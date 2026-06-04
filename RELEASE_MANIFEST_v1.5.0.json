@@ -1,0 +1,54 @@
+{
+  "app_version": "v1.5.0",
+  "package_type": "private_portable_source_runtime",
+  "build_time": "2026-06-04 20:37:48",
+  "runtime": {
+    "included": true,
+    "python_version": "3.12.1",
+    "path": "runtime/python"
+  },
+  "data": {
+    "included": true,
+    "api_profiles_included": true,
+    "path": "user_data"
+  },
+  "cleanup": {
+    "excluded_helper_prefixes": [
+      "check_",
+      "diagnose_",
+      "drill_",
+      "evaluate_",
+      "final_fix",
+      "finalize_",
+      "fix_",
+      "monitor_",
+      "operations_",
+      "patch_",
+      "prepare_",
+      "pre_release_",
+      "preview_",
+      "production_safety_",
+      "refactor",
+      "release_",
+      "revert_",
+      "rollback_",
+      "scratch_",
+      "search_",
+      "test_",
+      "validate_"
+    ],
+    "core_tests_included": [
+      "test_answer_normalizer.py",
+      "tests/__init__.py",
+      "tests/test_objective_batch_recognition_service.py",
+      "tests/test_objective_escalation.py",
+      "tests/test_objective_path_manager.py",
+      "tests/test_portable_path_resolution.py",
+      "tests/test_prompt_injection_guard.py"
+    ]
+  },
+  "package_stats": {
+    "files": 17471,
+    "size_mb": 1373.3
+  }
+}

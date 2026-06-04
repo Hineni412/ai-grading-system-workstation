@@ -1,0 +1,12 @@
+{
+  "app_version": "v1.5.0",
+  "package_type": "private_portable_source_runtime",
+  "build_time": "2026-06-04",
+  "included_files_count": null,
+  "data_included": true,
+  "runtime_included": true,
+  "api_profiles_included": true,
+  "source_commit": null,
+  "source_dirty": null,
+  "builder": "package_v1.5.0.py"
+}

@@ -1,0 +1,29 @@
+# Python cache and test output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local environment and secrets
+.env
+.env.*
+*.local
+
+# Logs and generated runtime data
+logs/
+user_data/
+
+# Packaged runtime and build outputs
+runtime/
+dist/
+build/
+
+# Temporary files
+*.tmp
+*.bak
+*.log
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
