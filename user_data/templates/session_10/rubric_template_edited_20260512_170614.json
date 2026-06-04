@@ -1,0 +1,511 @@
+{
+  "exam_title": "template_generated_exam",
+  "total_score": 90.0,
+  "questions": [
+    {
+      "question_id": "Q1",
+      "question_type": "choice",
+      "max_score": 5.0,
+      "knowledge_id": "C1_01",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "parts": [
+        {
+          "part_id": "Q1",
+          "part_score": 5.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 5.0,
+              "core_goal": "选择正确选项",
+              "required_elements": [
+                "C"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "过程表达规范、结论完整",
+              "max_deduction": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "Q2",
+      "question_type": "choice",
+      "max_score": 5.0,
+      "knowledge_id": "C1_02",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "parts": [
+        {
+          "part_id": "Q2",
+          "part_score": 5.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 5.0,
+              "core_goal": "选择正确选项",
+              "required_elements": [
+                "B"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "过程表达规范、结论完整",
+              "max_deduction": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "Q3",
+      "question_type": "choice",
+      "max_score": 5.0,
+      "knowledge_id": "C1_03",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "parts": [
+        {
+          "part_id": "Q3",
+          "part_score": 5.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 5.0,
+              "core_goal": "选择正确选项",
+              "required_elements": [
+                "B"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "过程表达规范、结论完整",
+              "max_deduction": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "Q4",
+      "question_type": "choice",
+      "max_score": 5.0,
+      "knowledge_id": "C1_04",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "parts": [
+        {
+          "part_id": "Q4",
+          "part_score": 5.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 5.0,
+              "core_goal": "选择正确选项",
+              "required_elements": [
+                "D"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "过程表达规范、结论完整",
+              "max_deduction": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "Q5",
+      "question_type": "choice",
+      "max_score": 5.0,
+      "knowledge_id": "C1_05",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "parts": [
+        {
+          "part_id": "Q5",
+          "part_score": 5.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 5.0,
+              "core_goal": "选择正确选项",
+              "required_elements": [
+                "B"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "过程表达规范、结论完整",
+              "max_deduction": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "Q6",
+      "question_type": "choice",
+      "max_score": 5.0,
+      "knowledge_id": "C1_06",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "parts": [
+        {
+          "part_id": "Q6",
+          "part_score": 5.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 5.0,
+              "core_goal": "选择正确选项",
+              "required_elements": [
+                "D"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "过程表达规范、结论完整",
+              "max_deduction": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "Q7",
+      "question_type": "fill_blank",
+      "max_score": 6.0,
+      "knowledge_id": "C2_01",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "parts": [
+        {
+          "part_id": "Q7",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "计算周长",
+              "required_elements": [
+                "16"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "过程表达规范、结论完整",
+              "max_deduction": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "Q8",
+      "question_type": "fill_blank",
+      "max_score": 6.0,
+      "knowledge_id": "C2_02",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "parts": [
+        {
+          "part_id": "Q8",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "计算周长",
+              "required_elements": [
+                "23"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "过程表达规范、结论完整",
+              "max_deduction": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "Q9",
+      "question_type": "fill_blank",
+      "max_score": 6.0,
+      "knowledge_id": "C2_03",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "parts": [
+        {
+          "part_id": "Q9",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "计算周长",
+              "required_elements": [
+                "12"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "过程表达规范、结论完整",
+              "max_deduction": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "Q10",
+      "question_type": "fill_blank",
+      "max_score": 6.0,
+      "knowledge_id": "C2_04",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "parts": [
+        {
+          "part_id": "Q10",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "计算角度",
+              "required_elements": [
+                "70"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "过程表达规范、结论完整",
+              "max_deduction": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "Q11",
+      "question_type": "fill_blank",
+      "max_score": 6.0,
+      "knowledge_id": "C2_05",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "parts": [
+        {
+          "part_id": "Q11",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "化简结果",
+              "required_elements": [
+                "4"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "过程表达规范、结论完整",
+              "max_deduction": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "Q12",
+      "question_type": "proof",
+      "max_score": 15.0,
+      "knowledge_id": "C3_01",
+      "grading_mode": "deductive_obligation",
+      "proof_obligations": [
+        {
+          "obligation_id": "O1",
+          "description": "求出∠CAB",
+          "weight": 5.0,
+          "acceptable_evidence": []
+        },
+        {
+          "obligation_id": "O2",
+          "description": "求出∠DAF",
+          "weight": 5.0,
+          "acceptable_evidence": []
+        },
+        {
+          "obligation_id": "O3",
+          "description": "求出∠AFB",
+          "weight": 5.0,
+          "acceptable_evidence": []
+        }
+      ],
+      "deduction_policy": [
+        {
+          "issue": "计算错误",
+          "max_deduction": 0.0,
+          "severity": "major"
+        },
+        {
+          "issue": "逻辑跳步",
+          "max_deduction": 0.0,
+          "severity": "major"
+        }
+      ],
+      "parts": [
+        {
+          "part_id": "Q12",
+          "part_score": 15.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 5.0,
+              "core_goal": "求∠CAB",
+              "required_elements": [
+                "内角和定理"
+              ],
+              "allow_alternative_methods": true
+            },
+            {
+              "step_id": "S2",
+              "step_score": 5.0,
+              "core_goal": "求∠DAF",
+              "required_elements": [
+                "角平分线定义"
+              ],
+              "allow_alternative_methods": true
+            },
+            {
+              "step_id": "S3",
+              "step_score": 5.0,
+              "core_goal": "求∠AFB",
+              "required_elements": [
+                "外角性质"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "过程表达规范、结论完整",
+              "max_deduction": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "Q13",
+      "question_type": "proof",
+      "max_score": 15.0,
+      "knowledge_id": "C3_02",
+      "grading_mode": "deductive_obligation",
+      "proof_obligations": [
+        {
+          "obligation_id": "O1",
+          "description": "利用全等得出对应边相等",
+          "weight": 7.5,
+          "acceptable_evidence": []
+        },
+        {
+          "obligation_id": "O2",
+          "description": "利用全等得出对应角相等",
+          "weight": 7.5,
+          "acceptable_evidence": []
+        }
+      ],
+      "deduction_policy": [
+        {
+          "issue": "对应关系错误",
+          "max_deduction": 0.0,
+          "severity": "major"
+        }
+      ],
+      "parts": [
+        {
+          "part_id": "Q13(1)",
+          "part_score": 7.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 7.0,
+              "core_goal": "求DE",
+              "required_elements": [
+                "全等性质"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "过程表达规范、结论完整",
+              "max_deduction": 1.0
+            }
+          ]
+        },
+        {
+          "part_id": "Q13(2)",
+          "part_score": 8.0,
+          "steps": [
+            {
+              "step_id": "S2",
+              "step_score": 8.0,
+              "core_goal": "求∠EFC",
+              "required_elements": [
+                "全等性质",
+                "外角性质"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "过程表达规范、结论完整",
+              "max_deduction": 1.0
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

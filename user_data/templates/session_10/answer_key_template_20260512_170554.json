@@ -1,0 +1,269 @@
+{
+  "questions": [
+    {
+      "question_id": "Q1",
+      "canonical_answer": "C",
+      "accepted_forms": [
+        "C"
+      ],
+      "method_variants": [],
+      "proof_obligations": [],
+      "parts": [
+        {
+          "part_id": "Q1",
+          "answer": "C",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ]
+    },
+    {
+      "question_id": "Q2",
+      "canonical_answer": "B",
+      "accepted_forms": [
+        "B"
+      ],
+      "method_variants": [],
+      "proof_obligations": [],
+      "parts": [
+        {
+          "part_id": "Q2",
+          "answer": "B",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ]
+    },
+    {
+      "question_id": "Q3",
+      "canonical_answer": "B",
+      "accepted_forms": [
+        "B"
+      ],
+      "method_variants": [],
+      "proof_obligations": [],
+      "parts": [
+        {
+          "part_id": "Q3",
+          "answer": "B",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ]
+    },
+    {
+      "question_id": "Q4",
+      "canonical_answer": "D",
+      "accepted_forms": [
+        "D"
+      ],
+      "method_variants": [],
+      "proof_obligations": [],
+      "parts": [
+        {
+          "part_id": "Q4",
+          "answer": "D",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ]
+    },
+    {
+      "question_id": "Q5",
+      "canonical_answer": "B",
+      "accepted_forms": [
+        "B"
+      ],
+      "method_variants": [],
+      "proof_obligations": [],
+      "parts": [
+        {
+          "part_id": "Q5",
+          "answer": "B",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ]
+    },
+    {
+      "question_id": "Q6",
+      "canonical_answer": "D",
+      "accepted_forms": [
+        "D"
+      ],
+      "method_variants": [],
+      "proof_obligations": [],
+      "parts": [
+        {
+          "part_id": "Q6",
+          "answer": "D",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ]
+    },
+    {
+      "question_id": "Q7",
+      "canonical_answer": "16",
+      "accepted_forms": [
+        "16"
+      ],
+      "method_variants": [],
+      "proof_obligations": [],
+      "parts": [
+        {
+          "part_id": "Q7",
+          "answer": "16",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ]
+    },
+    {
+      "question_id": "Q8",
+      "canonical_answer": "23",
+      "accepted_forms": [
+        "23"
+      ],
+      "method_variants": [],
+      "proof_obligations": [],
+      "parts": [
+        {
+          "part_id": "Q8",
+          "answer": "23",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ]
+    },
+    {
+      "question_id": "Q9",
+      "canonical_answer": "12",
+      "accepted_forms": [
+        "12"
+      ],
+      "method_variants": [],
+      "proof_obligations": [],
+      "parts": [
+        {
+          "part_id": "Q9",
+          "answer": "12",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ]
+    },
+    {
+      "question_id": "Q10",
+      "canonical_answer": "70",
+      "accepted_forms": [
+        "70"
+      ],
+      "method_variants": [],
+      "proof_obligations": [],
+      "parts": [
+        {
+          "part_id": "Q10",
+          "answer": "70",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ]
+    },
+    {
+      "question_id": "Q11",
+      "canonical_answer": "4",
+      "accepted_forms": [
+        "4"
+      ],
+      "method_variants": [],
+      "proof_obligations": [],
+      "parts": [
+        {
+          "part_id": "Q11",
+          "answer": "4",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ]
+    },
+    {
+      "question_id": "Q12",
+      "canonical_answer": "",
+      "accepted_forms": [],
+      "method_variants": [],
+      "proof_obligations": [
+        {
+          "obligation_id": "O1",
+          "description": "求出∠CAB",
+          "weight": 5.0,
+          "acceptable_evidence": [
+            "180-82-58=40"
+          ]
+        },
+        {
+          "obligation_id": "O2",
+          "description": "求出∠DAF",
+          "weight": 5.0,
+          "acceptable_evidence": [
+            "40/2=20"
+          ]
+        },
+        {
+          "obligation_id": "O3",
+          "description": "求出∠AFB",
+          "weight": 5.0,
+          "acceptable_evidence": [
+            "90+20=110"
+          ]
+        }
+      ],
+      "parts": [
+        {
+          "part_id": "Q12",
+          "answer": "",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ]
+    },
+    {
+      "question_id": "Q13",
+      "canonical_answer": "",
+      "accepted_forms": [],
+      "method_variants": [],
+      "proof_obligations": [
+        {
+          "obligation_id": "O1",
+          "description": "利用全等得出对应边相等",
+          "weight": 7.0,
+          "acceptable_evidence": [
+            "DE=AB"
+          ]
+        },
+        {
+          "obligation_id": "O2",
+          "description": "利用全等得出对应角相等",
+          "weight": 8.0,
+          "acceptable_evidence": [
+            "∠D=∠A"
+          ]
+        }
+      ],
+      "parts": [
+        {
+          "part_id": "Q13(1)",
+          "answer": "",
+          "analysis": "",
+          "step_milestones": []
+        },
+        {
+          "part_id": "Q13(2)",
+          "answer": "",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ]
+    }
+  ]
+}

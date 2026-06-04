@@ -1,0 +1,895 @@
+{
+  "meta": {
+    "source": "rubric_layout_mapping",
+    "schema_version": 2,
+    "warnings": [
+      "样卷阶段不再重新生成评分标准；请在下方手动画框并绑定题号/小问。"
+    ]
+  },
+  "questions": [
+    {
+      "question_id": "Q1",
+      "question_type": "choice",
+      "stem_summary": "根据露出的钝角判断被遮挡部分的三角形类型",
+      "max_score": 6.0,
+      "knowledge_id": "C2_01",
+      "knowledge_ids": [
+        "C2_01"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_01",
+          "knowledge_name": "三角形的分类"
+        }
+      ],
+      "knowledge_name": "三角形的分类",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "C",
+      "accepted_forms": [
+        "C",
+        "c"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q1",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "选择正确选项",
+              "required_elements": [
+                "C"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "C",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q2",
+      "question_type": "choice",
+      "stem_summary": "判断线段BE是否为△ABC的高线",
+      "max_score": 6.0,
+      "knowledge_id": "C2_02",
+      "knowledge_ids": [
+        "C2_02"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_02",
+          "knowledge_name": "三角形高线的定义"
+        }
+      ],
+      "knowledge_name": "三角形高线的定义",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "B",
+      "accepted_forms": [
+        "B",
+        "b"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q2",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "选择正确选项",
+              "required_elements": [
+                "B"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "B",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q3",
+      "question_type": "choice",
+      "stem_summary": "判断给定长度的三条线段能否构成三角形",
+      "max_score": 6.0,
+      "knowledge_id": "C2_03",
+      "knowledge_ids": [
+        "C2_03"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_03",
+          "knowledge_name": "三角形三边关系"
+        }
+      ],
+      "knowledge_name": "三角形三边关系",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "B",
+      "accepted_forms": [
+        "B",
+        "b"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q3",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "选择正确选项",
+              "required_elements": [
+                "B"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "B",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q4",
+      "question_type": "choice",
+      "stem_summary": "结合直角三角板和平行线性质计算∠FAD的度数",
+      "max_score": 6.0,
+      "knowledge_id": "C2_04",
+      "knowledge_ids": [
+        "C2_04",
+        "C2_05",
+        "C2_06"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_04",
+          "knowledge_name": "平行线的性质"
+        },
+        {
+          "knowledge_id": "C2_05",
+          "knowledge_name": "三角形内角和定理"
+        },
+        {
+          "knowledge_id": "C2_06",
+          "knowledge_name": "三角板角度特征"
+        }
+      ],
+      "knowledge_name": "平行线的性质",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "D",
+      "accepted_forms": [
+        "D",
+        "d"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q4",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "选择正确选项",
+              "required_elements": [
+                "D"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "D",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q5",
+      "question_type": "choice",
+      "stem_summary": "判断关于三角形中线、角平分线、高的说法正确性",
+      "max_score": 6.0,
+      "knowledge_id": "C2_07",
+      "knowledge_ids": [
+        "C2_07"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_07",
+          "knowledge_name": "三角形的中线、角平分线、高的性质"
+        }
+      ],
+      "knowledge_name": "三角形的中线、角平分线、高的性质",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "B",
+      "accepted_forms": [
+        "B",
+        "b"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q5",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "选择正确选项",
+              "required_elements": [
+                "B"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "B",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q6",
+      "question_type": "choice",
+      "stem_summary": "判断关于三角形中线、角平分线、高的表达式正误",
+      "max_score": 6.0,
+      "knowledge_id": "C2_07",
+      "knowledge_ids": [
+        "C2_07"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_07",
+          "knowledge_name": "三角形的中线、角平分线、高的定义"
+        }
+      ],
+      "knowledge_name": "三角形的中线、角平分线、高的定义",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "D",
+      "accepted_forms": [
+        "D",
+        "d"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q6",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "选择正确选项",
+              "required_elements": [
+                "D"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "D",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q7",
+      "question_type": "fill_blank",
+      "stem_summary": "根据非负数性质求边长，结合三边关系求三角形周长",
+      "max_score": 8.0,
+      "knowledge_id": "C2_08",
+      "knowledge_ids": [
+        "C2_08",
+        "C2_03",
+        "C2_09"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_08",
+          "knowledge_name": "非负数的性质"
+        },
+        {
+          "knowledge_id": "C2_03",
+          "knowledge_name": "三角形三边关系"
+        },
+        {
+          "knowledge_id": "C2_09",
+          "knowledge_name": "三角形周长计算"
+        }
+      ],
+      "knowledge_name": "非负数的性质",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "16",
+      "accepted_forms": [
+        "16",
+        "十六"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q7",
+          "part_score": 8.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 8.0,
+              "core_goal": "写出正确或等价答案",
+              "required_elements": [
+                "16"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "16",
+          "analysis": "根据非负数性质得a=7,b=2，结合三边关系得5<c<9，c为奇数故c=7，周长=7+2+7=16",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q8",
+      "question_type": "fill_blank",
+      "stem_summary": "根据中线性质计算△ABD的周长",
+      "max_score": 8.0,
+      "knowledge_id": "C2_10",
+      "knowledge_ids": [
+        "C2_10",
+        "C2_09"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_10",
+          "knowledge_name": "三角形中线的性质"
+        },
+        {
+          "knowledge_id": "C2_09",
+          "knowledge_name": "三角形周长计算"
+        }
+      ],
+      "knowledge_name": "三角形中线的性质",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "23",
+      "accepted_forms": [
+        "23",
+        "二十三"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q8",
+          "part_score": 8.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 8.0,
+              "core_goal": "写出正确或等价答案",
+              "required_elements": [
+                "23"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "23",
+          "analysis": "AD为中线故BD=CD，△ABD周长比△ACD周长长AB-AC=3cm，故△ABD周长=20+3=23",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q9",
+      "question_type": "fill_blank",
+      "stem_summary": "根据非负数性质求边长，结合等腰三角形性质和三边关系求周长",
+      "max_score": 8.0,
+      "knowledge_id": "C2_11",
+      "knowledge_ids": [
+        "C2_11",
+        "C2_08",
+        "C2_03",
+        "C2_09"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_11",
+          "knowledge_name": "等腰三角形的性质"
+        },
+        {
+          "knowledge_id": "C2_08",
+          "knowledge_name": "非负数的性质"
+        },
+        {
+          "knowledge_id": "C2_03",
+          "knowledge_name": "三角形三边关系"
+        },
+        {
+          "knowledge_id": "C2_09",
+          "knowledge_name": "三角形周长计算"
+        }
+      ],
+      "knowledge_name": "等腰三角形的性质",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "12",
+      "accepted_forms": [
+        "12",
+        "十二"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q9",
+          "part_score": 8.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 8.0,
+              "core_goal": "写出正确或等价答案",
+              "required_elements": [
+                "12"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "12",
+          "analysis": "根据非负数性质得a=5,b=2，若2为腰无法构成三角形，故腰为5，周长=5+5+2=12",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q10",
+      "question_type": "fill_blank",
+      "stem_summary": "根据角度关系计算直角三角形中较大锐角的度数",
+      "max_score": 8.0,
+      "knowledge_id": "C2_12",
+      "knowledge_ids": [
+        "C2_12"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_12",
+          "knowledge_name": "直角三角形两锐角互余"
+        }
+      ],
+      "knowledge_name": "直角三角形两锐角互余",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "70",
+      "accepted_forms": [
+        "70",
+        "七十"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q10",
+          "part_score": 8.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 8.0,
+              "core_goal": "写出正确或等价答案",
+              "required_elements": [
+                "70"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "70",
+          "analysis": "设较小锐角为x，x+3x+10=90，解得x=20，故所求锐角=3*20+10=70",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q11",
+      "question_type": "fill_blank",
+      "stem_summary": "根据三角形三边范围化简绝对值表达式",
+      "max_score": 8.0,
+      "knowledge_id": "C2_13",
+      "knowledge_ids": [
+        "C2_13",
+        "C2_03"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_13",
+          "knowledge_name": "绝对值的化简"
+        },
+        {
+          "knowledge_id": "C2_03",
+          "knowledge_name": "三角形三边关系"
+        }
+      ],
+      "knowledge_name": "绝对值的化简",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "4",
+      "accepted_forms": [
+        "4",
+        "四"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q11",
+          "part_score": 8.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 8.0,
+              "core_goal": "写出正确或等价答案",
+              "required_elements": [
+                "4"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "4",
+          "analysis": "根据三边关系得1<a<3，故|a-1|+|a-5|=a-1+5-a=4",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q12",
+      "question_type": "proof",
+      "stem_summary": "结合角平分线、高线性质计算∠AFB的度数",
+      "max_score": 12.0,
+      "knowledge_id": "C2_14",
+      "knowledge_ids": [
+        "C2_14",
+        "C2_05",
+        "C2_15",
+        "C2_02"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_14",
+          "knowledge_name": "角平分线的性质"
+        },
+        {
+          "knowledge_id": "C2_05",
+          "knowledge_name": "三角形内角和定理"
+        },
+        {
+          "knowledge_id": "C2_15",
+          "knowledge_name": "三角形外角的性质"
+        },
+        {
+          "knowledge_id": "C2_02",
+          "knowledge_name": "三角形高线的定义"
+        }
+      ],
+      "knowledge_name": "角平分线的性质",
+      "grading_mode": "deductive_obligation",
+      "proof_obligations": [
+        {
+          "obligation_id": "O1",
+          "description": "利用三角形内角和定理正确计算∠CAB的度数",
+          "weight": 3.0,
+          "acceptable_evidence": [
+            "直接写出∠CAB=40°且推导正确"
+          ]
+        },
+        {
+          "obligation_id": "O2",
+          "description": "利用角平分线性质正确求出∠DAF/∠BAF的度数",
+          "weight": 4.0,
+          "acceptable_evidence": [
+            "正确应用角平分线定义得到角的数量关系"
+          ]
+        },
+        {
+          "obligation_id": "O3",
+          "description": "结合高线定义和角度关系正确计算∠AFB的度数",
+          "weight": 5.0,
+          "acceptable_evidence": [
+            "用外角定理计算",
+            "用△AFB内角和计算"
+          ]
+        }
+      ],
+      "deduction_policy": [
+        {
+          "issue": "跳步严重，未说明核心定理依据",
+          "max_deduction": 3.0,
+          "severity": "major"
+        },
+        {
+          "issue": "角度计算错误",
+          "max_deduction": 4.0,
+          "severity": "major"
+        },
+        {
+          "issue": "过程书写不规范",
+          "max_deduction": 1.0,
+          "severity": "minor"
+        }
+      ],
+      "canonical_answer": "110°",
+      "accepted_forms": [
+        "110°",
+        "110度",
+        "110"
+      ],
+      "method_variants": [
+        {
+          "name": "外角法",
+          "outline": "先算∠CAB=40°，由角平分线得∠DAF=20°，BD⊥AC故∠ADB=90°，∠AFB为△ADF外角，故∠AFB=90°+20°=110°"
+        },
+        {
+          "name": "内角和法",
+          "outline": "先算∠CAB=40°，由角平分线得∠BAF=20°，BD⊥AC故∠ABD=90°-40°=50°，在△AFB中∠AFB=180°-20°-50°=110°"
+        }
+      ],
+      "parts": [
+        {
+          "part_id": "Q12",
+          "part_score": 12.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 12.0,
+              "core_goal": "完成关键解题或证明义务",
+              "required_elements": [
+                "关键过程合理",
+                "结论正确"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "110°",
+          "analysis": "核心是结合角平分线、高线性质，利用角度关系求解",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q13",
+      "question_type": "proof",
+      "stem_summary": "结合全等三角形性质计算线段长度和角度",
+      "max_score": 12.0,
+      "knowledge_id": "C2_16",
+      "knowledge_ids": [
+        "C2_16",
+        "C2_15",
+        "C2_05"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_16",
+          "knowledge_name": "全等三角形的性质"
+        },
+        {
+          "knowledge_id": "C2_15",
+          "knowledge_name": "三角形外角的性质"
+        },
+        {
+          "knowledge_id": "C2_05",
+          "knowledge_name": "三角形内角和定理"
+        }
+      ],
+      "knowledge_name": "全等三角形的性质",
+      "grading_mode": "deductive_obligation",
+      "proof_obligations": [
+        {
+          "obligation_id": "O1",
+          "description": "利用全等三角形对应边相等的性质正确计算DE的长度",
+          "weight": 6.0,
+          "acceptable_evidence": [
+            "正确写出全等对应边关系，计算结果正确"
+          ]
+        },
+        {
+          "obligation_id": "O2",
+          "description": "利用全等三角形对应角相等的性质正确计算∠EFC的度数",
+          "weight": 6.0,
+          "acceptable_evidence": [
+            "用外角性质推导",
+            "用内角和与邻补角推导"
+          ]
+        }
+      ],
+      "deduction_policy": [
+        {
+          "issue": "未说明全等三角形对应关系直接套用结论",
+          "max_deduction": 3.0,
+          "severity": "major"
+        },
+        {
+          "issue": "计算错误",
+          "max_deduction": 3.0,
+          "severity": "major"
+        },
+        {
+          "issue": "逻辑推导不连贯",
+          "max_deduction": 2.0,
+          "severity": "major"
+        },
+        {
+          "issue": "过程书写不规范",
+          "max_deduction": 1.0,
+          "severity": "minor"
+        }
+      ],
+      "canonical_answer": "(1)22；(2)124°",
+      "accepted_forms": [
+        "(1)22；(2)124°"
+      ],
+      "method_variants": [
+        {
+          "name": "外角法",
+          "outline": "(1)由全等得BE=BC=13，AB=AE+BE=22，故DE=AB=22；(2)由全等得∠D=∠A=37°，∠AFD=∠A+∠D+∠DBE=37+37+50=124°，故∠EFC=∠AFD=124°"
+        },
+        {
+          "name": "内角和法",
+          "outline": "(1)同外角法；(2)由全等得∠BED=∠C=180-37-50=93°，∠AED=180-93=87°，∠AFE=180-37-87=56°，故∠EFC=180-56=124°"
+        }
+      ],
+      "parts": [
+        {
+          "part_id": "Q13(1)",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 3.0,
+              "core_goal": "明确全等三角形对应边关系",
+              "required_elements": [
+                "△ABC≌△DEB，故BE=BC，AB=DE"
+              ],
+              "allow_alternative_methods": true
+            },
+            {
+              "step_id": "S2",
+              "step_score": 3.0,
+              "core_goal": "正确计算DE的长度",
+              "required_elements": [
+                "AB=AE+BE=22，故DE=22"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "明确全等对应关系",
+              "max_deduction": 1
+            }
+          ],
+          "answer": "22",
+          "analysis": "全等三角形对应边相等，BE=BC=13，AB=AE+BE=22，故DE=AB=22",
+          "step_milestones": [
+            "全等对应边关系",
+            "AB长度计算",
+            "DE长度结果"
+          ]
+        },
+        {
+          "part_id": "Q13(2)",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 2.0,
+              "core_goal": "明确全等三角形对应角关系",
+              "required_elements": [
+                "△ABC≌△DEB，故∠D=∠A=37°"
+              ],
+              "allow_alternative_methods": true
+            },
+            {
+              "step_id": "S2",
+              "step_score": 3.0,
+              "core_goal": "正确推导角度关系",
+              "required_elements": [
+                "推导∠AFD/∠AEF的度数"
+              ],
+              "allow_alternative_methods": true
+            },
+            {
+              "step_id": "S3",
+              "step_score": 1.0,
+              "core_goal": "正确得到∠EFC的度数",
+              "required_elements": [
+                "∠EFC=124°"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "角度推导逻辑清晰",
+              "max_deduction": 1
+            }
+          ],
+          "answer": "124°",
+          "analysis": "全等三角形对应角相等，结合角度关系推导得到∠EFC=124°",
+          "step_milestones": [
+            "全等对应角关系",
+            "中间角度推导",
+            "∠EFC结果"
+          ]
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    }
+  ]
+}

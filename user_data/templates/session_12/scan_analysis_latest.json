@@ -1,0 +1,682 @@
+{
+  "groups": [
+    {
+      "front_image": "C:\\Users\\89418\\Desktop\\AI阅卷系统_工作机版_v1.3.0\\user_data\\exams\\session_12\\uploaded_scans\\_pdf_pages\\001_05\\page_002.jpg",
+      "back_image": "C:\\Users\\89418\\Desktop\\AI阅卷系统_工作机版_v1.3.0\\user_data\\exams\\session_12\\uploaded_scans\\_pdf_pages\\001_05\\page_001.jpg",
+      "student_name": "陈维懋",
+      "student_id": 18,
+      "detected_name": "陈维懋",
+      "source_label": "001_05测试’.pdf 第 2-1 页",
+      "enhanced_front_image": null,
+      "enhanced_back_image": null,
+      "match_method": "exact",
+      "match_score": 1.0
+    },
+    {
+      "front_image": "C:\\Users\\89418\\Desktop\\AI阅卷系统_工作机版_v1.3.0\\user_data\\exams\\session_12\\uploaded_scans\\_pdf_pages\\001_05\\page_004.jpg",
+      "back_image": "C:\\Users\\89418\\Desktop\\AI阅卷系统_工作机版_v1.3.0\\user_data\\exams\\session_12\\uploaded_scans\\_pdf_pages\\001_05\\page_003.jpg",
+      "student_name": "胡梓萱",
+      "student_id": 3,
+      "detected_name": "胡梓萱",
+      "source_label": "001_05测试’.pdf 第 4-3 页",
+      "enhanced_front_image": null,
+      "enhanced_back_image": null,
+      "match_method": "exact",
+      "match_score": 1.0
+    },
+    {
+      "front_image": "C:\\Users\\89418\\Desktop\\AI阅卷系统_工作机版_v1.3.0\\user_data\\exams\\session_12\\uploaded_scans\\_pdf_pages\\001_05\\page_006.jpg",
+      "back_image": "C:\\Users\\89418\\Desktop\\AI阅卷系统_工作机版_v1.3.0\\user_data\\exams\\session_12\\uploaded_scans\\_pdf_pages\\001_05\\page_005.jpg",
+      "student_name": "钱肖白",
+      "student_id": 46,
+      "detected_name": "钱肖白",
+      "source_label": "001_05测试’.pdf 第 6-5 页",
+      "enhanced_front_image": null,
+      "enhanced_back_image": null,
+      "match_method": "exact",
+      "match_score": 1.0
+    },
+    {
+      "front_image": "C:\\Users\\89418\\Desktop\\AI阅卷系统_工作机版_v1.3.0\\user_data\\exams\\session_12\\uploaded_scans\\_pdf_pages\\001_05\\page_010.jpg",
+      "back_image": "C:\\Users\\89418\\Desktop\\AI阅卷系统_工作机版_v1.3.0\\user_data\\exams\\session_12\\uploaded_scans\\_pdf_pages\\001_05\\page_009.jpg",
+      "student_name": "段朝荣",
+      "student_id": 32,
+      "detected_name": "段朝荣",
+      "source_label": "001_05测试’.pdf 第 10-9 页",
+      "enhanced_front_image": null,
+      "enhanced_back_image": null,
+      "match_method": "exact",
+      "match_score": 1.0
+    }
+  ],
+  "issues": [
+    {
+      "issue_id": "001_05_.pdf_p8_7",
+      "issue_type": "unknown_name",
+      "message": "识别到姓名但不在学生库中，请人工匹配。",
+      "front_image": "C:\\Users\\89418\\Desktop\\AI阅卷系统_工作机版_v1.3.0\\user_data\\exams\\session_12\\uploaded_scans\\_pdf_pages\\001_05\\page_008.jpg",
+      "back_image": "C:\\Users\\89418\\Desktop\\AI阅卷系统_工作机版_v1.3.0\\user_data\\exams\\session_12\\uploaded_scans\\_pdf_pages\\001_05\\page_007.jpg",
+      "detected_name": "42",
+      "source_label": "001_05测试’.pdf 第 8-7 页",
+      "enhanced_front_image": null,
+      "enhanced_back_image": null,
+      "suggested_student_id": null,
+      "suggested_student_name": null,
+      "suggested_match_score": null
+    }
+  ],
+  "absent_students": [
+    {
+      "id": 57,
+      "student_code": "20251009",
+      "name": "何悦萌",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 69,
+      "student_code": "20251022",
+      "name": "刘俊楠",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 68,
+      "student_code": "20251021",
+      "name": "刘城宇",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 70,
+      "student_code": "20251023",
+      "name": "刘宇婉",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 43,
+      "student_code": "20250947",
+      "name": "刘志鑫",
+      "class_name": "10",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 71,
+      "student_code": "20251024",
+      "name": "刘梓轩",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 74,
+      "student_code": "20251027",
+      "name": "卢坜至",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 73,
+      "student_code": "20251026",
+      "name": "卢辰逸",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 83,
+      "student_code": "20251039",
+      "name": "叶家瑶",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 91,
+      "student_code": "20251047",
+      "name": "吴国晓",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 76,
+      "student_code": "20251029",
+      "name": "孙展鹏",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 84,
+      "student_code": "20251040",
+      "name": "岳思雨",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 75,
+      "student_code": "20251028",
+      "name": "强景桐",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 80,
+      "student_code": "20251036",
+      "name": "徐耀鲲",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 49,
+      "student_code": "20251001",
+      "name": "曹栩恺",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 89,
+      "student_code": "20251045",
+      "name": "朱益丹",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 90,
+      "student_code": "20251046",
+      "name": "朱芷莹",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 65,
+      "student_code": "20251018",
+      "name": "李泽庆",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 63,
+      "student_code": "20251016",
+      "name": "李珊",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 64,
+      "student_code": "20251017",
+      "name": "李舒杰",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 82,
+      "student_code": "20251038",
+      "name": "杨曦媛",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 81,
+      "student_code": "20251037",
+      "name": "杨诗语",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 66,
+      "student_code": "20251019",
+      "name": "梁沣",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 67,
+      "student_code": "20251020",
+      "name": "梁盛源",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 48,
+      "student_code": "20251030",
+      "name": "王奕晨",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 77,
+      "student_code": "20251031",
+      "name": "王振濠",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 79,
+      "student_code": "20251035",
+      "name": "肖瑶",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 78,
+      "student_code": "20251034",
+      "name": "肖闻轩",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 61,
+      "student_code": "20251014",
+      "name": "蒋妙熙",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 85,
+      "student_code": "20251041",
+      "name": "赵婉清",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 86,
+      "student_code": "20251042",
+      "name": "郑茂辰",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 56,
+      "student_code": "20251008",
+      "name": "郭启治",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 88,
+      "student_code": "20251044",
+      "name": "钟曜锴",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 87,
+      "student_code": "20251043",
+      "name": "钟港洋",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 53,
+      "student_code": "20251005",
+      "name": "陈一涵",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 54,
+      "student_code": "20251006",
+      "name": "陈佑翰",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 50,
+      "student_code": "20251002",
+      "name": "陈嘉琦",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 55,
+      "student_code": "20251007",
+      "name": "陈子涵",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 52,
+      "student_code": "20251004",
+      "name": "陈思羽",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 51,
+      "student_code": "20251003",
+      "name": "陈霂希",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 60,
+      "student_code": "20251012",
+      "name": "黄子轩",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 58,
+      "student_code": "20251010",
+      "name": "黄维欣",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 59,
+      "student_code": "20251011",
+      "name": "黄雅韵",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 62,
+      "student_code": "20251015",
+      "name": "黎轩恋",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 72,
+      "student_code": "20251025",
+      "name": "龙栩赛",
+      "class_name": "10",
+      "created_at": "2026-05-24 19:34:42"
+    },
+    {
+      "id": 39,
+      "student_code": "20250912",
+      "name": "何辰萱",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 17,
+      "student_code": "20250940",
+      "name": "余天策",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 30,
+      "student_code": "20250921",
+      "name": "刘瑾萱",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 41,
+      "student_code": "20250931",
+      "name": "吴濠轩",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 24,
+      "student_code": "20250932",
+      "name": "吴芷婧",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 31,
+      "student_code": "20250944",
+      "name": "周子钰",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 11,
+      "student_code": "20250939",
+      "name": "尹卓然",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 42,
+      "student_code": "20250946",
+      "name": "庄锦慧",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 4,
+      "student_code": "20250942",
+      "name": "张梓宁",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 12,
+      "student_code": "20250941",
+      "name": "张立璞",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 34,
+      "student_code": "20250925",
+      "name": "彭子轩",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 15,
+      "student_code": "20250924",
+      "name": "彭皓",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 38,
+      "student_code": "20250945",
+      "name": "朱海铭",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 5,
+      "student_code": "20250917",
+      "name": "李世善",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 36,
+      "student_code": "20250919",
+      "name": "李学志",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 25,
+      "student_code": "20250918",
+      "name": "李思钰",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 1,
+      "student_code": "20250920",
+      "name": "李易辰",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 14,
+      "student_code": "20250916",
+      "name": "李睿琪",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 9,
+      "student_code": "20250938",
+      "name": "杨梓雄",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 13,
+      "student_code": "20250937",
+      "name": "杨瑾萱",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 19,
+      "student_code": "20250915",
+      "name": "焦点点",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 2,
+      "student_code": "20250929",
+      "name": "王嘉豪",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 40,
+      "student_code": "20250930",
+      "name": "王梓鸣",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 45,
+      "student_code": "20250927",
+      "name": "盛雨秋",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 20,
+      "student_code": "20250923",
+      "name": "缪奕安",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 27,
+      "student_code": "20250922",
+      "name": "罗婉秋",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 16,
+      "student_code": "20250934",
+      "name": "肖妙可",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 28,
+      "student_code": "20250933",
+      "name": "肖旷然",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 35,
+      "student_code": "20250913",
+      "name": "胡筝",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 10,
+      "student_code": "20250928",
+      "name": "舒漪",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 47,
+      "student_code": "20250908",
+      "name": "范钰承",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 26,
+      "student_code": "20250903",
+      "name": "蔡勋翼",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 44,
+      "student_code": "20250936",
+      "name": "许诺",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 37,
+      "student_code": "20250902",
+      "name": "贝宝旋",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 23,
+      "student_code": "20250943",
+      "name": "赵居垓",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 6,
+      "student_code": "20250906",
+      "name": "邓妍洁",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 29,
+      "student_code": "20250935",
+      "name": "邢岂畅",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 22,
+      "student_code": "20250911",
+      "name": "郭凯泽",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 21,
+      "student_code": "20250904",
+      "name": "陈静菡",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 7,
+      "student_code": "20250901",
+      "name": "高瑞汐",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 33,
+      "student_code": "20250909",
+      "name": "高荣",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    },
+    {
+      "id": 8,
+      "student_code": "20250910",
+      "name": "龚哲",
+      "class_name": "9",
+      "created_at": "2026-04-11 23:04:04"
+    }
+  ],
+  "warnings": [],
+  "total_pages": 10,
+  "enhance_images": true
+}

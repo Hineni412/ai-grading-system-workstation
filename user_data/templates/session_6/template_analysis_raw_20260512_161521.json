@@ -1,0 +1,225 @@
+{
+  "questions": [
+    {
+      "question_id": "Q12",
+      "question_type": "calculation",
+      "stem_summary": "已知三角形ABC中角B=82度，角C=58度，BD垂直AC于D，AE平分角CAB，求角AFB。",
+      "max_score": 6,
+      "knowledge_id": "C_TRIANGLE_ANGLES",
+      "grading_mode": "deductive_obligation",
+      "proof_obligations": [
+        {
+          "obligation_id": "O1",
+          "description": "利用三角形内角和定理求出∠CAB",
+          "weight": 2,
+          "acceptable_evidence": [
+            "180-82-58=40"
+          ]
+        },
+        {
+          "obligation_id": "O2",
+          "description": "利用角平分线定义求出∠DAF",
+          "weight": 2,
+          "acceptable_evidence": [
+            "40/2=20"
+          ]
+        },
+        {
+          "obligation_id": "O3",
+          "description": "利用三角形外角性质或直角三角形性质求出∠AFB",
+          "weight": 2,
+          "acceptable_evidence": [
+            "90+20=110"
+          ]
+        }
+      ],
+      "deduction_policy": [
+        {
+          "issue": "计算错误",
+          "max_deduction": 2,
+          "severity": "minor"
+        },
+        {
+          "issue": "逻辑跳步严重",
+          "max_deduction": 3,
+          "severity": "major"
+        }
+      ],
+      "canonical_answer": "110°",
+      "accepted_forms": [
+        "110",
+        "110度",
+        "110°"
+      ],
+      "method_variants": [
+        {
+          "name": "外角法",
+          "outline": "∠AFB=∠ADB+∠DAF"
+        }
+      ],
+      "parts": [
+        {
+          "part_id": "Q12(1)",
+          "part_score": 6,
+          "answer": "110°",
+          "analysis": "利用三角形内角和求出∠CAB=40°，再由角平分线得∠DAF=20°，最后利用外角性质求解。",
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 2,
+              "core_goal": "求∠CAB",
+              "required_elements": [
+                "内角和定理"
+              ],
+              "allow_alternative_methods": true
+            },
+            {
+              "step_id": "S2",
+              "step_score": 2,
+              "core_goal": "求∠DAF",
+              "required_elements": [
+                "角平分线定义"
+              ],
+              "allow_alternative_methods": true
+            },
+            {
+              "step_id": "S3",
+              "step_score": 2,
+              "core_goal": "求∠AFB",
+              "required_elements": [
+                "外角性质或直角三角形互余"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "step_milestones": [
+            "∠CAB=40°",
+            "∠DAF=20°",
+            "∠AFB=110°"
+          ],
+          "presentation_rules": [
+            {
+              "rule": "过程规范",
+              "max_deduction": 1
+            }
+          ]
+        }
+      ],
+      "regions": [
+        {
+          "page": "back",
+          "x": 350,
+          "y": 300,
+          "w": 500,
+          "h": 350,
+          "confidence": 0.95
+        }
+      ]
+    },
+    {
+      "question_id": "Q13",
+      "question_type": "proof",
+      "stem_summary": "已知三角形ABC全等于三角形DEB，点E在AB上，DE与AC交于点F，求DE长度及角EFC度数。",
+      "max_score": 8,
+      "knowledge_id": "C_CONGRUENT_TRIANGLES",
+      "grading_mode": "deductive_obligation",
+      "proof_obligations": [
+        {
+          "obligation_id": "O1",
+          "description": "利用全等三角形性质对应边相等求DE",
+          "weight": 4,
+          "acceptable_evidence": [
+            "DE=AB, AB=AE+BE"
+          ]
+        },
+        {
+          "obligation_id": "O2",
+          "description": "利用全等三角形性质对应角相等求∠EFC",
+          "weight": 4,
+          "acceptable_evidence": [
+            "∠D=∠A, 外角性质"
+          ]
+        }
+      ],
+      "deduction_policy": [
+        {
+          "issue": "对应关系错误",
+          "max_deduction": 4,
+          "severity": "major"
+        },
+        {
+          "issue": "计算错误",
+          "max_deduction": 2,
+          "severity": "minor"
+        }
+      ],
+      "canonical_answer": "(1)22; (2)124°",
+      "accepted_forms": [
+        "22, 124°",
+        "22; 124°"
+      ],
+      "method_variants": [
+        {
+          "name": "全等性质法",
+          "outline": "利用全等三角形对应边相等和对应角相等求解"
+        }
+      ],
+      "parts": [
+        {
+          "part_id": "Q13(1)",
+          "part_score": 4,
+          "answer": "22",
+          "analysis": "由全等得DE=AB=AE+BE=9+13=22",
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 4,
+              "core_goal": "求DE",
+              "required_elements": [
+                "DE=AB",
+                "AB=AE+BE"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "step_milestones": [
+            "DE=AB",
+            "AB=22"
+          ]
+        },
+        {
+          "part_id": "Q13(2)",
+          "part_score": 4,
+          "answer": "124°",
+          "analysis": "由全等得∠D=∠A=37°，利用外角性质求出∠EFC=124°",
+          "steps": [
+            {
+              "step_id": "S2",
+              "step_score": 4,
+              "core_goal": "求∠EFC",
+              "required_elements": [
+                "∠D=∠A",
+                "外角性质"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "step_milestones": [
+            "∠D=∠A=37°",
+            "∠EFC=124°"
+          ]
+        }
+      ],
+      "regions": [
+        {
+          "page": "back",
+          "x": 50,
+          "y": 650,
+          "w": 900,
+          "h": 300,
+          "confidence": 0.95
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,109 @@
+{
+  "questions": [
+    {
+      "question_id": "Q12",
+      "canonical_answer": "110°",
+      "accepted_forms": [
+        "110",
+        "110度",
+        "110°"
+      ],
+      "method_variants": [
+        {
+          "name": "外角法",
+          "outline": "∠AFB=∠ADB+∠DAF"
+        }
+      ],
+      "proof_obligations": [
+        {
+          "obligation_id": "O1",
+          "description": "利用三角形内角和定理求出∠CAB",
+          "weight": 2.0,
+          "acceptable_evidence": [
+            "180-82-58=40"
+          ]
+        },
+        {
+          "obligation_id": "O2",
+          "description": "利用角平分线定义求出∠DAF",
+          "weight": 2.0,
+          "acceptable_evidence": [
+            "40/2=20"
+          ]
+        },
+        {
+          "obligation_id": "O3",
+          "description": "利用三角形外角性质或直角三角形性质求出∠AFB",
+          "weight": 2.0,
+          "acceptable_evidence": [
+            "90+20=110"
+          ]
+        }
+      ],
+      "parts": [
+        {
+          "part_id": "Q12(1)",
+          "answer": "110°",
+          "analysis": "利用三角形内角和求出∠CAB=40°，再由角平分线得∠DAF=20°，最后利用外角性质求解。",
+          "step_milestones": [
+            "∠CAB=40°",
+            "∠DAF=20°",
+            "∠AFB=110°"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "Q13",
+      "canonical_answer": "(1)22; (2)124°",
+      "accepted_forms": [
+        "22, 124°",
+        "22; 124°"
+      ],
+      "method_variants": [
+        {
+          "name": "全等性质法",
+          "outline": "利用全等三角形对应边相等和对应角相等求解"
+        }
+      ],
+      "proof_obligations": [
+        {
+          "obligation_id": "O1",
+          "description": "利用全等三角形性质对应边相等求DE",
+          "weight": 4.0,
+          "acceptable_evidence": [
+            "DE=AB, AB=AE+BE"
+          ]
+        },
+        {
+          "obligation_id": "O2",
+          "description": "利用全等三角形性质对应角相等求∠EFC",
+          "weight": 4.0,
+          "acceptable_evidence": [
+            "∠D=∠A, 外角性质"
+          ]
+        }
+      ],
+      "parts": [
+        {
+          "part_id": "Q13(1)",
+          "answer": "22",
+          "analysis": "由全等得DE=AB=AE+BE=9+13=22",
+          "step_milestones": [
+            "DE=AB",
+            "AB=22"
+          ]
+        },
+        {
+          "part_id": "Q13(2)",
+          "answer": "124°",
+          "analysis": "由全等得∠D=∠A=37°，利用外角性质求出∠EFC=124°",
+          "step_milestones": [
+            "∠D=∠A=37°",
+            "∠EFC=124°"
+          ]
+        }
+      ]
+    }
+  ]
+}

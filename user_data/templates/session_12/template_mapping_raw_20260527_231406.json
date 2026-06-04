@@ -1,0 +1,13 @@
+{
+  "source": "rubric_layout_mapping",
+  "note": "Template upload only stores page images and question candidates. Scoring rules remain from Word-generated rubric/answer_key.",
+  "front_size": {
+    "width": 888,
+    "height": 1202
+  },
+  "back_size": {
+    "width": 890,
+    "height": 1205
+  },
+  "question_count": 12
+}

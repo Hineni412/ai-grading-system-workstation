@@ -1,0 +1,1094 @@
+{
+  "meta": {
+    "source": "rubric_layout_mapping",
+    "schema_version": 2,
+    "warnings": [
+      "样卷阶段不再重新生成评分标准；请在下方手动画框并绑定题号/小问。"
+    ]
+  },
+  "questions": [
+    {
+      "question_id": "Q1",
+      "question_type": "choice",
+      "stem_summary": "判断四幅节气作品中哪个是轴对称图形",
+      "max_score": 6.0,
+      "knowledge_id": "C2_01",
+      "knowledge_ids": [
+        "C2_01"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_01",
+          "knowledge_name": "轴对称图形的判定"
+        }
+      ],
+      "knowledge_name": "轴对称图形的判定",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "B",
+      "accepted_forms": [
+        "B",
+        "b"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q1",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "选择正确选项",
+              "required_elements": [
+                "B"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "B",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q2",
+      "question_type": "choice",
+      "stem_summary": "判断关于同旁内角、三角形全等、锐角三角形判定、角对称轴的说法正确性",
+      "max_score": 6.0,
+      "knowledge_id": "C2_02",
+      "knowledge_ids": [
+        "C2_02",
+        "C2_01"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_02",
+          "knowledge_name": "三角形基本性质与平行线性质"
+        },
+        {
+          "knowledge_id": "C2_01",
+          "knowledge_name": "轴对称性质"
+        }
+      ],
+      "knowledge_name": "三角形基本性质与平行线性质",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "C",
+      "accepted_forms": [
+        "C",
+        "c"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q2",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "选择正确选项",
+              "required_elements": [
+                "C"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "C",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q3",
+      "question_type": "choice",
+      "stem_summary": "利用角平分线性质求△ADC的面积",
+      "max_score": 6.0,
+      "knowledge_id": "C2_03",
+      "knowledge_ids": [
+        "C2_03",
+        "C2_04"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_03",
+          "knowledge_name": "角平分线的性质"
+        },
+        {
+          "knowledge_id": "C2_04",
+          "knowledge_name": "三角形面积计算"
+        }
+      ],
+      "knowledge_name": "角平分线的性质",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "A",
+      "accepted_forms": [
+        "A",
+        "a"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q3",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "选择正确选项",
+              "required_elements": [
+                "A"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "A",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q4",
+      "question_type": "choice",
+      "stem_summary": "根据等腰三角形优美比的定义计算对应比值",
+      "max_score": 6.0,
+      "knowledge_id": "C2_05",
+      "knowledge_ids": [
+        "C2_05"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_05",
+          "knowledge_name": "等腰三角形的性质"
+        }
+      ],
+      "knowledge_name": "等腰三角形的性质",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "C",
+      "accepted_forms": [
+        "C",
+        "c"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q4",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "选择正确选项",
+              "required_elements": [
+                "C"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "C",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q5",
+      "question_type": "fill_blank",
+      "stem_summary": "结合平行线、等腰三角形性质求∠ABD的度数",
+      "max_score": 8.0,
+      "knowledge_id": "C2_06",
+      "knowledge_ids": [
+        "C2_06",
+        "C2_05"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_06",
+          "knowledge_name": "平行线的性质"
+        },
+        {
+          "knowledge_id": "C2_05",
+          "knowledge_name": "等腰三角形内角性质"
+        }
+      ],
+      "knowledge_name": "平行线的性质",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "70",
+      "accepted_forms": [
+        "70"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q5",
+          "part_score": 8.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 8.0,
+              "core_goal": "写出正确或等价答案",
+              "required_elements": [
+                "70"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "70",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q6",
+      "question_type": "fill_blank",
+      "stem_summary": "利用垂直平分线性质求△ADB的周长",
+      "max_score": 8.0,
+      "knowledge_id": "C2_07",
+      "knowledge_ids": [
+        "C2_07"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_07",
+          "knowledge_name": "线段垂直平分线的性质"
+        }
+      ],
+      "knowledge_name": "线段垂直平分线的性质",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "16",
+      "accepted_forms": [
+        "16"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q6",
+          "part_score": 8.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 8.0,
+              "core_goal": "写出正确或等价答案",
+              "required_elements": [
+                "16"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "16",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q7",
+      "question_type": "fill_blank",
+      "stem_summary": "结合垂直平分线性质、三角形内角和求∠BPC的度数",
+      "max_score": 8.0,
+      "knowledge_id": "C2_07",
+      "knowledge_ids": [
+        "C2_07",
+        "C2_04"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_07",
+          "knowledge_name": "线段垂直平分线的性质"
+        },
+        {
+          "knowledge_id": "C2_04",
+          "knowledge_name": "三角形内角和定理"
+        }
+      ],
+      "knowledge_name": "线段垂直平分线的性质",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "150",
+      "accepted_forms": [
+        "150"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q7",
+          "part_score": 8.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 8.0,
+              "core_goal": "写出正确或等价答案",
+              "required_elements": [
+                "150"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "150",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q8",
+      "question_type": "fill_blank",
+      "stem_summary": "利用面积拆分法求PE+PD的和",
+      "max_score": 8.0,
+      "knowledge_id": "C2_08",
+      "knowledge_ids": [
+        "C2_08"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_08",
+          "knowledge_name": "等腰三角形面积转化"
+        }
+      ],
+      "knowledge_name": "等腰三角形面积转化",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "3",
+      "accepted_forms": [
+        "3"
+      ],
+      "method_variants": [
+        {
+          "name": "面积拆分法",
+          "outline": "连接AP，将△ABC拆分为△ABP和△ACP，利用面积和等于△ABC面积求解"
+        },
+        {
+          "name": "特殊点法",
+          "outline": "取P与B点重合，PE=0，PD为AC边上的高，计算得PD=3，即PE+PD=3"
+        }
+      ],
+      "parts": [
+        {
+          "part_id": "Q8",
+          "part_score": 8.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 8.0,
+              "core_goal": "写出正确或等价答案",
+              "required_elements": [
+                "3"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "3",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q9",
+      "question_type": "fill_blank",
+      "stem_summary": "分类讨论△OCD为等腰三角形时∠OCD的度数",
+      "max_score": 8.0,
+      "knowledge_id": "C2_05",
+      "knowledge_ids": [
+        "C2_05"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_05",
+          "knowledge_name": "等腰三角形分类讨论"
+        }
+      ],
+      "knowledge_name": "等腰三角形分类讨论",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "65°或50°或80°",
+      "accepted_forms": [
+        "65°或50°或80°"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q9",
+          "part_score": 8.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 8.0,
+              "core_goal": "写出正确或等价答案",
+              "required_elements": [
+                "65°或50°或80°"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "65°或50°或80°",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q10",
+      "question_type": "calculation",
+      "stem_summary": "等腰三角形中结合垂直平分线性质求角度与三角形周长",
+      "max_score": 12.0,
+      "knowledge_id": "C2_07",
+      "knowledge_ids": [
+        "C2_07",
+        "C2_05"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_07",
+          "knowledge_name": "线段垂直平分线性质"
+        },
+        {
+          "knowledge_id": "C2_05",
+          "knowledge_name": "等腰三角形内角性质"
+        }
+      ],
+      "knowledge_name": "线段垂直平分线性质",
+      "grading_mode": "deductive_obligation",
+      "proof_obligations": [
+        {
+          "obligation_id": "O1",
+          "description": "利用等腰三角形AB=BC推导∠BAC=∠C，结合内角和求∠B",
+          "weight": 3.0,
+          "acceptable_evidence": [
+            "等腰三角形两底角相等、内角和180°直接计算"
+          ]
+        },
+        {
+          "obligation_id": "O2",
+          "description": "利用垂直平分线性质得到AE=BE，推导∠BAE=∠B，结合直角三角形性质求∠1",
+          "weight": 3.0,
+          "acceptable_evidence": [
+            "垂直平分线上的点到线段两端距离相等、直角三角形两锐角互余"
+          ]
+        },
+        {
+          "obligation_id": "O3",
+          "description": "利用垂直平分线性质将△AEC的周长转化为BC+AC",
+          "weight": 4.0,
+          "acceptable_evidence": [
+            "AE=BE代换周长公式"
+          ]
+        },
+        {
+          "obligation_id": "O4",
+          "description": "计算最终结果数值正确",
+          "weight": 2.0,
+          "acceptable_evidence": [
+            "数值计算正确"
+          ]
+        }
+      ],
+      "deduction_policy": [
+        {
+          "issue": "未说明等腰三角形/垂直平分线性质前提直接使用结论",
+          "max_deduction": 3.0,
+          "severity": "major"
+        },
+        {
+          "issue": "分类讨论缺失或逻辑跳步",
+          "max_deduction": 2.0,
+          "severity": "minor"
+        },
+        {
+          "issue": "数值计算错误",
+          "max_deduction": 2.0,
+          "severity": "minor"
+        },
+        {
+          "issue": "只写最终答案但没有有效过程，最多给 3 分，主要过程分不得给分",
+          "max_deduction": 9.0,
+          "severity": "major"
+        },
+        {
+          "issue": "关键过程、证明义务或推理链缺失，应扣除对应过程分",
+          "max_deduction": 12.0,
+          "severity": "fatal"
+        }
+      ],
+      "canonical_answer": "(1)∠B=36°,∠1=54°；(2)△AEC周长为19",
+      "accepted_forms": [
+        "(1)∠B=36°,∠1=54°",
+        "(2)△AEC周长为19",
+        "(1)∠B＝36°,∠1＝54°",
+        "∠B=36°,∠1=54°",
+        "∠B＝36°,∠1＝54°",
+        "△AEC周长为19"
+      ],
+      "method_variants": [
+        {
+          "name": "性质直接推导法",
+          "outline": "利用等腰三角形内角性质、垂直平分线性质直接代换计算"
+        }
+      ],
+      "parts": [
+        {
+          "part_id": "Q10(1)",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 3.0,
+              "core_goal": "求∠B的度数",
+              "required_elements": [
+                "AB=BC推出∠BAC=∠C=72°",
+                "内角和计算∠B=36°"
+              ],
+              "allow_alternative_methods": true
+            },
+            {
+              "step_id": "S2",
+              "step_score": 3.0,
+              "core_goal": "求∠1的度数",
+              "required_elements": [
+                "DE是AB垂直平分线推出AE=BE、∠ADE=90°",
+                "∠BAE=∠B=36°，计算∠1=54°"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "过程逻辑清晰",
+              "max_deduction": 1
+            }
+          ],
+          "answer": "∠B=36°,∠1=54°",
+          "analysis": "由AB=BC得∠BAC=∠C=72°，内角和计算∠B=36°；DE是AB垂直平分线得AE=BE，∠BAE=36°，Rt△ADE中∠1=90°-36°=54°",
+          "step_milestones": [
+            "∠B=36°",
+            "∠1=54°"
+          ]
+        },
+        {
+          "part_id": "Q10(2)",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 3.0,
+              "core_goal": "推导AB与BC的长度",
+              "required_elements": [
+                "BD=6推出AB=2BD=12",
+                "AB=BC推出BC=12"
+              ],
+              "allow_alternative_methods": true
+            },
+            {
+              "step_id": "S2",
+              "step_score": 3.0,
+              "core_goal": "计算△AEC的周长",
+              "required_elements": [
+                "AE=BE代换得到周长=BC+AC",
+                "计算得19"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "过程逻辑清晰",
+              "max_deduction": 1
+            }
+          ],
+          "answer": "△AEC周长为19",
+          "analysis": "DE是AB垂直平分线得AE=BE，BD=6得AB=12即BC=12，△AEC周长=AE+EC+AC=BE+EC+AC=BC+AC=12+7=19",
+          "step_milestones": [
+            "AE=BE代换周长",
+            "周长结果为19"
+          ]
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q11",
+      "question_type": "calculation",
+      "stem_summary": "探究等腰直角三角形中角度数量关系并计算指定角度",
+      "max_score": 12.0,
+      "knowledge_id": "C2_05",
+      "knowledge_ids": [
+        "C2_05",
+        "C2_04"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_05",
+          "knowledge_name": "等腰三角形性质"
+        },
+        {
+          "knowledge_id": "C2_04",
+          "knowledge_name": "直角三角形性质"
+        }
+      ],
+      "knowledge_name": "等腰三角形性质",
+      "grading_mode": "deductive_obligation",
+      "proof_obligations": [
+        {
+          "obligation_id": "O1",
+          "description": "利用AC=AD推导∠ACD=∠ADC，结合内角和推导y与x的关系",
+          "weight": 3.0,
+          "acceptable_evidence": [
+            "等边对等角、三角形内角和公式"
+          ]
+        },
+        {
+          "obligation_id": "O2",
+          "description": "完成表格数值计算全部正确",
+          "weight": 2.0,
+          "acceptable_evidence": [
+            "数值对应正确"
+          ]
+        },
+        {
+          "obligation_id": "O3",
+          "description": "严谨证明y与x的数量关系",
+          "weight": 3.0,
+          "acceptable_evidence": [
+            "逻辑推导完整，前提明确"
+          ]
+        },
+        {
+          "obligation_id": "O4",
+          "description": "结合BE=BC的等腰性质推导∠DCE的度数",
+          "weight": 4.0,
+          "acceptable_evidence": [
+            "角度代换逻辑正确，结果为45°"
+          ]
+        }
+      ],
+      "deduction_policy": [
+        {
+          "issue": "未说明等腰三角形性质前提直接推导角度",
+          "max_deduction": 3.0,
+          "severity": "major"
+        },
+        {
+          "issue": "数量关系证明逻辑断裂",
+          "max_deduction": 3.0,
+          "severity": "major"
+        },
+        {
+          "issue": "数值计算错误",
+          "max_deduction": 2.0,
+          "severity": "minor"
+        },
+        {
+          "issue": "未写最终结论",
+          "max_deduction": 1.0,
+          "severity": "minor"
+        },
+        {
+          "issue": "只写最终答案但没有有效过程，最多给 3 分，主要过程分不得给分",
+          "max_deduction": 9.0,
+          "severity": "major"
+        },
+        {
+          "issue": "关键过程、证明义务或推理链缺失，应扣除对应过程分",
+          "max_deduction": 12.0,
+          "severity": "fatal"
+        }
+      ],
+      "canonical_answer": "(1)y对应值为10、20、30、40；(2)y=0.5x；(3)∠DCE=45°",
+      "accepted_forms": [
+        "(1)y对应值为10、20、30、40",
+        "(2)y=0.5x",
+        "(3)∠DCE=45°",
+        "(2)y＝0.5x",
+        "(3)∠DCE＝45°",
+        "10、20、30、40",
+        "y=0.5x",
+        "y＝0.5x",
+        "∠DCE=45°",
+        "∠DCE＝45°"
+      ],
+      "method_variants": [
+        {
+          "name": "角度代换法",
+          "outline": "利用等腰三角形等边对等角性质，结合内角和公式推导角度关系"
+        }
+      ],
+      "parts": [
+        {
+          "part_id": "Q11(1)",
+          "part_score": 2.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 2.0,
+              "core_goal": "完成表格填写",
+              "required_elements": [
+                "y对应值为10、20、30、40"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "数值填写正确",
+              "max_deduction": 2
+            }
+          ],
+          "answer": "10、20、30、40",
+          "analysis": "代入y=0.5x分别计算x=20、40、60、80的对应值",
+          "step_milestones": [
+            "四个数值全部正确"
+          ]
+        },
+        {
+          "part_id": "Q11(2)",
+          "part_score": 5.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 2.0,
+              "core_goal": "提出猜想y=0.5x",
+              "required_elements": [
+                "数量关系表述正确"
+              ],
+              "allow_alternative_methods": true
+            },
+            {
+              "step_id": "S2",
+              "step_score": 3.0,
+              "core_goal": "证明猜想",
+              "required_elements": [
+                "AC=AD推出∠ACD=(180-x)/2",
+                "∠BCD=90°-∠ACD=0.5x"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "证明过程完整",
+              "max_deduction": 2
+            }
+          ],
+          "answer": "y=0.5x",
+          "analysis": "AC=AD得∠ACD=(180°-x°)/2，∠BCD=90°-∠ACD=0.5x°即y=0.5x",
+          "step_milestones": [
+            "角度表达式推导",
+            "数量关系证明完整"
+          ]
+        },
+        {
+          "part_id": "Q11(3)",
+          "part_score": 5.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 3.0,
+              "core_goal": "推导∠BCE的表达式",
+              "required_elements": [
+                "BE=BC推出∠BCE=(180°-(90°-x))/2=45°+0.5x"
+              ],
+              "allow_alternative_methods": true
+            },
+            {
+              "step_id": "S2",
+              "step_score": 2.0,
+              "core_goal": "计算∠DCE的度数",
+              "required_elements": [
+                "∠DCE=∠BCE-∠BCD=45°"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "结论明确",
+              "max_deduction": 1
+            }
+          ],
+          "answer": "∠DCE=45°",
+          "analysis": "BE=BC得∠BCE=(90°+x°)/2，∠DCE=∠BCE-∠BCD=45°",
+          "step_milestones": [
+            "∠BCE表达式推导",
+            "∠DCE计算结果为45°"
+          ]
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q12",
+      "question_type": "proof",
+      "stem_summary": "等腰三角形中计算角度、判断角度关系、证明线段数量关系",
+      "max_score": 12.0,
+      "knowledge_id": "C2_09",
+      "knowledge_ids": [
+        "C2_09",
+        "C2_05"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "C2_09",
+          "knowledge_name": "全等三角形的判定与性质"
+        },
+        {
+          "knowledge_id": "C2_05",
+          "knowledge_name": "等腰三角形性质"
+        }
+      ],
+      "knowledge_name": "全等三角形的判定与性质",
+      "grading_mode": "deductive_obligation",
+      "proof_obligations": [
+        {
+          "obligation_id": "O1",
+          "description": "利用AD⊥BC、AD=BD推导∠ABD=45°，结合角平分线求∠1、∠2",
+          "weight": 2.0,
+          "acceptable_evidence": [
+            "等腰直角三角形内角性质、角平分线定义"
+          ]
+        },
+        {
+          "obligation_id": "O2",
+          "description": "证明∠1=∠3，逻辑完整",
+          "weight": 4.0,
+          "acceptable_evidence": [
+            "利用同角的余角相等、对顶角相等推导"
+          ]
+        },
+        {
+          "obligation_id": "O3",
+          "description": "证明△BDH≌△ADC，推导DH=DC",
+          "weight": 4.0,
+          "acceptable_evidence": [
+            "ASA全等判定，对应边相等"
+          ]
+        },
+        {
+          "obligation_id": "O4",
+          "description": "推导AB=BD+DH的数量关系",
+          "weight": 2.0,
+          "acceptable_evidence": [
+            "AB=BC=BD+DC代换"
+          ]
+        }
+      ],
+      "deduction_policy": [
+        {
+          "issue": "全等判定前提缺失",
+          "max_deduction": 4.0,
+          "severity": "fatal"
+        },
+        {
+          "issue": "角度推导缺少性质前提",
+          "max_deduction": 2.0,
+          "severity": "major"
+        },
+        {
+          "issue": "数量关系证明逻辑断裂",
+          "max_deduction": 3.0,
+          "severity": "major"
+        },
+        {
+          "issue": "未写最终结论",
+          "max_deduction": 1.0,
+          "severity": "minor"
+        },
+        {
+          "issue": "只写最终答案但没有有效过程，最多给 3 分，主要过程分不得给分",
+          "max_deduction": 9.0,
+          "severity": "major"
+        },
+        {
+          "issue": "关键过程、证明义务或推理链缺失，应扣除对应过程分",
+          "max_deduction": 12.0,
+          "severity": "fatal"
+        }
+      ],
+      "canonical_answer": "(1)22.5；(2)∠1=∠3；(3)AB=BD+DH",
+      "accepted_forms": [
+        "(1)22.5",
+        "(2)∠1=∠3",
+        "(3)AB=BD+DH",
+        "(2)∠1＝∠3",
+        "(3)AB＝BD+DH",
+        "22.5",
+        "45/2",
+        "∠1=∠3",
+        "∠3=∠1",
+        "∠1 = ∠3",
+        "∠3 = ∠1",
+        "∠1＝∠3",
+        "AB=BD+DH",
+        "AB＝BD+DH"
+      ],
+      "method_variants": [
+        {
+          "name": "全等三角形法",
+          "outline": "利用ASA证明△BDH≌△ADC得到对应边相等，代换得到线段关系"
+        }
+      ],
+      "parts": [
+        {
+          "part_id": "Q12(1)",
+          "part_score": 2.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 2.0,
+              "core_goal": "计算∠1、∠2的度数",
+              "required_elements": [
+                "结果为22.5°"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "数值正确",
+              "max_deduction": 2
+            }
+          ],
+          "answer": "22.5",
+          "analysis": "AD⊥BC、AD=BD得∠ABD=45°，BE平分∠ABC得∠1=∠2=22.5°",
+          "step_milestones": [
+            "∠ABD=45°",
+            "∠1=∠2=22.5°"
+          ]
+        },
+        {
+          "part_id": "Q12(2)",
+          "part_score": 4.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 2.0,
+              "core_goal": "推导∠2=∠3",
+              "required_elements": [
+                "BE⊥AC、AD⊥BC推出∠2+∠BHD=∠3+∠AHE=90°",
+                "对顶角∠AHE=∠BHD推出∠2=∠3"
+              ],
+              "allow_alternative_methods": true
+            },
+            {
+              "step_id": "S2",
+              "step_score": 2.0,
+              "core_goal": "得到∠1=∠3结论",
+              "required_elements": [
+                "∠1=∠2代换得到结论"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "理由表述清晰",
+              "max_deduction": 1
+            }
+          ],
+          "answer": "∠1=∠3",
+          "analysis": "BE平分∠ABC且AB=BC得BE⊥AC，∠2+∠BHD=∠3+∠AHE=90°，对顶角∠AHE=∠BHD得∠2=∠3，结合∠1=∠2得∠1=∠3",
+          "step_milestones": [
+            "∠2=∠3推导",
+            "∠1=∠3结论"
+          ]
+        },
+        {
+          "part_id": "Q12(3)",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 3.0,
+              "core_goal": "证明△BDH≌△ADC",
+              "required_elements": [
+                "∠BDH=∠ADC=90°、BD=AD、∠2=∠3满足ASA判定"
+              ],
+              "allow_alternative_methods": true
+            },
+            {
+              "step_id": "S2",
+              "step_score": 3.0,
+              "core_goal": "推导AB=BD+DH",
+              "required_elements": [
+                "全等推出DH=DC、AB=BC=BD+DC代换得到结论"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "结论明确",
+              "max_deduction": 1
+            }
+          ],
+          "answer": "AB=BD+DH",
+          "analysis": "△BDH≌△ADC(ASA)得DH=DC，AB=BC=BD+DC=BD+DH",
+          "step_milestones": [
+            "△BDH≌△ADC证明",
+            "AB=BD+DH结论"
+          ]
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    }
+  ]
+}

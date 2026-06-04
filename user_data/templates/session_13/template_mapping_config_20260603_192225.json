@@ -1,0 +1,748 @@
+{
+  "meta": {
+    "source": "rubric_layout_mapping",
+    "schema_version": 2,
+    "warnings": [
+      "样卷阶段不再重新生成评分标准；请在下方手动画框并绑定题号/小问。"
+    ]
+  },
+  "questions": [
+    {
+      "question_id": "Q1",
+      "question_type": "choice",
+      "stem_summary": "",
+      "max_score": 6.0,
+      "knowledge_id": "UNKNOWN",
+      "knowledge_ids": [
+        "UNKNOWN"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "UNKNOWN",
+          "knowledge_name": ""
+        }
+      ],
+      "knowledge_name": "",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "B",
+      "accepted_forms": [
+        "B"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q1",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "Select the correct option",
+              "required_elements": [
+                "B"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "B",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q2",
+      "question_type": "choice",
+      "stem_summary": "",
+      "max_score": 6.0,
+      "knowledge_id": "UNKNOWN",
+      "knowledge_ids": [
+        "UNKNOWN"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "UNKNOWN",
+          "knowledge_name": ""
+        }
+      ],
+      "knowledge_name": "",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "C",
+      "accepted_forms": [
+        "C"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q2",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "Select the correct option",
+              "required_elements": [
+                "C"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "C",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q3",
+      "question_type": "choice",
+      "stem_summary": "",
+      "max_score": 6.0,
+      "knowledge_id": "UNKNOWN",
+      "knowledge_ids": [
+        "UNKNOWN"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "UNKNOWN",
+          "knowledge_name": ""
+        }
+      ],
+      "knowledge_name": "",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "A",
+      "accepted_forms": [
+        "A"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q3",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "Select the correct option",
+              "required_elements": [
+                "A"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "A",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q4",
+      "question_type": "choice",
+      "stem_summary": "",
+      "max_score": 6.0,
+      "knowledge_id": "UNKNOWN",
+      "knowledge_ids": [
+        "UNKNOWN"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "UNKNOWN",
+          "knowledge_name": ""
+        }
+      ],
+      "knowledge_name": "",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "C",
+      "accepted_forms": [
+        "C"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q4",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "Select the correct option",
+              "required_elements": [
+                "C"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "C",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q5",
+      "question_type": "fill_blank",
+      "stem_summary": "",
+      "max_score": 8.0,
+      "knowledge_id": "UNKNOWN",
+      "knowledge_ids": [
+        "UNKNOWN"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "UNKNOWN",
+          "knowledge_name": ""
+        }
+      ],
+      "knowledge_name": "",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "70",
+      "accepted_forms": [
+        "70",
+        "70°"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q5",
+          "part_score": 8.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 8.0,
+              "core_goal": "Write the correct or equivalent answer",
+              "required_elements": [
+                "70"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "70",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q6",
+      "question_type": "fill_blank",
+      "stem_summary": "",
+      "max_score": 8.0,
+      "knowledge_id": "UNKNOWN",
+      "knowledge_ids": [
+        "UNKNOWN"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "UNKNOWN",
+          "knowledge_name": ""
+        }
+      ],
+      "knowledge_name": "",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "16",
+      "accepted_forms": [
+        "16"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q6",
+          "part_score": 8.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 8.0,
+              "core_goal": "Write the correct or equivalent answer",
+              "required_elements": [
+                "16"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "16",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q7",
+      "question_type": "fill_blank",
+      "stem_summary": "",
+      "max_score": 8.0,
+      "knowledge_id": "UNKNOWN",
+      "knowledge_ids": [
+        "UNKNOWN"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "UNKNOWN",
+          "knowledge_name": ""
+        }
+      ],
+      "knowledge_name": "",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "150°",
+      "accepted_forms": [
+        "150",
+        "150°"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q7",
+          "part_score": 8.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 8.0,
+              "core_goal": "Write the correct or equivalent answer",
+              "required_elements": [
+                "150°"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "150°",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q8",
+      "question_type": "fill_blank",
+      "stem_summary": "",
+      "max_score": 8.0,
+      "knowledge_id": "UNKNOWN",
+      "knowledge_ids": [
+        "UNKNOWN"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "UNKNOWN",
+          "knowledge_name": ""
+        }
+      ],
+      "knowledge_name": "",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "3",
+      "accepted_forms": [
+        "3"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q8",
+          "part_score": 8.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 8.0,
+              "core_goal": "Write the correct or equivalent answer",
+              "required_elements": [
+                "3"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "3",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q9",
+      "question_type": "fill_blank",
+      "stem_summary": "",
+      "max_score": 8.0,
+      "knowledge_id": "UNKNOWN",
+      "knowledge_ids": [
+        "UNKNOWN"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "UNKNOWN",
+          "knowledge_name": ""
+        }
+      ],
+      "knowledge_name": "",
+      "grading_mode": "direct_answer",
+      "proof_obligations": [],
+      "deduction_policy": [],
+      "canonical_answer": "65°或50°或80°",
+      "accepted_forms": [
+        "65°、50°、80°",
+        "65,50,80",
+        "65°或50°或80°"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "Q9",
+          "part_score": 8.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 8.0,
+              "core_goal": "Write the correct or equivalent answer",
+              "required_elements": [
+                "65°或50°或80°"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "65°或50°或80°",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q10",
+      "question_type": "calculation",
+      "stem_summary": "",
+      "max_score": 12.0,
+      "knowledge_id": "UNKNOWN",
+      "knowledge_ids": [
+        "UNKNOWN"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "UNKNOWN",
+          "knowledge_name": ""
+        }
+      ],
+      "knowledge_name": "",
+      "grading_mode": "deductive_obligation",
+      "proof_obligations": [],
+      "deduction_policy": [
+        {
+          "issue": "Only final answer without valid process; cap score at 7 and do not award missing process points",
+          "max_deduction": 5.0,
+          "severity": "major"
+        },
+        {
+          "issue": "Missing key process, proof obligation, or reasoning chain; deduct the corresponding process score",
+          "max_deduction": 12.0,
+          "severity": "fatal"
+        }
+      ],
+      "canonical_answer": "{'(1)': '∠B=36°，∠1=54°', '(2)': '19'}",
+      "accepted_forms": [
+        "{'(1)': '∠B=36°，∠1=54°', '(2)': '19'}",
+        "{'(1)':'∠B=36°，∠1=54°','(2)':'19'}",
+        "{'(1)':'∠B＝36°，∠1＝54°','(2)':'19'}",
+        "{'(1)'：'∠B=36°，∠1=54°','(2)'：'19'}"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "10(1)",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "Complete the required reasoning or proof steps",
+              "required_elements": [
+                "valid reasoning",
+                "correct conclusion"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "",
+          "analysis": "",
+          "step_milestones": []
+        },
+        {
+          "part_id": "10(2)",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "Complete the required reasoning or proof steps",
+              "required_elements": [
+                "valid reasoning",
+                "correct conclusion"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q11",
+      "question_type": "calculation",
+      "stem_summary": "",
+      "max_score": 12.0,
+      "knowledge_id": "UNKNOWN",
+      "knowledge_ids": [
+        "UNKNOWN"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "UNKNOWN",
+          "knowledge_name": ""
+        }
+      ],
+      "knowledge_name": "",
+      "grading_mode": "deductive_obligation",
+      "proof_obligations": [],
+      "deduction_policy": [
+        {
+          "issue": "Only final answer without valid process; cap score at 10 and do not award missing process points",
+          "max_deduction": 2.0,
+          "severity": "major"
+        },
+        {
+          "issue": "Missing key process, proof obligation, or reasoning chain; deduct the corresponding process score",
+          "max_deduction": 12.0,
+          "severity": "fatal"
+        }
+      ],
+      "canonical_answer": "{'(1)': [10, 20, 30, 40], '(2)': '$y=\\\\frac{1}{2}x$', '(3)': '45°'}",
+      "accepted_forms": [
+        "{'(1)': [10, 20, 30, 40], '(2)': '$y=\\\\frac{1}{2}x$', '(3)': '45°'}",
+        "{'(1)':[10,20,30,40],'(2)':'$y=\\\\frac{1}{2}x$','(3)':'45°'}",
+        "{'(1)':[10,20,30,40],'(2)':'$y＝\\\\frac{1}{2}x$','(3)':'45°'}",
+        "{'(1)'：[10,20,30,40],'(2)'：'$y=\\\\frac{1}{2}x$','(3)'：'45°'}"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "11(1)",
+          "part_score": 2.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 2.0,
+              "core_goal": "Complete the required reasoning or proof steps",
+              "required_elements": [
+                "valid reasoning",
+                "correct conclusion"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "",
+          "analysis": "",
+          "step_milestones": []
+        },
+        {
+          "part_id": "11(2)",
+          "part_score": 5.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 5.0,
+              "core_goal": "Complete the required reasoning or proof steps",
+              "required_elements": [
+                "valid reasoning",
+                "correct conclusion"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "",
+          "analysis": "",
+          "step_milestones": []
+        },
+        {
+          "part_id": "11(3)",
+          "part_score": 5.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 5.0,
+              "core_goal": "Complete the required reasoning or proof steps",
+              "required_elements": [
+                "valid reasoning",
+                "correct conclusion"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    },
+    {
+      "question_id": "Q12",
+      "question_type": "proof",
+      "stem_summary": "",
+      "max_score": 12.0,
+      "knowledge_id": "UNKNOWN",
+      "knowledge_ids": [
+        "UNKNOWN"
+      ],
+      "knowledge_points": [
+        {
+          "knowledge_id": "UNKNOWN",
+          "knowledge_name": ""
+        }
+      ],
+      "knowledge_name": "",
+      "grading_mode": "deductive_obligation",
+      "proof_obligations": [],
+      "deduction_policy": [
+        {
+          "issue": "Only final answer without valid process; cap score at 8 and do not award missing process points",
+          "max_deduction": 4.0,
+          "severity": "major"
+        },
+        {
+          "issue": "Missing key process, proof obligation, or reasoning chain; deduct the corresponding process score",
+          "max_deduction": 12.0,
+          "severity": "fatal"
+        }
+      ],
+      "canonical_answer": "{'(1)': '22.5', '(2)': '相等', '(3)': 'AB=BD+DH'}",
+      "accepted_forms": [
+        "{'(1)': '22.5', '(2)': '相等', '(3)': 'AB=BD+DH'}",
+        "{'(1)':'22.5','(2)':'相等','(3)':'AB=BD+DH'}",
+        "{'(1)':'22.5','(2)':'相等','(3)':'AB＝BD+DH'}",
+        "{'(1)'：'22.5','(2)'：'相等','(3)'：'AB=BD+DH'}"
+      ],
+      "method_variants": [],
+      "parts": [
+        {
+          "part_id": "12(1)",
+          "part_score": 2.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 2.0,
+              "core_goal": "Complete the required reasoning or proof steps",
+              "required_elements": [
+                "valid reasoning",
+                "correct conclusion"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "",
+          "analysis": "",
+          "step_milestones": []
+        },
+        {
+          "part_id": "12(2)",
+          "part_score": 4.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 4.0,
+              "core_goal": "Complete the required reasoning or proof steps",
+              "required_elements": [
+                "valid reasoning",
+                "correct conclusion"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "",
+          "analysis": "",
+          "step_milestones": []
+        },
+        {
+          "part_id": "12(3)",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 6.0,
+              "core_goal": "Complete the required reasoning or proof steps",
+              "required_elements": [
+                "valid reasoning",
+                "correct conclusion"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [],
+          "answer": "",
+          "analysis": "",
+          "step_milestones": []
+        }
+      ],
+      "regions": [],
+      "is_confirmed": true,
+      "warnings": []
+    }
+  ]
+}

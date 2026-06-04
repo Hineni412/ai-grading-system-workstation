@@ -1,0 +1,18 @@
+{
+  "version": 3,
+  "question_id": 94,
+  "question_blocks": [
+    {
+      "text": "159.71",
+      "xml": "<w:p xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\" xmlns:mml=\"http://www.w3.org/1998/Math/MathML\" xmlns:ve=\"http://schemas.openxmlformats.org/markup-compatibility/2006\" xmlns:o=\"urn:schemas-microsoft-com:office:office\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\" xmlns:v=\"urn:schemas-microsoft-com:vml\" xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\" xmlns:w10=\"urn:schemas-microsoft-com:office:word\" xmlns:wne=\"http://schemas.microsoft.com/office/word/2006/wordml\" w:rsidR=\"009A52EA\">\n  <w:pPr>\n    <w:spacing w:line=\"360\" w:lineRule=\"auto\"/>\n    <w:jc w:val=\"center\"/>\n    <w:ind/>\n  </w:pPr>\n  <w:r>\n    <w:rPr>\n      <w:rFonts w:hint=\"eastAsia\" w:ascii=\"Times New Roman\" w:hAnsi=\"Times New Roman\" w:eastAsia=\"新宋体\"/>\n      <w:sz w:val=\"21\"/>\n      <w:szCs w:val=\"21\"/>\n    </w:rPr>\n    <w:t xml:space=\"preserve\">159.71</w:t>\n  </w:r>\n</w:p>\n",
+      "image_relationships": {}
+    }
+  ],
+  "answer_blocks": [
+    {
+      "text": "159.71",
+      "xml": "<w:p xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\" xmlns:mml=\"http://www.w3.org/1998/Math/MathML\" xmlns:ve=\"http://schemas.openxmlformats.org/markup-compatibility/2006\" xmlns:o=\"urn:schemas-microsoft-com:office:office\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\" xmlns:v=\"urn:schemas-microsoft-com:vml\" xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\" xmlns:w10=\"urn:schemas-microsoft-com:office:word\" xmlns:wne=\"http://schemas.microsoft.com/office/word/2006/wordml\" w:rsidR=\"0F3BC98E\">\n  <w:pPr>\n    <w:spacing w:line=\"360\" w:lineRule=\"auto\"/>\n    <w:jc w:val=\"center\"/>\n    <w:ind/>\n  </w:pPr>\n  <w:r>\n    <w:rPr>\n      <w:rFonts w:hint=\"eastAsia\" w:ascii=\"Times New Roman\" w:hAnsi=\"Times New Roman\" w:eastAsia=\"新宋体\"/>\n      <w:sz w:val=\"21\"/>\n      <w:szCs w:val=\"21\"/>\n    </w:rPr>\n    <w:t xml:space=\"preserve\">159.71</w:t>\n  </w:r>\n</w:p>\n",
+      "image_relationships": {}
+    }
+  ]
+}

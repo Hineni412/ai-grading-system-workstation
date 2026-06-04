@@ -1,0 +1,175 @@
+{
+  "exam_title": "template_generated_exam",
+  "total_score": 14.0,
+  "questions": [
+    {
+      "question_id": "Q12",
+      "question_type": "calculation",
+      "max_score": 6.0,
+      "knowledge_id": "C_TRIANGLE_ANGLES",
+      "grading_mode": "deductive_obligation",
+      "proof_obligations": [
+        {
+          "obligation_id": "O1",
+          "description": "利用三角形内角和定理求出∠CAB",
+          "weight": 2.0,
+          "acceptable_evidence": [
+            "180-82-58=40"
+          ]
+        },
+        {
+          "obligation_id": "O2",
+          "description": "利用角平分线定义求出∠DAF",
+          "weight": 2.0,
+          "acceptable_evidence": [
+            "40/2=20"
+          ]
+        },
+        {
+          "obligation_id": "O3",
+          "description": "利用三角形外角性质或直角三角形性质求出∠AFB",
+          "weight": 2.0,
+          "acceptable_evidence": [
+            "90+20=110"
+          ]
+        }
+      ],
+      "deduction_policy": [
+        {
+          "issue": "计算错误",
+          "max_deduction": 2.0,
+          "severity": "minor"
+        },
+        {
+          "issue": "逻辑跳步严重",
+          "max_deduction": 3.0,
+          "severity": "major"
+        }
+      ],
+      "parts": [
+        {
+          "part_id": "Q12(1)",
+          "part_score": 6.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 2.0,
+              "core_goal": "求∠CAB",
+              "required_elements": [
+                "内角和定理"
+              ],
+              "allow_alternative_methods": true
+            },
+            {
+              "step_id": "S2",
+              "step_score": 2.0,
+              "core_goal": "求∠DAF",
+              "required_elements": [
+                "角平分线定义"
+              ],
+              "allow_alternative_methods": true
+            },
+            {
+              "step_id": "S3",
+              "step_score": 2.0,
+              "core_goal": "求∠AFB",
+              "required_elements": [
+                "外角性质或直角三角形互余"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "过程规范",
+              "max_deduction": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "Q13",
+      "question_type": "proof",
+      "max_score": 8.0,
+      "knowledge_id": "C_CONGRUENT_TRIANGLES",
+      "grading_mode": "deductive_obligation",
+      "proof_obligations": [
+        {
+          "obligation_id": "O1",
+          "description": "利用全等三角形性质对应边相等求DE",
+          "weight": 4.0,
+          "acceptable_evidence": [
+            "DE=AB, AB=AE+BE"
+          ]
+        },
+        {
+          "obligation_id": "O2",
+          "description": "利用全等三角形性质对应角相等求∠EFC",
+          "weight": 4.0,
+          "acceptable_evidence": [
+            "∠D=∠A, 外角性质"
+          ]
+        }
+      ],
+      "deduction_policy": [
+        {
+          "issue": "对应关系错误",
+          "max_deduction": 4.0,
+          "severity": "major"
+        },
+        {
+          "issue": "计算错误",
+          "max_deduction": 2.0,
+          "severity": "minor"
+        }
+      ],
+      "parts": [
+        {
+          "part_id": "Q13(1)",
+          "part_score": 4.0,
+          "steps": [
+            {
+              "step_id": "S1",
+              "step_score": 4.0,
+              "core_goal": "求DE",
+              "required_elements": [
+                "DE=AB",
+                "AB=AE+BE"
+              ],
+              "allow_alternative_methods": false
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "过程表达规范、结论完整",
+              "max_deduction": 1.0
+            }
+          ]
+        },
+        {
+          "part_id": "Q13(2)",
+          "part_score": 4.0,
+          "steps": [
+            {
+              "step_id": "S2",
+              "step_score": 4.0,
+              "core_goal": "求∠EFC",
+              "required_elements": [
+                "∠D=∠A",
+                "外角性质"
+              ],
+              "allow_alternative_methods": true
+            }
+          ],
+          "presentation_rules": [
+            {
+              "rule": "过程表达规范、结论完整",
+              "max_deduction": 1.0
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

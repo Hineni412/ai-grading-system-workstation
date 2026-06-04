@@ -1,0 +1,31 @@
+{
+  "session_id": 11,
+  "session_name": "0519测试",
+  "stage": "state_viewed",
+  "updated_at": "2026-05-26 22:34:25",
+  "active_paths": {
+    "rubric_path": "C:\\Users\\89418\\Desktop\\vibecoding\\AI_Grading_System_tiku\\user_data\\config\\uploaded\\rubric_20260524_225852.json",
+    "answer_key_path": "C:\\Users\\89418\\Desktop\\vibecoding\\AI_Grading_System_tiku\\user_data\\config\\uploaded\\answer_key_20260524_225852.json",
+    "template_config_path": null,
+    "front_template_path": "C:\\Users\\89418\\Desktop\\vibecoding\\AI_Grading_System_tiku\\user_data\\templates\\session_11\\template_front_from_pdf_page.jpg",
+    "back_template_path": "C:\\Users\\89418\\Desktop\\vibecoding\\AI_Grading_System_tiku\\user_data\\templates\\session_11\\template_back_from_pdf_page.jpg",
+    "mapping_source_path": "C:\\Users\\89418\\Desktop\\vibecoding\\AI_Grading_System_tiku\\user_data\\templates\\session_11\\template_mapping_raw_20260524_230029.json",
+    "template_mapping_path": "C:\\Users\\89418\\Desktop\\vibecoding\\AI_Grading_System_tiku\\user_data\\templates\\session_11\\template_mapping_config_20260524_230029.json",
+    "regions_path": "C:\\Users\\89418\\Desktop\\vibecoding\\AI_Grading_System_tiku\\user_data\\templates\\session_11\\regions_manual_20260524_230029.json"
+  },
+  "template_ready": true,
+  "region_count": 16,
+  "progress": {
+    "total_papers": 17,
+    "matched_papers": 17,
+    "unmatched_papers": 0,
+    "graded_papers": 17,
+    "failed_papers": 0,
+    "grading_papers": 0,
+    "needs_human_review": 2,
+    "absent_students": 74,
+    "scan_issue_students": 0,
+    "progress_percent": 100.0
+  },
+  "extra": {}
+}
