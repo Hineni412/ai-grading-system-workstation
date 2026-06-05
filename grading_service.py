@@ -562,10 +562,20 @@ def _attach_enhanced_paths(analysis: ScanAnalysis, output_dir: Path) -> None:
 
 
 def _enhance_or_original(path: Path, output_dir: Path) -> Path:
+    if _is_standard_pdf_page(path):
+        return path
     try:
         return enhance_image_file(path, output_dir)
     except Exception:  # noqa: BLE001
         return path
+
+
+def _is_standard_pdf_page(path: Path) -> bool:
+    page_dir = Path(path).parent
+    if page_dir.parent.name != "_pdf_pages":
+        return False
+    manifest_path = page_dir / "source_manifest.json"
+    return manifest_path.exists()
 
 
 def _clear_enhanced_paths(analysis: ScanAnalysis) -> None:

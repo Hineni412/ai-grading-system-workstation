@@ -10,7 +10,10 @@ __pycache__/
 
 # Logs and generated runtime data
 logs/
-user_data/
+user_data/**
+!user_data/
+!user_data/**/
+!user_data/**/.gitkeep
 
 # Packaged runtime and build outputs
 runtime/
