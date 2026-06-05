@@ -59,6 +59,7 @@ def initialize_database(db_path: Path) -> None:
                 image_paths TEXT NOT NULL DEFAULT '[]',
                 difficulty TEXT,
                 typicality TEXT,
+                reason TEXT,
                 needs_review INTEGER NOT NULL DEFAULT 0,
                 has_images INTEGER NOT NULL DEFAULT 0,
                 needs_image_review INTEGER NOT NULL DEFAULT 0,
@@ -79,6 +80,7 @@ def initialize_database(db_path: Path) -> None:
                 tag_value TEXT NOT NULL,
                 confidence REAL,
                 source TEXT,
+                model_name TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
                 FOREIGN KEY(question_id) REFERENCES questions(id)
             )
@@ -141,6 +143,14 @@ def initialize_database(db_path: Path) -> None:
                 "needs_review": "INTEGER NOT NULL DEFAULT 0",
                 "has_images": "INTEGER NOT NULL DEFAULT 0",
                 "needs_image_review": "INTEGER NOT NULL DEFAULT 0",
+                "reason": "TEXT",
+            },
+        )
+        _ensure_columns(
+            conn,
+            "question_tags",
+            {
+                "model_name": "TEXT",
             },
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_questions_number ON questions(question_number)")

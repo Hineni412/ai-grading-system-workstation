@@ -16,7 +16,7 @@ from question_bank.importers.batch_importer import (
     infer_metadata_from_filename,
 )
 from question_bank.models.tag_schema import TaggingContext
-from question_bank.services.ai_tagging_service import AITaggingService
+from question_bank.services.ai_tagging_service import AITaggingService, is_auto_saveable_result
 from question_bank.services.question_service import QuestionService
 
 
@@ -82,9 +82,14 @@ def intake_grading_paper_to_question_bank(
             progress_callback=tagging_progress_callback,
         )
         for question_id, result in results.items():
-            if result.ok and result.analysis is not None:
+            if is_auto_saveable_result(result):
                 analysis = service.with_frequency_adjusted_typicality(result.analysis, exclude_question_id=question_id)
-                if service.save_tag_analysis(question_id, analysis):
+                if service.save_tag_analysis(
+                    question_id,
+                    analysis,
+                    model_name=result.model_name,
+                    confidence=analysis.confidence,
+                ):
                     tagged_questions += 1
                 else:
                     failed_tagging += 1

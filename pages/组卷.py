@@ -12,7 +12,6 @@ import streamlit as st
 from question_bank.database.paths import project_data_root, question_bank_db_path
 from question_bank.exporters.paper_docx_exporter import export_question_paper_docx
 from question_bank.services.assembly_record_service import (
-    AssemblyRecord,
     AssemblyRecordCreate,
     create_assembly_record,
     delete_assembly_record,
@@ -21,48 +20,68 @@ from question_bank.services.assembly_record_service import (
 )
 from question_bank.services.question_service import QuestionService
 from question_bank.services.ai_tagging_service import CURRICULUM_CHAPTERS
+from question_bank.services.assembly_basket_state import (
+    merge_question_ids,
+    normalize_question_ids,
+    order_for_basket,
+    parse_question_ids_csv,
+    question_ids_to_csv,
+)
+from question_bank.services.question_preview_display import (
+    PreviewDensity,
+    image_display_width,
+    resolve_preview_density,
+)
 from export_names import safe_filename_fragment
 
 
 BASKET_KEY = "qb_question_basket"
 ORDER_KEY = "qb_assembly_order"
-OUTPUT_DIR_KEY = "qb_assembly_output_dir"
 INCLUDE_ANSWER_KEY = "qb_assembly_include_answer"
+LAST_EXPORT_KEY = "qb_last_assembly_export"
+PREVIEW_DENSITY_KEY = "qb_preview_density"
+PREVIEW_IMAGE_SCALE_KEY = "qb_preview_image_scale"
 IMAGE_MARKER_PATTERN = re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]")
 
 
 def _basket_ids() -> list[int]:
-    values = st.session_state.setdefault(BASKET_KEY, [])
-    deduped: list[int] = []
-    for value in values:
-        try:
-            question_id = int(value)
-        except (TypeError, ValueError):
-            continue
-        if question_id not in deduped:
-            deduped.append(question_id)
-    st.session_state[BASKET_KEY] = deduped
-    return deduped
+    ids = normalize_question_ids(st.session_state.setdefault(BASKET_KEY, []))
+    st.session_state[BASKET_KEY] = ids
+    return ids
+
+
+def _set_basket_and_order(question_ids: object, order_ids: object | None = None) -> list[int]:
+    basket = normalize_question_ids(question_ids)
+    order = order_for_basket(basket, order_ids if order_ids is not None else st.session_state.get(ORDER_KEY, []))
+    st.session_state[BASKET_KEY] = basket
+    st.session_state[ORDER_KEY] = order
+    return basket
+
+
+def _add_questions_to_basket(question_ids: object) -> int:
+    before = _basket_ids()
+    merged = merge_question_ids(before, question_ids)
+    current_order = order_for_basket(before, st.session_state.get(ORDER_KEY, []))
+    new_ids = [question_id for question_id in merged if question_id not in before]
+    _set_basket_and_order(merged, [*current_order, *new_ids])
+    return len(new_ids)
+
+
+def _go_to_composition() -> None:
+    if _basket_ids():
+        st.session_state["assembly_page"] = "composition"
+    else:
+        st.session_state["assembly_page"] = "selection"
 
 
 def _sync_basket_from_query() -> None:
-    raw_ids = st.query_params.get("qb_ids", "")
-    if isinstance(raw_ids, list):
-        raw_ids = raw_ids[0] if raw_ids else ""
-    ids: list[int] = []
-    for item in str(raw_ids or "").split(","):
-        item = item.strip()
-        if not item:
-            continue
-        try:
-            question_id = int(item)
-        except ValueError:
-            continue
-        if question_id not in ids:
-            ids.append(question_id)
+    should_rerun = False
+
+    ids = parse_question_ids_csv(st.query_params.get("qb_ids", ""))
     if ids:
-        st.session_state[BASKET_KEY] = ids
-        st.session_state[ORDER_KEY] = ids
+        _set_basket_and_order(ids, ids)
+        st.query_params.pop("qb_ids")
+        should_rerun = True
 
     record_id = st.query_params.get("record_id", "")
     if isinstance(record_id, list):
@@ -70,49 +89,43 @@ def _sync_basket_from_query() -> None:
     if record_id:
         record = get_assembly_record(str(record_id))
         if record is not None:
-            st.session_state[BASKET_KEY] = record.question_ids
-            st.session_state[ORDER_KEY] = record.question_ids
+            _set_basket_and_order(record.question_ids, record.question_ids)
             st.session_state["qb_paper_title"] = record.title
+        st.query_params.pop("record_id")
+        should_rerun = True
 
     new_order_str = st.query_params.get("qb_order", "")
     if isinstance(new_order_str, list):
         new_order_str = new_order_str[0] if new_order_str else ""
     if new_order_str:
         try:
-            new_ids = [int(x) for x in new_order_str.split(",") if x.strip()]
+            new_ids = parse_question_ids_csv(new_order_str)
             if set(new_ids) == set(_basket_ids()):
                 st.session_state[ORDER_KEY] = new_ids
-                st.session_state[BASKET_KEY] = new_ids
-                st.query_params.pop("qb_order")
-                st.rerun()
         except Exception:
             pass
+        st.query_params.pop("qb_order")
+        should_rerun = True
 
     page_param = st.query_params.get("assembly_page", "")
     if isinstance(page_param, list):
         page_param = page_param[0] if page_param else ""
     if page_param == "composition":
-        st.session_state["assembly_page"] = "composition"
+        _go_to_composition()
         st.query_params.pop("assembly_page")
-        st.rerun()
+        should_rerun = True
     elif page_param == "selection":
         st.session_state["assembly_page"] = "selection"
         st.query_params.pop("assembly_page")
+        should_rerun = True
+
+    if should_rerun:
         st.rerun()
 
 
 def _ordered_ids() -> list[int]:
-    basket_ids = _basket_ids()
-    current_order = [
-        int(item)
-        for item in st.session_state.get(ORDER_KEY, [])
-        if _is_int(item) and int(item) in basket_ids
-    ]
-    for question_id in basket_ids:
-        if question_id not in current_order:
-            current_order.append(question_id)
+    current_order = order_for_basket(_basket_ids(), st.session_state.get(ORDER_KEY, []))
     st.session_state[ORDER_KEY] = current_order
-    st.session_state[BASKET_KEY] = current_order
     return current_order
 
 
@@ -122,6 +135,17 @@ def _is_int(value: object) -> bool:
         return True
     except (TypeError, ValueError):
         return False
+
+
+def _preview_display_settings() -> tuple[PreviewDensity, int]:
+    st.session_state.setdefault(PREVIEW_DENSITY_KEY, "紧凑")
+    st.session_state.setdefault(PREVIEW_IMAGE_SCALE_KEY, 90)
+    density = resolve_preview_density(st.session_state.get(PREVIEW_DENSITY_KEY))
+    try:
+        image_scale = int(st.session_state.get(PREVIEW_IMAGE_SCALE_KEY, 90) or 90)
+    except (TypeError, ValueError):
+        image_scale = 90
+    return density, max(70, min(130, image_scale))
 
 
 def _move_question(question_id: int, offset: int) -> None:
@@ -134,13 +158,12 @@ def _move_question(question_id: int, offset: int) -> None:
         return
     ordered[index], ordered[target] = ordered[target], ordered[index]
     st.session_state[ORDER_KEY] = ordered
-    st.session_state[BASKET_KEY] = ordered
 
 
 def _remove_question(question_id: int) -> None:
+    basket = [item for item in _basket_ids() if item != question_id]
     ordered = [item for item in _ordered_ids() if item != question_id]
-    st.session_state[ORDER_KEY] = ordered
-    st.session_state[BASKET_KEY] = ordered
+    _set_basket_and_order(basket, ordered)
 
 
 def _clear_basket() -> None:
@@ -293,6 +316,36 @@ def _safe_html_format(value: str) -> str:
     return escaped
 
 
+def _clean_teacher_reason(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    for _ in range(3):
+        unescaped = html.unescape(text)
+        if unescaped == text:
+            break
+        text = unescaped
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<(?:script|style)\b[^>]*>.*?</(?:script|style)>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"^(?:💡\s*)?教学诊断与提示[:：]\s*", "", text).strip()
+    return text
+
+
+def _teacher_reason_html(reason_text: object) -> str:
+    cleaned = _clean_teacher_reason(reason_text)
+    if not cleaned:
+        return ""
+    return (
+        '<div style="margin-top: 8px; border-top: 1px dashed #cbd5e1; padding-top: 8px; color: #475569;">'
+        "<b>💡 教学诊断与提示:</b><br>"
+        f"{_safe_html_format(cleaned)}"
+        "</div>"
+    )
+
+
 def _render_rich_text(value: object) -> None:
     text = IMAGE_MARKER_PATTERN.sub("", str(value or "")).strip()
     if not text:
@@ -303,20 +356,24 @@ def _render_rich_text(value: object) -> None:
     )
 
 
-def _render_images(image_paths: list[str]) -> None:
+def _render_images(image_paths: list[str], *, image_scale_percent: int | None = None) -> None:
     paths = _dedupe_paths(image_paths)
     valid_paths = [Path(p) for p in paths if Path(p).exists()]
     if not valid_paths:
         return
+    if image_scale_percent is None:
+        _, image_scale_percent = _preview_display_settings()
         
     if len(valid_paths) == 1:
-        st.image(str(valid_paths[0]), width=200)
+        width = image_display_width(valid_paths[0], image_count=1, scale_percent=image_scale_percent)
+        st.image(str(valid_paths[0]), width=width)
     else:
         num_cols = min(len(valid_paths), 4)
         cols = st.columns(num_cols)
         for idx, path in enumerate(valid_paths):
             with cols[idx % num_cols]:
-                st.image(str(path), width=150)
+                width = image_display_width(path, image_count=len(valid_paths), scale_percent=image_scale_percent)
+                st.image(str(path), width=width)
 
 
 def _render_premium_question_card(
@@ -384,16 +441,17 @@ def _render_card_body_content(
     is_teacher: bool,
     show_basket_toggle: bool
 ) -> None:
+    density, image_scale = _preview_display_settings()
     # Use different header format for selection vs composition
     header_text = f"ID: {qid} · {source_label}" if show_basket_toggle else f"第 {index} 题 · {source_label}"
     
     st.markdown(
         f"""
-        <div class="qb-paper-header" style="border-bottom: 1px dashed #cbd5e1; padding-bottom: 10px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
-            <span class="qb-paper-title-tag" style="font-weight: bold; font-size: 1.05rem; color: #1e293b;">{header_text}</span>
+        <div class="qb-paper-header" style="border-bottom: 1px dashed #cbd5e1; padding-bottom: 8px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+            <span class="qb-paper-title-tag" style="font-weight: bold; font-size: {density.header_font_rem:.2f}rem; color: #1e293b;">{header_text}</span>
             <div>{badges_html}</div>
         </div>
-        <div class="qb-rich-text" style="line-height: 1.8; font-size: 1.05rem; color: #0f172a; font-family: 'Times New Roman', SimSun, serif;">{q_rich}</div>
+        <div class="qb-rich-text" style="line-height: {density.line_height}; font-size: {density.body_font_rem:.2f}rem; color: #0f172a; font-family: 'Times New Roman', SimSun, serif;">{q_rich}</div>
         """,
         unsafe_allow_html=True
     )
@@ -406,7 +464,7 @@ def _render_card_body_content(
         ]
     )
     if image_paths:
-        _render_images(image_paths)
+        _render_images(image_paths, image_scale_percent=image_scale)
         
     # Render student blanks for solution questions (only in student perspective during composition)
     qtype = _canonical_type_group(question.get("question_type"))
@@ -462,19 +520,13 @@ def _render_card_body_content(
             ans_text = question.get("answer_text") or "暂无填写的参考答案"
             ans_rich = _safe_html_format(IMAGE_MARKER_PATTERN.sub("", ans_text).strip())
             
-            reason_html = ""
             reason_text = question.get("reason")
-            if reason_text:
-                reason_html = f"""
-                <div style="margin-top: 8px; border-top: 1px dashed #cbd5e1; padding-top: 8px; color: #475569;">
-                    <b>💡 教学诊断与提示:</b><br>{html.escape(reason_text)}
-                </div>
-                """
+            reason_html = _teacher_reason_html(reason_text)
 
             teacher_box_html = f"""
             <div class="qb-teacher-box" style="margin-top: 5px;">
                 <div class="qb-teacher-title">🔑 教师参考答案</div>
-                <div class="qb-rich-text" style="font-size: 1rem; color: #1e3a8a; margin-bottom: 10px;">{ans_rich}</div>
+                <div class="qb-rich-text" style="font-size: {density.answer_font_rem:.2f}rem; line-height: {density.line_height}; color: #1e3a8a; margin-bottom: 8px;">{ans_rich}</div>
                 <div style="border-top: 1px dashed #cbd5e1; padding-top: 8px; font-size: 0.88rem; color: #475569; line-height: 1.6;">
                     {tags_html}
                 </div>
@@ -485,7 +537,7 @@ def _render_card_body_content(
             
             ans_images = _image_paths_from_text(ans_text)
             if ans_images:
-                _render_images(ans_images)
+                _render_images(ans_images, image_scale_percent=image_scale)
 
 
 def _render_card_action_button(qid: int, qid_for_key: int | None = None) -> None:
@@ -503,7 +555,7 @@ def _render_card_action_button(qid: int, qid_for_key: int | None = None) -> None
             st.rerun()
     else:
         if st.button("➕ 加入试卷栏", key=f"assembly_toggle_add_{qid}{key_suffix}", type="secondary", use_container_width=True):
-            _basket_ids().append(qid)
+            _add_questions_to_basket([qid])
             st.rerun()
 
 
@@ -540,8 +592,7 @@ def _run_ai_question_sorting(questions: list[dict[str, Any]]) -> None:
             solutions.sort(key=_get_diff)
             
             sorted_ids = [int(q["id"]) for q in (choices + blanks + solutions)]
-            st.session_state[ORDER_KEY] = sorted_ids
-            st.session_state[BASKET_KEY] = sorted_ids
+            _set_basket_and_order(sorted_ids, sorted_ids)
             st.success("✨ (本地 Mock 模式) 智能排序已完成！已自动按“选择题 ➡️ 填空题 ➡️ 解答题”且难度循序渐进的梯度重排试卷。")
             st.rerun()
             return
@@ -589,8 +640,7 @@ def _run_ai_question_sorting(questions: list[dict[str, Any]]) -> None:
                 input_ids = {int(q["id"]) for q in questions}
                 output_ids = [int(x) for x in sorted_ids if _is_int(x)]
                 if set(output_ids) == input_ids:
-                    st.session_state[ORDER_KEY] = output_ids
-                    st.session_state[BASKET_KEY] = output_ids
+                    _set_basket_and_order(output_ids, output_ids)
                     st.success("✨ AI 智能一键排序已完成！已自动为您应用最优教学逻辑排版。")
                     st.rerun()
                     return
@@ -622,8 +672,7 @@ def _run_ai_question_sorting(questions: list[dict[str, Any]]) -> None:
         solutions.sort(key=_get_diff)
         
         sorted_ids = [int(q["id"]) for q in (choices + blanks + solutions)]
-        st.session_state[ORDER_KEY] = sorted_ids
-        st.session_state[BASKET_KEY] = sorted_ids
+        _set_basket_and_order(sorted_ids, sorted_ids)
         st.success("✨ 智能排序已完成！已按本地‘选择题 ➡️ 填空题 ➡️ 解答题’的难度渐进梯队重排。")
         st.rerun()
 
@@ -641,20 +690,41 @@ def _dedupe_paths(paths: list[object]) -> list[str]:
     return deduped
 
 
-def _choose_output_folder() -> str:
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
+def _assembly_export_cache_dir() -> Path:
+    path = project_data_root() / "question_bank" / "assembly_exports"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        selected = filedialog.askdirectory(title="选择导出文件夹")
-        root.destroy()
-        return selected or ""
-    except Exception as exc:  # noqa: BLE001
-        st.warning(f"无法打开 Windows 文件夹选择窗口：{exc}")
-        return ""
+
+def _render_last_export_download() -> None:
+    payload = st.session_state.get(LAST_EXPORT_KEY)
+    if not isinstance(payload, dict):
+        return
+
+    output_path = Path(str(payload.get("path") or ""))
+    if not output_path.exists():
+        st.session_state.pop(LAST_EXPORT_KEY, None)
+        return
+
+    with st.container(border=True):
+        cols = st.columns([3, 1, 1])
+        with cols[0]:
+            title = str(payload.get("title") or output_path.stem)
+            count = int(payload.get("count") or 0)
+            st.success(f"Word 试卷已生成：{title}（{count} 题）。当前试卷篮已清空，可从历史记录恢复。")
+        with cols[1]:
+            st.download_button(
+                "下载 Word 文档",
+                data=output_path.read_bytes(),
+                file_name=output_path.name,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                key=f"qb_recent_export_download_{payload.get('record_id') or output_path.name}",
+                use_container_width=True,
+            )
+        with cols[2]:
+            if st.button("隐藏提示", key="qb_recent_export_hide", use_container_width=True):
+                st.session_state.pop(LAST_EXPORT_KEY, None)
+                st.rerun()
 
 
 def _render_assembly_records(service: QuestionService) -> None:
@@ -678,16 +748,14 @@ def _render_assembly_records(service: QuestionService) -> None:
                 cols = st.columns([1, 1, 1, 1])
                 with cols[0]:
                     if st.button("预览", key=f"qb_record_preview_{record.id}", use_container_width=True):
-                        st.session_state[BASKET_KEY] = record.question_ids
-                        st.session_state[ORDER_KEY] = record.question_ids
+                        _set_basket_and_order(record.question_ids, record.question_ids)
                         st.session_state["qb_paper_title"] = record.title
-                        st.session_state["assembly_page"] = "composition"
+                        _go_to_composition()
                         st.rerun()
                 with cols[1]:
                     if st.button("恢复试题篮", key=f"qb_record_restore_{record.id}", use_container_width=True):
-                        st.session_state[BASKET_KEY] = record.question_ids
-                        st.session_state[ORDER_KEY] = record.question_ids
-                        st.session_state["assembly_page"] = "composition"
+                        _set_basket_and_order(record.question_ids, record.question_ids)
+                        _go_to_composition()
                         st.rerun()
                 with cols[2]:
                     output_path = Path(record.output_path)
@@ -717,8 +785,8 @@ st.markdown(
         background-color: #ffffff;
         border: 1px solid #e2e8f0;
         border-radius: 8px;
-        padding: 24px 28px;
-        margin-bottom: 20px;
+        padding: 18px 22px;
+        margin-bottom: 14px;
         box-shadow: 0 4px 15px rgba(15, 23, 42, 0.05);
         font-family: 'Times New Roman', SimSun, serif;
     }
@@ -728,22 +796,22 @@ st.markdown(
         justify-content: space-between;
         align-items: center;
         border-bottom: 1px dashed #cbd5e1;
-        padding-bottom: 10px;
-        margin-bottom: 15px;
-        font-size: 0.9rem;
+        padding-bottom: 8px;
+        margin-bottom: 10px;
+        font-size: 0.86rem;
         color: #64748b;
     }
     
     .qb-paper-title-tag {
         font-weight: bold;
-        font-size: 1.05rem;
+        font-size: 0.98rem;
         color: #1e293b;
     }
     
     .qb-rich-text {
         white-space: pre-wrap;
-        line-height: 1.8;
-        font-size: 1.05rem;
+        line-height: 1.62;
+        font-size: 0.96rem;
         color: #0f172a;
     }
     
@@ -767,14 +835,14 @@ st.markdown(
         border-collapse: collapse;
         width: auto;
         max-width: 100%;
-        margin: 0.45rem 0 0.8rem;
+        margin: 0.35rem 0 0.65rem;
         table-layout: auto;
     }
     
     .qb-rich-text td,
     .qb-rich-text th {
         border: 1px solid #d8dee9;
-        padding: 0.4rem 0.55rem;
+        padding: 0.32rem 0.45rem;
         vertical-align: top;
         word-break: break-word;
     }
@@ -817,10 +885,10 @@ st.markdown(
     .qb-teacher-box {
         background-color: #f8fafc;
         border-left: 4px solid #3b82f6;
-        padding: 12px 16px;
-        margin-top: 15px;
+        padding: 10px 14px;
+        margin-top: 10px;
         border-radius: 0 6px 6px 0;
-        font-size: 0.92rem;
+        font-size: 0.88rem;
     }
     
     .qb-teacher-title {
@@ -841,6 +909,7 @@ service = QuestionService(question_bank_db_path())
 service.initialize_database()
 _sync_basket_from_query()
 _render_assembly_records(service)
+_render_last_export_download()
 
 
 def _canonical_type_group(qtype: str | None) -> str:
@@ -889,7 +958,6 @@ def _move_question_in_group(question_id: int, offset: int, group_questions: list
     ordered[pos1], ordered[pos2] = ordered[pos2], ordered[pos1]
     
     st.session_state[ORDER_KEY] = ordered
-    st.session_state[BASKET_KEY] = ordered
 
 
 def _render_statistics_panel(questions: list[dict[str, Any]]) -> None:
@@ -990,7 +1058,7 @@ def _render_question_selection_page(service: QuestionService) -> None:
     with nav_cols[1]:
         if basket_count > 0:
             if st.button(f"🛒 去组卷编排与导出 ({basket_count} 题) ➡️", type="primary", key="go_to_comp_top", use_container_width=True):
-                st.session_state["assembly_page"] = "composition"
+                _go_to_composition()
                 st.rerun()
         else:
             st.button("🛒 组卷栏为空 (请先选题)", disabled=True, key="go_to_comp_top_disabled", use_container_width=True)
@@ -1117,8 +1185,7 @@ def _render_question_selection_page(service: QuestionService) -> None:
     offset = (current_page - 1) * page_size
 
     # 8. Query matched questions for current page
-    matched_qs = service.query_questions(**filters, limit=page_size, offset=offset)
-    matched_qs = _sort_question_results(matched_qs, sort_mode)
+    matched_qs = service.query_questions(**filters, limit=page_size, offset=offset, sort_mode=sort_mode)
 
     st.markdown(f"**找到 {total_count} 道匹配的试题**")
     
@@ -1127,12 +1194,7 @@ def _render_question_selection_page(service: QuestionService) -> None:
         action_cols = st.columns([2.5, 1.2, 2.5, 3.8])
         with action_cols[0]:
             if st.button("➕ 将当前页题目全部加入试卷", key="assembly_add_all_page", use_container_width=True):
-                added = 0
-                for mq in matched_qs:
-                    qid = int(mq["id"])
-                    if qid not in _basket_ids():
-                        _basket_ids().append(qid)
-                        added += 1
+                added = _add_questions_to_basket([int(mq["id"]) for mq in matched_qs])
                 if added > 0:
                     st.success(f"成功将 {added} 道题目加入试卷！")
                     st.rerun()
@@ -1147,8 +1209,7 @@ def _render_question_selection_page(service: QuestionService) -> None:
                     st.warning("所有匹配的题目已在试卷中！")
                 else:
                     chosen = random.sample(candidate_ids, min(int(rand_cnt), len(candidate_ids)))
-                    for qid in chosen:
-                        _basket_ids().append(qid)
+                    _add_questions_to_basket(chosen)
                     st.success(f"成功随机抽取并添加 {len(chosen)} 道题目！")
                     st.rerun()
 
@@ -1184,7 +1245,13 @@ def _render_question_selection_page(service: QuestionService) -> None:
         st.info("当前筛选条件下暂无题目。可以放宽关键词、难度、典型度或标签筛选。")
 
     # 9. Real-time Floating Shopping Cart Widget
-    basket_count_val = len(_basket_ids())
+    basket_ids = _basket_ids()
+    basket_count_val = len(basket_ids)
+    basket_href = (
+        f"?assembly_page=composition&qb_ids={question_ids_to_csv(basket_ids)}"
+        if basket_ids
+        else "?assembly_page=selection"
+    )
     st.markdown(
         f"""
         <style>
@@ -1236,7 +1303,7 @@ def _render_question_selection_page(service: QuestionService) -> None:
             box-shadow: 0 2px 5px rgba(0,0,0,0.25);
         }}
         </style>
-        <a href="?assembly_page=composition" target="_self" class="floating-basket-btn">
+        <a href="{basket_href}" target="_self" class="floating-basket-btn">
             <div class="floating-basket-icon">🛒</div>
             <div class="floating-basket-text">试卷栏</div>
             <div class="floating-basket-badge">{basket_count_val}</div>
@@ -1540,32 +1607,22 @@ def _render_question_composition_page(service: QuestionService) -> None:
                         overall_idx += 1
 
         st.markdown("#### 💾 导出 Word")
-        default_output_dir = project_data_root() / "question_bank" / "outputs"
-        st.session_state.setdefault(OUTPUT_DIR_KEY, str(default_output_dir))
         st.session_state.setdefault(INCLUDE_ANSWER_KEY, True)
-        export_cols = st.columns([2.4, 0.8, 0.8, 1.2])
+        st.caption("Word 文件会生成到本地缓存；导出完成后自动清空当前试卷篮，可在上方历史记录中下载或恢复。")
+        export_cols = st.columns([1, 1.4, 2.6])
         with export_cols[0]:
-            output_dir_text = st.text_input("导出位置", key=OUTPUT_DIR_KEY)
-        with export_cols[1]:
-            if st.button("选择文件夹", width="stretch", key="choose_folder_comp"):
-                selected_folder = _choose_output_folder()
-                if selected_folder:
-                    st.session_state[OUTPUT_DIR_KEY] = selected_folder
-                    st.rerun()
-        with export_cols[2]:
             include_answer = st.checkbox("包含答案", key=INCLUDE_ANSWER_KEY)
-        with export_cols[3]:
-            export_clicked = st.button("导出 Word 文档", type="primary", width="stretch", key="export_docx_btn_comp")
+        with export_cols[1]:
+            export_clicked = st.button("生成 Word 文档", type="primary", width="stretch", key="export_docx_btn_comp")
 
         if export_clicked:
-            output_dir = Path(output_dir_text or str(default_output_dir)).expanduser()
             exported_question_ids = _ordered_ids()
             try:
                 with st.spinner("正在按解析内容导出 Word..."):
                     output_path = export_question_paper_docx(
                         service.db_path,
                         exported_question_ids,
-                        output_dir,
+                        _assembly_export_cache_dir(),
                         title=title or default_title,
                         include_answer=include_answer,
                         ensure_previews=False,
@@ -1577,7 +1634,7 @@ def _render_question_composition_page(service: QuestionService) -> None:
                     g = _canonical_type_group(q.get("question_type"))
                     qtype_summary[g] = qtype_summary.get(g, 0) + 1
                     
-                create_assembly_record(
+                record = create_assembly_record(
                     AssemblyRecordCreate(
                         title=title or default_title,
                         question_ids=exported_question_ids,
@@ -1587,9 +1644,13 @@ def _render_question_composition_page(service: QuestionService) -> None:
                         question_type_summary=qtype_summary,
                     )
                 )
+                st.session_state[LAST_EXPORT_KEY] = {
+                    "record_id": record.id,
+                    "path": str(output_path),
+                    "title": record.title,
+                    "count": record.question_count,
+                }
                 _clear_basket()
-                st.success(f"已导出：{output_path}")
-                st.info("已清空当前试题篮，并保存到组卷记录。")
                 st.session_state["assembly_page"] = "selection"
                 st.rerun()
             except Exception as exc:

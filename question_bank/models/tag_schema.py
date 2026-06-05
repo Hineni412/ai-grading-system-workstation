@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -42,6 +44,7 @@ class TaggingContext:
     semester: str | None = None
     exam_type: str | None = None
     district: str | None = None
+    has_images: bool = False
     corpus_stats: dict[str, Any] = field(default_factory=dict)
     existing_tags: list[str] = field(default_factory=list)
 
@@ -59,6 +62,7 @@ class TaggingContext:
             "semester": _clean_optional(self.semester),
             "exam_type": _clean_optional(self.exam_type),
             "district": _clean_optional(self.district),
+            "has_images": bool(self.has_images),
             "corpus_stats": self.corpus_stats if isinstance(self.corpus_stats, dict) else {},
             "existing_tags": _normalize_tags(self.existing_tags),
         }
@@ -78,6 +82,7 @@ class TagAnalysis:
     teaching_stage: str
     suitable_student_level: str
     reason: str
+    confidence: float = 0.8
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "TagAnalysis":
@@ -90,10 +95,11 @@ class TagAnalysis:
             typicality=_normalize_score(payload.get("typicality")),
             error_prone_points=_normalize_error_tags(payload.get("error_prone_points")),
             prerequisite_points=_normalize_tags(payload.get("prerequisite_points")),
-            textbook_chapter=_clean_text(payload.get("textbook_chapter")),
-            teaching_stage=_clean_text(payload.get("teaching_stage")),
+            textbook_chapter=_normalize_text_value(payload.get("textbook_chapter")),
+            teaching_stage=_normalize_text_value(payload.get("teaching_stage")),
             suitable_student_level=_normalize_student_level(payload.get("suitable_student_level")),
-            reason=_clean_text(payload.get("reason")),
+            reason=_normalize_text_value(payload.get("reason")),
+            confidence=_normalize_confidence(payload.get("confidence")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -110,11 +116,12 @@ class TagAnalysis:
             "teaching_stage": self.teaching_stage,
             "suitable_student_level": self.suitable_student_level,
             "reason": self.reason,
+            "confidence": self.confidence,
         }
 
 
 def _normalize_tags(value: object) -> list[str]:
-    values = value if isinstance(value, (list, tuple, set)) else []
+    values = _coerce_sequence(value)
     tags: list[str] = []
     seen: set[str] = set()
     for item in values:
@@ -127,7 +134,7 @@ def _normalize_tags(value: object) -> list[str]:
 
 
 def _normalize_error_tags(value: object) -> list[str]:
-    values = value if isinstance(value, (list, tuple, set)) else []
+    values = _coerce_sequence(value)
     tags: list[str] = []
     seen: set[str] = set()
     for item in values:
@@ -175,6 +182,14 @@ def _normalize_score(value: object) -> int:
     return min(10, max(1, score))
 
 
+def _normalize_confidence(value: object) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        confidence = 0.8
+    return round(min(1.0, max(0.0, confidence)), 4)
+
+
 def _normalize_student_level(value: object) -> str:
     text = _clean_text(value)
     if text in STUDENT_LEVELS:
@@ -200,3 +215,46 @@ def _clean_optional(value: object) -> str | None:
 
 def _clean_text(value: object) -> str:
     return str(value or "").strip()
+
+
+def _normalize_text_value(value: object) -> str:
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            cleaned = _clean_text(item)
+            if cleaned:
+                return cleaned
+        return ""
+    parsed = _parse_string_sequence(value)
+    if parsed is not None:
+        for item in parsed:
+            cleaned = _clean_text(item)
+            if cleaned:
+                return cleaned
+        return ""
+    return _clean_text(value)
+
+
+def _coerce_sequence(value: object) -> list[object]:
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    parsed = _parse_string_sequence(value)
+    if parsed is not None:
+        return parsed
+    cleaned = _clean_text(value)
+    return [cleaned] if cleaned else []
+
+
+def _parse_string_sequence(value: object) -> list[object] | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not (text.startswith("[") and text.endswith("]")):
+        return None
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            parsed = parser(text)
+        except (ValueError, SyntaxError, TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(parsed, (list, tuple, set)):
+            return list(parsed)
+    return None
