@@ -1,19 +1,22 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import inspect
+import json
 import math
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, List
 
 from PIL import Image
 
-from image_preprocessor import enhance_image_file
+from image_preprocessor import ENHANCER_VERSION, enhance_for_ai, enhance_image_file
 from llm_client import LLMClient
 
 STUDENT_NAME_REGION_ID = "__student_name__"
@@ -93,6 +96,105 @@ class ScanAnalysis:
         )
 
 
+PDF_RENDER_SCALE = 1.6
+STANDARD_PAGE_QUALITY = 88
+STANDARD_PAGE_MANIFEST = "source_manifest.json"
+
+
+def _sha1_file(path: Path) -> str:
+    digest = hashlib.sha1()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _safe_pdf_stem(pdf_path: Path) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", pdf_path.stem).strip("_") or "pdf"
+
+
+def _read_standard_page_manifest(page_dir: Path) -> dict[str, Any]:
+    manifest_path = page_dir / STANDARD_PAGE_MANIFEST
+    if not manifest_path.exists():
+        return {}
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def render_pdf_to_standard_pages(
+    pdf_path: Path,
+    render_root: Path,
+    *,
+    enhance_images: bool,
+    delete_source_pdf: bool = False,
+) -> list[PageRecord]:
+    try:
+        import fitz  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("缺少 PyMuPDF，无法读取 PDF。请先安装 pymupdf。") from exc
+
+    pdf_path = Path(pdf_path)
+    render_root = Path(render_root)
+    if not pdf_path.exists():
+        raise FileNotFoundError(pdf_path)
+
+    source_size = pdf_path.stat().st_size
+    source_hash = _sha1_file(pdf_path)
+    safe_stem = _safe_pdf_stem(pdf_path)
+    output_dir = render_root / safe_stem
+    output_dir.mkdir(parents=True, exist_ok=True)
+    previous_manifest = _read_standard_page_manifest(output_dir)
+    force_render = bool(previous_manifest) and bool(previous_manifest.get("enhance_images")) != bool(enhance_images)
+
+    records: list[PageRecord] = []
+    doc = fitz.open(pdf_path)
+    try:
+        for page_index in range(doc.page_count):
+            image_path = output_dir / f"page_{page_index + 1:03d}.jpg"
+            if force_render or not image_path.exists():
+                page = doc.load_page(page_index)
+                pix = page.get_pixmap(matrix=fitz.Matrix(PDF_RENDER_SCALE, PDF_RENDER_SCALE), alpha=False)
+                image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                try:
+                    if enhance_images:
+                        image = enhance_for_ai(image)
+                    image.save(image_path, format="JPEG", quality=STANDARD_PAGE_QUALITY, optimize=True)
+                finally:
+                    image.close()
+            records.append(
+                PageRecord(
+                    image_path=image_path,
+                    source_file=pdf_path.name,
+                    page_number=page_index + 1,
+                    enhanced_image_path=image_path if enhance_images else None,
+                )
+            )
+        page_count = doc.page_count
+    finally:
+        doc.close()
+
+    manifest = {
+        "source_pdf_name": pdf_path.name,
+        "source_pdf_size": source_size,
+        "source_pdf_sha1": source_hash,
+        "page_count": page_count,
+        "rendered_at": datetime.now().isoformat(timespec="seconds"),
+        "render_scale": PDF_RENDER_SCALE,
+        "page_quality": STANDARD_PAGE_QUALITY,
+        "enhance_images": bool(enhance_images),
+        "enhancer_version": ENHANCER_VERSION if enhance_images else None,
+    }
+    (output_dir / STANDARD_PAGE_MANIFEST).write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if delete_source_pdf:
+        pdf_path.unlink(missing_ok=True)
+
+    return records
+
+
 class Scanner:
     def __init__(
         self,
@@ -103,6 +205,7 @@ class Scanner:
         ocr_workers: int | None = None,
         name_region: dict[str, Any] | None = None,
         front_page_parity: str | None = None,
+        delete_source_pdfs: bool = False,
     ) -> None:
         self.exams_dir = exams_dir
         self.llm_client = llm_client
@@ -111,6 +214,7 @@ class Scanner:
         self.ocr_workers = _bounded_int(ocr_workers, _env_int("AI_GRADING_PRECHECK_WORKERS", 12), 1, 32)
         self.name_region = dict(name_region or {}) if name_region else None
         self.front_page_parity = _normalize_front_page_parity(front_page_parity)
+        self.delete_source_pdfs = delete_source_pdfs
         self.render_dir = self.exams_dir / "_pdf_pages"
         self.enhanced_dir = self.exams_dir / "_enhanced"
         import threading
@@ -121,9 +225,10 @@ class Scanner:
 
     def analyze(self, students: list[dict[str, Any]] | None = None, report: Any = None) -> ScanAnalysis:
         student_lookup = _build_student_lookup(students or [])
-        image_files = self._collect_images()
         pdf_files = self._collect_pdfs()
-        if not image_files and not pdf_files:
+        image_files = self._collect_images()
+        rendered_page_sets = [] if pdf_files else self._collect_rendered_pdf_page_sets()
+        if not image_files and not pdf_files and not rendered_page_sets:
             raise FileNotFoundError(f"试卷目录为空: {self.exams_dir}")
 
         analysis = ScanAnalysis()
@@ -142,6 +247,14 @@ class Scanner:
             pages = self._render_pdf_pages(pdf_path)
             self._extract_pdf_page_names(pages, student_lookup, report=report)
             pdf_analysis = self._pair_pdf_pages(pdf_path.name, pages, student_lookup)
+            analysis.groups.extend(pdf_analysis.groups)
+            analysis.issues.extend(pdf_analysis.issues)
+            analysis.warnings.extend(pdf_analysis.warnings)
+            analysis.total_pages += len(pages)
+
+        for source_name, pages in rendered_page_sets:
+            self._extract_pdf_page_names(pages, student_lookup, report=report)
+            pdf_analysis = self._pair_pdf_pages(source_name, pages, student_lookup)
             analysis.groups.extend(pdf_analysis.groups)
             analysis.issues.extend(pdf_analysis.issues)
             analysis.warnings.extend(pdf_analysis.warnings)
@@ -181,6 +294,31 @@ class Scanner:
             [path for path in self.exams_dir.iterdir() if path.is_file() and path.suffix.lower() == ".pdf"],
             key=lambda p: p.name,
         )
+
+    def _collect_rendered_pdf_page_sets(self) -> list[tuple[str, list[PageRecord]]]:
+        if not self.render_dir.exists() or not self.render_dir.is_dir():
+            return []
+
+        result: list[tuple[str, list[PageRecord]]] = []
+        page_dirs = sorted((item for item in self.render_dir.iterdir() if item.is_dir()), key=lambda p: p.name)
+        for page_dir in page_dirs:
+            image_paths = sorted(page_dir.glob("page_*.jpg"), key=lambda p: p.name)
+            if not image_paths:
+                continue
+            manifest = _read_standard_page_manifest(page_dir)
+            source_name = str(manifest.get("source_pdf_name") or page_dir.name)
+            is_enhanced = bool(manifest.get("enhance_images"))
+            pages = [
+                PageRecord(
+                    image_path=path,
+                    source_file=source_name,
+                    page_number=index,
+                    enhanced_image_path=path if is_enhanced else None,
+                )
+                for index, path in enumerate(image_paths, start=1)
+            ]
+            result.append((source_name, pages))
+        return result
 
     def _analyze_legacy_images(self, image_files: list[Path], student_lookup: dict[str, dict[str, Any]]) -> ScanAnalysis:
         analysis = ScanAnalysis(total_pages=len(image_files))
@@ -240,35 +378,12 @@ class Scanner:
         return analysis
 
     def _render_pdf_pages(self, pdf_path: Path) -> list[PageRecord]:
-        try:
-            import fitz  # type: ignore
-        except ImportError as exc:
-            raise RuntimeError("缺少 PyMuPDF，无法读取 PDF。请先安装 pymupdf。") from exc
-
-        safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", pdf_path.stem).strip("_") or "pdf"
-        output_dir = self.render_dir / safe_stem
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        records: list[PageRecord] = []
-        doc = fitz.open(pdf_path)
-        try:
-            for page_index in range(doc.page_count):
-                image_path = output_dir / f"page_{page_index + 1:03d}.jpg"
-                if not image_path.exists():
-                    page = doc.load_page(page_index)
-                    pix = page.get_pixmap(matrix=fitz.Matrix(1.6, 1.6), alpha=False)
-                    Image.frombytes("RGB", (pix.width, pix.height), pix.samples).save(image_path, format="JPEG", quality=88)
-                records.append(
-                    PageRecord(
-                        image_path=image_path,
-                        source_file=pdf_path.name,
-                        page_number=page_index + 1,
-                        enhanced_image_path=None,
-                    )
-                )
-        finally:
-            doc.close()
-        return records
+        return render_pdf_to_standard_pages(
+            pdf_path,
+            self.render_dir,
+            enhance_images=self.enhance_images,
+            delete_source_pdf=self.delete_source_pdfs,
+        )
 
     def _pair_pdf_pages(
         self,

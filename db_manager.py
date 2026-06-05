@@ -597,6 +597,133 @@ class DBManager:
             ).fetchone()
             return dict(row) if row else None
 
+    def collect_session_storage_paths(self, session_id: int) -> list[str]:
+        paths: list[str] = []
+
+        def add_values(row: sqlite3.Row | None, fields: list[str]) -> None:
+            if row is None:
+                return
+            for field in fields:
+                value = row[field]
+                if value:
+                    paths.append(str(value))
+
+        with self._connect() as conn:
+            add_values(
+                conn.execute(
+                    """
+                    SELECT rubric_path, answer_key_path, template_config_path
+                    FROM grading_sessions
+                    WHERE id = ?
+                    """,
+                    (session_id,),
+                ).fetchone(),
+                ["rubric_path", "answer_key_path", "template_config_path"],
+            )
+            add_values(
+                conn.execute(
+                    """
+                    SELECT front_template_path, back_template_path, ai_analysis_path,
+                           template_config_path, regions_path
+                    FROM session_templates
+                    WHERE session_id = ?
+                    """,
+                    (session_id,),
+                ).fetchone(),
+                [
+                    "front_template_path",
+                    "back_template_path",
+                    "ai_analysis_path",
+                    "template_config_path",
+                    "regions_path",
+                ],
+            )
+            rows = conn.execute(
+                """
+                SELECT front_image, back_image
+                FROM exam_papers
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchall()
+            for row in rows:
+                add_values(row, ["front_image", "back_image"])
+
+            rows = conn.execute(
+                """
+                SELECT annotated_front_path, annotated_back_path
+                FROM annotated_results
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchall()
+            for row in rows:
+                add_values(row, ["annotated_front_path", "annotated_back_path"])
+
+        return paths
+
+    def hard_delete_grading_session(self, session_id: int) -> dict[str, int]:
+        session = self.get_grading_session(session_id)
+        if session is None:
+            raise ValueError(f"Session {session_id} does not exist.")
+        if int(session.get("is_deleted") or 0) != 1:
+            raise ValueError("Only sessions in recycle bin can be permanently deleted.")
+
+        counts = {
+            "session_details": 0,
+            "annotated_results": 0,
+            "session_attendance": 0,
+            "session_results": 0,
+            "exam_papers": 0,
+            "answer_regions": 0,
+            "session_templates": 0,
+            "grading_sessions": 0,
+        }
+
+        with self._connect() as conn:
+            result_rows = conn.execute("SELECT id FROM session_results WHERE session_id = ?", (session_id,)).fetchall()
+            result_ids = [int(row["id"]) for row in result_rows]
+
+            if result_ids:
+                placeholders = ",".join(["?"] * len(result_ids))
+                counts["session_details"] += int(
+                    conn.execute(f"DELETE FROM session_details WHERE result_id IN ({placeholders})", result_ids).rowcount
+                    or 0
+                )
+                counts["annotated_results"] += int(
+                    conn.execute(f"DELETE FROM annotated_results WHERE result_id IN ({placeholders})", result_ids).rowcount
+                    or 0
+                )
+
+            counts["annotated_results"] += int(
+                conn.execute("DELETE FROM annotated_results WHERE session_id = ?", (session_id,)).rowcount or 0
+            )
+            counts["session_attendance"] += int(
+                conn.execute("DELETE FROM session_attendance WHERE session_id = ?", (session_id,)).rowcount or 0
+            )
+            counts["session_results"] += int(
+                conn.execute("DELETE FROM session_results WHERE session_id = ?", (session_id,)).rowcount or 0
+            )
+            counts["exam_papers"] += int(
+                conn.execute("DELETE FROM exam_papers WHERE session_id = ?", (session_id,)).rowcount or 0
+            )
+            counts["answer_regions"] += int(
+                conn.execute("DELETE FROM answer_regions WHERE session_id = ?", (session_id,)).rowcount or 0
+            )
+            counts["session_templates"] += int(
+                conn.execute("DELETE FROM session_templates WHERE session_id = ?", (session_id,)).rowcount or 0
+            )
+            counts["grading_sessions"] += int(
+                conn.execute(
+                    "DELETE FROM grading_sessions WHERE id = ? AND is_deleted = 1",
+                    (session_id,),
+                ).rowcount
+                or 0
+            )
+            conn.commit()
+
+        return counts
+
     def update_session_status(self, session_id: int, status: str) -> None:
         with self._connect() as conn:
             conn.execute(
