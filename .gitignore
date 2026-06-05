@@ -10,15 +10,10 @@ __pycache__/
 
 # Logs and generated runtime data
 logs/
-user_data/*
-!user_data/exams/
-!user_data/exams/**
-!user_data/question_bank/
-!user_data/question_bank/**
-!user_data/databases/
-!user_data/databases/**
-!user_data/templates/
-!user_data/templates/**
+user_data/**
+!user_data/
+!user_data/**/
+!user_data/**/.gitkeep
 
 # Packaged runtime and build outputs
 runtime/

@@ -19,6 +19,13 @@ from objective_admission_wizard_ui import render_objective_admission_wizard_tab
 
 from analytics import AnalyticsService
 from api_profiles import load_api_profiles, normalize_question_allowlist, save_api_profiles
+from data_transfer_service import (
+    EXPORT_SIZE_WARNING_MB,
+    build_export_manifest,
+    create_export_zip_bytes,
+    default_export_sources,
+    total_size_mb,
+)
 from db_manager import DBManager
 from export_names import safe_filename_fragment
 from grading_service import GradingService
@@ -30,11 +37,12 @@ from question_bank.services.ai_tagging_service import AITaggingService
 from question_bank.services.grading_paper_intake_service import copy_and_intake_uploaded_grading_paper
 from report import ReportGenerator
 from score_policy import enforce_integer_scores_by_type
-from scanner import STUDENT_NAME_REGION_ID, ScanAnalysis, Scanner, refine_scan_analysis_matches, student_name_region_from_regions
+from scanner import STUDENT_NAME_REGION_ID, ScanAnalysis, Scanner, refine_scan_analysis_matches, render_pdf_to_standard_pages, student_name_region_from_regions
 from session_config_state import (
     clear_pending_config_for_new_session,
     remember_saved_config_for_new_session,
 )
+from session_cleanup import hard_delete_session_from_recycle_bin
 from session_manager import (
     extract_docx_text,
     force_payload_total_score,
@@ -1535,6 +1543,27 @@ def render_sidebar_session_selector(db: DBManager) -> int | None:
         for s in deleted_sessions:
             sid = int(s["id"])
             st.write(f"#{sid} {s['session_name']}")
+            confirm_hard_delete = st.checkbox(
+                "确认彻底删除此批改及全部数据",
+                key=f"hard_delete_confirm_{sid}",
+            )
+            if st.button(
+                "彻底删除",
+                key=f"hard_delete_{sid}",
+                disabled=not confirm_hard_delete,
+                use_container_width=True,
+            ):
+                try:
+                    stats = hard_delete_session_from_recycle_bin(db, sid, data_root=APP_DATA_DIR)
+                    st.success(
+                        f"已彻底删除 #{sid}，清理 {stats['deleted_files']} 个文件、"
+                        f"{stats['deleted_dirs']} 个目录"
+                    )
+                    if stats.get("failed_paths"):
+                        st.warning("部分文件清理失败，请稍后重试或手动检查。")
+                except Exception as exc:
+                    st.error(f"彻底删除失败: {exc}")
+                st.rerun()
             if st.button("恢复", key=f"restore_{sid}"):
                 db.restore_grading_session(sid)
                 st.success(f"已恢复 #{sid}")
@@ -2184,7 +2213,14 @@ def render_grading_tab(
         key=f"scan_exam_files_{selected_session_id}",
         help="可一次选择整班扫描 PDF，或选择多张 JPG/PNG 图片。文件会复制到当前考试批改的本地目录后再预检和批改。",
     )
-    saved_uploads = _save_uploaded_exam_files(uploaded_exam_files, upload_dir)
+    enhance_images = st.checkbox(
+        "启用扫描增强（推荐）",
+        value=True,
+        key=f"enhance_scan_images_{selected_session_id}",
+        help="PDF 会转成一套标准原卷页；开启后标准页直接保存为增强版，不再额外保留 PDF 源文件和增强副本。",
+    )
+    st.caption("PDF 会在处理成功后删除源文件；系统只保留一套标准原卷页用于批改、复核和导出。")
+    saved_uploads = _save_uploaded_exam_files(uploaded_exam_files, upload_dir, enhance_pdf_pages=enhance_images)
     if saved_uploads:
         st.success(f"已接收 {len(saved_uploads)} 个扫描文件，保存到：{upload_dir}")
     else:
@@ -2195,14 +2231,6 @@ def render_grading_tab(
     with st.expander("高级：从已有本地目录读取", expanded=False):
         exams_dir_input = st.text_input("试卷目录", value=str(default_scan_dir), key=f"scan_exam_dir_{selected_session_id}")
     active_exams_dir = upload_dir if _list_scan_input_files(upload_dir) else Path(exams_dir_input)
-    st.caption("支持 PDF/JPG/PNG。PDF 会先渲染为页面图片，并在正式批改前做学生匹配预检。")
-    enhance_images = st.checkbox(
-        "启用扫描增强（推荐）",
-        value=True,
-        key=f"enhance_scan_images_{selected_session_id}",
-        help="只增强上传给 OCR/AI 的本地副本；原始扫描图仍用于预览、审阅和导出。",
-    )
-    st.caption("扫描增强会拉白偏灰纸张、加深黑色笔迹并轻微锐化；不会覆盖原图。")
     grading_max_workers = int(st.session_state.get("grading_max_workers_input", DEFAULT_FULL_PAPER_WORKERS))
     grading_rpm_limit = int(st.session_state.get("grading_requests_per_minute_input", DEFAULT_GRADING_RPM))
     precheck_workers = int(st.session_state.get("precheck_max_workers_input", DEFAULT_PRECHECK_WORKERS))
@@ -5166,7 +5194,7 @@ def _session_exam_upload_dir(session_id: int) -> Path:
     return path
 
 
-def _save_uploaded_exam_files(uploaded_files: list[Any] | None, target_dir: Path) -> list[Path]:
+def _save_uploaded_exam_files(uploaded_files: list[Any] | None, target_dir: Path, *, enhance_pdf_pages: bool = False) -> list[Path]:
     if not uploaded_files:
         return []
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -5180,21 +5208,48 @@ def _save_uploaded_exam_files(uploaded_files: list[Any] | None, target_dir: Path
         target = target_dir / f"{index:03d}_{stem}{suffix}"
         data = uploaded.getbuffer()
         if target.exists() and target.stat().st_size == len(data):
-            saved.append(target)
+            if suffix == ".pdf":
+                try:
+                    pages = render_pdf_to_standard_pages(
+                        target,
+                        target_dir / "_pdf_pages",
+                        enhance_images=enhance_pdf_pages,
+                        delete_source_pdf=True,
+                    )
+                    saved.extend(page.image_path for page in pages)
+                except Exception:
+                    saved.append(target)
+            else:
+                saved.append(target)
             continue
         target.write_bytes(bytes(data))
-        saved.append(target)
+        if suffix == ".pdf":
+            try:
+                pages = render_pdf_to_standard_pages(
+                    target,
+                    target_dir / "_pdf_pages",
+                    enhance_images=enhance_pdf_pages,
+                    delete_source_pdf=True,
+                )
+                saved.extend(page.image_path for page in pages)
+            except Exception:
+                saved.append(target)
+        else:
+            saved.append(target)
     return saved
 
 
 def _list_scan_input_files(path: Path) -> list[Path]:
     if not path.exists() or not path.is_dir():
         return []
-    return sorted(
+    direct_files = [
         item
         for item in path.iterdir()
         if item.is_file() and item.suffix.lower() in {".pdf", ".jpg", ".jpeg", ".png"}
-    )
+    ]
+    rendered_pages_dir = path / "_pdf_pages"
+    rendered_pages = list(rendered_pages_dir.rglob("page_*.jpg")) if rendered_pages_dir.exists() else []
+    return sorted([*direct_files, *rendered_pages], key=lambda item: str(item))
 
 
 def _session_work_dir(session_id: int) -> Path:
@@ -7155,7 +7210,7 @@ def render_header() -> None:
 
 # ── 侧边栏数据导出 / 导入 ──────────────────────────────
 
-def _render_sidebar_data_transfer() -> None:
+def _render_sidebar_data_transfer_legacy() -> None:
     """在侧边栏底部渲染一键导出/导入全部数据的功能。"""
     import io
     import zipfile as _zf
@@ -7269,6 +7324,131 @@ def _render_sidebar_data_transfer() -> None:
                     st.sidebar.error(f"导入失败: {exc}")
                 finally:
                     st.session_state.pop("import_confirmed", None)
+
+def _render_sidebar_data_transfer() -> None:
+    import io
+    import zipfile as _zf
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 数据管理")
+
+    scope_label = st.sidebar.radio(
+        "导出范围",
+        ["轻量数据包（推荐）", "完整数据包"],
+        index=0,
+        key="data_export_scope_radio",
+        help="轻量包跳过批注图、历史报告、备份包和临时图片缓存；完整包会保留这些大文件。",
+    )
+    export_scope = "lean" if scope_label.startswith("轻量") else "full"
+    entries = build_export_manifest(default_export_sources(BASE_DIR, APP_DATA_DIR), scope=export_scope)
+    estimated_mb = total_size_mb(entries)
+    st.sidebar.caption(f"预计导出 {len(entries)} 个文件，原始大小约 {estimated_mb:.1f} MB")
+    if export_scope == "lean":
+        st.sidebar.caption("轻量包适合日常迁移和备份，不包含历史批注图、报告和备份压缩包。")
+    if estimated_mb > EXPORT_SIZE_WARNING_MB:
+        st.sidebar.warning("预计超过 200MB，浏览器下载或导入可能失败；建议先清理回收站或改用轻量包。")
+
+    export_button_label = "导出轻量数据包" if export_scope == "lean" else "导出完整数据包"
+    if st.sidebar.button(export_button_label, use_container_width=True, key="export_all_data_btn"):
+        with st.sidebar.status("正在打包数据...", expanded=True) as status:
+            try:
+                entries = build_export_manifest(default_export_sources(BASE_DIR, APP_DATA_DIR), scope=export_scope)
+                zip_bytes = create_export_zip_bytes(entries)
+                size_mb = len(zip_bytes) / (1024 * 1024)
+                status.update(label=f"打包完成: {len(entries)} 个文件，{size_mb:.1f} MB", state="complete")
+                if size_mb > EXPORT_SIZE_WARNING_MB:
+                    st.sidebar.warning("这个压缩包超过 200MB，下载或再次导入时可能不稳定。")
+
+                st.sidebar.download_button(
+                    label=f"下载数据包 ({size_mb:.1f} MB)",
+                    data=zip_bytes,
+                    file_name=f"AI阅卷系统_数据备份_{export_scope}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                    key="download_data_zip_btn",
+                )
+            except Exception as exc:
+                status.update(label="打包失败", state="error")
+                st.sidebar.error(f"导出失败: {exc}")
+
+    uploaded = st.sidebar.file_uploader(
+        "导入数据包",
+        type=["zip"],
+        key="import_data_zip_uploader",
+        help="导入之前导出的 .zip 数据包，会覆盖当前同名数据文件。",
+    )
+    if uploaded is None:
+        return
+
+    upload_size = getattr(uploaded, "size", None)
+    if upload_size:
+        upload_size_mb = float(upload_size) / (1024 * 1024)
+        st.sidebar.caption(f"待导入文件大小: {upload_size_mb:.1f} MB")
+        if upload_size_mb > EXPORT_SIZE_WARNING_MB:
+            st.sidebar.warning("这个数据包超过 200MB，浏览器上传和解压可能较慢或失败。")
+
+    if "import_confirmed" not in st.session_state:
+        st.session_state.import_confirmed = False
+
+    if not st.session_state.import_confirmed:
+        st.sidebar.warning("导入会覆盖当前同名数据文件。")
+        cols = st.sidebar.columns(2)
+        with cols[0]:
+            if st.button("确认导入", key="confirm_import_btn", type="primary", use_container_width=True):
+                st.session_state.import_confirmed = True
+                st.rerun()
+        with cols[1]:
+            if st.button("取消", key="cancel_import_btn", use_container_width=True):
+                st.session_state.pop("import_confirmed", None)
+                st.rerun()
+        return
+
+    with st.sidebar.status("正在导入数据...", expanded=True) as status:
+        try:
+            try:
+                sys.path.insert(0, str(BASE_DIR / "update_tools"))
+                from backup_core import create_backup
+
+                create_backup("before_import", include_api_keys=True)
+                st.sidebar.caption("已自动备份当前数据")
+            except Exception:
+                pass
+
+            buf = io.BytesIO(uploaded.read())
+            imported_count = 0
+            allowed_roots = {"user_data", "config"}
+            with _zf.ZipFile(buf, "r") as zf:
+                for member in zf.namelist():
+                    if member.endswith("/"):
+                        continue
+                    normalized = os.path.normpath(member)
+                    if normalized.startswith("..") or os.path.isabs(normalized):
+                        continue
+                    parts = Path(normalized).parts
+                    if not parts or parts[0] not in allowed_roots:
+                        continue
+                    if parts[0] == "user_data":
+                        dest = APP_DATA_DIR.joinpath(*parts[1:])
+                        allowed_root = APP_DATA_DIR
+                    else:
+                        dest = (BASE_DIR / "config").joinpath(*parts[1:])
+                        allowed_root = BASE_DIR / "config"
+                    try:
+                        dest.resolve().relative_to(allowed_root.resolve())
+                    except ValueError:
+                        continue
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(member) as src, open(dest, "wb") as dst:
+                        dst.write(src.read())
+                    imported_count += 1
+
+            status.update(label=f"导入完成: {imported_count} 个文件", state="complete")
+            st.sidebar.success(f"已导入 {imported_count} 个文件，请刷新页面。")
+        except Exception as exc:
+            status.update(label="导入失败", state="error")
+            st.sidebar.error(f"导入失败: {exc}")
+        finally:
+            st.session_state.pop("import_confirmed", None)
 
 
 def main() -> None:
