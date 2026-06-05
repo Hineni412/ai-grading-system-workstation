@@ -15,6 +15,14 @@ user_data/**
 !user_data/**/
 !user_data/**/.gitkeep
 
+# Versioned question-bank corpus.
+# Keep API profiles, grading data, backups, and generated exports ignored,
+# but allow GitHub sync of imported papers, parsed rich content, images, and AI tags.
+!user_data/databases/question_bank.db
+!user_data/question_bank/raw_papers/**
+!user_data/question_bank/extracted_images/**
+!user_data/question_bank/rich_content/**
+
 # Packaged runtime and build outputs
 runtime/
 dist/

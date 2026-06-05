@@ -274,12 +274,40 @@ def _configure_embed_pth(runtime_dir: Path) -> None:
     (runtime_dir / "Lib" / "site-packages").mkdir(parents=True, exist_ok=True)
 
 
+def _copy_tkinter_runtime(runtime_dir: Path) -> None:
+    host_root = Path(sys.base_prefix)
+    src_tkinter = host_root / "Lib" / "tkinter"
+    src_tcl = host_root / "tcl"
+    required_files = ("_tkinter.pyd", "tcl86t.dll", "tk86t.dll", "zlib1.dll")
+
+    missing: list[str] = []
+    if not src_tkinter.exists():
+        missing.append(str(src_tkinter))
+    if not src_tcl.exists():
+        missing.append(str(src_tcl))
+    for name in required_files:
+        src = host_root / "DLLs" / name
+        if not src.exists():
+            missing.append(str(src))
+    if missing:
+        raise RuntimeError(
+            "当前打包用 Python 缺少 Tkinter/Tcl 运行库，无法生成带本地文件选择窗口的工作机版：\n"
+            + "\n".join(missing)
+        )
+
+    shutil.copytree(src_tkinter, runtime_dir / "tkinter", dirs_exist_ok=True)
+    shutil.copytree(src_tcl, runtime_dir / "tcl", dirs_exist_ok=True)
+    for name in required_files:
+        shutil.copy2(host_root / "DLLs" / name, runtime_dir / name)
+
+
 def build_runtime(src_dir: Path, cache_dir: Path, *, rebuild: bool = False) -> Path:
     runtime_dir = cache_dir / f"python-{PYTHON_VERSION}-embed-amd64-runtime"
     requirements = src_dir / "requirements.txt"
     if runtime_dir.exists() and not rebuild:
         print(f"Using cached portable Python runtime: {runtime_dir}")
         _configure_embed_pth(runtime_dir)
+        _copy_tkinter_runtime(runtime_dir)
         python_exe = runtime_dir / "python.exe"
         _run(
             [
@@ -318,6 +346,7 @@ def build_runtime(src_dir: Path, cache_dir: Path, *, rebuild: bool = False) -> P
         archive.extractall(runtime_dir)
 
     _configure_embed_pth(runtime_dir)
+    _copy_tkinter_runtime(runtime_dir)
     _download(GET_PIP_URL, get_pip_path)
 
     python_exe = runtime_dir / "python.exe"
@@ -348,7 +377,7 @@ def build_runtime(src_dir: Path, cache_dir: Path, *, rebuild: bool = False) -> P
         [
             str(python_exe),
             "-c",
-            "import streamlit, cv2, fitz; print('runtime ok', streamlit.__version__)",
+            "import streamlit, cv2, fitz, tkinter; print('runtime ok', streamlit.__version__, tkinter.__file__)",
         ]
     )
     return runtime_dir

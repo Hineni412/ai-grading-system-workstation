@@ -26,21 +26,33 @@ from question_bank.services.ai_tagging_service import (
     MATH_MODEL_OPTIONS,
     METHOD_TAG_OPTIONS,
     STUDENT_LEVELS,
+    is_auto_saveable_result,
 )
-from question_bank.services.question_service import QuestionService
+from question_bank.services.question_service import QuestionService, has_complete_analysis_tags
+from question_bank.services.question_preview_display import (
+    PreviewDensity,
+    image_display_width,
+    resolve_preview_density,
+)
 from question_bank.services.rich_content_backfill_service import backfill_missing_rich_content
 from question_bank.services.similarity_service import SimilarityPlan, build_ai_upload_similarity_plan
+from question_bank.services.local_file_dialog import get_local_file_dialog
 from question_bank.parsers.type_detector import detect_question_type
 
 
 LOGGER = logging.getLogger(__name__)
 SCAN_ROWS_KEY = "qb_scan_rows"
+IMPORT_DIALOG_OPEN_KEY = "qb_import_dialog_open"
+IMPORT_SUCCESS_MESSAGE_KEY = "qb_import_success_message"
 AI_RESULTS_KEY = "qb_ai_tag_results"
 SHOW_FILTERED_QUESTIONS_KEY = "qb_show_filtered_questions"
 LAST_AI_SUMMARY_KEY = "qb_last_ai_tagging_summary"
 BASKET_KEY = "qb_question_basket"
 BASKET_PANEL_KEY = "qb_basket_panel_open"
 SIMILARITY_REVIEW_KEY = "qb_ai_similarity_review"
+PREVIEW_DENSITY_KEY = "qb_preview_density"
+PREVIEW_IMAGE_SCALE_KEY = "qb_preview_image_scale"
+PREVIEW_DENSITY_OPTIONS = ("紧凑", "舒适")
 TAG_FILTER_CONFIG = (
     ("knowledge_point", "知识点"),
     ("method", "思想方法"),
@@ -97,6 +109,7 @@ def _tagging_context(question: dict, service: QuestionService | None = None) -> 
         semester=question.get("semester"),
         exam_type=question.get("exam_type"),
         district=question.get("district"),
+        has_images=bool(question.get("has_images") or question.get("needs_image_review") or question.get("image_paths")),
         corpus_stats=_corpus_overview(service) if service is not None else {},
         existing_tags=existing_tags,
     )
@@ -138,6 +151,8 @@ def _render_import_area(service: QuestionService, raw_papers_dir: Path) -> None:
     with action_cols[1]:
         st.caption("从本地文件夹扫描 PDF / DOCX，扫描结果只保存在当前页面会话；不影响原 AI 阅卷流程。")
     if open_import_dialog:
+        st.session_state[IMPORT_DIALOG_OPEN_KEY] = True
+    if st.session_state.get(IMPORT_DIALOG_OPEN_KEY):
         _render_import_dialog(service, raw_papers_dir)
 
 
@@ -180,25 +195,41 @@ def _render_rich_content_tools(service: QuestionService) -> None:
 @st.dialog("批量导入真题", width="large")
 def _render_import_dialog(service: QuestionService, raw_papers_dir: Path) -> None:
     from question_bank.importers.batch_importer import infer_metadata_from_filename, ScannedPaper
-    import tkinter as tk
-    from tkinter import filedialog
-    import os
+    local_dialog = get_local_file_dialog()
+
+    header_cols = st.columns([1, 4])
+    with header_cols[0]:
+        if st.button("关闭", key="qb_import_dialog_close", use_container_width=True):
+            st.session_state[IMPORT_DIALOG_OPEN_KEY] = False
+            st.rerun()
+    with header_cols[1]:
+        success_message = st.session_state.get(IMPORT_SUCCESS_MESSAGE_KEY)
+        if success_message:
+            st.success(str(success_message))
 
     st.markdown("##### 📁 本地窗口多选/扫描")
     st.caption("您可以点击下方按钮，直接在 Windows 文件窗口多选文件，或者选择包含试卷的文件夹。")
+    if not local_dialog.available:
+        st.error(f"{local_dialog.message} 请确认本机运行包已包含 Tkinter 依赖后重启应用。")
     
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("📁 弹出窗口：多选文件 (Ctrl多选)", type="primary", use_container_width=True, key="btn_tk_files"):
+        if st.button(
+            "📁 弹出窗口：多选文件 (Ctrl多选)",
+            type="primary",
+            use_container_width=True,
+            key="btn_tk_files",
+            disabled=not local_dialog.available,
+        ):
+            root = None
             try:
-                root = tk.Tk()
+                root = local_dialog.tk.Tk()
                 root.withdraw()
                 root.attributes('-topmost', True)
-                file_paths = filedialog.askopenfilenames(
+                file_paths = local_dialog.filedialog.askopenfilenames(
                     title="选择试卷文件 (可按住 Ctrl 键多选)",
                     filetypes=[("试卷文件", "*.docx;*.pdf"), ("Word 文档", "*.docx"), ("PDF 文件", "*.pdf"), ("所有文件", "*.*")]
                 )
-                root.destroy()
                 if file_paths:
                     scanned_files = [
                         ScannedPaper(
@@ -212,41 +243,39 @@ def _render_import_dialog(service: QuestionService, raw_papers_dir: Path) -> Non
                     st.success(f"已成功加载并推断 {len(scanned_files)} 个试卷文件的元数据，请在下方确认或编辑。")
                     st.rerun()
             except Exception as e:
-                st.error(f"无法打开文件选择框: {e}。请在下方手动输入路径扫描。")
+                st.error(f"无法打开文件选择框：{e}")
+            finally:
+                if root is not None:
+                    root.destroy()
     with col2:
-        if st.button("📂 弹出窗口：选择一整个文件夹", type="primary", use_container_width=True, key="btn_tk_dir"):
+        if st.button(
+            "📂 弹出窗口：选择一整个文件夹",
+            type="primary",
+            use_container_width=True,
+            key="btn_tk_dir",
+            disabled=not local_dialog.available,
+        ):
+            root = None
             try:
-                root = tk.Tk()
+                root = local_dialog.tk.Tk()
                 root.withdraw()
                 root.attributes('-topmost', True)
-                dir_path = filedialog.askdirectory(title="选择包含试卷的文件夹")
-                root.destroy()
+                dir_path = local_dialog.filedialog.askdirectory(title="选择包含试卷的文件夹")
                 if dir_path:
                     scanned_files = scan_paper_folder(dir_path)
                     st.session_state[SCAN_ROWS_KEY] = [_scan_row(item) for item in scanned_files]
                     st.success(f"已扫描并加载文件夹下 {len(scanned_files)} 个试卷文件，请在下方确认或编辑。")
                     st.rerun()
             except Exception as e:
-                st.error(f"无法打开文件夹选择框: {e}。请在下方手动输入路径扫描。")
-
-    st.markdown("---")
-    st.markdown("##### ✍️ 手动输入路径扫描 (备用)")
-    import_folder = st.text_input("手动输入文件夹路径", value=str(raw_papers_dir), key="qb_import_folder")
-    scan_requested = st.button("扫描该路径下的文件", type="secondary", use_container_width=True)
-
-    if scan_requested:
-        scanned_files = scan_paper_folder(import_folder)
-        st.session_state[SCAN_ROWS_KEY] = [_scan_row(item) for item in scanned_files]
-        if scanned_files:
-            st.success(f"识别到 {len(scanned_files)} 个可导入文件，已按文件名尝试推断元数据。")
-        else:
-            st.warning("当前文件夹下没有识别到 PDF 或 DOCX 文件。")
-        st.rerun()
+                st.error(f"无法打开文件夹选择框：{e}")
+            finally:
+                if root is not None:
+                    root.destroy()
 
     rows = [_normalize_scan_row(row) for row in st.session_state.get(SCAN_ROWS_KEY, [])]
     st.session_state[SCAN_ROWS_KEY] = rows
     if not rows:
-        st.caption("💡 提示：使用上方按钮或手动输入文件夹路径扫描以开始载入试卷文件。")
+        st.caption("💡 提示：使用上方按钮打开本地窗口，选择试卷文件或试卷文件夹后开始载入。")
         return
 
         st.markdown("#### 待导入试卷列表")
@@ -320,6 +349,9 @@ def _render_import_dialog(service: QuestionService, raw_papers_dir: Path) -> Non
                 service.db_path,
             )
             st.session_state["qb_last_import_result"] = import_result
+            st.session_state[IMPORT_SUCCESS_MESSAGE_KEY] = (
+                f"导入完成：已导入 {import_result.imported_papers} 份试卷，新增 {import_result.question_count} 道题。"
+            )
             if tag_after_import and import_result.question_count:
                 imported_sources = {
                     item.source_file
@@ -333,12 +365,13 @@ def _render_import_dialog(service: QuestionService, raw_papers_dir: Path) -> Non
                 ]
                 question_ids = _question_ids_for_tagging(imported_questions, skip_tagged=skip_tagged_after_import)
                 if question_ids:
+                    max_workers, requests_per_minute = _tagging_runtime_limits()
                     _run_ai_tagging_for_ids(
                         service,
                         question_ids,
                         allow_manual_overwrite=False,
-                        max_workers=int(st.session_state.get("qb_tagging_workers", 8) or 8),
-                        requests_per_minute=int(st.session_state.get("qb_tagging_rpm", 1000) or 1000),
+                        max_workers=max_workers,
+                        requests_per_minute=requests_per_minute,
                     )
             st.success("导入完成。关闭窗口后可在题目列表查看。")
         except Exception as exc:  # noqa: BLE001
@@ -378,7 +411,7 @@ def _normalize_scan_row(row: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def _render_import_result() -> None:
+def _render_import_result(service: QuestionService) -> None:
     import_result = st.session_state.get("qb_last_import_result")
     if import_result is None:
         return
@@ -404,11 +437,42 @@ def _render_import_result() -> None:
             width="stretch",
             hide_index=True,
         )
+        suspicious_results = [
+            (item, _missing_question_numbers_for_import_item(service, item))
+            for item in import_result.files
+            if item.status in {"imported", "needs_review", "needs_ocr"} and item.question_count not in (0, 20)
+        ]
+        suspicious_results = [(item, missing) for item, missing in suspicious_results if missing]
+        if suspicious_results:
+            st.warning("题数异常：部分试卷不是 20 题，请复核导入结果。")
+            for item, missing in suspicious_results:
+                st.caption(f"{Path(item.source_file).name}：缺失题号 {', '.join(missing)}")
     failed_results = [item for item in import_result.files if item.status == "failed"]
     if failed_results:
         st.warning("部分文件导入失败，已记录日志。")
         for item in failed_results:
             st.caption(f"{Path(item.source_file).name}：{item.message or '未知错误'}")
+
+
+def _missing_question_numbers_for_import_item(service: QuestionService, item: Any) -> list[str]:
+    if int(getattr(item, "question_count", 0) or 0) <= 0:
+        return []
+    from question_bank.database.schema import connect
+
+    with connect(service.db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT question_number
+            FROM questions
+            WHERE source_file = ?
+              AND COALESCE(is_deleted, 0) = 0
+            """,
+            (str(getattr(item, "source_file", "") or ""),),
+        ).fetchall()
+    numbers = {str(row["question_number"]) for row in rows if str(row["question_number"] or "").isdigit()}
+    if not numbers:
+        return []
+    return [str(number) for number in range(1, 21) if str(number) not in numbers]
 
 
 def _render_paper_list(service: QuestionService) -> None:
@@ -502,35 +566,29 @@ def _render_paper_list(service: QuestionService) -> None:
         st.markdown("##### 🏷️ 批量 AI 打标签")
         st.caption("对勾选试卷下的题目进行批量打标签。默认跳过已标注题目。")
         
-        cols = st.columns([1.2, 1, 1])
+        cols = st.columns([1.2, 2])
         with cols[0]:
             skip_tagged = st.checkbox("跳过已标注", value=True, key="qb_paper_tag_skip_tagged_unified")
         with cols[1]:
-            max_workers = st.number_input("并发", min_value=1, max_value=64, value=8, step=1, key="qb_paper_tag_workers_unified")
-        with cols[2]:
-            requests_per_minute = st.number_input("RPM", min_value=1, max_value=10000, value=1000, step=10, key="qb_paper_tag_rpm_unified")
+            st.caption("并发与 RPM 使用左侧“题库打标签大模型 API 配置”。")
             
         btn_tagging = st.button("🚀 开始为选中试卷批量打标签", type="primary", use_container_width=True, key="btn_bulk_tag_papers")
         if btn_tagging:
             if not selected_ids:
                 st.warning("请先勾选要操作的试卷。")
             else:
-                # Query all questions under selected papers
-                all_questions = service.query_questions()
-                selected_questions = [
-                    q for q in all_questions
-                    if int(q.get("paper_id") or 0) in selected_ids
-                ]
+                selected_questions = service.query_questions(paper_ids=selected_ids)
                 question_ids = _question_ids_for_tagging(selected_questions, skip_tagged=skip_tagged)
                 if not question_ids:
                     st.info("选中的试卷中没有需要打标签的题目。")
                 else:
+                    max_workers, requests_per_minute = _tagging_runtime_limits()
                     _run_ai_tagging_for_ids(
                         service,
                         question_ids,
                         allow_manual_overwrite=False,
-                        max_workers=int(max_workers),
-                        requests_per_minute=int(requests_per_minute),
+                        max_workers=max_workers,
+                        requests_per_minute=requests_per_minute,
                     )
                     st.rerun()
 
@@ -554,6 +612,13 @@ def _render_ai_tag_results(service: QuestionService, questions: list[dict], allo
             if payload.get("mock_mode"):
                 st.warning("当前结果来自 mock 模式。若要实测 API，请先确认侧边栏 API 配置已保存，然后清空旧结果重新分析。")
             original_analysis = TagAnalysis.from_dict(payload["analysis"])
+            model_name = _cell_text(payload.get("model_name")) or "未知模型"
+            quality_status = _cell_text(payload.get("quality_status")) or "complete"
+            confidence_pct = f"{original_analysis.confidence * 100:.0f}%"
+            st.caption(f"模型：{model_name} · 置信度：{confidence_pct} · 状态：{_quality_status_label(quality_status)}")
+            quality_notes = [str(item) for item in (payload.get("quality_notes") or []) if str(item).strip()]
+            if quality_notes:
+                st.info("；".join(quality_notes[:4]))
             st.markdown("**题干摘要**")
             st.write(question.get("question_text") or "")
             tag_cols = st.columns([1, 1])
@@ -658,6 +723,7 @@ def _render_ai_tag_results(service: QuestionService, questions: list[dict], allo
                         "teaching_stage": teaching_stage,
                         "suitable_student_level": student_level,
                         "reason": reason,
+                        "confidence": original_analysis.confidence,
                     }
                 )
                 _save_tag_analysis(
@@ -666,6 +732,8 @@ def _render_ai_tag_results(service: QuestionService, questions: list[dict], allo
                     original_analysis,
                     accepted_analysis,
                     allow_manual_overwrite,
+                    model_name=payload.get("model_name"),
+                    confidence=accepted_analysis.confidence,
                 )
 
 
@@ -675,6 +743,8 @@ def _save_tag_analysis(
     original_analysis: TagAnalysis,
     accepted: TagAnalysis,
     allow_manual_overwrite: bool,
+    model_name: str | None = None,
+    confidence: float | None = None,
 ) -> None:
     try:
         edited_fields = set()
@@ -697,6 +767,8 @@ def _save_tag_analysis(
             accepted,
             overwrite_manual=allow_manual_overwrite,
             edited_fields=edited_fields,
+            model_name=model_name,
+            confidence=confidence,
         )
         if saved:
             st.success("标签已保存。")
@@ -774,19 +846,21 @@ def _render_local_tagging_api_config() -> None:
     if "tagging_model_input" not in st.session_state:
         st.session_state.tagging_model_input = str(saved_profile.get("tagging_model") or os.getenv("QUESTION_BANK_TAGGING_MODEL", "gpt-4o-mini"))
     if "tagging_max_workers_input" not in st.session_state:
-        st.session_state.tagging_max_workers_input = int(saved_profile.get("tagging_max_workers", 8))
+        st.session_state.tagging_max_workers_input = int(saved_profile.get("tagging_max_workers", 4))
     if "tagging_requests_per_minute_input" not in st.session_state:
         st.session_state.tagging_requests_per_minute_input = int(saved_profile.get("tagging_requests_per_minute", 1000))
     if "tagging_thinking_input" not in st.session_state:
         st.session_state.tagging_thinking_input = bool(saved_profile.get("tagging_thinking", False))
     if "tagging_enabled_input" not in st.session_state:
         st.session_state.tagging_enabled_input = bool(saved_profile.get("tagging_enabled", False))
-
-    # Initialize default tagging UI panel values if not present to match configurations
-    if "qb_tagging_workers" not in st.session_state:
-        st.session_state.qb_tagging_workers = int(st.session_state.tagging_max_workers_input)
-    if "qb_tagging_rpm" not in st.session_state:
-        st.session_state.qb_tagging_rpm = int(st.session_state.tagging_requests_per_minute_input)
+    if "tagging_review_enabled_input" not in st.session_state:
+        st.session_state.tagging_review_enabled_input = bool(saved_profile.get("tagging_review_enabled", False))
+    if "tagging_review_api_key_input" not in st.session_state:
+        st.session_state.tagging_review_api_key_input = str(saved_profile.get("tagging_review_api_key") or os.getenv("QUESTION_BANK_TAGGING_REVIEW_API_KEY", ""))
+    if "tagging_review_base_url_input" not in st.session_state:
+        st.session_state.tagging_review_base_url_input = str(saved_profile.get("tagging_review_base_url") or os.getenv("QUESTION_BANK_TAGGING_REVIEW_BASE_URL", st.session_state.tagging_base_url_input))
+    if "tagging_review_model_input" not in st.session_state:
+        st.session_state.tagging_review_model_input = str(saved_profile.get("tagging_review_model") or os.getenv("QUESTION_BANK_TAGGING_REVIEW_MODEL", ""))
 
     # Sync variables to process environment for the tagging service to access seamlessly
     os.environ["QUESTION_BANK_TAGGING_API_KEY"] = st.session_state.tagging_api_key_input
@@ -795,17 +869,20 @@ def _render_local_tagging_api_config() -> None:
     os.environ["QUESTION_BANK_TAGGING_MAX_WORKERS"] = str(st.session_state.tagging_max_workers_input)
     os.environ["QUESTION_BANK_TAGGING_REQUESTS_PER_MINUTE"] = str(st.session_state.tagging_requests_per_minute_input)
     os.environ["QUESTION_BANK_TAGGING_THINKING"] = "1" if st.session_state.tagging_thinking_input else "0"
+    review_enabled_now = bool(st.session_state.tagging_review_enabled_input and _cell_text(st.session_state.tagging_review_model_input))
+    os.environ["QUESTION_BANK_TAGGING_REVIEW_MODEL"] = st.session_state.tagging_review_model_input if review_enabled_now else ""
+    os.environ["QUESTION_BANK_TAGGING_REVIEW_API_KEY"] = st.session_state.tagging_review_api_key_input if review_enabled_now else ""
+    os.environ["QUESTION_BANK_TAGGING_REVIEW_BASE_URL"] = st.session_state.tagging_review_base_url_input if review_enabled_now else ""
     st.session_state.tagging_enabled = bool(st.session_state.tagging_enabled_input)
 
     # Render inside sidebar!
     with st.sidebar:
         st.markdown("#### 🏷️ 题库打标签大模型 API 配置")
         
-        # Display main grading model info by default as requested by user
         if not st.session_state.tagging_enabled_input:
-            st.info("💡 **打标签模型运行模式**：当前默认**采用系统主批改大模型**进行题库分析（无需单独配置，打标签质量高、高精度且极稳定，推荐使用）。")
+            st.warning("必须先在左侧配置并保存打标签 API，才能进行批量打标签。请勾选下方开关并保存 API Key、Base URL、模型、并发和 RPM。")
         else:
-            st.warning("⚠️ **打标签模型运行模式**：当前**已启用专属打标签模型**，该配置将覆盖主批改模型参数进行独立分析。")
+            st.info("当前已启用左侧专属打标签模型配置；批量打标签会统一使用这里保存的 API、并发和 RPM。")
             
         tagging_enabled = st.checkbox("⚙️ 单独配置专属打标签大模型 API (可自定义高并发/低成本模型)", key="tagging_enabled_input")
         
@@ -821,6 +898,11 @@ def _render_local_tagging_api_config() -> None:
                 tagging_max_workers = st.number_input("打标签最大并发数", min_value=1, max_value=64, step=1, key="tagging_max_workers_input")
                 tagging_requests_per_minute = st.number_input("打标签 RPM 上限", min_value=1, step=10, key="tagging_requests_per_minute_input")
                 tagging_thinking = st.checkbox("开启 Thinking 模式", key="tagging_thinking_input", help="开启后，将启用深度思维链推理，特别适用于 DeepSeek-R1 / o1 / o3-mini 等推理模型，显著提高标签和分析质量。")
+                st.divider()
+                tagging_review_enabled = st.checkbox("启用低置信度复核模型", key="tagging_review_enabled_input", help="只在主模型低置信或核心标签冲突时调用，不会全量双模型。")
+                tagging_review_api_key = st.text_input("复核模型 API Key", type="password", key="tagging_review_api_key_input", disabled=not tagging_review_enabled)
+                tagging_review_base_url = st.text_input("复核模型 API Base URL", key="tagging_review_base_url_input", disabled=not tagging_review_enabled)
+                tagging_review_model = st.text_input("复核模型名称", placeholder="例如 deepseek-chat / deepseek-reasoner", key="tagging_review_model_input", disabled=not tagging_review_enabled)
 
                 if st.button("💾 保存打标签配置", use_container_width=True, key="save_local_tagging_api_settings", type="primary"):
                     # Load fresh profiles to avoid overwriting newer changes
@@ -836,6 +918,10 @@ def _render_local_tagging_api_config() -> None:
                     profiles[-1]["tagging_requests_per_minute"] = int(tagging_requests_per_minute)
                     profiles[-1]["tagging_thinking"] = bool(tagging_thinking)
                     profiles[-1]["tagging_enabled"] = bool(tagging_enabled)
+                    profiles[-1]["tagging_review_enabled"] = bool(tagging_review_enabled)
+                    profiles[-1]["tagging_review_api_key"] = str(tagging_review_api_key).strip()
+                    profiles[-1]["tagging_review_base_url"] = normalize_openai_base_url(str(tagging_review_base_url).strip() or str(tagging_base_url).strip() or "https://api.openai.com/v1")
+                    profiles[-1]["tagging_review_model"] = str(tagging_review_model).strip()
 
                     save_api_profiles(profiles_path, profiles)
 
@@ -847,9 +933,9 @@ def _render_local_tagging_api_config() -> None:
                     os.environ["QUESTION_BANK_TAGGING_MAX_WORKERS"] = str(tagging_max_workers)
                     os.environ["QUESTION_BANK_TAGGING_REQUESTS_PER_MINUTE"] = str(tagging_requests_per_minute)
                     os.environ["QUESTION_BANK_TAGGING_THINKING"] = "1" if tagging_thinking else "0"
-                    
-                    st.session_state.qb_tagging_workers = int(tagging_max_workers)
-                    st.session_state.qb_tagging_rpm = int(tagging_requests_per_minute)
+                    os.environ["QUESTION_BANK_TAGGING_REVIEW_MODEL"] = str(tagging_review_model).strip() if tagging_review_enabled else ""
+                    os.environ["QUESTION_BANK_TAGGING_REVIEW_API_KEY"] = str(tagging_review_api_key).strip() if tagging_review_enabled else ""
+                    os.environ["QUESTION_BANK_TAGGING_REVIEW_BASE_URL"] = normalize_openai_base_url(str(tagging_review_base_url).strip() or str(tagging_base_url).strip() or "https://api.openai.com/v1") if tagging_review_enabled else ""
 
                     st.success("🏷️ 专属打标签 API 配置已保存并立即生效！")
                     st.rerun()
@@ -861,8 +947,105 @@ def _render_local_tagging_api_config() -> None:
                     profiles[-1]["tagging_enabled"] = False
                     save_api_profiles(profiles_path, profiles)
                     st.session_state.tagging_enabled = False
-                    st.success("🏷️ 已切换为：默认使用系统主批改模型。")
+                    st.success("🏷️ 已关闭专属打标签配置；再次批量打标签前请在左侧重新配置并保存 API。")
                     st.rerun()
+
+
+def _tagging_config_ready() -> bool:
+    return bool(
+        st.session_state.get("tagging_enabled")
+        and _cell_text(st.session_state.get("tagging_api_key_input"))
+        and _cell_text(st.session_state.get("tagging_base_url_input"))
+        and _cell_text(st.session_state.get("tagging_model_input"))
+    )
+
+
+def _tagging_runtime_limits() -> tuple[int, int]:
+    max_workers = int(st.session_state.get("tagging_max_workers_input", 4) or 4)
+    requests_per_minute = int(st.session_state.get("tagging_requests_per_minute_input", 1000) or 1000)
+    return max(1, max_workers), max(1, requests_per_minute)
+
+
+def _warn_missing_tagging_config() -> None:
+    st.warning("必须先在左侧配置并保存打标签 API，才能进行批量打标签。")
+
+
+def _render_pagination_controls(
+    *,
+    state_key: str,
+    current_page: int,
+    total_pages: int,
+    total_count: int,
+    key_prefix: str,
+) -> None:
+    if total_pages <= 1:
+        st.caption(f"第 1 / 1 页 (共 {total_count} 道题)")
+        return
+
+    items = _pagination_items(current_page, total_pages)
+    cols = st.columns(len(items))
+    for index, item in enumerate(items):
+        with cols[index]:
+            if item == "...":
+                st.markdown("<div style='text-align:center; line-height:2.4rem;'>…</div>", unsafe_allow_html=True)
+                continue
+            target_page, label = item
+            disabled = target_page == current_page
+            if st.button(label, key=f"{key_prefix}_{label}_{index}", disabled=disabled, use_container_width=True):
+                st.session_state[state_key] = target_page
+                st.rerun()
+    st.caption(f"第 {current_page} / {total_pages} 页 (共 {total_count} 道题)")
+
+
+def _pagination_items(current_page: int, total_pages: int) -> list[tuple[int, str] | str]:
+    page_numbers: list[int]
+    if total_pages <= 7:
+        page_numbers = list(range(1, total_pages + 1))
+    else:
+        visible = {1, total_pages, current_page - 1, current_page, current_page + 1}
+        if current_page <= 3:
+            visible.update({2, 3, 4})
+        if current_page >= total_pages - 2:
+            visible.update({total_pages - 3, total_pages - 2, total_pages - 1})
+        page_numbers = [page for page in sorted(visible) if 1 <= page <= total_pages]
+
+    items: list[tuple[int, str] | str] = [
+        (1, "首页"),
+        (max(1, current_page - 1), "上一页"),
+    ]
+    previous_page = 0
+    for page in page_numbers:
+        if previous_page and page - previous_page > 1:
+            items.append("...")
+        items.append((page, str(page)))
+        previous_page = page
+    items.extend(
+        [
+            (min(total_pages, current_page + 1), "下一页"),
+            (total_pages, "尾页"),
+        ]
+    )
+    return items
+
+
+def _preview_display_settings() -> tuple[PreviewDensity, int]:
+    st.session_state.setdefault(PREVIEW_DENSITY_KEY, "紧凑")
+    st.session_state.setdefault(PREVIEW_IMAGE_SCALE_KEY, 90)
+    density = resolve_preview_density(st.session_state.get(PREVIEW_DENSITY_KEY))
+    try:
+        image_scale = int(st.session_state.get(PREVIEW_IMAGE_SCALE_KEY, 90) or 90)
+    except (TypeError, ValueError):
+        image_scale = 90
+    return density, max(70, min(130, image_scale))
+
+
+def _render_preview_display_controls() -> None:
+    st.session_state.setdefault(PREVIEW_DENSITY_KEY, "紧凑")
+    st.session_state.setdefault(PREVIEW_IMAGE_SCALE_KEY, 90)
+    with st.popover("显示设置", use_container_width=True):
+        st.radio("预览密度", list(PREVIEW_DENSITY_OPTIONS), horizontal=True, key=PREVIEW_DENSITY_KEY)
+        st.slider("图片缩放", min_value=70, max_value=130, step=5, key=PREVIEW_IMAGE_SCALE_KEY)
+        st.caption("只调整网页预览的字号和图片显示大小，不改变题目解析和导出内容。")
 
 
 def _render_questions_v2(service: QuestionService) -> None:
@@ -892,8 +1075,16 @@ def _render_questions_v2(service: QuestionService) -> None:
         st.session_state["qb_current_page"] = 1
         
     current_page = st.session_state["qb_current_page"]
+    _render_pagination_controls(
+        state_key="qb_current_page",
+        current_page=current_page,
+        total_pages=total_pages,
+        total_count=total_count,
+        key_prefix="qb_top",
+    )
+
     offset = (current_page - 1) * page_size
-    questions = _sort_question_results(service.query_questions(**filters, limit=page_size, offset=offset), sort_mode)
+    questions = service.query_questions(**filters, limit=page_size, offset=offset, sort_mode=sort_mode)
     
     _render_ai_tagging_summary()
     if not questions:
@@ -916,14 +1107,9 @@ def _render_questions_v2(service: QuestionService) -> None:
         analyze_current = st.button("AI 分析当前页题目并保存", type="secondary")
     with ai_cols[2]:
         st.caption("分析完成后会直接写入题库。")
-    with st.expander("批量分析参数", expanded=False):
-        batch_cols = st.columns([1, 1, 2])
-        with batch_cols[0]:
-            max_workers = st.number_input("并发数", min_value=1, max_value=64, value=8, step=1, key="qb_tagging_workers")
-        with batch_cols[1]:
-            requests_per_minute = st.number_input("每分钟请求上限", min_value=1, max_value=10000, value=1000, step=10, key="qb_tagging_rpm")
-        with batch_cols[2]:
-            clear_ai_results = st.button("清空上次分析摘要", key="qb_clear_ai_results")
+    max_workers, requests_per_minute = _tagging_runtime_limits()
+    clear_ai_results = st.button("清空上次分析摘要", key="qb_clear_ai_results")
+    st.caption("并发与 RPM 使用左侧“题库打标签大模型 API 配置”。")
     if clear_ai_results:
         st.session_state.pop(AI_RESULTS_KEY, None)
         st.session_state.pop(LAST_AI_SUMMARY_KEY, None)
@@ -964,24 +1150,21 @@ def _render_questions_v2(service: QuestionService) -> None:
         st.session_state.pop(SIMILARITY_REVIEW_KEY, None)
     _render_filter_summary_popover(questions)
     st.divider()
-    preview_mode = st.radio("预览视图", ["教师视角 (显示解析与难度)", "学生视角 (最真实的答题排版)"], index=0, horizontal=True, key="qb_preview_view")
+    preview_cols = st.columns([3.4, 1])
+    with preview_cols[0]:
+        preview_mode = st.radio("预览视图", ["教师视角 (显示解析与难度)", "学生视角 (最真实的答题排版)"], index=0, horizontal=True, key="qb_preview_view")
+    with preview_cols[1]:
+        _render_preview_display_controls()
     _render_question_cards(service, questions, offset=offset, preview_mode=preview_mode)
     
-    # Pagination Controls
     st.divider()
-    page_cols = st.columns([1, 2, 1])
-    with page_cols[0]:
-        if current_page > 1:
-            if st.button("⬅️ 上一页", use_container_width=True):
-                st.session_state["qb_current_page"] = current_page - 1
-                st.rerun()
-    with page_cols[1]:
-        st.markdown(f"<div style='text-align: center; line-height: 2.2rem;'>第 {current_page} / {total_pages} 页 (共 {total_count} 道题)</div>", unsafe_allow_html=True)
-    with page_cols[2]:
-        if current_page < total_pages:
-            if st.button("下一页 ➡️", use_container_width=True):
-                st.session_state["qb_current_page"] = current_page + 1
-                st.rerun()
+    _render_pagination_controls(
+        state_key="qb_current_page",
+        current_page=current_page,
+        total_pages=total_pages,
+        total_count=total_count,
+        key_prefix="qb_bottom",
+    )
                 
     # Deleted questions recovery panel
     st.divider()
@@ -1099,10 +1282,28 @@ def _question_ids_for_tagging(questions: list[dict[str, Any]], *, skip_tagged: b
 
 
 def _has_analysis_tags(question: dict[str, Any]) -> bool:
-    return any(
-        _cell_text(tag.get("tag_type")) in ANALYSIS_TAG_TYPES and _cell_text(tag.get("tag_value"))
-        for tag in question.get("tags", [])
-    )
+    return has_complete_analysis_tags(question)
+
+
+def _ai_result_payload(result) -> dict[str, Any]:
+    return {
+        "ok": bool(result.ok),
+        "mock_mode": bool(result.mock_mode),
+        "error": result.error,
+        "analysis": result.analysis.to_dict() if result.analysis is not None else None,
+        "model_name": result.model_name,
+        "quality_status": result.quality_status,
+        "quality_notes": list(result.quality_notes or []),
+    }
+
+
+def _quality_status_label(status: str) -> str:
+    return {
+        "complete": "可自动保存",
+        "low_confidence": "低置信待确认",
+        "invalid": "不完整待确认",
+        "conflict": "标签冲突待确认",
+    }.get(str(status or ""), str(status or "未知"))
 
 
 def _run_ai_tagging_for_ids(
@@ -1117,30 +1318,87 @@ def _run_ai_tagging_for_ids(
     if not question_ids:
         st.warning("相似题过滤后没有需要上传 AI 的题目。")
         return
-
-    tagging_service = AITaggingService()
     contexts: dict[int, TaggingContext] = {}
-    for selected_id in question_ids:
-        question = service.get_question(selected_id)
-        if question is not None:
-            contexts[selected_id] = _tagging_context(question, service)
-    if not contexts:
-        st.warning("未找到可分析的题目。")
-        return
-
-    progress_bar = st.progress(0, text=f"AI 打标签进度：0/{len(contexts)}")
-    status_box = st.empty()
     saved_ids: list[int] = []
     failed_items: list[str] = []
+    pending_results = dict(st.session_state.get(AI_RESULTS_KEY, {}))
+    reused_count = 0
+    for selected_id in question_ids:
+        question = service.get_question(selected_id)
+        if question is None:
+            continue
+        duplicate = service.find_exact_duplicate_tag_analysis(selected_id)
+        if duplicate is not None:
+            analysis, model_name = duplicate
+            try:
+                saved = service.save_tag_analysis(
+                    selected_id,
+                    analysis,
+                    overwrite_manual=allow_manual_overwrite,
+                    model_name=model_name,
+                    confidence=analysis.confidence,
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("Failed to reuse duplicate AI tag analysis for question %s", selected_id)
+                failed_items.append(f"题目 {selected_id}：复用完整标签失败 {exc}")
+            else:
+                if saved:
+                    saved_ids.append(selected_id)
+                    reused_count += 1
+                    pending_results.pop(str(selected_id), None)
+                    continue
+        contexts[selected_id] = _tagging_context(question, service)
+    if not contexts:
+        if saved_ids or failed_items:
+            st.session_state[AI_RESULTS_KEY] = pending_results
+            st.session_state[LAST_AI_SUMMARY_KEY] = {
+                "total": len(question_ids),
+                "saved": len(saved_ids),
+                "reviewed": 0,
+                "pending": 0,
+                "reused": reused_count,
+                "failed": failed_items,
+                "mock_mode": False,
+                "skipped_duplicates": _similarity_skipped_notes(similarity_plan, []),
+            }
+            st.success(f"已复用已有完整标签 {reused_count} 道题。")
+        else:
+            st.warning("未找到可分析的题目。")
+        return
+    if not _tagging_config_ready():
+        st.session_state[AI_RESULTS_KEY] = pending_results
+        st.session_state[LAST_AI_SUMMARY_KEY] = {
+            "total": len(question_ids),
+            "saved": len(saved_ids),
+            "reviewed": 0,
+            "pending": 0,
+            "reused": reused_count,
+            "failed": failed_items,
+            "mock_mode": False,
+            "skipped_duplicates": _similarity_skipped_notes(similarity_plan, list(contexts)) if similarity_plan else [],
+        }
+        _warn_missing_tagging_config()
+        return
+
+    tagging_service = AITaggingService()
+    progress_bar = st.progress(0, text=f"AI 打标签进度：0/{len(contexts)}")
+    status_box = st.empty()
+    reviewed_count = 0
+    pending_count = 0
 
     def _handle_progress(done: int, total: int, question_id: int, result) -> None:
+        nonlocal reviewed_count, pending_count
         progress_bar.progress(done / max(total, 1), text=f"AI 打标签进度：{done}/{total}")
-        if result.ok and result.analysis is not None:
+        if result.model_name and "+" in str(result.model_name):
+            reviewed_count += 1
+        if is_auto_saveable_result(result):
             try:
                 saved = service.save_tag_analysis(
                     question_id,
                     result.analysis,
                     overwrite_manual=allow_manual_overwrite,
+                    model_name=result.model_name,
+                    confidence=result.analysis.confidence if result.analysis is not None else None,
                 )
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("Failed to auto-save AI tag analysis for question %s", question_id)
@@ -1149,10 +1407,16 @@ def _run_ai_tagging_for_ids(
                 return
             if saved:
                 saved_ids.append(question_id)
+                pending_results.pop(str(question_id), None)
                 status_box.caption(f"已完成 {done}/{total}，刚保存题目 {question_id}。")
             else:
                 failed_items.append(f"题目 {question_id}：题目不存在或已删除")
                 status_box.caption(f"已完成 {done}/{total}，题目 {question_id} 未保存。")
+        elif result.ok and result.analysis is not None:
+            pending_results[str(question_id)] = _ai_result_payload(result)
+            pending_count += 1
+            notes = "；".join(str(item) for item in (result.quality_notes or [])[:2])
+            status_box.caption(f"已完成 {done}/{total}，题目 {question_id} 进入待确认（{result.quality_status}{'：' + notes if notes else ''}）。")
         else:
             failed_items.append(f"题目 {question_id}：{result.error or 'AI 分析失败'}")
             status_box.caption(f"已完成 {done}/{total}，题目 {question_id} 分析失败。")
@@ -1164,9 +1428,13 @@ def _run_ai_tagging_for_ids(
         progress_callback=_handle_progress,
     )
     skipped_duplicates = _similarity_skipped_notes(similarity_plan, list(contexts)) if similarity_plan else []
+    st.session_state[AI_RESULTS_KEY] = pending_results
     st.session_state[LAST_AI_SUMMARY_KEY] = {
-        "total": len(contexts),
+        "total": len(question_ids),
         "saved": len(saved_ids),
+        "reviewed": reviewed_count,
+        "pending": pending_count,
+        "reused": reused_count,
         "failed": failed_items,
         "mock_mode": tagging_service.mock_mode,
         "skipped_duplicates": skipped_duplicates,
@@ -1455,15 +1723,19 @@ def _render_ai_tagging_summary() -> None:
     skipped_duplicates = summary.get("skipped_duplicates") or []
     saved = int(summary.get("saved") or 0)
     total = int(summary.get("total") or 0)
+    reviewed = int(summary.get("reviewed") or 0)
+    pending = int(summary.get("pending") or 0)
+    reused = int(summary.get("reused") or 0)
     mode_note = "mock 模式" if summary.get("mock_mode") else "API 模式"
+    summary_text = f"已自动保存 {saved}/{total}（{mode_note}），复用 {reused}，二审 {reviewed}，待确认 {pending}"
     if failed_items:
-        with st.expander(f"上次 AI 打标签：已保存 {saved}/{total}（{mode_note}），有 {len(failed_items)} 条失败", expanded=False):
+        with st.expander(f"上次 AI 打标签：{summary_text}，有 {len(failed_items)} 条失败", expanded=False):
             for item in failed_items[:30]:
                 st.caption(str(item))
             if len(failed_items) > 30:
                 st.caption(f"其余 {len(failed_items) - 30} 条失败已省略。")
     else:
-        st.success(f"上次 AI 打标签已自动保存 {saved}/{total}（{mode_note}）。")
+        st.success(f"上次 AI 打标签：{summary_text}。")
     if skipped_duplicates:
         with st.expander(f"相似题自动跳过：{len(skipped_duplicates)} 组", expanded=False):
             for item in skipped_duplicates:
@@ -1505,7 +1777,14 @@ def _render_basket_panel(service: QuestionService, *, compact: bool) -> None:
                 st.caption(f"题号：{question.get('question_number') or '-'}")
             st.divider()
         if st.button("进入组卷页", type="primary", key="qb_go_assembly", use_container_width=True):
-            st.switch_page("pages/组卷.py")
+            _go_to_assembly_composition()
+
+
+def _go_to_assembly_composition() -> None:
+    basket_ids = _basket_ids()
+    st.session_state["qb_assembly_order"] = basket_ids
+    st.session_state["assembly_page"] = "composition"
+    st.switch_page("pages/组卷.py")
 
 
 def _basket_ids() -> list[int]:
@@ -1545,7 +1824,7 @@ def _sync_basket_query_params() -> None:
         should_clear_query = True
 
     if _query_param("qb_go") == "assembly":
-        st.switch_page("pages/组卷.py")
+        _go_to_assembly_composition()
     if should_clear_query:
         st.query_params.clear()
 
@@ -1574,7 +1853,7 @@ def _render_sidebar_basket(service: QuestionService) -> None:
                 st.rerun()
         with col2:
             if st.button("🚀 开始组卷", key="sidebar_go_assembly", type="primary", use_container_width=True):
-                st.switch_page("pages/组卷.py")
+                _go_to_assembly_composition()
                 
         st.divider()
         questions = [service.get_question(qid) for qid in basket_ids]
@@ -1657,14 +1936,9 @@ def _render_questions(service: QuestionService) -> None:
         allow_manual_overwrite = st.checkbox("允许覆盖人工标签", key="qb_allow_manual_tag_overwrite")
     with ai_cols[1]:
         analyze_selected = st.button("AI 分析选中题目", type="secondary")
-    with st.expander("批量分析参数", expanded=False):
-        batch_cols = st.columns([1, 1, 2])
-        with batch_cols[0]:
-            max_workers = st.number_input("并发数", min_value=1, max_value=64, value=8, step=1, key="qb_tagging_workers")
-        with batch_cols[1]:
-            requests_per_minute = st.number_input("每分钟请求上限", min_value=1, max_value=10000, value=1000, step=10, key="qb_tagging_rpm")
-        with batch_cols[2]:
-            clear_ai_results = st.button("清空待确认结果", key="qb_clear_ai_results")
+    max_workers, requests_per_minute = _tagging_runtime_limits()
+    clear_ai_results = st.button("清空待确认结果", key="qb_clear_ai_results")
+    st.caption("并发与 RPM 使用左侧“题库打标签大模型 API 配置”。")
     if clear_ai_results:
         st.session_state[AI_RESULTS_KEY] = {}
         st.rerun()
@@ -1693,6 +1967,8 @@ def _render_questions(service: QuestionService) -> None:
     if analyze_selected:
         if not selected_question_ids:
             st.warning("请先勾选至少一道题目。")
+        elif not _tagging_config_ready():
+            _warn_missing_tagging_config()
         else:
             tagging_service = AITaggingService()
             results = dict(st.session_state.get(AI_RESULTS_KEY, {}))
@@ -1711,13 +1987,7 @@ def _render_questions(service: QuestionService) -> None:
                 requests_per_minute=int(requests_per_minute),
             )
             for selected_id, result in batch_results.items():
-                analysis_payload = result.analysis.to_dict() if result.analysis is not None else None
-                results[str(selected_id)] = {
-                    "ok": result.ok,
-                    "mock_mode": result.mock_mode,
-                    "error": result.error,
-                    "analysis": analysis_payload,
-                }
+                results[str(selected_id)] = _ai_result_payload(result)
             st.session_state[AI_RESULTS_KEY] = results
 
     _render_ai_tag_results(service, questions, allow_manual_overwrite)
@@ -1772,6 +2042,7 @@ def _render_question_cards(
 def _render_premium_question_card_qb(index: int, question: dict[str, Any], preview_mode: str, service: QuestionService) -> None:
     is_teacher = "教师" in preview_mode
     q_id = int(question["id"])
+    density, image_scale = _preview_display_settings()
     
     # 1. Action columns in header (Outside A4 card, to look crisp)
     header_cols = st.columns([5.0, 1.0])
@@ -1817,7 +2088,7 @@ def _render_premium_question_card_qb(index: int, question: dict[str, Any], previ
         q_text = question.get("question_text") or ""
         q_rich = _safe_html_format(IMAGE_MARKER_PATTERN.sub("", q_text).strip())
         st.markdown(
-            f'<div class="qb-rich-text" style="line-height: 1.8; font-size: 1.05rem; color: #0f172a; font-family: \'Times New Roman\', SimSun, serif; width: 100%;">{q_rich}</div>',
+            f'<div class="qb-rich-text" style="line-height: {density.line_height}; font-size: {density.body_font_rem:.2f}rem; color: #0f172a; font-family: \'Times New Roman\', SimSun, serif; width: 100%;">{q_rich}</div>',
             unsafe_allow_html=True
         )
         
@@ -1829,28 +2100,27 @@ def _render_premium_question_card_qb(index: int, question: dict[str, Any], previ
             ]
         )
         if image_paths:
-            _render_images(image_paths)
+            _render_images(image_paths, image_scale_percent=image_scale)
         elif question.get("has_images") or question.get("needs_image_review"):
             st.info("原文件包含图片，但暂未能精确绑定到本题。请打开本地原卷对照复核。")
             
-        # Render Teacher details box inside collapsible expander by default (DEFAULT EXPANDED = TRUE)
         if is_teacher:
-            with st.expander("🔑 查看参考答案与解析 (已默认展开)", expanded=True):
+            with st.expander("🔑 查看参考答案与解析", expanded=False):
                 ans_text = question.get("answer_text") or "暂无填写的参考答案"
                 ans_rich = _safe_html_format(IMAGE_MARKER_PATTERN.sub("", ans_text).strip())
                 
-                teacher_box_html = f"""<div class="qb-teacher-box" style="margin-top: 5px; width: 100%;">
+                teacher_box_html = f"""<div class="qb-teacher-box" style="margin-top: 5px; width: 100%; font-size: {density.teacher_box_font_rem:.2f}rem;">
 <div class="qb-teacher-title">🔑 教师参考答案</div>
-<div class="qb-rich-text" style="font-size: 1rem; color: #1e3a8a; margin-bottom: 10px;">{ans_rich}</div>
+<div class="qb-rich-text" style="font-size: {density.answer_font_rem:.2f}rem; line-height: {density.line_height}; color: #1e3a8a; margin-bottom: 8px;">{ans_rich}</div>
 </div>"""
                 st.markdown(teacher_box_html, unsafe_allow_html=True)
                 
                 ans_images = _image_paths_from_text(ans_text)
                 if ans_images:
-                    _render_images(ans_images)
+                    _render_images(ans_images, image_scale_percent=image_scale)
                     
         # Elegant separator between question body and metadata footer
-        st.markdown('<div style="border-top: 1px dashed #cbd5e1; margin: 15px 0;"></div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="border-top: 1px dashed #cbd5e1; margin: {density.separator_margin_px}px 0;"></div>', unsafe_allow_html=True)
         
         # Horizontal Footer (3-column premium layout)
         col_attr, col_tags_footer, col_reason = st.columns([1.0, 1.8, 1.2], gap="medium")
@@ -1861,7 +2131,7 @@ def _render_premium_question_card_qb(index: int, question: dict[str, Any], previ
             # 1. 题型
             q_type = question.get("question_type") or "未知"
             if q_type in ("未知", "解答题"):
-                detected_type = _detect_question_type(question.get("question_text") or "", q_type)
+                detected_type = detect_question_type(question.get("question_text") or "", q_type)
                 if detected_type != q_type:
                     q_type = detected_type
                     try:
@@ -1915,12 +2185,22 @@ def _render_premium_question_card_qb(index: int, question: dict[str, Any], previ
             error_tags = []
             chapter_tag = ""
             student_level_tag = ""
+            tag_model_names = []
+            tag_confidences = []
             
             for t in question.get("tags", []):
                 tt = t.get("tag_type")
                 tv = t.get("tag_value")
                 if not tv:
                     continue
+                model_name = _cell_text(t.get("model_name"))
+                if model_name and model_name not in tag_model_names:
+                    tag_model_names.append(model_name)
+                try:
+                    confidence_value = float(t.get("confidence"))
+                    tag_confidences.append(confidence_value)
+                except (TypeError, ValueError):
+                    pass
                 if tt == "knowledge_point":
                     kp_tags.append(tv)
                 elif tt == "ability":
@@ -1954,6 +2234,13 @@ def _render_premium_question_card_qb(index: int, question: dict[str, Any], previ
                 
             if tag_groups_html:
                 st.markdown('<div style="display: flex; flex-wrap: wrap; gap: 4px;">' + "".join(tag_groups_html) + '</div>', unsafe_allow_html=True)
+                meta_bits = []
+                if tag_model_names:
+                    meta_bits.append("模型：" + " / ".join(tag_model_names[:2]))
+                if tag_confidences:
+                    meta_bits.append(f"置信度：{max(tag_confidences) * 100:.0f}%")
+                if meta_bits:
+                    st.caption(" · ".join(meta_bits))
             else:
                 st.caption("💡 暂无 AI 属性标签。")
                 
@@ -2150,24 +2437,24 @@ def _render_rich_text(value: str) -> None:
     )
 
 
-def _render_images(image_paths: list[str]) -> None:
+def _render_images(image_paths: list[str], *, image_scale_percent: int | None = None) -> None:
     paths = _dedupe_paths(image_paths)
     valid_paths = [Path(p) for p in paths if Path(p).exists()]
     if not valid_paths:
         return
+    if image_scale_percent is None:
+        _, image_scale_percent = _preview_display_settings()
         
-    # If there is only 1 image, display it in a neat column to prevent massive scaling
     if len(valid_paths) == 1:
-        cols = st.columns([2.5, 3.5])
-        with cols[0]:
-            st.image(str(valid_paths[0]), use_container_width=True)
+        width = image_display_width(valid_paths[0], image_count=1, scale_percent=image_scale_percent)
+        st.image(str(valid_paths[0]), width=width)
     else:
-        # If there are multiple images (like A, B, C, D choices), display them in a horizontal grid row!
         num_cols = min(len(valid_paths), 4)
         cols = st.columns(num_cols)
         for idx, path in enumerate(valid_paths):
             with cols[idx % num_cols]:
-                st.image(str(path), use_container_width=True)
+                width = image_display_width(path, image_count=len(valid_paths), scale_percent=image_scale_percent)
+                st.image(str(path), width=width)
 
 
 def _image_paths_from_text(value: object) -> list[str]:
@@ -2349,7 +2636,7 @@ def _analysis_from_question(item: dict[str, Any]) -> TagAnalysis:
             "textbook_chapter": _first_tag(grouped, "exam_scope"),
             "teaching_stage": _first_tag(grouped, "teaching_stage"),
             "suitable_student_level": _first_tag(grouped, "student_level"),
-            "reason": "",
+            "reason": item.get("reason") or "",
         }
     )
 
@@ -2439,10 +2726,10 @@ st.markdown(
     <style>
     .qb-rich-text {
         white-space: pre-wrap;
-        line-height: 1.8;
-        font-size: 1.05rem;
+        line-height: 1.62;
+        font-size: 0.96rem;
         color: #0f172a;
-        margin: 0.35rem 0 0.75rem 0;
+        margin: 0.25rem 0 0.6rem 0;
     }
     
     /* Premium Paper Style */
@@ -2450,8 +2737,8 @@ st.markdown(
         background-color: #ffffff;
         border: 1px solid #e2e8f0;
         border-radius: 8px;
-        padding: 24px 28px;
-        margin-bottom: 20px;
+        padding: 18px 22px;
+        margin-bottom: 14px;
         box-shadow: 0 4px 15px rgba(15, 23, 42, 0.05);
         font-family: 'Times New Roman', SimSun, serif;
     }
@@ -2461,15 +2748,15 @@ st.markdown(
         justify-content: space-between;
         align-items: center;
         border-bottom: 1px dashed #cbd5e1;
-        padding-bottom: 10px;
-        margin-bottom: 15px;
-        font-size: 0.9rem;
+        padding-bottom: 8px;
+        margin-bottom: 10px;
+        font-size: 0.86rem;
         color: #64748b;
     }
     
     .qb-paper-title-tag {
         font-weight: bold;
-        font-size: 1.05rem;
+        font-size: 0.98rem;
         color: #1e293b;
     }
     
@@ -2549,10 +2836,10 @@ st.markdown(
     .qb-teacher-box {
         background-color: #f8fafc;
         border-left: 4px solid #3b82f6;
-        padding: 12px 16px;
-        margin-top: 15px;
+        padding: 10px 14px;
+        margin-top: 10px;
         border-radius: 0 6px 6px 0;
-        font-size: 0.92rem;
+        font-size: 0.88rem;
     }
     
     .qb-teacher-title {
@@ -2582,13 +2869,13 @@ st.markdown(
         border-collapse: collapse;
         width: auto;
         max-width: 100%;
-        margin: 0.45rem 0 0.8rem;
+        margin: 0.35rem 0 0.65rem;
         table-layout: auto;
     }
     .qb-rich-text td,
     .qb-rich-text th {
         border: 1px solid #d8dee9;
-        padding: 0.4rem 0.55rem;
+        padding: 0.32rem 0.45rem;
         vertical-align: top;
         word-break: break-word;
     }
@@ -2763,7 +3050,7 @@ raw_papers_dir = project_data_root() / "question_bank" / "raw_papers"
 raw_papers_dir.mkdir(parents=True, exist_ok=True)
 
 _render_import_area(service, raw_papers_dir)
-_render_import_result()
+_render_import_result(service)
 _render_rich_content_tools(service)
 st.divider()
 _render_question_bank_overview(service)
@@ -2771,7 +3058,3 @@ st.divider()
 _render_paper_list(service)
 st.divider()
 _render_questions_v2(service)
-
-
-def _detect_question_type(question_text: str, current_type: str | None = None) -> str:
-    return detect_question_type(question_text, current_type)

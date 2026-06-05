@@ -122,17 +122,7 @@ def export_question_paper_docx(
     indexed_questions = list(enumerate(questions, start=1))
 
     if grouped_by_type:
-        choices = []
-        blanks = []
-        solutions = []
-        for index, question in indexed_questions:
-            g = _canonical_type_group(question.get("question_type"))
-            if g == "选择题":
-                choices.append((index, question))
-            elif g == "填空题":
-                blanks.append((index, question))
-            else:
-                solutions.append((index, question))
+        choices, blanks, solutions = _group_indexed_questions(questions)
 
         # 1. 选择题
         if choices:
@@ -267,17 +257,7 @@ def export_question_paper_docx(
         document.add_heading("答案", level=1)
         
         if grouped_by_type:
-            choices = []
-            blanks = []
-            solutions = []
-            for index, question in indexed_questions:
-                g = _canonical_type_group(question.get("question_type"))
-                if g == "选择题":
-                    choices.append((index, question))
-                elif g == "填空题":
-                    blanks.append((index, question))
-                else:
-                    solutions.append((index, question))
+            choices, blanks, solutions = _group_indexed_questions(questions)
                     
             if choices:
                 document.add_heading("选择题答案", level=2)
@@ -372,6 +352,32 @@ def export_question_paper_docx(
 
     document.save(output_path)
     return output_path
+
+
+def _group_indexed_questions(
+    questions: list[dict[str, object]],
+) -> tuple[list[tuple[int, dict[str, object]]], list[tuple[int, dict[str, object]]], list[tuple[int, dict[str, object]]]]:
+    raw_choices: list[dict[str, object]] = []
+    raw_blanks: list[dict[str, object]] = []
+    raw_solutions: list[dict[str, object]] = []
+    for question in questions:
+        group = _canonical_type_group(question.get("question_type"))
+        if group == "选择题":
+            raw_choices.append(question)
+        elif group == "填空题":
+            raw_blanks.append(question)
+        else:
+            raw_solutions.append(question)
+
+    next_index = 1
+    grouped: list[list[tuple[int, dict[str, object]]]] = []
+    for raw_group in (raw_choices, raw_blanks, raw_solutions):
+        numbered_group = []
+        for question in raw_group:
+            numbered_group.append((next_index, question))
+            next_index += 1
+        grouped.append(numbered_group)
+    return grouped[0], grouped[1], grouped[2]
 
 
 def _apply_compact_layout(document: Document) -> None:

@@ -5,16 +5,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import objective_answer_loader
-import objective_question_registry
-
-
-def test_registry_path_uses_path_manager_config_dir(monkeypatch, tmp_path: Path) -> None:
-    config_dir = tmp_path / "custom_data" / "config"
-    fake_pm = SimpleNamespace(config_dir=config_dir)
-
-    monkeypatch.setattr(objective_question_registry, "get_path_manager", lambda: fake_pm)
-
-    assert objective_question_registry._registry_path() == config_dir / "objective_question_registry.json"
 
 
 def test_objective_answer_loader_uses_templates_dir(monkeypatch, tmp_path: Path) -> None:

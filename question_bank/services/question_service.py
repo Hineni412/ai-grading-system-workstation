@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -24,6 +25,7 @@ TAG_ANALYSIS_MAP = {
 }
 ANSWERED_AI_CONFIDENCE = 0.8
 ANSWERLESS_AI_CONFIDENCE = 0.55
+CORE_ANALYSIS_TAG_TYPES = ("knowledge_point", "ability", "exam_scope", "student_level")
 
 
 class QuestionService:
@@ -117,6 +119,43 @@ class QuestionService:
             if row is None:
                 return None
             return self._question_from_row(conn, row)
+
+    def find_exact_duplicate_tag_analysis(self, question_id: int) -> tuple[TagAnalysis, str | None] | None:
+        self.initialize_database()
+        with connect(self.db_path) as conn:
+            target = conn.execute(
+                """
+                SELECT q.*, p.title AS paper_title, p.year, p.grade, p.semester, p.exam_type, p.district
+                FROM questions q
+                LEFT JOIN papers p ON p.id = q.paper_id
+                WHERE q.id = ? AND q.is_deleted = 0
+                  AND COALESCE(p.import_status, '') <> 'deleted'
+                """,
+                (int(question_id),),
+            ).fetchone()
+            if target is None:
+                return None
+            target_key = _duplicate_key(target)
+            if not target_key:
+                return None
+            rows = conn.execute(
+                """
+                SELECT q.*, p.title AS paper_title, p.year, p.grade, p.semester, p.exam_type, p.district
+                FROM questions q
+                LEFT JOIN papers p ON p.id = q.paper_id
+                WHERE q.id <> ? AND q.is_deleted = 0
+                  AND COALESCE(p.import_status, '') <> 'deleted'
+                ORDER BY q.updated_at DESC, q.id DESC
+                """,
+                (int(question_id),),
+            ).fetchall()
+            for row in rows:
+                if _duplicate_key(row) != target_key:
+                    continue
+                item = self._question_from_row(conn, row)
+                if has_complete_analysis_tags(item):
+                    return _analysis_from_tagged_question(item)
+        return None
 
     def _build_filter_query(
         self,
@@ -226,20 +265,18 @@ class QuestionService:
         if _clean_optional(tag_status) and tag_status != "全部":
             if tag_status == "已打标签":
                 where.append("""
-                    EXISTS (
-                        SELECT 1 FROM question_tags kt2 
-                        WHERE kt2.question_id = q.id 
-                          AND kt2.tag_type IN ('knowledge_point', 'method', 'ability', 'model', 'error_type', 'exam_scope') 
-                          AND COALESCE(kt2.tag_value, '') <> ''
-                    )
+                    EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'knowledge_point' AND COALESCE(kt2.tag_value, '') <> '')
+                    AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'ability' AND COALESCE(kt2.tag_value, '') <> '')
+                    AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'exam_scope' AND COALESCE(kt2.tag_value, '') <> '')
+                    AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'student_level' AND COALESCE(kt2.tag_value, '') <> '')
                 """)
             elif tag_status == "未打标签":
                 where.append("""
-                    NOT EXISTS (
-                        SELECT 1 FROM question_tags kt2 
-                        WHERE kt2.question_id = q.id 
-                          AND kt2.tag_type IN ('knowledge_point', 'method', 'ability', 'model', 'error_type', 'exam_scope') 
-                          AND COALESCE(kt2.tag_value, '') <> ''
+                    NOT (
+                        EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'knowledge_point' AND COALESCE(kt2.tag_value, '') <> '')
+                        AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'ability' AND COALESCE(kt2.tag_value, '') <> '')
+                        AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'exam_scope' AND COALESCE(kt2.tag_value, '') <> '')
+                        AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'student_level' AND COALESCE(kt2.tag_value, '') <> '')
                     )
                 """)
             
@@ -308,6 +345,7 @@ class QuestionService:
         limit: int | None = None,
         is_deleted: bool = False,
         tag_status: str | None = None,
+        sort_mode: str | None = None,
     ) -> list[dict[str, Any]]:
         self.initialize_database()
         joins, where, params = self._build_filter_query(
@@ -331,7 +369,7 @@ class QuestionService:
         query.extend(joins)
         if where:
             query.append("WHERE " + " AND ".join(where))
-        query.append("ORDER BY q.created_at DESC, q.id DESC")
+        query.append(_question_order_clause(sort_mode))
         
         if limit is not None:
             query.append("LIMIT ?")
@@ -349,7 +387,7 @@ class QuestionService:
             placeholders = ", ".join("?" for _ in question_ids)
             tags_rows = conn.execute(
                 f"""
-                SELECT id, question_id, tag_type, tag_value, confidence, source, created_at
+                SELECT id, question_id, tag_type, tag_value, confidence, source, model_name, created_at
                 FROM question_tags
                 WHERE question_id IN ({placeholders})
                 ORDER BY id ASC
@@ -393,11 +431,10 @@ class QuestionService:
                 LEFT JOIN papers p ON p.id = q.paper_id
                 WHERE q.is_deleted = 0
                   AND COALESCE(p.import_status, '') <> 'deleted'
-                  AND t.tag_type IN (
-                    'knowledge_point', 'method', 'ability', 'model', 'error_type',
-                    'exam_scope', 'teaching_stage', 'student_level', 'canonical_knowledge_id'
-                  )
-                  AND COALESCE(t.tag_value, '') <> ''
+                  AND EXISTS (SELECT 1 FROM question_tags kt WHERE kt.question_id = q.id AND kt.tag_type = 'knowledge_point' AND COALESCE(kt.tag_value, '') <> '')
+                  AND EXISTS (SELECT 1 FROM question_tags kt WHERE kt.question_id = q.id AND kt.tag_type = 'ability' AND COALESCE(kt.tag_value, '') <> '')
+                  AND EXISTS (SELECT 1 FROM question_tags kt WHERE kt.question_id = q.id AND kt.tag_type = 'exam_scope' AND COALESCE(kt.tag_value, '') <> '')
+                  AND EXISTS (SELECT 1 FROM question_tags kt WHERE kt.question_id = q.id AND kt.tag_type = 'student_level' AND COALESCE(kt.tag_value, '') <> '')
                 """
             ).fetchone()[0]
             paper_count = conn.execute(
@@ -799,6 +836,8 @@ class QuestionService:
         *,
         overwrite_manual: bool = False,
         edited_fields: set[str] | None = None,
+        model_name: str | None = None,
+        confidence: float | None = None,
     ) -> bool:
         self.initialize_database()
         with connect(self.db_path) as conn:
@@ -819,17 +858,19 @@ class QuestionService:
                 """,
                 (int(question_id), *covered_tag_types, int(overwrite_manual)),
             )
-            confidence = ANSWERED_AI_CONFIDENCE if _clean_optional(question["answer_text"]) else ANSWERLESS_AI_CONFIDENCE
+            fallback_confidence = ANSWERED_AI_CONFIDENCE if _clean_optional(question["answer_text"]) else ANSWERLESS_AI_CONFIDENCE
+            resolved_confidence = _normalize_confidence(confidence if confidence is not None else getattr(analysis, "confidence", fallback_confidence))
             rows = _tag_analysis_rows(
                 question_id=int(question_id),
                 analysis=analysis,
-                confidence=confidence,
+                confidence=resolved_confidence,
                 edited_fields=edited_fields or set(),
+                model_name=_clean_optional(model_name),
             )
             conn.executemany(
                 """
-                INSERT INTO question_tags (question_id, tag_type, tag_value, confidence, source)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO question_tags (question_id, tag_type, tag_value, confidence, source, model_name)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
@@ -838,10 +879,16 @@ class QuestionService:
                 UPDATE questions
                 SET difficulty = ?,
                     typicality = ?,
+                    reason = ?,
                     updated_at = datetime('now','localtime')
                 WHERE id = ? AND is_deleted = 0
                 """,
-                (str(analysis.difficulty), str(analysis.typicality), int(question_id)),
+                (
+                    str(analysis.difficulty),
+                    str(analysis.typicality),
+                    _clean_optional(analysis.reason),
+                    int(question_id),
+                ),
             )
             conn.commit()
         return True
@@ -873,7 +920,7 @@ class QuestionService:
         item["image_paths"] = parsed_paths if isinstance(parsed_paths, list) else []
         tags = conn.execute(
             """
-            SELECT id, question_id, tag_type, tag_value, confidence, source, created_at
+            SELECT id, question_id, tag_type, tag_value, confidence, source, model_name, created_at
             FROM question_tags
             WHERE question_id = ?
             ORDER BY id ASC
@@ -901,25 +948,115 @@ def _normalized_range(value: tuple[int, int]) -> tuple[int, int]:
     return (min(low, high), max(low, high))
 
 
+def _question_order_clause(sort_mode: str | None) -> str:
+    if sort_mode == "试题难度":
+        return "ORDER BY CAST(q.difficulty AS REAL) DESC, q.created_at DESC, q.id DESC"
+    if sort_mode == "典型程度":
+        return "ORDER BY CAST(q.typicality AS REAL) DESC, q.created_at DESC, q.id DESC"
+    return "ORDER BY q.created_at DESC, q.id DESC"
+
+
 def _tag_analysis_rows(
     *,
     question_id: int,
     analysis: TagAnalysis,
     confidence: float,
     edited_fields: set[str],
-) -> list[tuple[int, str, str, float, str]]:
-    rows: list[tuple[int, str, str, float, str]] = []
+    model_name: str | None,
+) -> list[tuple[int, str, str, float, str, str | None]]:
+    rows: list[tuple[int, str, str, float, str, str | None]] = []
     payload = analysis.to_dict()
     for field_name, tag_type in TAG_ANALYSIS_MAP.items():
         source = "manual" if field_name in edited_fields else "ai"
         values = payload.get(field_name)
         if isinstance(values, str):
             values = [values] if values.strip() else []
-        rows.extend((question_id, tag_type, tag_value, confidence, source) for tag_value in values or [])
+        rows.extend((question_id, tag_type, tag_value, confidence, source, model_name if source == "ai" else None) for tag_value in values or [])
     canonical = canonicalize_knowledge_values(payload.get("knowledge_points", []))
     if canonical is not None:
-        rows.append((question_id, "canonical_knowledge_id", canonical.canonical_id, confidence, "taxonomy"))
+        rows.append((question_id, "canonical_knowledge_id", canonical.canonical_id, confidence, "taxonomy", model_name))
     return rows
+
+
+def _analysis_from_tagged_question(question: Mapping[str, Any]) -> tuple[TagAnalysis, str | None]:
+    grouped: dict[str, list[str]] = {}
+    model_name = None
+    confidences: list[float] = []
+    for tag in question.get("tags", []):
+        if not isinstance(tag, Mapping):
+            continue
+        tag_type = _clean_optional(tag.get("tag_type"))
+        tag_value = _clean_optional(tag.get("tag_value"))
+        if tag_type and tag_value:
+            grouped.setdefault(tag_type, [])
+            if tag_value not in grouped[tag_type]:
+                grouped[tag_type].append(tag_value)
+        if model_name is None:
+            model_name = _clean_optional(tag.get("model_name"))
+        try:
+            confidences.append(float(tag.get("confidence")))
+        except (TypeError, ValueError):
+            pass
+    confidence = min(max(confidences), 0.9) if confidences else 0.9
+    analysis = TagAnalysis.from_dict(
+        {
+            "knowledge_points": grouped.get("knowledge_point", []),
+            "method_tags": grouped.get("method", []),
+            "ability_tags": grouped.get("ability", []),
+            "math_model_tags": grouped.get("model", []),
+            "difficulty": question.get("difficulty") or 1,
+            "typicality": question.get("typicality") or 1,
+            "error_prone_points": grouped.get("error_type", []),
+            "prerequisite_points": grouped.get("prerequisite", []),
+            "textbook_chapter": _first_value(grouped.get("exam_scope", [])),
+            "teaching_stage": _first_value(grouped.get("teaching_stage", [])),
+            "suitable_student_level": _first_value(grouped.get("student_level", [])),
+            "reason": question.get("reason") or "",
+            "confidence": confidence,
+        }
+    )
+    return analysis, model_name
+
+
+def has_complete_analysis_tags(question: Mapping[str, Any]) -> bool:
+    seen: set[str] = set()
+    for tag in question.get("tags", []):
+        tag_type = _clean_optional(tag.get("tag_type")) if isinstance(tag, Mapping) else None
+        tag_value = _clean_optional(tag.get("tag_value")) if isinstance(tag, Mapping) else None
+        if tag_type in CORE_ANALYSIS_TAG_TYPES and tag_value:
+            seen.add(tag_type)
+    return all(tag_type in seen for tag_type in CORE_ANALYSIS_TAG_TYPES)
+
+
+def _duplicate_key(question: Mapping[str, Any]) -> str:
+    question_text = _normalize_duplicate_text(_mapping_value(question, "question_text"))
+    answer_text = _normalize_duplicate_text(_mapping_value(question, "answer_text"))
+    return f"{question_text}\n{answer_text}" if question_text else ""
+
+
+def _normalize_duplicate_text(value: object) -> str:
+    return re.sub(r"\s+", "", str(value or "")).strip()
+
+
+def _mapping_value(value: Mapping[str, Any], key: str) -> Any:
+    if hasattr(value, "get"):
+        return value.get(key)
+    try:
+        return value[key]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+def _first_value(values: list[str] | tuple[str, ...] | None) -> str:
+    return str((values or [""])[0] or "").strip()
+
+
+def _normalize_confidence(value: object) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        confidence = ANSWERED_AI_CONFIDENCE
+    return round(min(1.0, max(0.0, confidence)), 4)
 
 
 def _analysis_frequency_tags(analysis: TagAnalysis) -> tuple[str, ...]:

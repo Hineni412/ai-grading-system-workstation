@@ -130,6 +130,9 @@ def _get_paragraph_rich_text(paragraph) -> str:
                     text = _visible_underlined_text(text)
                     text = f"<u>{text}</u>"
                 parts.append(text)
+            for child in element.iterchildren():
+                if _local_name(child) in ("oMath", "oMathPara"):
+                    parts.append(_math_text(child))
         elif local_name in ("oMath", "oMathPara"):
             parts.append(_math_text(element))
         elif local_name == "hyperlink":

@@ -119,15 +119,15 @@ def parse_paper_text(
     for block in _split_numbered_blocks(question_text, source_file=source_file):
         if not _is_in_range(block.number, range_filter):
             continue
-        # 对于小于10个字符的题目，自动排除不入库（忽略HTML标签和图片标记）
+        # 对于小于6个字符的题目，自动排除不入库（忽略HTML标签和图片标记）
         # 单元测试文件除外，防止测试用例被错误拦截
         is_test_file = source_file and ("sample" in str(source_file).lower() or "temp" in str(source_file).lower() or "tmp" in str(source_file).lower() or "renamed" in str(source_file).lower())
         
         clean_content = re.sub(r"<[^>]+>", "", block.text)
         clean_content = _IMAGE_MARKER.sub("", clean_content)
-        if not is_test_file and len(clean_content.strip()) < 10:
+        if not is_test_file and len(clean_content.strip()) < 6:
             LOGGER.info(
-                "Skipping question block %s because it contains less than 10 characters: %r",
+                "Skipping question block %s because it contains less than 6 characters: %r",
                 block.number,
                 clean_content.strip(),
             )
@@ -256,6 +256,7 @@ def _import_scanned_paper(
     metadata: PaperMetadata,
     question_range: str | None,
 ) -> PaperImportFileResult:
+    initialize_database(db_path)
     fingerprint = _file_fingerprint(path)
     with connect(db_path) as conn:
         if _paper_exists(conn, fingerprint=fingerprint, source_file=str(path)):
@@ -277,6 +278,12 @@ def _import_scanned_paper(
     )
     parsed = _without_existing_duplicate_questions(db_path, parsed)
     if not parsed.questions:
+        if extracted.needs_ocr:
+            return PaperImportFileResult(
+                source_file=str(path),
+                status="needs_ocr",
+                message="document has no parseable text and needs OCR",
+            )
         return PaperImportFileResult(
             source_file=str(path),
             status="duplicate",
@@ -607,20 +614,12 @@ def _is_floating_image_only_paragraph(paragraph: dict[str, object]) -> bool:
 
 
 def _without_existing_duplicate_questions(db_path: Path, parsed: ParsedPaperText) -> ParsedPaperText:
-    with connect(db_path) as conn:
-        existing_signatures = {
-            _question_duplicate_signature(row["question_text"])
-            for row in conn.execute(
-                "SELECT question_text FROM questions WHERE COALESCE(is_deleted, 0) = 0"
-            )
-        }
-    existing_signatures.discard("")
     seen_signatures: set[str] = set()
     questions: list[ParsedQuestion] = []
     answer_match_count = 0
     for question in parsed.questions:
         signature = _question_duplicate_signature(question.question_text)
-        if signature and (signature in existing_signatures or signature in seen_signatures):
+        if signature and signature in seen_signatures:
             continue
         if signature:
             seen_signatures.add(signature)

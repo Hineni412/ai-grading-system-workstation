@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -142,6 +143,13 @@ class AITaggingResult:
     mock_mode: bool
     analysis: TagAnalysis | None = None
     error: str | None = None
+    model_name: str | None = None
+    quality_status: str = "complete"
+    quality_notes: list[str] = field(default_factory=list)
+
+
+COMPLETE_CONFIDENCE_THRESHOLD = 0.72
+REVIEW_CONFIDENCE_THRESHOLD = 0.45
 
 
 class AITaggingService:
@@ -156,6 +164,8 @@ class AITaggingService:
         self.api_key = str(self.env.get("QUESTION_BANK_TAGGING_API_KEY") or self.env.get("OPENAI_API_KEY") or "").strip()
         self.model = str(self.env.get("QUESTION_BANK_TAGGING_MODEL") or DEFAULT_TAGGING_MODEL).strip()
         self.client = client
+        self.review_model = str(self.env.get("QUESTION_BANK_TAGGING_REVIEW_MODEL") or "").strip()
+        self.review_llm_client: LLMClient | None = None
         
         # Build a dedicated LLM client specifically for tagging if configured
         tagging_api_key = str(self.env.get("QUESTION_BANK_TAGGING_API_KEY") or "").strip()
@@ -174,6 +184,7 @@ class AITaggingService:
             self.llm_client = LLMClient(settings)
         else:
             self.llm_client = llm_client or (_llm_client_from_saved_profile(self.env) if env is None else None)
+        self._configure_review_client(tagging_api_key=str(self.env.get("QUESTION_BANK_TAGGING_API_KEY") or "").strip())
 
     @property
     def mock_mode(self) -> bool:
@@ -192,24 +203,75 @@ class AITaggingService:
                     model=_model_for_llm_client(self.llm_client, self.model),
                     extra_kwargs=extra_kwargs,
                 )
-                return AITaggingResult(
+                result = AITaggingResult(
                     ok=True,
                     mock_mode=False,
                     analysis=TagAnalysis.from_dict(payload),
+                    model_name=_model_for_llm_client(self.llm_client, self.model),
                 )
+                return _with_quality(result, context)
             response = self._client().responses.create(
                 model=self.model,
                 text={"format": _tag_analysis_response_format()},
                 input=_prompt_input(context),
             )
             output_text = str(getattr(response, "output_text", "") or "").strip()
-            return AITaggingResult(
+            result = AITaggingResult(
                 ok=True,
                 mock_mode=False,
                 analysis=TagAnalysis.from_dict(json.loads(output_text)),
+                model_name=self.model,
             )
+            return _with_quality(result, context)
         except Exception as exc:  # noqa: BLE001
-            return AITaggingResult(ok=False, mock_mode=False, error=str(exc))
+            return AITaggingResult(ok=False, mock_mode=False, error=str(exc), model_name=self.model, quality_status="invalid", quality_notes=[str(exc)])
+
+    def analyze_review_question(self, context: TaggingContext) -> AITaggingResult:
+        if not self.review_configured:
+            return AITaggingResult(ok=False, mock_mode=False, error="未配置低置信度复核模型", model_name=self.review_model or None, quality_status="invalid")
+        try:
+            assert self.review_llm_client is not None
+            payload = _json_from_text_compat(
+                self.review_llm_client,
+                _prompt_text(context),
+                model=_model_for_llm_client(self.review_llm_client, self.review_model),
+            )
+            result = AITaggingResult(
+                ok=True,
+                mock_mode=False,
+                analysis=TagAnalysis.from_dict(payload),
+                model_name=_model_for_llm_client(self.review_llm_client, self.review_model),
+            )
+            return _with_quality(result, context)
+        except Exception as exc:  # noqa: BLE001
+            return AITaggingResult(ok=False, mock_mode=False, error=str(exc), model_name=self.review_model or None, quality_status="invalid", quality_notes=[str(exc)])
+
+    @property
+    def review_configured(self) -> bool:
+        overridden_review = type(self).analyze_review_question is not AITaggingService.analyze_review_question
+        return bool(self.review_model and (self.review_llm_client is not None or overridden_review))
+
+    def _configure_review_client(self, *, tagging_api_key: str) -> None:
+        if not self.review_model:
+            return
+        review_api_key = str(self.env.get("QUESTION_BANK_TAGGING_REVIEW_API_KEY") or tagging_api_key).strip()
+        if not review_api_key:
+            return
+        review_base_url = str(
+            self.env.get("QUESTION_BANK_TAGGING_REVIEW_BASE_URL")
+            or self.env.get("QUESTION_BANK_TAGGING_BASE_URL")
+            or "https://api.openai.com/v1"
+        ).strip()
+        settings = LLMSettings(
+            api_key=review_api_key,
+            base_url=review_base_url,
+            ocr_model=self.review_model,
+            grading_model=self.review_model,
+            config_model=self.review_model,
+            config_api_key=review_api_key,
+            config_base_url=review_base_url,
+        )
+        self.review_llm_client = LLMClient(settings)
 
     def analyze_questions(
         self,
@@ -223,9 +285,7 @@ class AITaggingService:
         if not items:
             return {}
             
-        # Group items into batches of 5
-        batch_size = 5
-        batches = [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
+        batches = _adaptive_batches(items)
         
         worker_count = _bounded_int(
             max_workers,
@@ -255,7 +315,7 @@ class AITaggingService:
                     batch_results = future.result()
                 except Exception as exc:
                     batch_results = {
-                        qid: AITaggingResult(ok=False, mock_mode=self.mock_mode, error=str(exc))
+                        qid: AITaggingResult(ok=False, mock_mode=self.mock_mode, error=str(exc), model_name=self.model, quality_status="invalid", quality_notes=[str(exc)])
                         for qid, _ in batch
                     }
                 
@@ -292,6 +352,7 @@ def _mock_analysis(context: TaggingContext) -> TagAnalysis:
         "teaching_stage": "巩固",
         "suitable_student_level": "中档提升",
         "reason": "Mock mode uses stable middle-school math tags for page testing.",
+        "confidence": 0.8,
     }
     return TagAnalysis.from_dict(payload)
 
@@ -363,7 +424,9 @@ def _system_prompt() -> str:
     Ability tags should be curriculum-friendly, such as 运算能力, 几何直观, 推理能力, 抽象能力, 模型观念, 应用意识, 创新意识.
     Error-prone points must be broad, reusable categories for statistics, not question-specific step descriptions. Prefer the provided error_prone_options such as 条件识别不完整, 图形关系识别错误, 辅助线思路缺失, 公式/定理误用, 运算化简错误, 书写依据不完整. Do not write labels like “第一问证明某三角形全等时漏找某条件”.
     Choose textbook_chapter from the provided 北师大版2024 初中数学教材章节候选 when possible.
+    Choose the smallest accurate primary knowledge point. Do not overgeneralize 三角形三边关系 as 三角形全等, or 科学记数法 as 整式运算.
     Scores difficulty and typicality must be integers from 1 to 10.
+    confidence must be a number from 0 to 1 for your overall confidence in the tag set. Lower it when the image is essential, the answer is missing, or the core knowledge point is uncertain.
     Typicality should primarily be your own professional judgment from the question form, knowledge pattern, method pattern, and exam recurrence intuition. corpus_stats is only reference context for now; do not mechanically overwrite your judgment from it.
     suitable_student_level must be one of: 入门补缺, 基础巩固, 中档提升, 综合突破, 压轴拔高.
     """.strip()
@@ -383,6 +446,7 @@ def _plain_output_schema() -> dict[str, object]:
         "teaching_stage": "",
         "suitable_student_level": "",
         "reason": "",
+        "confidence": 0.8,
     }
 
 
@@ -403,6 +467,7 @@ def _tag_analysis_response_format() -> dict[str, Any]:
         "teaching_stage": text_field,
         "suitable_student_level": text_field,
         "reason": text_field,
+        "confidence": {"type": "number"},
     }
     return {
         "type": "json_schema",
@@ -549,6 +614,7 @@ def _batch_prompt_input(batch_contexts: list[tuple[int, TaggingContext]]) -> lis
     user_payload = {
         "task": "Analyze and tag this batch of junior middle-school math questions.",
         "batch_inputs": input_payloads,
+        "output_schema": {"results": [{**_plain_output_schema(), "question_id": 0}]},
     }
     if os.getenv("QUESTION_BANK_TAGGING_THINKING") == "1":
         user_payload["reasoning_instruction"] = (
@@ -584,6 +650,7 @@ def _batch_tag_analysis_response_format() -> dict[str, Any]:
         "teaching_stage": text_field,
         "suitable_student_level": text_field,
         "reason": text_field,
+        "confidence": {"type": "number"},
     }
     
     return {
@@ -624,14 +691,16 @@ def _analyze_one_batch(
     rate_limiter.acquire()
     
     if service.mock_mode:
-        return _mock_batch_analysis(batch_items)
+        return _finalize_batch_results(service, batch_items, _mock_batch_analysis(batch_items))
         
     try:
         if service.llm_client is not None:
             # Format prompt for llm_client
             batch_inputs = [{'question_id': qid, 'input': ctx.to_dict()} for qid, ctx in batch_items]
             user_payload = {
-                "batch_inputs": batch_inputs
+                "task": "Analyze and tag this batch of junior middle-school math questions.",
+                "batch_inputs": batch_inputs,
+                "output_schema": {"results": [{**_plain_output_schema(), "question_id": 0}]},
             }
             if os.getenv("QUESTION_BANK_TAGGING_THINKING") == "1":
                 user_payload["reasoning_instruction"] = (
@@ -663,13 +732,14 @@ def _analyze_one_batch(
                         ok=True,
                         mock_mode=False,
                         analysis=TagAnalysis.from_dict(item),
+                        model_name=_model_for_llm_client(service.llm_client, service.model),
                     )
                 except (KeyError, ValueError, TypeError):
                     continue
             for qid, ctx in batch_items:
                 if qid not in results:
-                    results[qid] = AITaggingResult(ok=False, mock_mode=False, error="LLM response did not include results for this question ID")
-            return results
+                    results[qid] = AITaggingResult(ok=False, mock_mode=False, error="LLM response did not include results for this question ID", model_name=service.model, quality_status="invalid")
+            return _finalize_batch_results(service, batch_items, results)
             
         # Standard OpenAI-style / Google Responses API client
         response = service._client().responses.create(
@@ -687,13 +757,14 @@ def _analyze_one_batch(
                     ok=True,
                     mock_mode=False,
                     analysis=TagAnalysis.from_dict(item),
+                    model_name=service.model,
                 )
             except (KeyError, ValueError, TypeError):
                 continue
         for qid, ctx in batch_items:
             if qid not in results:
-                results[qid] = AITaggingResult(ok=False, mock_mode=False, error="API response did not include results for this question ID")
-        return results
+                results[qid] = AITaggingResult(ok=False, mock_mode=False, error="API response did not include results for this question ID", model_name=service.model, quality_status="invalid")
+        return _finalize_batch_results(service, batch_items, results)
     except Exception as exc:
         # Fallback to single-question tagging for the failed batch
         fallback_results = {}
@@ -701,8 +772,230 @@ def _analyze_one_batch(
             try:
                 fallback_results[qid] = service.analyze_question(ctx)
             except Exception as single_exc:
-                fallback_results[qid] = AITaggingResult(ok=False, mock_mode=False, error=str(single_exc))
-        return fallback_results
+                fallback_results[qid] = AITaggingResult(ok=False, mock_mode=False, error=str(single_exc), model_name=service.model, quality_status="invalid", quality_notes=[str(single_exc)])
+        return _finalize_batch_results(service, batch_items, fallback_results)
+
+
+def _adaptive_batches(items: list[tuple[int, TaggingContext]]) -> list[list[tuple[int, TaggingContext]]]:
+    batches: list[list[tuple[int, TaggingContext]]] = []
+    current: list[tuple[int, TaggingContext]] = []
+    current_size = 0
+    for item in items:
+        size = _batch_size_for_context(item[1])
+        if size == 1:
+            if current:
+                batches.append(current)
+                current = []
+                current_size = 0
+            batches.append([item])
+            continue
+        if not current or current_size != size:
+            if current:
+                batches.append(current)
+            current = [item]
+            current_size = size
+        else:
+            current.append(item)
+        if len(current) >= current_size:
+            batches.append(current)
+            current = []
+            current_size = 0
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _batch_size_for_context(context: TaggingContext) -> int:
+    text = str(context.question_text or "")
+    q_type = str(context.question_type or "")
+    if context.has_images or "[[IMAGE:" in text or any(token in q_type for token in ("证明", "画图")):
+        return 1
+    if len(text) >= 480 or any(token in text for token in ("综合与实践", "【探究】", "【模型", "【定义】")):
+        return 1
+    if "解答" in q_type:
+        return 3
+    if any(token in q_type for token in ("选择", "填空")) and len(text) <= 320:
+        return 5
+    return 3
+
+
+def _finalize_batch_results(
+    service: AITaggingService,
+    batch_items: list[tuple[int, TaggingContext]],
+    raw_results: dict[int, AITaggingResult],
+) -> dict[int, AITaggingResult]:
+    contexts = dict(batch_items)
+    final: dict[int, AITaggingResult] = {}
+    for qid, context in contexts.items():
+        result = _with_quality(raw_results.get(qid) or AITaggingResult(
+            ok=False,
+            mock_mode=service.mock_mode,
+            error="AI response missing",
+            model_name=service.model,
+            quality_status="invalid",
+        ), context)
+        if result.analysis is not None and result.quality_status == "invalid":
+            retry = _with_quality(service.analyze_question(context), context)
+            if _is_better_quality(retry, result):
+                result = retry
+        if result.analysis is not None and result.quality_status in {"low_confidence", "conflict"}:
+            result = _review_low_confidence_result(service, context, result)
+        final[qid] = result
+    return final
+
+
+def _with_quality(result: AITaggingResult, context: TaggingContext) -> AITaggingResult:
+    if not result.ok or result.analysis is None:
+        notes = list(result.quality_notes or [])
+        if result.error:
+            notes.append(result.error)
+        return AITaggingResult(
+            ok=result.ok,
+            mock_mode=result.mock_mode,
+            analysis=result.analysis,
+            error=result.error,
+            model_name=result.model_name,
+            quality_status="invalid",
+            quality_notes=notes,
+        )
+    status, notes, confidence = _evaluate_analysis_quality(result.analysis, context)
+    payload = result.analysis.to_dict()
+    payload["confidence"] = confidence
+    return AITaggingResult(
+        ok=True,
+        mock_mode=result.mock_mode,
+        analysis=TagAnalysis.from_dict(payload),
+        error=result.error,
+        model_name=result.model_name,
+        quality_status=status,
+        quality_notes=notes,
+    )
+
+
+def _evaluate_analysis_quality(analysis: TagAnalysis, context: TaggingContext) -> tuple[str, list[str], float]:
+    notes: list[str] = []
+    missing = []
+    if not analysis.knowledge_points:
+        missing.append("缺少知识点")
+    if not analysis.ability_tags:
+        missing.append("缺少能力标签")
+    if not analysis.textbook_chapter:
+        missing.append("缺少教材章节")
+    if not analysis.suitable_student_level:
+        missing.append("缺少适合学生层级")
+    confidence = float(analysis.confidence)
+    if context.has_images or "[[IMAGE:" in str(context.question_text or ""):
+        confidence *= 0.95
+        notes.append("图片依赖题已轻微降权")
+    conflict_notes = _rule_conflict_notes(context, analysis)
+    notes.extend(conflict_notes)
+    if missing:
+        notes.extend(missing)
+        return "invalid", notes, round(min(confidence * 0.4, REVIEW_CONFIDENCE_THRESHOLD - 0.01), 4)
+    if confidence < REVIEW_CONFIDENCE_THRESHOLD:
+        notes.append("AI 自评置信度过低")
+        return "invalid", notes, round(confidence, 4)
+    if conflict_notes:
+        return "conflict", notes, round(min(confidence * 0.75, COMPLETE_CONFIDENCE_THRESHOLD - 0.03), 4)
+    if confidence < COMPLETE_CONFIDENCE_THRESHOLD:
+        notes.append("置信度低，需复核或人工确认")
+        return "low_confidence", notes, round(confidence, 4)
+    return "complete", notes, round(min(1.0, confidence), 4)
+
+
+def _rule_conflict_notes(context: TaggingContext, analysis: TagAnalysis) -> list[str]:
+    text = _compact(str(context.question_text or ""))
+    knowledge = _compact(" ".join(analysis.knowledge_points))
+    notes: list[str] = []
+    if ("科学记数法" in text or re.search(r"0\.0{3,}\d", text)) and "有理数" not in knowledge and "科学记数法" not in knowledge:
+        notes.append("疑似科学记数法题，主知识点未指向有理数/科学记数法")
+    if ("第三边" in text or "两条边" in text) and "三角形全等" in knowledge and "三边" not in knowledge:
+        notes.append("疑似三角形三边关系题，不应泛化为三角形全等")
+    if ("角平分线" in text or "平分∠" in text) and "角平分线" not in knowledge and "轴对称" not in knowledge:
+        notes.append("疑似角平分线性质题，知识点可能偏泛")
+    return notes
+
+
+def _review_low_confidence_result(
+    service: AITaggingService,
+    context: TaggingContext,
+    primary: AITaggingResult,
+) -> AITaggingResult:
+    if not service.review_configured:
+        return primary
+    review = _with_quality(service.analyze_review_question(context), context)
+    if not review.ok or review.analysis is None or primary.analysis is None:
+        return AITaggingResult(
+            ok=primary.ok,
+            mock_mode=primary.mock_mode,
+            analysis=primary.analysis,
+            error=primary.error,
+            model_name=primary.model_name,
+            quality_status=primary.quality_status,
+            quality_notes=[*primary.quality_notes, "复核模型未返回有效结果"],
+        )
+    if _analyses_agree(primary.analysis, review.analysis):
+        merged = _merge_agreed_analyses(primary.analysis, review.analysis)
+        return AITaggingResult(
+            ok=True,
+            mock_mode=primary.mock_mode,
+            analysis=merged,
+            model_name="+".join(item for item in (primary.model_name, review.model_name) if item),
+            quality_status="complete",
+            quality_notes=[*primary.quality_notes, "复核模型与主模型核心标签一致"],
+        )
+    return AITaggingResult(
+        ok=True,
+        mock_mode=primary.mock_mode,
+        analysis=primary.analysis,
+        model_name=primary.model_name,
+        quality_status="conflict",
+        quality_notes=[*primary.quality_notes, "复核模型与主模型核心标签冲突"],
+    )
+
+
+def _analyses_agree(left: TagAnalysis, right: TagAnalysis) -> bool:
+    left_knowledge = {_compact(item) for item in left.knowledge_points if _compact(item)}
+    right_knowledge = {_compact(item) for item in right.knowledge_points if _compact(item)}
+    if not left_knowledge.intersection(right_knowledge):
+        return False
+    left_chapter = _compact(left.textbook_chapter)
+    right_chapter = _compact(right.textbook_chapter)
+    return not left_chapter or not right_chapter or left_chapter == right_chapter
+
+
+def _merge_agreed_analyses(primary: TagAnalysis, review: TagAnalysis) -> TagAnalysis:
+    payload = primary.to_dict()
+    for field_name in ("knowledge_points", "method_tags", "ability_tags", "math_model_tags", "error_prone_points", "prerequisite_points"):
+        payload[field_name] = _ordered_unique([*primary.to_dict().get(field_name, []), *review.to_dict().get(field_name, [])])
+    payload["confidence"] = max(primary.confidence, review.confidence, COMPLETE_CONFIDENCE_THRESHOLD)
+    if not payload.get("reason") and review.reason:
+        payload["reason"] = review.reason
+    return TagAnalysis.from_dict(payload)
+
+
+def _is_better_quality(candidate: AITaggingResult, current: AITaggingResult) -> bool:
+    rank = {"invalid": 0, "conflict": 1, "low_confidence": 2, "complete": 3}
+    return rank.get(candidate.quality_status, 0) > rank.get(current.quality_status, 0)
+
+
+def _ordered_unique(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            result.append(text)
+            seen.add(text)
+    return result
+
+
+def _compact(value: object) -> str:
+    return re.sub(r"[\s\W_]+", "", str(value or "")).casefold()
+
+
+def is_auto_saveable_result(result: AITaggingResult) -> bool:
+    return bool(result.ok and result.analysis is not None and result.quality_status == "complete")
 
 
 def _env_int(name: str, default: int) -> int:
