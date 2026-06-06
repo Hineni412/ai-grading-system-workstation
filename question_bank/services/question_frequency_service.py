@@ -113,6 +113,27 @@ class QuestionFrequencyService:
                 return FrequencyMetrics(available=False)
             return _metrics_for_target(conn, target)
 
+    def backfill_all_fingerprints(self) -> None:
+        self.initialize_database()
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT q.id
+                FROM questions q
+                LEFT JOIN question_fingerprints qf ON qf.question_id = q.id
+                WHERE q.is_deleted = 0 AND qf.question_id IS NULL
+                """
+            ).fetchall()
+            if not rows:
+                return
+            for row in rows:
+                qid = int(row["id"])
+                target = _load_question(conn, qid)
+                if target is not None:
+                    fingerprint = build_question_fingerprint(target)
+                    if fingerprint:
+                        _cache_fingerprint(conn, qid, fingerprint, _style_features(target))
+
 
 def _metrics_for_target(conn, target: Mapping[str, Any]) -> FrequencyMetrics:
     question_id = int(target["id"])
