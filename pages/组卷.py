@@ -1140,7 +1140,7 @@ def _render_question_selection_page(service: QuestionService) -> None:
         )
         sort_mode = _single_filter_row(
             "排序",
-            ["综合排序", "题库新增", "试题难度"],
+            ["综合排序", "题库新增", "试题难度", "考频排序"],
             key="assembly_smart_filter_sort",
         )
 

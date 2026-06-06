@@ -86,3 +86,19 @@ def test_query_questions_sorts_before_pagination(tmp_path: Path) -> None:
 
     assert [item["question_number"] for item in first_page] == ["2", "4"]
     assert [item["question_number"] for item in second_page] == ["3", "1"]
+
+
+def test_query_questions_sort_by_frequency(tmp_path: Path) -> None:
+    service = QuestionService(tmp_path / "question_bank.db")
+    q1 = service.add_question(QuestionCreate(question_number="1", question_text="Q1"))
+    q2 = service.add_question(QuestionCreate(question_number="2", question_text="Q2"))
+    q3 = service.add_question(QuestionCreate(question_number="3", question_text="Q3"))
+
+    service.save_tag_analysis(q1, TagAnalysis.from_dict({"knowledge_points": ["KP_A"]}))
+    service.save_tag_analysis(q2, TagAnalysis.from_dict({"knowledge_points": ["KP_A", "KP_B"]}))
+    service.save_tag_analysis(q3, TagAnalysis.from_dict({"knowledge_points": ["KP_B"]}))
+
+    res = service.query_questions(sort_mode="考频排序")
+    assert res[0]["question_number"] == "2"
+    assert {res[1]["question_number"], res[2]["question_number"]} == {"1", "3"}
+
