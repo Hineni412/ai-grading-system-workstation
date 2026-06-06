@@ -1108,9 +1108,12 @@ def _render_question_selection_page(service: QuestionService) -> None:
             ["全部", "选择题", "多选题", "填空题", "解答题", *question_type_options],
             key="assembly_smart_filter_question_type",
         )
-        selected_difficulty_label = _single_filter_row(
-            "难度",
-            ["全部", "易", "较易", "中档", "较难", "难"],
+        selected_difficulty_range = st.slider(
+            "难度区间",
+            min_value=1,
+            max_value=10,
+            value=(1, 10),
+            step=1,
             key="assembly_smart_filter_difficulty",
         )
         selected_years = _single_value_filter_row(
@@ -1168,7 +1171,7 @@ def _render_question_selection_page(service: QuestionService) -> None:
     question_types = _question_types_for_label(selected_question_type_label, question_type_options)
     filters = {
         "keyword": keyword_filter or None,
-        "difficulty_range": _difficulty_range_for_label(selected_difficulty_label),
+        "difficulty_range": selected_difficulty_range if selected_difficulty_range != (1, 10) else None,
         "question_types": question_types or None,
         "years": [selected_years] if selected_years else None,
         "grades": None if selected_grade == "全部" else [selected_grade],

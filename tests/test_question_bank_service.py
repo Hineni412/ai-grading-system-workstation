@@ -89,16 +89,104 @@ def test_query_questions_sorts_before_pagination(tmp_path: Path) -> None:
 
 
 def test_query_questions_sort_by_frequency(tmp_path: Path) -> None:
-    service = QuestionService(tmp_path / "question_bank.db")
-    q1 = service.add_question(QuestionCreate(question_number="1", question_text="Q1"))
-    q2 = service.add_question(QuestionCreate(question_number="2", question_text="Q2"))
-    q3 = service.add_question(QuestionCreate(question_number="3", question_text="Q3"))
+    db_path = tmp_path / "question_bank.db"
+    from question_bank.database.schema import initialize_database, connect
+    initialize_database(db_path)
+    
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO papers (id, title, grade, exam_type, semester, import_status)
+            VALUES (101, 'Mock Paper', '九年级', '中考', '全学年', 'success')
+            """
+        )
+    
+    service = QuestionService(db_path)
+    q1 = service.add_question(QuestionCreate(question_number="1", question_text="Q1", question_type="选择题", paper_id=101))
+    q2 = service.add_question(QuestionCreate(question_number="2", question_text="Q2", question_type="选择题", paper_id=101))
+    q3 = service.add_question(QuestionCreate(question_number="3", question_text="Q3", question_type="选择题", paper_id=101))
 
     service.save_tag_analysis(q1, TagAnalysis.from_dict({"knowledge_points": ["KP_A"]}))
-    service.save_tag_analysis(q2, TagAnalysis.from_dict({"knowledge_points": ["KP_A", "KP_B"]}))
+    service.save_tag_analysis(q2, TagAnalysis.from_dict({"knowledge_points": ["KP_A"]}))
     service.save_tag_analysis(q3, TagAnalysis.from_dict({"knowledge_points": ["KP_B"]}))
 
     res = service.query_questions(sort_mode="考频排序")
-    assert res[0]["question_number"] == "2"
-    assert {res[1]["question_number"], res[2]["question_number"]} == {"1", "3"}
+    assert {res[0]["question_number"], res[1]["question_number"]} == {"1", "2"}
+    assert res[2]["question_number"] == "3"
+
+
+def test_query_questions_sort_by_frequency_applies_complexity_penalty(tmp_path: Path) -> None:
+    db_path = tmp_path / "question_bank.db"
+    from question_bank.database.schema import initialize_database, connect
+    initialize_database(db_path)
+    
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO papers (id, title, grade, exam_type, semester, import_status)
+            VALUES (101, 'Mock Paper', '九年级', '中考', '全学年', 'success')
+            """
+        )
+    
+    service = QuestionService(db_path)
+    
+    # We will create three questions.
+    # q1 will share its fingerprint with 4 other mock questions (total 5 occurrences in DB).
+    # q2 will share its fingerprint with 9 other mock questions (total 10 occurrences in DB), but it has 10 tags.
+    # Score for q1: 5 * 1.0 = 5.0
+    # Score for q2: 10 * 0.4437 = 4.437
+    # So q1 should sort BEFORE q2 despite q2 having a higher raw frequency!
+    
+    q1 = service.add_question(QuestionCreate(question_number="1", question_text="KP_A_Q", question_type="选择题", paper_id=101))
+    for i in range(4):
+        service.add_question(QuestionCreate(question_number=f"1_mock_{i}", question_text="KP_A_Q", question_type="选择题", paper_id=101))
+        
+    q2 = service.add_question(QuestionCreate(question_number="2", question_text="KP_B_Q", question_type="选择题", paper_id=101))
+    for i in range(9):
+        service.add_question(QuestionCreate(question_number=f"2_mock_{i}", question_text="KP_B_Q", question_type="选择题", paper_id=101))
+        
+    # q1 has 1 tag
+    service.save_tag_analysis(q1, TagAnalysis.from_dict({
+        "knowledge_points": ["KP_A"]
+    }))
+    for i in range(4):
+        # We need to save matching tags for the mock questions so they build the same fingerprint.
+        # Since fingerprints now include difficulty and method/model for all question types,
+        # keeping difficulty as None and no methods makes them identical.
+        qid = q1 + 1 + i
+        service.save_tag_analysis(qid, TagAnalysis.from_dict({"knowledge_points": ["KP_A"]}))
+        
+    # q2 has 10 tags (KP_B, 3 methods, 3 abilities, 3 models = 10 tags total)
+    service.save_tag_analysis(q2, TagAnalysis.from_dict({
+        "knowledge_points": ["KP_B"],
+        "method_tags": ["Method1", "Method2", "Method3"],
+        "ability_tags": ["Ability1", "Ability2", "Ability3"],
+        "math_model_tags": ["Model1", "Model2", "Model3"]
+    }))
+    for i in range(9):
+        qid = q2 + 1 + i
+        # The mock questions must have identical fingerprints, but they can have fewer tags to not be penalized themselves
+        # (the query sorts the active question list where q1 and q2 are checked).
+        # We save KP_B for the mock questions to make their fingerprints identical to q2 (since they don't have methods or models either, wait!
+        # If they don't have methods/models, their fingerprint will be "选择题|KP_B|无图|普通".
+        # But q2 has methods/models, so q2's fingerprint is "选择题|KP_B|无图|普通|Method1" (first method).
+        # So they would NOT have the same fingerprint!
+        # To make them have the SAME fingerprint, the mock questions must also have "Method1" as their first method tag!)
+        service.save_tag_analysis(qid, TagAnalysis.from_dict({
+            "knowledge_points": ["KP_B"],
+            "method_tags": ["Method1"]
+        }))
+        
+    # Now q1's fingerprint is "选择题|KP_A|无图|普通" (5 matching questions: q1 and 4 mock questions)
+    # q2's fingerprint is "选择题|KP_B|无图|普通|Method1" (10 matching questions: q2 and 9 mock questions)
+    
+    res = service.query_questions(sort_mode="考频排序")
+    
+    # Check that q1 (question_number "1") is returned BEFORE q2 (question_number "2")
+    q1_idx = next(idx for idx, item in enumerate(res) if item["question_number"] == "1")
+    q2_idx = next(idx for idx, item in enumerate(res) if item["question_number"] == "2")
+    
+    assert q1_idx < q2_idx
+
+
 

@@ -212,8 +212,17 @@ def build_llm_settings_from_sidebar() -> LLMSettings | None:
         st.session_state.tagging_max_workers_input = int(saved_profile.get("tagging_max_workers", 8))
     if "tagging_requests_per_minute_input" not in st.session_state:
         st.session_state.tagging_requests_per_minute_input = int(saved_profile.get("tagging_requests_per_minute", 1000))
-    if "tagging_enabled_input" not in st.session_state:
-        st.session_state.tagging_enabled_input = bool(saved_profile.get("tagging_enabled", False))
+    st.session_state.tagging_enabled_input = True
+    if "tagging_thinking_input" not in st.session_state:
+        st.session_state.tagging_thinking_input = bool(saved_profile.get("tagging_thinking", False))
+    if "tagging_review_enabled_input" not in st.session_state:
+        st.session_state.tagging_review_enabled_input = bool(saved_profile.get("tagging_review_enabled", False))
+    if "tagging_review_api_key_input" not in st.session_state:
+        st.session_state.tagging_review_api_key_input = str(saved_profile.get("tagging_review_api_key") or os.getenv("QUESTION_BANK_TAGGING_REVIEW_API_KEY", ""))
+    if "tagging_review_base_url_input" not in st.session_state:
+        st.session_state.tagging_review_base_url_input = str(saved_profile.get("tagging_review_base_url") or os.getenv("QUESTION_BANK_TAGGING_REVIEW_BASE_URL", ""))
+    if "tagging_review_model_input" not in st.session_state:
+        st.session_state.tagging_review_model_input = str(saved_profile.get("tagging_review_model") or os.getenv("QUESTION_BANK_TAGGING_REVIEW_MODEL", ""))
 
     api_key_value = str(st.session_state.get("api_key_input", "")).strip()
     config_api_key_value = str(st.session_state.get("config_api_key_input", "")).strip()
@@ -268,44 +277,68 @@ def build_llm_settings_from_sidebar() -> LLMSettings | None:
         objective_enabled = st.checkbox("启用选填题专用模型", key="objective_enabled_input")
 
         if st.button("保存 API 配置", use_container_width=True, key="save_single_api_settings", type="primary"):
-            data_to_save = {
-                "name": "default",
-                "provider": str(provider_name).strip() or "custom-openai-compatible",
-                "api_key": str(api_key).strip(),
-                "base_url": normalize_openai_base_url(str(base_url).strip() or "https://api.openai.com/v1"),
-                "grading_model": str(grading_model).strip() or DEFAULT_MODELS["grading_model"],
-                "config_provider": str(config_provider_name).strip() or str(provider_name).strip() or "custom-openai-compatible",
-                "config_api_key": str(config_api_key).strip(),
-                "config_base_url": normalize_openai_base_url(str(config_base_url).strip() or "https://api.openai.com/v1"),
-                "config_model": str(config_model).strip() or DEFAULT_MODELS["config_model"],
-                "ocr_model": str(grading_model).strip() or DEFAULT_MODELS["grading_model"],
-                "objective_api_key": str(objective_api_key).strip(),
-                "objective_base_url": normalize_openai_base_url(str(objective_base_url).strip() or "https://api.openai.com/v1"),
-                "objective_model": str(objective_model).strip(),
-                "objective_temperature": float(objective_temperature),
-                "objective_max_tokens": int(objective_max_tokens),
-                "objective_thinking_type": str(objective_thinking_type).strip(),
-                "objective_timeout": int(objective_timeout),
-                "objective_enabled": bool(objective_enabled),
-                "objective_batch_size": int(objective_batch_size),
-                "hybrid_major_batch_size": int(major_batch_size),
-                "grading_requests_per_minute": int(st.session_state.get("grading_requests_per_minute_input", DEFAULT_GRADING_RPM)),
-                "grading_max_workers": int(st.session_state.get("grading_max_workers_input", DEFAULT_FULL_PAPER_WORKERS)),
-                "hybrid_inflight_workers": int(st.session_state.get("hybrid_inflight_workers_input", DEFAULT_HYBRID_INFLIGHT_WORKERS)),
-                "precheck_max_workers": int(st.session_state.get("precheck_max_workers_input", DEFAULT_PRECHECK_WORKERS)),
-                "tagging_api_key": str(st.session_state.get("tagging_api_key_input", "")).strip(),
-                "tagging_base_url": normalize_openai_base_url(str(st.session_state.get("tagging_base_url_input", "")).strip() or "https://api.openai.com/v1"),
-                "tagging_model": str(st.session_state.get("tagging_model_input", "")).strip() or "gpt-4o-mini",
-                "tagging_max_workers": int(st.session_state.get("tagging_max_workers_input", 8)),
-                "tagging_requests_per_minute": int(st.session_state.get("tagging_requests_per_minute_input", 1000)),
-                "tagging_enabled": bool(st.session_state.get("tagging_enabled_input", False)),
-            }
-            if not data_to_save["api_key"]:
+            # Load existing profiles first to avoid overwriting unrelated configurations
+            profiles = load_api_profiles(API_PROFILES_PATH)
+            current_profile = profiles[-1] if profiles else {"name": "default"}
+
+            current_profile["provider"] = str(provider_name).strip() or "custom-openai-compatible"
+            current_profile["api_key"] = str(api_key).strip()
+            current_profile["base_url"] = normalize_openai_base_url(str(base_url).strip() or "https://api.openai.com/v1")
+            current_profile["grading_model"] = str(grading_model).strip() or DEFAULT_MODELS["grading_model"]
+            current_profile["config_provider"] = str(config_provider_name).strip() or str(provider_name).strip() or "custom-openai-compatible"
+            current_profile["config_api_key"] = str(config_api_key).strip()
+            current_profile["config_base_url"] = normalize_openai_base_url(str(config_base_url).strip() or "https://api.openai.com/v1")
+            current_profile["config_model"] = str(config_model).strip() or DEFAULT_MODELS["config_model"]
+            current_profile["ocr_model"] = str(grading_model).strip() or DEFAULT_MODELS["grading_model"]
+            current_profile["objective_api_key"] = str(objective_api_key).strip()
+            current_profile["objective_base_url"] = normalize_openai_base_url(str(objective_base_url).strip() or "https://api.openai.com/v1")
+            current_profile["objective_model"] = str(objective_model).strip()
+            current_profile["objective_temperature"] = float(objective_temperature)
+            current_profile["objective_max_tokens"] = int(objective_max_tokens)
+            current_profile["objective_thinking_type"] = str(objective_thinking_type).strip()
+            current_profile["objective_timeout"] = int(objective_timeout)
+            current_profile["objective_enabled"] = bool(objective_enabled)
+            current_profile["objective_batch_size"] = int(objective_batch_size)
+            current_profile["hybrid_major_batch_size"] = int(major_batch_size)
+            current_profile["grading_requests_per_minute"] = int(st.session_state.get("grading_requests_per_minute_input", DEFAULT_GRADING_RPM))
+            current_profile["grading_max_workers"] = int(st.session_state.get("grading_max_workers_input", DEFAULT_FULL_PAPER_WORKERS))
+            current_profile["hybrid_inflight_workers"] = int(st.session_state.get("hybrid_inflight_workers_input", DEFAULT_HYBRID_INFLIGHT_WORKERS))
+            current_profile["precheck_max_workers"] = int(st.session_state.get("precheck_max_workers_input", DEFAULT_PRECHECK_WORKERS))
+
+            # Safely merge tagging configurations only if they are initialized in st.session_state
+            if "tagging_api_key_input" in st.session_state:
+                current_profile["tagging_api_key"] = str(st.session_state.tagging_api_key_input).strip()
+            if "tagging_base_url_input" in st.session_state:
+                current_profile["tagging_base_url"] = normalize_openai_base_url(str(st.session_state.tagging_base_url_input).strip() or "https://api.openai.com/v1")
+            if "tagging_model_input" in st.session_state:
+                current_profile["tagging_model"] = str(st.session_state.tagging_model_input).strip() or "gpt-4o-mini"
+            if "tagging_max_workers_input" in st.session_state:
+                current_profile["tagging_max_workers"] = int(st.session_state.tagging_max_workers_input)
+            if "tagging_requests_per_minute_input" in st.session_state:
+                current_profile["tagging_requests_per_minute"] = int(st.session_state.tagging_requests_per_minute_input)
+            if "tagging_enabled_input" in st.session_state:
+                current_profile["tagging_enabled"] = bool(st.session_state.tagging_enabled_input)
+            if "tagging_thinking_input" in st.session_state:
+                current_profile["tagging_thinking"] = bool(st.session_state.tagging_thinking_input)
+            if "tagging_review_enabled_input" in st.session_state:
+                current_profile["tagging_review_enabled"] = bool(st.session_state.tagging_review_enabled_input)
+            if "tagging_review_api_key_input" in st.session_state:
+                current_profile["tagging_review_api_key"] = str(st.session_state.tagging_review_api_key_input).strip()
+            if "tagging_review_base_url_input" in st.session_state:
+                current_profile["tagging_review_base_url"] = normalize_openai_base_url(str(st.session_state.tagging_review_base_url_input).strip() or "https://api.openai.com/v1")
+            if "tagging_review_model_input" in st.session_state:
+                current_profile["tagging_review_model"] = str(st.session_state.tagging_review_model_input).strip()
+
+            if not current_profile["api_key"]:
                 st.error("请先填写批改 API Key")
-            elif not data_to_save["config_api_key"]:
+            elif not current_profile["config_api_key"]:
                 st.error("请先填写评分标准 API Key")
             else:
-                save_api_profiles(API_PROFILES_PATH, [data_to_save])
+                if not profiles:
+                    profiles = [current_profile]
+                else:
+                    profiles[-1] = current_profile
+                save_api_profiles(API_PROFILES_PATH, profiles)
                 st.session_state["_saved_api_settings_notice"] = True
                 st.success("API 配置已保存")
                 st.rerun()
@@ -398,12 +431,17 @@ def build_llm_settings_from_sidebar() -> LLMSettings | None:
     os.environ["LLM_OBJECTIVE_BATCH_SIZE"] = str(st.session_state.get("objective_batch_size_input", 15))
     os.environ["LLM_HYBRID_MAJOR_BATCH_SIZE"] = str(st.session_state.get("hybrid_major_batch_size_input", 4))
 
-    st.session_state.tagging_enabled = st.session_state.get("tagging_enabled_input", False)
+    st.session_state.tagging_enabled = True
     os.environ["QUESTION_BANK_TAGGING_API_KEY"] = str(st.session_state.get("tagging_api_key_input", ""))
     os.environ["QUESTION_BANK_TAGGING_BASE_URL"] = str(st.session_state.get("tagging_base_url_input", ""))
     os.environ["QUESTION_BANK_TAGGING_MODEL"] = str(st.session_state.get("tagging_model_input", ""))
     os.environ["QUESTION_BANK_TAGGING_MAX_WORKERS"] = str(st.session_state.get("tagging_max_workers_input", 8))
     os.environ["QUESTION_BANK_TAGGING_REQUESTS_PER_MINUTE"] = str(st.session_state.get("tagging_requests_per_minute_input", 1000))
+    os.environ["QUESTION_BANK_TAGGING_THINKING"] = "1" if st.session_state.get("tagging_thinking_input", False) else "0"
+    review_enabled_now = bool(st.session_state.get("tagging_review_enabled_input", False) and str(st.session_state.get("tagging_review_model_input", "")).strip())
+    os.environ["QUESTION_BANK_TAGGING_REVIEW_MODEL"] = str(st.session_state.get("tagging_review_model_input", "")).strip() if review_enabled_now else ""
+    os.environ["QUESTION_BANK_TAGGING_REVIEW_API_KEY"] = str(st.session_state.get("tagging_review_api_key_input", "")).strip() if review_enabled_now else ""
+    os.environ["QUESTION_BANK_TAGGING_REVIEW_BASE_URL"] = str(st.session_state.get("tagging_review_base_url_input", "")).strip() if review_enabled_now else ""
 
     if not data["api_key"]:
         st.sidebar.warning("请先在 API 配置中填写并保存批改 API Key")

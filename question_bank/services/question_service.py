@@ -338,6 +338,10 @@ class QuestionService:
         sort_mode: str | None = None,
     ) -> list[dict[str, Any]]:
         self.initialize_database()
+        if sort_mode == "考频排序":
+            from question_bank.services.question_frequency_service import QuestionFrequencyService
+            QuestionFrequencyService(self.db_path).backfill_all_fingerprints()
+
         joins, where, params = self._build_filter_query(
             question_number=question_number,
             keyword=keyword,
@@ -921,15 +925,52 @@ def _question_order_clause(sort_mode: str | None) -> str:
     if sort_mode == "试题难度":
         return "ORDER BY CAST(q.difficulty AS REAL) DESC, q.created_at DESC, q.id DESC"
     if sort_mode == "考频排序":
-        return """ORDER BY COALESCE((
-            SELECT COUNT(DISTINCT qt2.question_id)
-            FROM question_tags qt1
-            JOIN question_tags qt2 ON qt2.tag_type = qt1.tag_type AND qt2.tag_value = qt1.tag_value
-            JOIN questions q2 ON q2.id = qt2.question_id
-            WHERE qt1.question_id = q.id
-              AND qt1.tag_type IN ('knowledge_point', 'method', 'model')
+        return """ORDER BY (COALESCE((
+            SELECT COUNT(*)
+            FROM question_fingerprints qf2
+            JOIN questions q2 ON q2.id = qf2.question_id
+            JOIN papers p2 ON p2.id = q2.paper_id
+            WHERE qf2.base_fingerprint = (
+                SELECT base_fingerprint FROM question_fingerprints WHERE question_id = q.id
+            )
               AND q2.is_deleted = 0
-        ), 0) DESC, q.created_at DESC, q.id DESC"""
+              AND COALESCE(p2.import_status, '') <> 'deleted'
+              AND (p.grade IS NULL OR p2.grade = p.grade)
+              AND (
+                  p.exam_type IS NULL OR p2.exam_type IS NULL OR
+                  (p.exam_type LIKE '%中考%' AND p2.exam_type LIKE '%中考%')
+                  OR (
+                      p.exam_type NOT LIKE '%中考%'
+                      AND p2.exam_type NOT LIKE '%中考%'
+                      AND (
+                          (p.exam_type LIKE '%期中%' AND p2.exam_type LIKE '%期中%')
+                          OR (p.exam_type LIKE '%期末%' AND p2.exam_type LIKE '%期末%')
+                          OR (p.exam_type NOT LIKE '%期中%' AND p.exam_type NOT LIKE '%期末%'
+                              AND p2.exam_type NOT LIKE '%期中%' AND p2.exam_type NOT LIKE '%期末%')
+                      )
+                      AND (p.semester IS NULL OR COALESCE(p2.semester, '') = COALESCE(p.semester, ''))
+                  )
+              )
+        ), 0) * (
+            CASE (SELECT COUNT(*) FROM question_tags WHERE question_id = q.id)
+                WHEN 0 THEN 1.0
+                WHEN 1 THEN 1.0
+                WHEN 2 THEN 1.0
+                WHEN 3 THEN 1.0
+                WHEN 4 THEN 1.0
+                WHEN 5 THEN 1.0
+                WHEN 6 THEN 0.85
+                WHEN 7 THEN 0.7225
+                WHEN 8 THEN 0.614125
+                WHEN 9 THEN 0.52200625
+                WHEN 10 THEN 0.44370531
+                WHEN 11 THEN 0.37714952
+                WHEN 12 THEN 0.32057709
+                WHEN 13 THEN 0.27249053
+                WHEN 14 THEN 0.23161695
+                ELSE 0.19687440
+            END
+        )) DESC, q.created_at DESC, q.id DESC"""
     return "ORDER BY q.created_at DESC, q.id DESC"
 
 
