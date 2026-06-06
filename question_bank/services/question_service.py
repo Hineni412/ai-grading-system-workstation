@@ -920,6 +920,16 @@ def _normalized_range(value: tuple[int, int]) -> tuple[int, int]:
 def _question_order_clause(sort_mode: str | None) -> str:
     if sort_mode == "试题难度":
         return "ORDER BY CAST(q.difficulty AS REAL) DESC, q.created_at DESC, q.id DESC"
+    if sort_mode == "考频排序":
+        return """ORDER BY COALESCE((
+            SELECT COUNT(DISTINCT qt2.question_id)
+            FROM question_tags qt1
+            JOIN question_tags qt2 ON qt2.tag_type = qt1.tag_type AND qt2.tag_value = qt1.tag_value
+            JOIN questions q2 ON q2.id = qt2.question_id
+            WHERE qt1.question_id = q.id
+              AND qt1.tag_type IN ('knowledge_point', 'method', 'model')
+              AND q2.is_deleted = 0
+        ), 0) DESC, q.created_at DESC, q.id DESC"""
     return "ORDER BY q.created_at DESC, q.id DESC"
 
 

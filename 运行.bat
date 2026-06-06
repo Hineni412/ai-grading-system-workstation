@@ -14,7 +14,7 @@ if not exist "%PYTHON_EXE%" (
 set "AI_GRADING_DATA_DIR=%~dp0user_data"
 set "PYTHONUTF8=1"
 set "STREAMLIT_BROWSER_GATHER_USAGE_STATS=false"
-set "STREAMLIT_SERVER_HEADLESS=false"
+set "STREAMLIT_SERVER_HEADLESS=true"
 if "%PORT%"=="" set "PORT=8501"
 
 echo AI阅卷系统 工作机版 v1.5.0
