@@ -20,6 +20,24 @@ def test_question_schema_has_reason_column_and_migration_file(tmp_path: Path) ->
     assert Path("migrations/question_bank/003_add_question_reason.sql").exists()
 
 
+def test_initialize_database_backfills_semester_from_paper_title(tmp_path: Path) -> None:
+    db_path = tmp_path / "question_bank.db"
+    service = QuestionService(db_path)
+    service.initialize_database()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO papers (title, exam_type, grade) VALUES (?, ?, ?)",
+            ("深圳市七年级（下）期末数学试卷", "期末", "七年级"),
+        )
+        conn.commit()
+
+    service.initialize_database()
+
+    with sqlite3.connect(db_path) as conn:
+        semester = conn.execute("SELECT semester FROM papers").fetchone()[0]
+    assert semester == "下学期"
+
+
 def test_save_tag_analysis_persists_reason(tmp_path: Path) -> None:
     service = QuestionService(tmp_path / "question_bank.db")
     question_id = service.add_question(
@@ -36,7 +54,6 @@ def test_save_tag_analysis_persists_reason(tmp_path: Path) -> None:
             "ability_tags": ["运算求解"],
             "math_model_tags": ["函数模型"],
             "difficulty": 6,
-            "typicality": 8,
             "error_prone_points": ["条件识别不完整"],
             "prerequisite_points": ["代数式"],
             "textbook_chapter": "函数",

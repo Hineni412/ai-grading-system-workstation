@@ -19,6 +19,11 @@ from question_bank.services.assembly_record_service import (
     list_assembly_records,
 )
 from question_bank.services.question_service import QuestionService
+from question_bank.services.question_frequency_service import (
+    FrequencyMetrics,
+    QuestionFrequencyService,
+    frequency_summary,
+)
 from question_bank.services.ai_tagging_service import CURRICULUM_CHAPTERS
 from question_bank.services.assembly_basket_state import (
     merge_question_ids,
@@ -381,7 +386,8 @@ def _render_premium_question_card(
     question: dict[str, Any], 
     preview_mode: str, 
     show_basket_toggle: bool = False,
-    qid_for_key: int | None = None
+    qid_for_key: int | None = None,
+    frequency: FrequencyMetrics | None = None,
 ) -> None:
     is_teacher = "教师" in preview_mode
     qid = int(question["id"])
@@ -406,13 +412,7 @@ def _render_premium_question_card(
             badge_label = f"难 (难度 {diff_val:.1f})"
         badges_html += f'<span class="{badge_class}">{badge_label}</span>'
         
-    typicality_val = 0
-    try:
-        typicality_val = float(question.get("typicality") or 0)
-    except ValueError:
-        pass
-    if typicality_val > 0:
-        badges_html += f'<span class="qb-badge qb-badge-medium">典型度 {typicality_val:.0f}</span>'
+    badges_html += _frequency_badge_html(frequency or FrequencyMetrics(available=False))
 
     # Get clean rich text
     q_text = question.get("question_text") or ""
@@ -907,6 +907,7 @@ st.title("智能组卷")
 
 service = QuestionService(question_bank_db_path())
 service.initialize_database()
+frequency_service = QuestionFrequencyService(service.db_path)
 _sync_basket_from_query()
 _render_assembly_records(service)
 _render_last_export_download()
@@ -931,7 +932,6 @@ def _reset_assembly_filters() -> None:
         "assembly_smart_filter_method",
         "assembly_smart_filter_model",
         "assembly_smart_filter_grade",
-        "assembly_smart_filter_typicality",
         "assembly_smart_filter_keyword",
         "assembly_curriculum_chapter_filter",
     ]
@@ -998,8 +998,6 @@ def _render_statistics_panel(questions: list[dict[str, Any]]) -> None:
 def _sort_question_results(questions: list[dict[str, Any]], sort_mode: str) -> list[dict[str, Any]]:
     if sort_mode == "试题难度":
         return sorted(questions, key=lambda item: _numeric_value(item.get("difficulty")), reverse=True)
-    if sort_mode == "典型程度":
-        return sorted(questions, key=lambda item: _numeric_value(item.get("typicality")), reverse=True)
     if sort_mode == "题库新增":
         return sorted(questions, key=lambda item: str(item.get("created_at") or ""), reverse=True)
     return questions
@@ -1010,6 +1008,16 @@ def _numeric_value(value: object) -> float:
         return float(value or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _frequency_badge_html(metrics: FrequencyMetrics) -> str:
+    summary = frequency_summary(metrics)
+    if not summary:
+        return ""
+    return (
+        '<span class="qb-badge qb-badge-medium" title="考频仅统计期中、期末和中考">'
+        f"{html.escape(summary)}</span>"
+    )
 
 
 def _curriculum_chapter_groups() -> dict[str, list[str]]:
@@ -1132,17 +1140,15 @@ def _render_question_selection_page(service: QuestionService) -> None:
         )
         sort_mode = _single_filter_row(
             "排序",
-            ["综合排序", "题库新增", "试题难度", "典型程度"],
+            ["综合排序", "题库新增", "试题难度"],
             key="assembly_smart_filter_sort",
         )
 
     # 4. Secondary filters
-    bottom_cols = st.columns([1.2, 1.8, 3.0])
+    bottom_cols = st.columns([1.2, 3.0])
     with bottom_cols[0]:
         selected_grade = st.selectbox("年级", ["全部", *grade_options], key="assembly_smart_filter_grade")
     with bottom_cols[1]:
-        typicality_range = st.slider("典型度", min_value=1, max_value=10, value=(1, 10), step=1, key="assembly_smart_filter_typicality")
-    with bottom_cols[2]:
         keyword_filter = st.text_input("关键词", placeholder="输入试题关键词", key="assembly_smart_filter_keyword")
 
     # 5. Build selected tags dictionary
@@ -1163,7 +1169,6 @@ def _render_question_selection_page(service: QuestionService) -> None:
     filters = {
         "keyword": keyword_filter or None,
         "difficulty_range": _difficulty_range_for_label(selected_difficulty_label),
-        "typicality_range": typicality_range if typicality_range != (1, 10) else None,
         "question_types": question_types or None,
         "years": [selected_years] if selected_years else None,
         "grades": None if selected_grade == "全部" else [selected_grade],
@@ -1190,6 +1195,9 @@ def _render_question_selection_page(service: QuestionService) -> None:
     st.markdown(f"**找到 {total_count} 道匹配的试题**")
     
     if matched_qs:
+        frequency_metrics = frequency_service.metrics_for_questions(
+            [int(question["id"]) for question in matched_qs]
+        )
         # Action controls for page actions & random sampling
         action_cols = st.columns([2.5, 1.2, 2.5, 3.8])
         with action_cols[0]:
@@ -1222,7 +1230,8 @@ def _render_question_selection_page(service: QuestionService) -> None:
                 question=mq, 
                 preview_mode="教师视角 (显示解析、知识点与难度)", 
                 show_basket_toggle=True,
-                qid_for_key=mq["id"]
+                qid_for_key=mq["id"],
+                frequency=frequency_metrics.get(int(mq["id"])),
             )
             st.write("")
 
@@ -1242,7 +1251,7 @@ def _render_question_selection_page(service: QuestionService) -> None:
                     st.session_state["assembly_select_page"] = current_page + 1
                     st.rerun()
     else:
-        st.info("当前筛选条件下暂无题目。可以放宽关键词、难度、典型度或标签筛选。")
+        st.info("当前筛选条件下暂无题目。可以放宽关键词、难度或标签筛选。")
 
     # 9. Real-time Floating Shopping Cart Widget
     basket_ids = _basket_ids()
@@ -1330,6 +1339,7 @@ def _render_question_composition_page(service: QuestionService) -> None:
     questions = [question for question in questions if question is not None]
     question_by_id = {int(question["id"]): question for question in questions}
     ordered_ids = [question_id for question_id in ordered_ids if question_id in question_by_id]
+    frequency_metrics = frequency_service.metrics_for_questions(ordered_ids)
 
     _render_statistics_panel(questions)
 
@@ -1587,7 +1597,13 @@ def _render_question_composition_page(service: QuestionService) -> None:
             if layout_mode == "顺序编排":
                 for index, question_id in enumerate(ordered_ids, start=1):
                     question = question_by_id[question_id]
-                    _render_premium_question_card(index, question, preview_mode, show_basket_toggle=False)
+                    _render_premium_question_card(
+                        index,
+                        question,
+                        preview_mode,
+                        show_basket_toggle=False,
+                        frequency=frequency_metrics.get(question_id),
+                    )
                     st.write("")
             else:
                 groups = {"选择题": [], "填空题": [], "解答题": []}
@@ -1602,7 +1618,13 @@ def _render_question_composition_page(service: QuestionService) -> None:
                         continue
                     st.markdown(f"#### {gname}")
                     for q in gqs:
-                        _render_premium_question_card(overall_idx, q, preview_mode, show_basket_toggle=False)
+                        _render_premium_question_card(
+                            overall_idx,
+                            q,
+                            preview_mode,
+                            show_basket_toggle=False,
+                            frequency=frequency_metrics.get(int(q["id"])),
+                        )
                         st.write("")
                         overall_idx += 1
 

@@ -13,6 +13,8 @@ from typing import Any
 from docx import Document
 from docx.shared import Inches
 
+from question_bank.services.question_frequency_service import QuestionFrequencyService, frequency_summary
+
 
 STAGE_ORDER = ["基础回补", "方法形成", "典型模型", "综合提升", "压轴迁移"]
 STAGE_TITLES = {
@@ -38,7 +40,7 @@ class ExportQuestion:
     page_range: str = ""
     image_paths: list[str] = field(default_factory=list)
     difficulty: str = ""
-    typicality: str = ""
+    frequency: str = ""
     knowledge_points: list[str] = field(default_factory=list)
     method_tags: list[str] = field(default_factory=list)
     error_prone_points: list[str] = field(default_factory=list)
@@ -115,6 +117,7 @@ def load_export_questions(
 
     details = _load_question_details(db_path, question_ids)
     tags = _load_question_tags(db_path, question_ids)
+    frequencies = QuestionFrequencyService(db_path).metrics_for_questions(question_ids)
     result: list[ExportQuestion] = []
     for recommendation in recommendation_list:
         question_id = int(recommendation.get("question_id") or 0)
@@ -132,7 +135,7 @@ def load_export_questions(
                 page_range=_text(_row_value(detail, "page_range")),
                 image_paths=_parse_image_paths(_row_value(detail, "image_paths")),
                 difficulty=_text(_row_value(detail, "difficulty") or recommendation.get("difficulty")),
-                typicality=_text(_row_value(detail, "typicality") or recommendation.get("typicality")),
+                frequency=frequency_summary(frequencies.get(question_id)),
                 knowledge_points=_unique_strings(
                     [*tag_map.get("knowledge_point", []), *recommendation.get("knowledge_points", [])]
                 ),
@@ -183,7 +186,7 @@ def _add_question_to_docx(document: Document, item: ExportQuestion, *, include_t
         document.add_paragraph(f"知识点：{_join_or_dash(item.knowledge_points)}")
         document.add_paragraph(f"方法标签：{_join_or_dash(item.method_tags)}")
         document.add_paragraph(f"难度：{item.difficulty or '-'}")
-        document.add_paragraph(f"典型程度：{item.typicality or '-'}")
+        document.add_paragraph(f"考频：{item.frequency or '仅期中、期末、中考试题计算'}")
         document.add_paragraph(f"推荐原因：{item.recommend_reason or '-'}")
         document.add_paragraph(f"教学提示：{teaching_tip(item)}")
     else:
@@ -234,7 +237,6 @@ def _load_question_details(db_path: Path, question_ids: list[int]) -> dict[int, 
                 q.page_range,
                 q.image_paths,
                 q.difficulty,
-                q.typicality,
                 p.title AS paper_title,
                 p.source_file AS paper_source_file,
                 p.year,

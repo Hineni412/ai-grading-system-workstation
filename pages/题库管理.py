@@ -29,6 +29,11 @@ from question_bank.services.ai_tagging_service import (
     is_auto_saveable_result,
 )
 from question_bank.services.question_service import QuestionService, has_complete_analysis_tags
+from question_bank.services.question_frequency_service import (
+    FrequencyMetrics,
+    QuestionFrequencyService,
+    frequency_summary,
+)
 from question_bank.services.question_preview_display import (
     PreviewDensity,
     image_display_width,
@@ -122,6 +127,8 @@ def _scan_row(item: ScannedPaper) -> dict[str, Any]:
         "文件": Path(item.source_file).name,
         "格式": item.file_type.upper(),
         "年份": metadata.year or "",
+        "省份": metadata.province or "",
+        "城市": metadata.city or "",
         "地区": metadata.district or "",
         "考试类型": metadata.exam_type or "",
         "年级": metadata.grade or "",
@@ -136,6 +143,8 @@ def _row_to_scanned_paper(row: dict[str, Any]) -> ScannedPaper:
         file_type=str(row.get("格式") or "").lower(),
         metadata=PaperMetadata(
             year=_cell_text(row.get("年份")),
+            province=_cell_text(row.get("省份")),
+            city=_cell_text(row.get("城市")),
             district=_cell_text(row.get("地区")),
             exam_type=_cell_text(row.get("考试类型")),
             grade=_cell_text(row.get("年级")),
@@ -292,19 +301,23 @@ def _render_import_dialog(service: QuestionService, raw_papers_dir: Path) -> Non
         },
     )
 
-    st.caption("系统会优先使用文件名推断的年份、地区、考试类型、年级和学期；你也可以直接在表格里修改。")
-    batch_cols = st.columns([1, 1, 1, 1, 1, 1])
+    st.caption("系统会优先使用文件名推断的年份、省份、城市、地区、考试类型、年级和学期；你也可以直接在表格里修改。")
+    batch_cols = st.columns([1, 1, 1, 1, 1, 1, 1, 1])
     with batch_cols[0]:
         batch_year = st.text_input("批量年份", placeholder="2025")
     with batch_cols[1]:
-        batch_region = st.text_input("批量地区", placeholder="南山区")
+        batch_province = st.text_input("批量省份", placeholder="广东省")
     with batch_cols[2]:
-        batch_exam_type = st.text_input("批量考试类型", placeholder="期中 / 期末 / 中考")
+        batch_city = st.text_input("批量城市", placeholder="深圳市")
     with batch_cols[3]:
-        batch_grade = st.text_input("批量年级", placeholder="九年级")
+        batch_region = st.text_input("批量地区", placeholder="南山区")
     with batch_cols[4]:
-        batch_semester = st.text_input("批量学期", placeholder="上学期")
+        batch_exam_type = st.text_input("批量考试类型", placeholder="期中 / 期末 / 中考")
     with batch_cols[5]:
+        batch_grade = st.text_input("批量年级", placeholder="九年级")
+    with batch_cols[6]:
+        batch_semester = st.text_input("批量学期", placeholder="上学期")
+    with batch_cols[7]:
         st.caption(" ")
         apply_metadata = st.button("应用到已勾选")
 
@@ -323,6 +336,8 @@ def _render_import_dialog(service: QuestionService, raw_papers_dir: Path) -> Non
         updated_rows = _apply_batch_metadata(
             edited_rows,
             year=batch_year,
+            province=batch_province,
+            city=batch_city,
             district=batch_region,
             exam_type=batch_exam_type,
             grade=batch_grade,
@@ -383,6 +398,8 @@ def _apply_batch_metadata(
     rows: list[dict[str, Any]],
     *,
     year: str,
+    province: str,
+    city: str,
     district: str,
     exam_type: str,
     grade: str,
@@ -390,6 +407,8 @@ def _apply_batch_metadata(
 ) -> list[dict[str, Any]]:
     replacements = {
         "年份": _cell_text(year),
+        "省份": _cell_text(province),
+        "城市": _cell_text(city),
         "地区": _cell_text(district),
         "考试类型": _cell_text(exam_type),
         "年级": _cell_text(grade),
@@ -526,6 +545,8 @@ def _render_paper_list(service: QuestionService) -> None:
             "ID": paper_id,
             "标题": item.get("title") or "",
             "年份": item.get("year") or "",
+            "省份": item.get("province") or "",
+            "城市": item.get("city") or "",
             "地区": item.get("district") or "",
             "考试类型": item.get("exam_type") or "",
             "年级": item.get("grade") or "",
@@ -539,7 +560,7 @@ def _render_paper_list(service: QuestionService) -> None:
         key="qb_paper_list_editor",
         width="stretch",
         hide_index=True,
-        disabled=["ID", "标题", "年份", "地区", "考试类型", "年级", "学期", "标签进度", "本地文件"],
+        disabled=["ID", "标题", "年份", "省份", "城市", "地区", "考试类型", "年级", "学期", "标签进度", "本地文件"],
         column_config={"选择": st.column_config.CheckboxColumn("选择", help="勾选要进行批量操作的试卷。")},
     )
 
@@ -661,7 +682,7 @@ def _render_ai_tag_results(service: QuestionService, questions: list[dict], allo
                     key=f"qb_ai_prerequisites_{item_id}",
                 )
 
-            meta_cols = st.columns([1, 1, 1, 1])
+            meta_cols = st.columns([1, 1, 1])
             with meta_cols[0]:
                 difficulty_score = st.number_input(
                     "难度",
@@ -672,21 +693,12 @@ def _render_ai_tag_results(service: QuestionService, questions: list[dict], allo
                     key=f"qb_ai_difficulty_{item_id}",
                 )
             with meta_cols[1]:
-                typicality_score = st.number_input(
-                    "典型度（AI判断）",
-                    min_value=1,
-                    max_value=10,
-                    step=1,
-                    value=original_analysis.typicality,
-                    key=f"qb_ai_typicality_{item_id}",
-                )
-            with meta_cols[2]:
                 teaching_stage = st.text_input(
                     "教学阶段",
                     value=original_analysis.teaching_stage,
                     key=f"qb_ai_stage_{item_id}",
                 )
-            with meta_cols[3]:
+            with meta_cols[2]:
                 student_level = st.selectbox(
                     "适合层次",
                     options=_ensure_options(STUDENT_LEVELS, [original_analysis.suitable_student_level]),
@@ -706,7 +718,6 @@ def _render_ai_tag_results(service: QuestionService, questions: list[dict], allo
                 height=90,
                 key=f"qb_ai_reason_{item_id}",
             )
-            st.caption("典型度当前保留 AI 判断；本地题库频次算法先不自动覆盖，后续可单独设计权重。")
             if st.button("保存标签", key=f"qb_ai_save_{item_id}", type="primary"):
                 accepted_analysis = TagAnalysis.from_dict(
                     {
@@ -716,7 +727,6 @@ def _render_ai_tag_results(service: QuestionService, questions: list[dict], allo
                         "ability_tags": ability_tags,
                         "math_model_tags": model_tags,
                         "difficulty": difficulty_score,
-                        "typicality": typicality_score,
                         "error_prone_points": error_points,
                         "prerequisite_points": prerequisite_points,
                         "textbook_chapter": textbook_chapter,
@@ -810,7 +820,6 @@ def _edit_question_dialog(service: QuestionService, question_id: int):
                     page_range=q.get("page_range"),
                     image_paths=q.get("image_paths", []),
                     difficulty=q.get("difficulty"),
-                    typicality=q.get("typicality"),
                     needs_review=bool(q.get("needs_review")),
                     has_images=bool(q.get("has_images")),
                     needs_image_review=bool(q.get("needs_image_review")),
@@ -1516,15 +1525,13 @@ def _question_filter_panel(service: QuestionService, selected_chapter: str) -> t
     # 6. 排序
     sort_mode = _single_filter_row(
         "排序",
-        ["综合排序", "题库新增", "试题难度", "典型程度"],
+        ["综合排序", "题库新增", "试题难度"],
         key="qb_filter_sort",
     )
 
     # Bottom layout
-    bottom_cols = st.columns([1.2, 1.8, 1.8, 1.8, 1.0, 1.0])
+    bottom_cols = st.columns([1.8, 1.8, 1.8, 1.0, 1.0])
     with bottom_cols[0]:
-        typicality_range = st.slider("典型度", min_value=1, max_value=10, value=(1, 10), step=1, key="qb_filter_typicality")
-    with bottom_cols[1]:
         chapter_opts = ["全部", *CURRICULUM_CHAPTERS]
         current_ch = st.session_state.get("qb_curriculum_chapter_filter") or "全部"
         ch_idx = chapter_opts.index(current_ch) if current_ch in chapter_opts else 0
@@ -1533,7 +1540,7 @@ def _question_filter_panel(service: QuestionService, selected_chapter: str) -> t
             st.session_state["qb_curriculum_chapter_filter"] = ""
         else:
             st.session_state["qb_curriculum_chapter_filter"] = selected_ch
-    with bottom_cols[2]:
+    with bottom_cols[1]:
         papers = service.list_papers()
         paper_names = ["全部"]
         paper_id_map = {}
@@ -1543,14 +1550,14 @@ def _question_filter_panel(service: QuestionService, selected_chapter: str) -> t
             paper_id_map[name] = p["id"]
         selected_paper_name = st.selectbox("按试卷筛选", paper_names, key="qb_filter_paper")
         selected_paper_id = paper_id_map.get(selected_paper_name)
-    with bottom_cols[3]:
+    with bottom_cols[2]:
         keyword_filter = st.text_input("关键词", placeholder="输入试题关键词", key="qb_filter_keyword")
-    with bottom_cols[4]:
+    with bottom_cols[3]:
         st.caption(" ")
         if st.button("显示筛选题目", type="primary", key="qb_apply_question_filters", use_container_width=True):
             st.session_state[SHOW_FILTERED_QUESTIONS_KEY] = True
             st.rerun()
-    with bottom_cols[5]:
+    with bottom_cols[4]:
         st.caption(" ")
         if st.button("隐藏题目", key="qb_hide_question_results", use_container_width=True):
             st.session_state[SHOW_FILTERED_QUESTIONS_KEY] = False
@@ -1564,7 +1571,6 @@ def _question_filter_panel(service: QuestionService, selected_chapter: str) -> t
     filters: dict[str, Any] = {
         "keyword": keyword_filter or None,
         "difficulty_range": _difficulty_range_for_label(selected_difficulty_label),
-        "typicality_range": typicality_range if typicality_range != (1, 10) else None,
         "question_types": question_types or None,
         "years": [selected_years] if selected_years else None,
         "exam_types": [selected_exam_types] if selected_exam_types else None,
@@ -1701,8 +1707,6 @@ def _question_types_for_label(label: str, raw_options: list[str]) -> list[str]:
 def _sort_question_results(questions: list[dict[str, Any]], sort_mode: str) -> list[dict[str, Any]]:
     if sort_mode == "试题难度":
         return sorted(questions, key=lambda item: _numeric_value(item.get("difficulty")), reverse=True)
-    if sort_mode == "典型程度":
-        return sorted(questions, key=lambda item: _numeric_value(item.get("typicality")), reverse=True)
     if sort_mode == "题库新增":
         return sorted(questions, key=lambda item: str(item.get("created_at") or ""), reverse=True)
     return questions
@@ -1713,6 +1717,16 @@ def _numeric_value(value: object) -> float:
         return float(value or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _frequency_badge_html(metrics: FrequencyMetrics) -> str:
+    summary = frequency_summary(metrics)
+    if not summary:
+        return ""
+    return (
+        '<span class="qb-badge qb-badge-medium" title="考频仅统计期中、期末和中考">'
+        f"{html.escape(summary)}</span>"
+    )
 
 
 def _render_ai_tagging_summary() -> None:
@@ -1912,18 +1926,14 @@ def _clear_basket() -> None:
 
 def _render_questions(service: QuestionService) -> None:
     st.subheader("题目列表")
-    filter_cols = st.columns([2, 1.2, 1.2])
+    filter_cols = st.columns([2, 1.2])
     with filter_cols[0]:
         keyword_filter = st.text_input("按关键词筛选", key="qb_keyword_filter")
     with filter_cols[1]:
         difficulty_range = st.slider("难度区间", min_value=1, max_value=10, value=(1, 10), step=1)
-    with filter_cols[2]:
-        typicality_range = st.slider("典型度区间", min_value=1, max_value=10, value=(1, 10), step=1)
-
     questions = service.query_questions(
         keyword=keyword_filter or None,
         difficulty_range=difficulty_range if difficulty_range != (1, 10) else None,
-        typicality_range=typicality_range if typicality_range != (1, 10) else None,
     )
     if not questions:
         st.info("当前筛选条件下暂无题目。")
@@ -1950,7 +1960,6 @@ def _render_questions(service: QuestionService) -> None:
             "来源": _source_label(item),
             "题干摘要": _short_text(item.get("question_text"), 70),
             "难度": item.get("difficulty") or "",
-            "典型度": item.get("typicality") or "",
             "标签状态": _tag_status(item),
         }
         for item in questions
@@ -1960,7 +1969,7 @@ def _render_questions(service: QuestionService) -> None:
         key="qb_ai_selection_editor",
         width="stretch",
         hide_index=True,
-        disabled=["ID", "来源", "题干摘要", "难度", "典型度", "标签状态"],
+        disabled=["ID", "来源", "题干摘要", "难度", "标签状态"],
         column_config={"分析": st.column_config.CheckboxColumn("分析")},
     )
     selected_question_ids = [int(row["ID"]) for row in edited_selection if bool(row.get("分析"))]
@@ -1993,7 +2002,7 @@ def _render_questions(service: QuestionService) -> None:
     _render_ai_tag_results(service, questions, allow_manual_overwrite)
 
     _render_filter_summary_popover(questions)
-    _render_question_cards(questions)
+    _render_question_cards(service, questions)
 
 
 def _source_label(item: dict[str, Any]) -> str:
@@ -2016,7 +2025,6 @@ def _render_filter_summary_popover(questions: list[dict]) -> None:
                         "来源": _source_label(item),
                         "题型": item.get("question_type") or "",
                         "难度": item.get("difficulty") or "",
-                        "典型度": item.get("typicality") or "",
                         "标签状态": _tag_status(item),
                     }
                     for item in questions
@@ -2034,15 +2042,32 @@ def _render_question_cards(
     preview_mode: str = "教师视角 (显示解析与难度)",
 ) -> None:
     st.markdown("#### 题目详情")
+    frequencies = QuestionFrequencyService(service.db_path).metrics_for_questions(
+        [int(item["id"]) for item in questions]
+    )
     for order, item in enumerate(questions, start=1):
-        _render_premium_question_card_qb(order + offset, item, preview_mode, service)
+        _render_premium_question_card_qb(
+            order + offset,
+            item,
+            preview_mode,
+            service,
+            frequency=frequencies.get(int(item["id"])),
+        )
         st.divider()
 
 
-def _render_premium_question_card_qb(index: int, question: dict[str, Any], preview_mode: str, service: QuestionService) -> None:
+def _render_premium_question_card_qb(
+    index: int,
+    question: dict[str, Any],
+    preview_mode: str,
+    service: QuestionService,
+    *,
+    frequency: FrequencyMetrics | None = None,
+) -> None:
     is_teacher = "教师" in preview_mode
     q_id = int(question["id"])
     density, image_scale = _preview_display_settings()
+    frequency = frequency or FrequencyMetrics(available=False)
     
     # 1. Action columns in header (Outside A4 card, to look crisp)
     header_cols = st.columns([5.0, 1.0])
@@ -2067,13 +2092,7 @@ def _render_premium_question_card_qb(index: int, question: dict[str, Any], previ
                     badge_label = f"难 (难度 {diff_val:.1f})"
                 badges_html += f'<span class="{badge_class}">{badge_label}</span>'
                 
-            typ_val = 0
-            try:
-                typ_val = float(question.get("typicality") or 0)
-            except ValueError:
-                pass
-            if typ_val > 0:
-                badges_html += f'<span class="qb-badge qb-badge-medium">典型度 {typ_val:.0f}</span>'
+            badges_html += _frequency_badge_html(frequency)
                 
         source_label = html.escape(_source_label(question))
         st.markdown(f'<div class="qb-paper-header" style="border:none; margin:0; padding:0;"><span class="qb-paper-title-tag">第 {index} 题 · {source_label}</span><div>{badges_html}</div></div>', unsafe_allow_html=True)
@@ -2159,18 +2178,10 @@ def _render_premium_question_card_qb(index: int, question: dict[str, Any], previ
                     diff_text = f"难 ({diff_val:.1f})"
                     diff_class = "qb-badge-hard"
                     
-            # 3. 典型度
-            typ_val = 0
-            try:
-                typ_val = float(question.get("typicality") or 0)
-            except ValueError:
-                pass
-                
             attrs_html = f"""<div style="display: flex; flex-wrap: wrap; gap: 4px; align-items: center;">
 <span class="qb-badge qb-badge-gray" style="margin-bottom: 4px;">{html.escape(q_type)}</span>
 <span class="qb-badge {diff_class}" style="margin-bottom: 4px;">{diff_text}</span>"""
-            if typ_val > 0:
-                attrs_html += f'<span class="qb-badge qb-badge-medium" style="margin-bottom: 4px;">典型度 {typ_val:.0f}</span>'
+            attrs_html += _frequency_badge_html(frequency)
             attrs_html += "</div>"
             st.markdown(attrs_html, unsafe_allow_html=True)
             
@@ -2296,7 +2307,7 @@ def _render_premium_question_card_qb(index: int, question: dict[str, Any], previ
                     key=f"qb_card_prerequisites_{q_id}",
                 )
                 
-            score_cols = st.columns([1, 1, 1, 1])
+            score_cols = st.columns([1, 1, 1])
             with score_cols[0]:
                 difficulty_score = st.number_input(
                     "难度",
@@ -2307,21 +2318,12 @@ def _render_premium_question_card_qb(index: int, question: dict[str, Any], previ
                     key=f"qb_card_difficulty_{q_id}",
                 )
             with score_cols[1]:
-                typicality_score = st.number_input(
-                    "典型度",
-                    min_value=1,
-                    max_value=10,
-                    value=analysis.typicality,
-                    step=1,
-                    key=f"qb_card_typicality_{q_id}",
-                )
-            with score_cols[2]:
                 teaching_stage = st.text_input(
                     "教学阶段",
                     value=analysis.teaching_stage,
                     key=f"qb_card_stage_{q_id}",
                 )
-            with score_cols[3]:
+            with score_cols[2]:
                 level_options = _ensure_options(STUDENT_LEVELS, [analysis.suitable_student_level])
                 student_level = st.selectbox(
                     "适合层次",
@@ -2354,7 +2356,6 @@ def _render_premium_question_card_qb(index: int, question: dict[str, Any], previ
                             "ability_tags": ability_tags,
                             "math_model_tags": model_tags,
                             "difficulty": difficulty_score,
-                            "typicality": typicality_score,
                             "error_prone_points": error_points,
                             "prerequisite_points": prerequisite_points,
                             "textbook_chapter": textbook_chapter,
@@ -2528,7 +2529,7 @@ def _render_tag_panel(item: dict[str, Any]) -> None:
                 key=f"qb_card_prerequisites_{item['id']}",
             )
 
-        score_cols = st.columns([1, 1, 1, 1])
+        score_cols = st.columns([1, 1, 1])
         with score_cols[0]:
             difficulty_score = st.number_input(
                 "难度",
@@ -2539,21 +2540,12 @@ def _render_tag_panel(item: dict[str, Any]) -> None:
                 key=f"qb_card_difficulty_{item['id']}",
             )
         with score_cols[1]:
-            typicality_score = st.number_input(
-                "典型度",
-                min_value=1,
-                max_value=10,
-                value=analysis.typicality,
-                step=1,
-                key=f"qb_card_typicality_{item['id']}",
-            )
-        with score_cols[2]:
             teaching_stage = st.text_input(
                 "教学阶段",
                 value=analysis.teaching_stage,
                 key=f"qb_card_stage_{item['id']}",
             )
-        with score_cols[3]:
+        with score_cols[2]:
             level_options = _ensure_options(STUDENT_LEVELS, [analysis.suitable_student_level])
             student_level = st.selectbox(
                 "适合层次",
@@ -2576,7 +2568,6 @@ def _render_tag_panel(item: dict[str, Any]) -> None:
                     "ability_tags": ability_tags,
                     "math_model_tags": model_tags,
                     "difficulty": difficulty_score,
-                    "typicality": typicality_score,
                     "error_prone_points": error_points,
                     "prerequisite_points": prerequisite_points,
                     "textbook_chapter": textbook_chapter,
@@ -2630,7 +2621,6 @@ def _analysis_from_question(item: dict[str, Any]) -> TagAnalysis:
             "ability_tags": grouped.get("ability", []),
             "math_model_tags": grouped.get("model", []),
             "difficulty": item.get("difficulty") or 1,
-            "typicality": item.get("typicality") or 1,
             "error_prone_points": grouped.get("error_type", []),
             "prerequisite_points": grouped.get("prerequisite", []),
             "textbook_chapter": _first_tag(grouped, "exam_scope"),

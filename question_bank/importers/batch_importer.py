@@ -72,6 +72,8 @@ class ScannedPaper:
 @dataclass(frozen=True)
 class PaperMetadata:
     year: str | None = None
+    province: str | None = None
+    city: str | None = None
     district: str | None = None
     exam_type: str | None = None
     grade: str | None = None
@@ -236,12 +238,16 @@ def infer_metadata_from_filename(filename: str) -> PaperMetadata:
     text = Path(filename).stem
     year_match = re.search(r"(20\d{2})", text)
     year = year_match.group(1) if year_match else None
+    province = _infer_province(text)
+    city = _infer_city(text)
     district = _infer_district(text)
     exam_type = _infer_exam_type(text)
-    grade = _infer_grade(text)
+    grade = _infer_grade(text) or ("九年级" if exam_type == "中考" else None)
     semester = _infer_semester(text)
     return PaperMetadata(
         year=year,
+        province=province,
+        city=city,
         district=district,
         exam_type=exam_type,
         grade=grade,
@@ -297,14 +303,16 @@ def _import_scanned_paper(
         paper_cursor = conn.execute(
             """
             INSERT INTO papers (
-                title, source_file, year, district, exam_type, grade, semester,
+                title, source_file, year, province, city, district, exam_type, grade, semester,
                 textbook_version, import_status, content_fingerprint
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 path.stem,
                 str(path),
                 _clean_optional(metadata.year),
+                _clean_optional(metadata.province),
+                _clean_optional(metadata.city),
                 _clean_optional(metadata.district),
                 _clean_optional(metadata.exam_type),
                 _clean_optional(metadata.grade),
@@ -673,12 +681,40 @@ def _clean_optional(value: object) -> str | None:
 def _merge_metadata(default: PaperMetadata, inferred: PaperMetadata) -> PaperMetadata:
     return PaperMetadata(
         year=_clean_optional(default.year) or _clean_optional(inferred.year),
+        province=_clean_optional(default.province) or _clean_optional(inferred.province),
+        city=_clean_optional(default.city) or _clean_optional(inferred.city),
         district=_clean_optional(default.district) or _clean_optional(inferred.district),
         exam_type=_clean_optional(default.exam_type) or _clean_optional(inferred.exam_type),
         grade=_clean_optional(default.grade) or _clean_optional(inferred.grade),
         semester=_clean_optional(default.semester) or _clean_optional(inferred.semester),
         textbook_version=_clean_optional(default.textbook_version) or _clean_optional(inferred.textbook_version),
     )
+
+
+def _infer_province(text: str) -> str | None:
+    provinces = (
+        "北京市", "天津市", "上海市", "重庆市",
+        "河北省", "山西省", "辽宁省", "吉林省", "黑龙江省",
+        "江苏省", "浙江省", "安徽省", "福建省", "江西省", "山东省",
+        "河南省", "湖北省", "湖南省", "广东省", "海南省",
+        "四川省", "贵州省", "云南省", "陕西省", "甘肃省", "青海省",
+        "内蒙古自治区", "广西壮族自治区", "西藏自治区", "宁夏回族自治区", "新疆维吾尔自治区",
+        "香港特别行政区", "澳门特别行政区", "台湾省",
+    )
+    return next((province for province in provinces if province in text), None)
+
+
+def _infer_city(text: str) -> str | None:
+    municipality = next((city for city in ("北京市", "天津市", "上海市", "重庆市") if city in text), None)
+    if municipality:
+        return municipality
+    province = _infer_province(text)
+    search_text = text.split(province, 1)[1] if province and province in text else text
+    search_text = re.sub(r"^\d{4}年?", "", search_text)
+    match = re.match(r"([\u4e00-\u9fff]{2,8}?市)", search_text)
+    if match:
+        return match.group(1)
+    return "深圳市" if "深圳" in text else None
 
 
 def _infer_district(text: str) -> str | None:
@@ -730,8 +766,8 @@ def _infer_grade(text: str) -> str | None:
 
 
 def _infer_semester(text: str) -> str | None:
-    if any(token in text for token in ("上学期", "上册", "七上", "八上", "九上")):
+    if any(token in text for token in ("上学期", "上册", "七上", "八上", "九上", "（上）", "(上)")):
         return "上学期"
-    if any(token in text for token in ("下学期", "下册", "七下", "八下", "九下")):
+    if any(token in text for token in ("下学期", "下册", "七下", "八下", "九下", "（下）", "(下)")):
         return "下学期"
     return None

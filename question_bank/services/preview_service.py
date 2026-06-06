@@ -370,7 +370,6 @@ def preview_recommendation(question: dict[str, Any]) -> dict[str, Any]:
             if tag.get("tag_type") == "knowledge_point" and tag.get("tag_value")
         ],
         "difficulty": question.get("difficulty") or "",
-        "typicality": question.get("typicality") or "",
         "recommend_reason": "题库手动组卷",
         "suggested_order": 0,
         "training_stage": "基础回补",
