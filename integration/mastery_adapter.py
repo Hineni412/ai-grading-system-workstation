@@ -114,16 +114,38 @@ def compute_priority(mastery: float) -> int:
     return 1
 
 
+def _get_mapped_knowledge_point(raw_kp: str) -> str:
+    from path_manager import get_path_manager
+    import json
+    try:
+        pm = get_path_manager()
+        mapping_path = pm.config_dir / "knowledge_mapping.json"
+        if mapping_path.exists():
+            mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+            if raw_kp in mapping:
+                val = mapping[raw_kp]
+                if isinstance(val, list) and val:
+                    return str(val[0])
+                if isinstance(val, str):
+                    return val
+    except Exception:
+        pass
+    return raw_kp
+
+
 def _weak_point_from_row(row: Mapping[str, Any]) -> WeakPoint:
     mastery = _mastery_value(row)
     priority = _priority_value(row.get("priority"), mastery)
     raw_knowledge_ids = _knowledge_ids(row)
     raw_knowledge_point = _first_text(row, "knowledge_point", "knowledge_label", "knowledge_id")
-    canonical = canonicalize_knowledge_values([raw_knowledge_point, *raw_knowledge_ids])
+    
+    mapped_knowledge_point = _get_mapped_knowledge_point(raw_knowledge_point)
+    canonical = canonicalize_knowledge_values([mapped_knowledge_point, *raw_knowledge_ids])
+    
     raw_error_types = _raw_error_types(row)
     normalized_errors = _normalize_error_types(raw_error_types)
     return WeakPoint(
-        knowledge_point=canonical.canonical_name if canonical is not None else raw_knowledge_point,
+        knowledge_point=canonical.canonical_name if canonical is not None else mapped_knowledge_point,
         canonical_knowledge_id=canonical.canonical_id if canonical is not None else "",
         mastery=mastery,
         stability=_optional_rate(row.get("stability")),

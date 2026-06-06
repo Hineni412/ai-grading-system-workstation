@@ -212,8 +212,7 @@ def build_llm_settings_from_sidebar() -> LLMSettings | None:
         st.session_state.tagging_max_workers_input = int(saved_profile.get("tagging_max_workers", 8))
     if "tagging_requests_per_minute_input" not in st.session_state:
         st.session_state.tagging_requests_per_minute_input = int(saved_profile.get("tagging_requests_per_minute", 1000))
-    if "tagging_enabled_input" not in st.session_state:
-        st.session_state.tagging_enabled_input = bool(saved_profile.get("tagging_enabled", False))
+    st.session_state.tagging_enabled_input = True
     if "tagging_thinking_input" not in st.session_state:
         st.session_state.tagging_thinking_input = bool(saved_profile.get("tagging_thinking", False))
     if "tagging_review_enabled_input" not in st.session_state:
@@ -432,7 +431,7 @@ def build_llm_settings_from_sidebar() -> LLMSettings | None:
     os.environ["LLM_OBJECTIVE_BATCH_SIZE"] = str(st.session_state.get("objective_batch_size_input", 15))
     os.environ["LLM_HYBRID_MAJOR_BATCH_SIZE"] = str(st.session_state.get("hybrid_major_batch_size_input", 4))
 
-    st.session_state.tagging_enabled = st.session_state.get("tagging_enabled_input", False)
+    st.session_state.tagging_enabled = True
     os.environ["QUESTION_BANK_TAGGING_API_KEY"] = str(st.session_state.get("tagging_api_key_input", ""))
     os.environ["QUESTION_BANK_TAGGING_BASE_URL"] = str(st.session_state.get("tagging_base_url_input", ""))
     os.environ["QUESTION_BANK_TAGGING_MODEL"] = str(st.session_state.get("tagging_model_input", ""))

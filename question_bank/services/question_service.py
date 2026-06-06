@@ -925,7 +925,7 @@ def _question_order_clause(sort_mode: str | None) -> str:
     if sort_mode == "试题难度":
         return "ORDER BY CAST(q.difficulty AS REAL) DESC, q.created_at DESC, q.id DESC"
     if sort_mode == "考频排序":
-        return """ORDER BY COALESCE((
+        return """ORDER BY (COALESCE((
             SELECT COUNT(*)
             FROM question_fingerprints qf2
             JOIN questions q2 ON q2.id = qf2.question_id
@@ -951,7 +951,26 @@ def _question_order_clause(sort_mode: str | None) -> str:
                       AND (p.semester IS NULL OR COALESCE(p2.semester, '') = COALESCE(p.semester, ''))
                   )
               )
-        ), 0) DESC, q.created_at DESC, q.id DESC"""
+        ), 0) * (
+            CASE (SELECT COUNT(*) FROM question_tags WHERE question_id = q.id)
+                WHEN 0 THEN 1.0
+                WHEN 1 THEN 1.0
+                WHEN 2 THEN 1.0
+                WHEN 3 THEN 1.0
+                WHEN 4 THEN 1.0
+                WHEN 5 THEN 1.0
+                WHEN 6 THEN 0.85
+                WHEN 7 THEN 0.7225
+                WHEN 8 THEN 0.614125
+                WHEN 9 THEN 0.52200625
+                WHEN 10 THEN 0.44370531
+                WHEN 11 THEN 0.37714952
+                WHEN 12 THEN 0.32057709
+                WHEN 13 THEN 0.27249053
+                WHEN 14 THEN 0.23161695
+                ELSE 0.19687440
+            END
+        )) DESC, q.created_at DESC, q.id DESC"""
     return "ORDER BY q.created_at DESC, q.id DESC"
 
 
