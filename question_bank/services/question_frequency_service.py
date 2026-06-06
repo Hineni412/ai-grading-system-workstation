@@ -10,7 +10,7 @@ from question_bank.database.schema import connect, initialize_database
 from question_bank.services.question_service import CORE_ANALYSIS_TAG_TYPES
 
 
-FINGERPRINT_VERSION = 2
+FINGERPRINT_VERSION = 3
 FORMAL_EXAM_TYPES = ("期中", "期末", "中考")
 PRACTICE_EXAM_MARKERS = ("同步练习", "专题练习", "练习", "作业")
 SIMPLE_QUESTION_TYPES = ("选择", "填空", "choice", "blank", "fill")
@@ -91,20 +91,19 @@ def build_question_fingerprint(question: Mapping[str, Any]) -> str:
     is_ctx = "情境/探究" if (style.get("is_contextual") or style.get("is_exploratory")) else "普通"
     parts.append(is_ctx)
     
-    if not _is_simple_question_type(question_type):
-        method_or_model = _first(grouped.get("method")) or _first(grouped.get("model"))
-        if method_or_model:
-            parts.append(method_or_model)
-            
-        diff = style.get("difficulty")
-        if diff is not None:
-            if diff <= 3:
-                diff_lvl = "基础"
-            elif diff <= 7:
-                diff_lvl = "中档"
-            else:
-                diff_lvl = "拔高"
-            parts.append(diff_lvl)
+    method_or_model = _first(grouped.get("method")) or _first(grouped.get("model"))
+    if method_or_model:
+        parts.append(method_or_model)
+        
+    diff = style.get("difficulty")
+    if diff is not None:
+        if diff <= 3:
+            diff_lvl = "基础"
+        elif diff <= 7:
+            diff_lvl = "中档"
+        else:
+            diff_lvl = "拔高"
+        parts.append(diff_lvl)
             
     return "|".join(_compact(part) for part in parts if _compact(part))
 

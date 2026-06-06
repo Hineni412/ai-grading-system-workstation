@@ -151,7 +151,7 @@ def test_zhongkao_has_national_and_shenzhen_frequency_without_semester_limit(tmp
     assert metrics.shenzhen_eligible_paper_count == 2
 
 
-def test_fingerprint_uses_method_for_solution_but_not_simple_question() -> None:
+def test_fingerprint_uses_method_for_both_simple_and_solution_questions() -> None:
     simple_a = build_question_fingerprint(
         {"question_type": "选择题", "tags": [{"tag_type": "knowledge_point", "tag_value": "概率"}]}
     )
@@ -183,7 +183,7 @@ def test_fingerprint_uses_method_for_solution_but_not_simple_question() -> None:
         }
     )
 
-    assert simple_a == simple_b
+    assert simple_a != simple_b
     assert solution_a != solution_b
 
 
