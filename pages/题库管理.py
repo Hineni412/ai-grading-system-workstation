@@ -895,30 +895,28 @@ def _render_local_tagging_api_config() -> None:
             
         tagging_enabled = st.checkbox("⚙️ 单独配置专属打标签大模型 API (可自定义高并发/低成本模型)", key="tagging_enabled_input")
         
-        # Render settings ONLY if checked
-        if tagging_enabled:
-            with st.container(border=True):
-                st.markdown("**专属打标签大模型参数设置**")
-                st.caption("启用后，您可以配置性价比高、高并发的第三方大模型（如 gpt-4o-mini, o3-mini 等）来单独进行题库分析。")
-                
-                tagging_api_key = st.text_input("打标签 API Key", type="password", key="tagging_api_key_input")
-                tagging_base_url = st.text_input("打标签 API Base URL", key="tagging_base_url_input")
-                tagging_model = st.text_input("打标签模型名称", key="tagging_model_input")
-                tagging_max_workers = st.number_input("打标签最大并发数", min_value=1, max_value=64, step=1, key="tagging_max_workers_input")
-                tagging_requests_per_minute = st.number_input("打标签 RPM 上限", min_value=1, step=10, key="tagging_requests_per_minute_input")
-                tagging_thinking = st.checkbox("开启 Thinking 模式", key="tagging_thinking_input", help="开启后，将启用深度思维链推理，特别适用于 DeepSeek-R1 / o1 / o3-mini 等推理模型，显著提高标签和分析质量。")
-                st.divider()
-                tagging_review_enabled = st.checkbox("启用低置信度复核模型", key="tagging_review_enabled_input", help="只在主模型低置信或核心标签冲突时调用，不会全量双模型。")
-                tagging_review_api_key = st.text_input("复核模型 API Key", type="password", key="tagging_review_api_key_input", disabled=not tagging_review_enabled)
-                tagging_review_base_url = st.text_input("复核模型 API Base URL", key="tagging_review_base_url_input", disabled=not tagging_review_enabled)
-                tagging_review_model = st.text_input("复核模型名称", placeholder="例如 deepseek-chat / deepseek-reasoner", key="tagging_review_model_input", disabled=not tagging_review_enabled)
+        # Use st.sidebar.expander to keep widgets rendered inside the DOM layout so Streamlit preserves their session_state
+        with st.sidebar.expander("🏷️ 专属打标签大模型参数设置", expanded=tagging_enabled):
+            st.caption("启用后，您可以配置性价比高、高并发的第三方大模型（如 gpt-4o-mini, o3-mini 等）来单独进行题库分析。")
+            
+            tagging_api_key = st.text_input("打标签 API Key", type="password", key="tagging_api_key_input")
+            tagging_base_url = st.text_input("打标签 API Base URL", key="tagging_base_url_input")
+            tagging_model = st.text_input("打标签模型名称", key="tagging_model_input")
+            tagging_max_workers = st.number_input("打标签最大并发数", min_value=1, max_value=64, step=1, key="tagging_max_workers_input")
+            tagging_requests_per_minute = st.number_input("打标签 RPM 上限", min_value=1, step=10, key="tagging_requests_per_minute_input")
+            tagging_thinking = st.checkbox("开启 Thinking 模式", key="tagging_thinking_input", help="开启后，将启用深度思维链推理，特别适用于 DeepSeek-R1 / o1 / o3-mini 等推理模型，显著提高标签和分析质量。")
+            st.divider()
+            tagging_review_enabled = st.checkbox("启用低置信度复核模型", key="tagging_review_enabled_input", help="只在主模型低置信或核心标签冲突时调用，不会全量双模型。")
+            tagging_review_api_key = st.text_input("复核模型 API Key", type="password", key="tagging_review_api_key_input", disabled=not tagging_review_enabled)
+            tagging_review_base_url = st.text_input("复核模型 API Base URL", key="tagging_review_base_url_input", disabled=not tagging_review_enabled)
+            tagging_review_model = st.text_input("复核模型名称", placeholder="例如 deepseek-chat / deepseek-reasoner", key="tagging_review_model_input", disabled=not tagging_review_enabled)
 
-                if st.button("💾 保存打标签配置", use_container_width=True, key="save_local_tagging_api_settings", type="primary"):
-                    # Load fresh profiles to avoid overwriting newer changes
-                    profiles = load_api_profiles(profiles_path)
-                    if not profiles:
-                        profiles = [{"name": "default"}]
-                    
+            if st.button("💾 保存打标签配置", use_container_width=True, key="save_local_tagging_api_settings", type="primary"):
+                # Load fresh profiles to avoid overwriting newer changes
+                profiles = load_api_profiles(profiles_path)
+                if not profiles:
+                    profiles = [{"name": "default"}]
+                
                     # Update last profile
                     profiles[-1]["tagging_api_key"] = str(tagging_api_key).strip()
                     profiles[-1]["tagging_base_url"] = normalize_openai_base_url(str(tagging_base_url).strip() or "https://api.openai.com/v1")
