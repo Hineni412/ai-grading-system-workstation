@@ -946,7 +946,7 @@ def _render_local_tagging_api_config() -> None:
 
                     st.success("🏷️ 专属打标签 API 配置已保存并立即生效！")
                     st.rerun()
-        else:
+        if not tagging_enabled:
             # If changed from checked to unchecked, auto-save to false
             if saved_profile.get("tagging_enabled", False):
                 profiles = load_api_profiles(profiles_path)
