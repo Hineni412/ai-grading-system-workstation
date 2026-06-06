@@ -80,7 +80,7 @@ def export_training_markdown(
                         "",
                         f"难度：{item.difficulty or '-'}",
                         "",
-                        f"典型程度：{item.typicality or '-'}",
+                        f"考频：{item.frequency or '仅期中、期末、中考试题计算'}",
                         "",
                         f"推荐原因：{item.recommend_reason or '-'}",
                         "",

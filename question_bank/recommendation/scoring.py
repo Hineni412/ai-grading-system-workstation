@@ -27,16 +27,6 @@ def normalize_score_1_to_5(value: object, default: float = 0.5) -> float:
     return round(score / 5, 4)
 
 
-def normalize_score_1_to_10(value: object, default: float = 0.5) -> float:
-    try:
-        score = float(value)
-    except (TypeError, ValueError):
-        return default
-    if not 1 <= score <= 10:
-        return default
-    return round(score / 10, 4)
-
-
 def preferred_difficulty_range(weak_point: Mapping[str, Any]) -> tuple[int, int]:
     recommended_level = _text(weak_point.get("recommended_level"))
     if recommended_level in LEVEL_DIFFICULTY_RANGES:
@@ -84,17 +74,31 @@ def tag_match_score(weak_point: Mapping[str, Any], tags: Mapping[str, list[str]]
 def recommendation_score(
     *,
     mastery: float,
-    typicality: object,
+    frequency_rate: object | None,
     tag_score: float,
     difficulty_score: float,
+    shenzhen_fit_score: object | None = None,
+    shenzhen_frequency_rate: object | None = None,
+    national_frequency_rate: object | None = None,
 ) -> float:
+    if shenzhen_fit_score is not None:
+        total = (
+            _rate(shenzhen_fit_score, default=0.0) * 0.40
+            + _rate(tag_score, default=0.0) * 0.25
+            + _rate(difficulty_score, default=0.0) * 0.15
+            + _rate(shenzhen_frequency_rate, default=0.0) * 0.10
+            + _rate(national_frequency_rate, default=0.0) * 0.10
+        )
+        return round(total, 4)
     mastery_rate = _rate(mastery, default=0.0)
-    total = (
+    base_total = (
         (1 - mastery_rate) * 0.35
-        + normalize_score_1_to_10(typicality) * 0.25
-        + _rate(tag_score, default=0.0) * 0.25
-        + _rate(difficulty_score, default=0.0) * 0.15
+        + _rate(tag_score, default=0.0) * 0.30
+        + _rate(difficulty_score, default=0.0) * 0.20
     )
+    if frequency_rate is None:
+        return round(base_total / 0.85, 4)
+    total = base_total + _rate(frequency_rate, default=0.0) * 0.15
     return round(total, 4)
 
 

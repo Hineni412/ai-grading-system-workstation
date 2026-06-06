@@ -83,12 +83,11 @@ def intake_grading_paper_to_question_bank(
         )
         for question_id, result in results.items():
             if is_auto_saveable_result(result):
-                analysis = service.with_frequency_adjusted_typicality(result.analysis, exclude_question_id=question_id)
                 if service.save_tag_analysis(
                     question_id,
-                    analysis,
+                    result.analysis,
                     model_name=result.model_name,
-                    confidence=analysis.confidence,
+                    confidence=result.analysis.confidence,
                 ):
                     tagged_questions += 1
                 else:
@@ -183,6 +182,8 @@ def _tagging_context(question: dict[str, Any]) -> TaggingContext:
 def _merge_metadata(primary: PaperMetadata, fallback: PaperMetadata) -> PaperMetadata:
     return PaperMetadata(
         year=primary.year or fallback.year,
+        province=primary.province or fallback.province,
+        city=primary.city or fallback.city,
         district=primary.district or fallback.district,
         exam_type=primary.exam_type or fallback.exam_type,
         grade=primary.grade or fallback.grade,

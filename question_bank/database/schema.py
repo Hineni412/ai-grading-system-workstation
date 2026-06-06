@@ -33,6 +33,8 @@ def initialize_database(db_path: Path) -> None:
                 title TEXT,
                 source_file TEXT,
                 year TEXT,
+                province TEXT,
+                city TEXT,
                 district TEXT,
                 exam_type TEXT,
                 grade TEXT,
@@ -88,6 +90,18 @@ def initialize_database(db_path: Path) -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS question_fingerprints (
+                question_id INTEGER PRIMARY KEY,
+                fingerprint_version INTEGER NOT NULL DEFAULT 1,
+                base_fingerprint TEXT NOT NULL,
+                style_features_json TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                FOREIGN KEY(question_id) REFERENCES questions(id)
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS question_previews (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 question_id INTEGER NOT NULL,
@@ -134,6 +148,8 @@ def initialize_database(db_path: Path) -> None:
             {
                 "import_status": "TEXT",
                 "content_fingerprint": "TEXT",
+                "province": "TEXT",
+                "city": "TEXT",
             },
         )
         _ensure_columns(
@@ -153,6 +169,29 @@ def initialize_database(db_path: Path) -> None:
                 "model_name": "TEXT",
             },
         )
+        conn.execute(
+            """
+            UPDATE papers
+            SET province = COALESCE(NULLIF(province, ''), '广东省'),
+                city = COALESCE(NULLIF(city, ''), '深圳市')
+            WHERE title LIKE '%深圳%'
+               OR source_file LIKE '%深圳%'
+               OR district IN ('深圳市', '福田区', '罗湖区', '南山区', '宝安区', '龙岗区', '龙华区', '盐田区', '坪山区', '光明区', '大鹏新区')
+            """
+        )
+        conn.execute(
+            """
+            UPDATE papers
+            SET semester = CASE
+                WHEN title LIKE '%（上）%' OR title LIKE '%(上)%'
+                  OR title LIKE '%上学期%' OR title LIKE '%上册%' THEN '上学期'
+                WHEN title LIKE '%（下）%' OR title LIKE '%(下)%'
+                  OR title LIKE '%下学期%' OR title LIKE '%下册%' THEN '下学期'
+                ELSE semester
+            END
+            WHERE COALESCE(semester, '') = ''
+            """
+        )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_questions_number ON questions(question_number)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_questions_paper ON questions(paper_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_questions_type_deleted ON questions(question_type, is_deleted)")
@@ -161,6 +200,8 @@ def initialize_database(db_path: Path) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_question_tags_value ON question_tags(tag_type, tag_value)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_papers_fingerprint ON papers(content_fingerprint)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_papers_source_file ON papers(source_file)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_papers_exam_scope ON papers(exam_type, grade, semester, city)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_question_fingerprints_base ON question_fingerprints(base_fingerprint)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_question_previews_question ON question_previews(question_id, preview_type)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_training_set_items_set ON training_set_items(training_set_id, item_order)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_training_set_items_question ON training_set_items(question_id)")

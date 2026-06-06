@@ -12,6 +12,7 @@ from question_bank.importers.batch_importer import (
     ParsedPaperText,
     ParsedQuestion,
     _without_existing_duplicate_questions,
+    infer_metadata_from_filename,
     parse_paper_text,
 )
 from question_bank.importers.types import ExtractedDocument
@@ -114,3 +115,25 @@ def test_cross_paper_duplicate_question_is_kept_for_complete_paper_import(tmp_pa
     result = _without_existing_duplicate_questions(db_path, parsed)
 
     assert [question.question_number for question in result.questions] == ["1"]
+
+
+def test_infer_national_zhongkao_region_metadata_from_filename() -> None:
+    metadata = infer_metadata_from_filename("2025年浙江省杭州市中考数学试卷.docx")
+
+    assert metadata.province == "浙江省"
+    assert metadata.city == "杭州市"
+    assert metadata.exam_type == "中考"
+    assert metadata.grade == "九年级"
+
+
+def test_infer_shenzhen_region_metadata_from_filename() -> None:
+    metadata = infer_metadata_from_filename("2025年广东省深圳市中考数学试卷.docx")
+
+    assert metadata.province == "广东省"
+    assert metadata.city == "深圳市"
+
+
+def test_infer_semester_from_parenthesized_filename_marker() -> None:
+    metadata = infer_metadata_from_filename("2024-2025学年深圳市七年级（下）期末数学试卷.docx")
+
+    assert metadata.semester == "下学期"

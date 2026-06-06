@@ -345,7 +345,6 @@ def _mock_analysis(context: TaggingContext) -> TagAnalysis:
         "ability_tags": ["数学推理"] if context.has_answer else ["信息提取"],
         "math_model_tags": ["平行线角度模型"] if "平行" in context.question_text else [],
         "difficulty": 3 if context.has_answer else 2,
-        "typicality": 3,
         "error_prone_points": ["条件转化不完整"],
         "prerequisite_points": context.existing_tags[:2],
         "textbook_chapter": "八年级上册 第七章 平行线的证明" if "平行" in context.question_text else "九年级上册 第四章 图形的相似",
@@ -425,9 +424,8 @@ def _system_prompt() -> str:
     Error-prone points must be broad, reusable categories for statistics, not question-specific step descriptions. Prefer the provided error_prone_options such as 条件识别不完整, 图形关系识别错误, 辅助线思路缺失, 公式/定理误用, 运算化简错误, 书写依据不完整. Do not write labels like “第一问证明某三角形全等时漏找某条件”.
     Choose textbook_chapter from the provided 北师大版2024 初中数学教材章节候选 when possible.
     Choose the smallest accurate primary knowledge point. Do not overgeneralize 三角形三边关系 as 三角形全等, or 科学记数法 as 整式运算.
-    Scores difficulty and typicality must be integers from 1 to 10.
+    Difficulty must be an integer from 1 to 10.
     confidence must be a number from 0 to 1 for your overall confidence in the tag set. Lower it when the image is essential, the answer is missing, or the core knowledge point is uncertain.
-    Typicality should primarily be your own professional judgment from the question form, knowledge pattern, method pattern, and exam recurrence intuition. corpus_stats is only reference context for now; do not mechanically overwrite your judgment from it.
     suitable_student_level must be one of: 入门补缺, 基础巩固, 中档提升, 综合突破, 压轴拔高.
     """.strip()
 
@@ -439,7 +437,6 @@ def _plain_output_schema() -> dict[str, object]:
         "ability_tags": [],
         "math_model_tags": [],
         "difficulty": 1,
-        "typicality": 1,
         "error_prone_points": [],
         "prerequisite_points": [],
         "textbook_chapter": "",
@@ -460,7 +457,6 @@ def _tag_analysis_response_format() -> dict[str, Any]:
         "ability_tags": array_field,
         "math_model_tags": array_field,
         "difficulty": score_field,
-        "typicality": score_field,
         "error_prone_points": array_field,
         "prerequisite_points": array_field,
         "textbook_chapter": text_field,
@@ -643,7 +639,6 @@ def _batch_tag_analysis_response_format() -> dict[str, Any]:
         "ability_tags": array_field,
         "math_model_tags": array_field,
         "difficulty": score_field,
-        "typicality": score_field,
         "error_prone_points": array_field,
         "prerequisite_points": array_field,
         "textbook_chapter": text_field,

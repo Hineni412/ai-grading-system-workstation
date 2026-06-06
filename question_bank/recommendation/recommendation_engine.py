@@ -10,11 +10,11 @@ from typing import Any
 
 from question_bank.recommendation.scoring import (
     difficulty_match_score,
-    normalize_score_1_to_10,
     parse_difficulty,
     recommendation_score,
     tag_match_score,
 )
+from question_bank.services.question_frequency_service import FrequencyMetrics, QuestionFrequencyService
 from question_bank.taxonomy.registry import canonicalize_error_type, canonicalize_knowledge_values
 
 
@@ -34,8 +34,15 @@ def recommend_for_weak_point(
     if not knowledge_point or limit <= 0:
         return []
 
-    candidates = _load_candidates(Path(db_path), normalized_weak_point)
-    scored = [_score_candidate(candidate, normalized_weak_point) for candidate in candidates]
+    database_path = Path(db_path)
+    candidates = _load_candidates(database_path, normalized_weak_point)
+    frequency_metrics = QuestionFrequencyService(database_path).metrics_for_questions(
+        [int(candidate["id"]) for candidate in candidates]
+    )
+    scored = [
+        _score_candidate(candidate, normalized_weak_point, frequency_metrics.get(int(candidate["id"])))
+        for candidate in candidates
+    ]
     scored.sort(key=lambda item: (-item["recommend_score"], item["question_id"]))
     selected = _select_diverse(
         scored,
@@ -49,8 +56,7 @@ def recommend_for_weak_point(
 
 def assign_training_stage(candidate: Mapping[str, Any]) -> str:
     difficulty = parse_difficulty(candidate.get("difficulty"))
-    typicality = normalize_score_1_to_10(candidate.get("typicality"))
-    if candidate.get("model_tags") and typicality >= 0.8:
+    if candidate.get("model_tags"):
         return "典型模型"
     if difficulty is not None and difficulty >= 8:
         return "压轴迁移"
@@ -157,20 +163,31 @@ def _attach_tags(conn: sqlite3.Connection, candidates: list[dict[str, Any]]) -> 
         item["tags"] = tags_by_question[int(item["id"])]
 
 
-def _score_candidate(candidate: Mapping[str, Any], weak_point: Mapping[str, Any]) -> dict[str, Any]:
+def _score_candidate(
+    candidate: Mapping[str, Any],
+    weak_point: Mapping[str, Any],
+    frequency: FrequencyMetrics | None,
+) -> dict[str, Any]:
     tags = candidate["tags"]
     matched_errors = _overlap(weak_point.get("error_types", []), tags.get("error_type", []))
+    frequency = frequency or FrequencyMetrics(available=False)
+    frequency_rate = min(1.0, frequency.questions_per_paper) if frequency.available else None
     score = recommendation_score(
         mastery=_rate(weak_point.get("mastery"), default=0.0),
-        typicality=candidate.get("typicality"),
+        frequency_rate=frequency_rate,
         tag_score=tag_match_score(weak_point, tags),
         difficulty_score=difficulty_match_score(candidate.get("difficulty"), weak_point),
+        shenzhen_fit_score=frequency.shenzhen_fit_score if frequency.shenzhen_fit_available else None,
+        shenzhen_frequency_rate=min(1.0, frequency.shenzhen_questions_per_paper),
+        national_frequency_rate=min(1.0, frequency.national_questions_per_paper),
     )
     reason_parts = [f"匹配薄弱知识点“{_text(weak_point.get('knowledge_point'))}”"]
     if matched_errors:
         reason_parts.append(f"匹配错因“{'、'.join(matched_errors)}”")
-    if normalize_score_1_to_10(candidate.get("typicality")) >= 0.8:
-        reason_parts.append("典型性较高")
+    if frequency.available:
+        reason_parts.append(f"同类题考频 {frequency.matched_question_count}/{frequency.eligible_paper_count} 卷")
+    if frequency.shenzhen_fit_available:
+        reason_parts.append(f"深圳中考适配度 {frequency.shenzhen_fit_score:.0%}")
     if difficulty_match_score(candidate.get("difficulty"), weak_point) >= 1.0:
         reason_parts.append("难度适配")
     method_tags = list(tags.get("method", []))
@@ -183,7 +200,7 @@ def _score_candidate(candidate: Mapping[str, Any], weak_point: Mapping[str, Any]
         "question_number": _text(candidate.get("question_number")),
         "knowledge_points": list(tags.get("knowledge_point", [])),
         "difficulty": _text(candidate.get("difficulty")),
-        "typicality": _text(candidate.get("typicality")),
+        "frequency": frequency.to_dict(),
         "recommend_reason": "，".join(reason_parts),
         "suggested_order": 0,
         "training_stage": "",
@@ -342,7 +359,6 @@ def _candidate_select_sql() -> str:
             q.question_number,
             q.question_text,
             q.difficulty,
-            q.typicality,
             q.source_file AS question_source_file,
             p.title AS paper_title,
             p.source_file AS paper_source_file

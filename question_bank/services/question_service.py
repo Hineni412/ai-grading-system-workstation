@@ -78,9 +78,9 @@ class QuestionService:
                 """
                 INSERT INTO questions (
                     paper_id, question_number, question_type, question_text, answer_text,
-                    source_file, page_range, image_paths, difficulty, typicality,
+                    source_file, page_range, image_paths, difficulty,
                     needs_review, has_images, needs_image_review
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     question.paper_id,
@@ -92,7 +92,6 @@ class QuestionService:
                     _clean_optional(question.page_range),
                     json.dumps(question.image_paths, ensure_ascii=False),
                     _clean_optional(question.difficulty),
-                    _clean_optional(question.typicality),
                     int(question.needs_review),
                     int(question.has_images),
                     int(question.needs_image_review),
@@ -108,7 +107,7 @@ class QuestionService:
         with connect(self.db_path) as conn:
             row = conn.execute(
                 """
-                SELECT q.*, p.title AS paper_title, p.year, p.grade, p.semester, p.exam_type, p.district
+                SELECT q.*, p.title AS paper_title, p.year, p.province, p.city, p.grade, p.semester, p.exam_type, p.district
                 FROM questions q
                 LEFT JOIN papers p ON p.id = q.paper_id
                 WHERE q.id = ? AND q.is_deleted = 0
@@ -125,7 +124,7 @@ class QuestionService:
         with connect(self.db_path) as conn:
             target = conn.execute(
                 """
-                SELECT q.*, p.title AS paper_title, p.year, p.grade, p.semester, p.exam_type, p.district
+                SELECT q.*, p.title AS paper_title, p.year, p.province, p.city, p.grade, p.semester, p.exam_type, p.district
                 FROM questions q
                 LEFT JOIN papers p ON p.id = q.paper_id
                 WHERE q.id = ? AND q.is_deleted = 0
@@ -140,7 +139,7 @@ class QuestionService:
                 return None
             rows = conn.execute(
                 """
-                SELECT q.*, p.title AS paper_title, p.year, p.grade, p.semester, p.exam_type, p.district
+                SELECT q.*, p.title AS paper_title, p.year, p.province, p.city, p.grade, p.semester, p.exam_type, p.district
                 FROM questions q
                 LEFT JOIN papers p ON p.id = q.paper_id
                 WHERE q.id <> ? AND q.is_deleted = 0
@@ -165,7 +164,6 @@ class QuestionService:
         knowledge_point: str | None = None,
         difficulty: str | None = None,
         difficulty_range: tuple[int, int] | None = None,
-        typicality_range: tuple[int, int] | None = None,
         question_types: list[str] | None = None,
         paper_ids: list[int] | None = None,
         years: list[str] | None = None,
@@ -204,11 +202,6 @@ class QuestionService:
             low, high = _normalized_range(difficulty_range)
             where.append("CAST(q.difficulty AS REAL) BETWEEN ? AND ?")
             params.extend([low, high])
-        if typicality_range is not None:
-            low, high = _normalized_range(typicality_range)
-            where.append("CAST(q.typicality AS REAL) BETWEEN ? AND ?")
-            params.extend([low, high])
-            
         cleaned_question_types = [_clean_optional(value) for value in (question_types or [])]
         cleaned_question_types = [value for value in cleaned_question_types if value]
         if cleaned_question_types:
@@ -290,7 +283,6 @@ class QuestionService:
         knowledge_point: str | None = None,
         difficulty: str | None = None,
         difficulty_range: tuple[int, int] | None = None,
-        typicality_range: tuple[int, int] | None = None,
         question_types: list[str] | None = None,
         paper_ids: list[int] | None = None,
         years: list[str] | None = None,
@@ -307,7 +299,6 @@ class QuestionService:
             knowledge_point=knowledge_point,
             difficulty=difficulty,
             difficulty_range=difficulty_range,
-            typicality_range=typicality_range,
             question_types=question_types,
             paper_ids=paper_ids,
             years=years,
@@ -334,7 +325,6 @@ class QuestionService:
         knowledge_point: str | None = None,
         difficulty: str | None = None,
         difficulty_range: tuple[int, int] | None = None,
-        typicality_range: tuple[int, int] | None = None,
         question_types: list[str] | None = None,
         paper_ids: list[int] | None = None,
         years: list[str] | None = None,
@@ -354,7 +344,6 @@ class QuestionService:
             knowledge_point=knowledge_point,
             difficulty=difficulty,
             difficulty_range=difficulty_range,
-            typicality_range=typicality_range,
             question_types=question_types,
             paper_ids=paper_ids,
             years=years,
@@ -365,7 +354,7 @@ class QuestionService:
             tag_status=tag_status,
         )
         
-        query = ["SELECT DISTINCT q.*, p.title AS paper_title, p.year, p.grade, p.semester, p.exam_type, p.district FROM questions q"]
+        query = ["SELECT DISTINCT q.*, p.title AS paper_title, p.year, p.province, p.city, p.grade, p.semester, p.exam_type, p.district FROM questions q"]
         query.extend(joins)
         if where:
             query.append("WHERE " + " AND ".join(where))
@@ -636,7 +625,7 @@ class QuestionService:
                 UPDATE questions
                 SET paper_id = ?, question_number = ?, question_type = ?, question_text = ?,
                     answer_text = ?, source_file = ?, page_range = ?, image_paths = ?,
-                    difficulty = ?, typicality = ?, needs_review = ?, has_images = ?,
+                    difficulty = ?, needs_review = ?, has_images = ?,
                     needs_image_review = ?, updated_at = datetime('now','localtime')
                 WHERE id = ? AND is_deleted = 0
                 """,
@@ -650,7 +639,6 @@ class QuestionService:
                     _clean_optional(question.page_range),
                     json.dumps(question.image_paths, ensure_ascii=False),
                     _clean_optional(question.difficulty),
-                    _clean_optional(question.typicality),
                     int(question.needs_review),
                     int(question.has_images),
                     int(question.needs_image_review),
@@ -812,23 +800,6 @@ class QuestionService:
             "frequency_score": frequency_score,
         }
 
-    def with_frequency_adjusted_typicality(
-        self,
-        analysis: TagAnalysis,
-        *,
-        exclude_question_id: int | None = None,
-    ) -> TagAnalysis:
-        stats = self.tag_frequency_stats(analysis, exclude_question_id=exclude_question_id)
-        frequency_score = int(stats.get("frequency_score") or 1)
-        adjusted = round(analysis.typicality * 0.55 + frequency_score * 0.45)
-        payload = analysis.to_dict()
-        payload["typicality"] = min(10, max(1, adjusted))
-        reason = str(payload.get("reason") or "").strip()
-        if stats.get("matched_question_count"):
-            suffix = f"本地题库相似标签出现 {stats['matched_question_count']}/{max(stats['total_questions'], 1)} 题，典型性已结合频次校准。"
-            payload["reason"] = f"{reason} {suffix}".strip()
-        return TagAnalysis.from_dict(payload)
-
     def save_tag_analysis(
         self,
         question_id: int,
@@ -878,14 +849,12 @@ class QuestionService:
                 """
                 UPDATE questions
                 SET difficulty = ?,
-                    typicality = ?,
                     reason = ?,
                     updated_at = datetime('now','localtime')
                 WHERE id = ? AND is_deleted = 0
                 """,
                 (
                     str(analysis.difficulty),
-                    str(analysis.typicality),
                     _clean_optional(analysis.reason),
                     int(question_id),
                 ),
@@ -951,8 +920,6 @@ def _normalized_range(value: tuple[int, int]) -> tuple[int, int]:
 def _question_order_clause(sort_mode: str | None) -> str:
     if sort_mode == "试题难度":
         return "ORDER BY CAST(q.difficulty AS REAL) DESC, q.created_at DESC, q.id DESC"
-    if sort_mode == "典型程度":
-        return "ORDER BY CAST(q.typicality AS REAL) DESC, q.created_at DESC, q.id DESC"
     return "ORDER BY q.created_at DESC, q.id DESC"
 
 
@@ -1005,7 +972,6 @@ def _analysis_from_tagged_question(question: Mapping[str, Any]) -> tuple[TagAnal
             "ability_tags": grouped.get("ability", []),
             "math_model_tags": grouped.get("model", []),
             "difficulty": question.get("difficulty") or 1,
-            "typicality": question.get("typicality") or 1,
             "error_prone_points": grouped.get("error_type", []),
             "prerequisite_points": grouped.get("prerequisite", []),
             "textbook_chapter": _first_value(grouped.get("exam_scope", [])),

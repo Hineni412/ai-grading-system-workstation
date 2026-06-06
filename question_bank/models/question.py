@@ -36,7 +36,6 @@ class QuestionCreate:
     page_range: str | None = None
     image_paths: list[str] = field(default_factory=list)
     difficulty: str | None = None
-    typicality: str | None = None
     needs_review: bool = False
     has_images: bool = False
     needs_image_review: bool = False
@@ -54,7 +53,6 @@ class QuestionUpdate:
     page_range: str | None = None
     image_paths: list[str] = field(default_factory=list)
     difficulty: str | None = None
-    typicality: str | None = None
     needs_review: bool = False
     has_images: bool = False
     needs_image_review: bool = False

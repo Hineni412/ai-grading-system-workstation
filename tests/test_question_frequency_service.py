@@ -1,0 +1,242 @@
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+from question_bank.database.schema import connect
+from question_bank.services.question_frequency_service import (
+    QuestionFrequencyService,
+    build_question_fingerprint,
+    is_frequency_exam_type,
+)
+
+
+def _insert_paper(
+    db_path: Path,
+    *,
+    title: str,
+    exam_type: str,
+    grade: str = "七年级",
+    semester: str = "下学期",
+    province: str = "广东省",
+    city: str = "深圳市",
+) -> int:
+    with connect(db_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO papers (
+                title, exam_type, grade, semester, province, city, import_status
+            ) VALUES (?, ?, ?, ?, ?, ?, 'ready')
+            """,
+            (title, exam_type, grade, semester, province, city),
+        )
+        return int(cursor.lastrowid)
+
+
+def _insert_question(
+    db_path: Path,
+    paper_id: int,
+    *,
+    number: str,
+    question_type: str = "选择题",
+    knowledge: str = "科学记数法",
+    method: str = "数形结合",
+    ability: str = "运算能力",
+    model: str = "",
+    difficulty: str = "4",
+) -> int:
+    with connect(db_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO questions (
+                paper_id, question_number, question_type, question_text, difficulty
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (paper_id, number, question_type, f"{knowledge}-{number}", difficulty),
+        )
+        question_id = int(cursor.lastrowid)
+        rows = [
+            (question_id, "knowledge_point", knowledge),
+            (question_id, "ability", ability),
+            (question_id, "exam_scope", "七年级下册"),
+            (question_id, "student_level", "基础巩固"),
+        ]
+        if method:
+            rows.append((question_id, "method", method))
+        if model:
+            rows.append((question_id, "model", model))
+        conn.executemany(
+            "INSERT INTO question_tags (question_id, tag_type, tag_value) VALUES (?, ?, ?)",
+            rows,
+        )
+        return question_id
+
+
+def test_only_formal_exams_have_frequency() -> None:
+    assert is_frequency_exam_type("期中考试")
+    assert is_frequency_exam_type("期末")
+    assert is_frequency_exam_type("中考")
+    assert not is_frequency_exam_type("同步练习")
+    assert not is_frequency_exam_type("专题练习")
+    assert not is_frequency_exam_type("期末同步练习")
+
+
+def test_frequency_counts_all_matching_questions_in_same_paper(tmp_path: Path) -> None:
+    db_path = tmp_path / "question_bank.db"
+    service = QuestionFrequencyService(db_path)
+    service.initialize_database()
+    first_paper = _insert_paper(db_path, title="A", exam_type="期末")
+    second_paper = _insert_paper(db_path, title="B", exam_type="期末")
+    target_id = _insert_question(db_path, first_paper, number="1")
+    _insert_question(db_path, first_paper, number="2")
+    _insert_question(db_path, second_paper, number="1")
+
+    metrics = service.metrics_for_question(target_id)
+
+    assert metrics.available
+    assert metrics.matched_question_count == 3
+    assert metrics.eligible_paper_count == 2
+    assert metrics.questions_per_paper == 1.5
+
+
+def test_frequency_excludes_practice_and_other_semesters(tmp_path: Path) -> None:
+    db_path = tmp_path / "question_bank.db"
+    service = QuestionFrequencyService(db_path)
+    service.initialize_database()
+    target_paper = _insert_paper(db_path, title="期末A", exam_type="期末")
+    same_scope = _insert_paper(db_path, title="期末B", exam_type="期末")
+    other_semester = _insert_paper(db_path, title="上学期期末", exam_type="期末", semester="上学期")
+    other_grade = _insert_paper(db_path, title="八年级期末", exam_type="期末", grade="八年级")
+    other_exam = _insert_paper(db_path, title="七年级期中", exam_type="期中")
+    practice = _insert_paper(db_path, title="同步练习", exam_type="同步练习")
+    target_id = _insert_question(db_path, target_paper, number="1")
+    _insert_question(db_path, same_scope, number="1")
+    _insert_question(db_path, other_semester, number="1")
+    _insert_question(db_path, other_grade, number="1")
+    _insert_question(db_path, other_exam, number="1")
+    _insert_question(db_path, practice, number="1")
+
+    metrics = service.metrics_for_question(target_id)
+    practice_metrics = service.metrics_for_question(
+        _insert_question(db_path, practice, number="2")
+    )
+
+    assert metrics.matched_question_count == 2
+    assert metrics.eligible_paper_count == 2
+    assert not practice_metrics.available
+
+
+def test_zhongkao_has_national_and_shenzhen_frequency_without_semester_limit(tmp_path: Path) -> None:
+    db_path = tmp_path / "question_bank.db"
+    service = QuestionFrequencyService(db_path)
+    service.initialize_database()
+    shenzhen = _insert_paper(
+        db_path, title="深圳中考", exam_type="中考", grade="九年级", semester="", city="深圳市"
+    )
+    shenzhen_other_semester = _insert_paper(
+        db_path, title="深圳中考2", exam_type="中考", grade="九年级", semester="下学期", city="深圳市"
+    )
+    hangzhou = _insert_paper(
+        db_path, title="杭州中考", exam_type="中考", grade="九年级", semester="", province="浙江省", city="杭州市"
+    )
+    target_id = _insert_question(db_path, hangzhou, number="20", question_type="解答题", method="分类讨论")
+    _insert_question(db_path, shenzhen, number="20", question_type="解答题", method="分类讨论")
+    _insert_question(db_path, shenzhen_other_semester, number="20", question_type="解答题", method="分类讨论")
+
+    metrics = service.metrics_for_question(target_id)
+
+    assert metrics.national_matched_question_count == 3
+    assert metrics.national_eligible_paper_count == 3
+    assert metrics.shenzhen_matched_question_count == 2
+    assert metrics.shenzhen_eligible_paper_count == 2
+
+
+def test_fingerprint_uses_method_for_solution_but_not_simple_question() -> None:
+    simple_a = build_question_fingerprint(
+        {"question_type": "选择题", "tags": [{"tag_type": "knowledge_point", "tag_value": "概率"}]}
+    )
+    simple_b = build_question_fingerprint(
+        {
+            "question_type": "选择题",
+            "tags": [
+                {"tag_type": "knowledge_point", "tag_value": "概率"},
+                {"tag_type": "method", "tag_value": "分类讨论"},
+            ],
+        }
+    )
+    solution_a = build_question_fingerprint(
+        {
+            "question_type": "解答题",
+            "tags": [
+                {"tag_type": "knowledge_point", "tag_value": "概率"},
+                {"tag_type": "method", "tag_value": "分类讨论"},
+            ],
+        }
+    )
+    solution_b = build_question_fingerprint(
+        {
+            "question_type": "解答题",
+            "tags": [
+                {"tag_type": "knowledge_point", "tag_value": "概率"},
+                {"tag_type": "method", "tag_value": "数形结合"},
+            ],
+        }
+    )
+
+    assert simple_a == simple_b
+    assert solution_a != solution_b
+
+
+def test_external_zhongkao_gets_explainable_shenzhen_fit_score(tmp_path: Path) -> None:
+    db_path = tmp_path / "question_bank.db"
+    service = QuestionFrequencyService(db_path)
+    service.initialize_database()
+    shenzhen = _insert_paper(
+        db_path, title="深圳中考", exam_type="中考", grade="九年级", semester="", city="深圳市"
+    )
+    hangzhou = _insert_paper(
+        db_path, title="杭州中考", exam_type="中考", grade="九年级", semester="", province="浙江省", city="杭州市"
+    )
+    _insert_question(
+        db_path,
+        shenzhen,
+        number="20",
+        question_type="解答题",
+        knowledge="二次函数",
+        method="分类讨论",
+        ability="推理能力",
+        difficulty="8",
+    )
+    target_id = _insert_question(
+        db_path,
+        hangzhou,
+        number="20",
+        question_type="解答题",
+        knowledge="二次函数",
+        method="分类讨论",
+        ability="推理能力",
+        difficulty="8",
+    )
+
+    metrics = service.metrics_for_question(target_id)
+
+    assert metrics.shenzhen_fit_available
+    assert metrics.shenzhen_fit_score >= 0.8
+    assert metrics.shenzhen_similar_question_ids
+    assert any("方法" in note or "结构" in note for note in metrics.shenzhen_fit_notes)
+
+
+def test_shenzhen_zhongkao_question_does_not_get_external_fit_score(tmp_path: Path) -> None:
+    db_path = tmp_path / "question_bank.db"
+    service = QuestionFrequencyService(db_path)
+    service.initialize_database()
+    shenzhen = _insert_paper(
+        db_path, title="深圳中考", exam_type="中考", grade="九年级", semester="", city="深圳市"
+    )
+    target_id = _insert_question(
+        db_path, shenzhen, number="20", question_type="解答题", knowledge="二次函数", method="分类讨论"
+    )
+
+    metrics = service.metrics_for_question(target_id)
+
+    assert not metrics.shenzhen_fit_available

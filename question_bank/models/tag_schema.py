@@ -75,7 +75,6 @@ class TagAnalysis:
     ability_tags: list[str]
     math_model_tags: list[str]
     difficulty: int
-    typicality: int
     error_prone_points: list[str]
     prerequisite_points: list[str]
     textbook_chapter: str
@@ -92,7 +91,6 @@ class TagAnalysis:
             ability_tags=_normalize_tags(payload.get("ability_tags")),
             math_model_tags=_normalize_tags(payload.get("math_model_tags")),
             difficulty=_normalize_score(payload.get("difficulty")),
-            typicality=_normalize_score(payload.get("typicality")),
             error_prone_points=_normalize_error_tags(payload.get("error_prone_points")),
             prerequisite_points=_normalize_tags(payload.get("prerequisite_points")),
             textbook_chapter=_normalize_text_value(payload.get("textbook_chapter")),
@@ -109,7 +107,6 @@ class TagAnalysis:
             "ability_tags": self.ability_tags,
             "math_model_tags": self.math_model_tags,
             "difficulty": self.difficulty,
-            "typicality": self.typicality,
             "error_prone_points": self.error_prone_points,
             "prerequisite_points": self.prerequisite_points,
             "textbook_chapter": self.textbook_chapter,
