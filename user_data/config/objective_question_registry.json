@@ -1,0 +1,213 @@
+{
+  "13": {
+    "Q1": {
+      "question_type": "choice",
+      "status": "approved_trial",
+      "allowed_modes": [
+        "shadow",
+        "dry_run",
+        "replace_with_fallback"
+      ],
+      "recommended_for_allowlist": true,
+      "risk_level": "low",
+      "last_validation_summary": {
+        "replacement_success_count": 5,
+        "fallback_rate": 0.0,
+        "q2_replaced_count": 0,
+        "backup_missing_count": 0,
+        "audit_missing_count": 0
+      },
+      "notes": "Q1 已通过小范围 subject_only replacement 试用，可继续 Q1-only 试用。"
+    },
+    "Q2": {
+      "question_type": "choice",
+      "status": "blocked_crop_risk",
+      "allowed_modes": [
+        "shadow",
+        "diagnosis",
+        "human_review"
+      ],
+      "recommended_for_allowlist": false,
+      "risk_level": "high",
+      "block_reason": "crop_contamination_and_handwriting_truncation",
+      "last_validation_summary": {
+        "auto_scored_rate": 0.0,
+        "need_review_rate": 1.0,
+        "consistency_rate": 0.75,
+        "suspected_contamination": true
+      },
+      "notes": "Q2 排版过紧。裁图扩大包含上一题 B 选项，裁图收窄截断学生 C。不得进入 replacement allowlist。"
+    },
+    "Q10": {
+      "question_type": "calculation",
+      "status": "not_objective",
+      "allowed_modes": [],
+      "recommended_for_allowlist": false,
+      "risk_level": "not_applicable"
+    },
+    "Q10(1)": {
+      "question_type": "unknown",
+      "status": "pending",
+      "allowed_modes": [
+        "shadow"
+      ],
+      "recommended_for_allowlist": false,
+      "risk_level": "unknown",
+      "notes": "新题目尚未完成准入验证，禁止 replacement。"
+    },
+    "Q10(2)": {
+      "question_type": "unknown",
+      "status": "pending",
+      "allowed_modes": [
+        "shadow"
+      ],
+      "recommended_for_allowlist": false,
+      "risk_level": "unknown",
+      "notes": "新题目尚未完成准入验证，禁止 replacement。"
+    },
+    "Q11": {
+      "question_type": "calculation",
+      "status": "not_objective",
+      "allowed_modes": [],
+      "recommended_for_allowlist": false,
+      "risk_level": "not_applicable"
+    },
+    "Q11(1)": {
+      "question_type": "unknown",
+      "status": "pending",
+      "allowed_modes": [
+        "shadow"
+      ],
+      "recommended_for_allowlist": false,
+      "risk_level": "unknown",
+      "notes": "新题目尚未完成准入验证，禁止 replacement。"
+    },
+    "Q11(2)": {
+      "question_type": "unknown",
+      "status": "pending",
+      "allowed_modes": [
+        "shadow"
+      ],
+      "recommended_for_allowlist": false,
+      "risk_level": "unknown",
+      "notes": "新题目尚未完成准入验证，禁止 replacement。"
+    },
+    "Q11(3)": {
+      "question_type": "unknown",
+      "status": "pending",
+      "allowed_modes": [
+        "shadow"
+      ],
+      "recommended_for_allowlist": false,
+      "risk_level": "unknown",
+      "notes": "新题目尚未完成准入验证，禁止 replacement。"
+    },
+    "Q12": {
+      "question_type": "proof",
+      "status": "not_objective",
+      "allowed_modes": [],
+      "recommended_for_allowlist": false,
+      "risk_level": "not_applicable"
+    },
+    "Q12(1)": {
+      "question_type": "unknown",
+      "status": "pending",
+      "allowed_modes": [
+        "shadow"
+      ],
+      "recommended_for_allowlist": false,
+      "risk_level": "unknown",
+      "notes": "新题目尚未完成准入验证，禁止 replacement。"
+    },
+    "Q12(2)": {
+      "question_type": "unknown",
+      "status": "pending",
+      "allowed_modes": [
+        "shadow"
+      ],
+      "recommended_for_allowlist": false,
+      "risk_level": "unknown",
+      "notes": "新题目尚未完成准入验证，禁止 replacement。"
+    },
+    "Q12(3)": {
+      "question_type": "unknown",
+      "status": "pending",
+      "allowed_modes": [
+        "shadow"
+      ],
+      "recommended_for_allowlist": false,
+      "risk_level": "unknown",
+      "notes": "新题目尚未完成准入验证，禁止 replacement。"
+    },
+    "Q3": {
+      "question_type": "choice",
+      "status": "pending",
+      "allowed_modes": [
+        "shadow"
+      ],
+      "recommended_for_allowlist": false,
+      "risk_level": "unknown",
+      "notes": "新题目尚未完成准入验证，禁止 replacement。"
+    },
+    "Q4": {
+      "question_type": "choice",
+      "status": "pending",
+      "allowed_modes": [
+        "shadow"
+      ],
+      "recommended_for_allowlist": false,
+      "risk_level": "unknown",
+      "notes": "新题目尚未完成准入验证，禁止 replacement。"
+    },
+    "Q5": {
+      "question_type": "fill_blank",
+      "status": "pending",
+      "allowed_modes": [
+        "shadow"
+      ],
+      "recommended_for_allowlist": false,
+      "risk_level": "unknown",
+      "notes": "新题目尚未完成准入验证，禁止 replacement。"
+    },
+    "Q6": {
+      "question_type": "fill_blank",
+      "status": "pending",
+      "allowed_modes": [
+        "shadow"
+      ],
+      "recommended_for_allowlist": false,
+      "risk_level": "unknown",
+      "notes": "新题目尚未完成准入验证，禁止 replacement。"
+    },
+    "Q7": {
+      "question_type": "fill_blank",
+      "status": "pending",
+      "allowed_modes": [
+        "shadow"
+      ],
+      "recommended_for_allowlist": false,
+      "risk_level": "unknown",
+      "notes": "新题目尚未完成准入验证，禁止 replacement。"
+    },
+    "Q8": {
+      "question_type": "fill_blank",
+      "status": "pending",
+      "allowed_modes": [
+        "shadow"
+      ],
+      "recommended_for_allowlist": false,
+      "risk_level": "unknown",
+      "notes": "新题目尚未完成准入验证，禁止 replacement。"
+    },
+    "Q9": {
+      "question_type": "fill_blank",
+      "status": "pending",
+      "allowed_modes": [
+        "shadow"
+      ],
+      "recommended_for_allowlist": false,
+      "risk_level": "unknown",
+      "notes": "新题目尚未完成准入验证，禁止 replacement。"
+    }
+  }
+}
