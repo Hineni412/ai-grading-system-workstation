@@ -10,7 +10,7 @@ from question_bank.database.schema import connect, initialize_database
 from question_bank.services.question_service import CORE_ANALYSIS_TAG_TYPES
 
 
-FINGERPRINT_VERSION = 1
+FINGERPRINT_VERSION = 2
 FORMAL_EXAM_TYPES = ("期中", "期末", "中考")
 PRACTICE_EXAM_MARKERS = ("同步练习", "专题练习", "练习", "作业")
 SIMPLE_QUESTION_TYPES = ("选择", "填空", "choice", "blank", "fill")
@@ -74,14 +74,38 @@ def frequency_summary(metrics: FrequencyMetrics | None) -> str:
 def build_question_fingerprint(question: Mapping[str, Any]) -> str:
     grouped = _group_tags(question.get("tags", []))
     question_type = _normalize_question_type(question.get("question_type"))
-    knowledge = _first(grouped.get("canonical_knowledge_id")) or _first(grouped.get("knowledge_point"))
-    if not question_type or not knowledge:
+    knowledge_raw = _first(grouped.get("canonical_knowledge_id")) or _first(grouped.get("knowledge_point"))
+    if not question_type or not knowledge_raw:
         return ""
+        
+    from question_bank.taxonomy.registry import get_parent_knowledge_category
+    knowledge = get_parent_knowledge_category(knowledge_raw)
+    
     parts = [question_type, knowledge]
+    
+    # Combine image and context/exploration style features
+    style = _style_features(question)
+    has_img = "有图" if style.get("has_images") else "无图"
+    parts.append(has_img)
+    
+    is_ctx = "情境/探究" if (style.get("is_contextual") or style.get("is_exploratory")) else "普通"
+    parts.append(is_ctx)
+    
     if not _is_simple_question_type(question_type):
         method_or_model = _first(grouped.get("method")) or _first(grouped.get("model"))
         if method_or_model:
             parts.append(method_or_model)
+            
+        diff = style.get("difficulty")
+        if diff is not None:
+            if diff <= 3:
+                diff_lvl = "基础"
+            elif diff <= 7:
+                diff_lvl = "中档"
+            else:
+                diff_lvl = "拔高"
+            parts.append(diff_lvl)
+            
     return "|".join(_compact(part) for part in parts if _compact(part))
 
 
@@ -121,8 +145,9 @@ class QuestionFrequencyService:
                 SELECT q.id
                 FROM questions q
                 LEFT JOIN question_fingerprints qf ON qf.question_id = q.id
-                WHERE q.is_deleted = 0 AND qf.question_id IS NULL
-                """
+                WHERE q.is_deleted = 0 AND (qf.question_id IS NULL OR qf.fingerprint_version <> ?)
+                """,
+                (FINGERPRINT_VERSION,)
             ).fetchall()
             if not rows:
                 return
