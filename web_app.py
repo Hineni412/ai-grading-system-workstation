@@ -5092,7 +5092,7 @@ def _apply_editor_rows_to_template_config(config: dict[str, Any], edited: pd.Dat
         ]
         _rescale_question_scores(question, old_score=old_score, new_score=new_score)
 
-    enforce_integer_scores_by_type(questions, target_total=100)
+    enforce_integer_scores_by_type(questions, target_total=100, max_question_score=12)
     return next_config
 
 
