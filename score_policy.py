@@ -11,7 +11,7 @@ def enforce_integer_scores_by_type(
     questions: list[Any],
     *,
     target_total: int = 100,
-    max_question_score: int = 15,
+    max_question_score: int = 12,
 ) -> None:
     """Force integer question scores.
 

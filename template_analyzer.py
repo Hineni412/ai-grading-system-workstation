@@ -303,7 +303,7 @@ def force_template_total_score(config: dict[str, Any], target_total: float = 100
     if valid_questions and abs(diff) > 0.001:
         last = valid_questions[-1]
         _set_template_question_score(last, round(_safe_float(last.get("max_score"), 0.0) + diff, 2))
-    enforce_integer_scores_by_type(questions, target_total=int(target_total))
+    enforce_integer_scores_by_type(questions, target_total=int(target_total), max_question_score=12)
 
 
 def _set_template_question_score(question: dict[str, Any], new_score: float) -> None:
@@ -840,11 +840,11 @@ def _build_template_analysis_prompt(
         "硬性总分：本系统所有考试批改统一按 100 分制设计。所有 question.max_score 之和必须等于 100；若原卷不是 100 分制，请按原始分值比例换算。\n"
         "单题上限：每一道题 question.max_score 不能超过 12 分，即不能超过总分的 12%。解答题可以拆成多个小问 parts 分别赋分，但整道题 max_score 仍不得超过 12。\n"
         "硬性赋分：所有 max_score、part_score、step_score、proof_obligations.weight、deduction_policy.max_deduction 都必须是整数，不能出现 2.5、3.33 这类小数。\n"
-        "同类同分：相同 question_type 的题目必须分值完全相同。例如所有 choice 题同分，所有 fill_blank 题同分，不能出现有的选择题3分、有的选择题4分。\n"
+        "同类同分（仅客观题）：相同 question_type 的客观题必须分值完全相同。例如所有 choice 题同分，所有 fill_blank 题同分，不能出现有的选择题3分、有的选择题4分。解答类大题（calculation/proof/comprehensive）不要求同类同分，可按题目难度与工作量赋予不同分值。\n"
         "分值层级：选择题(choice)单题分值必须小于或等于填空题(fill_blank)，且两者差距不要超过50%（即 choice_score >= fill_blank_score * 0.5）；choice/fill_blank 的单题分值必须小于或等于解答类题目的单题分值。\n"
         "题型细分：解答类题目不要全部写成一种类型，可按实际任务分为 calculation（计算/求解）、proof（证明）、comprehensive（一般综合解答）等多种 question_type。\n"
         "题型纠偏：只有题目明确要求“证明、求证、说明某结论成立、补全证明过程”时才标为 proof；如果题目主要要求求角度、求长度、求周长、求面积、求值、计算、化简或解方程，即使用到几何性质/全等/平行/垂直判定，也应标为 calculation。comprehensive 用于同时包含证明、计算或开放论述的混合型题。\n"
-        "若图片/文档中的原始分值与“100分制、整数、同类同分、选择题≤填空题且差距不超过50%、客观题不高于解答题”冲突，请优先按这些规则重新设计赋分。\n"
+        "若图片/文档中的原始分值与“100分制、整数、客观题同类同分、选择题≤填空题且差距不超过50%、客观题不高于解答题”冲突，请优先按这些规则重新设计赋分。\n"
         "不要输出作答区域坐标，regions 必须为空数组，作答区域由用户后续人工标定。\n"
         "题型严格区分(客观题)：题干或选项中明确包含 A、B、C、D 供选的题目是 choice (选择题)；如果只是要求填入一个最终结果而没有任何候选项，必须标记为 fill_blank (填空题)。坚决不要把没有选项的填空题标记为 choice！\n"
         "语言要求：所有的 core_goal、description、outline、issue 等描述性字段必须全部使用中文，严禁使用英文！\n\n"
@@ -911,7 +911,7 @@ def _build_template_analysis_prompt(
         f"1.2) knowledge_name 必须是精炼、标准的数学知识点名词（如“全等三角形的判定定理”、“实数的混合运算”）。严禁摘抄题干文本！字数控制在 15 个字以内。\n"
         "1.3) 每道题必须提取 knowledge_id 和 knowledge_points。保持高度的一致性：对于考查相同知识点的不同题目，必须输出完全相同的 knowledge_name，避免图谱碎片化！\n"
         "2) 每题 max_score 必须为整数；每题 parts.part_score 之和必须等于 max_score；每个 part 的 steps.step_score 之和必须等于 part_score，且不得出现小数。\n"
-        "2.1) 相同 question_type 的题目 max_score 必须完全一致。\n"
+        "2.1) 相同 question_type 的客观题（choice/fill_blank）max_score 必须完全一致；解答类大题（calculation/proof/comprehensive）允许不同分值。\n"
         "2.2) choice 的 max_score 必须小于或等于 fill_blank，且不得低于 fill_blank 的 50%；choice/fill_blank 的 max_score 必须小于或等于 calculation/proof/comprehensive 的 max_score。\n"
         "2.3) 任意 question.max_score 必须小于或等于 12；若大题有多问，请在 parts 中拆分小问分值，不要让整题超过 12。\n"
         "3) 若无法确定分值，max_score 可填 0，并在 warnings 写明，方便用户后续补填。\n"

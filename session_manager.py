@@ -18,7 +18,11 @@ from docx.text.paragraph import Paragraph
 from equivalence_engine import merge_equivalent_forms
 from llm_client import LLMClient
 from question_bank.services.ai_tagging_service import KNOWLEDGE_POINT_OPTIONS
-from score_policy import enforce_integer_scores_by_type
+from score_policy import (
+    enforce_integer_scores_by_type,
+    OBJECTIVE_TYPES,
+    _normalize_type,
+)
 
 
 DEFAULT_CONFIG_GENERATION_TIMEOUT_SECONDS = 600.0
@@ -2105,9 +2109,12 @@ def validate_generated_config(payload: dict[str, Any]) -> None:
             raise ValueError(f"rubric.questions[{idx - 1}].max_score must be an integer")
         if max_score > 12:
             raise ValueError(f"rubric.questions[{idx - 1}].max_score must not exceed 12")
-        if qtype in scores_by_type and abs(scores_by_type[qtype] - max_score) > 1e-6:
-            raise ValueError(f"All questions with question_type={qtype} must use the same max_score")
-        scores_by_type[qtype] = max_score
+        # 同类同分仅约束客观题（choice/fill_blank/judgement/true_false）；
+        # 解答类大题（calculation/proof/comprehensive）允许各题分值不同。
+        if _normalize_type(qtype) in OBJECTIVE_TYPES:
+            if qtype in scores_by_type and abs(scores_by_type[qtype] - max_score) > 1e-6:
+                raise ValueError(f"All questions with question_type={qtype} must use the same max_score")
+            scores_by_type[qtype] = max_score
 
         parts = item.get("parts")
         if not isinstance(parts, list) or not parts:
@@ -2204,11 +2211,11 @@ def _build_generation_prompt(doc_text: str) -> str:
         "硬性总分：本系统所有考试批改统一按 100 分制设计。rubric.total_score 必须等于 100，所有题目 max_score 之和必须等于 100；若原卷不是 100 分制，请按原始分值比例换算。\n"
         "单题上限：每一道题 question.max_score 不能超过 12 分，即不能超过总分的 12%。解答题可以拆成多个小问 parts 分别赋分，但整道题 max_score 仍不得超过 12。\n"
         "硬性赋分：所有 max_score、part_score、step_score、proof_obligations.weight、deduction_policy.max_deduction 都必须是整数，不能出现 2.5、3.33 这类小数。\n"
-        "同类同分：相同 question_type 的题目必须分值完全相同。例如所有 choice 题同分，所有 fill_blank 题同分，不能出现有的选择题3分、有的选择题4分。\n"
+        "同类同分（仅客观题）：相同 question_type 的客观题必须分值完全相同。例如所有 choice 题同分，所有 fill_blank 题同分，不能出现有的选择题3分、有的选择题4分。解答类大题（calculation/proof/comprehensive）不要求同类同分，可按题目难度与工作量赋予不同分值。\n"
         "分值层级：选择题(choice)单题分值必须小于或等于填空题(fill_blank)，且两者差距不要超过50%（即 choice_score >= fill_blank_score * 0.5）；choice/fill_blank 的单题分值必须小于或等于解答类题目的单题分值。\n"
         "题型细分：解答类题目不要全部写成一种类型，可按实际任务分为 calculation（计算/求解）、proof（证明）、comprehensive（一般综合解答）等多种 question_type。\n"
         "题型纠偏：只要题目要求证明、求证、说明理由、说明某结论成立、补全证明过程、判断并说明、添加条件使结论能够推出，就应标为 proof；如果题目主要要求求角度、求长度、求周长、求面积、求值、计算、化简或解方程，且不要求证明/说明理由，才标为 calculation。comprehensive 用于同时包含证明、计算、作图或开放论述的混合型题。\n"
-        "若原卷分值与“100分制、整数、同类同分、选择题≤填空题且差距不超过50%、客观题不高于解答题”冲突，请优先按这些规则重新设计赋分。\n"
+        "若原卷分值与“100分制、整数、客观题同类同分、选择题≤填空题且差距不超过50%、客观题不高于解答题”冲突，请优先按这些规则重新设计赋分。\n"
         "特别要求：证明题/解答题不要把参考答案路径当作唯一标准；应抽象成 proof_obligations（证明义务）和 deduction_policy（扣分规则）。\n"
         "必须覆盖 Word 中出现的全部题目，包括选择题、填空题、判断题、客观题和解答题；禁止只生成大题或只生成答案解析部分。\n"
         "如果 Word 中有选择题/填空题，即使评分逻辑简单，也必须在 rubric.questions 和 answer_key.questions 中逐题列出。\n"
@@ -2296,7 +2303,7 @@ def _build_generation_prompt(doc_text: str) -> str:
         "1.2) 一道题可以涉及多个知识点。若题目同时考查多个数学概念，必须输出 knowledge_ids 数组和 knowledge_points 数组；knowledge_id 只作为主知识点，取 knowledge_ids 的第一项。\n"
         "2) max_score、part_score、step_score 必须为整数且层级总分一致；不得输出小数。\n"
         "2.1) 整张试卷总分必须严格为 100 分，不能返回 10 分、120 分或其他总分。\n"
-        "2.2) 相同 question_type 的题目 max_score 必须完全一致。\n"
+        "2.2) 相同 question_type 的客观题（choice/fill_blank）max_score 必须完全一致；解答类大题（calculation/proof/comprehensive）允许不同分值。\n"
         "2.3) choice 的 max_score 必须小于或等于 fill_blank，且不得低于 fill_blank 的 50%；choice/fill_blank 的 max_score 必须小于或等于 calculation/proof/comprehensive 的 max_score。\n"
         "2.4) 任意 question.max_score 必须小于或等于 12；若大题有多问，请在 parts 中拆分小问分值，不要让整题超过 12。\n"
         "3) 对选择题/填空题，question_type 必须分别是 choice 或 fill_blank，parts 可只有一个，steps 可只有一个 direct-answer 步骤。\n"
