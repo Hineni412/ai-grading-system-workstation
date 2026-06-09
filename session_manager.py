@@ -303,6 +303,267 @@ def preview_question_blocks_from_docx_text(doc_text: str) -> list[dict[str, Any]
     return _extract_local_question_blocks(doc_text)
 
 
+_INLINE_IMAGE_MARKER = re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]")
+
+
+def preview_question_blocks_from_docx_bytes(
+    file_bytes: bytes,
+    *,
+    fallback_doc_text: str = "",
+) -> list[dict[str, Any]]:
+    """富文本拆题预览（复用题库 import_docx），保留公式 HTML 与图片，不调用 AI。
+
+    解析失败时回退到纯文本拆题（preview_question_blocks_from_docx_text）。
+    """
+    try:
+        rich_blocks = _extract_rich_question_blocks(file_bytes)
+    except Exception:
+        rich_blocks = None
+    if rich_blocks:
+        return rich_blocks
+    return preview_question_blocks_from_docx_text(fallback_doc_text or "")
+
+
+def _extract_rich_question_blocks(file_bytes: bytes) -> list[dict[str, Any]] | None:
+    """用题库 import_docx + map_rich_content_by_number 提取每题富文本块。"""
+    from question_bank.importers.docx_importer import import_docx
+    from question_bank.importers.batch_importer import map_rich_content_by_number
+
+    tmp_dir = Path(_resolve_upload_config_dir())
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    tmp_path = tmp_dir / f"_rich_split_{ts}.docx"
+    tmp_path.write_bytes(file_bytes)
+    try:
+        extracted = import_docx(tmp_path)
+        content = map_rich_content_by_number(
+            extracted.rich_paragraphs, source_file=str(tmp_path)
+        )
+    finally:
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
+
+    question_map = content.get("question") if isinstance(content, dict) else {}
+    answer_map = content.get("answer") if isinstance(content, dict) else {}
+    if not isinstance(question_map, dict) or not question_map:
+        return None
+
+    # 题号按数值升序
+    def _num_key(k: str) -> int:
+        try:
+            return int(str(k).strip())
+        except (TypeError, ValueError):
+            return 999
+
+    choice_answers = _extract_choice_answer_sequence(
+        _rich_blocks_plain_text(_flatten_answer_blocks(answer_map))
+    )
+
+    blocks: list[dict[str, Any]] = []
+    for num_key in sorted(question_map.keys(), key=_num_key):
+        number = _num_key(num_key)
+        if not (1 <= number <= 99):
+            continue
+        q_blocks = question_map.get(num_key) or []
+        a_blocks = answer_map.get(num_key) if isinstance(answer_map, dict) else None
+        block = _parse_rich_question_blocks(number, q_blocks, a_blocks, choice_answers)
+        if block:
+            blocks.append(block)
+    return blocks or None
+
+
+def _flatten_answer_blocks(answer_map: Any) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    if isinstance(answer_map, dict):
+        for _k, blocks in answer_map.items():
+            if isinstance(blocks, list):
+                out.extend(b for b in blocks if isinstance(b, dict))
+    return out
+
+
+def _rich_block_text(block: Any) -> str:
+    if isinstance(block, dict):
+        return str(block.get("text") or "")
+    return str(block or "")
+
+
+def _rich_blocks_plain_text(blocks: list[Any]) -> str:
+    parts = [_rich_block_text(b) for b in blocks]
+    return _strip_inline_html(_INLINE_IMAGE_MARKER.sub("", "\n".join(parts)))
+
+
+def _strip_inline_html(value: str) -> str:
+    """去掉公式 HTML 标签，得到可用于答案/题型推断的纯文本。"""
+    text = re.sub(r"</?(?:sub|sup|u|table|tbody|tr|td|th|br)\b[^>]*>", "", str(value or ""), flags=re.IGNORECASE)
+    return text
+
+
+def _image_paths_from_rich_text(value: str) -> list[str]:
+    seen: list[str] = []
+    for m in _INLINE_IMAGE_MARKER.finditer(str(value or "")):
+        p = m.group("path").strip()
+        if p and p not in seen:
+            seen.append(p)
+    return seen
+
+
+def _parse_answer_section_blocks(answer_blocks: list[Any]) -> tuple[str, str]:
+    """从卷末"参考答案"块中提取（最终答案, 解答过程）。
+
+    答案块通常重列了题干/选项，需跳过；只保留 【分析】/【解答】 后、【点评】 前的解答内容，
+    并优先抽取"故选X""故答案为：X"作为最终答案。
+    """
+    in_solution = False
+    solution_lines: list[str] = []
+    final_answer = ""
+    for blk in answer_blocks:
+        text = _rich_block_text(blk)
+        for raw in (text.splitlines() if "\n" in text else [text]):
+            line = str(raw or "").strip()
+            if not line:
+                continue
+            if "【点评】" in line or "【点睛】" in line:
+                in_solution = False
+                continue
+            if "【解答】" in line or "【分析】" in line or "【解析】" in line:
+                in_solution = True
+                marker = next(m for m in ("【解答】", "【分析】", "【解析】") if m in line)
+                after = line.split(marker, 1)[1].strip()
+                if after:
+                    solution_lines.append(after)
+                continue
+            if line.startswith("【") and "】" in line:
+                # 其他标记（如【答案】）后内容并入解答
+                in_solution = True
+                after = line.split("】", 1)[1].strip()
+                if after:
+                    solution_lines.append(after)
+                continue
+            if in_solution:
+                solution_lines.append(line)
+
+    solution_text = "\n".join(solution_lines).strip()
+    # 抽取最终答案：故选X / 故答案为：X
+    plain = _strip_inline_html(_INLINE_IMAGE_MARKER.sub("", solution_text))
+    m = re.search(r"故\s*选\s*[:：]?\s*([A-Da-d]+)", plain)
+    if m:
+        final_answer = m.group(1).upper()
+    else:
+        m = re.search(r"故\s*答\s*案\s*为\s*[:：]?\s*([^。\n．]+)", plain)
+        if m:
+            final_answer = m.group(1).strip().rstrip("．.")
+    return final_answer, solution_text
+
+
+def _parse_rich_question_blocks(
+    number: int,
+    question_blocks: list[Any],
+    answer_blocks: list[Any] | None,
+    choice_answers: dict[str, str],
+) -> dict[str, Any] | None:
+    """把单题的富文本块（题干区，含内联【答案】【解析】）拆成 题干/答案/解析 富文本。"""
+    # 题干区逐行送入分桶（沿用纯文本分桶逻辑），保留 HTML 公式与 [[IMAGE:]] 标记
+    lines: list[str] = []
+    for blk in question_blocks:
+        text = _rich_block_text(blk)
+        lines.extend(text.splitlines() if "\n" in text else [text])
+
+    bucket = "stem"
+    stem_lines: list[str] = []
+    answer_lines: list[str] = []
+    analysis_lines: list[str] = []
+    for raw in lines:
+        line = str(raw or "").strip()
+        if not line:
+            continue
+        if "【答案】" in line:
+            bucket = "answer"
+            after = line.split("【答案】", 1)[1].strip()
+            if after:
+                answer_lines.append(after)
+            continue
+        if ("【解析】" in line) or ("【点睛】" in line):
+            bucket = "analysis"
+            marker = "【解析】" if "【解析】" in line else "【点睛】"
+            after = line.split(marker, 1)[1].strip()
+            if after:
+                analysis_lines.append(after)
+            continue
+        if line.startswith("【") and "】" in line:
+            bucket = "analysis"
+            after = line.split("】", 1)[1].strip()
+            if after:
+                analysis_lines.append(after)
+            continue
+        if bucket == "stem":
+            stem_lines.append(line)
+        elif bucket == "answer":
+            answer_lines.append(line)
+        else:
+            analysis_lines.append(line)
+
+    # 若题干区没有内联答案，但存在独立答案块（卷末"参考答案"区），从中解析。
+    # 答案块结构通常为：[重列题干/选项] 【分析】… 【解答】…故选C/故答案为：X 【点评】…
+    # 需跳过重列的题干/选项，只取标记后的解答与最终答案。
+    if answer_blocks and not answer_lines:
+        ans_final, ana_text = _parse_answer_section_blocks(answer_blocks)
+        if ans_final:
+            answer_lines.append(ans_final)
+        if ana_text and not analysis_lines:
+            analysis_lines.append(ana_text)
+
+    question_html = _strip_leading_question_number(number, "\n".join(stem_lines).strip())
+    answer_html = "\n".join(answer_lines).strip()
+    analysis_html = "\n".join(analysis_lines).strip()
+
+    image_paths = _image_paths_from_rich_text(question_html)
+
+    question_text = _strip_inline_html(_INLINE_IMAGE_MARKER.sub("", question_html)).strip()
+    answer_text = _strip_inline_html(_INLINE_IMAGE_MARKER.sub("", answer_html)).strip()
+
+    if not question_text and not answer_text and not analysis_html and not image_paths:
+        return None
+
+    num_str = str(number)
+    qtype = _infer_local_question_type(question_text, answer_text, num_str)
+    canonical = _extract_canonical_answer_for_local_question(
+        number=num_str,
+        qtype=qtype,
+        question_text=question_text,
+        answer_text=answer_text,
+        choice_answers=choice_answers,
+    )
+    accepted = _local_accepted_forms(canonical, qtype)
+    has_answer = bool(answer_text or canonical)
+    return {
+        "question_id": f"Q{number}",
+        "text": question_text,
+        "question_text": question_text,
+        "question_html": question_html,
+        "answer_text": answer_text,
+        "answer_html": answer_html,
+        "analysis": _strip_inline_html(analysis_html).strip(),
+        "analysis_html": analysis_html,
+        "image_paths": image_paths,
+        "question_type": qtype,
+        "canonical_answer": canonical,
+        "accepted_forms": accepted,
+        "local_answer_trusted": has_answer,
+        "needs_review": (not bool(canonical)) if qtype in {"choice", "fill_blank"} else False,
+    }
+
+
+def _resolve_upload_config_dir() -> str:
+    try:
+        from path_manager import PathManager  # type: ignore
+
+        return str(PathManager().upload_config_dir)
+    except Exception:
+        return str(Path.cwd() / "user_data" / "config" / "uploaded")
+
+
 def generate_grading_config_from_confirmed_blocks(
     confirmed_blocks: list[dict[str, Any]],
     doc_text: str,
