@@ -294,7 +294,171 @@ def _generate_grading_config_by_question_blocks(
     return merged
 
 
+def preview_question_blocks_from_docx_text(doc_text: str) -> list[dict[str, Any]]:
+    """本地拆题预览，不调用任何 AI。
+
+    供 UI 在发送 AI 之前展示拆题结果，让人工确认每道题拆分是否正确、答案是否靠谱、
+    题型判断是否准确（可在预览中删题或切换题型）。直接复用本地拆题逻辑。
+    """
+    return _extract_local_question_blocks(doc_text)
+
+
+def generate_grading_config_from_confirmed_blocks(
+    confirmed_blocks: list[dict[str, Any]],
+    doc_text: str,
+    llm_client: LLMClient,
+    model_name: str | None = None,
+    report: Any = None,
+    q_images: dict[str, str] = None,
+) -> dict[str, Any]:
+    """用人工确认后的题块直接进入单题并发生成 + 统一赋分管线，跳过重新拆题。
+
+    confirmed_blocks 应来自 preview_question_blocks_from_docx_text 的输出，
+    经人工删除/题型修正后传入。
+    """
+    return _generate_grading_config_by_question_blocks(
+        confirmed_blocks,
+        doc_text,
+        llm_client,
+        model_name=model_name,
+        report=report,
+        q_images=q_images,
+    )
+
+
+def _parse_inline_answer_blocks(doc_text: str) -> list[dict[str, Any]] | None:
+    """解析"题干 + 【答案】 + 【解析】逐题穿插"格式的试卷（纯本地，不调 AI）。
+
+    返回 None 表示该文本不是内联格式（无【答案】/【解析】标记），交回上层兜底逻辑。
+    通过"题号必须单调递增"截断文件后半段重复的答案详解区，避免重复拆题。
+    """
+    text = str(doc_text or "")
+    if ("【答案】" not in text) and ("【解析】" not in text):
+        return None
+
+    lines = text.splitlines()
+    # 1. 找题号边界：行首 数字. / 数字．，题号单调递增；回退即停止
+    markers: list[tuple[int, int]] = []  # (line_index, number)
+    last_number = 0
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        m = re.match(r"^(\d{1,2})\s*[.．]", stripped)
+        if not m:
+            continue
+        number = int(m.group(1))
+        if not (1 <= number <= 99):
+            continue
+        if markers and number <= last_number:
+            break  # 题号回退 → 进入答案详解重复区，停止切题
+        markers.append((idx, number))
+        last_number = number
+
+    if not markers:
+        return None
+
+    answer_section_for_choice = _local_answer_section_text(text)
+    choice_answers = _extract_choice_answer_sequence(answer_section_for_choice)
+
+    blocks: list[dict[str, Any]] = []
+    for pos, (start, number) in enumerate(markers):
+        end = markers[pos + 1][0] if pos + 1 < len(markers) else len(lines)
+        segment_lines = lines[start:end]
+        parsed = _parse_inline_segment(number, segment_lines, choice_answers)
+        if parsed:
+            blocks.append(parsed)
+
+    return blocks or None
+
+
+def _parse_inline_segment(
+    number: int,
+    segment_lines: list[str],
+    choice_answers: dict[str, str],
+) -> dict[str, Any] | None:
+    """把单道题的文本段拆成 题干 / 答案 / 解析。"""
+    # 分类收集：题干 / 【答案】 / 【解析】(含【点睛】)
+    bucket = "stem"  # stem | answer | analysis
+    stem_lines: list[str] = []
+    answer_lines: list[str] = []
+    analysis_lines: list[str] = []
+
+    for raw in segment_lines:
+        line = str(raw or "").strip()
+        if not line:
+            continue
+        if line.startswith("[公式:") or line.startswith("[公式："):
+            continue  # 忽略公式占位行
+        if "【答案】" in line:
+            bucket = "answer"
+            after = line.split("【答案】", 1)[1].strip()
+            if after:
+                answer_lines.append(after)
+            continue
+        if ("【解析】" in line) or ("【点睛】" in line):
+            bucket = "analysis"
+            marker = "【解析】" if "【解析】" in line else "【点睛】"
+            after = line.split(marker, 1)[1].strip()
+            if after:
+                analysis_lines.append(after)
+            continue
+        if line.startswith("【") and "】" in line:
+            # 其他【…】标记（如【难度】），归入解析区尾部，避免污染题干
+            bucket = "analysis"
+            after = line.split("】", 1)[1].strip()
+            if after:
+                analysis_lines.append(after)
+            continue
+        if bucket == "stem":
+            stem_lines.append(line)
+        elif bucket == "answer":
+            answer_lines.append(line)
+        else:
+            analysis_lines.append(line)
+
+    question_text = _strip_leading_question_number(number, "\n".join(stem_lines).strip())
+    answer_raw = "\n".join(answer_lines).strip()
+    analysis_raw = "\n".join(analysis_lines).strip()
+
+    if not question_text and not answer_raw and not analysis_raw:
+        return None
+
+    num_str = str(number)
+    qtype = _infer_local_question_type(question_text, answer_raw, num_str)
+    canonical = _extract_canonical_answer_for_local_question(
+        number=num_str,
+        qtype=qtype,
+        question_text=question_text,
+        answer_text=answer_raw,
+        choice_answers=choice_answers,
+    )
+    accepted = _local_accepted_forms(canonical, qtype)
+    has_answer = bool(answer_raw or canonical)
+    return {
+        "question_id": f"Q{number}",
+        "text": question_text,
+        "question_text": question_text,
+        "answer_text": answer_raw,
+        "analysis": analysis_raw,
+        "question_type": qtype,
+        "canonical_answer": canonical,
+        "accepted_forms": accepted,
+        "local_answer_trusted": has_answer,
+        "needs_review": (not bool(canonical)) if qtype in {"choice", "fill_blank"} else False,
+    }
+
+
+def _strip_leading_question_number(number: int, text: str) -> str:
+    """去掉题干开头的"N." / "N．" / "N.(本小题X分)"等题号前缀。"""
+    value = str(text or "").lstrip()
+    value = re.sub(rf"^{number}\s*[.．]\s*", "", value, count=1)
+    return value.strip()
+
+
 def _extract_local_question_blocks(doc_text: str) -> list[dict[str, Any]]:
+    inline_blocks = _parse_inline_answer_blocks(doc_text)
+    if inline_blocks:
+        return inline_blocks
+
     parsed_questions: list[Any] = []
     try:
         from question_bank.importers.batch_importer import parse_paper_text
@@ -303,6 +467,22 @@ def _extract_local_question_blocks(doc_text: str) -> list[dict[str, Any]]:
         parsed_questions = list(parsed.questions)
     except Exception:
         parsed_questions = []
+
+    # 第二道防线：题号必须单调递增；一旦回退（如卷末答案详解区从1重列）即截断，避免重复拆题。
+    if parsed_questions:
+        truncated: list[Any] = []
+        last_number = 0
+        for item in parsed_questions:
+            number_str = str(getattr(item, "question_number", "") or "").strip()
+            if not number_str.isdigit():
+                truncated.append(item)
+                continue
+            number = int(number_str)
+            if truncated and number <= last_number:
+                break
+            truncated.append(item)
+            last_number = number
+        parsed_questions = truncated
 
     answer_section = _local_answer_section_text(doc_text)
     answer_blocks = _local_answer_blocks(answer_section)

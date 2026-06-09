@@ -46,8 +46,10 @@ from session_cleanup import hard_delete_session_from_recycle_bin
 from session_manager import (
     extract_docx_text,
     force_payload_total_score,
+    generate_grading_config_from_confirmed_blocks,
     generate_grading_config_from_docx_text,
     generate_grading_config_from_docx_text_legacy,
+    preview_question_blocks_from_docx_text,
     refine_grading_config_from_manual_structure,
     save_generated_config,
 )
@@ -1921,14 +1923,161 @@ def render_config_and_session_tab(
                     st.error(f"生成失败：{exc}")
 
             use_text_only = st.checkbox(
-                "旧版整卷文本模式（按旧项目逻辑直接把提取文本交给 AI，不走拆题并发或全卷图像模式）",
-                value=True,
+                "旧版整卷文本模式（直接把整份提取文本交给 AI 一次性生成，不走拆题预览与单题并发）",
+                value=False,
                 key="config_generation_use_text_only",
-                disabled=True,
+                help="勾选走旧逻辑：一次性整卷生成，速度慢且易超分值上限。默认不勾选，走本地拆题预览 + 人工确认 + 单题并发。",
             )
 
-            if st.button("AI 生成评分标准", key="generate_from_word_btn", type="primary"):
-                run_word_config_generation(use_text_only=use_text_only)
+            if use_text_only:
+                if st.button("AI 生成评分标准（整卷）", key="generate_from_word_btn", type="primary"):
+                    run_word_config_generation(use_text_only=True)
+            else:
+                _QTYPE_LABELS = {
+                    "choice": "选择",
+                    "fill_blank": "填空",
+                    "calculation": "计算",
+                    "proof": "证明",
+                    "comprehensive": "综合",
+                }
+                _QTYPE_LABEL_OPTIONS = ["选择", "填空", "计算", "证明", "综合"]
+                _QTYPE_FROM_LABEL = {v: k for k, v in _QTYPE_LABELS.items()}
+
+                def run_split_preview() -> None:
+                    try:
+                        if word_upload is None:
+                            raise ValueError("请先上传 .docx 或 .pdf 文件")
+                        word_bytes = word_upload.getvalue()
+                        is_pdf = word_upload.name.lower().endswith(".pdf")
+                        if is_pdf:
+                            from rubric_auto_cropper import extract_pdf_text
+                            doc_text = extract_pdf_text(word_bytes)
+                        else:
+                            doc_text = extract_docx_text(word_bytes)
+                        blocks = preview_question_blocks_from_docx_text(doc_text)
+                        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        st.session_state.pending_question_blocks = blocks
+                        st.session_state.pending_doc_text = doc_text
+                        st.session_state.pending_doc_ts = ts
+                        st.session_state.generated_config_payload = None
+                        st.session_state.generated_doc_name = word_upload.name
+                        st.session_state.generated_doc_bytes = word_bytes
+                        if not blocks:
+                            st.warning("本地未能拆分出任何题目，请检查文档格式或改用旧版整卷模式。")
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"拆题失败：{exc}")
+
+                if st.button("① 拆分试卷（本地预览，不调用 AI）", key="split_preview_btn"):
+                    run_split_preview()
+
+                pending_blocks = st.session_state.get("pending_question_blocks")
+                if pending_blocks:
+                    total_n = len(pending_blocks)
+                    review_n = sum(
+                        1 for b in pending_blocks
+                        if b.get("needs_review") or not b.get("local_answer_trusted")
+                    )
+                    st.caption(
+                        f"共拆出 {total_n} 题"
+                        + (f"，其中 {review_n} 题答案待人工确认（⚠️）。请核对题型与答案，删除拆错/多余的题后再生成。"
+                           if review_n else "，答案均已提取。请核对题型与答案后再生成。")
+                    )
+
+                    def _render_block_card(i: int, b: dict) -> None:
+                        qid = str(b.get("question_id") or f"Q{i + 1}")
+                        cur_type = str(b.get("question_type") or "comprehensive")
+                        cur_label = _QTYPE_LABELS.get(cur_type, "综合")
+                        flagged = bool(b.get("needs_review") or not b.get("local_answer_trusted"))
+                        with st.container(border=True):
+                            head = st.columns([0.18, 0.34, 0.48])
+                            with head[0]:
+                                st.markdown(f"**{qid.replace('Q', '第')}题**" + ("　⚠️" if flagged else ""))
+                            with head[1]:
+                                st.selectbox(
+                                    "题型",
+                                    options=_QTYPE_LABEL_OPTIONS,
+                                    index=_QTYPE_LABEL_OPTIONS.index(cur_label)
+                                    if cur_label in _QTYPE_LABEL_OPTIONS else 4,
+                                    key=f"qtype_{i}",
+                                    label_visibility="collapsed",
+                                )
+                            with head[2]:
+                                st.checkbox(
+                                    "删除此题（不进入 AI 生成）",
+                                    value=False,
+                                    key=f"del_{i}",
+                                )
+                            stem = str(b.get("question_text") or b.get("text") or "").strip()
+                            st.markdown(stem or "_（题干为空）_")
+                            ans = str(b.get("canonical_answer") or b.get("answer_text") or "").strip()
+                            analysis = str(b.get("analysis") or "").strip()
+                            exp_label = "查看答案与解析/证明过程" + ("（⚠️ 答案缺失，请核对）" if flagged else "")
+                            with st.expander(exp_label, expanded=False):
+                                st.markdown("**答案**：" + (ans if ans else "_未提取到，建议人工核对原卷_"))
+                                if analysis:
+                                    st.markdown("**解析 / 证明过程**：")
+                                    st.markdown(analysis)
+
+                    for _i, _b in enumerate(pending_blocks):
+                        _render_block_card(_i, _b)
+
+
+                    def run_confirmed_generation() -> None:
+                        try:
+                            if llm_settings is None:
+                                raise ValueError("请先在左侧配置 API Key/Base URL")
+                            confirmed_blocks: list[dict[str, Any]] = []
+                            for i, block in enumerate(pending_blocks):
+                                if st.session_state.get(f"del_{i}"):
+                                    continue
+                                new_block = dict(block)
+                                chosen_label = str(st.session_state.get(f"qtype_{i}") or "")
+                                new_block["question_type"] = _QTYPE_FROM_LABEL.get(
+                                    chosen_label,
+                                    new_block.get("question_type") or "comprehensive",
+                                )
+                                confirmed_blocks.append(new_block)
+                            if not confirmed_blocks:
+                                raise ValueError("没有可生成的题目（是否全部勾选了删除？）")
+                            doc_text = str(st.session_state.get("pending_doc_text") or "")
+                            ts = str(
+                                st.session_state.get("pending_doc_ts")
+                                or datetime.now().strftime("%Y%m%d_%H%M%S")
+                            )
+
+                            def generate_work(report) -> dict[str, Any]:
+                                llm_client = LLMClient(llm_settings)
+                                report(
+                                    0.10,
+                                    "单题并发生成",
+                                    f"已确认 {len(confirmed_blocks)} 题，开始单题并发生成评分标准结构。",
+                                )
+                                payload = generate_grading_config_from_confirmed_blocks(
+                                    confirmed_blocks,
+                                    doc_text,
+                                    llm_client=llm_client,
+                                    model_name=llm_settings.config_model,
+                                    report=report,
+                                )
+                                report(0.98, "校验结构完成")
+                                return payload
+
+                            payload = _run_with_stage_progress(
+                                "AI 评分标准生成（单题并发）",
+                                generate_work,
+                                done_text="预览准备就绪",
+                            )
+                            st.session_state.generated_config_payload = payload
+                            generated_raw_path = UPLOAD_CONFIG_DIR / f"generated_config_preview_{ts}.json"
+                            _write_compact_json_file(generated_raw_path, payload)
+                            st.success(
+                                f"AI 已生成评分标准（已确认 {len(confirmed_blocks)} 题），请先预览再确认保存。"
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            st.error(f"生成失败：{exc}")
+
+                    if st.button("② 确认无误，生成评分标准", key="generate_from_blocks_btn", type="primary"):
+                        run_confirmed_generation()
             payload = st.session_state.generated_config_payload
             if payload is not None:
                 preview_ready = _render_generated_config_preview(payload, st.session_state.generated_doc_name)
@@ -5546,6 +5695,7 @@ def _render_region_editor_legacy(
         _has_canvas = False
 
     question_candidates = _load_question_id_candidates(session)
+    parent_question_ids = _load_parent_question_ids(session)
     regions: list[dict[str, Any]] = db.list_answer_regions(session_id)
 
     # Cache regions in session_state so edits survive reruns within the same interaction
@@ -5686,7 +5836,11 @@ def _render_region_editor_legacy(
                 st.markdown("**题框映射表（选中行高亮对应框）**")
 
                 if question_candidates:
-                    st.caption("可用题号：" + ", ".join(question_candidates))
+                    _units_legacy = [
+                        o for o in _region_binding_options(question_candidates, parent_question_ids)
+                        if o and o != STUDENT_NAME_REGION_ID
+                    ]
+                    st.caption("可用题号：" + "、".join(_units_legacy))
 
                 if st.button("新增作答区", key=f"add_region_{session_id}_{page}", use_container_width=True):
                     new_order = max((int(r.get("region_order", 0)) for r in regions), default=0) + 1
@@ -5723,7 +5877,7 @@ def _render_region_editor_legacy(
                                 st.session_state[sel_key] = glob_i
                                 st.rerun()
                         with row_cols[1]:
-                            qid_options = _region_binding_options(question_candidates)
+                            qid_options = _region_binding_options(question_candidates, parent_question_ids)
                             cur_qid = str(r.get("mapped_question_id") or "")
                             try:
                                 cur_idx = qid_options.index(cur_qid)
@@ -5733,7 +5887,7 @@ def _render_region_editor_legacy(
                                 "题号",
                                 options=qid_options,
                                 index=cur_idx,
-                                format_func=_region_binding_label,
+                                format_func=lambda v: _region_binding_label(v, parent_question_ids),
                                 key=f"qid_sel_{session_id}_{page}_{glob_i}",
                                 label_visibility="collapsed",
                             )
@@ -5901,12 +6055,82 @@ def _region_canvas_label(region: dict[str, Any], fallback_order: int) -> str:
     return qid or f"#{region.get('region_order', fallback_order)}"
 
 
-def _region_binding_options(question_candidates: list[str]) -> list[str]:
-    return ["", STUDENT_NAME_REGION_ID, *question_candidates]
+def _load_parent_question_ids(session: dict[str, Any]) -> list[str]:
+    """提取有小问的大题题号（如 Q10、Q11），用于在映射表下拉中释放"整道大题"选项。
+
+    _load_question_id_candidates 默认只列小问以保证自动增量绑定按最小单元顺序进行；
+    本函数单独提供大题题号，仅用于人工下拉选择，不影响自动绑定顺序。
+    """
+    path = _resolve_session_file_path(session.get("rubric_path"))
+    if not path.exists():
+        return []
+    try:
+        rubric = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    parent_ids: list[str] = []
+    questions = rubric.get("questions") if isinstance(rubric, dict) else []
+    if not isinstance(questions, list):
+        return parent_ids
+    for q in questions:
+        if not isinstance(q, dict):
+            continue
+        qid = str(q.get("question_id") or "").strip()
+        parts = q.get("parts")
+        has_multi_parts = isinstance(parts, list) and sum(
+            1 for part in parts if isinstance(part, dict) and str(part.get("part_id") or "").strip()
+        ) > 1
+        if qid and has_multi_parts:
+            parent_ids.append(qid)
+    return parent_ids
 
 
-def _region_binding_label(value: str) -> str:
-    return "姓名识别区域" if value == STUDENT_NAME_REGION_ID else value
+def _region_binding_options(
+    question_candidates: list[str],
+    parent_question_ids: list[str] | None = None,
+) -> list[str]:
+    parents = [str(p).strip() for p in (parent_question_ids or []) if str(p).strip()]
+    parent_set = set(parents)
+
+    def _parent_of(candidate: str) -> str | None:
+        # 小问 Q10(1)/Q10-1/Q10. 等都归属大题 Q10；候选本身等于大题号也算
+        for p in parents:
+            if candidate == p or candidate.startswith(p + "(") or candidate.startswith(p + "（") \
+                    or candidate.startswith(p + "-") or candidate.startswith(p + "_") \
+                    or candidate.startswith(p + "."):
+                return p
+        return None
+
+    body: list[str] = []
+    emitted_parents: set[str] = set()
+    for cand in question_candidates:
+        cand = str(cand).strip()
+        if not cand:
+            continue
+        parent = _parent_of(cand)
+        # 在某个大题的第一个小问之前，先插入"整道大题"选项，使下拉为 …Q10、Q10(1)、Q10(2)…
+        if parent and parent not in emitted_parents:
+            if parent not in body:
+                body.append(parent)
+            emitted_parents.add(parent)
+        if cand not in body:
+            body.append(cand)
+
+    # 兜底：仍未出现的大题号（其小问不在候选里时）追加到末尾，避免遗漏
+    for p in parents:
+        if p not in body:
+            body.append(p)
+
+    return ["", STUDENT_NAME_REGION_ID, *body]
+
+
+def _region_binding_label(value: str, parent_question_ids: "set[str] | list[str] | None" = None) -> str:
+    if value == STUDENT_NAME_REGION_ID:
+        return "姓名识别区域"
+    if value and parent_question_ids and value in set(parent_question_ids):
+        return f"{value}（整道大题）"
+    return value
 
 
 def _next_region_question_id(regions: list[dict[str, Any]], question_candidates: list[str]) -> str | None:
@@ -6261,8 +6485,13 @@ def _render_region_editor(
                 "点击“定位”会高亮对应框；坐标参数已隐藏，位置和大小请直接在画布中拖动调整。"
             )
             if question_candidates:
-                st.caption("可绑定题号/小问：" + ", ".join(question_candidates))
-                st.caption("整题一个大框请选择 Q13；分小问框请选择 Q13(1)、Q13(2) 这类小问编号。")
+                _units_v2 = [
+                    o for o in _region_binding_options(
+                        question_candidates, _load_parent_question_ids(session)
+                    ) if o and o != STUDENT_NAME_REGION_ID
+                ]
+                st.caption("可绑定题号/小问：" + "、".join(_units_v2))
+                st.caption("整题一个大框请选不带括号的大题号（如 Q10）；分小问框请选 Q10(1)、Q10(2) 这类小问编号。")
 
             for local_i, global_i in enumerate(page_indices):
                 region = regions[global_i]
@@ -6280,7 +6509,10 @@ def _render_region_editor(
                 with row_cols[1]:
                     st.markdown(_region_question_label(region, local_i + 1))
                 with row_cols[2]:
-                    qid_options = _region_binding_options(question_candidates)
+                    _parent_ids_v2 = _load_parent_question_ids(session)
+                    qid_options = _region_binding_options(
+                        question_candidates, _parent_ids_v2
+                    )
                     current_qid = str(region.get("mapped_question_id") or "")
                     if current_qid and current_qid not in qid_options:
                         qid_options.append(current_qid)
@@ -6289,7 +6521,7 @@ def _render_region_editor(
                         "绑定题号/小问",
                         qid_options,
                         index=current_index,
-                        format_func=_region_binding_label,
+                        format_func=lambda v: _region_binding_label(v, _parent_ids_v2),
                         key=f"qid_region_v2_{session_id}_{page}_{global_i}",
                         label_visibility="collapsed",
                     )
@@ -6575,7 +6807,13 @@ def _render_region_editor_v3(
 
                         if question_candidates:
                             with st.expander("可绑定评分单元", expanded=False):
-                                st.caption("、".join(question_candidates))
+                                _units_v3 = [
+                                    o for o in _region_binding_options(
+                                        question_candidates, _load_parent_question_ids(session)
+                                    ) if o and o != STUDENT_NAME_REGION_ID
+                                ]
+                                st.caption("、".join(_units_v3))
+                                st.caption("提示：Q10 等不带括号的为整道大题，可整题一起评；Q10(1) 为对应小问。")
 
                         for local_i, global_i in enumerate(page_indices):
                             region = regions[global_i]
@@ -6591,7 +6829,10 @@ def _render_region_editor_v3(
                                     st.session_state[sel_key] = global_i
                                     st.rerun()
                             with row_cols[1]:
-                                qid_options = _region_binding_options(question_candidates)
+                                _parent_ids_v3 = _load_parent_question_ids(session)
+                                qid_options = _region_binding_options(
+                                    question_candidates, _parent_ids_v3
+                                )
                                 current_qid = str(region.get("mapped_question_id") or "")
                                 if current_qid and current_qid not in qid_options:
                                     qid_options.append(current_qid)
@@ -6600,7 +6841,7 @@ def _render_region_editor_v3(
                                     f"框 #{region.get('region_order', local_i + 1)}",
                                     qid_options,
                                     index=current_index,
-                                    format_func=_region_binding_label,
+                                    format_func=lambda v: _region_binding_label(v, _parent_ids_v3),
                                     key=f"qid_region_v3_{session_id}_{page}_{global_i}",
                                 )
                                 if chosen != current_qid:
