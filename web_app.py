@@ -49,6 +49,7 @@ from session_manager import (
     generate_grading_config_from_confirmed_blocks,
     generate_grading_config_from_docx_text,
     generate_grading_config_from_docx_text_legacy,
+    preview_question_blocks_from_docx_bytes,
     preview_question_blocks_from_docx_text,
     refine_grading_config_from_manual_structure,
     save_generated_config,
@@ -479,6 +480,70 @@ def build_stage_progress_log_body(
         f"[等待中] {current_stage}{detail_text}，已等待 {int(elapsed)} 秒，进度约 {progress_percent}%"
     )
     return "\n".join(visible_logs)
+
+
+def _qb_safe_html_format(value: str) -> str:
+    """复用题库的安全 HTML 渲染：保留 <sub>/<sup>/<u>/<table> 等公式标签，其余转义。"""
+    import re as _re
+    if not value:
+        return ""
+    text = str(value)
+    for _ in range(3):
+        unescaped = html.unescape(text)
+        if unescaped == text:
+            break
+        text = unescaped
+    escaped = html.escape(text)
+    escaped = _re.sub(r" {2,}", lambda m: "&nbsp;" * len(m.group(0)), escaped)
+    allowed_tags = ["sub", "sup", "u", "table", "tbody", "tr", "td", "th"]
+    for tag in allowed_tags:
+        opening = _re.compile(rf"&lt;({tag})(\s+[^&]*)?&gt;", _re.IGNORECASE)
+        escaped = opening.sub(lambda m: f"<{m.group(1)}{html.unescape(m.group(2) or '')}>", escaped)
+        closing = _re.compile(rf"&lt;/({tag})&gt;", _re.IGNORECASE)
+        escaped = closing.sub(rf"</\1>", escaped)
+    escaped = _re.sub(r"&lt;br\s*/?&gt;", "<br>", escaped, flags=_re.IGNORECASE)
+    escaped = escaped.replace("\n", "<br>").replace("\r", "")
+
+    def _strip_table_br(match):
+        c = match.group(0)
+        return c.replace("\n", "").replace("\r", "").replace("<br>", "").replace("<br/>", "")
+
+    escaped = _re.sub(r"<table\b[^>]*>.*?</table>", _strip_table_br, escaped, flags=_re.DOTALL | _re.IGNORECASE)
+    return escaped
+
+
+def _qb_image_paths_from_text(value: object) -> list[str]:
+    import re as _re
+    pat = _re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]")
+    seen: list[str] = []
+    for m in pat.finditer(str(value or "")):
+        p = m.group("path").strip()
+        if p and p not in seen:
+            seen.append(p)
+    return seen
+
+
+def _qb_strip_image_markers(value: str) -> str:
+    import re as _re
+    return _re.sub(r"\[\[IMAGE:.+?\]\]", "", str(value or "")).strip()
+
+
+def _render_split_images(image_paths: list[str]) -> None:
+    """渲染题目图片：单图自适应，多图按列网格。复用题库展示思路，固定宽度避免外部依赖。"""
+    seen: list[str] = []
+    for p in image_paths or []:
+        if p and p not in seen and Path(p).exists():
+            seen.append(p)
+    if not seen:
+        return
+    if len(seen) == 1:
+        st.image(seen[0], width=360)
+    else:
+        num_cols = min(len(seen), 4)
+        cols = st.columns(num_cols)
+        for idx, path in enumerate(seen):
+            with cols[idx % num_cols]:
+                st.image(path, width=200)
 
 
 def _run_with_stage_progress(label: str, work, *, done_text: str = "完成") -> Any:
@@ -1952,9 +2017,13 @@ def render_config_and_session_tab(
                         if is_pdf:
                             from rubric_auto_cropper import extract_pdf_text
                             doc_text = extract_pdf_text(word_bytes)
+                            blocks = preview_question_blocks_from_docx_text(doc_text)
                         else:
                             doc_text = extract_docx_text(word_bytes)
-                        blocks = preview_question_blocks_from_docx_text(doc_text)
+                            # 富文本拆题：保留公式 HTML 与图片，答案按卷末/内联正确配对；失败回退纯文本
+                            blocks = preview_question_blocks_from_docx_bytes(
+                                word_bytes, fallback_doc_text=doc_text
+                            )
                         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                         st.session_state.pending_question_blocks = blocks
                         st.session_state.pending_doc_text = doc_text
@@ -2007,16 +2076,37 @@ def render_config_and_session_tab(
                                     value=False,
                                     key=f"del_{i}",
                                 )
-                            stem = str(b.get("question_text") or b.get("text") or "").strip()
-                            st.markdown(stem or "_（题干为空）_")
-                            ans = str(b.get("canonical_answer") or b.get("answer_text") or "").strip()
-                            analysis = str(b.get("analysis") or "").strip()
+                            # 题干：富文本渲染公式（<sup>/<sub>），并显示题干图片
+                            stem_html = str(b.get("question_html") or b.get("question_text") or b.get("text") or "")
+                            stem_render = _qb_safe_html_format(_qb_strip_image_markers(stem_html))
+                            if stem_render:
+                                st.markdown(
+                                    f'<div style="font-size:0.96rem;line-height:1.7">{stem_render}</div>',
+                                    unsafe_allow_html=True,
+                                )
+                            else:
+                                st.markdown("_（题干为空）_")
+                            stem_imgs = list(b.get("image_paths") or []) + _qb_image_paths_from_text(stem_html)
+                            _render_split_images(stem_imgs)
+
+                            ans_html = str(b.get("answer_html") or b.get("canonical_answer") or b.get("answer_text") or "")
+                            ana_html = str(b.get("analysis_html") or b.get("analysis") or "")
                             exp_label = "查看答案与解析/证明过程" + ("（⚠️ 答案缺失，请核对）" if flagged else "")
                             with st.expander(exp_label, expanded=False):
-                                st.markdown("**答案**：" + (ans if ans else "_未提取到，建议人工核对原卷_"))
-                                if analysis:
-                                    st.markdown("**解析 / 证明过程**：")
-                                    st.markdown(analysis)
+                                ans_render = _qb_safe_html_format(_qb_strip_image_markers(ans_html))
+                                st.markdown(
+                                    "**答案**：" + (ans_render if ans_render else "_未提取到，建议人工核对原卷_"),
+                                    unsafe_allow_html=True,
+                                )
+                                _render_split_images(_qb_image_paths_from_text(ans_html))
+                                if ana_html.strip():
+                                    ana_render = _qb_safe_html_format(_qb_strip_image_markers(ana_html))
+                                    st.markdown("**解析 / 证明过程**：", unsafe_allow_html=True)
+                                    st.markdown(
+                                        f'<div style="font-size:0.92rem;line-height:1.7">{ana_render}</div>',
+                                        unsafe_allow_html=True,
+                                    )
+                                    _render_split_images(_qb_image_paths_from_text(ana_html))
 
                     for _i, _b in enumerate(pending_blocks):
                         _render_block_card(_i, _b)
