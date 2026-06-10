@@ -145,6 +145,55 @@ def _question_number_search_patterns(num: str) -> list[str]:
     ]
 
 
+def _is_question_marker_word(text: str, num: str, x0: float) -> bool:
+    text = text.strip()
+    if not text:
+        return False
+    # Avoid matching diagram captions like "第5题图" or "图5"
+    if "图" in text and "题图" in text:
+        return False
+    if text.startswith("图" + num):
+        return False
+        
+    import re
+    escaped_num = re.escape(num)
+    
+    # 1. Number parenthesized: e.g. "(5)", "（5）", "5)", "5）"
+    if re.match(rf"^[（(]?{escaped_num}[)）]$", text):
+        if not (x0 < 110 or (250 < x0 < 350)):
+            return False
+        return True
+        
+    # 2. Exactly number followed by period/comma/顿号 (e.g. "5.", "5．", "5、")
+    if re.match(rf"^[（(]?{escaped_num}(?!\d)[.．、]$", text):
+        if not (x0 < 150 or (240 < x0 < 380)):
+            return False
+        return True
+
+    # 3. Number followed by period/bracket/comma/顿号, and then not followed by digit (prevents decimals like 5.0, e.g. "5.如图")
+    if re.match(rf"^[（(]?{escaped_num}(?!\d)[.．、)）](?!\d).*", text):
+        if not (x0 < 150 or (240 < x0 < 380)):
+            return False
+        return True
+
+    # 4. Number followed by a Chinese character (prevents matching 50, e.g. "5如图")
+    if re.match(rf"^[（(]?{escaped_num}(?!\d)[\u4e00-\u9fa5].*", text):
+        # Exclude units / scores
+        if re.match(rf"^[（(]?{escaped_num}(?!\d)(分|点|秒|个|元|只|cm|m|s|kg|℃)", text):
+            return False
+        if not (x0 < 150 or (240 < x0 < 380)):
+            return False
+        return True
+
+    # 5. "第5题"
+    if re.match(rf"^第{escaped_num}(?!\d)题.*", text):
+        if not (x0 < 150 or (240 < x0 < 380)):
+            return False
+        return True
+
+    return False
+
+
 def _find_question_marker(
     doc,
     num: str,
@@ -157,22 +206,24 @@ def _find_question_marker(
 
     Returns (page_index, y0_in_points) or None if not found.
     """
-    for pattern in _question_number_search_patterns(num):
-        for page_idx in range(after_page, n_pages):
-            page = doc[page_idx]
-            rects = page.search_for(pattern)
-            if not rects:
+    for page_idx in range(after_page, n_pages):
+        page = doc[page_idx]
+        try:
+            words = page.get_text("words")
+        except Exception:
+            words = []
+        valid_words = []
+        for w in words:
+            x0, y0, x1, y1, text, _, _, _ = w
+            if page_idx == after_page and y0 < after_y:
                 continue
-            # Filter: must be at or after the given boundary
-            valid = [
-                r for r in rects
-                if (page_idx > after_page)
-                or (page_idx == after_page and r.y0 >= after_y)
-            ]
-            if not valid:
-                continue
-            best = min(valid, key=lambda r: (r.y0, r.x0))
-            return (page_idx, float(best.y0))
+            if _is_question_marker_word(text, num, x0):
+                valid_words.append(w)
+        if valid_words:
+            # Sort by y0 first, then x0
+            best = min(valid_words, key=lambda w: (w[1], w[0]))
+            return (page_idx, float(best[1]))
+
     return None
 
 
@@ -406,7 +457,8 @@ def extract_pdf_question_images(
             if ai + 1 < len(a_markers):
                 _, an_page, an_y = a_markers[ai + 1]
             else:
-                an_page, an_y = a_page, a_page_h
+                an_page = n_pages - 1
+                an_y = doc[n_pages - 1].rect.height
 
             a_segments: list[tuple[int, float, float]] = []
             if an_page == a_page:
@@ -436,9 +488,22 @@ def extract_pdf_question_images(
         else:
             final = q_combined
 
-        buf = io.BytesIO()
-        final.save(buf, format="JPEG", quality=jpeg_quality)
-        result[qid] = buf.getvalue()
+        buf_stacked = io.BytesIO()
+        final.save(buf_stacked, format="JPEG", quality=jpeg_quality)
+        
+        buf_q = io.BytesIO()
+        q_combined.save(buf_q, format="JPEG", quality=jpeg_quality)
+        
+        buf_a = None
+        if a_combined is not None:
+            buf_a = io.BytesIO()
+            a_combined.save(buf_a, format="JPEG", quality=jpeg_quality)
+
+        result[qid] = {
+            "stacked": buf_stacked.getvalue(),
+            "question": buf_q.getvalue(),
+            "answer": buf_a.getvalue() if buf_a is not None else None
+        }
 
     doc.close()
 

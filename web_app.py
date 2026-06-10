@@ -2024,17 +2024,32 @@ def render_config_and_session_tab(
                                 try:
                                     raw_crops = extract_pdf_question_images(word_bytes, blocks)
                                     q_images = {
-                                        qid: base64.b64encode(img).decode()
-                                        for qid, img in raw_crops.items()
+                                        qid: base64.b64encode(val["stacked"]).decode()
+                                        for qid, val in raw_crops.items()
+                                    }
+                                    q_stem_images = {
+                                        qid: base64.b64encode(val["question"]).decode()
+                                        for qid, val in raw_crops.items()
+                                    }
+                                    q_ans_images = {
+                                        qid: base64.b64encode(val["answer"]).decode()
+                                        for qid, val in raw_crops.items()
+                                        if val.get("answer") is not None
                                     }
                                     st.session_state.pending_q_images = q_images
+                                    st.session_state.pending_q_stem_images = q_stem_images
+                                    st.session_state.pending_q_ans_images = q_ans_images
                                     st.session_state.pending_is_pdf = True
                                 except Exception as crop_exc:  # noqa: BLE001
                                     st.warning(f"PDF 题目裁图失败，将退回纯文本模式：{crop_exc}")
                                     st.session_state.pending_q_images = {}
+                                    st.session_state.pending_q_stem_images = {}
+                                    st.session_state.pending_q_ans_images = {}
                                     st.session_state.pending_is_pdf = True
                             else:
                                 st.session_state.pending_q_images = {}
+                                st.session_state.pending_q_stem_images = {}
+                                st.session_state.pending_q_ans_images = {}
                                 st.session_state.pending_is_pdf = True
                         else:
                             doc_text = extract_docx_text(word_bytes)
@@ -2043,6 +2058,8 @@ def render_config_and_session_tab(
                                 word_bytes, fallback_doc_text=doc_text
                             )
                             st.session_state.pending_q_images = {}
+                            st.session_state.pending_q_stem_images = {}
+                            st.session_state.pending_q_ans_images = {}
                             st.session_state.pending_is_pdf = False
                         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                         st.session_state.pending_question_blocks = blocks
@@ -2096,37 +2113,66 @@ def render_config_and_session_tab(
                                     value=False,
                                     key=f"del_{i}",
                                 )
-                            # 题干：富文本渲染公式（<sup>/<sub>），并显示题干图片
-                            stem_html = str(b.get("question_html") or b.get("question_text") or b.get("text") or "")
-                            stem_render = _qb_safe_html_format(_qb_strip_image_markers(stem_html))
-                            if stem_render:
-                                st.markdown(
-                                    f'<div style="font-size:0.96rem;line-height:1.7">{stem_render}</div>',
-                                    unsafe_allow_html=True,
-                                )
-                            else:
-                                st.markdown("_（题干为空）_")
-                            stem_imgs = list(b.get("image_paths") or []) + _qb_image_paths_from_text(stem_html)
-                            _render_split_images(stem_imgs)
 
-                            ans_html = str(b.get("answer_html") or b.get("canonical_answer") or b.get("answer_text") or "")
-                            ana_html = str(b.get("analysis_html") or b.get("analysis") or "")
-                            exp_label = "查看答案与解析/证明过程" + ("（⚠️ 答案缺失，请核对）" if flagged else "")
-                            with st.expander(exp_label, expanded=False):
-                                ans_render = _qb_safe_html_format(_qb_strip_image_markers(ans_html))
-                                st.markdown(
-                                    "**答案**：" + (ans_render if ans_render else "_未提取到，建议人工核对原卷_"),
-                                    unsafe_allow_html=True,
-                                )
-                                _render_split_images(_qb_image_paths_from_text(ans_html))
-                                if ana_html.strip():
-                                    ana_render = _qb_safe_html_format(_qb_strip_image_markers(ana_html))
-                                    st.markdown("**解析 / 证明过程**：", unsafe_allow_html=True)
+                            is_pdf = bool(st.session_state.get("pending_is_pdf"))
+                            q_stem_images = st.session_state.get("pending_q_stem_images") or {}
+                            q_ans_images = st.session_state.get("pending_q_ans_images") or {}
+
+                            # 1. Render Question Stem
+                            shown_stem_img = False
+                            if is_pdf and qid in q_stem_images:
+                                import base64
+                                try:
+                                    img_bytes = base64.b64decode(q_stem_images[qid])
+                                    st.image(img_bytes, caption=f"{qid} 题干截图", use_container_width=True)
+                                    shown_stem_img = True
+                                except Exception as img_exc:
+                                    st.error(f"加载题干裁图失败：{img_exc}")
+
+                            if not shown_stem_img:
+                                # Fallback to text for Word or failed PDF crop
+                                stem_html = str(b.get("question_html") or b.get("question_text") or b.get("text") or "")
+                                stem_render = _qb_safe_html_format(_qb_strip_image_markers(stem_html))
+                                if stem_render:
                                     st.markdown(
-                                        f'<div style="font-size:0.92rem;line-height:1.7">{ana_render}</div>',
+                                        f'<div style="font-size:0.96rem;line-height:1.7">{stem_render}</div>',
                                         unsafe_allow_html=True,
                                     )
-                                    _render_split_images(_qb_image_paths_from_text(ana_html))
+                                else:
+                                    st.markdown("_（题干为空）_")
+                                stem_imgs = list(b.get("image_paths") or []) + _qb_image_paths_from_text(stem_html)
+                                _render_split_images(stem_imgs)
+
+                            # 2. Render Answer Section
+                            exp_label = "查看答案与解析/证明过程" + ("（⚠️ 答案缺失，请核对）" if flagged else "")
+                            with st.expander(exp_label, expanded=False):
+                                shown_ans_img = False
+                                if is_pdf and qid in q_ans_images:
+                                    import base64
+                                    try:
+                                        img_bytes = base64.b64decode(q_ans_images[qid])
+                                        st.image(img_bytes, caption=f"{qid} 答案截图", use_container_width=True)
+                                        shown_ans_img = True
+                                    except Exception as img_exc:
+                                        st.error(f"加载答案裁图失败：{img_exc}")
+
+                                if not shown_ans_img:
+                                    ans_html = str(b.get("answer_html") or b.get("canonical_answer") or b.get("answer_text") or "")
+                                    ana_html = str(b.get("analysis_html") or b.get("analysis") or "")
+                                    ans_render = _qb_safe_html_format(_qb_strip_image_markers(ans_html))
+                                    st.markdown(
+                                        "**答案**：" + (ans_render if ans_render else "_未提取到，建议人工核对原卷_"),
+                                        unsafe_allow_html=True,
+                                    )
+                                    _render_split_images(_qb_image_paths_from_text(ans_html))
+                                    if ana_html.strip():
+                                        ana_render = _qb_safe_html_format(_qb_strip_image_markers(ana_html))
+                                        st.markdown("**解析 / 证明过程**：", unsafe_allow_html=True)
+                                        st.markdown(
+                                            f'<div style="font-size:0.92rem;line-height:1.7">{ana_render}</div>',
+                                            unsafe_allow_html=True,
+                                        )
+                                        _render_split_images(_qb_image_paths_from_text(ana_html))
 
                     for _i, _b in enumerate(pending_blocks):
                         _render_block_card(_i, _b)
