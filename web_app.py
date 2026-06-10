@@ -2993,11 +2993,16 @@ def _render_question_review_tab(db: DBManager, analytics: AnalyticsService, sele
         st.info("🎉 所有题目均无需人工复核，批改已完成！")
         return
 
+    selector_key = f"review_question_selector_{selected_session_id}"
+    pending_key = f"_review_pending_qid_{selected_session_id}"
+    if pending_key in st.session_state:
+        st.session_state[selector_key] = st.session_state.pop(pending_key)
+
     selected_qid = st.selectbox(
         "选择需复核的题目",
         options=reviewable_qids,
         format_func=lambda qid: f"{qid} ({qid_needs_review_counts.get(qid, 0)} 人需复核)",
-        key=f"review_question_selector_{selected_session_id}",
+        key=selector_key,
     )
     
     # 始终只展示需要复核的学生
@@ -3049,15 +3054,14 @@ def _render_question_review_tab(db: DBManager, analytics: AnalyticsService, sele
                 applied = manual_service.apply_manual_adjustments(result_id, adjustments, highlight_qids=[selected_qid])
                 updated += int(applied.get("updated_details") or 0)
             st.success(f"已更新 {updated} 条 {selected_qid} 评分明细，并重新计算总分。")
-            
-            selector_key = f"review_question_selector_{selected_session_id}"
+
             try:
                 current_idx = reviewable_qids.index(selected_qid)
                 if current_idx + 1 < len(reviewable_qids):
-                    st.session_state[selector_key] = reviewable_qids[current_idx + 1]
+                    st.session_state[pending_key] = reviewable_qids[current_idx + 1]
             except ValueError:
                 pass
-                
+
             st.rerun()
         except Exception as exc:  # noqa: BLE001
             st.error(f"保存失败：{exc}")
