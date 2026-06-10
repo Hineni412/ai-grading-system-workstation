@@ -12,6 +12,7 @@ from PIL import Image, ImageDraw
 from ai_grader import GradingResult, QuestionGradingDetail
 from objective_batch_recognition_service import OBJECTIVE_AUTO_SCORE_MIN_CONFIDENCE, run_objective_batch_recognition
 from scoring_prompt_rules import SHARED_GRADING_RULES
+from solution_answer_guard import apply_solution_substance_rules, extract_observed_text, rubric_question_meta
 from scanner import ExamPaperGroup
 from usage_logger import extract_usage_fields
 from session_manager import _canonical_question_id
@@ -457,6 +458,7 @@ def build_hybrid_major_prompt(spec: MajorQuestionSpec, manifest: dict[str, Any],
             "error_summary": None,
             "answer_discarded_by_smudge": False,
             "answer_is_blank_or_no_valid_work": False,
+            "observed_answer": "",
             "evidence_steps": [],
             "missing_steps": [],
             "alternative_solution_detected": False,
@@ -519,6 +521,8 @@ def build_hybrid_major_prompt(spec: MajorQuestionSpec, manifest: dict[str, Any],
             "Before scoring a proof, extract evidence_steps from the answer, then list missing_steps from the rubric/key proof chain.",
             "Award each step score only when its corresponding evidence step is actually present; do not infer missing proof from the final conclusion.",
             "Only a final conclusion, a diagram label, or fragmented equations cannot receive complete process/proof credit.",
+            "If a student only copies the sub-question stem (e.g. '(3)是不是定值') or only adds a tick/check without proof work, score 0 or answer_only_max_score; never award full credit for stem echo plus a checkmark.",
+            "Each grading_detail must include observed_answer with the student's visible non-discarded text.",
             "If another valid method appears, set alternative_solution_detected=true, summarize the equivalent proof chain, and grade it with the same strict evidence-step standard.",
             "For blank, mostly blank, crossed-out-only, or no-valid-work answers, score conservatively and mark needs_human_review when uncertainty remains.",
             "When confidence is low or multiple scores are plausible, include 2-3 candidate_scores with score, confidence, and reason.",
@@ -564,7 +568,7 @@ def validate_hybrid_major_response(
         metadata = []
         item_failed_reason = ""
         for detail in item.get("grading_details", []):
-            converted, reason, detail_metadata = _detail_from_ai_item(detail, allowed_qids, min_confidence)
+            converted, reason, detail_metadata = _detail_from_ai_item(detail, allowed_qids, min_confidence, spec=spec)
             if reason:
                 item_failed_reason = reason
                 break
@@ -633,6 +637,8 @@ def _detail_from_ai_item(
     detail: dict[str, Any],
     allowed_qids: set[str],
     min_confidence: float,
+    *,
+    spec: MajorQuestionSpec | None = None,
 ) -> tuple[QuestionGradingDetail | None, str, dict[str, Any] | None]:
     if not isinstance(detail, dict):
         return None, "invalid_detail", None
@@ -666,6 +672,23 @@ def _detail_from_ai_item(
         error_summary = error_summary or ("low_confidence" if confidence < min_confidence else "needs_human_review")
         if not deduction_reason:
             deduction_reason = "需复核: 模型置信度不足或存在多种可能评分"
+    if spec is not None and not blank_or_no_work:
+        question_type, full_score, answer_only_max = rubric_question_meta(spec.rubric, qid)
+        adjusted_score, substance_category, substance_summary, substance_reason = apply_solution_substance_rules(
+            observed_answer=extract_observed_text(detail),
+            question_type=question_type,
+            full_score=float(full_score or 0),
+            answer_only_max_score=answer_only_max,
+            current_score=float(score),
+        )
+        if adjusted_score < float(score) - 1e-6:
+            score = adjusted_score
+            if substance_category:
+                error_category = substance_category
+                error_summary = substance_summary
+                deduction_reason = substance_reason
+                needs_review = False
+                confidence = 100.0
     detail_metadata = _subjective_detail_metadata(detail, qid)
     return (
         QuestionGradingDetail(

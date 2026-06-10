@@ -29,7 +29,7 @@
     "tagging_model": "ark-doubao-seed-2.0-pro-260215",
     "tagging_max_workers": 20,
     "tagging_requests_per_minute": 1000,
-    "tagging_enabled": false,
+    "tagging_enabled": true,
     "tagging_thinking": true,
     "tagging_review_enabled": true,
     "tagging_review_api_key": "sk-olaYGrD63f967BdBd4a8T3BlBkFJ0Fbae9Bb7cEb4D86A79F",
