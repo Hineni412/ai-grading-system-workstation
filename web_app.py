@@ -2015,15 +2015,35 @@ def render_config_and_session_tab(
                         word_bytes = word_upload.getvalue()
                         is_pdf = word_upload.name.lower().endswith(".pdf")
                         if is_pdf:
-                            from rubric_auto_cropper import extract_pdf_text
+                            from rubric_auto_cropper import extract_pdf_text, extract_pdf_question_images
+                            import base64
                             doc_text = extract_pdf_text(word_bytes)
                             blocks = preview_question_blocks_from_docx_text(doc_text)
+                            # Plan B: crop per-question images from the PDF
+                            if blocks:
+                                try:
+                                    raw_crops = extract_pdf_question_images(word_bytes, blocks)
+                                    q_images = {
+                                        qid: base64.b64encode(img).decode()
+                                        for qid, img in raw_crops.items()
+                                    }
+                                    st.session_state.pending_q_images = q_images
+                                    st.session_state.pending_is_pdf = True
+                                except Exception as crop_exc:  # noqa: BLE001
+                                    st.warning(f"PDF 题目裁图失败，将退回纯文本模式：{crop_exc}")
+                                    st.session_state.pending_q_images = {}
+                                    st.session_state.pending_is_pdf = True
+                            else:
+                                st.session_state.pending_q_images = {}
+                                st.session_state.pending_is_pdf = True
                         else:
                             doc_text = extract_docx_text(word_bytes)
                             # 富文本拆题：保留公式 HTML 与图片，答案按卷末/内联正确配对；失败回退纯文本
                             blocks = preview_question_blocks_from_docx_bytes(
                                 word_bytes, fallback_doc_text=doc_text
                             )
+                            st.session_state.pending_q_images = {}
+                            st.session_state.pending_is_pdf = False
                         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                         st.session_state.pending_question_blocks = blocks
                         st.session_state.pending_doc_text = doc_text
@@ -2137,10 +2157,17 @@ def render_config_and_session_tab(
 
                             def generate_work(report) -> dict[str, Any]:
                                 llm_client = LLMClient(llm_settings)
+                                # Read per-question PDF crops if available (Plan B)
+                                q_images: dict[str, str] | None = (
+                                    st.session_state.get("pending_q_images") or None
+                                )
+                                is_pdf = bool(st.session_state.get("pending_is_pdf"))
+                                img_count = len(q_images) if q_images else 0
                                 report(
                                     0.10,
                                     "单题并发生成",
-                                    f"已确认 {len(confirmed_blocks)} 题，开始单题并发生成评分标准结构。",
+                                    f"已确认 {len(confirmed_blocks)} 题，开始单题并发生成评分标准结构"
+                                    + (f"（PDF 模式，携带 {img_count} 张题目裁图）。" if is_pdf else "。"),
                                 )
                                 payload = generate_grading_config_from_confirmed_blocks(
                                     confirmed_blocks,
@@ -2148,6 +2175,7 @@ def render_config_and_session_tab(
                                     llm_client=llm_client,
                                     model_name=llm_settings.config_model,
                                     report=report,
+                                    q_images=q_images,
                                 )
                                 report(0.98, "校验结构完成")
                                 return payload
