@@ -1179,8 +1179,24 @@ def _build_single_question_generation_prompt(block: dict[str, str], doc_text: st
     All score fields must be set to 1 as a placeholder.
     """
     qid = str(block.get("question_id") or "").strip()
-    text = str(block.get("text") or "").strip()
-    context = str(doc_text or "")[:6000]
+    q_text = str(block.get("text") or "").strip()
+    answer_text = str(block.get("answer_text") or "").strip()
+    analysis_text = str(block.get("analysis") or "").strip()
+
+    # Build structured per-question context (replaces the old 6000-char full-doc dump)
+    context_parts: list[str] = [f"题目文本：\n{q_text}"]
+    if answer_text:
+        context_parts.append(f"参考答案：\n{answer_text}")
+    if analysis_text:
+        context_parts.append(f"解析/证明过程：\n{analysis_text}")
+    if not answer_text and not analysis_text:
+        # Fallback: include a limited window of the full doc text to help locate the answer
+        context_parts.append(
+            "（未能提取到配套答案，以下是试卷原文供参考，请自行定位该题答案区域）：\n"
+            + str(doc_text or "")[:4000]
+        )
+    question_context = "\n\n".join(context_parts)
+
     return (
         "你正在为【单道】初中数学题目生成评分标准大纲结构。请仅返回严格的 JSON 数据。\n"
         f"题目 ID (QUESTION_ID): {qid}\n"
@@ -1192,10 +1208,9 @@ def _build_single_question_generation_prompt(block: dict[str, str], doc_text: st
         "deduction_policy（扣分策略）、证据要求以及仅写出答案的上限得分（answer_only_max_score）。\n"
         "如果该题包含多个空格、表格单元格或子小问，必须将其拆分为不同的 parts 以给与步骤/部分分。\n"
         "accepted_forms 必须仅包含在数学上完全等价的答案形式。\n\n"
-        f"题目文本：\n{text}\n\n"
-        "下方的完整试卷全文仅供您定位答案区域时参考，严禁为试卷中的其他题目生成评分标准。\n"
-        f"{context}"
+        f"{question_context}"
     )
+
 
 def _merge_single_question_payloads(
     payloads: list[dict[str, Any] | None],
