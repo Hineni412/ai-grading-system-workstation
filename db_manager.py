@@ -1196,6 +1196,26 @@ class DBManager:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_failed_papers_detailed(self, session_id: int) -> list[dict[str, Any]]:
+        """返回本场次中批改失败（processing_status='failed'）的所有试卷的详细信息，用于增量重试。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    id AS paper_id,
+                    front_image,
+                    back_image,
+                    ocr_name,
+                    student_id,
+                    match_status
+                FROM exam_papers
+                WHERE session_id = ? AND processing_status = 'failed'
+                ORDER BY id ASC
+                """,
+                (session_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_session_results(self, session_id: int) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(

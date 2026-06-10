@@ -40,6 +40,7 @@ class GradingService:
         requests_per_minute: int | None = None,
         grading_mode: str = "full_paper",
         objective_escalation_question_ids: Iterable[str] | None = None,
+        failed_only: bool = False,
     ) -> Iterable[dict]:
         if not self.db.is_template_ready(session_id):
             raise ValueError("当前会话尚未完成模板题框映射确认，请先在“评分依据与会话”页完成模板配置")
@@ -71,69 +72,86 @@ class GradingService:
             answer_regions=answer_regions,
         )
 
-        if not self.db.try_start_session_run(session_id):
-            raise RuntimeError("当前考试批改已有运行中的批改任务，请等待完成后再启动")
-        self.db.clear_session_run_data(session_id)
-
-        if isinstance(scan_analysis, dict):
-            analysis = ScanAnalysis.from_dict(scan_analysis)
-        elif isinstance(scan_analysis, ScanAnalysis):
-            analysis = scan_analysis
+        if not failed_only:
+            if not self.db.try_start_session_run(session_id):
+                raise RuntimeError("当前考试批改已有运行中的批改任务，请等待完成后再启动")
+            self.db.clear_session_run_data(session_id)
         else:
-            analysis = scanner.analyze(students)
-        if enhance_images:
-            _attach_enhanced_paths(analysis, exams_dir / "_enhanced")
-        else:
-            _clear_enhanced_paths(analysis)
-
-        scanned_groups = _apply_manual_decisions(analysis, manual_decisions or [], students)
-        self._record_attendance(session_id, students, scanned_groups, analysis.issues)
-
-        for issue in analysis.issues:
-            yield {
-                "event": "scan_issue",
-                "issue_id": issue.issue_id,
-                "issue_type": issue.issue_type,
-                "message": issue.message,
-                "source_label": issue.source_label,
-                "detected_name": issue.detected_name,
-            }
+            if not self.db.try_start_session_run(session_id):
+                raise RuntimeError("当前考试批改已有运行中的批改任务，请等待完成后再启动")
 
         matched_records: list[tuple[int, ExamPaperGroup, int]] = []
 
-        for group in scanned_groups:
-            student = {"id": group.student_id, "name": group.student_name} if group.student_id else self.db.find_student_by_name(group.student_name)
-            if student is None:
+        if failed_only:
+            failed_detailed = self.db.list_failed_papers_detailed(session_id)
+            for item in failed_detailed:
+                group = ExamPaperGroup(
+                    front_image=Path(item["front_image"]),
+                    back_image=Path(item["back_image"]) if item["back_image"] else None,
+                    student_name=item["ocr_name"],
+                    student_id=item["student_id"],
+                    detected_name=item["ocr_name"],
+                    source_label=f"Retry {item['ocr_name']}",
+                )
+                matched_records.append((item["paper_id"], group, item["student_id"]))
+        else:
+            if isinstance(scan_analysis, dict):
+                analysis = ScanAnalysis.from_dict(scan_analysis)
+            elif isinstance(scan_analysis, ScanAnalysis):
+                analysis = scan_analysis
+            else:
+                analysis = scanner.analyze(students)
+            if enhance_images:
+                _attach_enhanced_paths(analysis, exams_dir / "_enhanced")
+            else:
+                _clear_enhanced_paths(analysis)
+
+            scanned_groups = _apply_manual_decisions(analysis, manual_decisions or [], students)
+            self._record_attendance(session_id, students, scanned_groups, analysis.issues)
+
+            for issue in analysis.issues:
+                yield {
+                    "event": "scan_issue",
+                    "issue_id": issue.issue_id,
+                    "issue_type": issue.issue_type,
+                    "message": issue.message,
+                    "source_label": issue.source_label,
+                    "detected_name": issue.detected_name,
+                }
+
+            for group in scanned_groups:
+                student = {"id": group.student_id, "name": group.student_name} if group.student_id else self.db.find_student_by_name(group.student_name)
+                if student is None:
+                    paper_id = self.db.create_exam_paper(
+                        session_id=session_id,
+                        front_image=str(group.front_image),
+                        back_image=str(group.back_image),
+                        ocr_name=group.student_name,
+                        student_id=None,
+                        match_status="unmatched",
+                        processing_status="skipped",
+                        error_message="名单未匹配到该姓名",
+                    )
+                    yield {
+                        "event": "paper_unmatched",
+                        "paper_id": paper_id,
+                        "ocr_name": group.student_name,
+                        "front_image": group.front_image.name,
+                        "back_image": group.back_image.name,
+                        "message": "OCR 姓名未匹配到学生名单，已跳过",
+                    }
+                    continue
+
                 paper_id = self.db.create_exam_paper(
                     session_id=session_id,
                     front_image=str(group.front_image),
                     back_image=str(group.back_image),
                     ocr_name=group.student_name,
-                    student_id=None,
-                    match_status="unmatched",
-                    processing_status="skipped",
-                    error_message="名单未匹配到该姓名",
+                    student_id=int(student["id"]),
+                    match_status="matched",
+                    processing_status="pending",
                 )
-                yield {
-                    "event": "paper_unmatched",
-                    "paper_id": paper_id,
-                    "ocr_name": group.student_name,
-                    "front_image": group.front_image.name,
-                    "back_image": group.back_image.name,
-                    "message": "OCR 姓名未匹配到学生名单，已跳过",
-                }
-                continue
-
-            paper_id = self.db.create_exam_paper(
-                session_id=session_id,
-                front_image=str(group.front_image),
-                back_image=str(group.back_image),
-                ocr_name=group.student_name,
-                student_id=int(student["id"]),
-                match_status="matched",
-                processing_status="pending",
-            )
-            matched_records.append((paper_id, group, int(student["id"])))
+                matched_records.append((paper_id, group, int(student["id"])))
 
         total = len(matched_records)
         worker_count = _bounded_int(max_workers, _env_int("AI_GRADING_MAX_WORKERS", 200), 1, 200)
