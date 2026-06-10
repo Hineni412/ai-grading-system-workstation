@@ -2591,24 +2591,40 @@ def render_grading_tab(
         log_box = st.empty()
         _render_grading_log_panel(log_box, st.session_state.get(grading_log_key, []))
         
+        failed_papers = db.list_failed_papers(selected_session_id)
+        
         col1, col2 = st.columns(2)
         with col1:
             run_full = st.button("开始整卷并发批改", type="primary", key="run_grading_full_btn")
         with col2:
             run_hybrid = st.button("开始混合批改（客观题+大题横批）", type="primary", key="run_grading_hybrid_btn")
             
-        run_any = run_full or run_hybrid
+        retry_full = False
+        retry_hybrid = False
+        if failed_papers:
+            st.markdown("---")
+            st.markdown("##### 仅重试批改失败的试卷")
+            rcol1, rcol2 = st.columns(2)
+            with rcol1:
+                retry_full = st.button("仅重试失败：整卷批改", type="secondary", key="retry_grading_full_btn")
+            with rcol2:
+                retry_hybrid = st.button("仅重试失败：混合批改", type="secondary", key="retry_grading_hybrid_btn")
+            
+        run_any = run_full or run_hybrid or retry_full or retry_hybrid
         
         if run_any:
-            grading_mode = "hybrid_batch" if run_hybrid else "full_paper"
+            grading_mode = "hybrid_batch" if (run_hybrid or retry_hybrid) else "full_paper"
+            failed_only = True if (retry_full or retry_hybrid) else False
             try:
                 exams_dir = active_exams_dir
                 if not exams_dir.exists():
                     raise FileNotFoundError(f"目录不存在：{exams_dir}")
-                if not isinstance(scan_payload, dict):
+                if not failed_only and not isinstance(scan_payload, dict):
                     raise ValueError("请先点击“预检本地试卷 PDF / 图片”，确认异常卷后再开始批改。")
-                decisions_path = _session_work_dir(selected_session_id) / "scan_manual_decisions_latest.json"
-                _write_json_file(decisions_path, manual_decisions)
+                
+                if not failed_only:
+                    decisions_path = _session_work_dir(selected_session_id) / "scan_manual_decisions_latest.json"
+                    _write_json_file(decisions_path, manual_decisions)
 
                 llm_client = LLMClient(llm_settings)
                 service = GradingService(db, llm_client=llm_client)
@@ -2626,12 +2642,13 @@ def render_grading_tab(
                     answer_key_path=_resolve_session_file_path(session["answer_key_path"]),
                     ocr_model=llm_settings.ocr_model,
                     grading_model=llm_settings.grading_model,
-                    scan_analysis=scan_payload,
-                    manual_decisions=manual_decisions,
+                    scan_analysis=scan_payload if not failed_only else None,
+                    manual_decisions=manual_decisions if not failed_only else None,
                     enhance_images=enhance_images,
                     max_workers=grading_max_workers,
                     requests_per_minute=grading_rpm_limit,
                     grading_mode=grading_mode,
+                    failed_only=failed_only,
                 ):
                     et = event["event"]
                     if et == "grading_started":
