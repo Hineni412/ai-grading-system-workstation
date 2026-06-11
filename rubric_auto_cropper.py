@@ -223,7 +223,6 @@ def _find_question_marker(
             # Sort by y0 first, then x0
             best = min(valid_words, key=lambda w: (w[1], w[0]))
             return (page_idx, float(best[1]))
-
     return None
 
 
@@ -417,26 +416,31 @@ def extract_pdf_question_images(
         # Bottom = next question marker (or answer section start, or page bottom)
         if i + 1 < len(q_markers):
             _, nxt_page, nxt_y = q_markers[i + 1]
+            nxt_padding = 0.0  # Do not add extra bottom padding when ending at a next question marker
         elif ans_section:
             nxt_page, nxt_y = ans_section
+            nxt_padding = bottom_padding_pt
         else:
             nxt_page, nxt_y = q_page, page_h
+            nxt_padding = bottom_padding_pt
 
         q_segments: list[tuple[int, float, float]] = []
         if nxt_page == q_page:
             q_segments.append((q_page,
                                 max(0.0, q_y_top - top_padding_pt),
-                                min(page_h, nxt_y + bottom_padding_pt)))
+                                min(page_h, nxt_y + nxt_padding)))
         else:
             q_segments.append((q_page,
                                 max(0.0, q_y_top - top_padding_pt),
                                 page_h))
             for mid in range(q_page + 1, nxt_page):
                 q_segments.append((mid, 0.0, doc[mid].rect.height))
-            q_segments.append((nxt_page,
-                                0.0,
-                                min(doc[nxt_page].rect.height,
-                                    nxt_y + bottom_padding_pt)))
+            # Only crop the top of nxt_page if the next question starts sufficiently down the page
+            if nxt_y >= 80.0:
+                q_segments.append((nxt_page,
+                                    0.0,
+                                    min(doc[nxt_page].rect.height,
+                                        nxt_y + nxt_padding)))
 
         q_imgs = _crop_segments(doc, q_segments, page_w, mat)
         if not q_imgs:
@@ -456,53 +460,49 @@ def extract_pdf_question_images(
             # Answer bottom = next answer marker
             if ai + 1 < len(a_markers):
                 _, an_page, an_y = a_markers[ai + 1]
+                an_padding = 0.0  # Do not add extra bottom padding when ending at a next answer marker
             else:
                 an_page = n_pages - 1
                 an_y = doc[n_pages - 1].rect.height
+                an_padding = bottom_padding_pt
 
             a_segments: list[tuple[int, float, float]] = []
             if an_page == a_page:
                 a_segments.append((a_page,
                                    max(0.0, a_y_top - top_padding_pt),
-                                   min(a_page_h, an_y + bottom_padding_pt)))
+                                   min(a_page_h, an_y + an_padding)))
             else:
                 a_segments.append((a_page,
                                    max(0.0, a_y_top - top_padding_pt),
                                    a_page_h))
                 for mid in range(a_page + 1, an_page):
                     a_segments.append((mid, 0.0, doc[mid].rect.height))
-                a_segments.append((an_page,
-                                   0.0,
-                                   min(doc[an_page].rect.height,
-                                       an_y + bottom_padding_pt)))
+                # Only crop the top of an_page if the next answer starts sufficiently down the page,
+                # or if it is the last page (end of PDF).
+                if an_y >= 80.0 or an_page == n_pages - 1:
+                    a_segments.append((an_page,
+                                       0.0,
+                                       min(doc[an_page].rect.height,
+                                           an_y + an_padding)))
 
             a_imgs = _crop_segments(doc, a_segments, a_page_w, mat)
             if a_imgs:
                 a_combined = _stack_images(a_imgs)
 
-        # ── 4c. Compose final image ───────────────────────────────────────
-        if a_combined is not None:
-            final_w = max(q_combined.width, a_combined.width)
-            divider = _make_divider_banner(final_w)
-            final = _stack_images([q_combined, divider, a_combined])
-        else:
-            final = q_combined
-
-        buf_stacked = io.BytesIO()
-        final.save(buf_stacked, format="JPEG", quality=jpeg_quality)
-        
+        # ── 4c. Save question and answer images separately ────────────────
         buf_q = io.BytesIO()
         q_combined.save(buf_q, format="JPEG", quality=jpeg_quality)
-        
-        buf_a = None
+        q_bytes = buf_q.getvalue()
+
+        a_bytes = None
         if a_combined is not None:
             buf_a = io.BytesIO()
             a_combined.save(buf_a, format="JPEG", quality=jpeg_quality)
+            a_bytes = buf_a.getvalue()
 
         result[qid] = {
-            "stacked": buf_stacked.getvalue(),
-            "question": buf_q.getvalue(),
-            "answer": buf_a.getvalue() if buf_a is not None else None
+            "question": q_bytes,
+            "answer": a_bytes
         }
 
     doc.close()

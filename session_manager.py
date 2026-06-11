@@ -246,8 +246,20 @@ def _generate_grading_config_by_question_blocks(
             # If we have an image for this QID, send the image to LLM instead of just text!
             if q_images and qid in q_images:
                 try:
-                    img_bytes = base64.b64decode(q_images[qid])
-                    future = executor.submit(llm_client.json_from_images, prompt, [img_bytes], model=model_name)
+                    img_data = q_images[qid]
+                    img_list = []
+                    if isinstance(img_data, dict):
+                        if img_data.get("question"):
+                            img_list.append(base64.b64decode(img_data["question"]))
+                        if img_data.get("answer"):
+                            img_list.append(base64.b64decode(img_data["answer"]))
+                    else:
+                        img_list.append(base64.b64decode(img_data))
+                    
+                    if img_list:
+                        future = executor.submit(llm_client.json_from_images, prompt, img_list, model=model_name)
+                    else:
+                        future = executor.submit(llm_client.json_from_text, prompt, model=model_name)
                 except Exception:
                     # fallback to text if base64 decoding fails
                     future = executor.submit(llm_client.json_from_text, prompt, model=model_name)
@@ -2344,12 +2356,24 @@ def _ensure_solution_hard_rules(question: dict[str, Any]) -> None:
         for part in parts:
             if not isinstance(part, dict):
                 continue
+            
+            part_score = _safe_float(part.get("part_score") or part.get("max_score"), max_score)
+            part_default_answer_only = max(1, int(round(part_score * 0.25))) if part_score > 0 else 1
+            
+            if "require_final_answer" not in part:
+                part["require_final_answer"] = question["require_final_answer"]
+            part["require_final_answer"] = bool(part.get("require_final_answer"))
+            
+            if "answer_only_max_score" not in part:
+                part["answer_only_max_score"] = int(round(_safe_float(question.get("answer_only_max_score"), part_default_answer_only)))
+            part["answer_only_max_score"] = max(0, min(int(round(_safe_float(part.get("answer_only_max_score"), part_default_answer_only))), int(round(part_score))))
+            
             rules = part.get("presentation_rules")
             if not isinstance(rules, list):
                 rules = []
                 part["presentation_rules"] = rules
             _remove_rule_by_id(rules, "final_answer_required")
-            if question["require_final_answer"]:
+            if part["require_final_answer"]:
                 rules.append(
                     {
                         "rule_id": "final_answer_required",
