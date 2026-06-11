@@ -117,7 +117,10 @@ def rubric_question_meta(rubric: dict[str, Any], question_id: str) -> tuple[str,
                     part_score = float(part.get("part_score") or question.get("max_score") or 0)
                 except (TypeError, ValueError):
                     part_score = 0.0
-                answer_only = _answer_only_max_from_node(question, part_score)
+                if "answer_only_max_score" in part:
+                    answer_only = _answer_only_max_from_node(part, part_score)
+                else:
+                    answer_only = _answer_only_max_from_node(question, part_score)
                 return qtype, part_score, answer_only
     return "", 0.0, 1
 
