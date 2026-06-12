@@ -6,6 +6,7 @@ from typing import Any
 from answer_normalizer import normalize_answer_text
 
 SOLUTION_TYPES = {"proof", "calculation", "comprehensive"}
+NON_PROCESS_RESPONSE_MODES = {"exact_objective", "short_answer_points", "visual_construction"}
 
 _STEM_ECHO_PATTERNS = (
     r"是不是定值",
@@ -123,6 +124,38 @@ def rubric_question_meta(rubric: dict[str, Any], question_id: str) -> tuple[str,
                     answer_only = _answer_only_max_from_node(question, part_score)
                 return qtype, part_score, answer_only
     return "", 0.0, 1
+
+
+def rubric_response_mode(rubric: dict[str, Any], question_id: str) -> str:
+    questions = rubric.get("questions") if isinstance(rubric, dict) else []
+    if not isinstance(questions, list):
+        return ""
+    for question in questions:
+        if not isinstance(question, dict):
+            continue
+        qid = str(question.get("question_id") or "")
+        parts = question.get("parts")
+        if isinstance(parts, list):
+            for part in parts:
+                if isinstance(part, dict) and str(part.get("part_id") or "") == question_id:
+                    return str(part.get("response_mode") or "").strip().lower()
+        if qid == question_id:
+            explicit = str(question.get("response_mode") or "").strip().lower()
+            if explicit:
+                return explicit
+            part_modes = {
+                str(part.get("response_mode") or "").strip().lower()
+                for part in parts
+                if isinstance(part, dict) and str(part.get("response_mode") or "").strip()
+            } if isinstance(parts, list) else set()
+            if part_modes and part_modes <= NON_PROCESS_RESPONSE_MODES:
+                return "short_answer_points"
+            return "process_required"
+    return ""
+
+
+def response_mode_requires_process(response_mode: str | None) -> bool:
+    return str(response_mode or "").strip().lower() not in NON_PROCESS_RESPONSE_MODES
 
 
 def _meta_from_question_node(question: dict[str, Any], qtype: str) -> tuple[str, float, int]:

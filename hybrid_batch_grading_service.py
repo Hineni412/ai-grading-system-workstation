@@ -12,11 +12,29 @@ from PIL import Image, ImageDraw
 from ai_grader import GradingResult, QuestionGradingDetail
 from objective_batch_recognition_service import OBJECTIVE_AUTO_SCORE_MIN_CONFIDENCE, run_objective_batch_recognition
 from scoring_prompt_rules import SHARED_GRADING_RULES
-from solution_answer_guard import apply_solution_substance_rules, extract_observed_text, rubric_question_meta
+from solution_answer_guard import (
+    apply_solution_substance_rules,
+    extract_observed_text,
+    response_mode_requires_process,
+    rubric_question_meta,
+    rubric_response_mode,
+)
 from scanner import ExamPaperGroup
 from usage_logger import extract_usage_fields
 from session_manager import _canonical_question_id
 OBJECTIVE_TYPES = {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}
+
+
+def _without_embedded_image_data(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_embedded_image_data(item)
+            for key, item in value.items()
+            if not str(key).endswith("_base64")
+        }
+    if isinstance(value, list):
+        return [_without_embedded_image_data(item) for item in value]
+    return value
 
 
 @dataclass(frozen=True)
@@ -439,7 +457,7 @@ def build_hybrid_major_prompt(spec: MajorQuestionSpec, manifest: dict[str, Any],
         "question_id": spec.question_id,
         "detail_question_ids": spec.detail_question_ids,
         "rubric": spec.rubric,
-        "answer_key": spec.answer_key,
+        "answer_key": _without_embedded_image_data(spec.answer_key),
     }
 
     # Build a schema grading_details that contains ONE entry per sub-question (part_id),
@@ -518,6 +536,9 @@ def build_hybrid_major_prompt(spec: MajorQuestionSpec, manifest: dict[str, Any],
             "Hard rule: smudged/crossed-out/deletion-line/X-marked answer content is discarded and must not be read or scored.",
             "If only discarded content exists for a subquestion, score it 0 and set answer_discarded_by_smudge=true and error_category=作废答案.",
             "For proof or reasoning questions, full proof/process credit requires explicit evidence steps in the student's visible, non-discarded work.",
+            "Follow each sub-question response_mode. Only process_required needs proof/process evidence.",
+            "For short_answer_points, award each correct independent answer item without requiring derivation.",
+            "For visual_construction, compare against the first standard-answer image and visual_requirements; do not require a written proof unless separately specified.",
             "Before scoring a proof, extract evidence_steps from the answer, then list missing_steps from the rubric/key proof chain.",
             "Award each step score only when its corresponding evidence step is actually present; do not infer missing proof from the final conclusion.",
             "Only a final conclusion, a diagram label, or fragmented equations cannot receive complete process/proof credit.",
@@ -672,7 +693,11 @@ def _detail_from_ai_item(
         error_summary = error_summary or ("low_confidence" if confidence < min_confidence else "needs_human_review")
         if not deduction_reason:
             deduction_reason = "需复核: 模型置信度不足或存在多种可能评分"
-    if spec is not None and not blank_or_no_work:
+    if (
+        spec is not None
+        and not blank_or_no_work
+        and response_mode_requires_process(rubric_response_mode(spec.rubric, qid))
+    ):
         question_type, full_score, answer_only_max = rubric_question_meta(spec.rubric, qid)
         adjusted_score, substance_category, substance_summary, substance_reason = apply_solution_substance_rules(
             observed_answer=extract_observed_text(detail),

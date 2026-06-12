@@ -1,31 +1,46 @@
 from __future__ import annotations
 
+import ast
+import copy
 import io
 import json
 import os
 import re
+import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from xml.etree import ElementTree
 
 from docx import Document
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
+from answer_normalizer import complete_answer_set_values
 from equivalence_engine import merge_equivalent_forms
 from llm_client import LLMClient
 from question_bank.services.ai_tagging_service import KNOWLEDGE_POINT_OPTIONS
 from score_policy import (
     enforce_integer_scores_by_type,
+    MAX_QUESTION_SCORE,
     OBJECTIVE_TYPES,
     _normalize_type,
 )
 
 
 DEFAULT_CONFIG_GENERATION_TIMEOUT_SECONDS = 600.0
+DEFAULT_CONFIG_GENERATION_RETRY_DELAYS = (2.0, 6.0)
+
+
+class _QuestionGenerationRequestError(RuntimeError):
+    def __init__(self, question_id: str, attempts: int, category: str, original: Exception) -> None:
+        super().__init__(str(original))
+        self.question_id = question_id
+        self.attempts = attempts
+        self.category = category
+        self.original = original
 
 
 def _config_generation_extra_kwargs() -> dict[str, float]:
@@ -158,6 +173,65 @@ def _extract_docx_xml_text(file_bytes: bytes) -> list[str]:
     return result
 
 
+def _aligned_whole_generation_rules() -> str:
+    return (
+        "\n\n与分题生成模式一致的硬性规则：\n"
+        "1. 每个 parts 项必须输出 response_mode：exact_objective、short_answer_points、"
+        "process_required 或 visual_construction。\n"
+        "2. 选择题和普通填空题只按最终答案判分，不得要求推理或计算过程。\n"
+        "3. 要求列出全部可能答案的填空题必须使用 match_mode=complete_set，并输出 required_values、"
+        "order_sensitive=false、allow_extra_values=false、partial_credit=false；少写、错写、多写均不得分。\n"
+        "4. 必须输出具体知识点 knowledge_name、knowledge_id、knowledge_points，不得用题干或"
+        "“几何综合/代数综合/综合应用”充当知识点。\n"
+        "5. 主观题评分点必须写出可核验的必要条件、式子或结论，不得只写通用描述。\n"
+        "6. 作图题应输出 visual_requirements 和必要踩分点，不得把答案图臆造为唯一文字答案。\n"
+        "7. 总分严格为100；单题不超过18分；相同类型客观题必须同分，其他题型不要求同分。\n"
+    )
+
+
+def _build_whole_text_generation_prompt(doc_text: str) -> str:
+    return (
+        "这是 Word 整卷单次请求。你必须在本次响应中一次完成所有题目的解析、评分点生成与赋分；"
+        "不要建议后续补充请求。\n"
+        + _build_generation_prompt("", include_source_text=False)
+        + _aligned_whole_generation_rules()
+        + f"\nWord 原文（唯一文本来源）：\n{doc_text}"
+    )
+
+
+def _build_whole_image_generation_prompt() -> str:
+    return (
+        "这是 PDF 整卷视觉单次请求。后续附带的图片按顺序对应整份试卷及答案/解析的各页原图。"
+        "图片是唯一权威内容来源，不得参考、猜测或恢复任何 PDF 抽取文字。"
+        "你必须在本次响应中一次完成所有题目的解析、评分点生成与赋分；不要建议后续补充请求。\n\n"
+        + _build_generation_prompt("", include_source_text=False)
+        + _aligned_whole_generation_rules()
+    )
+
+
+def _finalize_whole_generation_payload(
+    payload: dict[str, Any],
+    generation_mode: str,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("AI 整卷生成未返回有效 JSON 对象。")
+    normalize_generated_config_schema(payload)
+    force_payload_total_score(payload, target_total=100.0)
+    meta = payload.setdefault("meta", {})
+    if not isinstance(meta, dict):
+        payload["meta"] = meta = {}
+    meta["generation_mode"] = generation_mode
+    meta["score_allocation_mode"] = "single_request_local_normalization"
+    meta["single_request"] = True
+    refresh_generated_config_quality_warnings(payload)
+    try:
+        validate_generated_config(payload)
+    except Exception:
+        _dump_failed_generated_payload(payload)
+        raise
+    return payload
+
+
 def generate_grading_config_from_docx_text(
     doc_text: str,
     llm_client: LLMClient,
@@ -166,27 +240,14 @@ def generate_grading_config_from_docx_text(
     q_images: dict[str, str] = None,
 ) -> dict[str, Any]:
     if report:
-        report(0.18, "旧版整卷生成", "直接把整份 Word 文本发送给模型生成评分标准。")
-    prompt = _build_generation_prompt(doc_text)
-    payload = llm_client.json_from_text(prompt, model=model_name, extra_kwargs=_config_generation_extra_kwargs())
-    try:
-        validate_generated_config(payload)
-    except Exception:
-        _dump_failed_generated_payload(payload)
-        raise
-    if _needs_objective_repair(payload, doc_text):
-        if report:
-            report(0.70, "旧版整卷修复", "检测到客观题可能缺失，正在请求模型修复。")
-        repair_prompt = _build_objective_repair_prompt(doc_text, payload)
-        payload = llm_client.json_from_text(repair_prompt, model=model_name, extra_kwargs=_config_generation_extra_kwargs())
-        try:
-            validate_generated_config(payload)
-        except Exception:
-            _dump_failed_generated_payload(payload)
-            raise
-        if _needs_objective_repair(payload, doc_text):
-            raise ValueError("AI 二次修复后仍疑似漏掉选择题/填空题，请检查 Word 提取文本或换用更强模型。")
-    return payload
+        report(0.18, "Word 整卷单次请求", "直接把整份 Word 文本发送给模型，一次完成解析与赋分。")
+    prompt = _build_whole_text_generation_prompt(doc_text)
+    payload = llm_client.json_from_text_once(
+        prompt,
+        model=model_name,
+        extra_kwargs=_config_generation_extra_kwargs(),
+    )
+    return _finalize_whole_generation_payload(payload, "whole_word_text_single_request")
 
 
 def generate_grading_config_from_docx_text_legacy(
@@ -213,14 +274,102 @@ def generate_grading_config_from_docx_text_legacy(
     return payload
 
 
-def _generate_grading_config_by_question_blocks(
-    question_blocks: list[dict[str, str]],
+def _config_generation_retry_delays() -> tuple[float, ...]:
+    raw = str(os.getenv("AI_GRADING_CONFIG_RETRY_DELAYS") or "").strip()
+    if not raw:
+        return DEFAULT_CONFIG_GENERATION_RETRY_DELAYS
+    try:
+        values = tuple(max(0.0, float(item.strip())) for item in raw.split(",") if item.strip())
+    except ValueError:
+        return DEFAULT_CONFIG_GENERATION_RETRY_DELAYS
+    return values or DEFAULT_CONFIG_GENERATION_RETRY_DELAYS
+
+
+def _is_transient_config_generation_error(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 429 or (isinstance(status_code, int) and 500 <= status_code <= 599):
+        return True
+    class_name = exc.__class__.__name__.lower()
+    if any(token in class_name for token in ("apiconnection", "apitimeout", "ratelimit", "timeout", "connection")):
+        return True
+    message = str(exc).lower()
+    return any(
+        token in message
+        for token in (
+            "connection reset",
+            "connection aborted",
+            "connection error",
+            "temporarily unavailable",
+            "temporary upstream",
+            "timed out",
+            "timeout",
+            "rate limit",
+            "too many requests",
+            "service unavailable",
+            "bad gateway",
+            "gateway timeout",
+        )
+    )
+
+
+def _call_question_generation_with_retry(
+    question_id: str,
+    request: Callable[[], dict[str, Any]],
+) -> tuple[dict[str, Any], int]:
+    retry_delays = _config_generation_retry_delays()
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            return request(), attempts
+        except Exception as exc:
+            transient = _is_transient_config_generation_error(exc)
+            retry_index = attempts - 1
+            if not transient or retry_index >= len(retry_delays):
+                category = "transient_network" if transient else "non_retryable"
+                raise _QuestionGenerationRequestError(question_id, attempts, category, exc) from exc
+            time.sleep(retry_delays[retry_index])
+
+
+def _word_block_image_blobs(block: dict[str, Any], *, limit: int = 8) -> list[bytes]:
+    raw_paths: list[str] = []
+    image_paths = block.get("image_paths")
+    if isinstance(image_paths, list):
+        raw_paths.extend(str(path).strip() for path in image_paths if str(path).strip())
+    for key in ("question_html", "answer_html", "analysis_html"):
+        value = str(block.get(key) or "")
+        raw_paths.extend(_image_paths_from_rich_text(value))
+
+    blobs: list[bytes] = []
+    seen: set[str] = set()
+    for raw_path in raw_paths:
+        candidates = [Path(raw_path)]
+        if not Path(raw_path).is_absolute():
+            candidates.append(Path.cwd() / raw_path)
+        path = next((candidate for candidate in candidates if candidate.is_file()), None)
+        if path is None:
+            continue
+        resolved = str(path.resolve())
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        try:
+            blobs.append(path.read_bytes())
+        except OSError:
+            continue
+        if len(blobs) >= limit:
+            break
+    return blobs
+
+
+def _generate_question_block_results(
+    question_blocks: list[dict[str, Any]],
     doc_text: str,
     llm_client: LLMClient,
     model_name: str | None = None,
     report: Any = None,
-    q_images: dict[str, str] = None,
-) -> dict[str, Any]:
+    q_images: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any] | None], list[dict[str, Any]], dict[str, int], int, bool]:
     max_workers = _bounded_int(
         os.getenv("AI_GRADING_CONFIG_WORKERS") or os.getenv("AI_GRADING_MAX_WORKERS"),
         8,
@@ -229,44 +378,55 @@ def _generate_grading_config_by_question_blocks(
     )
     worker_count = min(max_workers, len(question_blocks))
     results: list[dict[str, Any] | None] = [None] * len(question_blocks)
-    failures: list[str] = []
-    
+    failures: list[dict[str, Any]] = []
+    attempt_counts: dict[str, int] = {}
+    image_semantic_mode = bool(q_images) or any(
+        str(block.get("semantic_source") or "").strip() == "images"
+        for block in question_blocks
+    )
+
     if report:
         qids = ", ".join(str(block.get("question_id") or "") for block in question_blocks if block.get("question_id"))
         report(0.18, "Split paper", f"Parsed {len(question_blocks)} questions; workers={worker_count}; qids: {qids}")
-        
 
     import base64
+
     with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="config-q") as executor:
         future_map = {}
         for index, block in enumerate(question_blocks):
-            qid = str(block.get("question_id"))
-            prompt = _build_single_question_generation_prompt(block, doc_text)
-            
-            # If we have an image for this QID, send the image to LLM instead of just text!
-            if q_images and qid in q_images:
-                try:
-                    img_data = q_images[qid]
-                    img_list = []
-                    if isinstance(img_data, dict):
-                        if img_data.get("question"):
-                            img_list.append(base64.b64decode(img_data["question"]))
-                        if img_data.get("answer"):
-                            img_list.append(base64.b64decode(img_data["answer"]))
-                    else:
-                        img_list.append(base64.b64decode(img_data))
-                    
-                    if img_list:
-                        future = executor.submit(llm_client.json_from_images, prompt, img_list, model=model_name)
-                    else:
-                        future = executor.submit(llm_client.json_from_text, prompt, model=model_name)
-                except Exception:
-                    # fallback to text if base64 decoding fails
-                    future = executor.submit(llm_client.json_from_text, prompt, model=model_name)
+            qid = str(block.get("question_id") or f"Q{index + 1}")
+            image_data = q_images.get(qid) if isinstance(q_images, dict) else None
+            has_question_images = bool(isinstance(image_data, dict) and image_data.get("question"))
+            image_semantic_source = str(block.get("semantic_source") or "").strip() == "images"
+            word_image_blobs = (
+                _word_block_image_blobs(block)
+                if not has_question_images and not image_semantic_source
+                else []
+            )
+            prompt = (
+                _build_single_question_image_generation_prompt(
+                    block,
+                    has_answer_image=bool(isinstance(image_data, dict) and image_data.get("answer")),
+                )
+                if has_question_images or image_semantic_source
+                else _build_single_question_generation_prompt(block, doc_text)
+            )
+            if has_question_images and isinstance(image_data, dict):
+                img_list = [base64.b64decode(image_data["question"], validate=True)]
+                if image_data.get("answer"):
+                    img_list.append(base64.b64decode(image_data["answer"], validate=True))
+
+                def request(prompt: str = prompt, img_list: list[bytes] = img_list) -> dict[str, Any]:
+                    return llm_client.json_from_images(prompt, img_list, model=model_name)
+            elif word_image_blobs:
+                def request(prompt: str = prompt, img_list: list[bytes] = word_image_blobs) -> dict[str, Any]:
+                    return llm_client.json_from_images(prompt, img_list, model=model_name)
             else:
-                future = executor.submit(llm_client.json_from_text, prompt, model=model_name)
-            
-            future_map[future] = index
+                def request(prompt: str = prompt) -> dict[str, Any]:
+                    return llm_client.json_from_text(prompt, model=model_name)
+
+            future_map[executor.submit(_call_question_generation_with_retry, qid, request)] = index
+
         if report:
             qids = ", ".join(str(block.get("question_id") or "") for block in question_blocks if block.get("question_id"))
             report(0.20, "Submit per-question requests", f"Submitted {len(future_map)} question requests; waiting for model: {qids}")
@@ -274,36 +434,151 @@ def _generate_grading_config_by_question_blocks(
         total = len(question_blocks)
         for future in as_completed(future_map):
             index = future_map[future]
+            qid = str(question_blocks[index].get("question_id") or f"Q{index + 1}")
             try:
-                results[index] = future.result()
+                results[index], attempt_counts[qid] = future.result()
+            except _QuestionGenerationRequestError as exc:
+                attempt_counts[qid] = exc.attempts
+                failures.append(
+                    {
+                        "question_id": qid,
+                        "attempts": exc.attempts,
+                        "category": exc.category,
+                        "error": str(exc.original),
+                    }
+                )
             except Exception as exc:
-                qid = str(question_blocks[index].get("question_id") or f"Q{index + 1}")
-                failures.append(f"{qid}: {exc}")
+                attempt_counts[qid] = 1
+                failures.append(
+                    {
+                        "question_id": qid,
+                        "attempts": 1,
+                        "category": "unexpected",
+                        "error": str(exc),
+                    }
+                )
             completed += 1
             if report:
                 progress = 0.18 + 0.7 * (completed / total)
                 report(progress, "Parse question", f"Question {index + 1} parsed (progress: {completed}/{total})")
 
+    return results, failures, attempt_counts, worker_count, image_semantic_mode
+
+
+def _append_unmergeable_question_failures(
+    merged: dict[str, Any],
+    question_blocks: list[dict[str, Any]],
+    failures: list[dict[str, Any]],
+    attempt_counts: dict[str, int],
+) -> list[dict[str, Any]]:
+    questions = merged.get("rubric", {}).get("questions", [])
+    merged_qids = {
+        str(question.get("question_id") or "").strip()
+        for question in questions
+        if isinstance(question, dict)
+    } if isinstance(questions, list) else set()
+    failed_qids = {str(item.get("question_id") or "").strip() for item in failures}
+    for block in question_blocks:
+        qid = str(block.get("question_id") or "").strip()
+        if not qid or qid in merged_qids or qid in failed_qids:
+            continue
+        failures.append(
+            {
+                "question_id": qid,
+                "attempts": int(attempt_counts.get(qid, 1)),
+                "category": "unmergeable_schema",
+                "error": "AI returned a result that could not be merged into the rubric schema",
+            }
+        )
+    return failures
+
+
+def _generate_grading_config_by_question_blocks(
+    question_blocks: list[dict[str, str]],
+    doc_text: str,
+    llm_client: LLMClient,
+    model_name: str | None = None,
+    report: Any = None,
+    q_images: dict[str, str] = None,
+) -> dict[str, Any]:
+    _validate_image_semantic_inputs(question_blocks, q_images)
+    results, failures, attempt_counts, worker_count, image_semantic_mode = _generate_question_block_results(
+        question_blocks,
+        doc_text,
+        llm_client,
+        model_name=model_name,
+        report=report,
+        q_images=q_images,
+    )
+
     if report:
         report(0.90, "Assemble rubric", "All questions parsed; assembling final scoring rubric...")
 
     merged = _merge_single_question_payloads(results, question_blocks)
-    _attach_parallel_generation_meta(merged, question_blocks, results, failures, worker_count)
+    failures = _append_unmergeable_question_failures(merged, question_blocks, failures, attempt_counts)
+    _attach_parallel_generation_meta(merged, question_blocks, failures, worker_count, attempt_counts)
     _ensure_question_blocks_covered(merged, question_blocks)
     _apply_local_question_facts(merged, question_blocks)
     normalize_generated_config_schema(merged)
+
+    if failures:
+        meta = merged.setdefault("meta", {})
+        meta["score_allocation_mode"] = "pending_failed_questions"
+        meta["score_allocation_ai_success"] = False
+        meta["score_allocation_pending"] = True
+        _attach_reference_answer_images(merged, q_images)
+        refresh_generated_config_quality_warnings(merged)
+        return merged
 
     # ① Phase 2: dedicated score-allocation AI call
     # All per-question prompts set score placeholders (=1); this step assigns real scores.
-    _assign_scores_to_merged_config(merged, doc_text, llm_client, model_name, report=report)
+    return retry_grading_config_score_allocation(
+        merged,
+        question_blocks,
+        doc_text,
+        llm_client,
+        model_name=model_name,
+        report=report,
+        q_images=q_images,
+        include_document_text=not image_semantic_mode,
+    )
 
-    # Post-scoring cleanup: re-apply local facts (they survive score allocation)
-    _ensure_question_blocks_covered(merged, question_blocks)
-    _apply_local_question_facts(merged, question_blocks)
-    normalize_generated_config_schema(merged)
-    merged.setdefault("meta", {})["score_allocation_mode"] = "dedicated_ai_scoring"
-    force_payload_total_score(merged, target_total=100.0)
-    return merged
+
+def _validate_image_semantic_inputs(
+    question_blocks: list[dict[str, Any]],
+    q_images: dict[str, Any] | None,
+) -> None:
+    image_qids = [
+        str(block.get("question_id") or "").strip()
+        for block in question_blocks
+        if isinstance(block, dict) and str(block.get("semantic_source") or "").strip() == "images"
+    ]
+    if not image_qids:
+        return
+    if not isinstance(q_images, dict) or not q_images:
+        raise ValueError("PDF 图片裁题状态已丢失，请重新点击“① 拆分试卷”后再生成评分标准。")
+
+    import base64
+
+    invalid_qids: list[str] = []
+    for qid in image_qids:
+        image_data = q_images.get(qid)
+        question_image = image_data.get("question") if isinstance(image_data, dict) else None
+        if not isinstance(question_image, str) or not question_image.strip():
+            invalid_qids.append(qid)
+            continue
+        try:
+            base64.b64decode(question_image, validate=True)
+            answer_image = image_data.get("answer")
+            if answer_image:
+                base64.b64decode(str(answer_image), validate=True)
+        except (ValueError, TypeError):
+            invalid_qids.append(qid)
+    if invalid_qids:
+        raise ValueError(
+            "PDF 图片裁题数据无效，未退回纯文本模式。请重新拆题："
+            + ", ".join(invalid_qids)
+        )
 
 
 def preview_question_blocks_from_docx_text(doc_text: str) -> list[dict[str, Any]]:
@@ -589,8 +864,12 @@ def generate_grading_config_from_confirmed_blocks(
     confirmed_blocks 应来自 preview_question_blocks_from_docx_text 的输出，
     经人工删除/题型修正后传入。
     """
+    locked_blocks = [
+        {**block, "question_type_confirmed": True}
+        for block in confirmed_blocks
+    ]
     return _generate_grading_config_by_question_blocks(
-        confirmed_blocks,
+        locked_blocks,
         doc_text,
         llm_client,
         model_name=model_name,
@@ -599,13 +878,277 @@ def generate_grading_config_from_confirmed_blocks(
     )
 
 
+def failed_grading_config_question_ids(payload: dict[str, Any]) -> list[str]:
+    meta = payload.get("meta") if isinstance(payload, dict) else {}
+    if not isinstance(meta, dict):
+        return []
+    raw_ids = meta.get("failed_question_ids")
+    if isinstance(raw_ids, list):
+        return list(dict.fromkeys(str(qid).strip() for qid in raw_ids if str(qid).strip()))
+    failures = meta.get("failed_questions")
+    if not isinstance(failures, list):
+        return []
+    return list(
+        dict.fromkeys(
+            str(failure.get("question_id") or "").strip()
+            for failure in failures
+            if isinstance(failure, dict) and str(failure.get("question_id") or "").strip()
+        )
+    )
+
+
+def _replace_retry_question_payloads(
+    existing_payload: dict[str, Any],
+    retry_payload: dict[str, Any],
+    successful_qids: set[str],
+    question_blocks: list[dict[str, Any]],
+) -> None:
+    existing_rubric = existing_payload.setdefault("rubric", {})
+    existing_answer_key = existing_payload.setdefault("answer_key", {})
+    retry_rubric = retry_payload.get("rubric", {})
+    retry_answer_key = retry_payload.get("answer_key", {})
+    existing_questions = existing_rubric.setdefault("questions", []) if isinstance(existing_rubric, dict) else []
+    existing_answers = existing_answer_key.setdefault("questions", []) if isinstance(existing_answer_key, dict) else []
+    retry_questions = retry_rubric.get("questions", []) if isinstance(retry_rubric, dict) else []
+    retry_answers = retry_answer_key.get("questions", []) if isinstance(retry_answer_key, dict) else []
+    if not isinstance(existing_questions, list) or not isinstance(existing_answers, list):
+        return
+
+    retry_question_map = {
+        str(question.get("question_id") or "").strip(): question
+        for question in retry_questions
+        if isinstance(question, dict)
+    } if isinstance(retry_questions, list) else {}
+    retry_answer_map = {
+        str(answer.get("question_id") or "").strip(): answer
+        for answer in retry_answers
+        if isinstance(answer, dict)
+    } if isinstance(retry_answers, list) else {}
+
+    existing_questions[:] = [
+        question
+        for question in existing_questions
+        if not isinstance(question, dict) or str(question.get("question_id") or "").strip() not in successful_qids
+    ]
+    existing_answers[:] = [
+        answer
+        for answer in existing_answers
+        if not isinstance(answer, dict) or str(answer.get("question_id") or "").strip() not in successful_qids
+    ]
+    for qid in successful_qids:
+        if qid in retry_question_map:
+            existing_questions.append(copy.deepcopy(retry_question_map[qid]))
+        if qid in retry_answer_map:
+            existing_answers.append(copy.deepcopy(retry_answer_map[qid]))
+
+    qid_order = {
+        str(block.get("question_id") or "").strip(): index
+        for index, block in enumerate(question_blocks)
+        if str(block.get("question_id") or "").strip()
+    }
+    existing_questions.sort(
+        key=lambda item: qid_order.get(str(item.get("question_id") or "").strip(), 10_000)
+        if isinstance(item, dict) else 10_001
+    )
+    existing_answers.sort(
+        key=lambda item: qid_order.get(str(item.get("question_id") or "").strip(), 10_000)
+        if isinstance(item, dict) else 10_001
+    )
+
+
+def _clear_resolved_generation_warnings(payload: dict[str, Any], resolved_qids: set[str]) -> None:
+    meta = payload.get("meta") if isinstance(payload, dict) else {}
+    warnings = meta.get("warnings") if isinstance(meta, dict) else None
+    if not isinstance(warnings, list):
+        return
+    generation_markers = (
+        "parallel generation failed",
+        "placeholder added",
+        "unmergeable single-question schema",
+    )
+    warnings[:] = [
+        warning
+        for warning in warnings
+        if not (
+            any(marker in str(warning) for marker in generation_markers)
+            and any(qid in str(warning) for qid in resolved_qids)
+        )
+        and str(warning) != "parallel generation completed with failed question blocks; score allocation paused until retry."
+    ]
+
+
+def retry_failed_grading_config_questions(
+    existing_payload: dict[str, Any],
+    question_blocks: list[dict[str, Any]],
+    doc_text: str,
+    llm_client: LLMClient,
+    model_name: str | None = None,
+    report: Any = None,
+    q_images: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    failed_qids = failed_grading_config_question_ids(existing_payload)
+    if not failed_qids:
+        return copy.deepcopy(existing_payload)
+
+    locked_blocks = [{**block, "question_type_confirmed": True} for block in question_blocks]
+    block_map = {
+        str(block.get("question_id") or "").strip(): block
+        for block in locked_blocks
+        if str(block.get("question_id") or "").strip()
+    }
+    retry_blocks = [block_map[qid] for qid in failed_qids if qid in block_map]
+    missing_failures = [
+        {
+            "question_id": qid,
+            "attempts": 0,
+            "category": "missing_retry_input",
+            "error": "Original confirmed question block is no longer available",
+        }
+        for qid in failed_qids
+        if qid not in block_map
+    ]
+    if not retry_blocks:
+        raise ValueError("失败题目的原始确认数据已丢失，请重新拆分试卷后生成。")
+
+    _validate_image_semantic_inputs(retry_blocks, q_images)
+    results, failures, attempt_counts, worker_count, image_semantic_mode = _generate_question_block_results(
+        retry_blocks,
+        doc_text,
+        llm_client,
+        model_name=model_name,
+        report=report,
+        q_images=q_images,
+    )
+    retry_payload = _merge_single_question_payloads(results, retry_blocks)
+    failures = _append_unmergeable_question_failures(retry_payload, retry_blocks, failures, attempt_counts)
+    failures.extend(missing_failures)
+    remaining_failed_qids = {
+        str(failure.get("question_id") or "").strip()
+        for failure in failures
+        if str(failure.get("question_id") or "").strip()
+    }
+    successful_qids = set(failed_qids) - remaining_failed_qids
+
+    merged = copy.deepcopy(existing_payload)
+    _replace_retry_question_payloads(merged, retry_payload, successful_qids, locked_blocks)
+    _clear_resolved_generation_warnings(merged, successful_qids)
+    previous_attempts = merged.get("meta", {}).get("single_question_attempts", {})
+    all_attempts = dict(previous_attempts) if isinstance(previous_attempts, dict) else {}
+    all_attempts.update(attempt_counts)
+    _attach_parallel_generation_meta(merged, locked_blocks, failures, worker_count, all_attempts)
+    _ensure_question_blocks_covered(merged, locked_blocks)
+    _apply_local_question_facts(merged, locked_blocks)
+    normalize_generated_config_schema(merged)
+
+    if failures:
+        meta = merged.setdefault("meta", {})
+        meta["score_allocation_mode"] = "pending_failed_questions"
+        meta["score_allocation_ai_success"] = False
+        meta["score_allocation_pending"] = True
+        _attach_reference_answer_images(merged, q_images)
+        refresh_generated_config_quality_warnings(merged)
+        return merged
+
+    return retry_grading_config_score_allocation(
+        merged,
+        locked_blocks,
+        doc_text,
+        llm_client,
+        model_name=model_name,
+        report=report,
+        q_images=q_images,
+        include_document_text=not image_semantic_mode,
+    )
+
+
+def retry_grading_config_score_allocation(
+    existing_payload: dict[str, Any],
+    question_blocks: list[dict[str, Any]],
+    doc_text: str,
+    llm_client: LLMClient,
+    model_name: str | None = None,
+    report: Any = None,
+    q_images: dict[str, Any] | None = None,
+    *,
+    include_document_text: bool | None = None,
+) -> dict[str, Any]:
+    if failed_grading_config_question_ids(existing_payload):
+        raise ValueError("仍有失败题目，需先重试失败题目，再进行整体赋分。")
+    merged = copy.deepcopy(existing_payload)
+    if include_document_text is None:
+        include_document_text = not (
+            bool(q_images)
+            or any(str(block.get("semantic_source") or "").strip() == "images" for block in question_blocks)
+        )
+    _assign_scores_to_merged_config(
+        merged,
+        doc_text,
+        llm_client,
+        model_name,
+        report=report,
+        include_document_text=include_document_text,
+    )
+    _ensure_question_blocks_covered(merged, question_blocks)
+    _apply_local_question_facts(merged, question_blocks)
+    normalize_generated_config_schema(merged)
+    meta = merged.setdefault("meta", {})
+    meta["score_allocation_mode"] = (
+        "dedicated_ai_scoring" if meta.get("score_allocation_ai_success") else "local_score_fallback"
+    )
+    meta["score_allocation_pending"] = False
+    force_payload_total_score(merged, target_total=100.0)
+    _attach_reference_answer_images(merged, q_images)
+    refresh_generated_config_quality_warnings(merged)
+    return merged
+
+
+def _split_local_question_answer_text(doc_text: str) -> tuple[str, str]:
+    text = str(doc_text or "")
+    try:
+        from question_bank.importers.batch_importer import _split_answer_text
+
+        question_text, answer_text = _split_answer_text(text)
+        return str(question_text or ""), str(answer_text or "")
+    except Exception:
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            if _looks_like_answer_section_heading(line):
+                return "\n".join(lines[:index]).strip(), "\n".join(lines[index + 1 :]).strip()
+    return text, ""
+
+
+def _question_type_hints_from_section_headings(doc_text: str) -> dict[str, str]:
+    question_text, _ = _split_local_question_answer_text(doc_text)
+    current_type = ""
+    hints: dict[str, str] = {}
+    for line in question_text.splitlines():
+        value = str(line or "").strip()
+        if "选择题" in value:
+            current_type = "choice"
+            continue
+        if "填空题" in value:
+            current_type = "fill_blank"
+            continue
+        if "证明题" in value:
+            current_type = "proof"
+            continue
+        if "解答题" in value:
+            current_type = "comprehensive"
+            continue
+        number = _extract_question_marker_number(value)
+        if number is not None and current_type:
+            hints[str(number)] = current_type
+    return hints
+
+
 def _parse_inline_answer_blocks(doc_text: str) -> list[dict[str, Any]] | None:
     """解析"题干 + 【答案】 + 【解析】逐题穿插"格式的试卷（纯本地，不调 AI）。
 
     返回 None 表示该文本不是内联格式（无【答案】/【解析】标记），交回上层兜底逻辑。
     通过"题号必须单调递增"截断文件后半段重复的答案详解区，避免重复拆题。
     """
-    text = str(doc_text or "")
+    full_text = str(doc_text or "")
+    text, answer_section = _split_local_question_answer_text(full_text)
     if ("【答案】" not in text) and ("【解析】" not in text):
         return None
 
@@ -629,14 +1172,20 @@ def _parse_inline_answer_blocks(doc_text: str) -> list[dict[str, Any]] | None:
     if not markers:
         return None
 
-    answer_section_for_choice = _local_answer_section_text(text)
+    answer_section_for_choice = answer_section or _local_answer_section_text(text)
     choice_answers = _extract_choice_answer_sequence(answer_section_for_choice)
+    section_hints = _question_type_hints_from_section_headings(text)
 
     blocks: list[dict[str, Any]] = []
     for pos, (start, number) in enumerate(markers):
         end = markers[pos + 1][0] if pos + 1 < len(markers) else len(lines)
         segment_lines = lines[start:end]
-        parsed = _parse_inline_segment(number, segment_lines, choice_answers)
+        parsed = _parse_inline_segment(
+            number,
+            segment_lines,
+            choice_answers,
+            section_type=section_hints.get(str(number), ""),
+        )
         if parsed:
             blocks.append(parsed)
 
@@ -647,6 +1196,8 @@ def _parse_inline_segment(
     number: int,
     segment_lines: list[str],
     choice_answers: dict[str, str],
+    *,
+    section_type: str = "",
 ) -> dict[str, Any] | None:
     """把单道题的文本段拆成 题干 / 答案 / 解析。"""
     # 分类收集：题干 / 【答案】 / 【解析】(含【点睛】)
@@ -696,7 +1247,12 @@ def _parse_inline_segment(
         return None
 
     num_str = str(number)
-    qtype = _infer_local_question_type(question_text, answer_raw, num_str)
+    qtype = _infer_local_question_type(
+        question_text,
+        answer_raw,
+        num_str,
+        section_type=section_type,
+    )
     canonical = _extract_canonical_answer_for_local_question(
         number=num_str,
         qtype=qtype,
@@ -760,6 +1316,7 @@ def _extract_local_question_blocks(doc_text: str) -> list[dict[str, Any]]:
     answer_section = _local_answer_section_text(doc_text)
     answer_blocks = _local_answer_blocks(answer_section)
     choice_answers = _extract_choice_answer_sequence(answer_section)
+    section_hints = _question_type_hints_from_section_headings(doc_text)
 
     blocks: list[dict[str, Any]] = []
     if parsed_questions:
@@ -772,7 +1329,12 @@ def _extract_local_question_blocks(doc_text: str) -> list[dict[str, Any]]:
             answer_from_map = str(answer_blocks.get(number, "") or "").strip()
             parsed_answer = str(getattr(item, "answer_text", "") or "").strip()
             raw_answer = str(answer_from_map or parsed_answer).strip()
-            qtype = _infer_local_question_type(question_text, raw_answer, number)
+            qtype = _infer_local_question_type(
+                question_text,
+                raw_answer,
+                number,
+                section_type=section_hints.get(str(int(number)), ""),
+            )
             canonical = _extract_canonical_answer_for_local_question(
                 number=number,
                 qtype=qtype,
@@ -801,7 +1363,12 @@ def _extract_local_question_blocks(doc_text: str) -> list[dict[str, Any]]:
             number = qid.removeprefix("Q")
             question_text = str(block.get("text") or "")
             raw_answer = answer_blocks.get(number, "")
-            qtype = _infer_local_question_type(question_text, raw_answer, number)
+            qtype = _infer_local_question_type(
+                question_text,
+                raw_answer,
+                number,
+                section_type=section_hints.get(str(int(number)), "") if number.isdigit() else "",
+            )
             canonical = _extract_canonical_answer_for_local_question(
                 number=number,
                 qtype=qtype,
@@ -905,6 +1472,7 @@ def _extract_choice_answer_sequence(answer_section: str) -> dict[str, str]:
         r"|选\s*[:：]"
         r"|答\s*案\s*(?:是|为|选)?\s*[:：]?"
         r"|答\s*[:：]"
+        r"|【答案】"
         r")\s*([A-Da-d])"
     )
     for match in re.finditer(pattern, section):
@@ -922,35 +1490,50 @@ def _extract_choice_answer_sequence(answer_section: str) -> dict[str, str]:
     return {str(index): value for index, value in enumerate(found[:20], start=1)}
 
 
-def _infer_local_question_type(question_text: str, answer_text: str, number: str) -> str:  # noqa: ARG001
-    """Infer question type from content only — never by question number position."""
-    value = f"{question_text}\n{answer_text}"
-    # Choice: has A/B/C/D option lines
-    option_line = any(
+def _infer_local_question_type(
+    question_text: str,
+    answer_text: str,
+    number: str,  # noqa: ARG001
+    *,
+    section_type: str = "",
+) -> str:
+    """Infer question type, preferring explicit paper-section headings."""
+    value = str(question_text or "")
+    normalized_section_type = str(section_type or "").strip()
+    if normalized_section_type in {"choice", "fill_blank", "proof"}:
+        return normalized_section_type
+
+    option_labels = {
+        match.group(1).upper()
+        for match in re.finditer(r"(?m)^\s*([A-Da-d])\s*(?:[.．、)]|\s{2,})", value)
+    }
+    compact_options = any(
         re.search(r"[Aa][.．、]?\s*.{0,80}[Bb][.．、]?\s*.{0,80}[Cc][.．、]?\s*.{0,80}[Dd]", line)
         for line in value.splitlines()
     )
-    if option_line:
+    if len(option_labels) >= 3 or compact_options:
         return "choice"
-    # Also choice: answer is a single letter A-D
     if re.fullmatch(r"\s*[A-Da-d]\s*", str(answer_text or "")):
         return "choice"
-    # Fill-blank: has explicit blank markers or answer-intro phrases
+
     has_blank = bool(
         re.search(
-            r"_{2,}|　{1,}|（\s*）|\(\s*\)|\b填空\b|故答案为|答案(?:是|为)",
+            r"_{2,}|　{1,}|（\s*）|\(\s*\)|\b填空\b",
             value,
         )
     )
     if has_blank:
         return "fill_blank"
-    # Proof: has proof-specific keywords
+
+    if any(token in value for token in ["作图", "作出", "画出", "保留作图痕迹"]):
+        return "comprehensive"
     if any(token in value for token in ["证明", "理由", "说明", "求证", "全等", "证得"]):
         return "proof"
-    # Calculation: has sub-parts or calculation keywords
     has_subparts = bool(re.search(r"[（(]\s*[1-9]\s*[）)]", value))
     if has_subparts or any(token in value for token in ["计算", "求", "解答", "解："]):
         return "calculation"
+    if normalized_section_type == "comprehensive":
+        return "comprehensive"
     return _infer_question_type_from_block_text(question_text)
 
 
@@ -969,7 +1552,7 @@ def _extract_canonical_answer_for_local_question(
             return answer
         # Then try in-line answer patterns
         choice_pattern = (
-            r"(?:故\s*选|选择|选\s*[:：]|答\s*案\s*(?:是|为|选)?\s*[:：]?|答\s*[:：])\s*([A-Da-d])"
+            r"(?:故\s*选|选择|选\s*[:：]|答\s*案\s*(?:是|为|选)?\s*[:：]?|答\s*[:：]|【答案】)\s*([A-Da-d])"
         )
         match = re.search(choice_pattern, str(answer_text or ""))
         if match:
@@ -984,6 +1567,7 @@ def _extract_canonical_answer_for_local_question(
     text = str(answer_text or "")
     # Extended patterns for fill-blank answer extraction
     patterns = [
+        r"【答案】\s*([^。\n；;]{1,120})",
         r"故答案为\s*[:：]?\s*([^。\n；;]{1,120})",
         r"答案(?:是|为)\s*[:：]?\s*([^。\n；;]{1,120})",
         r"答案\s*[:：]\s*([^。\n；;]{1,120})",
@@ -1060,10 +1644,24 @@ def _apply_local_question_facts(payload: dict[str, Any], question_blocks: list[d
         if not fact:
             continue
         local_type = str(fact.get("question_type") or "").strip()
-        if local_type in {"choice", "fill_blank"}:
+        type_confirmed = bool(fact.get("question_type_confirmed"))
+        if local_type in {"choice", "fill_blank"} or (
+            type_confirmed and local_type in {"calculation", "proof", "comprehensive"}
+        ):
             question["question_type"] = local_type
-            question["grading_mode"] = "direct_answer"
-        if str(fact.get("question_text") or "").strip() and not str(question.get("stem_summary") or "").strip():
+            question["grading_mode"] = (
+                "direct_answer"
+                if local_type in {"choice", "fill_blank"}
+                else "deductive_obligation"
+            )
+        if type_confirmed:
+            question["question_type_confirmed"] = True
+        image_semantic_source = str(fact.get("semantic_source") or "").strip() == "images"
+        if (
+            not image_semantic_source
+            and str(fact.get("question_text") or "").strip()
+            and not str(question.get("stem_summary") or "").strip()
+        ):
             question["stem_summary"] = str(fact.get("question_text") or "").strip().splitlines()[0][:120]
 
         answer = answer_map.get(qid)
@@ -1073,7 +1671,7 @@ def _apply_local_question_facts(payload: dict[str, Any], question_blocks: list[d
             answer_map[qid] = answer
         canonical = str(fact.get("canonical_answer") or "").strip()
         accepted = [str(item).strip() for item in fact.get("accepted_forms") or [] if str(item).strip()]
-        if canonical:
+        if canonical and not image_semantic_source:
             current_canonical = str(answer.get("canonical_answer") or "").strip()
             if bool(fact.get("local_answer_trusted")) or not current_canonical:
                 answer["canonical_answer"] = canonical
@@ -1088,6 +1686,174 @@ def _apply_local_question_facts(payload: dict[str, Any], question_blocks: list[d
                 for part in parts:
                     if isinstance(part, dict) and not str(part.get("answer") or "").strip():
                         part["answer"] = base_answer
+
+
+def _attach_reference_answer_images(
+    payload: dict[str, Any],
+    q_images: dict[str, Any] | None,
+) -> None:
+    """Persist clean PDF answer crops for image-aware grading."""
+    if not q_images:
+        return
+    answer_key = payload.get("answer_key") if isinstance(payload, dict) else None
+    answer_questions = answer_key.get("questions") if isinstance(answer_key, dict) else None
+    if not isinstance(answer_questions, list):
+        return
+    answer_map = {
+        str(item.get("question_id") or ""): item
+        for item in answer_questions
+        if isinstance(item, dict)
+    }
+    for qid, image_data in q_images.items():
+        if not isinstance(image_data, dict):
+            continue
+        answer_image = str(image_data.get("answer") or "").strip()
+        answer_item = answer_map.get(str(qid))
+        if not answer_image or not isinstance(answer_item, dict):
+            continue
+        answer_item["answer_image_base64"] = answer_image
+        answer_item["answer_image_role"] = "perfect_standard_answer"
+
+
+def _quality_answer_texts(node: Any) -> list[str]:
+    if not isinstance(node, dict):
+        return []
+    values: list[str] = []
+    for key in ("answer", "canonical_answer", "standard_answer", "correct_answer"):
+        value = str(node.get(key) or "").strip()
+        if value:
+            values.append(value)
+    accepted = node.get("accepted_forms")
+    if isinstance(accepted, list):
+        values.extend(str(item).strip() for item in accepted if str(item).strip())
+    return values
+
+
+def _looks_like_serialized_answer_list(value: Any) -> bool:
+    return bool(re.fullmatch(r"\s*\[[\s\S]*\]\s*", str(value or "")))
+
+
+def _normalize_serialized_answer_list(value: Any) -> str:
+    text = str(value or "").strip()
+    if not _looks_like_serialized_answer_list(text):
+        return text
+    try:
+        parsed = ast.literal_eval(text)
+    except (SyntaxError, ValueError):
+        return text
+    if not isinstance(parsed, (list, tuple)) or not parsed:
+        return text
+    values = [str(item).strip() for item in parsed if str(item).strip()]
+    return "、".join(values) if values else text
+
+
+def _looks_like_garbled_generated_text(value: Any) -> bool:
+    text = str(value or "")
+    return "\ufffd" in text or "锟" in text or "��" in text
+
+
+def collect_generated_config_quality_warnings(payload: dict[str, Any]) -> list[str]:
+    rubric = payload.get("rubric") if isinstance(payload, dict) else None
+    answer_key = payload.get("answer_key") if isinstance(payload, dict) else None
+    rubric_questions = rubric.get("questions") if isinstance(rubric, dict) else []
+    answer_questions = answer_key.get("questions") if isinstance(answer_key, dict) else []
+    if not isinstance(rubric_questions, list):
+        return ["[质量检查-阻断] rubric.questions 结构无效"]
+    answer_map = {
+        str(item.get("question_id") or ""): item
+        for item in answer_questions
+        if isinstance(item, dict)
+    } if isinstance(answer_questions, list) else {}
+
+    warnings: list[str] = []
+    for question in rubric_questions:
+        if not isinstance(question, dict):
+            continue
+        qid = str(question.get("question_id") or "未知题号")
+        qtype = str(question.get("question_type") or "")
+        stem = str(question.get("stem_summary") or "").strip()
+        knowledge_id = str(question.get("knowledge_id") or "").strip()
+        knowledge_name = str(question.get("knowledge_name") or "").strip()
+        if not knowledge_name or knowledge_id in {"", "UNKNOWN"}:
+            warnings.append(f"[质量检查-提醒] {qid} 缺少明确知识点")
+        if knowledge_name and stem and knowledge_name == stem:
+            warnings.append(f"[质量检查-提醒] {qid} 知识点疑似直接复制题干")
+        if knowledge_name in {"几何综合", "代数综合", "数学综合", "综合应用", "未知知识点"}:
+            warnings.append(f"[质量检查-提醒] {qid} 知识点过于宽泛，应写明具体考查概念")
+
+        answer_item = answer_map.get(qid, {})
+        answer_image_present = bool(isinstance(answer_item, dict) and answer_item.get("answer_image_base64"))
+        answer_texts = _quality_answer_texts(answer_item)
+        answer_parts = answer_item.get("parts") if isinstance(answer_item, dict) else []
+        if not isinstance(answer_parts, list):
+            answer_parts = []
+
+        text_fields: list[Any] = [stem, knowledge_name, *answer_texts]
+        parts = question.get("parts")
+        if not isinstance(parts, list):
+            parts = []
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            for step in part.get("steps") or []:
+                if not isinstance(step, dict):
+                    continue
+                text_fields.append(step.get("core_goal"))
+                required = step.get("required_elements")
+                if isinstance(required, list):
+                    text_fields.extend(required)
+        for answer_part in answer_parts:
+            text_fields.extend(_quality_answer_texts(answer_part))
+        if any(_looks_like_garbled_generated_text(value) for value in text_fields):
+            warnings.append(f"[质量检查-阻断] {qid} 的题干、公式、答案或踩分点中存在疑似乱码")
+        if any(_looks_like_serialized_answer_list(value) for value in text_fields):
+            warnings.append(f"[质量检查-阻断] {qid} 的答案中混入列表字符串，无法作为合法等价答案")
+
+        if qtype in {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}:
+            if not answer_texts and not answer_image_present:
+                warnings.append(f"[质量检查-阻断] {qid} 缺少可评分的标准答案")
+
+        for index, part in enumerate(parts):
+            if not isinstance(part, dict):
+                continue
+            mode = str(part.get("response_mode") or "").strip() or _infer_part_response_mode(question, part)
+            steps = [step for step in part.get("steps") or [] if isinstance(step, dict)]
+            goals = [str(step.get("core_goal") or "").strip() for step in steps]
+            generic_goals = {
+                "完成必要的推理或计算步骤",
+                "合理的推理过程",
+                "正确的结论",
+            }
+            if qtype in {"choice", "fill_blank", "judgement", "true_false", "direct_answer"} and mode == "process_required":
+                warnings.append(f"[质量检查-阻断] {qid} 客观题被错误设置为过程评分")
+            if mode == "visual_construction":
+                visual_requirements = _string_list(part.get("visual_requirements"))
+                meaningful_goals = [goal for goal in goals if goal and goal not in generic_goals]
+                if not visual_requirements and not meaningful_goals:
+                    warnings.append(f"[质量检查-阻断] {qid} 作图题缺少具体作图要求")
+            if mode not in {"exact_objective", "short_answer_points", "visual_construction"}:
+                if qtype in {"proof", "calculation", "comprehensive"} and goals and all(goal in generic_goals for goal in goals):
+                    warnings.append(f"[质量检查-阻断] {qid} 评分点全部为通用描述，无法执行可靠批改")
+                continue
+            answer_part = answer_parts[index] if index < len(answer_parts) and isinstance(answer_parts[index], dict) else {}
+            if not _quality_answer_texts(answer_part) and not answer_texts and not answer_image_present:
+                part_id = str(part.get("part_id") or f"第{index + 1}问")
+                warnings.append(f"[质量检查-阻断] {qid}/{part_id} 缺少可评分的标准答案或答案图")
+
+    return list(dict.fromkeys(warnings))
+
+
+def refresh_generated_config_quality_warnings(payload: dict[str, Any]) -> list[str]:
+    meta = payload.setdefault("meta", {}) if isinstance(payload, dict) else {}
+    if not isinstance(meta, dict):
+        return []
+    warnings = meta.get("warnings")
+    if not isinstance(warnings, list):
+        warnings = []
+    warnings = [warning for warning in warnings if not str(warning).startswith("[质量检查-")]
+    quality_warnings = collect_generated_config_quality_warnings(payload)
+    meta["warnings"] = [*warnings, *quality_warnings]
+    return quality_warnings
 
 
 def _restore_precalibration_objective_answers(payload: dict[str, Any], previous_payload: dict[str, Any]) -> None:
@@ -1183,6 +1949,52 @@ def _looks_like_answer_section_heading(line: str) -> bool:
         return True
     return lower in {"answer", "answers", "solution", "solutions", "answer key"}
 
+def _build_single_question_image_generation_prompt(
+    block: dict[str, Any],
+    *,
+    has_answer_image: bool,
+) -> str:
+    qid = str(block.get("question_id") or "").strip()
+    confirmed_type = str(block.get("question_type") or "").strip()
+    image_description = (
+        "图片1是题目原图；图片2是标准答案与解析原图。"
+        if has_answer_image
+        else "图片1是题目原图；未提供标准答案与解析原图。"
+    )
+    knowledge_options = "、".join(str(item) for item in KNOWLEDGE_POINT_OPTIONS)
+    return (
+        "你正在为一道中学数学题生成可执行评分标准。仅返回严格 JSON。\n"
+        f"题目ID：{qid}\n"
+        f"教师已确认题型：{confirmed_type}\n"
+        f"{image_description}\n"
+        "图片是唯一权威内容来源。不得参考、猜测或恢复任何 PDF 抽取文字。\n"
+        "必须严格保持图片中的点名、线段、公式、运算对象、小问结构和作答要求，不得改写成相似题。\n"
+        "分值字段暂时全部设为1；后续会统一分配分值。\n"
+        "每个 parts 项必须输出 response_mode："
+        "exact_objective（选择/普通填空）、short_answer_points（直接写出、多空或多个结果，按答对数量给分）、"
+        "process_required（证明/计算过程）、visual_construction（作图，以答案图为视觉参考）。\n"
+        "题目写有“直接写出”“填空”时，不得强制过程；short_answer_points 的每个可独立得分答案应拆成独立踩分点。\n"
+        "选择题和普通填空题的评分点只能描述核对最终答案，不能要求推理或计算过程。\n"
+        "若一个填空要求列出全部可能答案，必须在 canonical_answer 写全，并输出 match_mode=complete_set、required_values、"
+        "order_sensitive=false、allow_extra_values=false、partial_credit=false；不要把少写答案列为 accepted_forms。\n"
+        "作图题不得把答案图臆造为唯一文字答案；应输出 visual_requirements 和必要踩分点。\n"
+        "必须输出精炼且具体的 knowledge_name、knowledge_id、knowledge_points；严禁用题干或“几何综合/代数综合/综合应用”充当知识点。\n"
+        "每个主观题步骤的 required_elements 必须写出可核验的条件、式子或结论，不得留空或只写通用描述。\n"
+        f"知识点参考字典：{knowledge_options}\n"
+        "仅为该题输出 rubric.questions 与 answer_key.questions，并保持 question_id 一致。\n"
+        "必须严格使用以下字段，不得自行改名或创造 answers、answer_parts、answer_content、desc 等同义字段：\n"
+        "{\"rubric\":{\"questions\":[{\"question_id\":\"...\",\"question_type\":\"...\","
+        "\"knowledge_name\":\"...\",\"knowledge_id\":\"...\",\"knowledge_points\":["
+        "{\"knowledge_id\":\"...\",\"knowledge_name\":\"具体考查内容\"}],\"parts\":["
+        "{\"part_id\":\"...\",\"response_mode\":\"...\",\"visual_requirements\":[],\"steps\":["
+        "{\"step_id\":\"S1\",\"core_goal\":\"具体踩分点描述\",\"required_elements\":[\"可核验的必要条件或结论\"],"
+        "\"allow_alternative_methods\":true}]}]}]},\"answer_key\":{\"questions\":["
+        "{\"question_id\":\"...\",\"canonical_answer\":\"...\",\"accepted_forms\":[],\"parts\":["
+        "{\"part_id\":\"...\",\"answer\":\"...\",\"accepted_forms\":[],\"analysis\":\"\","
+        "\"step_milestones\":[]}]}]}}"
+    )
+
+
 def _build_single_question_generation_prompt(block: dict[str, str], doc_text: str) -> str:
     """Build a prompt for a single question's rubric structure.
 
@@ -1194,9 +2006,16 @@ def _build_single_question_generation_prompt(block: dict[str, str], doc_text: st
     q_text = str(block.get("text") or "").strip()
     answer_text = str(block.get("answer_text") or "").strip()
     analysis_text = str(block.get("analysis") or "").strip()
+    confirmed_type = str(block.get("question_type") or "").strip()
+    type_is_confirmed = bool(block.get("question_type_confirmed"))
 
     # Build structured per-question context (replaces the old 6000-char full-doc dump)
     context_parts: list[str] = [f"题目文本：\n{q_text}"]
+    if type_is_confirmed and confirmed_type:
+        context_parts.append(
+            f"教师已确认题型：{confirmed_type}\n"
+            "该题型是强约束，必须原样写入 question_type，不得自行改成其他题型。"
+        )
     if answer_text:
         context_parts.append(f"参考答案：\n{answer_text}")
     if analysis_text:
@@ -1218,8 +2037,15 @@ def _build_single_question_generation_prompt(block: dict[str, str], doc_text: st
         "如果是选择题或填空题，应给出标准答案以及 accepted_forms（等价接受形式）。\n"
         "如果是计算题、证明题、综合题，必须包含 parts、steps、proof_obligations（证明证据点）、"
         "deduction_policy（扣分策略）、证据要求以及仅写出答案的上限得分（answer_only_max_score）。\n"
+        "每个 parts 项必须输出 response_mode：exact_objective、short_answer_points、process_required 或 visual_construction；"
+        "不得把大题级过程要求无条件继承给“直接写出”或作图小问。\n"
+        "选择题和普通填空题的评分点只能描述核对最终答案，不能要求推理或计算过程。\n"
+        "若一个填空要求列出全部可能答案，必须在 canonical_answer 写全，并输出 match_mode=complete_set、required_values、"
+        "order_sensitive=false、allow_extra_values=false、partial_credit=false；不要把少写答案列为 accepted_forms。\n"
         "如果该题包含多个空格、表格单元格或子小问，必须将其拆分为不同的 parts 以给与步骤/部分分。\n"
         "accepted_forms 必须仅包含在数学上完全等价的答案形式。\n\n"
+        "必须输出精炼且具体的 knowledge_name、knowledge_id、knowledge_points；严禁用题干或“几何综合/代数综合/综合应用”充当知识点。\n"
+        "每个主观题步骤的 required_elements 必须写出可核验的条件、式子或结论，不得留空或只写通用描述。\n\n"
         f"{question_context}"
     )
 
@@ -1274,23 +2100,19 @@ def _coerce_single_question_payload_schema(
     warnings: list[str],
 ) -> None:
     """Accept common one-question schemas returned by LLMs before strict normalization."""
-    rubric = payload.setdefault("rubric", {})
-    answer_key = payload.setdefault("answer_key", {})
-    if not isinstance(rubric, dict):
-        rubric = {}
-        payload["rubric"] = rubric
-    if not isinstance(answer_key, dict):
-        answer_key = {}
-        payload["answer_key"] = answer_key
+    raw_rubric = payload.get("rubric")
+    raw_answer_key = payload.get("answer_key")
+    rubric = raw_rubric if isinstance(raw_rubric, dict) else {}
+    answer_key = raw_answer_key if isinstance(raw_answer_key, dict) else {}
+    payload["rubric"] = rubric
+    payload["answer_key"] = answer_key
 
-    questions = rubric.get("questions")
-    if not isinstance(questions, list):
-        questions = []
-        rubric["questions"] = questions
-    answers = answer_key.get("questions")
-    if not isinstance(answers, list):
-        answers = []
-        answer_key["questions"] = answers
+    raw_questions = rubric.get("questions") if isinstance(raw_rubric, dict) else raw_rubric
+    questions = _coerce_single_item_list(raw_questions, _looks_like_question_dict)
+    rubric["questions"] = questions
+    raw_answers = answer_key.get("questions") if isinstance(raw_answer_key, dict) else raw_answer_key
+    answers = _coerce_single_item_list(raw_answers, _looks_like_answer_dict)
+    answer_key["questions"] = answers
 
     question = next((item for item in questions if isinstance(item, dict)), None)
     if question is None:
@@ -1317,6 +2139,16 @@ def _coerce_single_question_payload_schema(
     if question is None and expected_qid:
         keys = ", ".join(sorted(str(key) for key in payload.keys()))
         warnings.append(f"{expected_qid} unmergeable single-question schema; top-level keys: {keys}")
+
+
+def _coerce_single_item_list(value: Any, predicate: Callable[[Any], bool]) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        if predicate(value):
+            return [value]
+        return [item for item in value.values() if isinstance(item, dict) and predicate(item)]
+    return []
 
 
 def _extract_single_question_candidate(payload: dict[str, Any], rubric: dict[str, Any]) -> dict[str, Any] | None:
@@ -1398,9 +2230,9 @@ def _looks_like_answer_dict(item: Any) -> bool:
 def _attach_parallel_generation_meta(
     payload: dict[str, Any],
     question_blocks: list[dict[str, str]],
-    results: list[dict[str, Any] | None],
-    failures: list[str],
+    failures: list[dict[str, Any]],
     worker_count: int,
+    attempt_counts: dict[str, int],
 ) -> None:
     meta = payload.setdefault("meta", {})
     if not isinstance(meta, dict):
@@ -1410,20 +2242,48 @@ def _attach_parallel_generation_meta(
         warnings = []
         meta["warnings"] = warnings
 
-    meta["source"] = "word_docx_parallel"
+    image_split_mode = any(
+        str(block.get("semantic_source") or "").strip() == "images"
+        for block in question_blocks
+        if isinstance(block, dict)
+    )
+    meta["source"] = "pdf_image_split_parallel" if image_split_mode else "word_rich_split_parallel"
+    meta["generation_mode"] = "pdf_image_split_parallel" if image_split_mode else "word_rich_split_parallel"
     meta["question_block_count"] = len(question_blocks)
-    meta["single_question_success_count"] = sum(1 for result in results if isinstance(result, dict))
-    meta["single_question_failure_count"] = len(failures)
+    failed_question_ids = list(
+        dict.fromkeys(
+            str(failure.get("question_id") or "").strip()
+            for failure in failures
+            if str(failure.get("question_id") or "").strip()
+        )
+    )
+    meta["single_question_success_count"] = max(0, len(question_blocks) - len(failed_question_ids))
+    meta["single_question_failure_count"] = len(failed_question_ids)
     meta["config_generation_workers"] = int(worker_count)
+    meta["single_question_attempts"] = {
+        str(qid): int(attempts)
+        for qid, attempts in attempt_counts.items()
+        if str(qid).strip()
+    }
+    meta["failed_question_ids"] = failed_question_ids
+    meta["failed_questions"] = [dict(failure) for failure in failures]
 
+    warnings[:] = [
+        warning
+        for warning in warnings
+        if str(warning) != "parallel generation completed with failed question blocks; score allocation paused until retry."
+    ]
     existing = {str(item) for item in warnings}
     for failure in failures:
-        warning = f"parallel generation failed for {failure}"
+        qid = str(failure.get("question_id") or "").strip()
+        error = str(failure.get("error") or "").strip()
+        attempts = int(failure.get("attempts") or 1)
+        warning = f"parallel generation failed for {qid} after {attempts} attempt(s): {error}"
         if warning not in existing:
             warnings.append(warning)
             existing.add(warning)
     if failures:
-        summary = "parallel generation completed with failed question blocks; final calibration attempted to preserve usable results."
+        summary = "parallel generation completed with failed question blocks; score allocation paused until retry."
         if summary not in existing:
             warnings.append(summary)
 
@@ -1516,18 +2376,26 @@ def _placeholder_question_from_block(block: dict[str, str]) -> dict[str, Any]:
 
 def _infer_question_type_from_block_text(text: str) -> str:
     value = str(text or "")
+    option_labels = {
+        match.group(1).upper()
+        for match in re.finditer(r"(?m)^\s*([A-Da-d])\s*(?:[.．、)]|\s{2,})", value)
+    }
     option_line = any(re.search(r"A.{0,80}B.{0,80}C.{0,80}D", line) for line in value.splitlines())
-    if option_line:
+    if len(option_labels) >= 3 or option_line:
         return "choice"
     has_blank = bool(re.search(r"_{2,}|[ \t]{3,}|　{1,}|（\s*）|\(\s*\)", value))
     if has_blank:
         return "fill_blank"
+    if any(token in value for token in ["作图", "作出", "画出", "保留作图痕迹"]):
+        return "comprehensive"
+    if any(token in value for token in ["证明", "理由", "说明", "求证", "全等", "证得"]):
+        return "proof"
     has_subparts = bool(re.search(r"[（(]\s*[1-9]\s*[）)]", value))
     if has_subparts:
         return "calculation"
     if any(token in value.lower() for token in ["proof", "why", "explain", "relationship"]):
         return "comprehensive"
-    return "fill_blank"
+    return "comprehensive"
 
 
 def _attach_generation_fallback_warning(
@@ -1556,6 +2424,8 @@ def _assign_scores_to_merged_config(
     llm_client: LLMClient,
     model_name: str | None = None,
     report: Any = None,
+    *,
+    include_document_text: bool = True,
 ) -> None:
     """Phase-2 AI call: allocate real scores to all questions so they sum to 100.
 
@@ -1584,6 +2454,7 @@ def _assign_scores_to_merged_config(
             steps = p.get("steps") or []
             part_list.append({
                 "part_id": str(p.get("part_id") or ""),
+                "response_mode": str(p.get("response_mode") or ""),
                 "step_ids": [str(s.get("step_id") or "") for s in steps if isinstance(s, dict)],
             })
         structure_summary.append({
@@ -1600,10 +2471,10 @@ def _assign_scores_to_merged_config(
         "3. 所有分值必须是正整数。\n"
         "4. 试卷所有题目的 max_score 之和必须精确等于 100。\n"
         "5. 将未分配的分数，按照步骤的数量比例分配给主观大题。\n"
-        "6. 关键限制 —— 单道大题 15% 分值上限约束（适用于解答题、计算题、证明题）：\n"
-        "   - 每道独立题目的 max_score 必须 <= 15 分（即 100 分的 15%）。\n"
-        "   - 所有共享相同大题号的子小问（例如 Q10_1 和 Q10_2 共享同一个大题前缀 Q10）的合并总分必须 <= 15 分。\n"
-        "   - 若某解答题原有的标注分值超过 15 分，必须强行将该题总分（含所有小问）封顶在 15 分，并将其余分数分摊分配给选择题、填空题或其他大题。\n"
+        "6. 关键限制 —— 所有题型的单题分值上限均为 18 分：\n"
+        "   - 每道独立题目的 max_score 必须 <= 18 分。\n"
+        "   - 所有共享相同大题号的子小问（例如 Q10_1 和 Q10_2 共享同一个大题前缀 Q10）的合并总分必须 <= 18 分。\n"
+        "   - 若某题原有标注分值超过 18 分，必须封顶为 18 分，并将其余分数分摊给其他题目。\n"
         "   - 你必须严格保持输入中提供的题目结构和 question_id 列表，绝对不允许新增、删除、修改或拆分任何 question_id 题号。\n\n"
         "Return ONLY the following JSON (no markdown, no explanation):\n"
         "{\n"
@@ -1620,6 +2491,11 @@ def _assign_scores_to_merged_config(
         "}\n\n"
         f"Word document (for score hints, first 6000 chars):\n{str(doc_text or '')[:6000]}\n\n"
         f"Question structure to score:\n{json.dumps(structure_summary, ensure_ascii=False)}"
+    )
+    prompt = _build_score_allocation_prompt(
+        structure_summary,
+        doc_text,
+        include_document_text=include_document_text,
     )
 
     if report:
@@ -1641,6 +2517,29 @@ def _assign_scores_to_merged_config(
         merged.setdefault("meta", {})["score_allocation_ai_success"] = False
     # Always do a local normalization pass to guarantee score consistency
     force_payload_total_score(merged, target_total=100.0)
+
+
+def _build_score_allocation_prompt(
+    structure_summary: list[dict[str, Any]],
+    doc_text: str,
+    *,
+    include_document_text: bool,
+) -> str:
+    source_context = (
+        f"\n原始文档文本（仅用于识别原卷分值提示）：\n{str(doc_text or '')[:6000]}\n"
+        if include_document_text and str(doc_text or "").strip()
+        else "\n本次为图片语义来源，不提供也不得推测 PDF 抽取文字或原卷分值。\n"
+    )
+    return (
+        "请仅为下列已确认题目结构分配分值，总分必须精确等于100。\n"
+        "不同题型之间不限制分值高低；相同类型客观题必须同分；所有分值均为正整数；单题不超过18分。\n"
+        "保持所有 question_id、part_id、step_id 和小问结构不变。"
+        "分值可以不采用原卷分值，但不得改变小问作答要求或 response_mode。\n"
+        f"{source_context}"
+        "仅返回 JSON：{\"question_scores\":[{\"question_id\":\"Q1\",\"max_score\":1,"
+        "\"parts\":[{\"part_id\":\"Q1\",\"part_score\":1,\"steps\":[{\"step_id\":\"S1\",\"step_score\":1}]}]}]}\n"
+        f"待分值结构：\n{json.dumps(structure_summary, ensure_ascii=False)}"
+    )
 
 
 def _apply_score_allocation(merged: dict[str, Any], score_data: dict[str, Any]) -> None:
@@ -1833,6 +2732,7 @@ def normalize_generated_config_schema(payload: dict[str, Any]) -> None:
                 or "",
                 "",
             )
+            _coerce_answer_item_aliases(answer)
 
     answer_map = {
         _canonical_question_id(q.get("question_id") or q.get("id") or q.get("number") or "", ""): q
@@ -1851,6 +2751,7 @@ def normalize_generated_config_schema(payload: dict[str, Any]) -> None:
             f"Q{idx}",
         )
         question["question_id"] = qid
+        _promote_nested_question_knowledge(question)
         qtype = _normalize_question_type(
             question.get("question_type")
             or question.get("type")
@@ -1867,7 +2768,6 @@ def normalize_generated_config_schema(payload: dict[str, Any]) -> None:
             question.get("knowledge_name")
             or question.get("knowledge_text")
             or question.get("knowledge_label")
-            or question.get("stem_summary")
             or question.get("knowledge")
             or ""
         ).strip()
@@ -1884,12 +2784,18 @@ def normalize_generated_config_schema(payload: dict[str, Any]) -> None:
             answer_questions.append(answer_item)
             answer_map[qid] = answer_item
         _normalize_answer_item(answer_item, question)
-        if _should_treat_as_direct_answer_question(qtype, question, answer_item):
+        if (
+            not bool(question.get("question_type_confirmed"))
+            and _should_treat_as_direct_answer_question(qtype, question, answer_item)
+        ):
             qtype = "fill_blank"
             question["question_type"] = qtype
             question["grading_mode"] = "direct_answer"
         _augment_answer_equivalences(answer_item, qtype)
         _normalize_rubric_question(question, answer_item)
+        _align_answer_parts_to_rubric_parts(question, answer_item)
+        _align_step_required_elements_with_answer_values(question, answer_item)
+        _enforce_objective_question_rules(question, answer_item)
         _ensure_solution_hard_rules(question)
 
     rubric["total_score"] = _safe_float(
@@ -1927,6 +2833,13 @@ def _normalize_question_knowledge_fields(question: dict[str, Any]) -> None:
                 name = ""
             if kid:
                 points.append({"knowledge_id": kid, "knowledge_name": name})
+    elif isinstance(raw_points, str) and raw_points.strip():
+        points.append(
+            {
+                "knowledge_id": str(question.get("knowledge_id") or question.get("knowledge_name") or "UNKNOWN").strip(),
+                "knowledge_name": raw_points.strip(),
+            }
+        )
 
     raw_ids = question.get("knowledge_ids")
     if isinstance(raw_ids, list):
@@ -1940,23 +2853,79 @@ def _normalize_question_knowledge_fields(question: dict[str, Any]) -> None:
     if primary_id:
         points.append({"knowledge_id": primary_id, "knowledge_name": primary_name})
 
+    useful_points = [point for point in points if point["knowledge_id"] not in {"", "UNKNOWN"}]
+    if useful_points:
+        points = useful_points
+
     normalized: list[dict[str, str]] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     for point in points:
         kid = point["knowledge_id"]
-        if not kid or kid in seen:
+        key = (kid, point.get("knowledge_name", ""))
+        if not kid or key in seen:
             continue
-        seen.add(kid)
+        seen.add(key)
         normalized.append(point)
 
     if not normalized:
         normalized = [{"knowledge_id": "UNKNOWN", "knowledge_name": ""}]
 
     question["knowledge_points"] = normalized
-    question["knowledge_ids"] = [point["knowledge_id"] for point in normalized]
+    question["knowledge_ids"] = list(dict.fromkeys(point["knowledge_id"] for point in normalized))
     question["knowledge_id"] = normalized[0]["knowledge_id"]
     if normalized[0].get("knowledge_name"):
         question["knowledge_name"] = normalized[0]["knowledge_name"]
+
+
+def _promote_nested_question_knowledge(question: dict[str, Any]) -> None:
+    parts = question.get("parts")
+    if not isinstance(parts, list):
+        return
+
+    current_id = str(question.get("knowledge_id") or "").strip()
+    current_name = str(question.get("knowledge_name") or "").strip()
+    collected: list[dict[str, str]] = []
+    raw_top_points = question.get("knowledge_points")
+    if isinstance(raw_top_points, list):
+        collected.extend(item for item in raw_top_points if isinstance(item, dict))
+
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        part_id = str(part.get("knowledge_id") or part.get("knowledge_name") or "").strip()
+        part_name = str(part.get("knowledge_name") or "").strip()
+        if part_id and part_name:
+            collected.append({"knowledge_id": part_id, "knowledge_name": part_name})
+        raw_points = part.get("knowledge_points")
+        if isinstance(raw_points, str) and raw_points.strip():
+            collected.append(
+                {
+                    "knowledge_id": part_id or part_name or "DETAIL",
+                    "knowledge_name": raw_points.strip(),
+                }
+            )
+        elif isinstance(raw_points, list):
+            for raw_point in raw_points:
+                if isinstance(raw_point, dict):
+                    collected.append(raw_point)
+                elif str(raw_point or "").strip():
+                    collected.append(
+                        {
+                            "knowledge_id": part_id or part_name or "DETAIL",
+                            "knowledge_name": str(raw_point).strip(),
+                        }
+                    )
+
+        if (not current_name or current_id in {"", "UNKNOWN"}) and part_name:
+            current_name = part_name
+            current_id = part_id or part_name
+
+    if current_name:
+        question["knowledge_name"] = current_name
+    if current_id:
+        question["knowledge_id"] = current_id
+    if collected:
+        question["knowledge_points"] = collected
 
 
 def force_payload_total_score(payload: dict[str, Any], target_total: float = 100.0) -> None:
@@ -1982,7 +2951,11 @@ def force_payload_total_score(payload: dict[str, Any], target_total: float = 100
                 _scale_question_scores(question, ratio)
         _fix_question_sum(questions, target_total)
 
-    enforce_integer_scores_by_type(questions, target_total=int(target_total), max_question_score=12)
+    enforce_integer_scores_by_type(
+        questions,
+        target_total=int(target_total),
+        max_question_score=MAX_QUESTION_SCORE,
+    )
     # Second pass: fix any +-1 rounding drift produced by integer allocation
     _fix_question_sum(questions, target_total)
     for question in questions:
@@ -2041,12 +3014,14 @@ def _fix_question_sum(questions: list[Any], target_total: float) -> None:
 
 
 def _normalize_answer_item(answer_item: dict[str, Any], rubric_question: dict[str, Any]) -> None:
+    _coerce_answer_item_aliases(answer_item)
     qid = str(rubric_question.get("question_id") or answer_item.get("question_id") or "")
     answer_item["question_id"] = qid
     direct_answers = _extract_direct_answer_values(answer_item)
     canonical = (
         answer_item.get("canonical_answer")
         or answer_item.get("answer")
+        or answer_item.get("standard_answer")
         or answer_item.get("correct_answer")
         or answer_item.get("绛旀")
         or (direct_answers[0] if direct_answers else "")
@@ -2084,17 +3059,56 @@ def _normalize_answer_item(answer_item: dict[str, Any], rubric_question: dict[st
         for idx, part in enumerate(answer_item["parts"], start=1):
             if not isinstance(part, dict):
                 continue
+            _coerce_answer_part_aliases(part)
             part_direct_answers = _extract_direct_answer_values(part)
+            part["answer_values"] = _string_list(part_direct_answers)
             part.setdefault("part_id", qid if len(answer_item["parts"]) == 1 else f"{qid}({idx})")
-            if not str(part.get("answer") or "").strip() and part_direct_answers:
-                part["answer"] = str(part_direct_answers[0])
-            else:
-                part.setdefault("answer", str(canonical))
-            if part_direct_answers and not part.get("accepted_forms"):
+            part_answer = (
+                part.get("answer")
+                or part.get("canonical_answer")
+                or part.get("standard_answer")
+                or ("；".join(part["answer_values"]) if part["answer_values"] else "")
+                or canonical
+            )
+            part["answer"] = str(part_answer)
+            if len(part["answer_values"]) == 1 and not part.get("accepted_forms"):
                 part["accepted_forms"] = _string_list(part_direct_answers)
             part.setdefault("analysis", "")
             if not isinstance(part.get("step_milestones"), list):
                 part["step_milestones"] = _string_list(part.get("step_milestones"))
+
+    if not str(answer_item.get("canonical_answer") or "").strip():
+        qtype = str(rubric_question.get("question_type") or "").strip()
+        if qtype in {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}:
+            first_part_answer = next(
+                (
+                    str(part.get("answer") or "").strip()
+                    for part in answer_item.get("parts", [])
+                    if isinstance(part, dict) and str(part.get("answer") or "").strip()
+                ),
+                "",
+            )
+            if first_part_answer:
+                answer_item["canonical_answer"] = first_part_answer
+                answer_item["accepted_forms"] = _string_list(answer_item.get("accepted_forms")) or [first_part_answer]
+
+
+def _coerce_answer_item_aliases(answer_item: dict[str, Any]) -> None:
+    if not isinstance(answer_item.get("parts"), list) or not answer_item.get("parts"):
+        for key in ("answer_parts", "sub_answers", "subquestions"):
+            value = answer_item.get(key)
+            if isinstance(value, list) and value:
+                answer_item["parts"] = value
+                break
+
+
+def _coerce_answer_part_aliases(part: dict[str, Any]) -> None:
+    if not str(part.get("answer") or "").strip():
+        for key in ("answer_content", "standard_answer", "canonical_answer", "correct_answer"):
+            value = part.get(key)
+            if value is not None and str(value).strip():
+                part["answer"] = str(value).strip()
+                break
 
 
 def _extract_direct_answer_values(item: dict[str, Any]) -> list[Any]:
@@ -2113,6 +3127,28 @@ def _extract_direct_answer_values(item: dict[str, Any]) -> list[Any]:
         values.extend(direct)
     elif direct is not None:
         values.append(direct)
+    for key in ("answers", "values"):
+        raw = item.get(key)
+        if isinstance(raw, list):
+            for value in raw:
+                if isinstance(value, dict):
+                    nested = next(
+                        (
+                            value.get(alias)
+                            for alias in ("value", "answer", "answer_content", "standard_answer", "canonical_answer")
+                            if value.get(alias) is not None
+                        ),
+                        None,
+                    )
+                    if nested is not None:
+                        values.append(nested)
+                elif value is not None:
+                    values.append(value)
+        elif raw is not None:
+            values.append(raw)
+    answer_content = item.get("answer_content")
+    if answer_content is not None:
+        values.append(answer_content)
     return values
 
 
@@ -2143,21 +3179,78 @@ def _augment_answer_equivalences(answer_item: dict[str, Any], qtype: str) -> Non
         return
 
     canonical = str(answer_item.get("canonical_answer") or "").strip()
-    answers = [canonical]
     top_level_manually_edited = bool(answer_item.get("_manual_accepted_forms"))
     parts = answer_item.get("parts")
+    subjective_multi_part = (
+        qtype in {"proof", "calculation", "comprehensive"}
+        and isinstance(parts, list)
+        and len([part for part in parts if isinstance(part, dict)]) > 1
+    )
     if isinstance(parts, list):
         for part in parts:
             if not isinstance(part, dict):
                 continue
             part_answer = str(part.get("answer") or "").strip()
             if part_answer:
-                answers.append(part_answer)
+                normalized_part_answer = _normalize_serialized_answer_list(part_answer)
+                serialized_part_answer = normalized_part_answer != part_answer
+                if serialized_part_answer:
+                    part["answer"] = normalized_part_answer
+                    part_answer = normalized_part_answer
                 if not bool(part.get("_manual_accepted_forms")):
-                    part["accepted_forms"] = merge_equivalent_forms(part.get("accepted_forms"), part_answer, max_forms=16)
+                    existing_part_forms = [] if serialized_part_answer else [
+                        value
+                        for value in _string_list(part.get("accepted_forms"))
+                        if not _looks_like_serialized_answer_list(value)
+                    ]
+                    part["accepted_forms"] = merge_equivalent_forms(existing_part_forms, part_answer, max_forms=16)
 
     if not top_level_manually_edited:
-        answer_item["accepted_forms"] = merge_equivalent_forms(answer_item.get("accepted_forms"), *answers, max_forms=32)
+        existing_top_forms = [] if subjective_multi_part else [
+            value
+            for value in _string_list(answer_item.get("accepted_forms"))
+            if not _looks_like_serialized_answer_list(value)
+        ]
+        answer_item["accepted_forms"] = merge_equivalent_forms(existing_top_forms, canonical, max_forms=32)
+
+
+def _record_complete_answer_set_rule(answer_item: dict[str, Any], qtype: str) -> None:
+    if qtype != "fill_blank":
+        return
+    canonical = str(answer_item.get("canonical_answer") or "").strip()
+    required_values = complete_answer_set_values(canonical)
+    if not required_values:
+        return
+    rule = {
+        "match_mode": "complete_set",
+        "required_values": required_values,
+        "order_sensitive": False,
+        "allow_extra_values": False,
+        "partial_credit": False,
+    }
+    answer_item.update(rule)
+    parts = answer_item.get("parts")
+    if isinstance(parts, list) and len(parts) == 1 and isinstance(parts[0], dict):
+        parts[0].update(rule)
+
+
+def _sanitize_choice_answer_forms(answer_item: dict[str, Any]) -> None:
+    canonical = str(answer_item.get("canonical_answer") or "").strip().upper()
+    if not re.fullmatch(r"[A-D]", canonical):
+        return
+    answer_item["canonical_answer"] = canonical
+    answer_item["accepted_forms"] = [canonical]
+    parts = answer_item.get("parts")
+    if not isinstance(parts, list):
+        return
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        part_answer = str(part.get("answer") or canonical).strip().upper()
+        if not re.fullmatch(r"[A-D]", part_answer):
+            part_answer = canonical
+        part["answer"] = part_answer
+        part["accepted_forms"] = [part_answer]
 
 
 def _normalize_rubric_question(question: dict[str, Any], answer_item: dict[str, Any]) -> None:
@@ -2196,13 +3289,7 @@ def _normalize_rubric_question(question: dict[str, Any], answer_item: dict[str, 
             )
             part["part_id"] = str(part.get("part_id") or (qid if part_count == 1 else f"{qid}({idx})"))
             part["part_score"] = part_score
-            step_alias = (
-                part.get("steps")
-                or part.get("scoring_steps")
-                or part.get("criteria")
-                or part.get("rubric")
-                or part.get("score_points")
-            )
+            step_alias = _best_step_alias(part)
             if step_alias is not part.get("steps"):
                 part["steps"] = step_alias
 
@@ -2233,21 +3320,244 @@ def _normalize_rubric_question(question: dict[str, Any], answer_item: dict[str, 
                         raw_score,
                         part_score / max(len(part["steps"]), 1),
                     )
-                    step["core_goal"] = str(
-                        step.get("core_goal")
-                        or step.get("goal")
-                        or step.get("criterion")
-                        or step.get("description")
-                        or step.get("step_description")
-                        or _default_core_goal(qtype, answer_item)
+                    step["core_goal"] = _specific_step_goal(
+                        step,
+                        _default_core_goal(qtype, answer_item),
                     )
-                    if not isinstance(step.get("required_elements"), list):
-                        step["required_elements"] = _string_list(step.get("required_elements")) or _default_required_elements(qtype, answer_item)
+                    required_elements = _string_list(step.get("required_elements"))
+                    if not required_elements or all(value in _GENERIC_STEP_GOALS for value in required_elements):
+                        goal = str(step.get("core_goal") or "").strip()
+                        step["required_elements"] = (
+                            [goal]
+                            if goal and goal not in _GENERIC_STEP_GOALS
+                            else _default_required_elements(qtype, answer_item)
+                        )
+                    else:
+                        step["required_elements"] = required_elements
                     step["allow_alternative_methods"] = bool(step.get("allow_alternative_methods", qtype not in {"choice"}))
             if not isinstance(part.get("presentation_rules"), list):
                 part["presentation_rules"] = []
             _force_step_total(part)
     _force_part_total(question)
+
+
+def _first_list_value(node: dict[str, Any], *keys: str) -> list[Any]:
+    for key in keys:
+        value = node.get(key)
+        if isinstance(value, list) and value:
+            return value
+    return []
+
+
+def _best_step_alias(part: dict[str, Any]) -> list[Any]:
+    existing = _first_list_value(part, "steps")
+    candidates = [
+        value
+        for key in ("scoring_steps", "criteria", "rubric", "score_points", "points")
+        if isinstance((value := part.get(key)), list) and value
+    ]
+    visual_requirements = _string_list(part.get("visual_requirements"))
+    visual_steps = [
+        {"core_goal": value, "required_elements": [value]}
+        for value in visual_requirements
+    ]
+    if not existing:
+        return next(iter(candidates), visual_steps)
+    if not _steps_are_generic(existing):
+        return existing
+    for candidate in candidates:
+        if not _steps_are_generic(candidate):
+            return candidate
+    return visual_steps or existing
+
+
+def _steps_are_generic(steps: list[Any]) -> bool:
+    descriptions: list[str] = []
+    for step in steps:
+        if isinstance(step, dict):
+            descriptions.append(_specific_step_goal(step, ""))
+        else:
+            descriptions.append(str(step or "").strip())
+    return bool(descriptions) and all(description in _GENERIC_STEP_GOALS for description in descriptions)
+
+
+_GENERIC_STEP_GOALS = {
+    "",
+    "完成必要的推理或计算步骤",
+    "填写正确或等价的答案",
+    "选择正确的选项",
+    "合理的推理过程",
+    "正确的结论",
+}
+
+
+def _specific_step_goal(step: dict[str, Any], default: str) -> str:
+    values = [
+        str(step.get(key) or "").strip()
+        for key in ("core_goal", "goal", "criterion", "description", "step_description", "desc", "title", "requirement")
+    ]
+    return next((value for value in values if value and value not in _GENERIC_STEP_GOALS), None) or next(
+        (value for value in values if value),
+        default,
+    )
+
+
+def _enforce_objective_question_rules(question: dict[str, Any], answer_item: dict[str, Any]) -> None:
+    qtype = str(question.get("question_type") or "").strip().lower()
+    if qtype not in {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}:
+        return
+
+    if qtype == "choice":
+        _sanitize_choice_answer_forms(answer_item)
+    _record_complete_answer_set_rule(answer_item, qtype)
+
+    top_answers = _string_list(answer_item.get("accepted_forms"))
+    canonical = str(answer_item.get("canonical_answer") or "").strip()
+    if canonical and canonical not in top_answers:
+        top_answers.insert(0, canonical)
+    answer_parts = answer_item.get("parts")
+    if not isinstance(answer_parts, list):
+        answer_parts = []
+
+    parts = question.get("parts")
+    if not isinstance(parts, list):
+        return
+    for index, part in enumerate(parts):
+        if not isinstance(part, dict):
+            continue
+        explicit_mode = str(part.get("response_mode") or "").strip()
+        answer_part = answer_parts[index] if index < len(answer_parts) and isinstance(answer_parts[index], dict) else {}
+        independent_answer_values = _string_list(answer_part.get("answer_values"))
+        is_independent_fill = (
+            qtype == "fill_blank"
+            and explicit_mode == "short_answer_points"
+            and len(independent_answer_values) > 1
+        )
+        part["response_mode"] = "short_answer_points" if is_independent_fill else "exact_objective"
+        part["presentation_rules"] = []
+        part["require_final_answer"] = False
+        part["answer_only_max_score"] = int(round(_safe_float(part.get("part_score"), 0.0)))
+
+        part_answers: list[str] = []
+        if answer_part:
+            part_answers = _string_list(answer_part.get("accepted_forms"))
+            part_answer = str(answer_part.get("answer") or "").strip()
+            if part_answer and part_answer not in part_answers:
+                part_answers.insert(0, part_answer)
+        required_answers = list(dict.fromkeys([*part_answers, *top_answers]))
+
+        steps = part.get("steps")
+        if not isinstance(steps, list) or not steps:
+            continue
+        if not is_independent_fill:
+            first_step = next((step for step in steps if isinstance(step, dict)), {})
+            first_step["step_id"] = str(first_step.get("step_id") or "S1")
+            first_step["step_score"] = int(round(_safe_float(part.get("part_score"), 0.0)))
+            first_step["core_goal"] = _default_core_goal(qtype, answer_item)
+            first_step["required_elements"] = required_answers
+            first_step["allow_alternative_methods"] = qtype != "choice"
+            part["steps"] = [first_step]
+            continue
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            goal = str(step.get("core_goal") or "").strip()
+            if not goal or goal == "完成必要的推理或计算步骤":
+                step["core_goal"] = _default_core_goal(qtype, answer_item)
+            if not _string_list(step.get("required_elements")):
+                step["required_elements"] = required_answers
+            step["allow_alternative_methods"] = qtype != "choice"
+
+    question["require_final_answer"] = False
+    question["answer_only_max_score"] = int(round(_safe_float(question.get("max_score"), 0.0)))
+    policies = question.get("deduction_policy")
+    if isinstance(policies, list):
+        question["deduction_policy"] = [
+            policy
+            for policy in policies
+            if not (
+                isinstance(policy, dict)
+                and str(policy.get("policy_id") or "") in {"answer_only_process_missing", "core_process_missing"}
+            )
+        ]
+    question["answer_presentation_policy"] = {
+        "require_final_answer": False,
+        "answer_only_max_score": question["answer_only_max_score"],
+        "note": "客观题仅按标准答案或等价答案判分，不要求过程证据。",
+    }
+
+
+def _align_answer_parts_to_rubric_parts(
+    question: dict[str, Any],
+    answer_item: dict[str, Any],
+) -> None:
+    rubric_parts = question.get("parts")
+    answer_parts = answer_item.get("parts")
+    if not isinstance(rubric_parts, list) or not isinstance(answer_parts, list):
+        return
+    valid_rubric_parts = [part for part in rubric_parts if isinstance(part, dict)]
+    valid_answer_parts = [part for part in answer_parts if isinstance(part, dict)]
+    if not valid_rubric_parts or len(valid_rubric_parts) != len(valid_answer_parts):
+        return
+
+    rubric_ids = [str(part.get("part_id") or "") for part in valid_rubric_parts]
+    answer_ids = [str(part.get("part_id") or "") for part in valid_answer_parts]
+    if rubric_ids == answer_ids:
+        return
+    if len(rubric_ids) > 1 and set(rubric_ids) & set(answer_ids):
+        return
+    for rubric_part, answer_part in zip(valid_rubric_parts, valid_answer_parts):
+        answer_part["part_id"] = str(rubric_part.get("part_id") or answer_part.get("part_id") or "")
+
+
+def _align_step_required_elements_with_answer_values(
+    question: dict[str, Any],
+    answer_item: dict[str, Any],
+) -> None:
+    rubric_parts = question.get("parts")
+    answer_parts = answer_item.get("parts")
+    if not isinstance(rubric_parts, list) or not isinstance(answer_parts, list):
+        return
+    answer_part_map = {
+        str(part.get("part_id") or ""): part
+        for part in answer_parts
+        if isinstance(part, dict)
+    }
+    for part_index, rubric_part in enumerate(rubric_parts):
+        if not isinstance(rubric_part, dict):
+            continue
+        answer_part = answer_part_map.get(str(rubric_part.get("part_id") or ""))
+        if not isinstance(answer_part, dict) and part_index < len(answer_parts):
+            candidate = answer_parts[part_index]
+            answer_part = candidate if isinstance(candidate, dict) else None
+        if not isinstance(answer_part, dict):
+            continue
+
+        raw_answers = answer_part.get("answers")
+        answer_values = _string_list(answer_part.get("answer_values"))
+        steps = rubric_part.get("steps")
+        if not answer_values or not isinstance(steps, list):
+            continue
+
+        values_by_id: dict[str, str] = {}
+        if isinstance(raw_answers, list):
+            for raw_answer in raw_answers:
+                if not isinstance(raw_answer, dict):
+                    continue
+                score_point_id = str(raw_answer.get("score_point_id") or raw_answer.get("step_id") or "").strip()
+                value = str(raw_answer.get("value") or raw_answer.get("answer") or "").strip()
+                if score_point_id and value:
+                    values_by_id[score_point_id] = value
+
+        for step_index, step in enumerate(steps):
+            if not isinstance(step, dict):
+                continue
+            step_key = str(step.get("score_point_id") or step.get("step_id") or "").strip()
+            value = values_by_id.get(step_key)
+            if not value and step_index < len(answer_values):
+                value = answer_values[step_index]
+            if value:
+                step["required_elements"] = merge_equivalent_forms([], value, max_forms=16)
 
 
 def _align_solution_parts_with_answer_parts(
@@ -2300,8 +3610,62 @@ def _allocate_scores(total: float, count: int) -> list[float]:
     return [base + (1 if idx < remainder else 0) for idx in range(count)]
 
 
+_VALID_RESPONSE_MODES = {
+    "exact_objective",
+    "short_answer_points",
+    "process_required",
+    "visual_construction",
+}
+_NON_PROCESS_RESPONSE_MODES = {
+    "exact_objective",
+    "short_answer_points",
+    "visual_construction",
+}
+
+
+def _infer_part_response_mode(question: dict[str, Any], part: dict[str, Any]) -> str:
+    explicit = str(part.get("response_mode") or "").strip().lower()
+    aliases = {
+        "direct_answer": "short_answer_points",
+        "answer_only": "short_answer_points",
+        "objective": "exact_objective",
+        "construction": "visual_construction",
+        "proof": "process_required",
+    }
+    explicit = aliases.get(explicit, explicit)
+    if explicit in _VALID_RESPONSE_MODES:
+        return explicit
+
+    qtype = str(question.get("question_type") or "").strip().lower()
+    if qtype in {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}:
+        return "exact_objective"
+
+    text_parts = [
+        str(part.get(key) or "")
+        for key in ("core_goal", "description", "part_title", "response_requirement", "answer_requirement")
+    ]
+    steps = part.get("steps")
+    if isinstance(steps, list):
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            text_parts.extend(
+                str(step.get(key) or "")
+                for key in ("core_goal", "goal", "criterion", "description")
+            )
+            required = step.get("required_elements")
+            if isinstance(required, list):
+                text_parts.extend(str(item or "") for item in required)
+    text = " ".join(text_parts)
+    if re.search(r"尺规|作图|画出|绘制|保留.{0,6}(?:痕迹|过程)", text):
+        return "visual_construction"
+    if re.search(r"直接写出|只需.{0,6}答案|无需.{0,6}过程|填空|填写|选择|判断|写出.{0,8}(?:结果|关系|答案|数值)", text):
+        return "short_answer_points"
+    return "process_required"
+
+
 def _ensure_solution_hard_rules(question: dict[str, Any]) -> None:
-    """Persist teacher-editable process/answer rules for solution questions."""
+    """Persist process rules without applying them to direct-answer subquestions."""
     qtype = str(question.get("question_type") or "")
     if qtype not in {"proof", "calculation", "comprehensive"}:
         return
@@ -2315,8 +3679,58 @@ def _ensure_solution_hard_rules(question: dict[str, Any]) -> None:
         question["require_final_answer"] = qtype == "comprehensive"
     question["require_final_answer"] = bool(question.get("require_final_answer"))
 
-    answer_only_raw = question.get("answer_only_max_score")
-    answer_only_max = int(round(_safe_float(answer_only_raw, default_answer_only)))
+    parts = question.get("parts")
+    part_answer_only_total = 0
+    has_process_part = False
+    if isinstance(parts, list):
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+
+            part_score = _safe_float(part.get("part_score") or part.get("max_score"), max_score)
+            response_mode = _infer_part_response_mode(question, part)
+            part["response_mode"] = response_mode
+
+            rules = part.get("presentation_rules")
+            if not isinstance(rules, list):
+                rules = []
+                part["presentation_rules"] = rules
+            _remove_rule_by_id(rules, "final_answer_required")
+
+            if response_mode in _NON_PROCESS_RESPONSE_MODES:
+                part["require_final_answer"] = False
+                part["answer_only_max_score"] = int(round(part_score))
+            else:
+                has_process_part = True
+                part_default_answer_only = max(1, int(round(part_score * 0.25))) if part_score > 0 else 1
+                if "require_final_answer" not in part:
+                    part["require_final_answer"] = question["require_final_answer"]
+                part["require_final_answer"] = bool(part.get("require_final_answer"))
+                if "answer_only_max_score" not in part:
+                    part["answer_only_max_score"] = part_default_answer_only
+                part["answer_only_max_score"] = max(
+                    0,
+                    min(
+                        int(round(_safe_float(part.get("answer_only_max_score"), part_default_answer_only))),
+                        int(round(part_score)),
+                    ),
+                )
+                if part["require_final_answer"]:
+                    rules.append(
+                        {
+                            "rule_id": "final_answer_required",
+                            "rule": "启用此策略时，必须包含最终答案或明确的结论；如果缺失或不完整则扣分。",
+                            "max_deduction": 1,
+                        }
+                    )
+            part_answer_only_total += int(part["answer_only_max_score"])
+
+    if isinstance(parts, list) and parts:
+        answer_only_max = part_answer_only_total
+    else:
+        answer_only_raw = question.get("answer_only_max_score")
+        answer_only_max = int(round(_safe_float(answer_only_raw, default_answer_only)))
+        has_process_part = True
     if max_score > 0:
         answer_only_max = max(0, min(answer_only_max, int(round(max_score))))
     question["answer_only_max_score"] = answer_only_max
@@ -2326,61 +3740,39 @@ def _ensure_solution_hard_rules(question: dict[str, Any]) -> None:
         policies = []
         question["deduction_policy"] = policies
 
-    _upsert_policy(
-        policies,
-        {
-            "policy_id": "answer_only_process_missing",
-            "issue": f"仅有最终答案但缺乏有效过程；最高只给 {answer_only_max} 分，扣除过程分",
-            "max_deduction": max(0, int(round(max_score)) - answer_only_max),
-            "severity": "major",
-        },
-    )
-    _upsert_policy(
-        policies,
-        {
-            "policy_id": "core_process_missing",
-            "issue": "缺失关键步骤、证明逻辑或推理链条；扣除对应的步骤分",
-            "max_deduction": int(round(max_score)),
-            "severity": "fatal",
-        },
-    )
+    policies[:] = [
+        policy
+        for policy in policies
+        if not (
+            isinstance(policy, dict)
+            and str(policy.get("policy_id") or "") in {"answer_only_process_missing", "core_process_missing"}
+        )
+    ]
+    if has_process_part:
+        _upsert_policy(
+            policies,
+            {
+                "policy_id": "answer_only_process_missing",
+                "issue": f"需要过程的小问仅有最终答案时，整题最高只给 {answer_only_max} 分",
+                "max_deduction": max(0, int(round(max_score)) - answer_only_max),
+                "severity": "major",
+            },
+        )
+        _upsert_policy(
+            policies,
+            {
+                "policy_id": "core_process_missing",
+                "issue": "需要过程的小问缺失关键步骤、证明逻辑或推理链条；扣除对应步骤分",
+                "max_deduction": int(round(max_score)),
+                "severity": "fatal",
+            },
+        )
 
     question["answer_presentation_policy"] = {
         "require_final_answer": question["require_final_answer"],
         "answer_only_max_score": answer_only_max,
-        "note": "教师可根据具体题目微调此项；解答/证明题仍需过程证据以获取满分。",
+        "note": "仅 response_mode=process_required 的小问需要过程证据；其他小问按正确答案项或图形要求给分。",
     }
-
-    parts = question.get("parts")
-    if isinstance(parts, list):
-        for part in parts:
-            if not isinstance(part, dict):
-                continue
-            
-            part_score = _safe_float(part.get("part_score") or part.get("max_score"), max_score)
-            part_default_answer_only = max(1, int(round(part_score * 0.25))) if part_score > 0 else 1
-            
-            if "require_final_answer" not in part:
-                part["require_final_answer"] = question["require_final_answer"]
-            part["require_final_answer"] = bool(part.get("require_final_answer"))
-            
-            if "answer_only_max_score" not in part:
-                part["answer_only_max_score"] = int(round(_safe_float(question.get("answer_only_max_score"), part_default_answer_only)))
-            part["answer_only_max_score"] = max(0, min(int(round(_safe_float(part.get("answer_only_max_score"), part_default_answer_only))), int(round(part_score))))
-            
-            rules = part.get("presentation_rules")
-            if not isinstance(rules, list):
-                rules = []
-                part["presentation_rules"] = rules
-            _remove_rule_by_id(rules, "final_answer_required")
-            if part["require_final_answer"]:
-                rules.append(
-                    {
-                        "rule_id": "final_answer_required",
-                        "rule": "启用此策略时，必须包含最终答案或明确的结论；如果缺失或不完整则扣分。",
-                        "max_deduction": 1,
-                    }
-                )
 
 
 def _upsert_policy(policies: list[Any], new_policy: dict[str, Any]) -> None:
@@ -2587,8 +3979,10 @@ def validate_generated_config(payload: dict[str, Any]) -> None:
         max_score = float(item["max_score"])
         if not max_score.is_integer():
             raise ValueError(f"rubric.questions[{idx - 1}].max_score must be an integer")
-        if max_score > 12:
-            raise ValueError(f"rubric.questions[{idx - 1}].max_score must not exceed 12")
+        if max_score > MAX_QUESTION_SCORE:
+            raise ValueError(
+                f"rubric.questions[{idx - 1}].max_score must not exceed {MAX_QUESTION_SCORE}"
+            )
         # 同类同分仅约束客观题（choice/fill_blank/judgement/true_false）；
         # 解答类大题（calculation/proof/comprehensive）允许各题分值不同。
         if _normalize_type(qtype) in OBJECTIVE_TYPES:
@@ -2683,19 +4077,18 @@ def save_generated_config(upload_dir: Path, payload: dict[str, Any], ts: str) ->
     return rubric_path, answer_key_path
 
 
-def _build_generation_prompt(doc_text: str) -> str:
+def _build_generation_prompt(doc_text: str, *, include_source_text: bool = True) -> str:
     return (
         "你是中学数学教研评分设计助手。\n"
         "请从给定Word文本中抽取‘题目、分值、答案与解析’，并生成可执行评分标准。\n"
         "核心目标：支持填空题等价答案判分、解答题/证明题按证明义务扣分、不同正确解法给分。\n"
         "硬性总分：本系统所有考试批改统一按 100 分制设计。rubric.total_score 必须等于 100，所有题目 max_score 之和必须等于 100；若原卷不是 100 分制，请按原始分值比例换算。\n"
-        "单题上限：每一道题 question.max_score 不能超过 12 分，即不能超过总分的 12%。解答题可以拆成多个小问 parts 分别赋分，但整道题 max_score 仍不得超过 12。\n"
+        "单题上限：所有题型的 question.max_score 均不能超过 18 分。题目可以拆成多个小问 parts 分别赋分，但整道题 max_score 仍不得超过 18。\n"
         "硬性赋分：所有 max_score、part_score、step_score、proof_obligations.weight、deduction_policy.max_deduction 都必须是整数，不能出现 2.5、3.33 这类小数。\n"
         "同类同分（仅客观题）：相同 question_type 的客观题必须分值完全相同。例如所有 choice 题同分，所有 fill_blank 题同分，不能出现有的选择题3分、有的选择题4分。解答类大题（calculation/proof/comprehensive）不要求同类同分，可按题目难度与工作量赋予不同分值。\n"
-        "分值层级：选择题(choice)单题分值必须小于或等于填空题(fill_blank)，且两者差距不要超过50%（即 choice_score >= fill_blank_score * 0.5）；choice/fill_blank 的单题分值必须小于或等于解答类题目的单题分值。\n"
         "题型细分：解答类题目不要全部写成一种类型，可按实际任务分为 calculation（计算/求解）、proof（证明）、comprehensive（一般综合解答）等多种 question_type。\n"
         "题型纠偏：只要题目要求证明、求证、说明理由、说明某结论成立、补全证明过程、判断并说明、添加条件使结论能够推出，就应标为 proof；如果题目主要要求求角度、求长度、求周长、求面积、求值、计算、化简或解方程，且不要求证明/说明理由，才标为 calculation。comprehensive 用于同时包含证明、计算、作图或开放论述的混合型题。\n"
-        "若原卷分值与“100分制、整数、客观题同类同分、选择题≤填空题且差距不超过50%、客观题不高于解答题”冲突，请优先按这些规则重新设计赋分。\n"
+        "若原卷分值与“100分制、整数、客观题同类同分、单题不超过18分”冲突，请优先按这些规则重新设计赋分。\n"
         "特别要求：证明题/解答题不要把参考答案路径当作唯一标准；应抽象成 proof_obligations（证明义务）和 deduction_policy（扣分规则）。\n"
         "必须覆盖 Word 中出现的全部题目，包括选择题、填空题、判断题、客观题和解答题；禁止只生成大题或只生成答案解析部分。\n"
         "如果 Word 中有选择题/填空题，即使评分逻辑简单，也必须在 rubric.questions 和 answer_key.questions 中逐题列出。\n"
@@ -2784,8 +4177,8 @@ def _build_generation_prompt(doc_text: str) -> str:
         "2) max_score、part_score、step_score 必须为整数且层级总分一致；不得输出小数。\n"
         "2.1) 整张试卷总分必须严格为 100 分，不能返回 10 分、120 分或其他总分。\n"
         "2.2) 相同 question_type 的客观题（choice/fill_blank）max_score 必须完全一致；解答类大题（calculation/proof/comprehensive）允许不同分值。\n"
-        "2.3) choice 的 max_score 必须小于或等于 fill_blank，且不得低于 fill_blank 的 50%；choice/fill_blank 的 max_score 必须小于或等于 calculation/proof/comprehensive 的 max_score。\n"
-        "2.4) 任意 question.max_score 必须小于或等于 12；若大题有多问，请在 parts 中拆分小问分值，不要让整题超过 12。\n"
+        "2.3) 不限制不同题型之间的分值高低关系；仅要求同类型客观题同分。\n"
+        "2.4) 任意 question.max_score 必须小于或等于 18；若大题有多问，请在 parts 中拆分小问分值，不要让整题超过 18。\n"
         "3) 对选择题/填空题，question_type 必须分别是 choice 或 fill_blank，parts 可只有一个，steps 可只有一个 direct-answer 步骤。\n"
         "4) 对解答题，必须按题目特征细分为 calculation/proof/comprehensive，必须有 parts 与 steps，不能只给最终答案；同时必须给出 proof_obligations 与 deduction_policy。明确要求证明/求证/说明结论成立的题使用 proof；主要求数值、角度、长度、面积、化简或方程结果的题使用 calculation。\n"
         "4.1) 对 proof 与 calculation，默认 require_final_answer=false，不因未额外写“答”单独扣分；对 comprehensive，默认 require_final_answer=true，未写最终答/结论完整性可小扣分。若题目本身明确要求写结论，可按题意调整。\n"
@@ -2802,7 +4195,7 @@ def _build_generation_prompt(doc_text: str) -> str:
         "- proof_obligations 描述学生必须完成的数学责任，例如建立辅助条件、证明全等/相似、推出角度/线段关系、说明定理前提等。\n"
         "- deduction_policy 描述扣分项，例如缺少前提、跳步严重、逻辑循环、结论与过程断裂、符号/对象指代不清。\n"
         "- steps 可以对应证明义务的评分权重，但不能要求学生过程与参考答案逐句一致。\n\n"
-        f"Word原文:\n{doc_text}"
+        + (f"Word原文:\n{doc_text}" if include_source_text else "")
     )
 
 
@@ -2813,29 +4206,12 @@ def generate_grading_config_from_text(
     model_name: str | None = None,
     report: Any = None,
 ) -> dict[str, Any]:
-    if report:
-        report(0.20, "Submit text prompt", "Submitted text prompt; waiting for model to parse all questions...")
-    
-    prompt = _build_generation_prompt(doc_text)
-    prompt = "这是一份试卷及其标准答案的提取文本。请你仔细阅读文本内容，提取出所有题目的评分标准（题号、分值、步骤分、标准答案等）。\n\n" + prompt
-
-    payload = llm_client.json_from_text(prompt, model=model_name, extra_kwargs={"timeout": 300.0})
-    
-    try:
-        validate_generated_config(payload)
-    except Exception:
-        _dump_failed_generated_payload(payload)
-        raise
-        
-    if _needs_objective_repair(payload, doc_text):
-        repair_prompt = _build_objective_repair_prompt(doc_text, payload)
-        payload = llm_client.json_from_text(repair_prompt, model=model_name)
-        try:
-            validate_generated_config(payload)
-        except Exception:
-            pass
-
-    return payload
+    return generate_grading_config_from_docx_text(
+        doc_text,
+        llm_client,
+        model_name=model_name,
+        report=report,
+    )
 
 
 def generate_grading_config_from_images(
@@ -2845,32 +4221,16 @@ def generate_grading_config_from_images(
     model_name: str | None = None,
     report: Any = None,
 ) -> dict[str, Any]:
+    if not image_blobs:
+        raise ValueError("PDF 整卷视觉模式未获得任何页面图片。")
     if report:
-        report(0.20, "全卷图像解析", f"发送 {len(image_blobs)} 张图片等待全局解析（耗时较长）...")
-    prompt = (
-        "这是一份试卷及其标准答案的高清原图。请你仔细阅读图片内容，提取出所有题目的评分标准"
-        "（题号、分值、步骤分、标准答案等）。请务必精准识别图片中的 LaTeX 公式、表格和几何图形。\n\n"
-    ) + _build_generation_prompt(doc_text)
-
-    payload = llm_client.json_from_images_with_options(
-        prompt, image_blobs, model=model_name,
-        extra_kwargs={"timeout": 600.0},
+        report(0.20, "PDF 整卷视觉单次请求", f"发送 {len(image_blobs)} 张整页图片，一次完成解析与赋分。")
+    payload = llm_client.json_from_images_once(
+        _build_whole_image_generation_prompt(),
+        image_blobs,
+        model=model_name,
+        extra_kwargs=_config_generation_extra_kwargs(),
         use_config_client=True,
     )
-    
-    try:
-        validate_generated_config(payload)
-    except Exception:
-        _dump_failed_generated_payload(payload)
-        raise
-        
-    if _needs_objective_repair(payload, doc_text):
-        repair_prompt = _build_objective_repair_prompt(doc_text, payload)
-        payload = llm_client.json_from_text(repair_prompt, model=model_name, extra_kwargs={"timeout": 300.0})
-        try:
-            validate_generated_config(payload)
-        except Exception:
-            pass
-
-    return payload
+    return _finalize_whole_generation_payload(payload, "whole_pdf_visual_single_request")
 

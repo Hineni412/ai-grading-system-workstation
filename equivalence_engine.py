@@ -21,13 +21,15 @@ def expand_equivalent_forms(answer: Any, *, max_forms: int = 16) -> list[str]:
     forms.extend(_numeric_equivalent_forms(text))
     forms.extend(_relation_equivalent_forms(text))
     forms.extend(_punctuation_variants(text))
+    forms.extend(_semantic_format_variants(text))
 
     return _dedupe(forms)[:max_forms]
 
 
 def merge_equivalent_forms(existing: Any, *answers: Any, max_forms: int = 24) -> list[str]:
     forms: list[str] = []
-    forms.extend(_string_list(existing))
+    for existing_answer in _string_list(existing):
+        forms.extend(expand_equivalent_forms(existing_answer, max_forms=max_forms))
     for answer in answers:
         forms.extend(expand_equivalent_forms(answer, max_forms=max_forms))
     canonical = next((answer for answer in answers if _clean_answer(answer)), None)
@@ -116,6 +118,24 @@ def _punctuation_variants(text: str) -> list[str]:
     return variants
 
 
+def _semantic_format_variants(text: str) -> list[str]:
+    variants: list[str] = []
+    if "°" in text:
+        variants.append(text.replace("°", "度"))
+    if "度" in text:
+        variants.append(text.replace("度", "°"))
+
+    unit_match = re.fullmatch(r"([+-]?\d+(?:\.\d+)?)(条|个|米|厘米|毫米|秒|分钟|元|人|次)", text)
+    if unit_match:
+        variants.append(unit_match.group(1))
+
+    equation_match = re.fullmatch(r"([^=]+)=([^+=]+)\+([^+=]+)", text)
+    if equation_match:
+        left, first, second = equation_match.groups()
+        variants.append(f"{left}={second}+{first}")
+    return variants
+
+
 def _parse_number_like(text: str) -> Fraction | None:
     normalized = text.strip().replace("％", "%")
     if not _DECIMAL_RE.match(normalized) and not _FRACTION_RE.match(normalized):
@@ -152,7 +172,9 @@ def _format_finite_decimal(value: Fraction) -> str | None:
         return None
 
     decimal_value = Decimal(value.numerator) / Decimal(value.denominator)
-    text = format(decimal_value, "f").rstrip("0").rstrip(".")
+    text = format(decimal_value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
     return text or "0"
 
 

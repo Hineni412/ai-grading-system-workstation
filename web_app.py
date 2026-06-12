@@ -5,6 +5,7 @@ import html
 import inspect
 import os
 import queue
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -16,6 +17,7 @@ import pandas as pd
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
 from objective_admission_wizard_ui import render_objective_admission_wizard_tab
+import session_manager as _session_manager
 
 from analytics import AnalyticsService
 from api_profiles import load_api_profiles, normalize_question_allowlist, save_api_profiles
@@ -36,22 +38,27 @@ from question_bank.database.paths import project_data_root, question_bank_db_pat
 from question_bank.services.ai_tagging_service import AITaggingService
 from question_bank.services.grading_paper_intake_service import copy_and_intake_uploaded_grading_paper
 from report import ReportGenerator
-from score_policy import enforce_integer_scores_by_type
+from score_policy import enforce_integer_scores_by_type, MAX_QUESTION_SCORE
 from scanner import STUDENT_NAME_REGION_ID, ScanAnalysis, Scanner, refine_scan_analysis_matches, render_pdf_to_standard_pages, student_name_region_from_regions
 from session_config_state import (
     clear_pending_config_for_new_session,
     remember_saved_config_for_new_session,
+    restore_persistent_config_state,
 )
 from session_cleanup import hard_delete_session_from_recycle_bin
 from session_manager import (
     extract_docx_text,
     force_payload_total_score,
+    failed_grading_config_question_ids,
     generate_grading_config_from_confirmed_blocks,
     generate_grading_config_from_docx_text,
     generate_grading_config_from_docx_text_legacy,
+    generate_grading_config_from_images,
     preview_question_blocks_from_docx_bytes,
     preview_question_blocks_from_docx_text,
     refine_grading_config_from_manual_structure,
+    retry_failed_grading_config_questions,
+    retry_grading_config_score_allocation,
     save_generated_config,
 )
 from student_manager import StudentManager
@@ -1604,10 +1611,12 @@ def render_sidebar_session_selector(db: DBManager) -> int | None:
     if delete_clicked and selected is not None:
         db.soft_delete_grading_session(int(selected))
         st.session_state["selected_session_id"] = None
+        db.set_app_setting("last_selected_session_id", "")
         st.sidebar.success("考试批改已删除")
         st.rerun()
 
     st.session_state["selected_session_id"] = selected
+    db.set_app_setting("last_selected_session_id", "" if selected is None else str(selected))
 
     if selected is not None:
         session = db.get_grading_session(int(selected))
@@ -1918,7 +1927,7 @@ def _render_upload_paths_guide(is_pdf: bool | None, use_text_only: bool) -> None
         status_html = '<div class="status-prompt">💡 <b>使用提示</b>：请在上方上传试卷（.docx 或 .pdf）并选择模式，系统将自动激活匹配的解析路径。</div>'
     else:
         file_type = "PDF" if is_pdf else "Word"
-        mode_type = "旧版整卷文本" if use_text_only else "单题并发 (推荐)"
+        mode_type = "整卷单次请求" if use_text_only else "单题并发 (推荐)"
         status_html = f'<div class="status-prompt" style="background: #ECFDF5; color: #065F46; border: 1px solid #A7F3D0; margin-bottom: 14px;">✅ <b>当前激活路径</b>：您上传了 <b>{file_type}</b> 文件，选择了 <b>{mode_type}</b> 模式，已激活下方高亮路径。</div>'
 
     def get_class(idx: int) -> str:
@@ -1947,7 +1956,7 @@ def _render_upload_paths_guide(is_pdf: bool | None, use_text_only: bool) -> None
             </div>
             <div class="path-card-desc">
                 <b>适用场景</b>：试卷包含几何图形、函数图表、较多插图，或扫描版试卷。<br>
-                <b>核心机制</b>：AI 接收文字+裁切出的题目高清图。
+                <b>核心机制</b>：AI 仅接收裁切出的题目/答案高清图和少量规则；PDF 抽取文字仅用于本地拆题定位，不发送给 AI。
             </div>
         </div>
         <div class="path-card {get_class(1)}">
@@ -1969,7 +1978,7 @@ def _render_upload_paths_guide(is_pdf: bool | None, use_text_only: bool) -> None
             </div>
             <div class="path-card-desc">
                 <b>适用场景</b>：试卷由排版规范的 DOCX 文档生成，且包含不少大题步骤。<br>
-                <b>核心机制</b>：AI 接收纯文本+公式 HTML 实体。
+                <b>核心机制</b>：AI 接收每道题的富文本、公式 HTML 和可用的内嵌图片；失败题支持自动与手动重试。
             </div>
         </div>
         """
@@ -1977,23 +1986,24 @@ def _render_upload_paths_guide(is_pdf: bool | None, use_text_only: bool) -> None
         cards_html = f"""
         <div class="path-card {get_class(2)}">
             { '<span class="active-badge">当前生效</span>' if active_idx == 2 else '' }
-            <div class="path-card-title">📝📖 整卷纯文本 + PDF 格式</div>
-            <div class="path-card-mode-badge">视觉文本兜底模式</div>
+            <div class="path-card-title">📝🖼️ PDF 整卷视觉单次请求</div>
+            <div class="path-card-mode-badge">真正单次视觉请求</div>
             <div class="flow-steps">
                 <span class="step-node">PDF文件</span>
                 <span class="flow-arrow">➔</span>
-                <span class="step-node">提取整卷文本</span>
+                <span class="step-node">逐页渲染图片</span>
                 <span class="flow-arrow">➔</span>
                 <span class="step-node">AI 一次性解析与赋分</span>
             </div>
             <div class="path-card-desc">
-                <b>适用场景</b>：仅为纯文本、无图表的 PDF 试卷（极不推荐）。
+                <b>适用场景</b>：本地无法可靠拆题，或需要让 AI 从整卷上下文判断题目与答案对应关系。<br>
+                <b>核心机制</b>：一次性发送全部 PDF 整页图片，不发送 PDF 抽取文字；失败后仅手动重试。
             </div>
         </div>
         <div class="path-card {get_class(3)}">
             { '<span class="active-badge">当前生效</span>' if active_idx == 3 else '' }
-            <div class="path-card-title">📝📄 整卷纯文本 + Word 格式</div>
-            <div class="path-card-mode-badge">整卷纯文本模式</div>
+            <div class="path-card-title">📝📄 Word 整卷文本单次请求</div>
+            <div class="path-card-mode-badge">真正单次文本请求</div>
             <div class="flow-steps">
                 <span class="step-node">Word文件</span>
                 <span class="flow-arrow">➔</span>
@@ -2003,7 +2013,7 @@ def _render_upload_paths_guide(is_pdf: bool | None, use_text_only: bool) -> None
             </div>
             <div class="path-card-desc">
                 <b>适用场景</b>：排版极为简单、无图无公式的纯客观题试卷。<br>
-                <b>核心机制</b>：一次性将整卷文本发给 AI。大上下文极易导致 AI 漏题，大题步骤也极易被高度合并，不推荐复杂大题使用。
+                <b>核心机制</b>：一次性将整卷文本发给 AI，不自动修复或补请求；失败后仅手动重试。
             </div>
         </div>
         """
@@ -2131,6 +2141,94 @@ def _render_upload_paths_guide(is_pdf: bool | None, use_text_only: bool) -> None
 
 
 
+def _persistent_rubric_source(
+    db: DBManager,
+    selected_session_id: int | None,
+) -> tuple[Path, Path, str, int | None] | None:
+    if selected_session_id is not None:
+        session = db.get_grading_session(int(selected_session_id))
+        if session and int(session.get("is_deleted") or 0) == 0:
+            return (
+                Path(str(session.get("rubric_path") or "")),
+                Path(str(session.get("answer_key_path") or "")),
+                f"当前考试：{session.get('session_name') or selected_session_id}",
+                int(selected_session_id),
+            )
+
+    rubric_path = str(st.session_state.get("latest_rubric_path") or "").strip()
+    answer_path = str(st.session_state.get("latest_answer_path") or "").strip()
+    if rubric_path and answer_path:
+        return Path(rubric_path), Path(answer_path), "最近确认保存的评分标准", None
+    return None
+
+
+def _load_rubric_payload(rubric_path: Path, answer_key_path: Path) -> dict[str, Any]:
+    rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+    answer_key = json.loads(answer_key_path.read_text(encoding="utf-8"))
+    payload = {"rubric": rubric, "answer_key": answer_key}
+    _session_manager.normalize_generated_config_schema(payload)
+    return payload
+
+
+def _render_persistent_rubric_overview(db: DBManager, selected_session_id: int | None) -> None:
+    st.markdown("### 当前评分标准总览")
+    source = _persistent_rubric_source(db, selected_session_id)
+    if source is None:
+        st.info("尚未确认保存评分标准。生成并确认后，总览会常驻在这里。")
+        return
+
+    rubric_path, answer_path, source_label, source_session_id = source
+    if not rubric_path.exists() or not answer_path.exists():
+        st.warning(f"{source_label}的评分标准文件缺失，请重新确认保存。")
+        return
+
+    try:
+        payload = _load_rubric_payload(rubric_path, answer_path)
+        rows = build_unified_rubric_rows(payload)
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"加载常驻评分标准失败：{exc}")
+        return
+
+    rubric = payload.get("rubric") if isinstance(payload, dict) else {}
+    questions = rubric.get("questions") if isinstance(rubric, dict) else []
+    total_score = _to_float(rubric.get("total_score"), 0.0) if isinstance(rubric, dict) else 0.0
+    st.caption(
+        f"{source_label} · {len(questions) if isinstance(questions, list) else 0} 道题 · "
+        f"总分 {total_score:g} · 已持久保存，重新打开首页仍会显示"
+    )
+    visible_columns = [
+        "题号",
+        "评分单元",
+        "评分点",
+        "题型",
+        "分值",
+        "标准答案",
+        "作答匹配规则",
+        "知识点",
+    ]
+    overview_df = pd.DataFrame(rows)
+    if overview_df.empty:
+        st.info("当前评分标准中暂无可展示的评分行。")
+        return
+    st.dataframe(
+        overview_df[[column for column in visible_columns if column in overview_df.columns]],
+        use_container_width=True,
+        hide_index=True,
+        height=min(620, max(220, 38 * (len(overview_df) + 1))),
+    )
+
+    edit_key = f"persistent_rubric_edit_{source_session_id if source_session_id is not None else rubric_path.name}"
+    if st.toggle("编辑当前评分标准", value=False, key=edit_key):
+        _render_active_session_rubric_editor(
+            db,
+            source_session_id,
+            rubric_path,
+            answer_path,
+            payload,
+        )
+    st.divider()
+
+
 def render_config_and_session_tab(
     db: DBManager,
     llm_settings: LLMSettings | None,
@@ -2149,6 +2247,9 @@ def render_config_and_session_tab(
         st.session_state.generated_doc_name = ""
     if "generated_doc_bytes" not in st.session_state:
         st.session_state.generated_doc_bytes = b""
+    if "whole_config_generation_failed" not in st.session_state:
+        st.session_state.whole_config_generation_failed = False
+    _render_persistent_rubric_overview(db, selected_session_id)
     intake_notice = st.session_state.pop("_question_bank_intake_notice", None)
     if isinstance(intake_notice, dict):
         st.success(
@@ -2176,26 +2277,36 @@ def render_config_and_session_tab(
                     word_bytes = word_upload.getvalue()
                     is_pdf = word_upload.name.lower().endswith(".pdf")
 
-                    def generate_work(report) -> tuple[dict[str, Any], Path, str]:
-                        report(0.04, "读取 Word 文件")
+                    def generate_work(report) -> tuple[dict[str, Any], Path | None, str]:
                         llm_client = LLMClient(llm_settings)
-                        if is_pdf:
-                            from rubric_auto_cropper import extract_pdf_text
-                            doc_text = extract_pdf_text(word_bytes)
-                        else:
-                            doc_text = extract_docx_text(word_bytes)
                         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        report(0.10, "写入 Word 文本缓存", f"已提取约 {len(doc_text):,} 个字符")
-                        extracted_path = UPLOAD_CONFIG_DIR / f"extracted_word_text_{ts}.txt"
-                        extracted_path.write_text(doc_text, encoding="utf-8")
+                        if is_pdf:
+                            from rubric_auto_cropper import extract_pdf_images
 
-                        report(0.16, "旧版整卷文本生成", "使用旧版逻辑：直接把整份 Word/PDF 提取文本发送给模型生成评分标准。")
-                        payload = generate_grading_config_from_docx_text(
-                            doc_text,
-                            llm_client=llm_client,
-                            model_name=llm_settings.config_model,
-                            report=report,
-                        )
+                            report(0.04, "渲染 PDF 整页图片")
+                            page_images = extract_pdf_images(word_bytes)
+                            report(0.14, "PDF 整卷视觉单次请求", f"已准备 {len(page_images)} 张整页图片；不会发送 PDF 抽取文字。")
+                            payload = generate_grading_config_from_images(
+                                page_images,
+                                "",
+                                llm_client=llm_client,
+                                model_name=llm_settings.config_model,
+                                report=report,
+                            )
+                            extracted_path = None
+                        else:
+                            report(0.04, "读取 Word 文件")
+                            doc_text = extract_docx_text(word_bytes)
+                            report(0.10, "写入 Word 文本缓存", f"已提取约 {len(doc_text):,} 个字符")
+                            extracted_path = UPLOAD_CONFIG_DIR / f"extracted_word_text_{ts}.txt"
+                            extracted_path.write_text(doc_text, encoding="utf-8")
+                            report(0.16, "Word 整卷文本单次请求", "整份 Word 文本仅发送一次；失败后由用户手动重试。")
+                            payload = generate_grading_config_from_docx_text(
+                                doc_text,
+                                llm_client=llm_client,
+                                model_name=llm_settings.config_model,
+                                report=report,
+                            )
                         report(0.98, "校验结构完成")
                         return payload, extracted_path, ts
 
@@ -2207,24 +2318,38 @@ def render_config_and_session_tab(
                     st.session_state.generated_config_payload = payload
                     st.session_state.generated_doc_name = word_upload.name
                     st.session_state.generated_doc_bytes = word_bytes
+                    st.session_state.whole_config_generation_failed = False
                     generated_raw_path = UPLOAD_CONFIG_DIR / f"generated_config_preview_{generated_ts}.json"
                     _write_compact_json_file(generated_raw_path, payload)
-                    st.success(f"AI 已生成评分标准，请先预览再确认保存。Word 提取文本已保存：{extracted_path.name}")
+                    if extracted_path is not None:
+                        st.success(f"AI 已生成评分标准，请先预览再确认保存。Word 提取文本已保存：{extracted_path.name}")
+                    else:
+                        st.success("AI 已通过 PDF 整卷视觉单次请求生成评分标准，请先预览再确认保存。")
                 except Exception as exc:  # noqa: BLE001
+                    st.session_state.whole_config_generation_failed = True
                     st.error(f"生成失败：{exc}")
 
             use_text_only = st.checkbox(
-                "旧版整卷文本模式（直接把整份提取文本交给 AI 一次性生成，不走拆题预览与单题并发）",
+                "整卷单次请求模式（不走本地拆题；Word 发送整卷文本，PDF 发送全部整页图片）",
                 value=False,
                 key="config_generation_use_text_only",
-                help="勾选走旧逻辑：一次性整卷生成，速度慢且易超分值上限。默认不勾选，走本地拆题预览 + 人工确认 + 单题并发。",
+                help="适合本地拆题不可靠时使用。整卷模式严格只请求一次，不自动重试；失败后可手动重试。",
             )
 
             is_pdf = word_upload.name.lower().endswith(".pdf") if word_upload is not None else None
             _render_upload_paths_guide(is_pdf, use_text_only)
 
             if use_text_only:
-                if st.button("AI 生成评分标准（整卷）", key="generate_from_word_btn", type="primary"):
+                whole_button_label = (
+                    "重试整卷生成"
+                    if st.session_state.get("whole_config_generation_failed")
+                    else "AI 生成评分标准（整卷单次请求）"
+                )
+                if st.button(
+                    whole_button_label,
+                    key="generate_from_word_btn",
+                    type="primary",
+                ):
                     run_word_config_generation(use_text_only=True)
             else:
                 _QTYPE_LABELS = {
@@ -2262,19 +2387,13 @@ def render_config_and_session_tab(
                                             "answer": base64.b64encode(crop_dict["answer"]).decode() if crop_dict.get("answer") else None
                                         }
                                     st.session_state.pending_q_images = q_images
-                                    st.session_state.pending_q_stem_images = q_stem_images
-                                    st.session_state.pending_q_ans_images = q_ans_images
                                     st.session_state.pending_is_pdf = True
                                 except Exception as crop_exc:  # noqa: BLE001
-                                    st.warning(f"PDF 题目裁图失败，将退回纯文本模式：{crop_exc}")
+                                    st.error(f"PDF 题目裁图失败，已停止图片准备，不会退回纯文本模式：{crop_exc}")
                                     st.session_state.pending_q_images = {}
-                                    st.session_state.pending_q_stem_images = {}
-                                    st.session_state.pending_q_ans_images = {}
                                     st.session_state.pending_is_pdf = True
                             else:
                                 st.session_state.pending_q_images = {}
-                                st.session_state.pending_q_stem_images = {}
-                                st.session_state.pending_q_ans_images = {}
                                 st.session_state.pending_is_pdf = True
                         else:
                             doc_text = extract_docx_text(word_bytes)
@@ -2283,8 +2402,6 @@ def render_config_and_session_tab(
                                 word_bytes, fallback_doc_text=doc_text
                             )
                             st.session_state.pending_q_images = {}
-                            st.session_state.pending_q_stem_images = {}
-                            st.session_state.pending_q_ans_images = {}
                             st.session_state.pending_is_pdf = False
                         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                         st.session_state.pending_question_blocks = blocks
@@ -2413,22 +2530,26 @@ def render_config_and_session_tab(
                                     chosen_label,
                                     new_block.get("question_type") or "comprehensive",
                                 )
+                                if bool(st.session_state.get("pending_is_pdf")):
+                                    new_block["semantic_source"] = "images"
                                 confirmed_blocks.append(new_block)
                             if not confirmed_blocks:
                                 raise ValueError("没有可生成的题目（是否全部勾选了删除？）")
+                            st.session_state.pending_confirmed_blocks = confirmed_blocks
                             doc_text = str(st.session_state.get("pending_doc_text") or "")
                             ts = str(
                                 st.session_state.get("pending_doc_ts")
                                 or datetime.now().strftime("%Y%m%d_%H%M%S")
                             )
+                            q_images: dict[str, Any] | None = (
+                                st.session_state.get("pending_q_images") or None
+                            )
+                            is_pdf = bool(st.session_state.get("pending_is_pdf"))
+                            if is_pdf:
+                                _session_manager._validate_image_semantic_inputs(confirmed_blocks, q_images)
 
                             def generate_work(report) -> dict[str, Any]:
                                 llm_client = LLMClient(llm_settings)
-                                # Read per-question PDF crops if available (Plan B)
-                                q_images: dict[str, str] | None = (
-                                    st.session_state.get("pending_q_images") or None
-                                )
-                                is_pdf = bool(st.session_state.get("pending_is_pdf"))
                                 img_count = len(q_images) if q_images else 0
                                 report(
                                     0.10,
@@ -2463,6 +2584,116 @@ def render_config_and_session_tab(
 
                     if st.button("② 确认无误，生成评分标准", key="generate_from_blocks_btn", type="primary"):
                         run_confirmed_generation()
+
+                    def run_failed_question_retry() -> None:
+                        try:
+                            if llm_settings is None:
+                                raise ValueError("请先在左侧配置 API Key/Base URL")
+                            current_payload = st.session_state.get("generated_config_payload")
+                            confirmed_blocks = st.session_state.get("pending_confirmed_blocks") or []
+                            if not isinstance(current_payload, dict):
+                                raise ValueError("当前没有可恢复的评分标准")
+                            if not confirmed_blocks:
+                                raise ValueError("已确认的题目数据已丢失，请重新拆分试卷")
+                            doc_text = str(st.session_state.get("pending_doc_text") or "")
+                            q_images = st.session_state.get("pending_q_images") or None
+
+                            def retry_work(report) -> dict[str, Any]:
+                                report(0.08, "重试失败题目", "仅重新发送失败题目，已成功题目保持不变。")
+                                return retry_failed_grading_config_questions(
+                                    current_payload,
+                                    confirmed_blocks,
+                                    doc_text,
+                                    llm_client=LLMClient(llm_settings),
+                                    model_name=llm_settings.config_model,
+                                    report=report,
+                                    q_images=q_images,
+                                )
+
+                            payload = _run_with_stage_progress(
+                                "AI 评分标准恢复",
+                                retry_work,
+                                done_text="失败题目重试完成",
+                            )
+                            st.session_state.generated_config_payload = payload
+                            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            _write_compact_json_file(
+                                UPLOAD_CONFIG_DIR / f"generated_config_retry_{ts}.json",
+                                payload,
+                            )
+                            remaining = failed_grading_config_question_ids(payload)
+                            if remaining:
+                                st.warning(f"仍有 {len(remaining)} 道题生成失败：{', '.join(remaining)}")
+                            else:
+                                st.success("失败题目已全部补齐，并已重新完成 AI 整体赋分。")
+                        except Exception as exc:  # noqa: BLE001
+                            st.error(f"失败题目重试失败：{exc}")
+
+                    def run_score_allocation_retry() -> None:
+                        try:
+                            if llm_settings is None:
+                                raise ValueError("请先在左侧配置 API Key/Base URL")
+                            current_payload = st.session_state.get("generated_config_payload")
+                            confirmed_blocks = st.session_state.get("pending_confirmed_blocks") or []
+                            if not isinstance(current_payload, dict):
+                                raise ValueError("当前没有可重新赋分的评分标准")
+                            if not confirmed_blocks:
+                                raise ValueError("已确认的题目数据已丢失，请重新拆分试卷")
+                            doc_text = str(st.session_state.get("pending_doc_text") or "")
+                            q_images = st.session_state.get("pending_q_images") or None
+
+                            def score_work(report) -> dict[str, Any]:
+                                report(0.10, "重新整体赋分", "保持题目与评分点不变，仅重新分配整卷分值。")
+                                return retry_grading_config_score_allocation(
+                                    current_payload,
+                                    confirmed_blocks,
+                                    doc_text,
+                                    llm_client=LLMClient(llm_settings),
+                                    model_name=llm_settings.config_model,
+                                    report=report,
+                                    q_images=q_images,
+                                )
+
+                            payload = _run_with_stage_progress(
+                                "AI 重新整体赋分",
+                                score_work,
+                                done_text="整体赋分完成",
+                            )
+                            st.session_state.generated_config_payload = payload
+                            if payload.get("meta", {}).get("score_allocation_ai_success"):
+                                st.success("AI 整体赋分已重新完成。")
+                            else:
+                                st.warning("AI 整体赋分仍失败，当前保留本地兜底分值，可再次点击重试。")
+                        except Exception as exc:  # noqa: BLE001
+                            st.error(f"重新整体赋分失败：{exc}")
+
+                    current_split_payload = st.session_state.get("generated_config_payload")
+                    current_confirmed_blocks = st.session_state.get("pending_confirmed_blocks") or []
+                    if isinstance(current_split_payload, dict) and current_confirmed_blocks:
+                        failed_qids = failed_grading_config_question_ids(current_split_payload)
+                        if failed_qids:
+                            st.error(f"{len(failed_qids)} 道题生成失败：{', '.join(failed_qids)}。整体赋分已暂停。")
+                            failed_details = current_split_payload.get("meta", {}).get("failed_questions", [])
+                            if isinstance(failed_details, list) and failed_details:
+                                with st.expander("查看失败原因", expanded=False):
+                                    for failure in failed_details:
+                                        if not isinstance(failure, dict):
+                                            continue
+                                        st.write(
+                                            f"{failure.get('question_id', '')}："
+                                            f"已尝试 {failure.get('attempts', 1)} 次；"
+                                            f"{failure.get('error', '未知错误')}"
+                                        )
+                            if st.button("仅重试失败题目", key="retry_failed_config_questions_btn", type="primary"):
+                                run_failed_question_retry()
+                        else:
+                            score_success = bool(
+                                current_split_payload.get("meta", {}).get("score_allocation_ai_success")
+                            )
+                            if not score_success:
+                                st.warning("题目均已生成，但 AI 整体赋分未成功，当前使用本地兜底分值。")
+                            if st.button("重新整体赋分", key="retry_config_score_allocation_btn"):
+                                run_score_allocation_retry()
 
 
     with session_col:
@@ -2545,6 +2776,7 @@ def render_config_and_session_tab(
                     selected_session_id=selected_session_id,
                     rubric_path=str(rubric_path),
                     answer_key_path=str(answer_path),
+                    settings_store=db,
                 )
                 if sync_to_question_bank:
                     try:
@@ -4716,6 +4948,77 @@ def _build_answer_region_crop_preview(db: DBManager, item: dict[str, Any]) -> Im
     return crop
 
 
+def _answer_text_from_node(node: Any) -> str:
+    if not isinstance(node, dict):
+        return ""
+    return str(
+        node.get("answer")
+        or node.get("canonical_answer")
+        or node.get("standard_answer")
+        or node.get("correct_answer")
+        or ""
+    )
+
+
+def _display_scoring_unit(qid: str, part_id: str, part_index: int, part_count: int) -> str:
+    if part_count <= 1:
+        return qid
+    suffix = re.search(r"[\(（]([^)）]+)[\)）]$", part_id)
+    if suffix:
+        return f"第({suffix.group(1)})问"
+    return f"第({part_index})问"
+
+
+def _display_scoring_point(step: dict[str, Any], step_index: int) -> str:
+    goal = str(
+        step.get("core_goal")
+        or step.get("goal")
+        or step.get("criterion")
+        or step.get("description")
+        or ""
+    ).strip()
+    if goal:
+        return goal
+    required = step.get("required_elements")
+    if isinstance(required, list) and required:
+        return str(required[0])
+    return f"踩分点{step_index}"
+
+
+def _part_knowledge_display_label(part: dict[str, Any], fallback: str) -> str:
+    raw_points = part.get("knowledge_points")
+    labels: list[str] = []
+    if isinstance(raw_points, str) and raw_points.strip():
+        labels.append(raw_points.strip())
+    elif isinstance(raw_points, list):
+        for point in raw_points:
+            if isinstance(point, dict):
+                label = str(point.get("knowledge_name") or point.get("name") or point.get("label") or "").strip()
+            else:
+                label = str(point or "").strip()
+            if label:
+                labels.append(label)
+    if labels:
+        return "；".join(dict.fromkeys(labels))
+    part_name = str(part.get("knowledge_name") or "").strip()
+    return part_name or fallback
+
+
+def _answer_match_rule_text(answer_node: dict[str, Any], fallback_node: dict[str, Any] | None = None) -> str:
+    source = answer_node if isinstance(answer_node, dict) else {}
+    fallback = fallback_node if isinstance(fallback_node, dict) else {}
+    match_mode = str(source.get("match_mode") or fallback.get("match_mode") or "").strip()
+    if match_mode != "complete_set":
+        return ""
+    required_values = source.get("required_values")
+    if not isinstance(required_values, list) or not required_values:
+        required_values = fallback.get("required_values")
+    values = [str(value).strip() for value in required_values or [] if str(value).strip()]
+    if not values:
+        return "必须填写全部正确答案；顺序不限；少写、错写或多写均不得分"
+    return f"必须全部填写：{'、'.join(values)}；顺序不限；少写、错写或多写均不得分"
+
+
 def build_unified_rubric_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     rubric = payload.get("rubric", {}) if isinstance(payload, dict) else {}
     answer_key = payload.get("answer_key", {}) if isinstance(payload, dict) else {}
@@ -4751,9 +5054,12 @@ def build_unified_rubric_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if not parts:
             accepted_forms = ans_q.get("accepted_forms", []) if isinstance(ans_q, dict) else []
             eq_text = "；".join(str(item) for item in accepted_forms)
-            canonical = str(ans_q.get("canonical_answer") or "")
+            canonical = _answer_text_from_node(ans_q)
 
             rows.append({
+                "_question_id": qid,
+                "_part_id": "整题",
+                "_step_id": "整题",
                 "题号": qid,
                 "评分单元": "整题",
                 "评分点": "整题",
@@ -4761,6 +5067,7 @@ def build_unified_rubric_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "分值": max_score,
                 "标准答案": canonical,
                 "等价答案预案": eq_text,
+                "作答匹配规则": _answer_match_rule_text(ans_q),
                 "证据要求/关键步骤": "",
                 "扣分规则": "",
                 "知识点": knowledge_label,
@@ -4774,9 +5081,15 @@ def build_unified_rubric_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
                     continue
                 part_id = str(part.get("part_id") or f"{qid}({part_index})")
                 ans_p = ans_part_map.get(part_id, {})
-                part_canonical = str(ans_p.get("answer") or ans_p.get("canonical_answer") or "")
+                if not ans_p and part_index <= len(ans_parts) and isinstance(ans_parts[part_index - 1], dict):
+                    ans_p = ans_parts[part_index - 1]
+                part_canonical = _answer_text_from_node(ans_p)
+                if not part_canonical and len(parts) == 1:
+                    part_canonical = _answer_text_from_node(ans_q)
                 part_accepted = ans_p.get("accepted_forms", []) if isinstance(ans_p, dict) else []
                 part_eq_text = "；".join(str(item) for item in part_accepted)
+                display_unit = _display_scoring_unit(qid, part_id, part_index, len(parts))
+                part_knowledge_label = _part_knowledge_display_label(part, knowledge_label)
 
                 part_score = _to_float(part.get("part_score") or part.get("max_score"), 0.0)
                 part_default_answer_only = max(1, int(round(part_score * 0.25))) if part_score > 0 else 1
@@ -4805,16 +5118,20 @@ def build_unified_rubric_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
                 if not steps:
                     rows.append({
+                        "_question_id": qid,
+                        "_part_id": part_id,
+                        "_step_id": "未拆评分点",
                         "题号": qid,
-                        "评分单元": part_id,
+                        "评分单元": display_unit,
                         "评分点": "未拆评分点",
                         "分值": part_score,
                         "题型": qtype,
                         "标准答案": part_canonical,
                         "等价答案预案": part_eq_text,
+                        "作答匹配规则": _answer_match_rule_text(ans_p, ans_q),
                         "证据要求/关键步骤": "",
                         "扣分规则": "",
-                        "知识点": knowledge_label,
+                        "知识点": part_knowledge_label,
                         "需要单独写答": part_require_final if qtype in {"proof", "calculation", "comprehensive"} else None,
                         "无过程结论分上限": part_answer_only_max if qtype in {"proof", "calculation", "comprehensive"} else None,
                         "未写答扣分说明": part_final_rule if qtype in {"proof", "calculation", "comprehensive"} else "",
@@ -4833,18 +5150,23 @@ def build_unified_rubric_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
                         ded_text = "; ".join(str(d) for d in ded_rules) if isinstance(ded_rules, list) else str(ded_rules or "")
 
                         is_first = (step_index == 1)
+                        display_point = _display_scoring_point(step, step_index)
 
                         rows.append({
+                            "_question_id": qid,
+                            "_part_id": part_id,
+                            "_step_id": step_id,
                             "题号": qid,
-                            "评分单元": part_id,
-                            "评分点": step_id,
+                            "评分单元": display_unit,
+                            "评分点": display_point,
                             "题型": qtype,
                             "分值": step_score,
                             "标准答案": part_canonical if is_first else "",
                             "等价答案预案": part_eq_text if is_first else "",
+                            "作答匹配规则": _answer_match_rule_text(ans_p, ans_q) if is_first else "",
                             "证据要求/关键步骤": req_text,
                             "扣分规则": ded_text,
-                            "知识点": knowledge_label if is_first else "",
+                            "知识点": part_knowledge_label if is_first else "",
                             "需要单独写答": (part_require_final if qtype in {"proof", "calculation", "comprehensive"} else None) if is_first else None,
                             "无过程结论分上限": (part_answer_only_max if qtype in {"proof", "calculation", "comprehensive"} else None) if is_first else None,
                             "未写答扣分说明": (part_final_rule if qtype in {"proof", "calculation", "comprehensive"} else "") if is_first else "",
@@ -4863,11 +5185,32 @@ def _apply_unified_table_to_payload(payload: dict[str, Any], edited_df: pd.DataF
     rubric_q_map = {str(q.get("question_id")): q for q in rubric_questions if isinstance(q, dict)}
     answer_q_map = {str(q.get("question_id")): q for q in answer_questions if isinstance(q, dict)}
 
+    def resolve_part_id(qid: str, row: dict[str, Any]) -> str:
+        hidden_id = str(row.get("_part_id") or "").strip()
+        if hidden_id:
+            return hidden_id
+        display = str(row.get("小题/评分单元") or row.get("评分单元") or "").strip()
+        if display in {"", "整题"}:
+            return display
+        question = rubric_q_map.get(qid)
+        parts = question.get("parts") if isinstance(question, dict) else []
+        if not isinstance(parts, list) or not parts:
+            return display
+        valid_parts = [part for part in parts if isinstance(part, dict)]
+        if display == qid and len(valid_parts) == 1:
+            return str(valid_parts[0].get("part_id") or display)
+        match = re.fullmatch(r"第\((\d+)\)问", display)
+        if match:
+            index = int(match.group(1)) - 1
+            if 0 <= index < len(valid_parts):
+                return str(valid_parts[index].get("part_id") or display)
+        return display
+
     records = edited_df.to_dict(orient="records")
     grouped = {}
     for r in records:
-        qid = str(r.get("题号") or "").strip()
-        part_id = str(r.get("小题/评分单元") or "").strip()
+        qid = str(r.get("_question_id") or r.get("题号") or "").strip()
+        part_id = resolve_part_id(qid, r)
         grouped.setdefault((qid, part_id), []).append(r)
 
     for (qid, part_id), rows in grouped.items():
@@ -4945,12 +5288,23 @@ def _apply_unified_table_to_payload(payload: dict[str, Any], edited_df: pd.DataF
 
                 steps = part_node.get("steps", []) if isinstance(part_node.get("steps"), list) else []
                 part_score_sum = 0.0
-                step_rows = [r for r in rows if str(r.get("评分点")) != "未拆评分点"]
+                step_rows = [
+                    r for r in rows
+                    if str(r.get("_step_id") or r.get("评分点") or "") != "未拆评分点"
+                ]
                 if step_rows:
                     step_map = {str(s.get("step_id") or s.get("id")): s for s in steps if isinstance(s, dict)}
                     new_steps = []
                     for s_row in step_rows:
-                        step_id = str(s_row.get("评分点") or "")
+                        step_id = str(s_row.get("_step_id") or "").strip()
+                        if not step_id:
+                            display_point = str(s_row.get("评分点") or "").strip()
+                            for existing_index, existing_step in enumerate(steps, start=1):
+                                if isinstance(existing_step, dict) and _display_scoring_point(existing_step, existing_index) == display_point:
+                                    step_id = str(existing_step.get("step_id") or existing_step.get("id") or "")
+                                    break
+                        if not step_id:
+                            step_id = str(s_row.get("评分点") or "")
                         step_node = step_map.get(step_id)
                         if not step_node:
                             step_node = {
@@ -5025,7 +5379,7 @@ def _apply_unified_table_to_payload(payload: dict[str, Any], edited_df: pd.DataF
             rub_parts = rub_q.get("parts", [])
             ans_parts = ans_q.get("parts", [])
             if isinstance(rub_parts, list) and isinstance(ans_parts, list):
-                rub_part_map = {str(p.get("part_id")): p for p in rubric_parts if isinstance(p, dict)}
+                rub_part_map = {str(p.get("part_id")): p for p in rub_parts if isinstance(p, dict)}
                 for ans_p in ans_parts:
                     if isinstance(ans_p, dict):
                         pid = str(ans_p.get("part_id"))
@@ -5047,6 +5401,9 @@ def _render_generated_config_preview(payload: dict[str, Any], doc_name: str) -> 
             return False
 
     st.markdown(f"**当前预览来源**：{doc_name}")
+    refresh_quality_warnings = getattr(_session_manager, "refresh_generated_config_quality_warnings", None)
+    if callable(refresh_quality_warnings):
+        refresh_quality_warnings(payload)
     warnings = payload.get("meta", {}).get("warnings", [])
     if warnings:
         st.warning("AI 解析提醒：\n- " + "\n- ".join([str(w) for w in warnings]))
@@ -5070,7 +5427,11 @@ def _render_generated_config_preview(payload: dict[str, Any], doc_name: str) -> 
         df_from_payload,
         use_container_width=True,
         hide_index=True,
-        disabled=["题号", "评分单元", "评分点", "题型", "知识点"],
+        column_order=[
+            "题号", "评分单元", "评分点", "题型", "分值", "标准答案", "等价答案预案",
+            "作答匹配规则", "证据要求/关键步骤", "扣分规则", "知识点", "需要单独写答", "无过程结论分上限", "未写答扣分说明",
+        ],
+        disabled=["题号", "评分单元", "评分点", "题型", "作答匹配规则", "知识点"],
         column_config={
             "题号": st.column_config.TextColumn("题号", help="大题号"),
             "评分单元": st.column_config.TextColumn("评分单元", help="小问/评分单元ID"),
@@ -5154,6 +5515,11 @@ def _render_generated_config_preview(payload: dict[str, Any], doc_name: str) -> 
         health_warnings.append("AI 明确提示选择题/填空题未进入详细评分标准，不能直接保存")
     if any(token in warning_text for token in ["placeholder added", "unmergeable single-question schema"]):
         health_warnings.append("存在单题解析占位或不可合并结构，不能直接保存")
+    health_warnings.extend(
+        str(warning).replace("[质量检查-阻断] ", "", 1)
+        for warning in warnings
+        if str(warning).startswith("[质量检查-阻断]")
+    )
 
     answer_key = payload.get("answer_key", {})
     answer_questions = answer_key.get("questions", []) if isinstance(answer_key, dict) else []
@@ -5188,8 +5554,15 @@ def _render_generated_config_preview(payload: dict[str, Any], doc_name: str) -> 
     return True
 
 
-def _render_active_session_rubric_editor(db: DBManager, session_id: int, rubric_path: Path, answer_key_path: Path, active_payload: dict[str, Any]) -> None:
-    state_key = f"active_session_payload_{session_id}"
+def _render_active_session_rubric_editor(
+    db: DBManager,
+    session_id: int | None,
+    rubric_path: Path,
+    answer_key_path: Path,
+    active_payload: dict[str, Any],
+) -> None:
+    editor_id = str(session_id) if session_id is not None else rubric_path.name
+    state_key = f"active_session_payload_{editor_id}"
     if state_key not in st.session_state:
         st.session_state[state_key] = json.loads(json.dumps(active_payload, ensure_ascii=False))
 
@@ -5210,7 +5583,11 @@ def _render_active_session_rubric_editor(db: DBManager, session_id: int, rubric_
         df_from_payload,
         use_container_width=True,
         hide_index=True,
-        disabled=["题号", "评分单元", "评分点", "题型", "知识点"],
+        column_order=[
+            "题号", "评分单元", "评分点", "题型", "分值", "标准答案", "等价答案预案",
+            "作答匹配规则", "证据要求/关键步骤", "扣分规则", "知识点", "需要单独写答", "无过程结论分上限", "未写答扣分说明",
+        ],
+        disabled=["题号", "评分单元", "评分点", "题型", "作答匹配规则", "知识点"],
         column_config={
             "题号": st.column_config.TextColumn("题号", help="大题号"),
             "评分单元": st.column_config.TextColumn("评分单元", help="小问/评分单元ID"),
@@ -5230,6 +5607,14 @@ def _render_active_session_rubric_editor(db: DBManager, session_id: int, rubric_
             "等价答案预案": st.column_config.TextColumn(
                 "等价答案预案",
                 help="等价答案，多个用分号分隔。仅第一行编辑有效。",
+            ),
+            "作答匹配规则": st.column_config.TextColumn(
+                "作答匹配规则",
+                help="例如多答案填空必须写全、顺序不限、少写错写多写均不得分。",
+            ),
+            "作答匹配规则": st.column_config.TextColumn(
+                "作答匹配规则",
+                help="例如多答案填空必须写全、顺序不限、少写错写多写均不得分。",
             ),
             "证据要求/关键步骤": st.column_config.TextColumn(
                 "证据要求/关键步骤",
@@ -5256,7 +5641,7 @@ def _render_active_session_rubric_editor(db: DBManager, session_id: int, rubric_
                 help="未写答扣分规则描述（仅第一行编辑有效）。",
             ),
         },
-        key=f"active_rubric_editor_{session_id}"
+        key=f"active_rubric_editor_{editor_id}"
     )
 
     total_score = float(edited_df["分值"].sum())
@@ -5265,14 +5650,14 @@ def _render_active_session_rubric_editor(db: DBManager, session_id: int, rubric_
     if has_changes:
         if abs(total_score - 100.0) > 1e-4:
             st.error(f"⚠️ 当前表格总分为 {total_score:.1f} 分，必须调整至 100 分才能保存修改。")
-            st.button("确认修改评分标准", key=f"save_active_rubric_btn_{session_id}", disabled=True)
+            st.button("确认修改评分标准", key=f"save_active_rubric_btn_{editor_id}", disabled=True)
         else:
-            if st.button("确认修改评分标准", key=f"save_active_rubric_btn_{session_id}", type="primary"):
+            if st.button("确认修改评分标准", key=f"save_active_rubric_btn_{editor_id}", type="primary"):
                 try:
                     next_payload = _apply_unified_table_to_payload(payload, edited_df)
                     _write_compact_json_file(rubric_path, next_payload["rubric"])
                     _write_compact_json_file(answer_key_path, next_payload["answer_key"])
-                    if hasattr(db, "_rubric_map_cache"):
+                    if session_id is not None and hasattr(db, "_rubric_map_cache"):
                         db._rubric_map_cache.pop(session_id, None)
                     st.session_state[state_key] = next_payload
                     st.success("评分标准已成功更新并写入本地磁盘，缓存已清空，即时生效！")
@@ -6024,7 +6409,11 @@ def _apply_editor_rows_to_template_config(config: dict[str, Any], edited: pd.Dat
         ]
         _rescale_question_scores(question, old_score=old_score, new_score=new_score)
 
-    enforce_integer_scores_by_type(questions, target_total=100, max_question_score=12)
+    enforce_integer_scores_by_type(
+        questions,
+        target_total=100,
+        max_question_score=MAX_QUESTION_SCORE,
+    )
     return next_config
 
 
@@ -8516,6 +8905,7 @@ def _render_sidebar_data_transfer() -> None:
 def main() -> None:
     render_header()
     db = ensure_env_ready()
+    restore_persistent_config_state(st.session_state, db)
     analytics = AnalyticsService(db)
 
     llm_settings = build_llm_settings_from_sidebar()

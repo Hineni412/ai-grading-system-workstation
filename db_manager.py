@@ -134,6 +134,15 @@ class DBManager:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    setting_key TEXT PRIMARY KEY,
+                    setting_value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+                )
+                """
+            )
             self._ensure_column(conn, "grading_sessions", "is_deleted", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "grading_sessions", "deleted_at", "TEXT")
             self._ensure_column(conn, "grading_sessions", "updated_at", "TEXT")
@@ -493,6 +502,28 @@ class DBManager:
         return None
 
     # ---------- Session ----------
+    def set_app_setting(self, key: str, value: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO app_settings (setting_key, setting_value, updated_at)
+                VALUES (?, ?, datetime('now','localtime'))
+                ON CONFLICT(setting_key) DO UPDATE SET
+                    setting_value = excluded.setting_value,
+                    updated_at = datetime('now','localtime')
+                """,
+                (str(key), str(value)),
+            )
+            conn.commit()
+
+    def get_app_setting(self, key: str, default: str | None = None) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT setting_value FROM app_settings WHERE setting_key = ?",
+                (str(key),),
+            ).fetchone()
+        return str(row["setting_value"]) if row else default
+
     def create_grading_session(self, session_name: str, rubric_path: str, answer_key_path: str) -> int:
         with self._connect() as conn:
             cursor = conn.cursor()
