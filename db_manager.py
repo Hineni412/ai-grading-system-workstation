@@ -1350,6 +1350,54 @@ class DBManager:
             )
             conn.commit()
 
+    def update_session_detail_scores(
+        self,
+        session_id: int,
+        adjustments: list[dict[str, Any]],
+    ) -> dict[str, int]:
+        if not adjustments:
+            return {"updated_details": 0, "updated_results": 0}
+
+        detail_ids = [int(item["detail_id"]) for item in adjustments]
+        if len(detail_ids) != len(set(detail_ids)):
+            raise ValueError("同一评分明细不能重复调整。")
+
+        placeholders = ",".join(["?"] * len(detail_ids))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT sd.id AS detail_id, sd.result_id
+                FROM session_details sd
+                JOIN session_results sr ON sr.id = sd.result_id
+                WHERE sr.session_id = ? AND sd.id IN ({placeholders})
+                """,
+                [int(session_id), *detail_ids],
+            ).fetchall()
+            result_by_detail = {int(row["detail_id"]): int(row["result_id"]) for row in rows}
+            missing_ids = [detail_id for detail_id in detail_ids if detail_id not in result_by_detail]
+            if missing_ids:
+                raise ValueError(f"评分明细不属于当前考试：{missing_ids}")
+
+            for item in adjustments:
+                conn.execute(
+                    "UPDATE session_details SET score_awarded = ? WHERE id = ?",
+                    (float(item["score_awarded"]), int(item["detail_id"])),
+                )
+
+            result_ids = sorted(set(result_by_detail.values()))
+            for result_id in result_ids:
+                total = conn.execute(
+                    "SELECT COALESCE(SUM(score_awarded),0) AS s FROM session_details WHERE result_id = ?",
+                    (result_id,),
+                ).fetchone()["s"]
+                conn.execute(
+                    "UPDATE session_results SET student_score = ? WHERE id = ?",
+                    (float(total), result_id),
+                )
+            conn.commit()
+
+        return {"updated_details": len(adjustments), "updated_results": len(result_ids)}
+
     def upsert_annotated_result(self, session_id: int, result_id: int, annotated_front_path: str, annotated_back_path: str) -> None:
         with self._connect() as conn:
             existing = conn.execute("SELECT id FROM annotated_results WHERE result_id = ?", (result_id,)).fetchone()

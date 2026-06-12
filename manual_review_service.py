@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -134,6 +136,74 @@ class ManualReviewService:
         paths = self.render_result_annotation(result_id, highlight_qids=highlight_qids)
         return {"updated_details": changed, "annotated_paths": paths}
 
+    def apply_batch_score_adjustments(
+        self,
+        session_id: int,
+        adjustments: list[dict[str, Any]],
+    ) -> dict[str, int]:
+        if not adjustments:
+            return {"updated_details": 0, "updated_results": 0}
+
+        score_map = self._load_max_score_map(session_id)
+        results = self.db.get_session_results(session_id)
+        details_by_result: dict[int, list[dict[str, Any]]] = {}
+        detail_lookup: dict[int, dict[str, Any]] = {}
+        for result in results:
+            result_id = int(result["result_id"])
+            details = self.db.get_result_details(result_id)
+            details_by_result[result_id] = details
+            for detail in details:
+                detail_lookup[int(detail["detail_id"])] = {**detail, "result_id": result_id}
+
+        proposed_scores: dict[int, float] = {}
+        affected_results: set[int] = set()
+        affected_buckets_by_result: dict[int, set[str]] = {}
+        normalized_adjustments: list[dict[str, Any]] = []
+        seen_detail_ids: set[int] = set()
+        for adjustment in adjustments:
+            detail_id = int(adjustment.get("detail_id") or 0)
+            if detail_id in seen_detail_ids:
+                raise ValueError("同一评分明细不能重复调整。")
+            seen_detail_ids.add(detail_id)
+
+            detail = detail_lookup.get(detail_id)
+            if detail is None:
+                raise ValueError(f"评分明细 {detail_id} 不属于当前考试。")
+
+            score = float(adjustment.get("score_awarded"))
+            if not math.isfinite(score) or score < 0:
+                raise ValueError(f"{detail.get('question_id')} 的得分必须是非负有限数字。")
+
+            result_id = int(detail["result_id"])
+            qid = str(detail.get("question_id") or "").strip()
+            bucket_id = _score_bucket_id(qid, score_map)
+            if bucket_id is None:
+                raise ValueError(f"{qid} 未找到对应满分，无法安全调整。")
+
+            proposed_scores[detail_id] = score
+            affected_results.add(result_id)
+            affected_buckets_by_result.setdefault(result_id, set()).add(bucket_id)
+            normalized_adjustments.append({"detail_id": detail_id, "score_awarded": score})
+
+        for result_id in affected_results:
+            bucket_scores: dict[str, float] = {}
+            for detail in details_by_result[result_id]:
+                detail_id = int(detail["detail_id"])
+                qid = str(detail.get("question_id") or "").strip()
+                bucket_id = _score_bucket_id(qid, score_map)
+                if bucket_id not in affected_buckets_by_result[result_id]:
+                    continue
+                score = proposed_scores.get(detail_id, float(detail.get("score_awarded") or 0))
+                bucket_scores[bucket_id] = bucket_scores.get(bucket_id, 0.0) + score
+
+            for bucket_id, score_sum in bucket_scores.items():
+                max_score = float(score_map[bucket_id])
+                if score_sum > max_score + 1e-6:
+                    raise ValueError(f"{bucket_id} 得分 {score_sum:g} 超过满分 {max_score:g}。")
+
+        self.db.create_backup("manual_score_adjustment")
+        return self.db.update_session_detail_scores(session_id, normalized_adjustments)
+
     def _load_max_score_map(self, session_id: int) -> dict[str, float]:
         session = self.db.get_grading_session(session_id)
         if not session:
@@ -181,3 +251,14 @@ class ManualReviewService:
     def _resolve_stored_file_path(self, path_value: object) -> Path:
         data_root = self.db.db_path.parent.parent if self.db.db_path.parent.name == "databases" else None
         return resolve_stored_file_path(path_value, data_root=data_root)
+
+
+def _score_bucket_id(question_id: str, score_map: dict[str, float]) -> str | None:
+    qid = str(question_id or "").strip()
+    if qid in score_map:
+        return qid
+    match = re.match(r"^(Q\d+)(?:\(|（|-)", qid)
+    parent_id = match.group(1) if match else None
+    if parent_id and parent_id in score_map:
+        return parent_id
+    return None

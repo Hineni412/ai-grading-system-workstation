@@ -4518,36 +4518,17 @@ def render_export_tab(selected_session_id: int | None) -> None:
         st.warning("请先在左侧选择考试批改")
         return
 
-    st.caption("先筛选班级查看各题得分率和失分学生；点击题目行后，下方只展示对应学生的作答框裁剪图。")
-    export_col, originals_col = st.columns([1, 1])
-    with export_col:
-        if st.button("导出考试批改 Excel 报表", type="primary", use_container_width=True):
-            try:
-                reporter = ReportGenerator(db_path=DB_PATH, reports_dir=APP_DATA_DIR / "reports")
-                output_path = reporter.export_session(selected_session_id)
-                st.success(f"导出成功：{output_path}")
-            except Exception as exc:  # noqa: BLE001
-                st.error(f"导出失败：{exc}")
-    with originals_col:
-        if st.button("导出全体考生批注原卷 PDF", use_container_width=True):
-            try:
-                exporter = OriginalPaperExporter(DBManager(DB_PATH), APP_DATA_DIR / "reports")
-                pdf_path = exporter.export_session_originals(selected_session_id)
-                st.success(f"原卷 PDF 导出成功：{pdf_path}")
-                st.download_button(
-                    "下载批注原卷 PDF",
-                    data=pdf_path.read_bytes(),
-                    file_name=pdf_path.name,
-                    mime="application/pdf",
-                    use_container_width=True,
-                )
-            except Exception as exc:  # noqa: BLE001
-                st.error(f"原卷 PDF 导出失败：{exc}")
+    _reset_report_score_input_state(selected_session_id)
+    flash_key = f"report_score_review_flash_{selected_session_id}"
+    flash_message = st.session_state.pop(flash_key, None)
+    if flash_message:
+        st.success(str(flash_message))
 
-    st.divider()
+    st.caption("先筛选班级查看各题得分率；点击题目行后，可核查全体学生的作答框并直接调整分数。")
     analysis = _build_session_question_analysis(DBManager(DB_PATH), selected_session_id)
     if not analysis["rows"]:
         st.info("当前考试暂无可分析的题目明细。")
+        _render_report_export_controls(selected_session_id)
         return
 
     class_options = ["全部班级"] + analysis["classes"]
@@ -4561,6 +4542,7 @@ def render_export_tab(selected_session_id: int | None) -> None:
         ]
     if not rows:
         st.info("该班级暂无批改明细。")
+        _render_report_export_controls(selected_session_id)
         return
 
     rows = sorted(rows, key=lambda item: (float(item.get("班级得分率") or 0), _question_sort_key(str(item.get("题号") or ""))))
@@ -4574,45 +4556,323 @@ def render_export_tab(selected_session_id: int | None) -> None:
         selected_row_idx = 0
 
     selected_row = rows[int(selected_row_idx)]
-    wrong_items = selected_row.get("_wrong_items", [])
-    st.markdown(f"### {selected_row['班级']} · {selected_row['题号']} 作答框索引")
-    if not wrong_items:
-        st.success("该题在当前筛选班级内无人失分。")
-    else:
-        st.caption("仅展示题框裁剪内容，不展开完整卷面。")
-        for row_start in range(0, len(wrong_items), 3):
-            cols = st.columns(3)
-            for col, item in zip(cols, wrong_items[row_start:row_start + 3]):
-                with col:
-                    deduction = float(item.get("max_score") or 0) - float(item.get("score_awarded") or 0)
-                    st.markdown(
-                        f"**{item.get('student_name')}** · {item.get('question_id')} · 扣 {deduction:g} 分"
-                    )
-                    reason = str(item.get("deduction_reason") or "").strip()
-                    if reason:
-                        st.caption(reason[:90] + ("..." if len(reason) > 90 else ""))
-                    crop = _build_answer_region_crop_preview(DBManager(DB_PATH), item)
-                    if crop is not None:
-                        st.image(crop, use_container_width=True)
-                    else:
-                        st.info("未找到该题框映射，无法裁剪。")
+    selected_qid = str(selected_row["题号"])
+    review_rows = _build_report_score_review_rows(
+        DBManager(DB_PATH),
+        selected_session_id,
+        selected_class,
+        selected_qid,
+    )
+    _render_report_score_review_grid(selected_session_id, selected_class, selected_qid, review_rows)
+    _render_report_export_controls(selected_session_id)
 
-    correct_items = selected_row.get("_correct_items", [])
-    if correct_items:
-        with st.expander("✅ 查看满分试卷图框 (核查是否存在误判)", expanded=False):
-            st.caption("仅展示该题得满分的学生题框")
-            for row_start in range(0, len(correct_items), 3):
-                cols = st.columns(3)
-                for col, item in zip(cols, correct_items[row_start:row_start + 3]):
-                    with col:
-                        st.markdown(
-                            f"**{item.get('student_name')}** · {item.get('question_id')} · 满分 {float(item.get('max_score') or 0):g} 分"
-                        )
-                        crop = _build_answer_region_crop_preview(DBManager(DB_PATH), item)
-                        if crop is not None:
-                            st.image(crop, use_container_width=True)
-                        else:
-                            st.info("未找到该题框映射，无法裁剪。")
+
+def _build_report_score_review_rows(
+    db: DBManager,
+    session_id: int,
+    selected_class: str,
+    selected_qid: str,
+) -> list[dict[str, Any]]:
+    session = db.get_grading_session(session_id)
+    score_map, _type_map = _load_session_score_type_maps(session)
+    selected_max_score = score_map.get(selected_qid)
+    selected_parent_id = _question_parent_id(selected_qid)
+    rows: list[dict[str, Any]] = []
+    for result in db.get_session_results(session_id):
+        class_name = str(result.get("class_name") or "未分班")
+        if selected_class != "全部班级" and class_name != selected_class:
+            continue
+        result_id = int(result["result_id"])
+        details = db.get_result_details(result_id)
+        direct_details: list[dict[str, Any]] = []
+        for detail in details:
+            raw_qid = str(detail.get("question_id") or "").strip()
+            canonical_qid = _canonical_question_id_for_score(raw_qid, score_map)
+            if canonical_qid != selected_qid:
+                continue
+            direct_details.append(detail)
+            max_score = score_map.get(raw_qid)
+            if max_score is None:
+                max_score = score_map.get(canonical_qid)
+            rows.append(
+                {
+                    **result,
+                    **detail,
+                    "session_id": session_id,
+                    "question_id": raw_qid,
+                    "canonical_question_id": canonical_qid,
+                    "max_score": float(max_score) if max_score is not None else None,
+                    "source_question_id": raw_qid,
+                    "source_score_awarded": float(detail.get("score_awarded") or 0),
+                    "is_inferred_full_score": False,
+                }
+            )
+        if direct_details or selected_parent_id is None or selected_max_score is None:
+            continue
+
+        parent_detail = next(
+            (
+                detail
+                for detail in details
+                if str(detail.get("question_id") or "").strip() == selected_parent_id
+            ),
+            None,
+        )
+        parent_max_score = score_map.get(selected_parent_id)
+        if parent_detail is None or parent_max_score is None:
+            continue
+        parent_score = float(parent_detail.get("score_awarded") or 0)
+        if parent_score < float(parent_max_score) - 1e-6:
+            continue
+        rows.append(
+            {
+                **result,
+                **parent_detail,
+                "session_id": session_id,
+                "question_id": selected_qid,
+                "canonical_question_id": selected_qid,
+                "score_awarded": float(selected_max_score),
+                "max_score": float(selected_max_score),
+                "source_question_id": selected_parent_id,
+                "source_score_awarded": parent_score,
+                "is_inferred_full_score": True,
+            }
+        )
+    return sorted(
+        rows,
+        key=lambda item: (
+            str(item.get("class_name") or ""),
+            str(item.get("student_code") or ""),
+            str(item.get("student_name") or ""),
+            _question_sort_key(str(item.get("question_id") or "")),
+        ),
+    )
+
+
+def _render_report_score_review_grid(
+    session_id: int,
+    selected_class: str,
+    selected_qid: str,
+    rows: list[dict[str, Any]],
+) -> None:
+    st.markdown(f"### {selected_class} · {selected_qid} 全员评分复核")
+    if not rows:
+        st.info("当前筛选范围没有可调整的评分明细。")
+        return
+
+    st.caption("分数调整会保存到批改结果并自动重算学生总分。仅展示题框裁剪内容，不展开完整卷面。")
+    deducted_rows = [item for item in rows if not _report_row_is_full_score(item)]
+    full_score_rows = [item for item in rows if _report_row_is_full_score(item)]
+    form_key = f"report_score_review_form_{session_id}_{selected_class}_{selected_qid}"
+    with st.form(key=form_key):
+        if deducted_rows:
+            _render_report_score_cards(session_id, deducted_rows)
+        else:
+            st.success("当前题目没有已记录的失分学生。")
+
+        if full_score_rows:
+            with st.expander(f"查看满分同学复核（{len(full_score_rows)} 人）", expanded=False):
+                _render_report_score_cards(session_id, full_score_rows)
+
+        submitted = st.form_submit_button("保存本题全部评分调整", type="primary", use_container_width=True)
+
+    if not submitted:
+        return
+
+    try:
+        adjustments: list[dict[str, Any]] = []
+        for item in rows:
+            current_score = float(item.get("score_awarded") or 0)
+            input_key = _report_score_input_key(session_id, item)
+            new_score = _optional_float(st.session_state.get(input_key))
+            if new_score is None:
+                raise ValueError(f"{item.get('student_name')} · {item.get('question_id')} 的得分不是有效数字。")
+            if abs(new_score - current_score) > 1e-6:
+                adjustments.append(
+                    {
+                        "detail_id": int(item["detail_id"]),
+                        "score_awarded": _report_persisted_score(item, new_score),
+                    }
+                )
+
+        if not adjustments:
+            st.info("没有检测到分数变化。")
+            return
+
+        result = ManualReviewService(DBManager(DB_PATH), ANNOTATED_DIR).apply_batch_score_adjustments(
+            session_id,
+            adjustments,
+        )
+        _clear_report_export_cache(session_id)
+        _mark_report_score_inputs_for_reset(session_id)
+        st.session_state[f"report_score_review_flash_{session_id}"] = (
+            f"已更新 {result['updated_details']} 项评分，并重算 {result['updated_results']} 名学生总分。"
+        )
+        st.rerun()
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"评分调整保存失败：{exc}")
+
+
+def _render_report_score_cards(session_id: int, rows: list[dict[str, Any]]) -> None:
+    for row_start in range(0, len(rows), 3):
+        cols = st.columns(3)
+        for col, item in zip(cols, rows[row_start:row_start + 3]):
+            with col:
+                current_score = float(item.get("score_awarded") or 0)
+                max_score = item.get("max_score")
+                max_score_text = f"{float(max_score):g}" if max_score is not None else "未知"
+                st.markdown(
+                    f"**[{item.get('student_code')}] {item.get('student_name')}**  \n"
+                    f"{item.get('question_id')}"
+                )
+                score_col, max_col = st.columns([2, 1])
+                with score_col:
+                    st.text_input(
+                        "得分",
+                        value=f"{current_score:g}",
+                        key=_report_score_input_key(session_id, item),
+                        label_visibility="collapsed",
+                    )
+                with max_col:
+                    st.markdown(f"/ {max_score_text}")
+
+                reason = str(item.get("deduction_reason") or "").strip()
+                if reason:
+                    st.caption(_short_text(reason, 90))
+                crop = _build_answer_region_crop_preview(DBManager(DB_PATH), item)
+                if crop is not None:
+                    st.image(crop, use_container_width=True)
+                else:
+                    st.info("未找到该题框映射，无法裁剪。")
+
+
+def _report_row_is_full_score(item: dict[str, Any]) -> bool:
+    max_score = item.get("max_score")
+    if max_score is None:
+        return False
+    return float(item.get("score_awarded") or 0) >= float(max_score) - 1e-6
+
+
+def _report_persisted_score(item: dict[str, Any], displayed_score: float) -> float:
+    if not item.get("is_inferred_full_score"):
+        return float(displayed_score)
+    source_score = float(item.get("source_score_awarded") or 0)
+    displayed_current = float(item.get("score_awarded") or 0)
+    return source_score - (displayed_current - float(displayed_score))
+
+
+def _report_score_input_key(session_id: int, item: dict[str, Any]) -> str:
+    question_id = str(item.get("question_id") or "").strip()
+    return f"report_score_input_{session_id}_{int(item['result_id'])}_{int(item['detail_id'])}_{question_id}"
+
+
+def _mark_report_score_inputs_for_reset(session_id: int) -> None:
+    st.session_state[f"report_score_inputs_reset_{session_id}"] = True
+
+
+def _reset_report_score_input_state(session_id: int) -> None:
+    marker_key = f"report_score_inputs_reset_{session_id}"
+    if not st.session_state.pop(marker_key, False):
+        return
+    prefix = f"report_score_input_{session_id}_"
+    for key in list(st.session_state.keys()):
+        if str(key).startswith(prefix):
+            st.session_state.pop(key, None)
+
+
+def _report_export_cache_key(session_id: int, export_type: str) -> str:
+    return f"report_export_cache_{session_id}_{export_type}"
+
+
+def _clear_report_export_cache(session_id: int) -> None:
+    for export_type in ("excel", "pdf"):
+        st.session_state.pop(_report_export_cache_key(session_id, export_type), None)
+
+
+def _report_score_revision(session_id: int) -> str:
+    db = DBManager(DB_PATH)
+    rows: list[list[Any]] = []
+    for result in db.get_session_results(session_id):
+        result_id = int(result["result_id"])
+        rows.append(["result", result_id, float(result.get("student_score") or 0)])
+        for detail in db.get_result_details(result_id):
+            rows.append(
+                [
+                    "detail",
+                    int(detail["detail_id"]),
+                    str(detail.get("question_id") or ""),
+                    float(detail.get("score_awarded") or 0),
+                ]
+            )
+    return json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+
+
+def _cached_report_export_path(session_id: int, export_type: str, score_revision: str) -> Path | None:
+    cache_key = _report_export_cache_key(session_id, export_type)
+    cached = st.session_state.get(cache_key)
+    if not isinstance(cached, dict) or cached.get("revision") != score_revision:
+        st.session_state.pop(cache_key, None)
+        return None
+    path_value = cached.get("path")
+    path = Path(str(path_value)) if path_value else None
+    if path is None or not path.exists():
+        st.session_state.pop(cache_key, None)
+        return None
+    return path
+
+
+def _render_report_export_controls(session_id: int) -> None:
+    st.divider()
+    st.markdown("### 导出最新成绩")
+    st.caption("生成文件时会重新读取当前已保存成绩。评分调整后，旧的下载缓存会自动清除。")
+    score_revision = _report_score_revision(session_id)
+    excel_col, pdf_col = st.columns(2)
+
+    with excel_col:
+        if st.button("生成 Excel 成绩报表", type="primary", use_container_width=True, key=f"generate_excel_{session_id}"):
+            try:
+                output_path = ReportGenerator(db_path=DB_PATH, reports_dir=APP_DATA_DIR / "reports").export_session(session_id)
+                st.session_state[_report_export_cache_key(session_id, "excel")] = {
+                    "path": str(output_path),
+                    "revision": score_revision,
+                }
+                st.success("已生成最新 Excel 成绩报表。")
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Excel 报表生成失败：{exc}")
+
+        excel_path = _cached_report_export_path(session_id, "excel", score_revision)
+        if excel_path is not None:
+            st.download_button(
+                "下载 Excel 成绩报表",
+                data=excel_path.read_bytes(),
+                file_name=excel_path.name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key=f"download_excel_{session_id}",
+            )
+
+    with pdf_col:
+        if st.button("生成全体考生批注原卷 PDF", use_container_width=True, key=f"generate_pdf_{session_id}"):
+            try:
+                pdf_path = OriginalPaperExporter(DBManager(DB_PATH), APP_DATA_DIR / "reports").export_session_originals(session_id)
+                st.session_state[_report_export_cache_key(session_id, "pdf")] = {
+                    "path": str(pdf_path),
+                    "revision": score_revision,
+                }
+                st.success("已生成最新批注原卷 PDF。")
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"批注原卷 PDF 生成失败：{exc}")
+
+        pdf_path = _cached_report_export_path(session_id, "pdf", score_revision)
+        if pdf_path is not None:
+            st.download_button(
+                "下载批注原卷 PDF",
+                data=pdf_path.read_bytes(),
+                file_name=pdf_path.name,
+                mime="application/pdf",
+                use_container_width=True,
+                key=f"download_pdf_{session_id}",
+            )
 
 
 def _render_selectable_question_matrix(display_df: pd.DataFrame, session_id: int) -> int | None:
