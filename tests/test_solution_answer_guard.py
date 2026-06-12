@@ -1,3 +1,4 @@
+import base64
 import json
 import tempfile
 import unittest
@@ -9,6 +10,8 @@ from solution_answer_guard import (
     classify_non_substantive_solution_answer,
     has_solution_process_evidence,
 )
+from scoring_prompt_rules import SHARED_GRADING_RULES
+from hybrid_batch_grading_service import MajorQuestionSpec, build_hybrid_major_prompt
 
 
 class _FakeLLMClient:
@@ -16,6 +19,44 @@ class _FakeLLMClient:
 
 
 class SolutionAnswerGuardTests(unittest.TestCase):
+    def test_shared_prompt_rules_distinguish_response_modes(self) -> None:
+        self.assertIn("short_answer_points", SHARED_GRADING_RULES)
+        self.assertIn("visual_construction", SHARED_GRADING_RULES)
+        self.assertIn("process_required", SHARED_GRADING_RULES)
+
+    def test_answer_images_are_sent_as_images_not_embedded_prompt_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            rubric_path = root / "rubric.json"
+            answer_path = root / "answer.json"
+            rubric_path.write_text(json.dumps({"questions": []}), encoding="utf-8")
+            encoded = base64.b64encode(b"perfect-answer-image").decode("ascii")
+            answer_path.write_text(
+                json.dumps({"questions": [{"question_id": "Q10", "answer_image_base64": encoded}]}),
+                encoding="utf-8",
+            )
+
+            grader = AIGrader(rubric_path, _FakeLLMClient(), answer_key_path=answer_path)
+
+            self.assertEqual(grader._reference_answer_images(), [("Q10", b"perfect-answer-image")])
+            self.assertNotIn(encoded, grader._build_system_prompt())
+            self.assertIn("Q10", grader._build_user_prompt("学生", reference_question_ids=["Q10"]))
+
+    def test_hybrid_prompt_omits_embedded_image_base64(self) -> None:
+        encoded = base64.b64encode(b"perfect-answer-image").decode("ascii")
+        spec = MajorQuestionSpec(
+            question_id="Q10",
+            detail_question_ids=["Q10"],
+            rubric={"question_id": "Q10", "parts": [{"part_id": "Q10", "response_mode": "visual_construction"}]},
+            answer_key={"question_id": "Q10", "answer_image_base64": encoded},
+            max_score=6,
+        )
+
+        prompt = build_hybrid_major_prompt(spec, {"items": []}, has_rubric_image=True)
+
+        self.assertNotIn(encoded, prompt)
+        self.assertIn("visual_construction", prompt)
+
     def test_stem_echo_with_checkmark_is_non_substantive(self) -> None:
         for observed in ("(3)是不是定值", "(3)是不是定值√", "⑶是不是定值勾"):
             self.assertEqual(
@@ -88,6 +129,59 @@ class SolutionAnswerGuardTests(unittest.TestCase):
         self.assertEqual(adjusted, 1.0)
         self.assertEqual(category, "逻辑断裂")
         self.assertEqual(summary, "缺少有效过程")
+
+    def test_direct_answer_part_inside_comprehensive_question_is_not_process_capped(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            rubric_path = root / "rubric.json"
+            rubric_path.write_text(
+                json.dumps(
+                    {
+                        "total_score": 4,
+                        "questions": [
+                            {
+                                "question_id": "Q11",
+                                "question_type": "comprehensive",
+                                "max_score": 4,
+                                "answer_only_max_score": 1,
+                                "parts": [
+                                    {
+                                        "part_id": "Q11(1)",
+                                        "part_score": 4,
+                                        "response_mode": "short_answer_points",
+                                        "answer_only_max_score": 4,
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            grader = AIGrader(rubric_path, _FakeLLMClient())
+            result = grader._validate_and_convert(
+                {
+                    "student_name": "余天策",
+                    "total_score": 4,
+                    "student_score": 4,
+                    "needs_human_review": False,
+                    "grading_details": [
+                        {
+                            "question_id": "Q11(1)",
+                            "observed_answer": "72°，54°",
+                            "score_awarded": 4,
+                            "deduction_reason": "",
+                            "knowledge_id": "K1",
+                            "knowledge_ids": ["K1"],
+                        }
+                    ],
+                },
+                expected_student_name="余天策",
+            )
+
+            self.assertEqual(result.student_score, 4)
+            self.assertEqual(result.grading_details[0].score_awarded, 4)
 
     def test_full_paper_grading_extracts_aligned_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

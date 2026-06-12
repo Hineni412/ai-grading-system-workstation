@@ -136,6 +136,61 @@ class LLMClient:
             extra_kwargs=extra_kwargs,
         )
 
+    def json_from_text_once(
+        self,
+        prompt: str,
+        model: str | None = None,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Make exactly one model request and parse JSON locally without AI repair."""
+        strict_kwargs = dict(extra_kwargs or {})
+        strict_kwargs["omit_token_limit"] = True
+        completion = self._create_chat_completion(
+            self.config_client,
+            model=model or self.settings.config_model,
+            messages=[{"role": "user", "content": prompt}],
+            expect_json=False,
+            extra_kwargs=strict_kwargs,
+            allow_parameter_fallback=False,
+        )
+        return _parse_json_text(_extract_text_from_completion(completion))
+
+    def json_from_images_once(
+        self,
+        prompt: str,
+        image_blobs: list[bytes],
+        model: str | None = None,
+        system_prompt: str | None = None,
+        extra_kwargs: dict[str, Any] | None = None,
+        use_config_client: bool = False,
+    ) -> dict[str, Any]:
+        """Make exactly one visual model request and parse JSON locally without AI repair."""
+        active_client = self.config_client if use_config_client else self.client
+        default_model = self.settings.config_model if use_config_client else self.settings.grading_model
+        strict_kwargs = dict(extra_kwargs or {})
+        strict_kwargs["omit_token_limit"] = True
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for blob in image_blobs:
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": _to_data_url(blob)},
+                }
+            )
+        messages: list[dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": content})
+        completion = self._create_chat_completion(
+            active_client,
+            model=model or default_model,
+            messages=messages,
+            expect_json=False,
+            extra_kwargs=strict_kwargs,
+            allow_parameter_fallback=False,
+        )
+        return _parse_json_text(_extract_text_from_completion(completion))
+
     def _parse_or_repair_json(
         self,
         text: str,
@@ -201,7 +256,17 @@ class LLMClient:
             except ValueError as repaired_error:
                 raise ValueError(f"{first_error}\nJSON 修复重试仍失败：{repaired_error}") from repaired_error
 
-    def _create_chat_completion(self, client: OpenAI, model: str, messages: list[dict[str, Any]], expect_json: bool, usage_callback = None, extra_kwargs: dict[str, Any] | None = None) -> Any:
+    def _create_chat_completion(
+        self,
+        client: OpenAI,
+        model: str,
+        messages: list[dict[str, Any]],
+        expect_json: bool,
+        usage_callback = None,
+        extra_kwargs: dict[str, Any] | None = None,
+        *,
+        allow_parameter_fallback: bool = True,
+    ) -> Any:
         kwargs: dict[str, Any] = {
             "model": model,
             "temperature": 0,
@@ -234,6 +299,8 @@ class LLMClient:
                 except: pass
             return res
         except Exception as exc:
+            if not allow_parameter_fallback:
+                raise
             if not _is_parameter_fallback_error(exc):
                 raise
             if "max_tokens" in kwargs:

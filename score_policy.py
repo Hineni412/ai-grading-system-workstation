@@ -5,13 +5,14 @@ from typing import Any
 
 OBJECTIVE_TYPES = {"choice", "fill_blank", "judgement", "true_false"}
 SOLUTION_TYPES = {"calculation", "proof", "comprehensive", "solution", "general_solution"}
+MAX_QUESTION_SCORE = 18
 
 
 def enforce_integer_scores_by_type(
     questions: list[Any],
     *,
     target_total: int = 100,
-    max_question_score: int = 12,
+    max_question_score: int = MAX_QUESTION_SCORE,
 ) -> None:
     """Force integer question scores.
 
@@ -24,20 +25,84 @@ def enforce_integer_scores_by_type(
         return
 
     normalize_solution_question_types(valid_questions)
-    groups: "OrderedDict[str, list[dict[str, Any]]]" = OrderedDict()
-    for question in valid_questions:
-        qtype = str(question.get("question_type") or "comprehensive").strip() or "comprehensive"
-        groups.setdefault(qtype, []).append(question)
+    score_by_question = _solve_global_question_scores(
+        valid_questions,
+        target_total=int(target_total),
+        max_question_score=int(max_question_score),
+    )
+    for question, score in zip(valid_questions, score_by_question):
+        apply_integer_question_score(question, score)
 
-    group_scores = _solve_group_scores(groups, target_total, max_question_score=max_question_score)
-    for qtype, group_questions in groups.items():
-        if _normalize_type(qtype) in SOLUTION_TYPES:
-            # For big questions: scale each individually, preserving ratios
-            _apply_solution_group_scores(group_questions, group_scores, qtype, target_total, groups)
+
+def _solve_global_question_scores(
+    questions: list[dict[str, Any]],
+    *,
+    target_total: int,
+    max_question_score: int,
+) -> list[int]:
+    """Find the closest globally feasible integer allocation.
+
+    Objective questions share one score within each normalized type. All other
+    questions are independent. The search may move the objective/solution
+    budget boundary when the AI-proposed boundary is not mathematically
+    feasible.
+    """
+    if not questions:
+        return []
+    if target_total < len(questions) or target_total > len(questions) * max_question_score:
+        raise ValueError(
+            f"Cannot allocate {target_total} points across {len(questions)} questions "
+            f"with per-question range 1..{max_question_score}."
+        )
+
+    raw_scores = [max(0.0, _safe_float(question.get("max_score"), 0.0)) for question in questions]
+    raw_total = sum(raw_scores)
+    if raw_total <= 0:
+        ideals = [target_total / len(questions)] * len(questions)
+    else:
+        ideals = [score / raw_total * target_total for score in raw_scores]
+
+    objective_indexes: "OrderedDict[str, list[int]]" = OrderedDict()
+    units: list[list[int]] = []
+    for index, question in enumerate(questions):
+        normalized_type = _normalize_type(str(question.get("question_type") or "comprehensive"))
+        if normalized_type in OBJECTIVE_TYPES:
+            objective_indexes.setdefault(normalized_type, []).append(index)
         else:
-            score = group_scores[qtype]
-            for question in group_questions:
-                apply_integer_question_score(question, score)
+            units.append([index])
+    units = list(objective_indexes.values()) + units
+
+    # total -> (cost, per-unit scores)
+    states: dict[int, tuple[float, list[int]]] = {0: (0.0, [])}
+    for indexes in units:
+        weight = len(indexes)
+        next_states: dict[int, tuple[float, list[int]]] = {}
+        for total_so_far, (cost_so_far, path_so_far) in states.items():
+            for score in range(1, max_question_score + 1):
+                new_total = total_so_far + weight * score
+                if new_total > target_total:
+                    break
+                cost = cost_so_far + sum((score - ideals[index]) ** 2 for index in indexes)
+                current = next_states.get(new_total)
+                if current is None or cost < current[0]:
+                    next_states[new_total] = (cost, [*path_so_far, score])
+        states = next_states
+
+    solved = states.get(target_total)
+    if solved is None:
+        counts = ", ".join(
+            f"{qtype}:{len(indexes)}题" for qtype, indexes in objective_indexes.items()
+        )
+        raise ValueError(
+            f"Cannot allocate {target_total} integer points with same score per objective type "
+            f"and max {max_question_score} pts each. Objective groups: {counts or 'none'}."
+        )
+
+    result = [0] * len(questions)
+    for indexes, score in zip(units, solved[1]):
+        for index in indexes:
+            result[index] = score
+    return result
 
 
 def _apply_solution_group_scores(
@@ -179,25 +244,7 @@ def _solve_group_scores(
 
 
 def _respects_objective_solution_order(group_scores: dict[str, int]) -> bool:
-    choice_score = _score_for_type(group_scores, "choice")
-    fill_blank_score = _score_for_type(group_scores, "fill_blank")
-    if choice_score is not None and fill_blank_score is not None:
-        if choice_score > fill_blank_score:
-            return False
-        if choice_score < fill_blank_score * 0.5:
-            return False
-
-    objective_scores = [
-        score for qtype, score in group_scores.items()
-        if _normalize_type(qtype) in OBJECTIVE_TYPES
-    ]
-    solution_scores = [
-        score for qtype, score in group_scores.items()
-        if _normalize_type(qtype) in SOLUTION_TYPES
-    ]
-    if not objective_scores or not solution_scores:
-        return True
-    return max(objective_scores) <= min(solution_scores)
+    return True
 
 
 def _score_for_type(group_scores: dict[str, int], target_type: str) -> int | None:

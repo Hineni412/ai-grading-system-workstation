@@ -105,6 +105,15 @@ def _standard_requires_complete_answer_set(standard_answer: str, tolerance: floa
     return len(keys) > 1
 
 
+def complete_answer_set_values(standard_answer: str, tolerance: float = 1e-6) -> list[str]:
+    """Return required values when the standard answer represents one complete set."""
+    parts = _split_answer_values(standard_answer)
+    if len(parts) <= 1:
+        return []
+    keys = {_answer_value_key(part, tolerance) for part in parts}
+    return parts if len(keys) > 1 else []
+
+
 def _match_complete_answer_set(student_answer: str, standard_answer: str, tolerance: float) -> dict | None:
     standard_parts = _split_answer_values(standard_answer)
     if len(standard_parts) <= 1:
