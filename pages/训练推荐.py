@@ -10,6 +10,7 @@ from db_manager import DBManager
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from path_manager import get_path_manager
 from question_bank.recommendation.practice_plan_service import PracticePlanService
+from question_bank.services.training_export_service import TrainingExportService
 from question_bank.services.training_task_service import TrainingTaskService
 
 
@@ -169,6 +170,188 @@ def _render_plan(plan: Mapping[str, Any]) -> None:
                 )
             for warning in variant.get("warnings") or []:
                 st.warning(str(warning))
+
+
+def _render_export_records(
+    exports: list[dict[str, Any]],
+    export_service: TrainingExportService,
+    *,
+    key_prefix: str,
+) -> None:
+    if not exports:
+        st.caption("尚无导出记录。")
+        return
+    st.dataframe(
+        [
+            {
+                "版本ID": item.get("variant_id") or "任务包",
+                "受众": item.get("audience"),
+                "格式": item.get("export_format"),
+                "状态": item.get("status"),
+                "重试次数": item.get("retry_count"),
+                "文件": item.get("output_path") or "",
+                "错误": item.get("error_message") or "",
+            }
+            for item in exports
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+    failed = [
+        item
+        for item in exports
+        if item.get("status") == "failed" and item.get("audience") != "bundle"
+    ]
+    for item in failed:
+        if st.button(
+            f"重试失败导出 #{item['id']}（{item['audience']} / {item['export_format']}）",
+            key=f"{key_prefix}_retry_{item['id']}",
+        ):
+            retried = export_service.retry_export(int(item["id"]))
+            if retried["status"] == "succeeded":
+                st.success(f"导出重试成功：{retried['output_path']}")
+            else:
+                st.error(f"导出仍失败：{retried['error_message']}")
+    if any(item.get("status") == "failed" and item.get("audience") == "bundle" for item in exports):
+        st.caption("完整任务包失败时，请修复单项失败后重新生成任务包。")
+
+
+def _render_task_detail(
+    task: Mapping[str, Any],
+    export_service: TrainingExportService,
+    *,
+    key_prefix: str,
+    allow_export: bool,
+) -> None:
+    columns = st.columns(4)
+    columns[0].metric("任务状态", task.get("status") or "")
+    columns[1].metric("训练版本", len(task.get("variants") or []))
+    columns[2].metric(
+        "题目数",
+        sum(len(variant.get("items") or []) for variant in task.get("variants") or []),
+    )
+    columns[3].metric(
+        "缺题数",
+        sum(
+            int(shortage.get("missing_count") or 0)
+            for variant in task.get("variants") or []
+            for shortage in variant.get("shortages") or []
+        ),
+    )
+    st.caption(
+        f"任务代码：{task.get('task_code')} | 创建时间：{task.get('created_at')} | "
+        f"考试范围：{task.get('exam_scope')}"
+    )
+    for warning in task.get("warnings") or []:
+        st.warning(str(warning))
+
+    for variant in task.get("variants") or []:
+        students = "、".join(
+            str(item.get("student_name_snapshot") or item.get("student_id"))
+            for item in variant.get("students") or []
+        )
+        with st.expander(
+            f"{variant.get('variant_key')} | {students or '未分配学生'} | "
+            f"{len(variant.get('items') or [])} 题"
+        ):
+            st.caption(f"分组依据：{variant.get('grouping_reason') or {}}")
+            if variant.get("shortages"):
+                st.warning(f"缺题记录：{variant['shortages']}")
+            if variant.get("warnings"):
+                st.warning("；".join(str(value) for value in variant["warnings"]))
+
+    if allow_export and task.get("status") != "cancelled":
+        export_format = st.segmented_control(
+            "导出格式",
+            ["docx", "markdown"],
+            default="docx",
+            key=f"{key_prefix}_format",
+        )
+        export_columns = st.columns(2)
+        if export_columns[0].button(
+            "导出学生卷和教师卷",
+            key=f"{key_prefix}_export_variants",
+            use_container_width=True,
+        ):
+            results = [
+                export_service.export_variant(
+                    int(task["id"]),
+                    int(variant["id"]),
+                    formats=[export_format or "docx"],
+                )
+                for variant in task.get("variants") or []
+            ]
+            succeeded = sum(
+                item["status"] == "succeeded"
+                for result in results
+                for item in result["exports"]
+            )
+            failed = sum(
+                item["status"] == "failed"
+                for result in results
+                for item in result["exports"]
+            )
+            st.success(f"导出完成：成功 {succeeded} 个，失败 {failed} 个。")
+        if export_columns[1].button(
+            "导出完整任务包",
+            key=f"{key_prefix}_export_bundle",
+            use_container_width=True,
+        ):
+            bundle = export_service.export_task_bundle(
+                int(task["id"]),
+                formats=[export_format or "docx"],
+            )
+            if bundle["export"]["status"] == "succeeded":
+                st.success(f"完整任务包已生成：{bundle['export']['output_path']}")
+            else:
+                st.error(f"完整任务包生成失败：{bundle['export']['error_message']}")
+
+    _render_export_records(
+        list(task.get("exports") or []),
+        export_service,
+        key_prefix=key_prefix,
+    )
+
+
+def _render_task_history(
+    task_service: TrainingTaskService,
+    export_service: TrainingExportService,
+) -> None:
+    st.subheader("历史训练任务")
+    st.info("训练结果回流尚未启用：当前只保存稳定任务题码和预留证据结构，不会自动更新学生掌握度。")
+    tasks = task_service.list_tasks()
+    if not tasks:
+        st.caption("尚无已保存训练任务。")
+        return
+    st.dataframe(
+        [
+            {
+                "任务代码": item.get("task_code"),
+                "创建时间": item.get("created_at"),
+                "状态": item.get("status"),
+                "学生范围": item.get("scope_snapshot"),
+                "考试范围": item.get("exam_scope"),
+            }
+            for item in tasks[:30]
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+    task_by_code = {str(item["task_code"]): item for item in tasks[:30]}
+    selected_code = st.selectbox(
+        "查看历史任务详情",
+        list(task_by_code),
+        key="training_history_selected_task",
+    )
+    selected = task_by_code.get(selected_code)
+    if selected:
+        detail = task_service.get_task(int(selected["id"]))
+        _render_task_detail(
+            detail,
+            export_service,
+            key_prefix=f"history_{detail['id']}",
+            allow_export=True,
+        )
 
 
 st.set_page_config(page_title="训练推荐", layout="wide")
@@ -440,7 +623,24 @@ elif plan is not None:
 
 saved_task = st.session_state.get(SAVED_TASK_KEY)
 if saved_task:
-    st.success(f"已保存任务：{saved_task['task_code']}。下一步可从该固定快照导出学生卷和教师卷。")
-    st.button("导出已保存任务（下一阶段接入）", disabled=True)
+    st.success(f"已保存任务：{saved_task['task_code']}。后续导出都从该固定快照生成。")
+    saved_task_service = TrainingTaskService(pm.qb_db_path)
+    saved_export_service = TrainingExportService(
+        pm.qb_db_path,
+        pm.outputs_dir / "training_tasks",
+    )
+    _render_task_detail(
+        saved_task_service.get_task(int(saved_task["id"])),
+        saved_export_service,
+        key_prefix=f"saved_{saved_task['id']}",
+        allow_export=True,
+    )
 else:
     st.info("请先保存训练任务，再执行导出。")
+
+if question_bank_available:
+    st.divider()
+    _render_task_history(
+        TrainingTaskService(pm.qb_db_path),
+        TrainingExportService(pm.qb_db_path, pm.outputs_dir / "training_tasks"),
+    )

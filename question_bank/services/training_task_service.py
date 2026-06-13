@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -160,8 +163,7 @@ class TrainingTaskService:
         return self._record_for_task(task_id)
 
     def get_task(self, task_id: int) -> dict[str, Any]:
-        initialize_database(self.db_path)
-        with connect(self.db_path) as conn:
+        with _read_connection(self.db_path) as conn:
             task = conn.execute(
                 "SELECT * FROM training_tasks WHERE id = ?",
                 (int(task_id),),
@@ -187,8 +189,7 @@ class TrainingTaskService:
             return result
 
     def list_tasks(self) -> list[dict[str, Any]]:
-        initialize_database(self.db_path)
-        with connect(self.db_path) as conn:
+        with _read_connection(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT * FROM training_tasks ORDER BY created_at DESC, id DESC"
             ).fetchall()
@@ -270,8 +271,7 @@ class TrainingTaskService:
             return int(cursor.lastrowid)
 
     def list_attempts(self, task_id: int) -> list[dict[str, Any]]:
-        initialize_database(self.db_path)
-        with connect(self.db_path) as conn:
+        with _read_connection(self.db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT a.*
@@ -426,6 +426,17 @@ def _optional_int(value: object) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+@contextmanager
+def _read_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
+    uri = f"{db_path.resolve().as_uri()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 __all__ = [
