@@ -42,6 +42,7 @@ class PracticePlanService:
         question_count: int = 10,
         stage_ratios: Mapping[str, object] | None = None,
         weights: Mapping[str, object] | None = None,
+        exclude_current_exam_originals: bool = True,
         include_historical_wrong_questions: bool = False,
         similarity_threshold: float = 0.92,
     ) -> dict[str, Any]:
@@ -84,6 +85,7 @@ class PracticePlanService:
                 question_count=question_count,
                 stage_ratios=stage_ratios,
                 weights=weights,
+                exclude_question_ids=None if exclude_current_exam_originals else set(),
                 include_historical_wrong_questions=include_historical_wrong_questions,
                 similarity_threshold=similarity_threshold,
             )
@@ -97,12 +99,27 @@ class PracticePlanService:
                     **generated,
                 }
             )
+        resolved_stage_ratios = dict(DEFAULT_STAGE_RATIOS if stage_ratios is None else stage_ratios)
+        resolved_weights = dict(DEFAULT_WEIGHTS if weights is None else weights)
         return {
             "scope_snapshot": dict(profile_set.get("scope") or {}),
             "exam_scope": exam_scope,
             "diagnosis_snapshot": dict(profile_set),
+            "generation_config": {
+                "question_count": int(question_count),
+                "stage_ratios": resolved_stage_ratios,
+                "weights": resolved_weights,
+                "exclude_current_exam_originals": bool(exclude_current_exam_originals),
+                "include_historical_wrong_questions": bool(include_historical_wrong_questions),
+                "similarity_threshold": float(similarity_threshold),
+            },
             "variant_mode": variant_mode,
             "variants": variants,
+            "warnings": _unique_text(
+                warning
+                for variant in variants
+                for warning in variant.get("warnings", [])
+            ),
             "ungrouped_students": ungrouped_students,
             "teacher_override": {
                 "allowed": True,
@@ -687,6 +704,15 @@ def _student_ids(profile: Mapping[str, Any]) -> list[str]:
             if isinstance(item, Mapping) and item.get("student_id") is not None
         ]
     return [str(profile["student_id"])] if profile.get("student_id") is not None else []
+
+
+def _unique_text(values: Iterable[object]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
 
 
 __all__ = ["PracticePlanService"]
