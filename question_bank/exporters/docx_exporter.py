@@ -14,6 +14,9 @@ from docx import Document
 from docx.shared import Inches
 
 from question_bank.services.question_frequency_service import QuestionFrequencyService, frequency_summary
+from question_bank.exporters.base_exporter import _resolve_image_path, apply_exporter_layout
+from question_bank.exporters.export_config import ExportConfig
+
 
 
 STAGE_ORDER = ["基础回补", "方法形成", "典型模型", "综合提升", "压轴迁移"]
@@ -60,6 +63,7 @@ def export_training_docx(
     student_id: str | None = None,
     class_id: str | None = None,
     use_real_name: bool = False,
+    config: ExportConfig | None = None,
 ) -> Path:
     """Export selected recommendations to a student or teacher DOCX file."""
 
@@ -81,6 +85,9 @@ def export_training_docx(
     )
 
     document = Document()
+    active_config = config or ExportConfig()
+    apply_exporter_layout(document, active_config)
+
     title_name = resolve_title_name(
         display_name=display_name,
         student_id=student_id,
@@ -90,6 +97,7 @@ def export_training_docx(
     document.add_heading(f"{title_name} 专项训练", level=0)
     document.add_paragraph("说明：根据最近一次考试薄弱点生成")
     document.add_paragraph(f"版本：{AUDIENCE_LABELS[audience]}")
+
 
     for stage, stage_items in _group_by_stage(items).items():
         document.add_heading(STAGE_TITLES.get(stage, stage), level=1)
@@ -197,12 +205,12 @@ def _add_question_to_docx(document: Document, item: ExportQuestion, *, include_t
 
 def _add_images(document: Document, image_paths: list[str]) -> None:
     for image_path in image_paths:
-        path = Path(image_path)
-        if not path.exists():
+        resolved = _resolve_image_path(image_path)
+        if not resolved or not resolved.exists():
             document.add_paragraph(f"图像：{image_path}（未找到）")
             continue
         try:
-            document.add_picture(str(path), width=Inches(4.8))
+            document.add_picture(str(resolved), width=Inches(4.8))
         except Exception:  # noqa: BLE001
             document.add_paragraph(f"图像：{image_path}（无法插入）")
 

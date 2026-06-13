@@ -50,3 +50,42 @@ def order_for_basket(basket_ids: object, order_values: object) -> list[int]:
 
 def question_ids_to_csv(values: object) -> str:
     return ",".join(str(question_id) for question_id in normalize_question_ids(values))
+
+
+import json
+from pathlib import Path
+from question_bank.database.paths import project_data_root
+
+BASKET_KEY = "qb_question_basket"
+ORDER_KEY = "qb_assembly_order"
+
+
+def _draft_file_path() -> Path:
+    return project_data_root() / "question_bank" / "assembly_draft.json"
+
+
+def save_basket_draft(basket_ids: list[int], order_ids: list[int] | None = None) -> None:
+    try:
+        path = _draft_file_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "basket_ids": normalize_question_ids(basket_ids),
+            "order_ids": normalize_question_ids(order_ids or []),
+        }
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def load_basket_draft() -> tuple[list[int], list[int]]:
+    try:
+        path = _draft_file_path()
+        if path.exists():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                basket_ids = normalize_question_ids(payload.get("basket_ids"))
+                order_ids = normalize_question_ids(payload.get("order_ids"))
+                return basket_ids, order_ids
+    except Exception:
+        pass
+    return [], []

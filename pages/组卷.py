@@ -31,7 +31,24 @@ from question_bank.services.assembly_basket_state import (
     order_for_basket,
     parse_question_ids_csv,
     question_ids_to_csv,
+    load_basket_draft,
+    save_basket_draft,
 )
+from pages_shared.shared_styles import inject_shared_css
+import importlib
+import pages_shared.shared_components
+importlib.reload(pages_shared.shared_components)
+from pages_shared.shared_components import (
+    format_difficulty_badge,
+    format_type_badge,
+    format_frequency_badge,
+    render_tag_panel_markdown,
+    render_sortable_list,
+)
+from question_bank.exporters.export_config import ExportConfig
+
+
+
 from question_bank.services.question_preview_display import (
     PreviewDensity,
     image_display_width,
@@ -50,6 +67,11 @@ IMAGE_MARKER_PATTERN = re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]")
 
 
 def _basket_ids() -> list[int]:
+    if BASKET_KEY not in st.session_state:
+        b_ids, o_ids = load_basket_draft()
+        st.session_state[BASKET_KEY] = b_ids
+        st.session_state[ORDER_KEY] = o_ids
+
     ids = normalize_question_ids(st.session_state.setdefault(BASKET_KEY, []))
     st.session_state[BASKET_KEY] = ids
     return ids
@@ -60,6 +82,7 @@ def _set_basket_and_order(question_ids: object, order_ids: object | None = None)
     order = order_for_basket(basket, order_ids if order_ids is not None else st.session_state.get(ORDER_KEY, []))
     st.session_state[BASKET_KEY] = basket
     st.session_state[ORDER_KEY] = order
+    save_basket_draft(basket, order)
     return basket
 
 
@@ -163,6 +186,7 @@ def _move_question(question_id: int, offset: int) -> None:
         return
     ordered[index], ordered[target] = ordered[target], ordered[index]
     st.session_state[ORDER_KEY] = ordered
+    save_basket_draft(_basket_ids(), ordered)
 
 
 def _remove_question(question_id: int) -> None:
@@ -174,6 +198,7 @@ def _remove_question(question_id: int) -> None:
 def _clear_basket() -> None:
     st.session_state[BASKET_KEY] = []
     st.session_state[ORDER_KEY] = []
+    save_basket_draft([], [])
 
 
 TAG_FILTER_CONFIG = (
@@ -248,11 +273,11 @@ def _source_label(question: dict[str, Any]) -> str:
     paper_title = str(question.get("paper_title") or "").strip()
     if not paper_title and question.get("source_file"):
         paper_title = Path(question["source_file"]).stem
-        
+
     # Clean up YYYYMMDD_HHMMSS timestamps from paper titles
     if paper_title:
         paper_title = re.sub(r'_\d{8}_\d{6}$', '', paper_title)
-        
+
     if paper_title:
         if year and (paper_title.startswith(year) or f"{year}·" in paper_title):
             label = paper_title
@@ -265,7 +290,7 @@ def _source_label(question: dict[str, Any]) -> str:
         label = "·".join(label_parts) if label_parts else "本地题库"
         if year:
             label = f"{year}·{label}"
-            
+
     number = str(question.get("question_number") or "").strip()
     if number:
         return f"{label} 第{number}题"
@@ -280,7 +305,7 @@ def _short_text(value: object, limit: int = 80) -> str:
 def _safe_html_format(value: str) -> str:
     if not value:
         return ""
-    
+
     # 1. unescape HTML entities to normalize
     text = str(value)
     for _ in range(3):
@@ -291,7 +316,7 @@ def _safe_html_format(value: str) -> str:
 
     # 2. Escape HTML for safety
     escaped = html.escape(text)
-    
+
     # 2.5 Convert continuous spaces (2 or more) to non-folding spaces for underlines
     escaped = re.sub(r" {2,}", lambda m: "&nbsp;" * len(m.group(0)), escaped)
 
@@ -300,10 +325,10 @@ def _safe_html_format(value: str) -> str:
     for tag in allowed_tags:
         opening_pattern = re.compile(rf"&lt;({tag})(\s+[^&]*)?&gt;", re.IGNORECASE)
         escaped = opening_pattern.sub(lambda m: f"<{m.group(1)}{html.unescape(m.group(2) or '')}>", escaped)
-        
+
         closing_pattern = re.compile(rf"&lt;/({tag})&gt;", re.IGNORECASE)
         escaped = closing_pattern.sub(rf"</\1>", escaped)
-        
+
     # 4. Normalize <br>
     escaped = re.sub(r"&lt;br\s*/?&gt;", "<br>", escaped, flags=re.IGNORECASE)
 
@@ -368,7 +393,7 @@ def _render_images(image_paths: list[str], *, image_scale_percent: int | None = 
         return
     if image_scale_percent is None:
         _, image_scale_percent = _preview_display_settings()
-        
+
     if len(valid_paths) == 1:
         width = image_display_width(valid_paths[0], image_count=1, scale_percent=image_scale_percent)
         st.image(str(valid_paths[0]), width=width)
@@ -382,43 +407,27 @@ def _render_images(image_paths: list[str], *, image_scale_percent: int | None = 
 
 
 def _render_premium_question_card(
-    index: int, 
-    question: dict[str, Any], 
-    preview_mode: str, 
+    index: int,
+    question: dict[str, Any],
+    preview_mode: str,
     show_basket_toggle: bool = False,
     qid_for_key: int | None = None,
     frequency: FrequencyMetrics | None = None,
 ) -> None:
     is_teacher = "教师" in preview_mode
     qid = int(question["id"])
-    
+
     # 1. Badges preparation
     badges_html = ""
-    diff_val = 0
-    try:
-        diff_val = float(question.get("difficulty") or 0)
-    except ValueError:
-        pass
-    
-    if diff_val > 0:
-        if diff_val <= 3:
-            badge_class = "qb-badge qb-badge-easy"
-            badge_label = f"易 (难度 {diff_val:.1f})"
-        elif diff_val <= 7:
-            badge_class = "qb-badge qb-badge-medium"
-            badge_label = f"中 (难度 {diff_val:.1f})"
-        else:
-            badge_class = "qb-badge qb-badge-hard"
-            badge_label = f"难 (难度 {diff_val:.1f})"
-        badges_html += f'<span class="{badge_class}">{badge_label}</span>'
-        
-    badges_html += _frequency_badge_html(frequency or FrequencyMetrics(available=False))
+    if is_teacher:
+        badges_html += format_difficulty_badge(question.get("difficulty"))
+        badges_html += format_frequency_badge(frequency or FrequencyMetrics(available=False))
 
     # Get clean rich text
     q_text = question.get("question_text") or ""
     q_rich = _safe_html_format(IMAGE_MARKER_PATTERN.sub("", q_text).strip())
     source_label = html.escape(_source_label(question))
-    
+
     # Render inside a native Streamlit container with border for premium card feel
     with st.container(border=True):
         if show_basket_toggle:
@@ -432,19 +441,19 @@ def _render_premium_question_card(
 
 
 def _render_card_body_content(
-    qid: int, 
-    index: int, 
-    source_label: str, 
-    badges_html: str, 
-    q_rich: str, 
-    question: dict[str, Any], 
+    qid: int,
+    index: int,
+    source_label: str,
+    badges_html: str,
+    q_rich: str,
+    question: dict[str, Any],
     is_teacher: bool,
     show_basket_toggle: bool
 ) -> None:
     density, image_scale = _preview_display_settings()
     # Use different header format for selection vs composition
     header_text = f"ID: {qid} · {source_label}" if show_basket_toggle else f"第 {index} 题 · {source_label}"
-    
+
     st.markdown(
         f"""
         <div class="qb-paper-header" style="border-bottom: 1px dashed #cbd5e1; padding-bottom: 8px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
@@ -455,7 +464,7 @@ def _render_card_body_content(
         """,
         unsafe_allow_html=True
     )
-    
+
     # Render inline/attached images if any
     image_paths = _dedupe_paths(
         [
@@ -465,7 +474,7 @@ def _render_card_body_content(
     )
     if image_paths:
         _render_images(image_paths, image_scale_percent=image_scale)
-        
+
     # Render student blanks for solution questions (only in student perspective during composition)
     qtype = _canonical_type_group(question.get("question_type"))
     if not is_teacher and qtype == "解答题":
@@ -481,45 +490,9 @@ def _render_card_body_content(
     # Render Teacher details box inside a collapsible expander by default
     if is_teacher:
         with st.expander("🔑 查看参考答案与解析 (默认折叠)", expanded=False):
-            kp_tags = []
-            ability_tags = []
-            method_tags = []
-            model_tags = []
-            chapter_tag = ""
-            
-            for t in question.get("tags", []):
-                tt = t.get("tag_type")
-                tv = t.get("tag_value")
-                if not tv:
-                    continue
-                if tt == "knowledge_point":
-                    kp_tags.append(tv)
-                elif tt == "ability":
-                    ability_tags.append(tv)
-                elif tt == "method":
-                    method_tags.append(tv)
-                elif tt == "model":
-                    model_tags.append(tv)
-                elif tt == "exam_scope":
-                    chapter_tag = tv
-                    
-            tags_parts = []
-            if chapter_tag:
-                tags_parts.append(f"<b>教材章节:</b> {html.escape(chapter_tag)}")
-            if kp_tags:
-                tags_parts.append(f"<b>知识点:</b> {', '.join(html.escape(x) for x in kp_tags)}")
-            if method_tags:
-                tags_parts.append(f"<b>思想方法:</b> {', '.join(html.escape(x) for x in method_tags)}")
-            if ability_tags:
-                tags_parts.append(f"<b>核心能力:</b> {', '.join(html.escape(x) for x in ability_tags)}")
-            if model_tags:
-                tags_parts.append(f"<b>解题模型:</b> {', '.join(html.escape(x) for x in model_tags)}")
-                
-            tags_html = "<br>".join(tags_parts) if tags_parts else "暂无标签"
-            
             ans_text = question.get("answer_text") or "暂无填写的参考答案"
             ans_rich = _safe_html_format(IMAGE_MARKER_PATTERN.sub("", ans_text).strip())
-            
+
             reason_text = question.get("reason")
             reason_html = _teacher_reason_html(reason_text)
 
@@ -527,14 +500,14 @@ def _render_card_body_content(
             <div class="qb-teacher-box" style="margin-top: 5px;">
                 <div class="qb-teacher-title">🔑 教师参考答案</div>
                 <div class="qb-rich-text" style="font-size: {density.answer_font_rem:.2f}rem; line-height: {density.line_height}; color: #1e3a8a; margin-bottom: 8px;">{ans_rich}</div>
-                <div style="border-top: 1px dashed #cbd5e1; padding-top: 8px; font-size: 0.88rem; color: #475569; line-height: 1.6;">
-                    {tags_html}
-                </div>
                 {reason_html}
             </div>
             """
             st.markdown(teacher_box_html, unsafe_allow_html=True)
-            
+
+            st.markdown('<div style="margin-top: 8px; border-top: 1px dashed #cbd5e1; padding-top: 8px;"><span style="font-size: 0.85rem; color: #64748b; font-weight: 600; display: block; margin-bottom: 6px;">🏷️ AI 属性标签</span></div>', unsafe_allow_html=True)
+            render_tag_panel_markdown(st, question)
+
             ans_images = _image_paths_from_text(ans_text)
             if ans_images:
                 _render_images(ans_images, image_scale_percent=image_scale)
@@ -545,10 +518,10 @@ def _render_card_action_button(qid: int, qid_for_key: int | None = None) -> None
     key_suffix = f"_{qid_for_key}" if qid_for_key is not None else ""
     st.write("")
     st.write("")
-    
+
     # Premium vertical spacer to center it slightly
     st.markdown("<div style='height: 25px;'></div>", unsafe_allow_html=True)
-    
+
     if in_basket:
         if st.button("❌ 移除试卷栏", key=f"assembly_toggle_rem_{qid}{key_suffix}", type="primary", use_container_width=True):
             _remove_question(qid)
@@ -563,11 +536,11 @@ def _run_ai_question_sorting(questions: list[dict[str, Any]]) -> None:
     if not questions:
         st.warning("当前试卷没有题目，无法进行排序！")
         return
-        
+
     with st.spinner("🤖 AI 正在根据教学法（题型分组、难度循序渐进、知识点连贯）规划最优试卷顺序..."):
         from question_bank.services.ai_tagging_service import AITaggingService
         tagging_service = AITaggingService()
-        
+
         # 1. Local canonical pedagogical sorting
         if tagging_service.mock_mode:
             choices = []
@@ -581,7 +554,7 @@ def _run_ai_question_sorting(questions: list[dict[str, Any]]) -> None:
                     blanks.append(q)
                 else:
                     solutions.append(q)
-            
+
             def _get_diff(item):
                 try:
                     return float(item.get("difficulty") or 5.0)
@@ -590,13 +563,13 @@ def _run_ai_question_sorting(questions: list[dict[str, Any]]) -> None:
             choices.sort(key=_get_diff)
             blanks.sort(key=_get_diff)
             solutions.sort(key=_get_diff)
-            
+
             sorted_ids = [int(q["id"]) for q in (choices + blanks + solutions)]
             _set_basket_and_order(sorted_ids, sorted_ids)
             st.success("✨ (本地 Mock 模式) 智能排序已完成！已自动按“选择题 ➡️ 填空题 ➡️ 解答题”且难度循序渐进的梯度重排试卷。")
             st.rerun()
             return
-            
+
         # 2. AI Sorger
         simplified_questions = []
         for q in questions:
@@ -610,22 +583,22 @@ def _run_ai_question_sorting(questions: list[dict[str, Any]]) -> None:
                 "methods": method_tags,
                 "question_text": _short_text(q.get("question_text"), 150)
             })
-            
+
         prompt = f"""
         You are an expert junior middle-school math curriculum designer and chief examiner.
         Your task is to review the following set of math exam questions and recommend the most pedagogically sound sorting order.
-        
+
         CRITICAL sorting principles:
         1. **Type Grouping (STRICT)**: Group strictly by: Choice (选择题) first, Fill-in-the-Blank (填空题) second, and Solution (解答题) last.
         2. **Difficulty Progression**: Within each group, progress from easier (lower difficulty) to harder (higher difficulty).
         3. **Knowledge Coherence**: Group closely related concepts to avoid sudden context switching.
-        
+
         Here is the list of questions to sort:
         {json.dumps(simplified_questions, ensure_ascii=False, indent=2)}
-        
+
         Return a single JSON object with a single key "sorted_ids" containing a list of the question IDs in the recommended order.
         Do not add or remove any IDs.
-        
+
         Expected response format:
         {{
             "sorted_ids": [3, 1, 5, 2, 4]
@@ -648,7 +621,7 @@ def _run_ai_question_sorting(questions: list[dict[str, Any]]) -> None:
                     st.warning("AI 返回的题目列表与当前试卷不一致，已自动退回本地安全排序。")
         except Exception as exc:
             st.error(f"AI 智能排序失败：{exc}，已自动降级为本地教学法排序。")
-            
+
         # Fallback local sorting
         choices = []
         blanks = []
@@ -661,7 +634,7 @@ def _run_ai_question_sorting(questions: list[dict[str, Any]]) -> None:
                 blanks.append(q)
             else:
                 solutions.append(q)
-        
+
         def _get_diff(item):
             try:
                 return float(item.get("difficulty") or 5.0)
@@ -670,7 +643,7 @@ def _run_ai_question_sorting(questions: list[dict[str, Any]]) -> None:
         choices.sort(key=_get_diff)
         blanks.sort(key=_get_diff)
         solutions.sort(key=_get_diff)
-        
+
         sorted_ids = [int(q["id"]) for q in (choices + blanks + solutions)]
         _set_basket_and_order(sorted_ids, sorted_ids)
         st.success("✨ 智能排序已完成！已按本地‘选择题 ➡️ 填空题 ➡️ 解答题’的难度渐进梯队重排。")
@@ -736,15 +709,15 @@ def _render_assembly_records(service: QuestionService) -> None:
         for record in records[:30]:
             with st.container(border=True):
                 st.markdown(f"**{record.title}**")
-                
+
                 summary_parts = []
                 for k, v in getattr(record, "question_type_summary", {}).items():
                     if v > 0:
                         summary_parts.append(f"{k}: {v}题")
                 summary_text = " (" + ", ".join(summary_parts) + ")" if summary_parts else ""
-                
+
                 st.caption(f"{record.created_at} · 共 {record.question_count} 题{summary_text}")
-                
+
                 cols = st.columns([1, 1, 1, 1])
                 with cols[0]:
                     if st.button("预览", key=f"qb_record_preview_{record.id}", use_container_width=True):
@@ -777,132 +750,7 @@ def _render_assembly_records(service: QuestionService) -> None:
 
 
 st.set_page_config(page_title="组卷", layout="wide")
-st.markdown(
-    """
-    <style>
-    /* Premium Paper Style */
-    .qb-paper-card {
-        background-color: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        padding: 18px 22px;
-        margin-bottom: 14px;
-        box-shadow: 0 4px 15px rgba(15, 23, 42, 0.05);
-        font-family: 'Times New Roman', SimSun, serif;
-    }
-    
-    .qb-paper-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        border-bottom: 1px dashed #cbd5e1;
-        padding-bottom: 8px;
-        margin-bottom: 10px;
-        font-size: 0.86rem;
-        color: #64748b;
-    }
-    
-    .qb-paper-title-tag {
-        font-weight: bold;
-        font-size: 0.98rem;
-        color: #1e293b;
-    }
-    
-    .qb-rich-text {
-        white-space: pre-wrap;
-        line-height: 1.62;
-        font-size: 0.96rem;
-        color: #0f172a;
-    }
-    
-    .qb-rich-text sub {
-        font-size: 70%;
-        vertical-align: sub;
-        line-height: 0;
-    }
-    .qb-rich-text sup {
-        font-size: 70%;
-        vertical-align: super;
-        line-height: 0;
-    }
-    .qb-rich-text u {
-        text-decoration: underline;
-        text-underline-offset: 3px;
-        text-decoration-thickness: 1.5px;
-    }
-    
-    .qb-rich-text table {
-        border-collapse: collapse;
-        width: auto;
-        max-width: 100%;
-        margin: 0.35rem 0 0.65rem;
-        table-layout: auto;
-    }
-    
-    .qb-rich-text td,
-    .qb-rich-text th {
-        border: 1px solid #d8dee9;
-        padding: 0.32rem 0.45rem;
-        vertical-align: top;
-        word-break: break-word;
-    }
-    
-    .qb-rich-text tr:nth-child(even) {
-        background: #f8fafc;
-    }
-    
-    /* Badge styling */
-    .qb-badge {
-        display: inline-flex;
-        align-items: center;
-        border-radius: 9999px;
-        padding: 2px 10px;
-        font-size: 0.75rem;
-        font-weight: 600;
-        line-height: 1.2;
-        margin-right: 6px;
-    }
-    
-    .qb-badge-easy {
-        background-color: #f0fdf4;
-        color: #166534;
-        border: 1px solid #bbf7d0;
-    }
-    
-    .qb-badge-medium {
-        background-color: #fef8e6;
-        color: #854d0e;
-        border: 1px solid #fef08a;
-    }
-    
-    .qb-badge-hard {
-        background-color: #fef2f2;
-        color: #991b1b;
-        border: 1px solid #fecaca;
-    }
-    
-    /* Teacher Mode Box */
-    .qb-teacher-box {
-        background-color: #f8fafc;
-        border-left: 4px solid #3b82f6;
-        padding: 10px 14px;
-        margin-top: 10px;
-        border-radius: 0 6px 6px 0;
-        font-size: 0.88rem;
-    }
-    
-    .qb-teacher-title {
-        font-weight: bold;
-        color: #1e3a8a;
-        margin-bottom: 6px;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+inject_shared_css(st)
 st.title("智能组卷")
 
 service = QuestionService(question_bank_db_path())
@@ -950,25 +798,26 @@ def _move_question_in_group(question_id: int, offset: int, group_questions: list
     target_idx_in_group = idx_in_group + offset
     if target_idx_in_group < 0 or target_idx_in_group >= len(group_qids):
         return
-    
+
     other_qid = group_qids[target_idx_in_group]
-    
+
     pos1 = ordered.index(question_id)
     pos2 = ordered.index(other_qid)
     ordered[pos1], ordered[pos2] = ordered[pos2], ordered[pos1]
-    
+
     st.session_state[ORDER_KEY] = ordered
+    save_basket_draft(_basket_ids(), ordered)
 
 
 def _render_statistics_panel(questions: list[dict[str, Any]]) -> None:
     if not questions:
         return
-    
+
     total = len(questions)
     choice_cnt = sum(1 for q in questions if _canonical_type_group(q.get("question_type")) == "选择题")
     fill_cnt = sum(1 for q in questions if _canonical_type_group(q.get("question_type")) == "填空题")
     solution_cnt = total - choice_cnt - fill_cnt
-    
+
     diffs = []
     for q in questions:
         try:
@@ -978,13 +827,13 @@ def _render_statistics_panel(questions: list[dict[str, Any]]) -> None:
         except ValueError:
             pass
     avg_diff = sum(diffs) / len(diffs) if diffs else 0.0
-    
+
     st.markdown("##### 📊 当前试卷统计信息")
     metric_cols = st.columns(4)
     metric_cols[0].metric("总题数", f"{total} 道")
     metric_cols[1].metric("题型分布", f"选{choice_cnt} / 填{fill_cnt} / 简{solution_cnt}")
     metric_cols[2].metric("平均难度", f"{avg_diff:.1f}" if avg_diff > 0 else "无")
-    
+
     kp_set = set()
     for q in questions:
         for t in q.get("tags", []):
@@ -1010,14 +859,7 @@ def _numeric_value(value: object) -> float:
         return 0.0
 
 
-def _frequency_badge_html(metrics: FrequencyMetrics) -> str:
-    summary = frequency_summary(metrics)
-    if not summary:
-        return ""
-    return (
-        '<span class="qb-badge qb-badge-medium" title="考频仅统计期中、期末和中考">'
-        f"{html.escape(summary)}</span>"
-    )
+
 
 
 def _curriculum_chapter_groups() -> dict[str, list[str]]:
@@ -1087,7 +929,7 @@ def _render_question_selection_page(service: QuestionService) -> None:
     year_options = _options_from_questions(all_questions, "year", reverse=True)
     exam_type_options = _options_from_questions(all_questions, "exam_type")
     grade_options = _options_from_questions(all_questions, "grade")
-    
+
     ability_options = tag_options.get("ability", [])
     knowledge_options = tag_options.get("knowledge_point", [])
     error_options = tag_options.get("error_type", [])
@@ -1176,6 +1018,7 @@ def _render_question_selection_page(service: QuestionService) -> None:
         "years": [selected_years] if selected_years else None,
         "grades": None if selected_grade == "全部" else [selected_grade],
         "tag_filters": selected_tags or None,
+        "tag_status": "已打标签",
     }
 
     # 7. Query count and pagination
@@ -1196,7 +1039,7 @@ def _render_question_selection_page(service: QuestionService) -> None:
     matched_qs = service.query_questions(**filters, limit=page_size, offset=offset, sort_mode=sort_mode)
 
     st.markdown(f"**找到 {total_count} 道匹配的试题**")
-    
+
     if matched_qs:
         frequency_metrics = frequency_service.metrics_for_questions(
             [int(question["id"]) for question in matched_qs]
@@ -1229,9 +1072,9 @@ def _render_question_selection_page(service: QuestionService) -> None:
         # Render each question card in full high-fidelity paper preview style at the root level!
         for mq in matched_qs:
             _render_premium_question_card(
-                index=0, 
-                question=mq, 
-                preview_mode="教师视角 (显示解析、知识点与难度)", 
+                index=0,
+                question=mq,
+                preview_mode="教师视角 (显示解析、知识点与难度)",
                 show_basket_toggle=True,
                 qid_for_key=mq["id"],
                 frequency=frequency_metrics.get(int(mq["id"])),
@@ -1325,6 +1168,34 @@ def _render_question_selection_page(service: QuestionService) -> None:
     )
 
 
+def _process_question_for_drag_card(q) -> tuple[str, str, str, str]:
+    qtext = q.get("question_text", "").strip()
+    score_str = ""
+    # Extract leading score like (10分) or （12分）
+    m = re.match(r'^[（\(]\s*(\d+)\s*分\s*[）\)]\s*', qtext)
+    if m:
+        score_str = f"{m.group(1)}分"
+        cleaned_text = qtext[m.end():].strip()
+    else:
+        cleaned_text = qtext
+
+    preview = _short_text(cleaned_text, 18)
+
+    # Get primary knowledge point tag
+    kp_tags = [t.get("tag_value") for t in q.get("tags", []) if t.get("tag_type") == "knowledge_point"]
+    kp = kp_tags[0] if kp_tags else "未标注知识点"
+
+    # Format difficulty
+    diff = q.get("difficulty")
+    try:
+        diff_val = float(diff) if diff is not None else 0.0
+    except (ValueError, TypeError):
+        diff_val = 0.0
+    diff_str = f"难度:{diff_val:.1f}" if diff_val > 0 else "难度未标注"
+
+    return preview, score_str, kp, diff_str
+
+
 def _render_question_composition_page(service: QuestionService) -> None:
     # Top navigation bar
     nav_cols = st.columns([3.2, 0.8])
@@ -1348,209 +1219,95 @@ def _render_question_composition_page(service: QuestionService) -> None:
 
     # 1. Split into Main Column (Left, 7.8) and Sidebar Column (Right, 2.2)
     main_col, right_col = st.columns([7.8, 2.2], gap="large")
-    
+
     with right_col:
+        st.markdown('<div class="sticky-sidebar-marker"></div>', unsafe_allow_html=True)
+        st.markdown("""
+            <style>
+                /* Ensure horizontal row container allows sticky child elements */
+                div[data-testid="stHorizontalBlock"] {
+                    overflow: visible !important;
+                }
+
+                /* Sticky layout for the sidebar column */
+                div[data-testid="stColumn"]:has(.sticky-sidebar-marker),
+                div[data-testid="column"]:has(.sticky-sidebar-marker),
+                div.stColumn:has(.sticky-sidebar-marker),
+                div[class*="stColumn"]:has(.sticky-sidebar-marker) {
+                    position: -webkit-sticky !important;
+                    position: sticky !important;
+                    top: 5rem !important;
+                    align-self: start !important;
+                    max-height: 85vh !important;
+                    overflow-y: auto !important;
+                    padding-right: 6px;
+                    z-index: 99 !important;
+                }
+            </style>
+        """, unsafe_allow_html=True)
         st.markdown("#### 🧩 试卷题目拖拽排序")
         st.caption("拖动 ☰ 手柄上下拖拽题目。🔵选择 🟢填空 🟠解答。")
-        
+
         layout_mode = st.radio("组卷编排方式", ["顺序编排", "分题型编排"], index=0, horizontal=True, key="assembly_layout_mode")
         preview_mode = st.radio("预览视图", ["教师视角 (显示解析、知识点与难度)", "学生视角 (最真实的答题排版)"], index=0, horizontal=True, key="assembly_preview_view")
-        
-        # Build SortableJS HTML lists
-        html_lists = ""
+
+        st.markdown("---")
+
+        # Prepare list of items
+        items_data = []
         if layout_mode == "顺序编排":
-            squares_html = ""
-            for index, question_id in enumerate(ordered_ids, start=1):
-                q = question_by_id[question_id]
+            for index, question_id in enumerate(ordered_ids):
+                q = question_by_id.get(question_id)
+                if not q:
+                    continue
                 qtype = _canonical_type_group(q.get("question_type"))
                 style_class = "choice" if qtype == "选择题" else ("blank" if qtype == "填空题" else "solution")
                 bullet = "🔵" if qtype == "选择题" else ("🟢" if qtype == "填空题" else "🟠")
-                preview = _short_text(q.get("question_text"), 20)
-                squares_html += f"""
-                <div class="draggable-item {style_class}" data-id="{question_id}">
-                    <span class="drag-handle">☰</span>
-                    <span class="idx-badge">{index}</span>
-                    <span class="bullet">{bullet}</span>
-                    <span class="text">{html.escape(preview)}</span>
-                </div>
-                """
-            
-            html_lists = f"""
-            <div class="sort-section">
-              <div class="sort-title">📑 顺序编排 (拖动手柄重排)</div>
-              <div id="grid-overall" class="sort-grid">
-                {squares_html}
-              </div>
-            </div>
-            """
+                preview, score, kp, diff = _process_question_for_drag_card(q)
+                items_data.append({
+                    "id": str(question_id),
+                    "style_class": style_class,
+                    "bullet": bullet,
+                    "preview": preview,
+                    "score": score,
+                    "kp": kp,
+                    "diff": diff,
+                })
         else:
-            choice_squares = ""
-            blank_squares = ""
-            solution_squares = ""
-            
-            overall_idx = 1
-            for q in questions:
-                qid = int(q["id"])
-                qtype = _canonical_type_group(q.get("question_type"))
-                style_class = "choice" if qtype == "选择题" else ("blank" if qtype == "填空题" else "solution")
-                bullet = "🔵" if qtype == "选择题" else ("🟢" if qtype == "填空题" else "🟠")
-                preview = _short_text(q.get("question_text"), 20)
-                square_el = f"""
-                <div class="draggable-item {style_class}" data-id="{qid}">
-                    <span class="drag-handle">☰</span>
-                    <span class="idx-badge">{overall_idx}</span>
-                    <span class="bullet">{bullet}</span>
-                    <span class="text">{html.escape(preview)}</span>
-                </div>
-                """
-                
-                if qtype == "选择题":
-                    choice_squares += square_el
-                elif qtype == "填空题":
-                    blank_squares += square_el
-                else:
-                    solution_squares += square_el
-                overall_idx += 1
-                
-            html_lists = f"""
-            <div class="sort-section">
-              <div class="sort-title">🔵 选择题 (拖动手柄)</div>
-              <div id="grid-choice" class="sort-grid">
-                {choice_squares}
-              </div>
-            </div>
-            <div class="sort-section">
-              <div class="sort-title">🟢 填空题 (拖动手柄)</div>
-              <div id="grid-blank" class="sort-grid">
-                {blank_squares}
-              </div>
-            </div>
-            <div class="sort-section">
-              <div class="sort-title">🟠 解答题 (拖动手柄)</div>
-              <div id="grid-solution" class="sort-grid">
-                {solution_squares}
-              </div>
-            </div>
-            """
-            
-        html_code = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <script src="https://cdnjs.cloudflare.com/ajax/libs/sortablejs/1.15.0/Sortable.min.js"></script>
-          <style>
-            body {{
-              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-              margin: 0; padding: 5px; background-color: transparent;
-            }}
-            .sort-section {{
-              margin-bottom: 15px;
-              border: 1px solid #e2e8f0;
-              border-radius: 8px;
-              background: #ffffff;
-              padding: 10px 12px;
-              box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-            }}
-            .sort-title {{
-              font-size: 0.82rem; font-weight: bold; color: #475569; margin-bottom: 8px;
-            }}
-            .sort-grid {{
-              display: flex; flex-direction: column; gap: 6px; min-height: 50px; padding: 6px;
-              border: 1.5px dashed #cbd5e1; border-radius: 8px; background: #f8fafc;
-            }}
-            .draggable-item {{
-              display: flex;
-              align-items: center;
-              padding: 8px 10px;
-              background-color: #ffffff;
-              border: 1px solid #e2e8f0;
-              border-radius: 6px;
-              box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-              cursor: grab;
-              user-select: none;
-              transition: all 0.2s ease;
-              font-size: 0.85rem;
-              color: #334155;
-            }}
-            .draggable-item:hover {{
-              transform: translateY(-1px);
-              box-shadow: 0 3px 5px rgba(0,0,0,0.07);
-              border-color: #cbd5e1;
-            }}
-            .draggable-item:active {{
-              cursor: grabbing;
-            }}
-            .drag-handle {{
-              color: #94a3b8;
-              margin-right: 8px;
-              font-weight: bold;
-              font-size: 1rem;
-              cursor: move;
-            }}
-            .idx-badge {{
-              display: inline-flex;
-              align-items: center;
-              justify-content: center;
-              width: 18px;
-              height: 18px;
-              background-color: #f1f5f9;
-              border-radius: 9999px;
-              font-size: 0.7rem;
-              font-weight: bold;
-              color: #475569;
-              margin-right: 6px;
-            }}
-            .bullet {{
-              margin-right: 6px;
-            }}
-            .text {{
-              white-space: nowrap;
-              overflow: hidden;
-              text-overflow: ellipsis;
-              flex: 1;
-            }}
-            .draggable-item.choice {{ border-left: 3.5px solid #3b82f6; }}
-            .draggable-item.blank {{ border-left: 3.5px solid #10b981; }}
-            .draggable-item.solution {{ border-left: 3.5px solid #f97316; }}
-            .ghost {{ opacity: 0.35; background: #e2e8f0 !important; border: 1.5px dashed #94a3b8 !important; }}
-          </style>
-        </head>
-        <body>
-          {html_lists}
-          <script>
-            function initSortable(elId) {{
-              const el = document.getElementById(elId);
-              if (!el) return;
-              new Sortable(el, {{
-                group: 'shared_paper_questions',
-                animation: 180,
-                ghostClass: 'ghost',
-                handle: '.drag-handle',
-                onEnd: function() {{
-                  const items = Array.from(document.querySelectorAll('.draggable-item'));
-                  const newOrder = items.map(item => item.getAttribute('data-id'));
-                  
-                  let parentUrl;
-                  try {{
-                      parentUrl = new URL(document.referrer || window.parent.location.href);
-                  }} catch (e) {{
-                      parentUrl = new URL(window.location.origin);
-                  }}
-                  parentUrl.searchParams.set("qb_order", newOrder.join(","));
-                  parentUrl.searchParams.set("assembly_page", "composition");
-                  window.top.location.href = parentUrl.toString();
-                }}
-              }});
-            }}
-            
-            Array.from(document.querySelectorAll('.sort-grid')).forEach(grid => {{
-              initSortable(grid.id);
-            }});
-          </script>
-        </body>
-        </html>
-        """
-        st.components.v1.html(html_code, height=520, scrolling=True)
+            # Grouped layout sorting
+            groups = {"选择题": [], "填空题": [], "解答题": []}
+            for question_id in ordered_ids:
+                q = question_by_id.get(question_id)
+                if not q:
+                    continue
+                g = _canonical_type_group(q.get("question_type"))
+                groups[g].append(q)
+
+            for gname in ["选择题", "填空题", "解答题"]:
+                gqs = groups[gname]
+                for q in gqs:
+                    qid = int(q["id"])
+                    bullet = "🔵" if gname == "选择题" else ("🟢" if gname == "填空题" else "🟠")
+                    preview, score, kp, diff = _process_question_for_drag_card(q)
+                    style_class = "choice" if gname == "选择题" else ("blank" if gname == "填空题" else "solution")
+                    items_data.append({
+                        "id": str(qid),
+                        "style_class": style_class,
+                        "bullet": bullet,
+                        "preview": preview,
+                        "score": score,
+                        "kp": kp,
+                        "diff": diff,
+                    })
+
+        # Render custom drag-and-drop sortable widget
+        new_order = render_sortable_list(items_data, key="assembly_sortable_widget")
+        if new_order is not None:
+            new_ids = [int(x) for x in new_order if x.isdigit()]
+            if new_ids != ordered_ids:
+                st.session_state[ORDER_KEY] = new_ids
+                save_basket_draft(_basket_ids(), new_ids)
+                st.rerun()
 
     with main_col:
         st.markdown("##### ⚙️ 试卷一键操作")
@@ -1596,7 +1353,7 @@ def _render_question_composition_page(service: QuestionService) -> None:
             st.markdown(f"<div style='text-align: center; font-size: 1.6rem; font-weight: bold; margin-bottom: 15px; color: #0f172a;'>{html.escape(title or default_title)}</div>", unsafe_allow_html=True)
             st.markdown("<div style='text-align: center; font-size: 0.95rem; margin-bottom: 20px; color: #475569;'>班级：________________    姓名：________________    学号：________________</div>", unsafe_allow_html=True)
             st.divider()
-            
+
             if layout_mode == "顺序编排":
                 for index, question_id in enumerate(ordered_ids, start=1):
                     question = question_by_id[question_id]
@@ -1613,7 +1370,7 @@ def _render_question_composition_page(service: QuestionService) -> None:
                 for q in questions:
                     g = _canonical_type_group(q.get("question_type"))
                     groups[g].append(q)
-                    
+
                 overall_idx = 1
                 for gname in ["选择题", "填空题", "解答题"]:
                     gqs = groups[gname]
@@ -1658,7 +1415,7 @@ def _render_question_composition_page(service: QuestionService) -> None:
                 for q in questions:
                     g = _canonical_type_group(q.get("question_type"))
                     qtype_summary[g] = qtype_summary.get(g, 0) + 1
-                    
+
                 record = create_assembly_record(
                     AssemblyRecordCreate(
                         title=title or default_title,

@@ -12,6 +12,16 @@ from docx.shared import Cm, Inches, Pt
 
 from question_bank.services.question_service import QuestionService
 from question_bank.services.rich_content_service import load_question_rich_content
+from question_bank.exporters.base_exporter import (
+    _resolve_image_path,
+    apply_exporter_layout,
+    add_paragraph_with_latex,
+    extract_and_format_options,
+    add_noborder_table,
+    latex_to_png
+)
+from question_bank.exporters.export_config import ExportConfig
+
 
 
 LOGGER = logging.getLogger(__name__)
@@ -36,54 +46,22 @@ def _canonical_type_group(qtype: str | None) -> str:
 def _add_choice_answer_table(document: Document, choice_questions: list[tuple[int, dict[str, Any]]]) -> None:
     if not choice_questions:
         return
-    
+
     document.add_paragraph("选择题答题区：")
     num_cols = len(choice_questions)
-    
+
     table = document.add_table(rows=2, cols=num_cols + 1)
     table.style = 'Table Grid'
-    
+
     table.cell(0, 0).paragraphs[0].text = "题号"
     table.cell(1, 0).paragraphs[0].text = "答案"
-    
+
     for i, (index, _) in enumerate(choice_questions, start=1):
         table.cell(0, i).paragraphs[0].text = str(index)
         table.cell(1, i).paragraphs[0].text = ""
-        
+
     document.add_paragraph("")
 
-
-def _resolve_image_path(saved_path_str: str) -> Path | None:
-    if not saved_path_str:
-        return None
-    p = Path(saved_path_str)
-    if p.exists():
-        return p
-    try:
-        parts = p.parts
-        if "extracted_images" in parts:
-            idx = parts.index("extracted_images")
-            subpath = Path(*parts[idx:])
-            try:
-                from path_manager import get_path_manager
-                pm = get_path_manager()
-                opt1 = pm.data_root / "question_bank" / subpath
-                if opt1.exists():
-                    return opt1
-                opt2 = pm.data_root / subpath
-                if opt2.exists():
-                    return opt2
-            except Exception:
-                pass
-            opt3 = Path(__file__).resolve().parents[2] / "user_data" / "question_bank" / subpath
-            if opt3.exists():
-                return opt3
-            opt4 = Path(__file__).resolve().parents[2] / "question_bank" / subpath
-            if opt4.exists():
-                return opt4
-    except Exception:
-        pass
-    return None
 
 
 def export_question_paper_docx(
@@ -96,6 +74,7 @@ def export_question_paper_docx(
     ensure_previews: bool = True,
     grouped_by_type: bool = False,
     header_text: str | None = None,
+    config: ExportConfig | None = None,
 ) -> Path:
     service = QuestionService(Path(db_path))
     service.initialize_database()
@@ -106,34 +85,36 @@ def export_question_paper_docx(
 
     output_path = _output_path(output_dir, title)
     document = Document()
-    _apply_compact_layout(document)
-    
+    active_config = config or ExportConfig()
+    apply_exporter_layout(document, active_config)
+
     if header_text:
         header_p = document.add_paragraph()
         header_p.alignment = 1 # Center
         hrun = header_p.add_run(header_text.strip())
         hrun.font.size = Pt(14)
         hrun.bold = True
-        
+
     document.add_heading(title.strip() or _default_title(), level=0)
     document.add_paragraph("姓名：________________    班级：________________    日期：________________")
     document.add_paragraph("")
 
+
     indexed_questions = list(enumerate(questions, start=1))
 
     if grouped_by_type:
-        choices, blanks, solutions = _group_indexed_questions(questions)
+        choices, blanks, solutions = _group_indexed_questions(questions, active_config.numbering_mode)
 
         # 1. 选择题
         if choices:
             document.add_heading("一、选择题", level=1)
             _add_choice_answer_table(document, choices)
-            
+
             for index, question in choices:
                 document.add_paragraph(f"{index}. {_source_label(question)}")
                 rich_content = load_question_rich_content(int(question["id"]))
                 appended, embedded_paths = _add_rich_blocks(document, _rich_blocks(rich_content, "question_blocks"), strip_leading_number=True)
-                
+
                 all_image_paths = _dedupe_paths([
                     *(question.get("image_paths") or []),
                     *_image_paths_from_text(question.get("question_text") or "")
@@ -144,13 +125,14 @@ def export_question_paper_docx(
                     if rp:
                         resolved_all_paths.append(str(rp))
                 missing_images = [p for p in resolved_all_paths if p not in embedded_paths]
-                
+
                 if not appended:
                     _add_text_and_images(
                         document,
                         question.get("question_text") or "",
                         extra_image_paths=question.get("image_paths") or [],
                         strip_leading_number=True,
+                        config=active_config,
                     )
                 elif missing_images:
                     _add_images(document, missing_images)
@@ -164,7 +146,7 @@ def export_question_paper_docx(
                 document.add_paragraph(f"{index}. {_source_label(question)}")
                 rich_content = load_question_rich_content(int(question["id"]))
                 appended, embedded_paths = _add_rich_blocks(document, _rich_blocks(rich_content, "question_blocks"), strip_leading_number=True)
-                
+
                 all_image_paths = _dedupe_paths([
                     *(question.get("image_paths") or []),
                     *_image_paths_from_text(question.get("question_text") or "")
@@ -175,13 +157,14 @@ def export_question_paper_docx(
                     if rp:
                         resolved_all_paths.append(str(rp))
                 missing_images = [p for p in resolved_all_paths if p not in embedded_paths]
-                
+
                 if not appended:
                     _add_text_and_images(
                         document,
                         question.get("question_text") or "",
                         extra_image_paths=question.get("image_paths") or [],
                         strip_leading_number=True,
+                        config=active_config,
                     )
                 elif missing_images:
                     _add_images(document, missing_images)
@@ -200,7 +183,7 @@ def export_question_paper_docx(
                 document.add_paragraph(f"{index}. {_source_label(question)}")
                 rich_content = load_question_rich_content(int(question["id"]))
                 appended, embedded_paths = _add_rich_blocks(document, _rich_blocks(rich_content, "question_blocks"), strip_leading_number=True)
-                
+
                 all_image_paths = _dedupe_paths([
                     *(question.get("image_paths") or []),
                     *_image_paths_from_text(question.get("question_text") or "")
@@ -211,13 +194,14 @@ def export_question_paper_docx(
                     if rp:
                         resolved_all_paths.append(str(rp))
                 missing_images = [p for p in resolved_all_paths if p not in embedded_paths]
-                
+
                 if not appended:
                     _add_text_and_images(
                         document,
                         question.get("question_text") or "",
                         extra_image_paths=question.get("image_paths") or [],
                         strip_leading_number=True,
+                        config=active_config,
                     )
                 elif missing_images:
                     _add_images(document, missing_images)
@@ -229,7 +213,7 @@ def export_question_paper_docx(
             document.add_paragraph(f"{index}. {_source_label(question)}")
             rich_content = load_question_rich_content(int(question["id"]))
             appended, embedded_paths = _add_rich_blocks(document, _rich_blocks(rich_content, "question_blocks"), strip_leading_number=True)
-            
+
             all_image_paths = _dedupe_paths([
                 *(question.get("image_paths") or []),
                 *_image_paths_from_text(question.get("question_text") or "")
@@ -240,13 +224,14 @@ def export_question_paper_docx(
                 if rp:
                     resolved_all_paths.append(str(rp))
             missing_images = [p for p in resolved_all_paths if p not in embedded_paths]
-            
+
             if not appended:
                 _add_text_and_images(
                     document,
                     question.get("question_text") or "",
                     extra_image_paths=question.get("image_paths") or [],
                     strip_leading_number=True,
+                    config=active_config,
                 )
             elif missing_images:
                 _add_images(document, missing_images)
@@ -255,17 +240,17 @@ def export_question_paper_docx(
     if include_answer:
         document.add_page_break()
         document.add_heading("答案", level=1)
-        
+
         if grouped_by_type:
-            choices, blanks, solutions = _group_indexed_questions(questions)
-                    
+            choices, blanks, solutions = _group_indexed_questions(questions, active_config.numbering_mode)
+
             if choices:
                 document.add_heading("选择题答案", level=2)
                 for index, question in choices:
                     document.add_paragraph(f"{index}. {_source_label(question)}")
                     rich_content = load_question_rich_content(int(question["id"]))
                     appended, embedded_paths = _add_rich_blocks(document, _rich_blocks(rich_content, "answer_blocks"), strip_leading_number=True)
-                    
+
                     all_image_paths = _dedupe_paths([
                         *_image_paths_from_text(question.get("answer_text") or "")
                     ])
@@ -275,20 +260,20 @@ def export_question_paper_docx(
                         if rp:
                             resolved_all_paths.append(str(rp))
                     missing_images = [p for p in resolved_all_paths if p not in embedded_paths]
-                    
+
                     if not appended:
-                        _add_text_and_images(document, question.get("answer_text") or "暂无答案", strip_leading_number=True)
+                        _add_text_and_images(document, question.get("answer_text") or "暂无答案", strip_leading_number=True, config=active_config)
                     elif missing_images:
                         _add_images(document, missing_images)
                     document.add_paragraph("")
-                    
+
             if blanks:
                 document.add_heading("填空题答案", level=2)
                 for index, question in blanks:
                     document.add_paragraph(f"{index}. {_source_label(question)}")
                     rich_content = load_question_rich_content(int(question["id"]))
                     appended, embedded_paths = _add_rich_blocks(document, _rich_blocks(rich_content, "answer_blocks"), strip_leading_number=True)
-                    
+
                     all_image_paths = _dedupe_paths([
                         *_image_paths_from_text(question.get("answer_text") or "")
                     ])
@@ -298,20 +283,20 @@ def export_question_paper_docx(
                         if rp:
                             resolved_all_paths.append(str(rp))
                     missing_images = [p for p in resolved_all_paths if p not in embedded_paths]
-                    
+
                     if not appended:
-                        _add_text_and_images(document, question.get("answer_text") or "暂无答案", strip_leading_number=True)
+                        _add_text_and_images(document, question.get("answer_text") or "暂无答案", strip_leading_number=True, config=active_config)
                     elif missing_images:
                         _add_images(document, missing_images)
                     document.add_paragraph("")
-                    
+
             if solutions:
                 document.add_heading("解答题答案", level=2)
                 for index, question in solutions:
                     document.add_paragraph(f"{index}. {_source_label(question)}")
                     rich_content = load_question_rich_content(int(question["id"]))
                     appended, embedded_paths = _add_rich_blocks(document, _rich_blocks(rich_content, "answer_blocks"), strip_leading_number=True)
-                    
+
                     all_image_paths = _dedupe_paths([
                         *_image_paths_from_text(question.get("answer_text") or "")
                     ])
@@ -321,9 +306,9 @@ def export_question_paper_docx(
                         if rp:
                             resolved_all_paths.append(str(rp))
                     missing_images = [p for p in resolved_all_paths if p not in embedded_paths]
-                    
+
                     if not appended:
-                        _add_text_and_images(document, question.get("answer_text") or "暂无答案", strip_leading_number=True)
+                        _add_text_and_images(document, question.get("answer_text") or "暂无答案", strip_leading_number=True, config=active_config)
                     elif missing_images:
                         _add_images(document, missing_images)
                     document.add_paragraph("")
@@ -332,7 +317,7 @@ def export_question_paper_docx(
                 document.add_paragraph(f"{index}. {_source_label(question)}")
                 rich_content = load_question_rich_content(int(question["id"]))
                 appended, embedded_paths = _add_rich_blocks(document, _rich_blocks(rich_content, "answer_blocks"), strip_leading_number=True)
-                
+
                 all_image_paths = _dedupe_paths([
                     *_image_paths_from_text(question.get("answer_text") or "")
                 ])
@@ -342,9 +327,9 @@ def export_question_paper_docx(
                     if rp:
                         resolved_all_paths.append(str(rp))
                 missing_images = [p for p in resolved_all_paths if p not in embedded_paths]
-                
+
                 if not appended:
-                    _add_text_and_images(document, question.get("answer_text") or "暂无答案", strip_leading_number=True)
+                    _add_text_and_images(document, question.get("answer_text") or "暂无答案", strip_leading_number=True, config=active_config)
                 elif missing_images:
                     _add_images(document, missing_images)
                 if index < len(questions):
@@ -356,6 +341,7 @@ def export_question_paper_docx(
 
 def _group_indexed_questions(
     questions: list[dict[str, object]],
+    numbering_mode: str = "global",
 ) -> tuple[list[tuple[int, dict[str, object]]], list[tuple[int, dict[str, object]]], list[tuple[int, dict[str, object]]]]:
     raw_choices: list[dict[str, object]] = []
     raw_blanks: list[dict[str, object]] = []
@@ -369,9 +355,11 @@ def _group_indexed_questions(
         else:
             raw_solutions.append(question)
 
-    next_index = 1
     grouped: list[list[tuple[int, dict[str, object]]]] = []
+    next_index = 1
     for raw_group in (raw_choices, raw_blanks, raw_solutions):
+        if numbering_mode == "per_section":
+            next_index = 1
         numbered_group = []
         for question in raw_group:
             numbered_group.append((next_index, question))
@@ -463,15 +451,75 @@ def _add_text_and_images(
     *,
     extra_image_paths: list[object] | None = None,
     strip_leading_number: bool = False,
+    config: ExportConfig | None = None,
 ) -> None:
+    active_config = config or ExportConfig()
     raw_text = str(text or "")
     inline_paths = [match.group("path").strip() for match in IMAGE_MARKER_PATTERN.finditer(raw_text)]
     clean_text = IMAGE_MARKER_PATTERN.sub("", raw_text).strip()
     if strip_leading_number:
         clean_text = LEADING_QUESTION_NUMBER_PATTERN.sub("", clean_text, count=1).lstrip()
+
     if clean_text:
-        for line in clean_text.splitlines():
-            document.add_paragraph(line.strip() if line.strip() else "")
+        # Check if we can extract options
+        stem, options = extract_and_format_options(clean_text)
+        if options:
+            # Render stem
+            for line in stem.splitlines():
+                if line.strip():
+                    add_paragraph_with_latex(document, line.strip(), active_config)
+            # Render options in table/columns
+            max_len = max(len(opt_text) for _, opt_text in options)
+            if max_len <= 6:
+                table = add_noborder_table(document, 1, 4)
+                for i, (label, opt_text) in enumerate(options):
+                    cell = table.cell(0, i)
+                    p = cell.paragraphs[0]
+                    runs = parse_latex_runs(f"{label}. {opt_text}")
+                    for run_type, content in runs:
+                        if run_type == "text":
+                            p.add_run(content)
+                        elif run_type == "inline_math":
+                            png_path = latex_to_png(content, active_config)
+                            if png_path and png_path.exists():
+                                from PIL import Image
+                                with Image.open(png_path) as img:
+                                    w_px, h_px = img.size
+                                w_pt = (w_px / active_config.latex_dpi) * 72 * 0.85
+                                run = p.add_run()
+                                run.add_picture(str(png_path), width=Pt(w_pt))
+                            else:
+                                p.add_run(f"${content}$")
+            elif max_len <= 15:
+                table = add_noborder_table(document, 2, 2)
+                opt_coords = [(0, 0), (0, 1), (1, 0), (1, 1)]
+                for idx, (label, opt_text) in enumerate(options):
+                    r_idx, c_idx = opt_coords[idx]
+                    cell = table.cell(r_idx, c_idx)
+                    p = cell.paragraphs[0]
+                    runs = parse_latex_runs(f"{label}. {opt_text}")
+                    for run_type, content in runs:
+                        if run_type == "text":
+                            p.add_run(content)
+                        elif run_type == "inline_math":
+                            png_path = latex_to_png(content, active_config)
+                            if png_path and png_path.exists():
+                                from PIL import Image
+                                with Image.open(png_path) as img:
+                                    w_px, h_px = img.size
+                                w_pt = (w_px / active_config.latex_dpi) * 72 * 0.85
+                                run = p.add_run()
+                                run.add_picture(str(png_path), width=Pt(w_pt))
+                            else:
+                                p.add_run(f"${content}$")
+            else:
+                for label, opt_text in options:
+                    add_paragraph_with_latex(document, f"{label}. {opt_text}", active_config)
+        else:
+            for line in clean_text.splitlines():
+                if line.strip():
+                    add_paragraph_with_latex(document, line.strip(), active_config)
+
     image_paths = _dedupe_paths([*(extra_image_paths or []), *inline_paths])
     _add_images(document, image_paths)
 

@@ -34,6 +34,10 @@ from question_bank.services.question_frequency_service import (
     QuestionFrequencyService,
     frequency_summary,
 )
+from pages_shared.shared_styles import inject_shared_css
+from pages_shared.shared_components import format_difficulty_badge, format_type_badge, format_frequency_badge, render_tag_panel_markdown
+from question_bank.services.assembly_basket_state import load_basket_draft, save_basket_draft, ORDER_KEY
+
 from question_bank.services.question_preview_display import (
     PreviewDensity,
     image_display_width,
@@ -220,7 +224,7 @@ def _render_import_dialog(service: QuestionService, raw_papers_dir: Path) -> Non
     st.caption("您可以点击下方按钮，直接在 Windows 文件窗口多选文件，或者选择包含试卷的文件夹。")
     if not local_dialog.available:
         st.error(f"{local_dialog.message} 请确认本机运行包已包含 Tkinter 依赖后重启应用。")
-    
+
     col1, col2 = st.columns(2)
     with col1:
         if st.button(
@@ -539,7 +543,7 @@ def _render_paper_list(service: QuestionService) -> None:
         tagged = tagged_counts.get(paper_id, 0)
         pct = f"{tagged / total:.0%}" if total > 0 else "0%"
         progress_str = f"📊 {tagged}/{total} ({pct})"
-        
+
         rows.append({
             "选择": False,
             "ID": paper_id,
@@ -565,9 +569,9 @@ def _render_paper_list(service: QuestionService) -> None:
     )
 
     selected_ids = [int(row["ID"]) for row in edited if bool(row.get("选择"))]
-    
+
     col1, col2 = st.columns([1, 2], gap="large")
-    
+
     with col1:
         st.markdown("##### 🗑️ 试卷管理")
         st.caption("从题库中移除选中的试卷及所含题目。该操作不会删除本地物理文件。")
@@ -582,17 +586,17 @@ def _render_paper_list(service: QuestionService) -> None:
                         removed += 1
                 st.success(f"已成功从题库移除 {removed} 份试卷。")
                 st.rerun()
-                
+
     with col2:
         st.markdown("##### 🏷️ 批量 AI 打标签")
         st.caption("对勾选试卷下的题目进行批量打标签。默认跳过已标注题目。")
-        
+
         cols = st.columns([1.2, 2])
         with cols[0]:
             skip_tagged = st.checkbox("跳过已标注", value=True, key="qb_paper_tag_skip_tagged_unified")
         with cols[1]:
             st.caption("并发与 RPM 使用左侧“题库打标签大模型 API 配置”。")
-            
+
         btn_tagging = st.button("🚀 开始为选中试卷批量打标签", type="primary", use_container_width=True, key="btn_bulk_tag_papers")
         if btn_tagging:
             if not selected_ids:
@@ -795,7 +799,7 @@ def _edit_question_dialog(service: QuestionService, question_id: int):
     if q is None:
         st.error("题目不存在")
         return
-        
+
     edit_number = st.text_input("题号", value=q.get("question_number") or "")
     type_options = ["选择题", "多选题", "填空题", "解答题", "解答题（计算）", "解答题（证明）", "解答题（画图）"]
     current_qtype = q.get("question_type") or "选择题"
@@ -803,9 +807,9 @@ def _edit_question_dialog(service: QuestionService, question_id: int):
     edit_type = st.selectbox("题型", type_options, index=default_idx)
     edit_text = st.text_area("题干内容", value=q.get("question_text") or "", height=150)
     edit_answer = st.text_area("参考答案", value=q.get("answer_text") or "", height=100)
-    
+
     from question_bank.models.question import QuestionUpdate
-    
+
     save_cols = st.columns(2)
     with save_cols[0]:
         if st.button("保存修改", type="primary", use_container_width=True):
@@ -843,7 +847,7 @@ def _render_local_tagging_api_config() -> None:
 
     pm = get_path_manager()
     profiles_path = pm.api_profiles_path
-    
+
     profiles = load_api_profiles(profiles_path)
     saved_profile = profiles[-1] if profiles else {}
 
@@ -860,7 +864,7 @@ def _render_local_tagging_api_config() -> None:
         st.session_state.tagging_requests_per_minute_input = int(saved_profile.get("tagging_requests_per_minute", 1000))
     if "tagging_thinking_input" not in st.session_state:
         st.session_state.tagging_thinking_input = bool(saved_profile.get("tagging_thinking", False))
-    
+
     # Force tagging_enabled_input to True in st.session_state so it is always active
     st.session_state.tagging_enabled_input = True
     if "tagging_review_enabled_input" not in st.session_state:
@@ -888,7 +892,7 @@ def _render_local_tagging_api_config() -> None:
     # Render inside sidebar!
     with st.sidebar:
         st.markdown("#### 🏷️ 题库打标签大模型 API 配置")
-        
+
         # Check if saved profile has key/url/model configured
         config_is_ready = bool(
             _cell_text(st.session_state.get("tagging_api_key_input"))
@@ -899,9 +903,9 @@ def _render_local_tagging_api_config() -> None:
             st.warning("必须先在下方配置并保存打标签 API，才能进行批量打标签。请填写 API Key、Base URL、模型并保存。")
         else:
             st.info("当前已启用专属打标签模型配置；批量打标签会统一使用这里保存的 API、并发和 RPM。")
-            
+
         st.caption("您可以配置性价比高、高并发的第三方大模型（如 gpt-4o-mini, o3-mini 等）来单独进行题库分析。")
-        
+
         tagging_api_key = st.text_input("打标签 API Key", type="password", key="tagging_api_key_input")
         tagging_base_url = st.text_input("打标签 API Base URL", key="tagging_base_url_input")
         tagging_model = st.text_input("打标签模型名称", key="tagging_model_input")
@@ -919,7 +923,7 @@ def _render_local_tagging_api_config() -> None:
             profiles = load_api_profiles(profiles_path)
             if not profiles:
                 profiles = [{"name": "default"}]
-            
+
             # Update last profile
             profiles[-1]["tagging_api_key"] = str(tagging_api_key).strip()
             profiles[-1]["tagging_base_url"] = normalize_openai_base_url(str(tagging_base_url).strip() or "https://api.openai.com/v1")
@@ -1051,11 +1055,11 @@ def _render_preview_display_controls() -> None:
 
 def _render_questions_v2(service: QuestionService) -> None:
     st.subheader("题目列表")
-    
+
     # 1. Render API config expander at the top of questions list section
     _render_local_tagging_api_config()
     st.write("---")
-    
+
     # 2. Get selected chapter and filter panel (Spans 100% full screen width!)
     selected_chapter = st.session_state.get("qb_curriculum_chapter_filter") or ""
     show_questions, filters = _question_filter_panel(service, selected_chapter)
@@ -1064,17 +1068,17 @@ def _render_questions_v2(service: QuestionService) -> None:
         return
 
     sort_mode = str(filters.pop("_sort_mode", "综合排序"))
-    
+
     # Query total count for pagination
     total_count = service.count_questions(**filters)
-    
+
     # Paginate
     page_size = 20
     total_pages = max((total_count + page_size - 1) // page_size, 1)
-    
+
     if "qb_current_page" not in st.session_state or st.session_state["qb_current_page"] > total_pages:
         st.session_state["qb_current_page"] = 1
-        
+
     current_page = st.session_state["qb_current_page"]
     _render_pagination_controls(
         state_key="qb_current_page",
@@ -1086,7 +1090,7 @@ def _render_questions_v2(service: QuestionService) -> None:
 
     offset = (current_page - 1) * page_size
     questions = service.query_questions(**filters, limit=page_size, offset=offset, sort_mode=sort_mode)
-    
+
     _render_ai_tagging_summary()
     if not questions:
         st.info("当前筛选条件下暂无题目。")
@@ -1098,7 +1102,7 @@ def _render_questions_v2(service: QuestionService) -> None:
         if service.batch_delete_questions([int(q["id"]) for q in questions if q.get("id")]):
             st.success("批量操作成功")
             st.rerun()
-    
+
     st.markdown("#### AI 标签分析")
     st.caption("默认分析并保存当前页筛选出来的题目；没有 OPENAI_API_KEY 时自动使用 mock 模式。")
     ai_cols = st.columns([1.2, 1, 1])
@@ -1157,7 +1161,7 @@ def _render_questions_v2(service: QuestionService) -> None:
     with preview_cols[1]:
         _render_preview_display_controls()
     _render_question_cards(service, questions, offset=offset, preview_mode=preview_mode)
-    
+
     st.divider()
     _render_pagination_controls(
         state_key="qb_current_page",
@@ -1166,13 +1170,13 @@ def _render_questions_v2(service: QuestionService) -> None:
         total_count=total_count,
         key_prefix="qb_bottom",
     )
-                
+
     # Deleted questions recovery panel
     st.divider()
     with st.expander("🗑️ 已删除内容恢复 (试卷 / 题目)"):
         deleted_papers = [p for p in service.list_papers(include_deleted=True) if p.get("import_status") == "deleted"]
         deleted_count = service.count_questions(is_deleted=True)
-        
+
         if deleted_papers:
             st.markdown("##### ♻️ 已删除试卷一键恢复")
             st.caption("恢复试卷后，该试卷下的全部题目也将自动恢复可见。")
@@ -1187,7 +1191,7 @@ def _render_questions_v2(service: QuestionService) -> None:
                             st.success(f"已成功恢复试卷“{dp.get('title')}”及其全部题目！")
                             st.rerun()
             st.divider()
-            
+
         st.markdown("##### ♻️ 已删除单题恢复")
         if deleted_count == 0:
             st.info("当前没有被软删除的独立题目。")
@@ -1203,7 +1207,7 @@ def _render_questions_v2(service: QuestionService) -> None:
                         restored = service.batch_restore_questions(del_ids)
                         st.success(f"已成功一键恢复 {restored} 道题目！")
                         st.rerun()
-            
+
             deleted_qs = service.query_questions(is_deleted=True, limit=50)
             for dq in deleted_qs:
                 dq_cols = st.columns([3, 1])
@@ -1711,14 +1715,7 @@ def _numeric_value(value: object) -> float:
         return 0.0
 
 
-def _frequency_badge_html(metrics: FrequencyMetrics) -> str:
-    summary = frequency_summary(metrics)
-    if not summary:
-        return ""
-    return (
-        '<span class="qb-badge qb-badge-medium" title="考频仅统计期中、期末和中考">'
-        f"{html.escape(summary)}</span>"
-    )
+
 
 
 def _render_ai_tagging_summary() -> None:
@@ -1794,6 +1791,11 @@ def _go_to_assembly_composition() -> None:
 
 
 def _basket_ids() -> list[int]:
+    if BASKET_KEY not in st.session_state:
+        b_ids, o_ids = load_basket_draft()
+        st.session_state[BASKET_KEY] = b_ids
+        st.session_state[ORDER_KEY] = o_ids
+
     values = st.session_state.setdefault(BASKET_KEY, [])
     deduped: list[int] = []
     for value in values:
@@ -1849,7 +1851,7 @@ def _render_sidebar_basket(service: QuestionService) -> None:
         if not basket_ids:
             st.info("尚未选定试题。在下方题目列表点击“加入试题篮”进行选题。")
             return
-        
+
         st.success(f"已选取 {len(basket_ids)} 道题目")
         col1, col2 = st.columns(2)
         with col1:
@@ -1860,7 +1862,7 @@ def _render_sidebar_basket(service: QuestionService) -> None:
         with col2:
             if st.button("🚀 开始组卷", key="sidebar_go_assembly", type="primary", use_container_width=True):
                 _go_to_assembly_composition()
-                
+
         st.divider()
         questions = [service.get_question(qid) for qid in basket_ids]
         questions = [q for q in questions if q is not None]
@@ -1905,15 +1907,19 @@ def _add_to_basket(question_id: int) -> None:
     if question_id not in basket_ids:
         basket_ids.append(question_id)
     st.session_state[BASKET_KEY] = basket_ids
+    save_basket_draft(basket_ids, st.session_state.get(ORDER_KEY, []))
 
 
 def _remove_from_basket(question_id: int) -> None:
-    st.session_state[BASKET_KEY] = [item for item in _basket_ids() if item != int(question_id)]
+    new_basket = [item for item in _basket_ids() if item != int(question_id)]
+    st.session_state[BASKET_KEY] = new_basket
+    save_basket_draft(new_basket, st.session_state.get(ORDER_KEY, []))
 
 
 def _clear_basket() -> None:
     st.session_state[BASKET_KEY] = []
-    st.session_state["qb_assembly_order"] = []
+    st.session_state[ORDER_KEY] = []
+    save_basket_draft([], [])
 
 
 def _render_questions(service: QuestionService) -> None:
@@ -2060,39 +2066,23 @@ def _render_premium_question_card_qb(
     q_id = int(question["id"])
     density, image_scale = _preview_display_settings()
     frequency = frequency or FrequencyMetrics(available=False)
-    
+
     # 1. Action columns in header (Outside A4 card, to look crisp)
     header_cols = st.columns([5.0, 1.0])
     with header_cols[0]:
         # Morandi badges
         badges_html = ""
         if is_teacher:
-            diff_val = 0
-            try:
-                diff_val = float(question.get("difficulty") or 0)
-            except ValueError:
-                pass
-            if diff_val > 0:
-                if diff_val <= 3:
-                    badge_class = "qb-badge qb-badge-easy"
-                    badge_label = f"易 (难度 {diff_val:.1f})"
-                elif diff_val <= 7:
-                    badge_class = "qb-badge qb-badge-medium"
-                    badge_label = f"中 (难度 {diff_val:.1f})"
-                else:
-                    badge_class = "qb-badge qb-badge-hard"
-                    badge_label = f"难 (难度 {diff_val:.1f})"
-                badges_html += f'<span class="{badge_class}">{badge_label}</span>'
-                
-            badges_html += _frequency_badge_html(frequency)
-                
+            badges_html += format_difficulty_badge(question.get("difficulty"))
+            badges_html += format_frequency_badge(frequency)
+
         source_label = html.escape(_source_label(question))
         st.markdown(f'<div class="qb-paper-header" style="border:none; margin:0; padding:0;"><span class="qb-paper-title-tag">第 {index} 题 · {source_label}</span><div>{badges_html}</div></div>', unsafe_allow_html=True)
-    
+
     with header_cols[1]:
         if st.button("📝 编辑内容", key=f"qb_edit_btn_{q_id}", use_container_width=True):
             _edit_question_dialog(service, q_id)
-            
+
     # 2. Card body (White paper layout inside native Streamlit container with border - FULL WIDTH!)
     with st.container(border=True):
         # Render question text at 100% full width
@@ -2102,7 +2092,7 @@ def _render_premium_question_card_qb(
             f'<div class="qb-rich-text" style="line-height: {density.line_height}; font-size: {density.body_font_rem:.2f}rem; color: #0f172a; font-family: \'Times New Roman\', SimSun, serif; width: 100%;">{q_rich}</div>',
             unsafe_allow_html=True
         )
-        
+
         # Render images
         image_paths = _dedupe_paths(
             [
@@ -2114,31 +2104,31 @@ def _render_premium_question_card_qb(
             _render_images(image_paths, image_scale_percent=image_scale)
         elif question.get("has_images") or question.get("needs_image_review"):
             st.info("原文件包含图片，但暂未能精确绑定到本题。请打开本地原卷对照复核。")
-            
+
         if is_teacher:
             with st.expander("🔑 查看参考答案与解析", expanded=False):
                 ans_text = question.get("answer_text") or "暂无填写的参考答案"
                 ans_rich = _safe_html_format(IMAGE_MARKER_PATTERN.sub("", ans_text).strip())
-                
+
                 teacher_box_html = f"""<div class="qb-teacher-box" style="margin-top: 5px; width: 100%; font-size: {density.teacher_box_font_rem:.2f}rem;">
 <div class="qb-teacher-title">🔑 教师参考答案</div>
 <div class="qb-rich-text" style="font-size: {density.answer_font_rem:.2f}rem; line-height: {density.line_height}; color: #1e3a8a; margin-bottom: 8px;">{ans_rich}</div>
 </div>"""
                 st.markdown(teacher_box_html, unsafe_allow_html=True)
-                
+
                 ans_images = _image_paths_from_text(ans_text)
                 if ans_images:
                     _render_images(ans_images, image_scale_percent=image_scale)
-                    
+
         # Elegant separator between question body and metadata footer
         st.markdown(f'<div style="border-top: 1px dashed #cbd5e1; margin: {density.separator_margin_px}px 0;"></div>', unsafe_allow_html=True)
-        
+
         # Horizontal Footer (3-column premium layout)
         col_attr, col_tags_footer, col_reason = st.columns([1.0, 1.8, 1.2], gap="medium")
-        
+
         with col_attr:
             st.markdown('<span style="font-size: 0.85rem; color: #64748b; font-weight: 600; display: block; margin-bottom: 6px;">📝 试题属性</span>', unsafe_allow_html=True)
-            
+
             # 1. 题型
             q_type = question.get("question_type") or "未知"
             if q_type in ("未知", "解答题"):
@@ -2150,103 +2140,22 @@ def _render_premium_question_card_qb(
                         question["question_type"] = detected_type
                     except Exception:
                         pass
-            
+
             # 2. 难度
-            diff_val = 0
-            try:
-                diff_val = float(question.get("difficulty") or 0)
-            except ValueError:
-                pass
-            diff_text = "未标注"
-            diff_class = "qb-badge-gray"
-            if diff_val > 0:
-                if diff_val <= 3:
-                    diff_text = f"易 ({diff_val:.1f})"
-                    diff_class = "qb-badge-easy"
-                elif diff_val <= 7:
-                    diff_text = f"中 ({diff_val:.1f})"
-                    diff_class = "qb-badge-medium"
-                else:
-                    diff_text = f"难 ({diff_val:.1f})"
-                    diff_class = "qb-badge-hard"
-                    
+            diff_badge = format_difficulty_badge(question.get("difficulty"))
+            type_badge = format_type_badge(q_type)
+            freq_badge = format_frequency_badge(frequency)
+
             attrs_html = f"""<div style="display: flex; flex-wrap: wrap; gap: 4px; align-items: center;">
-<span class="qb-badge qb-badge-gray" style="margin-bottom: 4px;">{html.escape(q_type)}</span>
-<span class="qb-badge {diff_class}" style="margin-bottom: 4px;">{diff_text}</span>"""
-            attrs_html += _frequency_badge_html(frequency)
-            attrs_html += "</div>"
+{type_badge}
+{diff_badge}
+{freq_badge}</div>"""
             st.markdown(attrs_html, unsafe_allow_html=True)
-            
+
         with col_tags_footer:
             st.markdown('<span style="font-size: 0.85rem; color: #64748b; font-weight: 600; display: block; margin-bottom: 6px;">🏷️ AI 属性标签</span>', unsafe_allow_html=True)
-            
-            # Parse AI tags
-            kp_tags = []
-            ability_tags = []
-            method_tags = []
-            model_tags = []
-            error_tags = []
-            chapter_tag = ""
-            student_level_tag = ""
-            tag_model_names = []
-            tag_confidences = []
-            
-            for t in question.get("tags", []):
-                tt = t.get("tag_type")
-                tv = t.get("tag_value")
-                if not tv:
-                    continue
-                model_name = _cell_text(t.get("model_name"))
-                if model_name and model_name not in tag_model_names:
-                    tag_model_names.append(model_name)
-                try:
-                    confidence_value = float(t.get("confidence"))
-                    tag_confidences.append(confidence_value)
-                except (TypeError, ValueError):
-                    pass
-                if tt == "knowledge_point":
-                    kp_tags.append(tv)
-                elif tt == "ability":
-                    ability_tags.append(tv)
-                elif tt == "method":
-                    method_tags.append(tv)
-                elif tt == "model":
-                    model_tags.append(tv)
-                elif tt in ("error_type", "error_prone", "error_prone_point"):
-                     error_tags.append(tv)
-                elif tt == "exam_scope":
-                    chapter_tag = tv
-                elif tt == "student_level":
-                    student_level_tag = tv
-            
-            tag_groups_html = []
-            if chapter_tag:
-                tag_groups_html.append(f'<span class="qb-badge qb-badge-blue" style="margin-bottom: 4px;">{html.escape(chapter_tag)}</span>')
-            if kp_tags:
-                tag_groups_html.append("".join(f'<span class="qb-badge qb-badge-green" style="margin-bottom: 4px;">{html.escape(x)}</span>' for x in kp_tags))
-            if method_tags:
-                tag_groups_html.append("".join(f'<span class="qb-badge qb-badge-orange" style="margin-bottom: 4px;">{html.escape(x)}</span>' for x in method_tags))
-            if ability_tags:
-                tag_groups_html.append("".join(f'<span class="qb-badge qb-badge-purple" style="margin-bottom: 4px;">{html.escape(x)}</span>' for x in ability_tags))
-            if model_tags:
-                tag_groups_html.append("".join(f'<span class="qb-badge qb-badge-magenta" style="margin-bottom: 4px;">{html.escape(x)}</span>' for x in model_tags))
-            if error_tags:
-                tag_groups_html.append("".join(f'<span class="qb-badge qb-badge-red" style="margin-bottom: 4px;">{html.escape(x)}</span>' for x in error_tags))
-            if student_level_tag:
-                tag_groups_html.append(f'<span class="qb-badge qb-badge-gray" style="margin-bottom: 4px;">🎯 {html.escape(student_level_tag)}</span>')
-                
-            if tag_groups_html:
-                st.markdown('<div style="display: flex; flex-wrap: wrap; gap: 4px;">' + "".join(tag_groups_html) + '</div>', unsafe_allow_html=True)
-                meta_bits = []
-                if tag_model_names:
-                    meta_bits.append("模型：" + " / ".join(tag_model_names[:2]))
-                if tag_confidences:
-                    meta_bits.append(f"置信度：{max(tag_confidences) * 100:.0f}%")
-                if meta_bits:
-                    st.caption(" · ".join(meta_bits))
-            else:
-                st.caption("💡 暂无 AI 属性标签。")
-                
+            render_tag_panel_markdown(st, question)
+
         with col_reason:
             st.markdown('<span style="font-size: 0.85rem; color: #64748b; font-weight: 600; display: block; margin-bottom: 6px;">💡 教学诊断与提示</span>', unsafe_allow_html=True)
             reason_text = question.get("reason")
@@ -2255,7 +2164,7 @@ def _render_premium_question_card_qb(
                 st.markdown(reason_html, unsafe_allow_html=True)
             else:
                 st.caption("💡 暂无诊断，可在下方管理版面中添加。")
-                
+
         # Expander for Tags Editing and Delete actions (Extremely clean!)
         with st.expander("🛠️ 管理此题标签与选项", expanded=False):
             analysis = _analysis_from_question(question)
@@ -2298,7 +2207,7 @@ def _render_premium_question_card_qb(
                     analysis.prerequisite_points,
                     key=f"qb_card_prerequisites_{q_id}",
                 )
-                
+
             score_cols = st.columns([1, 1, 1])
             with score_cols[0]:
                 difficulty_score = st.number_input(
@@ -2330,14 +2239,14 @@ def _render_premium_question_card_qb(
                 index=_option_index(chapter_options, analysis.textbook_chapter),
                 key=f"qb_card_chapter_{q_id}",
             )
-            
+
             reason = st.text_area(
                 "教学诊断与提示",
                 value=question.get("reason") or "",
                 height=80,
                 key=f"qb_card_reason_edit_{q_id}",
             )
-            
+
             action_btn_cols = st.columns([1, 1])
             with action_btn_cols[0]:
                 if st.button("保存标签与诊断", key=f"qb_card_save_tags_{q_id}", type="primary", use_container_width=True):
@@ -2377,7 +2286,7 @@ def _render_premium_question_card_qb(
 def _safe_html_format(value: str) -> str:
     if not value:
         return ""
-    
+
     # 1. 预处理：解出任何已存在的 HTML 实体的多重转义，确保输入源一致
     text = str(value)
     for _ in range(3):
@@ -2388,7 +2297,7 @@ def _safe_html_format(value: str) -> str:
 
     # 2. 对全文做基础 HTML 转义以确保安全性
     escaped = html.escape(text)
-    
+
     # 2.5 转换连续空格（2个或以上）为不折叠空格，防止浏览器折叠空白下划线
     escaped = re.sub(r" {2,}", lambda m: "&nbsp;" * len(m.group(0)), escaped)
 
@@ -2398,11 +2307,11 @@ def _safe_html_format(value: str) -> str:
         # 正则处理开始标签（兼容属性）
         opening_pattern = re.compile(rf"&lt;({tag})(\s+[^&]*)?&gt;", re.IGNORECASE)
         escaped = opening_pattern.sub(lambda m: f"<{m.group(1)}{html.unescape(m.group(2) or '')}>", escaped)
-        
+
         # 正则处理结束标签
         closing_pattern = re.compile(rf"&lt;/({tag})&gt;", re.IGNORECASE)
         escaped = closing_pattern.sub(rf"</\1>", escaped)
-        
+
     # 4. 单独匹配与规范化换行标签 <br>
     escaped = re.sub(r"&lt;br\s*/?&gt;", "<br>", escaped, flags=re.IGNORECASE)
 
@@ -2437,7 +2346,7 @@ def _render_images(image_paths: list[str], *, image_scale_percent: int | None = 
         return
     if image_scale_percent is None:
         _, image_scale_percent = _preview_display_settings()
-        
+
     if len(valid_paths) == 1:
         width = image_display_width(valid_paths[0], image_count=1, scale_percent=image_scale_percent)
         st.image(str(valid_paths[0]), width=width)
@@ -2481,78 +2390,81 @@ def _render_tag_panel(item: dict[str, Any]) -> None:
 
     with st.expander("编辑标签", expanded=False):
         analysis = _analysis_from_question(item)
-        edit_cols = st.columns([1, 1])
-        with edit_cols[0]:
-            knowledge_points = _tag_multiselect(
-                "知识点",
-                KNOWLEDGE_POINT_OPTIONS,
-                analysis.knowledge_points,
-                key=f"qb_card_knowledge_{item['id']}",
-            )
-            ability_tags = _tag_multiselect(
-                "数学能力",
-                ABILITY_TAG_OPTIONS,
-                analysis.ability_tags,
-                key=f"qb_card_ability_{item['id']}",
-            )
-            error_points = _tag_multiselect(
-                "易错点",
-                tuple(grouped.get("error_type", [])),
-                analysis.error_prone_points,
-                key=f"qb_card_errors_{item['id']}",
-            )
-        with edit_cols[1]:
-            method_tags = _tag_multiselect(
-                "思想方法",
-                METHOD_TAG_OPTIONS,
-                analysis.method_tags,
-                key=f"qb_card_methods_{item['id']}",
-            )
-            model_tags = _tag_multiselect(
-                "数学模型",
-                MATH_MODEL_OPTIONS,
-                analysis.math_model_tags,
-                key=f"qb_card_models_{item['id']}",
-            )
-            prerequisite_points = _tag_multiselect(
-                "前置知识",
-                KNOWLEDGE_POINT_OPTIONS,
-                analysis.prerequisite_points,
-                key=f"qb_card_prerequisites_{item['id']}",
-            )
+        with st.form(key=f"qb_card_edit_form_{item['id']}", clear_on_submit=False):
+            edit_cols = st.columns([1, 1])
+            with edit_cols[0]:
+                knowledge_points = _tag_multiselect(
+                    "知识点",
+                    KNOWLEDGE_POINT_OPTIONS,
+                    analysis.knowledge_points,
+                    key=f"qb_card_knowledge_{item['id']}",
+                )
+                ability_tags = _tag_multiselect(
+                    "数学能力",
+                    ABILITY_TAG_OPTIONS,
+                    analysis.ability_tags,
+                    key=f"qb_card_ability_{item['id']}",
+                )
+                error_points = _tag_multiselect(
+                    "易错点",
+                    tuple(grouped.get("error_type", [])),
+                    analysis.error_prone_points,
+                    key=f"qb_card_errors_{item['id']}",
+                )
+            with edit_cols[1]:
+                method_tags = _tag_multiselect(
+                    "思想方法",
+                    METHOD_TAG_OPTIONS,
+                    analysis.method_tags,
+                    key=f"qb_card_methods_{item['id']}",
+                )
+                model_tags = _tag_multiselect(
+                    "数学模型",
+                    MATH_MODEL_OPTIONS,
+                    analysis.math_model_tags,
+                    key=f"qb_card_models_{item['id']}",
+                )
+                prerequisite_points = _tag_multiselect(
+                    "前置知识",
+                    KNOWLEDGE_POINT_OPTIONS,
+                    analysis.prerequisite_points,
+                    key=f"qb_card_prerequisites_{item['id']}",
+                )
 
-        score_cols = st.columns([1, 1, 1])
-        with score_cols[0]:
-            difficulty_score = st.number_input(
-                "难度",
-                min_value=1,
-                max_value=10,
-                value=analysis.difficulty,
-                step=1,
-                key=f"qb_card_difficulty_{item['id']}",
+            score_cols = st.columns([1, 1, 1])
+            with score_cols[0]:
+                difficulty_score = st.number_input(
+                    "难度",
+                    min_value=1,
+                    max_value=10,
+                    value=analysis.difficulty,
+                    step=1,
+                    key=f"qb_card_difficulty_{item['id']}",
+                )
+            with score_cols[1]:
+                teaching_stage = st.text_input(
+                    "教学阶段",
+                    value=analysis.teaching_stage,
+                    key=f"qb_card_stage_{item['id']}",
+                )
+            with score_cols[2]:
+                level_options = _ensure_options(STUDENT_LEVELS, [analysis.suitable_student_level])
+                student_level = st.selectbox(
+                    "适合层次",
+                    options=level_options,
+                    index=_option_index(level_options, analysis.suitable_student_level),
+                    key=f"qb_card_level_{item['id']}",
+                )
+            chapter_options = _ensure_options(CURRICULUM_CHAPTERS, [analysis.textbook_chapter])
+            textbook_chapter = st.selectbox(
+                "教材章节",
+                options=chapter_options,
+                index=_option_index(chapter_options, analysis.textbook_chapter),
+                key=f"qb_card_chapter_{item['id']}",
             )
-        with score_cols[1]:
-            teaching_stage = st.text_input(
-                "教学阶段",
-                value=analysis.teaching_stage,
-                key=f"qb_card_stage_{item['id']}",
-            )
-        with score_cols[2]:
-            level_options = _ensure_options(STUDENT_LEVELS, [analysis.suitable_student_level])
-            student_level = st.selectbox(
-                "适合层次",
-                options=level_options,
-                index=_option_index(level_options, analysis.suitable_student_level),
-                key=f"qb_card_level_{item['id']}",
-            )
-        chapter_options = _ensure_options(CURRICULUM_CHAPTERS, [analysis.textbook_chapter])
-        textbook_chapter = st.selectbox(
-            "教材章节",
-            options=chapter_options,
-            index=_option_index(chapter_options, analysis.textbook_chapter),
-            key=f"qb_card_chapter_{item['id']}",
-        )
-        if st.button("保存标签修改", key=f"qb_card_save_tags_{item['id']}", type="primary"):
+            save_clicked = st.form_submit_button("保存标签修改", type="primary")
+
+        if save_clicked:
             accepted = TagAnalysis.from_dict(
                 {
                     "knowledge_points": knowledge_points,
@@ -2580,7 +2492,7 @@ def _render_tag_panel(item: dict[str, Any]) -> None:
                 st.rerun()
             else:
                 st.error("题目不存在或已删除，未保存。")
-        
+
         st.write("")
         if st.button("🗑️ 软删除此题目", key=f"qb_card_delete_{item['id']}", type="secondary", use_container_width=True):
             service = QuestionService(question_bank_db_path())
@@ -2703,315 +2615,7 @@ def _cell_text(value: object) -> str:
 
 
 st.set_page_config(page_title="题库管理", layout="wide")
-st.markdown(
-    """
-    <style>
-    .qb-rich-text {
-        white-space: pre-wrap;
-        line-height: 1.62;
-        font-size: 0.96rem;
-        color: #0f172a;
-        margin: 0.25rem 0 0.6rem 0;
-    }
-    
-    /* Premium Paper Style */
-    .qb-paper-card {
-        background-color: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        padding: 18px 22px;
-        margin-bottom: 14px;
-        box-shadow: 0 4px 15px rgba(15, 23, 42, 0.05);
-        font-family: 'Times New Roman', SimSun, serif;
-    }
-    
-    .qb-paper-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        border-bottom: 1px dashed #cbd5e1;
-        padding-bottom: 8px;
-        margin-bottom: 10px;
-        font-size: 0.86rem;
-        color: #64748b;
-    }
-    
-    .qb-paper-title-tag {
-        font-weight: bold;
-        font-size: 0.98rem;
-        color: #1e293b;
-    }
-    
-    /* Badge styling */
-    .qb-badge {
-        display: inline-flex;
-        align-items: center;
-        border-radius: 9999px;
-        padding: 2px 10px;
-        font-size: 0.75rem;
-        font-weight: 600;
-        line-height: 1.2;
-        margin-right: 6px;
-    }
-    
-    .qb-badge-easy {
-        background-color: #f0fdf4;
-        color: #166534;
-        border: 1px solid #bbf7d0;
-    }
-    
-    .qb-badge-medium {
-        background-color: #fef8e6;
-        color: #854d0e;
-        border: 1px solid #fef08a;
-    }
-    
-    .qb-badge-hard {
-        background-color: #fef2f2;
-        color: #991b1b;
-        border: 1px solid #fecaca;
-    }
-    
-    .qb-badge-blue {
-        background-color: #eff6ff;
-        color: #1d4ed8;
-        border: 1px solid #bfdbfe;
-    }
-    
-    .qb-badge-green {
-        background-color: #f0fdf4;
-        color: #15803d;
-        border: 1px solid #bbf7d0;
-    }
-    
-    .qb-badge-orange {
-        background-color: #fff7ed;
-        color: #c2410c;
-        border: 1px solid #ffedd5;
-    }
-    
-    .qb-badge-purple {
-        background-color: #faf5ff;
-        color: #6d28d9;
-        border: 1px solid #e9d5ff;
-    }
-    
-    .qb-badge-magenta {
-        background-color: #fdf2f8;
-        color: #be185d;
-        border: 1px solid #fbcfe8;
-    }
-    
-    .qb-badge-gray {
-        background-color: #f8fafc;
-        color: #475569;
-        border: 1px solid #e2e8f0;
-    }
-    
-    .qb-badge-red {
-        background-color: #fef2f2;
-        color: #dc2626;
-        border: 1px solid #fecaca;
-    }
-    
-    /* Teacher Mode Box */
-    .qb-teacher-box {
-        background-color: #f8fafc;
-        border-left: 4px solid #3b82f6;
-        padding: 10px 14px;
-        margin-top: 10px;
-        border-radius: 0 6px 6px 0;
-        font-size: 0.88rem;
-    }
-    
-    .qb-teacher-title {
-        font-weight: bold;
-        color: #1e3a8a;
-        margin-bottom: 6px;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-    }
-    .qb-rich-text sub {
-        font-size: 70%;
-        vertical-align: sub;
-        line-height: 0;
-    }
-    .qb-rich-text sup {
-        font-size: 70%;
-        vertical-align: super;
-        line-height: 0;
-    }
-    .qb-rich-text u {
-        text-decoration: underline;
-        text-underline-offset: 3px;
-        text-decoration-thickness: 1.5px;
-    }
-    .qb-rich-text table {
-        border-collapse: collapse;
-        width: auto;
-        max-width: 100%;
-        margin: 0.35rem 0 0.65rem;
-        table-layout: auto;
-    }
-    .qb-rich-text td,
-    .qb-rich-text th {
-        border: 1px solid #d8dee9;
-        padding: 0.32rem 0.45rem;
-        vertical-align: top;
-        word-break: break-word;
-    }
-    .qb-rich-text tr:nth-child(even) {
-        background: #f8fafc;
-    }
-    .qb-tag-panel {
-        display: flex;
-        flex-direction: column;
-        gap: 0.35rem;
-        margin: 0.75rem 0;
-    }
-    .qb-tag-row {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 0.35rem;
-    }
-    .qb-tag-label {
-        min-width: 4.75rem;
-        color: #697182;
-        font-size: 0.9rem;
-        font-weight: 600;
-    }
-    .qb-tag-chip {
-        display: inline-flex;
-        align-items: center;
-        border: 1px solid #d9dee8;
-        border-radius: 999px;
-        padding: 0.12rem 0.55rem;
-        background: #f6f8fb;
-        color: #303642;
-        font-size: 0.86rem;
-        line-height: 1.55;
-    }
-    .qb-fixed-basket-shell {
-        position: fixed;
-        right: 1.35rem;
-        top: 50%;
-        transform: translateY(-50%);
-        z-index: 999999;
-        font-family: "Microsoft YaHei", sans-serif;
-    }
-    .qb-fixed-basket-details {
-        position: relative;
-    }
-    .qb-fixed-basket-button {
-        width: 3.5rem;
-        height: 3.5rem;
-        border-radius: 999px;
-        background: #ffffff;
-        border: 1px solid rgba(49, 51, 63, 0.18);
-        box-shadow: 0 8px 24px rgba(20, 25, 40, 0.18);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        cursor: pointer;
-        list-style: none;
-        position: relative;
-    }
-    .qb-fixed-basket-button::-webkit-details-marker {
-        display: none;
-    }
-    .qb-fixed-basket-icon {
-        font-size: 1.45rem;
-    }
-    .qb-fixed-basket-badge {
-        position: absolute;
-        right: -0.15rem;
-        top: -0.2rem;
-        min-width: 1.35rem;
-        height: 1.35rem;
-        padding: 0 0.28rem;
-        border-radius: 999px;
-        background: #ef4444;
-        color: #fff;
-        font-size: 0.78rem;
-        line-height: 1.35rem;
-        text-align: center;
-        font-weight: 700;
-    }
-    .qb-fixed-basket-panel {
-        position: absolute;
-        right: 4.2rem;
-        top: 50%;
-        transform: translateY(-50%);
-        width: min(22rem, calc(100vw - 6rem));
-        max-height: 68vh;
-        overflow: hidden;
-        border: 1px solid #d9dee8;
-        border-radius: 0.75rem;
-        background: #ffffff;
-        box-shadow: 0 16px 40px rgba(20, 25, 40, 0.2);
-        padding: 0.8rem;
-    }
-    .qb-fixed-basket-title {
-        font-size: 1rem;
-        font-weight: 700;
-        margin-bottom: 0.55rem;
-        color: #242936;
-    }
-    .qb-fixed-basket-list {
-        max-height: 48vh;
-        overflow-y: auto;
-        padding-right: 0.25rem;
-    }
-    .qb-fixed-basket-item {
-        border-bottom: 1px solid #edf0f5;
-        padding: 0.55rem 0;
-    }
-    .qb-fixed-basket-source {
-        color: #252b37;
-        font-weight: 650;
-        font-size: 0.9rem;
-    }
-    .qb-fixed-basket-text,
-    .qb-fixed-basket-empty {
-        color: #667085;
-        font-size: 0.82rem;
-        line-height: 1.45;
-        margin: 0.25rem 0;
-    }
-    .qb-fixed-basket-remove {
-        color: #ef4444;
-        font-size: 0.82rem;
-        text-decoration: none;
-    }
-    .qb-fixed-basket-clear {
-        display: block;
-        margin-top: 0.65rem;
-        border-radius: 0.45rem;
-        border: 1px solid #fecaca;
-        color: #dc2626 !important;
-        text-align: center;
-        padding: 0.48rem 0.7rem;
-        font-weight: 650;
-        text-decoration: none;
-        background: #fff7f7;
-    }
-    .qb-fixed-basket-go {
-        display: block;
-        margin-top: 0.7rem;
-        border-radius: 0.45rem;
-        background: #1f6feb;
-        color: #fff !important;
-        text-align: center;
-        padding: 0.55rem 0.7rem;
-        font-weight: 650;
-        text-decoration: none;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+inject_shared_css(st)
 st.title("本地真题题库管理")
 
 service = QuestionService(question_bank_db_path())
