@@ -1,8 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
+
+DEFAULT_WEIGHTS = {
+    "concept": 0.40,
+    "frequency": 0.35,
+    "gradient": 0.10,
+    "diversity": 0.15,
+}
 
 LEVEL_DIFFICULTY_RANGES = {
     "基础": (1, 3),
@@ -15,6 +23,72 @@ LEVEL_DIFFICULTY_RANGES = {
     "综合突破": (7, 9),
     "压轴拔高": (8, 10),
 }
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateScore:
+    eligible: bool
+    total_score: float
+    components: dict[str, float]
+    weights: dict[str, float]
+    warnings: tuple[str, ...] = ()
+
+
+def score_candidate(
+    *,
+    concept_match: object,
+    mapping_status: object,
+    frequency_fit: object | None,
+    gradient_fit: object | None,
+    diversity_fit: object | None,
+    weights: Mapping[str, object] | None = None,
+) -> CandidateScore:
+    resolved_weights = _validated_weights(weights)
+    components = {
+        "concept": _rate(concept_match, default=0.0),
+        "frequency": _rate(frequency_fit, default=0.5),
+        "gradient": _rate(gradient_fit, default=0.5),
+        "diversity": _rate(diversity_fit, default=0.5),
+    }
+    warnings: list[str] = []
+    if frequency_fit is None:
+        warnings.append("候选题缺少考频数据")
+    if gradient_fit is None:
+        warnings.append("候选题缺少难度标签")
+    if diversity_fit is None:
+        warnings.append("候选题缺少方法、模型或来源信息")
+
+    eligible = _text(mapping_status).casefold() == "confirmed" and components["concept"] > 0
+    if not eligible:
+        warnings.append("知识点映射未确认或候选题与目标概念不匹配")
+        return CandidateScore(
+            eligible=False,
+            total_score=0.0,
+            components=components,
+            weights=resolved_weights,
+            warnings=tuple(warnings),
+        )
+    total = sum(components[key] * resolved_weights[key] for key in DEFAULT_WEIGHTS)
+    return CandidateScore(
+        eligible=True,
+        total_score=round(total, 4),
+        components=components,
+        weights=resolved_weights,
+        warnings=tuple(warnings),
+    )
+
+
+def frequency_fit_score(metrics: object | None) -> float:
+    if metrics is None or not bool(_metric_value(metrics, "available", False)):
+        return 0.5
+    if bool(_metric_value(metrics, "shenzhen_fit_available", False)):
+        score = (
+            _rate(_metric_value(metrics, "shenzhen_fit_score"), default=0.0) * 0.55
+            + _rate(_metric_value(metrics, "shenzhen_questions_per_paper"), default=0.0) * 0.25
+            + _rate(_metric_value(metrics, "national_questions_per_paper"), default=0.0) * 0.20
+        )
+        return round(score, 4)
+    return _rate(_metric_value(metrics, "questions_per_paper"), default=0.0)
 
 
 def normalize_score_1_to_5(value: object, default: float = 0.5) -> float:
@@ -139,3 +213,38 @@ def _rate(value: object, *, default: float) -> float:
 
 def _text(value: object) -> str:
     return str(value or "").strip()
+
+
+def _validated_weights(weights: Mapping[str, object] | None) -> dict[str, float]:
+    source = dict(DEFAULT_WEIGHTS if weights is None else weights)
+    if set(source) != set(DEFAULT_WEIGHTS):
+        raise ValueError(f"weights must contain exactly: {', '.join(DEFAULT_WEIGHTS)}")
+    try:
+        resolved = {key: float(source[key]) for key in DEFAULT_WEIGHTS}
+    except (TypeError, ValueError) as exc:
+        raise ValueError("weights must be numeric") from exc
+    if any(value < 0 or value > 1 for value in resolved.values()):
+        raise ValueError("weights must be between 0 and 1")
+    if abs(sum(resolved.values()) - 1.0) > 1e-9:
+        raise ValueError("weights must sum to 1")
+    return resolved
+
+
+def _metric_value(metrics: object, key: str, default: object = 0.0) -> object:
+    if isinstance(metrics, Mapping):
+        return metrics.get(key, default)
+    return getattr(metrics, key, default)
+
+
+__all__ = [
+    "CandidateScore",
+    "DEFAULT_WEIGHTS",
+    "difficulty_match_score",
+    "frequency_fit_score",
+    "normalize_score_1_to_5",
+    "parse_difficulty",
+    "preferred_difficulty_range",
+    "recommendation_score",
+    "score_candidate",
+    "tag_match_score",
+]

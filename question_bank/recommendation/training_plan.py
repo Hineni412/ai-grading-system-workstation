@@ -9,11 +9,44 @@ from question_bank.database.paths import question_bank_db_path
 from question_bank.recommendation.recommendation_engine import recommend_for_weak_point
 
 
+DEFAULT_STAGE_RATIOS = {
+    "direct": 0.60,
+    "prerequisite": 0.25,
+    "transfer": 0.15,
+}
+
 CLASS_LAYERS = (
     ("基础回补组", 0.0, 0.4),
     ("巩固提升组", 0.4, 0.7),
     ("低优先级组", 0.7, 1.01),
 )
+
+
+def allocate_stage_counts(
+    question_count: int,
+    ratios: Mapping[str, object] | None = None,
+) -> dict[str, int]:
+    count = int(question_count)
+    if count <= 0:
+        raise ValueError("question_count must be positive")
+    source = dict(DEFAULT_STAGE_RATIOS if ratios is None else ratios)
+    if set(source) != set(DEFAULT_STAGE_RATIOS):
+        raise ValueError(f"stage ratios must contain exactly: {', '.join(DEFAULT_STAGE_RATIOS)}")
+    resolved = {stage: float(source[stage]) for stage in DEFAULT_STAGE_RATIOS}
+    if any(value < 0 or value > 1 for value in resolved.values()):
+        raise ValueError("stage ratios must be between 0 and 1")
+    if abs(sum(resolved.values()) - 1.0) > 1e-9:
+        raise ValueError("stage ratios must sum to 1")
+    raw = {stage: count * resolved[stage] for stage in DEFAULT_STAGE_RATIOS}
+    result = {stage: int(raw[stage]) for stage in DEFAULT_STAGE_RATIOS}
+    remaining = count - sum(result.values())
+    order = sorted(
+        DEFAULT_STAGE_RATIOS,
+        key=lambda stage: (-(raw[stage] - result[stage]), list(DEFAULT_STAGE_RATIOS).index(stage)),
+    )
+    for stage in order[:remaining]:
+        result[stage] += 1
+    return result
 
 
 def generate_student_training_plan(

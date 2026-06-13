@@ -81,6 +81,23 @@ def normalize_question_text(value: object) -> str:
     return TEXT_CLEAN_PATTERN.sub("", _text(value)).casefold()
 
 
+def practice_gradient_fit(stage: str, difficulty: object) -> float | None:
+    normalized = parse_difficulty(difficulty)
+    if normalized is None:
+        return None
+    preferred = {
+        "prerequisite": (1, 4),
+        "direct": (4, 7),
+        "transfer": (7, 10),
+    }
+    lower, upper = preferred.get(str(stage), (4, 7))
+    if lower <= normalized <= upper:
+        return 1.0
+    if normalized in {lower - 1, upper + 1}:
+        return 0.6
+    return 0.2
+
+
 def _load_candidates(db_path: Path, weak_point: Mapping[str, Any]) -> list[dict[str, Any]]:
     if not db_path.exists():
         return []
