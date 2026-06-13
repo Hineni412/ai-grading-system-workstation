@@ -158,6 +158,17 @@ def canonical_knowledge_options() -> list[str]:
     return [item.canonical_name for item in CANONICAL_KNOWLEDGE]
 
 
+def canonical_knowledge_seed_rows() -> tuple[dict[str, object], ...]:
+    return tuple(
+        {
+            "canonical_key": item.canonical_id,
+            "name": item.canonical_name,
+            "aliases": item.aliases,
+        }
+        for item in CANONICAL_KNOWLEDGE
+    )
+
+
 def _normalize(value: object) -> str:
     return re.sub(r"[\s\W_]+", "", _text(value)).casefold()
 
