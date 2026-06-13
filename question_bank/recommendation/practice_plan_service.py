@@ -33,6 +33,84 @@ class PracticePlanService:
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
 
+    def generate(
+        self,
+        profile_set: Mapping[str, Any],
+        *,
+        variant_mode: str = "individual",
+        teacher_groups: Mapping[str, Iterable[str]] | None = None,
+        question_count: int = 10,
+        stage_ratios: Mapping[str, object] | None = None,
+        weights: Mapping[str, object] | None = None,
+        include_historical_wrong_questions: bool = False,
+        similarity_threshold: float = 0.92,
+    ) -> dict[str, Any]:
+        profiles = [
+            dict(item)
+            for item in profile_set.get("students", [])
+            if isinstance(item, Mapping) and item.get("student_id") is not None
+        ]
+        if variant_mode not in {"individual", "auto_group"}:
+            raise ValueError(f"unsupported variant mode: {variant_mode}")
+        normalized_overrides = _normalized_teacher_groups(teacher_groups, profiles)
+        if normalized_overrides:
+            grouped_profiles, ungrouped_students = _teacher_override_groups(profiles, normalized_overrides)
+        elif variant_mode == "auto_group":
+            grouped_profiles, ungrouped_students = _automatic_groups(profiles)
+        else:
+            grouped_profiles = [
+                ([profile], {"rule": "individual", "covered_concept_ids": _confirmed_concept_ids(profile)})
+                for profile in profiles
+            ]
+            ungrouped_students = []
+
+        variants: list[dict[str, Any]] = []
+        exam_scope = dict(profile_set.get("exam_scope") or {})
+        for index, (members, grouping_reason) in enumerate(grouped_profiles, start=1):
+            member_ids = [str(item["student_id"]) for item in members]
+            variant_type = "group" if len(members) > 1 else "individual"
+            variant_key = (
+                f"student-{member_ids[0]}"
+                if variant_type == "individual"
+                else f"group-{index}"
+            )
+            diagnosis_snapshot = {
+                "scope": {"mode": "selected", "student_ids": member_ids},
+                "exam_scope": exam_scope,
+                "students": members,
+            }
+            generated = self.generate_variant(
+                diagnosis_snapshot,
+                question_count=question_count,
+                stage_ratios=stage_ratios,
+                weights=weights,
+                include_historical_wrong_questions=include_historical_wrong_questions,
+                similarity_threshold=similarity_threshold,
+            )
+            variants.append(
+                {
+                    "variant_key": variant_key,
+                    "variant_type": variant_type,
+                    "student_ids": member_ids,
+                    "grouping_reason": grouping_reason,
+                    "diagnosis_snapshot": diagnosis_snapshot,
+                    **generated,
+                }
+            )
+        return {
+            "scope_snapshot": dict(profile_set.get("scope") or {}),
+            "exam_scope": exam_scope,
+            "diagnosis_snapshot": dict(profile_set),
+            "variant_mode": variant_mode,
+            "variants": variants,
+            "ungrouped_students": ungrouped_students,
+            "teacher_override": {
+                "allowed": True,
+                "applied": bool(normalized_overrides),
+                "assignments": normalized_overrides,
+            },
+        }
+
     def generate_variant(
         self,
         diagnosis_profile: Mapping[str, Any],
@@ -250,6 +328,158 @@ class PracticePlanService:
             if method_key:
                 method_counts[method_key] += 1
         return selected
+
+
+def _automatic_groups(
+    profiles: list[dict[str, Any]],
+) -> tuple[list[tuple[list[dict[str, Any]], dict[str, Any]]], list[str]]:
+    buckets: dict[tuple[str, tuple[int, ...]], list[dict[str, Any]]] = {}
+    ungrouped: list[str] = []
+    groups: list[tuple[list[dict[str, Any]], dict[str, Any]]] = []
+    for profile in profiles:
+        concept_ids = _confirmed_concept_ids(profile)
+        score_band = _score_rate_band(profile.get("score_rate"))
+        if not concept_ids or score_band == "unknown":
+            student_id = str(profile["student_id"])
+            ungrouped.append(student_id)
+            groups.append(
+                (
+                    [profile],
+                    {
+                        "rule": "individual_unconfirmed_or_missing_score",
+                        "covered_concept_ids": concept_ids,
+                        "score_rate_band": score_band,
+                    },
+                )
+            )
+            continue
+        buckets.setdefault((score_band, tuple(concept_ids)), []).append(profile)
+    for (score_band, concept_ids), members in sorted(
+        buckets.items(),
+        key=lambda item: (item[0][0], item[0][1], str(item[1][0]["student_id"])),
+    ):
+        groups.append(
+            (
+                members,
+                {
+                    "rule": "confirmed_concept_vector_and_score_band",
+                    "covered_concept_ids": list(concept_ids),
+                    "score_rate_band": score_band,
+                    "weakness_vector": _average_weakness_vector(members, concept_ids),
+                },
+            )
+        )
+    groups.sort(key=lambda item: min(str(profile["student_id"]) for profile in item[0]))
+    return groups, sorted(ungrouped)
+
+
+def _normalized_teacher_groups(
+    teacher_groups: Mapping[str, Iterable[str]] | None,
+    profiles: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    if not teacher_groups:
+        return {}
+    valid_ids = {str(item["student_id"]) for item in profiles}
+    assigned: set[str] = set()
+    result: dict[str, list[str]] = {}
+    for group_name, raw_ids in teacher_groups.items():
+        member_ids: list[str] = []
+        for value in raw_ids:
+            student_id = str(value)
+            if student_id in valid_ids and student_id not in assigned:
+                member_ids.append(student_id)
+                assigned.add(student_id)
+        if member_ids:
+            result[str(group_name)] = member_ids
+    return result
+
+
+def _teacher_override_groups(
+    profiles: list[dict[str, Any]],
+    assignments: Mapping[str, list[str]],
+) -> tuple[list[tuple[list[dict[str, Any]], dict[str, Any]]], list[str]]:
+    by_id = {str(item["student_id"]): item for item in profiles}
+    assigned: set[str] = set()
+    groups: list[tuple[list[dict[str, Any]], dict[str, Any]]] = []
+    for group_name, member_ids in assignments.items():
+        members = [by_id[student_id] for student_id in member_ids]
+        assigned.update(member_ids)
+        groups.append(
+            (
+                members,
+                {
+                    "rule": "teacher_override",
+                    "group_name": group_name,
+                    "covered_concept_ids": sorted(
+                        {
+                            concept_id
+                            for member in members
+                            for concept_id in _confirmed_concept_ids(member)
+                        }
+                    ),
+                },
+            )
+        )
+    for profile in profiles:
+        student_id = str(profile["student_id"])
+        if student_id not in assigned:
+            groups.append(
+                (
+                    [profile],
+                    {
+                        "rule": "individual_not_assigned_by_teacher",
+                        "covered_concept_ids": _confirmed_concept_ids(profile),
+                    },
+                )
+            )
+    return groups, []
+
+
+def _confirmed_concept_ids(profile: Mapping[str, Any]) -> list[int]:
+    return sorted(
+        {
+            int(item["concept_id"])
+            for item in profile.get("weak_points", [])
+            if isinstance(item, Mapping)
+            and item.get("concept_id") is not None
+            and str(item.get("mapping_status") or "") == "confirmed"
+            and item.get("eligible_for_recommendation") is not False
+        }
+    )
+
+
+def _average_weakness_vector(
+    profiles: list[dict[str, Any]],
+    concept_ids: Iterable[int],
+) -> dict[str, float]:
+    result: dict[str, float] = {}
+    for concept_id in concept_ids:
+        values = [
+            1.0 - min(1.0, max(0.0, float(item.get("mastery") or 0.0)))
+            for profile in profiles
+            for item in profile.get("weak_points", [])
+            if isinstance(item, Mapping)
+            and item.get("concept_id") is not None
+            and int(item["concept_id"]) == int(concept_id)
+            and str(item.get("mapping_status") or "") == "confirmed"
+            and item.get("eligible_for_recommendation") is not False
+        ]
+        result[str(concept_id)] = round(sum(values) / len(values), 4) if values else 0.0
+    return result
+
+
+def _score_rate_band(value: object) -> str:
+    try:
+        score_rate = float(value)
+    except (TypeError, ValueError):
+        return "unknown"
+    if score_rate > 1:
+        score_rate /= 100
+    if score_rate < 0.4:
+        return "low"
+    if score_rate < 0.7:
+        return "middle"
+    return "high"
 
 
 def _eligible_weak_points(profile: Mapping[str, Any]) -> list[dict[str, Any]]:
