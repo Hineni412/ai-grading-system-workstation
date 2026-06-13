@@ -96,6 +96,19 @@ def test_teacher_override_assignments_are_recorded(
     assert any(item["student_ids"] == ["12", "18"] for item in plan["variants"])
 
 
+def test_generation_config_records_original_exclusion_choice(
+    service: PracticePlanService,
+    profile_set: dict,
+) -> None:
+    plan = service.generate(
+        profile_set,
+        exclude_current_exam_originals=False,
+    )
+
+    assert plan["generation_config"]["exclude_current_exam_originals"] is False
+    assert plan["generation_config"]["question_count"] == 10
+
+
 def _student(student_id: str, score_rate: float, concepts: list[tuple[int, float]]) -> dict:
     return {
         "student_id": student_id,
