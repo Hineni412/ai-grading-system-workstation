@@ -18,6 +18,7 @@ from question_bank.importers.batch_importer import (
 from question_bank.models.tag_schema import TaggingContext
 from question_bank.services.ai_tagging_service import AITaggingService, is_auto_saveable_result
 from question_bank.services.question_service import QuestionService
+from question_bank.services.source_question_link_service import SourceQuestionLinkService
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +27,9 @@ class GradingPaperIntakeResult:
     import_result: BatchImportResult
     tagged_questions: int = 0
     failed_tagging: int = 0
+    confirmed_links: int = 0
+    suggested_links: int = 0
+    unresolved_links: int = 0
 
 
 def save_uploaded_grading_paper(
@@ -57,6 +61,8 @@ def intake_grading_paper_to_question_bank(
     tagging_max_workers: int | None = None,
     tagging_requests_per_minute: int | None = None,
     tagging_progress_callback: Callable[[int, int, int, Any], None] | None = None,
+    grading_session_id: str | int | None = None,
+    grading_source_questions: list[dict[str, Any]] | None = None,
 ) -> GradingPaperIntakeResult:
     paper_path = Path(source_file)
     database_path = Path(db_path) if db_path is not None else question_bank_db_path()
@@ -68,11 +74,11 @@ def intake_grading_paper_to_question_bank(
         default_metadata=merged_metadata,
     )
 
+    questions = _questions_for_source(database_path, str(paper_path))
     tagged_questions = 0
     failed_tagging = 0
     if run_ai_tagging and import_result.question_count:
         service = QuestionService(database_path)
-        questions = _questions_for_source(database_path, str(paper_path))
         contexts = {int(item["id"]): _tagging_context(item) for item in questions}
         tagger = ai_service or AITaggingService()
         results = tagger.analyze_questions(
@@ -95,11 +101,21 @@ def intake_grading_paper_to_question_bank(
             else:
                 failed_tagging += 1
 
+    link_summary = {"confirmed": 0, "suggested": 0, "unresolved": 0}
+    if grading_session_id is not None and grading_source_questions:
+        link_summary = SourceQuestionLinkService(database_path).link_questions_for_session(
+            grading_session_id=grading_session_id,
+            source_questions=grading_source_questions,
+        )
+
     return GradingPaperIntakeResult(
         saved_file=paper_path,
         import_result=import_result,
         tagged_questions=tagged_questions,
         failed_tagging=failed_tagging,
+        confirmed_links=link_summary["confirmed"],
+        suggested_links=link_summary["suggested"],
+        unresolved_links=link_summary["unresolved"],
     )
 
 
@@ -115,6 +131,8 @@ def copy_and_intake_uploaded_grading_paper(
     tagging_max_workers: int | None = None,
     tagging_requests_per_minute: int | None = None,
     tagging_progress_callback: Callable[[int, int, int, Any], None] | None = None,
+    grading_session_id: str | int | None = None,
+    grading_source_questions: list[dict[str, Any]] | None = None,
 ) -> GradingPaperIntakeResult:
     saved = save_uploaded_grading_paper(filename=filename, content=content, raw_papers_dir=raw_papers_dir)
     try:
@@ -127,6 +145,8 @@ def copy_and_intake_uploaded_grading_paper(
             tagging_max_workers=tagging_max_workers,
             tagging_requests_per_minute=tagging_requests_per_minute,
             tagging_progress_callback=tagging_progress_callback,
+            grading_session_id=grading_session_id,
+            grading_source_questions=grading_source_questions,
         )
     except Exception:
         if saved.exists() and saved.stat().st_size == 0:

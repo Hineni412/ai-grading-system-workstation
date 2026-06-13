@@ -13,7 +13,11 @@ from typing import Any
 from docx import Document
 from docx.shared import Inches
 
-from question_bank.services.question_frequency_service import QuestionFrequencyService, frequency_summary
+from question_bank.services.question_frequency_service import (
+    FrequencyMetrics,
+    QuestionFrequencyService,
+    frequency_summary,
+)
 from question_bank.exporters.base_exporter import _resolve_image_path, apply_exporter_layout
 from question_bank.exporters.export_config import ExportConfig
 
@@ -51,6 +55,7 @@ class ExportQuestion:
     recommend_reason: str = ""
     suggested_order: int = 0
     training_stage: str = "基础回补"
+    task_item_code: str = ""
 
 
 def export_training_docx(
@@ -63,6 +68,8 @@ def export_training_docx(
     student_id: str | None = None,
     class_id: str | None = None,
     use_real_name: bool = False,
+    task_code: str | None = None,
+    variant_code: str | None = None,
     config: ExportConfig | None = None,
 ) -> Path:
     """Export selected recommendations to a student or teacher DOCX file."""
@@ -97,6 +104,10 @@ def export_training_docx(
     document.add_heading(f"{title_name} 专项训练", level=0)
     document.add_paragraph("说明：根据最近一次考试薄弱点生成")
     document.add_paragraph(f"版本：{AUDIENCE_LABELS[audience]}")
+    if audience == "teacher" and task_code:
+        document.add_paragraph(f"训练任务：{task_code}")
+    if audience == "teacher" and variant_code:
+        document.add_paragraph(f"训练版本：{variant_code}")
 
 
     for stage, stage_items in _group_by_stage(items).items():
@@ -129,10 +140,11 @@ def load_export_questions(
     result: list[ExportQuestion] = []
     for recommendation in recommendation_list:
         question_id = int(recommendation.get("question_id") or 0)
-        detail = details.get(question_id)
+        snapshot = recommendation.get("question_snapshot")
+        detail = dict(snapshot) if isinstance(snapshot, Mapping) else details.get(question_id)
         if not detail:
             continue
-        tag_map = tags.get(question_id, {})
+        tag_map = _merged_tags(tags.get(question_id, {}), detail)
         result.append(
             ExportQuestion(
                 question_id=question_id,
@@ -143,7 +155,7 @@ def load_export_questions(
                 page_range=_text(_row_value(detail, "page_range")),
                 image_paths=_parse_image_paths(_row_value(detail, "image_paths")),
                 difficulty=_text(_row_value(detail, "difficulty") or recommendation.get("difficulty")),
-                frequency=frequency_summary(frequencies.get(question_id)),
+                frequency=_frequency_display(recommendation, frequencies.get(question_id)),
                 knowledge_points=_unique_strings(
                     [*tag_map.get("knowledge_point", []), *recommendation.get("knowledge_points", [])]
                 ),
@@ -153,6 +165,7 @@ def load_export_questions(
                 recommend_reason=_text(recommendation.get("recommend_reason")),
                 suggested_order=_int(recommendation.get("suggested_order")),
                 training_stage=_text(recommendation.get("training_stage")) or "基础回补",
+                task_item_code=_text(recommendation.get("task_item_code")),
             )
         )
     return sorted(result, key=lambda item: (STAGE_ORDER.index(item.training_stage) if item.training_stage in STAGE_ORDER else 99, item.suggested_order, item.question_id))
@@ -190,6 +203,8 @@ def _add_question_to_docx(document: Document, item: ExportQuestion, *, include_t
     document.add_paragraph(item.question_text)
     _add_images(document, item.image_paths)
     if include_teacher_fields:
+        if item.task_item_code:
+            document.add_paragraph(f"任务题码：{item.task_item_code}")
         document.add_paragraph(f"答案：{item.answer_text or '（暂无答案）'}")
         document.add_paragraph(f"知识点：{_join_or_dash(item.knowledge_points)}")
         document.add_paragraph(f"方法标签：{_join_or_dash(item.method_tags)}")
@@ -284,11 +299,11 @@ def _load_question_tags(db_path: Path, question_ids: list[int]) -> dict[int, dic
     return {question_id: dict(tag_map) for question_id, tag_map in tags.items()}
 
 
-def _source_display(detail: sqlite3.Row, recommendation: Mapping[str, Any]) -> str:
-    year = _text(detail["year"])
-    region_exam = f"{_text(detail['district'])}{_text(detail['exam_type'])}"
+def _source_display(detail: Mapping[str, Any] | sqlite3.Row, recommendation: Mapping[str, Any]) -> str:
+    year = _text(_row_value(detail, "year"))
+    region_exam = f"{_text(_row_value(detail, 'district'))}{_text(_row_value(detail, 'exam_type'))}"
     source = " ".join(part for part in [year, region_exam] if part)
-    return source or _text(detail["paper_title"]) or _text(recommendation.get("source_paper")) or _text(detail["paper_source_file"]) or _text(detail["question_source_file"])
+    return source or _text(_row_value(detail, "paper_title")) or _text(recommendation.get("source_paper")) or _text(_row_value(detail, "paper_source_file")) or _text(_row_value(detail, "question_source_file"))
 
 
 def _output_path(output_dir: str | Path, *, audience: str, title_name: str, suffix: str) -> Path:
@@ -356,5 +371,38 @@ def _text(value: object) -> str:
     return str(value or "").strip()
 
 
-def _row_value(row: sqlite3.Row, key: str) -> object:
+def _merged_tags(
+    current: Mapping[str, list[str]],
+    detail: Mapping[str, Any] | sqlite3.Row,
+) -> dict[str, list[str]]:
+    result = {key: list(values) for key, values in current.items()}
+    snapshot_tags = _row_value(detail, "tags")
+    if isinstance(snapshot_tags, list):
+        for tag in snapshot_tags:
+            if not isinstance(tag, Mapping):
+                continue
+            tag_type = _text(tag.get("tag_type"))
+            tag_value = _text(tag.get("tag_value"))
+            values = result.setdefault(tag_type, [])
+            if tag_type and tag_value and tag_value not in values:
+                values.append(tag_value)
+    return result
+
+
+def _frequency_display(
+    recommendation: Mapping[str, Any],
+    current: FrequencyMetrics | None,
+) -> str:
+    snapshot = recommendation.get("frequency")
+    if isinstance(snapshot, Mapping):
+        fields = FrequencyMetrics.__dataclass_fields__
+        values = {key: snapshot[key] for key in fields if key in snapshot}
+        try:
+            return frequency_summary(FrequencyMetrics(**values))
+        except (TypeError, ValueError):
+            pass
+    return frequency_summary(current)
+
+
+def _row_value(row: Mapping[str, Any] | sqlite3.Row, key: str) -> object:
     return row[key] if key in row.keys() else None

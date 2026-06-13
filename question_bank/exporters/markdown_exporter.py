@@ -28,6 +28,8 @@ def export_training_markdown(
     student_id: str | None = None,
     class_id: str | None = None,
     use_real_name: bool = False,
+    task_code: str | None = None,
+    variant_code: str | None = None,
 ) -> Path:
     """Export selected recommendations to Markdown.
 
@@ -56,6 +58,10 @@ def export_training_markdown(
         f"版本：{AUDIENCE_LABELS[audience]}",
         "",
     ]
+    if audience == "teacher" and task_code:
+        lines.extend([f"训练任务：{task_code}", ""])
+    if audience == "teacher" and variant_code:
+        lines.extend([f"训练版本：{variant_code}", ""])
     for stage, stage_items in _group_by_stage(items).items():
         lines.extend([f"## {STAGE_TITLES.get(stage, stage)}", ""])
         for item in stage_items:
@@ -70,6 +76,8 @@ def export_training_markdown(
             for image_path in item.image_paths:
                 lines.extend([f"![题目图像]({image_path})", ""])
             if audience == "teacher":
+                if item.task_item_code:
+                    lines.extend([f"任务题码：{item.task_item_code}", ""])
                 lines.extend(
                     [
                         f"答案：{item.answer_text or '（暂无答案）'}",
