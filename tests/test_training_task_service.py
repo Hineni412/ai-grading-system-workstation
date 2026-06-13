@@ -156,3 +156,26 @@ def test_mark_export_state_updates_task_and_variant_only(
     assert loaded["status"] == "exporting"
     assert loaded["variants"][0]["status"] == "exporting"
     assert loaded["variants"][0]["items"][0]["question_snapshot"]["question_text"] == "原题干"
+
+
+def test_read_methods_do_not_run_database_initialization(
+    service: TrainingTaskService,
+    practice_plan: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = service.create_task(practice_plan, created_by="teacher")
+
+    def fail_if_initialized(_db_path):
+        raise AssertionError("read-only task lookup must not initialize the database")
+
+    monkeypatch.setattr(
+        "question_bank.services.training_task_service.initialize_database",
+        fail_if_initialized,
+    )
+    monkeypatch.setattr(
+        "question_bank.services.training_task_service.connect",
+        fail_if_initialized,
+    )
+
+    assert service.list_tasks()[0]["id"] == task.id
+    assert service.get_task(task.id)["task_code"] == task.task_code
