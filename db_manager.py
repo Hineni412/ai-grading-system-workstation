@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from ai_grader import GradingResult
 from path_manager import resolve_stored_file_path
@@ -243,6 +244,7 @@ class DBManager:
                     template_config_path TEXT,
                     regions_path TEXT,
                     is_confirmed INTEGER NOT NULL DEFAULT 0,
+                    regions_snapshot_pending INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
                     FOREIGN KEY(session_id) REFERENCES grading_sessions(id)
@@ -252,11 +254,13 @@ class DBManager:
             self._ensure_column(conn, "session_templates", "ai_analysis_path", "TEXT")
             self._ensure_column(conn, "session_templates", "template_config_path", "TEXT")
             self._ensure_column(conn, "session_templates", "regions_path", "TEXT")
+            self._ensure_column(conn, "session_templates", "regions_snapshot_pending", "INTEGER NOT NULL DEFAULT 0")
 
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS answer_regions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    region_uuid TEXT NOT NULL UNIQUE,
                     session_id INTEGER NOT NULL,
                     template_id INTEGER NOT NULL,
                     page TEXT NOT NULL,
@@ -269,11 +273,73 @@ class DBManager:
                     mapped_question_id TEXT,
                     confidence REAL NOT NULL DEFAULT 0,
                     is_confirmed INTEGER NOT NULL DEFAULT 0,
+                    mapping_status TEXT NOT NULL DEFAULT 'unbound',
+                    multi_region_confirmed INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
                     FOREIGN KEY(session_id) REFERENCES grading_sessions(id),
                     FOREIGN KEY(template_id) REFERENCES session_templates(id)
                 )
+                """
+            )
+            self._ensure_column(conn, "answer_regions", "region_uuid", "TEXT")
+            self._ensure_column(conn, "answer_regions", "mapping_status", "TEXT NOT NULL DEFAULT 'unbound'")
+            self._ensure_column(conn, "answer_regions", "multi_region_confirmed", "INTEGER NOT NULL DEFAULT 0")
+
+            seen_region_uuids: set[str] = set()
+            region_identity_rows = conn.execute(
+                "SELECT id, region_uuid FROM answer_regions ORDER BY id ASC"
+            ).fetchall()
+            for row in region_identity_rows:
+                region_uuid = row["region_uuid"]
+                if region_uuid is not None and str(region_uuid).strip() and str(region_uuid) not in seen_region_uuids:
+                    seen_region_uuids.add(str(region_uuid))
+                    continue
+                replacement_uuid = str(uuid4())
+                while replacement_uuid in seen_region_uuids:
+                    replacement_uuid = str(uuid4())
+                conn.execute(
+                    "UPDATE answer_regions SET region_uuid = ? WHERE id = ?",
+                    (replacement_uuid, int(row["id"])),
+                )
+                seen_region_uuids.add(replacement_uuid)
+
+            conn.execute(
+                """
+                UPDATE answer_regions
+                SET mapping_status = CASE
+                    WHEN COALESCE(TRIM(mapped_question_id), '') <> '' THEN 'manual'
+                    ELSE 'unbound'
+                END
+                WHERE mapping_status IS NULL
+                   OR TRIM(mapping_status) = ''
+                   OR (
+                       mapping_status = 'unbound'
+                       AND COALESCE(TRIM(mapped_question_id), '') <> ''
+                   )
+                """
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_answer_regions_region_uuid_unique ON answer_regions(region_uuid)"
+            )
+            conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS answer_regions_region_uuid_required_insert
+                BEFORE INSERT ON answer_regions
+                WHEN NEW.region_uuid IS NULL OR TRIM(NEW.region_uuid) = ''
+                BEGIN
+                    SELECT RAISE(ABORT, 'answer_regions.region_uuid must be nonblank');
+                END
+                """
+            )
+            conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS answer_regions_region_uuid_required_update
+                BEFORE UPDATE OF region_uuid ON answer_regions
+                WHEN NEW.region_uuid IS NULL OR TRIM(NEW.region_uuid) = ''
+                BEGIN
+                    SELECT RAISE(ABORT, 'answer_regions.region_uuid must be nonblank');
+                END
                 """
             )
 
@@ -878,7 +944,7 @@ class DBManager:
                 """
                 SELECT id, session_id, front_template_path, back_template_path,
                        ai_analysis_path, template_config_path, regions_path,
-                       is_confirmed, created_at, updated_at
+                       is_confirmed, regions_snapshot_pending, created_at, updated_at
                 FROM session_templates
                 WHERE session_id = ?
                 """,
@@ -909,40 +975,68 @@ class DBManager:
             )
             conn.commit()
 
+    def _insert_answer_region_conn(
+        self,
+        conn: sqlite3.Connection,
+        session_id: int,
+        template_id: int,
+        region: dict[str, Any],
+    ) -> int:
+        raw_region_uuid = region.get("region_uuid")
+        region_uuid = (
+            str(raw_region_uuid)
+            if raw_region_uuid is not None and str(raw_region_uuid).strip()
+            else str(uuid4())
+        )
+        mapped_question_id = region.get("mapped_question_id")
+        raw_mapping_status = region.get("mapping_status")
+        mapping_status = (
+            str(raw_mapping_status)
+            if raw_mapping_status is not None and str(raw_mapping_status).strip()
+            else ("manual" if mapped_question_id is not None and str(mapped_question_id).strip() else "unbound")
+        )
+        cursor = conn.execute(
+            """
+            INSERT INTO answer_regions (
+                region_uuid, session_id, template_id, page, region_order, x, y, w, h,
+                detected_question_id, mapped_question_id, confidence, is_confirmed,
+                mapping_status, multi_region_confirmed, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
+            """,
+            (
+                region_uuid,
+                session_id,
+                template_id,
+                region.get("page", "front"),
+                int(region.get("region_order", 0)),
+                int(region.get("x", 0)),
+                int(region.get("y", 0)),
+                int(region.get("w", 0)),
+                int(region.get("h", 0)),
+                region.get("detected_question_id"),
+                mapped_question_id,
+                float(region.get("confidence", 0.0)),
+                1 if region.get("is_confirmed") else 0,
+                mapping_status,
+                1 if region.get("multi_region_confirmed") else 0,
+            ),
+        )
+        return int(cursor.lastrowid)
+
     def save_answer_regions(self, session_id: int, template_id: int, regions: list[dict[str, Any]]) -> None:
         with self._connect() as conn:
             conn.execute("DELETE FROM answer_regions WHERE session_id = ?", (session_id,))
             for region in regions:
-                conn.execute(
-                    """
-                    INSERT INTO answer_regions (
-                        session_id, template_id, page, region_order, x, y, w, h,
-                        detected_question_id, mapped_question_id, confidence, is_confirmed, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
-                    """,
-                    (
-                        session_id,
-                        template_id,
-                        region.get("page"),
-                        int(region.get("region_order", 0)),
-                        int(region.get("x", 0)),
-                        int(region.get("y", 0)),
-                        int(region.get("w", 0)),
-                        int(region.get("h", 0)),
-                        region.get("detected_question_id"),
-                        region.get("mapped_question_id"),
-                        float(region.get("confidence", 0.0)),
-                        1 if region.get("is_confirmed") else 0,
-                    ),
-                )
+                self._insert_answer_region_conn(conn, session_id, template_id, region)
             conn.commit()
 
     def list_answer_regions(self, session_id: int) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, session_id, template_id, page, region_order, x, y, w, h,
-                       detected_question_id, mapped_question_id, confidence, is_confirmed, created_at, updated_at
+                SELECT id, region_uuid, session_id, template_id, page, region_order, x, y, w, h,
+                       detected_question_id, mapped_question_id, confidence, is_confirmed,
+                       mapping_status, multi_region_confirmed, created_at, updated_at
                 FROM answer_regions
                 WHERE session_id = ?
                 ORDER BY CASE page WHEN 'front' THEN 1 ELSE 2 END, region_order ASC
@@ -972,30 +1066,47 @@ class DBManager:
     def add_answer_region(self, session_id: int, template_id: int, region: dict[str, Any]) -> int:
         """Insert a single region and return its new id."""
         with self._connect() as conn:
-            cursor = conn.execute(
+            region_id = self._insert_answer_region_conn(conn, session_id, template_id, region)
+            conn.commit()
+            return region_id
+
+    def replace_answer_regions_atomic(
+        self,
+        session_id: int,
+        template_id: int,
+        regions: list[dict[str, Any]],
+        *,
+        confirmed: bool,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM answer_regions WHERE session_id = ?", (session_id,))
+            for region in regions:
+                self._insert_answer_region_conn(conn, session_id, template_id, region)
+            conn.execute(
                 """
-                INSERT INTO answer_regions (
-                    session_id, template_id, page, region_order, x, y, w, h,
-                    detected_question_id, mapped_question_id, confidence, is_confirmed, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
+                UPDATE session_templates
+                SET is_confirmed = ?,
+                    regions_snapshot_pending = 1,
+                    updated_at = datetime('now','localtime')
+                WHERE session_id = ?
                 """,
-                (
-                    session_id,
-                    template_id,
-                    region.get("page", "front"),
-                    int(region.get("region_order", 0)),
-                    int(region.get("x", 0)),
-                    int(region.get("y", 0)),
-                    int(region.get("w", 0)),
-                    int(region.get("h", 0)),
-                    region.get("detected_question_id"),
-                    region.get("mapped_question_id"),
-                    float(region.get("confidence", 0.0)),
-                    1 if region.get("is_confirmed") else 0,
-                ),
+                (1 if confirmed else 0, session_id),
             )
             conn.commit()
-            return int(cursor.lastrowid)
+
+    def mark_region_snapshot_complete(self, session_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE session_templates
+                SET regions_snapshot_pending = 0,
+                    updated_at = datetime('now','localtime')
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            )
+            conn.commit()
 
     def delete_answer_region(self, region_id: int) -> None:
         with self._connect() as conn:
