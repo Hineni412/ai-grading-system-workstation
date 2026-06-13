@@ -2809,6 +2809,8 @@ def render_config_and_session_tab(
                                 tagging_max_workers=tagging_workers,
                                 tagging_requests_per_minute=tagging_rpm,
                                 tagging_progress_callback=on_tagging_progress,
+                                grading_session_id=selected_session_id,
+                                grading_source_questions=payload.get("questions", []),
                             )
                             report(0.98, "写入题库同步结果")
                             return intake_result
@@ -2822,6 +2824,8 @@ def render_config_and_session_tab(
                             "saved_file": intake_result.saved_file.name,
                             "question_count": intake_result.import_result.question_count,
                             "tagged_questions": intake_result.tagged_questions,
+                            "confirmed_links": intake_result.confirmed_links,
+                            "suggested_links": intake_result.suggested_links,
                         }
                     except Exception as intake_exc:  # noqa: BLE001
                         st.warning(f"评分依据已保存，但同步题库失败：{intake_exc}")
