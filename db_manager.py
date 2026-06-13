@@ -1048,14 +1048,26 @@ class DBManager:
     def bulk_update_answer_region_mapping(self, session_id: int, rows: list[dict[str, Any]]) -> None:
         with self._connect() as conn:
             for row in rows:
+                mapped_question_id = row.get("mapped_question_id")
+                mapping_status = row.get("mapping_status")
+                if mapping_status not in {"auto", "manual", "unbound"}:
+                    mapping_status = (
+                        "manual"
+                        if mapped_question_id is not None and str(mapped_question_id).strip()
+                        else "unbound"
+                    )
                 conn.execute(
                     """
                     UPDATE answer_regions
-                    SET mapped_question_id = ?, is_confirmed = ?, updated_at = datetime('now','localtime')
+                    SET mapped_question_id = ?,
+                        mapping_status = ?,
+                        is_confirmed = ?,
+                        updated_at = datetime('now','localtime')
                     WHERE id = ? AND session_id = ?
                     """,
                     (
-                        row.get("mapped_question_id"),
+                        mapped_question_id,
+                        mapping_status,
                         1 if row.get("is_confirmed") else 0,
                         int(row.get("id")),
                         session_id,
