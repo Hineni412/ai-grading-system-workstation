@@ -46,4 +46,4 @@ def test_image_display_width_uses_multi_image_and_missing_file_fallbacks(tmp_pat
     assert image_display_width(option, image_count=4, scale_percent=100) == 150
     assert image_display_width(option, image_count=4, scale_percent=70) == 105
     assert image_display_width(tmp_path / "missing.png", image_count=1, scale_percent=100) == 320
-    assert image_display_width(tmp_path / "missing.png", image_count=3, scale_percent=100) == 150
+    assert image_display_width(tmp_path / "missing.png", image_count=3, scale_percent=100) == 220

@@ -53,7 +53,22 @@ def image_display_width(path: str | Path, *, image_count: int, scale_percent: in
 
 def _base_image_width(path: str | Path, *, image_count: int) -> int:
     if image_count > 1:
-        return 150
+        if image_count == 2:
+            base = 280
+        elif image_count == 3:
+            base = 220
+        else:
+            base = 150
+
+        image_path = Path(path)
+        try:
+            with Image.open(image_path) as image:
+                width, _ = image.size
+                if width > 0:
+                    return min(base, width)
+        except Exception:
+            pass
+        return base
 
     image_path = Path(path)
     try:
