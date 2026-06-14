@@ -476,6 +476,27 @@ def test_service_instances_for_same_resolved_session_directory_share_lock(tmp_pa
     assert first._lock is second._lock
 
 
+def test_constructor_rejects_draft_from_different_resolved_session_before_lock_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class DraftService:
+        draft_path = tmp_path / "other-session" / "region_draft.json"
+
+    lock_looked_up = False
+
+    def unexpected_lock_lookup(_session_dir: Path) -> object:
+        nonlocal lock_looked_up
+        lock_looked_up = True
+        raise AssertionError("lock lookup must happen after path validation")
+
+    monkeypatch.setattr(commit_module, "get_answer_region_session_lock", unexpected_lock_lookup)
+
+    with pytest.raises(ValueError, match="draft service session directory"):
+        AnswerRegionCommitService(object(), tmp_path / "session", DraftService())
+
+    assert lock_looked_up is False
+
+
 def test_cross_process_newer_commit_waits_for_older_completion_lock(tmp_path: Path) -> None:
     db, session_id, template_id, session_dir, _draft_service = _setup(tmp_path)
     context = multiprocessing.get_context("spawn")
@@ -875,6 +896,23 @@ def test_stale_workflow_rollback_never_overwrites_newer_generation_workflow(
     assert json.loads(workflow_path.read_text(encoding="utf-8")) == newer_workflow
     assert [row["region_uuid"] for row in db.list_answer_regions(session_id)] == ["newer-formal"]
     assert db.get_session_template(session_id)["regions_snapshot_pending"] == 0
+
+
+def test_stale_workflow_restore_requires_current_thread_to_hold_session_lock(
+    tmp_path: Path,
+) -> None:
+    db, _session_id, _template_id, session_dir, draft_service = _setup(tmp_path)
+    service = AnswerRegionCommitService(db, session_dir, draft_service)
+
+    with pytest.raises(AssertionError, match="session lock"):
+        service._stale_after_workflow_result(
+            RegionValidationResult(()),
+            session_dir / "regions_confirmed_token.json",
+            session_dir / "workflow_state.json",
+            "token",
+            {},
+            False,
+        )
 
 
 def test_conflicting_deterministic_snapshot_fails_without_overwrite(tmp_path: Path) -> None:

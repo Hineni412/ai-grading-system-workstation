@@ -20,6 +20,7 @@ from objective_admission_wizard_ui import render_objective_admission_wizard_tab
 import session_manager as _session_manager
 
 from analytics import AnalyticsService
+from answer_region_session_lock import get_answer_region_session_lock
 from api_profiles import load_api_profiles, normalize_question_allowlist, save_api_profiles
 from data_transfer_service import (
     EXPORT_SIZE_WARNING_MB,
@@ -6909,39 +6910,40 @@ def _write_session_workflow_state(
     stage: str,
     extra: dict[str, Any] | None = None,
 ) -> Path | None:
-    session = db.get_grading_session(session_id)
-    if not session:
-        return None
-    template = db.get_session_template(session_id)
-    progress = db.get_session_progress(session_id)
-    regions = db.list_answer_regions(session_id) if template else []
-    state_path = _session_work_dir(session_id) / "workflow_state.json"
-    previous = _read_json_safely(state_path) if state_path.exists() else {}
-    previous_extra = previous.get("extra") if isinstance(previous, dict) else {}
-    merged_extra = dict(previous_extra) if isinstance(previous_extra, dict) else {}
-    merged_extra.update(extra or {})
-    state = {
-        "session_id": session_id,
-        "session_name": session.get("session_name"),
-        "stage": stage,
-        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "active_paths": {
-            "rubric_path": session.get("rubric_path"),
-            "answer_key_path": session.get("answer_key_path"),
-            "template_config_path": session.get("template_config_path"),
-            "front_template_path": template.get("front_template_path") if template else None,
-            "back_template_path": template.get("back_template_path") if template else None,
-            "mapping_source_path": template.get("ai_analysis_path") if template else None,
-            "template_mapping_path": template.get("template_config_path") if template else None,
-            "regions_path": template.get("regions_path") if template else None,
-        },
-        "template_ready": db.is_template_ready(session_id),
-        "region_count": len(regions),
-        "progress": progress,
-        "extra": merged_extra,
-    }
-    _write_json_file(state_path, state)
-    return state_path
+    with get_answer_region_session_lock(_session_work_dir(session_id)):
+        session = db.get_grading_session(session_id)
+        if not session:
+            return None
+        template = db.get_session_template(session_id)
+        progress = db.get_session_progress(session_id)
+        regions = db.list_answer_regions(session_id) if template else []
+        state_path = _session_work_dir(session_id) / "workflow_state.json"
+        previous = _read_json_safely(state_path) if state_path.exists() else {}
+        previous_extra = previous.get("extra") if isinstance(previous, dict) else {}
+        merged_extra = dict(previous_extra) if isinstance(previous_extra, dict) else {}
+        merged_extra.update(extra or {})
+        state = {
+            "session_id": session_id,
+            "session_name": session.get("session_name"),
+            "stage": stage,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "active_paths": {
+                "rubric_path": session.get("rubric_path"),
+                "answer_key_path": session.get("answer_key_path"),
+                "template_config_path": session.get("template_config_path"),
+                "front_template_path": template.get("front_template_path") if template else None,
+                "back_template_path": template.get("back_template_path") if template else None,
+                "mapping_source_path": template.get("ai_analysis_path") if template else None,
+                "template_mapping_path": template.get("template_config_path") if template else None,
+                "regions_path": template.get("regions_path") if template else None,
+            },
+            "template_ready": db.is_template_ready(session_id),
+            "region_count": len(regions),
+            "progress": progress,
+            "extra": merged_extra,
+        }
+        _write_json_file(state_path, state)
+        return state_path
 
 
 def _front_page_parity_from_first_page_role(first_page_role: str | None) -> str:
