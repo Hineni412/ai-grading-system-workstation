@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import inspect
 import json
+import multiprocessing
 import threading
 from dataclasses import FrozenInstanceError
 from pathlib import Path
+from queue import Empty
 
 import pytest
 
@@ -12,10 +14,117 @@ import answer_region_commit_service as commit_module
 from answer_region_commit_service import AnswerRegionCommitResult, AnswerRegionCommitService
 from answer_region_draft_service import AnswerRegionDraftService
 from answer_region_models import RegionValidationResult
+from answer_region_session_lock import get_answer_region_session_lock
 from db_manager import DBManager
 
 
 IMAGE_SIZES = {"front": (200, 300), "back": (200, 300)}
+
+
+class _PausingDraftService(AnswerRegionDraftService):
+    def __init__(self, session_dir: Path, events: object, release: object) -> None:
+        super().__init__(session_dir)
+        self._events = events
+        self._release = release
+
+    def discard(self) -> None:
+        self._events.put(("older", "completion"))
+        if not self._release.wait(10):
+            raise TimeoutError("older completion was not released")
+        super().discard()
+
+
+class _ReportingDBManager(DBManager):
+    def __init__(self, db_path: Path, events: object) -> None:
+        super().__init__(db_path)
+        self._events = events
+
+    def replace_answer_regions_atomic(self, *args: object, **kwargs: object) -> str:
+        self._events.put(("newer_commit", "entered"))
+        return super().replace_answer_regions_atomic(*args, **kwargs)
+
+
+def _older_completion_in_process(
+    db_path: str,
+    session_dir: str,
+    session_id: int,
+    template_id: int,
+    events: object,
+    release: object,
+) -> None:
+    service = AnswerRegionCommitService(
+        DBManager(Path(db_path)),
+        Path(session_dir),
+        _PausingDraftService(Path(session_dir), events, release),
+    )
+    result = service.commit(
+        session_id=session_id,
+        template_id=template_id,
+        regions=[_region("older-commit")],
+        image_sizes=IMAGE_SIZES,
+        template_matches=True,
+    )
+    events.put(("older", "completed", result.error))
+
+
+def _reported_commit_in_process(
+    db_path: str,
+    session_dir: str,
+    session_id: int,
+    template_id: int,
+    events: object,
+) -> None:
+    events.put(("newer_commit", "started"))
+    service = AnswerRegionCommitService(
+        _ReportingDBManager(Path(db_path), events),
+        Path(session_dir),
+        AnswerRegionDraftService(Path(session_dir)),
+    )
+    result = service.commit(
+        session_id=session_id,
+        template_id=template_id,
+        regions=[_region("newer-commit")],
+        image_sizes=IMAGE_SIZES,
+        template_matches=True,
+    )
+    events.put(("newer_commit", "completed", result.error))
+
+
+def _reported_draft_save_in_process(session_dir: str, events: object) -> None:
+    events.put(("draft_save", "started"))
+    service = AnswerRegionDraftService(Path(session_dir))
+    with get_answer_region_session_lock(Path(session_dir)):
+        events.put(("draft_save", "entered"))
+        service.save(
+            session_id=1,
+            template_fingerprint="fingerprint",
+            revision=3,
+            regions=[{"region_uuid": "child-draft"}],
+        )
+    events.put(("draft_save", "completed"))
+
+
+def _commit_in_process(
+    db_path: str,
+    session_dir: str,
+    session_id: int,
+    template_id: int,
+    events: object,
+) -> None:
+    events.put("started")
+    service = AnswerRegionCommitService(
+        DBManager(Path(db_path)),
+        Path(session_dir),
+        AnswerRegionDraftService(Path(session_dir)),
+    )
+    result = service.commit(
+        session_id=session_id,
+        template_id=template_id,
+        regions=[_region("child-commit")],
+        image_sizes=IMAGE_SIZES,
+        template_matches=True,
+    )
+    events.put(("completed", result.error))
 
 
 def _region(
@@ -76,7 +185,7 @@ def _seed_formal(
         confirmed=True,
     )
     if not pending:
-        db.mark_region_snapshot_complete(session_id)
+        db.mark_region_snapshot_complete(session_id, expected_token=token)
     return token
 
 
@@ -137,6 +246,7 @@ def test_commit_replaces_formal_regions_writes_both_snapshots_and_finishes_clean
     assert workflow["session_id"] == session_id
     assert workflow["session_name"] == "regions"
     assert workflow["stage"] == "regions_confirmed"
+    assert workflow["snapshot_token"] == result.snapshot_path.stem.removeprefix("regions_confirmed_")
     assert workflow["active_paths"]["regions_path"] is None
     assert workflow["template_ready"] is True
     assert workflow["region_count"] == 1
@@ -366,6 +476,78 @@ def test_service_instances_for_same_resolved_session_directory_share_lock(tmp_pa
     assert first._lock is second._lock
 
 
+def test_cross_process_newer_commit_waits_for_older_completion_lock(tmp_path: Path) -> None:
+    db, session_id, template_id, session_dir, _draft_service = _setup(tmp_path)
+    context = multiprocessing.get_context("spawn")
+    events = context.Queue()
+    process = context.Process(
+        target=_commit_in_process,
+        args=(str(db.db_path), str(session_dir), session_id, template_id, events),
+    )
+
+    with get_answer_region_session_lock(session_dir):
+        process.start()
+        assert events.get(timeout=5) == "started"
+        with pytest.raises(Empty):
+            events.get(timeout=0.3)
+
+    assert events.get(timeout=10) == ("completed", None)
+    process.join(10)
+    assert process.exitcode == 0
+    assert [row["region_uuid"] for row in db.list_answer_regions(session_id)] == ["child-commit"]
+
+
+def test_cross_process_draft_save_and_newer_commit_wait_during_real_older_completion(
+    tmp_path: Path,
+) -> None:
+    db, session_id, template_id, session_dir, draft_service = _setup(tmp_path)
+    _save_draft(draft_service, session_id)
+    context = multiprocessing.get_context("spawn")
+    events = context.Queue()
+    release = context.Event()
+    older = context.Process(
+        target=_older_completion_in_process,
+        args=(str(db.db_path), str(session_dir), session_id, template_id, events, release),
+    )
+    newer = context.Process(
+        target=_reported_commit_in_process,
+        args=(str(db.db_path), str(session_dir), session_id, template_id, events),
+    )
+    draft_save = context.Process(
+        target=_reported_draft_save_in_process,
+        args=(str(session_dir), events),
+    )
+
+    older.start()
+    assert events.get(timeout=10) == ("older", "completion")
+    newer.start()
+    draft_save.start()
+    starts = {events.get(timeout=10), events.get(timeout=10)}
+    assert starts == {("newer_commit", "started"), ("draft_save", "started")}
+    with pytest.raises(Empty):
+        events.get(timeout=0.5)
+
+    release.set()
+    older.join(15)
+    newer.join(15)
+    draft_save.join(15)
+    remaining = []
+    while True:
+        try:
+            remaining.append(events.get_nowait())
+        except Empty:
+            break
+
+    assert older.exitcode == 0
+    assert newer.exitcode == 0
+    assert draft_save.exitcode == 0
+    assert ("newer_commit", "entered") in remaining
+    assert ("draft_save", "entered") in remaining
+    assert ("older", "completed", None) in remaining
+    assert ("newer_commit", "completed", None) in remaining
+    assert ("draft_save", "completed") in remaining
+
+
 def test_shared_session_lock_serializes_concurrent_commits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -428,7 +610,7 @@ def test_shared_session_lock_serializes_concurrent_commits(
     assert [row["region_uuid"] for row in db.list_answer_regions(session_id)] == ["second"]
 
 
-def test_older_commit_does_not_discard_draft_changed_while_commit_is_running(
+def test_draft_save_waits_for_commit_and_survives_after_completion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db, session_id, template_id, session_dir, draft_service = _setup(tmp_path)
@@ -460,19 +642,29 @@ def test_older_commit_does_not_discard_draft_changed_while_commit_is_running(
 
     worker.start()
     assert snapshot_written.wait(5)
-    draft_service.save(
-        session_id=session_id,
-        template_fingerprint="template-fingerprint",
-        revision=2,
-        regions=[_region("newer-draft")],
-    )
+    save_finished = threading.Event()
+
+    def save_newer_draft() -> None:
+        draft_service.save(
+            session_id=session_id,
+            template_fingerprint="template-fingerprint",
+            revision=2,
+            regions=[_region("newer-draft")],
+        )
+        save_finished.set()
+
+    save_thread = threading.Thread(target=save_newer_draft)
+    save_thread.start()
+    assert save_finished.wait(0.2) is False
     release_snapshot.set()
     worker.join(5)
+    save_thread.join(5)
 
-    assert results[0].error == "draft_changed_during_commit"
-    assert results[0].snapshot_pending is True
+    assert results[0].error is None
+    assert results[0].snapshot_pending is False
+    assert save_finished.is_set()
     assert draft_service.load(expected_template_fingerprint="template-fingerprint").draft["revision"] == 2
-    assert db.get_session_template(session_id)["regions_snapshot_pending"] == 1
+    assert db.get_session_template(session_id)["regions_snapshot_pending"] == 0
 
 
 def test_draft_save_cannot_slip_between_final_check_and_discard(
@@ -585,14 +777,25 @@ def test_stale_generation_cannot_discard_draft_or_clear_newer_pending(
 ) -> None:
     db, session_id, template_id, session_dir, draft_service = _setup(tmp_path)
     _save_draft(draft_service, session_id)
+    session_dir.mkdir(parents=True, exist_ok=True)
+    previous_workflow = {
+        "stage": "template_uploaded",
+        "extra": {"front_page_parity": "odd", "keep_me": True},
+    }
+    (session_dir / "workflow_state.json").write_text(
+        json.dumps(previous_workflow),
+        encoding="utf-8",
+    )
     service = AnswerRegionCommitService(db, session_dir, draft_service)
     real_atomic_write = commit_module._atomic_write_json
     newer_token: str | None = None
+    replaced = False
 
     def replace_with_newer_generation(path: Path, data: object) -> None:
-        nonlocal newer_token
+        nonlocal newer_token, replaced
         real_atomic_write(path, data)
-        if path.name == "workflow_state.json":
+        if path.name == "workflow_state.json" and not replaced:
+            replaced = True
             newer_token = db.replace_answer_regions_atomic(
                 session_id,
                 template_id,
@@ -617,6 +820,61 @@ def test_stale_generation_cannot_discard_draft_or_clear_newer_pending(
     assert template["regions_snapshot_pending"] == 1
     assert template["regions_snapshot_token"] == newer_token
     assert [row["region_uuid"] for row in db.list_answer_regions(session_id)] == ["newer-formal"]
+    assert json.loads((session_dir / "workflow_state.json").read_text(encoding="utf-8")) == (
+        previous_workflow
+    )
+
+
+def test_stale_workflow_rollback_never_overwrites_newer_generation_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db, session_id, template_id, session_dir, draft_service = _setup(tmp_path)
+    _save_draft(draft_service, session_id)
+    session_dir.mkdir(parents=True, exist_ok=True)
+    previous_workflow = {"stage": "template_uploaded", "extra": {"keep_me": True}}
+    workflow_path = session_dir / "workflow_state.json"
+    workflow_path.write_text(json.dumps(previous_workflow), encoding="utf-8")
+    service = AnswerRegionCommitService(db, session_dir, draft_service)
+    real_atomic_write = commit_module._atomic_write_json
+    newer_workflow: dict[str, object] | None = None
+
+    def publish_newer_after_older(path: Path, data: object) -> None:
+        nonlocal newer_workflow
+        real_atomic_write(path, data)
+        if path == workflow_path:
+            newer_token = db.replace_answer_regions_atomic(
+                session_id,
+                template_id,
+                [_region("newer-formal")],
+                confirmed=True,
+            )
+            newer_workflow = {
+                "session_id": session_id,
+                "stage": "regions_confirmed",
+                "snapshot_token": newer_token,
+                "extra": {"regions_path": f"regions_confirmed_{newer_token}.json"},
+            }
+            real_atomic_write(path, newer_workflow)
+            assert db.mark_region_snapshot_complete(
+                session_id,
+                expected_token=newer_token,
+            )
+
+    monkeypatch.setattr(commit_module, "_atomic_write_json", publish_newer_after_older)
+
+    result = service.commit(
+        session_id=session_id,
+        template_id=template_id,
+        regions=[_region("older-formal")],
+        image_sizes=IMAGE_SIZES,
+        template_matches=True,
+    )
+
+    assert result.error == "stale_snapshot_generation"
+    assert newer_workflow is not None
+    assert json.loads(workflow_path.read_text(encoding="utf-8")) == newer_workflow
+    assert [row["region_uuid"] for row in db.list_answer_regions(session_id)] == ["newer-formal"]
+    assert db.get_session_template(session_id)["regions_snapshot_pending"] == 0
 
 
 def test_conflicting_deterministic_snapshot_fails_without_overwrite(tmp_path: Path) -> None:
