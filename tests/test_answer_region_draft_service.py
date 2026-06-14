@@ -2,16 +2,31 @@ from __future__ import annotations
 
 import gc
 import json
+import multiprocessing
 import shutil
 import threading
 from dataclasses import FrozenInstanceError
 from datetime import datetime
 from pathlib import Path
+from queue import Empty
 
 import pytest
 
 import answer_region_draft_service as draft_module
+import answer_region_session_lock as session_lock_module
 from answer_region_draft_service import AnswerRegionDraftService, DraftLoadResult
+from answer_region_session_lock import get_answer_region_session_lock
+
+
+def _save_draft_in_process(session_dir: str, events: object) -> None:
+    events.put("started")
+    AnswerRegionDraftService(Path(session_dir)).save(
+        session_id=1,
+        template_fingerprint="fingerprint",
+        revision=2,
+        regions=[{"region_uuid": "saved-in-child"}],
+    )
+    events.put("saved")
 
 
 def _valid_draft(**overrides: object) -> dict[str, object]:
@@ -74,6 +89,62 @@ def test_template_fingerprint_frames_page_content_unambiguously(tmp_path: Path) 
     assert service.compute_template_fingerprint(
         first_front, first_back
     ) != service.compute_template_fingerprint(second_front, second_back)
+
+
+def test_session_file_lock_is_reentrant_and_shared_with_draft_service(tmp_path: Path) -> None:
+    session_dir = tmp_path / "session"
+    service = AnswerRegionDraftService(session_dir)
+    shared_lock = get_answer_region_session_lock(session_dir)
+
+    assert service._lock is shared_lock
+    with shared_lock:
+        with shared_lock:
+            service.discard()
+
+
+def test_cross_process_draft_save_waits_for_session_lock(tmp_path: Path) -> None:
+    session_dir = tmp_path / "session"
+    context = multiprocessing.get_context("spawn")
+    events = context.Queue()
+    process = context.Process(target=_save_draft_in_process, args=(str(session_dir), events))
+
+    with get_answer_region_session_lock(session_dir):
+        process.start()
+        assert events.get(timeout=5) == "started"
+        with pytest.raises(Empty):
+            events.get(timeout=0.3)
+
+    assert events.get(timeout=5) == "saved"
+    process.join(5)
+    assert process.exitcode == 0
+
+
+def test_quarantine_operation_reenters_shared_session_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class CountingLock:
+        def __init__(self) -> None:
+            self._lock = threading.RLock()
+            self.entries = 0
+
+        def __enter__(self) -> CountingLock:
+            self._lock.acquire()
+            self.entries += 1
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self._lock.release()
+
+    lock = CountingLock()
+    monkeypatch.setattr(draft_module, "_lock_for", lambda _path: lock)
+    service = AnswerRegionDraftService(tmp_path / "session")
+    service.draft_path.parent.mkdir()
+    service.draft_path.write_text("{corrupt", encoding="utf-8")
+
+    result = service._quarantine()
+
+    assert result.status == "corrupt"
+    assert lock.entries == 1
 
 
 def test_load_returns_missing_when_no_draft_exists(tmp_path: Path) -> None:
@@ -518,18 +589,18 @@ def test_concurrent_service_instances_leave_one_valid_draft_and_no_temp(tmp_path
 def test_lock_registry_shares_active_lock_and_releases_inactive_path(tmp_path: Path) -> None:
     first_service = AnswerRegionDraftService(tmp_path / "session")
     second_service = AnswerRegionDraftService(tmp_path / "session")
-    resolved_path = first_service.draft_path.resolve(strict=False)
+    resolved_path = first_service.draft_path.parent.resolve(strict=False)
 
     assert first_service._lock is second_service._lock
-    assert draft_module._DRAFT_LOCKS[resolved_path] is first_service._lock
+    assert session_lock_module._SESSION_LOCKS[resolved_path] is first_service._lock
 
     del first_service
     gc.collect()
-    assert resolved_path in draft_module._DRAFT_LOCKS
+    assert resolved_path in session_lock_module._SESSION_LOCKS
 
     del second_service
     gc.collect()
-    assert resolved_path not in draft_module._DRAFT_LOCKS
+    assert resolved_path not in session_lock_module._SESSION_LOCKS
 
 
 def test_save_cannot_race_between_corrupt_read_and_quarantine(

@@ -4,21 +4,16 @@ import hashlib
 import json
 import os
 import shutil
-import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
-from weakref import WeakValueDictionary
 
+from answer_region_session_lock import get_answer_region_session_lock
 
 DraftLoadStatus = Literal["missing", "compatible", "incompatible", "corrupt"]
 _SCHEMA_VERSION = 1
-_LOCKS_GUARD = threading.Lock()
-_DRAFT_LOCKS: WeakValueDictionary[Path, threading.RLock] = WeakValueDictionary()
-
-
 @dataclass(frozen=True)
 class DraftLoadResult:
     status: DraftLoadStatus
@@ -28,8 +23,9 @@ class DraftLoadResult:
 
 class AnswerRegionDraftService:
     def __init__(self, session_dir: Path) -> None:
-        self.draft_path = session_dir / "region_draft.json"
-        self.temp_path = session_dir / "region_draft.json.tmp"
+        resolved_dir = Path(session_dir).resolve(strict=False)
+        self.draft_path = resolved_dir / "region_draft.json"
+        self.temp_path = resolved_dir / "region_draft.json.tmp"
         self._lock = _lock_for(self.draft_path)
 
     def compute_template_fingerprint(self, front_path: Path, back_path: Path) -> str:
@@ -104,22 +100,23 @@ class AnswerRegionDraftService:
             self.temp_path.unlink(missing_ok=True)
 
     def _quarantine(self) -> DraftLoadResult:
-        while True:
-            quarantined_path = self.draft_path.with_name(
-                f"region_draft.corrupt-{_new_quarantine_suffix()}.json"
-            )
-            try:
-                os.link(self.draft_path, quarantined_path)
-            except FileExistsError:
-                continue
-            except (NotImplementedError, OSError):
+        with self._lock:
+            while True:
+                quarantined_path = self.draft_path.with_name(
+                    f"region_draft.corrupt-{_new_quarantine_suffix()}.json"
+                )
                 try:
-                    _copy_exclusively(self.draft_path, quarantined_path)
+                    os.link(self.draft_path, quarantined_path)
                 except FileExistsError:
                     continue
-            self.draft_path.unlink()
-            break
-        return DraftLoadResult(status="corrupt", quarantined_path=quarantined_path)
+                except (NotImplementedError, OSError):
+                    try:
+                        _copy_exclusively(self.draft_path, quarantined_path)
+                    except FileExistsError:
+                        continue
+                self.draft_path.unlink()
+                break
+            return DraftLoadResult(status="corrupt", quarantined_path=quarantined_path)
 
 
 def _is_valid_draft(value: object) -> bool:
@@ -171,14 +168,8 @@ def _copy_exclusively(source: Path, destination: Path) -> None:
         raise
 
 
-def _lock_for(draft_path: Path) -> threading.RLock:
-    resolved_path = draft_path.resolve(strict=False)
-    with _LOCKS_GUARD:
-        lock = _DRAFT_LOCKS.get(resolved_path)
-        if lock is None:
-            lock = threading.RLock()
-            _DRAFT_LOCKS[resolved_path] = lock
-        return lock
+def _lock_for(draft_path: Path) -> object:
+    return get_answer_region_session_lock(draft_path.parent)
 
 
 def _new_quarantine_suffix() -> str:

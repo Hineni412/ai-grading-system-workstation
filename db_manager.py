@@ -1140,33 +1140,23 @@ class DBManager:
         self,
         session_id: int,
         *,
-        expected_token: str | None = None,
+        expected_token: str,
     ) -> bool:
+        if not isinstance(expected_token, str) or not expected_token.strip():
+            raise ValueError("expected_token must be nonblank")
         with self._connect() as conn:
-            if expected_token is None:
-                cursor = conn.execute(
-                    """
-                    UPDATE session_templates
-                    SET regions_snapshot_pending = 0,
-                        regions_snapshot_token = NULL,
-                        updated_at = datetime('now','localtime')
-                    WHERE session_id = ?
-                    """,
-                    (session_id,),
-                )
-            else:
-                cursor = conn.execute(
-                    """
-                    UPDATE session_templates
-                    SET regions_snapshot_pending = 0,
-                        regions_snapshot_token = NULL,
-                        updated_at = datetime('now','localtime')
-                    WHERE session_id = ?
-                      AND regions_snapshot_pending = 1
-                      AND regions_snapshot_token = ?
-                    """,
-                    (session_id, expected_token),
-                )
+            cursor = conn.execute(
+                """
+                UPDATE session_templates
+                SET regions_snapshot_pending = 0,
+                    regions_snapshot_token = NULL,
+                    updated_at = datetime('now','localtime')
+                WHERE session_id = ?
+                  AND regions_snapshot_pending = 1
+                  AND regions_snapshot_token = ?
+                """,
+                (session_id, expected_token),
+            )
             conn.commit()
             return cursor.rowcount > 0
 

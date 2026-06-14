@@ -6,19 +6,16 @@ import logging
 import os
 import re
 import tempfile
-import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from weakref import WeakValueDictionary
 
 from answer_region_models import RegionValidationResult, normalize_regions, validate_regions
+from answer_region_session_lock import get_answer_region_session_lock
 
 
 logger = logging.getLogger(__name__)
-_LOCKS_GUARD = threading.Lock()
-_SESSION_LOCKS: WeakValueDictionary[Path, threading.RLock] = WeakValueDictionary()
 _SAFE_TOKEN = re.compile(r"[A-Za-z0-9_-]+")
 
 
@@ -40,7 +37,7 @@ class AnswerRegionCommitService:
         self._db = db
         self._session_dir = Path(session_dir).resolve(strict=False)
         self._draft_service = draft_service
-        self._lock = _lock_for(self._session_dir)
+        self._lock = get_answer_region_session_lock(self._session_dir)
 
     def commit(
         self,
@@ -197,14 +194,18 @@ class AnswerRegionCommitService:
             )
 
         try:
+            workflow_path = self._session_dir / "workflow_state.json"
+            previous_workflow_exists = workflow_path.exists()
+            previous_workflow = _read_json_safely(workflow_path)
             workflow_state = _build_workflow_state(
                 self._db,
                 session_id=session_id,
                 formal_regions=formal_regions,
                 snapshot_path=snapshot_path,
-                previous=_read_json_safely(self._session_dir / "workflow_state.json"),
+                snapshot_token=snapshot_token,
+                previous=previous_workflow,
             )
-            _atomic_write_json(self._session_dir / "workflow_state.json", workflow_state)
+            _atomic_write_json(workflow_path, workflow_state)
         except Exception:
             logger.exception("Failed to publish answer-region workflow snapshot")
             return self._pending_error_result(
@@ -216,7 +217,14 @@ class AnswerRegionCommitService:
 
         try:
             if not self._generation_is_current(session_id, snapshot_token):
-                return self._stale_result(validation, snapshot_path)
+                return self._stale_after_workflow_result(
+                    validation,
+                    snapshot_path,
+                    workflow_path,
+                    snapshot_token,
+                    previous_workflow,
+                    previous_workflow_exists,
+                )
             with self._draft_service._lock:
                 if _draft_marker(self._draft_service.draft_path) != draft_marker:
                     return self._pending_error_result(
@@ -237,7 +245,14 @@ class AnswerRegionCommitService:
 
         try:
             if not self._generation_is_current(session_id, snapshot_token):
-                return self._stale_result(validation, snapshot_path)
+                return self._stale_after_workflow_result(
+                    validation,
+                    snapshot_path,
+                    workflow_path,
+                    snapshot_token,
+                    previous_workflow,
+                    previous_workflow_exists,
+                )
             cleared = self._db.mark_region_snapshot_complete(
                 session_id,
                 expected_token=snapshot_token,
@@ -253,7 +268,14 @@ class AnswerRegionCommitService:
         if not cleared:
             try:
                 if not self._generation_is_current(session_id, snapshot_token):
-                    return self._stale_result(validation, snapshot_path)
+                    return self._stale_after_workflow_result(
+                        validation,
+                        snapshot_path,
+                        workflow_path,
+                        snapshot_token,
+                        previous_workflow,
+                        previous_workflow_exists,
+                    )
             except Exception:
                 logger.exception("Failed to verify answer-region generation after completion")
             return self._pending_error_result(
@@ -289,6 +311,33 @@ class AnswerRegionCommitService:
             snapshot_path=snapshot_path,
             error="stale_snapshot_generation",
         )
+
+    def _stale_after_workflow_result(
+        self,
+        validation: RegionValidationResult,
+        snapshot_path: Path,
+        workflow_path: Path,
+        snapshot_token: str,
+        previous_workflow: dict[str, Any],
+        previous_workflow_exists: bool,
+    ) -> AnswerRegionCommitResult:
+        try:
+            _restore_workflow_if_owned(
+                workflow_path,
+                snapshot_token=snapshot_token,
+                previous=previous_workflow,
+                previous_exists=previous_workflow_exists,
+            )
+        except Exception:
+            logger.exception("Failed to restore workflow after stale answer-region generation")
+            return AnswerRegionCommitResult(
+                True,
+                True,
+                validation,
+                snapshot_path=snapshot_path,
+                error="workflow_restore_failed",
+            )
+        return self._stale_result(validation, snapshot_path)
 
     def _pending_error_result(
         self,
@@ -368,6 +417,7 @@ def _build_workflow_state(
     session_id: int,
     formal_regions: list[dict[str, Any]],
     snapshot_path: Path,
+    snapshot_token: str,
     previous: dict[str, Any],
 ) -> dict[str, Any]:
     session = db.get_grading_session(session_id)
@@ -381,6 +431,7 @@ def _build_workflow_state(
         "session_id": session_id,
         "session_name": session.get("session_name"),
         "stage": "regions_confirmed",
+        "snapshot_token": snapshot_token,
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "active_paths": {
             "rubric_path": session.get("rubric_path"),
@@ -397,6 +448,22 @@ def _build_workflow_state(
         "progress": db.get_session_progress(session_id),
         "extra": merged_extra,
     }
+
+
+def _restore_workflow_if_owned(
+    path: Path,
+    *,
+    snapshot_token: str,
+    previous: dict[str, Any],
+    previous_exists: bool,
+) -> None:
+    current = _read_json_safely(path)
+    if current.get("snapshot_token") != snapshot_token:
+        return
+    if previous_exists:
+        _atomic_write_json(path, previous)
+    else:
+        path.unlink(missing_ok=True)
 
 
 def _draft_marker(draft_path: Path) -> str | None:
@@ -418,12 +485,3 @@ def _snapshot_is_pending(db: Any, session_id: int) -> bool:
 
 def _valid_snapshot_token(snapshot_token: str) -> bool:
     return bool(_SAFE_TOKEN.fullmatch(snapshot_token))
-
-
-def _lock_for(session_dir: Path) -> threading.RLock:
-    with _LOCKS_GUARD:
-        lock = _SESSION_LOCKS.get(session_dir)
-        if lock is None:
-            lock = threading.RLock()
-            _SESSION_LOCKS[session_dir] = lock
-        return lock

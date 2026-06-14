@@ -202,7 +202,7 @@ def test_replace_answer_regions_atomic_persists_metadata_and_marks_snapshot_pend
     assert template["regions_snapshot_token"] == snapshot_token
     assert isinstance(snapshot_token, str) and snapshot_token
 
-    assert db.mark_region_snapshot_complete(session_id) is True
+    assert db.mark_region_snapshot_complete(session_id, expected_token=snapshot_token) is True
     completed_template = db.get_session_template(session_id)
     assert completed_template["regions_snapshot_pending"] == 0
     assert completed_template["regions_snapshot_token"] is None
@@ -240,6 +240,29 @@ def test_replacement_tokens_are_unique_and_stale_completion_cannot_clear_newer_p
     assert completed_template["regions_snapshot_token"] is None
 
 
+def test_snapshot_completion_requires_nonblank_matching_token(tmp_path: Path) -> None:
+    db = DBManager(tmp_path / "grading.db")
+    db.initialize()
+    session_id, template_id = _make_session(db)
+    token = db.replace_answer_regions_atomic(
+        session_id,
+        template_id,
+        [_region("formal", 1, "Q1")],
+        confirmed=True,
+    )
+
+    with pytest.raises(TypeError):
+        db.mark_region_snapshot_complete(session_id)  # type: ignore[call-arg]
+    with pytest.raises(ValueError):
+        db.mark_region_snapshot_complete(session_id, expected_token="")
+    with pytest.raises(ValueError):
+        db.mark_region_snapshot_complete(session_id, expected_token=" ")
+
+    pending = db.get_session_template(session_id)
+    assert pending["regions_snapshot_pending"] == 1
+    assert pending["regions_snapshot_token"] == token
+
+
 def test_initialize_assigns_token_to_existing_pending_snapshot(tmp_path: Path) -> None:
     db = DBManager(tmp_path / "grading.db")
     db.initialize()
@@ -268,13 +291,13 @@ def test_duplicate_uuid_replacement_rolls_back_and_preserves_formal_regions(tmp_
     db = DBManager(tmp_path / "grading.db")
     db.initialize()
     session_id, template_id = _make_session(db)
-    db.replace_answer_regions_atomic(
+    token = db.replace_answer_regions_atomic(
         session_id,
         template_id,
         [_region("formal-one", 1, "Q1"), _region("formal-two", 2, "Q2")],
         confirmed=True,
     )
-    db.mark_region_snapshot_complete(session_id)
+    db.mark_region_snapshot_complete(session_id, expected_token=token)
     regions_before = db.list_answer_regions(session_id)
     template_before = db.get_session_template(session_id)
 
@@ -295,13 +318,13 @@ def test_cross_session_template_replacement_preserves_formal_regions(tmp_path: P
     db.initialize()
     session_a_id, template_a_id = _make_session(db)
     _session_b_id, template_b_id = _make_session(db)
-    db.replace_answer_regions_atomic(
+    token = db.replace_answer_regions_atomic(
         session_a_id,
         template_a_id,
         [_region("formal-one", 1, "Q1"), _region("formal-two", 2, "Q2")],
         confirmed=True,
     )
-    db.mark_region_snapshot_complete(session_a_id)
+    db.mark_region_snapshot_complete(session_a_id, expected_token=token)
     regions_before = db.list_answer_regions(session_a_id)
     template_before = db.get_session_template(session_a_id)
 
