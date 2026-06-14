@@ -1092,6 +1092,14 @@ class DBManager:
     ) -> None:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            template = conn.execute(
+                "SELECT 1 FROM session_templates WHERE id = ? AND session_id = ?",
+                (template_id, session_id),
+            ).fetchone()
+            if template is None:
+                raise sqlite3.IntegrityError(
+                    f"template_id {template_id} does not belong to session_id {session_id}"
+                )
             conn.execute("DELETE FROM answer_regions WHERE session_id = ?", (session_id,))
             for region in regions:
                 self._insert_answer_region_conn(conn, session_id, template_id, region)
