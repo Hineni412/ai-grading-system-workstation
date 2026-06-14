@@ -67,6 +67,12 @@ def test_exposes_frozen_result_models_and_constants() -> None:
     assert catalog.automatic_candidates == ("Q1",)
     with pytest.raises(FrozenInstanceError):
         issue.code = "changed"  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        result.issues = ()  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        option.label = "changed"  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        catalog.automatic_candidates = ()  # type: ignore[misc]
 
 
 def test_normalization_is_stable_copies_inputs_and_creates_blank_uuid() -> None:
