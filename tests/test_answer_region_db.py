@@ -104,9 +104,11 @@ def test_initialize_upgrades_true_legacy_answer_region_schema(tmp_path: Path) ->
 
         assert {"region_uuid", "mapping_status", "multi_region_confirmed"} <= set(answer_columns)
         assert "regions_snapshot_pending" in template_columns
+        assert "regions_snapshot_token" in template_columns
         assert answer_columns["mapping_status"]["dflt_value"] == "'unbound'"
         assert answer_columns["multi_region_confirmed"]["dflt_value"] == "0"
         assert template_columns["regions_snapshot_pending"]["dflt_value"] == "0"
+        assert template_columns["regions_snapshot_token"]["dflt_value"] is None
         assert all(str(row["region_uuid"]).strip() for row in rows)
         assert len({row["region_uuid"] for row in rows}) == 2
         assert [row["mapping_status"] for row in rows] == ["unbound", "manual"]
@@ -185,18 +187,81 @@ def test_replace_answer_regions_atomic_persists_metadata_and_marks_snapshot_pend
     regions = [_region("region-one", 1, "Q1"), _region("region-two", 2, "Q2")]
     regions[0]["mapping_status"] = "auto"
 
-    db.replace_answer_regions_atomic(session_id, template_id, regions, confirmed=True)
+    snapshot_token = db.replace_answer_regions_atomic(
+        session_id, template_id, regions, confirmed=True
+    )
 
     saved = db.list_answer_regions(session_id)
+    template = db.get_session_template(session_id)
     assert [row["region_uuid"] for row in saved] == ["region-one", "region-two"]
     assert [row["mapping_status"] for row in saved] == ["auto", "manual"]
     assert [row["multi_region_confirmed"] for row in saved] == [0, 1]
     assert db.is_template_ready(session_id) is True
-    assert db.get_session_template(session_id)["is_confirmed"] == 1
-    assert db.get_session_template(session_id)["regions_snapshot_pending"] == 1
+    assert template["is_confirmed"] == 1
+    assert template["regions_snapshot_pending"] == 1
+    assert template["regions_snapshot_token"] == snapshot_token
+    assert isinstance(snapshot_token, str) and snapshot_token
 
-    db.mark_region_snapshot_complete(session_id)
-    assert db.get_session_template(session_id)["regions_snapshot_pending"] == 0
+    assert db.mark_region_snapshot_complete(session_id) is True
+    completed_template = db.get_session_template(session_id)
+    assert completed_template["regions_snapshot_pending"] == 0
+    assert completed_template["regions_snapshot_token"] is None
+
+
+def test_replacement_tokens_are_unique_and_stale_completion_cannot_clear_newer_pending(
+    tmp_path: Path,
+) -> None:
+    db = DBManager(tmp_path / "grading.db")
+    db.initialize()
+    session_id, template_id = _make_session(db)
+
+    first_token = db.replace_answer_regions_atomic(
+        session_id,
+        template_id,
+        [_region("first", 1, "Q1")],
+        confirmed=True,
+    )
+    second_token = db.replace_answer_regions_atomic(
+        session_id,
+        template_id,
+        [_region("second", 1, "Q2")],
+        confirmed=True,
+    )
+
+    assert first_token != second_token
+    assert db.mark_region_snapshot_complete(session_id, expected_token=first_token) is False
+    pending_template = db.get_session_template(session_id)
+    assert pending_template["regions_snapshot_pending"] == 1
+    assert pending_template["regions_snapshot_token"] == second_token
+
+    assert db.mark_region_snapshot_complete(session_id, expected_token=second_token) is True
+    completed_template = db.get_session_template(session_id)
+    assert completed_template["regions_snapshot_pending"] == 0
+    assert completed_template["regions_snapshot_token"] is None
+
+
+def test_initialize_assigns_token_to_existing_pending_snapshot(tmp_path: Path) -> None:
+    db = DBManager(tmp_path / "grading.db")
+    db.initialize()
+    session_id, _template_id = _make_session(db)
+    with db._connect() as conn:
+        conn.execute(
+            """
+            UPDATE session_templates
+            SET regions_snapshot_pending = 1,
+                regions_snapshot_token = NULL
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        )
+        conn.commit()
+
+    db.initialize()
+
+    template = db.get_session_template(session_id)
+    assert template["regions_snapshot_pending"] == 1
+    assert isinstance(template["regions_snapshot_token"], str)
+    assert template["regions_snapshot_token"]
 
 
 def test_duplicate_uuid_replacement_rolls_back_and_preserves_formal_regions(tmp_path: Path) -> None:
