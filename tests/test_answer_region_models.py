@@ -294,6 +294,23 @@ def test_validate_regions_reports_overflowing_geometry_without_crashing() -> Non
     assert "region_out_of_bounds" in _issue_codes(result)
 
 
+@pytest.mark.parametrize("image_size", [("100", 100), (None, 100)])
+def test_validate_regions_reports_malformed_image_sizes_without_crashing(
+    image_size: tuple[object, object],
+) -> None:
+    region = _region("a")
+    coordinates_before = {key: region[key] for key in ("x", "y", "w", "h")}
+
+    result = validate_regions(
+        [region],
+        image_sizes={"front": image_size},  # type: ignore[dict-item]
+        template_matches=True,
+    )
+
+    assert "region_out_of_bounds" in _issue_codes(result)
+    assert {key: region[key] for key in ("x", "y", "w", "h")} == coordinates_before
+
+
 def test_duplicate_uuid_blocks_commit() -> None:
     result = validate_regions(
         normalize_regions([_region("same", question_id="Q1"), _region("same", question_id="Q2", y=50)]),
