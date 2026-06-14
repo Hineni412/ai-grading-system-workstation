@@ -185,6 +185,15 @@ def test_load_question_binding_catalog_uses_smallest_units_and_manual_parents(tm
     assert options["Q10"] == "Q10（整道大题）"
 
 
+def test_load_question_binding_catalog_falls_back_for_invalid_utf8(tmp_path: Path) -> None:
+    rubric_path = tmp_path / "invalid-rubric.json"
+    rubric_path.write_bytes(b"\xff\xfe\xfa")
+
+    catalog = load_question_binding_catalog(rubric_path)
+
+    assert catalog == load_question_binding_catalog(tmp_path / "missing-rubric.json")
+
+
 def test_template_mismatch_blocks_commit() -> None:
     result = validate_regions(
         normalize_regions([_region("a")]),
@@ -193,6 +202,16 @@ def test_template_mismatch_blocks_commit() -> None:
     )
 
     assert "template_mismatch" in _issue_codes(result)
+
+
+def test_template_mismatch_does_not_clamp_region_coordinates() -> None:
+    region = _region("a", x=-EDGE_SNAP_TOLERANCE, y=20, w=40, h=40)
+    coordinates_before = {key: region[key] for key in ("x", "y", "w", "h")}
+
+    result = validate_regions([region], image_sizes=IMAGE_SIZES, template_matches=False)
+
+    assert "template_mismatch" in _issue_codes(result)
+    assert {key: region[key] for key in ("x", "y", "w", "h")} == coordinates_before
 
 
 def test_unbound_region_blocks_commit() -> None:
@@ -243,6 +262,36 @@ def test_region_lightly_outside_image_is_clamped_and_accepted() -> None:
     assert result.can_commit is True
     assert regions[0]["x"] == 0
     assert regions[0]["x"] + regions[0]["w"] <= IMAGE_SIZES["front"][0]
+
+
+def test_validate_regions_safely_converts_direct_numeric_coordinates() -> None:
+    region = _region("a")
+    region.update({"x": "-8.0", "y": 20.4, "w": "40.2", "h": 40.6})
+
+    result = validate_regions([region], image_sizes=IMAGE_SIZES, template_matches=True)
+
+    assert result.can_commit is True
+    assert (region["x"], region["y"], region["w"], region["h"]) == (0, 20, 32, 41)
+
+
+def test_validate_regions_reports_invalid_geometry_without_crashing() -> None:
+    region = _region("a")
+    region.update({"x": "not-a-number", "w": None})
+
+    result = validate_regions([region], image_sizes=IMAGE_SIZES, template_matches=True)
+
+    assert {"region_out_of_bounds", "region_too_small"} <= _issue_codes(result)
+    assert region["x"] == "not-a-number"
+    assert region["w"] is None
+
+
+def test_validate_regions_reports_overflowing_geometry_without_crashing() -> None:
+    region = _region("a")
+    region["x"] = 10**10_000
+
+    result = validate_regions([region], image_sizes=IMAGE_SIZES, template_matches=True)
+
+    assert "region_out_of_bounds" in _issue_codes(result)
 
 
 def test_duplicate_uuid_blocks_commit() -> None:
