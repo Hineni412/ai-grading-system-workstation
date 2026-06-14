@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import errno
 import multiprocessing
+import os
 from pathlib import Path
 from queue import Empty
+import select
+import signal
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +20,37 @@ def _acquire_inherited_lock(lock: AnswerRegionSessionLock, events: object) -> No
     events.put("started")
     with lock:
         events.put("acquired")
+
+
+def _read_pipe_byte(fd: int, timeout: float) -> bytes:
+    readable, _, _ = select.select([fd], [], [], timeout)
+    if not readable:
+        raise TimeoutError("timed out waiting for child process")
+    value = os.read(fd, 1)
+    if not value:
+        raise EOFError("child process closed status pipe")
+    return value
+
+
+def _wait_for_child(pid: int, timeout: float) -> int | None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        waited_pid, status = os.waitpid(pid, os.WNOHANG)
+        if waited_pid == pid:
+            return status
+        time.sleep(0.01)
+    return None
+
+
+def _terminate_child(pid: int) -> None:
+    status = _wait_for_child(pid, 0.1)
+    if status is not None:
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    os.waitpid(pid, 0)
 
 
 def test_failed_os_lock_acquisition_closes_opened_lock_file(
@@ -79,15 +114,87 @@ def test_process_identity_change_resets_local_state_and_reacquires_file_lock(
 def test_lock_registry_resets_across_process_identity_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    class TrackingFile:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
     first = get_answer_region_session_lock(tmp_path / "session")
+    inherited_file = TrackingFile()
+    first._thread_lock.acquire()
+    first._depth = 1
+    first._lock_file = inherited_file
+    first._owner_thread_id = 123
     child_pid = lock_module._REGISTRY_PID + 1
     monkeypatch.setattr(lock_module.os, "getpid", lambda: child_pid)
 
     second = get_answer_region_session_lock(tmp_path / "session")
 
     assert second is not first
+    assert inherited_file.closed is True
+    assert first._depth == 0
+    assert first._lock_file is None
+    assert first._owner_thread_id is None
+    first.__exit__(None, None, None)
+    assert first._depth == 0
+    with first:
+        first.assert_held_by_current_thread()
     assert second._pid == child_pid
     assert lock_module._REGISTRY_PID == child_pid
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or not hasattr(os, "fork"),
+    reason="requires POSIX os.fork",
+)
+def test_fresh_registry_lock_after_fork_does_not_keep_its_inherited_lock(
+    tmp_path: Path,
+) -> None:
+    inherited_lock = get_answer_region_session_lock(tmp_path / "session")
+    status_read, status_write = os.pipe()
+    child_pid: int | None = None
+
+    try:
+        with inherited_lock:
+            child_pid = os.fork()
+            if child_pid == 0:
+                os.close(status_read)
+                exit_code = 0
+                try:
+                    fresh_lock = get_answer_region_session_lock(tmp_path / "session")
+                    assert fresh_lock is not inherited_lock
+                    assert inherited_lock._depth == 0
+                    assert inherited_lock._lock_file is None
+                    os.write(status_write, b"S")
+                    with fresh_lock:
+                        os.write(status_write, b"A")
+                    with inherited_lock:
+                        os.write(status_write, b"R")
+                except BaseException:
+                    exit_code = 1
+                finally:
+                    os.close(status_write)
+                    os._exit(exit_code)
+
+            os.close(status_write)
+            status_write = -1
+            assert _read_pipe_byte(status_read, 5.0) == b"S"
+            with pytest.raises(TimeoutError):
+                _read_pipe_byte(status_read, 0.3)
+
+        assert _read_pipe_byte(status_read, 5.0) == b"A"
+        assert _read_pipe_byte(status_read, 5.0) == b"R"
+        status = _wait_for_child(child_pid, 5.0)
+        assert status is not None
+        child_pid = None
+        assert os.waitstatus_to_exitcode(status) == 0
+    finally:
+        if status_write >= 0:
+            os.close(status_write)
+        os.close(status_read)
+        if child_pid is not None:
+            _terminate_child(child_pid)
 
 
 @pytest.mark.skipif(
