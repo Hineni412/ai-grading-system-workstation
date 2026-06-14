@@ -34,8 +34,12 @@ class AnswerRegionCommitResult:
 
 class AnswerRegionCommitService:
     def __init__(self, db: Any, session_dir: Path, draft_service: Any) -> None:
+        resolved_session_dir = Path(session_dir).resolve(strict=False)
+        resolved_draft_session_dir = Path(draft_service.draft_path).parent.resolve(strict=False)
+        if resolved_session_dir != resolved_draft_session_dir:
+            raise ValueError("draft service session directory must match session_dir")
         self._db = db
-        self._session_dir = Path(session_dir).resolve(strict=False)
+        self._session_dir = resolved_session_dir
         self._draft_service = draft_service
         self._lock = get_answer_region_session_lock(self._session_dir)
 
@@ -321,6 +325,7 @@ class AnswerRegionCommitService:
         previous_workflow: dict[str, Any],
         previous_workflow_exists: bool,
     ) -> AnswerRegionCommitResult:
+        self._lock.assert_held_by_current_thread()
         try:
             _restore_workflow_if_owned(
                 workflow_path,

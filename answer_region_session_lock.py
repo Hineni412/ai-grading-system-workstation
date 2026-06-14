@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import os
 import threading
 import time
@@ -13,6 +14,11 @@ else:
     import fcntl
 
 
+_WINDOWS_LOCK_TIMEOUT_SECONDS = 10.0
+_WINDOWS_LOCK_RETRY_SECONDS = 0.01
+_WINDOWS_LOCK_CONTENTION_ERRNOS = {errno.EACCES, errno.EAGAIN, errno.EDEADLK}
+_WINDOWS_LOCK_CONTENTION_WINERRORS = {32, 33}
+_REGISTRY_PID = os.getpid()
 _LOCKS_GUARD = threading.Lock()
 _SESSION_LOCKS: WeakValueDictionary[Path, AnswerRegionSessionLock] = WeakValueDictionary()
 
@@ -24,8 +30,11 @@ class AnswerRegionSessionLock:
         self._thread_lock = threading.RLock()
         self._depth = 0
         self._lock_file: object | None = None
+        self._owner_thread_id: int | None = None
+        self._pid = os.getpid()
 
     def __enter__(self) -> AnswerRegionSessionLock:
+        self._reset_if_process_changed()
         self._thread_lock.acquire()
         try:
             if self._depth == 0:
@@ -39,6 +48,7 @@ class AnswerRegionSessionLock:
                     raise
                 self._lock_file = lock_file
             self._depth += 1
+            self._owner_thread_id = threading.get_ident()
             return self
         except BaseException:
             self._thread_lock.release()
@@ -50,9 +60,13 @@ class AnswerRegionSessionLock:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        if self._pid != os.getpid():
+            self._reset_if_process_changed()
+            return
         try:
             self._depth -= 1
             if self._depth == 0:
+                self._owner_thread_id = None
                 lock_file = self._lock_file
                 self._lock_file = None
                 if lock_file is not None:
@@ -63,8 +77,30 @@ class AnswerRegionSessionLock:
         finally:
             self._thread_lock.release()
 
+    def assert_held_by_current_thread(self) -> None:
+        self._reset_if_process_changed()
+        if self._depth <= 0 or self._owner_thread_id != threading.get_ident():
+            raise AssertionError("answer region session lock must be held by current thread")
+
+    def _reset_if_process_changed(self) -> None:
+        current_pid = os.getpid()
+        if self._pid == current_pid:
+            return
+        inherited_file = self._lock_file
+        self._thread_lock = threading.RLock()
+        self._depth = 0
+        self._lock_file = None
+        self._owner_thread_id = None
+        self._pid = current_pid
+        if inherited_file is not None:
+            try:
+                inherited_file.close()
+            except OSError:
+                pass
+
 
 def get_answer_region_session_lock(session_dir: Path) -> AnswerRegionSessionLock:
+    _reset_registry_if_process_changed()
     resolved_dir = Path(session_dir).resolve(strict=False)
     with _LOCKS_GUARD:
         lock = _SESSION_LOCKS.get(resolved_dir)
@@ -72,6 +108,16 @@ def get_answer_region_session_lock(session_dir: Path) -> AnswerRegionSessionLock
             lock = AnswerRegionSessionLock(resolved_dir)
             _SESSION_LOCKS[resolved_dir] = lock
         return lock
+
+
+def _reset_registry_if_process_changed() -> None:
+    global _LOCKS_GUARD, _REGISTRY_PID, _SESSION_LOCKS
+    current_pid = os.getpid()
+    if _REGISTRY_PID == current_pid:
+        return
+    _LOCKS_GUARD = threading.Lock()
+    _SESSION_LOCKS = WeakValueDictionary()
+    _REGISTRY_PID = current_pid
 
 
 def _ensure_lock_byte(lock_file: object) -> None:
@@ -85,15 +131,32 @@ def _ensure_lock_byte(lock_file: object) -> None:
 
 def _acquire_file_lock(lock_file: object) -> None:
     if os.name == "nt":
-        while True:
-            lock_file.seek(0)
-            try:
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-                return
-            except OSError:
-                time.sleep(0.01)
+        _acquire_windows_file_lock(lock_file)
     else:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+
+def _acquire_windows_file_lock(lock_file: object) -> None:
+    deadline = time.monotonic() + _WINDOWS_LOCK_TIMEOUT_SECONDS
+    while True:
+        lock_file.seek(0)
+        try:
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            return
+        except OSError as exc:
+            if not _is_windows_lock_contention(exc):
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("timed out acquiring answer region session lock") from exc
+            time.sleep(min(_WINDOWS_LOCK_RETRY_SECONDS, remaining))
+
+
+def _is_windows_lock_contention(exc: OSError) -> bool:
+    return (
+        exc.errno in _WINDOWS_LOCK_CONTENTION_ERRNOS
+        or getattr(exc, "winerror", None) in _WINDOWS_LOCK_CONTENTION_WINERRORS
+    )
 
 
 def _release_file_lock(lock_file: object) -> None:
