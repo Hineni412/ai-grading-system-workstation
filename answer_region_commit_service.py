@@ -1,15 +1,29 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import os
+import re
 import tempfile
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from weakref import WeakValueDictionary
 
 from answer_region_models import RegionValidationResult, normalize_regions, validate_regions
+
+
+logger = logging.getLogger(__name__)
+_LOCKS_GUARD = threading.Lock()
+_SESSION_LOCKS: WeakValueDictionary[Path, threading.RLock] = WeakValueDictionary()
+_SAFE_TOKEN = re.compile(r"[A-Za-z0-9_-]+")
+
+
+class _SnapshotCollisionError(Exception):
+    pass
 
 
 @dataclass(frozen=True)
@@ -24,8 +38,9 @@ class AnswerRegionCommitResult:
 class AnswerRegionCommitService:
     def __init__(self, db: Any, session_dir: Path, draft_service: Any) -> None:
         self._db = db
-        self._session_dir = Path(session_dir)
+        self._session_dir = Path(session_dir).resolve(strict=False)
         self._draft_service = draft_service
+        self._lock = _lock_for(self._session_dir)
 
     def commit(
         self,
@@ -36,51 +51,152 @@ class AnswerRegionCommitService:
         image_sizes: dict[str, tuple[int, int]],
         template_matches: bool,
     ) -> AnswerRegionCommitResult:
-        normalized = normalize_regions(regions)
-        validation = validate_regions(
-            normalized,
-            image_sizes=image_sizes,
-            template_matches=template_matches,
-        )
-        if not validation.can_commit:
-            return AnswerRegionCommitResult(False, False, validation)
-
-        try:
-            self._db.replace_answer_regions_atomic(
-                session_id,
-                template_id,
+        with self._lock:
+            normalized = normalize_regions(regions)
+            validation = validate_regions(
                 normalized,
-                confirmed=True,
+                image_sizes=image_sizes,
+                template_matches=template_matches,
             )
-        except Exception as exc:
-            return AnswerRegionCommitResult(False, False, validation, error=str(exc))
+            if not validation.can_commit:
+                return AnswerRegionCommitResult(False, False, validation)
 
-        return self._write_pending_snapshot(session_id=session_id, validation=validation)
+            try:
+                draft_marker = _draft_marker(self._draft_service.draft_path)
+            except Exception:
+                logger.exception("Failed to read answer-region draft state before commit")
+                return AnswerRegionCommitResult(
+                    False,
+                    False,
+                    validation,
+                    error="draft_state_failed",
+                )
+
+            try:
+                snapshot_token = self._db.replace_answer_regions_atomic(
+                    session_id,
+                    template_id,
+                    normalized,
+                    confirmed=True,
+                )
+            except Exception:
+                logger.exception("Failed to replace formal answer regions")
+                return AnswerRegionCommitResult(
+                    False,
+                    False,
+                    validation,
+                    error="database_commit_failed",
+                )
+
+            return self._write_pending_snapshot(
+                session_id=session_id,
+                snapshot_token=snapshot_token,
+                validation=validation,
+                draft_marker=draft_marker,
+            )
 
     def retry_pending_snapshot(self, *, session_id: int) -> AnswerRegionCommitResult:
-        validation = RegionValidationResult(())
-        try:
-            template = self._db.get_session_template(session_id)
-        except Exception as exc:
-            return AnswerRegionCommitResult(False, False, validation, error=str(exc))
-        if template is None:
-            return AnswerRegionCommitResult(False, False, validation)
-        if not bool(template.get("regions_snapshot_pending")):
-            return AnswerRegionCommitResult(True, False, validation)
-        return self._write_pending_snapshot(session_id=session_id, validation=validation)
+        with self._lock:
+            validation = RegionValidationResult(())
+            try:
+                template = self._db.get_session_template(session_id)
+            except Exception:
+                logger.exception("Failed to read pending answer-region snapshot state")
+                return AnswerRegionCommitResult(
+                    False,
+                    False,
+                    validation,
+                    error="snapshot_state_failed",
+                )
+            if template is None:
+                return AnswerRegionCommitResult(
+                    False,
+                    False,
+                    validation,
+                    error="session_template_missing",
+                )
+            if not bool(template.get("regions_snapshot_pending")):
+                return AnswerRegionCommitResult(True, False, validation)
+
+            snapshot_token = template.get("regions_snapshot_token")
+            if not isinstance(snapshot_token, str) or not snapshot_token:
+                return AnswerRegionCommitResult(
+                    True,
+                    True,
+                    validation,
+                    error="snapshot_token_missing",
+                )
+            try:
+                draft_marker = _draft_marker(self._draft_service.draft_path)
+            except Exception:
+                logger.exception("Failed to read answer-region draft state before retry")
+                return AnswerRegionCommitResult(
+                    True,
+                    True,
+                    validation,
+                    error="draft_state_failed",
+                )
+            return self._write_pending_snapshot(
+                session_id=session_id,
+                snapshot_token=snapshot_token,
+                validation=validation,
+                draft_marker=draft_marker,
+            )
 
     def _write_pending_snapshot(
         self,
         *,
         session_id: int,
+        snapshot_token: str,
         validation: RegionValidationResult,
+        draft_marker: str | None,
     ) -> AnswerRegionCommitResult:
         snapshot_path: Path | None = None
+        if not _valid_snapshot_token(snapshot_token):
+            return AnswerRegionCommitResult(
+                True,
+                True,
+                validation,
+                error="snapshot_token_invalid",
+            )
+
         try:
+            if not self._generation_is_current(session_id, snapshot_token):
+                return self._stale_result(validation)
             formal_regions = self._db.list_answer_regions(session_id)
-            next_snapshot_path = _new_snapshot_path(self._session_dir)
+            if not self._generation_is_current(session_id, snapshot_token):
+                return self._stale_result(validation)
+        except Exception:
+            logger.exception("Failed to read formal answer regions for snapshot")
+            return self._pending_error_result(
+                session_id,
+                validation,
+                snapshot_path,
+                "snapshot_state_failed",
+            )
+
+        next_snapshot_path = self._session_dir / f"regions_confirmed_{snapshot_token}.json"
+        try:
             _atomic_write_json(next_snapshot_path, formal_regions)
             snapshot_path = next_snapshot_path
+        except _SnapshotCollisionError:
+            logger.exception("Answer-region snapshot destination contains a different payload")
+            return self._pending_error_result(
+                session_id,
+                validation,
+                snapshot_path,
+                "snapshot_collision",
+            )
+        except Exception:
+            logger.exception("Failed to publish answer-region snapshot")
+            return self._pending_error_result(
+                session_id,
+                validation,
+                snapshot_path,
+                "snapshot_write_failed",
+            )
+
+        try:
             workflow_state = _build_workflow_state(
                 self._db,
                 session_id=session_id,
@@ -89,15 +205,62 @@ class AnswerRegionCommitService:
                 previous=_read_json_safely(self._session_dir / "workflow_state.json"),
             )
             _atomic_write_json(self._session_dir / "workflow_state.json", workflow_state)
-            self._db.mark_region_snapshot_complete(session_id)
-            self._draft_service.discard()
-        except Exception as exc:
-            return AnswerRegionCommitResult(
-                True,
-                _snapshot_is_pending(self._db, session_id),
+        except Exception:
+            logger.exception("Failed to publish answer-region workflow snapshot")
+            return self._pending_error_result(
+                session_id,
                 validation,
-                snapshot_path=snapshot_path,
-                error=str(exc),
+                snapshot_path,
+                "workflow_snapshot_failed",
+            )
+
+        try:
+            if not self._generation_is_current(session_id, snapshot_token):
+                return self._stale_result(validation, snapshot_path)
+            with self._draft_service._lock:
+                if _draft_marker(self._draft_service.draft_path) != draft_marker:
+                    return self._pending_error_result(
+                        session_id,
+                        validation,
+                        snapshot_path,
+                        "draft_changed_during_commit",
+                    )
+                self._draft_service.discard()
+        except Exception:
+            logger.exception("Failed to discard answer-region draft")
+            return self._pending_error_result(
+                session_id,
+                validation,
+                snapshot_path,
+                "draft_cleanup_failed",
+            )
+
+        try:
+            if not self._generation_is_current(session_id, snapshot_token):
+                return self._stale_result(validation, snapshot_path)
+            cleared = self._db.mark_region_snapshot_complete(
+                session_id,
+                expected_token=snapshot_token,
+            )
+        except Exception:
+            logger.exception("Failed to mark answer-region snapshot complete")
+            return self._pending_error_result(
+                session_id,
+                validation,
+                snapshot_path,
+                "snapshot_completion_failed",
+            )
+        if not cleared:
+            try:
+                if not self._generation_is_current(session_id, snapshot_token):
+                    return self._stale_result(validation, snapshot_path)
+            except Exception:
+                logger.exception("Failed to verify answer-region generation after completion")
+            return self._pending_error_result(
+                session_id,
+                validation,
+                snapshot_path,
+                "snapshot_completion_failed",
             )
         return AnswerRegionCommitResult(
             True,
@@ -106,13 +269,46 @@ class AnswerRegionCommitService:
             snapshot_path=snapshot_path,
         )
 
+    def _generation_is_current(self, session_id: int, snapshot_token: str) -> bool:
+        template = self._db.get_session_template(session_id)
+        return bool(
+            template
+            and template.get("regions_snapshot_pending")
+            and template.get("regions_snapshot_token") == snapshot_token
+        )
 
-def _snapshot_timestamp() -> str:
-    return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    def _stale_result(
+        self,
+        validation: RegionValidationResult,
+        snapshot_path: Path | None = None,
+    ) -> AnswerRegionCommitResult:
+        return AnswerRegionCommitResult(
+            True,
+            True,
+            validation,
+            snapshot_path=snapshot_path,
+            error="stale_snapshot_generation",
+        )
+
+    def _pending_error_result(
+        self,
+        session_id: int,
+        validation: RegionValidationResult,
+        snapshot_path: Path | None,
+        error: str,
+    ) -> AnswerRegionCommitResult:
+        return AnswerRegionCommitResult(
+            True,
+            _snapshot_is_pending(self._db, session_id),
+            validation,
+            snapshot_path=snapshot_path,
+            error=error,
+        )
 
 
 def _atomic_write_json(path: Path, data: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(data, ensure_ascii=False, indent=2)
     file_descriptor, temp_name = tempfile.mkstemp(
         dir=path.parent,
         prefix=f".{path.name}.",
@@ -121,30 +317,41 @@ def _atomic_write_json(path: Path, data: object) -> None:
     temp_path = Path(temp_name)
     try:
         with os.fdopen(file_descriptor, "w", encoding="utf-8") as temp_file:
-            json.dump(data, temp_file, ensure_ascii=False, indent=2)
+            temp_file.write(serialized)
             temp_file.flush()
             os.fsync(temp_file.fileno())
-        os.replace(temp_path, path)
+        if path.name.startswith("regions_confirmed_"):
+            _publish_exclusively(temp_path, path, data)
+        else:
+            os.replace(temp_path, path)
     except BaseException:
         try:
             os.close(file_descriptor)
         except OSError:
             pass
+        raise
+    finally:
         try:
             temp_path.unlink(missing_ok=True)
         except OSError:
             pass
-        raise
 
 
-def _new_snapshot_path(session_dir: Path) -> Path:
-    base_path = session_dir / f"regions_confirmed_{_snapshot_timestamp()}.json"
-    if not base_path.exists():
-        return base_path
-    while True:
-        candidate = base_path.with_name(f"{base_path.stem}_{uuid4().hex}.json")
-        if not candidate.exists():
-            return candidate
+def _publish_exclusively(temp_path: Path, destination: Path, data: object) -> None:
+    try:
+        os.link(temp_path, destination)
+    except FileExistsError:
+        if _json_file_matches(destination, data):
+            return
+        raise _SnapshotCollisionError
+
+
+def _json_file_matches(path: Path, data: object) -> bool:
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return existing == data
 
 
 def _read_json_safely(path: Path) -> dict[str, Any]:
@@ -192,9 +399,31 @@ def _build_workflow_state(
     }
 
 
+def _draft_marker(draft_path: Path) -> str | None:
+    try:
+        content = draft_path.read_bytes()
+    except FileNotFoundError:
+        return None
+    return hashlib.sha256(content).hexdigest()
+
+
 def _snapshot_is_pending(db: Any, session_id: int) -> bool:
     try:
         template = db.get_session_template(session_id)
     except Exception:
+        logger.exception("Failed to read answer-region pending state")
         return True
     return bool(template and template.get("regions_snapshot_pending"))
+
+
+def _valid_snapshot_token(snapshot_token: str) -> bool:
+    return bool(_SAFE_TOKEN.fullmatch(snapshot_token))
+
+
+def _lock_for(session_dir: Path) -> threading.RLock:
+    with _LOCKS_GUARD:
+        lock = _SESSION_LOCKS.get(session_dir)
+        if lock is None:
+            lock = threading.RLock()
+            _SESSION_LOCKS[session_dir] = lock
+        return lock

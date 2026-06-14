@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import threading
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -67,8 +68,8 @@ def _seed_formal(
     region_uuid: str = "formal-region",
     *,
     pending: bool = False,
-) -> None:
-    db.replace_answer_regions_atomic(
+) -> str:
+    token = db.replace_answer_regions_atomic(
         session_id,
         template_id,
         [_region(region_uuid)],
@@ -76,6 +77,7 @@ def _seed_formal(
     )
     if not pending:
         db.mark_region_snapshot_complete(session_id)
+    return token
 
 
 def test_exposes_frozen_result_and_keyword_only_public_methods(tmp_path: Path) -> None:
@@ -231,7 +233,7 @@ def test_database_failure_leaves_formal_regions_and_draft_untouched(
     assert result.snapshot_pending is False
     assert result.validation.can_commit is True
     assert result.snapshot_path is None
-    assert result.error == "database unavailable"
+    assert result.error == "database_commit_failed"
     assert db.list_answer_regions(session_id) == formal_before
     assert draft_service.draft_path.read_bytes() == draft_before
     assert list(session_dir.glob("regions_confirmed_*.json")) == []
@@ -268,7 +270,7 @@ def test_snapshot_failure_keeps_committed_formal_draft_and_pending_and_preserves
     assert result.committed is True
     assert result.snapshot_pending is True
     assert result.validation.can_commit is True
-    assert result.error == "workflow snapshot unavailable"
+    assert result.error == "workflow_snapshot_failed"
     assert [region["region_uuid"] for region in db.list_answer_regions(session_id)] == ["replacement"]
     assert draft_service.draft_path.exists()
     assert db.get_session_template(session_id)["regions_snapshot_pending"] == 1
@@ -276,28 +278,21 @@ def test_snapshot_failure_keeps_committed_formal_draft_and_pending_and_preserves
     assert list(session_dir.glob(".workflow_state.json.*.tmp")) == []
 
 
-def test_snapshot_name_collision_preserves_existing_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_matching_deterministic_snapshot_is_reused(tmp_path: Path) -> None:
     db, session_id, template_id, session_dir, draft_service = _setup(tmp_path)
+    token = _seed_formal(db, session_id, template_id, pending=True)
     session_dir.mkdir(parents=True)
-    existing_path = session_dir / "regions_confirmed_fixed.json"
-    existing_path.write_text('{"existing": true}', encoding="utf-8")
-    monkeypatch.setattr(commit_module, "_snapshot_timestamp", lambda: "fixed")
+    existing_path = session_dir / f"regions_confirmed_{token}.json"
+    existing_path.write_text(
+        json.dumps(db.list_answer_regions(session_id), ensure_ascii=False),
+        encoding="utf-8",
+    )
     service = AnswerRegionCommitService(db, session_dir, draft_service)
 
-    result = service.commit(
-        session_id=session_id,
-        template_id=template_id,
-        regions=[_region("replacement")],
-        image_sizes=IMAGE_SIZES,
-        template_matches=True,
-    )
+    result = service.retry_pending_snapshot(session_id=session_id)
 
-    assert result.snapshot_path is not None
-    assert result.snapshot_path != existing_path
-    assert json.loads(existing_path.read_text(encoding="utf-8")) == {"existing": True}
-    assert json.loads(result.snapshot_path.read_text(encoding="utf-8")) == db.list_answer_regions(
-        session_id
-    )
+    assert result.snapshot_path == existing_path
+    assert json.loads(existing_path.read_text(encoding="utf-8")) == db.list_answer_regions(session_id)
 
 
 def test_retry_pending_snapshot_writes_formal_snapshots_then_clears_pending_and_draft(
@@ -340,7 +335,7 @@ def test_retry_pending_snapshot_failure_keeps_pending_and_draft(
     assert result.committed is True
     assert result.snapshot_pending is True
     assert result.snapshot_path is None
-    assert result.error == "snapshot disk full"
+    assert result.error == "snapshot_write_failed"
     assert db.get_session_template(session_id)["regions_snapshot_pending"] == 1
     assert draft_service.draft_path.exists()
 
@@ -360,3 +355,329 @@ def test_retry_pending_snapshot_handles_no_pending_work_gracefully(tmp_path: Pat
     )
     assert draft_service.draft_path.exists()
     assert list(session_dir.glob("regions_confirmed_*.json")) == []
+
+
+def test_service_instances_for_same_resolved_session_directory_share_lock(tmp_path: Path) -> None:
+    db, _session_id, _template_id, session_dir, draft_service = _setup(tmp_path)
+
+    first = AnswerRegionCommitService(db, session_dir, draft_service)
+    second = AnswerRegionCommitService(db, session_dir / ".." / "session", draft_service)
+
+    assert first._lock is second._lock
+
+
+def test_shared_session_lock_serializes_concurrent_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db, session_id, template_id, session_dir, draft_service = _setup(tmp_path)
+    first = AnswerRegionCommitService(db, session_dir, draft_service)
+    second = AnswerRegionCommitService(db, session_dir, draft_service)
+    first_in_replace = threading.Event()
+    release_first = threading.Event()
+    second_entered_replace = threading.Event()
+    real_replace = db.replace_answer_regions_atomic
+    call_count = 0
+
+    def controlled_replace(*args: object, **kwargs: object) -> str:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            first_in_replace.set()
+            assert release_first.wait(5)
+        else:
+            second_entered_replace.set()
+        return real_replace(*args, **kwargs)
+
+    monkeypatch.setattr(db, "replace_answer_regions_atomic", controlled_replace)
+    results: list[AnswerRegionCommitResult] = []
+    first_thread = threading.Thread(
+        target=lambda: results.append(
+            first.commit(
+                session_id=session_id,
+                template_id=template_id,
+                regions=[_region("first")],
+                image_sizes=IMAGE_SIZES,
+                template_matches=True,
+            )
+        )
+    )
+    second_thread = threading.Thread(
+        target=lambda: results.append(
+            second.commit(
+                session_id=session_id,
+                template_id=template_id,
+                regions=[_region("second")],
+                image_sizes=IMAGE_SIZES,
+                template_matches=True,
+            )
+        )
+    )
+
+    first_thread.start()
+    assert first_in_replace.wait(5)
+    second_thread.start()
+    assert second_entered_replace.wait(0.2) is False
+    release_first.set()
+    first_thread.join(5)
+    second_thread.join(5)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert second_entered_replace.is_set()
+    assert all(result.error is None for result in results)
+    assert [row["region_uuid"] for row in db.list_answer_regions(session_id)] == ["second"]
+
+
+def test_older_commit_does_not_discard_draft_changed_while_commit_is_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db, session_id, template_id, session_dir, draft_service = _setup(tmp_path)
+    _save_draft(draft_service, session_id)
+    service = AnswerRegionCommitService(db, session_dir, draft_service)
+    snapshot_written = threading.Event()
+    release_snapshot = threading.Event()
+    real_atomic_write = commit_module._atomic_write_json
+
+    def pause_after_snapshot(path: Path, data: object) -> None:
+        real_atomic_write(path, data)
+        if path.name.startswith("regions_confirmed_"):
+            snapshot_written.set()
+            assert release_snapshot.wait(5)
+
+    monkeypatch.setattr(commit_module, "_atomic_write_json", pause_after_snapshot)
+    results: list[AnswerRegionCommitResult] = []
+    worker = threading.Thread(
+        target=lambda: results.append(
+            service.commit(
+                session_id=session_id,
+                template_id=template_id,
+                regions=[_region("formal")],
+                image_sizes=IMAGE_SIZES,
+                template_matches=True,
+            )
+        )
+    )
+
+    worker.start()
+    assert snapshot_written.wait(5)
+    draft_service.save(
+        session_id=session_id,
+        template_fingerprint="template-fingerprint",
+        revision=2,
+        regions=[_region("newer-draft")],
+    )
+    release_snapshot.set()
+    worker.join(5)
+
+    assert results[0].error == "draft_changed_during_commit"
+    assert results[0].snapshot_pending is True
+    assert draft_service.load(expected_template_fingerprint="template-fingerprint").draft["revision"] == 2
+    assert db.get_session_template(session_id)["regions_snapshot_pending"] == 1
+
+
+def test_draft_save_cannot_slip_between_final_check_and_discard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db, session_id, template_id, session_dir, draft_service = _setup(tmp_path)
+    _save_draft(draft_service, session_id)
+    service = AnswerRegionCommitService(db, session_dir, draft_service)
+    final_check_started = threading.Event()
+    release_final_check = threading.Event()
+    save_finished = threading.Event()
+    real_marker = commit_module._draft_marker
+    marker_calls = 0
+
+    def pause_final_marker(path: Path) -> str | None:
+        nonlocal marker_calls
+        marker_calls += 1
+        marker = real_marker(path)
+        if marker_calls == 2:
+            final_check_started.set()
+            assert release_final_check.wait(5)
+        return marker
+
+    monkeypatch.setattr(commit_module, "_draft_marker", pause_final_marker)
+    commit_thread = threading.Thread(
+        target=lambda: service.commit(
+            session_id=session_id,
+            template_id=template_id,
+            regions=[_region("formal")],
+            image_sizes=IMAGE_SIZES,
+            template_matches=True,
+        )
+    )
+
+    def save_newer_draft() -> None:
+        draft_service.save(
+            session_id=session_id,
+            template_fingerprint="template-fingerprint",
+            revision=2,
+            regions=[_region("newer-draft")],
+        )
+        save_finished.set()
+
+    save_thread = threading.Thread(target=save_newer_draft)
+    commit_thread.start()
+    assert final_check_started.wait(5)
+    save_thread.start()
+    assert save_finished.wait(0.2) is False
+    release_final_check.set()
+    commit_thread.join(5)
+    save_thread.join(5)
+
+    assert save_finished.is_set()
+    loaded = draft_service.load(expected_template_fingerprint="template-fingerprint")
+    assert loaded.draft is not None
+    assert loaded.draft["revision"] == 2
+
+
+def test_discard_failure_keeps_pending_and_retry_reuses_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db, session_id, template_id, session_dir, draft_service = _setup(tmp_path)
+    _save_draft(draft_service, session_id)
+    service = AnswerRegionCommitService(db, session_dir, draft_service)
+    real_discard = draft_service.discard
+
+    def fail_discard() -> None:
+        raise OSError(f"cannot delete {draft_service.draft_path}")
+
+    monkeypatch.setattr(draft_service, "discard", fail_discard)
+    failed = service.commit(
+        session_id=session_id,
+        template_id=template_id,
+        regions=[_region("formal")],
+        image_sizes=IMAGE_SIZES,
+        template_matches=True,
+    )
+    monkeypatch.setattr(draft_service, "discard", real_discard)
+    recovered = service.retry_pending_snapshot(session_id=session_id)
+
+    assert failed.error == "draft_cleanup_failed"
+    assert failed.snapshot_pending is True
+    assert recovered.error is None
+    assert recovered.snapshot_path == failed.snapshot_path
+    assert list(session_dir.glob("regions_confirmed_*.json")) == [failed.snapshot_path]
+    assert db.get_session_template(session_id)["regions_snapshot_pending"] == 0
+    assert not draft_service.draft_path.exists()
+
+
+def test_repeated_completion_failures_reuse_one_snapshot_and_remain_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db, session_id, template_id, session_dir, draft_service = _setup(tmp_path)
+    _seed_formal(db, session_id, template_id, pending=True)
+    service = AnswerRegionCommitService(db, session_dir, draft_service)
+    monkeypatch.setattr(db, "mark_region_snapshot_complete", lambda *args, **kwargs: False)
+
+    first = service.retry_pending_snapshot(session_id=session_id)
+    second = service.retry_pending_snapshot(session_id=session_id)
+
+    assert first.error == "snapshot_completion_failed"
+    assert second.error == "snapshot_completion_failed"
+    assert first.snapshot_path == second.snapshot_path
+    assert len(list(session_dir.glob("regions_confirmed_*.json"))) == 1
+    assert db.get_session_template(session_id)["regions_snapshot_pending"] == 1
+
+
+def test_stale_generation_cannot_discard_draft_or_clear_newer_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db, session_id, template_id, session_dir, draft_service = _setup(tmp_path)
+    _save_draft(draft_service, session_id)
+    service = AnswerRegionCommitService(db, session_dir, draft_service)
+    real_atomic_write = commit_module._atomic_write_json
+    newer_token: str | None = None
+
+    def replace_with_newer_generation(path: Path, data: object) -> None:
+        nonlocal newer_token
+        real_atomic_write(path, data)
+        if path.name == "workflow_state.json":
+            newer_token = db.replace_answer_regions_atomic(
+                session_id,
+                template_id,
+                [_region("newer-formal")],
+                confirmed=True,
+            )
+
+    monkeypatch.setattr(commit_module, "_atomic_write_json", replace_with_newer_generation)
+
+    result = service.commit(
+        session_id=session_id,
+        template_id=template_id,
+        regions=[_region("older-formal")],
+        image_sizes=IMAGE_SIZES,
+        template_matches=True,
+    )
+
+    template = db.get_session_template(session_id)
+    assert result.error == "stale_snapshot_generation"
+    assert result.snapshot_pending is True
+    assert draft_service.draft_path.exists()
+    assert template["regions_snapshot_pending"] == 1
+    assert template["regions_snapshot_token"] == newer_token
+    assert [row["region_uuid"] for row in db.list_answer_regions(session_id)] == ["newer-formal"]
+
+
+def test_conflicting_deterministic_snapshot_fails_without_overwrite(tmp_path: Path) -> None:
+    db, session_id, template_id, session_dir, draft_service = _setup(tmp_path)
+    token = _seed_formal(db, session_id, template_id, pending=True)
+    session_dir.mkdir(parents=True)
+    snapshot_path = session_dir / f"regions_confirmed_{token}.json"
+    snapshot_path.write_text('{"belongs_to": "another payload"}', encoding="utf-8")
+    service = AnswerRegionCommitService(db, session_dir, draft_service)
+
+    result = service.retry_pending_snapshot(session_id=session_id)
+
+    assert result.error == "snapshot_collision"
+    assert result.snapshot_pending is True
+    assert json.loads(snapshot_path.read_text(encoding="utf-8")) == {
+        "belongs_to": "another payload"
+    }
+
+
+def test_snapshot_publication_race_never_overwrites_raced_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db, session_id, template_id, session_dir, draft_service = _setup(tmp_path)
+    token = _seed_formal(db, session_id, template_id, pending=True)
+    snapshot_path = session_dir / f"regions_confirmed_{token}.json"
+    real_link = commit_module.os.link
+
+    def race_link(source: str | Path, destination: str | Path) -> None:
+        if Path(destination) == snapshot_path:
+            snapshot_path.write_text('{"raced": true}', encoding="utf-8")
+            raise FileExistsError
+        real_link(source, destination)
+
+    monkeypatch.setattr(commit_module.os, "link", race_link)
+    service = AnswerRegionCommitService(db, session_dir, draft_service)
+
+    result = service.retry_pending_snapshot(session_id=session_id)
+
+    assert result.error == "snapshot_collision"
+    assert result.snapshot_pending is True
+    assert json.loads(snapshot_path.read_text(encoding="utf-8")) == {"raced": True}
+
+
+def test_errors_are_stable_and_do_not_leak_absolute_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db, session_id, template_id, session_dir, draft_service = _setup(tmp_path)
+    service = AnswerRegionCommitService(db, session_dir, draft_service)
+
+    def fail_replace(*args: object, **kwargs: object) -> str:
+        raise OSError(f"database path leaked: {tmp_path / 'secret.db'}")
+
+    monkeypatch.setattr(db, "replace_answer_regions_atomic", fail_replace)
+
+    result = service.commit(
+        session_id=session_id,
+        template_id=template_id,
+        regions=[_region("formal")],
+        image_sizes=IMAGE_SIZES,
+        template_matches=True,
+    )
+
+    assert result.error == "database_commit_failed"
+    assert str(tmp_path) not in result.error

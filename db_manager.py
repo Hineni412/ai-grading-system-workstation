@@ -245,6 +245,7 @@ class DBManager:
                     regions_path TEXT,
                     is_confirmed INTEGER NOT NULL DEFAULT 0,
                     regions_snapshot_pending INTEGER NOT NULL DEFAULT 0,
+                    regions_snapshot_token TEXT,
                     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
                     FOREIGN KEY(session_id) REFERENCES grading_sessions(id)
@@ -255,6 +256,22 @@ class DBManager:
             self._ensure_column(conn, "session_templates", "template_config_path", "TEXT")
             self._ensure_column(conn, "session_templates", "regions_path", "TEXT")
             self._ensure_column(conn, "session_templates", "regions_snapshot_pending", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "session_templates", "regions_snapshot_token", "TEXT")
+            conn.execute(
+                """
+                UPDATE session_templates
+                SET regions_snapshot_token = lower(hex(randomblob(16)))
+                WHERE regions_snapshot_pending = 1
+                  AND COALESCE(regions_snapshot_token, '') = ''
+                """
+            )
+            conn.execute(
+                """
+                UPDATE session_templates
+                SET regions_snapshot_token = NULL
+                WHERE regions_snapshot_pending = 0
+                """
+            )
 
             conn.execute(
                 """
@@ -944,7 +961,8 @@ class DBManager:
                 """
                 SELECT id, session_id, front_template_path, back_template_path,
                        ai_analysis_path, template_config_path, regions_path,
-                       is_confirmed, regions_snapshot_pending, created_at, updated_at
+                       is_confirmed, regions_snapshot_pending, regions_snapshot_token,
+                       created_at, updated_at
                 FROM session_templates
                 WHERE session_id = ?
                 """,
@@ -1089,7 +1107,8 @@ class DBManager:
         regions: list[dict[str, Any]],
         *,
         confirmed: bool,
-    ) -> None:
+    ) -> str:
+        snapshot_token = uuid4().hex
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             template = conn.execute(
@@ -1108,25 +1127,48 @@ class DBManager:
                 UPDATE session_templates
                 SET is_confirmed = ?,
                     regions_snapshot_pending = 1,
+                    regions_snapshot_token = ?,
                     updated_at = datetime('now','localtime')
                 WHERE session_id = ?
                 """,
-                (1 if confirmed else 0, session_id),
+                (1 if confirmed else 0, snapshot_token, session_id),
             )
             conn.commit()
+        return snapshot_token
 
-    def mark_region_snapshot_complete(self, session_id: int) -> None:
+    def mark_region_snapshot_complete(
+        self,
+        session_id: int,
+        *,
+        expected_token: str | None = None,
+    ) -> bool:
         with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE session_templates
-                SET regions_snapshot_pending = 0,
-                    updated_at = datetime('now','localtime')
-                WHERE session_id = ?
-                """,
-                (session_id,),
-            )
+            if expected_token is None:
+                cursor = conn.execute(
+                    """
+                    UPDATE session_templates
+                    SET regions_snapshot_pending = 0,
+                        regions_snapshot_token = NULL,
+                        updated_at = datetime('now','localtime')
+                    WHERE session_id = ?
+                    """,
+                    (session_id,),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    UPDATE session_templates
+                    SET regions_snapshot_pending = 0,
+                        regions_snapshot_token = NULL,
+                        updated_at = datetime('now','localtime')
+                    WHERE session_id = ?
+                      AND regions_snapshot_pending = 1
+                      AND regions_snapshot_token = ?
+                    """,
+                    (session_id, expected_token),
+                )
             conn.commit()
+            return cursor.rowcount > 0
 
     def delete_answer_region(self, region_id: int) -> None:
         with self._connect() as conn:
