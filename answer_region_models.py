@@ -119,7 +119,7 @@ def load_question_binding_catalog(rubric_path: Path) -> QuestionBindingCatalog:
         raw_questions = rubric.get("questions") if isinstance(rubric, dict) else None
         if isinstance(raw_questions, list):
             questions = [question for question in raw_questions if isinstance(question, dict)]
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         pass
 
     automatic_candidates: list[str] = []
@@ -192,28 +192,39 @@ def validate_regions(
         else:
             question_groups.setdefault(question_id, []).append(region)
 
-        page = str(region.get("page") or "")
-        image_size = image_sizes.get(page)
-        if not _valid_image_size(image_size):
+        geometry, geometry_is_valid = _region_geometry(region)
+        if not geometry_is_valid:
             issues.append(
                 RegionIssue(
                     "region_out_of_bounds",
-                    f"Region page {page!r} has no valid image bounds.",
+                    "Region geometry contains invalid coordinates.",
                     region_uuid=region_uuid,
                     question_id=question_id,
                 )
             )
-        elif not _clamp_or_reject_region(region, image_size):
-            issues.append(
-                RegionIssue(
-                    "region_out_of_bounds",
-                    "Region is clearly outside the image bounds.",
-                    region_uuid=region_uuid,
-                    question_id=question_id,
+        elif template_matches:
+            page = str(region.get("page") or "")
+            image_size = image_sizes.get(page)
+            if not _valid_image_size(image_size):
+                issues.append(
+                    RegionIssue(
+                        "region_out_of_bounds",
+                        f"Region page {page!r} has no valid image bounds.",
+                        region_uuid=region_uuid,
+                        question_id=question_id,
+                    )
                 )
-            )
+            elif not _clamp_or_reject_region(region, image_size, geometry):
+                issues.append(
+                    RegionIssue(
+                        "region_out_of_bounds",
+                        "Region is clearly outside the image bounds.",
+                        region_uuid=region_uuid,
+                        question_id=question_id,
+                    )
+                )
 
-        if int(region.get("w", 0)) < MIN_REGION_SIZE or int(region.get("h", 0)) < MIN_REGION_SIZE:
+        if geometry["w"] < MIN_REGION_SIZE or geometry["h"] < MIN_REGION_SIZE:
             issues.append(
                 RegionIssue(
                     "region_too_small",
@@ -237,13 +248,26 @@ def validate_regions(
 
 
 def _integer_coordinate(value: Any) -> int:
+    return _coordinate_value(value)[0]
+
+
+def _coordinate_value(value: Any) -> tuple[int, bool]:
     try:
         number = float(value)
-    except (TypeError, ValueError):
-        return 0
+    except (TypeError, ValueError, OverflowError):
+        return 0, False
     if not math.isfinite(number):
-        return 0
-    return int(round(number))
+        return 0, False
+    return int(round(number)), True
+
+
+def _region_geometry(region: dict[str, Any]) -> tuple[dict[str, int], bool]:
+    geometry: dict[str, int] = {}
+    is_valid = True
+    for key in ("x", "y", "w", "h"):
+        geometry[key], coordinate_is_valid = _coordinate_value(region.get(key))
+        is_valid = is_valid and coordinate_is_valid
+    return geometry, is_valid
 
 
 def _optional_text(value: Any) -> str | None:
@@ -314,12 +338,16 @@ def _valid_image_size(image_size: tuple[int, int] | None) -> bool:
     )
 
 
-def _clamp_or_reject_region(region: dict[str, Any], image_size: tuple[int, int]) -> bool:
+def _clamp_or_reject_region(
+    region: dict[str, Any],
+    image_size: tuple[int, int],
+    geometry: dict[str, int],
+) -> bool:
     image_width, image_height = image_size
-    x = int(region.get("x", 0))
-    y = int(region.get("y", 0))
-    w = int(region.get("w", 0))
-    h = int(region.get("h", 0))
+    x = geometry["x"]
+    y = geometry["y"]
+    w = geometry["w"]
+    h = geometry["h"]
     right = x + w
     bottom = y + h
 
