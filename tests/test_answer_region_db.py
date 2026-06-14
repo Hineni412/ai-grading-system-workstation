@@ -225,6 +225,33 @@ def test_duplicate_uuid_replacement_rolls_back_and_preserves_formal_regions(tmp_
     assert db.get_session_template(session_id) == template_before
 
 
+def test_cross_session_template_replacement_preserves_formal_regions(tmp_path: Path) -> None:
+    db = DBManager(tmp_path / "grading.db")
+    db.initialize()
+    session_a_id, template_a_id = _make_session(db)
+    _session_b_id, template_b_id = _make_session(db)
+    db.replace_answer_regions_atomic(
+        session_a_id,
+        template_a_id,
+        [_region("formal-one", 1, "Q1"), _region("formal-two", 2, "Q2")],
+        confirmed=True,
+    )
+    db.mark_region_snapshot_complete(session_a_id)
+    regions_before = db.list_answer_regions(session_a_id)
+    template_before = db.get_session_template(session_a_id)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        db.replace_answer_regions_atomic(
+            session_a_id,
+            template_b_id,
+            [_region("replacement", 3, "Q3")],
+            confirmed=False,
+        )
+
+    assert db.list_answer_regions(session_a_id) == regions_before
+    assert db.get_session_template(session_a_id) == template_before
+
+
 def test_bulk_update_answer_region_mapping_keeps_mapping_status_in_sync(tmp_path: Path) -> None:
     db = DBManager(tmp_path / "grading.db")
     db.initialize()
