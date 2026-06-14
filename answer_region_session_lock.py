@@ -63,6 +63,9 @@ class AnswerRegionSessionLock:
         if self._pid != os.getpid():
             self._reset_if_process_changed()
             return
+        # A child may unwind a parent-entered context after its registry reset.
+        if self._depth <= 0:
+            return
         try:
             self._depth -= 1
             if self._depth == 0:
@@ -115,6 +118,8 @@ def _reset_registry_if_process_changed() -> None:
     current_pid = os.getpid()
     if _REGISTRY_PID == current_pid:
         return
+    for lock in list(_SESSION_LOCKS.values()):
+        lock._reset_if_process_changed()
     _LOCKS_GUARD = threading.Lock()
     _SESSION_LOCKS = WeakValueDictionary()
     _REGISTRY_PID = current_pid
