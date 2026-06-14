@@ -329,12 +329,12 @@ def _binding_label(value: str, parent_ids: set[str]) -> str:
     return value
 
 
-def _valid_image_size(image_size: tuple[int, int] | None) -> bool:
-    return (
-        isinstance(image_size, tuple)
-        and len(image_size) == 2
-        and image_size[0] > 0
-        and image_size[1] > 0
+def _valid_image_size(image_size: object) -> bool:
+    if not isinstance(image_size, tuple) or len(image_size) != 2:
+        return False
+    return all(
+        isinstance(value, int) and not isinstance(value, bool) and value > 0
+        for value in image_size
     )
 
 
