@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import gc
 import json
+import shutil
 import threading
 from dataclasses import FrozenInstanceError
 from datetime import datetime
@@ -115,6 +117,49 @@ def test_atomic_save_preserves_unicode_and_compatible_load_returns_draft(tmp_pat
     )
 
 
+@pytest.mark.parametrize(
+    ("session_id", "template_fingerprint", "revision", "regions"),
+    [
+        (0, "fingerprint", 2, [{"region_uuid": "replacement-region"}]),
+        (1, " ", 2, [{"region_uuid": "replacement-region"}]),
+        (1, "fingerprint", -1, [{"region_uuid": "replacement-region"}]),
+        (1, "fingerprint", 2, [{}]),
+    ],
+)
+def test_save_rejects_invalid_draft_before_serialization_and_preserves_good_draft(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    session_id: int,
+    template_fingerprint: str,
+    revision: int,
+    regions: list[dict[str, object]],
+) -> None:
+    service = AnswerRegionDraftService(tmp_path / "session")
+    service.save(
+        session_id=1,
+        template_fingerprint="fingerprint",
+        revision=1,
+        regions=[{"region_uuid": "good-region"}],
+    )
+    original_draft = service.draft_path.read_bytes()
+
+    def fail_serialization(*args: object, **kwargs: object) -> str:
+        raise AssertionError("invalid draft reached serialization")
+
+    monkeypatch.setattr(draft_module.json, "dumps", fail_serialization)
+
+    with pytest.raises(ValueError, match="invalid answer region draft"):
+        service.save(
+            session_id=session_id,
+            template_fingerprint=template_fingerprint,
+            revision=revision,
+            regions=regions,
+        )
+
+    assert service.draft_path.read_bytes() == original_draft
+    assert not service.temp_path.exists()
+
+
 def test_incompatible_load_leaves_draft_untouched(tmp_path: Path) -> None:
     service = AnswerRegionDraftService(tmp_path / "session")
     service.save(
@@ -187,6 +232,62 @@ def test_quarantine_collision_never_overwrites_existing_file(
     assert not service.draft_path.exists()
 
 
+def test_quarantine_falls_back_to_copy_when_hard_links_are_unsupported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AnswerRegionDraftService(tmp_path / "session")
+    service.draft_path.parent.mkdir()
+    existing_quarantine = service.draft_path.with_name(
+        "region_draft.corrupt-fallback-collision.json"
+    )
+    unique_quarantine = service.draft_path.with_name(
+        "region_draft.corrupt-fallback-unique.json"
+    )
+    existing_quarantine.write_bytes(b"existing-quarantine")
+    corrupt_bytes = b"{corrupt-draft"
+    service.draft_path.write_bytes(corrupt_bytes)
+    suffixes = iter(["fallback-collision", "fallback-unique"])
+
+    def fail_hard_link(*args: object, **kwargs: object) -> None:
+        raise OSError("hard links unsupported")
+
+    monkeypatch.setattr(draft_module.os, "link", fail_hard_link)
+    monkeypatch.setattr(draft_module, "_new_quarantine_suffix", lambda: next(suffixes))
+
+    result = service.load(expected_template_fingerprint="fingerprint")
+
+    assert result.status == "corrupt"
+    assert result.quarantined_path == unique_quarantine
+    assert existing_quarantine.read_bytes() == b"existing-quarantine"
+    assert result.quarantined_path.read_bytes() == corrupt_bytes
+    assert not service.draft_path.exists()
+
+
+def test_quarantine_copy_failure_preserves_original_and_cleans_partial_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AnswerRegionDraftService(tmp_path / "session")
+    service.draft_path.parent.mkdir()
+    corrupt_bytes = b"{corrupt-draft"
+    service.draft_path.write_bytes(corrupt_bytes)
+
+    def fail_hard_link(*args: object, **kwargs: object) -> None:
+        raise OSError("hard links unsupported")
+
+    def fail_after_partial_copy(source: object, destination: object) -> None:
+        destination.write(b"partial quarantine")  # type: ignore[attr-defined]
+        raise OSError("simulated copy failure")
+
+    monkeypatch.setattr(draft_module.os, "link", fail_hard_link)
+    monkeypatch.setattr(shutil, "copyfileobj", fail_after_partial_copy)
+
+    with pytest.raises(OSError, match="simulated copy failure"):
+        service.load(expected_template_fingerprint="fingerprint")
+
+    assert service.draft_path.read_bytes() == corrupt_bytes
+    assert not list(service.draft_path.parent.glob("region_draft.corrupt-*.json"))
+
+
 def test_transient_read_oserror_propagates_without_quarantining(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -243,6 +344,22 @@ def test_invalid_shape_draft_is_quarantined(tmp_path: Path, invalid_draft: objec
 
     assert result.status == "corrupt"
     assert result.draft is None
+    assert result.quarantined_path is not None
+    assert result.quarantined_path.exists()
+    assert not service.draft_path.exists()
+
+
+def test_invalid_iso_timestamp_draft_is_quarantined(tmp_path: Path) -> None:
+    service = AnswerRegionDraftService(tmp_path / "session")
+    service.draft_path.parent.mkdir()
+    service.draft_path.write_text(
+        json.dumps(_valid_draft(updated_at="not-an-iso-timestamp")),
+        encoding="utf-8",
+    )
+
+    result = service.load(expected_template_fingerprint="fingerprint")
+
+    assert result.status == "corrupt"
     assert result.quarantined_path is not None
     assert result.quarantined_path.exists()
     assert not service.draft_path.exists()
@@ -396,6 +513,23 @@ def test_concurrent_service_instances_leave_one_valid_draft_and_no_temp(tmp_path
     assert result.draft is not None
     assert result.draft["regions"][0]["region_uuid"].startswith("region-")
     assert not services[0].temp_path.exists()
+
+
+def test_lock_registry_shares_active_lock_and_releases_inactive_path(tmp_path: Path) -> None:
+    first_service = AnswerRegionDraftService(tmp_path / "session")
+    second_service = AnswerRegionDraftService(tmp_path / "session")
+    resolved_path = first_service.draft_path.resolve(strict=False)
+
+    assert first_service._lock is second_service._lock
+    assert draft_module._DRAFT_LOCKS[resolved_path] is first_service._lock
+
+    del first_service
+    gc.collect()
+    assert resolved_path in draft_module._DRAFT_LOCKS
+
+    del second_service
+    gc.collect()
+    assert resolved_path not in draft_module._DRAFT_LOCKS
 
 
 def test_save_cannot_race_between_corrupt_read_and_quarantine(

@@ -3,18 +3,20 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
+from weakref import WeakValueDictionary
 
 
 DraftLoadStatus = Literal["missing", "compatible", "incompatible", "corrupt"]
 _SCHEMA_VERSION = 1
 _LOCKS_GUARD = threading.Lock()
-_DRAFT_LOCKS: dict[Path, threading.RLock] = {}
+_DRAFT_LOCKS: WeakValueDictionary[Path, threading.RLock] = WeakValueDictionary()
 
 
 @dataclass(frozen=True)
@@ -57,6 +59,8 @@ class AnswerRegionDraftService:
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "regions": regions,
         }
+        if not _is_valid_draft(draft):
+            raise ValueError("invalid answer region draft")
         serialized = json.dumps(draft, ensure_ascii=False, indent=2)
         with self._lock:
             self.draft_path.parent.mkdir(parents=True, exist_ok=True)
@@ -108,6 +112,11 @@ class AnswerRegionDraftService:
                 os.link(self.draft_path, quarantined_path)
             except FileExistsError:
                 continue
+            except (NotImplementedError, OSError):
+                try:
+                    _copy_exclusively(self.draft_path, quarantined_path)
+                except FileExistsError:
+                    continue
             self.draft_path.unlink()
             break
         return DraftLoadResult(status="corrupt", quarantined_path=quarantined_path)
@@ -125,7 +134,7 @@ def _is_valid_draft(value: object) -> bool:
         and _is_nonblank_string(value.get("template_fingerprint"))
         and type(value.get("revision")) is int
         and value["revision"] >= 0
-        and _is_nonblank_string(value.get("updated_at"))
+        and _is_iso8601_timestamp(value.get("updated_at"))
         and isinstance(regions, list)
         and all(
             isinstance(region, dict) and _is_nonblank_string(region.get("region_uuid"))
@@ -138,10 +147,38 @@ def _is_nonblank_string(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _is_iso8601_timestamp(value: object) -> bool:
+    if not _is_nonblank_string(value):
+        return False
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _copy_exclusively(source: Path, destination: Path) -> None:
+    destination_file = destination.open("xb")
+    try:
+        with destination_file:
+            with source.open("rb") as source_file:
+                shutil.copyfileobj(source_file, destination_file)
+    except BaseException:
+        try:
+            destination.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def _lock_for(draft_path: Path) -> threading.RLock:
     resolved_path = draft_path.resolve(strict=False)
     with _LOCKS_GUARD:
-        return _DRAFT_LOCKS.setdefault(resolved_path, threading.RLock())
+        lock = _DRAFT_LOCKS.get(resolved_path)
+        if lock is None:
+            lock = threading.RLock()
+            _DRAFT_LOCKS[resolved_path] = lock
+        return lock
 
 
 def _new_quarantine_suffix() -> str:
