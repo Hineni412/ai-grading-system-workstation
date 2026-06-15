@@ -93,12 +93,6 @@ export function pushHistory(history, regions, limit = 30) {
   return [...cloneValue(history), cloneValue(regions)].slice(-safeLimit);
 }
 
-export function filterRegionsByPage(regions, page) {
-  return regions
-    .filter((region) => region.page === page)
-    .map(cloneValue);
-}
-
 const SVG_NS = "http://www.w3.org/2000/svg";
 const XLINK_NS = "http://www.w3.org/1999/xlink";
 const HISTORY_LIMIT = 30;
@@ -113,6 +107,32 @@ const WARNING_ISSUES = new Set([
   "unbound_question",
   "unconfirmed_multi_region",
 ]);
+const VALIDATION_ISSUE_TEXT = Object.freeze({
+  unbound_question: {
+    label: "未绑定题目",
+    message: "请选择对应题目。",
+  },
+  region_out_of_bounds: {
+    label: "题框超出图像范围",
+    message: "请调整到页面内。",
+  },
+  region_too_small: {
+    label: "题框尺寸过小",
+    message: "请扩大题框。",
+  },
+  duplicate_uuid: {
+    label: "题框标识重复",
+    message: "请删除后重新创建该题框。",
+  },
+  unconfirmed_multi_region: {
+    label: "同题多框尚未确认",
+    message: "请确认这些题框属于同一道题。",
+  },
+  template_mismatch: {
+    label: "试卷模板不匹配",
+    message: "请重新检查当前标定。",
+  },
+});
 const COMPLETED_OPERATIONS = new Set([
   "regions_changed",
   "mapping_changed",
@@ -218,7 +238,38 @@ function newRegionUuid() {
   if (globalThis.crypto?.randomUUID) {
     return globalThis.crypto.randomUUID();
   }
-  return `region-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0"));
+  return [
+    hex.slice(0, 4).join(""),
+    hex.slice(4, 6).join(""),
+    hex.slice(6, 8).join(""),
+    hex.slice(8, 10).join(""),
+    hex.slice(10, 16).join(""),
+  ].join("-");
+}
+
+function formatValidationIssue(issue) {
+  const known = VALIDATION_ISSUE_TEXT[issue?.code];
+  const backendMessage = typeof issue?.message === "string"
+    ? issue.message.trim()
+    : "";
+  if (known) {
+    const chineseMessage = `${known.label}：${known.message}`;
+    return backendMessage && backendMessage !== known.message
+      ? `${chineseMessage}（${backendMessage}）`
+      : chineseMessage;
+  }
+  return backendMessage || "未知校验问题";
 }
 
 function isTypingTarget(target) {
@@ -310,8 +361,8 @@ export default function answerRegionEditor(component) {
     );
   }
 
-  function issueState(region) {
-    const relevant = validationIssues.filter(
+  function issuesForRegion(region) {
+    return validationIssues.filter(
       (issue) => (
         issue.region_uuid === region.region_uuid
         || (
@@ -320,6 +371,10 @@ export default function answerRegionEditor(component) {
         )
       ),
     );
+  }
+
+  function issueState(region) {
+    const relevant = issuesForRegion(region);
     if (relevant.some((issue) => INVALID_ISSUES.has(issue.code))) {
       return "invalid";
     }
@@ -404,7 +459,7 @@ export default function answerRegionEditor(component) {
 
   function renderRegions() {
     const fragment = document.createDocumentFragment();
-    for (const region of filterRegionsByPage(regions, activePage)) {
+    for (const region of regions.filter((region) => region.page === activePage)) {
       fragment.append(renderRegion(region));
     }
     regionsLayer.replaceChildren(fragment);
@@ -445,11 +500,14 @@ export default function answerRegionEditor(component) {
 
   function renderStatus() {
     const currentCount = regions.filter((region) => region.page === activePage).length;
+    const formattedIssues = validationIssues.map(formatValidationIssue);
     statusCounts.textContent = `当前页 ${currentCount} 个 · 全部 ${regions.length} 个`;
     statusMode.textContent = mode === "create"
       ? "连续新增模式：拖动画框，Esc 退出"
       : "选择模式：拖动题框，拖动角点缩放";
-    statusNext.textContent = `下一个预计映射：${nextMappingLabel()}`;
+    statusNext.textContent = formattedIssues.length > 0
+      ? `校验：${formattedIssues.join("；")}`
+      : `下一个预计映射：${nextMappingLabel()}`;
     statusSave.textContent = `${data.save_status || "草稿"} · 修订 ${revision}`;
   }
 
@@ -515,6 +573,7 @@ export default function answerRegionEditor(component) {
     for (const region of regions) {
       const row = document.createElement("section");
       const stateClass = issueState(region);
+      const formattedIssues = issuesForRegion(region).map(formatValidationIssue);
       row.className = `region-row ${stateClass}`;
       row.classList.toggle("is-selected", region.region_uuid === selectedUuid);
       row.dataset.regionUuid = region.region_uuid;
@@ -541,6 +600,15 @@ export default function answerRegionEditor(component) {
       select.setAttribute("aria-label", `题框 ${region.region_order || ""} 映射`);
       appendMappingOptions(select, region);
 
+      const issueList = document.createElement("ul");
+      issueList.className = "region-issues";
+      issueList.hidden = formattedIssues.length === 0;
+      for (const message of formattedIssues) {
+        const item = document.createElement("li");
+        item.textContent = message;
+        issueList.append(item);
+      }
+
       const actions = document.createElement("div");
       actions.className = "region-row-actions";
       const locate = createButton("定位", "locate");
@@ -548,7 +616,7 @@ export default function answerRegionEditor(component) {
       const remove = createButton("删除", "delete-row");
       remove.dataset.regionUuid = region.region_uuid;
       actions.append(locate, remove);
-      row.append(top, select, actions);
+      row.append(top, issueList, select, actions);
       fragment.append(row);
     }
 
@@ -1106,7 +1174,17 @@ export default function answerRegionEditor(component) {
 
   function handleKeyUp(event) {
     if (event.code === "Space") {
-      spacePressed = false;
+      resetSpacePressed();
+    }
+  }
+
+  function resetSpacePressed() {
+    spacePressed = false;
+  }
+
+  function handleVisibilityChange() {
+    if (document.hidden) {
+      resetSpacePressed();
     }
   }
 
@@ -1119,6 +1197,8 @@ export default function answerRegionEditor(component) {
   listen(svg, "pointercancel", handlePointerCancel);
   listen(root, "keydown", handleKeyDown);
   listen(window, "keyup", handleKeyUp);
+  listen(window, "blur", resetSpacePressed);
+  listen(document, "visibilitychange", handleVisibilityChange);
 
   let resizeObserver = null;
   if (typeof ResizeObserver === "function") {
