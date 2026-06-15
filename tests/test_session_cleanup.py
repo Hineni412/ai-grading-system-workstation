@@ -63,6 +63,7 @@ def _make_deleted_session(db: DBManager, data_root: Path) -> tuple[int, list[Pat
     back_template = _write(template_dir / "back.png")
     analysis = _write(template_dir / "analysis.json")
     regions = _write(template_dir / "regions.json")
+    region_draft = _write(template_dir / "region_draft.json")
     front_scan = _write(exams_dir / "front.jpg")
     back_scan = _write(exams_dir / "back.jpg")
     annotated_front = _write(annotated_dir / "front.jpg")
@@ -125,7 +126,19 @@ def _make_deleted_session(db: DBManager, data_root: Path) -> tuple[int, list[Pat
         conn.commit()
 
     db.soft_delete_grading_session(session_id)
-    return session_id, [rubric, answer_key, front_template, back_template, front_scan, back_scan, annotated_front]
+    return session_id, [
+        rubric,
+        answer_key,
+        front_template,
+        back_template,
+        analysis,
+        regions,
+        region_draft,
+        front_scan,
+        back_scan,
+        annotated_front,
+        annotated_back,
+    ]
 
 
 def test_hard_delete_session_removes_database_rows_and_owned_files(tmp_path: Path) -> None:
@@ -141,6 +154,7 @@ def test_hard_delete_session_removes_database_rows_and_owned_files(tmp_path: Pat
     assert all(count == 0 for count in _session_table_counts(db, session_id).values())
     assert result["deleted_files"] >= len(owned_files)
     assert not (data_root / "templates" / f"session_{session_id}").exists()
+    assert not (data_root / "templates" / f"session_{session_id}" / "region_draft.json").exists()
     assert not (data_root / "exams" / f"session_{session_id}").exists()
     assert not (data_root / "annotated" / f"session_{session_id}").exists()
     for path in owned_files:

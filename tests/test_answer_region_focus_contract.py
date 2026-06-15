@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import ast
+from contextlib import nullcontext
 from dataclasses import FrozenInstanceError, fields
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from answer_region_focus_page import EditorEventResult, process_editor_state
+import answer_region_focus_page as focus_module
+from answer_region_draft_service import AnswerRegionDraftService
+from answer_region_focus_page import (
+    EditorEventResult,
+    process_editor_state,
+    read_component_result_value,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,6 +81,16 @@ def _process(
         image_sizes=IMAGE_SIZES,
         template_matches=True,
     )
+
+
+def test_component_result_reader_supports_attributes_and_dict_test_doubles() -> None:
+    attribute_result = SimpleNamespace(editor_state={"revision": 2})
+    dict_result = {"editor_state": {"revision": 3}}
+
+    assert read_component_result_value(attribute_result, "editor_state") == {"revision": 2}
+    assert read_component_result_value(dict_result, "editor_state") == {"revision": 3}
+    assert read_component_result_value(attribute_result, "missing", "fallback") == "fallback"
+    assert read_component_result_value(None, "editor_state") is None
 
 
 def test_editor_event_result_is_frozen_with_exact_public_fields() -> None:
@@ -156,6 +174,194 @@ def test_unconfirmed_multi_region_requests_drawer() -> None:
     assert result.drawer_open_requested is True
 
 
+class _FakeStreamlit:
+    def __init__(self) -> None:
+        self.session_state: dict[str, Any] = {"region_focus_session_id": 17}
+        self.rerun_count = 0
+        self.errors: list[str] = []
+        self.component_mount_count = 0
+
+    def __getattr__(self, name: str) -> Any:
+        if name == "button":
+            return lambda *args, **kwargs: False
+        if name == "expander":
+            return lambda *args, **kwargs: nullcontext()
+        if name == "rerun":
+            return self._rerun
+        if name == "error":
+            return lambda message, *args, **kwargs: self.errors.append(str(message))
+        return lambda *args, **kwargs: None
+
+    def _rerun(self) -> None:
+        self.rerun_count += 1
+
+
+def _render_focus_with_component_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    component_result: object,
+    *,
+    draft_status: str = "missing",
+) -> tuple[_FakeStreamlit, list[dict[str, Any]], list[list[dict[str, Any]]], Path]:
+    fake_st = _FakeStreamlit()
+    session_dir = tmp_path / "templates" / "session_17"
+    session_dir.mkdir(parents=True)
+    front_path = session_dir / "front.png"
+    back_path = session_dir / "back.png"
+    front_path.write_bytes(b"front")
+    back_path.write_bytes(b"back")
+    saved_drafts: list[dict[str, Any]] = []
+    committed_regions: list[list[dict[str, Any]]] = []
+
+    class FakeDB:
+        def get_grading_session(self, session_id: int) -> dict[str, Any]:
+            return {"id": session_id, "session_name": "focus", "rubric_path": None}
+
+        def get_session_template(self, session_id: int) -> dict[str, Any]:
+            return {
+                "id": 9,
+                "session_id": session_id,
+                "front_template_path": str(front_path),
+                "back_template_path": str(back_path),
+                "regions_snapshot_pending": 0,
+            }
+
+        def list_answer_regions(self, session_id: int) -> list[dict[str, Any]]:
+            return []
+
+    class FakeDraftService:
+        def __init__(self, path: Path) -> None:
+            self.draft_path = path / "region_draft.json"
+
+        def compute_template_fingerprint(self, front: Path, back: Path) -> str:
+            return "current-fingerprint"
+
+        def load(self, *, expected_template_fingerprint: str) -> SimpleNamespace:
+            return SimpleNamespace(status="missing", draft=None, quarantined_path=None)
+
+        def save(self, **kwargs: Any) -> None:
+            saved_drafts.append(kwargs)
+
+        def discard(self) -> None:
+            raise AssertionError("incompatible or uploaded draft must not be discarded automatically")
+
+    class FakeCommitService:
+        def __init__(self, db: Any, path: Path, draft_service: Any) -> None:
+            pass
+
+        def commit(self, **kwargs: Any) -> SimpleNamespace:
+            committed_regions.append(kwargs["regions"])
+            return SimpleNamespace(committed=True, snapshot_pending=False)
+
+    monkeypatch.setattr(focus_module, "st", fake_st)
+    if draft_status == "incompatible":
+        draft_service = AnswerRegionDraftService(session_dir)
+        old_fingerprint = draft_service.compute_template_fingerprint(front_path, back_path)
+        draft_service.save(
+            session_id=17,
+            template_fingerprint=old_fingerprint,
+            revision=1,
+            regions=[_region("old", question_id="Q1")],
+        )
+        back_path.write_bytes(b"changed-back")
+    else:
+        monkeypatch.setattr(focus_module, "AnswerRegionDraftService", FakeDraftService)
+    monkeypatch.setattr(focus_module, "AnswerRegionCommitService", FakeCommitService)
+    monkeypatch.setattr(
+        focus_module,
+        "load_question_binding_catalog",
+        lambda _path: SimpleNamespace(automatic_candidates=("Q1",), manual_options=()),
+    )
+    monkeypatch.setattr(
+        focus_module,
+        "_load_images",
+        lambda _paths: (
+            {"front": "front-data", "back": "back-data"},
+            IMAGE_SIZES,
+        ),
+    )
+
+    def fake_render_answer_region_editor(**kwargs: Any) -> object:
+        fake_st.component_mount_count += 1
+        return component_result
+
+    monkeypatch.setattr(focus_module, "render_answer_region_editor", fake_render_answer_region_editor)
+
+    focus_module.render_answer_region_focus_page(
+        FakeDB(),
+        session_id=17,
+        templates_dir=tmp_path / "templates",
+    )
+    return fake_st, saved_drafts, committed_regions, session_dir
+
+
+def test_attribute_component_finish_autosaves_then_commits_fresh_regions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    returned_state = _event([_region("fresh")], revision=2)
+    component_result = SimpleNamespace(
+        editor_state=returned_state,
+        finish_requested={"revision": 2},
+    )
+
+    _fake_st, saved_drafts, committed_regions, _session_dir = _render_focus_with_component_result(
+        monkeypatch,
+        tmp_path,
+        component_result,
+    )
+
+    assert saved_drafts[0]["revision"] == 2
+    assert saved_drafts[0]["regions"][0]["region_uuid"] == "fresh"
+    assert committed_regions == [saved_drafts[0]["regions"]]
+
+
+def test_attribute_component_exit_autosaves_latest_draft_before_leaving_focus(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    component_result = SimpleNamespace(
+        editor_state=_event([_region("latest")], revision=3),
+        exit_requested={"revision": 3},
+    )
+
+    fake_st, saved_drafts, committed_regions, _session_dir = _render_focus_with_component_result(
+        monkeypatch,
+        tmp_path,
+        component_result,
+    )
+
+    assert saved_drafts[0]["regions"][0]["region_uuid"] == "latest"
+    assert committed_regions == []
+    assert "region_focus_session_id" not in fake_st.session_state
+    assert fake_st.rerun_count == 1
+
+
+def test_changed_template_fingerprint_blocks_focus_entry_and_preserves_draft(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    mounted = object()
+
+    _fake_st, saved_drafts, committed_regions, session_dir = _render_focus_with_component_result(
+        monkeypatch,
+        tmp_path,
+        mounted,
+        draft_status="incompatible",
+    )
+
+    assert saved_drafts == []
+    assert committed_regions == []
+    assert _fake_st.component_mount_count == 0
+    assert _fake_st.errors
+    draft_service = AnswerRegionDraftService(session_dir)
+    current_fingerprint = draft_service.compute_template_fingerprint(
+        session_dir / "front.png",
+        session_dir / "back.png",
+    )
+    assert draft_service.load(expected_template_fingerprint=current_fingerprint).status == "incompatible"
+
+
 def test_focus_page_source_keeps_formal_writes_behind_commit_service() -> None:
     source = FOCUS_PAGE.read_text(encoding="utf-8")
 
@@ -213,3 +419,46 @@ def test_web_app_routes_focus_before_tabs_and_gates_v3_as_legacy_fallback() -> N
     assert "旧版题框编辑器（紧急回退）" in config_source
     assert "AI_REGION_EDITOR_LEGACY" in config_source
     assert config_source.count("_render_region_editor_v3") == 1
+
+
+def test_template_upload_preserves_primary_editor_draft_and_legacy_cache_state() -> None:
+    module = ast.parse(WEB_APP.read_text(encoding="utf-8"))
+    config = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "render_config_and_session_tab"
+    )
+    upload_block = next(
+        node
+        for node in ast.walk(config)
+        if isinstance(node, ast.If)
+        and "detect_regions_btn_" in ast.unparse(node.test)
+    )
+    upload_source = ast.unparse(upload_block)
+    formatted_values = [
+        ast.unparse(node)
+        for node in ast.walk(upload_block)
+        if isinstance(node, ast.JoinedStr)
+    ]
+
+    assert "region_draft.json" not in upload_source
+    assert ".discard()" not in upload_source
+    assert not any(value.startswith("f'regions_") for value in formatted_values)
+    assert not any(value.startswith("f'sel_region_idx_") for value in formatted_values)
+    assert not any(value.startswith("f'region_canvas_version_") for value in formatted_values)
+
+
+def test_legacy_editor_gate_accepts_only_trimmed_one() -> None:
+    module = ast.parse(WEB_APP.read_text(encoding="utf-8"))
+    config = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "render_config_and_session_tab"
+    )
+    legacy_gate = next(
+        node
+        for node in ast.walk(config)
+        if isinstance(node, ast.If) and "AI_REGION_EDITOR_LEGACY" in ast.unparse(node.test)
+    )
+
+    assert ast.unparse(legacy_gate.test) == "os.getenv('AI_REGION_EDITOR_LEGACY', '').strip() == '1'"

@@ -2968,12 +2968,6 @@ def render_config_and_session_tab(
                     "front_page_parity": _front_page_parity_from_first_page_role(first_page_role),
                 },
             )
-            # Flush regions cache
-            st.session_state.pop(f"regions_{selected_session_id}", None)
-            st.session_state.pop(f"sel_region_idx_{selected_session_id}", None)
-            st.session_state[f"region_canvas_version_{selected_session_id}"] = (
-                int(st.session_state.get(f"region_canvas_version_{selected_session_id}", 0)) + 1
-            )
             st.success(
                 f"样卷映射包已建立：读到 {len(package['config'].get('questions', []))} 道题号候选。"
                 f"作答区域将由人工标定；本地调试文件已保存到 {session_dir}"
@@ -2994,7 +2988,7 @@ def render_config_and_session_tab(
         ):
             st.session_state["region_focus_session_id"] = selected_session_id
             st.rerun()
-        if os.getenv("AI_REGION_EDITOR_LEGACY") == "1":
+        if os.getenv("AI_REGION_EDITOR_LEGACY", "").strip() == "1":
             with st.expander("旧版题框编辑器（紧急回退）", expanded=False):
                 _render_region_editor_v3(db, selected_session_id, session, template, llm_settings)
         _render_workflow_state_card(db, selected_session_id)

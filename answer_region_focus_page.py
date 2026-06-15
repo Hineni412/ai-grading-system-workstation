@@ -39,6 +39,17 @@ class EditorEventResult:
     editor_state: dict[str, Any]
 
 
+def read_component_result_value(
+    component_result: object,
+    name: str,
+    default: Any = None,
+) -> Any:
+    """Read a Components v2 result attribute or a dict-backed test double."""
+    if isinstance(component_result, dict):
+        return component_result.get(name, default)
+    return getattr(component_result, name, default)
+
+
 def process_editor_state(
     editor_state: dict[str, Any],
     *,
@@ -221,15 +232,9 @@ def render_answer_region_focus_page(
         key=f"focus-answer-region-{session_id}",
         data=payload,
     )
-    if not isinstance(component_value, dict):
-        return
-
-    if component_value.get("exit_requested") is not None:
-        _leave_focus_mode(session_id, fingerprint)
-        return
 
     handled_event = False
-    returned_state = component_value.get("editor_state")
+    returned_state = read_component_result_value(component_value, "editor_state")
     if isinstance(returned_state, dict):
         event_result = process_editor_state(
             returned_state,
@@ -250,7 +255,11 @@ def render_answer_region_focus_page(
             regions = event_result.regions
             handled_event = True
 
-    if component_value.get("finish_requested") is not None:
+    if read_component_result_value(component_value, "exit_requested") is not None:
+        _leave_focus_mode(session_id, fingerprint)
+        return
+
+    if read_component_result_value(component_value, "finish_requested") is not None:
         result = commit_service.commit(
             session_id=session_id,
             template_id=int(template["id"]),
