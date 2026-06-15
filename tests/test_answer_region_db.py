@@ -240,6 +240,54 @@ def test_replacement_tokens_are_unique_and_stale_completion_cannot_clear_newer_p
     assert completed_template["regions_snapshot_token"] is None
 
 
+def test_template_reupload_clears_stale_pending_snapshot_generation(tmp_path: Path) -> None:
+    db = DBManager(tmp_path / "grading.db")
+    db.initialize()
+    session_id, template_id = _make_session(db)
+    db.replace_answer_regions_atomic(
+        session_id,
+        template_id,
+        [_region("formal", 1, "Q1")],
+        confirmed=True,
+    )
+
+    db.upsert_session_template(session_id, "replacement-front.png", "replacement-back.png")
+
+    template = db.get_session_template(session_id)
+    assert template["front_template_path"] == "replacement-front.png"
+    assert template["back_template_path"] == "replacement-back.png"
+    assert template["is_confirmed"] == 0
+    assert template["regions_snapshot_pending"] == 0
+    assert template["regions_snapshot_token"] is None
+
+
+def test_template_mapping_refresh_clears_stale_pending_snapshot_generation(tmp_path: Path) -> None:
+    db = DBManager(tmp_path / "grading.db")
+    db.initialize()
+    session_id, template_id = _make_session(db)
+    db.replace_answer_regions_atomic(
+        session_id,
+        template_id,
+        [_region("formal", 1, "Q1")],
+        confirmed=True,
+    )
+
+    db.update_session_template_analysis(
+        session_id,
+        ai_analysis_path="replacement-analysis.json",
+        template_config_path="replacement-config.json",
+        regions_path="replacement-regions.json",
+    )
+
+    template = db.get_session_template(session_id)
+    assert template["ai_analysis_path"] == "replacement-analysis.json"
+    assert template["template_config_path"] == "replacement-config.json"
+    assert template["regions_path"] == "replacement-regions.json"
+    assert template["is_confirmed"] == 0
+    assert template["regions_snapshot_pending"] == 0
+    assert template["regions_snapshot_token"] is None
+
+
 def test_snapshot_completion_requires_nonblank_matching_token(tmp_path: Path) -> None:
     db = DBManager(tmp_path / "grading.db")
     db.initialize()

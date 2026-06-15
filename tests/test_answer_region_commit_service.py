@@ -316,6 +316,42 @@ def test_validation_failure_leaves_formal_regions_and_draft_untouched(tmp_path: 
     assert list(session_dir.glob("regions_confirmed_*.json")) == []
 
 
+def test_commit_rechecks_current_template_fingerprint_before_formal_write(tmp_path: Path) -> None:
+    db, session_id, template_id, session_dir, draft_service = _setup(tmp_path)
+    session_dir.mkdir(parents=True)
+    original_front = session_dir / "original-front.png"
+    original_back = session_dir / "original-back.png"
+    replacement_front = session_dir / "replacement-front.png"
+    replacement_back = session_dir / "replacement-back.png"
+    original_front.write_bytes(b"original-front")
+    original_back.write_bytes(b"original-back")
+    replacement_front.write_bytes(b"replacement-front")
+    replacement_back.write_bytes(b"replacement-back")
+    db.upsert_session_template(session_id, str(original_front), str(original_back))
+    _seed_formal(db, session_id, template_id)
+    _save_draft(draft_service, session_id)
+    expected_fingerprint = draft_service.compute_template_fingerprint(original_front, original_back)
+    formal_before = db.list_answer_regions(session_id)
+    draft_before = draft_service.draft_path.read_bytes()
+    db.upsert_session_template(session_id, str(replacement_front), str(replacement_back))
+    service = AnswerRegionCommitService(db, session_dir, draft_service)
+
+    result = service.commit(
+        session_id=session_id,
+        template_id=template_id,
+        regions=[_region("stale-template-region")],
+        image_sizes=IMAGE_SIZES,
+        template_matches=True,
+        expected_template_fingerprint=expected_fingerprint,
+    )
+
+    assert result.committed is False
+    assert [issue.code for issue in result.validation.issues] == ["template_mismatch"]
+    assert db.list_answer_regions(session_id) == formal_before
+    assert draft_service.draft_path.read_bytes() == draft_before
+    assert list(session_dir.glob("regions_confirmed_*.json")) == []
+
+
 def test_database_failure_leaves_formal_regions_and_draft_untouched(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

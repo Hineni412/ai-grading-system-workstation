@@ -936,7 +936,11 @@ class DBManager:
                 cursor.execute(
                     """
                     UPDATE session_templates
-                    SET front_template_path = ?, back_template_path = ?, is_confirmed = 0,
+                    SET front_template_path = ?,
+                        back_template_path = ?,
+                        is_confirmed = 0,
+                        regions_snapshot_pending = 0,
+                        regions_snapshot_token = NULL,
                         updated_at = datetime('now','localtime')
                     WHERE id = ?
                     """,
@@ -986,6 +990,8 @@ class DBManager:
                     template_config_path = ?,
                     regions_path = ?,
                     is_confirmed = 0,
+                    regions_snapshot_pending = 0,
+                    regions_snapshot_token = NULL,
                     updated_at = datetime('now','localtime')
                 WHERE session_id = ?
                 """,
