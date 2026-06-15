@@ -87,3 +87,22 @@ def test_frequency_fit_prioritizes_shenzhen_fit_and_retains_wider_frequency() ->
 
 def test_regular_frequency_fit_uses_local_frequency() -> None:
     assert frequency_fit_score(FrequencyMetrics(available=True, questions_per_paper=0.75)) == 0.75
+
+
+def test_sub_skill_boost_applies_bonus_multiplier() -> None:
+    base_result = score_candidate(
+        concept_match=1.0,
+        mapping_status="confirmed",
+        frequency_fit=0.8,
+        gradient_fit=0.5,
+        diversity_fit=0.5,
+    )
+    boosted_result = score_candidate(
+        concept_match=1.0,
+        mapping_status="confirmed",
+        frequency_fit=0.8,
+        gradient_fit=0.5,
+        diversity_fit=0.5,
+        sub_skill_boost=1.0,
+    )
+    assert boosted_result.total_score == pytest.approx(base_result.total_score * 1.3, rel=1e-4)

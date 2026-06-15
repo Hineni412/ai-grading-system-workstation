@@ -14,6 +14,7 @@ ALLOWED_TAG_TYPES = {
     "prerequisite",
     "teaching_stage",
     "student_level",
+    "sub_skill",
 }
 
 

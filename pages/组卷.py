@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import streamlit as st
+
+LOGGER = logging.getLogger(__name__)
 
 from question_bank.database.paths import project_data_root, question_bank_db_path
 from question_bank.exporters.paper_docx_exporter import export_question_paper_docx
@@ -33,6 +36,7 @@ from question_bank.services.assembly_basket_state import (
     question_ids_to_csv,
     load_basket_draft,
     save_basket_draft,
+    SectionSpec,
 )
 from pages_shared.shared_styles import inject_shared_css
 import importlib
@@ -59,6 +63,7 @@ from export_names import safe_filename_fragment
 
 BASKET_KEY = "qb_question_basket"
 ORDER_KEY = "qb_assembly_order"
+SECTIONS_KEY = "qb_assembly_sections"  # AI 智能分类分组：None=未启用，list[SectionSpec]=已分类
 INCLUDE_ANSWER_KEY = "qb_assembly_include_answer"
 LAST_EXPORT_KEY = "qb_last_assembly_export"
 PREVIEW_DENSITY_KEY = "qb_preview_density"
@@ -68,13 +73,75 @@ IMAGE_MARKER_PATTERN = re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]")
 
 def _basket_ids() -> list[int]:
     if BASKET_KEY not in st.session_state:
-        b_ids, o_ids = load_basket_draft()
+        b_ids, o_ids, sections = load_basket_draft()
         st.session_state[BASKET_KEY] = b_ids
         st.session_state[ORDER_KEY] = o_ids
+        st.session_state[SECTIONS_KEY] = sections
 
     ids = normalize_question_ids(st.session_state.setdefault(BASKET_KEY, []))
     st.session_state[BASKET_KEY] = ids
     return ids
+
+
+def _current_sections() -> list[SectionSpec] | None:
+    _basket_ids()  # 触发初始化
+    return st.session_state.get(SECTIONS_KEY) or None
+
+
+def _set_sections(sections: list[SectionSpec] | None) -> None:
+    """更新当前分类分组，并连同 basket/order 一起落盘。"""
+    st.session_state[SECTIONS_KEY] = sections or None
+    save_basket_draft(_basket_ids(), _ordered_ids(), sections=sections)
+
+
+def _clear_sections() -> None:
+    st.session_state[SECTIONS_KEY] = None
+
+
+def _sections_to_order(sections: list[SectionSpec] | None) -> list[int]:
+    """把分类分组按段顺序拍平为线性 order。"""
+    if not sections:
+        return []
+    ordered: list[int] = []
+    for sec in sections:
+        for qid in sec.question_ids:
+            qid = int(qid)
+            if qid not in ordered:
+                ordered.append(qid)
+    return ordered
+
+
+def _reorder_sections_by_difficulty(
+    sections: list[SectionSpec],
+    questions: list[dict[str, Any]],
+) -> list[SectionSpec]:
+    """按难度强制重排：分类内 difficulty 升序，分类间按平均难度升序。
+
+    作为 LLM 排序的保险——即使 LLM 没严格按难度排，最终结果也一定由易到难。
+    保留「其它」分类在最末尾（不参与难度排序）。
+    """
+    diff_map: dict[int, float] = {}
+    for q in questions:
+        try:
+            diff_map[int(q["id"])] = float(q.get("difficulty") or 5.0)
+        except (TypeError, ValueError):
+            diff_map[int(q["id"])] = 5.0
+
+    def _sec_avg_diff(sec: SectionSpec) -> float:
+        vals = [diff_map.get(int(qid), 5.0) for qid in sec.question_ids]
+        return sum(vals) / len(vals) if vals else 5.0
+
+    reordered: list[SectionSpec] = []
+    for sec in sections:
+        # 回退类内难度排序逻辑，保留LLM对题目顺序的初始排序
+        reordered.append(SectionSpec(title=sec.title, question_ids=sec.question_ids))
+
+    # 「其它」类固定在最后，其余按平均难度升序
+    others = [s for s in reordered if s.title == "其它"]
+    main = [s for s in reordered if s.title != "其它"]
+    main.sort(key=_sec_avg_diff)
+    return main + others
+
 
 
 def _set_basket_and_order(question_ids: object, order_ids: object | None = None) -> list[int]:
@@ -82,7 +149,7 @@ def _set_basket_and_order(question_ids: object, order_ids: object | None = None)
     order = order_for_basket(basket, order_ids if order_ids is not None else st.session_state.get(ORDER_KEY, []))
     st.session_state[BASKET_KEY] = basket
     st.session_state[ORDER_KEY] = order
-    save_basket_draft(basket, order)
+    save_basket_draft(basket, order, sections=st.session_state.get(SECTIONS_KEY))
     return basket
 
 
@@ -186,7 +253,7 @@ def _move_question(question_id: int, offset: int) -> None:
         return
     ordered[index], ordered[target] = ordered[target], ordered[index]
     st.session_state[ORDER_KEY] = ordered
-    save_basket_draft(_basket_ids(), ordered)
+    save_basket_draft(_basket_ids(), ordered, sections=st.session_state.get(SECTIONS_KEY))
 
 
 def _remove_question(question_id: int) -> None:
@@ -198,7 +265,8 @@ def _remove_question(question_id: int) -> None:
 def _clear_basket() -> None:
     st.session_state[BASKET_KEY] = []
     st.session_state[ORDER_KEY] = []
-    save_basket_draft([], [])
+    st.session_state[SECTIONS_KEY] = None
+    save_basket_draft([], [], sections=None)
 
 
 TAG_FILTER_CONFIG = (
@@ -532,45 +600,59 @@ def _render_card_action_button(qid: int, qid_for_key: int | None = None) -> None
             st.rerun()
 
 
+def _local_typegroup_sort(questions: list[dict[str, Any]]) -> list[int]:
+    """本地三段式安全排序：选择题 ➡️ 填空题 ➡️ 解答题，段内难度递增。"""
+    choices: list[dict[str, Any]] = []
+    blanks: list[dict[str, Any]] = []
+    solutions: list[dict[str, Any]] = []
+    for q in questions:
+        g = _canonical_type_group(q.get("question_type"))
+        if g == "选择题":
+            choices.append(q)
+        elif g == "填空题":
+            blanks.append(q)
+        else:
+            solutions.append(q)
+
+    def _get_diff(item: dict[str, Any]) -> float:
+        try:
+            return float(item.get("difficulty") or 5.0)
+        except (TypeError, ValueError):
+            return 5.0
+
+    choices.sort(key=_get_diff)
+    blanks.sort(key=_get_diff)
+    solutions.sort(key=_get_diff)
+    return [int(q["id"]) for q in (choices + blanks + solutions)]
+
+
+def _apply_local_fallback(questions: list[dict[str, Any]], *, message: str) -> None:
+    """统一降级：清空分类分组，回到三段式线性排序。"""
+    sorted_ids = _local_typegroup_sort(questions)
+    _clear_sections()
+    _set_basket_and_order(sorted_ids, sorted_ids)
+    st.success(message)
+    st.rerun()
+
+
 def _run_ai_question_sorting(questions: list[dict[str, Any]]) -> None:
     if not questions:
         st.warning("当前试卷没有题目，无法进行排序！")
         return
 
-    with st.spinner("🤖 AI 正在根据教学法（题型分组、难度循序渐进、知识点连贯）规划最优试卷顺序..."):
+    with st.spinner("🤖 AI 正在按知识点分类规划试卷结构（跨题型归类、同类难度循序渐进）..."):
         from question_bank.services.ai_tagging_service import AITaggingService
         tagging_service = AITaggingService()
 
-        # 1. Local canonical pedagogical sorting
+        # 1. Mock 模式：无法语义分组，退回三段式
         if tagging_service.mock_mode:
-            choices = []
-            blanks = []
-            solutions = []
-            for q in questions:
-                g = _canonical_type_group(q.get("question_type"))
-                if g == "选择题":
-                    choices.append(q)
-                elif g == "填空题":
-                    blanks.append(q)
-                else:
-                    solutions.append(q)
-
-            def _get_diff(item):
-                try:
-                    return float(item.get("difficulty") or 5.0)
-                except ValueError:
-                    return 5.0
-            choices.sort(key=_get_diff)
-            blanks.sort(key=_get_diff)
-            solutions.sort(key=_get_diff)
-
-            sorted_ids = [int(q["id"]) for q in (choices + blanks + solutions)]
-            _set_basket_and_order(sorted_ids, sorted_ids)
-            st.success("✨ (本地 Mock 模式) 智能排序已完成！已自动按“选择题 ➡️ 填空题 ➡️ 解答题”且难度循序渐进的梯度重排试卷。")
-            st.rerun()
+            _apply_local_fallback(
+                questions,
+                message="✨ (本地 Mock 模式) 已按“选择题 ➡️ 填空题 ➡️ 解答题”且难度循序渐进重排试卷。",
+            )
             return
 
-        # 2. AI Sorger
+        # 2. 真实 LLM：按知识点细类分类
         simplified_questions = []
         for q in questions:
             kp_tags = [t.get("tag_value") for t in q.get("tags", []) if t.get("tag_type") == "knowledge_point" and t.get("tag_value")]
@@ -581,73 +663,289 @@ def _run_ai_question_sorting(questions: list[dict[str, Any]]) -> None:
                 "difficulty": q.get("difficulty") or 5.0,
                 "knowledge_points": kp_tags,
                 "methods": method_tags,
-                "question_text": _short_text(q.get("question_text"), 150)
+                "question_text": _short_text(q.get("question_text"), 150),
             })
 
         prompt = f"""
-        You are an expert junior middle-school math curriculum designer and chief examiner.
-        Your task is to review the following set of math exam questions and recommend the most pedagogically sound sorting order.
+你是一位资深初中数学教研员与命题组长。请把下面这组试题按「知识点细类」分门别类地组织成一份结构清晰、难度循序渐进的试卷。
 
-        CRITICAL sorting principles:
-        1. **Type Grouping (STRICT)**: Group strictly by: Choice (选择题) first, Fill-in-the-Blank (填空题) second, and Solution (解答题) last.
-        2. **Difficulty Progression**: Within each group, progress from easier (lower difficulty) to harder (higher difficulty).
-        3. **Knowledge Coherence**: Group closely related concepts to avoid sudden context switching.
+⚠️ 最重要的规则（违反则任务失败）：
+**每道题目只能、必须归入一个分类**。一道题即使涉及多个知识点，也只按它最核心、最主要的那个知识点归类一次。绝对不允许把同一个题目 ID 放进多个分类。
+**必须覆盖全部题目**：输入有几道题，输出所有分类的题目总数就必须等于这个数，既不能多也不能少。
 
-        Here is the list of questions to sort:
-        {json.dumps(simplified_questions, ensure_ascii=False, indent=2)}
+分类原则（务必准确）：
+1. **按核心知识点归类（最关键）**：仔细阅读每道题的题干和知识点标签，判断它**最核心、最主要**考查的知识点是什么，归入该知识点的分类。注意：题目的"题干情境"不等于"考查知识点"——例如一道以"折叠"为情境的题，如果核心考点是"全等三角形的判定"，就应该归入「全等三角形的判定」而非「折叠」。请基于题目的实际数学考点而非表面情境归类。
+2. **互斥归类**：每题唯一归属。若拿不准，归到与题目解题所用的核心数学方法最匹配的那个分类。
+3. **分类粒度**：用具体的知识点细类作为标题（如「一元二次方程解法」「二次函数图像性质」「全等三角形判定」），不要用「数与代数」「图形与几何」这种过粗的大模块。每个分类尽量至少 2 道题，除非题量确实太少。
+4. **标题规范**：每个分类给出一个简洁的中文标题（4-10 字），准确反映该分类的知识点，不要加编号、不要加「类」字、不要带标点。
 
-        Return a single JSON object with a single key "sorted_ids" containing a list of the question IDs in the recommended order.
-        Do not add or remove any IDs.
+难度排序原则（全卷由易到难，严格遵守）：
+5. **分类间排序（大类由易到难）**：各大类（知识点分类）之间，按整体难度从易到难排列。基础概念类（如「有理数运算」「整式加减」）排在前面，综合应用类（如「二次函数综合」「几何证明与计算」）排在后面。
+6. **分类内排序（同类由易到难）**：同一分类内部的题目，严格按难度值（difficulty 字段）从低到高排列。difficulty 数值越小越简单，必须升序排列。
 
-        Expected response format:
-        {{
-            "sorted_ids": [3, 1, 5, 2, 4]
-        }}
-        """
+待分类的题目列表（共 {len(simplified_questions)} 道，difficulty 越小越简单）：
+{json.dumps(simplified_questions, ensure_ascii=False, indent=2)}
+
+只返回一个 JSON 对象，键为 "sections"，值为分类数组。每个元素包含 "title"（中文标题）和 "question_ids"（该分类下的题目 ID 列表，必须按难度从低到高排列）。
+
+返回前自查清单（逐条确认）：
+- ✅ 每个题目 ID 在所有分类中总共只出现一次（不能重复）
+- ✅ 所有分类的 question_ids 合并后，恰好等于输入的 {len(simplified_questions)} 个题目 ID，不多不少
+- ✅ 没有题目被遗漏，没有凭空新增的 ID
+- ✅ 每个分类内的题目按 difficulty 从小到大排列
+- ✅ 分类顺序整体由易到难
+
+期望格式：
+{{
+    "sections": [
+        {{"title": "有理数运算", "question_ids": [3, 1, 7]}},
+        {{"title": "二次函数综合", "question_ids": [2, 5]}}
+    ]
+}}
+"""
         try:
             from question_bank.services.ai_tagging_service import _model_for_llm_client
             model = _model_for_llm_client(tagging_service.llm_client, tagging_service.model)
             payload = tagging_service.llm_client.json_from_text(prompt, model=model)
-            sorted_ids = payload.get("sorted_ids")
-            if isinstance(sorted_ids, list):
-                input_ids = {int(q["id"]) for q in questions}
-                output_ids = [int(x) for x in sorted_ids if _is_int(x)]
-                if set(output_ids) == input_ids:
-                    _set_basket_and_order(output_ids, output_ids)
-                    st.success("✨ AI 智能一键排序已完成！已自动为您应用最优教学逻辑排版。")
+            # 容错：LLM 可能用不同字段名返回分组结构
+            raw_sections = None
+            if isinstance(payload, dict):
+                for key in ("sections", "groups", "categories", "result", "data"):
+                    candidate = payload.get(key)
+                    if isinstance(candidate, list) and candidate:
+                        # 嵌套一层的情况（如 {"result": {"sections": [...]}}）
+                        raw_sections = candidate
+                        break
+                    if isinstance(candidate, dict):
+                        for inner_key in ("sections", "groups", "categories"):
+                            inner = candidate.get(inner_key)
+                            if isinstance(inner, list) and inner:
+                                raw_sections = inner
+                                break
+                        if raw_sections:
+                            break
+                if raw_sections is None:
+                    LOGGER.warning("AI 分类返回的 JSON 顶层 keys=%s，未找到分组字段", list(payload.keys()))
+
+            input_ids = {int(q["id"]) for q in questions}
+            seen: set[int] = set()
+            sections: list[SectionSpec] = []
+            duplicate_count = 0
+            invalid_count = 0
+            ok = isinstance(raw_sections, list) and bool(raw_sections)
+            if ok:
+                for item in raw_sections:
+                    if not isinstance(item, dict):
+                        ok = False
+                        break
+                    # 容错：标题字段名可能是 title / name / category / 知识点
+                    title = ""
+                    for tkey in ("title", "name", "category", "topic", "label"):
+                        if item.get(tkey):
+                            title = str(item.get(tkey)).strip()
+                            break
+                    # 容错：ID 字段名可能是 question_ids / ids / id
+                    ids_raw = None
+                    for ikey in ("question_ids", "ids", "id", "question_id"):
+                        if item.get(ikey):
+                            ids_raw = item.get(ikey)
+                            break
+                    # 单数 id 字段：单个 ID 而非列表
+                    if isinstance(ids_raw, (int, str)):
+                        ids_raw = [ids_raw]
+                    raw_ids = [int(x) for x in (ids_raw or []) if _is_int(x)]
+                    if not title or not raw_ids:
+                        ok = False
+                        break
+                    # 容错去重：只保留首次出现的、且属于输入集合的 ID（而非整体失败）
+                    deduped_ids: list[int] = []
+                    for qid in raw_ids:
+                        if qid not in input_ids:
+                            invalid_count += 1
+                            continue
+                        if qid in seen:
+                            duplicate_count += 1
+                            continue
+                        deduped_ids.append(qid)
+                        seen.add(qid)
+                    if not deduped_ids:
+                        # 该分类去重后空了，跳过它（不整体失败）
+                        continue
+                    sections.append(SectionSpec(title=title, question_ids=deduped_ids))
+
+                if duplicate_count > 0 or invalid_count > 0:
+                    LOGGER.info("AI 分类去重：移除 %d 个重复 ID、%d 个无效 ID", duplicate_count, invalid_count)
+
+            # 容错：AI 遗漏了少量题目，自动补一个"其它"分类，而不是直接 fallback
+            if ok and sections and seen != input_ids:
+                missing_ids = [qid for qid in input_ids if qid not in seen]
+                if missing_ids:
+                    sections.append(SectionSpec(title="其它", question_ids=missing_ids))
+                    st.info(f"AI 分类未覆盖 {len(missing_ids)} 题，已自动归入「其它」分类。")
+
+            if ok and sections:
+                # 二次确认：所有输入题都在 sections 里
+                all_covered = all(qid in input_ids for sec in sections for qid in sec.question_ids)
+                if all_covered:
+                    # 后处理：强制按难度重排（类内升序、类间升序），保证全卷由易到难
+                    sections = _reorder_sections_by_difficulty(sections, questions)
+                    # 校验通过：写入分类分组 + 拍平的线性 order
+                    linear_order = _sections_to_order(sections)
+                    st.session_state[SECTIONS_KEY] = sections
+                    _set_basket_and_order(linear_order, linear_order)
+                    save_basket_draft(_basket_ids(), linear_order, sections=sections)
+                    # 强制切到「AI 分类编排」视图（通过 pending 延迟修改，防止 widget 冲突报错）
+                    st.session_state["assembly_layout_mode_pending"] = "AI 分类编排"
+                    st.success(f"✨ AI 智能分类组卷完成！已按 {len(sections)} 个知识点大类组织试卷，全卷由易到难排列，可在左侧编辑分类标题。")
                     st.rerun()
                     return
-                else:
-                    st.warning("AI 返回的题目列表与当前试卷不一致，已自动退回本地安全排序。")
+            elif raw_sections is None and isinstance(payload, dict):
+                st.warning(f"AI 返回的内容不含分组结构（顶层字段：{', '.join(list(payload.keys())[:5])}），已退回本地排序。")
+            elif not ok:
+                st.warning("AI 返回的分类格式不正确，已自动退回本地安全排序。")
         except Exception as exc:
-            st.error(f"AI 智能排序失败：{exc}，已自动降级为本地教学法排序。")
+            LOGGER.exception("AI 智能分类失败")
+            st.error(f"AI 智能分类失败：{exc}，已自动降级为本地题型排序。")
 
-        # Fallback local sorting
-        choices = []
-        blanks = []
-        solutions = []
-        for q in questions:
-            g = _canonical_type_group(q.get("question_type"))
-            if g == "选择题":
-                choices.append(q)
-            elif g == "填空题":
-                blanks.append(q)
-            else:
-                solutions.append(q)
+        # Fallback：三段式安全排序
+        _apply_local_fallback(
+            questions,
+            message="✨ 已按本地“选择题 ➡️ 填空题 ➡️ 解答题”的难度渐进梯队重排。",
+        )
 
-        def _get_diff(item):
-            try:
-                return float(item.get("difficulty") or 5.0)
-            except ValueError:
-                return 5.0
-        choices.sort(key=_get_diff)
-        blanks.sort(key=_get_diff)
-        solutions.sort(key=_get_diff)
 
-        sorted_ids = [int(q["id"]) for q in (choices + blanks + solutions)]
-        _set_basket_and_order(sorted_ids, sorted_ids)
-        st.success("✨ 智能排序已完成！已按本地‘选择题 ➡️ 填空题 ➡️ 解答题’的难度渐进梯队重排。")
+_CN_SECTION_NUMS = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十",
+                     "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十"]
+
+
+def _section_index_label(index: int) -> str:
+    """返回中文序号，超出范围则回退为阿拉伯数字。"""
+    if 0 <= index < len(_CN_SECTION_NUMS):
+        return _CN_SECTION_NUMS[index]
+    return str(index + 1)
+
+
+def _persist_sections(sections: list[SectionSpec]) -> None:
+    """把当前 sections 写回 session_state + 草稿，并把 order 同步拍平。"""
+    st.session_state[SECTIONS_KEY] = sections
+    linear = _sections_to_order(sections)
+    st.session_state[ORDER_KEY] = linear
+    save_basket_draft(_basket_ids(), linear, sections=sections)
+
+
+def _render_sections_drag_view(
+    sections: list[SectionSpec],
+    question_by_id: dict[int, dict[str, Any]],
+) -> None:
+    """AI 分类编排模式下的左侧拖拽视图。
+
+    每个 section 单独渲染：可编辑标题 + 段内拖拽排序 + 跨段「移至」下拉。
+    """
+    # 取一份可变的副本用于本轮渲染；用户操作后整体落盘
+    working: list[SectionSpec] = [SectionSpec(title=s.title, question_ids=list(s.question_ids)) for s in sections]
+    rerun_needed = False
+
+    for sec_idx, sec in enumerate(working):
+        title_cols = st.columns([5, 1])
+        with title_cols[0]:
+            new_title = st.text_input(
+                f"{_section_index_label(sec_idx)}、分类标题",
+                value=sec.title,
+                key=f"section_title_{sec_idx}",
+                label_visibility="collapsed",
+                placeholder="分类标题（如：折叠的性质）",
+            )
+            new_title = (new_title or "").strip()
+            if new_title and new_title != sections[sec_idx].title:
+                sections[sec_idx].title = new_title
+                rerun_needed = True
+        with title_cols[1]:
+            if st.button("🗑", key=f"section_del_{sec_idx}", help=f"删除「{sec.title}」分类（题目移至末尾分类）"):
+                _delete_section(sections, sec_idx)
+                _persist_sections(sections)
+                st.rerun()
+                return
+
+        # 段内拖拽：构造该段的 items
+        items_data = []
+        valid_ids: list[int] = []
+        for qid in sec.question_ids:
+            q = question_by_id.get(int(qid))
+            if not q:
+                continue
+            valid_ids.append(int(qid))
+            qtype = _canonical_type_group(q.get("question_type"))
+            style_class = "choice" if qtype == "选择题" else ("blank" if qtype == "填空题" else "solution")
+            bullet = "🔵" if qtype == "选择题" else ("🟢" if qtype == "填空题" else "🟠")
+            preview, score, kp, diff = _process_question_for_drag_card(q)
+            items_data.append({
+                "id": str(qid),
+                "style_class": style_class,
+                "bullet": bullet,
+                "preview": preview,
+                "score": score,
+                "kp": kp,
+                "diff": diff,
+            })
+
+        if items_data:
+            new_order = render_sortable_list(items_data, key=f"section_sortable_{sec_idx}")
+            if new_order is not None:
+                new_ids = [int(x) for x in new_order if x.isdigit()]
+                if new_ids != valid_ids:
+                    sections[sec_idx].question_ids = new_ids
+                    _persist_sections(sections)
+                    st.rerun()
+                    return
+
+            # 跨段移动下拉
+            other_targets = [f"{_section_index_label(i)}、{working[i].title}" for i in range(len(working)) if i != sec_idx]
+            move_cols = st.columns([1, 3])
+            with move_cols[0]:
+                st.caption("移至 ▶")
+            with move_cols[1]:
+                target = st.selectbox(
+                    f"移动题目到其他分类",
+                    options=["（不移动）"] + other_targets,
+                    key=f"section_move_{sec_idx}",
+                    label_visibility="collapsed",
+                )
+                if target != "（不移动）":
+                    target_idx = other_targets.index(target)
+                    real_target = sec_idx + 1 + target_idx if target_idx >= sec_idx else target_idx
+                    # 用 number_input 选要移动的题号
+                    qid_options = [f"第{i+1}题 (ID {qid})" for i, qid in enumerate(valid_ids)]
+                    pick = st.selectbox(
+                        "选择要移动的题目",
+                        options=qid_options,
+                        key=f"section_move_pick_{sec_idx}",
+                        label_visibility="collapsed",
+                    )
+                    if st.button("移动", key=f"section_move_btn_{sec_idx}", type="secondary"):
+                        pick_idx = qid_options.index(pick)
+                        moved_qid = valid_ids[pick_idx]
+                        sections[sec_idx].question_ids = [x for x in sections[sec_idx].question_ids if int(x) != moved_qid]
+                        sections[real_target].question_ids.append(moved_qid)
+                        _persist_sections(sections)
+                        st.rerun()
+                        return
+
+        st.markdown("---")
+
+    if rerun_needed:
+        _persist_sections(sections)
         st.rerun()
+
+
+def _delete_section(sections: list[SectionSpec], sec_idx: int) -> None:
+    """删除一个分类，其题目并入最后一个分类（或新建一个「其它」分类）。"""
+    if len(sections) <= 1:
+        # 只剩一个分类，不允许删除
+        return
+    orphan_ids = list(sections[sec_idx].question_ids)
+    del sections[sec_idx]
+    if orphan_ids:
+        sections[-1].question_ids.extend(orphan_ids)
 
 
 def _image_paths_from_text(value: object) -> list[str]:
@@ -806,7 +1104,7 @@ def _move_question_in_group(question_id: int, offset: int, group_questions: list
     ordered[pos1], ordered[pos2] = ordered[pos2], ordered[pos1]
 
     st.session_state[ORDER_KEY] = ordered
-    save_basket_draft(_basket_ids(), ordered)
+    save_basket_draft(_basket_ids(), ordered, sections=st.session_state.get(SECTIONS_KEY))
 
 
 def _render_statistics_panel(questions: list[dict[str, Any]]) -> None:
@@ -1197,6 +1495,10 @@ def _process_question_for_drag_card(q) -> tuple[str, str, str, str]:
 
 
 def _render_question_composition_page(service: QuestionService) -> None:
+    # 在组件实例化前消费 pending 状态，防止直接修改 widget 绑定的 session_state 报错
+    if "assembly_layout_mode_pending" in st.session_state:
+        st.session_state["assembly_layout_mode"] = st.session_state.pop("assembly_layout_mode_pending")
+
     # Top navigation bar
     nav_cols = st.columns([3.2, 0.8])
     with nav_cols[0]:
@@ -1248,50 +1550,37 @@ def _render_question_composition_page(service: QuestionService) -> None:
         st.markdown("#### 🧩 试卷题目拖拽排序")
         st.caption("拖动 ☰ 手柄上下拖拽题目。🔵选择 🟢填空 🟠解答。")
 
-        layout_mode = st.radio("组卷编排方式", ["顺序编排", "分题型编排"], index=0, horizontal=True, key="assembly_layout_mode")
+        layout_options = ["顺序编排", "分题型编排"]
+        current_sections = _current_sections()
+        if current_sections:
+            layout_options.append("AI 分类编排")
+
+        # 若上次选了「AI 分类编排」但现在 sections 已被清空，回退到分题型编排
+        if st.session_state.get("assembly_layout_mode") == "AI 分类编排" and not current_sections:
+            st.session_state["assembly_layout_mode"] = "分题型编排"
+
+        layout_mode = st.radio("组卷编排方式", layout_options, horizontal=True, key="assembly_layout_mode")
         preview_mode = st.radio("预览视图", ["教师视角 (显示解析、知识点与难度)", "学生视角 (最真实的答题排版)"], index=0, horizontal=True, key="assembly_preview_view")
 
         st.markdown("---")
 
-        # Prepare list of items
-        items_data = []
-        if layout_mode == "顺序编排":
-            for index, question_id in enumerate(ordered_ids):
-                q = question_by_id.get(question_id)
-                if not q:
-                    continue
-                qtype = _canonical_type_group(q.get("question_type"))
-                style_class = "choice" if qtype == "选择题" else ("blank" if qtype == "填空题" else "solution")
-                bullet = "🔵" if qtype == "选择题" else ("🟢" if qtype == "填空题" else "🟠")
-                preview, score, kp, diff = _process_question_for_drag_card(q)
-                items_data.append({
-                    "id": str(question_id),
-                    "style_class": style_class,
-                    "bullet": bullet,
-                    "preview": preview,
-                    "score": score,
-                    "kp": kp,
-                    "diff": diff,
-                })
+        if current_sections:
+            # 有 AI 分类分组时，左侧拖拽区始终显示分类视图，与预览页保持一致
+            _render_sections_drag_view(current_sections, question_by_id)
         else:
-            # Grouped layout sorting
-            groups = {"选择题": [], "填空题": [], "解答题": []}
-            for question_id in ordered_ids:
-                q = question_by_id.get(question_id)
-                if not q:
-                    continue
-                g = _canonical_type_group(q.get("question_type"))
-                groups[g].append(q)
-
-            for gname in ["选择题", "填空题", "解答题"]:
-                gqs = groups[gname]
-                for q in gqs:
-                    qid = int(q["id"])
-                    bullet = "🔵" if gname == "选择题" else ("🟢" if gname == "填空题" else "🟠")
+            # Prepare list of items
+            items_data = []
+            if layout_mode == "顺序编排":
+                for index, question_id in enumerate(ordered_ids):
+                    q = question_by_id.get(question_id)
+                    if not q:
+                        continue
+                    qtype = _canonical_type_group(q.get("question_type"))
+                    style_class = "choice" if qtype == "选择题" else ("blank" if qtype == "填空题" else "solution")
+                    bullet = "🔵" if qtype == "选择题" else ("🟢" if qtype == "填空题" else "🟠")
                     preview, score, kp, diff = _process_question_for_drag_card(q)
-                    style_class = "choice" if gname == "选择题" else ("blank" if gname == "填空题" else "solution")
                     items_data.append({
-                        "id": str(qid),
+                        "id": str(question_id),
                         "style_class": style_class,
                         "bullet": bullet,
                         "preview": preview,
@@ -1299,15 +1588,41 @@ def _render_question_composition_page(service: QuestionService) -> None:
                         "kp": kp,
                         "diff": diff,
                     })
+            else:
+                # Grouped layout sorting
+                groups = {"选择题": [], "填空题": [], "解答题": []}
+                for question_id in ordered_ids:
+                    q = question_by_id.get(question_id)
+                    if not q:
+                        continue
+                    g = _canonical_type_group(q.get("question_type"))
+                    groups[g].append(q)
 
-        # Render custom drag-and-drop sortable widget
-        new_order = render_sortable_list(items_data, key="assembly_sortable_widget")
-        if new_order is not None:
-            new_ids = [int(x) for x in new_order if x.isdigit()]
-            if new_ids != ordered_ids:
-                st.session_state[ORDER_KEY] = new_ids
-                save_basket_draft(_basket_ids(), new_ids)
-                st.rerun()
+                for gname in ["选择题", "填空题", "解答题"]:
+                    gqs = groups[gname]
+                    for q in gqs:
+                        qid = int(q["id"])
+                        bullet = "🔵" if gname == "选择题" else ("🟢" if gname == "填空题" else "🟠")
+                        preview, score, kp, diff = _process_question_for_drag_card(q)
+                        style_class = "choice" if gname == "选择题" else ("blank" if gname == "填空题" else "solution")
+                        items_data.append({
+                            "id": str(qid),
+                            "style_class": style_class,
+                            "bullet": bullet,
+                            "preview": preview,
+                            "score": score,
+                            "kp": kp,
+                            "diff": diff,
+                        })
+
+            # Render custom drag-and-drop sortable widget
+            new_order = render_sortable_list(items_data, key="assembly_sortable_widget")
+            if new_order is not None:
+                new_ids = [int(x) for x in new_order if x.isdigit()]
+                if new_ids != ordered_ids:
+                    st.session_state[ORDER_KEY] = new_ids
+                    save_basket_draft(_basket_ids(), new_ids, sections=st.session_state.get(SECTIONS_KEY))
+                    st.rerun()
 
     with main_col:
         st.markdown("##### ⚙️ 试卷一键操作")
@@ -1354,7 +1669,25 @@ def _render_question_composition_page(service: QuestionService) -> None:
             st.markdown("<div style='text-align: center; font-size: 0.95rem; margin-bottom: 20px; color: #475569;'>班级：________________    姓名：________________    学号：________________</div>", unsafe_allow_html=True)
             st.divider()
 
-            if layout_mode == "顺序编排":
+            if current_sections:
+                # 有 AI 分类分组时，预览页始终按分类渲染（带大类标题），与编排方式开关解耦
+                overall_idx = 1
+                for sec_idx, sec in enumerate(current_sections):
+                    st.markdown(f"#### {_section_index_label(sec_idx)}、{sec.title}")
+                    for qid in sec.question_ids:
+                        q = question_by_id.get(int(qid))
+                        if not q:
+                            continue
+                        _render_premium_question_card(
+                            overall_idx,
+                            q,
+                            preview_mode,
+                            show_basket_toggle=False,
+                            frequency=frequency_metrics.get(int(qid)),
+                        )
+                        st.write("")
+                        overall_idx += 1
+            elif layout_mode == "顺序编排":
                 for index, question_id in enumerate(ordered_ids, start=1):
                     question = question_by_id[question_id]
                     _render_premium_question_card(
@@ -1398,7 +1731,12 @@ def _render_question_composition_page(service: QuestionService) -> None:
             export_clicked = st.button("生成 Word 文档", type="primary", width="stretch", key="export_docx_btn_comp")
 
         if export_clicked:
-            exported_question_ids = _ordered_ids()
+            # 有 AI 分类分组时，导出始终按分类（与预览页保持一致）
+            export_sections = current_sections if current_sections else None
+            if export_sections:
+                exported_question_ids = _sections_to_order(export_sections)
+            else:
+                exported_question_ids = _ordered_ids()
             try:
                 with st.spinner("正在按解析内容导出 Word..."):
                     output_path = export_question_paper_docx(
@@ -1410,6 +1748,7 @@ def _render_question_composition_page(service: QuestionService) -> None:
                         ensure_previews=False,
                         grouped_by_type=(layout_mode == "分题型编排"),
                         header_text=header_text or None,
+                        sections=export_sections,
                     )
                 qtype_summary = {}
                 for q in questions:

@@ -22,11 +22,14 @@ from question_bank.services.ai_tagging_service import (
     ABILITY_TAG_OPTIONS,
     AITaggingService,
     CURRICULUM_CHAPTERS,
+    ERROR_PRONE_CATEGORIES,
     KNOWLEDGE_POINT_OPTIONS,
     MATH_MODEL_OPTIONS,
     METHOD_TAG_OPTIONS,
     STUDENT_LEVELS,
+    SUB_SKILL_KEYWORD_HINTS,
     is_auto_saveable_result,
+    is_valid_canonical_id,
 )
 from question_bank.services.question_service import QuestionService, has_complete_analysis_tags
 from question_bank.services.question_frequency_service import (
@@ -72,11 +75,13 @@ TAG_FILTER_CONFIG = (
 )
 TAG_GROUP_LABELS = {
     "knowledge_point": "知识点",
+    "canonical_knowledge_id": "标准编码",
     "method": "思想方法",
     "ability": "数学能力",
     "model": "数学模型",
     "error_type": "易错点",
     "prerequisite": "前置知识",
+    "sub_skill": "细分技能",
     "exam_scope": "教材章节",
     "teaching_stage": "教学阶段",
     "student_level": "适合层次",
@@ -89,6 +94,7 @@ EDITED_TAG_FIELDS = {
     "math_model_tags",
     "error_prone_points",
     "prerequisite_points",
+    "sub_skills",
     "textbook_chapter",
     "teaching_stage",
     "suitable_student_level",
@@ -104,6 +110,7 @@ ANALYSIS_TAG_TYPES = {
     "teaching_stage",
     "student_level",
     "canonical_knowledge_id",
+    "sub_skill",
 }
 
 
@@ -686,6 +693,26 @@ def _render_ai_tag_results(service: QuestionService, questions: list[dict], allo
                     key=f"qb_ai_prerequisites_{item_id}",
                 )
 
+            # 主知识点稳定编码（受控，AI 产出，展示+可手动修正）
+            canonical_id = original_analysis.canonical_knowledge_id
+            canonical_valid = is_valid_canonical_id(canonical_id) if canonical_id else False
+            canonical_help = "来自标准词表的 KP_* 编码，用于跨页面知识点对齐与训练推荐"
+            if canonical_id and not canonical_valid:
+                canonical_help = f"⚠️ 当前编码 {canonical_id} 不在标准词表中，建议核对"
+            st.selectbox(
+                "标准编码 (canonical_knowledge_id)",
+                options=_canonical_id_options(),
+                index=_option_index(_canonical_id_options(), canonical_id),
+                key=f"qb_ai_canonical_{item_id}",
+                help=canonical_help,
+            )
+            sub_skills = _tag_multiselect(
+                "细分技能 (sub_skills)",
+                SUB_SKILL_KEYWORD_HINTS,
+                original_analysis.sub_skills,
+                key=f"qb_ai_subskills_{item_id}",
+            )
+
             meta_cols = st.columns([1, 1, 1])
             with meta_cols[0]:
                 difficulty_score = st.number_input(
@@ -723,6 +750,8 @@ def _render_ai_tag_results(service: QuestionService, questions: list[dict], allo
                 key=f"qb_ai_reason_{item_id}",
             )
             if st.button("保存标签", key=f"qb_ai_save_{item_id}", type="primary"):
+                # 读取用户可能手动修改的 canonical 下拉值
+                edited_canonical = st.session_state.get(f"qb_ai_canonical_{item_id}", canonical_id)
                 accepted_analysis = TagAnalysis.from_dict(
                     {
                         **original_analysis.to_dict(),
@@ -738,6 +767,8 @@ def _render_ai_tag_results(service: QuestionService, questions: list[dict], allo
                         "suitable_student_level": student_level,
                         "reason": reason,
                         "confidence": original_analysis.confidence,
+                        "canonical_knowledge_id": edited_canonical,
+                        "sub_skills": sub_skills,
                     }
                 )
                 _save_tag_analysis(
@@ -769,6 +800,8 @@ def _save_tag_analysis(
             "math_model_tags",
             "error_prone_points",
             "prerequisite_points",
+            "sub_skills",
+            "canonical_knowledge_id",
             "textbook_chapter",
             "teaching_stage",
             "suitable_student_level",
@@ -2184,7 +2217,7 @@ def _render_premium_question_card_qb(
                 )
                 error_points = _tag_multiselect(
                     "易错点",
-                    tuple(error_tags),
+                    tuple(ERROR_PRONE_CATEGORIES),
                     analysis.error_prone_points,
                     key=f"qb_card_errors_{q_id}",
                 )
@@ -2207,6 +2240,22 @@ def _render_premium_question_card_qb(
                     analysis.prerequisite_points,
                     key=f"qb_card_prerequisites_{q_id}",
                 )
+
+            # 主知识点稳定编码 + 细分技能
+            canonical_id = analysis.canonical_knowledge_id
+            st.selectbox(
+                "标准编码 (canonical_knowledge_id)",
+                options=_canonical_id_options(),
+                index=_option_index(_canonical_id_options(), canonical_id),
+                key=f"qb_qc_canonical_{q_id}",
+                help="来自标准词表的 KP_* 编码，用于跨页面知识点对齐与训练推荐",
+            )
+            sub_skills = _tag_multiselect(
+                "细分技能 (sub_skills)",
+                SUB_SKILL_KEYWORD_HINTS,
+                analysis.sub_skills,
+                key=f"qb_qc_subskills_{q_id}",
+            )
 
             score_cols = st.columns([1, 1, 1])
             with score_cols[0]:
@@ -2250,8 +2299,10 @@ def _render_premium_question_card_qb(
             action_btn_cols = st.columns([1, 1])
             with action_btn_cols[0]:
                 if st.button("保存标签与诊断", key=f"qb_card_save_tags_{q_id}", type="primary", use_container_width=True):
+                    edited_canonical = st.session_state.get(f"qb_qc_canonical_{q_id}", canonical_id)
                     accepted = TagAnalysis.from_dict(
                         {
+                            **analysis.to_dict(),
                             "knowledge_points": knowledge_points,
                             "method_tags": method_tags,
                             "ability_tags": ability_tags,
@@ -2263,6 +2314,8 @@ def _render_premium_question_card_qb(
                             "teaching_stage": teaching_stage,
                             "suitable_student_level": student_level,
                             "reason": reason,
+                            "canonical_knowledge_id": edited_canonical,
+                            "sub_skills": sub_skills,
                         }
                     )
                     saved = service.save_tag_analysis(
@@ -2431,6 +2484,22 @@ def _render_tag_panel(item: dict[str, Any]) -> None:
                     key=f"qb_card_prerequisites_{item['id']}",
                 )
 
+            # 主知识点稳定编码 + 细分技能
+            canonical_id = analysis.canonical_knowledge_id
+            st.selectbox(
+                "标准编码 (canonical_knowledge_id)",
+                options=_canonical_id_options(),
+                index=_option_index(_canonical_id_options(), canonical_id),
+                key=f"qb_card_canonical_{item['id']}",
+                help="来自标准词表的 KP_* 编码，用于跨页面知识点对齐与训练推荐",
+            )
+            sub_skills = _tag_multiselect(
+                "细分技能 (sub_skills)",
+                SUB_SKILL_KEYWORD_HINTS,
+                analysis.sub_skills,
+                key=f"qb_card_subskills_{item['id']}",
+            )
+
             score_cols = st.columns([1, 1, 1])
             with score_cols[0]:
                 difficulty_score = st.number_input(
@@ -2465,8 +2534,10 @@ def _render_tag_panel(item: dict[str, Any]) -> None:
             save_clicked = st.form_submit_button("保存标签修改", type="primary")
 
         if save_clicked:
+            edited_canonical = st.session_state.get(f"qb_card_canonical_{item['id']}", canonical_id)
             accepted = TagAnalysis.from_dict(
                 {
+                    **analysis.to_dict(),
                     "knowledge_points": knowledge_points,
                     "method_tags": method_tags,
                     "ability_tags": ability_tags,
@@ -2478,6 +2549,8 @@ def _render_tag_panel(item: dict[str, Any]) -> None:
                     "teaching_stage": teaching_stage,
                     "suitable_student_level": student_level,
                     "reason": analysis.reason,
+                    "canonical_knowledge_id": edited_canonical,
+                    "sub_skills": sub_skills,
                 }
             )
             service = QuestionService(question_bank_db_path())
@@ -2531,8 +2604,16 @@ def _analysis_from_question(item: dict[str, Any]) -> TagAnalysis:
             "teaching_stage": _first_tag(grouped, "teaching_stage"),
             "suitable_student_level": _first_tag(grouped, "student_level"),
             "reason": item.get("reason") or "",
+            "canonical_knowledge_id": _first_tag(grouped, "canonical_knowledge_id"),
+            "sub_skills": grouped.get("sub_skill", []),
         }
     )
+
+
+def _canonical_id_options() -> list[str]:
+    """生成标准编码下拉选项（含空选项 + 所有 KP_* 小写形式）。"""
+    from question_bank.taxonomy.registry import CANONICAL_KNOWLEDGE
+    return [""] + [item.canonical_id.casefold() for item in CANONICAL_KNOWLEDGE]
 
 
 def _first_tag(grouped: dict[str, list[str]], tag_type: str) -> str:

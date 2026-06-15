@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Callable
 
 from question_bank.database.schema import connect, initialize_database
 from question_bank.models.knowledge_alignment import (
@@ -27,6 +28,7 @@ class AlignmentResolution:
     status: AlignmentStatus
     concept: KnowledgeConcept | None
     confidence: float
+    sub_skill_tags: tuple[str, ...] = ()
 
     @property
     def eligible_for_recommendation(self) -> bool:
@@ -219,6 +221,7 @@ class ConceptAlignmentService:
         source_value: str,
         concept_id: int,
         *,
+        sub_skill_tags: Iterable[str] = (),
         reviewed_by: str | None = None,
         evidence: dict[str, Any] | None = None,
     ) -> KnowledgeSourceMapping:
@@ -232,6 +235,7 @@ class ConceptAlignmentService:
                     concept_id=int(concept_id),
                     status=AlignmentStatus.CONFIRMED,
                     confidence=1.0,
+                    sub_skill_tags=tuple(sub_skill_tags),
                 ),
                 reviewed_by=reviewed_by,
                 evidence=evidence,
@@ -239,14 +243,19 @@ class ConceptAlignmentService:
 
     def confirm_many(
         self,
-        mappings: Iterable[tuple[str, str, int]],
+        mappings: Iterable[tuple[str, str, int] | tuple[str, str, int, Iterable[str]]],
         *,
         reviewed_by: str | None = None,
     ) -> list[KnowledgeSourceMapping]:
         self.initialize_database()
         results: list[KnowledgeSourceMapping] = []
         with connect(self.db_path) as conn:
-            for source_namespace, source_value, concept_id in mappings:
+            for item in mappings:
+                if len(item) == 4:
+                    source_namespace, source_value, concept_id, sub_skill_tags = item
+                else:
+                    source_namespace, source_value, concept_id = item
+                    sub_skill_tags = ()
                 results.append(
                     _upsert_mapping(
                         conn,
@@ -256,6 +265,7 @@ class ConceptAlignmentService:
                             concept_id=int(concept_id),
                             status=AlignmentStatus.CONFIRMED,
                             confidence=1.0,
+                            sub_skill_tags=tuple(sub_skill_tags),
                         ),
                         reviewed_by=reviewed_by,
                     )
@@ -269,6 +279,7 @@ class ConceptAlignmentService:
         concept_id: int,
         *,
         confidence: float,
+        sub_skill_tags: Iterable[str] = (),
         evidence: dict[str, Any] | None = None,
     ) -> KnowledgeSourceMapping:
         self.initialize_database()
@@ -281,6 +292,7 @@ class ConceptAlignmentService:
                     concept_id=int(concept_id),
                     status=AlignmentStatus.SUGGESTED,
                     confidence=confidence,
+                    sub_skill_tags=tuple(sub_skill_tags),
                 ),
                 evidence=evidence,
             )
@@ -345,6 +357,225 @@ class ConceptAlignmentService:
             metrics.setdefault(str(row["source_namespace"]), {})[str(row["status"])] = int(row["count"])
         return metrics
 
+    def ai_batch_align(
+        self,
+        source_namespace: str,
+        source_terms: list[str],
+        llm_client: Any,
+        on_chunk_complete: Callable[[int, int, list[str], list[Any]], None] = None,
+    ) -> list[KnowledgeSourceMapping]:
+        if not source_terms:
+            return []
+
+        # 1. Delta check: 决定哪些词需要(重新)对齐
+        #    设计意图：教师未确认过的词一律重新对齐，确保每次点"AI一键对齐"
+        #    都基于当前最新的标准知识点库给出建议。
+        #    - 无记录词 / suggested / unmapped：重新对齐
+        #    - confirmed / rejected：跳过（教师已决策，不重复消耗 API）
+        unmapped_terms = []
+        with connect(self.db_path) as conn:
+            for term in source_terms:
+                row = conn.execute(
+                    """
+                    SELECT status FROM knowledge_source_mappings
+                    WHERE source_namespace = ? AND source_value = ?
+                    """,
+                    (source_namespace, term)
+                ).fetchone()
+                if row is None or str(row["status"]) not in ("confirmed", "rejected"):
+                    unmapped_terms.append(term)
+
+        # 2. Perform alignment only if there are unmapped terms
+        if unmapped_terms:
+            concepts = self.list_concepts(status="active")
+
+            def prune_candidates(chunk_terms):
+                pruned = set()
+                for term in chunk_terms:
+                    scores = []
+                    for c in concepts:
+                        sim = max(SequenceMatcher(None, term, alias).ratio() for alias in [c.name] + list(c.aliases))
+                        scores.append((sim, c))
+                    scores.sort(key=lambda x: -x[0])
+                    for _, c in scores[:5]:
+                        pruned.add(c)
+                return sorted(list(pruned), key=lambda x: x.canonical_key)
+
+            def align_chunk(chunk_terms):
+                chunk_concepts = prune_candidates(chunk_terms)
+                candidate_concepts = [
+                    {
+                        "canonical_key": c.canonical_key,
+                        "name": c.name,
+                        "aliases": list(c.aliases)
+                    }
+                    for c in chunk_concepts
+                ]
+
+                prompt = f"""你是一个专业的数学教学与课标分析 AI 助手。你的任务是将一批从批改系统抽取的学生薄弱知识点（原始词）对齐到标准知识点，并从原始词字面中提取出细粒度的子技能标签。
+
+【标准知识点候选列表】
+{json.dumps(candidate_concepts, ensure_ascii=False, indent=2)}
+
+【待对齐的原始词列表】
+{json.dumps(chunk_terms, ensure_ascii=False, indent=2)}
+
+【对齐与提取规则】
+1. 对齐标准知识点：
+   - 为每个原始词，从【标准知识点候选列表】中选出最匹配的一个。如果没有任何标准知识点匹配，返回 null。
+   - 返回标准知识点的 `canonical_key`。
+
+2. 提取子技能标签 (sub_skill_tags)：
+   - **极其重要**：仅从原始词本身的字面和语义推断子技能，绝不能从对齐的标准知识点过度发散或补全！
+   - 例如：如果原始词是 "等腰三角形的角度计算"，子技能标签应仅为 `["角度计算"]`。绝对不能因为对齐到了 "等腰三角形"，就凭空推断出 `["底角计算", "顶角计算"]` 等原始词中并未提及的具体概念。如果原始词没有包含细分技能，子技能标签应为空数组 `[]`。
+
+3. 给出置信度 (confidence)：
+   - 0.0 到 1.0 之间的浮点数。若匹配精准且无歧义，给出高置信度（如 0.9+）；否则给低置信度。
+
+【输出格式】
+直接返回一个 JSON 对象，其中包含 "alignments" 键，其值为无键名的二维数组。格式如下：
+{{
+  "alignments": [
+    ["原始词", "匹配的 canonical_key/如无则填 null", ["子技能标签1", "子技能标签2"], 置信度]
+  ]
+}}
+
+不要包含任何 Markdown 格式包裹（如 ```json），只输出 JSON 字符串。
+"""
+                try:
+                    res = llm_client.json_from_text(prompt)
+                    print("DEBUG align_chunk res:", repr(res))
+                    if isinstance(res, dict) and "alignments" in res:
+                        aligns = res["alignments"]
+                        if isinstance(aligns, list):
+                            ret = []
+                            for item in aligns:
+                                if isinstance(item, list):
+                                    ret.append(item)
+                                elif isinstance(item, dict):
+                                    ret.append([
+                                        item.get("source_value"),
+                                        item.get("concept_key"),
+                                        item.get("sub_skill_tags", []),
+                                        item.get("confidence", 0.5)
+                                    ])
+                            print("DEBUG dict match ret:", repr(ret))
+                            return {"alignments": ret, "error": None, "raw_response": res}
+                    elif isinstance(res, list):
+                        print("DEBUG list match res:", repr(res))
+                        return {"alignments": res, "error": None, "raw_response": res}
+                    else:
+                        print("DEBUG no match res:", type(res))
+                        return {"alignments": [], "error": f"返回值类型不匹配(预期 dict/list，实际 {type(res).__name__})", "raw_response": res}
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    return {"alignments": [], "error": str(e), "raw_response": None}
+
+            # Threaded chunk concurrency
+            chunk_size = 15
+            chunks = [unmapped_terms[i : i + chunk_size] for i in range(0, len(unmapped_terms), chunk_size)]
+            all_alignments = []
+            total_chunks = len(chunks)
+            completed_chunks = 0
+
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = {executor.submit(align_chunk, chunk): chunk for chunk in chunks}
+                for future in as_completed(futures):
+                    chunk_terms = futures[future]
+                    completed_chunks += 1
+                    res_list = []
+                    error_info = None
+                    try:
+                        chunk_res = future.result()
+                        if isinstance(chunk_res, dict):
+                            res_list = chunk_res.get("alignments", [])
+                            error_info = {
+                                "error": chunk_res.get("error"),
+                                "raw_response": chunk_res.get("raw_response")
+                            }
+                        else:
+                            res_list = chunk_res if isinstance(chunk_res, list) else []
+                            error_info = {"error": "返回值格式错误", "raw_response": chunk_res}
+                        
+                        if isinstance(res_list, list):
+                            all_alignments.extend(res_list)
+                    except Exception as e:
+                        import traceback
+                        traceback.print_exc()
+                        error_info = {"error": str(e), "raw_response": None}
+                    
+                    if on_chunk_complete:
+                        try:
+                            import inspect
+                            sig = inspect.signature(on_chunk_complete)
+                            accepts_error_info = False
+                            params = list(sig.parameters.values())
+                            if any(p.kind == p.VAR_KEYWORD for p in params):
+                                accepts_error_info = True
+                            elif len(params) >= 5:
+                                accepts_error_info = True
+                            elif 'error_info' in sig.parameters:
+                                accepts_error_info = True
+
+                            if accepts_error_info:
+                                on_chunk_complete(completed_chunks, total_chunks, chunk_terms, res_list, error_info=error_info)
+                            else:
+                                on_chunk_complete(completed_chunks, total_chunks, chunk_terms, res_list)
+                        except Exception:
+                            try:
+                                on_chunk_complete(completed_chunks, total_chunks, chunk_terms, res_list)
+                            except Exception:
+                                pass
+
+            # Write-back in a single database transaction
+            key_to_concept = {c.canonical_key: c for c in concepts}
+            with connect(self.db_path) as conn:
+                for item in all_alignments:
+                    if not isinstance(item, list) or len(item) < 2:
+                        continue
+                    val = item[0]
+                    if not val or val not in unmapped_terms:
+                        continue
+                    key = item[1]
+                    concept = key_to_concept.get(key) if key else None
+                    concept_id = concept.id if concept else None
+
+                    sub_tags = item[2] if len(item) > 2 else []
+                    if not isinstance(sub_tags, list):
+                        sub_tags = []
+                    sub_tags = [str(t).strip() for t in sub_tags if t]
+
+                    try:
+                        confidence = float(item[3]) if len(item) > 3 else 0.5
+                    except (TypeError, ValueError):
+                        confidence = 0.5
+
+                    mapping = KnowledgeSourceMapping(
+                        source_namespace=source_namespace,
+                        source_value=val,
+                        concept_id=concept_id,
+                        status=AlignmentStatus.SUGGESTED,
+                        confidence=confidence,
+                        sub_skill_tags=tuple(sub_tags),
+                    )
+                    _upsert_mapping(conn, mapping)
+
+        # 3. Retrieve all final mappings to return
+        results = []
+        with connect(self.db_path) as conn:
+            for term in source_terms:
+                row = conn.execute(
+                    """
+                    SELECT * FROM knowledge_source_mappings
+                    WHERE source_namespace = ? AND source_value = ?
+                    """,
+                    (source_namespace, term)
+                ).fetchone()
+                if row:
+                    results.append(_mapping_from_row(row))
+        return results
+
     def resolve(self, source_namespace: str, source_value: str) -> AlignmentResolution:
         self.initialize_database()
         namespace = normalize_source_value(source_namespace)
@@ -379,6 +610,7 @@ class ConceptAlignmentService:
                     status=mapping.status,
                     concept=concept,
                     confidence=mapping.confidence,
+                    sub_skill_tags=mapping.sub_skill_tags,
                 )
 
             concept, confidence = _suggest_concept(conn, display_value)
@@ -389,6 +621,7 @@ class ConceptAlignmentService:
                     status=AlignmentStatus.SUGGESTED,
                     concept=concept,
                     confidence=confidence,
+                    sub_skill_tags=(),
                 )
         return AlignmentResolution(
             source_namespace=namespace,
@@ -396,6 +629,7 @@ class ConceptAlignmentService:
             status=AlignmentStatus.UNMAPPED,
             concept=None,
             confidence=0.0,
+            sub_skill_tags=(),
         )
 
 
@@ -411,13 +645,14 @@ def _upsert_mapping(
         f"""
         INSERT INTO knowledge_source_mappings (
             source_namespace, source_value, normalized_value, concept_id,
-            status, confidence, evidence_json, reviewed_by, reviewed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, {reviewed_at})
+            status, confidence, sub_skill_tags, evidence_json, reviewed_by, reviewed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, {reviewed_at})
         ON CONFLICT(source_namespace, source_value) DO UPDATE SET
             normalized_value = excluded.normalized_value,
             concept_id = excluded.concept_id,
             status = excluded.status,
             confidence = excluded.confidence,
+            sub_skill_tags = excluded.sub_skill_tags,
             evidence_json = excluded.evidence_json,
             reviewed_by = excluded.reviewed_by,
             reviewed_at = {reviewed_at},
@@ -432,6 +667,7 @@ def _upsert_mapping(
             mapping.concept_id,
             mapping.status.value,
             mapping.confidence,
+            _json(list(mapping.sub_skill_tags)),
             _json(evidence or {}),
             _optional(reviewed_by),
         ),
@@ -502,12 +738,14 @@ def _concept_from_row(row: sqlite3.Row) -> KnowledgeConcept:
 
 
 def _mapping_from_row(row: sqlite3.Row) -> KnowledgeSourceMapping:
+    sub_skills = _json_list(row["sub_skill_tags"]) if "sub_skill_tags" in row.keys() else []
     return KnowledgeSourceMapping(
         source_namespace=str(row["source_namespace"]),
         source_value=str(row["source_value"]),
         concept_id=int(row["concept_id"]) if row["concept_id"] is not None else None,
         status=AlignmentStatus(str(row["status"])),
         confidence=float(row["confidence"]),
+        sub_skill_tags=tuple(sub_skills),
     )
 
 

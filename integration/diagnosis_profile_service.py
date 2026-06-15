@@ -77,6 +77,7 @@ class DiagnosisProfileService:
                         "mapping_status": resolution.status.value,
                         "mapping_confidence": resolution.confidence,
                         "eligible_for_recommendation": eligible,
+                        "sub_skill_tags": list(resolution.sub_skill_tags) if hasattr(resolution, "sub_skill_tags") and resolution.sub_skill_tags else [],
                         "mastery": mastery,
                         "score_sum": round(score_sum, 4),
                         "full_score_sum": round(full_score_sum, 4),
