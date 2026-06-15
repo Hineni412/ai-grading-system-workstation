@@ -13,6 +13,7 @@ import answer_region_focus_page as focus_module
 from answer_region_draft_service import AnswerRegionDraftService
 from answer_region_focus_page import (
     EditorEventResult,
+    merge_component_editor_state,
     process_editor_state,
     read_component_result_value,
 )
@@ -143,6 +144,28 @@ def test_same_revision_already_handled_is_not_processed_again() -> None:
 
     assert result.handled is False
     assert result.revision == 4
+
+
+def test_repeated_component_state_keeps_first_sequential_binding() -> None:
+    previous = [_region("one", question_id="Q1")]
+    returned_state = _event([*previous, _region("new", y=160)], revision=1)
+    initial_echo = {"handled_revision": 0}
+
+    first = _process(
+        merge_component_editor_state(returned_state, initial_echo),
+        previous_regions=previous,
+        candidates=["Q1", "Q2"],
+    )
+    second = _process(
+        merge_component_editor_state(returned_state, first.editor_state),
+        previous_regions=first.regions,
+        candidates=["Q1", "Q2"],
+    )
+
+    assert first.regions[1]["mapped_question_id"] == "Q2"
+    assert first.regions[1]["mapping_status"] == "auto"
+    assert second.handled is False
+    assert second.regions[1]["mapped_question_id"] == "Q2"
 
 
 def test_existing_unbound_uuid_is_not_newly_auto_bound() -> None:
