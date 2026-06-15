@@ -323,6 +323,7 @@ class PracticePlanService:
                 gradient_fit=practice_gradient_fit(stage, candidate.get("difficulty")),
                 diversity_fit=diversity,
                 weights=weights,
+                sub_skill_boost=candidate["stage_roles"][stage].get("sub_skill_boost", 0.0),
             )
             if result.eligible:
                 scored.append((result.total_score, question_id, _item_payload(candidate, stage, result, metrics)))
@@ -539,7 +540,22 @@ def _assign_candidate_roles(
         for weak in weak_points:
             target_id = int(weak["concept_id"])
             if target_id in concept_ids:
-                _set_role(roles, "direct", 1.0, target_id, target_id, "direct")
+                weak_sub_skills = [s.strip().casefold() for s in weak.get("sub_skill_tags", []) if s]
+                sub_skill_boost = 0.0
+                matched_skills = []
+                if weak_sub_skills:
+                    candidate_tag_values = set()
+                    fold_to_orig = {}
+                    for tag_type, vals in candidate.get("tags", {}).items():
+                        for val in vals:
+                            cleaned = val.strip()
+                            candidate_tag_values.add(cleaned.casefold())
+                            fold_to_orig[cleaned.casefold()] = cleaned
+                    intersection = candidate_tag_values.intersection(weak_sub_skills)
+                    sub_skill_boost = len(intersection) / len(weak_sub_skills)
+                    matched_skills = [fold_to_orig[s] for s in intersection]
+
+                _set_role(roles, "direct", 1.0, target_id, target_id, "direct", sub_skill_boost=sub_skill_boost, sub_skill_match=matched_skills)
                 if difficulty is not None and difficulty <= 3:
                     _set_role(roles, "prerequisite", 0.75, target_id, target_id, "difficulty_scaffold")
                 if (difficulty is not None and difficulty >= 7) or candidate["tags"].get("model"):
@@ -566,6 +582,9 @@ def _set_role(
     target_concept_id: int,
     matched_concept_id: int,
     relation_type: str,
+    *,
+    sub_skill_boost: float = 0.0,
+    sub_skill_match: list[str] = None,
 ) -> None:
     existing = roles.get(stage)
     if existing is None or float(existing["concept_match"]) < strength:
@@ -574,6 +593,8 @@ def _set_role(
             "target_concept_id": target_concept_id,
             "matched_concept_id": matched_concept_id,
             "relation_type": relation_type,
+            "sub_skill_boost": round(sub_skill_boost, 4),
+            "sub_skill_match": sub_skill_match or [],
         }
 
 
@@ -637,6 +658,7 @@ def _item_payload(candidate: Mapping[str, Any], stage: str, result: Any, metrics
         "source_paper": str(candidate.get("paper_title") or candidate.get("paper_source_file") or ""),
         "method_tags": list(candidate["tags"].get("method", [])),
         "model_tags": list(candidate["tags"].get("model", [])),
+        "sub_skill_match": list(role.get("sub_skill_match", [])),
         "frequency": metrics.to_dict() if metrics is not None else {},
     }
 

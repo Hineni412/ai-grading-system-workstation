@@ -13,7 +13,8 @@ from typing import Any, Callable, Mapping
 from api_profiles import load_api_profiles
 from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
 from question_bank.database.paths import project_data_root
-from question_bank.models.tag_schema import ERROR_PRONE_CATEGORIES, TagAnalysis, TaggingContext
+from question_bank.models.tag_schema import ERROR_PRONE_CATEGORIES, SUB_SKILL_DIMENSIONS, SUB_SKILL_KEYWORD_HINTS, TagAnalysis, TaggingContext
+from question_bank.taxonomy.registry import CANONICAL_KNOWLEDGE, canonical_knowledge_seed_rows
 
 
 DEFAULT_TAGGING_MODEL = "gpt-4o"
@@ -64,6 +65,30 @@ METHOD_TAG_OPTIONS = (
     "函数思想",
     "模型思想",
 )
+
+
+def canonical_knowledge_prompt_table() -> str:
+    """生成受控的 KP_* 候选表文本，注入到打标 prompt 中。
+
+    要求 AI 必须从这个表里选 canonical_knowledge_id（小写 kp_* 形式），
+    不在表内的知识点填 null 并在 reason 说明。
+    """
+    lines = []
+    for item in CANONICAL_KNOWLEDGE:
+        # 只取前 6 个别名避免 prompt 过长
+        alias_preview = "、".join(item.aliases[:6])
+        lines.append(f"- {item.canonical_id.casefold()} : {item.canonical_name}（别名: {alias_preview}）")
+    return "\n".join(lines)
+
+
+def is_valid_canonical_id(value: str) -> bool:
+    """校验 AI 给的 canonical_id 是否在 registry 中（大小写不敏感）。"""
+    if not value:
+        return False
+    target = value.casefold().strip()
+    return any(item.canonical_id.casefold() == target for item in CANONICAL_KNOWLEDGE)
+
+
 ABILITY_TAG_OPTIONS = (
     "运算能力",
     "几何直观",
@@ -350,6 +375,8 @@ def _mock_analysis(context: TaggingContext) -> TagAnalysis:
         "textbook_chapter": "八年级上册 第七章 平行线的证明" if "平行" in context.question_text else "九年级上册 第四章 图形的相似",
         "teaching_stage": "巩固",
         "suitable_student_level": "中档提升",
+        "canonical_knowledge_id": "kp_geo_comprehensive",
+        "sub_skills": [],
         "reason": "Mock mode uses stable middle-school math tags for page testing.",
         "confidence": 0.8,
     }
@@ -397,26 +424,46 @@ def _prompt_input(context: TaggingContext) -> list[dict[str, str]]:
 
 def _system_prompt() -> str:
     curriculum_list = "\n".join(f"- {ch}" for ch in CURRICULUM_CHAPTERS)
+    canonical_table = canonical_knowledge_prompt_table()
+    sub_skill_dims = "、".join(SUB_SKILL_DIMENSIONS)
+    sub_skill_hints = "、".join(SUB_SKILL_KEYWORD_HINTS)
     return f"""
     You analyze junior middle-school math questions.
     Return one JSON object only with the requested schema.
     Prefer stable, countable Chinese junior math tags over long ad hoc phrases.
-    
+
     Allowed student levels (choose exactly one): {", ".join(STUDENT_LEVELS)}
-    
+
     Knowledge point options (choose relevant): {", ".join(KNOWLEDGE_POINT_OPTIONS)}
-    
+
+    === 主知识点稳定编码（canonical_knowledge_id，受控输出，极其重要）===
+    你必须为题目选出一个 canonical_knowledge_id，从下列候选表中选取（输出小写 kp_* 形式）：
+    {canonical_table}
+    规则：
+    - 必须输出表中的某个 kp_* 编码，不可自创、不可拼写错误。
+    - 若题目的核心知识点确实不在表中，canonical_knowledge_id 填空字符串 ""，并在 reason 里说明原因。
+    - 编码必须全小写（如 kp_geo_triangle_congruence），不要使用大写。
+
+    === 子技能（sub_skills，半受控维度提炼，极其重要）===
+    请按以下维度提炼子技能：{sub_skill_dims}
+    参考词（可适度扩展但不强制封闭）：{sub_skill_hints}
+    规则：
+    - sub_skills 描述具体考法/题型/微技能（如 SAS判定、尺规作图、面积计算、手拉手模型），用于精准匹配学生薄弱考法。
+    - 严禁复读 knowledge_points 原词或添加无信息量的词（如"性质""定义""概念""运算"等泛词）。
+    - 若题目考法无明确细分，sub_skills 可为空数组 []。
+    - 每个子技能应是简短词组（2-8 字），如"SAS判定""辅助线构造""角度计算"。
+
     Method tag options (choose relevant): {", ".join(METHOD_TAG_OPTIONS)}
-    
+
     Ability tag options (choose relevant): {", ".join(ABILITY_TAG_OPTIONS)}
-    
+
     Math model options (choose relevant): {", ".join(MATH_MODEL_OPTIONS)}
-    
+
     Error-prone options (choose relevant): {", ".join(ERROR_PRONE_CATEGORIES)}
-    
+
     Curriculum chapters (choose textbook_chapter from these candidates):
     {curriculum_list}
-    
+
     Knowledge points should be concise, such as 平行线性质, 三角形全等, 二元一次方程组, 一元一次不等式组, 函数图像, 几何综合.
     Method tags should include stable ideas when applicable, such as 方程思想, 数形结合, 分类讨论, 构造辅助线, 构造全等, 角度转化, 面积法.
     Math model tags may include common exam models, such as 半角模型, 手拉手模型, 将军饮马模型, 角平分线模型, 中点模型, 旋转模型, 折叠模型, 平行线角度模型.
@@ -442,6 +489,8 @@ def _plain_output_schema() -> dict[str, object]:
         "textbook_chapter": "",
         "teaching_stage": "",
         "suitable_student_level": "",
+        "canonical_knowledge_id": "",
+        "sub_skills": [],
         "reason": "",
         "confidence": 0.8,
     }
@@ -462,6 +511,8 @@ def _tag_analysis_response_format() -> dict[str, Any]:
         "textbook_chapter": text_field,
         "teaching_stage": text_field,
         "suitable_student_level": text_field,
+        "canonical_knowledge_id": text_field,
+        "sub_skills": array_field,
         "reason": text_field,
         "confidence": {"type": "number"},
     }
@@ -644,6 +695,8 @@ def _batch_tag_analysis_response_format() -> dict[str, Any]:
         "textbook_chapter": text_field,
         "teaching_stage": text_field,
         "suitable_student_level": text_field,
+        "canonical_knowledge_id": text_field,
+        "sub_skills": array_field,
         "reason": text_field,
         "confidence": {"type": "number"},
     }
@@ -878,11 +931,17 @@ def _evaluate_analysis_quality(analysis: TagAnalysis, context: TaggingContext) -
         missing.append("缺少教材章节")
     if not analysis.suitable_student_level:
         missing.append("缺少适合学生层级")
+    # canonical_knowledge_id 受控校验：若 AI 给了值但不在 registry 中，记为冲突
+    if analysis.canonical_knowledge_id and not is_valid_canonical_id(analysis.canonical_knowledge_id):
+        conflict_notes = [f"AI 给出的 canonical_knowledge_id 不在标准词表中: {analysis.canonical_knowledge_id}"]
+    else:
+        conflict_notes = []
     confidence = float(analysis.confidence)
     if context.has_images or "[[IMAGE:" in str(context.question_text or ""):
         confidence *= 0.95
         notes.append("图片依赖题已轻微降权")
-    conflict_notes = _rule_conflict_notes(context, analysis)
+    rule_conflict_notes = _rule_conflict_notes(context, analysis)
+    notes.extend(rule_conflict_notes)
     notes.extend(conflict_notes)
     if missing:
         notes.extend(missing)
@@ -890,7 +949,7 @@ def _evaluate_analysis_quality(analysis: TagAnalysis, context: TaggingContext) -
     if confidence < REVIEW_CONFIDENCE_THRESHOLD:
         notes.append("AI 自评置信度过低")
         return "invalid", notes, round(confidence, 4)
-    if conflict_notes:
+    if conflict_notes or rule_conflict_notes:
         return "conflict", notes, round(min(confidence * 0.75, COMPLETE_CONFIDENCE_THRESHOLD - 0.03), 4)
     if confidence < COMPLETE_CONFIDENCE_THRESHOLD:
         notes.append("置信度低，需复核或人工确认")

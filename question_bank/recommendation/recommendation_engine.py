@@ -189,6 +189,7 @@ def _score_candidate(
     matched_errors = _overlap(weak_point.get("error_types", []), tags.get("error_type", []))
     frequency = frequency or FrequencyMetrics(available=False)
     frequency_rate = min(1.0, frequency.questions_per_paper) if frequency.available else None
+    skill_frequency_rate = min(1.0, frequency.skill_frequency) if frequency.skill_available else None
     score = recommendation_score(
         mastery=_rate(weak_point.get("mastery"), default=0.0),
         frequency_rate=frequency_rate,
@@ -197,6 +198,7 @@ def _score_candidate(
         shenzhen_fit_score=frequency.shenzhen_fit_score if frequency.shenzhen_fit_available else None,
         shenzhen_frequency_rate=min(1.0, frequency.shenzhen_questions_per_paper),
         national_frequency_rate=min(1.0, frequency.national_questions_per_paper),
+        skill_frequency_rate=skill_frequency_rate,
     )
     reason_parts = [f"匹配薄弱知识点“{_text(weak_point.get('knowledge_point'))}”"]
     if matched_errors:

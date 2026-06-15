@@ -152,6 +152,8 @@ def test_zhongkao_has_national_and_shenzhen_frequency_without_semester_limit(tmp
 
 
 def test_fingerprint_uses_method_for_both_simple_and_solution_questions() -> None:
+    # 用具体方法验证"方法参与指纹"；宽泛方法（数形结合/分类讨论）已被排除，
+    # 不再用于区分指纹（见 GENERIC_METHOD_TAGS）。
     simple_a = build_question_fingerprint(
         {"question_type": "选择题", "tags": [{"tag_type": "knowledge_point", "tag_value": "概率"}]}
     )
@@ -160,7 +162,7 @@ def test_fingerprint_uses_method_for_both_simple_and_solution_questions() -> Non
             "question_type": "选择题",
             "tags": [
                 {"tag_type": "knowledge_point", "tag_value": "概率"},
-                {"tag_type": "method", "tag_value": "分类讨论"},
+                {"tag_type": "method", "tag_value": "列举法"},
             ],
         }
     )
@@ -169,7 +171,7 @@ def test_fingerprint_uses_method_for_both_simple_and_solution_questions() -> Non
             "question_type": "解答题",
             "tags": [
                 {"tag_type": "knowledge_point", "tag_value": "概率"},
-                {"tag_type": "method", "tag_value": "分类讨论"},
+                {"tag_type": "method", "tag_value": "列举法"},
             ],
         }
     )
@@ -178,13 +180,75 @@ def test_fingerprint_uses_method_for_both_simple_and_solution_questions() -> Non
             "question_type": "解答题",
             "tags": [
                 {"tag_type": "knowledge_point", "tag_value": "概率"},
-                {"tag_type": "method", "tag_value": "数形结合"},
+                {"tag_type": "method", "tag_value": "树状图法"},
             ],
         }
     )
 
     assert simple_a != simple_b
     assert solution_a != solution_b
+
+
+def test_fingerprint_excludes_generic_method_tags() -> None:
+    # 数形结合/分类讨论等宽泛方法不进指纹，避免几何综合题过度聚拢。
+    without_generic = build_question_fingerprint(
+        {"question_type": "解答题", "tags": [{"tag_type": "knowledge_point", "tag_value": "二次函数"}]}
+    )
+    with_generic_only = build_question_fingerprint(
+        {
+            "question_type": "解答题",
+            "tags": [
+                {"tag_type": "knowledge_point", "tag_value": "二次函数"},
+                {"tag_type": "method", "tag_value": "数形结合"},
+                {"tag_type": "method", "tag_value": "分类讨论"},
+            ],
+        }
+    )
+    assert without_generic == with_generic_only
+
+
+def test_fingerprint_is_invariant_to_tag_order() -> None:
+    # 标签顺序不应影响指纹（消除顺序敏感）。
+    first_order = build_question_fingerprint(
+        {
+            "question_type": "解答题",
+            "tags": [
+                {"tag_type": "knowledge_point", "tag_value": "二次函数"},
+                {"tag_type": "method", "tag_value": "待定系数法"},
+                {"tag_type": "method", "tag_value": "配方法"},
+            ],
+        }
+    )
+    reversed_order = build_question_fingerprint(
+        {
+            "question_type": "解答题",
+            "tags": [
+                {"tag_type": "knowledge_point", "tag_value": "二次函数"},
+                {"tag_type": "method", "tag_value": "配方法"},
+                {"tag_type": "method", "tag_value": "待定系数法"},
+            ],
+        }
+    )
+    assert first_order == reversed_order
+
+
+def test_fingerprint_splits_mid_difficulty_into_two_buckets() -> None:
+    # 难度4-7拆为偏基础(4-5)/偏综合(6-7)，避免常规题与综合题混桶。
+    base_mid = build_question_fingerprint(
+        {
+            "question_type": "解答题",
+            "tags": [{"tag_type": "knowledge_point", "tag_value": "一元二次方程"}],
+            "difficulty": "4",
+        }
+    )
+    advanced_mid = build_question_fingerprint(
+        {
+            "question_type": "解答题",
+            "tags": [{"tag_type": "knowledge_point", "tag_value": "一元二次方程"}],
+            "difficulty": "7",
+        }
+    )
+    assert base_mid != advanced_mid
 
 
 def test_external_zhongkao_gets_explainable_shenzhen_fit_score(tmp_path: Path) -> None:

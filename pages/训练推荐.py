@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import html
 import json
+import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+import pandas as pd
 import streamlit as st
 
 from db_manager import DBManager
@@ -12,6 +15,22 @@ from path_manager import get_path_manager
 from question_bank.recommendation.practice_plan_service import PracticePlanService
 from question_bank.services.training_export_service import TrainingExportService
 from question_bank.services.training_task_service import TrainingTaskService
+from question_bank.services.question_service import QuestionService
+from question_bank.services.concept_alignment_service import ConceptAlignmentService
+
+# 共享组件（难度 badge / 标签 chip 群），与题库管理页风格统一
+try:
+    import importlib
+    import pages_shared.shared_components
+    importlib.reload(pages_shared.shared_components)
+    from pages_shared.shared_components import format_difficulty_badge
+except Exception:  # 共享组件不可用时回退为纯文本
+    def format_difficulty_badge(difficulty: object) -> str:
+        try:
+            v = float(difficulty)
+        except (TypeError, ValueError):
+            return '<span class="qb-badge qb-badge-gray">未标注</span>'
+        return f'<span class="qb-badge qb-badge-gray">难度 {v:.1f}</span>' if v > 0 else '<span class="qb-badge qb-badge-gray">未标注</span>'
 
 
 ALIGNMENT_FOCUS_SESSION_KEY = "knowledge_alignment_focus_terms"
@@ -97,26 +116,225 @@ def _render_diagnosis(diagnosis: Mapping[str, Any]) -> None:
                     "标准知识点": weak.get("concept_name") or "未映射",
                     "映射状态": weak.get("mapping_status") or "",
                     "掌握率": f"{float(weak.get('mastery') or 0) * 100:.1f}%",
+                    "掌握率数值": float(weak.get('mastery') or 0),
                     "证据题数": weak.get("evidence_count") or 0,
                 }
             )
+            
     if rows:
-        st.dataframe(rows, width="stretch", hide_index=True)
+        st.dataframe(
+            pd.DataFrame(rows).drop(columns=["掌握率数值"]),
+            width="stretch",
+            hide_index=True
+        )
+        
+        # Mastery heatmap
+        confirmed_rows = [r for r in rows if r["标准知识点"] != "未映射" and r["映射状态"] == "confirmed"]
+        if confirmed_rows:
+            st.markdown("##### 📊 班级/学生薄弱点掌握率热力图")
+            st.caption("展示所选学生在各个已确认标准知识点上的平均掌握率（红色代表薄弱度高，绿色代表掌握较好，-代表无数据）")
+            try:
+                df_heat = pd.DataFrame(confirmed_rows)
+                pivot = df_heat.pivot_table(
+                    index="学生",
+                    columns="标准知识点",
+                    values="掌握率数值",
+                    aggfunc="mean"
+                )
+                st.dataframe(
+                    pivot.style.background_gradient(cmap="RdYlGn", vmin=0.0, vmax=1.0)
+                    .format("{:.1%}", na_rep="-"),
+                    width="stretch",
+                )
+            except Exception as e:
+                st.caption(f"（热力图渲染提示：{e}）")
     else:
         st.info("所选范围内暂时没有薄弱知识点证据。")
 
     excluded_terms = _unique_text([*suggested, *unmapped])
     if excluded_terms:
         st.warning(
-            "以下知识点尚未确认映射，本次推荐会明确排除："
-            + "、".join(excluded_terms)
+            f"⚠️ **检测到 {len(excluded_terms)} 个薄弱术语未建立映射**。未绑定的知识点不会静默推荐题目。建议您前往对齐中心对齐："
         )
-        if st.button("去知识图谱适配中心处理", key="open_alignment_center"):
+        # 术语 chip 群：每个未映射术语一个红色 badge，提示需处理
+        chips = "".join(
+            f'<span class="qb-badge qb-badge-hard">{html.escape(str(t))}</span>'
+            for t in excluded_terms
+        )
+        st.markdown(
+            f'<div style="display:flex; flex-wrap:wrap; gap:4px;">{chips}</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("👉 前往知识点对齐中心处理", key="open_alignment_center"):
             st.session_state[ALIGNMENT_FOCUS_SESSION_KEY] = excluded_terms
             st.switch_page("pages/知识图谱适配调试.py")
 
-    for warning in diagnosis.get("warnings") or []:
-        st.warning(str(warning))
+def _render_question_images(question_detail: dict[str, Any]) -> None:
+    IMAGE_MARKER_PATTERN = re.compile(r"\[image:\s*(?P<path>[^\]]+)\]", re.IGNORECASE)
+    
+    raw_images = question_detail.get("image_paths") or []
+    text_content = (question_detail.get("question_text") or "") + " " + (question_detail.get("answer_text") or "")
+    extracted_images = [m.group("path").strip() for m in IMAGE_MARKER_PATTERN.finditer(text_content)]
+    
+    all_images = []
+    for img in list(raw_images) + extracted_images:
+        img_str = str(img).strip()
+        if img_str and img_str not in all_images:
+            all_images.append(img_str)
+            
+    valid_paths = [Path(p) for p in all_images if Path(p).exists()]
+    if not valid_paths:
+        return
+        
+    if len(valid_paths) == 1:
+        st.image(str(valid_paths[0]), use_container_width=True)
+    else:
+        cols = st.columns(min(len(valid_paths), 3))
+        for idx, path in enumerate(valid_paths):
+            with cols[idx % len(cols)]:
+                st.image(str(path), use_container_width=True)
+
+
+def _render_question_detail_expander(order: int, item: dict[str, Any], qb_service: QuestionService | None, key_prefix: str = "") -> None:
+    q_id = item.get("question_id")
+    stage = item.get("stage", "")
+    stage_info = {
+        "direct": ("🎯 直接补弱", "purple"),
+        "prerequisite": ("🧱 前置巩固", "blue"),
+        "transfer": ("🚀 迁移验证", "green"),
+    }.get(stage, (stage or "推荐", "gray"))
+
+    score = item.get("recommend_score", 0.0)
+    source = item.get("source_paper") or "题库"
+    difficulty = item.get("difficulty") or 0
+
+    # Format recommendation reason
+    relation_type = item.get("relation_type", "")
+    target_concept_id = item.get("target_concept_id")
+    matched_concept_id = item.get("matched_concept_id")
+
+    target_concept_name = "未知"
+    matched_concept_name = "未知"
+    if qb_service:
+        try:
+            align_service = ConceptAlignmentService(qb_service.db_path)
+            if target_concept_id:
+                c_target = align_service.get_concept(int(target_concept_id))
+                if c_target:
+                    target_concept_name = c_target.name
+            if matched_concept_id:
+                c_matched = align_service.get_concept(int(matched_concept_id))
+                if c_matched:
+                    matched_concept_name = c_matched.name
+        except Exception:
+            pass
+
+    reason_desc = ""
+    if relation_type == "direct":
+        reason_desc = f"直接关联了您已确认的薄弱知识点「{target_concept_name}」"
+    elif relation_type == "prerequisite":
+        reason_desc = f"薄弱点「{target_concept_name}」的必备前置基础「{matched_concept_name}」（夯实根基）"
+    elif relation_type == "parent":
+        reason_desc = f"薄弱点「{target_concept_name}」的分类大纲「{matched_concept_name}」（分类巩固）"
+    elif relation_type == "related":
+        reason_desc = f"薄弱点「{target_concept_name}」的相关关联知识「{matched_concept_name}」（迁移突破）"
+    elif relation_type == "difficulty_scaffold":
+        reason_desc = f"针对薄弱点「{target_concept_name}」进行的难度搭建（易错拉练）"
+    elif relation_type == "direct_transfer":
+        reason_desc = f"针对薄弱点「{target_concept_name}」进行的综合题型挑战（迁移验证）"
+    else:
+        reason_desc = "关联大纲知识点匹配推荐"
+
+    # —— 白底卡片头部：题号标题 + 彩色 badges 一行 ——
+    diff_badge = format_difficulty_badge(difficulty)
+    source_badge = f'<span class="qb-badge qb-badge-gray">{html.escape(str(source))}</span>'
+    stage_badge = f'<span class="qb-badge qb-badge-{stage_info[1]}">{html.escape(stage_info[0])}</span>'
+    score_badge = f'<span class="qb-badge qb-badge-medium">评分 {score:.1f}</span>'
+
+    with st.container(border=True):
+        st.markdown(
+            f'<div class="qb-paper-header">'
+            f'<span class="qb-paper-title-tag">第 {order} 题</span>'
+            f'<div style="display:flex; gap:4px; flex-wrap:wrap;">'
+            f'{stage_badge}{diff_badge}{source_badge}{score_badge}'
+            f'</div></div>',
+            unsafe_allow_html=True,
+        )
+
+        col_q_left, col_q_right = st.columns([0.65, 0.35])
+
+        with col_q_left:
+            st.markdown("**📝 题目内容**")
+            q_text = item.get("question_text") or ""
+            IMAGE_MARKER_PATTERN = re.compile(r"\[image:\s*(?P<path>[^\]]+)\]", re.IGNORECASE)
+            q_text_clean = IMAGE_MARKER_PATTERN.sub("", q_text).strip()
+            st.markdown(
+                f'<div class="qb-rich-text">{q_text_clean}</div>',
+                unsafe_allow_html=True,
+            )
+
+            if qb_service:
+                q_detail = qb_service.get_question(int(q_id))
+                if q_detail:
+                    _render_question_images(q_detail)
+                    with st.expander("🔑 参考答案与解析"):
+                        ans_text = q_detail.get("answer_text") or "暂无参考答案"
+                        ans_text_clean = IMAGE_MARKER_PATTERN.sub("", ans_text).strip()
+                        st.markdown(
+                            f'<div class="qb-rich-text">{ans_text_clean}</div>',
+                            unsafe_allow_html=True,
+                        )
+                        raw_ans_images = [m.group("path").strip() for m in IMAGE_MARKER_PATTERN.finditer(ans_text)]
+                        if raw_ans_images:
+                            valid_ans_paths = [Path(p) for p in raw_ans_images if Path(p).exists()]
+                            if valid_ans_paths:
+                                if len(valid_ans_paths) == 1:
+                                    st.image(str(valid_ans_paths[0]), use_container_width=True)
+                                else:
+                                    cols = st.columns(min(len(valid_ans_paths), 3))
+                                    for idx, path in enumerate(valid_ans_paths):
+                                        with cols[idx % len(cols)]:
+                                            st.image(str(path), use_container_width=True)
+            else:
+                st.caption("⚠️ 题库数据不可用，无法加载图片和答案。")
+
+        with col_q_right:
+            # 推荐理由：蓝边教师批注框
+            st.markdown(
+                f'<div class="qb-teacher-box">'
+                f'<div class="qb-teacher-title">💡 推荐理由</div>'
+                f'<div>{html.escape(reason_desc)}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+            # 精准匹配子技能：chip 群
+            sub_skills = item.get("sub_skill_match")
+            if sub_skills:
+                chips = "".join(
+                    f'<span class="qb-tag-chip">{html.escape(str(s))}</span>'
+                    for s in sub_skills
+                )
+                st.markdown(
+                    f'<div class="qb-tag-row" style="margin-top:8px;">'
+                    f'<span class="qb-tag-label">🎯 命中子技能</span>'
+                    f'<div class="qb-tag-panel" style="display:flex; flex-wrap:wrap; gap:4px;">{chips}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+            # 评分拆解
+            score_comps = item.get("score_components") or {}
+            if score_comps:
+                st.markdown("**📊 推荐指数评分拆解**")
+                for comp_key, comp_val in score_comps.items():
+                    comp_name = {
+                        "concept": "知识点匹配度",
+                        "frequency": "高频考点程度",
+                        "gradient": "难度合适度",
+                        "diversity": "出题来源多样性",
+                    }.get(comp_key, comp_key)
+                    st.progress(min(1.0, max(0.0, float(comp_val))), text=f"{comp_name}: {float(comp_val)*100:.0f}%")
 
 
 def _render_plan(plan: Mapping[str, Any]) -> None:
@@ -137,6 +355,9 @@ def _render_plan(plan: Mapping[str, Any]) -> None:
     for warning in plan.get("warnings") or []:
         st.warning(str(warning))
 
+    pm = get_path_manager()
+    qb_service = QuestionService(pm.qb_db_path) if Path(pm.qb_db_path).exists() else None
+
     for variant in variants:
         students = "、".join(str(value) for value in variant.get("student_ids") or [])
         title = f"{variant.get('variant_key')} | 学生 {students or '未分配'} | {len(variant.get('items') or [])} 题"
@@ -146,6 +367,7 @@ def _render_plan(plan: Mapping[str, Any]) -> None:
                 st.caption(f"分组依据：{reason.get('rule') or '未记录'}")
             items = list(variant.get("items") or [])
             if items:
+                # 1. Summary table
                 st.dataframe(
                     [
                         {
@@ -161,6 +383,11 @@ def _render_plan(plan: Mapping[str, Any]) -> None:
                     width="stretch",
                     hide_index=True,
                 )
+                
+                # 2. Detailed previews
+                st.markdown("📋 **试题内容深度预览与推荐分析**")
+                for item in items:
+                    _render_question_detail_expander(item.get("item_order"), item, qb_service, key_prefix=f"plan_{variant.get('variant_key')}")
             else:
                 st.info("当前版本没有符合硬性知识点映射规则的候选题。")
             for shortage in variant.get("shortages") or []:
@@ -245,6 +472,9 @@ def _render_task_detail(
     for warning in task.get("warnings") or []:
         st.warning(str(warning))
 
+    pm = get_path_manager()
+    qb_service = QuestionService(pm.qb_db_path) if Path(pm.qb_db_path).exists() else None
+
     for variant in task.get("variants") or []:
         students = "、".join(
             str(item.get("student_name_snapshot") or item.get("student_id"))
@@ -259,6 +489,30 @@ def _render_task_detail(
                 st.warning(f"缺题记录：{variant['shortages']}")
             if variant.get("warnings"):
                 st.warning("；".join(str(value) for value in variant["warnings"]))
+
+            items = list(variant.get("items") or [])
+            if items:
+                # 1. Summary table
+                st.dataframe(
+                    [
+                        {
+                            "顺序": item.get("item_order"),
+                            "阶段": item.get("stage"),
+                            "题库题号": item.get("question_id"),
+                            "来源": item.get("source_paper"),
+                            "难度": item.get("difficulty") or "未标注",
+                            "推荐分": item.get("recommend_score"),
+                        }
+                        for item in items
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                )
+                
+                # 2. Detailed previews
+                st.markdown("📋 **试题内容深度预览与推荐分析**")
+                for item in items:
+                    _render_question_detail_expander(item.get("item_order"), item, qb_service, key_prefix=f"{key_prefix}_{variant.get('variant_key')}")
 
     if allow_export and task.get("status") != "cancelled":
         export_format = st.segmented_control(
@@ -355,6 +609,13 @@ def _render_task_history(
 
 
 st.set_page_config(page_title="训练推荐", layout="wide")
+
+try:
+    from pages_shared.shared_styles import inject_shared_css
+    inject_shared_css(st)
+except Exception:
+    pass
+
 st.title("个性化训练任务")
 st.caption("基于真实批改诊断和已确认知识点映射生成训练题。未确认映射不会静默参与推荐。")
 
@@ -498,10 +759,11 @@ if st.button(
     disabled=analyze_disabled,
 ):
     try:
-        diagnosis = DiagnosisProfileService(pm.db_path, pm.qb_db_path).build_profiles(
-            scope=scope,
-            exam_scope=exam_scope,
-        )
+        with st.spinner("正在分析薄弱知识点…"):
+            diagnosis = DiagnosisProfileService(pm.db_path, pm.qb_db_path).build_profiles(
+                scope=scope,
+                exam_scope=exam_scope,
+            )
     except Exception as exc:
         st.error(f"诊断分析失败：{exc}")
     else:
@@ -538,6 +800,11 @@ prerequisite_percent = stage_columns[1].number_input("前置巩固 %", 0, 100, 2
 transfer_percent = stage_columns[2].number_input("迁移验证 %", 0, 100, 15, 5)
 stage_total = direct_percent + prerequisite_percent + transfer_percent
 
+if stage_total == 100:
+    st.markdown(f"🟢 **阶段比例合计：100%** (比例合理)")
+else:
+    st.markdown(f"🔴 **阶段比例合计：{stage_total}%** (各比例相加必须等于 100%，当前偏差 {stage_total - 100:+}%)")
+
 st.markdown("**推荐排序权重**")
 weight_columns = st.columns(4)
 concept_percent = weight_columns[0].number_input("知识点匹配 %", 0, 100, 40, 5)
@@ -545,9 +812,19 @@ frequency_percent = weight_columns[1].number_input("考频 %", 0, 100, 35, 5)
 gradient_percent = weight_columns[2].number_input("难度梯度 %", 0, 100, 10, 5)
 diversity_percent = weight_columns[3].number_input("来源与方法多样性 %", 0, 100, 15, 5)
 weight_total = concept_percent + frequency_percent + gradient_percent + diversity_percent
+
+if weight_total == 100:
+    st.markdown(f"🟢 **排序权重合计：100%** (权重分配合理)")
+else:
+    st.markdown(f"🔴 **排序权重合计：{weight_total}%** (各权重相加必须等于 100%，当前偏差 {weight_total - 100:+}%)")
+
 exclude_current_exam_originals = st.checkbox(
     "排除当前所选考试的原题和可识别近重复题",
     value=True,
+)
+include_historical_wrong_questions = st.checkbox(
+    "包含历史错题回流（综合考虑学生过往所有错题记录）",
+    value=False,
 )
 
 confirmed_available = bool(
@@ -572,23 +849,25 @@ if st.button(
     disabled=bool(generation_reasons),
 ):
     try:
-        plan = PracticePlanService(pm.qb_db_path).generate(
-            diagnosis,
-            variant_mode=VARIANT_MODE_MAP[variant_label or "每人独立个性卷"],
-            question_count=int(question_count),
-            stage_ratios={
-                "direct": direct_percent / 100,
-                "prerequisite": prerequisite_percent / 100,
-                "transfer": transfer_percent / 100,
-            },
-            weights={
-                "concept": concept_percent / 100,
-                "frequency": frequency_percent / 100,
-                "gradient": gradient_percent / 100,
-                "diversity": diversity_percent / 100,
-            },
-            exclude_current_exam_originals=exclude_current_exam_originals,
-        )
+        with st.spinner("正在生成训练任务…"):
+            plan = PracticePlanService(pm.qb_db_path).generate(
+                diagnosis,
+                variant_mode=VARIANT_MODE_MAP[variant_label or "每人独立个性卷"],
+                question_count=int(question_count),
+                stage_ratios={
+                    "direct": direct_percent / 100,
+                    "prerequisite": prerequisite_percent / 100,
+                    "transfer": transfer_percent / 100,
+                },
+                weights={
+                    "concept": concept_percent / 100,
+                    "frequency": frequency_percent / 100,
+                    "gradient": gradient_percent / 100,
+                    "diversity": diversity_percent / 100,
+                },
+                exclude_current_exam_originals=exclude_current_exam_originals,
+                include_historical_wrong_questions=include_historical_wrong_questions,
+            )
     except Exception as exc:
         st.error(f"生成训练任务失败：{exc}")
     else:

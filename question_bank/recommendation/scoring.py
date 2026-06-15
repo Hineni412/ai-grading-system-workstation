@@ -42,6 +42,7 @@ def score_candidate(
     gradient_fit: object | None,
     diversity_fit: object | None,
     weights: Mapping[str, object] | None = None,
+    sub_skill_boost: float | None = None,
 ) -> CandidateScore:
     resolved_weights = _validated_weights(weights)
     components = {
@@ -69,6 +70,8 @@ def score_candidate(
             warnings=tuple(warnings),
         )
     total = sum(components[key] * resolved_weights[key] for key in DEFAULT_WEIGHTS)
+    if sub_skill_boost is not None and sub_skill_boost > 0.0:
+        total *= (1.0 + 0.3 * sub_skill_boost)
     return CandidateScore(
         eligible=True,
         total_score=round(total, 4),
@@ -88,7 +91,12 @@ def frequency_fit_score(metrics: object | None) -> float:
             + _rate(_metric_value(metrics, "national_questions_per_paper"), default=0.0) * 0.20
         )
         return round(score, 4)
-    return _rate(_metric_value(metrics, "questions_per_paper"), default=0.0)
+    category_rate = _rate(_metric_value(metrics, "questions_per_paper"), default=0.0)
+    skill_rate = _rate(_metric_value(metrics, "skill_frequency"), default=0.0)
+    skill_available = bool(_metric_value(metrics, "skill_available", False))
+    if skill_available and skill_rate > 0:
+        return round(category_rate * 0.6 + min(1.0, skill_rate) * 0.4, 4)
+    return category_rate
 
 
 def normalize_score_1_to_5(value: object, default: float = 0.5) -> float:
@@ -154,6 +162,7 @@ def recommendation_score(
     shenzhen_fit_score: object | None = None,
     shenzhen_frequency_rate: object | None = None,
     national_frequency_rate: object | None = None,
+    skill_frequency_rate: object | None = None,
 ) -> float:
     if shenzhen_fit_score is not None:
         total = (
@@ -170,9 +179,16 @@ def recommendation_score(
         + _rate(tag_score, default=0.0) * 0.30
         + _rate(difficulty_score, default=0.0) * 0.20
     )
-    if frequency_rate is None:
+    if frequency_rate is None and skill_frequency_rate is None:
         return round(base_total / 0.85, 4)
-    total = base_total + _rate(frequency_rate, default=0.0) * 0.15
+    freq_r = _rate(frequency_rate, default=0.0)
+    skill_r = _rate(skill_frequency_rate, default=0.0)
+    if skill_r > 0:
+        # 两项考频都有数据时，混合评分：类别 0.6 + 技能 0.4
+        total = base_total + freq_r * 0.09 + skill_r * 0.06
+    else:
+        # 只有类别考频时，保持原始权重
+        total = base_total + freq_r * 0.15
     return round(total, 4)
 
 

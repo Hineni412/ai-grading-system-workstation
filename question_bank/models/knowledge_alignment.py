@@ -50,6 +50,7 @@ class KnowledgeSourceMapping:
     concept_id: int | None
     status: AlignmentStatus
     confidence: float
+    sub_skill_tags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         status = self.status if isinstance(self.status, AlignmentStatus) else AlignmentStatus(self.status)
@@ -70,6 +71,15 @@ class KnowledgeSourceMapping:
         object.__setattr__(self, "concept_id", concept_id)
         object.__setattr__(self, "status", status)
         object.__setattr__(self, "confidence", confidence)
+
+        sub_skills: list[str] = []
+        seen_skills: set[str] = set()
+        for s in (self.sub_skill_tags or ()):
+            s_clean = _clean_display_value(s)
+            if s_clean and s_clean not in seen_skills:
+                sub_skills.append(s_clean)
+                seen_skills.add(s_clean)
+        object.__setattr__(self, "sub_skill_tags", tuple(sub_skills))
 
     @property
     def normalized_value(self) -> str:

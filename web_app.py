@@ -221,10 +221,11 @@ def build_llm_settings_from_sidebar() -> LLMSettings | None:
     if "tagging_model_input" not in st.session_state:
         st.session_state.tagging_model_input = str(saved_profile.get("tagging_model") or os.getenv("QUESTION_BANK_TAGGING_MODEL", "gpt-4o-mini"))
     if "tagging_max_workers_input" not in st.session_state:
-        st.session_state.tagging_max_workers_input = int(saved_profile.get("tagging_max_workers", 8))
+        st.session_state.tagging_max_workers_input = int(saved_profile.get("tagging_max_workers", 4))
     if "tagging_requests_per_minute_input" not in st.session_state:
         st.session_state.tagging_requests_per_minute_input = int(saved_profile.get("tagging_requests_per_minute", 1000))
-    st.session_state.tagging_enabled_input = True
+    if "tagging_enabled_input" not in st.session_state:
+        st.session_state.tagging_enabled_input = bool(saved_profile.get("tagging_enabled", True))
     if "tagging_thinking_input" not in st.session_state:
         st.session_state.tagging_thinking_input = bool(saved_profile.get("tagging_thinking", False))
     if "tagging_review_enabled_input" not in st.session_state:
@@ -317,29 +318,9 @@ def build_llm_settings_from_sidebar() -> LLMSettings | None:
             current_profile["hybrid_inflight_workers"] = int(st.session_state.get("hybrid_inflight_workers_input", DEFAULT_HYBRID_INFLIGHT_WORKERS))
             current_profile["precheck_max_workers"] = int(st.session_state.get("precheck_max_workers_input", DEFAULT_PRECHECK_WORKERS))
 
-            # Safely merge tagging configurations only if they are initialized in st.session_state
-            if "tagging_api_key_input" in st.session_state:
-                current_profile["tagging_api_key"] = str(st.session_state.tagging_api_key_input).strip()
-            if "tagging_base_url_input" in st.session_state:
-                current_profile["tagging_base_url"] = normalize_openai_base_url(str(st.session_state.tagging_base_url_input).strip() or "https://api.openai.com/v1")
-            if "tagging_model_input" in st.session_state:
-                current_profile["tagging_model"] = str(st.session_state.tagging_model_input).strip() or "gpt-4o-mini"
-            if "tagging_max_workers_input" in st.session_state:
-                current_profile["tagging_max_workers"] = int(st.session_state.tagging_max_workers_input)
-            if "tagging_requests_per_minute_input" in st.session_state:
-                current_profile["tagging_requests_per_minute"] = int(st.session_state.tagging_requests_per_minute_input)
-            if "tagging_enabled_input" in st.session_state:
-                current_profile["tagging_enabled"] = bool(st.session_state.tagging_enabled_input)
-            if "tagging_thinking_input" in st.session_state:
-                current_profile["tagging_thinking"] = bool(st.session_state.tagging_thinking_input)
-            if "tagging_review_enabled_input" in st.session_state:
-                current_profile["tagging_review_enabled"] = bool(st.session_state.tagging_review_enabled_input)
-            if "tagging_review_api_key_input" in st.session_state:
-                current_profile["tagging_review_api_key"] = str(st.session_state.tagging_review_api_key_input).strip()
-            if "tagging_review_base_url_input" in st.session_state:
-                current_profile["tagging_review_base_url"] = normalize_openai_base_url(str(st.session_state.tagging_review_base_url_input).strip() or "https://api.openai.com/v1")
-            if "tagging_review_model_input" in st.session_state:
-                current_profile["tagging_review_model"] = str(st.session_state.tagging_review_model_input).strip()
+            # NOTE: 打标签 (tagging_*) 配置由「题库管理」页面独立管理并保存。
+            # 此处刻意不写入，避免主页保存时用 session_state 中陈旧/默认值覆盖用户
+            # 在题库管理页保存的打标签配置（历史 bug：并发数/RPM/API Key 被改回默认）。
 
             if not current_profile["api_key"]:
                 st.error("请先填写批改 API Key")

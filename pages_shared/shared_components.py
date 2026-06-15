@@ -28,13 +28,42 @@ def format_type_badge(question_type: object) -> str:
 
 
 def format_frequency_badge(frequency_metrics: object) -> str:
-    if frequency_metrics is None:
+    if frequency_metrics is None or not getattr(frequency_metrics, "available", False):
         return ""
     summary = frequency_summary(frequency_metrics)
     if not summary:
         return ""
+        
+    # Build detailed tooltip
+    exam_type = getattr(frequency_metrics, "exam_type", "")
+    matched = getattr(frequency_metrics, "matched_question_count", 0)
+    total_papers = getattr(frequency_metrics, "eligible_paper_count", 0)
+    
+    weighted_freq = getattr(frequency_metrics, "weighted_frequency", 0.0)
+    global_similar = getattr(frequency_metrics, "global_similar_count", 0)
+    
+    p_local = min(1.0, matched / total_papers) if total_papers else 0.0
+    s_global = min(1.0, global_similar / 50.0)
+    
+    tooltip_lines = [
+        "【综合考频计算明细】",
+        f"1. 真题考频 (权重 60%)：{matched}题/{total_papers}卷 = {p_local:.1%}",
+        f"2. 题库典型 (权重 40%)：{global_similar}题相似 = {s_global:.1%}",
+        f"3. 综合加权考频：{weighted_freq:.1%}"
+    ]
+    
+    if exam_type == "中考" and getattr(frequency_metrics, "shenzhen_fit_available", False):
+        sz_score = getattr(frequency_metrics, "shenzhen_fit_score", 0.0)
+        tooltip_lines.append(f"- 深圳适配度：{sz_score:.0%}")
+        notes = getattr(frequency_metrics, "shenzhen_fit_notes", ())
+        if notes:
+            tooltip_lines.append("  备注:")
+            for note in notes:
+                tooltip_lines.append(f"  • {note}")
+                
+    title_text = "\n".join(tooltip_lines)
     return (
-        '<span class="qb-badge qb-badge-medium" title="考频仅统计期中、期末和中考">'
+        f'<span class="qb-badge qb-badge-medium" title="{html.escape(title_text)}">'
         f"{html.escape(summary)}</span>"
     )
 

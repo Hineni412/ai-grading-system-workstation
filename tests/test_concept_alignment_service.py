@@ -125,3 +125,72 @@ def test_registry_seed_creates_stable_concepts(
     assert created > 0
     assert alignment_service.list_concepts()
     assert alignment_service.seed_registry_concepts() == 0
+
+
+def test_sub_skill_tags_persistence(alignment_service: ConceptAlignmentService) -> None:
+    concept = alignment_service.create_concept("math.quadratic", "二次函数")
+
+    # Test confirm_mapping
+    m = alignment_service.confirm_mapping(
+        source_namespace="grading_weak_point",
+        source_value="二次函数图像",
+        concept_id=concept.id,
+        sub_skill_tags=["图像性质", "顶点"],
+        reviewed_by="teacher"
+    )
+    assert m.sub_skill_tags == ("图像性质", "顶点")
+
+    # Test resolve
+    res = alignment_service.resolve("grading_weak_point", "二次函数图像")
+    assert res.sub_skill_tags == ("图像性质", "顶点")
+
+    # Test confirm_many
+    alignment_service.confirm_many([
+        ("grading_weak_point", "二次函数的最大值", concept.id, ["最大值", "极值"])
+    ])
+    res2 = alignment_service.resolve("grading_weak_point", "二次函数的最大值")
+    assert res2.sub_skill_tags == ("最大值", "极值")
+
+
+class MockLLMClient:
+    def __init__(self, response: dict[str, Any]):
+        self.response = response
+        self.prompts = []
+
+    def json_from_text(self, prompt: str) -> dict[str, Any]:
+        self.prompts.append(prompt)
+        return self.response
+
+
+def test_ai_batch_align(alignment_service: ConceptAlignmentService) -> None:
+    concept = alignment_service.create_concept("math.quadratic", "二次函数")
+
+    mock_response = {
+        "alignments": [
+            {
+                "source_value": "等腰三角形的角度计算",
+                "concept_key": "math.quadratic",
+                "sub_skill_tags": ["角度计算"],
+                "confidence": 0.85
+            }
+        ]
+    }
+    mock_client = MockLLMClient(mock_response)
+
+    results = alignment_service.ai_batch_align(
+        source_namespace="grading_weak_point",
+        source_terms=["等腰三角形的角度计算"],
+        llm_client=mock_client
+    )
+
+    assert len(results) == 1
+    assert results[0].source_value == "等腰三角形的角度计算"
+    assert results[0].concept_id == concept.id
+    assert results[0].sub_skill_tags == ("角度计算",)
+    assert results[0].confidence == 0.85
+
+    # Check that rule "仅从原始词本身推断子技能标签，绝不能从对齐的标准知识点过度发散" is in the prompt
+    assert len(mock_client.prompts) == 1
+    prompt_text = mock_client.prompts[0]
+    assert "仅从原始词" in prompt_text
+    assert "绝不能从对齐的标准知识点过度发散" in prompt_text

@@ -8,9 +8,8 @@ from typing import Any, Mapping
 from question_bank.database.schema import connect, initialize_database
 from question_bank.models.question import ALLOWED_TAG_TYPES, QuestionCreate, QuestionUpdate, TagCreate
 from question_bank.models.tag_schema import TagAnalysis
-from question_bank.taxonomy.registry import canonicalize_knowledge_values
+from question_bank.taxonomy.registry import CANONICAL_KNOWLEDGE, canonicalize_knowledge_values
 from question_bank.parsers.type_detector import detect_question_type
-
 
 TAG_ANALYSIS_MAP = {
     "knowledge_points": "knowledge_point",
@@ -22,6 +21,7 @@ TAG_ANALYSIS_MAP = {
     "textbook_chapter": "exam_scope",
     "teaching_stage": "teaching_stage",
     "suitable_student_level": "student_level",
+    "sub_skills": "sub_skill",
 }
 ANSWERED_AI_CONFIDENCE = 0.8
 ANSWERLESS_AI_CONFIDENCE = 0.55
@@ -357,6 +357,8 @@ class QuestionService:
             is_deleted=is_deleted,
             tag_status=tag_status,
         )
+        if sort_mode == "考频排序":
+            joins.append("LEFT JOIN question_frequency_cache qfc ON qfc.question_id = q.id")
         
         query = ["SELECT DISTINCT q.*, p.title AS paper_title, p.year, p.province, p.city, p.grade, p.semester, p.exam_type, p.district FROM questions q"]
         query.extend(joins)
@@ -650,6 +652,9 @@ class QuestionService:
                 ),
             )
             conn.commit()
+        if cursor.rowcount > 0:
+            from question_bank.services.question_frequency_service import QuestionFrequencyService
+            QuestionFrequencyService(self.db_path).invalidate_frequency_cache_for_question(int(question_id))
         return cursor.rowcount > 0
 
     def update_question_type(self, question_id: int, question_type: str) -> bool:
@@ -822,7 +827,9 @@ class QuestionService:
             ).fetchone()
             if question is None:
                 return False
-            covered_tag_types = tuple(TAG_ANALYSIS_MAP.values())
+            # sub_skill 随 TAG_ANALYSIS_MAP 自动纳入覆盖删除；
+            # canonical_knowledge_id 走单独 taxonomy 行，需显式加入覆盖范围，避免重新打标后残留旧编码。
+            covered_tag_types = tuple(TAG_ANALYSIS_MAP.values()) + ("canonical_knowledge_id",)
             placeholders = ", ".join("?" for _ in covered_tag_types)
             conn.execute(
                 f"""
@@ -864,6 +871,8 @@ class QuestionService:
                 ),
             )
             conn.commit()
+        from question_bank.services.question_frequency_service import QuestionFrequencyService
+        QuestionFrequencyService(self.db_path).invalidate_frequency_cache_for_question(int(question_id))
         return True
 
     def _insert_tags(self, conn, question_id: int, tags: list[TagCreate]) -> None:
@@ -925,52 +934,14 @@ def _question_order_clause(sort_mode: str | None) -> str:
     if sort_mode == "试题难度":
         return "ORDER BY CAST(q.difficulty AS REAL) DESC, q.created_at DESC, q.id DESC"
     if sort_mode == "考频排序":
-        return """ORDER BY (COALESCE((
-            SELECT COUNT(*)
-            FROM question_fingerprints qf2
-            JOIN questions q2 ON q2.id = qf2.question_id
-            JOIN papers p2 ON p2.id = q2.paper_id
-            WHERE qf2.base_fingerprint = (
-                SELECT base_fingerprint FROM question_fingerprints WHERE question_id = q.id
-            )
-              AND q2.is_deleted = 0
-              AND COALESCE(p2.import_status, '') <> 'deleted'
-              AND (p.grade IS NULL OR p2.grade = p.grade)
-              AND (
-                  p.exam_type IS NULL OR p2.exam_type IS NULL OR
-                  (p.exam_type LIKE '%中考%' AND p2.exam_type LIKE '%中考%')
-                  OR (
-                      p.exam_type NOT LIKE '%中考%'
-                      AND p2.exam_type NOT LIKE '%中考%'
-                      AND (
-                          (p.exam_type LIKE '%期中%' AND p2.exam_type LIKE '%期中%')
-                          OR (p.exam_type LIKE '%期末%' AND p2.exam_type LIKE '%期末%')
-                          OR (p.exam_type NOT LIKE '%期中%' AND p.exam_type NOT LIKE '%期末%'
-                              AND p2.exam_type NOT LIKE '%期中%' AND p2.exam_type NOT LIKE '%期末%')
-                      )
-                      AND (p.semester IS NULL OR COALESCE(p2.semester, '') = COALESCE(p.semester, ''))
-                  )
-              )
-        ), 0) * (
-            CASE (SELECT COUNT(*) FROM question_tags WHERE question_id = q.id)
-                WHEN 0 THEN 1.0
-                WHEN 1 THEN 1.0
-                WHEN 2 THEN 1.0
-                WHEN 3 THEN 1.0
-                WHEN 4 THEN 1.0
-                WHEN 5 THEN 1.0
-                WHEN 6 THEN 0.85
-                WHEN 7 THEN 0.7225
-                WHEN 8 THEN 0.614125
-                WHEN 9 THEN 0.52200625
-                WHEN 10 THEN 0.44370531
-                WHEN 11 THEN 0.37714952
-                WHEN 12 THEN 0.32057709
-                WHEN 13 THEN 0.27249053
-                WHEN 14 THEN 0.23161695
-                ELSE 0.19687440
-            END
-        )) DESC, q.created_at DESC, q.id DESC"""
+        return """ORDER BY 
+            CASE 
+                WHEN COALESCE(p.exam_type, '') LIKE '%期中%' THEN COALESCE(qfc.score_midterm, 0.0)
+                WHEN COALESCE(p.exam_type, '') LIKE '%期末%' THEN COALESCE(qfc.score_final, 0.0)
+                ELSE COALESCE(qfc.score_zhongkao, 0.0)
+            END DESC, 
+            q.created_at DESC, 
+            q.id DESC"""
     return "ORDER BY q.created_at DESC, q.id DESC"
 
 
@@ -990,10 +961,22 @@ def _tag_analysis_rows(
         if isinstance(values, str):
             values = [values] if values.strip() else []
         rows.extend((question_id, tag_type, tag_value, confidence, source, model_name if source == "ai" else None) for tag_value in values or [])
-    canonical = canonicalize_knowledge_values(payload.get("knowledge_points", []))
-    if canonical is not None:
-        rows.append((question_id, "canonical_knowledge_id", canonical.canonical_id, confidence, "taxonomy", model_name))
+    # canonical_knowledge_id：优先采用 AI 受控产出（校验在 registry 中），无效则回退到派生匹配。
+    canonical_id = _resolve_canonical_id(analysis)
+    if canonical_id:
+        rows.append((question_id, "canonical_knowledge_id", canonical_id, confidence, "taxonomy", model_name))
     return rows
+
+
+def _resolve_canonical_id(analysis: TagAnalysis) -> str:
+    """优先用 AI 给的 canonical_knowledge_id（须在 registry 中），否则回退派生。"""
+    candidate = (analysis.canonical_knowledge_id or "").strip().casefold()
+    if candidate:
+        for item in CANONICAL_KNOWLEDGE:
+            if item.canonical_id.casefold() == candidate:
+                return item.canonical_id
+    derived = canonicalize_knowledge_values(analysis.knowledge_points)
+    return derived.canonical_id if derived is not None else ""
 
 
 def _analysis_from_tagged_question(question: Mapping[str, Any]) -> tuple[TagAnalysis, str | None]:
@@ -1030,6 +1013,8 @@ def _analysis_from_tagged_question(question: Mapping[str, Any]) -> tuple[TagAnal
             "suitable_student_level": _first_value(grouped.get("student_level", [])),
             "reason": question.get("reason") or "",
             "confidence": confidence,
+            "canonical_knowledge_id": _first_value(grouped.get("canonical_knowledge_id", [])),
+            "sub_skills": grouped.get("sub_skill", []),
         }
     )
     return analysis, model_name

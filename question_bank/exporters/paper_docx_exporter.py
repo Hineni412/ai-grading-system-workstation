@@ -12,6 +12,7 @@ from docx.shared import Cm, Inches, Pt
 
 from question_bank.services.question_service import QuestionService
 from question_bank.services.rich_content_service import load_question_rich_content
+from question_bank.services.assembly_basket_state import SectionSpec
 from question_bank.exporters.base_exporter import (
     _resolve_image_path,
     apply_exporter_layout,
@@ -29,6 +30,9 @@ IMAGE_MARKER_PATTERN = re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]")
 REL_EMBED_ATTR = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
 LEADING_QUESTION_NUMBER_PATTERN = re.compile(r"^\s*(?:第\s*)?\d{1,3}\s*(?:[.．、]|题)[ \t]*")
 
+_CN_SECTION_NUMS = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十",
+                     "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十"]
+
 
 def _image_paths_from_text(value: object) -> list[str]:
     return [match.group("path").strip() for match in IMAGE_MARKER_PATTERN.finditer(str(value or ""))]
@@ -41,6 +45,82 @@ def _canonical_type_group(qtype: str | None) -> str:
     if qtype in ["fill_blank", "blank", "填空题"]:
         return "填空题"
     return "解答题"
+
+
+def _section_index_label(index: int) -> str:
+    if 0 <= index < len(_CN_SECTION_NUMS):
+        return _CN_SECTION_NUMS[index]
+    return str(index + 1)
+
+
+def _render_question_body(
+    document: Document,
+    question: dict[str, Any],
+    index: int,
+    config: ExportConfig,
+    *,
+    trailing_blank: int = 1,
+) -> None:
+    """渲染单个题目的正文（题号 + 来源 + 富文本/纯文本 + 图片）。
+
+    抽出来供 sections 分支复用，消除原三段式里重复的渲染块。
+    """
+    document.add_paragraph(f"{index}. {_source_label(question)}")
+    rich_content = load_question_rich_content(int(question["id"]))
+    appended, embedded_paths = _add_rich_blocks(document, _rich_blocks(rich_content, "question_blocks"), strip_leading_number=True)
+
+    all_image_paths = _dedupe_paths([
+        *(question.get("image_paths") or []),
+        *_image_paths_from_text(question.get("question_text") or "")
+    ])
+    resolved_all_paths = []
+    for p in all_image_paths:
+        rp = _resolve_image_path(p)
+        if rp:
+            resolved_all_paths.append(str(rp))
+    missing_images = [p for p in resolved_all_paths if p not in embedded_paths]
+
+    if not appended:
+        _add_text_and_images(
+            document,
+            question.get("question_text") or "",
+            extra_image_paths=question.get("image_paths") or [],
+            strip_leading_number=True,
+            config=config,
+        )
+    elif missing_images:
+        _add_images(document, missing_images)
+    for _ in range(trailing_blank):
+        document.add_paragraph("")
+
+
+def _render_answer_body(
+    document: Document,
+    question: dict[str, Any],
+    index: int,
+    config: ExportConfig,
+    *,
+    trailing_blank: int = 1,
+) -> None:
+    """渲染单个题目的答案正文。"""
+    document.add_paragraph(f"{index}. {_source_label(question)}")
+    rich_content = load_question_rich_content(int(question["id"]))
+    appended, embedded_paths = _add_rich_blocks(document, _rich_blocks(rich_content, "answer_blocks"), strip_leading_number=True)
+
+    all_image_paths = _dedupe_paths([*_image_paths_from_text(question.get("answer_text") or "")])
+    resolved_all_paths = []
+    for p in all_image_paths:
+        rp = _resolve_image_path(p)
+        if rp:
+            resolved_all_paths.append(str(rp))
+    missing_images = [p for p in resolved_all_paths if p not in embedded_paths]
+
+    if not appended:
+        _add_text_and_images(document, question.get("answer_text") or "暂无答案", strip_leading_number=True, config=config)
+    elif missing_images:
+        _add_images(document, missing_images)
+    for _ in range(trailing_blank):
+        document.add_paragraph("")
 
 
 def _add_choice_answer_table(document: Document, choice_questions: list[tuple[int, dict[str, Any]]]) -> None:
@@ -74,6 +154,7 @@ def export_question_paper_docx(
     ensure_previews: bool = True,
     grouped_by_type: bool = False,
     header_text: str | None = None,
+    sections: list[SectionSpec] | None = None,
     config: ExportConfig | None = None,
 ) -> Path:
     service = QuestionService(Path(db_path))
@@ -101,6 +182,49 @@ def export_question_paper_docx(
 
 
     indexed_questions = list(enumerate(questions, start=1))
+
+    if sections:
+        # AI 智能分类编排：按外部传入的 sections 渲染
+        question_by_id_docx = {int(q["id"]): q for q in questions}
+        next_index = 1
+        # 为答案区准备：每个 section 的 [(index, question)] 列表
+        sections_indexed: list[tuple[str, list[tuple[int, dict[str, Any]]]]] = []
+
+        for sec_idx, sec in enumerate(sections):
+            sec_questions: list[tuple[int, dict[str, Any]]] = []
+            for qid in sec.question_ids:
+                q = question_by_id_docx.get(int(qid))
+                if not q:
+                    continue
+                sec_questions.append((next_index, q))
+                next_index += 1
+            if not sec_questions:
+                continue
+            heading = f"{_section_index_label(sec_idx)}、{sec.title.strip()}"
+            document.add_heading(heading, level=1)
+
+            # 选择题答题区表格：段内若含选择题则触发
+            choice_in_sec = [(idx, q) for idx, q in sec_questions if _canonical_type_group(q.get("question_type")) == "选择题"]
+            if choice_in_sec:
+                _add_choice_answer_table(document, choice_in_sec)
+
+            for idx, q in sec_questions:
+                _render_question_body(document, q, idx, active_config, trailing_blank=1)
+
+            sections_indexed.append((sec.title.strip(), sec_questions))
+
+        # 答案区：同样按 sections 分段
+        if include_answer:
+            document.add_page_break()
+            document.add_heading("答案", level=1)
+            for sec_idx, (sec_title, sec_qs) in enumerate(sections_indexed):
+                heading = f"{_section_index_label(sec_idx)}、{sec_title} 答案"
+                document.add_heading(heading, level=2)
+                for idx, q in sec_qs:
+                    _render_answer_body(document, q, idx, active_config, trailing_blank=1)
+
+        document.save(output_path)
+        return output_path
 
     if grouped_by_type:
         choices, blanks, solutions = _group_indexed_questions(questions, active_config.numbering_mode)

@@ -102,6 +102,18 @@ def initialize_database(db_path: Path) -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS question_frequency_cache (
+                question_id INTEGER PRIMARY KEY,
+                score_midterm REAL DEFAULT 0.0,
+                score_final REAL DEFAULT 0.0,
+                score_zhongkao REAL DEFAULT 0.0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                FOREIGN KEY(question_id) REFERENCES questions(id)
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS question_previews (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 question_id INTEGER NOT NULL,
@@ -170,6 +182,13 @@ def initialize_database(db_path: Path) -> None:
                 "model_name": "TEXT",
             },
         )
+        _ensure_columns(
+            conn,
+            "knowledge_source_mappings",
+            {
+                "sub_skill_tags": "TEXT DEFAULT '[]'",
+            },
+        )
         conn.execute(
             """
             UPDATE papers
@@ -203,6 +222,9 @@ def initialize_database(db_path: Path) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_papers_source_file ON papers(source_file)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_papers_exam_scope ON papers(exam_type, grade, semester, city)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_question_fingerprints_base ON question_fingerprints(base_fingerprint)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_freq_midterm ON question_frequency_cache(score_midterm DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_freq_final ON question_frequency_cache(score_final DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_freq_zhongkao ON question_frequency_cache(score_zhongkao DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_question_previews_question ON question_previews(question_id, preview_type)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_training_set_items_set ON training_set_items(training_set_id, item_order)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_training_set_items_question ON training_set_items(question_id)")
@@ -260,6 +282,7 @@ def _create_knowledge_practice_tables(conn: sqlite3.Connection) -> None:
                 CHECK (status IN ('confirmed', 'suggested', 'rejected')),
             confidence REAL NOT NULL DEFAULT 0.0
                 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+            sub_skill_tags TEXT DEFAULT '[]',
             evidence_json TEXT NOT NULL DEFAULT '{}',
             reviewed_by TEXT,
             reviewed_at TEXT,

@@ -15,6 +15,7 @@ LIST_FIELDS = (
     "math_model_tags",
     "error_prone_points",
     "prerequisite_points",
+    "sub_skills",
 )
 MAX_TAG_LENGTH = 36
 STUDENT_LEVELS = ("入门补缺", "基础巩固", "中档提升", "综合突破", "压轴拔高")
@@ -31,6 +32,23 @@ ERROR_PRONE_CATEGORIES = (
     "书写依据不完整",
     "单位/符号错误",
     "综合建模困难",
+)
+
+# 子技能提炼维度（半受控引导）：AI 在产出 sub_skills 时按这些维度提炼，
+# 不强制封闭词表，但禁止复读知识点原词。用于贯穿打标侧与薄弱点侧，让推荐 boost 真正生效。
+SUB_SKILL_DIMENSIONS = (
+    "判定法",      # SAS判定 / SSS判定 / AAS判定 / HL判定 / 平行线判定
+    "作法构造",    # 尺规作图 / 辅助线构造 / 角平分线作法 / 中点作法
+    "计算类型",    # 面积计算 / 角度计算 / 和差计算 / 求值 / 化简
+    "数学模型",    # 手拉手模型 / 半角模型 / 将军饮马模型 / 一线三等角
+    "性质应用",    # 等边对等角 / 三线合一 / 垂径定理应用 / 切线性质
+)
+SUB_SKILL_KEYWORD_HINTS = (
+    "SAS判定", "SSS判定", "AAS判定", "ASA判定", "HL判定",
+    "尺规作图", "辅助线构造", "角平分线作法", "中点作法",
+    "面积计算", "角度计算", "和差计算", "求值", "化简",
+    "手拉手模型", "半角模型", "将军饮马模型", "一线三等角", "旋转模型", "折叠模型",
+    "等边对等角", "三线合一", "垂径定理", "切线性质",
 )
 
 
@@ -82,6 +100,10 @@ class TagAnalysis:
     suitable_student_level: str
     reason: str
     confidence: float = 0.8
+    # 主知识点稳定编码（受控，须来自 registry 的 KP_* 候选表）。
+    canonical_knowledge_id: str = ""
+    # 子技能（半受控，按 SUB_SKILL_DIMENSIONS 维度提炼，与薄弱点侧同维度可比对）。
+    sub_skills: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "TagAnalysis":
@@ -98,6 +120,8 @@ class TagAnalysis:
             suitable_student_level=_normalize_student_level(payload.get("suitable_student_level")),
             reason=_normalize_text_value(payload.get("reason")),
             confidence=_normalize_confidence(payload.get("confidence")),
+            canonical_knowledge_id=_normalize_canonical_id(payload.get("canonical_knowledge_id")),
+            sub_skills=_normalize_tags(payload.get("sub_skills")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -114,6 +138,8 @@ class TagAnalysis:
             "suitable_student_level": self.suitable_student_level,
             "reason": self.reason,
             "confidence": self.confidence,
+            "canonical_knowledge_id": self.canonical_knowledge_id,
+            "sub_skills": self.sub_skills,
         }
 
 
@@ -128,6 +154,22 @@ def _normalize_tags(value: object) -> list[str]:
         tags.append(tag)
         seen.add(tag)
     return tags
+
+
+def _normalize_canonical_id(value: object) -> str:
+    """对 AI 产出的 canonical_knowledge_id 做基本清洗与大小写归一。
+
+    严格校验（是否在 registry 中）由 service 层负责；此处只做格式规范，
+    统一转为小写 kp_* 形式，避免大小写不一致导致的隐性依赖。
+    """
+    text = _clean_text(value)
+    if not text:
+        return ""
+    lower = text.casefold().strip()
+    if lower.startswith("kp_"):
+        return lower
+    # 兼容 AI 偶尔返回纯编码前缀（如 geo_line_angle）的情况
+    return lower
 
 
 def _normalize_error_tags(value: object) -> list[str]:
