@@ -50,6 +50,19 @@ def read_component_result_value(
     return getattr(component_result, name, default)
 
 
+def merge_component_editor_state(
+    returned_state: dict[str, Any],
+    echoed_state: dict[str, Any],
+) -> dict[str, Any]:
+    """Carry Python's handled revision into repeated Components v2 state events."""
+    merged = deepcopy(returned_state)
+    if "handled_revision" not in merged:
+        handled_revision = _optional_nonnegative_int(echoed_state.get("handled_revision"))
+        if handled_revision is not None:
+            merged["handled_revision"] = handled_revision
+    return merged
+
+
 def process_editor_state(
     editor_state: dict[str, Any],
     *,
@@ -236,6 +249,7 @@ def render_answer_region_focus_page(
     handled_event = False
     returned_state = read_component_result_value(component_value, "editor_state")
     if isinstance(returned_state, dict):
+        returned_state = merge_component_editor_state(returned_state, editor_state)
         event_result = process_editor_state(
             returned_state,
             previous_regions=regions,
