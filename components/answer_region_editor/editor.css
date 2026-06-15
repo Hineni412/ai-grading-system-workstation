@@ -35,7 +35,11 @@ output {
   background: var(--editor-bg);
   border: 1px solid var(--border);
   border-radius: 10px;
-  outline: none;
+}
+
+.region-editor:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--primary) 65%, white);
+  outline-offset: 3px;
 }
 
 .toolbar {
@@ -352,6 +356,18 @@ output {
   flex: 0 0 auto;
   color: var(--muted);
   font-size: 11px;
+}
+
+.region-issues {
+  padding-left: 18px;
+  margin: 0 0 8px;
+  color: var(--invalid);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.region-row.warning .region-issues {
+  color: var(--warning);
 }
 
 .mapping-select {
