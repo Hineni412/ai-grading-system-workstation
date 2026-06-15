@@ -6985,25 +6985,26 @@ def _save_template_pages_from_pdf_upload(
     except ImportError as exc:
         raise RuntimeError("缺少 PyMuPDF，无法从 PDF 抽取样卷页面。请确认 requirements.txt 已安装。") from exc
 
-    pdf_bytes = pdf_upload.getvalue()
-    pdf_path = session_dir / "template_source_full_class.pdf"
-    pdf_path.write_bytes(pdf_bytes)
+    with get_answer_region_session_lock(session_dir):
+        pdf_bytes = pdf_upload.getvalue()
+        pdf_path = session_dir / "template_source_full_class.pdf"
+        pdf_path.write_bytes(pdf_bytes)
 
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    try:
-        if doc.page_count < 2:
-            raise ValueError("上传的 PDF 少于 2 页，无法建立正反面样卷。")
-        for page_number in (front_page_number, back_page_number):
-            if page_number < 1 or page_number > doc.page_count:
-                raise ValueError(f"PDF 不存在第 {page_number} 页。")
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        try:
+            if doc.page_count < 2:
+                raise ValueError("上传的 PDF 少于 2 页，无法建立正反面样卷。")
+            for page_number in (front_page_number, back_page_number):
+                if page_number < 1 or page_number > doc.page_count:
+                    raise ValueError(f"PDF 不存在第 {page_number} 页。")
 
-        front_path = session_dir / "template_front_from_pdf_page.jpg"
-        back_path = session_dir / "template_back_from_pdf_page.jpg"
-        _render_pdf_page_to_image(doc, front_page_number - 1, front_path)
-        _render_pdf_page_to_image(doc, back_page_number - 1, back_path)
-        return front_path, back_path
-    finally:
-        doc.close()
+            front_path = session_dir / "template_front_from_pdf_page.jpg"
+            back_path = session_dir / "template_back_from_pdf_page.jpg"
+            _render_pdf_page_to_image(doc, front_page_number - 1, front_path)
+            _render_pdf_page_to_image(doc, back_page_number - 1, back_path)
+            return front_path, back_path
+        finally:
+            doc.close()
 
 
 def _render_pdf_page_to_image(doc: Any, page_index: int, output_path: Path) -> None:

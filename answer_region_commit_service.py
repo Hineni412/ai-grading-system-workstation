@@ -13,6 +13,7 @@ from typing import Any
 
 from answer_region_models import RegionValidationResult, normalize_regions, validate_regions
 from answer_region_session_lock import get_answer_region_session_lock
+from path_manager import resolve_stored_file_path
 
 
 logger = logging.getLogger(__name__)
@@ -51,8 +52,15 @@ class AnswerRegionCommitService:
         regions: list[dict[str, Any]],
         image_sizes: dict[str, tuple[int, int]],
         template_matches: bool,
+        expected_template_fingerprint: str | None = None,
     ) -> AnswerRegionCommitResult:
         with self._lock:
+            if template_matches and expected_template_fingerprint is not None:
+                template_matches = self._current_template_matches(
+                    session_id=session_id,
+                    template_id=template_id,
+                    expected_template_fingerprint=expected_template_fingerprint,
+                )
             normalized = normalize_regions(regions)
             validation = validate_regions(
                 normalized,
@@ -95,6 +103,34 @@ class AnswerRegionCommitService:
                 validation=validation,
                 draft_marker=draft_marker,
             )
+
+    def _current_template_matches(
+        self,
+        *,
+        session_id: int,
+        template_id: int,
+        expected_template_fingerprint: str,
+    ) -> bool:
+        try:
+            template = self._db.get_session_template(session_id)
+            if template is None or int(template.get("id")) != template_id:
+                return False
+            paths = [
+                resolve_stored_file_path(
+                    template.get(f"{page}_template_path"),
+                    search_roots=[self._session_dir, self._session_dir.parent],
+                )
+                for page in ("front", "back")
+            ]
+            if not all(path.is_file() for path in paths):
+                return False
+            return (
+                self._draft_service.compute_template_fingerprint(paths[0], paths[1])
+                == expected_template_fingerprint
+            )
+        except Exception:
+            logger.exception("Failed to verify current answer-region template fingerprint")
+            return False
 
     def retry_pending_snapshot(self, *, session_id: int) -> AnswerRegionCommitResult:
         with self._lock:

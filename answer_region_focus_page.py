@@ -280,6 +280,7 @@ def render_answer_region_focus_page(
             regions=regions,
             image_sizes=image_sizes,
             template_matches=True,
+            expected_template_fingerprint=fingerprint,
         )
         if not result.committed:
             st.error("仍有题框未通过校验，请按右侧提示修正后再完成。")

@@ -390,6 +390,7 @@ def test_focus_page_source_keeps_formal_writes_behind_commit_service() -> None:
 
     assert "AnswerRegionCommitService" in source
     assert ".commit(" in source
+    assert "expected_template_fingerprint=fingerprint" in source
     assert ".retry_pending_snapshot(" in source
     for forbidden in (
         "db.save_answer_regions(",
