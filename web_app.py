@@ -20,6 +20,7 @@ from objective_admission_wizard_ui import render_objective_admission_wizard_tab
 import session_manager as _session_manager
 
 from analytics import AnalyticsService
+from answer_region_focus_page import render_answer_region_focus_page
 from answer_region_session_lock import get_answer_region_session_lock
 from api_profiles import load_api_profiles, normalize_question_allowlist, save_api_profiles
 from data_transfer_service import (
@@ -2985,7 +2986,17 @@ def render_config_and_session_tab(
     if template:
         with st.expander("样卷映射预览（默认折叠）", expanded=False):
             _render_template_config_editor(db, selected_session_id, template)
-        _render_region_editor_v3(db, selected_session_id, session, template, llm_settings)
+        if st.button(
+            "进入专注题框标定",
+            key=f"enter_region_focus_{selected_session_id}",
+            type="primary",
+            use_container_width=True,
+        ):
+            st.session_state["region_focus_session_id"] = selected_session_id
+            st.rerun()
+        if os.getenv("AI_REGION_EDITOR_LEGACY") == "1":
+            with st.expander("旧版题框编辑器（紧急回退）", expanded=False):
+                _render_region_editor_v3(db, selected_session_id, session, template, llm_settings)
         _render_workflow_state_card(db, selected_session_id)
 
     ready = db.is_template_ready(selected_session_id)
@@ -9179,6 +9190,15 @@ def main() -> None:
 
     # ── 侧边栏底部：数据导出 / 导入 ──
     _render_sidebar_data_transfer()
+
+    focus_session_id = st.session_state.get("region_focus_session_id")
+    if isinstance(focus_session_id, int) and not isinstance(focus_session_id, bool):
+        render_answer_region_focus_page(
+            db,
+            session_id=focus_session_id,
+            templates_dir=TEMPLATE_DIR,
+        )
+        return
 
     st.caption("默认工作区聚焦当前考试批改；学生库和跨考试知识图谱已移至“全局资料”。")
 
