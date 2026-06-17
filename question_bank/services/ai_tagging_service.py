@@ -471,7 +471,7 @@ def _system_prompt() -> str:
     Error-prone points must be broad, reusable categories for statistics, not question-specific step descriptions. Prefer the provided error_prone_options such as 条件识别不完整, 图形关系识别错误, 辅助线思路缺失, 公式/定理误用, 运算化简错误, 书写依据不完整. Do not write labels like “第一问证明某三角形全等时漏找某条件”.
     Choose textbook_chapter from the provided 北师大版2024 初中数学教材章节候选 when possible.
     Choose the smallest accurate primary knowledge point. Do not overgeneralize 三角形三边关系 as 三角形全等, or 科学记数法 as 整式运算.
-    Difficulty must be an integer from 1 to 10.
+    Difficulty must be a number from 1 to 10 (allow 1 decimal place, e.g., 4.5, 6.2, 8.0).
     confidence must be a number from 0 to 1 for your overall confidence in the tag set. Lower it when the image is essential, the answer is missing, or the core knowledge point is uncertain.
     suitable_student_level must be one of: 入门补缺, 基础巩固, 中档提升, 综合突破, 压轴拔高.
     """.strip()
@@ -498,7 +498,7 @@ def _plain_output_schema() -> dict[str, object]:
 
 def _tag_analysis_response_format() -> dict[str, Any]:
     array_field = {"type": "array", "items": {"type": "string"}}
-    score_field = {"type": "integer"}
+    score_field = {"type": "number"}
     text_field = {"type": "string"}
     properties = {
         "knowledge_points": array_field,
@@ -681,7 +681,7 @@ def _batch_prompt_input(batch_contexts: list[tuple[int, TaggingContext]]) -> lis
 
 def _batch_tag_analysis_response_format() -> dict[str, Any]:
     array_field = {"type": "array", "items": {"type": "string"}}
-    score_field = {"type": "integer"}
+    score_field = {"type": "number"}
     text_field = {"type": "string"}
     question_analysis_properties = {
         "question_id": {"type": "integer"},
