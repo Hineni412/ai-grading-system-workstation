@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from annotation_renderer import render_annotated_paper
+from answer_region_geometry import answer_regions_with_template_source_sizes
 from db_manager import DBManager
 from path_manager import resolve_stored_file_path
 
@@ -22,7 +23,11 @@ class ManualReviewService:
             return None
 
         session_id = int(context["session_id"])
-        regions = self.db.list_answer_regions(session_id)
+        regions = answer_regions_with_template_source_sizes(
+            self.db,
+            session_id,
+            data_root=self._data_root(),
+        )
         details = self.db.get_result_details(result_id)
 
         detail_map = {str(item.get("question_id")): item for item in details}
@@ -249,8 +254,10 @@ class ManualReviewService:
         return result
 
     def _resolve_stored_file_path(self, path_value: object) -> Path:
-        data_root = self.db.db_path.parent.parent if self.db.db_path.parent.name == "databases" else None
-        return resolve_stored_file_path(path_value, data_root=data_root)
+        return resolve_stored_file_path(path_value, data_root=self._data_root())
+
+    def _data_root(self) -> Path | None:
+        return self.db.db_path.parent.parent if self.db.db_path.parent.name == "databases" else None
 
 
 def _score_bucket_id(question_id: str, score_map: dict[str, float]) -> str | None:

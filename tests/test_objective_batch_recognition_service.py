@@ -9,7 +9,7 @@ from typing import Any
 
 from PIL import Image
 
-from objective_batch_recognition_service import run_objective_batch_recognition
+from objective_batch_recognition_service import ObjectivePaperEntry, crop_objective_region, run_objective_batch_recognition
 from objective_batch_recognition_service import ObjectiveBatchRecognitionClient
 from scanner import ExamPaperGroup
 
@@ -114,6 +114,39 @@ class CountingLimiter:
     def acquire(self) -> None:
         with self.lock:
             self.calls += 1
+
+
+def test_crop_objective_region_scales_template_coordinates_to_scan_size(tmp_path: Path) -> None:
+    front_image = tmp_path / "front.jpg"
+    Image.new("RGB", (1768, 1224), "white").save(front_image)
+    entry = ObjectivePaperEntry(
+        paper_key="paper-1",
+        student_id=1,
+        student_name="student",
+        group=ExamPaperGroup(front_image=front_image, back_image=None, student_name="student"),
+    )
+    regions = [
+        {
+            "page": "front",
+            "mapped_question_id": "Q10(2)",
+            "x": 1504,
+            "y": 867,
+            "w": 687,
+            "h": 453,
+            "source_image_width": 2831,
+            "source_image_height": 1960,
+        }
+    ]
+
+    crop_path, bbox = crop_objective_region(
+        entry=entry,
+        question_id="Q10(2)",
+        regions=regions,
+        output_root=tmp_path / "crops",
+    )
+
+    assert crop_path.exists()
+    assert bbox == {"x": 939, "y": 541, "w": 429, "h": 283}
 
 
 def _save(path: Path) -> None:

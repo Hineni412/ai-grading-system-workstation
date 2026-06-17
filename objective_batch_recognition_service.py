@@ -125,6 +125,7 @@ def run_objective_batch_recognition(
     progress_callback: Any | None = None,
     batch_workers: int = 1,
     rate_limiter: Any | None = None,
+    skipped_questions_by_student: dict[int, set[str]] | None = None,
 ) -> ObjectiveBatchRunResult:
     entries = build_objective_paper_entries(paper_groups)
     specs = build_objective_question_specs(str(session_id), rubric, answer_key)
@@ -140,6 +141,9 @@ def run_objective_batch_recognition(
     for spec in specs:
         crop_items: list[dict[str, Any]] = []
         for entry in entries:
+            if skipped_questions_by_student and entry.student_id in skipped_questions_by_student:
+                if spec.question_id in skipped_questions_by_student[entry.student_id]:
+                    continue
             try:
                 crop_path, bbox = crop_objective_region(
                     entry=entry,
@@ -851,14 +855,8 @@ def crop_objective_region(
     with Image.open(source) as image:
         rgb = image.convert("RGB")
         width, height = rgb.size
-        x = _int(region.get("x"))
-        y = _int(region.get("y"))
-        w = _int(region.get("w"))
-        h = _int(region.get("h"))
-        left = max(0, x)
-        top = max(0, y)
-        right = min(width, x + w)
-        bottom = min(height, y + h)
+        from answer_region_geometry import scaled_region_bbox
+        left, top, right, bottom = scaled_region_bbox(region, width, height)
         if right <= left or bottom <= top:
             raise ValueError("objective_invalid_bbox")
         crop = rgb.crop((left, top, right, bottom))

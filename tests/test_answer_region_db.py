@@ -208,6 +208,21 @@ def test_replace_answer_regions_atomic_persists_metadata_and_marks_snapshot_pend
     assert completed_template["regions_snapshot_token"] is None
 
 
+def test_confirmed_region_replacement_promotes_bound_rows_to_ready(tmp_path: Path) -> None:
+    db = DBManager(tmp_path / "grading.db")
+    db.initialize()
+    session_id, template_id = _make_session(db)
+    regions = [_region("region-one", 1, "Q1"), _region("region-two", 2, "Q2")]
+    for region in regions:
+        region["is_confirmed"] = False
+
+    db.replace_answer_regions_atomic(session_id, template_id, regions, confirmed=True)
+
+    saved = db.list_answer_regions(session_id)
+    assert [row["is_confirmed"] for row in saved] == [1, 1]
+    assert db.is_template_ready(session_id) is True
+
+
 def test_replacement_tokens_are_unique_and_stale_completion_cannot_clear_newer_pending(
     tmp_path: Path,
 ) -> None:
