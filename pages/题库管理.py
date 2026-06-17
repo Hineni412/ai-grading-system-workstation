@@ -167,13 +167,10 @@ def _row_to_scanned_paper(row: dict[str, Any]) -> ScannedPaper:
 def _render_import_area(service: QuestionService, raw_papers_dir: Path) -> None:
     action_cols = st.columns([1, 4])
     with action_cols[0]:
-        open_import_dialog = st.button("导入真题", type="primary", use_container_width=True)
+        if st.button("导入真题", type="primary", use_container_width=True):
+            _render_import_dialog(service, raw_papers_dir)
     with action_cols[1]:
         st.caption("从本地文件夹扫描 PDF / DOCX，扫描结果只保存在当前页面会话；不影响原 AI 阅卷流程。")
-    if open_import_dialog:
-        st.session_state[IMPORT_DIALOG_OPEN_KEY] = True
-    if st.session_state.get(IMPORT_DIALOG_OPEN_KEY):
-        _render_import_dialog(service, raw_papers_dir)
 
 
 def _render_rich_content_tools(service: QuestionService) -> None:
@@ -220,7 +217,6 @@ def _render_import_dialog(service: QuestionService, raw_papers_dir: Path) -> Non
     header_cols = st.columns([1, 4])
     with header_cols[0]:
         if st.button("关闭", key="qb_import_dialog_close", use_container_width=True):
-            st.session_state[IMPORT_DIALOG_OPEN_KEY] = False
             st.rerun()
     with header_cols[1]:
         success_message = st.session_state.get(IMPORT_SUCCESS_MESSAGE_KEY)

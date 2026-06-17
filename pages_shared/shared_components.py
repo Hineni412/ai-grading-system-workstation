@@ -38,6 +38,7 @@ def format_frequency_badge(frequency_metrics: object) -> str:
     exam_type = getattr(frequency_metrics, "exam_type", "")
     matched = getattr(frequency_metrics, "matched_question_count", 0)
     total_papers = getattr(frequency_metrics, "eligible_paper_count", 0)
+    weighted_freq = getattr(frequency_metrics, "weighted_frequency", 0.0)
     
     sim_sum = getattr(frequency_metrics, "similarity_sum", 0.0)
     avg_sim = (sim_sum / matched) if matched > 0 else 0.0
