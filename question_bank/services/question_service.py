@@ -338,7 +338,7 @@ class QuestionService:
         sort_mode: str | None = None,
     ) -> list[dict[str, Any]]:
         self.initialize_database()
-        if sort_mode == "考频排序":
+        if sort_mode in ("考频排序", "期中考频排序", "期末考频排序", "中考考频排序"):
             from question_bank.services.question_frequency_service import QuestionFrequencyService
             QuestionFrequencyService(self.db_path).backfill_all_fingerprints()
 
@@ -357,7 +357,7 @@ class QuestionService:
             is_deleted=is_deleted,
             tag_status=tag_status,
         )
-        if sort_mode == "考频排序":
+        if sort_mode in ("考频排序", "期中考频排序", "期末考频排序", "中考考频排序"):
             joins.append("LEFT JOIN question_frequency_cache qfc ON qfc.question_id = q.id")
         
         query = ["SELECT DISTINCT q.*, p.title AS paper_title, p.year, p.province, p.city, p.grade, p.semester, p.exam_type, p.district FROM questions q"]
@@ -933,6 +933,12 @@ def _normalized_range(value: tuple[int, int]) -> tuple[int, int]:
 def _question_order_clause(sort_mode: str | None) -> str:
     if sort_mode == "试题难度":
         return "ORDER BY CAST(q.difficulty AS REAL) DESC, q.created_at DESC, q.id DESC"
+    if sort_mode == "期中考频排序":
+        return "ORDER BY COALESCE(qfc.score_midterm, 0.0) DESC, q.created_at DESC, q.id DESC"
+    if sort_mode == "期末考频排序":
+        return "ORDER BY COALESCE(qfc.score_final, 0.0) DESC, q.created_at DESC, q.id DESC"
+    if sort_mode == "中考考频排序":
+        return "ORDER BY COALESCE(qfc.score_zhongkao, 0.0) DESC, q.created_at DESC, q.id DESC"
     if sort_mode == "考频排序":
         return """ORDER BY 
             CASE 

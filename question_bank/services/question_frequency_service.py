@@ -58,6 +58,7 @@ class FrequencyMetrics:
     # 综合加权考频新属性
     weighted_frequency: float = 0.0
     global_similar_count: int = 0
+    similarity_sum: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -460,18 +461,18 @@ class QuestionFrequencyService:
             
             # 1. 期中
             midterm_papers = _eligible_paper_ids(conn, target, exam_type="期中")
-            midterm_matched = _matching_count_by_similarity(conn, target, midterm_papers, cache=candidates_cache)
-            score_midterm = midterm_matched / len(midterm_papers) if midterm_papers else 0.0
+            midterm_matched, midterm_sim_sum = _matching_similarity_stats(conn, target, midterm_papers, cache=candidates_cache)
+            score_midterm = midterm_sim_sum / len(midterm_papers) if midterm_papers else 0.0
 
             # 2. 期末
             final_papers = _eligible_paper_ids(conn, target, exam_type="期末")
-            final_matched = _matching_count_by_similarity(conn, target, final_papers, cache=candidates_cache)
-            score_final = final_matched / len(final_papers) if final_papers else 0.0
+            final_matched, final_sim_sum = _matching_similarity_stats(conn, target, final_papers, cache=candidates_cache)
+            score_final = final_sim_sum / len(final_papers) if final_papers else 0.0
 
             # 3. 中考
             zhongkao_papers = _eligible_paper_ids(conn, target, exam_type="中考")
-            zhongkao_matched = _matching_count_by_similarity(conn, target, zhongkao_papers, cache=candidates_cache)
-            score_zhongkao = zhongkao_matched / len(zhongkao_papers) if zhongkao_papers else 0.0
+            zhongkao_matched, zhongkao_sim_sum = _matching_similarity_stats(conn, target, zhongkao_papers, cache=candidates_cache)
+            score_zhongkao = zhongkao_sim_sum / len(zhongkao_papers) if zhongkao_papers else 0.0
 
             conn.execute(
                 """
@@ -565,6 +566,29 @@ def _matching_count_by_similarity(conn, target: Mapping[str, Any], paper_ids: li
     return matched_count
 
 
+def _matching_similarity_stats(conn, target: Mapping[str, Any], paper_ids: list[int], cache: dict | None = None) -> tuple[int, float]:
+    if not paper_ids:
+        return 0, 0.0
+    key = tuple(sorted(paper_ids))
+    candidates = None
+    if cache is not None:
+        candidates = cache.get(key)
+    if candidates is None:
+        candidate_ids = _question_ids_in_papers(conn, paper_ids)
+        candidates = _batch_load_questions(conn, candidate_ids)
+        if cache is not None:
+            cache[key] = candidates
+            
+    matched_count = 0
+    total_similarity = 0.0
+    for qid, candidate in candidates.items():
+        sim = calculate_question_similarity(target, candidate)
+        if sim >= 0.55:
+            matched_count += 1
+            total_similarity += sim
+    return matched_count, round(total_similarity, 4)
+
+
 def _bayesian_frequency_score(matched_count: int, paper_count: int) -> float:
     K = 5
     C = 0.05
@@ -593,8 +617,8 @@ def _metrics_for_target(
     global_matched = _global_similar_match_count(target, all_active, parents_by_qid)
     
     eligible_papers = _eligible_paper_ids(conn, target, exam_type=exam_type)
-    matched = _matching_count_by_similarity(conn, target, eligible_papers)
-    p_local = matched / len(eligible_papers) if eligible_papers else 0.0
+    matched, sim_sum = _matching_similarity_stats(conn, target, eligible_papers)
+    p_local = sim_sum / len(eligible_papers) if eligible_papers else 0.0
     weighted_freq = p_local
 
     if exam_type != "中考":
@@ -612,9 +636,10 @@ def _metrics_for_target(
             skill_frequency=weighted_freq,
             skill_matched_count=global_matched,
             skill_available=True,
+            similarity_sum=sim_sum,
         )
     shenzhen_papers = _eligible_paper_ids(conn, target, exam_type=exam_type, city="深圳市")
-    shenzhen_matched = _matching_count_by_similarity(conn, target, shenzhen_papers)
+    shenzhen_matched, shenzhen_sim_sum = _matching_similarity_stats(conn, target, shenzhen_papers)
     national_count = len(eligible_papers)
     shenzhen_count = len(shenzhen_papers)
     fit_score, fit_notes, similar_ids = _shenzhen_fit(
@@ -648,6 +673,7 @@ def _metrics_for_target(
         skill_frequency=weighted_freq,
         skill_matched_count=global_matched,
         skill_available=True,
+        similarity_sum=sim_sum,
     )
 
 
@@ -721,12 +747,13 @@ def _metrics_for_target_cached(
         eligible_cache[eligible_key] = eligible_papers
 
     match_key = (question_id, tuple(eligible_papers))
-    matched = match_cache.get(match_key)
-    if matched is None:
-        matched = _matching_count_by_similarity(conn, target, eligible_papers)
-        match_cache[match_key] = matched
+    match_stats = match_cache.get(match_key)
+    if match_stats is None:
+        match_stats = _matching_similarity_stats(conn, target, eligible_papers)
+        match_cache[match_key] = match_stats
+    matched, sim_sum = match_stats
 
-    p_local = matched / len(eligible_papers) if eligible_papers else 0.0
+    p_local = sim_sum / len(eligible_papers) if eligible_papers else 0.0
     weighted_freq = p_local
 
     if exam_type != "中考":
@@ -744,6 +771,7 @@ def _metrics_for_target_cached(
             skill_frequency=weighted_freq,
             skill_matched_count=global_matched,
             skill_available=True,
+            similarity_sum=sim_sum,
         )
 
     shenzhen_key = (target.get("grade"), target.get("semester"), exam_type, "深圳市")
@@ -753,10 +781,11 @@ def _metrics_for_target_cached(
         eligible_cache[shenzhen_key] = shenzhen_papers
 
     shenzhen_match_key = (question_id, tuple(shenzhen_papers))
-    shenzhen_matched = match_cache.get(shenzhen_match_key)
-    if shenzhen_matched is None:
-        shenzhen_matched = _matching_count_by_similarity(conn, target, shenzhen_papers)
-        match_cache[shenzhen_match_key] = shenzhen_matched
+    shenzhen_match_stats = match_cache.get(shenzhen_match_key)
+    if shenzhen_match_stats is None:
+        shenzhen_match_stats = _matching_similarity_stats(conn, target, shenzhen_papers)
+        match_cache[shenzhen_match_key] = shenzhen_match_stats
+    shenzhen_matched, shenzhen_sim_sum = shenzhen_match_stats
 
     national_count = len(eligible_papers)
     shenzhen_count = len(shenzhen_papers)
@@ -791,6 +820,7 @@ def _metrics_for_target_cached(
         skill_frequency=weighted_freq,
         skill_matched_count=global_matched,
         skill_available=True,
+        similarity_sum=sim_sum,
     )
 
 
