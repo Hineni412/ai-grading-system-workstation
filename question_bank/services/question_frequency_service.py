@@ -137,12 +137,12 @@ def frequency_summary(metrics: FrequencyMetrics | None) -> str:
     weighted_val = getattr(metrics, "weighted_frequency", 0.0)
     
     if metrics.exam_type == "中考":
-        summary = f"中考考频 {weighted_val:.1%} (综合加权)"
+        summary = f"中考考频 {weighted_val:.1%}"
         if metrics.shenzhen_fit_available and metrics.shenzhen_fit_score > 0:
             summary += f" · 深圳适配 {metrics.shenzhen_fit_score:.0%}"
         return summary
     else:
-        return f"{metrics.exam_type}考频 {weighted_val:.1%} (综合加权)"
+        return f"{metrics.exam_type}考频 {weighted_val:.1%}"
 
 
 # ---------------------------------------------------------------------------
@@ -461,20 +461,17 @@ class QuestionFrequencyService:
             # 1. 期中
             midterm_papers = _eligible_paper_ids(conn, target, exam_type="期中")
             midterm_matched = _matching_count_by_similarity(conn, target, midterm_papers, cache=candidates_cache)
-            p_midterm = min(1.0, midterm_matched / len(midterm_papers)) if midterm_papers else 0.0
-            score_midterm = p_midterm * 0.6 + s_global * 0.4
+            score_midterm = midterm_matched / len(midterm_papers) if midterm_papers else 0.0
 
             # 2. 期末
             final_papers = _eligible_paper_ids(conn, target, exam_type="期末")
             final_matched = _matching_count_by_similarity(conn, target, final_papers, cache=candidates_cache)
-            p_final = min(1.0, final_matched / len(final_papers)) if final_papers else 0.0
-            score_final = p_final * 0.6 + s_global * 0.4
+            score_final = final_matched / len(final_papers) if final_papers else 0.0
 
             # 3. 中考
             zhongkao_papers = _eligible_paper_ids(conn, target, exam_type="中考")
             zhongkao_matched = _matching_count_by_similarity(conn, target, zhongkao_papers, cache=candidates_cache)
-            p_zhongkao = min(1.0, zhongkao_matched / len(zhongkao_papers)) if zhongkao_papers else 0.0
-            score_zhongkao = p_zhongkao * 0.6 + s_global * 0.4
+            score_zhongkao = zhongkao_matched / len(zhongkao_papers) if zhongkao_papers else 0.0
 
             conn.execute(
                 """
@@ -594,12 +591,11 @@ def _metrics_for_target(
         parents_by_qid = _precompute_parents(all_active)
         
     global_matched = _global_similar_match_count(target, all_active, parents_by_qid)
-    s_global = min(1.0, global_matched / 50.0)
     
     eligible_papers = _eligible_paper_ids(conn, target, exam_type=exam_type)
     matched = _matching_count_by_similarity(conn, target, eligible_papers)
-    p_local = min(1.0, matched / len(eligible_papers)) if eligible_papers else 0.0
-    weighted_freq = p_local * 0.6 + s_global * 0.4
+    p_local = matched / len(eligible_papers) if eligible_papers else 0.0
+    weighted_freq = p_local
 
     if exam_type != "中考":
         count = len(eligible_papers)
@@ -717,7 +713,6 @@ def _metrics_for_target_cached(
         parents_by_qid = _precompute_parents(all_active)
 
     global_matched = _global_similar_match_count(target, all_active, parents_by_qid)
-    s_global = min(1.0, global_matched / 50.0)
 
     eligible_key = (target.get("grade"), target.get("semester"), exam_type, None)
     eligible_papers = eligible_cache.get(eligible_key)
@@ -731,8 +726,8 @@ def _metrics_for_target_cached(
         matched = _matching_count_by_similarity(conn, target, eligible_papers)
         match_cache[match_key] = matched
 
-    p_local = min(1.0, matched / len(eligible_papers)) if eligible_papers else 0.0
-    weighted_freq = p_local * 0.6 + s_global * 0.4
+    p_local = matched / len(eligible_papers) if eligible_papers else 0.0
+    weighted_freq = p_local
 
     if exam_type != "中考":
         count = len(eligible_papers)

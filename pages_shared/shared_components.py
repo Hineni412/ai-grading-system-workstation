@@ -46,10 +46,10 @@ def format_frequency_badge(frequency_metrics: object) -> str:
     s_global = min(1.0, global_similar / 50.0)
     
     tooltip_lines = [
-        "【综合考频计算明细】",
-        f"1. 真题考频 (权重 60%)：{matched}题/{total_papers}卷 = {p_local:.1%}",
-        f"2. 题库典型 (权重 40%)：{global_similar}题相似 = {s_global:.1%}",
-        f"3. 综合加权考频：{weighted_freq:.1%}"
+        "【考频计算明细】",
+        f"- 本年级有效{exam_type}试卷：{total_papers} 卷",
+        f"- 相似度 >= 55% 的同类题：{matched} 道 (含本题)",
+        f"- 频次计算：{matched} 题 / {total_papers} 卷 = {weighted_freq:.1%}"
     ]
     
     if exam_type == "中考" and getattr(frequency_metrics, "shenzhen_fit_available", False):
