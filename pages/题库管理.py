@@ -1554,7 +1554,7 @@ def _question_filter_panel(service: QuestionService, selected_chapter: str) -> t
     # 6. 排序
     sort_mode = _single_filter_row(
          "排序",
-         ["综合排序", "题库新增", "试题难度", "考频排序"],
+         ["综合排序", "题库新增", "试题难度", "期中考频排序", "期末考频排序", "中考考频排序", "考频排序"],
          key="qb_filter_sort",
      )
 

@@ -39,17 +39,15 @@ def format_frequency_badge(frequency_metrics: object) -> str:
     matched = getattr(frequency_metrics, "matched_question_count", 0)
     total_papers = getattr(frequency_metrics, "eligible_paper_count", 0)
     
-    weighted_freq = getattr(frequency_metrics, "weighted_frequency", 0.0)
-    global_similar = getattr(frequency_metrics, "global_similar_count", 0)
-    
-    p_local = min(1.0, matched / total_papers) if total_papers else 0.0
-    s_global = min(1.0, global_similar / 50.0)
-    
+    sim_sum = getattr(frequency_metrics, "similarity_sum", 0.0)
+    avg_sim = (sim_sum / matched) if matched > 0 else 0.0
+
     tooltip_lines = [
         "【考频计算明细】",
         f"- 本年级有效{exam_type}试卷：{total_papers} 卷",
         f"- 相似度 >= 55% 的同类题：{matched} 道 (含本题)",
-        f"- 频次计算：{matched} 题 / {total_papers} 卷 = {weighted_freq:.1%}"
+        f"  • 相似度累加值：{sim_sum:.2f} (平均相似度 {avg_sim:.1%})",
+        f"- 频次计算(累加相似度/试卷数)：{sim_sum:.2f} / {total_papers} 卷 = {weighted_freq:.1%}"
     ]
     
     if exam_type == "中考" and getattr(frequency_metrics, "shenzhen_fit_available", False):
