@@ -5,6 +5,8 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
+from answer_region_geometry import scaled_region_bbox
+
 
 def render_annotated_paper(
     front_image: Path,
@@ -70,10 +72,9 @@ def draw_regions_on_image(
     line_width = max(2, int(scale_base * 0.0025))
 
     for region in regions:
-        x = int(region.get("x", 0))
-        y = int(region.get("y", 0))
-        w = int(region.get("w", 0))
-        h = int(region.get("h", 0))
+        x, y, right, bottom = scaled_region_bbox(region, image.width, image.height)
+        w = right - x
+        h = bottom - y
         qid = str(region.get("mapped_question_id") or region.get("detected_question_id") or "")
 
         score_item = question_scores.get(qid, {})
@@ -86,7 +87,7 @@ def draw_regions_on_image(
         if annotate_only_deductions and deduction <= 0:
             continue
 
-        draw.rectangle([x, y, x + w, y + h], outline=(255, 0, 0), width=line_width)
+        draw.rectangle([x, y, right, bottom], outline=(255, 0, 0), width=line_width)
 
         if summary_labels:
             if awarded is not None and full is not None:

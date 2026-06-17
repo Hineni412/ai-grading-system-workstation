@@ -47,7 +47,9 @@ class GradingService:
         session = self.db.get_grading_session(session_id)
         rubric = _load_rubric_for_preflight(rubric_path)
         _validate_session_exam_identity(session, rubric)
-        answer_regions = self.db.list_answer_regions(session_id)
+        from answer_region_geometry import answer_regions_with_template_source_sizes
+        data_root = self.db.db_path.parent.parent if self.db.db_path.parent.name == "databases" else None
+        answer_regions = answer_regions_with_template_source_sizes(self.db, session_id, data_root=data_root)
         if grading_mode == "hybrid_batch":
             resolved_grading_mode = "hybrid_batch"
         else:
@@ -176,6 +178,27 @@ class GradingService:
             }
 
         if resolved_grading_mode == "hybrid_batch":
+            existing_results_by_student = {}
+            skipped_questions_by_student = {}
+            if failed_only:
+                for paper_id, group, student_id in matched_records:
+                    with self.db._connect() as conn:
+                        row = conn.execute(
+                            "SELECT id, total_score, student_score, needs_human_review, raw_json FROM session_results WHERE session_id = ? AND student_id = ?",
+                            (session_id, student_id)
+                        ).fetchone()
+                        if row:
+                            res_id = row["id"]
+                            details_rows = self.db.get_result_details(res_id)
+                            existing_results_by_student[student_id] = {
+                                "total_score": row["total_score"],
+                                "student_score": row["student_score"],
+                                "needs_human_review": bool(row["needs_human_review"]),
+                                "raw_json": json.loads(row["raw_json"]) if row["raw_json"] else {},
+                                "details": details_rows
+                            }
+                            skipped_questions_by_student[student_id] = {d["question_id"] for d in details_rows}
+
             for idx, (paper_id, group, student_id) in enumerate(matched_records, start=1):
                 self.db.update_exam_paper_status(paper_id, "grading")
                 yield {
@@ -228,6 +251,7 @@ class GradingService:
                         rate_limiter=rate_limiter,
                         progress_callback=_hybrid_progress,
                         rubric_images_dir=get_path_manager().templates_dir / f"session_{session_id}" / "rubric_images",
+                        skipped_questions_by_student=skipped_questions_by_student,
                     )
                     while not future.done():
                         try:
@@ -265,6 +289,50 @@ class GradingService:
                     paper_key = paper_key_by_paper_id.get(paper_id, "")
                     fallback_items = fallback_items_by_key.get(paper_key, [])
                     result = batch_run.results_by_paper_key[paper_key]
+
+                    if failed_only and student_id in existing_results_by_student:
+                        existing = existing_results_by_student[student_id]
+                        merged_raw_json = dict(existing["raw_json"])
+                        merged_raw_json.pop("hybrid_batch_fallback", None)
+                        if result.raw_json:
+                            merged_raw_json.update(result.raw_json)
+                        
+                        new_details_map = {d.question_id: d for d in result.grading_details}
+                        merged_details = []
+                        from ai_grader import QuestionGradingDetail
+                        for od in existing["details"]:
+                            qid = od["question_id"]
+                            if qid in new_details_map:
+                                merged_details.append(new_details_map.pop(qid))
+                            else:
+                                k_ids = od.get("knowledge_ids")
+                                if isinstance(k_ids, str):
+                                    try: k_ids = json.loads(k_ids)
+                                    except: k_ids = [od["knowledge_id"]]
+                                else:
+                                    k_ids = k_ids or [od["knowledge_id"]]
+                                merged_details.append(QuestionGradingDetail(
+                                    question_id=od["question_id"],
+                                    score_awarded=od["score_awarded"],
+                                    deduction_reason=od["deduction_reason"],
+                                    knowledge_id=od["knowledge_id"],
+                                    error_category=od["error_category"],
+                                    error_summary=od["error_summary"],
+                                    confidence_score=od["confidence_score"],
+                                    knowledge_ids=k_ids
+                                ))
+                        merged_details.extend(new_details_map.values())
+                        
+                        total_score = existing["total_score"]
+                        student_score = sum(d.score_awarded for d in merged_details)
+                        needs_human_review = any(d.confidence_score is not None and d.confidence_score < 80 for d in merged_details) or result.needs_human_review
+                        
+                        result.total_score = total_score
+                        result.student_score = student_score
+                        result.needs_human_review = needs_human_review
+                        result.grading_details = merged_details
+                        result.raw_json = merged_raw_json
+
                     if fallback_items:
                         result.needs_human_review = True
                         result.raw_json = dict(result.raw_json or {})

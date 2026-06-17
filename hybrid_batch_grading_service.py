@@ -81,6 +81,7 @@ def run_hybrid_batch_grading(
     batch_workers: int = 1,
     rate_limiter: Any | None = None,
     rubric_images_dir: Path | None = None,
+    skipped_questions_by_student: dict[int, set[str]] | None = None,
 ) -> HybridBatchRunResult:
     entries = build_paper_entries(paper_groups)
     specs = build_major_question_specs(rubric, answer_key)
@@ -104,6 +105,7 @@ def run_hybrid_batch_grading(
             progress_callback=progress_callback,
             batch_workers=batch_workers,
             rate_limiter=rate_limiter,
+            skipped_questions_by_student=skipped_questions_by_student,
         )
         for paper_key, details in objective_run.details_by_paper_key.items():
             details_by_key.setdefault(paper_key, []).extend(details)
@@ -114,7 +116,16 @@ def run_hybrid_batch_grading(
     builder = MajorQuestionAtlasBuilder(output_root=output_root)
     major_tasks: list[tuple[MajorQuestionSpec, int, list[PaperEntry]]] = []
     for spec in specs:
-        for batch_index, batch_entries in enumerate(_chunk(entries, batch_size), start=1):
+        filtered_entries = []
+        for entry in entries:
+            if skipped_questions_by_student and entry.student_id in skipped_questions_by_student:
+                student_skipped = skipped_questions_by_student[entry.student_id]
+                if all(dqid in student_skipped for dqid in spec.detail_question_ids):
+                    continue
+            filtered_entries.append(entry)
+        if not filtered_entries:
+            continue
+        for batch_index, batch_entries in enumerate(_chunk(filtered_entries, batch_size), start=1):
             major_tasks.append((spec, batch_index, batch_entries))
     if progress_callback is not None:
         progress_callback(
@@ -841,7 +852,9 @@ def _bbox_from_regions(region_list: list[dict[str, Any]]) -> dict[str, Any]:
     top = min(_int_region_value(r, "y") for r in region_list)
     right = max(_int_region_value(r, "x") + _int_region_value(r, "w") for r in region_list)
     bottom = max(_int_region_value(r, "y") + _int_region_value(r, "h") for r in region_list)
-    return {"page": page, "x": left, "y": top, "w": right - left, "h": bottom - top}
+    merged = dict(region_list[0])
+    merged.update({"page": page, "x": left, "y": top, "w": right - left, "h": bottom - top})
+    return merged
 
 
 def _extract_sub_number(qid: str) -> int:
@@ -907,16 +920,8 @@ def _crop_region(source_path: Path, region: dict[str, Any], padding: int) -> tup
     with Image.open(source_path) as image:
         rgb = image.convert("RGB")
         width, height = rgb.size
-        x = _int_region_value(region, "x")
-        y = _int_region_value(region, "y")
-        w = _int_region_value(region, "w")
-        h = _int_region_value(region, "h")
-        left = max(0, x - padding)
-        top = max(0, y - padding)
-        right = min(width, x + w + padding)
-        bottom = min(height, y + h + padding)
-        if right <= left or bottom <= top:
-            raise ValueError(f"Invalid major answer bbox: {region}")
+        from answer_region_geometry import scaled_region_bbox
+        left, top, right, bottom = scaled_region_bbox(region, width, height, padding=padding)
         crop = rgb.crop((left, top, right, bottom))
     return crop, {"x": left, "y": top, "w": right - left, "h": bottom - top}
 

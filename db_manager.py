@@ -844,6 +844,11 @@ class DBManager:
                 "UPDATE grading_sessions SET status = ?, updated_at = datetime('now','localtime') WHERE id = ?",
                 (status, session_id),
             )
+            if status != "running":
+                conn.execute(
+                    "UPDATE exam_papers SET processing_status = 'failed', error_message = '批改中途被终止或强制重置' WHERE session_id = ? AND processing_status = 'grading'",
+                    (session_id,),
+                )
             conn.commit()
 
     def try_start_session_run(self, session_id: int) -> bool:
@@ -856,8 +861,14 @@ class DBManager:
                 """,
                 (session_id,),
             )
+            success = int(cursor.rowcount or 0) == 1
+            if success:
+                conn.execute(
+                    "UPDATE exam_papers SET processing_status = 'failed', error_message = '批改中途被异常中断，请重试' WHERE session_id = ? AND processing_status = 'grading'",
+                    (session_id,),
+                )
             conn.commit()
-            return int(cursor.rowcount or 0) == 1
+            return success
 
     def finish_session_run(self, session_id: int, status: str = "completed") -> None:
         self.update_session_status(session_id, status)
@@ -1127,6 +1138,9 @@ class DBManager:
                 )
             conn.execute("DELETE FROM answer_regions WHERE session_id = ?", (session_id,))
             for region in regions:
+                if confirmed:
+                    region = dict(region)
+                    region["is_confirmed"] = True
                 self._insert_answer_region_conn(conn, session_id, template_id, region)
             conn.execute(
                 """
@@ -1280,6 +1294,7 @@ class DBManager:
             old_rows = cursor.fetchall()
             for old_row in old_rows:
                 old_id = old_row[0]
+                cursor.execute("DELETE FROM annotated_results WHERE result_id = ?", (old_id,))
                 cursor.execute("DELETE FROM session_details WHERE result_id = ?", (old_id,))
                 cursor.execute("DELETE FROM session_results WHERE id = ?", (old_id,))
                 
@@ -1375,7 +1390,7 @@ class DBManager:
         }
 
     def list_failed_papers(self, session_id: int) -> list[dict[str, Any]]:
-        """返回本场次中批改失败（processing_status='failed'）的所有试卷，含学生姓名与错误信息。"""
+        """返回本场次中批改失败（processing_status='failed'、'grading'（非运行状态下）或含有局部失败降级）的所有试卷，含学生姓名与错误信息。"""
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -1385,11 +1400,28 @@ class DBManager:
                     COALESCE(s.name, ep.ocr_name, '未知') AS student_name,
                     s.student_code,
                     s.class_name,
-                    ep.error_message,
+                    CASE 
+                        WHEN ep.processing_status = 'failed' THEN ep.error_message 
+                        WHEN ep.processing_status = 'grading' THEN '批改任务异常中断，需重新批改'
+                        ELSE 'AI批改部分大题缺失，需重新发AI批改' 
+                    END AS error_message,
                     ep.created_at
                 FROM exam_papers ep
                 LEFT JOIN students s ON s.id = ep.student_id
-                WHERE ep.session_id = ? AND ep.processing_status = 'failed'
+                LEFT JOIN session_results sr ON sr.paper_id = ep.id
+                LEFT JOIN grading_sessions gs ON gs.id = ep.session_id
+                WHERE ep.session_id = ?
+                  AND (
+                    ep.processing_status = 'failed'
+                    OR (
+                      ep.processing_status = 'grading'
+                      AND COALESCE(gs.status, '') <> 'running'
+                    )
+                    OR (
+                      ep.processing_status = 'graded'
+                      AND sr.raw_json LIKE '%"hybrid_batch_fallback"%'
+                    )
+                  )
                 ORDER BY ep.id ASC
                 """,
                 (session_id,),
@@ -1397,20 +1429,33 @@ class DBManager:
         return [dict(row) for row in rows]
 
     def list_failed_papers_detailed(self, session_id: int) -> list[dict[str, Any]]:
-        """返回本场次中批改失败（processing_status='failed'）的所有试卷的详细信息，用于增量重试。"""
+        """返回本场次中批改失败（processing_status='failed'、'grading'（非运行状态下）或含有局部失败降级）的所有试卷的详细信息，用于增量重试。"""
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT
-                    id AS paper_id,
-                    front_image,
-                    back_image,
-                    ocr_name,
-                    student_id,
-                    match_status
-                FROM exam_papers
-                WHERE session_id = ? AND processing_status = 'failed'
-                ORDER BY id ASC
+                    ep.id AS paper_id,
+                    ep.front_image,
+                    ep.back_image,
+                    ep.ocr_name,
+                    ep.student_id,
+                    ep.match_status
+                FROM exam_papers ep
+                LEFT JOIN session_results sr ON sr.paper_id = ep.id
+                LEFT JOIN grading_sessions gs ON gs.id = ep.session_id
+                WHERE ep.session_id = ?
+                  AND (
+                    ep.processing_status = 'failed'
+                    OR (
+                      ep.processing_status = 'grading'
+                      AND COALESCE(gs.status, '') <> 'running'
+                    )
+                    OR (
+                      ep.processing_status = 'graded'
+                      AND sr.raw_json LIKE '%"hybrid_batch_fallback"%'
+                    )
+                  )
+                ORDER BY ep.id ASC
                 """,
                 (session_id,),
             ).fetchall()

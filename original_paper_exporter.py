@@ -9,6 +9,7 @@ from typing import Any
 from PIL import Image
 
 from annotation_renderer import render_annotated_paper
+from answer_region_geometry import answer_regions_with_template_source_sizes
 from db_manager import DBManager
 from export_names import safe_filename_fragment, session_export_path_name
 from image_preprocessor import _enhanced_name
@@ -32,7 +33,11 @@ class OriginalPaperExporter:
         work_dir.mkdir(parents=True, exist_ok=True)
         pdf_path = self.output_dir / session_export_path_name(session_name, "批注原卷", "pdf", ts)
 
-        regions = self.db.list_answer_regions(session_id)
+        regions = answer_regions_with_template_source_sizes(
+            self.db,
+            session_id,
+            data_root=self._data_root(),
+        )
         score_map, type_map = self._load_rubric_maps(session_id)
         enhanced_path_map = self._load_enhanced_path_map(session_id)
 
@@ -134,8 +139,10 @@ class OriginalPaperExporter:
         return score_map, type_map
 
     def _resolve_stored_file_path(self, path_value: object) -> Path:
-        data_root = self.db.db_path.parent.parent if self.db.db_path.parent.name == "databases" else None
-        return resolve_stored_file_path(path_value, data_root=data_root)
+        return resolve_stored_file_path(path_value, data_root=self._data_root())
+
+    def _data_root(self) -> Path | None:
+        return self.db.db_path.parent.parent if self.db.db_path.parent.name == "databases" else None
 
     def _load_enhanced_path_map(self, session_id: int) -> dict[str, Path]:
         data_dir = self.output_dir.parent

@@ -16,6 +16,7 @@ from typing import Any, List
 
 from PIL import Image
 
+from answer_region_geometry import scaled_region_bbox
 from image_preprocessor import ENHANCER_VERSION, enhance_for_ai, enhance_image_file
 from llm_client import LLMClient
 
@@ -1073,11 +1074,7 @@ def _student_name_crop_box(region: dict[str, Any] | None, width: int, height: in
         except (TypeError, ValueError):
             x = y = w = h = 0
         if w > 8 and h > 8:
-            left = max(0, min(x, width - 1))
-            top = max(0, min(y, height - 1))
-            right = max(left + 1, min(x + w, width))
-            bottom = max(top + 1, min(y + h, height))
-            return (left, top, right, bottom)
+            return scaled_region_bbox(region, width, height)
     return (0, 0, width, int(height * 0.18))
 
 

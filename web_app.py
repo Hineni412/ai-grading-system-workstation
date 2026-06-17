@@ -20,6 +20,7 @@ from objective_admission_wizard_ui import render_objective_admission_wizard_tab
 import session_manager as _session_manager
 
 from analytics import AnalyticsService
+from answer_region_geometry import answer_regions_with_template_source_sizes, scaled_region_bbox
 from answer_region_focus_page import render_answer_region_focus_page
 from answer_region_session_lock import get_answer_region_session_lock
 from api_profiles import load_api_profiles, normalize_question_allowlist, save_api_profiles
@@ -3066,7 +3067,7 @@ def render_grading_tab(
                     ocr_model=llm_settings.ocr_model,
                     enhance_images=enhance_images,
                     ocr_workers=precheck_workers,
-                    name_region=student_name_region_from_regions(db.list_answer_regions(selected_session_id)),
+                    name_region=_student_name_region_for_scan(db, selected_session_id),
                     front_page_parity=_session_front_page_parity(selected_session_id),
                 )
                 report(0.18, "并发渲染/识别学生姓名", f"姓名识别并发数：{precheck_workers}；将对 OCR 姓名和学生库做相似匹配。")
@@ -4471,7 +4472,7 @@ def _render_error_wrong_detail(
 def _build_wrong_question_preview(db: DBManager, item: dict[str, Any]) -> Image.Image | None:
     session_id = int(item.get("session_id") or 0)
     qid = str(item.get("question_id") or "")
-    regions = db.list_answer_regions(session_id)
+    regions = answer_regions_with_template_source_sizes(db, session_id, data_root=APP_DATA_DIR)
     matched_regions = [
         region for region in regions
         if str(region.get("mapped_question_id") or region.get("detected_question_id") or "") == qid
@@ -4487,11 +4488,10 @@ def _build_wrong_question_preview(db: DBManager, item: dict[str, Any]) -> Image.
     image = Image.open(image_path).convert("RGB")
     draw = ImageDraw.Draw(image)
     font = _load_preview_font()
-    x = int(region.get("x", 0))
-    y = int(region.get("y", 0))
-    w = int(region.get("w", 0))
-    h = int(region.get("h", 0))
-    draw.rectangle([x, y, x + w, y + h], outline=(220, 38, 38), width=max(5, image.width // 240))
+    x, y, right, bottom = scaled_region_bbox(region, image.width, image.height)
+    w = right - x
+    h = bottom - y
+    draw.rectangle([x, y, right, bottom], outline=(220, 38, 38), width=max(5, image.width // 240))
     label = f"{qid} 失分：{float(item.get('max_score') or 0) - float(item.get('score_awarded') or 0):g}"
     bbox = draw.textbbox((0, 0), label, font=font)
     tx = min(max(0, x + w - (bbox[2] - bbox[0]) - 18), max(0, image.width - (bbox[2] - bbox[0]) - 18))
@@ -5161,7 +5161,7 @@ def _build_answer_region_crop_preview(db: DBManager, item: dict[str, Any]) -> Im
     import re
     session_id = int(item.get("session_id") or 0)
     qid = str(item.get("question_id") or "")
-    regions = db.list_answer_regions(session_id)
+    regions = answer_regions_with_template_source_sizes(db, session_id, data_root=APP_DATA_DIR)
     matched_regions = [
         region for region in regions
         if str(region.get("mapped_question_id") or region.get("detected_question_id") or "") in (qid, f"Q{qid}")
@@ -5183,19 +5183,25 @@ def _build_answer_region_crop_preview(db: DBManager, item: dict[str, Any]) -> Im
         return None
 
     image = Image.open(image_path).convert("RGB")
-    x = max(0, int(region.get("x", 0)))
-    y = max(0, int(region.get("y", 0)))
-    w = max(1, int(region.get("w", 0)))
-    h = max(1, int(region.get("h", 0)))
+    x, y, region_right, region_bottom = scaled_region_bbox(region, image.width, image.height)
     pad = max(18, min(image.width, image.height) // 70)
     left = max(0, x - pad)
     top = max(0, y - pad)
-    right = min(image.width, x + w + pad)
-    bottom = min(image.height, y + h + pad)
+    right = min(image.width, region_right + pad)
+    bottom = min(image.height, region_bottom + pad)
     crop = image.crop((left, top, right, bottom))
     draw = ImageDraw.Draw(crop)
     line_width = max(3, crop.width // 220)
-    draw.rectangle([pad, pad, min(crop.width - 1, pad + w), min(crop.height - 1, pad + h)], outline=(220, 38, 38), width=line_width)
+    draw.rectangle(
+        [
+            x - left,
+            y - top,
+            min(crop.width - 1, region_right - left),
+            min(crop.height - 1, region_bottom - top),
+        ],
+        outline=(220, 38, 38),
+        width=line_width,
+    )
     return crop
 
 
@@ -6952,6 +6958,11 @@ def _session_front_page_parity(session_id: int) -> str:
         if role in {"front", "back"}:
             return _front_page_parity_from_first_page_role(role)
     return "odd"
+
+
+def _student_name_region_for_scan(db: DBManager, session_id: int) -> dict[str, Any] | None:
+    regions = answer_regions_with_template_source_sizes(db, session_id, data_root=APP_DATA_DIR)
+    return student_name_region_from_regions(regions)
 
 
 def _save_template_pages_from_pdf_upload(

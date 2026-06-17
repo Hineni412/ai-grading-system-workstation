@@ -8,6 +8,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
+from answer_region_geometry import scaled_region_bbox
 from scanner import ExamPaperGroup, STUDENT_NAME_REGION_ALIASES
 
 
@@ -106,14 +107,12 @@ class EvidenceAtlasBuilder:
         with Image.open(source_path) as image:
             rgb = image.convert("RGB")
             width, height = rgb.size
-            x = _int_region_value(region, "x")
-            y = _int_region_value(region, "y")
-            w = _int_region_value(region, "w")
-            h = _int_region_value(region, "h")
-            left = max(0, x - self.crop_padding)
-            top = max(0, y - self.crop_padding)
-            right = min(width, x + w + self.crop_padding)
-            bottom = min(height, y + h + self.crop_padding)
+            left, top, right, bottom = scaled_region_bbox(
+                region,
+                width,
+                height,
+                padding=self.crop_padding,
+            )
             if right <= left or bottom <= top:
                 raise ValueError(f"Invalid answer region bbox: {region}")
             crop = rgb.crop((left, top, right, bottom))

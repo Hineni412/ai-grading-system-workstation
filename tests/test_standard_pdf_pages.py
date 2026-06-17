@@ -7,7 +7,7 @@ import pytest
 from PIL import Image, ImageStat
 
 from grading_service import _enhance_or_original
-from scanner import Scanner, render_pdf_to_standard_pages
+from scanner import Scanner, _student_name_crop_box, render_pdf_to_standard_pages
 
 
 fitz = pytest.importorskip("fitz")
@@ -98,6 +98,19 @@ def test_scanner_keeps_external_pdf_when_rendering_standard_pages(tmp_path: Path
     assert pdf_path.exists()
     assert len(pages) == 2
     assert all(page.image_path.exists() for page in pages)
+
+
+def test_student_name_crop_scales_template_region_to_rendered_page_size() -> None:
+    region = {
+        "x": 694,
+        "y": 210,
+        "w": 448,
+        "h": 120,
+        "source_image_width": 2831,
+        "source_image_height": 1960,
+    }
+
+    assert _student_name_crop_box(region, width=1768, height=1224) == (433, 131, 713, 206)
 
 
 def test_plain_standard_page_does_not_create_enhanced_copy_later(tmp_path: Path) -> None:
