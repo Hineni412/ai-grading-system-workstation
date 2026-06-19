@@ -58,7 +58,16 @@ class LLMClient:
         )
         return _extract_text_from_completion(completion)
 
-    def json_from_images(self, prompt: str, image_blobs: list[bytes], model: str | None = None, system_prompt: str | None = None, usage_callback=None) -> dict[str, Any]:
+    def json_from_images(
+        self,
+        prompt: str,
+        image_blobs: list[bytes],
+        model: str | None = None,
+        system_prompt: str | None = None,
+        usage_callback=None,
+        static_image_blobs: list[bytes] | None = None,
+        dynamic_prompt: str | None = None,
+    ) -> dict[str, Any]:
         return self.json_from_images_with_options(
             prompt,
             image_blobs,
@@ -66,6 +75,8 @@ class LLMClient:
             system_prompt=system_prompt,
             usage_callback=usage_callback,
             extra_kwargs=None,
+            static_image_blobs=static_image_blobs,
+            dynamic_prompt=dynamic_prompt,
         )
 
     def json_from_images_with_options(
@@ -77,17 +88,33 @@ class LLMClient:
         usage_callback=None,
         extra_kwargs: dict[str, Any] | None = None,
         use_config_client: bool = False,
+        static_image_blobs: list[bytes] | None = None,
+        dynamic_prompt: str | None = None,
     ) -> dict[str, Any]:
         active_client = self.config_client if use_config_client else self.client
         default_model = self.settings.config_model if use_config_client else self.settings.grading_model
-        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
-        for blob in image_blobs:
-            content.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": _to_data_url(blob)},
-                }
-            )
+        
+        content: list[dict[str, Any]] = []
+        if prompt:
+            content.append({"type": "text", "text": prompt})
+        if static_image_blobs:
+            for blob in static_image_blobs:
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": _to_data_url(blob)},
+                    }
+                )
+        if dynamic_prompt:
+            content.append({"type": "text", "text": dynamic_prompt})
+        if image_blobs:
+            for blob in image_blobs:
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": _to_data_url(blob)},
+                    }
+                )
 
         messages = []
         if system_prompt:
@@ -163,20 +190,37 @@ class LLMClient:
         system_prompt: str | None = None,
         extra_kwargs: dict[str, Any] | None = None,
         use_config_client: bool = False,
+        static_image_blobs: list[bytes] | None = None,
+        dynamic_prompt: str | None = None,
     ) -> dict[str, Any]:
         """Make exactly one visual model request and parse JSON locally without AI repair."""
         active_client = self.config_client if use_config_client else self.client
         default_model = self.settings.config_model if use_config_client else self.settings.grading_model
         strict_kwargs = dict(extra_kwargs or {})
         strict_kwargs["omit_token_limit"] = True
-        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
-        for blob in image_blobs:
-            content.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": _to_data_url(blob)},
-                }
-            )
+        
+        content: list[dict[str, Any]] = []
+        if prompt:
+            content.append({"type": "text", "text": prompt})
+        if static_image_blobs:
+            for blob in static_image_blobs:
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": _to_data_url(blob)},
+                    }
+                )
+        if dynamic_prompt:
+            content.append({"type": "text", "text": dynamic_prompt})
+        if image_blobs:
+            for blob in image_blobs:
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": _to_data_url(blob)},
+                    }
+                )
+                
         messages: list[dict[str, Any]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})

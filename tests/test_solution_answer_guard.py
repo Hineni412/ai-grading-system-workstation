@@ -52,7 +52,8 @@ class SolutionAnswerGuardTests(unittest.TestCase):
             max_score=6,
         )
 
-        prompt = build_hybrid_major_prompt(spec, {"items": []}, has_rubric_image=True)
+        system_prompt, static_prompt, dynamic_prompt = build_hybrid_major_prompt(spec, {"items": []}, has_rubric_image=True)
+        prompt = f"{system_prompt}\n{static_prompt}\n{dynamic_prompt}"
 
         self.assertNotIn(encoded, prompt)
         self.assertIn("visual_construction", prompt)

@@ -64,7 +64,7 @@ class GradingService:
             front_page_parity=_session_front_page_parity(session_id),
         )
         students = self.db.list_students()
-        target_question_ids = _target_question_ids_from_regions(answer_regions)
+        target_question_ids = _target_question_ids_from_regions(answer_regions, rubric=rubric)
         grader = AIGrader(
             rubric_path=rubric_path,
             answer_key_path=answer_key_path,
@@ -479,8 +479,8 @@ class GradingService:
         self.db.replace_session_attendance(session_id, rows)
 
 
-def _target_question_ids_from_regions(regions: list[dict]) -> list[str]:
-    result: list[str] = []
+def _target_question_ids_from_regions(regions: list[dict], rubric: dict | None = None) -> list[str]:
+    raw_ids: list[str] = []
     seen: set[str] = set()
     for region in regions:
         qid = str(region.get("mapped_question_id") or region.get("detected_question_id") or "").strip()
@@ -489,7 +489,29 @@ def _target_question_ids_from_regions(regions: list[dict]) -> list[str]:
         if not qid or qid in seen:
             continue
         seen.add(qid)
-        result.append(qid)
+        raw_ids.append(qid)
+
+    # Expand to parts if rubric is provided
+    result: list[str] = []
+    if rubric and isinstance(rubric, dict):
+        rubric_parts: dict[str, list[str]] = {}
+        for q in rubric.get("questions", []):
+            if not isinstance(q, dict):
+                continue
+            parent_qid = str(q.get("question_id") or "").strip()
+            parts = q.get("parts", [])
+            if parent_qid and isinstance(parts, list) and len(parts) > 0:
+                part_ids = [str(p.get("part_id") or "").strip() for p in parts if isinstance(p, dict) and p.get("part_id")]
+                if part_ids:
+                    rubric_parts[parent_qid] = part_ids
+
+        for qid in raw_ids:
+            if qid in rubric_parts:
+                result.extend(rubric_parts[qid])
+            else:
+                result.append(qid)
+    else:
+        result = raw_ids
     return result
 
 
