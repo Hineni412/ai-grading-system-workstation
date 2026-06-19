@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import pytest
 from PIL import Image
 
 from objective_batch_recognition_service import ObjectivePaperEntry, crop_objective_region, run_objective_batch_recognition
@@ -156,6 +157,38 @@ def test_build_objective_question_specs_uses_unified_answer_forms_before_loader_
     assert loader_calls == ["Q11"]
 
 
+@pytest.mark.parametrize("rubric_answer_field", ["standard_answer", "correct_answer", "answer"])
+def test_build_objective_question_specs_uses_rubric_answer_before_loader_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    rubric_answer_field: str,
+) -> None:
+    import objective_answer_loader
+
+    loader_calls: list[str] = []
+    monkeypatch.setattr(objective_answer_loader, "load_objective_answer_sources", lambda session_id: {})
+
+    def fake_get_standard_answer_for_question(answer_sources: dict[str, Any], question_id: str) -> tuple[str, dict[str, Any]]:
+        loader_calls.append(question_id)
+        return ("loader-answer", {})
+
+    monkeypatch.setattr(objective_answer_loader, "get_standard_answer_for_question", fake_get_standard_answer_for_question)
+    rubric = {
+        "questions": [
+            {
+                "question_id": "Q7",
+                "question_type": "choice",
+                "max_score": 8,
+                rubric_answer_field: "C",
+            }
+        ]
+    }
+
+    specs = build_objective_question_specs("13", rubric, {"questions": [{"question_id": "Q7"}]})
+
+    assert specs[0].standard_answer == "C"
+    assert loader_calls == []
+
+
 def test_crop_objective_region_scales_template_coordinates_to_scan_size(tmp_path: Path) -> None:
     front_image = tmp_path / "front.jpg"
     Image.new("RGB", (1768, 1224), "white").save(front_image)
@@ -225,6 +258,38 @@ def test_choice_objective_batch_splits_16_papers_into_two_requests(tmp_path: Pat
     assert len(result.review_items) == 0
     assert sum(len(items) for items in result.details_by_paper_key.values()) == 16
     assert all(items[0].score_awarded == 8 for items in result.details_by_paper_key.values())
+
+
+def test_choice_objective_batch_scores_against_any_unified_accepted_form(tmp_path: Path) -> None:
+    client = FakeBatchClient(confidence=0.95, need_review=False, answer="C")
+
+    result = run_objective_batch_recognition(
+        session_id=13,
+        paper_groups=_groups(tmp_path, 1),
+        answer_regions=[
+            {"page": "front", "mapped_question_id": "Q7", "x": 10, "y": 10, "w": 120, "h": 80, "is_confirmed": True}
+        ],
+        rubric={"questions": [{"question_id": "Q7", "question_type": "choice", "max_score": 8}]},
+        answer_key={
+            "questions": [
+                {
+                    "question_id": "Q7",
+                    "canonical_answer": "C",
+                    "accepted_forms": ["C", "c"],
+                }
+            ]
+        },
+        output_root=tmp_path / "out",
+        recognition_client=client,
+    )
+
+    detail = next(iter(result.details_by_paper_key.values()))[0]
+    metadata = next(iter(result.metadata_by_paper_key.values()))[0]
+    assert detail.score_awarded == 8
+    assert metadata["standard_answer"] == ["C", "c"]
+    assert metadata["auto_scored"] is True
+    assert metadata["need_review"] is False
+    assert result.review_items == []
 
 
 def test_low_confidence_blank_choice_auto_scores_zero_without_review(tmp_path: Path) -> None:

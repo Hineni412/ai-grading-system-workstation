@@ -69,7 +69,13 @@ def crop_choice_region(front_image_path: Path, back_image_path: Path, question_i
         
     return None, False, False, "unknown"
 
-def score_choice_by_program(selected: str, standard_answer: str, max_score: float, confidence: float, threshold: float = 0.85) -> dict:
+def score_choice_by_program(
+    selected: str,
+    standard_answer: str | list[str] | None,
+    max_score: float,
+    confidence: float,
+    threshold: float = 0.85,
+) -> dict:
     selected = str(selected or "").strip().upper()
     
     result = {
@@ -100,11 +106,15 @@ def score_choice_by_program(selected: str, standard_answer: str, max_score: floa
         result["review_reason"] = "prompt_injection_or_score_bait"
         return result
 
-    if not standard_answer or str(standard_answer).strip() == "":
+    answer_values = standard_answer if isinstance(standard_answer, list) else [standard_answer]
+    accepted_answers = {
+        str(answer or "").strip().upper()
+        for answer in answer_values
+        if str(answer or "").strip()
+    }
+    if not accepted_answers:
         result["review_reason"] = "standard_answer_missing"
         return result
-
-    standard_answer = str(standard_answer).strip().upper()
     
     if selected in {"MULTIPLE", "UNCLEAR"} or not selected:
         result["review_reason"] = selected.lower() if selected else "unclear"
@@ -117,7 +127,7 @@ def score_choice_by_program(selected: str, standard_answer: str, max_score: floa
     result["auto_scored"] = True
     result["need_review"] = False
     
-    if selected == standard_answer:
+    if selected in accepted_answers:
         result["is_correct"] = True
         result["score"] = max_score
     else:

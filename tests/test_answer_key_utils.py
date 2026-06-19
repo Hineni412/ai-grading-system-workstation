@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from ai_grader import _answer_key_forms_for_question
 from answer_key_utils import answer_forms_for_question, answer_forms_map
 
@@ -38,10 +40,24 @@ def test_part_question_resolves_part_accepted_forms_before_part_fallback_answer(
     assert answer_forms_for_question(answer_key, "Q10(1)") == ["4", "四"]
 
 
-def test_legacy_only_question_falls_back_to_legacy_answer_fields() -> None:
-    answer_key = {"questions": [{"question_id": "Q3", "standard_answer": "B"}]}
+@pytest.mark.parametrize(
+    ("answer_field", "answer_value", "expected_forms"),
+    [
+        ("standard_answer", "B", ["B"]),
+        ("correct_answer", "C", ["C"]),
+        ("answer", "D", ["D"]),
+        ("answers", ["A", "B"], ["A", "B"]),
+        ("reference_answer", "E", ["E"]),
+    ],
+)
+def test_legacy_only_question_falls_back_to_legacy_answer_fields(
+    answer_field: str,
+    answer_value: str | list[str],
+    expected_forms: list[str],
+) -> None:
+    answer_key = {"questions": [{"question_id": "Q3", answer_field: answer_value}]}
 
-    assert answer_forms_for_question(answer_key, "Q3") == ["B"]
+    assert answer_forms_for_question(answer_key, "Q3") == expected_forms
 
 
 def test_answer_forms_map_includes_parent_and_part_question_ids() -> None:
