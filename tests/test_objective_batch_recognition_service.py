@@ -10,7 +10,7 @@ from typing import Any
 from PIL import Image
 
 from objective_batch_recognition_service import ObjectivePaperEntry, crop_objective_region, run_objective_batch_recognition
-from objective_batch_recognition_service import ObjectiveBatchRecognitionClient
+from objective_batch_recognition_service import ObjectiveBatchRecognitionClient, build_objective_question_specs
 from scanner import ExamPaperGroup
 
 
@@ -114,6 +114,46 @@ class CountingLimiter:
     def acquire(self) -> None:
         with self.lock:
             self.calls += 1
+
+
+def test_build_objective_question_specs_uses_unified_answer_forms_before_loader_fallback(monkeypatch) -> None:
+    import objective_answer_loader
+
+    loader_calls: list[str] = []
+
+    monkeypatch.setattr(objective_answer_loader, "load_objective_answer_sources", lambda session_id: {"session_id": session_id})
+
+    def fake_get_standard_answer_for_question(answer_sources: dict[str, Any], question_id: str) -> tuple[str, dict[str, Any]]:
+        loader_calls.append(question_id)
+        return ("loader-answer", {"source": answer_sources})
+
+    monkeypatch.setattr(objective_answer_loader, "get_standard_answer_for_question", fake_get_standard_answer_for_question)
+
+    rubric = {
+        "questions": [
+            {"question_id": "Q9", "question_type": "fill_blank", "max_score": 5},
+            {"question_id": "Q11", "question_type": "fill_blank", "max_score": 5},
+        ]
+    }
+    answer_key = {
+        "questions": [
+            {
+                "question_id": "Q9",
+                "canonical_answer": "y=48x+20",
+                "accepted_forms": ["y=48x+20", "y=20+48x", "48x+20=y", ""],
+                "standard_answer": "legacy answer",
+            },
+            {"question_id": "Q11"},
+        ]
+    }
+
+    specs = build_objective_question_specs("13", rubric, answer_key)
+
+    assert [spec.standard_answer for spec in specs] == [
+        ["y=48x+20", "y=20+48x", "48x+20=y"],
+        "loader-answer",
+    ]
+    assert loader_calls == ["Q11"]
 
 
 def test_crop_objective_region_scales_template_coordinates_to_scan_size(tmp_path: Path) -> None:

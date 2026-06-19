@@ -12,6 +12,7 @@ from typing import Any
 from PIL import Image, ImageDraw
 
 from ai_grader import QuestionGradingDetail
+from answer_key_utils import answer_forms_map
 from answer_normalizer import contains_prompt_injection_or_score_bait, normalize_answer_text
 from choice_recognition_chain import score_choice_by_program
 from fill_blank_recognition_chain import score_fill_blank_by_program
@@ -461,7 +462,7 @@ def build_objective_paper_entries(paper_groups: list[ExamPaperGroup]) -> list[Ob
 
 
 def build_objective_question_specs(session_id: str, rubric: dict[str, Any], answer_key: dict[str, Any]) -> list[ObjectiveQuestionSpec]:
-    answer_map = _answer_map(answer_key)
+    answer_map = answer_forms_map(answer_key)
     try:
         from objective_answer_loader import load_objective_answer_sources, get_standard_answer_for_question
 
@@ -478,8 +479,11 @@ def build_objective_question_specs(session_id: str, rubric: dict[str, Any], answ
         qid = str(question.get("question_id") or "").strip()
         if not qid or qtype not in OBJECTIVE_BATCH_TYPES:
             continue
-        standard_answer = answer_map.get(qid) or question.get("standard_answer") or question.get("correct_answer")
-        if not standard_answer and get_standard_answer_for_question is not None:
+        resolved_forms = answer_map.get(qid) or []
+        standard_answer: Any = resolved_forms
+        if qtype == "choice" and len(resolved_forms) == 1:
+            standard_answer = resolved_forms[0]
+        if not resolved_forms and get_standard_answer_for_question is not None:
             standard_answer = get_standard_answer_for_question(answer_sources, qid)[0]
         specs.append(
             ObjectiveQuestionSpec(
@@ -961,16 +965,7 @@ def _objective_has_clear_replacement_reason(reason: str) -> bool:
 
 
 def _answer_map(answer_key: dict[str, Any]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    if not isinstance(answer_key, dict):
-        return result
-    for question in answer_key.get("questions", []):
-        if not isinstance(question, dict):
-            continue
-        qid = str(question.get("question_id") or "").strip()
-        if qid:
-            result[qid] = question.get("standard_answer") or question.get("correct_answer") or question.get("answer")
-    return result
+    return answer_forms_map(answer_key)
 
 
 def _save_atlas(items: list[dict[str, Any]], images: list[Image.Image], atlas_path: Path, max_width: int, jpeg_quality: int) -> None:
