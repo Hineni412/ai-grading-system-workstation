@@ -10,6 +10,7 @@ from typing import Any
 
 from PIL import Image
 
+from answer_key_utils import answer_forms_for_question
 from answer_normalizer import contains_prompt_injection_or_score_bait, match_fill_blank_answer
 from solution_answer_guard import (
     apply_solution_substance_rules,
@@ -698,36 +699,7 @@ def _observed_answer_has_score_bait(value: Any, accepted_forms: list[str], quest
 
 
 def _answer_key_forms_for_question(answer_key: dict[str, Any], question_id: str) -> list[str]:
-    questions = answer_key.get("questions") if isinstance(answer_key, dict) else []
-    if not isinstance(questions, list):
-        return []
-    for question in questions:
-        if not isinstance(question, dict):
-            continue
-        qid = str(question.get("question_id") or "").strip()
-        if qid == question_id:
-            return _forms_from_answer_node(question)
-        parts = question.get("parts")
-        if not isinstance(parts, list):
-            continue
-        for part in parts:
-            if isinstance(part, dict) and str(part.get("part_id") or "").strip() == question_id:
-                return _forms_from_answer_node(part) or _forms_from_answer_node(question)
-    return []
-
-
-def _forms_from_answer_node(node: dict[str, Any]) -> list[str]:
-    values: list[Any] = []
-    for key in ("canonical_answer", "answer"):
-        value = node.get(key)
-        if value:
-            values.append(value)
-    accepted = node.get("accepted_forms")
-    if isinstance(accepted, list):
-        values.extend(accepted)
-    elif accepted:
-        values.append(accepted)
-    return _unique_texts([str(value) for value in values if str(value or "").strip()])
+    return answer_forms_for_question(answer_key, question_id)
 
 
 def _answer_matches(observed_answer: str, accepted_forms: list[str], question_type: str = "") -> bool:
