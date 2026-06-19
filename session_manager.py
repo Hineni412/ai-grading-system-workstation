@@ -1692,27 +1692,39 @@ def _attach_reference_answer_images(
     payload: dict[str, Any],
     q_images: dict[str, Any] | None,
 ) -> None:
-    """Persist clean PDF answer crops for image-aware grading."""
+    """Persist clean PDF answer and question stem crops for image-aware grading."""
     if not q_images:
         return
     answer_key = payload.get("answer_key") if isinstance(payload, dict) else None
     answer_questions = answer_key.get("questions") if isinstance(answer_key, dict) else None
-    if not isinstance(answer_questions, list):
-        return
+    rubric = payload.get("rubric") if isinstance(payload, dict) else None
+    rubric_questions = rubric.get("questions") if isinstance(rubric, dict) else None
+    
     answer_map = {
         str(item.get("question_id") or ""): item
         for item in answer_questions
         if isinstance(item, dict)
-    }
+    } if isinstance(answer_questions, list) else {}
+    
+    rubric_map = {
+        str(item.get("question_id") or ""): item
+        for item in rubric_questions
+        if isinstance(item, dict)
+    } if isinstance(rubric_questions, list) else {}
+
     for qid, image_data in q_images.items():
         if not isinstance(image_data, dict):
             continue
         answer_image = str(image_data.get("answer") or "").strip()
         answer_item = answer_map.get(str(qid))
-        if not answer_image or not isinstance(answer_item, dict):
-            continue
-        answer_item["answer_image_base64"] = answer_image
-        answer_item["answer_image_role"] = "perfect_standard_answer"
+        if answer_image and isinstance(answer_item, dict):
+            answer_item["answer_image_base64"] = answer_image
+            answer_item["answer_image_role"] = "perfect_standard_answer"
+            
+        question_image = str(image_data.get("question") or "").strip()
+        rubric_item = rubric_map.get(str(qid))
+        if question_image and isinstance(rubric_item, dict):
+            rubric_item["question_image_base64"] = question_image
 
 
 def _quality_answer_texts(node: Any) -> list[str]:
