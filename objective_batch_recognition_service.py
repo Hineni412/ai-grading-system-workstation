@@ -480,10 +480,17 @@ def build_objective_question_specs(session_id: str, rubric: dict[str, Any], answ
         if not qid or qtype not in OBJECTIVE_BATCH_TYPES:
             continue
         resolved_forms = answer_map.get(qid) or []
-        standard_answer: Any = resolved_forms
-        if qtype == "choice" and len(resolved_forms) == 1:
-            standard_answer = resolved_forms[0]
-        if not resolved_forms and get_standard_answer_for_question is not None:
+        if resolved_forms:
+            standard_answer: Any = resolved_forms[0] if qtype == "choice" and len(resolved_forms) == 1 else resolved_forms
+        else:
+            standard_answer = (
+                question.get("standard_answer")
+                or question.get("correct_answer")
+                or question.get("answer")
+                or question.get("answers")
+                or question.get("reference_answer")
+            )
+        if not standard_answer and get_standard_answer_for_question is not None:
             standard_answer = get_standard_answer_for_question(answer_sources, qid)[0]
         specs.append(
             ObjectiveQuestionSpec(
