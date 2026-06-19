@@ -157,6 +157,26 @@ def test_build_objective_question_specs_uses_unified_answer_forms_before_loader_
     assert loader_calls == ["Q11"]
 
 
+def test_build_objective_question_specs_keeps_singleton_choice_forms_as_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    import objective_answer_loader
+
+    monkeypatch.setattr(objective_answer_loader, "load_objective_answer_sources", lambda session_id: {})
+    rubric = {"questions": [{"question_id": "Q7", "question_type": "choice", "max_score": 8}]}
+    answer_key = {
+        "questions": [
+            {
+                "question_id": "Q7",
+                "canonical_answer": "C",
+                "accepted_forms": ["C"],
+            }
+        ]
+    }
+
+    specs = build_objective_question_specs("13", rubric, answer_key)
+
+    assert specs[0].standard_answer == ["C"]
+
+
 @pytest.mark.parametrize("rubric_answer_field", ["standard_answer", "correct_answer", "answer"])
 def test_build_objective_question_specs_uses_rubric_answer_before_loader_fallback(
     monkeypatch: pytest.MonkeyPatch,
@@ -274,8 +294,8 @@ def test_choice_objective_batch_scores_against_any_unified_accepted_form(tmp_pat
             "questions": [
                 {
                     "question_id": "Q7",
-                    "canonical_answer": "C",
-                    "accepted_forms": ["C", "c"],
+                    "canonical_answer": "B",
+                    "accepted_forms": ["B", "C"],
                 }
             ]
         },
@@ -286,7 +306,7 @@ def test_choice_objective_batch_scores_against_any_unified_accepted_form(tmp_pat
     detail = next(iter(result.details_by_paper_key.values()))[0]
     metadata = next(iter(result.metadata_by_paper_key.values()))[0]
     assert detail.score_awarded == 8
-    assert metadata["standard_answer"] == ["C", "c"]
+    assert metadata["standard_answer"] == ["B", "C"]
     assert metadata["auto_scored"] is True
     assert metadata["need_review"] is False
     assert result.review_items == []
@@ -501,7 +521,7 @@ def test_objective_confidence_079_correct_answer_needs_review(tmp_path: Path) ->
     assert detail.score_awarded == 0
     assert detail.confidence_score == 79
     assert metadata["recognized_answer"] == "A"
-    assert metadata["standard_answer"] == "A"
+    assert metadata["standard_answer"] == ["A"]
     assert metadata["auto_scored"] is False
     assert metadata["need_review"] is True
 

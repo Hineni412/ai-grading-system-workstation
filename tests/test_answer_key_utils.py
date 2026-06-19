@@ -60,6 +60,20 @@ def test_legacy_only_question_falls_back_to_legacy_answer_fields(
     assert answer_forms_for_question(answer_key, "Q3") == expected_forms
 
 
+def test_legacy_fallback_uses_only_first_non_empty_field() -> None:
+    answer_key = {
+        "questions": [
+            {
+                "question_id": "Q3",
+                "standard_answer": "B",
+                "correct_answer": "C",
+            }
+        ]
+    }
+
+    assert answer_forms_for_question(answer_key, "Q3") == ["B"]
+
+
 def test_answer_forms_map_includes_parent_and_part_question_ids() -> None:
     answer_key = {
         "questions": [

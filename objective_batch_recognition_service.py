@@ -481,7 +481,7 @@ def build_objective_question_specs(session_id: str, rubric: dict[str, Any], answ
             continue
         resolved_forms = answer_map.get(qid) or []
         if resolved_forms:
-            standard_answer: Any = resolved_forms[0] if qtype == "choice" and len(resolved_forms) == 1 else resolved_forms
+            standard_answer: Any = resolved_forms
         else:
             standard_answer = (
                 question.get("standard_answer")

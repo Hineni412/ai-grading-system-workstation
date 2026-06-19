@@ -78,14 +78,13 @@ def _forms_from_node(node: dict[str, Any]) -> list[str]:
     if primary_forms:
         return primary_forms
 
-    legacy_values: list[Any] = []
     for key in _LEGACY_FALLBACK_KEYS:
         value = node.get(key)
-        if isinstance(value, list):
-            legacy_values.extend(value)
-        elif value is not None:
-            legacy_values.append(value)
-    return _stable_unique_non_empty(legacy_values)
+        values = value if isinstance(value, list) else [value]
+        forms = _stable_unique_non_empty(values)
+        if forms:
+            return forms
+    return []
 
 
 def _stable_unique_non_empty(values: list[Any]) -> list[str]:
