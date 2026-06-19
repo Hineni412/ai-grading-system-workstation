@@ -10,6 +10,7 @@ from typing import Any
 from PIL import Image, ImageDraw
 
 from ai_grader import GradingResult, QuestionGradingDetail
+from major_region_evidence import build_major_evidence_groups
 from objective_batch_recognition_service import OBJECTIVE_AUTO_SCORE_MIN_CONFIDENCE, run_objective_batch_recognition
 from scoring_prompt_rules import SHARED_GRADING_RULES
 from solution_answer_guard import (
@@ -325,26 +326,11 @@ class MajorQuestionAtlasBuilder:
         answer_regions: list[dict[str, Any]],
         batch_index: int,
     ) -> dict[str, Any]:
-        # Resolve sub-regions: one region per part_id, matched by position/prefix
-        sub_regions = _major_sub_regions(spec, answer_regions)
-        # sub_regions = [(part_id, region_bbox), ...]
-
-        # Group identical bboxes to avoid tile duplication
-        unique_regions = []
-        for part_id, region in sub_regions:
-            matched_list = None
-            for u_part_ids, u_reg in unique_regions:
-                if (u_reg.get("x") == region.get("x") and 
-                    u_reg.get("y") == region.get("y") and 
-                    u_reg.get("width") == region.get("width") and 
-                    u_reg.get("height") == region.get("height") and 
-                    str(u_reg.get("page")) == str(region.get("page"))):
-                    matched_list = u_part_ids
-                    break
-            if matched_list is not None:
-                matched_list.append(part_id)
-            else:
-                unique_regions.append(([part_id], region))
+        evidence_groups = build_major_evidence_groups(
+            spec.question_id,
+            spec.detail_question_ids,
+            answer_regions,
+        )
 
         output_dir = self.output_root / f"session_{session_id}" / f"major_{_safe_path_part(spec.question_id)}"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -358,21 +344,22 @@ class MajorQuestionAtlasBuilder:
         try:
             for item_index, entry in enumerate(paper_entries, start=1):
                 student_sub_items: list[dict[str, Any]] = []
-                for u_part_ids, region in unique_regions:
-                    page = str(region["page"])
+                for evidence_group in evidence_groups:
+                    page = str(evidence_group["page"])
+                    group_part_ids = list(evidence_group.get("part_ids") or [])
                     source_path = _source_image_path(entry.group, page)
-                    crop, bbox = _crop_region(source_path, region, self.crop_padding)
+                    crop, bbox = _crop_region(source_path, evidence_group["bbox"], self.crop_padding)
                     tile_images.append(crop)
                     
-                    if len(u_part_ids) == len(spec.detail_question_ids or [spec.question_id]):
+                    if len(group_part_ids) == len(spec.detail_question_ids or [spec.question_id]):
                         tile_label = f"{item_index:02d}. [{entry.student_name}] 整题: {spec.question_id}"
-                    elif len(u_part_ids) > 1:
-                        tile_label = f"{item_index:02d}. [{entry.student_name}] 合并小问: {','.join(u_part_ids)}"
+                    elif len(group_part_ids) > 1:
+                        tile_label = f"{item_index:02d}. [{entry.student_name}] 合并小问: {','.join(group_part_ids)}"
                     else:
-                        tile_label = f"{item_index:02d}. [{entry.student_name}] 小问: {u_part_ids[0]}"
+                        tile_label = f"{item_index:02d}. [{entry.student_name}] 小问: {group_part_ids[0]}"
                         
                     tile_labels.append(tile_label)
-                    for part_id in u_part_ids:
+                    for part_id in group_part_ids:
                         student_sub_items.append(
                             {
                                 "part_id": part_id,
@@ -548,6 +535,9 @@ def build_hybrid_major_prompt(spec: MajorQuestionSpec, manifest: dict[str, Any],
         "你必须根据 TILE_TO_SUBQUESTION_MAP 将拼图中的每一个切片(tile)正确映射到学生的 paper_key 和对应的小问(part_id)。\n"
         "硬性要求：\n"
         f"{SHARED_GRADING_RULES}\n"
+        "Shared tiles may contain vertically, horizontally, or continuously written answers.\n"
+        "Score each required part exactly once and do not duplicate evidence across parts.\n"
+        "If boundaries are unclear, return all implicated parts with low confidence and needs_human_review=true.\n"
         "1) 评分必须遵循 rubric 中的题目-小题-步骤分值，不得跳步打分。\n"
         "2) 必须逐小问读取 response_mode；仅 response_mode=process_required 的小问采用“证明义务完成度 + 扣分制”；short_answer_points 按答对的独立答案项给分，visual_construction 对照标准答案图和 visual_requirements 给分。\n"
         "3) 若学生使用标准答案之外但数学上成立的方法，也应给相应过程分；不要因为路径不同扣分。\n"
