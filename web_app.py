@@ -3115,6 +3115,15 @@ def render_grading_tab(
         
         failed_papers = db.list_failed_papers(selected_session_id)
         
+        with st.expander("⚙️ 混合批改参数快速设置", expanded=False):
+            d_obj = int(st.session_state.get("objective_batch_size_input", 15))
+            d_maj = int(st.session_state.get("hybrid_major_batch_size_input", 4))
+            obj_bs = st.number_input("客观题批大小", min_value=1, max_value=50, value=d_obj, step=1, key="run_objective_batch_size")
+            maj_bs = st.number_input("主观题横批批大小 (batch_size)", min_value=1, max_value=20, value=d_maj, step=1, key="run_hybrid_major_batch_size")
+            st.session_state.objective_batch_size_input = obj_bs
+            st.session_state.hybrid_major_batch_size_input = maj_bs
+            st.caption("参数快速调整，无需重新在左侧 API 配置中保存。")
+            
         col1, col2 = st.columns(2)
         with col1:
             run_full = st.button("开始整卷并发批改", type="primary", key="run_grading_full_btn")
