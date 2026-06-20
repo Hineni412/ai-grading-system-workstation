@@ -10,14 +10,47 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COM
 from pathlib import Path
 from typing import Any, Iterable
 
-from ai_grader import AIGrader
+from ai_grader import AIGrader, QuestionGradingDetail
 from db_manager import DBManager
 from evidence_atlas import EvidenceAtlasBuilder
+from grading_completeness import audit_grading_details, major_question_id, major_question_ids_for_issues
 from image_preprocessor import enhance_image_file
 from llm_client import LLMClient
 from path_manager import get_path_manager
 from hybrid_batch_grading_service import run_hybrid_batch_grading
 from scanner import STUDENT_NAME_REGION_ALIASES, ExamPaperGroup, ScanAnalysis, Scanner, student_name_region_from_regions
+
+
+def _detail_from_row(row: dict[str, Any]) -> QuestionGradingDetail:
+    knowledge_ids = row.get("knowledge_ids")
+    if isinstance(knowledge_ids, str):
+        try:
+            knowledge_ids = json.loads(knowledge_ids)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            knowledge_ids = []
+    if not isinstance(knowledge_ids, list):
+        knowledge_ids = []
+    if not knowledge_ids and row.get("knowledge_id"):
+        knowledge_ids = [row["knowledge_id"]]
+    return QuestionGradingDetail(
+        question_id=row["question_id"],
+        score_awarded=row["score_awarded"],
+        deduction_reason=row.get("deduction_reason"),
+        knowledge_id=row.get("knowledge_id") or "",
+        error_category=row.get("error_category"),
+        error_summary=row.get("error_summary"),
+        confidence_score=row.get("confidence_score"),
+        knowledge_ids=knowledge_ids,
+    )
+
+
+def _failed_retry_attempt(exc: Exception, affected_major_ids: set[str]) -> dict[str, Any]:
+    return {
+        "status": "failed",
+        "error": str(exc),
+        "affected_major_question_ids": sorted(affected_major_ids),
+        "attempted_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
 
 
 class GradingService:
@@ -191,13 +224,21 @@ class GradingService:
                             res_id = row["id"]
                             details_rows = self.db.get_result_details(res_id)
                             existing_results_by_student[student_id] = {
+                                "result_id": res_id,
                                 "total_score": row["total_score"],
                                 "student_score": row["student_score"],
                                 "needs_human_review": bool(row["needs_human_review"]),
                                 "raw_json": json.loads(row["raw_json"]) if row["raw_json"] else {},
                                 "details": details_rows
                             }
-                            skipped_questions_by_student[student_id] = {d["question_id"] for d in details_rows}
+                            completeness = audit_grading_details(grader.rubric, details_rows)
+                            affected_major_ids = set(major_question_ids_for_issues(completeness))
+                            existing_results_by_student[student_id]["affected_major_ids"] = affected_major_ids
+                            skipped_questions_by_student[student_id] = {
+                                d["question_id"]
+                                for d in details_rows
+                                if major_question_id(grader.rubric, d["question_id"]) not in affected_major_ids
+                            }
 
             for idx, (paper_id, group, student_id) in enumerate(matched_records, start=1):
                 self.db.update_exam_paper_status(paper_id, "grading")
@@ -267,8 +308,14 @@ class GradingService:
                     for entry, (paper_id, _, _) in zip(batch_run.paper_entries, matched_records)
                 }
             except Exception as exc:  # noqa: BLE001
-                for _, (paper_id, group, _) in enumerate(matched_records, start=1):
+                for _, (paper_id, group, student_id) in enumerate(matched_records, start=1):
                     completed += 1
+                    retry_existing = existing_results_by_student.get(student_id) if failed_only else None
+                    if retry_existing and retry_existing.get("affected_major_ids"):
+                        self.db.record_result_retry_failure(
+                            retry_existing["result_id"],
+                            _failed_retry_attempt(exc, retry_existing["affected_major_ids"]),
+                        )
                     self.db.update_exam_paper_status(paper_id, "failed", str(exc))
                     yield {
                         "event": "grading_failed",
@@ -285,51 +332,68 @@ class GradingService:
 
             for paper_id, group, student_id in matched_records:
                 completed += 1
+                retry_existing = existing_results_by_student.get(student_id) if failed_only else None
                 try:
                     paper_key = paper_key_by_paper_id.get(paper_id, "")
                     fallback_items = fallback_items_by_key.get(paper_key, [])
                     result = batch_run.results_by_paper_key[paper_key]
 
-                    if failed_only and student_id in existing_results_by_student:
-                        existing = existing_results_by_student[student_id]
+                    atomic_major_retry = bool(retry_existing and retry_existing["affected_major_ids"])
+                    if atomic_major_retry:
+                        existing = retry_existing
+                        affected_major_ids = existing["affected_major_ids"]
                         merged_raw_json = dict(existing["raw_json"])
                         merged_raw_json.pop("hybrid_batch_fallback", None)
                         if result.raw_json:
                             merged_raw_json.update(result.raw_json)
-                        
+                        preserved_details = [
+                            _detail_from_row(detail)
+                            for detail in existing["details"]
+                            if major_question_id(grader.rubric, detail["question_id"]) not in affected_major_ids
+                        ]
+                        replacement_details = [
+                            detail
+                            for detail in result.grading_details
+                            if major_question_id(grader.rubric, detail.question_id) in affected_major_ids
+                        ]
+                        merged_details = [*preserved_details, *replacement_details]
+                        completeness = audit_grading_details(grader.rubric, merged_details)
+                        merged_raw_json["grading_completeness"] = completeness
+                        if fallback_items or completeness["status"] != "complete":
+                            raise ValueError("Retry did not return every affected major-question part exactly once and in range")
+                        result.total_score = existing["total_score"]
+                        result.student_score = sum(detail.score_awarded for detail in merged_details)
+                        result.needs_human_review = (
+                            any(
+                                detail.confidence_score is not None and detail.confidence_score < 80
+                                for detail in merged_details
+                            )
+                            or result.needs_human_review
+                        )
+                        result.grading_details = merged_details
+                        result.raw_json = merged_raw_json
+
+                    elif failed_only and retry_existing:
+                        existing = retry_existing
+                        merged_raw_json = dict(existing["raw_json"])
+                        merged_raw_json.pop("hybrid_batch_fallback", None)
+                        if result.raw_json:
+                            merged_raw_json.update(result.raw_json)
+
                         new_details_map = {d.question_id: d for d in result.grading_details}
                         merged_details = []
-                        from ai_grader import QuestionGradingDetail
-                        for od in existing["details"]:
-                            qid = od["question_id"]
-                            if qid in new_details_map:
-                                merged_details.append(new_details_map.pop(qid))
-                            else:
-                                k_ids = od.get("knowledge_ids")
-                                if isinstance(k_ids, str):
-                                    try: k_ids = json.loads(k_ids)
-                                    except: k_ids = [od["knowledge_id"]]
-                                else:
-                                    k_ids = k_ids or [od["knowledge_id"]]
-                                merged_details.append(QuestionGradingDetail(
-                                    question_id=od["question_id"],
-                                    score_awarded=od["score_awarded"],
-                                    deduction_reason=od["deduction_reason"],
-                                    knowledge_id=od["knowledge_id"],
-                                    error_category=od["error_category"],
-                                    error_summary=od["error_summary"],
-                                    confidence_score=od["confidence_score"],
-                                    knowledge_ids=k_ids
-                                ))
+                        for old_detail in existing["details"]:
+                            merged_details.append(new_details_map.pop(old_detail["question_id"], _detail_from_row(old_detail)))
                         merged_details.extend(new_details_map.values())
-                        
-                        total_score = existing["total_score"]
-                        student_score = sum(d.score_awarded for d in merged_details)
-                        needs_human_review = any(d.confidence_score is not None and d.confidence_score < 80 for d in merged_details) or result.needs_human_review
-                        
-                        result.total_score = total_score
-                        result.student_score = student_score
-                        result.needs_human_review = needs_human_review
+                        result.total_score = existing["total_score"]
+                        result.student_score = sum(detail.score_awarded for detail in merged_details)
+                        result.needs_human_review = (
+                            any(
+                                detail.confidence_score is not None and detail.confidence_score < 80
+                                for detail in merged_details
+                            )
+                            or result.needs_human_review
+                        )
                         result.grading_details = merged_details
                         result.raw_json = merged_raw_json
 
@@ -347,7 +411,30 @@ class GradingService:
                     except queue.Empty:
                         pass
 
-                    result_id = self.db.save_session_result(session_id, student_id, paper_id, result)
+                    if atomic_major_retry:
+                        remove_question_ids = [
+                            detail["question_id"]
+                            for detail in retry_existing["details"]
+                            if major_question_id(grader.rubric, detail["question_id"])
+                            in retry_existing["affected_major_ids"]
+                        ]
+                        replacement_details = [
+                            detail
+                            for detail in result.grading_details
+                            if major_question_id(grader.rubric, detail.question_id)
+                            in retry_existing["affected_major_ids"]
+                        ]
+                        result_id = retry_existing["result_id"]
+                        self.db.replace_result_details_atomic(
+                            result_id,
+                            remove_question_ids,
+                            replacement_details,
+                            student_score=result.student_score,
+                            needs_human_review=result.needs_human_review,
+                            raw_json=result.raw_json,
+                        )
+                    else:
+                        result_id = self.db.save_session_result(session_id, student_id, paper_id, result)
                     self.db.update_exam_paper_status(paper_id, "graded")
                     yield {
                         "event": "graded",
@@ -361,6 +448,11 @@ class GradingService:
                         "total": total,
                     }
                 except Exception as exc:  # noqa: BLE001
+                    if retry_existing and retry_existing.get("affected_major_ids"):
+                        self.db.record_result_retry_failure(
+                            retry_existing["result_id"],
+                            _failed_retry_attempt(exc, retry_existing["affected_major_ids"]),
+                        )
                     self.db.update_exam_paper_status(paper_id, "failed", str(exc))
                     yield {
                         "event": "grading_failed",
