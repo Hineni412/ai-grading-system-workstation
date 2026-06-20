@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from ai_grader import GradingResult
+from ai_grader import GradingResult, QuestionGradingDetail
 from path_manager import resolve_stored_file_path
 from scanner import ExamPaperGroup
 try:
@@ -1419,7 +1419,13 @@ class DBManager:
                     )
                     OR (
                       ep.processing_status = 'graded'
-                      AND sr.raw_json LIKE '%"hybrid_batch_fallback"%'
+                      AND (
+                        sr.raw_json LIKE '%"hybrid_batch_fallback"%'
+                        OR CASE
+                          WHEN json_valid(sr.raw_json)
+                          THEN json_extract(sr.raw_json, '$.grading_completeness.status')
+                        END IN ('incomplete', 'invalid')
+                      )
                     )
                   )
                 ORDER BY ep.id ASC
@@ -1452,7 +1458,13 @@ class DBManager:
                     )
                     OR (
                       ep.processing_status = 'graded'
-                      AND sr.raw_json LIKE '%"hybrid_batch_fallback"%'
+                      AND (
+                        sr.raw_json LIKE '%"hybrid_batch_fallback"%'
+                        OR CASE
+                          WHEN json_valid(sr.raw_json)
+                          THEN json_extract(sr.raw_json, '$.grading_completeness.status')
+                        END IN ('incomplete', 'invalid')
+                      )
                     )
                   )
                 ORDER BY ep.id ASC
@@ -1532,6 +1544,79 @@ class DBManager:
                 (result_id,),
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def replace_result_details_atomic(
+        self,
+        result_id: int,
+        remove_question_ids: list[str],
+        replacement_details: list[QuestionGradingDetail],
+        *,
+        student_score: float,
+        needs_human_review: bool,
+        raw_json: dict,
+    ) -> None:
+        """Replace one or more question details without replacing the parent result row."""
+        with self._connect() as conn:
+            if conn.execute("SELECT 1 FROM session_results WHERE id = ?", (result_id,)).fetchone() is None:
+                raise ValueError(f"Unknown session result: {result_id}")
+            question_ids = list(dict.fromkeys(str(value) for value in remove_question_ids))
+            if question_ids:
+                placeholders = ",".join("?" for _ in question_ids)
+                conn.execute(
+                    f"DELETE FROM session_details WHERE result_id = ? AND question_id IN ({placeholders})",
+                    (result_id, *question_ids),
+                )
+            for detail in replacement_details:
+                conn.execute(
+                    """
+                    INSERT INTO session_details (
+                        result_id, question_id, score_awarded, deduction_reason,
+                        knowledge_id, knowledge_ids, error_category, error_summary, confidence_score
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        result_id,
+                        detail.question_id,
+                        detail.score_awarded,
+                        detail.deduction_reason,
+                        detail.knowledge_id,
+                        json.dumps(_detail_knowledge_ids(detail), ensure_ascii=False),
+                        getattr(detail, "error_category", None),
+                        getattr(detail, "error_summary", None),
+                        getattr(detail, "confidence_score", None),
+                    ),
+                )
+            conn.execute(
+                """
+                UPDATE session_results
+                SET student_score = ?, needs_human_review = ?, raw_json = ?
+                WHERE id = ?
+                """,
+                (
+                    float(student_score),
+                    1 if needs_human_review else 0,
+                    json.dumps(raw_json, ensure_ascii=False),
+                    result_id,
+                ),
+            )
+
+    def record_result_retry_failure(self, result_id: int, attempt: dict[str, Any]) -> None:
+        """Append an uncapped structured retry attempt while preserving completeness state."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT raw_json FROM session_results WHERE id = ?", (result_id,)).fetchone()
+            if row is None:
+                return
+            loaded_raw_json = _safe_json_loads(row["raw_json"])
+            raw_json = loaded_raw_json if isinstance(loaded_raw_json, dict) else {}
+            attempts = raw_json.get("grading_retry_attempts")
+            if not isinstance(attempts, list):
+                attempts = []
+            attempts.append(dict(attempt))
+            raw_json["grading_retry_attempts"] = attempts
+            conn.execute(
+                "UPDATE session_results SET needs_human_review = 1, raw_json = ? WHERE id = ?",
+                (json.dumps(raw_json, ensure_ascii=False), result_id),
+            )
 
     def update_result_detail(
         self,

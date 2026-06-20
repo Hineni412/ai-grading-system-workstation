@@ -107,6 +107,38 @@ def test_list_failed_papers(tmp_path):
     assert failed_detailed[2]["front_image"] == "f4.jpg"
 
 
+@pytest.mark.parametrize("completeness_status", ["incomplete", "invalid"])
+def test_graded_incomplete_or_invalid_result_is_retry_eligible(tmp_path, completeness_status):
+    import json
+
+    db = DBManager(tmp_path / f"{completeness_status}.db")
+    db.initialize()
+    session_id = db.create_grading_session("Retry", "rubric.json", "answer.json")
+    with db._connect() as conn:
+        student_id = conn.execute(
+            "INSERT INTO students (student_code, name) VALUES ('001', 'Alice')"
+        ).lastrowid
+        paper_id = conn.execute(
+            "INSERT INTO exam_papers (session_id, front_image, back_image, ocr_name, student_id, match_status, processing_status) "
+            "VALUES (?, 'front.jpg', 'back.jpg', 'Alice', ?, 'matched', 'graded')",
+            (session_id, student_id),
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO session_results (session_id, student_id, paper_id, total_score, student_score, needs_human_review, raw_json) "
+            "VALUES (?, ?, ?, 10, 5, 1, ?)",
+            (
+                session_id,
+                student_id,
+                paper_id,
+                json.dumps({"grading_completeness": {"status": completeness_status}}),
+            ),
+        )
+        conn.commit()
+
+    assert [item["paper_id"] for item in db.list_failed_papers(session_id)] == [paper_id]
+    assert [item["paper_id"] for item in db.list_failed_papers_detailed(session_id)] == [paper_id]
+
+
 def test_grading_service_incremental_retry_merge(tmp_path):
     import json
     from unittest.mock import patch, MagicMock
