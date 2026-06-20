@@ -53,6 +53,18 @@ def _failed_retry_attempt(exc: Exception, affected_major_ids: set[str]) -> dict[
     }
 
 
+def _rubric_major_question_ids(rubric: dict) -> set[str]:
+    questions = rubric.get("questions", []) if isinstance(rubric, dict) else []
+    if not isinstance(questions, list):
+        return set()
+    return {
+        question_id
+        for question in questions
+        if isinstance(question, dict)
+        and (question_id := str(question.get("question_id") or "").strip())
+    }
+
+
 class GradingService:
     def __init__(self, db_manager: DBManager, llm_client: LLMClient) -> None:
         self.db = db_manager
@@ -233,12 +245,26 @@ class GradingService:
                             }
                             completeness = audit_grading_details(grader.rubric, details_rows)
                             affected_major_ids = set(major_question_ids_for_issues(completeness))
+                            raw_completeness = existing_results_by_student[student_id]["raw_json"].get(
+                                "grading_completeness"
+                            )
+                            has_structured_audit = isinstance(raw_completeness, dict)
+                            replace_all_details = has_structured_audit and not affected_major_ids
+                            if replace_all_details:
+                                affected_major_ids = _rubric_major_question_ids(grader.rubric)
                             existing_results_by_student[student_id]["affected_major_ids"] = affected_major_ids
-                            skipped_questions_by_student[student_id] = {
-                                d["question_id"]
-                                for d in details_rows
-                                if major_question_id(grader.rubric, d["question_id"]) not in affected_major_ids
-                            }
+                            existing_results_by_student[student_id]["atomic_retry"] = bool(
+                                affected_major_ids or has_structured_audit
+                            )
+                            existing_results_by_student[student_id]["replace_all_details"] = replace_all_details
+                            if replace_all_details:
+                                skipped_questions_by_student[student_id] = set()
+                            else:
+                                skipped_questions_by_student[student_id] = {
+                                    d["question_id"]
+                                    for d in details_rows
+                                    if major_question_id(grader.rubric, d["question_id"]) not in affected_major_ids
+                                }
 
             for idx, (paper_id, group, student_id) in enumerate(matched_records, start=1):
                 self.db.update_exam_paper_status(paper_id, "grading")
@@ -311,7 +337,7 @@ class GradingService:
                 for _, (paper_id, group, student_id) in enumerate(matched_records, start=1):
                     completed += 1
                     retry_existing = existing_results_by_student.get(student_id) if failed_only else None
-                    if retry_existing and retry_existing.get("affected_major_ids"):
+                    if retry_existing and retry_existing.get("atomic_retry"):
                         self.db.record_result_retry_failure(
                             retry_existing["result_id"],
                             _failed_retry_attempt(exc, retry_existing["affected_major_ids"]),
@@ -338,10 +364,12 @@ class GradingService:
                     fallback_items = fallback_items_by_key.get(paper_key, [])
                     result = batch_run.results_by_paper_key[paper_key]
 
-                    atomic_major_retry = bool(retry_existing and retry_existing["affected_major_ids"])
+                    atomic_major_retry = bool(retry_existing and retry_existing["atomic_retry"])
                     if atomic_major_retry:
                         existing = retry_existing
                         affected_major_ids = existing["affected_major_ids"]
+                        if existing["replace_all_details"] and not affected_major_ids:
+                            raise ValueError("Structured incomplete result has no rubric major questions to retry safely")
                         merged_raw_json = dict(existing["raw_json"])
                         merged_raw_json.pop("hybrid_batch_fallback", None)
                         if result.raw_json:
@@ -349,7 +377,8 @@ class GradingService:
                         preserved_details = [
                             _detail_from_row(detail)
                             for detail in existing["details"]
-                            if major_question_id(grader.rubric, detail["question_id"]) not in affected_major_ids
+                            if not existing["replace_all_details"]
+                            and major_question_id(grader.rubric, detail["question_id"]) not in affected_major_ids
                         ]
                         replacement_details = [
                             detail
@@ -357,9 +386,7 @@ class GradingService:
                             if major_question_id(grader.rubric, detail.question_id) in affected_major_ids
                         ]
                         merged_details = [*preserved_details, *replacement_details]
-                        completeness = audit_grading_details(grader.rubric, merged_details)
-                        merged_raw_json["grading_completeness"] = completeness
-                        if fallback_items or completeness["status"] != "complete":
+                        if fallback_items:
                             raise ValueError("Retry did not return every affected major-question part exactly once and in range")
                         result.total_score = existing["total_score"]
                         result.student_score = sum(detail.score_awarded for detail in merged_details)
@@ -415,7 +442,8 @@ class GradingService:
                         remove_question_ids = [
                             detail["question_id"]
                             for detail in retry_existing["details"]
-                            if major_question_id(grader.rubric, detail["question_id"])
+                            if retry_existing["replace_all_details"]
+                            or major_question_id(grader.rubric, detail["question_id"])
                             in retry_existing["affected_major_ids"]
                         ]
                         replacement_details = [
@@ -429,6 +457,7 @@ class GradingService:
                             result_id,
                             remove_question_ids,
                             replacement_details,
+                            rubric=grader.rubric,
                             student_score=result.student_score,
                             needs_human_review=result.needs_human_review,
                             raw_json=result.raw_json,
@@ -448,7 +477,7 @@ class GradingService:
                         "total": total,
                     }
                 except Exception as exc:  # noqa: BLE001
-                    if retry_existing and retry_existing.get("affected_major_ids"):
+                    if retry_existing and retry_existing.get("atomic_retry"):
                         self.db.record_result_retry_failure(
                             retry_existing["result_id"],
                             _failed_retry_attempt(exc, retry_existing["affected_major_ids"]),
