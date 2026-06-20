@@ -10,7 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from ai_grader import GradingResult, QuestionGradingDetail
-from grading_completeness import audit_grading_details
+from grading_completeness import audit_grading_details, major_question_id
 from path_manager import resolve_stored_file_path
 from scanner import ExamPaperGroup
 try:
@@ -1433,7 +1433,25 @@ class DBManager:
                 """,
                 (session_id,),
             ).fetchall()
-        return [dict(row) for row in rows]
+        items = [dict(row) for row in rows]
+        existing_paper_ids = {int(item["paper_id"]) for item in items if item.get("paper_id") is not None}
+        for row in self.list_incomplete_results(session_id):
+            paper_id = int(row["paper_id"])
+            if paper_id in existing_paper_ids:
+                continue
+            items.append(
+                {
+                    "paper_id": paper_id,
+                    "ocr_name": row.get("ocr_name"),
+                    "student_name": row.get("student_name"),
+                    "student_code": row.get("student_code"),
+                    "class_name": row.get("class_name"),
+                    "error_message": row.get("last_failure_reason") or "批改结果不完整，需补跑受影响大题",
+                    "created_at": None,
+                }
+            )
+            existing_paper_ids.add(paper_id)
+        return items
 
     def list_failed_papers_detailed(self, session_id: int) -> list[dict[str, Any]]:
         """返回本场次中批改失败（processing_status='failed'、'grading'（非运行状态下）或含有局部失败降级）的所有试卷的详细信息，用于增量重试。"""
@@ -1472,7 +1490,117 @@ class DBManager:
                 """,
                 (session_id,),
             ).fetchall()
-        return [dict(row) for row in rows]
+        items = [dict(row) for row in rows]
+        existing_paper_ids = {int(item["paper_id"]) for item in items if item.get("paper_id") is not None}
+        for row in self.list_incomplete_results(session_id):
+            paper_id = int(row["paper_id"])
+            if paper_id in existing_paper_ids:
+                continue
+            items.append(
+                {
+                    "paper_id": paper_id,
+                    "front_image": row.get("front_image"),
+                    "back_image": row.get("back_image"),
+                    "ocr_name": row.get("ocr_name"),
+                    "student_id": row.get("student_id"),
+                    "match_status": row.get("match_status"),
+                }
+            )
+            existing_paper_ids.add(paper_id)
+        return items
+
+    def list_incomplete_results(self, session_id: int) -> list[dict[str, Any]]:
+        rubric = self._load_session_rubric(session_id)
+        with self._connect() as conn:
+            result_rows = conn.execute(
+                """
+                SELECT
+                    sr.id AS result_id,
+                    sr.student_id,
+                    sr.paper_id,
+                    sr.raw_json,
+                    ep.front_image,
+                    ep.back_image,
+                    ep.ocr_name,
+                    ep.match_status,
+                    ep.processing_status,
+                    ep.error_message,
+                    s.student_code,
+                    s.name AS student_name,
+                    s.class_name
+                FROM session_results sr
+                JOIN exam_papers ep ON ep.id = sr.paper_id
+                JOIN students s ON s.id = sr.student_id
+                WHERE sr.session_id = ?
+                ORDER BY sr.id ASC
+                """,
+                (session_id,),
+            ).fetchall()
+            if not result_rows:
+                return []
+            result_ids = [int(row["result_id"]) for row in result_rows]
+            placeholders = ",".join("?" for _ in result_ids)
+            detail_rows = conn.execute(
+                f"""
+                SELECT
+                    result_id,
+                    question_id,
+                    score_awarded,
+                    deduction_reason,
+                    knowledge_id,
+                    knowledge_ids,
+                    error_category,
+                    error_summary,
+                    confidence_score
+                FROM session_details
+                WHERE result_id IN ({placeholders})
+                ORDER BY id ASC
+                """,
+                result_ids,
+            ).fetchall()
+
+        details_by_result: dict[int, list[dict[str, Any]]] = {}
+        for row in detail_rows:
+            details_by_result.setdefault(int(row["result_id"]), []).append(dict(row))
+
+        items: list[dict[str, Any]] = []
+        for row in result_rows:
+            parsed_raw_json = _safe_json_loads(row["raw_json"])
+            completeness = resolve_grading_completeness(
+                parsed_raw_json,
+                rubric=rubric,
+                details=details_by_result.get(int(row["result_id"]), []),
+            )
+            if not isinstance(completeness, dict):
+                continue
+            if completeness.get("status") not in {"incomplete", "invalid"}:
+                continue
+            retry_attempts = _grading_retry_attempts(parsed_raw_json)
+            items.append(
+                {
+                    "result_id": int(row["result_id"]),
+                    "student_id": int(row["student_id"]),
+                    "paper_id": int(row["paper_id"]),
+                    "student_code": row["student_code"],
+                    "student_name": row["student_name"],
+                    "class_name": row["class_name"],
+                    "ocr_name": row["ocr_name"],
+                    "front_image": row["front_image"],
+                    "back_image": row["back_image"],
+                    "match_status": row["match_status"],
+                    "processing_status": row["processing_status"],
+                    "status": completeness["status"],
+                    "missing_question_ids": list(completeness.get("missing_question_ids", [])),
+                    "affected_major_question_ids": list(completeness.get("affected_major_question_ids", [])),
+                    "last_failure_reason": _last_incomplete_failure_reason(
+                        parsed_raw_json,
+                        fallback_error=row["error_message"],
+                        completeness_status=str(completeness.get("status") or ""),
+                    ),
+                    "retry_attempt_count": len(retry_attempts),
+                }
+            )
+        return items
 
     def get_session_results(self, session_id: int) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -2319,6 +2447,19 @@ class DBManager:
                                 label_map[f"{pid}_UNKNOWN"] = lbl
         return {"score": score_map, "label": label_map, "knowledge": knowledge_map}
 
+    def _load_session_rubric(self, session_id: int) -> dict[str, Any]:
+        session = self.get_grading_session(session_id)
+        if not session:
+            return {}
+        rubric_path = self._resolve_stored_file_path(session.get("rubric_path"))
+        if not rubric_path.exists():
+            return {}
+        try:
+            rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return rubric if isinstance(rubric, dict) else {}
+
     def _resolve_stored_file_path(self, path_value: object) -> Path:
         data_root = self.db_path.parent.parent if self.db_path.parent.name == "databases" else None
         return resolve_stored_file_path(path_value, data_root=data_root)
@@ -2336,6 +2477,141 @@ def _safe_json_loads(value: Any) -> Any:
         except json.JSONDecodeError:
             return value
     return value
+
+
+def resolve_grading_completeness(
+    raw_json: Any,
+    rubric: dict[str, Any] | None = None,
+    details: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    completeness = _normalized_completeness_dict(raw_json)
+    if completeness is not None:
+        return completeness
+
+    parsed = _safe_json_loads(raw_json)
+    if isinstance(parsed, dict):
+        completeness = _normalized_completeness_dict(parsed.get("grading_completeness"))
+        if completeness is not None:
+            return completeness
+
+    if isinstance(rubric, dict):
+        audited = audit_grading_details(rubric, details or [])
+        normalized = _normalized_completeness_dict(audited)
+        if normalized is not None:
+            return normalized
+
+    if isinstance(parsed, dict):
+        legacy = _legacy_fallback_completeness(parsed.get("hybrid_batch_fallback"), rubric or {})
+        if legacy is not None:
+            return legacy
+    return None
+
+
+def _normalized_completeness_dict(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    status = str(value.get("status") or "").strip()
+    if status not in {"complete", "incomplete", "invalid"}:
+        return None
+    raw_score_issues = value.get("score_out_of_range")
+    score_out_of_range = [dict(item) for item in raw_score_issues if isinstance(item, dict)] if isinstance(raw_score_issues, list) else []
+    return {
+        "status": status,
+        "missing_question_ids": _unique_text_list(value.get("missing_question_ids")),
+        "duplicate_question_ids": _unique_text_list(value.get("duplicate_question_ids")),
+        "unexpected_question_ids": _unique_text_list(value.get("unexpected_question_ids")),
+        "score_out_of_range": score_out_of_range,
+        "affected_major_question_ids": _unique_text_list(value.get("affected_major_question_ids")),
+    }
+
+
+def _legacy_fallback_completeness(value: Any, rubric: dict[str, Any]) -> dict[str, Any] | None:
+    items = []
+    if isinstance(value, dict):
+        items = value.get("items") if isinstance(value.get("items"), list) else []
+    elif isinstance(value, list):
+        items = value
+    elif value:
+        items = []
+    else:
+        return None
+
+    affected_major_question_ids: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        question_id = str(item.get("question_id") or "").strip()
+        if not question_id:
+            continue
+        major_id = major_question_id(rubric, question_id) or question_id
+        if major_id not in affected_major_question_ids:
+            affected_major_question_ids.append(major_id)
+    return {
+        "status": "incomplete",
+        "missing_question_ids": [],
+        "duplicate_question_ids": [],
+        "unexpected_question_ids": [],
+        "score_out_of_range": [],
+        "affected_major_question_ids": affected_major_question_ids,
+    }
+
+
+def _grading_retry_attempts(raw_json: Any) -> list[dict[str, Any]]:
+    parsed = _safe_json_loads(raw_json)
+    attempts = parsed.get("grading_retry_attempts") if isinstance(parsed, dict) else None
+    if not isinstance(attempts, list):
+        return []
+    return [dict(item) for item in attempts if isinstance(item, dict)]
+
+
+def _last_incomplete_failure_reason(raw_json: Any, *, fallback_error: Any, completeness_status: str) -> str:
+    attempts = _grading_retry_attempts(raw_json)
+    if attempts:
+        latest = attempts[-1]
+        for key in ("error", "message", "reason"):
+            value = str(latest.get(key) or "").strip()
+            if value:
+                return value
+
+    parsed = _safe_json_loads(raw_json)
+    if isinstance(parsed, dict):
+        legacy = parsed.get("hybrid_batch_fallback")
+        if isinstance(legacy, dict):
+            items = legacy.get("items") if isinstance(legacy.get("items"), list) else []
+            reasons = _unique_text_list(
+                [
+                    item.get("reason")
+                    for item in items
+                    if isinstance(item, dict)
+                ]
+            )
+            if reasons:
+                return "；".join(reasons)
+
+    fallback_text = str(fallback_error or "").strip()
+    if fallback_text:
+        return fallback_text
+    if completeness_status == "invalid":
+        return "批改结果存在异常题目或分值，建议补跑受影响大题"
+    return "批改结果缺少部分小题，建议补跑受影响大题"
+
+
+def _unique_text_list(values: Any) -> list[str]:
+    if isinstance(values, (str, bytes)):
+        values = [values]
+    elif not isinstance(values, list):
+        try:
+            values = list(values)
+        except TypeError:
+            values = [values]
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return result
 
 
 def _detail_knowledge_ids(detail: Any) -> list[str]:
