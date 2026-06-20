@@ -161,6 +161,29 @@ def test_atomic_replace_recomputes_stale_score_and_completeness_inside_transacti
     assert saved["raw_json"]["caller"] == "stale"
 
 
+def test_atomic_replace_original_signature_without_rubric_remains_compatible(tmp_path: Path) -> None:
+    db, session_id, _, _, _, _, _ = _seed_retry_case(tmp_path)
+    result_id = db.get_session_results(session_id)[0]["result_id"]
+
+    db.replace_result_details_atomic(
+        result_id,
+        ["10-1"],
+        [_detail("10-1", 4, "new-K10")],
+        student_score=-999,
+        needs_human_review=False,
+        raw_json={"legacy_retry": True},
+    )
+
+    saved = db.get_session_results(session_id)[0]
+    assert saved["result_id"] == result_id
+    assert saved["student_score"] == 9
+    assert saved["raw_json"] == {"legacy_retry": True}
+    assert [(detail["question_id"], detail["score_awarded"]) for detail in db.get_result_details(result_id)] == [
+        ("Q1", 5.0),
+        ("10-1", 4.0),
+    ]
+
+
 @pytest.mark.parametrize(
     "replacement_details",
     [
@@ -388,6 +411,90 @@ def test_unmapped_structured_invalid_retries_all_majors_without_legacy_save(tmp_
 
     legacy_save.assert_not_called()
     assert run.call_args.kwargs["skipped_questions_by_student"] == {student_id: set()}
+    saved = db.get_session_results(session_id)[0]
+    assert saved["result_id"] == result_id
+    assert saved["student_score"] == 15
+    assert saved["raw_json"]["grading_completeness"]["status"] == "complete"
+    assert [detail["question_id"] for detail in db.get_result_details(result_id)] == ["Q1", "10-1", "10-2"]
+    with db._connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM annotated_results WHERE result_id = ?", (result_id,)
+        ).fetchone()[0] == 1
+    assert any(event.get("event") == "graded" and event.get("result_id") == result_id for event in events)
+
+
+def test_mixed_mappable_and_unmapped_invalid_retries_all_majors_and_removes_residue(tmp_path: Path) -> None:
+    db, session_id, student_id, _, rubric_path, answer_path, exams_dir = _seed_retry_case(tmp_path)
+    result_id = db.get_session_results(session_id)[0]["result_id"]
+    with db._connect() as conn:
+        conn.execute(
+            "INSERT INTO session_details (result_id, question_id, score_awarded, deduction_reason, knowledge_id, confidence_score) "
+            "VALUES (?, 'Q99', 1, '', 'K99', 99)",
+            (result_id,),
+        )
+        conn.execute(
+            "UPDATE session_results SET student_score = 9, raw_json = ? WHERE id = ?",
+            (
+                json.dumps(
+                    {
+                        "grading_completeness": {
+                            "status": "invalid",
+                            "missing_question_ids": ["10-2"],
+                            "duplicate_question_ids": [],
+                            "unexpected_question_ids": ["Q99"],
+                            "score_out_of_range": [],
+                            "affected_major_question_ids": ["Q10"],
+                        }
+                    }
+                ),
+                result_id,
+            ),
+        )
+        conn.commit()
+
+    group = ExamPaperGroup(
+        front_image=exams_dir / "front.jpg",
+        back_image=exams_dir / "back.jpg",
+        student_name="Alice",
+        student_id=student_id,
+    )
+    batch_result = HybridBatchRunResult(
+        paper_entries=[PaperEntry("Alice", student_id, "Alice", group)],
+        results_by_paper_key={
+            "Alice": GradingResult(
+                "Alice",
+                15,
+                15,
+                False,
+                [_detail("Q1", 5), _detail("10-1", 4), _detail("10-2", 6)],
+                {},
+            )
+        },
+        fallback_items=[],
+        usage_records=[],
+        usage_summary={},
+    )
+    service = GradingService(db, MagicMock(spec=LLMClient))
+
+    with (
+        patch("grading_service.run_hybrid_batch_grading", return_value=batch_result) as run,
+        patch.object(
+            db, "replace_result_details_atomic", wraps=db.replace_result_details_atomic
+        ) as atomic_replace,
+    ):
+        events = list(
+            service.run_session_grading(
+                session_id,
+                exams_dir,
+                rubric_path,
+                answer_path,
+                grading_mode="hybrid_batch",
+                failed_only=True,
+            )
+        )
+
+    assert run.call_args.kwargs["skipped_questions_by_student"] == {student_id: set()}
+    assert set(atomic_replace.call_args.args[1]) == {"Q1", "10-1", "Q99"}
     saved = db.get_session_results(session_id)[0]
     assert saved["result_id"] == result_id
     assert saved["student_score"] == 15

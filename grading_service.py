@@ -249,7 +249,13 @@ class GradingService:
                                 "grading_completeness"
                             )
                             has_structured_audit = isinstance(raw_completeness, dict)
-                            replace_all_details = has_structured_audit and not affected_major_ids
+                            has_unmapped_unexpected = has_structured_audit and any(
+                                major_question_id(grader.rubric, question_id) is None
+                                for question_id in completeness["unexpected_question_ids"]
+                            )
+                            replace_all_details = has_unmapped_unexpected or (
+                                has_structured_audit and not affected_major_ids
+                            )
                             if replace_all_details:
                                 affected_major_ids = _rubric_major_question_ids(grader.rubric)
                             existing_results_by_student[student_id]["affected_major_ids"] = affected_major_ids
