@@ -10,6 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from ai_grader import GradingResult, QuestionGradingDetail
+from grading_completeness import audit_grading_details
 from path_manager import resolve_stored_file_path
 from scanner import ExamPaperGroup
 try:
@@ -1551,6 +1552,7 @@ class DBManager:
         remove_question_ids: list[str],
         replacement_details: list[QuestionGradingDetail],
         *,
+        rubric: dict,
         student_score: float,
         needs_human_review: bool,
         raw_json: dict,
@@ -1586,6 +1588,28 @@ class DBManager:
                         getattr(detail, "confidence_score", None),
                     ),
                 )
+            stored_details = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT question_id, score_awarded, deduction_reason, knowledge_id,
+                           knowledge_ids, error_category, error_summary, confidence_score
+                    FROM session_details
+                    WHERE result_id = ?
+                    ORDER BY id ASC
+                    """,
+                    (result_id,),
+                ).fetchall()
+            ]
+            completeness = audit_grading_details(rubric, stored_details)
+            if completeness["status"] != "complete":
+                raise ValueError(
+                    "Atomic replacement must leave a complete grading result; "
+                    f"got {completeness['status']}"
+                )
+            recalculated_score = sum(float(detail["score_awarded"]) for detail in stored_details)
+            persisted_raw_json = dict(raw_json) if isinstance(raw_json, dict) else {}
+            persisted_raw_json["grading_completeness"] = completeness
             conn.execute(
                 """
                 UPDATE session_results
@@ -1593,9 +1617,9 @@ class DBManager:
                 WHERE id = ?
                 """,
                 (
-                    float(student_score),
+                    float(recalculated_score),
                     1 if needs_human_review else 0,
-                    json.dumps(raw_json, ensure_ascii=False),
+                    json.dumps(persisted_raw_json, ensure_ascii=False),
                     result_id,
                 ),
             )

@@ -125,6 +125,7 @@ def test_replace_result_details_atomic_rolls_back_delete_and_result_update(tmp_p
             result_id,
             ["10-1", "10-2"],
             [_detail("10-1", 4), invalid_detail],
+            rubric=RUBRIC,
             student_score=15,
             needs_human_review=False,
             raw_json={"grading_completeness": {"status": "complete"}},
@@ -138,6 +139,60 @@ def test_replace_result_details_atomic_rolls_back_delete_and_result_update(tmp_p
         ("Q1", 5.0),
         ("10-1", 3.0),
     ]
+
+
+def test_atomic_replace_recomputes_stale_score_and_completeness_inside_transaction(tmp_path: Path) -> None:
+    db, session_id, _, _, _, _, _ = _seed_retry_case(tmp_path)
+    result_id = db.get_session_results(session_id)[0]["result_id"]
+
+    db.replace_result_details_atomic(
+        result_id,
+        ["10-1", "10-2"],
+        [_detail("10-1", 4), _detail("10-2", 5)],
+        rubric=RUBRIC,
+        student_score=-999,
+        needs_human_review=False,
+        raw_json={"grading_completeness": {"status": "invalid"}, "caller": "stale"},
+    )
+
+    saved = db.get_session_results(session_id)[0]
+    assert saved["student_score"] == 14
+    assert saved["raw_json"]["grading_completeness"]["status"] == "complete"
+    assert saved["raw_json"]["caller"] == "stale"
+
+
+@pytest.mark.parametrize(
+    "replacement_details",
+    [
+        [_detail("10-1", 4), _detail("10-1", 4), _detail("10-2", 5)],
+        [_detail("10-1", 5), _detail("10-2", 5)],
+        [_detail("10-1", 4)],
+    ],
+    ids=["duplicate", "out-of-range", "incomplete"],
+)
+def test_atomic_replace_rolls_back_non_complete_stored_replacement(
+    tmp_path: Path, replacement_details: list[QuestionGradingDetail]
+) -> None:
+    db, session_id, _, _, _, _, _ = _seed_retry_case(tmp_path)
+    original = db.get_session_results(session_id)[0]
+    result_id = original["result_id"]
+    original_details = db.get_result_details(result_id)
+
+    with pytest.raises(ValueError, match="complete"):
+        db.replace_result_details_atomic(
+            result_id,
+            ["10-1", "10-2"],
+            replacement_details,
+            rubric=RUBRIC,
+            student_score=15,
+            needs_human_review=False,
+            raw_json={"grading_completeness": {"status": "complete"}},
+        )
+
+    saved = db.get_session_results(session_id)[0]
+    assert saved["student_score"] == original["student_score"]
+    assert saved["raw_json"] == original["raw_json"]
+    assert db.get_result_details(result_id) == original_details
 
 
 def test_missing_one_part_retries_and_atomically_replaces_the_whole_major(tmp_path: Path) -> None:
@@ -260,4 +315,133 @@ def test_batch_retry_exception_records_attempt_without_changing_scores(tmp_path:
     assert db.get_result_details(saved["result_id"]) == original_details
     assert saved["raw_json"]["grading_completeness"]["status"] == "incomplete"
     assert saved["raw_json"]["grading_retry_attempts"][-1]["error"] == "network down"
+    assert [item["paper_id"] for item in db.list_failed_papers(session_id)] == [paper_id]
+
+
+def test_unmapped_structured_invalid_retries_all_majors_without_legacy_save(tmp_path: Path) -> None:
+    db, session_id, student_id, _, rubric_path, answer_path, exams_dir = _seed_retry_case(tmp_path)
+    result_id = db.get_session_results(session_id)[0]["result_id"]
+    invalid_audit = {
+        "status": "invalid",
+        "missing_question_ids": [],
+        "duplicate_question_ids": [],
+        "unexpected_question_ids": ["Q99"],
+        "score_out_of_range": [],
+        "affected_major_question_ids": [],
+    }
+    with db._connect() as conn:
+        conn.execute("DELETE FROM session_details WHERE result_id = ?", (result_id,))
+        conn.executemany(
+            "INSERT INTO session_details (result_id, question_id, score_awarded, deduction_reason, knowledge_id, confidence_score) "
+            "VALUES (?, ?, ?, '', ?, 99)",
+            [
+                (result_id, "Q1", 5, "K1"),
+                (result_id, "10-1", 4, "K10-1"),
+                (result_id, "10-2", 6, "K10-2"),
+                (result_id, "Q99", 1, "K99"),
+            ],
+        )
+        conn.execute(
+            "UPDATE session_results SET student_score = 16, raw_json = ? WHERE id = ?",
+            (json.dumps({"grading_completeness": invalid_audit}), result_id),
+        )
+        conn.commit()
+
+    group = ExamPaperGroup(
+        front_image=exams_dir / "front.jpg",
+        back_image=exams_dir / "back.jpg",
+        student_name="Alice",
+        student_id=student_id,
+    )
+    batch_result = HybridBatchRunResult(
+        paper_entries=[PaperEntry("Alice", student_id, "Alice", group)],
+        results_by_paper_key={
+            "Alice": GradingResult(
+                "Alice",
+                15,
+                15,
+                False,
+                [_detail("Q1", 5), _detail("10-1", 4), _detail("10-2", 6)],
+                {},
+            )
+        },
+        fallback_items=[],
+        usage_records=[],
+        usage_summary={},
+    )
+    service = GradingService(db, MagicMock(spec=LLMClient))
+
+    with (
+        patch("grading_service.run_hybrid_batch_grading", return_value=batch_result) as run,
+        patch.object(db, "save_session_result", side_effect=AssertionError("legacy save called")) as legacy_save,
+    ):
+        events = list(
+            service.run_session_grading(
+                session_id,
+                exams_dir,
+                rubric_path,
+                answer_path,
+                grading_mode="hybrid_batch",
+                failed_only=True,
+            )
+        )
+
+    legacy_save.assert_not_called()
+    assert run.call_args.kwargs["skipped_questions_by_student"] == {student_id: set()}
+    saved = db.get_session_results(session_id)[0]
+    assert saved["result_id"] == result_id
+    assert saved["student_score"] == 15
+    assert saved["raw_json"]["grading_completeness"]["status"] == "complete"
+    assert [detail["question_id"] for detail in db.get_result_details(result_id)] == ["Q1", "10-1", "10-2"]
+    with db._connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM annotated_results WHERE result_id = ?", (result_id,)
+        ).fetchone()[0] == 1
+    assert any(event.get("event") == "graded" and event.get("result_id") == result_id for event in events)
+
+
+def test_fallback_retry_preserves_old_major_and_incomplete_marker(tmp_path: Path) -> None:
+    db, session_id, student_id, paper_id, rubric_path, answer_path, exams_dir = _seed_retry_case(tmp_path)
+    original = db.get_session_results(session_id)[0]
+    original_details = db.get_result_details(original["result_id"])
+    group = ExamPaperGroup(
+        front_image=exams_dir / "front.jpg",
+        back_image=exams_dir / "back.jpg",
+        student_name="Alice",
+        student_id=student_id,
+    )
+    batch_result = HybridBatchRunResult(
+        paper_entries=[PaperEntry("Alice", student_id, "Alice", group)],
+        results_by_paper_key={
+            "Alice": GradingResult(
+                "Alice",
+                15,
+                10,
+                False,
+                [_detail("10-1", 4), _detail("10-2", 6)],
+                {},
+            )
+        },
+        fallback_items=[{"paper_key": "Alice", "question_id": "Q10", "reason": "partial"}],
+        usage_records=[],
+        usage_summary={},
+    )
+
+    with patch("grading_service.run_hybrid_batch_grading", return_value=batch_result):
+        list(
+            GradingService(db, MagicMock(spec=LLMClient)).run_session_grading(
+                session_id,
+                exams_dir,
+                rubric_path,
+                answer_path,
+                grading_mode="hybrid_batch",
+                failed_only=True,
+            )
+        )
+
+    saved = db.get_session_results(session_id)[0]
+    assert saved["result_id"] == original["result_id"]
+    assert saved["student_score"] == original["student_score"]
+    assert saved["raw_json"]["grading_completeness"]["status"] == "incomplete"
+    assert db.get_result_details(saved["result_id"]) == original_details
     assert [item["paper_id"] for item in db.list_failed_papers(session_id)] == [paper_id]

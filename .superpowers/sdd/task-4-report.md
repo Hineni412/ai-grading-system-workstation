@@ -34,3 +34,26 @@ Implemented and verified.
 
 - Retry timestamps use local process time with numeric timezone offset; they are structured audit metadata only and do not affect eligibility.
 - Legacy results without a usable completeness audit continue through the prior incremental merge path for compatibility.
+
+## Review fixes
+
+### Behavior corrected
+
+- Structured completeness rows can no longer enter destructive legacy `save_session_result` persistence. If an invalid/incomplete audit cannot map an issue such as unexpected `Q99` to a parent, the retry targets every rubric parent major and atomically replaces all old details.
+- The all-major fallback preserves the existing result ID and annotation linkage while removing unmappable stale details.
+- `DBManager.replace_result_details_atomic(...)` now reads the post-replacement rows inside its transaction, recomputes the score from those rows, runs `audit_grading_details(...)`, overwrites caller completeness with that fresh audit, and accepts only `complete`.
+- Caller-provided `student_score` and `grading_completeness` are not trusted. Duplicate, out-of-range, incomplete, insertion, and audit failures raise inside the transaction and restore old details, score, and raw audit.
+- Legacy incremental merge remains available only when the existing row has no structured completeness audit and no mappable affected parent major.
+
+### Fix TDD evidence
+
+- RED: `pytest tests/test_atomic_major_retry.py -q` produced `6 failed, 4 passed`. The Q99 execution test showed one call to `save_session_result`; transaction tests failed because the database interface did not accept a rubric and did not perform stored-row re-audit.
+- GREEN: `pytest tests/test_atomic_major_retry.py -q` produced `10 passed` after the safe all-major path and transaction-local score/audit gate were implemented.
+- GREEN regression: `pytest tests/test_atomic_major_retry.py tests/test_retry_failed_grading.py tests/test_grading_completeness.py -q` produced `27 passed`.
+
+### Added review regressions
+
+- Unexpected structured `Q99` retries all rubric majors without calling legacy persistence and preserves result ID plus annotation.
+- A stale caller score of `-999` is replaced with the stored-detail sum, and a stale invalid caller audit is replaced with a fresh complete audit.
+- Duplicate, out-of-range, and incomplete replacements each roll back all detail and result changes.
+- A fallback-marked retry preserves the previous incomplete major, score, result ID, and retry eligibility.
