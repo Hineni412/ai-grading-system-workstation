@@ -57,3 +57,25 @@ Implemented and verified.
 - A stale caller score of `-999` is replaced with the stored-detail sum, and a stale invalid caller audit is replaced with a fresh complete audit.
 - Duplicate, out-of-range, and incomplete replacements each roll back all detail and result changes.
 - A fallback-marked retry preserves the previous incomplete major, score, result ID, and retry eligibility.
+
+## Third review fix wave
+
+### Behavior corrected
+
+- A structured invalid audit containing any unexpected ID that cannot map to a rubric parent now forces an all-major retry even when another issue already maps to a major such as Q10.
+- All-major atomic replacement removes every prior detail question ID, including unmappable `Q99`, before inserting the full replacement. The parent result ID and annotation linkage remain unchanged.
+- The original `replace_result_details_atomic(result_id, remove_question_ids, replacement_details, *, student_score, needs_human_review, raw_json)` call shape is compatible again. `rubric` is an optional trailing keyword.
+- Calls without rubric retain atomic delete/insert/update behavior and recompute the final score from stored rows. The grading-service production path passes rubric and therefore retains transaction-local completeness audit and rollback gating.
+- Unmappable unexpected escalation is limited to rows with structured completeness metadata, preserving the genuinely legacy no-audit Q1/Q2 incremental path.
+
+### Third-wave TDD evidence
+
+- RED: the two new targeted tests produced `2 failed`. The compatibility call raised `TypeError: missing 1 required keyword-only argument: 'rubric'`; the mixed Q10+Q99 retry incorrectly skipped `Q1` and `Q99` instead of targeting all majors.
+- Initial focused regression exposed one legacy compatibility failure because an audit synthesized from a no-audit legacy row was also treated as structured. Root-cause tracing showed `has_unmapped_unexpected` needed the existing structured-audit guard.
+- GREEN targeted: compatibility, mixed invalid, and legacy incremental tests produced `3 passed`.
+- GREEN focused suite: `pytest tests/test_atomic_major_retry.py tests/test_retry_failed_grading.py tests/test_grading_completeness.py -q` produced `29 passed`.
+
+### Added regressions
+
+- Mixed missing Q10 part plus unexpected Q99 retries Q1 and all Q10 parts, removes Q99, preserves result ID and annotation, and finishes complete.
+- The original database signature without rubric atomically replaces details and corrects a stale caller score from stored values without raising `TypeError`.

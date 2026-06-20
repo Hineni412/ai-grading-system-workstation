@@ -1552,10 +1552,10 @@ class DBManager:
         remove_question_ids: list[str],
         replacement_details: list[QuestionGradingDetail],
         *,
-        rubric: dict,
         student_score: float,
         needs_human_review: bool,
         raw_json: dict,
+        rubric: dict | None = None,
     ) -> None:
         """Replace one or more question details without replacing the parent result row."""
         with self._connect() as conn:
@@ -1601,15 +1601,16 @@ class DBManager:
                     (result_id,),
                 ).fetchall()
             ]
-            completeness = audit_grading_details(rubric, stored_details)
-            if completeness["status"] != "complete":
-                raise ValueError(
-                    "Atomic replacement must leave a complete grading result; "
-                    f"got {completeness['status']}"
-                )
             recalculated_score = sum(float(detail["score_awarded"]) for detail in stored_details)
             persisted_raw_json = dict(raw_json) if isinstance(raw_json, dict) else {}
-            persisted_raw_json["grading_completeness"] = completeness
+            if rubric is not None:
+                completeness = audit_grading_details(rubric, stored_details)
+                if completeness["status"] != "complete":
+                    raise ValueError(
+                        "Atomic replacement must leave a complete grading result; "
+                        f"got {completeness['status']}"
+                    )
+                persisted_raw_json["grading_completeness"] = completeness
             conn.execute(
                 """
                 UPDATE session_results
