@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from db_manager import resolve_grading_completeness
 from export_names import session_export_path_name
 from path_manager import resolve_stored_file_path
 
@@ -91,7 +92,8 @@ class ReportGenerator:
                     sr.total_score,
                     sr.student_score,
                     sr.needs_human_review,
-                    sr.graded_at
+                    sr.graded_at,
+                    sr.raw_json
                 FROM session_results sr
                 JOIN students s ON s.id = sr.student_id
                 WHERE sr.session_id = ?
@@ -163,11 +165,12 @@ class ReportGenerator:
 
         df_details_filtered = df_details[df_details["result_id"].isin(valid_result_ids)].copy()
 
+        rubric = self._load_session_rubric(session_id)
         score_map, type_map = self._load_session_question_maps(session_id)
         knowledge_label_map = self._load_session_knowledge_label_map(session_id)
         
         # summary uses full df_results
-        score_summary = self._build_compact_session_report(df_results, df_details, score_map)
+        score_summary = self._build_compact_session_report(df_results, df_details, score_map, rubric=rubric)
         
         # details and knowledge use filtered details
         question_detail = self._build_question_score_detail_sheet(df_details_filtered, score_map, type_map)
@@ -222,14 +225,15 @@ class ReportGenerator:
         df_results: pd.DataFrame,
         df_details: pd.DataFrame,
         score_map: dict[str, float],
+        *,
+        rubric: dict | None = None,
     ) -> pd.DataFrame:
-        if df_details.empty:
-            summary = df_results[["student_name", "class_name", "student_code", "student_score"]].copy()
-            summary.columns = ["学生姓名", "班级", "学号", "总分"]
-            return summary
-
         question_ids = _natural_question_order(df_details["question_id"].dropna().astype(str).unique().tolist())
         rows_by_result: dict[int, dict[str, object]] = {}
+        detail_rows_by_result: dict[int, list[dict[str, object]]] = {}
+        for detail in df_details.to_dict(orient="records"):
+            result_id = int(detail.get("result_id") or 0)
+            detail_rows_by_result.setdefault(result_id, []).append(detail)
         # Compute rank and average per class
         class_stats = {}
         for class_name, group in df_results.groupby(df_results["class_name"].fillna("未分班")):
@@ -250,6 +254,14 @@ class ReportGenerator:
         for result in df_results.to_dict(orient="records"):
             rid = int(result["result_id"])
             stats = class_stats.get(rid, {"班级排名": "-", "班级均分": "-"})
+            completeness = resolve_grading_completeness(
+                result.get("raw_json"),
+                rubric=rubric if isinstance(rubric, dict) else None,
+                details=detail_rows_by_result.get(rid, []),
+            )
+            completeness_fields = self._completeness_fields(
+                {"grading_completeness": completeness} if isinstance(completeness, dict) else result.get("raw_json")
+            )
             
             rows_by_result[rid] = {
                 "班级": result.get("class_name") or "未分班",
@@ -258,6 +270,8 @@ class ReportGenerator:
                 "学生姓名": result.get("student_name"),
                 "学号": result.get("student_code"),
                 "总分": result.get("student_score"),
+                "批改完整性": completeness_fields[0],
+                "缺失题目": completeness_fields[1],
             }
 
         for detail in df_details.to_dict(orient="records"):
@@ -274,7 +288,7 @@ class ReportGenerator:
                 reason = ""
             row[f"{qid}扣分原因"] = reason
 
-        columns = ["班级", "班级排名", "班级均分", "学生姓名", "学号", "总分"]
+        columns = ["班级", "班级排名", "班级均分", "学生姓名", "学号", "总分", "批改完整性", "缺失题目"]
         for qid in question_ids:
             columns.extend([f"{qid}得分", f"{qid}扣分原因"])
             
@@ -287,17 +301,23 @@ class ReportGenerator:
     def _load_session_score_map(self, session_id: int) -> dict[str, float]:
         return self._load_session_question_maps(session_id)[0]
 
-    def _load_session_question_maps(self, session_id: int) -> tuple[dict[str, float], dict[str, str]]:
+    def _load_session_rubric(self, session_id: int) -> dict:
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute("SELECT rubric_path FROM grading_sessions WHERE id = ?", (session_id,)).fetchone()
         if not row:
-            return {}, {}
+            return {}
         rubric_path = self._resolve_stored_file_path(row[0])
         if not rubric_path.exists():
-            return {}, {}
+            return {}
         try:
             rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
         except Exception:
+            return {}
+        return rubric if isinstance(rubric, dict) else {}
+
+    def _load_session_question_maps(self, session_id: int) -> tuple[dict[str, float], dict[str, str]]:
+        rubric = self._load_session_rubric(session_id)
+        if not rubric:
             return {}, {}
         score_map: dict[str, float] = {}
         type_map: dict[str, str] = {}
@@ -324,16 +344,8 @@ class ReportGenerator:
         return score_map, type_map
 
     def _load_session_knowledge_label_map(self, session_id: int) -> dict[str, str]:
-        with sqlite3.connect(self.db_path) as conn:
-            row = conn.execute("SELECT rubric_path FROM grading_sessions WHERE id = ?", (session_id,)).fetchone()
-        if not row:
-            return {}
-        rubric_path = self._resolve_stored_file_path(row[0])
-        if not rubric_path.exists():
-            return {}
-        try:
-            rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
-        except Exception:
+        rubric = self._load_session_rubric(session_id)
+        if not rubric:
             return {}
 
         labels: dict[str, str] = {}
@@ -358,6 +370,20 @@ class ReportGenerator:
             if primary_id and primary_label:
                 labels.setdefault(primary_id, primary_label)
         return labels
+
+    def _completeness_fields(self, raw_json: object) -> tuple[str, str]:
+        completeness = resolve_grading_completeness(raw_json)
+        if not isinstance(completeness, dict):
+            return "无效", ""
+        status = str(completeness.get("status") or "").strip()
+        status_label = {
+            "complete": "完整",
+            "incomplete": "不完整",
+            "invalid": "无效",
+        }.get(status, "无效")
+        missing_ids = completeness.get("missing_question_ids") if isinstance(completeness, dict) else []
+        missing_list = [str(item).strip() for item in missing_ids if str(item).strip()] if isinstance(missing_ids, list) else []
+        return status_label, "、".join(missing_list)
 
     def _resolve_stored_file_path(self, path_value: object) -> Path:
         data_root = self.db_path.parent.parent if self.db_path.parent.name == "databases" else None

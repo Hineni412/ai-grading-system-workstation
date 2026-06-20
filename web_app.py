@@ -2981,6 +2981,83 @@ def render_config_and_session_tab(
     return created_session_id
 
 
+def _resolve_grading_run_request(
+    *,
+    run_full: bool,
+    run_hybrid: bool,
+    retry_full: bool,
+    retry_hybrid: bool,
+    retry_incomplete_hybrid: bool = False,
+) -> tuple[str, bool] | None:
+    if run_full:
+        return "full_paper", False
+    if run_hybrid:
+        return "hybrid_batch", False
+    if retry_full:
+        return "full_paper", True
+    if retry_hybrid or retry_incomplete_hybrid:
+        return "hybrid_batch", True
+    return None
+
+
+def _incomplete_status_label(status: object) -> str:
+    return {
+        "complete": "完整",
+        "incomplete": "不完整",
+        "invalid": "无效",
+    }.get(str(status or "").strip(), "无效")
+
+
+def _sanitize_incomplete_result_error(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"data:image/\S+", "[图片数据已省略]", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bsk-[A-Za-z0-9_-]+\b", "[已隐藏密钥]", text)
+    text = re.sub(r"\bBearer\s+[A-Za-z0-9._-]+\b", "Bearer [已隐藏密钥]", text, flags=re.IGNORECASE)
+    return text
+
+
+def _build_incomplete_result_display_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    display_rows: list[dict[str, Any]] = []
+    for row in rows:
+        name = str(row.get("student_name") or row.get("ocr_name") or "未知学生").strip()
+        code = str(row.get("student_code") or "").strip()
+        student_label = f"{name}（{code}）" if code else name
+        affected = "、".join(str(item).strip() for item in row.get("affected_major_question_ids", []) if str(item).strip())
+        missing = "、".join(str(item).strip() for item in row.get("missing_question_ids", []) if str(item).strip())
+        display_rows.append(
+            {
+                "学生": student_label,
+                "状态": _incomplete_status_label(row.get("status")),
+                "受影响大题": affected,
+                "缺失小题": missing,
+                "最近失败原因": _sanitize_incomplete_result_error(row.get("last_failure_reason")),
+                "失败重试次数": int(row.get("retry_attempt_count") or 0),
+            }
+        )
+    return display_rows
+
+
+def _render_incomplete_results_panel(db: DBManager, session_id: int) -> bool:
+    incomplete_rows = db.list_incomplete_results(session_id)
+    if not incomplete_rows:
+        return False
+    st.markdown("---")
+    st.markdown(f"##### 不完整批改结果（{len(incomplete_rows)} 份）")
+    st.info("这些试卷虽然已经生成成绩，但仍有缺题或异常。点击下方“一键补跑不完整大题”后，系统会只用混合批改重跑受影响的大题，其他已成功分数会继续保留。")
+    st.dataframe(
+        pd.DataFrame(_build_incomplete_result_display_rows(incomplete_rows)),
+        use_container_width=True,
+        hide_index=True,
+    )
+    return st.button(
+        "一键补跑不完整大题",
+        type="secondary",
+        key=f"retry_incomplete_hybrid_btn_{session_id}",
+    )
+
+
 def render_grading_tab(
     db: DBManager,
     selected_session_id: int | None,
@@ -3114,6 +3191,7 @@ def render_grading_tab(
         _render_grading_log_panel(log_box, st.session_state.get(grading_log_key, []))
         
         failed_papers = db.list_failed_papers(selected_session_id)
+        retry_incomplete_hybrid = _render_incomplete_results_panel(db, selected_session_id)
         
         with st.expander("⚙️ 混合批改参数快速设置", expanded=False):
             d_obj = int(st.session_state.get("objective_batch_size_input", 15))
@@ -3141,11 +3219,17 @@ def render_grading_tab(
             with rcol2:
                 retry_hybrid = st.button("仅重试失败：混合批改", type="secondary", key="retry_grading_hybrid_btn")
             
-        run_any = run_full or run_hybrid or retry_full or retry_hybrid
+        run_request = _resolve_grading_run_request(
+            run_full=run_full,
+            run_hybrid=run_hybrid,
+            retry_full=retry_full,
+            retry_hybrid=retry_hybrid,
+            retry_incomplete_hybrid=retry_incomplete_hybrid,
+        )
+        run_any = run_request is not None
         
         if run_any:
-            grading_mode = "hybrid_batch" if (run_hybrid or retry_hybrid) else "full_paper"
-            failed_only = True if (retry_full or retry_hybrid) else False
+            grading_mode, failed_only = run_request
             try:
                 exams_dir = active_exams_dir
                 if not exams_dir.exists():
