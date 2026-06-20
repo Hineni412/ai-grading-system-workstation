@@ -10,6 +10,7 @@ from typing import Any
 from PIL import Image, ImageDraw
 
 from ai_grader import GradingResult, QuestionGradingDetail
+from grading_completeness import audit_grading_details
 from major_region_evidence import build_major_evidence_groups
 from objective_batch_recognition_service import OBJECTIVE_AUTO_SCORE_MIN_CONFIDENCE, run_objective_batch_recognition
 from scoring_prompt_rules import SHARED_GRADING_RULES
@@ -236,13 +237,20 @@ def run_hybrid_batch_grading(
 
     total_score = _float_value(rubric.get("total_score"), 100.0)
     entry_by_key = {entry.paper_key: entry for entry in entries}
+    fallback_items_by_key: dict[str, list[dict[str, Any]]] = {}
+    for item in fallback_items:
+        paper_key = str(item.get("paper_key") or "").strip()
+        if paper_key:
+            fallback_items_by_key.setdefault(paper_key, []).append(item)
     results = {
         paper_key: _build_result(
             student_name=entry_by_key[paper_key].student_name,
+            rubric=rubric,
             total_score=total_score,
             details=details,
             metadata=metadata_by_key.get(paper_key, []),
             paper_key=paper_key,
+            fallback_items=fallback_items_by_key.get(paper_key, []),
         )
         for paper_key, details in details_by_key.items()
     }
@@ -932,27 +940,42 @@ def _questions_by_id(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 def _build_result(
     student_name: str,
+    rubric: dict[str, Any],
     total_score: float,
     details: list[QuestionGradingDetail],
     metadata: list[dict[str, Any]],
     paper_key: str,
+    fallback_items: list[dict[str, Any]] | None = None,
 ) -> GradingResult:
     metadata_by_qid = {
         str(item.get("question_id")): item
         for item in metadata
         if isinstance(item, dict) and item.get("question_id") is not None
     }
+    ordered_details = sorted(details, key=lambda detail: _question_sort_key(detail.question_id))
+    grading_completeness = audit_grading_details(rubric, ordered_details)
+    raw_json: dict[str, Any] = {
+        "mode": "hybrid_batch",
+        "paper_key": paper_key,
+        "detail_metadata": metadata_by_qid,
+        "grading_completeness": grading_completeness,
+    }
+    if fallback_items:
+        raw_json["hybrid_batch_fallback"] = {
+            "mode": "partial_failure",
+            "items": list(fallback_items),
+        }
     return GradingResult(
         student_name=student_name,
         total_score=total_score,
-        student_score=sum(detail.score_awarded for detail in details),
-        needs_human_review=any(
+        student_score=sum(detail.score_awarded for detail in ordered_details),
+        needs_human_review=grading_completeness["status"] != "complete" or any(
             (detail.confidence_score is not None and detail.confidence_score < 80)
             or str(detail.error_category or "") == "需复核"
-            for detail in details
+            for detail in ordered_details
         ),
-        grading_details=sorted(details, key=lambda detail: _question_sort_key(detail.question_id)),
-        raw_json={"mode": "hybrid_batch", "paper_key": paper_key, "detail_metadata": metadata_by_qid},
+        grading_details=ordered_details,
+        raw_json=raw_json,
     )
 
 

@@ -12,6 +12,7 @@ from PIL import Image
 
 from answer_key_utils import answer_forms_for_question
 from answer_normalizer import contains_prompt_injection_or_score_bait, match_fill_blank_answer
+from grading_completeness import audit_grading_details, rubric_exact_question_id
 from solution_answer_guard import (
     apply_solution_substance_rules,
     extract_observed_text,
@@ -417,6 +418,10 @@ class AIGrader:
                 if key not in item:
                     raise ValueError(f"grading_details 元素缺少字段: {key}")
 
+            exact_question_id = rubric_exact_question_id(self.rubric, str(item["question_id"]))
+            if exact_question_id is not None:
+                item["question_id"] = exact_question_id
+
             knowledge_ids = _normalize_knowledge_ids(item.get("knowledge_ids"), item.get("knowledge_id"))
             if not knowledge_ids:
                 knowledge_ids = _rubric_knowledge_ids_for_question(self.rubric, str(item["question_id"]))
@@ -507,6 +512,13 @@ class AIGrader:
                 )
             )
 
+        grading_completeness = audit_grading_details(self.rubric, details)
+        if grading_completeness["status"] != "complete":
+            raise ValueError(
+                "grading_details completeness audit failed: "
+                + json.dumps(grading_completeness, ensure_ascii=False, sort_keys=True)
+            )
+
         # Build detail_metadata mapping question_id -> metadata
         metadata_by_qid = {}
         for item in details_raw:
@@ -528,6 +540,7 @@ class AIGrader:
         
         raw_json_to_store = dict(data)
         raw_json_to_store["detail_metadata"] = metadata_by_qid
+        raw_json_to_store["grading_completeness"] = grading_completeness
         raw_json_to_store["total_score"] = rubric_total
         raw_json_to_store["student_score"] = detail_sum
         
