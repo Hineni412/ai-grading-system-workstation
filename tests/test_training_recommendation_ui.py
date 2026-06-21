@@ -48,3 +48,15 @@ def test_training_page_exposes_safety_states() -> None:
         "题库数据库不可用",
     ):
         assert message in PAGE_SOURCE
+
+
+def test_training_page_defaults_to_a_simple_teacher_workflow() -> None:
+    assert 'st.title("生成错题巩固练习")' in PAGE_SOURCE
+    assert 'st.expander("高级设置")' in PAGE_SOURCE
+    assert "基础巩固" in PAGE_SOURCE
+    assert "针对训练" in PAGE_SOURCE
+    assert "提升应用" in PAGE_SOURCE
+    assert "允许仅大类匹配的题目补足" in PAGE_SOURCE
+    assert "推荐排序权重" not in PAGE_SOURCE
+    assert "包含历史错题回流" not in PAGE_SOURCE
+    assert "include_historical_wrong_questions" not in PAGE_SOURCE

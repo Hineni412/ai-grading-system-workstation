@@ -11,8 +11,8 @@ from question_bank.recommendation.recommendation_engine import recommend_for_wea
 
 DEFAULT_STAGE_RATIOS = {
     "direct": 0.60,
-    "prerequisite": 0.25,
-    "transfer": 0.15,
+    "prerequisite": 0.30,
+    "transfer": 0.10,
 }
 
 CLASS_LAYERS = (

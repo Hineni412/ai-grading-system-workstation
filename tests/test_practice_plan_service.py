@@ -7,6 +7,7 @@ import pytest
 
 from question_bank.database.schema import connect, initialize_database
 from question_bank.recommendation.practice_plan_service import PracticePlanService
+from question_bank.recommendation.training_plan import DEFAULT_STAGE_RATIOS
 from question_bank.services.concept_alignment_service import ConceptAlignmentService
 from question_bank.services.source_question_link_service import SourceQuestionLinkService
 
@@ -122,6 +123,14 @@ def test_default_ten_question_plan_uses_agreed_stage_mix(
     assert counts == {"direct": 6, "prerequisite": 3, "transfer": 1}
     assert 201 not in {item["question_id"] for item in plan["items"]}
     assert 202 not in {item["question_id"] for item in plan["items"]}
+
+
+def test_default_stage_mix_is_teacher_friendly_sixty_thirty_ten() -> None:
+    assert DEFAULT_STAGE_RATIOS == {
+        "direct": 0.60,
+        "prerequisite": 0.30,
+        "transfer": 0.10,
+    }
 
 
 def test_current_exam_original_and_near_duplicate_are_excluded(

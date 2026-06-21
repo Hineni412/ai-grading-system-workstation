@@ -60,6 +60,11 @@ VARIANT_MODE_MAP = {
     "每人独立个性卷": "individual",
     "自动分组卷": "auto_group",
 }
+STAGE_LABELS = {
+    "prerequisite": "基础巩固",
+    "direct": "针对训练",
+    "transfer": "提升应用",
+}
 
 
 def _student_label(student: Mapping[str, Any]) -> str:
@@ -320,12 +325,11 @@ def _render_question_detail_expander(order: int, item: dict[str, Any], qb_servic
     q_id = item.get("question_id")
     stage = item.get("stage", "")
     stage_info = {
-        "direct": ("🎯 直接补弱", "purple"),
-        "prerequisite": ("🧱 前置巩固", "blue"),
-        "transfer": ("🚀 迁移验证", "green"),
+        "direct": ("🎯 针对训练", "purple"),
+        "prerequisite": ("🧱 基础巩固", "blue"),
+        "transfer": ("🚀 提升应用", "green"),
     }.get(stage, (stage or "推荐", "gray"))
 
-    score = item.get("recommend_score", 0.0)
     source = item.get("source_paper") or "题库"
     difficulty = item.get("difficulty") or 0
 
@@ -362,7 +366,7 @@ def _render_question_detail_expander(order: int, item: dict[str, Any], qb_servic
     elif relation_type == "difficulty_scaffold":
         reason_desc = f"针对薄弱点「{target_concept_name}」进行的难度搭建（易错拉练）"
     elif relation_type == "direct_transfer":
-        reason_desc = f"针对薄弱点「{target_concept_name}」进行的综合题型挑战（迁移验证）"
+        reason_desc = f"针对薄弱点「{target_concept_name}」进行的综合题型挑战（提升应用）"
     else:
         reason_desc = "关联大纲知识点匹配推荐"
 
@@ -370,14 +374,13 @@ def _render_question_detail_expander(order: int, item: dict[str, Any], qb_servic
     diff_badge = format_difficulty_badge(difficulty)
     source_badge = f'<span class="qb-badge qb-badge-gray">{html.escape(str(source))}</span>'
     stage_badge = f'<span class="qb-badge qb-badge-{stage_info[1]}">{html.escape(stage_info[0])}</span>'
-    score_badge = f'<span class="qb-badge qb-badge-medium">评分 {score:.1f}</span>'
 
     with st.container(border=True):
         st.markdown(
             f'<div class="qb-paper-header">'
             f'<span class="qb-paper-title-tag">第 {order} 题</span>'
             f'<div style="display:flex; gap:4px; flex-wrap:wrap;">'
-            f'{stage_badge}{diff_badge}{source_badge}{score_badge}'
+            f'{stage_badge}{diff_badge}{source_badge}'
             f'</div></div>',
             unsafe_allow_html=True,
         )
@@ -447,15 +450,16 @@ def _render_question_detail_expander(order: int, item: dict[str, Any], qb_servic
             # 评分拆解
             score_comps = item.get("score_components") or {}
             if score_comps:
-                st.markdown("**📊 推荐指数评分拆解**")
-                for comp_key, comp_val in score_comps.items():
-                    comp_name = {
-                        "concept": "知识点匹配度",
-                        "frequency": "高频考点程度",
-                        "gradient": "难度合适度",
-                        "diversity": "出题来源多样性",
-                    }.get(comp_key, comp_key)
-                    st.progress(min(1.0, max(0.0, float(comp_val))), text=f"{comp_name}: {float(comp_val)*100:.0f}%")
+                with st.expander("推荐依据（高级）"):
+                    for comp_key, comp_val in score_comps.items():
+                        comp_name = {
+                            "concept": "标准知识点",
+                            "fine_skill": "具体训练技能",
+                            "frequency": "常见程度",
+                            "gradient": "难度合适度",
+                            "diversity": "题目多样性",
+                        }.get(comp_key, comp_key)
+                        st.progress(min(1.0, max(0.0, float(comp_val))), text=f"{comp_name}: {float(comp_val)*100:.0f}%")
 
 
 def _render_plan(plan: Mapping[str, Any]) -> None:
@@ -493,11 +497,10 @@ def _render_plan(plan: Mapping[str, Any]) -> None:
                     [
                         {
                             "顺序": item.get("item_order"),
-                            "阶段": item.get("stage"),
+                            "训练环节": STAGE_LABELS.get(item.get("stage"), item.get("stage")),
                             "题库题号": item.get("question_id"),
                             "来源": item.get("source_paper"),
                             "难度": item.get("difficulty") or "未标注",
-                            "推荐分": item.get("recommend_score"),
                         }
                         for item in items
                     ],
@@ -618,11 +621,10 @@ def _render_task_detail(
                     [
                         {
                             "顺序": item.get("item_order"),
-                            "阶段": item.get("stage"),
+                            "训练环节": STAGE_LABELS.get(item.get("stage"), item.get("stage")),
                             "题库题号": item.get("question_id"),
                             "来源": item.get("source_paper"),
                             "难度": item.get("difficulty") or "未标注",
-                            "推荐分": item.get("recommend_score"),
                         }
                         for item in items
                     ],
@@ -729,7 +731,7 @@ def _render_task_history(
         )
 
 
-st.set_page_config(page_title="训练推荐", layout="wide")
+st.set_page_config(page_title="生成错题巩固练习", layout="wide")
 
 try:
     from pages_shared.shared_styles import inject_shared_css
@@ -737,8 +739,8 @@ try:
 except Exception:
     pass
 
-st.title("个性化训练任务")
-st.caption("基于真实批改诊断和已确认知识点映射生成训练题。未确认映射不会静默参与推荐。")
+st.title("生成错题巩固练习")
+st.caption("选好学生和考试，确认少数知识点例外后即可生成；系统默认只选择具体技能贴合的题目。")
 
 pm = get_path_manager()
 grading_db_available = Path(pm.db_path).exists()
@@ -933,7 +935,7 @@ if diagnosis_is_current:
 elif diagnosis is not None:
     st.info("学生或考试范围已变化，请重新分析薄弱知识点。")
 
-st.subheader("4. 配置并生成训练任务")
+st.subheader("4. 生成练习")
 variant_label = st.segmented_control(
     "训练版本",
     list(VARIANT_MODE_MAP),
@@ -941,39 +943,23 @@ variant_label = st.segmented_control(
 )
 question_count = st.slider("每个版本题量", min_value=8, max_value=12, value=10)
 
-st.markdown("**训练阶段比例**")
-stage_columns = st.columns(3)
-direct_percent = stage_columns[0].number_input("直接补弱 %", 0, 100, 60, 5)
-prerequisite_percent = stage_columns[1].number_input("前置巩固 %", 0, 100, 25, 5)
-transfer_percent = stage_columns[2].number_input("迁移验证 %", 0, 100, 15, 5)
-stage_total = direct_percent + prerequisite_percent + transfer_percent
-
-if stage_total == 100:
-    st.markdown(f"🟢 **阶段比例合计：100%** (比例合理)")
-else:
-    st.markdown(f"🔴 **阶段比例合计：{stage_total}%** (各比例相加必须等于 100%，当前偏差 {stage_total - 100:+}%)")
-
-st.markdown("**推荐排序权重**")
-weight_columns = st.columns(4)
-concept_percent = weight_columns[0].number_input("知识点匹配 %", 0, 100, 40, 5)
-frequency_percent = weight_columns[1].number_input("考频 %", 0, 100, 35, 5)
-gradient_percent = weight_columns[2].number_input("难度梯度 %", 0, 100, 10, 5)
-diversity_percent = weight_columns[3].number_input("来源与方法多样性 %", 0, 100, 15, 5)
-weight_total = concept_percent + frequency_percent + gradient_percent + diversity_percent
-
-if weight_total == 100:
-    st.markdown(f"🟢 **排序权重合计：100%** (权重分配合理)")
-else:
-    st.markdown(f"🔴 **排序权重合计：{weight_total}%** (各权重相加必须等于 100%，当前偏差 {weight_total - 100:+}%)")
-
 exclude_current_exam_originals = st.checkbox(
     "排除当前所选考试的原题和可识别近重复题",
     value=True,
 )
-include_historical_wrong_questions = st.checkbox(
-    "包含历史错题回流（综合考虑学生过往所有错题记录）",
-    value=False,
-)
+
+with st.expander("高级设置"):
+    st.caption("通常无需修改。三类练习的比例合计需为 100%。")
+    stage_columns = st.columns(3)
+    prerequisite_percent = stage_columns[0].number_input("基础巩固 %", 0, 100, 30, 5)
+    direct_percent = stage_columns[1].number_input("针对训练 %", 0, 100, 60, 5)
+    transfer_percent = stage_columns[2].number_input("提升应用 %", 0, 100, 10, 5)
+    allow_broad_fallback = st.checkbox(
+        "允许仅大类匹配的题目补足（不推荐）",
+        value=False,
+        help="开启后，具体训练技能不匹配但标准知识点大类相同的题目也可能入选。",
+    )
+stage_total = direct_percent + prerequisite_percent + transfer_percent
 
 confirmed_available = bool(
     diagnosis_is_current and diagnosis.get("confirmed_concept_ids")
@@ -985,14 +971,12 @@ elif not confirmed_available:
     generation_reasons.append("没有已确认映射的薄弱知识点")
 if stage_total != 100:
     generation_reasons.append("训练阶段比例合计必须为 100%")
-if weight_total != 100:
-    generation_reasons.append("推荐排序权重合计必须为 100%")
 
 if generation_reasons:
     st.info("当前不能生成：" + "；".join(_unique_text(generation_reasons)))
 
 if st.button(
-    "生成训练任务预览",
+    "生成练习预览",
     type="primary",
     disabled=bool(generation_reasons),
 ):
@@ -1007,14 +991,8 @@ if st.button(
                     "prerequisite": prerequisite_percent / 100,
                     "transfer": transfer_percent / 100,
                 },
-                weights={
-                    "concept": concept_percent / 100,
-                    "frequency": frequency_percent / 100,
-                    "gradient": gradient_percent / 100,
-                    "diversity": diversity_percent / 100,
-                },
                 exclude_current_exam_originals=exclude_current_exam_originals,
-                include_historical_wrong_questions=include_historical_wrong_questions,
+                allow_broad_fallback=allow_broad_fallback,
             )
     except Exception as exc:
         st.error(f"生成训练任务失败：{exc}")
