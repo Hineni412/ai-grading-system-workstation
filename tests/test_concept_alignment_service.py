@@ -127,6 +127,64 @@ def test_registry_seed_creates_stable_concepts(
     assert alignment_service.seed_registry_concepts() == 0
 
 
+def test_legacy_numbered_confirmation_is_copied_to_plain_term(
+    alignment_service: ConceptAlignmentService,
+) -> None:
+    concept = alignment_service.create_concept("math.angle_bisector", "角平分线")
+    alignment_service.confirm_mapping(
+        "grading_weak_point",
+        "G7_15 · 角平分线性质",
+        concept.id,
+        reviewed_by="teacher",
+    )
+
+    first = alignment_service.migrate_legacy_grading_mappings()
+    second = alignment_service.migrate_legacy_grading_mappings()
+    resolved = alignment_service.resolve("grading_weak_point", "角平分线性质")
+
+    assert first.copied == 1
+    assert second.copied == 0
+    assert resolved.status.value == "confirmed"
+    assert resolved.concept is not None and resolved.concept.id == concept.id
+
+
+def test_legacy_conflict_is_reported_without_overwriting_teacher_choice(
+    alignment_service: ConceptAlignmentService,
+) -> None:
+    old_concept = alignment_service.create_concept("math.old", "旧分类")
+    current_concept = alignment_service.create_concept("math.current", "当前分类")
+    alignment_service.confirm_mapping(
+        "grading_weak_point", "G7_15 · 角平分线性质", old_concept.id
+    )
+    alignment_service.confirm_mapping(
+        "grading_weak_point", "角平分线性质", current_concept.id
+    )
+
+    report = alignment_service.migrate_legacy_grading_mappings()
+    resolved = alignment_service.resolve("grading_weak_point", "角平分线性质")
+
+    assert report.conflicts == ("角平分线性质",)
+    assert resolved.concept is not None and resolved.concept.id == current_concept.id
+
+
+def test_training_resolution_auto_confirms_exact_alias_but_not_fuzzy_semantics(
+    alignment_service: ConceptAlignmentService,
+) -> None:
+    concept = alignment_service.create_concept(
+        "math.quadratic", "二次函数", aliases=["抛物线"]
+    )
+
+    exact = alignment_service.resolve_for_training("grading_weak_point", "抛物线")
+    fuzzy = alignment_service.resolve_for_training(
+        "grading_weak_point", "二次函数图像应用"
+    )
+
+    assert exact.status.value == "confirmed"
+    assert exact.concept is not None and exact.concept.id == concept.id
+    assert fuzzy.status.value == "suggested"
+    assert fuzzy.eligible_for_recommendation is False
+
+
 def test_sub_skill_tags_persistence(alignment_service: ConceptAlignmentService) -> None:
     concept = alignment_service.create_concept("math.quadratic", "二次函数")
 

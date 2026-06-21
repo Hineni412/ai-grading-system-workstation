@@ -144,6 +144,31 @@ def test_unmapped_terms_are_visible_and_not_eligible(
     assert weak["actionable_reasons"] == []
 
 
+def test_diagnosis_reuses_legacy_numbered_teacher_confirmation(
+    service: DiagnosisProfileService,
+) -> None:
+    concept = service.alignment.create_concept("math.legacy", "旧版确认知识点")
+    service.alignment.confirm_mapping(
+        "grading_weak_point",
+        "K_UNKNOWN · 陌生诊断词",
+        concept.id,
+        reviewed_by="teacher",
+    )
+
+    profile = service.build_profiles(
+        scope={"mode": "student", "student_ids": ["12"]},
+        exam_scope={"mode": "current", "session_ids": [14]},
+    )
+
+    weak = next(
+        item
+        for item in profile["students"][0]["weak_points"]
+        if item["source_term"] == "陌生诊断词"
+    )
+    assert weak["mapping_status"] == "confirmed"
+    assert weak["concept_id"] == concept.id
+
+
 def test_class_scope_selects_students_from_requested_class(
     service: DiagnosisProfileService,
 ) -> None:

@@ -34,6 +34,12 @@ class DiagnosisProfileService:
         exam_scope: Mapping[str, Any],
     ) -> dict[str, Any]:
         warnings: list[str] = []
+        migration_report = self.alignment.migrate_legacy_grading_mappings()
+        if migration_report.conflicts:
+            warnings.append(
+                "以下旧知识点确认与当前确认冲突，已保留当前教师选择："
+                + "、".join(migration_report.conflicts)
+            )
         sessions = self._resolve_sessions(exam_scope, warnings)
         students = self._resolve_students(scope, warnings)
         session_ids = [int(item["id"]) for item in sessions]
@@ -56,7 +62,10 @@ class DiagnosisProfileService:
                     row.get("knowledge_label"),
                 )
                 source_term = term.source_value
-                resolution = self.alignment.resolve("grading_weak_point", source_term)
+                resolution = self.alignment.resolve_for_training(
+                    "grading_weak_point",
+                    source_term,
+                )
                 references = self._source_question_refs(
                     student_id=student_id,
                     knowledge_id=str(row.get("knowledge_id") or source_term),

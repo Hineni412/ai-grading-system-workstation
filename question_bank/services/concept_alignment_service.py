@@ -8,6 +8,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Iterable, Callable
 
+from integration.knowledge_term_identity import build_grading_knowledge_term
 from question_bank.database.schema import connect, initialize_database
 from question_bank.models.knowledge_alignment import (
     AlignmentStatus,
@@ -33,6 +34,13 @@ class AlignmentResolution:
     @property
     def eligible_for_recommendation(self) -> bool:
         return self.status is AlignmentStatus.CONFIRMED and self.concept is not None
+
+
+@dataclass(frozen=True)
+class LegacyAlignmentMigrationReport:
+    copied: int = 0
+    reused: int = 0
+    conflicts: tuple[str, ...] = ()
 
 
 class ConceptAlignmentService:
@@ -576,6 +584,109 @@ class ConceptAlignmentService:
                     results.append(_mapping_from_row(row))
         return results
 
+    def migrate_legacy_grading_mappings(self) -> LegacyAlignmentMigrationReport:
+        self.initialize_database()
+        copied = 0
+        reused = 0
+        conflicts: list[str] = []
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM knowledge_source_mappings
+                WHERE source_namespace = 'grading_weak_point'
+                  AND source_value LIKE '%·%'
+                ORDER BY id
+                """
+            ).fetchall()
+            for row in rows:
+                legacy_value = str(row["source_value"])
+                legacy_id, _, _ = legacy_value.partition("·")
+                source_value = build_grading_knowledge_term(
+                    legacy_id, legacy_value
+                ).source_value
+                target = conn.execute(
+                    """
+                    SELECT * FROM knowledge_source_mappings
+                    WHERE source_namespace = 'grading_weak_point'
+                      AND normalized_value = ?
+                    ORDER BY CASE status
+                        WHEN 'confirmed' THEN 0
+                        WHEN 'rejected' THEN 1
+                        ELSE 2
+                    END, id
+                    LIMIT 1
+                    """,
+                    (normalize_source_value(source_value),),
+                ).fetchone()
+                if target is not None:
+                    same_decision = (
+                        str(target["status"]) == str(row["status"])
+                        and target["concept_id"] == row["concept_id"]
+                    )
+                    if same_decision:
+                        reused += 1
+                    elif (
+                        str(target["status"]) == AlignmentStatus.CONFIRMED.value
+                        and str(row["status"]) == AlignmentStatus.CONFIRMED.value
+                    ):
+                        conflicts.append(source_value)
+                    continue
+                _upsert_mapping(
+                    conn,
+                    KnowledgeSourceMapping(
+                        source_namespace="grading_weak_point",
+                        source_value=source_value,
+                        concept_id=row["concept_id"],
+                        status=AlignmentStatus(str(row["status"])),
+                        confidence=float(row["confidence"] or 0.0),
+                        sub_skill_tags=tuple(_json_list(row["sub_skill_tags"])),
+                    ),
+                    reviewed_by=row["reviewed_by"],
+                    evidence={"legacy_source_value": legacy_value},
+                )
+                copied += 1
+        return LegacyAlignmentMigrationReport(
+            copied=copied,
+            reused=reused,
+            conflicts=tuple(sorted(set(conflicts))),
+        )
+
+    def resolve_for_training(
+        self,
+        source_namespace: str,
+        source_value: str,
+    ) -> AlignmentResolution:
+        resolved = self.resolve(source_namespace, source_value)
+        if resolved.status in {
+            AlignmentStatus.CONFIRMED,
+            AlignmentStatus.REJECTED,
+        }:
+            return resolved
+        with connect(self.db_path) as conn:
+            concept = _safe_automatic_concept(conn, source_value)
+        if concept is None:
+            return resolved
+        self.confirm_mapping(
+            source_namespace,
+            source_value,
+            concept.id,
+            reviewed_by="system:exact-or-alias",
+            evidence={"automatic_rule": "exact-or-registered-alias"},
+        )
+        return self.resolve(source_namespace, source_value)
+
+    def revision_token(self) -> str:
+        self.initialize_database()
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS item_count,
+                       COALESCE(MAX(updated_at), '') AS latest_update
+                FROM knowledge_source_mappings
+                """
+            ).fetchone()
+        return f"{int(row['item_count'])}:{row['latest_update']}"
+
     def resolve(self, source_namespace: str, source_value: str) -> AlignmentResolution:
         self.initialize_database()
         namespace = normalize_source_value(source_namespace)
@@ -712,6 +823,35 @@ def _suggest_concept(
             if similarity >= 0.7:
                 best = max(best, (min(0.89, similarity), concept), key=lambda item: item[0])
     return best[1], round(best[0], 4)
+
+
+def _safe_automatic_concept(
+    conn: sqlite3.Connection,
+    source_value: str,
+) -> KnowledgeConcept | None:
+    normalized = normalize_source_value(source_value)
+    if not normalized:
+        return None
+    concepts = [
+        _concept_from_row(row)
+        for row in conn.execute(
+            "SELECT * FROM knowledge_concepts WHERE status = 'active' ORDER BY id"
+        ).fetchall()
+    ]
+    registry_match = canonicalize_knowledge(source_value)
+    for concept in concepts:
+        exact_values = (concept.canonical_key, concept.name, *concept.aliases)
+        if normalized in {
+            normalize_source_value(value) for value in exact_values
+        }:
+            return concept
+        if (
+            registry_match is not None
+            and normalize_source_value(registry_match.canonical_id)
+            == concept.canonical_key
+        ):
+            return concept
+    return None
 
 
 def _load_concept(
