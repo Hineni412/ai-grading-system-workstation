@@ -130,6 +130,48 @@ def test_incomplete_result_stays_visible_after_another_failed_retry(tmp_path: Pa
     assert rows[0]["last_failure_reason"] == "second failure"
 
 
+def test_incomplete_failure_reason_is_safe_at_db_and_render_boundaries(tmp_path: Path) -> None:
+    raw_reason = (
+        "模型重试失败 data:image/jpeg;base64,"
+        + ("A" * 600)
+        + " Bearer secret-token Authorization: Basic auth-secret api_key=secret "
+        + ("oversized-payload " * 80)
+    )
+    db, session_id, _paper_id = _seed_session(
+        tmp_path,
+        raw_json={
+            "grading_retry_attempts": [
+                {
+                    "status": "failed",
+                    "error": raw_reason,
+                    "affected_major_question_ids": ["Q11"],
+                }
+            ]
+        },
+    )
+
+    incomplete_rows = db.list_incomplete_results(session_id)
+    legacy_rows = db.list_failed_papers(session_id)
+    display_rows = _build_incomplete_result_display_rows(incomplete_rows)
+
+    assert len(incomplete_rows) == 1
+    safe_summary = incomplete_rows[0]["last_failure_reason"]
+    rendered_summary = display_rows[0]["最近失败原因"]
+    legacy_summary = legacy_rows[0]["error_message"]
+    for exposed_text in (safe_summary, rendered_summary, legacy_summary):
+        lowered = exposed_text.lower()
+        assert "data:image" not in lowered
+        assert "base64" not in lowered
+        assert "secret-token" not in lowered
+        assert "auth-secret" not in lowered
+        assert "api_key=secret" not in lowered
+        assert "a" * 100 not in lowered
+    assert len(safe_summary) <= 240
+    assert "模型重试失败" in safe_summary
+    assert rendered_summary == safe_summary
+    assert legacy_summary == "批改结果不完整，需补跑受影响大题"
+
+
 def test_grading_page_incomplete_panel_redacts_errors_and_uses_failed_only_hybrid_retry() -> None:
     display_rows = _build_incomplete_result_display_rows(
         [

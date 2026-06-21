@@ -44,3 +44,32 @@ Done.
 ## Concerns
 
 - `web_app.py` already had unrelated local edits before Task 5; they were preserved and should stay out of the Task 5 commit.
+
+## Review finding fix: safe incomplete-result summaries
+
+- The legacy `list_failed_papers` path now uses a generic message for historically audited incomplete rows instead of exposing `last_failure_reason`.
+- `list_incomplete_results` sanitizes retry/fallback errors before returning them:
+  - removes embedded `data:image` payloads and long opaque data
+  - redacts Authorization, Bearer, API-key, and `sk-` credentials
+  - normalizes whitespace and limits summaries to 240 characters
+- The grading-page row builder reuses the same sanitizer as a defense-in-depth rendering boundary.
+
+### Review fix TDD evidence
+
+- RED 1:
+  - `pytest tests/test_grading_completeness_ui.py::test_incomplete_failure_reason_is_safe_at_db_and_render_boundaries -q`
+  - failed because the DB list returned the raw `data:image/jpeg;base64,...` retry reason.
+- GREEN 1:
+  - same focused command
+  - `1 passed`
+- RED 2:
+  - extended the regression with `Authorization: Basic auth-secret`
+  - same focused command failed because `auth-secret` remained visible.
+- GREEN 2:
+  - same focused command
+  - `1 passed`
+
+### Review fix verification
+
+- `pytest tests/test_grading_completeness_ui.py tests/test_report_completeness.py tests/test_retry_failed_grading.py tests/test_atomic_major_retry.py -q`
+- Result: `24 passed`

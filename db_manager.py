@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
@@ -1446,7 +1447,7 @@ class DBManager:
                     "student_name": row.get("student_name"),
                     "student_code": row.get("student_code"),
                     "class_name": row.get("class_name"),
-                    "error_message": row.get("last_failure_reason") or "批改结果不完整，需补跑受影响大题",
+                    "error_message": "批改结果不完整，需补跑受影响大题",
                     "created_at": None,
                 }
             )
@@ -2564,17 +2565,52 @@ def _grading_retry_attempts(raw_json: Any) -> list[dict[str, Any]]:
     return [dict(item) for item in attempts if isinstance(item, dict)]
 
 
+def sanitize_incomplete_failure_summary(value: Any, *, max_chars: int = 240) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"data:image/[^\s\"']+", "[图片数据已省略]", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"\bAuthorization\b[\"']?\s*[:=]\s*[\"']?(?:(?:Bearer|Basic)\s+)?[^,\s;\"'}]+",
+        "Authorization=[已隐藏认证信息]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\bBearer\s+[^,\s;\"'}]+",
+        "Bearer [已隐藏密钥]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"(?<![A-Za-z0-9])(?:[A-Za-z0-9_-]*api[_ -]?key)[\"']?\s*[:=]\s*[\"']?[^,\s;\"'}]+",
+        "[API密钥已隐藏]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\bsk-[A-Za-z0-9_-]+\b", "[已隐藏密钥]", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{128,}(?![A-Za-z0-9+/=_-])", "[长数据已省略]", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    limit = max(32, int(max_chars))
+    if len(text) > limit:
+        suffix = "…（内容已截断）"
+        text = text[: limit - len(suffix)].rstrip() + suffix
+    return text
+
+
 def _last_incomplete_failure_reason(raw_json: Any, *, fallback_error: Any, completeness_status: str) -> str:
+    raw_reason = ""
     attempts = _grading_retry_attempts(raw_json)
     if attempts:
         latest = attempts[-1]
         for key in ("error", "message", "reason"):
             value = str(latest.get(key) or "").strip()
             if value:
-                return value
+                raw_reason = value
+                break
 
     parsed = _safe_json_loads(raw_json)
-    if isinstance(parsed, dict):
+    if not raw_reason and isinstance(parsed, dict):
         legacy = parsed.get("hybrid_batch_fallback")
         if isinstance(legacy, dict):
             items = legacy.get("items") if isinstance(legacy.get("items"), list) else []
@@ -2586,11 +2622,13 @@ def _last_incomplete_failure_reason(raw_json: Any, *, fallback_error: Any, compl
                 ]
             )
             if reasons:
-                return "；".join(reasons)
+                raw_reason = "；".join(reasons)
 
-    fallback_text = str(fallback_error or "").strip()
-    if fallback_text:
-        return fallback_text
+    if not raw_reason:
+        raw_reason = str(fallback_error or "").strip()
+    safe_reason = sanitize_incomplete_failure_summary(raw_reason)
+    if safe_reason:
+        return safe_reason
     if completeness_status == "invalid":
         return "批改结果存在异常题目或分值，建议补跑受影响大题"
     return "批改结果缺少部分小题，建议补跑受影响大题"
