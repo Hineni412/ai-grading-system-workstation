@@ -151,8 +151,6 @@ def run_hybrid_batch_grading(
                         "item_count": len(batch_entries),
                     }
                 )
-            if rate_limiter is not None:
-                rate_limiter.acquire()
             try:
                 result = grade_major_question_batch(
                     session_id=session_id,
@@ -166,6 +164,7 @@ def run_hybrid_batch_grading(
                     min_confidence=min_confidence,
                     builder=builder,
                     rubric_images_dir=rubric_images_dir,
+                    rate_limiter=rate_limiter,
                 )
             except Exception as exc:  # noqa: BLE001
                 if progress_callback is not None:
@@ -420,6 +419,7 @@ def grade_major_question_batch(
     min_confidence: float = 80.0,
     builder: MajorQuestionAtlasBuilder | None = None,
     rubric_images_dir: Path | None = None,
+    rate_limiter: Any | None = None,
 ) -> dict[str, Any]:
     atlas_builder = builder or MajorQuestionAtlasBuilder(output_root)
     atlas = atlas_builder.build(
@@ -502,6 +502,8 @@ def grade_major_question_batch(
     import time
     for attempt in range(max_retries):
         try:
+            if rate_limiter is not None:
+                rate_limiter.acquire()
             if callable(json_from_images):
                 response = json_from_images(
                     static_prompt,

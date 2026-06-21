@@ -4,7 +4,6 @@ import json
 import os
 import queue
 import re
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from pathlib import Path
@@ -31,6 +30,7 @@ from image_preprocessor import enhance_image_file
 from llm_client import LLMClient
 from path_manager import get_path_manager
 from hybrid_batch_grading_service import run_hybrid_batch_grading
+from request_pacer import RequestPacer
 from scanner import STUDENT_NAME_REGION_ALIASES, ExamPaperGroup, ScanAnalysis, Scanner, student_name_region_from_regions
 
 
@@ -232,7 +232,7 @@ class GradingService:
             HYBRID_INFLIGHT_WORKERS_MIN,
             HYBRID_INFLIGHT_WORKERS_MAX,
         )
-        rate_limiter = _RateLimiter(rpm_limit)
+        rate_limiter = RequestPacer(rpm_limit)
         event_queue = queue.Queue()
 
         if total:
@@ -858,7 +858,7 @@ def _clear_enhanced_paths(analysis: ScanAnalysis) -> None:
 def _grade_one_paper_with_retries(
     grader: AIGrader,
     group: ExamPaperGroup,
-    rate_limiter: "_RateLimiter",
+    rate_limiter: RequestPacer,
     event_queue: queue.Queue | None = None,
     session_id: int | None = None,
     *,
@@ -921,7 +921,7 @@ def _grade_one_paper_with_retries(
 def _grade_one_paper(
     grader: AIGrader,
     group: ExamPaperGroup,
-    rate_limiter: "_RateLimiter",
+    rate_limiter: RequestPacer,
     event_queue: queue.Queue | None = None,
     session_id: int | None = None,
     *,
@@ -988,25 +988,3 @@ def _env_int(name: str, default: int) -> int:
         return int(os.getenv(name, str(default)))
     except (TypeError, ValueError):
         return default
-
-
-class _RateLimiter:
-    def __init__(self, requests_per_minute: int) -> None:
-        self.capacity = max(1, requests_per_minute)
-        self.rate = self.capacity / 60.0  # tokens per second
-        self.tokens = float(self.capacity)
-        self.last_update = time.monotonic()
-        self._lock = threading.Lock()
-
-    def acquire(self) -> None:
-        while True:
-            with self._lock:
-                now = time.monotonic()
-                elapsed = now - self.last_update
-                self.tokens = min(float(self.capacity), self.tokens + elapsed * self.rate)
-                self.last_update = now
-
-                if self.tokens >= 1.0:
-                    self.tokens -= 1.0
-                    return
-            time.sleep(0.05)
