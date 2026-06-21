@@ -135,7 +135,7 @@ def _alignment_rows(
         resolution = service.resolve(source["source_namespace"], source["source_value"])
         target_label = label_by_id.get(resolution.concept.id, "") if resolution.concept else ""
         sub_skills = "、".join(resolution.sub_skill_tags) if hasattr(resolution, "sub_skill_tags") and resolution.sub_skill_tags else ""
-        # 自动勾选：仅在"已有建议知识点(置信度>0 且 concept 非空)"且置信度≥阈值时默认勾选
+        # 旧版预选逻辑，仅保留给未启用的兼容工作台。
         auto_selected = (
             auto_select_threshold is not None
             and resolution.concept is not None
@@ -190,7 +190,7 @@ def _render_summary(rows: list[dict[str, Any]]) -> None:
         st.caption(f"共 {total} 个原始词 — {source_bits}")
 
 
-def _render_alignment_workbench(
+def _render_legacy_alignment_workbench(
     service: ConceptAlignmentService,
     source_terms: list[dict[str, Any]],
 ) -> None:
@@ -400,17 +400,17 @@ def _render_alignment_workbench(
     # —— 按置信度批量选中（滑块 + 按钮）——
     AUTO_THRESHOLD_KEY = "align_auto_select_threshold"
     threshold_pct = st.slider(
-        "置信度阈值",
+        "旧版匹配阈值",
         min_value=0,
         max_value=100,
         value=90,
         step=5,
         format="%d%%",
-        help="拖动设定阈值，然后点击右侧按钮自动勾选所有「置信度≥阈值 且已绑定知识点」的行",
+        help="旧版兼容工作台的匹配阈值。",
         key="align_conf_threshold_slider",
     )
     threshold_val = threshold_pct / 100.0
-    # 预览：符合自动勾选条件的行数（置信度>0 且有建议知识点 且 ≥阈值）
+    # 旧版兼容工作台预选数量。
     auto_eligible = [
         r for r in visible_rows
         if r["置信度"] > 0 and r["置信度"] >= threshold_val and r["建议/已绑定标准知识点"]
@@ -420,16 +420,16 @@ def _render_alignment_workbench(
     col_auto, col_reset = st.columns([0.7, 0.3])
     with col_auto:
         if st.button(
-            f"☑ 自动勾选 ≥{threshold_pct}% 的行（将勾选 {auto_eligible_n} / {len(visible_rows)} 行）",
+            f"☑ 旧版预选 ≥{threshold_pct}% 的行（将选择 {auto_eligible_n} / {len(visible_rows)} 行）",
             use_container_width=True,
             disabled=(auto_eligible_n == 0),
-            help="一次性勾选高置信度的行，勾选后可继续手动调整，再点下方批量确认",
+            help="旧版兼容工作台的批量预选。",
         ):
             st.session_state[AUTO_THRESHOLD_KEY] = threshold_val
             st.rerun()
     with col_reset:
         if st.session_state.get(AUTO_THRESHOLD_KEY) is not None:
-            if st.button("↩ 重置自动勾选", use_container_width=True):
+            if st.button("↩ 重置旧版预选", use_container_width=True):
                 st.session_state.pop(AUTO_THRESHOLD_KEY, None)
                 st.rerun()
 
@@ -519,6 +519,182 @@ def _render_alignment_workbench(
             st.rerun()
     with refresh_col:
         if st.button("刷新对齐状态", width="stretch"):
+            st.rerun()
+
+
+def _render_alignment_workbench(
+    service: ConceptAlignmentService,
+    source_terms: list[dict[str, Any]],
+) -> None:
+    st.subheader("只处理少数例外")
+    st.caption("训练页已能直接确认当前学生的异常项；这里用于集中整理题库和历史术语。")
+
+    raw_focus_items = st.session_state.get(ALIGNMENT_FOCUS_SESSION_KEY) or []
+    focus_items: list[AlignmentFocusItem] = []
+    for item in raw_focus_items:
+        if isinstance(item, Mapping):
+            focus_items.append(
+                AlignmentFocusItem(
+                    source_namespace=str(
+                        item.get("source_namespace") or "grading_weak_point"
+                    ),
+                    source_value=str(item.get("source_value") or ""),
+                    display_value=str(
+                        item.get("display_value")
+                        or item.get("source_value")
+                        or ""
+                    ),
+                    evidence_count=int(item.get("evidence_count") or 0),
+                    student_ids=tuple(
+                        str(value) for value in item.get("student_ids", [])
+                    ),
+                    session_ids=tuple(
+                        int(value) for value in item.get("session_ids", [])
+                    ),
+                )
+            )
+        elif str(item or "").strip():
+            value = str(item).strip()
+            focus_items.append(
+                AlignmentFocusItem(
+                    source_namespace="grading_weak_point",
+                    source_value=value,
+                    display_value=value,
+                    evidence_count=0,
+                    student_ids=(),
+                    session_ids=(),
+                )
+            )
+
+    if focus_items:
+        source_terms = merge_focus_sources(source_terms, focus_items)
+        filtered_terms = filter_focus_sources(source_terms, focus_items)
+        st.info(f"当前只显示训练页带来的 {len(focus_items)} 个待处理术语。")
+        if st.button("退出当前范围"):
+            st.session_state.pop(ALIGNMENT_FOCUS_SESSION_KEY, None)
+            st.rerun()
+    else:
+        filtered_terms = source_terms
+
+    rows = _alignment_rows(service, filtered_terms)
+    _render_summary(rows)
+    pending_terms: list[tuple[dict[str, Any], Any]] = []
+    overview: list[dict[str, Any]] = []
+    for source in filtered_terms:
+        resolution = service.resolve(
+            source["source_namespace"],
+            source["source_value"],
+        )
+        if resolution.status not in (
+            AlignmentStatus.SUGGESTED,
+            AlignmentStatus.UNMAPPED,
+        ):
+            continue
+        pending_terms.append((source, resolution))
+        overview.append(
+            {
+                "待处理术语": source.get("display_value") or source["source_value"],
+                "系统建议": resolution.concept.name if resolution.concept else "尚无建议",
+                "具体训练技能": "、".join(resolution.sub_skill_tags) or "待补充",
+                "来源": NAMESPACE_MAP.get(
+                    source["source_namespace"], source["source_namespace"]
+                ),
+                "证据题数": int(source.get("evidence_count") or 0),
+            }
+        )
+
+    st.markdown("#### 待处理术语概览")
+    if not pending_terms:
+        st.success("当前没有需要人工处理的术语。")
+    else:
+        st.dataframe(
+            pd.DataFrame(overview),
+            hide_index=True,
+            width="stretch",
+        )
+
+        labels: dict[str, tuple[dict[str, Any], Any]] = {}
+        for index, (source, resolution) in enumerate(pending_terms, start=1):
+            display = source.get("display_value") or source["source_value"]
+            label = f"{index}. {display}｜{NAMESPACE_MAP.get(source['source_namespace'], source['source_namespace'])}"
+            labels[label] = (source, resolution)
+        selected_label = st.selectbox("选择需要处理的术语", list(labels))
+        selected_source, selected_resolution = labels[selected_label]
+
+        concept_labels, concept_ids = _concept_options(service)
+        suggested_label = ""
+        if selected_resolution.concept is not None:
+            suggested_label = next(
+                (
+                    label
+                    for label, concept_id in concept_ids.items()
+                    if concept_id == selected_resolution.concept.id
+                ),
+                "",
+            )
+        selected_concept_label = st.selectbox(
+            "匹配到标准知识点",
+            [""] + concept_labels,
+            index=(concept_labels.index(suggested_label) + 1) if suggested_label else 0,
+            format_func=lambda value: value or "请选择标准知识点",
+        )
+        sub_skills = st.text_input(
+            "具体训练技能",
+            value="、".join(selected_resolution.sub_skill_tags),
+            placeholder=str(
+                selected_source.get("display_value")
+                or selected_source["source_value"]
+            ),
+            help="写清学生具体要练什么；可用顿号或逗号分隔。",
+        )
+        confirm_col, reject_col = st.columns(2)
+        if confirm_col.button("确认此匹配", type="primary", width="stretch"):
+            concept_id = concept_ids.get(selected_concept_label)
+            if concept_id is None:
+                st.error("请先选择标准知识点。")
+            else:
+                tags = [
+                    value.strip()
+                    for value in sub_skills.replace("，", ",").replace("、", ",").split(",")
+                    if value.strip()
+                ]
+                service.confirm_mapping(
+                    selected_source["source_namespace"],
+                    selected_source["source_value"],
+                    concept_id,
+                    sub_skill_tags=tags,
+                    reviewed_by="teacher",
+                )
+                st.success("匹配已确认，将用于后续训练推荐。")
+                st.rerun()
+        if reject_col.button("拒绝此术语", width="stretch"):
+            service.reject_mapping(
+                selected_source["source_namespace"],
+                selected_source["source_value"],
+                reviewed_by="teacher",
+            )
+            st.success("该术语已拒绝，不会用于训练推荐。")
+            st.rerun()
+
+    with st.expander("AI 处理详情（维护）", expanded=False):
+        st.caption("仅在需要批量生成初步建议时使用；AI 结果仍需教师确认。")
+        tagging_service = AITaggingService()
+        llm_client = tagging_service.llm_client
+        if llm_client is None:
+            st.info("AI 功能尚未配置。")
+        elif st.button("为待处理术语生成建议", disabled=not pending_terms):
+            grouped: dict[str, list[str]] = {}
+            for source, _ in pending_terms:
+                grouped.setdefault(source["source_namespace"], []).append(
+                    source["source_value"]
+                )
+            logs: list[str] = []
+            with st.spinner("正在生成知识点建议…"):
+                for namespace, terms in grouped.items():
+                    results = service.ai_batch_align(namespace, terms, llm_client)
+                    logs.append(f"{namespace}: 已处理 {len(results)} 项")
+            st.code("\n".join(logs) or "没有需要更新的术语")
+            st.success("AI 建议已更新，请回到上方逐条确认。")
             st.rerun()
 
 
@@ -656,7 +832,7 @@ def _render_relation_editor(service: ConceptAlignmentService) -> None:
             st.rerun()
 
 
-st.set_page_config(page_title="知识点对齐中心", layout="wide")
+st.set_page_config(page_title="知识点整理（高级）", layout="wide")
 
 # Inject premium shared CSS
 try:
@@ -665,9 +841,9 @@ try:
 except Exception:
     pass
 
-st.title("知识点对齐中心")
+st.title("知识点整理（高级）")
 
-with st.expander("💡 知识点对齐中心是如何工作的？（新手教师快速入门）", expanded=True):
+with st.expander("这个页面什么时候用？", expanded=False):
     st.markdown("""
     #### 🎯 为什么需要“知识点对齐”？
     1. **诊断出的词不标准**：系统在批改阅卷时识别到的学生薄弱点（如“求根公式”、“一元二次函数解析式”）是比较零散的**“原始词”**。
@@ -682,7 +858,7 @@ with st.expander("💡 知识点对齐中心是如何工作的？（新手教师
     > ⚠️ **重要提示**：只有映射状态为 **「已确认」** 且绑定了标准知识点的原始词，才会被当做有效的薄弱证据，进而能够参与 **「训练推荐」** 选题！
     """)
 
-st.caption("集中连接批改薄弱点、题库标签与稳定标准知识点，为后续训练推荐提供可信入口。")
+st.caption("普通生成练习不必来这里；仅在集中维护标准知识点或处理历史异常术语时使用。")
 
 path_manager = get_path_manager()
 alignment_service = ConceptAlignmentService(path_manager.qb_db_path)
@@ -692,12 +868,14 @@ for warning in load_warnings:
     st.warning(warning)
 
 alignment_tab, concept_tab = st.tabs(
-    ["对齐工作台", "知识点管理"]
+    ["例外处理", "标准知识点维护"]
 )
 with alignment_tab:
     _render_alignment_workbench(alignment_service, real_source_terms)
 with concept_tab:
     _render_concept_editor(alignment_service)
-    st.markdown("---")
-    with st.expander("🔗 知识点关系管理", expanded=False):
-        _render_relation_editor(alignment_service)
+    relations = alignment_service.list_relations()
+    if relations:
+        st.markdown("---")
+        with st.expander("关系维护（专家）", expanded=False):
+            _render_relation_editor(alignment_service)
