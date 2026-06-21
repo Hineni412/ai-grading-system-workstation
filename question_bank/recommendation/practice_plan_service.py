@@ -10,6 +10,7 @@ from question_bank.recommendation.recommendation_engine import (
     practice_gradient_fit,
     text_similarity,
 )
+from question_bank.recommendation.fine_skill_matching import fine_skill_match_score
 from question_bank.recommendation.scoring import (
     DEFAULT_WEIGHTS,
     frequency_fit_score,
@@ -45,6 +46,7 @@ class PracticePlanService:
         exclude_current_exam_originals: bool = True,
         include_historical_wrong_questions: bool = False,
         similarity_threshold: float = 0.92,
+        allow_broad_fallback: bool = False,
     ) -> dict[str, Any]:
         profiles = [
             dict(item)
@@ -88,6 +90,7 @@ class PracticePlanService:
                 exclude_question_ids=None if exclude_current_exam_originals else set(),
                 include_historical_wrong_questions=include_historical_wrong_questions,
                 similarity_threshold=similarity_threshold,
+                allow_broad_fallback=allow_broad_fallback,
             )
             variants.append(
                 {
@@ -112,6 +115,7 @@ class PracticePlanService:
                 "exclude_current_exam_originals": bool(exclude_current_exam_originals),
                 "include_historical_wrong_questions": bool(include_historical_wrong_questions),
                 "similarity_threshold": float(similarity_threshold),
+                "allow_broad_fallback": bool(allow_broad_fallback),
             },
             "variant_mode": variant_mode,
             "variants": variants,
@@ -138,6 +142,7 @@ class PracticePlanService:
         exclude_question_ids: Iterable[int] | None = None,
         include_historical_wrong_questions: bool = False,
         similarity_threshold: float = 0.92,
+        allow_broad_fallback: bool = False,
     ) -> dict[str, Any]:
         count = int(question_count)
         if not 8 <= count <= 12:
@@ -190,6 +195,7 @@ class PracticePlanService:
                 method_counts=method_counts,
                 frequency_by_id=frequency_by_id,
                 weights=resolved_weights,
+                allow_broad_fallback=allow_broad_fallback,
             )
             selected.extend(stage_selected)
             if len(stage_selected) < requested:
@@ -219,6 +225,7 @@ class PracticePlanService:
                 "stage_ratios": dict(DEFAULT_STAGE_RATIOS if stage_ratios is None else stage_ratios),
                 "weights": resolved_weights,
                 "include_historical_wrong_questions": bool(include_historical_wrong_questions),
+                "allow_broad_fallback": bool(allow_broad_fallback),
             },
         }
 
@@ -306,8 +313,9 @@ class PracticePlanService:
         method_counts: Counter[str],
         frequency_by_id: Mapping[int, Any],
         weights: Mapping[str, object],
+        allow_broad_fallback: bool,
     ) -> list[dict[str, Any]]:
-        scored: list[tuple[float, int, dict[str, Any]]] = []
+        scored: list[tuple[tuple[float, ...], int, dict[str, Any]]] = []
         for candidate in candidates:
             question_id = int(candidate["id"])
             if question_id in selected_ids or stage not in candidate["stage_roles"]:
@@ -316,18 +324,28 @@ class PracticePlanService:
             method_key = _method_key(candidate)
             diversity = _diversity_fit(paper_counts[paper_key], method_counts[method_key] if method_key else 0)
             metrics = frequency_by_id.get(question_id)
+            role = candidate["stage_roles"][stage]
             result = score_candidate(
-                concept_match=candidate["stage_roles"][stage]["concept_match"],
+                concept_match=role["concept_match"],
                 mapping_status="confirmed",
+                fine_skill_match=role.get("fine_skill_match", 0.0),
                 frequency_fit=frequency_fit_score(metrics) if getattr(metrics, "available", False) else None,
                 gradient_fit=practice_gradient_fit(stage, candidate.get("difficulty")),
                 diversity_fit=diversity,
                 weights=weights,
-                sub_skill_boost=candidate["stage_roles"][stage].get("sub_skill_boost", 0.0),
+                sub_skill_boost=role.get("sub_skill_boost", 0.0),
+                allow_broad_fallback=allow_broad_fallback,
             )
             if result.eligible:
-                scored.append((result.total_score, question_id, _item_payload(candidate, stage, result, metrics)))
-        scored.sort(key=lambda item: (-item[0], item[1]))
+                ranking = (
+                    -float(role.get("fine_skill_match", 0.0)),
+                    -float(result.components["gradient"]),
+                    -float(result.components["frequency"]),
+                    -float(result.components["diversity"]),
+                    -float(result.total_score),
+                )
+                scored.append((ranking, question_id, _item_payload(candidate, stage, result, metrics)))
+        scored.sort(key=lambda item: (item[0], item[1]))
 
         selected: list[dict[str, Any]] = []
         for _, question_id, payload in scored:
@@ -539,10 +557,34 @@ def _assign_candidate_roles(
         difficulty = _difficulty(candidate.get("difficulty"))
         for weak in weak_points:
             target_id = int(weak["concept_id"])
+            target_skills = [
+                str(value).strip()
+                for value in weak.get("sub_skill_tags", [])
+                if str(value).strip()
+            ]
+            if not target_skills:
+                source_skill = str(
+                    weak.get("source_term")
+                    or weak.get("source_display")
+                    or weak.get("concept_name")
+                    or ""
+                ).strip()
+                if source_skill:
+                    target_skills = [source_skill]
             if target_id in concept_ids:
                 weak_sub_skills = [s.strip().casefold() for s in weak.get("sub_skill_tags", []) if s]
                 sub_skill_boost = 0.0
                 matched_skills = []
+                candidate_skill_tags = [
+                    str(value).strip()
+                    for tag_type in ("knowledge_point", "prerequisite", "method", "model")
+                    for value in candidate.get("tags", {}).get(tag_type, [])
+                    if str(value).strip()
+                ]
+                fine_skill_match = fine_skill_match_score(
+                    target_skills,
+                    candidate_skill_tags,
+                )
                 if weak_sub_skills:
                     candidate_tag_values = set()
                     fold_to_orig = {}
@@ -555,11 +597,40 @@ def _assign_candidate_roles(
                     sub_skill_boost = len(intersection) / len(weak_sub_skills)
                     matched_skills = [fold_to_orig[s] for s in intersection]
 
-                _set_role(roles, "direct", 1.0, target_id, target_id, "direct", sub_skill_boost=sub_skill_boost, sub_skill_match=matched_skills)
+                _set_role(
+                    roles,
+                    "direct",
+                    1.0,
+                    target_id,
+                    target_id,
+                    "direct",
+                    sub_skill_boost=sub_skill_boost,
+                    sub_skill_match=matched_skills,
+                    fine_skill_match=fine_skill_match,
+                    target_skills=target_skills,
+                )
                 if difficulty is not None and difficulty <= 3:
-                    _set_role(roles, "prerequisite", 0.75, target_id, target_id, "difficulty_scaffold")
+                    _set_role(
+                        roles,
+                        "prerequisite",
+                        0.75,
+                        target_id,
+                        target_id,
+                        "difficulty_scaffold",
+                        fine_skill_match=fine_skill_match,
+                        target_skills=target_skills,
+                    )
                 if (difficulty is not None and difficulty >= 7) or candidate["tags"].get("model"):
-                    _set_role(roles, "transfer", 0.8, target_id, target_id, "direct_transfer")
+                    _set_role(
+                        roles,
+                        "transfer",
+                        0.8,
+                        target_id,
+                        target_id,
+                        "direct_transfer",
+                        fine_skill_match=fine_skill_match,
+                        target_skills=target_skills,
+                    )
             for relation in relations.get(target_id, []):
                 related_id = int(relation["target_concept_id"])
                 if related_id not in concept_ids:
@@ -567,9 +638,29 @@ def _assign_candidate_roles(
                 relation_type = str(relation["relation_type"])
                 strength = float(relation.get("weight") or 0.0)
                 if relation_type in {"prerequisite", "parent"}:
-                    _set_role(roles, "prerequisite", strength, target_id, related_id, relation_type)
+                    _set_role(
+                        roles,
+                        "prerequisite",
+                        strength,
+                        target_id,
+                        related_id,
+                        relation_type,
+                        fine_skill_match=1.0,
+                        target_skills=target_skills,
+                        match_basis="confirmed_relation",
+                    )
                 elif relation_type == "related":
-                    _set_role(roles, "transfer", strength, target_id, related_id, relation_type)
+                    _set_role(
+                        roles,
+                        "transfer",
+                        strength,
+                        target_id,
+                        related_id,
+                        relation_type,
+                        fine_skill_match=1.0,
+                        target_skills=target_skills,
+                        match_basis="confirmed_relation",
+                    )
         if roles:
             result.append({**candidate, "stage_roles": roles})
     return result
@@ -584,7 +675,10 @@ def _set_role(
     relation_type: str,
     *,
     sub_skill_boost: float = 0.0,
-    sub_skill_match: list[str] = None,
+    sub_skill_match: list[str] | None = None,
+    fine_skill_match: float = 0.0,
+    target_skills: list[str] | None = None,
+    match_basis: str = "fine_skill",
 ) -> None:
     existing = roles.get(stage)
     if existing is None or float(existing["concept_match"]) < strength:
@@ -595,6 +689,9 @@ def _set_role(
             "relation_type": relation_type,
             "sub_skill_boost": round(sub_skill_boost, 4),
             "sub_skill_match": sub_skill_match or [],
+            "fine_skill_match": round(min(1.0, max(0.0, fine_skill_match)), 4),
+            "target_skills": list(target_skills or []),
+            "match_basis": match_basis,
         }
 
 
@@ -659,6 +756,9 @@ def _item_payload(candidate: Mapping[str, Any], stage: str, result: Any, metrics
         "method_tags": list(candidate["tags"].get("method", [])),
         "model_tags": list(candidate["tags"].get("model", [])),
         "sub_skill_match": list(role.get("sub_skill_match", [])),
+        "fine_skill_match": float(role.get("fine_skill_match", 0.0)),
+        "target_skills": list(role.get("target_skills", [])),
+        "match_basis": str(role.get("match_basis") or "fine_skill"),
         "frequency": metrics.to_dict() if metrics is not None else {},
     }
 

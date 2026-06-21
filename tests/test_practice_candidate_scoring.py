@@ -13,6 +13,7 @@ def test_candidate_without_confirmed_concept_match_is_ineligible() -> None:
     result = score_candidate(
         concept_match=0.0,
         mapping_status="suggested",
+        fine_skill_match=1.0,
         frequency_fit=1.0,
         gradient_fit=1.0,
         diversity_fit=1.0,
@@ -26,6 +27,7 @@ def test_default_weights_prioritize_concept_and_frequency() -> None:
     result = score_candidate(
         concept_match=1.0,
         mapping_status="confirmed",
+        fine_skill_match=1.0,
         frequency_fit=0.8,
         gradient_fit=0.5,
         diversity_fit=0.5,
@@ -40,6 +42,7 @@ def test_invalid_custom_weight_total_is_rejected() -> None:
         score_candidate(
             concept_match=1.0,
             mapping_status="confirmed",
+            fine_skill_match=1.0,
             frequency_fit=0.8,
             gradient_fit=0.5,
             diversity_fit=0.5,
@@ -51,6 +54,7 @@ def test_missing_difficulty_uses_neutral_gradient_with_warning() -> None:
     result = score_candidate(
         concept_match=1.0,
         mapping_status="confirmed",
+        fine_skill_match=1.0,
         frequency_fit=0.8,
         gradient_fit=None,
         diversity_fit=0.5,
@@ -93,6 +97,7 @@ def test_sub_skill_boost_applies_bonus_multiplier() -> None:
     base_result = score_candidate(
         concept_match=1.0,
         mapping_status="confirmed",
+        fine_skill_match=1.0,
         frequency_fit=0.8,
         gradient_fit=0.5,
         diversity_fit=0.5,
@@ -100,9 +105,39 @@ def test_sub_skill_boost_applies_bonus_multiplier() -> None:
     boosted_result = score_candidate(
         concept_match=1.0,
         mapping_status="confirmed",
+        fine_skill_match=1.0,
         frequency_fit=0.8,
         gradient_fit=0.5,
         diversity_fit=0.5,
         sub_skill_boost=1.0,
     )
     assert boosted_result.total_score == pytest.approx(base_result.total_score * 1.3, rel=1e-4)
+
+
+def test_confirmed_broad_concept_without_fine_skill_is_ineligible_by_default() -> None:
+    result = score_candidate(
+        concept_match=1.0,
+        mapping_status="confirmed",
+        fine_skill_match=0.0,
+        frequency_fit=1.0,
+        gradient_fit=1.0,
+        diversity_fit=1.0,
+    )
+
+    assert result.eligible is False
+    assert "具体训练技能不匹配" in result.warnings
+
+
+def test_advanced_broad_fallback_is_explicit_and_warned() -> None:
+    result = score_candidate(
+        concept_match=1.0,
+        mapping_status="confirmed",
+        fine_skill_match=0.0,
+        frequency_fit=1.0,
+        gradient_fit=1.0,
+        diversity_fit=1.0,
+        allow_broad_fallback=True,
+    )
+
+    assert result.eligible is True
+    assert "仅按标准知识点大类补足" in result.warnings
