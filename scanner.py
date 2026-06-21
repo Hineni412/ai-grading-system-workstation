@@ -17,6 +17,7 @@ from typing import Any, List
 from PIL import Image
 
 from answer_region_geometry import scaled_region_bbox
+from grading_limits import PRECHECK_WORKERS_MAX, PRECHECK_WORKERS_MIN, bounded_int
 from image_preprocessor import ENHANCER_VERSION, enhance_for_ai, enhance_image_file
 from llm_client import LLMClient
 
@@ -212,7 +213,12 @@ class Scanner:
         self.llm_client = llm_client
         self.ocr_model = ocr_model
         self.enhance_images = enhance_images
-        self.ocr_workers = _bounded_int(ocr_workers, _env_int("AI_GRADING_PRECHECK_WORKERS", 12), 1, 32)
+        self.ocr_workers = bounded_int(
+            ocr_workers,
+            _env_int("AI_GRADING_PRECHECK_WORKERS", 12),
+            PRECHECK_WORKERS_MIN,
+            PRECHECK_WORKERS_MAX,
+        )
         self.name_region = dict(name_region or {}) if name_region else None
         self.front_page_parity = _normalize_front_page_parity(front_page_parity)
         self.delete_source_pdfs = delete_source_pdfs
@@ -1114,14 +1120,6 @@ def _env_int(name: str, default: int) -> int:
         return int(os.getenv(name, str(default)))
     except (TypeError, ValueError):
         return default
-
-
-def _bounded_int(value: int | None, default: int, minimum: int, maximum: int) -> int:
-    try:
-        resolved = int(value) if value is not None else int(default)
-    except (TypeError, ValueError):
-        resolved = int(default)
-    return max(minimum, min(maximum, resolved))
 
 
 def _normalize_front_page_parity(value: str | None) -> str | None:

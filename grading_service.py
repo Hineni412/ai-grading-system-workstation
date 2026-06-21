@@ -13,6 +13,19 @@ from typing import Any, Iterable
 from ai_grader import AIGrader, QuestionGradingDetail
 from db_manager import DBManager
 from evidence_atlas import EvidenceAtlasBuilder
+from grading_limits import (
+    FULL_PAPER_WORKERS_MAX,
+    FULL_PAPER_WORKERS_MIN,
+    GRADING_RPM_MAX,
+    GRADING_RPM_MIN,
+    HYBRID_INFLIGHT_WORKERS_MAX,
+    HYBRID_INFLIGHT_WORKERS_MIN,
+    OBJECTIVE_BATCH_SIZE_MAX,
+    OBJECTIVE_BATCH_SIZE_MIN,
+    SUBJECTIVE_MAJOR_BATCH_SIZE_MAX,
+    SUBJECTIVE_MAJOR_BATCH_SIZE_MIN,
+    bounded_int,
+)
 from grading_completeness import audit_grading_details, major_question_id, major_question_ids_for_issues
 from image_preprocessor import enhance_image_file
 from llm_client import LLMClient
@@ -201,13 +214,23 @@ class GradingService:
                 matched_records.append((paper_id, group, int(student["id"])))
 
         total = len(matched_records)
-        worker_count = _bounded_int(max_workers, _env_int("AI_GRADING_MAX_WORKERS", 200), 1, 200)
-        rpm_limit = _bounded_int(requests_per_minute, _env_int("AI_GRADING_REQUESTS_PER_MINUTE", 1000), 1, 10000)
-        hybrid_worker_count = _bounded_int(
+        worker_count = bounded_int(
+            max_workers,
+            _env_int("AI_GRADING_MAX_WORKERS", FULL_PAPER_WORKERS_MAX),
+            FULL_PAPER_WORKERS_MIN,
+            FULL_PAPER_WORKERS_MAX,
+        )
+        rpm_limit = bounded_int(
+            requests_per_minute,
+            _env_int("AI_GRADING_REQUESTS_PER_MINUTE", 1000),
+            GRADING_RPM_MIN,
+            GRADING_RPM_MAX,
+        )
+        hybrid_worker_count = bounded_int(
             None,
-            _env_int("AI_HYBRID_INFLIGHT_WORKERS", max(worker_count, min(rpm_limit, 200))),
-            1,
-            1000,
+            _env_int("AI_HYBRID_INFLIGHT_WORKERS", max(worker_count, min(rpm_limit, FULL_PAPER_WORKERS_MAX))),
+            HYBRID_INFLIGHT_WORKERS_MIN,
+            HYBRID_INFLIGHT_WORKERS_MAX,
         )
         rate_limiter = _RateLimiter(rpm_limit)
         event_queue = queue.Queue()
@@ -318,8 +341,18 @@ class GradingService:
                         llm_client=self.llm_client,
                         grading_model=grading_model,
                         output_root=get_path_manager().outputs_dir / "hybrid_batch",
-                        batch_size=_bounded_int(os.getenv("LLM_HYBRID_MAJOR_BATCH_SIZE"), 4, 1, 20),
-                        objective_batch_size=_bounded_int(os.getenv("LLM_OBJECTIVE_BATCH_SIZE"), 15, 1, 50),
+                        batch_size=bounded_int(
+                            os.getenv("LLM_HYBRID_MAJOR_BATCH_SIZE"),
+                            4,
+                            SUBJECTIVE_MAJOR_BATCH_SIZE_MIN,
+                            SUBJECTIVE_MAJOR_BATCH_SIZE_MAX,
+                        ),
+                        objective_batch_size=bounded_int(
+                            os.getenv("LLM_OBJECTIVE_BATCH_SIZE"),
+                            OBJECTIVE_BATCH_SIZE_MAX,
+                            OBJECTIVE_BATCH_SIZE_MIN,
+                            OBJECTIVE_BATCH_SIZE_MAX,
+                        ),
                         batch_workers=hybrid_worker_count,
                         rate_limiter=rate_limiter,
                         progress_callback=_hybrid_progress,
@@ -835,7 +868,7 @@ def _grade_one_paper_with_retries(
 ):
     from openai import APIConnectionError, APITimeoutError, RateLimitError
 
-    retry_count = _bounded_int(os.getenv("AI_GRADING_FULL_PAPER_RETRIES"), 1, 0, 5)
+    retry_count = bounded_int(os.getenv("AI_GRADING_FULL_PAPER_RETRIES"), 1, 0, 5)
     attempts = retry_count + 1
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
@@ -955,14 +988,6 @@ def _env_int(name: str, default: int) -> int:
         return int(os.getenv(name, str(default)))
     except (TypeError, ValueError):
         return default
-
-
-def _bounded_int(value: int | None, default: int, minimum: int, maximum: int) -> int:
-    try:
-        resolved = int(value) if value is not None else int(default)
-    except (TypeError, ValueError):
-        resolved = int(default)
-    return max(minimum, min(maximum, resolved))
 
 
 class _RateLimiter:

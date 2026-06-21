@@ -597,6 +597,7 @@ class ObjectiveBatchRecognitionClient:
 
 
 def build_objective_batch_prompt(spec: ObjectiveQuestionSpec, manifest: dict[str, Any]) -> str:
+    item_count = len(manifest.get("items", [])) if isinstance(manifest.get("items"), list) else 0
     if spec.question_type == "choice":
         item_schema = {
             "paper_key": "paper_001_student_1_sample",
@@ -620,7 +621,7 @@ def build_objective_batch_prompt(spec: ObjectiveQuestionSpec, manifest: dict[str
         task = "Recognize the student's final fill-in answer text. Do not grade."
     return "\n".join(
         [
-            "You are recognizing objective answers from one question across up to 15 students.",
+            f"You are recognizing objective answers from one question across {item_count} students.",
             task,
             "Use paper_key as the primary identifier. student_id may not be unique.",
             "Preserve every visible, non-discarded student answer exactly; for fill-in questions, keep all answer values and separators.",
