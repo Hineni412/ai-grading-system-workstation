@@ -17,7 +17,12 @@ from question_bank.services.training_export_service import TrainingExportService
 from question_bank.services.training_task_service import TrainingTaskService
 from question_bank.services.question_service import QuestionService
 from question_bank.services.concept_alignment_service import ConceptAlignmentService
-from question_bank.services.alignment_review_service import focus_items_from_diagnosis
+from question_bank.models.knowledge_alignment import normalize_source_value
+from question_bank.services.alignment_review_service import (
+    AlignmentReviewService,
+    apply_scope_exclusions,
+    focus_items_from_diagnosis,
+)
 
 # 共享组件（难度 badge / 标签 chip 群），与题库管理页风格统一
 try:
@@ -77,12 +82,32 @@ def _unique_text(values: Iterable[object]) -> list[str]:
     return result
 
 
-def _scope_signature(scope: Mapping[str, Any], exam_scope: Mapping[str, Any]) -> str:
+def _scope_signature(
+    scope: Mapping[str, Any],
+    exam_scope: Mapping[str, Any],
+    alignment_revision: str,
+) -> str:
     return json.dumps(
+        {
+            "scope": dict(scope),
+            "exam_scope": dict(exam_scope),
+            "alignment_revision": alignment_revision,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _scope_exclusion_key(
+    scope: Mapping[str, Any],
+    exam_scope: Mapping[str, Any],
+) -> str:
+    stable_scope = json.dumps(
         {"scope": dict(scope), "exam_scope": dict(exam_scope)},
         ensure_ascii=False,
         sort_keys=True,
     )
+    return f"training_scope_exclusions:{stable_scope}"
 
 
 def _score_by_student(db: DBManager) -> dict[str, float | None]:
@@ -95,7 +120,12 @@ def _score_by_student(db: DBManager) -> dict[str, float | None]:
     return result
 
 
-def _render_diagnosis(diagnosis: Mapping[str, Any]) -> None:
+def _render_diagnosis(
+    diagnosis: Mapping[str, Any],
+    *,
+    scope: Mapping[str, Any],
+    exam_scope: Mapping[str, Any],
+) -> None:
     students = list(diagnosis.get("students") or [])
     confirmed = list(diagnosis.get("confirmed_concept_ids") or [])
     suggested = list(diagnosis.get("suggested_terms") or [])
@@ -152,26 +182,113 @@ def _render_diagnosis(diagnosis: Mapping[str, Any]) -> None:
     else:
         st.info("所选范围内暂时没有薄弱知识点证据。")
 
-    excluded_terms = _unique_text([*suggested, *unmapped])
-    if excluded_terms:
-        st.warning(
-            f"⚠️ **检测到 {len(excluded_terms)} 个薄弱术语未建立映射**。未绑定的知识点不会静默推荐题目。建议您前往对齐中心对齐："
+    focus_items = focus_items_from_diagnosis(diagnosis)
+    confirmed_count = sum(
+        1
+        for student in students
+        for weak in student.get("weak_points", [])
+        if weak.get("eligible_for_recommendation")
+    )
+    if focus_items:
+        st.info(
+            f"已自动整理 {confirmed_count} 个薄弱点，还有 "
+            f"{len(focus_items)} 个需要您确认。"
         )
-        # 术语 chip 群：每个未映射术语一个红色 badge，提示需处理
-        chips = "".join(
-            f'<span class="qb-badge qb-badge-hard">{html.escape(str(t))}</span>'
-            for t in excluded_terms
-        )
-        st.markdown(
-            f'<div style="display:flex; flex-wrap:wrap; gap:4px;">{chips}</div>',
-            unsafe_allow_html=True,
-        )
-        if st.button("👉 前往知识点对齐中心处理", key="open_alignment_center"):
-            focus_items = focus_items_from_diagnosis(diagnosis)
-            st.session_state[ALIGNMENT_FOCUS_SESSION_KEY] = [
-                item.to_dict() for item in focus_items
-            ]
-            st.switch_page("pages/知识图谱适配调试.py")
+        pm = get_path_manager()
+        alignment_service = ConceptAlignmentService(pm.qb_db_path)
+        review_service = AlignmentReviewService(pm.db_path, pm.qb_db_path)
+        concepts = alignment_service.list_concepts()
+        concept_by_id = {concept.id: concept for concept in concepts}
+        concept_ids = list(concept_by_id)
+        exclusion_key = _scope_exclusion_key(scope, exam_scope)
+        exclusions = set(st.session_state.get(exclusion_key) or [])
+
+        if not concept_ids:
+            st.warning("标准知识点库为空，请先打开高级整理并导入标准知识点。")
+        else:
+            for item in focus_items:
+                resolution = alignment_service.resolve(
+                    item.source_namespace,
+                    item.source_value,
+                )
+                suggested_id = (
+                    resolution.concept.id if resolution.concept else None
+                )
+                default_index = (
+                    concept_ids.index(suggested_id)
+                    if suggested_id in concept_ids
+                    else 0
+                )
+                item_key = normalize_source_value(item.source_value)
+                with st.container(border=True):
+                    st.markdown(f"**薄弱点：{item.source_value}**")
+                    st.caption(
+                        f"诊断来源：{item.display_value} · "
+                        f"证据题数：{item.evidence_count}"
+                    )
+                    selected_id = st.selectbox(
+                        "系统建议",
+                        concept_ids,
+                        index=default_index,
+                        format_func=lambda concept_id: concept_by_id[
+                            concept_id
+                        ].name,
+                        key=f"alignment_choice_{item_key}",
+                    )
+                    accept_col, skip_col = st.columns(2)
+                    if accept_col.button(
+                        "使用这个匹配",
+                        key=f"alignment_accept_{item_key}",
+                        use_container_width=True,
+                    ):
+                        refreshed = review_service.confirm_and_rebuild(
+                            scope=scope,
+                            exam_scope=exam_scope,
+                            source_value=item.source_value,
+                            concept_id=int(selected_id),
+                        )
+                        if exclusions:
+                            refreshed = apply_scope_exclusions(
+                                refreshed,
+                                exclusions,
+                            )
+                        alignment_revision = (
+                            review_service.alignment.revision_token()
+                        )
+                        st.session_state[DIAGNOSIS_KEY] = refreshed
+                        st.session_state[DIAGNOSIS_SIGNATURE_KEY] = (
+                            _scope_signature(
+                                scope,
+                                exam_scope,
+                                alignment_revision,
+                            )
+                        )
+                        st.session_state.pop(PLAN_KEY, None)
+                        st.session_state.pop(PLAN_SIGNATURE_KEY, None)
+                        st.session_state.pop(SAVED_TASK_KEY, None)
+                        st.rerun()
+                    if skip_col.button(
+                        "本次不推荐",
+                        key=f"alignment_skip_{item_key}",
+                        use_container_width=True,
+                    ):
+                        exclusions.add(item.source_value)
+                        st.session_state[exclusion_key] = sorted(exclusions)
+                        st.session_state[DIAGNOSIS_KEY] = (
+                            apply_scope_exclusions(diagnosis, exclusions)
+                        )
+                        st.session_state.pop(PLAN_KEY, None)
+                        st.session_state.pop(PLAN_SIGNATURE_KEY, None)
+                        st.session_state.pop(SAVED_TASK_KEY, None)
+                        st.rerun()
+    else:
+        st.success(f"已自动整理 {confirmed_count} 个薄弱点，无需额外确认。")
+
+    if st.button("打开知识点整理（高级）", key="open_advanced_alignment"):
+        st.session_state[ALIGNMENT_FOCUS_SESSION_KEY] = [
+            item.to_dict() for item in focus_items
+        ]
+        st.switch_page("pages/知识图谱适配调试.py")
 
 def _render_question_images(question_detail: dict[str, Any]) -> None:
     IMAGE_MARKER_PATTERN = re.compile(r"\[image:\s*(?P<path>[^\]]+)\]", re.IGNORECASE)
@@ -744,7 +861,16 @@ exam_scope = {
     "mode": exam_mode,
     "session_ids": selected_session_ids,
 }
-selection_signature = _scope_signature(scope, exam_scope)
+alignment_revision = (
+    ConceptAlignmentService(pm.qb_db_path).revision_token()
+    if question_bank_available
+    else "question-bank-unavailable"
+)
+selection_signature = _scope_signature(
+    scope,
+    exam_scope,
+    alignment_revision,
+)
 
 safety_reasons: list[str] = []
 if not selected_student_ids:
@@ -771,6 +897,20 @@ if st.button(
     except Exception as exc:
         st.error(f"诊断分析失败：{exc}")
     else:
+        alignment_revision = ConceptAlignmentService(
+            pm.qb_db_path
+        ).revision_token()
+        selection_signature = _scope_signature(
+            scope,
+            exam_scope,
+            alignment_revision,
+        )
+        exclusions = set(
+            st.session_state.get(_scope_exclusion_key(scope, exam_scope))
+            or []
+        )
+        if exclusions:
+            diagnosis = apply_scope_exclusions(diagnosis, exclusions)
         st.session_state[DIAGNOSIS_KEY] = diagnosis
         st.session_state[DIAGNOSIS_SIGNATURE_KEY] = selection_signature
         st.session_state.pop(PLAN_KEY, None)
@@ -785,7 +925,11 @@ diagnosis_is_current = (
 )
 if diagnosis_is_current:
     st.subheader("3. 检查诊断与知识点覆盖")
-    _render_diagnosis(diagnosis)
+    _render_diagnosis(
+        diagnosis,
+        scope=scope,
+        exam_scope=exam_scope,
+    )
 elif diagnosis is not None:
     st.info("学生或考试范围已变化，请重新分析薄弱知识点。")
 

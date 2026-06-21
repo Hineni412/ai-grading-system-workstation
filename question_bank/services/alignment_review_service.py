@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from integration.diagnosis_profile_service import DiagnosisProfileService
 from question_bank.models.knowledge_alignment import normalize_source_value
+from question_bank.services.concept_alignment_service import ConceptAlignmentService
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +23,39 @@ class AlignmentFocusItem:
         return asdict(self)
 
 
+class AlignmentReviewService:
+    def __init__(
+        self,
+        grading_db_path: str | Path,
+        question_bank_db_path: str | Path,
+    ) -> None:
+        self.diagnosis = DiagnosisProfileService(
+            grading_db_path,
+            question_bank_db_path,
+        )
+        self.alignment = ConceptAlignmentService(question_bank_db_path)
+
+    def confirm_and_rebuild(
+        self,
+        *,
+        scope: Mapping[str, Any],
+        exam_scope: Mapping[str, Any],
+        source_value: str,
+        concept_id: int,
+    ) -> dict[str, Any]:
+        self.alignment.confirm_mapping(
+            "grading_weak_point",
+            source_value,
+            concept_id,
+            sub_skill_tags=[source_value],
+            reviewed_by="teacher",
+        )
+        return self.diagnosis.build_profiles(
+            scope=scope,
+            exam_scope=exam_scope,
+        )
+
+
 def focus_items_from_diagnosis(
     diagnosis: Mapping[str, Any],
 ) -> list[AlignmentFocusItem]:
@@ -30,6 +67,8 @@ def focus_items_from_diagnosis(
     for student in diagnosis.get("students", []):
         student_id = str(student.get("student_id") or "")
         for weak in student.get("weak_points", []):
+            if str(weak.get("review_state") or "") == "本次不推荐":
+                continue
             if str(weak.get("mapping_status") or "") in {
                 "confirmed",
                 "rejected",
@@ -117,8 +156,32 @@ def filter_focus_sources(
     ]
 
 
+def apply_scope_exclusions(
+    diagnosis: Mapping[str, Any],
+    excluded_terms: set[str],
+) -> dict[str, Any]:
+    result = deepcopy(dict(diagnosis))
+    for student in result.get("students", []):
+        for weak in student.get("weak_points", []):
+            if str(weak.get("source_term") or "") in excluded_terms:
+                weak["eligible_for_recommendation"] = False
+                weak["review_state"] = "本次不推荐"
+    result["confirmed_concept_ids"] = sorted(
+        {
+            int(weak["concept_id"])
+            for student in result.get("students", [])
+            for weak in student.get("weak_points", [])
+            if weak.get("eligible_for_recommendation")
+            and weak.get("concept_id") is not None
+        }
+    )
+    return result
+
+
 __all__ = [
     "AlignmentFocusItem",
+    "AlignmentReviewService",
+    "apply_scope_exclusions",
     "filter_focus_sources",
     "focus_items_from_diagnosis",
     "merge_focus_sources",
