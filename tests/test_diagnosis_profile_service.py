@@ -102,6 +102,22 @@ def test_current_exam_single_student_profile_uses_full_score_weighting(
     assert weak["eligible_for_recommendation"] is True
 
 
+def test_diagnosis_exposes_display_value_separately_from_mapping_term(
+    service: DiagnosisProfileService,
+) -> None:
+    profile = service.build_profiles(
+        scope={"mode": "student", "student_ids": ["12"]},
+        exam_scope={"mode": "current", "session_ids": [14]},
+    )
+
+    weak = next(
+        item
+        for item in profile["students"][0]["weak_points"]
+        if item["source_term"] == "二次函数"
+    )
+    assert weak["source_display"].endswith("二次函数")
+
+
 def test_selected_students_and_manual_sessions_are_respected(
     service: DiagnosisProfileService,
 ) -> None:

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from db_manager import DBManager
+from integration.knowledge_term_identity import build_grading_knowledge_term
 from question_bank.models.knowledge_alignment import AlignmentStatus
 from question_bank.services.concept_alignment_service import ConceptAlignmentService
 
@@ -50,7 +51,11 @@ class DiagnosisProfileService:
             )
             weak_points: list[dict[str, Any]] = []
             for row in weak_rows:
-                source_term = _source_term(row)
+                term = build_grading_knowledge_term(
+                    row.get("knowledge_id"),
+                    row.get("knowledge_label"),
+                )
+                source_term = term.source_value
                 resolution = self.alignment.resolve("grading_weak_point", source_term)
                 references = self._source_question_refs(
                     student_id=student_id,
@@ -71,6 +76,7 @@ class DiagnosisProfileService:
                 weak_points.append(
                     {
                         "source_term": source_term,
+                        "source_display": term.display_value,
                         "source_knowledge_id": str(row.get("knowledge_id") or ""),
                         "concept_id": concept.id if concept is not None else None,
                         "concept_name": concept.name if concept is not None else "",
@@ -274,13 +280,10 @@ def _score_totals(
 
 
 def _source_term(row: Mapping[str, Any]) -> str:
-    knowledge_id = str(row.get("knowledge_id") or "").strip()
-    label = str(row.get("knowledge_label") or "").strip()
-    if knowledge_id and label.startswith(knowledge_id):
-        label = label[len(knowledge_id) :].strip()
-        while label and label[0] in "·路:：-| ":
-            label = label[1:].strip()
-    return label or knowledge_id or "UNKNOWN"
+    return build_grading_knowledge_term(
+        row.get("knowledge_id"),
+        row.get("knowledge_label"),
+    ).source_value
 
 
 def _actionable_reasons(value: object) -> list[str]:
