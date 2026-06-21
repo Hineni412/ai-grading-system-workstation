@@ -51,6 +51,129 @@ def test_teacher_can_generate_save_and_export_grouped_practice(tmp_path: Path) -
     assert all(item["status"] == "succeeded" for item in exports["exports"])
 
 
+def test_numbered_weak_point_confirmation_survives_simplified_training_flow(
+    tmp_path: Path,
+) -> None:
+    grading_db = tmp_path / "grading_system.db"
+    question_bank_db = tmp_path / "question_bank.db"
+    output_dir = tmp_path / "numbered_exports"
+    _build_numbered_grading_fixture(
+        grading_db,
+        tmp_path,
+        knowledge_id="G7_15",
+        knowledge_name="角平分线性质",
+    )
+    question_id, concept_id = _build_angle_bisector_question_bank(question_bank_db)
+    alignment = ConceptAlignmentService(question_bank_db)
+    alignment.confirm_mapping(
+        "grading_weak_point",
+        "G7_15 · 角平分线性质",
+        concept_id,
+        reviewed_by="teacher",
+    )
+
+    diagnosis = DiagnosisProfileService(grading_db, question_bank_db).build_profiles(
+        scope={"mode": "student", "student_ids": ["70"]},
+        exam_scope={"mode": "current", "session_ids": [1]},
+    )
+    plan = PracticePlanService(question_bank_db).generate(
+        diagnosis,
+        question_count=8,
+    )
+    task = TrainingTaskService(question_bank_db).create_task(
+        plan,
+        created_by="teacher",
+    )
+    exports = TrainingExportService(question_bank_db, output_dir).export_variant(
+        task.id,
+        task.variants[0].id,
+        formats=["markdown"],
+    )
+
+    weak = diagnosis["students"][0]["weak_points"][0]
+    assert weak["source_term"] == "角平分线性质"
+    assert weak["mapping_status"] == "confirmed"
+    assert question_id in {
+        item["question_id"]
+        for variant in plan["variants"]
+        for item in variant["items"]
+    }
+    assert all(item["status"] == "succeeded" for item in exports["exports"])
+
+
+def _build_numbered_grading_fixture(
+    db_path: Path,
+    root: Path,
+    *,
+    knowledge_id: str,
+    knowledge_name: str,
+) -> None:
+    DBManager(db_path).initialize()
+    rubric_path = root / "numbered_rubric.json"
+    rubric_path.write_text(
+        json.dumps(
+            {
+                "questions": [
+                    {
+                        "question_id": "Q1",
+                        "max_score": 10,
+                        "knowledge_id": knowledge_id,
+                        "knowledge_name": knowledge_name,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO students (id, student_code, name, class_name) "
+            "VALUES (70, 'S70', '测试学生', '10')"
+        )
+        conn.execute(
+            """
+            INSERT INTO grading_sessions (
+                id, session_name, rubric_path, answer_key_path, status, is_deleted
+            ) VALUES (1, '编号知识点考试', ?, '', 'completed', 0)
+            """,
+            (str(rubric_path),),
+        )
+        _insert_result(
+            conn,
+            session_id=1,
+            student_id=70,
+            paper_id=7001,
+            result_id=70001,
+            student_score=0,
+            details=[("Q1", 0, knowledge_id)],
+        )
+
+
+def _build_angle_bisector_question_bank(db_path: Path) -> tuple[int, int]:
+    initialize_database(db_path)
+    alignment = ConceptAlignmentService(db_path)
+    concept = alignment.create_concept("math.angle_bisector", "角平分线")
+    alignment.confirm_mapping(
+        "question_tag",
+        "角平分线性质",
+        concept.id,
+        reviewed_by="teacher",
+    )
+    with connect(db_path) as conn:
+        for index, question_id in enumerate(range(710, 718), start=1):
+            _insert_question(
+                conn,
+                question_id,
+                f"角平分线训练{index}",
+                f"利用角平分线性质完成第 {index} 个计算。",
+                "角平分线性质",
+                f"角平分线方法{index}",
+                "5",
+            )
+    return 710, concept.id
+
+
 def _build_grading_fixture(db_path: Path, root: Path) -> None:
     DBManager(db_path).initialize()
     rubric_12 = _write_rubric(root / "rubric_12.json")
