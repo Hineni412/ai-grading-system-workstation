@@ -31,8 +31,8 @@ def resolve_question_bank_asset_path(
     subdirs = tuple(search_subdirs or DEFAULT_SEARCH_SUBDIRS)
     text = str(path_value or "").strip()
     stored = Path(text)
-    if text and stored.is_file():
-        return stored
+    if text and stored.is_absolute() and stored.is_file():
+        return stored.resolve()
 
     candidates: list[Path] = []
     if text and not stored.is_absolute():

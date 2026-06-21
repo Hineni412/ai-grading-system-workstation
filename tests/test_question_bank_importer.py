@@ -17,6 +17,7 @@ from question_bank.importers.batch_importer import (
     parse_paper_text,
 )
 from question_bank.database.schema import connect
+from question_bank.database.schema import initialize_database
 from question_bank.importers.types import ExtractedDocument
 from question_bank.importers.docx_importer import _get_paragraph_rich_text
 from question_bank.models.question import QuestionCreate
@@ -172,6 +173,36 @@ def test_import_archives_local_source_and_persists_data_relative_path(
     assert (data_root / paper_source).exists()
     assert source.exists()
     assert result.files[0].source_file == paper_source
+
+
+def test_archived_import_uses_original_title_for_legacy_duplicate_detection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    with connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO papers (title, source_file, content_fingerprint) VALUES ('paper', 'old.docx', NULL)"
+        )
+    archived = tmp_path / "paper_0123456789ab.docx"
+    archived.write_bytes(b"paper-content")
+    monkeypatch.setattr(
+        batch_importer,
+        "_extract_paper",
+        lambda _path: (_ for _ in ()).throw(AssertionError("duplicate should skip parsing")),
+    )
+
+    result = batch_importer._import_scanned_paper(
+        archived,
+        db_path,
+        stored_source_file="question_bank/raw_papers/paper_0123456789ab.docx",
+        source_title="paper",
+        metadata=PaperMetadata(),
+        question_range=None,
+    )
+
+    assert result.status == "duplicate"
 
 
 def test_infer_semester_from_parenthesized_filename_marker() -> None:

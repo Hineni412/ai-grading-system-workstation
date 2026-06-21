@@ -25,6 +25,30 @@ def test_resolves_data_relative_question_bank_path(tmp_path: Path) -> None:
     )
 
 
+def test_data_relative_path_prefers_data_root_over_current_working_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "portable" / "user_data"
+    archived = data_root / "question_bank" / "raw_papers" / "paper_hash.docx"
+    archived.parent.mkdir(parents=True)
+    archived.write_bytes(b"portable-paper")
+
+    working_dir = tmp_path / "working"
+    shadow = working_dir / "question_bank" / "raw_papers" / "paper_hash.docx"
+    shadow.parent.mkdir(parents=True)
+    shadow.write_bytes(b"wrong-paper")
+    monkeypatch.chdir(working_dir)
+
+    assert (
+        resolve_question_bank_asset_path(
+            "question_bank/raw_papers/paper_hash.docx",
+            data_root=data_root,
+        )
+        == archived
+    )
+
+
 def test_rebases_legacy_absolute_question_image_path(tmp_path: Path) -> None:
     data_root = tmp_path / "user_data"
     image = data_root / "question_bank" / "extracted_images" / "set" / "rId1.png"

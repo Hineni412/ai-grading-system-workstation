@@ -285,7 +285,12 @@ def _import_scanned_paper(
     source_value = stored_source_file or str(path)
     fingerprint = _file_fingerprint(path)
     with connect(db_path) as conn:
-        if _paper_exists(conn, fingerprint=fingerprint, source_file=source_value):
+        if _paper_exists(
+            conn,
+            fingerprint=fingerprint,
+            source_file=source_value,
+            source_title=source_title,
+        ):
             return PaperImportFileResult(
                 source_file=source_value,
                 status="duplicate",
@@ -400,8 +405,15 @@ def _extract_paper(path: Path):
     return import_docx(path)
 
 
-def _paper_exists(conn, *, fingerprint: str | None, source_file: str) -> bool:
-    clean_title = re.sub(r'_\d{8}_\d{6}$', '', Path(source_file).stem).strip()
+def _paper_exists(
+    conn,
+    *,
+    fingerprint: str | None,
+    source_file: str,
+    source_title: str | None = None,
+) -> bool:
+    raw_title = source_title or Path(source_file).stem
+    clean_title = re.sub(r'_\d{8}_\d{6}$', '', raw_title).strip()
     if fingerprint:
         row = conn.execute(
             "SELECT id FROM papers WHERE (content_fingerprint = ? OR title = ? OR title LIKE ?) AND COALESCE(import_status, '') <> 'deleted' LIMIT 1",

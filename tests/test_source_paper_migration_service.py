@@ -113,3 +113,29 @@ def test_transaction_rolls_back_when_invariant_check_fails(
 
     with connect(db_path) as conn:
         assert conn.execute("SELECT source_file FROM questions").fetchone()[0] == str(source)
+
+
+def test_invariant_snapshot_covers_every_question_tag_column(tmp_path: Path) -> None:
+    _data_root, db_path, _source = _seed_single_source_fixture(tmp_path)
+
+    with connect(db_path) as conn:
+        before = migration_service._snapshot_invariants(conn)
+        conn.execute(
+            "UPDATE question_tags SET created_at = '2099-01-01 00:00:00'"
+        )
+        after = migration_service._snapshot_invariants(conn)
+
+    assert not migration_service._invariants_match(before, after)
+
+
+def test_invariant_snapshot_covers_question_content_except_source_path(
+    tmp_path: Path,
+) -> None:
+    _data_root, db_path, _source = _seed_single_source_fixture(tmp_path)
+
+    with connect(db_path) as conn:
+        before = migration_service._snapshot_invariants(conn)
+        conn.execute("UPDATE questions SET question_text = 'changed'")
+        after = migration_service._snapshot_invariants(conn)
+
+    assert not migration_service._invariants_match(before, after)
