@@ -24,6 +24,7 @@ def test_training_page_keeps_explicit_selection_and_alignment_entry() -> None:
     assert "明确选择要训练的学生" in PAGE_SOURCE
     assert "selected_student_ids" in PAGE_SOURCE
     assert "ALIGNMENT_FOCUS_SESSION_KEY" in PAGE_SOURCE
+    assert "focus_items_from_diagnosis" in PAGE_SOURCE
     assert "知识图谱适配调试.py" in PAGE_SOURCE
 
 

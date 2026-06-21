@@ -17,6 +17,7 @@ from question_bank.services.training_export_service import TrainingExportService
 from question_bank.services.training_task_service import TrainingTaskService
 from question_bank.services.question_service import QuestionService
 from question_bank.services.concept_alignment_service import ConceptAlignmentService
+from question_bank.services.alignment_review_service import focus_items_from_diagnosis
 
 # 共享组件（难度 badge / 标签 chip 群），与题库管理页风格统一
 try:
@@ -166,7 +167,10 @@ def _render_diagnosis(diagnosis: Mapping[str, Any]) -> None:
             unsafe_allow_html=True,
         )
         if st.button("👉 前往知识点对齐中心处理", key="open_alignment_center"):
-            st.session_state[ALIGNMENT_FOCUS_SESSION_KEY] = excluded_terms
+            focus_items = focus_items_from_diagnosis(diagnosis)
+            st.session_state[ALIGNMENT_FOCUS_SESSION_KEY] = [
+                item.to_dict() for item in focus_items
+            ]
             st.switch_page("pages/知识图谱适配调试.py")
 
 def _render_question_images(question_detail: dict[str, Any]) -> None:

@@ -22,6 +22,9 @@ def test_alignment_page_exposes_concentrated_confirmation_workflow() -> None:
     for label in ("批量确认", "待确认", "未映射", "已拒绝"):
         assert label in source
     assert "ALIGNMENT_FOCUS_SESSION_KEY" in source
+    assert "merge_focus_sources" in source
+    assert "filter_focus_sources" in source
+    assert 'str(row["source_value"]).strip().lower() in focus_set' not in source
 
 
 def test_alignment_page_exposes_concept_and_relation_editors() -> None:
