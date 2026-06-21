@@ -5,7 +5,11 @@ import sqlite3
 from pathlib import Path
 
 from db_manager import DBManager
-from web_app import _build_incomplete_result_display_rows, _resolve_grading_run_request
+from web_app import (
+    _build_failed_paper_display_rows,
+    _build_incomplete_result_display_rows,
+    _resolve_grading_run_request,
+)
 
 
 RUBRIC = {
@@ -170,6 +174,52 @@ def test_incomplete_failure_reason_is_safe_at_db_and_render_boundaries(tmp_path:
     assert "模型重试失败" in safe_summary
     assert rendered_summary == safe_summary
     assert legacy_summary == "批改结果不完整，需补跑受影响大题"
+
+
+def test_failed_paper_error_is_safe_in_db_list_and_ui_row(tmp_path: Path) -> None:
+    raw_error = (
+        "模型请求失败 data:image/jpeg;base64,"
+        + ("A" * 500)
+        + " Bearer bearer-secret Authorization: Basic auth-secret api_key=api-secret"
+    )
+    db, session_id, _paper_id = _seed_session(tmp_path, raw_json={})
+    with db._connect() as conn:
+        conn.execute(
+            "UPDATE exam_papers SET processing_status = 'failed', error_message = ? WHERE session_id = ?",
+            (raw_error, session_id),
+        )
+        conn.commit()
+
+    failed_rows = db.list_failed_papers(session_id)
+
+    assert len(failed_rows) == 1
+    list_summary = failed_rows[0]["error_message"]
+    for forbidden in (
+        "data:image",
+        "base64",
+        "bearer-secret",
+        "auth-secret",
+        "api_key=api-secret",
+        "A" * 100,
+    ):
+        assert forbidden.lower() not in list_summary.lower()
+    assert "模型请求失败" in list_summary
+    assert len(list_summary) <= 240
+
+    display_rows = _build_failed_paper_display_rows(failed_rows)
+    assert len(display_rows) == 1
+    ui_summary = display_rows[0]["error_message"]
+    for forbidden in (
+        "data:image",
+        "base64",
+        "bearer-secret",
+        "auth-secret",
+        "api_key=api-secret",
+        "A" * 100,
+    ):
+        assert forbidden.lower() not in ui_summary.lower()
+    assert "模型请求失败" in ui_summary
+    assert len(ui_summary) <= 240
 
 
 def test_grading_page_incomplete_panel_redacts_errors_and_uses_failed_only_hybrid_retry() -> None:

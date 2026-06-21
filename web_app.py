@@ -3012,6 +3012,27 @@ def _sanitize_incomplete_result_error(value: object) -> str:
     return sanitize_incomplete_failure_summary(value)
 
 
+def _build_failed_paper_display_rows(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+    display_rows: list[dict[str, str]] = []
+    for row in rows:
+        name = str(row.get("student_name") or row.get("ocr_name") or "未知学生").strip()
+        code = str(row.get("student_code") or "").strip()
+        class_name = str(row.get("class_name") or "").strip()
+        label = f"❌ {name}"
+        if code:
+            label += f"（{code}）"
+        if class_name:
+            label += f" · {class_name}"
+        error_message = _sanitize_incomplete_result_error(row.get("error_message") or "未记录错误信息")
+        display_rows.append(
+            {
+                "label": label,
+                "error_message": error_message or "未记录错误信息",
+            }
+        )
+    return display_rows
+
+
 def _build_incomplete_result_display_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     display_rows: list[dict[str, Any]] = []
     for row in rows:
@@ -3354,18 +3375,8 @@ def render_grading_tab(
         failed_papers = db.list_failed_papers(selected_session_id)
         if failed_papers:
             with st.expander(f"⚠️ 批改失败学生（{len(failed_papers)} 人）—— 点击查看原因", expanded=True):
-                for fp in failed_papers:
-                    name = fp.get("student_name") or fp.get("ocr_name") or "未知学生"
-                    code = fp.get("student_code") or ""
-                    cls = fp.get("class_name") or ""
-                    err = str(fp.get("error_message") or "未记录错误信息")
-                    label = f"❌ {name}"
-                    if code:
-                        label += f"（{code}）"
-                    if cls:
-                        label += f" · {cls}"
-                    err_short = err[:300] + "…" if len(err) > 300 else err
-                    st.error(f"{label}\n\n**失败原因**：{err_short}")
+                for row in _build_failed_paper_display_rows(failed_papers):
+                    st.error(f"{row['label']}\n\n**失败原因**：{row['error_message']}")
 
     if selected_session_id is not None and session:
         st.write("")
