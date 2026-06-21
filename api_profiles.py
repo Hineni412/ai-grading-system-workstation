@@ -5,6 +5,20 @@ from pathlib import Path
 from typing import Any
 
 
+_DEPRECATED_OBJECTIVE_PROFILE_KEYS = {
+    "objective_timeout",
+    "objective_max_tokens",
+}
+
+
+def _serialized_profile_copy(profile: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in dict(profile).items()
+        if key not in _DEPRECATED_OBJECTIVE_PROFILE_KEYS
+    }
+
+
 def load_api_profiles(file_path: Path) -> list[dict[str, Any]]:
     if not file_path.exists():
         return []
@@ -17,8 +31,13 @@ def load_api_profiles(file_path: Path) -> list[dict[str, Any]]:
 
 def save_api_profiles(file_path: Path, profiles: list[dict[str, Any]]) -> None:
     file_path.parent.mkdir(parents=True, exist_ok=True)
+    serialized_profiles = [
+        _serialized_profile_copy(profile)
+        for profile in profiles
+        if isinstance(profile, dict)
+    ]
     with file_path.open("w", encoding="utf-8") as f:
-        json.dump(profiles, f, ensure_ascii=False, indent=2)
+        json.dump(serialized_profiles, f, ensure_ascii=False, indent=2)
 
 
 def upsert_api_profile(file_path: Path, profile: dict[str, Any]) -> None:
@@ -82,8 +101,6 @@ def get_objective_api_config() -> dict[str, Any]:
         "api_key": profile.get("objective_api_key") or os.getenv("LLM_OBJECTIVE_API_KEY", ""),
         "model": profile.get("objective_model") or os.getenv("LLM_OBJECTIVE_MODEL", ""),
         "temperature": float(profile.get("objective_temperature", 0.0)),
-        "max_tokens": int(profile.get("objective_max_tokens", 100)),
         "thinking_type": str(profile.get("objective_thinking_type", "disabled")),
-        "timeout": int(profile.get("objective_timeout", 60)),
         "enabled": bool(profile.get("objective_enabled", False)),
     }

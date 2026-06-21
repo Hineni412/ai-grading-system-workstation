@@ -33,6 +33,21 @@ from data_transfer_service import (
 )
 from db_manager import DBManager, sanitize_incomplete_failure_summary
 from export_names import safe_filename_fragment
+from grading_limits import (
+    FULL_PAPER_WORKERS_MAX,
+    FULL_PAPER_WORKERS_MIN,
+    GRADING_RPM_MAX,
+    GRADING_RPM_MIN,
+    HYBRID_INFLIGHT_WORKERS_MAX,
+    HYBRID_INFLIGHT_WORKERS_MIN,
+    OBJECTIVE_BATCH_SIZE_MAX,
+    OBJECTIVE_BATCH_SIZE_MIN,
+    PRECHECK_WORKERS_MAX,
+    PRECHECK_WORKERS_MIN,
+    SUBJECTIVE_MAJOR_BATCH_SIZE_MAX,
+    SUBJECTIVE_MAJOR_BATCH_SIZE_MIN,
+    bounded_int,
+)
 from grading_service import GradingService
 from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
 from manual_review_service import ManualReviewService
@@ -93,7 +108,7 @@ DEFAULT_MODELS = {
 }
 
 DEFAULT_GRADING_RPM = 1000
-DEFAULT_FULL_PAPER_WORKERS = 200
+DEFAULT_FULL_PAPER_WORKERS = FULL_PAPER_WORKERS_MAX
 DEFAULT_HYBRID_INFLIGHT_WORKERS = 200
 DEFAULT_PRECHECK_WORKERS = 16
 
@@ -111,6 +126,20 @@ def _sidebar_int_setting(
         return int(raw)
     except (TypeError, ValueError):
         return int(default)
+
+
+def _bounded_sidebar_int_setting(
+    saved_profile: dict[str, Any],
+    profile_key: str,
+    env_key: str,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    raw = saved_profile.get(profile_key)
+    if raw in (None, ""):
+        raw = os.getenv(env_key, str(default))
+    return bounded_int(raw, default, minimum, maximum)
 
 
 def ensure_env_ready() -> DBManager:
@@ -174,45 +203,61 @@ def build_llm_settings_from_sidebar() -> LLMSettings | None:
         st.session_state.objective_model_input = str(saved_profile.get("objective_model") or os.getenv("LLM_OBJECTIVE_MODEL", ""))
     if "objective_temperature_input" not in st.session_state:
         st.session_state.objective_temperature_input = float(saved_profile.get("objective_temperature", 0.0))
-    if "objective_max_tokens_input" not in st.session_state:
-        st.session_state.objective_max_tokens_input = int(saved_profile.get("objective_max_tokens", 100))
     if "objective_thinking_type_input" not in st.session_state:
         st.session_state.objective_thinking_type_input = str(saved_profile.get("objective_thinking_type", "disabled"))
-    if "objective_timeout_input" not in st.session_state:
-        st.session_state.objective_timeout_input = int(saved_profile.get("objective_timeout", 60))
     if "objective_enabled_input" not in st.session_state:
         st.session_state.objective_enabled_input = bool(saved_profile.get("objective_enabled", False))
     if "objective_batch_size_input" not in st.session_state:
-        st.session_state.objective_batch_size_input = int(saved_profile.get("objective_batch_size", 15))
+        st.session_state.objective_batch_size_input = _bounded_sidebar_int_setting(
+            saved_profile,
+            "objective_batch_size",
+            "LLM_OBJECTIVE_BATCH_SIZE",
+            OBJECTIVE_BATCH_SIZE_MAX,
+            OBJECTIVE_BATCH_SIZE_MIN,
+            OBJECTIVE_BATCH_SIZE_MAX,
+        )
     if "hybrid_major_batch_size_input" not in st.session_state:
-        st.session_state.hybrid_major_batch_size_input = int(saved_profile.get("hybrid_major_batch_size", 4))
+        st.session_state.hybrid_major_batch_size_input = bounded_int(
+            saved_profile.get("hybrid_major_batch_size", os.getenv("LLM_HYBRID_MAJOR_BATCH_SIZE", 4)),
+            4,
+            SUBJECTIVE_MAJOR_BATCH_SIZE_MIN,
+            SUBJECTIVE_MAJOR_BATCH_SIZE_MAX,
+        )
     if "grading_requests_per_minute_input" not in st.session_state:
-        st.session_state.grading_requests_per_minute_input = _sidebar_int_setting(
+        st.session_state.grading_requests_per_minute_input = _bounded_sidebar_int_setting(
             saved_profile,
             "grading_requests_per_minute",
             "AI_GRADING_REQUESTS_PER_MINUTE",
             DEFAULT_GRADING_RPM,
+            GRADING_RPM_MIN,
+            GRADING_RPM_MAX,
         )
     if "grading_max_workers_input" not in st.session_state:
-        st.session_state.grading_max_workers_input = _sidebar_int_setting(
+        st.session_state.grading_max_workers_input = _bounded_sidebar_int_setting(
             saved_profile,
             "grading_max_workers",
             "AI_GRADING_MAX_WORKERS",
             DEFAULT_FULL_PAPER_WORKERS,
+            FULL_PAPER_WORKERS_MIN,
+            FULL_PAPER_WORKERS_MAX,
         )
     if "hybrid_inflight_workers_input" not in st.session_state:
-        st.session_state.hybrid_inflight_workers_input = _sidebar_int_setting(
+        st.session_state.hybrid_inflight_workers_input = _bounded_sidebar_int_setting(
             saved_profile,
             "hybrid_inflight_workers",
             "AI_HYBRID_INFLIGHT_WORKERS",
             DEFAULT_HYBRID_INFLIGHT_WORKERS,
+            HYBRID_INFLIGHT_WORKERS_MIN,
+            HYBRID_INFLIGHT_WORKERS_MAX,
         )
     if "precheck_max_workers_input" not in st.session_state:
-        st.session_state.precheck_max_workers_input = _sidebar_int_setting(
+        st.session_state.precheck_max_workers_input = _bounded_sidebar_int_setting(
             saved_profile,
             "precheck_max_workers",
             "AI_GRADING_PRECHECK_WORKERS",
             DEFAULT_PRECHECK_WORKERS,
+            PRECHECK_WORKERS_MIN,
+            PRECHECK_WORKERS_MAX,
         )
 
     if "tagging_api_key_input" not in st.session_state:
@@ -279,15 +324,13 @@ def build_llm_settings_from_sidebar() -> LLMSettings | None:
         objective_model = st.text_input("模型名称", key="objective_model_input")
         st.caption("例如 doubaoseed2.0 lite。具体模型名以你的 ohmygpt 后台支持的名称为准。")
         objective_temperature = float(st.session_state.get("objective_temperature_input", 0.0))
-        objective_max_tokens = int(st.session_state.get("objective_max_tokens_input", 4096))
         
         # fix selectbox issue by deriving index from state
         _think_options = ["disabled", "enabled"]
         _think_idx = _think_options.index(st.session_state.objective_thinking_type_input) if st.session_state.objective_thinking_type_input in _think_options else 0
         objective_thinking_type = st.selectbox("Thinking 模式", options=_think_options, index=_think_idx, key="objective_thinking_type_input")
-        objective_timeout = int(st.session_state.get("objective_timeout_input", 60))
-        objective_batch_size = st.number_input("客观题并发合并数量", min_value=1, max_value=50, step=1, key="objective_batch_size_input", help="单次请求中合并的客观题试卷切片数，默认 15")
-        major_batch_size = st.number_input("主观题并发合并数量", min_value=1, max_value=20, step=1, key="hybrid_major_batch_size_input", help="单次请求中合并的主观题试卷切片数，默认 4")
+        objective_batch_size = st.number_input("客观题并发合并数量", min_value=OBJECTIVE_BATCH_SIZE_MIN, max_value=OBJECTIVE_BATCH_SIZE_MAX, step=1, key="objective_batch_size_input", help="单次请求中合并的客观题试卷切片数，默认 15")
+        major_batch_size = st.number_input("主观题并发合并数量", min_value=SUBJECTIVE_MAJOR_BATCH_SIZE_MIN, max_value=SUBJECTIVE_MAJOR_BATCH_SIZE_MAX, step=1, key="hybrid_major_batch_size_input", help="单次请求中合并的主观题试卷切片数，默认 4")
         objective_enabled = st.checkbox("启用选填题专用模型", key="objective_enabled_input")
 
         if st.button("保存 API 配置", use_container_width=True, key="save_single_api_settings", type="primary"):
@@ -308,9 +351,7 @@ def build_llm_settings_from_sidebar() -> LLMSettings | None:
             current_profile["objective_base_url"] = normalize_openai_base_url(str(objective_base_url).strip() or "https://api.openai.com/v1")
             current_profile["objective_model"] = str(objective_model).strip()
             current_profile["objective_temperature"] = float(objective_temperature)
-            current_profile["objective_max_tokens"] = int(objective_max_tokens)
             current_profile["objective_thinking_type"] = str(objective_thinking_type).strip()
-            current_profile["objective_timeout"] = int(objective_timeout)
             current_profile["objective_enabled"] = bool(objective_enabled)
             current_profile["objective_batch_size"] = int(objective_batch_size)
             current_profile["hybrid_major_batch_size"] = int(major_batch_size)
@@ -342,32 +383,32 @@ def build_llm_settings_from_sidebar() -> LLMSettings | None:
         st.caption("1000 RPM 约等于每秒 16.7 个请求；混合批改在途请求数默认 200，用来避免第一批长响应堵住后续题目。")
         st.number_input(
             "请求速率上限（RPM）",
-            min_value=1,
-            max_value=10000,
+            min_value=GRADING_RPM_MIN,
+            max_value=GRADING_RPM_MAX,
             step=50,
             key="grading_requests_per_minute_input",
             help="限制 AI 请求启动速度。1000 RPM 是当前推荐值；若要每秒 20 个请求，需要约 1200 RPM。",
         )
         st.number_input(
             "整卷批改并发数",
-            min_value=1,
-            max_value=200,
+            min_value=FULL_PAPER_WORKERS_MIN,
+            max_value=FULL_PAPER_WORKERS_MAX,
             step=1,
             key="grading_max_workers_input",
             help="整卷批改同时在跑的试卷数。1000 RPM 下默认 200，与混合批改在途请求数保持一致。",
         )
         st.number_input(
             "混合批改在途请求数",
-            min_value=1,
-            max_value=1000,
+            min_value=HYBRID_INFLIGHT_WORKERS_MIN,
+            max_value=HYBRID_INFLIGHT_WORKERS_MAX,
             step=10,
             key="hybrid_inflight_workers_input",
             help="混合批改可同时等待返回的请求数。1000 RPM 下默认 200，适合模型响应较慢但请求额度较高的情况。",
         )
         st.number_input(
             "预检姓名识别并发数",
-            min_value=1,
-            max_value=64,
+            min_value=PRECHECK_WORKERS_MIN,
+            max_value=PRECHECK_WORKERS_MAX,
             step=1,
             key="precheck_max_workers_input",
             help="PDF/图片预检阶段用于并发识别学生姓名。1000 RPM 下建议 16。",
@@ -422,7 +463,7 @@ def build_llm_settings_from_sidebar() -> LLMSettings | None:
     os.environ["LLM_OBJECTIVE_API_KEY"] = str(st.session_state.get("objective_api_key_input", ""))
     os.environ["LLM_OBJECTIVE_BASE_URL"] = str(st.session_state.get("objective_base_url_input", ""))
     os.environ["LLM_OBJECTIVE_MODEL"] = str(st.session_state.get("objective_model_input", ""))
-    os.environ["LLM_OBJECTIVE_BATCH_SIZE"] = str(st.session_state.get("objective_batch_size_input", 15))
+    os.environ["LLM_OBJECTIVE_BATCH_SIZE"] = str(st.session_state.get("objective_batch_size_input", OBJECTIVE_BATCH_SIZE_MAX))
     os.environ["LLM_HYBRID_MAJOR_BATCH_SIZE"] = str(st.session_state.get("hybrid_major_batch_size_input", 4))
 
     st.session_state.tagging_enabled = True
@@ -3209,10 +3250,10 @@ def render_grading_tab(
         retry_incomplete_hybrid = _render_incomplete_results_panel(db, selected_session_id)
         
         with st.expander("⚙️ 混合批改参数快速设置", expanded=False):
-            d_obj = int(st.session_state.get("objective_batch_size_input", 15))
+            d_obj = int(st.session_state.get("objective_batch_size_input", OBJECTIVE_BATCH_SIZE_MAX))
             d_maj = int(st.session_state.get("hybrid_major_batch_size_input", 4))
-            obj_bs = st.number_input("客观题批大小", min_value=1, max_value=50, value=d_obj, step=1, key="run_objective_batch_size")
-            maj_bs = st.number_input("主观题横批批大小 (batch_size)", min_value=1, max_value=20, value=d_maj, step=1, key="run_hybrid_major_batch_size")
+            obj_bs = st.number_input("客观题批大小", min_value=OBJECTIVE_BATCH_SIZE_MIN, max_value=OBJECTIVE_BATCH_SIZE_MAX, value=d_obj, step=1, key="run_objective_batch_size")
+            maj_bs = st.number_input("主观题横批批大小 (batch_size)", min_value=SUBJECTIVE_MAJOR_BATCH_SIZE_MIN, max_value=SUBJECTIVE_MAJOR_BATCH_SIZE_MAX, value=d_maj, step=1, key="run_hybrid_major_batch_size")
             st.session_state.objective_batch_size_input = obj_bs
             st.session_state.hybrid_major_batch_size_input = maj_bs
             st.caption("参数快速调整，无需重新在左侧 API 配置中保存。")
