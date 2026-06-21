@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import shutil
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from question_bank.database.paths import project_data_root, question_bank_db_path
+from question_bank.database.paths import question_bank_db_path
 from question_bank.database.schema import connect
 from question_bank.importers.batch_importer import (
     BatchImportResult,
@@ -17,7 +15,12 @@ from question_bank.importers.batch_importer import (
 )
 from question_bank.models.tag_schema import TaggingContext
 from question_bank.services.ai_tagging_service import AITaggingService, is_auto_saveable_result
+from question_bank.services.asset_path_service import resolve_question_bank_asset_path
 from question_bank.services.question_service import QuestionService
+from question_bank.services.source_paper_archive_service import (
+    archive_source_bytes,
+    archive_source_paper,
+)
 from question_bank.services.source_question_link_service import SourceQuestionLinkService
 
 
@@ -38,17 +41,11 @@ def save_uploaded_grading_paper(
     content: bytes,
     raw_papers_dir: str | Path | None = None,
 ) -> Path:
-    if not content:
-        raise ValueError("上传的试卷文件内容为空，无法同步到题库。")
-    destination_dir = Path(raw_papers_dir) if raw_papers_dir is not None else project_data_root() / "question_bank" / "raw_papers"
-    destination_dir.mkdir(parents=True, exist_ok=True)
-    source_name = Path(filename or "grading_paper.docx").name
-    stem = Path(source_name).stem or "grading_paper"
-    suffix = Path(source_name).suffix.lower() or ".docx"
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    destination = destination_dir / f"{stem}_{timestamp}{suffix}"
-    destination.write_bytes(content)
-    return destination
+    return archive_source_bytes(
+        filename=filename,
+        content=content,
+        raw_papers_dir=raw_papers_dir,
+    ).physical_path
 
 
 def intake_grading_paper_to_question_bank(
@@ -63,6 +60,8 @@ def intake_grading_paper_to_question_bank(
     tagging_progress_callback: Callable[[int, int, int, Any], None] | None = None,
     grading_session_id: str | int | None = None,
     grading_source_questions: list[dict[str, Any]] | None = None,
+    data_root: str | Path | None = None,
+    raw_papers_dir: str | Path | None = None,
 ) -> GradingPaperIntakeResult:
     paper_path = Path(source_file)
     database_path = Path(db_path) if db_path is not None else question_bank_db_path()
@@ -72,9 +71,20 @@ def intake_grading_paper_to_question_bank(
         [ScannedPaper(source_file=str(paper_path), file_type=paper_path.suffix.lower().lstrip("."), metadata=inferred)],
         database_path,
         default_metadata=merged_metadata,
+        data_root=data_root,
+        raw_papers_dir=raw_papers_dir,
     )
 
-    questions = _questions_for_source(database_path, str(paper_path))
+    imported_sources = {
+        item.source_file
+        for item in import_result.files
+        if item.status in {"imported", "needs_review", "needs_ocr"}
+    }
+    questions = [
+        question
+        for imported_source in imported_sources
+        for question in _questions_for_source(database_path, imported_source)
+    ]
     tagged_questions = 0
     failed_tagging = 0
     if run_ai_tagging and import_result.question_count:
@@ -108,8 +118,10 @@ def intake_grading_paper_to_question_bank(
             source_questions=grading_source_questions,
         )
 
+    stored_source = next(iter(imported_sources), str(paper_path))
+    saved_file = resolve_question_bank_asset_path(stored_source, data_root=data_root)
     return GradingPaperIntakeResult(
-        saved_file=paper_path,
+        saved_file=saved_file,
         import_result=import_result,
         tagged_questions=tagged_questions,
         failed_tagging=failed_tagging,
@@ -147,6 +159,7 @@ def copy_and_intake_uploaded_grading_paper(
             tagging_progress_callback=tagging_progress_callback,
             grading_session_id=grading_session_id,
             grading_source_questions=grading_source_questions,
+            raw_papers_dir=raw_papers_dir,
         )
     except Exception:
         if saved.exists() and saved.stat().st_size == 0:
@@ -159,15 +172,10 @@ def copy_existing_grading_paper_to_raw_dir(
     *,
     raw_papers_dir: str | Path | None = None,
 ) -> Path:
-    source = Path(source_file)
-    destination_dir = Path(raw_papers_dir) if raw_papers_dir is not None else project_data_root() / "question_bank" / "raw_papers"
-    destination_dir.mkdir(parents=True, exist_ok=True)
-    destination = destination_dir / source.name
-    if destination.exists():
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        destination = destination_dir / f"{source.stem}_{timestamp}{source.suffix}"
-    shutil.copy2(source, destination)
-    return destination
+    return archive_source_paper(
+        source_file,
+        raw_papers_dir=raw_papers_dir,
+    ).physical_path
 
 
 def _questions_for_source(db_path: Path, source_file: str) -> list[dict[str, Any]]:

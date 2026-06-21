@@ -11,10 +11,12 @@ from question_bank.importers.batch_importer import (
     PaperMetadata,
     ParsedPaperText,
     ParsedQuestion,
+    ScannedPaper,
     _without_existing_duplicate_questions,
     infer_metadata_from_filename,
     parse_paper_text,
 )
+from question_bank.database.schema import connect
 from question_bank.importers.types import ExtractedDocument
 from question_bank.importers.docx_importer import _get_paragraph_rich_text
 from question_bank.models.question import QuestionCreate
@@ -131,6 +133,45 @@ def test_infer_shenzhen_region_metadata_from_filename() -> None:
 
     assert metadata.province == "广东省"
     assert metadata.city == "深圳市"
+
+
+def test_import_archives_local_source_and_persists_data_relative_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_root = tmp_path / "user_data"
+    db_path = data_root / "databases" / "question_bank.db"
+    source = tmp_path / "outside" / "paper.docx"
+    source.parent.mkdir()
+    source.write_bytes(b"paper-content")
+
+    monkeypatch.setattr(
+        batch_importer,
+        "_extract_paper",
+        lambda path: ExtractedDocument(
+            source_file=str(path),
+            page_range="document",
+            text="1. 这是长度足够的测试题目\n答案：\n1. 42",
+        ),
+    )
+
+    result = batch_importer.import_scanned_papers(
+        [ScannedPaper(source_file=str(source), file_type="docx")],
+        db_path,
+        data_root=data_root,
+    )
+
+    with connect(db_path) as conn:
+        paper_title, paper_source = conn.execute(
+            "SELECT title, source_file FROM papers"
+        ).fetchone()
+        question_source = conn.execute("SELECT source_file FROM questions").fetchone()[0]
+    assert paper_title == "paper"
+    assert paper_source.startswith("question_bank/raw_papers/")
+    assert question_source == paper_source
+    assert (data_root / paper_source).exists()
+    assert source.exists()
+    assert result.files[0].source_file == paper_source
 
 
 def test_infer_semester_from_parenthesized_filename_marker() -> None:
