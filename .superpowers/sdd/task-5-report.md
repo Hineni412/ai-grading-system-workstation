@@ -73,3 +73,25 @@ Done.
 
 - `pytest tests/test_grading_completeness_ui.py tests/test_report_completeness.py tests/test_retry_failed_grading.py tests/test_atomic_major_retry.py -q`
 - Result: `24 passed`
+
+## Second review fix: failed-paper error sanitization
+
+- `list_failed_papers` now applies the shared sanitizer to every queried `error_message`, including rows whose `processing_status` is `failed`.
+- The legacy failed-paper panel now builds rows through `_build_failed_paper_display_rows`, which applies the same sanitizer again before rendering.
+- Added a regression fixture containing an embedded `data:image/jpeg;base64` payload plus Bearer, Authorization, and `api_key` credentials while retaining the safe prefix `模型请求失败`.
+
+### Second review fix TDD evidence
+
+- RED 1:
+  - `pytest tests/test_grading_completeness_ui.py::test_failed_paper_error_is_safe_in_db_list_and_ui_row -q`
+  - failed because `list_failed_papers` returned the raw `data:image/jpeg;base64,...` error.
+- RED 2 after fixing the DB boundary:
+  - same focused command failed because the failed-paper UI row helper did not yet exist and the panel still rendered inline.
+- GREEN:
+  - same focused command
+  - `1 passed`
+
+### Second review fix verification
+
+- `pytest tests/test_grading_completeness_ui.py tests/test_report_completeness.py tests/test_retry_failed_grading.py tests/test_atomic_major_retry.py -q`
+- Result: `25 passed`

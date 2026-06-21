@@ -1435,6 +1435,8 @@ class DBManager:
                 (session_id,),
             ).fetchall()
         items = [dict(row) for row in rows]
+        for item in items:
+            item["error_message"] = sanitize_incomplete_failure_summary(item.get("error_message"))
         existing_paper_ids = {int(item["paper_id"]) for item in items if item.get("paper_id") is not None}
         for row in self.list_incomplete_results(session_id):
             paper_id = int(row["paper_id"])
