@@ -31,7 +31,7 @@ from data_transfer_service import (
     default_export_sources,
     total_size_mb,
 )
-from db_manager import DBManager
+from db_manager import DBManager, sanitize_incomplete_failure_summary
 from export_names import safe_filename_fragment
 from grading_service import GradingService
 from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
@@ -3009,13 +3009,7 @@ def _incomplete_status_label(status: object) -> str:
 
 
 def _sanitize_incomplete_result_error(value: object) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    text = re.sub(r"data:image/\S+", "[图片数据已省略]", text, flags=re.IGNORECASE)
-    text = re.sub(r"\bsk-[A-Za-z0-9_-]+\b", "[已隐藏密钥]", text)
-    text = re.sub(r"\bBearer\s+[A-Za-z0-9._-]+\b", "Bearer [已隐藏密钥]", text, flags=re.IGNORECASE)
-    return text
+    return sanitize_incomplete_failure_summary(value)
 
 
 def _build_incomplete_result_display_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
