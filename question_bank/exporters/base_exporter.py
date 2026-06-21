@@ -13,41 +13,24 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
 
 from question_bank.exporters.export_config import ExportConfig
+from question_bank.services.asset_path_service import resolve_question_bank_asset_path
 
 LOGGER = logging.getLogger(__name__)
 
 
-def _resolve_image_path(saved_path_str: str) -> Path | None:
+def _resolve_image_path(
+    saved_path_str: str,
+    *,
+    data_root: str | Path | None = None,
+) -> Path | None:
     if not saved_path_str:
         return None
-    p = Path(saved_path_str)
-    if p.exists():
-        return p
-    try:
-        parts = p.parts
-        if "extracted_images" in parts:
-            idx = parts.index("extracted_images")
-            subpath = Path(*parts[idx:])
-            try:
-                from path_manager import get_path_manager
-                pm = get_path_manager()
-                opt1 = pm.data_root / "question_bank" / subpath
-                if opt1.exists():
-                    return opt1
-                opt2 = pm.data_root / subpath
-                if opt2.exists():
-                    return opt2
-            except Exception:
-                pass
-            opt3 = Path(__file__).resolve().parents[2] / "user_data" / "question_bank" / subpath
-            if opt3.exists():
-                return opt3
-            opt4 = Path(__file__).resolve().parents[2] / "question_bank" / subpath
-            if opt4.exists():
-                return opt4
-    except Exception:
-        pass
-    return None
+    resolved = resolve_question_bank_asset_path(
+        saved_path_str,
+        data_root=data_root,
+        search_subdirs=("question_bank/extracted_images", "question_bank/previews"),
+    )
+    return resolved if resolved.is_file() else None
 
 
 def add_page_number_to_paragraph(paragraph) -> None:

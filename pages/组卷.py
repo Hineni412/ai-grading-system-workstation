@@ -22,6 +22,7 @@ from question_bank.services.assembly_record_service import (
     list_assembly_records,
 )
 from question_bank.services.question_service import QuestionService
+from question_bank.services.asset_path_service import resolve_question_bank_asset_path
 from question_bank.services.question_frequency_service import (
     FrequencyMetrics,
     QuestionFrequencyService,
@@ -456,7 +457,14 @@ def _render_rich_text(value: object) -> None:
 
 def _render_images(image_paths: list[str], *, image_scale_percent: int | None = None) -> None:
     paths = _dedupe_paths(image_paths)
-    valid_paths = [Path(p) for p in paths if Path(p).exists()]
+    resolved_paths = [
+        resolve_question_bank_asset_path(
+            path,
+            search_subdirs=("question_bank/extracted_images", "question_bank/previews"),
+        )
+        for path in paths
+    ]
+    valid_paths = [path for path in resolved_paths if path.is_file()]
     if not valid_paths:
         return
     if image_scale_percent is None:

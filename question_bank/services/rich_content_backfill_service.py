@@ -9,6 +9,7 @@ from pathlib import Path
 from question_bank.database.schema import connect, initialize_database
 from question_bank.importers.batch_importer import map_rich_content_by_number
 from question_bank.importers.docx_importer import import_docx
+from question_bank.services.asset_path_service import resolve_question_bank_asset_path
 from question_bank.services.rich_content_service import is_question_rich_content_current, save_question_rich_content
 
 
@@ -51,18 +52,7 @@ def backfill_missing_rich_content(
             continue
 
         source_file = str(row.get("source_file") or row.get("paper_source_file") or "").strip()
-        source_path = Path(source_file).expanduser()
-        if not source_path.exists():
-            # Try searching under local raw papers directories
-            filename = source_path.name
-            possible_paths = [
-                Path('user_data/question_bank/raw_papers') / filename,
-                Path('question_bank/raw_papers') / filename,
-            ]
-            for p in possible_paths:
-                if p.exists():
-                    source_path = p
-                    break
+        source_path = _resolve_backfill_source(source_file)
 
         if source_path.suffix.lower() != ".docx" or not source_path.exists():
             skipped_missing_source += 1
@@ -127,6 +117,18 @@ def backfill_missing_rich_content(
         skipped_no_match=skipped_no_match,
         failed_sources=failed_sources,
         errors=errors,
+    )
+
+
+def _resolve_backfill_source(
+    source_file: object,
+    *,
+    data_root: str | Path | None = None,
+) -> Path:
+    return resolve_question_bank_asset_path(
+        source_file,
+        data_root=data_root,
+        search_subdirs=("question_bank/raw_papers",),
     )
 
 
