@@ -169,6 +169,51 @@ def test_shortage_is_reported_instead_of_unaligned_fill(
     assert direct_shortage["missing_count"] == 3
 
 
+def test_broad_only_candidate_requires_explicit_advanced_fallback(
+    practice_system: tuple[PracticePlanService, dict],
+) -> None:
+    service, diagnosis_profile = practice_system
+    target_concept_id = int(diagnosis_profile["weak_points"][0]["concept_id"])
+    alignment = ConceptAlignmentService(service.db_path)
+    alignment.confirm_mapping(
+        "question_tag",
+        "函数图像平移",
+        target_concept_id,
+        reviewed_by="teacher",
+    )
+    with connect(service.db_path) as conn:
+        conn.execute(
+            "UPDATE questions SET is_deleted = 1 WHERE id BETWEEN 210 AND 215"
+        )
+        _insert_question(
+            conn,
+            question_id=450,
+            title="只有大类相同",
+            text="完成函数图像的平移操作。",
+            knowledge="函数图像平移",
+            method="图像平移",
+            difficulty="5",
+        )
+
+    strict = service.generate_variant(
+        diagnosis_profile,
+        question_count=8,
+        exclude_question_ids={201},
+    )
+    fallback = service.generate_variant(
+        diagnosis_profile,
+        question_count=8,
+        exclude_question_ids={201},
+        allow_broad_fallback=True,
+    )
+
+    assert 450 not in {item["question_id"] for item in strict["items"]}
+    fallback_item = next(
+        item for item in fallback["items"] if item["question_id"] == 450
+    )
+    assert "仅按标准知识点大类补足" in fallback_item["warnings"]
+
+
 def _insert_question(
     conn,
     *,

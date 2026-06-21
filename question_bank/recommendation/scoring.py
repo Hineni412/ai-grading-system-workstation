@@ -38,11 +38,13 @@ def score_candidate(
     *,
     concept_match: object,
     mapping_status: object,
+    fine_skill_match: object,
     frequency_fit: object | None,
     gradient_fit: object | None,
     diversity_fit: object | None,
     weights: Mapping[str, object] | None = None,
     sub_skill_boost: float | None = None,
+    allow_broad_fallback: bool = False,
 ) -> CandidateScore:
     resolved_weights = _validated_weights(weights)
     components = {
@@ -50,6 +52,7 @@ def score_candidate(
         "frequency": _rate(frequency_fit, default=0.5),
         "gradient": _rate(gradient_fit, default=0.5),
         "diversity": _rate(diversity_fit, default=0.5),
+        "fine_skill": _rate(fine_skill_match, default=0.0),
     }
     warnings: list[str] = []
     if frequency_fit is None:
@@ -59,9 +62,21 @@ def score_candidate(
     if diversity_fit is None:
         warnings.append("候选题缺少方法、模型或来源信息")
 
-    eligible = _text(mapping_status).casefold() == "confirmed" and components["concept"] > 0
-    if not eligible:
+    confirmed_concept = (
+        _text(mapping_status).casefold() == "confirmed"
+        and components["concept"] > 0
+    )
+    fine_match = components["fine_skill"]
+    eligible = confirmed_concept and (
+        fine_match > 0 or allow_broad_fallback
+    )
+    if not confirmed_concept:
         warnings.append("知识点映射未确认或候选题与目标概念不匹配")
+    elif fine_match <= 0 and not allow_broad_fallback:
+        warnings.append("具体训练技能不匹配")
+    elif fine_match <= 0:
+        warnings.append("仅按标准知识点大类补足")
+    if not eligible:
         return CandidateScore(
             eligible=False,
             total_score=0.0,
