@@ -27,3 +27,5 @@ def test_question_pages_do_not_use_unbounded_question_image_width() -> None:
     assert "st.image(str(path), use_container_width=True)" not in bank_page
     assert "st.image(str(valid_paths[0]), use_container_width=True)" not in assembly_page
     assert "st.image(str(path), use_container_width=True)" not in assembly_page
+    assert "resolve_question_bank_asset_path" in bank_page
+    assert "resolve_question_bank_asset_path" in assembly_page

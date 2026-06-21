@@ -14,6 +14,7 @@ from typing import Any
 import fitz
 
 from question_bank.database.paths import project_data_root
+from question_bank.services.asset_path_service import resolve_question_bank_asset_path
 from question_bank.services.question_service import QuestionService
 
 
@@ -63,7 +64,7 @@ def generate_question_previews(
 
 
 def _generate_one(service: QuestionService, question: dict[str, Any], output_dir: Path) -> PreviewResult:
-    source_file = Path(str(question.get("source_file") or ""))
+    source_file = _resolve_source_file(question)
     if not source_file.exists():
         message = f"源文件不存在：{source_file}"
         _save_failed(service, int(question["id"]), question, "question", message)
@@ -100,6 +101,18 @@ def _generate_one(service: QuestionService, question: dict[str, Any], output_dir
                 answer_heading=answer_heading,
             )
     return PreviewResult(int(question["id"]), question_status, answer_status)
+
+
+def _resolve_source_file(
+    question: dict[str, Any],
+    *,
+    data_root: str | Path | None = None,
+) -> Path:
+    return resolve_question_bank_asset_path(
+        question.get("source_file"),
+        data_root=data_root,
+        search_subdirs=("question_bank/raw_papers",),
+    )
 
 
 class _preview_pdf:

@@ -650,8 +650,8 @@ def _add_text_and_images(
 
 def _add_images(document: Document, image_paths: list[object]) -> None:
     for image_path in image_paths:
-        path = Path(str(image_path))
-        if not path.exists():
+        path = _resolve_image_path(str(image_path))
+        if path is None:
             continue
         try:
             document.add_picture(str(path), width=Inches(4.8))
