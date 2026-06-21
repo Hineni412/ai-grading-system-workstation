@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
-PAGE_PATH = Path("pages/知识图谱适配调试.py")
+PAGE_PATH = Path("pages/知识点整理（高级）.py")
 
 
 def test_alignment_page_uses_persistent_service_and_real_sources() -> None:

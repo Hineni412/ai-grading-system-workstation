@@ -293,7 +293,7 @@ def _render_diagnosis(
         st.session_state[ALIGNMENT_FOCUS_SESSION_KEY] = [
             item.to_dict() for item in focus_items
         ]
-        st.switch_page("pages/知识图谱适配调试.py")
+        st.switch_page("pages/知识点整理（高级）.py")
 
 def _render_question_images(question_detail: dict[str, Any]) -> None:
     IMAGE_MARKER_PATTERN = re.compile(r"\[image:\s*(?P<path>[^\]]+)\]", re.IGNORECASE)

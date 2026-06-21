@@ -30,7 +30,7 @@ def test_training_page_keeps_explicit_selection_and_alignment_entry() -> None:
     assert "本次不推荐" in PAGE_SOURCE
     assert "alignment_revision" in PAGE_SOURCE
     assert "前往知识点对齐中心处理" not in PAGE_SOURCE
-    assert "知识图谱适配调试.py" in PAGE_SOURCE
+    assert "知识点整理（高级）.py" in PAGE_SOURCE
 
 
 def test_training_page_requires_preview_to_be_saved_before_export() -> None:
