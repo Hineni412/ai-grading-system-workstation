@@ -65,6 +65,7 @@ def generate_question_previews(
 
 def _generate_one(service: QuestionService, question: dict[str, Any], output_dir: Path) -> PreviewResult:
     source_file = _resolve_source_file(question)
+    stored_source_file = str(question.get("source_file") or source_file)
     if not source_file.exists():
         message = f"源文件不存在：{source_file}"
         _save_failed(service, int(question["id"]), question, "question", message)
@@ -87,7 +88,7 @@ def _generate_one(service: QuestionService, question: dict[str, Any], output_dir
                 lines,
                 output_dir,
                 preview_type="question",
-                source_file=str(source_file),
+                source_file=stored_source_file,
                 answer_heading=answer_heading,
             )
             answer_status = _render_preview(
@@ -97,7 +98,7 @@ def _generate_one(service: QuestionService, question: dict[str, Any], output_dir
                 lines,
                 output_dir,
                 preview_type="answer",
-                source_file=str(source_file),
+                source_file=stored_source_file,
                 answer_heading=answer_heading,
             )
     return PreviewResult(int(question["id"]), question_status, answer_status)

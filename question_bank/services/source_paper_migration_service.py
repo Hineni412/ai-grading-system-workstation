@@ -34,6 +34,7 @@ class MigrationReport:
 @dataclass(frozen=True, slots=True)
 class _InvariantSnapshot:
     question_ids: tuple[int, ...]
+    question_digest: str
     tag_count: int
     tag_digest: str
 
@@ -197,19 +198,34 @@ def _snapshot_invariants(conn: sqlite3.Connection) -> _InvariantSnapshot:
     question_ids = tuple(
         int(row[0]) for row in conn.execute("SELECT id FROM questions ORDER BY id")
     )
+    question_columns = [
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info('questions')")
+        if str(row[1]) != "source_file"
+    ]
+    quoted_columns = ", ".join(f'"{column}"' for column in question_columns)
+    question_rows = [
+        tuple(row)
+        for row in conn.execute(
+            f"SELECT {quoted_columns} FROM questions ORDER BY id"
+        )
+    ]
+    question_encoded = json.dumps(
+        question_rows,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
     tag_rows = [
         tuple(row)
         for row in conn.execute(
-            """
-            SELECT question_id, tag_type, tag_value, confidence, source, model_name
-            FROM question_tags
-            ORDER BY id
-            """
+            "SELECT * FROM question_tags ORDER BY id"
         )
     ]
     encoded = json.dumps(tag_rows, ensure_ascii=False, separators=(",", ":"), default=str)
     return _InvariantSnapshot(
         question_ids=question_ids,
+        question_digest=hashlib.sha256(question_encoded.encode("utf-8")).hexdigest(),
         tag_count=len(tag_rows),
         tag_digest=hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
     )

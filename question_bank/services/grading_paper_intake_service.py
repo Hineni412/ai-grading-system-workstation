@@ -78,7 +78,7 @@ def intake_grading_paper_to_question_bank(
     imported_sources = {
         item.source_file
         for item in import_result.files
-        if item.status in {"imported", "needs_review", "needs_ocr"}
+        if item.status != "failed" and item.source_file
     }
     questions = [
         question
