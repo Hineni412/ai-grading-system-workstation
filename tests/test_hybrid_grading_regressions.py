@@ -14,6 +14,7 @@ from hybrid_batch_grading_service import (
     MajorQuestionSpec,
     PaperEntry,
     build_hybrid_major_prompt,
+    grade_major_question_batch,
     validate_hybrid_major_response,
 )
 from scanner import ExamPaperGroup
@@ -247,3 +248,63 @@ def test_quick_batch_settings_do_not_mutate_instantiated_sidebar_widget_state() 
     assert "st.session_state.hybrid_major_batch_size_input = maj_bs" not in source
     assert "os.environ['LLM_OBJECTIVE_BATCH_SIZE'] = str(obj_bs)" in source
     assert "os.environ['LLM_HYBRID_MAJOR_BATCH_SIZE'] = str(maj_bs)" in source
+
+
+def test_subjective_retry_acquires_one_request_slot_per_model_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    atlas_path = tmp_path / "atlas.jpg"
+    Image.new("RGB", (20, 20), "white").save(atlas_path)
+    manifest = _manifest()
+
+    class FakeBuilder:
+        def build(self, **kwargs):
+            return {"atlas_path": atlas_path, "manifest": manifest}
+
+    class RetryingClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def json_from_images(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls < 3:
+                raise RuntimeError("transient")
+            return {
+                "question_id": "Q10",
+                "items": [
+                    {
+                        "paper_key": "paper-1",
+                        "student_id": 1,
+                        "grading_details": [_detail("10-1"), _detail("10-2")],
+                    }
+                ],
+            }
+
+    class CountingLimiter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def acquire(self) -> None:
+            self.calls += 1
+
+    client = RetryingClient()
+    limiter = CountingLimiter()
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+
+    result = grade_major_question_batch(
+        session_id=1,
+        spec=_multipart_spec(),
+        paper_entries=[],
+        answer_regions=[],
+        llm_client=client,
+        grading_model="test-model",
+        output_root=tmp_path,
+        batch_index=1,
+        builder=FakeBuilder(),
+        rate_limiter=limiter,
+    )
+
+    assert len(result["accepted"]) == 1
+    assert client.calls == 3
+    assert limiter.calls == 3
