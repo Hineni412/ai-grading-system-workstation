@@ -3254,8 +3254,8 @@ def render_grading_tab(
             d_maj = int(st.session_state.get("hybrid_major_batch_size_input", 4))
             obj_bs = st.number_input("客观题批大小", min_value=OBJECTIVE_BATCH_SIZE_MIN, max_value=OBJECTIVE_BATCH_SIZE_MAX, value=d_obj, step=1, key="run_objective_batch_size")
             maj_bs = st.number_input("主观题横批批大小 (batch_size)", min_value=SUBJECTIVE_MAJOR_BATCH_SIZE_MIN, max_value=SUBJECTIVE_MAJOR_BATCH_SIZE_MAX, value=d_maj, step=1, key="run_hybrid_major_batch_size")
-            st.session_state.objective_batch_size_input = obj_bs
-            st.session_state.hybrid_major_batch_size_input = maj_bs
+            os.environ["LLM_OBJECTIVE_BATCH_SIZE"] = str(obj_bs)
+            os.environ["LLM_HYBRID_MAJOR_BATCH_SIZE"] = str(maj_bs)
             st.caption("参数快速调整，无需重新在左侧 API 配置中保存。")
             
         col1, col2 = st.columns(2)

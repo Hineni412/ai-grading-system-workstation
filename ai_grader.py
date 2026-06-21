@@ -353,7 +353,7 @@ class AIGrader:
             "- 单选题硬规则：choice 默认都是单选题。若学生同时圈选/书写多个选项（如 AB、A/C、两个选项均有明显标记），除非 rubric 明确为 multiple_choice 且标准答案允许多选，否则该题必须给 0 分。\n"
             "- 作废内容硬规则：学生自己黑笔涂抹、划掉、删除线覆盖、明显打叉作废的区域，即便仍然看得清，也不得采信；但作答框内未被涂抹/作废的其它答案仍要正常评分。\n\n"
             f"{mapping_instruction}"
-            f"rubric(JSON):\n{json.dumps(self.rubric, ensure_ascii=False)}\n\n"
+            f"rubric(JSON):\n{json.dumps(_without_embedded_image_data(self.rubric), ensure_ascii=False)}\n\n"
             f"answer_key(JSON):\n{json.dumps(_without_embedded_image_data(self.answer_key), ensure_ascii=False)}"
         )
 

@@ -608,7 +608,7 @@ def build_hybrid_major_prompt(spec: MajorQuestionSpec, manifest: dict[str, Any],
     payload = {
         "question_id": spec.question_id,
         "detail_question_ids": detail_ids,
-        "rubric": spec.rubric,
+        "rubric": _without_embedded_image_data(spec.rubric),
         "answer_key": _without_embedded_image_data(spec.answer_key),
     }
     
@@ -688,9 +688,9 @@ def validate_hybrid_major_response(
     if str(response.get("question_id") or "").strip() != spec.question_id:
         return [], [_failed_manifest_item(item, "question_id_mismatch", spec.question_id) for item in manifest.get("items", [])]
     expected = {str(item.get("paper_key")): item for item in manifest.get("items", [])}
-    # Allow both the sub-question IDs (part_ids) AND the parent question_id itself,
-    # so that if the model returns the parent Q-ID it is not immediately rejected.
-    allowed_qids = set(spec.detail_question_ids or [spec.question_id]) | {spec.question_id}
+    required_qids = list(spec.detail_question_ids or [spec.question_id])
+    allowed_qids = set(required_qids)
+    required_normalized_qids = {normalize_sub_question_id(qid) for qid in required_qids}
     accepted: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -708,14 +708,22 @@ def validate_hybrid_major_response(
         details = []
         metadata = []
         item_failed_reason = ""
+        seen_detail_qids: set[str] = set()
         for detail in item.get("grading_details", []):
             converted, reason, detail_metadata = _detail_from_ai_item(detail, allowed_qids, min_confidence, spec=spec)
             if reason:
                 item_failed_reason = reason
                 break
+            normalized_qid = normalize_sub_question_id(converted.question_id)
+            if normalized_qid in seen_detail_qids:
+                item_failed_reason = "duplicate_detail_question_id"
+                break
+            seen_detail_qids.add(normalized_qid)
             details.append(converted)
             if detail_metadata:
                 metadata.append(detail_metadata)
+        if not item_failed_reason and required_normalized_qids - seen_detail_qids:
+            item_failed_reason = "missing_detail_question_ids"
         if item_failed_reason or not details:
             failed.append({"paper_key": paper_key, "student_id": expected[paper_key].get("student_id"), "question_id": spec.question_id, "reason": item_failed_reason or "missing_grading_details"})
             continue
