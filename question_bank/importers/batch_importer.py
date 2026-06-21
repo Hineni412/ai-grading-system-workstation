@@ -12,6 +12,7 @@ from pathlib import Path
 from question_bank.database.schema import connect, initialize_database
 from question_bank.importers.docx_importer import import_docx
 from question_bank.importers.pdf_importer import import_pdf
+from question_bank.services.source_paper_archive_service import archive_source_paper
 from question_bank.services.rich_content_service import save_question_rich_content
 from question_bank.parsers.type_detector import detect_question_type
 
@@ -197,27 +198,43 @@ def import_scanned_papers(
     *,
     default_metadata: PaperMetadata | None = None,
     question_range: str | None = None,
+    data_root: str | Path | None = None,
+    raw_papers_dir: str | Path | None = None,
+    archive_sources: bool = True,
 ) -> BatchImportResult:
     database_path = Path(db_path)
     initialize_database(database_path)
     file_results: list[PaperImportFileResult] = []
 
     for scanned in scanned_papers:
-        path = Path(scanned.source_file)
+        original_path = Path(scanned.source_file)
         try:
+            if archive_sources:
+                archived = archive_source_paper(
+                    original_path,
+                    data_root=data_root,
+                    raw_papers_dir=raw_papers_dir,
+                )
+                physical_path = archived.physical_path
+                stored_source_file = archived.stored_path
+            else:
+                physical_path = original_path
+                stored_source_file = str(original_path)
             file_results.append(
                 _import_scanned_paper(
-                    path,
+                    physical_path,
                     database_path,
+                    stored_source_file=stored_source_file,
+                    source_title=original_path.stem,
                     metadata=_merge_metadata(default_metadata or PaperMetadata(), scanned.metadata),
                     question_range=question_range,
                 )
             )
         except Exception as exc:  # noqa: BLE001
-            LOGGER.exception("Failed to import local paper %s", path)
+            LOGGER.exception("Failed to import local paper %s", original_path)
             file_results.append(
                 PaperImportFileResult(
-                    source_file=str(path),
+                    source_file=str(original_path),
                     status="failed",
                     message=str(exc),
                 )
@@ -259,15 +276,18 @@ def _import_scanned_paper(
     path: Path,
     db_path: Path,
     *,
+    stored_source_file: str | None = None,
+    source_title: str | None = None,
     metadata: PaperMetadata,
     question_range: str | None,
 ) -> PaperImportFileResult:
     initialize_database(db_path)
+    source_value = stored_source_file or str(path)
     fingerprint = _file_fingerprint(path)
     with connect(db_path) as conn:
-        if _paper_exists(conn, fingerprint=fingerprint, source_file=str(path)):
+        if _paper_exists(conn, fingerprint=fingerprint, source_file=source_value):
             return PaperImportFileResult(
-                source_file=str(path),
+                source_file=source_value,
                 status="duplicate",
                 message="paper already imported",
             )
@@ -275,7 +295,7 @@ def _import_scanned_paper(
     extracted = _extract_paper(path)
     parsed = parse_paper_text(
         extracted.text,
-        source_file=extracted.source_file,
+        source_file=source_value,
         page_range=extracted.page_range,
         question_range=question_range,
         has_images=extracted.has_images,
@@ -286,17 +306,20 @@ def _import_scanned_paper(
     if not parsed.questions:
         if extracted.needs_ocr:
             return PaperImportFileResult(
-                source_file=str(path),
+                source_file=source_value,
                 status="needs_ocr",
                 message="document has no parseable text and needs OCR",
             )
         return PaperImportFileResult(
-            source_file=str(path),
+            source_file=source_value,
             status="duplicate",
             message="all parsed questions already exist",
         )
     import_status = _import_status(extracted.needs_ocr, parsed)
-    rich_content = map_rich_content_by_number(getattr(extracted, "rich_paragraphs", []), source_file=str(path))
+    rich_content = map_rich_content_by_number(
+        getattr(extracted, "rich_paragraphs", []),
+        source_file=source_value,
+    )
     pending_rich_content: list[tuple[int, list[dict[str, object]], list[dict[str, object]]]] = []
 
     with connect(db_path) as conn:
@@ -308,8 +331,8 @@ def _import_scanned_paper(
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                path.stem,
-                str(path),
+                source_title or path.stem,
+                source_value,
                 _clean_optional(metadata.year),
                 _clean_optional(metadata.province),
                 _clean_optional(metadata.city),
@@ -363,7 +386,7 @@ def _import_scanned_paper(
             LOGGER.exception("Failed to save rich question content for question %s", question_id)
 
     return PaperImportFileResult(
-        source_file=str(path),
+        source_file=source_value,
         status=import_status,
         question_count=len(parsed.questions),
         answer_match_count=parsed.answer_match_count,
