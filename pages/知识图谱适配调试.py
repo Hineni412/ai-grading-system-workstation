@@ -4,16 +4,22 @@ import html
 import time
 from datetime import datetime
 from collections import Counter
-from typing import Any
+from typing import Any, Mapping
 
 import pandas as pd
 import streamlit as st
 
 from db_manager import DBManager
+from integration.knowledge_term_identity import build_grading_knowledge_term
 from path_manager import get_path_manager
 from question_bank.database.schema import connect
 from question_bank.models.knowledge_alignment import AlignmentStatus
 from question_bank.services.concept_alignment_service import ConceptAlignmentService
+from question_bank.services.alignment_review_service import (
+    AlignmentFocusItem,
+    filter_focus_sources,
+    merge_focus_sources,
+)
 from question_bank.services.ai_tagging_service import AITaggingService
 
 
@@ -37,6 +43,7 @@ def _add_source_term(
     *,
     source_namespace: str,
     source_value: object,
+    display_value: object | None = None,
     evidence_count: int = 1,
 ) -> None:
     value = str(source_value or "").strip()
@@ -48,6 +55,7 @@ def _add_source_term(
         {
             "source_namespace": source_namespace,
             "source_value": value,
+            "display_value": str(display_value or value).strip(),
             "evidence_count": 0,
         },
     )
@@ -62,10 +70,15 @@ def _load_real_source_terms() -> tuple[list[dict[str, Any]], list[str]]:
     try:
         weak_points = DBManager(pm.db_path).get_active_global_weak_points()
         for item in weak_points:
+            term = build_grading_knowledge_term(
+                item.get("knowledge_id"),
+                item.get("knowledge_label"),
+            )
             _add_source_term(
                 terms,
                 source_namespace="grading_weak_point",
-                source_value=item.get("knowledge_label") or item.get("knowledge_id"),
+                source_value=term.source_value,
+                display_value=term.display_value,
                 evidence_count=int(item.get("item_count") or 1),
             )
     except Exception as exc:
@@ -133,7 +146,7 @@ def _alignment_rows(
             {
                 "选择": bool(auto_selected),
                 "来源": NAMESPACE_MAP.get(source["source_namespace"], source["source_namespace"]),
-                "原始词": source["source_value"],
+                "原始词": source.get("display_value") or source["source_value"],
                 "状态": STATUS_LABELS[resolution.status.value],
                 "建议/已绑定标准知识点": target_label,
                 "子技能标签": sub_skills,
@@ -314,30 +327,59 @@ def _render_alignment_workbench(
     with col_info:
         st.info("💡 **批量操作指引**：点击「AI一键对齐」完成预测后，可在下表微调修改绑定知识点与子技能标签，勾选后点击批量确认即可。")
 
-    focus_terms = st.session_state.get(ALIGNMENT_FOCUS_SESSION_KEY) or []
-    is_focus_active = False
+    raw_focus_items = st.session_state.get(ALIGNMENT_FOCUS_SESSION_KEY) or []
+    focus_items: list[AlignmentFocusItem] = []
+    for item in raw_focus_items:
+        if isinstance(item, Mapping):
+            focus_items.append(
+                AlignmentFocusItem(
+                    source_namespace=str(
+                        item.get("source_namespace") or "grading_weak_point"
+                    ),
+                    source_value=str(item.get("source_value") or ""),
+                    display_value=str(
+                        item.get("display_value")
+                        or item.get("source_value")
+                        or ""
+                    ),
+                    evidence_count=int(item.get("evidence_count") or 0),
+                    student_ids=tuple(
+                        str(value) for value in item.get("student_ids", [])
+                    ),
+                    session_ids=tuple(
+                        int(value) for value in item.get("session_ids", [])
+                    ),
+                )
+            )
+        elif str(item or "").strip():
+            value = str(item).strip()
+            focus_items.append(
+                AlignmentFocusItem(
+                    source_namespace="grading_weak_point",
+                    source_value=value,
+                    display_value=value,
+                    evidence_count=0,
+                    student_ids=(),
+                    session_ids=(),
+                )
+            )
 
-    if focus_terms:
-        st.info(f"📍 **当前焦点对齐模式**：正在处理从「训练推荐」跳转过来的待确认术语 ({len(focus_terms)} 个)")
+    if focus_items:
+        st.info(f"📍 **当前焦点对齐模式**：正在处理从「训练推荐」跳转过来的待确认术语 ({len(focus_items)} 个)")
         col_focus_1, col_focus_2 = st.columns([0.75, 0.25])
         with col_focus_1:
-            st.write(f"待处理术语：`{', '.join(str(item) for item in focus_terms)}`")
+            st.write(
+                "待处理术语：`"
+                + ", ".join(item.source_value for item in focus_items)
+                + "`"
+            )
         with col_focus_2:
             if st.button("❌ 退出焦点过滤", use_container_width=True):
                 st.session_state.pop(ALIGNMENT_FOCUS_SESSION_KEY, None)
                 st.rerun()
 
-        # Filter terms by focus terms
-        focus_set = {str(item).strip().lower() for item in focus_terms}
-        filtered_terms = [
-            row
-            for row in source_terms
-            if str(row["source_value"]).strip().lower() in focus_set
-        ]
-        is_focus_active = len(filtered_terms) > 0
-        if not is_focus_active:
-            st.warning("所有焦点术语都已在下方过滤掉（或已被对齐/拒绝），显示全部数据。")
-            filtered_terms = source_terms
+        source_terms = merge_focus_sources(source_terms, focus_items)
+        filtered_terms = filter_focus_sources(source_terms, focus_items)
     else:
         filtered_terms = source_terms
 
