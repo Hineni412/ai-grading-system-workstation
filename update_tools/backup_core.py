@@ -7,10 +7,15 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
+import re
 import shutil
+import sqlite3
 import sys
+import tempfile
 import zipfile
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -74,6 +79,84 @@ _SKIP_EXTENSIONS = {
 
 # 默认不备份 API key 文件
 _SENSITIVE_FILES = {"api_profiles.json"}
+_SAFE_BATCH_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def create_skill_migration_backup(
+    question_bank_db: str | Path,
+    grading_db: str | Path,
+    batch_id: str,
+) -> dict[str, str]:
+    """Create consistent database snapshots and a rollback manifest."""
+    question_bank = Path(question_bank_db).resolve()
+    grading = Path(grading_db).resolve()
+    normalized_batch = str(batch_id or "").strip()
+    if not normalized_batch or not _SAFE_BATCH_ID.fullmatch(normalized_batch):
+        raise ValueError("batch_id may contain only letters, numbers, dot, dash, and underscore")
+    backup_dir = question_bank.parent / "skill_migration_backups" / normalized_batch
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backups = {
+        "question_bank": backup_dir / "question_bank.db",
+        "grading": backup_dir / "grading_system.db",
+    }
+    _sqlite_snapshot(question_bank, backups["question_bank"])
+    _sqlite_snapshot(grading, backups["grading"])
+    manifest = {
+        "batch_id": normalized_batch,
+        "originals": {
+            "question_bank": str(question_bank),
+            "grading": str(grading),
+        },
+        "backups": {key: str(path) for key, path in backups.items()},
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    manifest_path = backup_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {key: str(path) for key, path in backups.items()}
+
+
+def restore_skill_migration_backup(
+    question_bank_db: str | Path,
+    batch_id: str,
+) -> dict[str, str]:
+    question_bank = Path(question_bank_db).resolve()
+    normalized_batch = str(batch_id or "").strip()
+    manifest_path = question_bank.parent / "skill_migration_backups" / normalized_batch / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"skill migration backup manifest not found: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    restored: dict[str, str] = {}
+    for key in ("question_bank", "grading"):
+        source = Path(manifest["backups"][key]).resolve()
+        destination = Path(manifest["originals"][key]).resolve()
+        if not source.is_file():
+            raise FileNotFoundError(f"skill migration backup is missing: {source}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{destination.name}.",
+            suffix=".restore",
+            dir=destination.parent,
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+        try:
+            shutil.copy2(source, temporary)
+            os.replace(temporary, destination)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+        restored[key] = str(source)
+    return restored
+
+
+def _sqlite_snapshot(source: Path, destination: Path) -> None:
+    if not source.is_file():
+        raise FileNotFoundError(f"database not found: {source}")
+    if destination.exists():
+        destination.unlink()
+    with closing(sqlite3.connect(source)) as source_conn:
+        with closing(sqlite3.connect(destination)) as destination_conn:
+            source_conn.backup(destination_conn)
 
 
 # ── 备份目录 ──────────────────────────────────────────

@@ -8,6 +8,8 @@ from db_manager import DBManager
 from integration.knowledge_term_identity import build_grading_knowledge_term
 from question_bank.models.knowledge_alignment import AlignmentStatus
 from question_bank.services.concept_alignment_service import ConceptAlignmentService
+from question_bank.database.schema import connect, initialize_database
+from question_bank.services.skill_link_service import SkillLinkService
 
 
 GENERIC_ERROR_REASONS = {
@@ -25,9 +27,34 @@ class DiagnosisProfileService:
         question_bank_db_path: str | Path,
     ) -> None:
         self.db = DBManager(Path(grading_db_path))
-        self.alignment = ConceptAlignmentService(question_bank_db_path)
+        self.question_bank_db_path = Path(question_bank_db_path)
+        self.alignment = ConceptAlignmentService(self.question_bank_db_path)
+        self.skill_links = SkillLinkService(self.question_bank_db_path)
 
     def build_profiles(
+        self,
+        *,
+        scope: Mapping[str, Any],
+        exam_scope: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        read_mode = self._skill_read_mode()
+        if read_mode == "skill":
+            return self._build_skill_profiles(scope=scope, exam_scope=exam_scope)
+        if read_mode == "shadow":
+            skill_profile = self._build_skill_profiles(scope=scope, exam_scope=exam_scope)
+            legacy_profile = self._build_legacy_profiles(scope=scope, exam_scope=exam_scope)
+            skill_profile["legacy_comparison"] = {
+                "student_count": len(legacy_profile.get("students") or []),
+                "weak_point_count": sum(
+                    len(item.get("weak_points") or [])
+                    for item in legacy_profile.get("students") or []
+                ),
+                "confirmed_concept_count": len(legacy_profile.get("confirmed_concept_ids") or []),
+            }
+            return skill_profile
+        return self._build_legacy_profiles(scope=scope, exam_scope=exam_scope)
+
+    def _build_legacy_profiles(
         self,
         *,
         scope: Mapping[str, Any],
@@ -149,6 +176,182 @@ class DiagnosisProfileService:
             "unmapped_terms": sorted(unmapped_terms),
             "warnings": _unique(warnings),
         }
+
+    def _skill_read_mode(self) -> str:
+        initialize_database(self.question_bank_db_path)
+        with connect(self.question_bank_db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT value FROM skill_system_settings
+                WHERE key = 'recommendation_read_mode'
+                """
+            ).fetchone()
+        value = str(row["value"] if row is not None else "legacy").strip().casefold()
+        return value if value in {"legacy", "shadow", "skill"} else "legacy"
+
+    def _build_skill_profiles(
+        self,
+        *,
+        scope: Mapping[str, Any],
+        exam_scope: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        warnings: list[str] = []
+        sessions = self._resolve_sessions(exam_scope, warnings)
+        students = self._resolve_students(scope, warnings)
+        session_ids = [int(item["id"]) for item in sessions]
+        student_ids = [str(item["id"]) for item in students]
+        score_rates = self._score_rates(students, session_ids)
+        evidence_rows = self.db.get_active_assessment_evidence(
+            student_ids=student_ids,
+            session_ids=session_ids,
+        )
+        measured_by_item: dict[tuple[int, str], list[dict[str, Any]]] = defaultdict(list)
+        for link in self.skill_links.assessment_links_for_sessions(
+            [str(value) for value in session_ids]
+        ):
+            if str(link.get("role")) != "measured":
+                continue
+            measured_by_item[
+                (int(link.get("grading_session_id") or 0), str(link.get("source_question_id") or ""))
+            ].append(link)
+
+        grouped_by_student: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
+        confirmed_skill_ids: set[int] = set()
+        for row in evidence_rows:
+            item_key = (int(row.get("session_id") or 0), str(row.get("question_id") or ""))
+            links = measured_by_item.get(item_key, [])
+            if not links:
+                continue
+            student_id = str(row.get("student_id") or "")
+            awarded = max(_number(row.get("score_awarded")), 0.0)
+            full_score = max(_number(row.get("full_score")), 0.0)
+            score_for_rate = min(awarded, full_score) if full_score > 0 else awarded
+            for link in links:
+                skill_id = int(link["skill_id"])
+                confirmed_skill_ids.add(skill_id)
+                item = grouped_by_student[student_id].setdefault(
+                    skill_id,
+                    {
+                        "skill_id": skill_id,
+                        "skill_name": str(link.get("skill_name") or ""),
+                        "topic_id": int(link.get("topic_id") or 0),
+                        "topic_name": str(link.get("topic_name") or ""),
+                        "score_sum": 0.0,
+                        "full_score_sum": 0.0,
+                        "deduction_count": 0,
+                        "source_question_refs": [],
+                        "actionable_reasons": [],
+                        "error_types": [],
+                    },
+                )
+                item["score_sum"] += score_for_rate
+                item["full_score_sum"] += full_score
+                if row.get("is_deducted"):
+                    item["deduction_count"] += 1
+                reference = {
+                    "session_id": int(row.get("session_id") or 0),
+                    "question_id": str(row.get("question_id") or ""),
+                    "score_awarded": awarded,
+                    "full_score": full_score,
+                    "score_rate": round(awarded / full_score, 4) if full_score > 0 else None,
+                }
+                if reference not in item["source_question_refs"]:
+                    item["source_question_refs"].append(reference)
+                reasons = _actionable_reasons(
+                    ";".join(
+                        value
+                        for value in (
+                            str(row.get("deduction_reason") or "").strip(),
+                            str(row.get("error_summary") or "").strip(),
+                        )
+                        if value
+                    )
+                )
+                item["actionable_reasons"] = _unique([*item["actionable_reasons"], *reasons])
+                error_type = str(row.get("error_category") or "").strip()
+                if error_type:
+                    item["error_types"] = _unique([*item["error_types"], error_type])
+
+        student_profiles: list[dict[str, Any]] = []
+        for student in students:
+            student_id = str(student["id"])
+            weak_points: list[dict[str, Any]] = []
+            for item in grouped_by_student.get(student_id, {}).values():
+                full_score_sum = float(item.pop("full_score_sum"))
+                score_sum = float(item.pop("score_sum"))
+                references = sorted(
+                    item["source_question_refs"],
+                    key=lambda ref: (ref["session_id"], ref["question_id"]),
+                )
+                weak_points.append(
+                    {
+                        **item,
+                        "source_term": item["skill_name"],
+                        "eligible_for_recommendation": True,
+                        "mastery": round(score_sum / full_score_sum, 4) if full_score_sum > 0 else 1.0,
+                        "score_sum": round(score_sum, 4),
+                        "full_score_sum": round(full_score_sum, 4),
+                        "evidence_count": len(references),
+                        "exam_count": len({ref["session_id"] for ref in references}),
+                        "source_question_refs": references,
+                    }
+                )
+            weak_points.sort(key=lambda item: (item["mastery"], item["skill_name"]))
+            student_profiles.append(
+                {
+                    "student_id": student_id,
+                    "student_code": str(student.get("student_code") or ""),
+                    "student_name": str(student.get("name") or ""),
+                    "class_id": str(student.get("class_name") or ""),
+                    "score_rate": score_rates.get(student_id),
+                    "weak_points": weak_points,
+                }
+            )
+
+        unresolved_count = self._open_assessment_conflict_count(session_ids)
+        if unresolved_count:
+            warnings.append(f"有 {unresolved_count} 个评分题技能名称尚未确定，已从训练推荐中排除。")
+        if not any(item["weak_points"] for item in student_profiles):
+            warnings.append("所选范围内没有已绑定具体技能的诊断证据。")
+        normalized_scope = {
+            "mode": str(scope.get("mode") or "student"),
+            "student_ids": [item["student_id"] for item in student_profiles],
+        }
+        if scope.get("class_id") or scope.get("class_name"):
+            normalized_scope["class_id"] = str(scope.get("class_id") or scope.get("class_name"))
+        return {
+            "scope": normalized_scope,
+            "exam_scope": {
+                "mode": str(exam_scope.get("mode") or "current"),
+                "session_ids": session_ids,
+                "sessions": [
+                    {"session_id": int(item["id"]), "session_name": str(item.get("session_name") or "")}
+                    for item in sessions
+                ],
+            },
+            "students": student_profiles,
+            "confirmed_skill_ids": sorted(confirmed_skill_ids),
+            "confirmed_concept_ids": [],
+            "suggested_terms": [],
+            "unmapped_terms": [],
+            "unresolved_count": unresolved_count,
+            "warnings": _unique(warnings),
+            "diagnosis_identity": "skill",
+        }
+
+    def _open_assessment_conflict_count(self, session_ids: list[int]) -> int:
+        if not session_ids:
+            return 0
+        initialize_database(self.question_bank_db_path)
+        with connect(self.question_bank_db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT source_ref FROM skill_resolution_conflicts
+                WHERE source_type = 'assessment_item' AND state = 'open'
+                """
+            ).fetchall()
+        prefixes = tuple(f"{session_id}:" for session_id in session_ids)
+        return sum(str(row["source_ref"]).startswith(prefixes) for row in rows)
 
     def _resolve_sessions(
         self,

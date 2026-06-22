@@ -17,6 +17,7 @@ from question_bank.models.tag_schema import TaggingContext
 from question_bank.services.ai_tagging_service import AITaggingService, is_auto_saveable_result
 from question_bank.services.asset_path_service import resolve_question_bank_asset_path
 from question_bank.services.question_service import QuestionService
+from question_bank.services.skill_resolution_service import SkillResolutionService
 from question_bank.services.source_paper_archive_service import (
     archive_source_bytes,
     archive_source_paper,
@@ -91,6 +92,10 @@ def intake_grading_paper_to_question_bank(
         service = QuestionService(database_path)
         contexts = {int(item["id"]): _tagging_context(item) for item in questions}
         tagger = ai_service or AITaggingService()
+        skill_resolver = SkillResolutionService(
+            database_path,
+            context_ranker=tagger.build_skill_context_ranker(),
+        )
         results = tagger.analyze_questions(
             contexts,
             max_workers=tagging_max_workers,
@@ -104,6 +109,7 @@ def intake_grading_paper_to_question_bank(
                     result.analysis,
                     model_name=result.model_name,
                     confidence=result.analysis.confidence,
+                    skill_resolver=skill_resolver,
                 ):
                     tagged_questions += 1
                 else:
