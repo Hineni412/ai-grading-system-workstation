@@ -24,6 +24,15 @@ def test_question_bank_page_only_auto_saves_complete_ai_results() -> None:
     assert "待确认" in page
 
 
+def test_question_bank_feedback_uses_plain_skill_counts() -> None:
+    page = PAGE.read_text(encoding="utf-8")
+
+    assert "已识别" in page
+    assert "个训练技能" in page
+    assert "个问题进入后台待处理" in page
+    assert "不需要老师逐个确认编号" in page
+
+
 def test_question_bank_page_reuses_exact_duplicate_tags_before_ai_call() -> None:
     page = PAGE.read_text(encoding="utf-8")
 
