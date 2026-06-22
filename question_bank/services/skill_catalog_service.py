@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ from question_bank.taxonomy.skill_catalog_seed import (
     load_builtin_catalog,
     validate_builtin_catalog,
 )
+from question_bank.models.skill_catalog import normalize_display_text, normalize_stable_key
 
 
 class SkillCatalogService:
@@ -134,6 +136,274 @@ class SkillCatalogService:
                 """,
                 (source_id, resolved_target, resolved_target, source_id),
             )
+
+    def list_open_conflicts(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        initialize_database(self.db_path)
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM skill_resolution_conflicts
+                WHERE state = 'open'
+                ORDER BY created_at, id
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+            result: list[dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                candidate_ids = _json_int_list(item.pop("candidate_skill_ids_json", "[]"))[:5]
+                item["evidence"] = _json_dict(item.pop("evidence_json", "{}"))
+                item["candidates"] = []
+                if candidate_ids:
+                    placeholders = ",".join("?" for _ in candidate_ids)
+                    candidates = conn.execute(
+                        f"""
+                        SELECT s.id, s.name, t.name AS topic_name
+                        FROM skills s JOIN skill_topics t ON t.id = s.topic_id
+                        WHERE s.id IN ({placeholders}) AND s.status = 'active'
+                        """,
+                        candidate_ids,
+                    ).fetchall()
+                    by_id = {int(candidate["id"]): dict(candidate) for candidate in candidates}
+                    item["candidates"] = [by_id[value] for value in candidate_ids if value in by_id]
+                result.append(item)
+            return result
+
+    def resolve_conflict(self, conflict_id: int, skill_id: int, *, actor: str) -> None:
+        initialize_database(self.db_path)
+        _require_actor(actor)
+        with connect(self.db_path) as conn:
+            self._resolve_conflict_connection(conn, int(conflict_id), int(skill_id), actor=str(actor))
+
+    def create_local_from_conflict(
+        self,
+        conflict_id: int,
+        name: str,
+        topic_id: int,
+        *,
+        actor: str,
+    ) -> int:
+        initialize_database(self.db_path)
+        actor = _require_actor(actor)
+        normalized_name = normalize_display_text(name)
+        if len(normalized_name) < 3:
+            raise ValueError("local skill name must contain at least 3 characters")
+        with connect(self.db_path) as conn:
+            topic = conn.execute(
+                "SELECT stable_key FROM skill_topics WHERE id = ? AND status = 'active'",
+                (int(topic_id),),
+            ).fetchone()
+            if topic is None:
+                raise KeyError(f"active topic not found: {topic_id}")
+            existing = conn.execute(
+                "SELECT id FROM skills WHERE name = ? AND topic_id = ? AND status = 'active'",
+                (normalized_name, int(topic_id)),
+            ).fetchone()
+            if existing is None:
+                digest = hashlib.sha1(
+                    f"{topic['stable_key']}:{normalize_stable_key(normalized_name)}".encode("utf-8")
+                ).hexdigest()[:12]
+                cursor = conn.execute(
+                    """
+                    INSERT INTO skills (
+                        stable_key, topic_id, name, aliases_json, origin, status
+                    ) VALUES (?, ?, ?, '[]', 'local', 'active')
+                    """,
+                    (f"local.{topic['stable_key']}.{digest}", int(topic_id), normalized_name),
+                )
+                local_id = int(cursor.lastrowid)
+            else:
+                local_id = int(existing["id"])
+            self._resolve_conflict_connection(conn, int(conflict_id), local_id, actor=actor)
+            return local_id
+
+    def ignore_conflict(self, conflict_id: int, *, actor: str) -> None:
+        initialize_database(self.db_path)
+        actor = _require_actor(actor)
+        with connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                UPDATE skill_resolution_conflicts
+                SET state = 'ignored', resolved_by = ?, resolved_at = datetime('now','localtime'),
+                    updated_at = datetime('now','localtime')
+                WHERE id = ? AND state = 'open'
+                """,
+                (actor, int(conflict_id)),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"open conflict not found: {conflict_id}")
+
+    def list_neighbors(self, *, include_disabled: bool = False) -> list[dict[str, Any]]:
+        initialize_database(self.db_path)
+        where = "" if include_disabled else "WHERE n.enabled = 1"
+        with connect(self.db_path) as conn:
+            return [
+                dict(row)
+                for row in conn.execute(
+                    f"""
+                    SELECT n.*, source.name AS source_skill_name, target.name AS target_skill_name
+                    FROM skill_neighbors n
+                    JOIN skills source ON source.id = n.source_skill_id
+                    JOIN skills target ON target.id = n.target_skill_id
+                    {where}
+                    ORDER BY n.enabled DESC, source.name, target.name, n.id
+                    """
+                ).fetchall()
+            ]
+
+    def set_neighbor_enabled(self, neighbor_id: int, enabled: bool, *, actor: str) -> None:
+        initialize_database(self.db_path)
+        actor = _require_actor(actor)
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT evidence_json FROM skill_neighbors WHERE id = ?",
+                (int(neighbor_id),),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"skill neighbor not found: {neighbor_id}")
+            evidence = _json_dict(row["evidence_json"])
+            evidence["last_admin_action"] = {"actor": actor, "enabled": bool(enabled)}
+            conn.execute(
+                """
+                UPDATE skill_neighbors
+                SET enabled = ?, evidence_json = ?, updated_at = datetime('now','localtime')
+                WHERE id = ?
+                """,
+                (int(bool(enabled)), json.dumps(evidence, ensure_ascii=False), int(neighbor_id)),
+            )
+
+    def coverage_summary(self) -> dict[str, dict[str, int]]:
+        initialize_database(self.db_path)
+        with connect(self.db_path) as conn:
+            question_total = int(
+                conn.execute("SELECT COUNT(*) FROM questions WHERE COALESCE(is_deleted, 0) = 0").fetchone()[0]
+            )
+            question_resolved = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(DISTINCT question_id) FROM question_skill_links
+                    WHERE status = 'resolved' AND role = 'measured'
+                    """
+                ).fetchone()[0]
+            )
+            question_conflicts = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM skill_resolution_conflicts
+                    WHERE state = 'open' AND source_type = 'question_bank_item'
+                    """
+                ).fetchone()[0]
+            )
+            assessment_resolved = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(DISTINCT grading_session_id || ':' || source_question_id)
+                    FROM assessment_item_skills
+                    WHERE status = 'resolved' AND role = 'measured'
+                    """
+                ).fetchone()[0]
+            )
+            assessment_conflicts = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM skill_resolution_conflicts
+                    WHERE state = 'open' AND source_type = 'assessment_item'
+                    """
+                ).fetchone()[0]
+            )
+        return {
+            "question_bank": {
+                "total": max(question_total, question_resolved + question_conflicts),
+                "resolved": question_resolved,
+                "conflicts": question_conflicts,
+            },
+            "assessment": {
+                "total": assessment_resolved + assessment_conflicts,
+                "resolved": assessment_resolved,
+                "conflicts": assessment_conflicts,
+            },
+        }
+
+    def list_migration_runs(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        initialize_database(self.db_path)
+        with connect(self.db_path) as conn:
+            return [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM skill_migration_runs ORDER BY started_at DESC, id DESC LIMIT ?",
+                    (max(1, int(limit)),),
+                ).fetchall()
+            ]
+
+    def _resolve_conflict_connection(self, conn, conflict_id: int, skill_id: int, *, actor: str) -> None:
+        conflict = conn.execute(
+            "SELECT * FROM skill_resolution_conflicts WHERE id = ? AND state = 'open'",
+            (int(conflict_id),),
+        ).fetchone()
+        if conflict is None:
+            raise KeyError(f"open conflict not found: {conflict_id}")
+        active_skill_id = _redirect_target(conn, int(skill_id))
+        skill = conn.execute(
+            "SELECT id FROM skills WHERE id = ? AND status = 'active'",
+            (active_skill_id,),
+        ).fetchone()
+        if skill is None:
+            raise KeyError(f"active skill not found: {skill_id}")
+        source_type = str(conflict["source_type"])
+        source_ref = str(conflict["source_ref"])
+        if source_type == "question_bank_item":
+            question_id = _question_id_from_source_ref(source_ref)
+            conn.execute(
+                """
+                INSERT INTO question_skill_links (
+                    question_id, skill_id, role, raw_knowledge_label,
+                    source, confidence, evidence_json, status
+                ) VALUES (?, ?, 'measured', ?, 'admin_resolution', 1.0, ?, 'resolved')
+                ON CONFLICT(question_id, skill_id, role) DO UPDATE SET
+                    raw_knowledge_label = excluded.raw_knowledge_label,
+                    source = excluded.source, confidence = 1.0,
+                    evidence_json = excluded.evidence_json, status = 'resolved',
+                    updated_at = datetime('now','localtime')
+                """,
+                (
+                    question_id,
+                    active_skill_id,
+                    str(conflict["raw_label"]),
+                    json.dumps({"conflict_id": conflict_id, "actor": actor}, ensure_ascii=False),
+                ),
+            )
+        elif source_type == "assessment_item":
+            session_id, item_ref = _assessment_source_ref(source_ref)
+            conn.execute(
+                """
+                INSERT INTO assessment_item_skills (
+                    grading_session_id, source_question_id, skill_id, role,
+                    raw_knowledge_label, source, confidence, evidence_json, status
+                ) VALUES (?, ?, ?, 'measured', ?, 'admin_resolution', 1.0, ?, 'resolved')
+                ON CONFLICT(grading_session_id, source_question_id, skill_id, role) DO UPDATE SET
+                    raw_knowledge_label = excluded.raw_knowledge_label,
+                    source = excluded.source, confidence = 1.0,
+                    evidence_json = excluded.evidence_json, status = 'resolved',
+                    updated_at = datetime('now','localtime')
+                """,
+                (
+                    session_id,
+                    item_ref,
+                    active_skill_id,
+                    str(conflict["raw_label"]),
+                    json.dumps({"conflict_id": conflict_id, "actor": actor}, ensure_ascii=False),
+                ),
+            )
+        conn.execute(
+            """
+            UPDATE skill_resolution_conflicts
+            SET state = 'resolved', resolved_skill_id = ?, resolved_by = ?,
+                resolved_at = datetime('now','localtime'), updated_at = datetime('now','localtime')
+            WHERE id = ?
+            """,
+            (active_skill_id, actor, int(conflict_id)),
+        )
 
 
 def seed_builtin_catalog_connection(conn, catalog: BuiltinSkillCatalog) -> dict[str, int]:
@@ -282,3 +552,53 @@ def _redirect_target(conn, skill_id: int) -> int:
         if row["status"] != "merged" or row["redirect_skill_id"] is None:
             return current_id
         current_id = int(row["redirect_skill_id"])
+
+
+def _require_actor(actor: object) -> str:
+    value = normalize_display_text(actor)
+    if not value:
+        raise ValueError("actor is required")
+    return value
+
+
+def _json_int_list(value: object) -> list[int]:
+    try:
+        parsed = json.loads(str(value or "[]"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    result: list[int] = []
+    for item in parsed if isinstance(parsed, list) else []:
+        try:
+            number = int(item)
+        except (TypeError, ValueError):
+            continue
+        if number > 0 and number not in result:
+            result.append(number)
+    return result
+
+
+def _json_dict(value: object) -> dict[str, Any]:
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}
+
+
+def _question_id_from_source_ref(source_ref: str) -> int:
+    candidates = [source_ref, *reversed(source_ref.split(":"))]
+    for value in candidates:
+        try:
+            question_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if question_id > 0:
+            return question_id
+    raise ValueError(f"question source reference has no numeric id: {source_ref}")
+
+
+def _assessment_source_ref(source_ref: str) -> tuple[str, str]:
+    parts = str(source_ref).split(":", 1)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise ValueError(f"invalid assessment source reference: {source_ref}")
+    return parts[0], parts[1]
