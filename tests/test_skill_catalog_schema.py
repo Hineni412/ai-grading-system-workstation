@@ -21,18 +21,26 @@ EXPECTED_SKILL_TABLES = {
 
 
 def _seed_skill(conn: sqlite3.Connection) -> int:
-    topic_id = conn.execute(
-        "INSERT INTO skill_topics (stable_key, name, subject) VALUES (?, ?, ?)",
+    conn.execute(
+        "INSERT OR IGNORE INTO skill_topics (stable_key, name, subject) VALUES (?, ?, ?)",
         ("math.geometry.triangle", "三角形", "math"),
-    ).lastrowid
+    )
+    topic_id = int(
+        conn.execute(
+            "SELECT id FROM skill_topics WHERE stable_key = 'math.geometry.triangle'"
+        ).fetchone()[0]
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO skills (stable_key, topic_id, name, origin)
+        VALUES (?, ?, ?, 'builtin')
+        """,
+        ("math.geometry.triangle.angle_bisector", topic_id, "角平分线性质"),
+    )
     return int(
         conn.execute(
-            """
-            INSERT INTO skills (stable_key, topic_id, name, origin)
-            VALUES (?, ?, ?, 'builtin')
-            """,
-            ("math.geometry.triangle.angle_bisector", topic_id, "角平分线性质"),
-        ).lastrowid
+            "SELECT id FROM skills WHERE stable_key = 'math.geometry.triangle.angle_bisector'"
+        ).fetchone()[0]
     )
 
 

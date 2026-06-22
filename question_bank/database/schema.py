@@ -24,7 +24,7 @@ def connect(db_path: Path) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def initialize_database(db_path: Path) -> None:
+def initialize_database(db_path: Path, *, seed_skills: bool = True) -> None:
     with connect(db_path) as conn:
         conn.execute(
             """
@@ -228,6 +228,20 @@ def initialize_database(db_path: Path) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_question_previews_question ON question_previews(question_id, preview_type)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_training_set_items_set ON training_set_items(training_set_id, item_order)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_training_set_items_question ON training_set_items(question_id)")
+        if seed_skills:
+            from question_bank.services.skill_catalog_service import (
+                seed_builtin_catalog_connection,
+            )
+            from question_bank.taxonomy.skill_catalog_seed import (
+                load_builtin_catalog,
+                validate_builtin_catalog,
+            )
+
+            catalog = load_builtin_catalog()
+            errors = validate_builtin_catalog(catalog)
+            if errors:
+                raise ValueError("invalid built-in skill catalog: " + "; ".join(errors))
+            seed_builtin_catalog_connection(conn, catalog)
         conn.commit()
 
 
