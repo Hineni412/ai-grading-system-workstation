@@ -135,6 +135,13 @@ class TrainingTaskService:
                             "matched_concept_id",
                             "relation_type",
                             "concept_name",
+                            "target_skill_id",
+                            "matched_skill_id",
+                            "target_skill_name",
+                            "matched_skill_name",
+                            "match_kind",
+                            "neighbor_kind",
+                            "reason",
                         )
                         if item.get(key) is not None
                     }
