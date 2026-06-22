@@ -1,62 +1,54 @@
-from __future__ import annotations
-
 from pathlib import Path
 
 
 PAGE_SOURCE = Path("pages/训练推荐.py").read_text(encoding="utf-8")
 
 
-def test_training_page_uses_real_diagnosis_and_task_services() -> None:
-    assert "DiagnosisProfileService" in PAGE_SOURCE
-    assert "PracticePlanService" in PAGE_SOURCE
-    assert "TrainingTaskService" in PAGE_SOURCE
+def test_training_page_uses_real_skill_diagnosis_and_task_services() -> None:
+    for service in ("DiagnosisProfileService", "PracticePlanService", "TrainingTaskService", "SkillCatalogService"):
+        assert service in PAGE_SOURCE
     assert "load_sample_mastery_rows" not in PAGE_SOURCE
 
 
-def test_training_page_supports_all_student_and_exam_scope_modes() -> None:
-    for label in ("单个学生", "筛选多个学生", "全部班级"):
+def test_training_page_keeps_scope_selection_and_snapshot_safety() -> None:
+    for label in ("单个学生", "筛选多个学生", "全部班级", "当前考试", "跨考试", "手动选择考试"):
         assert label in PAGE_SOURCE
-    for label in ("当前考试", "跨考试", "手动选择考试"):
-        assert label in PAGE_SOURCE
-
-
-def test_training_page_keeps_explicit_selection_and_alignment_entry() -> None:
     assert "明确选择要训练的学生" in PAGE_SOURCE
-    assert "selected_student_ids" in PAGE_SOURCE
-    assert "ALIGNMENT_FOCUS_SESSION_KEY" in PAGE_SOURCE
-    assert "focus_items_from_diagnosis" in PAGE_SOURCE
-    assert "AlignmentReviewService" in PAGE_SOURCE
-    assert "使用这个匹配" in PAGE_SOURCE
-    assert "本次不推荐" in PAGE_SOURCE
-    assert "alignment_revision" in PAGE_SOURCE
-    assert "前往知识点对齐中心处理" not in PAGE_SOURCE
-    assert "知识点整理（高级）.py" in PAGE_SOURCE
-
-
-def test_training_page_requires_preview_to_be_saved_before_export() -> None:
     assert "保存训练任务" in PAGE_SOURCE
     assert "请先保存训练任务" in PAGE_SOURCE
-    assert "exclude_current_exam_originals" in PAGE_SOURCE
     assert "PLAN_SIGNATURE_KEY" in PAGE_SOURCE
 
 
-def test_training_page_exposes_safety_states() -> None:
-    for message in (
-        "未选择学生",
-        "未选择考试",
-        "没有已确认映射的薄弱知识点",
-        "题库数据库不可用",
+def test_diagnosis_uses_plain_concrete_skill_columns() -> None:
+    for label in ("薄弱技能", "所属主题", "掌握率", "证据题数", "精确题数"):
+        assert label in PAGE_SOURCE
+    for removed in (
+        "ConceptAlignmentService",
+        "AlignmentReviewService",
+        "ALIGNMENT_FOCUS_SESSION_KEY",
+        "focus_items_from_diagnosis",
+        "打开知识点整理（高级）",
+        "映射状态",
+        "置信度",
+        "canonical_knowledge_id",
+        "允许仅大类匹配的题目补足",
     ):
-        assert message in PAGE_SOURCE
+        assert removed not in PAGE_SOURCE
 
 
-def test_training_page_defaults_to_a_simple_teacher_workflow() -> None:
-    assert 'st.title("生成错题巩固练习")' in PAGE_SOURCE
-    assert 'st.expander("高级设置")' in PAGE_SOURCE
-    assert "基础巩固" in PAGE_SOURCE
-    assert "针对训练" in PAGE_SOURCE
-    assert "提升应用" in PAGE_SOURCE
-    assert "允许仅大类匹配的题目补足" in PAGE_SOURCE
-    assert "推荐排序权重" not in PAGE_SOURCE
-    assert "包含历史错题回流" not in PAGE_SOURCE
-    assert "include_historical_wrong_questions" not in PAGE_SOURCE
+def test_shortage_has_one_teacher_decision_and_neighbors_are_labeled() -> None:
+    assert '_generate_selected_plan("ask")' in PAGE_SOURCE
+    assert "related_fill_policy=fill_policy" in PAGE_SOURCE
+    assert "补入相近题" in PAGE_SOURCE
+    assert "保持较少的精确题" in PAGE_SOURCE
+    assert "allow_neighbors" in PAGE_SOURCE
+    assert "exact_only" in PAGE_SOURCE
+    assert "相近补入" in PAGE_SOURCE
+    assert "target_skill_name" in PAGE_SOURCE
+    assert "matched_skill_name" in PAGE_SOURCE
+
+
+def test_resolved_evidence_needs_no_confirmation_action() -> None:
+    assert "无需逐条确认" in PAGE_SOURCE
+    assert "本次跳过" in PAGE_SOURCE
+    assert "resolve_conflict" in PAGE_SOURCE

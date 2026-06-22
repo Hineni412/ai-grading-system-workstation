@@ -1769,6 +1769,28 @@ def _render_ai_tagging_summary() -> None:
     reused = int(summary.get("reused") or 0)
     mode_note = "mock 模式" if summary.get("mock_mode") else "API 模式"
     summary_text = f"已自动保存 {saved}/{total}（{mode_note}），复用 {reused}，二审 {reviewed}，待确认 {pending}"
+    from question_bank.database.schema import connect
+    with connect(question_bank_db_path()) as conn:
+        recognized_skills = int(
+            conn.execute(
+                """
+                SELECT COUNT(DISTINCT skill_id) FROM question_skill_links
+                WHERE status = 'resolved' AND role = 'measured'
+                """
+            ).fetchone()[0]
+        )
+        background_issues = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) FROM skill_resolution_conflicts
+                WHERE state = 'open' AND source_type = 'question_bank_item'
+                """
+            ).fetchone()[0]
+        )
+    st.success(
+        f"已识别 {recognized_skills} 个训练技能；{background_issues} 个问题进入后台待处理。"
+        "不需要老师逐个确认编号。"
+    )
     if failed_items:
         with st.expander(f"上次 AI 打标签：{summary_text}，有 {len(failed_items)} 条失败", expanded=False):
             for item in failed_items[:30]:
