@@ -10,6 +10,7 @@ from question_bank.services.skill_migration_service import (
     SkillMigrationConfig,
     SkillMigrationService,
 )
+from question_bank.services.skill_catalog_service import SkillCatalogService
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,6 +28,12 @@ def build_parser() -> argparse.ArgumentParser:
     rollback = subparsers.add_parser("rollback")
     rollback.add_argument("--question-bank-db", type=Path, required=True)
     rollback.add_argument("--batch-id", required=True)
+    set_mode = subparsers.add_parser("set-mode")
+    set_mode.add_argument("--question-bank-db", type=Path, required=True)
+    set_mode.add_argument("--mode", choices=("legacy", "shadow", "skill"), required=True)
+    set_mode.add_argument("--batch-id")
+    set_mode.add_argument("--reason", required=True)
+    set_mode.add_argument("--actor", default="local-operator")
     return parser
 
 
@@ -35,6 +42,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     service = SkillMigrationService()
     if args.command == "rollback":
         report = service.rollback(args.question_bank_db, args.batch_id)
+    elif args.command == "set-mode":
+        catalog = SkillCatalogService(args.question_bank_db)
+        previous = catalog.get_read_mode()
+        catalog.set_read_mode(
+            args.mode,
+            actor=args.actor,
+            reason=args.reason,
+            batch_id=args.batch_id,
+        )
+        report = {
+            "status": "succeeded",
+            "previous_mode": previous,
+            "current_mode": catalog.get_read_mode(),
+            "batch_id": args.batch_id,
+        }
     else:
         batch_id = args.batch_id or f"dry-run-{datetime.now():%Y%m%d-%H%M%S}"
         config = SkillMigrationConfig(

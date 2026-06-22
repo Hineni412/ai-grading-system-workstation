@@ -80,7 +80,7 @@
     {"stable_key": "math.function.linear.graph", "topic_key": "math.function.linear", "name": "一次函数图像与性质", "grade_min": 8, "grade_max": 9, "legacy_keys": ["KP_FUN_FUNCTION_GRAPH"]},
     {"stable_key": "math.function.linear.intersection", "topic_key": "math.function.linear", "name": "一次函数交点与方程组", "grade_min": 8, "grade_max": 9},
     {"stable_key": "math.function.linear.inequality", "topic_key": "math.function.linear", "name": "一次函数图像解不等式", "grade_min": 8, "grade_max": 9},
-    {"stable_key": "math.function.linear.graph_application", "topic_key": "math.function.linear", "name": "一次函数图像应用", "aliases": ["一次函数实际图像应用"], "grade_min": 8, "grade_max": 9, "legacy_keys": ["KP_FUN_LINEAR_APPL"]},
+    {"stable_key": "math.function.linear.graph_application", "topic_key": "math.function.linear", "name": "一次函数图像应用", "aliases": ["一次函数实际图像应用", "一次函数的实际应用"], "grade_min": 8, "grade_max": 9, "legacy_keys": ["KP_FUN_LINEAR_APPL"]},
     {"stable_key": "math.function.linear.piecewise", "topic_key": "math.function.linear", "name": "分段一次函数情境分析", "grade_min": 8, "grade_max": 9},
 
     {"stable_key": "math.function.inverse.form", "topic_key": "math.function.inverse", "name": "反比例函数解析式确定", "grade_min": 9, "grade_max": 9, "legacy_keys": ["KP_FUN_INVERSE"]},
@@ -114,7 +114,7 @@
     {"stable_key": "math.geometry.triangle.median", "topic_key": "math.geometry.triangle", "name": "三角形中线性质", "grade_min": 7, "grade_max": 9},
     {"stable_key": "math.geometry.triangle.area", "topic_key": "math.geometry.triangle", "name": "三角形面积计算", "grade_min": 7, "grade_max": 9, "legacy_keys": ["KP_GEO_TRIANGLE_AREA"]},
     {"stable_key": "math.geometry.triangle.area_relation", "topic_key": "math.geometry.triangle", "name": "等高三角形面积关系", "grade_min": 7, "grade_max": 9},
-    {"stable_key": "math.geometry.triangle.bisector_area", "topic_key": "math.geometry.triangle", "name": "角平分线与三角形面积", "grade_min": 8, "grade_max": 9},
+    {"stable_key": "math.geometry.triangle.bisector_area", "topic_key": "math.geometry.triangle", "name": "角平分线与三角形面积", "aliases": ["角平分线性质与三角形面积"], "grade_min": 8, "grade_max": 9},
     {"stable_key": "math.geometry.triangle.center", "topic_key": "math.geometry.triangle", "name": "三角形内心与外心辨析", "grade_min": 8, "grade_max": 9},
     {"stable_key": "math.geometry.triangle.comprehensive", "topic_key": "math.geometry.triangle", "name": "三角形几何综合推理", "grade_min": 8, "grade_max": 9, "legacy_keys": ["KP_GEO_COMPREHENSIVE"]},
 
@@ -125,7 +125,7 @@
     {"stable_key": "math.geometry.congruence.hl", "topic_key": "math.geometry.congruence", "name": "HL判定直角三角形全等", "grade_min": 8, "grade_max": 9},
     {"stable_key": "math.geometry.congruence.property", "topic_key": "math.geometry.congruence", "name": "全等三角形性质应用", "grade_min": 8, "grade_max": 9},
 
-    {"stable_key": "math.geometry.special_triangle.isosceles_property", "topic_key": "math.geometry.special_triangle", "name": "等腰三角形性质", "grade_min": 8, "grade_max": 9, "legacy_keys": ["KP_GEO_ISOSCELES_TRIANGLE"]},
+    {"stable_key": "math.geometry.special_triangle.isosceles_property", "topic_key": "math.geometry.special_triangle", "name": "等腰三角形性质", "aliases": ["等腰三角形的角度计算", "等腰三角形三线合一"], "grade_min": 7, "grade_max": 9, "legacy_keys": ["KP_GEO_ISOSCELES_TRIANGLE"]},
     {"stable_key": "math.geometry.special_triangle.isosceles_judge", "topic_key": "math.geometry.special_triangle", "name": "等腰三角形判定", "grade_min": 8, "grade_max": 9},
     {"stable_key": "math.geometry.special_triangle.equilateral", "topic_key": "math.geometry.special_triangle", "name": "等边三角形性质与判定", "grade_min": 8, "grade_max": 9},
     {"stable_key": "math.geometry.special_triangle.right_property", "topic_key": "math.geometry.special_triangle", "name": "直角三角形性质", "grade_min": 8, "grade_max": 9, "legacy_keys": ["KP_GEO_RIGHT_TRIANGLE"]},
@@ -145,7 +145,7 @@
     {"stable_key": "math.geometry.quadrilateral.area", "topic_key": "math.geometry.quadrilateral", "name": "四边形面积计算", "grade_min": 8, "grade_max": 9},
     {"stable_key": "math.geometry.quadrilateral.comprehensive", "topic_key": "math.geometry.quadrilateral", "name": "特殊四边形综合判定", "grade_min": 8, "grade_max": 9, "legacy_keys": ["KP_GEO_QUADRILATERAL_PROPERTIES"]},
 
-    {"stable_key": "math.geometry.transformation.axis_property", "topic_key": "math.geometry.transformation", "name": "轴对称性质", "grade_min": 7, "grade_max": 9, "legacy_keys": ["KP_GEO_AXIS_SYMMETRY"]},
+    {"stable_key": "math.geometry.transformation.axis_property", "topic_key": "math.geometry.transformation", "name": "轴对称性质", "aliases": ["轴对称的面积性质", "轴对称图形的对称轴计数"], "grade_min": 7, "grade_max": 9, "legacy_keys": ["KP_GEO_AXIS_SYMMETRY"]},
     {"stable_key": "math.geometry.transformation.axis_draw", "topic_key": "math.geometry.transformation", "name": "轴对称作图", "aliases": ["作轴对称图形"], "grade_min": 7, "grade_max": 9},
     {"stable_key": "math.geometry.transformation.perpendicular_bisector", "topic_key": "math.geometry.transformation", "name": "垂直平分线性质", "grade_min": 8, "grade_max": 9},
     {"stable_key": "math.geometry.transformation.translation", "topic_key": "math.geometry.transformation", "name": "平移作图与坐标变化", "grade_min": 7, "grade_max": 9},
@@ -182,11 +182,12 @@
     {"stable_key": "math.geometry.circle.comprehensive", "topic_key": "math.geometry.circle", "name": "圆与三角形综合证明", "grade_min": 9, "grade_max": 9},
 
     {"stable_key": "math.geometry.construction.angle", "topic_key": "math.geometry.construction", "name": "尺规作等角", "grade_min": 7, "grade_max": 9, "legacy_keys": ["KP_GEO_CONSTRUCTION"]},
+    {"stable_key": "math.geometry.construction.validity", "topic_key": "math.geometry.construction", "name": "尺规作图步骤与正确性判定", "aliases": ["尺规作图的正确性判定"], "grade_min": 7, "grade_max": 9},
     {"stable_key": "math.geometry.construction.bisector", "topic_key": "math.geometry.construction", "name": "角平分线尺规作图", "grade_min": 7, "grade_max": 9},
     {"stable_key": "math.geometry.construction.perpendicular", "topic_key": "math.geometry.construction", "name": "垂线与垂直平分线作图", "grade_min": 7, "grade_max": 9},
     {"stable_key": "math.geometry.construction.circumcenter", "topic_key": "math.geometry.construction", "name": "三角形外心作图", "aliases": ["作三角形外接圆圆心"], "grade_min": 8, "grade_max": 9},
     {"stable_key": "math.geometry.construction.incenter", "topic_key": "math.geometry.construction", "name": "三角形内心作图", "grade_min": 8, "grade_max": 9},
-    {"stable_key": "math.geometry.construction.shortest_path", "topic_key": "math.geometry.construction", "name": "最短路径作图", "aliases": ["将军饮马最短路径"], "grade_min": 8, "grade_max": 9},
+    {"stable_key": "math.geometry.construction.shortest_path", "topic_key": "math.geometry.construction", "name": "最短路径作图", "aliases": ["将军饮马最短路径", "最短路径与等边三角形性质", "最短路径与角度计算"], "grade_min": 7, "grade_max": 9},
     {"stable_key": "math.geometry.construction.fold_path", "topic_key": "math.geometry.construction", "name": "轴对称最短路径", "grade_min": 8, "grade_max": 9},
     {"stable_key": "math.geometry.construction.tangent", "topic_key": "math.geometry.construction", "name": "圆的切线作图", "grade_min": 9, "grade_max": 9},
 

@@ -86,6 +86,33 @@ python update_tools/restore_backup.py <备份文件名>
 - 备份状态
 - 一键备份功能
 
+## 具体训练技能与训练推荐
+
+训练推荐现在直接显示“薄弱技能、所属主题、掌握率、证据题数、精确题数”。系统会把评分规则和题库题目统一到同一个具体技能，普通老师不再逐条确认知识点编号或映射状态。
+
+- **精确题**：错题证据和题库题目具有同一个“直接考查技能”，默认只选这类题。
+- **相近补入**：精确题不足时，老师可为整份练习选择一次是否补入。补入题会同时显示目标技能和实际技能，不会伪装成精确题。
+- **待处理问题**：只有无法唯一判断的本校叫法才进入“技能目录与待处理问题”。管理员可选择已有技能、新建本校技能或暂不处理。
+
+旧的映射表只用于兼容历史数据，请勿手工删除或直接修改。
+
+### 安全迁移命令
+
+先执行 dry-run；报告未通过覆盖率 95%、100 条金标及 98% 精度门槛时，不得 apply 或切换：
+
+```powershell
+runtime\python\python.exe -m update_tools.migrate_skill_catalog dry-run --grading-db user_data/databases/grading_system.db --question-bank-db user_data/databases/question_bank.db --report-dir user_data/reports/skill_migration --gold-file tests/fixtures/skill_migration_gold.json
+runtime\python\python.exe -m update_tools.migrate_skill_catalog apply --batch-id skill-v1-20260622 --grading-db user_data/databases/grading_system.db --question-bank-db user_data/databases/question_bank.db --report-dir user_data/reports/skill_migration --gold-file tests/fixtures/skill_migration_gold.json
+runtime\python\python.exe -m update_tools.migrate_skill_catalog set-mode --mode shadow --question-bank-db user_data/databases/question_bank.db --reason "compare unified skill recommendations"
+runtime\python\python.exe -m update_tools.migrate_skill_catalog set-mode --mode skill --question-bank-db user_data/databases/question_bank.db --batch-id skill-v1-20260622 --reason "acceptance gates passed"
+runtime\python\python.exe -m update_tools.migrate_skill_catalog rollback --batch-id skill-v1-20260622 --question-bank-db user_data/databases/question_bank.db
+runtime\python\python.exe -m update_tools.migrate_skill_catalog set-mode --mode legacy --question-bank-db user_data/databases/question_bank.db --reason "emergency rollback"
+```
+
+`shadow → skill` 还要求系统已保存代表性学生的影子推荐对比记录；如果没有记录或出现精确题差异，`set-mode --mode skill` 会直接拒绝。
+
+迁移备份位于 `user_data/databases/skill_migration_backups/<批次号>/`。回滚前不要移动该目录。
+
 ## 技术支持
 
 如遇问题，请提供以下信息：

@@ -237,6 +237,11 @@ class SkillMigrationService:
                 results.append(_source_result("question_bank", source_ref, "resolved_existing", "existing measured link"))
                 continue
             candidates = _question_skill_candidates(tags.get(question_id, []))
+            context_hint = _context_stable_key_hint(
+                f"{row['question_text'] or ''} {row['answer_text'] or ''}"
+            )
+            if context_hint:
+                candidates.insert(0, ("context_keyword", context_hint))
             if not candidates:
                 results.append(_source_result("question_bank", source_ref, "insufficient_evidence", "no usable tags"))
                 continue
@@ -244,7 +249,12 @@ class SkillMigrationService:
             used_label = ""
             used_type = ""
             for tag_type, label in candidates:
-                stable_hint = label if tag_type == "canonical_knowledge_id" and label.startswith("math.") else ""
+                stable_hint = (
+                    label
+                    if tag_type in {"canonical_knowledge_id", "context_keyword"}
+                    and label.startswith("math.")
+                    else ""
+                )
                 request = SkillResolutionRequest(
                     source_type=SkillSourceType.QUESTION_BANK_ITEM,
                     source_ref=source_ref,
@@ -454,6 +464,42 @@ def _question_skill_candidates(tags: list[tuple[str, str]]) -> list[tuple[str, s
         [(kind, value.strip()) for kind, value in tags if kind in priorities and value.strip()],
         key=lambda item: (priorities[item[0]], item[1]),
     )
+
+
+def _context_stable_key_hint(text: object) -> str:
+    normalized = str(text or "")
+    if "角平分线" in normalized and "面积" in normalized:
+        return "math.geometry.triangle.bisector_area"
+    if "三线合一" in normalized:
+        return "math.geometry.special_triangle.isosceles_property"
+    if "垂直平分线" in normalized:
+        return "math.geometry.construction.perpendicular"
+    if "两直线平行" in normalized or "平行线的性质" in normalized:
+        return "math.geometry.line_angle.parallel_property"
+    if "角平分线" in normalized:
+        return "math.geometry.line_angle.bisector"
+    if ("最短路径" in normalized or "值最小" in normalized) and "轴对称" in normalized:
+        return "math.geometry.construction.shortest_path"
+    if "轴对称" in normalized and any(word in normalized for word in ("画出", "作出")):
+        return "math.geometry.transformation.axis_draw"
+    if "轴对称" in normalized or "折叠" in normalized:
+        return "math.geometry.transformation.axis_property"
+    if "三角形外心" in normalized or "外接圆圆心" in normalized:
+        return "math.geometry.construction.circumcenter"
+    if "全等三角形" in normalized:
+        return "math.geometry.congruence.judge"
+    if "一次函数" in normalized and any(word in normalized for word in ("实际", "估计", "应用")):
+        return "math.function.linear.graph_application"
+    rules = (
+        (("科学记数法",), "math.algebra.expression.scientific"),
+        (("负整数指数幂", "零指数幂"), "math.algebra.expression.power"),
+        (("一元一次方程",), "math.algebra.equation.linear_solve"),
+        (("一次函数",), "math.function.linear.graph"),
+    )
+    for keywords, stable_key in rules:
+        if any(keyword in normalized for keyword in keywords):
+            return stable_key
+    return ""
 
 
 def _source_result(source: str, source_ref: str, outcome: str, reason: str, **evidence: Any) -> dict[str, Any]:
