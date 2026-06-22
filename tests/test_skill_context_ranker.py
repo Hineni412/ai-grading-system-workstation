@@ -44,3 +44,16 @@ def test_llm_ranker_accepts_only_supplied_candidate_ids() -> None:
 
     assert [candidate.skill_id for candidate in ranking.candidates] == [7]
     assert ranking.candidates[0].confidence == 0.96
+
+
+def test_ai_tagging_service_exposes_reusable_skill_ranker() -> None:
+    from question_bank.services.ai_tagging_service import AITaggingService
+    from question_bank.services.skill_context_ranker import LLMSkillContextRanker
+
+    client = _JsonClient()
+    service = AITaggingService(env={}, llm_client=client)
+
+    ranker = service.build_skill_context_ranker()
+
+    assert isinstance(ranker, LLMSkillContextRanker)
+    assert ranker.json_client is client

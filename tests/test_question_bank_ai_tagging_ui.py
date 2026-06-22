@@ -29,3 +29,10 @@ def test_question_bank_page_reuses_exact_duplicate_tags_before_ai_call() -> None
 
     assert "find_exact_duplicate_tag_analysis(selected_id)" in page
     assert '"reused": reused_count' in page
+
+
+def test_question_bank_page_reuses_one_skill_resolver_for_batch_save() -> None:
+    page = PAGE.read_text(encoding="utf-8")
+
+    assert "build_skill_context_ranker" in page
+    assert "skill_resolver=skill_resolver" in page

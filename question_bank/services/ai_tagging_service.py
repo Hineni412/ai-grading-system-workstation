@@ -215,6 +215,13 @@ class AITaggingService:
     def mock_mode(self) -> bool:
         return not bool(self.api_key or self.llm_client)
 
+    def build_skill_context_ranker(self):
+        if self.llm_client is None:
+            return None
+        from question_bank.services.skill_context_ranker import LLMSkillContextRanker
+
+        return LLMSkillContextRanker(self.llm_client)
+
     def analyze_question(self, context: TaggingContext) -> AITaggingResult:
         if self.mock_mode:
             return AITaggingResult(ok=True, mock_mode=True, analysis=_mock_analysis(context))
@@ -377,6 +384,12 @@ def _mock_analysis(context: TaggingContext) -> TagAnalysis:
         "suitable_student_level": "中档提升",
         "canonical_knowledge_id": "kp_geo_comprehensive",
         "sub_skills": [],
+        "measured_skills": (
+            ["角平分线性质"] if "角平分线" in context.question_text
+            else ["平行线性质"] if "平行" in context.question_text
+            else ["相似三角形判定"]
+        ),
+        "supporting_skills": [],
         "reason": "Mock mode uses stable middle-school math tags for page testing.",
         "confidence": 0.8,
     }
@@ -453,6 +466,12 @@ def _system_prompt() -> str:
     - 若题目考法无明确细分，sub_skills 可为空数组 []。
     - 每个子技能应是简短词组（2-8 字），如"SAS判定""辅助线构造""角度计算"。
 
+    === 具体训练技能（measured_skills / supporting_skills）===
+    - measured_skills 必须至少包含一个题目直接考查、可直接训练的具体技能。
+    - supporting_skills 只填写解题中使用但不是主要考查目标的前置技能或方法。
+    - 技能名必须包含明确数学对象与动作/性质，如“角平分线性质”“SAS判定全等”“一次函数图像应用”。
+    - 禁止用“几何综合”“线与角”“性质”“计算”“作图”等大类或孤立宽泛词充当 measured_skills。
+
     Method tag options (choose relevant): {", ".join(METHOD_TAG_OPTIONS)}
 
     Ability tag options (choose relevant): {", ".join(ABILITY_TAG_OPTIONS)}
@@ -491,6 +510,8 @@ def _plain_output_schema() -> dict[str, object]:
         "suitable_student_level": "",
         "canonical_knowledge_id": "",
         "sub_skills": [],
+        "measured_skills": [],
+        "supporting_skills": [],
         "reason": "",
         "confidence": 0.8,
     }
@@ -513,6 +534,8 @@ def _tag_analysis_response_format() -> dict[str, Any]:
         "suitable_student_level": text_field,
         "canonical_knowledge_id": text_field,
         "sub_skills": array_field,
+        "measured_skills": array_field,
+        "supporting_skills": array_field,
         "reason": text_field,
         "confidence": {"type": "number"},
     }
@@ -697,6 +720,8 @@ def _batch_tag_analysis_response_format() -> dict[str, Any]:
         "suitable_student_level": text_field,
         "canonical_knowledge_id": text_field,
         "sub_skills": array_field,
+        "measured_skills": array_field,
+        "supporting_skills": array_field,
         "reason": text_field,
         "confidence": {"type": "number"},
     }
@@ -931,6 +956,8 @@ def _evaluate_analysis_quality(analysis: TagAnalysis, context: TaggingContext) -
         missing.append("缺少教材章节")
     if not analysis.suitable_student_level:
         missing.append("缺少适合学生层级")
+    if not analysis.measured_skills:
+        missing.append("缺少具体训练技能")
     # canonical_knowledge_id 受控校验：若 AI 给了值但不在 registry 中，记为冲突
     if analysis.canonical_knowledge_id and not is_valid_canonical_id(analysis.canonical_knowledge_id):
         conflict_notes = [f"AI 给出的 canonical_knowledge_id 不在标准词表中: {analysis.canonical_knowledge_id}"]
@@ -1020,7 +1047,16 @@ def _analyses_agree(left: TagAnalysis, right: TagAnalysis) -> bool:
 
 def _merge_agreed_analyses(primary: TagAnalysis, review: TagAnalysis) -> TagAnalysis:
     payload = primary.to_dict()
-    for field_name in ("knowledge_points", "method_tags", "ability_tags", "math_model_tags", "error_prone_points", "prerequisite_points"):
+    for field_name in (
+        "knowledge_points",
+        "method_tags",
+        "ability_tags",
+        "math_model_tags",
+        "error_prone_points",
+        "prerequisite_points",
+        "measured_skills",
+        "supporting_skills",
+    ):
         payload[field_name] = _ordered_unique([*primary.to_dict().get(field_name, []), *review.to_dict().get(field_name, [])])
     payload["confidence"] = max(primary.confidence, review.confidence, COMPLETE_CONFIDENCE_THRESHOLD)
     if not payload.get("reason") and review.reason:

@@ -32,6 +32,7 @@ from question_bank.services.ai_tagging_service import (
     is_valid_canonical_id,
 )
 from question_bank.services.question_service import QuestionService, has_complete_analysis_tags
+from question_bank.services.skill_resolution_service import SkillResolutionService
 from question_bank.services.asset_path_service import resolve_question_bank_asset_path
 from question_bank.services.question_frequency_service import (
     FrequencyMetrics,
@@ -766,6 +767,8 @@ def _render_ai_tag_results(service: QuestionService, questions: list[dict], allo
                         "confidence": original_analysis.confidence,
                         "canonical_knowledge_id": edited_canonical,
                         "sub_skills": sub_skills,
+                        "measured_skills": original_analysis.measured_skills,
+                        "supporting_skills": original_analysis.supporting_skills,
                     }
                 )
                 _save_tag_analysis(
@@ -1416,6 +1419,10 @@ def _run_ai_tagging_for_ids(
         return
 
     tagging_service = AITaggingService()
+    skill_resolver = SkillResolutionService(
+        service.db_path,
+        context_ranker=tagging_service.build_skill_context_ranker(),
+    )
     progress_bar = st.progress(0, text=f"AI 打标签进度：0/{len(contexts)}")
     status_box = st.empty()
     reviewed_count = 0
@@ -1434,6 +1441,7 @@ def _run_ai_tagging_for_ids(
                     overwrite_manual=allow_manual_overwrite,
                     model_name=result.model_name,
                     confidence=result.analysis.confidence if result.analysis is not None else None,
+                    skill_resolver=skill_resolver,
                 )
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("Failed to auto-save AI tag analysis for question %s", question_id)
