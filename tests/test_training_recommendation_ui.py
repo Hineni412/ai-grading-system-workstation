@@ -34,6 +34,8 @@ def test_diagnosis_uses_plain_concrete_skill_columns() -> None:
         "允许仅大类匹配的题目补足",
     ):
         assert removed not in PAGE_SOURCE
+    assert "background_gradient" not in PAGE_SOURCE
+    assert "matplotlib" not in PAGE_SOURCE
 
 
 def test_shortage_has_one_teacher_decision_and_neighbors_are_labeled() -> None:

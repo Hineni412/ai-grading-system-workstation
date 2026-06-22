@@ -11,7 +11,9 @@ from question_bank.database.schema import connect, initialize_database
 from question_bank.services.skill_migration_service import (
     SkillMigrationConfig,
     SkillMigrationService,
+    _context_stable_key_hint,
 )
+from question_bank.services.skill_catalog_service import SkillCatalogService
 from update_tools.migrate_skill_catalog import build_parser
 
 
@@ -25,6 +27,76 @@ def test_migration_cli_exposes_guarded_commands() -> None:
     assert parser.parse_args(["rollback", "--question-bank-db", "q.db", "--batch-id", "b"]).command == "rollback"
     with pytest.raises(SystemExit):
         parser.parse_args(["apply", "--grading-db", "g.db", "--question-bank-db", "q.db", "--report-dir", "reports"])
+
+
+def test_untagged_question_uses_only_specific_deterministic_context_rules() -> None:
+    assert _context_stable_key_hint("等腰三角形底边中线、高线和角平分线三线合一") == (
+        "math.geometry.special_triangle.isosceles_property"
+    )
+    assert _context_stable_key_hint("两直线平行，内错角相等") == (
+        "math.geometry.line_angle.parallel_property"
+    )
+    assert _context_stable_key_hint("两直线平行推出角相等，再用角平分线定义") == (
+        "math.geometry.line_angle.parallel_property"
+    )
+    assert _context_stable_key_hint("作线段CD的垂直平分线") == (
+        "math.geometry.construction.perpendicular"
+    )
+    assert _context_stable_key_hint("角平分线相交，利用面积求边长") == (
+        "math.geometry.triangle.bisector_area"
+    )
+    assert _context_stable_key_hint("画出关于直线l的轴对称图形") == (
+        "math.geometry.transformation.axis_draw"
+    )
+    assert _context_stable_key_hint("普通综合题") == ""
+
+
+def test_read_mode_transitions_are_audited_and_skill_requires_all_gates(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    migration = SkillMigrationService()
+    applied = migration.apply(config)
+    catalog = SkillCatalogService(config.question_bank_db)
+
+    with pytest.raises(ValueError, match="shadow mode"):
+        catalog.record_shadow_comparison(config.batch_id, {"evaluated_profiles": 6}, actor="operator")
+    with pytest.raises(ValueError, match="legacy -> skill"):
+        catalog.set_read_mode("skill", actor="operator", reason="skip shadow", batch_id=config.batch_id)
+    catalog.set_read_mode("shadow", actor="operator", reason="compare recommendations")
+    with pytest.raises(ValueError, match="shadow comparison"):
+        catalog.set_read_mode("skill", actor="operator", reason="too early", batch_id=config.batch_id)
+
+    catalog.record_shadow_comparison(
+        config.batch_id,
+        {
+            "evaluated_profiles": 6,
+            "unexplained_exact_match_divergence": 0,
+            "topic_only_exact_count": 0,
+            "supporting_only_exact_count": 0,
+            "silent_shortage_fill_count": 0,
+        },
+        actor="operator",
+    )
+    catalog.set_read_mode(
+        "skill",
+        actor="operator",
+        reason="all gates passed",
+        batch_id=config.batch_id,
+    )
+    catalog.set_read_mode("legacy", actor="operator", reason="emergency rollback")
+
+    assert applied["status"] == "succeeded"
+    assert catalog.get_read_mode() == "legacy"
+    with connect(config.question_bank_db) as conn:
+        mode_runs = conn.execute(
+            "SELECT invariants_json FROM skill_migration_runs WHERE mode = 'set_mode' ORDER BY id"
+        ).fetchall()
+    audits = [json.loads(row["invariants_json"])["mode_change"] for row in mode_runs]
+    assert [(item["from"], item["to"]) for item in audits] == [
+        ("legacy", "shadow"),
+        ("shadow", "skill"),
+        ("skill", "legacy"),
+    ]
+    assert all(item["actor"] == "operator" and item["reason"] for item in audits)
 
 
 def _hash(path: Path) -> str:

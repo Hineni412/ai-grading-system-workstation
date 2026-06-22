@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import hashlib
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from question_bank.database.schema import connect, initialize_database
 from question_bank.taxonomy.skill_catalog_seed import (
@@ -336,6 +338,115 @@ class SkillCatalogService:
                 ).fetchall()
             ]
 
+    def get_read_mode(self) -> str:
+        initialize_database(self.db_path)
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT value FROM skill_system_settings WHERE key = 'recommendation_read_mode'"
+            ).fetchone()
+        return str(row["value"] if row is not None else "legacy")
+
+    def record_shadow_comparison(
+        self,
+        batch_id: str,
+        comparison: dict[str, Any],
+        *,
+        actor: str,
+    ) -> None:
+        initialize_database(self.db_path)
+        actor = _require_actor(actor)
+        with connect(self.db_path) as conn:
+            mode_row = conn.execute(
+                "SELECT value FROM skill_system_settings WHERE key = 'recommendation_read_mode'"
+            ).fetchone()
+            if mode_row is None or str(mode_row["value"]) != "shadow":
+                raise ValueError("shadow comparison can only be recorded in shadow mode")
+            applied = conn.execute(
+                """
+                SELECT id FROM skill_migration_runs
+                WHERE batch_id = ? AND mode = 'apply' AND status = 'succeeded'
+                """,
+                (str(batch_id),),
+            ).fetchone()
+            if applied is None:
+                raise ValueError("shadow comparison requires a successful applied batch")
+            payload = {
+                **dict(comparison),
+                "batch_id": str(batch_id),
+                "actor": actor,
+                "recorded_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            conn.execute(
+                """
+                INSERT INTO skill_system_settings (key, value)
+                VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value, updated_at = datetime('now','localtime')
+                """,
+                (f"shadow_comparison:{batch_id}", json.dumps(payload, ensure_ascii=False)),
+            )
+
+    def set_read_mode(
+        self,
+        mode: str,
+        *,
+        actor: str,
+        reason: str,
+        batch_id: str | None = None,
+    ) -> None:
+        initialize_database(self.db_path)
+        target = str(mode or "").strip()
+        actor = _require_actor(actor)
+        reason = normalize_display_text(reason)
+        if not reason:
+            raise ValueError("reason is required")
+        if target not in {"legacy", "shadow", "skill"}:
+            raise ValueError(f"unsupported recommendation read mode: {target}")
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT value FROM skill_system_settings WHERE key = 'recommendation_read_mode'"
+            ).fetchone()
+            current = str(row["value"] if row is not None else "legacy")
+            if current == target:
+                return
+            allowed = {("legacy", "shadow"), ("shadow", "skill"), ("skill", "legacy")}
+            if (current, target) not in allowed:
+                raise ValueError(f"unsupported read-mode transition: {current} -> {target}")
+            gate_evidence: dict[str, Any] = {}
+            if target == "skill":
+                if not batch_id:
+                    raise ValueError("skill mode requires an applied migration batch")
+                gate_evidence = _skill_cutover_evidence(conn, str(batch_id))
+            mode_change = {
+                "from": current,
+                "to": target,
+                "actor": actor,
+                "reason": reason,
+                "batch_id": str(batch_id or ""),
+                "changed_at": datetime.now().isoformat(timespec="seconds"),
+                "gates": gate_evidence,
+            }
+            conn.execute(
+                """
+                INSERT INTO skill_system_settings (key, value)
+                VALUES ('recommendation_read_mode', ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value, updated_at = datetime('now','localtime')
+                """,
+                (target,),
+            )
+            conn.execute(
+                """
+                INSERT INTO skill_migration_runs (
+                    batch_id, mode, status, invariants_json, finished_at
+                ) VALUES (?, 'set_mode', 'succeeded', ?, datetime('now','localtime'))
+                """,
+                (
+                    f"set-mode-{target}-{datetime.now():%Y%m%d%H%M%S}-{uuid4().hex[:8]}",
+                    json.dumps({"mode_change": mode_change}, ensure_ascii=False),
+                ),
+            )
+
     def _resolve_conflict_connection(self, conn, conflict_id: int, skill_id: int, *, actor: str) -> None:
         conflict = conn.execute(
             "SELECT * FROM skill_resolution_conflicts WHERE id = ? AND state = 'open'",
@@ -456,7 +567,7 @@ def seed_builtin_catalog_connection(conn, catalog: BuiltinSkillCatalog) -> dict[
                 skill.stable_key,
                 topic_ids[skill.topic_key],
                 skill.name,
-                json.dumps(list(skill.aliases), ensure_ascii=False),
+                json.dumps(list(dict.fromkeys((*skill.aliases, *skill.legacy_keys))), ensure_ascii=False),
                 skill.grade_min,
                 skill.grade_max,
             ),
@@ -472,7 +583,7 @@ def seed_builtin_catalog_connection(conn, catalog: BuiltinSkillCatalog) -> dict[
             (
                 topic_ids[skill.topic_key],
                 skill.name,
-                json.dumps(list(skill.aliases), ensure_ascii=False),
+                json.dumps(list(dict.fromkeys((*skill.aliases, *skill.legacy_keys))), ensure_ascii=False),
                 skill.grade_min,
                 skill.grade_max,
                 skill.stable_key,
@@ -602,3 +713,69 @@ def _assessment_source_ref(source_ref: str) -> tuple[str, str]:
     if len(parts) != 2 or not parts[0] or not parts[1]:
         raise ValueError(f"invalid assessment source reference: {source_ref}")
     return parts[0], parts[1]
+
+
+def _skill_cutover_evidence(conn, batch_id: str) -> dict[str, Any]:
+    run = conn.execute(
+        """
+        SELECT report_path FROM skill_migration_runs
+        WHERE batch_id = ? AND mode = 'apply' AND status = 'succeeded'
+        """,
+        (batch_id,),
+    ).fetchone()
+    if run is None:
+        raise ValueError("skill mode requires a successful applied migration batch")
+    report_path = Path(str(run["report_path"] or ""))
+    if not report_path.is_file():
+        raise ValueError("applied migration report is unavailable")
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("applied migration report is unreadable") from exc
+    failures: list[str] = []
+    if (
+        str(report.get("batch_id") or "") != batch_id
+        or str(report.get("mode") or "") != "apply"
+        or str(report.get("status") or "") != "succeeded"
+    ):
+        failures.append("report identity")
+    coverage = float(report.get("coverage", {}).get("value") or 0.0)
+    gold = report.get("gold") or {}
+    invariants_unchanged = bool(report.get("invariants", {}).get("unchanged"))
+    insufficient = int(report.get("result_counts", {}).get("insufficient_evidence") or 0)
+    if coverage < 0.95:
+        failures.append("coverage")
+    if int(gold.get("reviewed_count") or 0) < 100 or float(gold.get("precision") or 0.0) < 0.98:
+        failures.append("gold precision")
+    if not invariants_unchanged:
+        failures.append("count invariants")
+    if insufficient:
+        failures.append("silent unknowns")
+    comparison_row = conn.execute(
+        "SELECT value FROM skill_system_settings WHERE key = ?",
+        (f"shadow_comparison:{batch_id}",),
+    ).fetchone()
+    if comparison_row is None:
+        raise ValueError("skill mode requires a completed shadow comparison")
+    comparison = _json_dict(comparison_row["value"])
+    comparison_failures = {
+        key: int(comparison.get(key) or 0)
+        for key in (
+            "unexplained_exact_match_divergence",
+            "topic_only_exact_count",
+            "supporting_only_exact_count",
+            "silent_shortage_fill_count",
+        )
+    }
+    if int(comparison.get("evaluated_profiles") or 0) <= 0 or any(comparison_failures.values()):
+        failures.append("shadow comparison")
+    if failures:
+        raise ValueError("skill mode gates failed: " + ", ".join(failures))
+    return {
+        "coverage": coverage,
+        "gold_reviewed_count": int(gold["reviewed_count"]),
+        "gold_precision": float(gold["precision"]),
+        "invariants_unchanged": invariants_unchanged,
+        "insufficient_evidence": insufficient,
+        "shadow_comparison": comparison_failures,
+    }

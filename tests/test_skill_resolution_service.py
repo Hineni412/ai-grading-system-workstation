@@ -344,3 +344,18 @@ def test_local_skill_creation_rejects_broad_or_duplicate_name(tmp_path: Path) ->
             context_ranker=_StaticRanker(ranking),
         ).resolve(_request(f"本地候选{index}", source_ref=f"L{index}"))
         assert result.outcome is ResolutionOutcome.CONFLICT
+
+
+def test_legacy_canonical_key_resolves_to_its_concrete_skill(tmp_path: Path) -> None:
+    from question_bank.services.skill_resolution_service import SkillResolutionService
+
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    target = SkillCatalogService(db_path).find_by_stable_key("math.geometry.congruence.judge")
+
+    result = SkillResolutionService(db_path).resolve(
+        _request("KP_GEO_TRIANGLE_CONGRUENCE", source_ref="legacy-key-question")
+    )
+
+    assert result.outcome is ResolutionOutcome.RESOLVED_EXISTING
+    assert result.skill_id == target["id"]

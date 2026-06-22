@@ -141,17 +141,14 @@ def _render_diagnosis(diagnosis: Mapping[str, Any], *, exam_scope: Mapping[str, 
     if rows:
         st.dataframe(pd.DataFrame(rows).drop(columns=["掌握率数值"]), width="stretch", hide_index=True)
         st.markdown("##### 学生技能掌握情况")
-        st.caption("红色表示更薄弱，绿色表示掌握较好。")
-        try:
-            pivot = pd.DataFrame(rows).pivot_table(
-                index="学生", columns="薄弱技能", values="掌握率数值", aggfunc="mean"
-            )
-            st.dataframe(
-                pivot.style.background_gradient(cmap="RdYlGn", vmin=0.0, vmax=1.0).format("{:.1%}", na_rep="-"),
-                width="stretch",
-            )
-        except Exception as exc:
-            st.caption(f"掌握情况暂时无法绘制：{exc}")
+        st.caption("按学生和具体技能汇总掌握率，空白位置显示为“-”。")
+        pivot = pd.DataFrame(rows).pivot_table(
+            index="学生", columns="薄弱技能", values="掌握率数值", aggfunc="mean"
+        )
+        display_pivot = pivot.apply(
+            lambda column: column.map(lambda value: "-" if pd.isna(value) else f"{value:.1%}")
+        )
+        st.dataframe(display_pivot, width="stretch")
     else:
         st.info("所选范围内暂时没有薄弱技能证据。")
     _render_current_conflicts(exam_scope)
