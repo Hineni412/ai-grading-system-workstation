@@ -16,6 +16,8 @@ LIST_FIELDS = (
     "error_prone_points",
     "prerequisite_points",
     "sub_skills",
+    "measured_skills",
+    "supporting_skills",
 )
 MAX_TAG_LENGTH = 36
 STUDENT_LEVELS = ("入门补缺", "基础巩固", "中档提升", "综合突破", "压轴拔高")
@@ -104,6 +106,9 @@ class TagAnalysis:
     canonical_knowledge_id: str = ""
     # 子技能（半受控，按 SUB_SKILL_DIMENSIONS 维度提炼，与薄弱点侧同维度可比对）。
     sub_skills: list[str] = field(default_factory=list)
+    # 直接训练与辅助使用的具体技能名称；稳定身份由统一技能目录解析后保存。
+    measured_skills: list[str] = field(default_factory=list)
+    supporting_skills: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "TagAnalysis":
@@ -122,6 +127,8 @@ class TagAnalysis:
             confidence=_normalize_confidence(payload.get("confidence")),
             canonical_knowledge_id=_normalize_canonical_id(payload.get("canonical_knowledge_id")),
             sub_skills=_normalize_tags(payload.get("sub_skills")),
+            measured_skills=_normalize_tags(payload.get("measured_skills")),
+            supporting_skills=_normalize_tags(payload.get("supporting_skills")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -140,6 +147,8 @@ class TagAnalysis:
             "confidence": self.confidence,
             "canonical_knowledge_id": self.canonical_knowledge_id,
             "sub_skills": self.sub_skills,
+            "measured_skills": self.measured_skills,
+            "supporting_skills": self.supporting_skills,
         }
 
 

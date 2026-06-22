@@ -24,10 +24,12 @@ from question_bank.services.question_frequency_service import (
     QuestionFrequencyService,
     build_question_fingerprint,
 )
+from question_bank.services.skill_catalog_service import SkillCatalogService
 from question_bank.services.source_question_link_service import SourceQuestionLinkService
 
 
 STAGE_ORDER = ("direct", "prerequisite", "transfer")
+RELATED_FILL_POLICIES = {"ask", "exact_only", "allow_neighbors"}
 
 
 class PracticePlanService:
@@ -47,7 +49,9 @@ class PracticePlanService:
         include_historical_wrong_questions: bool = False,
         similarity_threshold: float = 0.92,
         allow_broad_fallback: bool = False,
+        related_fill_policy: str = "ask",
     ) -> dict[str, Any]:
+        related_fill_policy = _validate_related_fill_policy(related_fill_policy)
         profiles = [
             dict(item)
             for item in profile_set.get("students", [])
@@ -78,8 +82,10 @@ class PracticePlanService:
                 else f"group-{index}"
             )
             diagnosis_snapshot = {
+                "diagnosis_identity": profile_set.get("diagnosis_identity"),
                 "scope": {"mode": "selected", "student_ids": member_ids},
                 "exam_scope": exam_scope,
+                "confirmed_skill_ids": list(profile_set.get("confirmed_skill_ids") or []),
                 "students": members,
             }
             generated = self.generate_variant(
@@ -91,6 +97,7 @@ class PracticePlanService:
                 include_historical_wrong_questions=include_historical_wrong_questions,
                 similarity_threshold=similarity_threshold,
                 allow_broad_fallback=allow_broad_fallback,
+                related_fill_policy=related_fill_policy,
             )
             variants.append(
                 {
@@ -116,6 +123,7 @@ class PracticePlanService:
                 "include_historical_wrong_questions": bool(include_historical_wrong_questions),
                 "similarity_threshold": float(similarity_threshold),
                 "allow_broad_fallback": bool(allow_broad_fallback),
+                "related_fill_policy": related_fill_policy,
             },
             "variant_mode": variant_mode,
             "variants": variants,
@@ -143,12 +151,26 @@ class PracticePlanService:
         include_historical_wrong_questions: bool = False,
         similarity_threshold: float = 0.92,
         allow_broad_fallback: bool = False,
+        related_fill_policy: str = "ask",
     ) -> dict[str, Any]:
         count = int(question_count)
         if not 8 <= count <= 12:
             raise ValueError("question_count must be between 8 and 12")
+        related_fill_policy = _validate_related_fill_policy(related_fill_policy)
         stage_counts = allocate_stage_counts(count, stage_ratios)
         resolved_weights = dict(DEFAULT_WEIGHTS if weights is None else weights)
+        if _is_skill_diagnosis(diagnosis_profile):
+            return self._generate_skill_variant(
+                diagnosis_profile,
+                count=count,
+                stage_counts=stage_counts,
+                stage_ratios=stage_ratios,
+                weights=resolved_weights,
+                exclude_question_ids=exclude_question_ids,
+                include_historical_wrong_questions=include_historical_wrong_questions,
+                similarity_threshold=float(similarity_threshold),
+                related_fill_policy=related_fill_policy,
+            )
         weak_points = _eligible_weak_points(diagnosis_profile)
         if not weak_points:
             return {
@@ -226,8 +248,282 @@ class PracticePlanService:
                 "weights": resolved_weights,
                 "include_historical_wrong_questions": bool(include_historical_wrong_questions),
                 "allow_broad_fallback": bool(allow_broad_fallback),
+                "related_fill_policy": related_fill_policy,
             },
         }
+
+    def _generate_skill_variant(
+        self,
+        diagnosis_profile: Mapping[str, Any],
+        *,
+        count: int,
+        stage_counts: Mapping[str, int],
+        stage_ratios: Mapping[str, object] | None,
+        weights: Mapping[str, object],
+        exclude_question_ids: Iterable[int] | None,
+        include_historical_wrong_questions: bool,
+        similarity_threshold: float,
+        related_fill_policy: str,
+    ) -> dict[str, Any]:
+        initialize_database(self.db_path)
+        catalog = SkillCatalogService(self.db_path)
+        weak_points = _eligible_skill_weak_points(diagnosis_profile, catalog)
+        generation_config = {
+            "question_count": count,
+            "stage_ratios": dict(DEFAULT_STAGE_RATIOS if stage_ratios is None else stage_ratios),
+            "weights": dict(weights),
+            "include_historical_wrong_questions": bool(include_historical_wrong_questions),
+            "related_fill_policy": related_fill_policy,
+        }
+        if not weak_points:
+            return {
+                "student_ids": _student_ids(diagnosis_profile),
+                "items": [],
+                "stage_counts": dict(stage_counts),
+                "shortages": [
+                    {
+                        "stage": stage,
+                        "requested_count": requested,
+                        "selected_count": 0,
+                        "missing_count": requested,
+                        "decision_required": False,
+                    }
+                    for stage, requested in stage_counts.items()
+                ],
+                "warnings": ["没有可用于推荐的已确认具体技能。"],
+                "dedupe_summary": {"removed_count": 0, "reason_counts": {}},
+                "generation_config": generation_config,
+            }
+
+        resolved_exclusions, source_link_warnings = self._resolved_exclusions(
+            diagnosis_profile,
+            exclude_question_ids,
+        )
+        candidates, neighbors = self._load_skill_candidates_and_neighbors(catalog)
+        role_candidates = _assign_skill_candidate_roles(
+            candidates,
+            weak_points,
+            neighbors,
+            include_neighbors=related_fill_policy == "allow_neighbors",
+        )
+        deduped, dedupe_summary = _dedupe_candidates(
+            role_candidates,
+            exclude_question_ids=resolved_exclusions,
+            similarity_threshold=similarity_threshold,
+        )
+        frequency_by_id = QuestionFrequencyService(self.db_path).metrics_for_questions(
+            [int(item["id"]) for item in deduped]
+        )
+
+        selected: list[dict[str, Any]] = []
+        selected_ids: set[int] = set()
+        paper_counts: Counter[str] = Counter()
+        method_counts: Counter[str] = Counter()
+        shortages: list[dict[str, Any]] = []
+        warnings: list[str] = list(source_link_warnings)
+        primary_weak = weak_points[0]
+        available_neighbor_count = _available_neighbor_question_count(candidates, weak_points, neighbors)
+        for stage in STAGE_ORDER:
+            requested = int(stage_counts[stage])
+            stage_selected = self._select_skill_for_stage(
+                stage=stage,
+                requested=requested,
+                candidates=deduped,
+                selected_ids=selected_ids,
+                paper_counts=paper_counts,
+                method_counts=method_counts,
+                frequency_by_id=frequency_by_id,
+            )
+            selected.extend(stage_selected)
+            if len(stage_selected) < requested:
+                missing = requested - len(stage_selected)
+                shortage = {
+                    "stage": stage,
+                    "requested_count": requested,
+                    "selected_count": len(stage_selected),
+                    "missing_count": missing,
+                    "skill_id": int(primary_weak["skill_id"]),
+                    "skill_name": str(primary_weak.get("skill_name") or ""),
+                    "decision_required": related_fill_policy == "ask" and available_neighbor_count > 0,
+                    "available_neighbor_count": available_neighbor_count,
+                }
+                shortages.append(shortage)
+                if related_fill_policy == "ask" and available_neighbor_count > 0:
+                    warnings.append(
+                        f"还差 {missing} 道精确技能题；发现相近技能题，请由教师决定是否补入。"
+                    )
+                else:
+                    warnings.append(f"还差 {missing} 道精确技能题，当前未静默补入其他技能。")
+
+        for item_order, item in enumerate(selected, start=1):
+            item["item_order"] = item_order
+        return {
+            "student_ids": _student_ids(diagnosis_profile),
+            "items": selected,
+            "stage_counts": dict(stage_counts),
+            "shortages": shortages,
+            "warnings": _unique_text(warnings),
+            "dedupe_summary": dedupe_summary,
+            "generation_config": generation_config,
+        }
+
+    def _load_skill_candidates_and_neighbors(
+        self,
+        catalog: SkillCatalogService,
+    ) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]]]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    q.*,
+                    p.title AS paper_title,
+                    p.source_file AS paper_source_file,
+                    p.exam_type,
+                    p.grade,
+                    p.city
+                FROM questions q
+                LEFT JOIN papers p ON p.id = q.paper_id
+                WHERE COALESCE(q.is_deleted, 0) = 0
+                  AND COALESCE(p.import_status, '') <> 'deleted'
+                ORDER BY q.id
+                """
+            ).fetchall()
+            candidates = [dict(row) for row in rows]
+            question_ids = [int(item["id"]) for item in candidates]
+            tags_by_question = _load_tags(conn, question_ids)
+            measured_rows = conn.execute(
+                """
+                SELECT question_id, skill_id
+                FROM question_skill_links
+                WHERE status = 'resolved' AND role = 'measured'
+                ORDER BY question_id, id
+                """
+            ).fetchall()
+            neighbor_rows = conn.execute(
+                """
+                SELECT source_skill_id, target_skill_id, kind, weight
+                FROM skill_neighbors
+                WHERE enabled = 1
+                ORDER BY source_skill_id, weight DESC, id
+                """
+            ).fetchall()
+
+        skill_cache: dict[int, dict[str, Any] | None] = {}
+
+        def active_skill(skill_id: int) -> dict[str, Any] | None:
+            stored_id = int(skill_id)
+            if stored_id not in skill_cache:
+                skill = catalog.get_skill(stored_id)
+                skill_cache[stored_id] = skill if skill and skill.get("status") == "active" else None
+            return skill_cache[stored_id]
+
+        measured_by_question: dict[int, dict[int, dict[str, Any]]] = {}
+        for row in measured_rows:
+            skill = active_skill(int(row["skill_id"]))
+            if skill is None:
+                continue
+            measured_by_question.setdefault(int(row["question_id"]), {})[int(skill["id"])] = {
+                "skill_id": int(skill["id"]),
+                "skill_name": str(skill["name"]),
+                "topic_id": int(skill["topic_id"]),
+                "topic_name": str(skill["topic_name"]),
+            }
+
+        neighbors: dict[int, list[dict[str, Any]]] = {}
+        seen_neighbors: set[tuple[int, int, str]] = set()
+        for row in neighbor_rows:
+            source = active_skill(int(row["source_skill_id"]))
+            target = active_skill(int(row["target_skill_id"]))
+            if source is None or target is None or int(source["id"]) == int(target["id"]):
+                continue
+            identity = (int(source["id"]), int(target["id"]), str(row["kind"]))
+            if identity in seen_neighbors:
+                continue
+            seen_neighbors.add(identity)
+            neighbors.setdefault(int(source["id"]), []).append(
+                {
+                    "skill_id": int(target["id"]),
+                    "skill_name": str(target["name"]),
+                    "topic_id": int(target["topic_id"]),
+                    "topic_name": str(target["topic_name"]),
+                    "kind": str(row["kind"]),
+                    "weight": float(row["weight"]),
+                }
+            )
+
+        for candidate in candidates:
+            question_id = int(candidate["id"])
+            candidate["tags"] = tags_by_question.get(question_id, {})
+            candidate["measured_skills"] = list(measured_by_question.get(question_id, {}).values())
+            candidate["fingerprint"] = _candidate_fingerprint(candidate)
+        return candidates, neighbors
+
+    def _select_skill_for_stage(
+        self,
+        *,
+        stage: str,
+        requested: int,
+        candidates: list[dict[str, Any]],
+        selected_ids: set[int],
+        paper_counts: Counter[str],
+        method_counts: Counter[str],
+        frequency_by_id: Mapping[int, Any],
+    ) -> list[dict[str, Any]]:
+        scored: list[tuple[tuple[float, ...], int, dict[str, Any], dict[str, Any]]] = []
+        for candidate in candidates:
+            question_id = int(candidate["id"])
+            if question_id in selected_ids:
+                continue
+            match = candidate["skill_match"]
+            metrics = frequency_by_id.get(question_id)
+            gradient = practice_gradient_fit(stage, candidate.get("difficulty"))
+            frequency = frequency_fit_score(metrics) if getattr(metrics, "available", False) else 0.5
+            paper_key = _paper_key(candidate)
+            method_key = _method_key(candidate)
+            diversity = _diversity_fit(
+                paper_counts[paper_key],
+                method_counts[method_key] if method_key else 0,
+            )
+            match_score = 1.0 if match["match_kind"] == "exact" else float(match["neighbor_weight"])
+            total = round(0.55 * match_score + 0.25 * float(gradient or 0.5) + 0.1 * frequency + 0.1 * diversity, 4)
+            ranking = (
+                0.0 if match["match_kind"] == "exact" else 1.0,
+                -float(gradient or 0.5),
+                -float(frequency),
+                -float(diversity),
+                -total,
+            )
+            payload = _skill_item_payload(
+                candidate,
+                stage,
+                total,
+                {
+                    "skill_match": match_score,
+                    "gradient": float(gradient or 0.5),
+                    "frequency": float(frequency),
+                    "diversity": float(diversity),
+                },
+                metrics,
+            )
+            scored.append((ranking, question_id, payload, candidate))
+        scored.sort(key=lambda item: (item[0], item[1]))
+
+        selected: list[dict[str, Any]] = []
+        for _, question_id, payload, candidate in scored:
+            if len(selected) >= requested:
+                break
+            paper_key = _paper_key(candidate)
+            method_key = _method_key(candidate)
+            if paper_counts[paper_key] >= 2:
+                continue
+            if method_key and method_counts[method_key] >= 2:
+                continue
+            selected.append(payload)
+            selected_ids.add(question_id)
+            paper_counts[paper_key] += 1
+            if method_key:
+                method_counts[method_key] += 1
+        return selected
 
     def _resolved_exclusions(
         self,
@@ -364,6 +660,193 @@ class PracticePlanService:
             if method_key:
                 method_counts[method_key] += 1
         return selected
+
+
+def _validate_related_fill_policy(value: object) -> str:
+    policy = str(value or "ask").strip()
+    if policy not in RELATED_FILL_POLICIES:
+        raise ValueError(f"unsupported related fill policy: {policy}")
+    return policy
+
+
+def _is_skill_diagnosis(profile: Mapping[str, Any]) -> bool:
+    if str(profile.get("diagnosis_identity") or "") == "skill":
+        return True
+    if isinstance(profile.get("students"), list):
+        weak_points = [
+            weak
+            for student in profile["students"]
+            if isinstance(student, Mapping)
+            for weak in student.get("weak_points", [])
+            if isinstance(weak, Mapping)
+        ]
+    else:
+        weak_points = [weak for weak in profile.get("weak_points", []) if isinstance(weak, Mapping)]
+    return any(weak.get("skill_id") is not None for weak in weak_points)
+
+
+def _eligible_skill_weak_points(
+    profile: Mapping[str, Any],
+    catalog: SkillCatalogService,
+) -> list[dict[str, Any]]:
+    if isinstance(profile.get("students"), list):
+        raw = [
+            weak
+            for student in profile["students"]
+            if isinstance(student, Mapping)
+            for weak in student.get("weak_points", [])
+            if isinstance(weak, Mapping)
+        ]
+    else:
+        raw = [weak for weak in profile.get("weak_points", []) if isinstance(weak, Mapping)]
+    result_by_id: dict[int, dict[str, Any]] = {}
+    for weak in raw:
+        if weak.get("eligible_for_recommendation") is False:
+            continue
+        try:
+            stored_skill_id = int(weak.get("skill_id"))
+        except (TypeError, ValueError):
+            continue
+        skill = catalog.get_skill(stored_skill_id)
+        if skill is None or skill.get("status") != "active":
+            continue
+        active_id = int(skill["id"])
+        normalized = {
+            **dict(weak),
+            "stored_skill_id": stored_skill_id,
+            "skill_id": active_id,
+            "skill_name": str(skill["name"]),
+            "topic_id": int(skill["topic_id"]),
+            "topic_name": str(skill["topic_name"]),
+        }
+        existing = result_by_id.get(active_id)
+        if existing is None or _mastery(normalized) < _mastery(existing):
+            result_by_id[active_id] = normalized
+    return sorted(result_by_id.values(), key=lambda item: (_mastery(item), int(item["skill_id"])))
+
+
+def _mastery(item: Mapping[str, Any]) -> float:
+    try:
+        return min(1.0, max(0.0, float(item.get("mastery") or 0.0)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _assign_skill_candidate_roles(
+    candidates: list[dict[str, Any]],
+    weak_points: list[dict[str, Any]],
+    neighbors: Mapping[int, list[dict[str, Any]]],
+    *,
+    include_neighbors: bool,
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for candidate in candidates:
+        measured = {
+            int(skill["skill_id"]): skill
+            for skill in candidate.get("measured_skills", [])
+            if isinstance(skill, Mapping) and skill.get("skill_id") is not None
+        }
+        if not measured:
+            continue
+        matches: list[tuple[tuple[float, float, int], dict[str, Any]]] = []
+        for weak in weak_points:
+            target_id = int(weak["skill_id"])
+            if target_id in measured:
+                matched = measured[target_id]
+                matches.append(
+                    (
+                        (0.0, _mastery(weak), target_id),
+                        {
+                            "match_kind": "exact",
+                            "target_skill_id": target_id,
+                            "matched_skill_id": target_id,
+                            "target_skill_name": str(weak.get("skill_name") or ""),
+                            "matched_skill_name": str(matched.get("skill_name") or ""),
+                            "neighbor_kind": None,
+                            "neighbor_weight": 1.0,
+                            "reason": "exact measured skill / 精确技能匹配",
+                        },
+                    )
+                )
+            if not include_neighbors:
+                continue
+            for neighbor in neighbors.get(target_id, []):
+                matched_id = int(neighbor["skill_id"])
+                if matched_id not in measured:
+                    continue
+                matches.append(
+                    (
+                        (1.0, -float(neighbor["weight"]), matched_id),
+                        {
+                            "match_kind": "neighbor",
+                            "target_skill_id": target_id,
+                            "matched_skill_id": matched_id,
+                            "target_skill_name": str(weak.get("skill_name") or ""),
+                            "matched_skill_name": str(neighbor.get("skill_name") or ""),
+                            "neighbor_kind": str(neighbor["kind"]),
+                            "neighbor_weight": float(neighbor["weight"]),
+                            "reason": f"related fill / 相近补入 ({neighbor['kind']})",
+                        },
+                    )
+                )
+        if matches:
+            matches.sort(key=lambda item: item[0])
+            result.append({**candidate, "skill_match": matches[0][1]})
+    return result
+
+
+def _available_neighbor_question_count(
+    candidates: list[dict[str, Any]],
+    weak_points: list[dict[str, Any]],
+    neighbors: Mapping[int, list[dict[str, Any]]],
+) -> int:
+    neighbor_ids = {
+        int(neighbor["skill_id"])
+        for weak in weak_points
+        for neighbor in neighbors.get(int(weak["skill_id"]), [])
+    }
+    return sum(
+        1
+        for candidate in candidates
+        if neighbor_ids.intersection(
+            int(skill["skill_id"])
+            for skill in candidate.get("measured_skills", [])
+            if isinstance(skill, Mapping) and skill.get("skill_id") is not None
+        )
+    )
+
+
+def _skill_item_payload(
+    candidate: Mapping[str, Any],
+    stage: str,
+    total_score: float,
+    components: Mapping[str, float],
+    metrics: Any,
+) -> dict[str, Any]:
+    match = candidate["skill_match"]
+    warnings = [] if _difficulty(candidate.get("difficulty")) is not None else ["题目难度缺失"]
+    return {
+        "question_id": int(candidate["id"]),
+        "stage": stage,
+        "target_skill_id": int(match["target_skill_id"]),
+        "matched_skill_id": int(match["matched_skill_id"]),
+        "target_skill_name": str(match["target_skill_name"]),
+        "matched_skill_name": str(match["matched_skill_name"]),
+        "match_kind": str(match["match_kind"]),
+        "neighbor_kind": match.get("neighbor_kind"),
+        "reason": str(match["reason"]),
+        "recommend_score": float(total_score),
+        "score_components": dict(components),
+        "warnings": warnings,
+        "question_fingerprint": str(candidate.get("fingerprint") or ""),
+        "question_text": str(candidate.get("question_text") or ""),
+        "question_number": str(candidate.get("question_number") or ""),
+        "difficulty": candidate.get("difficulty"),
+        "source_paper": str(candidate.get("paper_title") or candidate.get("paper_source_file") or ""),
+        "method_tags": list(candidate.get("tags", {}).get("method", [])),
+        "model_tags": list(candidate.get("tags", {}).get("model", [])),
+        "frequency": metrics.to_dict() if metrics is not None else {},
+    }
 
 
 def _automatic_groups(

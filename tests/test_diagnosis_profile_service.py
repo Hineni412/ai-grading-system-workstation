@@ -9,6 +9,10 @@ import pytest
 from db_manager import DBManager
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from question_bank.services.concept_alignment_service import ConceptAlignmentService
+from question_bank.database.schema import connect as connect_question_bank
+from question_bank.models.skill_catalog import ResolvedSkillLink
+from question_bank.services.skill_catalog_service import SkillCatalogService
+from question_bank.services.skill_link_service import SkillLinkService
 
 
 @pytest.fixture
@@ -179,6 +183,74 @@ def test_class_scope_selects_students_from_requested_class(
 
     assert {item["student_id"] for item in profile["students"]} == {"12", "15"}
     assert profile["exam_scope"]["session_ids"] == [12, 14]
+
+
+def test_skill_mode_aggregates_two_sessions_by_same_measured_skill_id(
+    service: DiagnosisProfileService,
+) -> None:
+    db_path = service.question_bank_db_path
+    catalog = SkillCatalogService(db_path)
+    measured = catalog.find_by_stable_key("math.function.quadratic.graph")
+    supporting = catalog.find_by_stable_key("math.algebra.equation.quadratic_factor")
+    links = SkillLinkService(db_path)
+    for session_id in (12, 14):
+        links.replace_assessment_links(
+            str(session_id),
+            "Q1",
+            [
+                ResolvedSkillLink(measured["id"], "measured"),
+                ResolvedSkillLink(supporting["id"], "supporting"),
+            ],
+        )
+    with connect_question_bank(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE skill_system_settings SET value = 'skill'
+            WHERE key = 'recommendation_read_mode'
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO skill_resolution_conflicts (
+                source_type, source_ref, raw_label, normalized_label, reason, state
+            ) VALUES ('assessment_item', ?, '陌生诊断词', '陌生诊断词', '无法确定', 'open')
+            """,
+            [("12:Q2",), ("14:Q2",)],
+        )
+
+    profile = service.build_profiles(
+        scope={"mode": "student", "student_ids": ["12"]},
+        exam_scope={"mode": "manual", "session_ids": [12, 14]},
+    )
+
+    weak_points = profile["students"][0]["weak_points"]
+    assert len(weak_points) == 1
+    weak = weak_points[0]
+    assert weak["skill_id"] == measured["id"]
+    assert weak["skill_name"] == "二次函数图像与性质"
+    assert weak["topic_name"] == "二次函数"
+    assert weak["mastery"] == pytest.approx((8 + 6) / (10 + 10))
+    assert weak["evidence_count"] == 2
+    assert len(weak["source_question_refs"]) == 2
+    assert "mapping_status" not in weak
+    assert profile["confirmed_skill_ids"] == [measured["id"]]
+    assert profile["unresolved_count"] == 2
+    assert supporting["id"] not in profile["confirmed_skill_ids"]
+
+
+def test_active_assessment_evidence_returns_detail_level_scores(
+    service: DiagnosisProfileService,
+) -> None:
+    rows = service.db.get_active_assessment_evidence(
+        student_ids=["12"],
+        session_ids=[14],
+    )
+
+    q1 = next(row for row in rows if row["question_id"] == "Q1")
+    assert q1["student_id"] == 12
+    assert q1["session_id"] == 14
+    assert q1["score_awarded"] == 6
+    assert q1["full_score"] == 10
 
 
 def _write_rubric(path: Path, questions: list[tuple[str, float, str, str]]) -> Path:

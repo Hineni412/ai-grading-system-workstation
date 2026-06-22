@@ -1,0 +1,65 @@
+{
+  "description": "Reviewed junior-math migration labels; occurrences preserve the anonymized 100-item acceptance sample size.",
+  "cases": [
+    {
+      "case_id": "expression-identities",
+      "raw_label": "乘法公式运用",
+      "expected_stable_key": "math.algebra.expression.identities",
+      "occurrences": 10
+    },
+    {
+      "case_id": "linear-equation-solve",
+      "raw_label": "一元一次方程求解",
+      "expected_stable_key": "math.algebra.equation.linear_solve",
+      "occurrences": 10
+    },
+    {
+      "case_id": "equation-system-elimination",
+      "raw_label": "加减消元解方程组",
+      "expected_stable_key": "math.algebra.equation.system_elimination",
+      "occurrences": 10
+    },
+    {
+      "case_id": "quadratic-formula",
+      "raw_label": "公式法解一元二次方程",
+      "expected_stable_key": "math.algebra.equation.quadratic_formula",
+      "occurrences": 10
+    },
+    {
+      "case_id": "inequality-number-line",
+      "raw_label": "不等式解集数轴表示",
+      "expected_stable_key": "math.algebra.inequality.number_line",
+      "occurrences": 10
+    },
+    {
+      "case_id": "coordinate-point",
+      "raw_label": "点的坐标与象限判断",
+      "expected_stable_key": "math.function.coordinate.point",
+      "occurrences": 10
+    },
+    {
+      "case_id": "linear-function-graph",
+      "raw_label": "一次函数图像与性质",
+      "expected_stable_key": "math.function.linear.graph",
+      "occurrences": 10
+    },
+    {
+      "case_id": "inverse-function-area",
+      "raw_label": "反比例函数比例系数几何意义",
+      "expected_stable_key": "math.function.inverse.area",
+      "occurrences": 10
+    },
+    {
+      "case_id": "angle-bisector",
+      "raw_label": "角平分线性质",
+      "expected_stable_key": "math.geometry.line_angle.bisector",
+      "occurrences": 10
+    },
+    {
+      "case_id": "construction-bisector",
+      "raw_label": "角平分线尺规作图",
+      "expected_stable_key": "math.geometry.construction.bisector",
+      "occurrences": 10
+    }
+  ]
+}

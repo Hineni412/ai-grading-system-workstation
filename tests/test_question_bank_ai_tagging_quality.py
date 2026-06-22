@@ -23,6 +23,8 @@ def _analysis(**overrides) -> TagAnalysis:
         "suitable_student_level": "基础巩固",
         "reason": "考查幂运算和整式化简。",
         "confidence": 0.86,
+        "measured_skills": ["整式乘法运算"],
+        "supporting_skills": ["整数指数幂运算"],
     }
     payload.update(overrides)
     return TagAnalysis.from_dict(payload)
@@ -43,6 +45,8 @@ def test_tag_analysis_normalizes_confidence_and_string_list_fields() -> None:
             "suitable_student_level": "基础巩固",
             "reason": "可直接判断。",
             "confidence": 1.8,
+            "measured_skills": "科学记数法表示",
+            "supporting_skills": "实数分类",
         }
     )
 
@@ -52,6 +56,8 @@ def test_tag_analysis_normalizes_confidence_and_string_list_fields() -> None:
     assert analysis.error_prone_points == ["运算化简错误"]
     assert analysis.textbook_chapter == "七年级上册 第二章 有理数及其运算"
     assert analysis.confidence == 1.0
+    assert analysis.measured_skills == ["科学记数法表示"]
+    assert analysis.supporting_skills == ["实数分类"]
 
 
 def test_save_tag_analysis_persists_model_name_and_confidence(tmp_path: Path) -> None:
