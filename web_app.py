@@ -55,6 +55,7 @@ from original_paper_exporter import OriginalPaperExporter
 from question_bank.database.paths import project_data_root, question_bank_db_path
 from question_bank.services.ai_tagging_service import AITaggingService
 from question_bank.services.grading_paper_intake_service import copy_and_intake_uploaded_grading_paper
+from question_bank.services.skill_link_service import SkillLinkService
 from report import ReportGenerator
 from score_policy import enforce_integer_scores_by_type, MAX_QUESTION_SCORE
 from scanner import STUDENT_NAME_REGION_ID, ScanAnalysis, Scanner, refine_scan_analysis_matches, render_pdf_to_standard_pages, student_name_region_from_regions
@@ -111,6 +112,21 @@ DEFAULT_GRADING_RPM = 1000
 DEFAULT_FULL_PAPER_WORKERS = FULL_PAPER_WORKERS_MAX
 DEFAULT_HYBRID_INFLIGHT_WORKERS = 200
 DEFAULT_PRECHECK_WORKERS = 16
+
+
+def _sync_session_skill_links(session_id: int, rubric_path: str | Path) -> dict[str, Any]:
+    try:
+        path = resolve_stored_file_path(rubric_path)
+        rubric = json.loads(path.read_text(encoding="utf-8"))
+        return SkillLinkService(question_bank_db_path()).resolve_rubric(str(session_id), rubric)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "items": 0,
+            "resolved_items": 0,
+            "conflicts": 1,
+            "skills": 0,
+            "error": str(exc),
+        }
 
 
 def _sidebar_int_setting(
@@ -2720,6 +2736,17 @@ def render_config_and_session_tab(
                             if st.button("重新整体赋分", key="retry_config_score_allocation_btn"):
                                 run_score_allocation_retry()
 
+    skill_notice = st.session_state.pop("_skill_sync_notice", None)
+    if isinstance(skill_notice, dict):
+        resolved_count = int(skill_notice.get("skills") or 0)
+        conflict_count = int(skill_notice.get("conflicts") or 0)
+        if conflict_count:
+            st.info(
+                f"已自动识别 {resolved_count} 个训练技能；"
+                f"另有 {conflict_count} 个技能名称需要稍后处理，不影响阅卷。"
+            )
+        else:
+            st.success(f"已自动识别 {resolved_count} 个训练技能，无需确认。")
 
     with session_col:
         with st.container(border=True):
@@ -2764,12 +2791,14 @@ def render_config_and_session_tab(
                             rubric_path=rubric_path,
                             answer_key_path=answer_path,
                         )
+                        skill_summary = _sync_session_skill_links(created_session_id, rubric_path)
                         _write_session_workflow_state(
                             db,
                             created_session_id,
                             "session_created",
                             {"rubric_path": rubric_path, "answer_key_path": answer_path},
                         )
+                        st.session_state["_skill_sync_notice"] = skill_summary
                         clear_pending_config_for_new_session(st.session_state)
                         st.session_state["selected_session_id"] = created_session_id
                         st.success(f"考试批改创建成功：{created_session_id}")
@@ -2860,6 +2889,8 @@ def render_config_and_session_tab(
                         rubric_path=str(rubric_path),
                         answer_key_path=str(answer_path),
                     )
+                    skill_summary = _sync_session_skill_links(selected_session_id, rubric_path)
+                    st.session_state["_skill_sync_notice"] = skill_summary
                     refreshed = _refresh_template_mapping_from_session(db, selected_session_id)
                     _write_session_workflow_state(
                         db,
