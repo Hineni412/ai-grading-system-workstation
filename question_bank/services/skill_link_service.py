@@ -53,6 +53,87 @@ class SkillLinkService:
                 ],
             )
 
+    def clear_assessment_links(
+        self,
+        grading_session_id: str,
+        source_question_id: str,
+    ) -> None:
+        initialize_database(self.db_path)
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                DELETE FROM assessment_item_skills
+                WHERE grading_session_id = ? AND source_question_id = ?
+                """,
+                (str(grading_session_id), str(source_question_id)),
+            )
+
+    def resolve_rubric(
+        self,
+        grading_session_id: str,
+        payload,
+        *,
+        resolver=None,
+    ) -> dict[str, int]:
+        from question_bank.models.skill_catalog import (
+            ResolvedSkillLink,
+            ResolutionOutcome,
+            SkillRole,
+        )
+        from question_bank.services.skill_resolution_service import SkillResolutionService
+        from session_manager import iter_rubric_skill_requests
+
+        active_resolver = resolver or SkillResolutionService(self.db_path)
+        grouped: dict[str, list[tuple[SkillRole, Any]]] = {}
+        for item_ref, role, request in iter_rubric_skill_requests(
+            payload,
+            grading_session_id=str(grading_session_id),
+        ):
+            grouped.setdefault(item_ref, []).append((role, request))
+        resolved_items = 0
+        conflicts = 0
+        skill_count = 0
+        for item_ref, requests in grouped.items():
+            links: list[ResolvedSkillLink] = []
+            identities: set[tuple[int, str]] = set()
+            for role, request in requests:
+                resolution = active_resolver.resolve(request)
+                if resolution.outcome is ResolutionOutcome.CONFLICT or resolution.skill_id is None:
+                    conflicts += 1
+                    continue
+                identity = (int(resolution.skill_id), role.value)
+                if identity in identities:
+                    continue
+                identities.add(identity)
+                links.append(
+                    ResolvedSkillLink(
+                        skill_id=int(resolution.skill_id),
+                        role=role,
+                        raw_knowledge_id=request.stable_key_hint,
+                        raw_knowledge_label=request.raw_label,
+                        source="rubric",
+                        confidence=resolution.confidence,
+                        evidence={
+                            "grading_session_id": str(grading_session_id),
+                            "source_question_id": item_ref,
+                            "resolution_reason": resolution.reason,
+                            "raw_knowledge_id": request.stable_key_hint,
+                        },
+                    )
+                )
+            if any(link.role is SkillRole.MEASURED for link in links):
+                self.replace_assessment_links(str(grading_session_id), item_ref, links)
+                resolved_items += 1
+                skill_count += len(links)
+            else:
+                self.clear_assessment_links(str(grading_session_id), item_ref)
+        return {
+            "items": len(grouped),
+            "resolved_items": resolved_items,
+            "conflicts": conflicts,
+            "skills": skill_count,
+        }
+
     def replace_question_links(
         self,
         question_id: int,

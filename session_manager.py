@@ -11,7 +11,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator, Mapping
 from xml.etree import ElementTree
 
 from docx import Document
@@ -22,6 +22,10 @@ from answer_normalizer import complete_answer_set_values
 from equivalence_engine import merge_equivalent_forms
 from llm_client import LLMClient
 from question_bank.services.ai_tagging_service import KNOWLEDGE_POINT_OPTIONS
+from question_bank.models.skill_catalog import (
+    SkillResolutionRequest,
+    SkillRole,
+)
 from score_policy import (
     enforce_integer_scores_by_type,
     MAX_QUESTION_SCORE,
@@ -2889,6 +2893,176 @@ def _normalize_question_knowledge_fields(question: dict[str, Any]) -> None:
         question["knowledge_name"] = normalized[0]["knowledge_name"]
 
 
+def iter_rubric_skill_requests(
+    payload: Mapping[str, object],
+    *,
+    grading_session_id: str,
+) -> Iterator[tuple[str, SkillRole, SkillResolutionRequest]]:
+    rubric = payload.get("rubric") if isinstance(payload.get("rubric"), Mapping) else payload
+    questions = rubric.get("questions") if isinstance(rubric, Mapping) else None
+    if not isinstance(questions, list):
+        return
+    grade = str(
+        (rubric.get("grade") if isinstance(rubric, Mapping) else "")
+        or payload.get("grade")
+        or ""
+    ).strip()
+    for question_index, raw_question in enumerate(questions, start=1):
+        if not isinstance(raw_question, Mapping):
+            continue
+        question = dict(raw_question)
+        question_ref = str(
+            question.get("question_id")
+            or question.get("id")
+            or question.get("number")
+            or f"Q{question_index}"
+        ).strip()
+        parts = question.get("parts")
+        effective_items: list[tuple[str, Mapping[str, object]]] = []
+        if isinstance(parts, list) and parts:
+            for part_index, raw_part in enumerate(parts, start=1):
+                if not isinstance(raw_part, Mapping):
+                    continue
+                part_ref = str(
+                    raw_part.get("part_id")
+                    or raw_part.get("question_id")
+                    or f"{question_ref}.{part_index}"
+                ).strip()
+                effective_items.append((part_ref, raw_part))
+        if not effective_items:
+            effective_items.append((question_ref, question))
+
+        for item_ref, item in effective_items:
+            measured = _rubric_knowledge_points(item)
+            if not measured and item is not question:
+                measured = _rubric_knowledge_points(question)
+            supporting = _rubric_supporting_points(item)
+            context_text = _rubric_context_text(question, item)
+            for role, points in (
+                (SkillRole.MEASURED, measured),
+                (SkillRole.SUPPORTING, supporting),
+            ):
+                for raw_id, label in points:
+                    if not label:
+                        continue
+                    yield (
+                        item_ref,
+                        role,
+                        SkillResolutionRequest(
+                            source_type="assessment_item",
+                            source_ref=f"{grading_session_id}:{item_ref}",
+                            raw_label=label,
+                            stable_key_hint=raw_id,
+                            grade=grade,
+                            question_text=str(
+                                question.get("stem_summary")
+                                or question.get("question_text")
+                                or question.get("text")
+                                or ""
+                            ),
+                            rubric_text=context_text,
+                            existing_tags=tuple(
+                                value
+                                for value in (raw_id, label)
+                                if str(value or "").strip()
+                            ),
+                        ),
+                    )
+
+
+def _rubric_knowledge_points(item: Mapping[str, object]) -> list[tuple[str, str]]:
+    result: list[tuple[str, str]] = []
+    raw_points = item.get("knowledge_points")
+    if isinstance(raw_points, list):
+        for point in raw_points:
+            if isinstance(point, Mapping):
+                raw_id = str(point.get("knowledge_id") or point.get("id") or "").strip()
+                label = str(
+                    point.get("knowledge_name")
+                    or point.get("name")
+                    or point.get("label")
+                    or ""
+                ).strip()
+            else:
+                raw_id = ""
+                label = str(point or "").strip()
+            if label:
+                result.append((raw_id, label))
+    elif isinstance(raw_points, str) and raw_points.strip():
+        result.append((str(item.get("knowledge_id") or "").strip(), raw_points.strip()))
+    if not result:
+        label = str(
+            item.get("knowledge_name")
+            or item.get("knowledge_label")
+            or item.get("knowledge_text")
+            or ""
+        ).strip()
+        if label:
+            result.append((str(item.get("knowledge_id") or "").strip(), label))
+    return _unique_rubric_points(result)
+
+
+def _rubric_supporting_points(item: Mapping[str, object]) -> list[tuple[str, str]]:
+    result: list[tuple[str, str]] = []
+    for field_name in ("prerequisite_points", "supporting_skills"):
+        values = item.get(field_name)
+        if isinstance(values, str):
+            values = [values]
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            if isinstance(value, Mapping):
+                raw_id = str(value.get("knowledge_id") or value.get("id") or "").strip()
+                label = str(
+                    value.get("knowledge_name")
+                    or value.get("name")
+                    or value.get("label")
+                    or ""
+                ).strip()
+            else:
+                raw_id = ""
+                label = str(value or "").strip()
+            if label:
+                result.append((raw_id, label))
+    return _unique_rubric_points(result)
+
+
+def _unique_rubric_points(values: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    result: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw_id, label in values:
+        identity = (raw_id.casefold(), label.casefold())
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append((raw_id, label))
+    return result
+
+
+def _rubric_context_text(
+    question: Mapping[str, object],
+    item: Mapping[str, object],
+) -> str:
+    values: list[str] = []
+    for source in (question, item):
+        for key in ("stem_summary", "knowledge_name", "knowledge_points"):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                values.append(value.strip())
+        steps = source.get("steps")
+        if isinstance(steps, list):
+            for step in steps:
+                if not isinstance(step, Mapping):
+                    continue
+                for key in ("core_goal", "required_elements"):
+                    value = step.get(key)
+                    if isinstance(value, list):
+                        values.extend(str(item).strip() for item in value if str(item).strip())
+                    elif str(value or "").strip():
+                        values.append(str(value).strip())
+    return "；".join(dict.fromkeys(values))
+
+
 def _promote_nested_question_knowledge(question: dict[str, Any]) -> None:
     parts = question.get("parts")
     if not isinstance(parts, list):
@@ -4184,7 +4358,7 @@ def _build_generation_prompt(doc_text: str, *, include_source_text: bool = True)
         "}\n\n"
         "硬性要求：\n"
         "1) question_id 在 rubric 与 answer_key 中一一对应。\n"
-        "1.1) knowledge_id 不能只有编号；必须同时给出 knowledge_name 或 stem_summary，方便教师在知识图谱中看懂考查内容。\n"
+        "1.1) knowledge_id 仅是本试卷内的来源编号，不承担跨系统知识身份；必须同时给出具体 knowledge_name，供统一技能目录归一。\n"
         "1.2) 一道题可以涉及多个知识点。若题目同时考查多个数学概念，必须输出 knowledge_ids 数组和 knowledge_points 数组；knowledge_id 只作为主知识点，取 knowledge_ids 的第一项。\n"
         "2) max_score、part_score、step_score 必须为整数且层级总分一致；不得输出小数。\n"
         "2.1) 整张试卷总分必须严格为 100 分，不能返回 10 分、120 分或其他总分。\n"
