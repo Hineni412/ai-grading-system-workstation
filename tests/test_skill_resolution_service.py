@@ -14,13 +14,21 @@ from question_bank.services.skill_catalog_service import SkillCatalogService
 FIXTURE = Path(__file__).parent / "fixtures" / "skill_resolution_cases.json"
 
 
-def _request(label: str, *, source_ref: str = "Q1", stable_key_hint: str = "") -> SkillResolutionRequest:
+def _request(
+    label: str,
+    *,
+    source_ref: str = "Q1",
+    stable_key_hint: str = "",
+    grade: str = "八年级",
+    topic_hint: str = "",
+) -> SkillResolutionRequest:
     return SkillResolutionRequest(
         source_type="assessment_item",
         source_ref=source_ref,
         raw_label=label,
         stable_key_hint=stable_key_hint,
-        grade="八年级",
+        grade=grade,
+        topic_hint=topic_hint,
         question_text=f"考查{label}",
     )
 
@@ -168,3 +176,171 @@ def test_resolved_conflict_decision_is_reused(tmp_path: Path) -> None:
 
     assert result.outcome is ResolutionOutcome.RESOLVED_EXISTING
     assert result.skill_id == target["id"]
+
+
+class _StaticRanker:
+    def __init__(self, ranking) -> None:
+        self.ranking = ranking
+
+    def rank(self, request, candidates):
+        return self.ranking
+
+
+class _FailingRanker:
+    def rank(self, request, candidates):
+        raise RuntimeError("service unavailable")
+
+
+def test_context_candidate_accepts_exact_threshold_and_margin(tmp_path: Path) -> None:
+    from question_bank.services.skill_context_ranker import ContextRanking
+    from question_bank.services.skill_resolution_service import SkillResolutionService
+
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    catalog = SkillCatalogService(db_path)
+    first = catalog.find_by_stable_key("math.geometry.line_angle.bisector")
+    second = catalog.find_by_stable_key("math.geometry.line_angle.parallel_property")
+    ranking = ContextRanking(
+        candidates=(
+            {"skill_id": first["id"], "confidence": 0.92, "reason": "上下文一致"},
+            {"skill_id": second["id"], "confidence": 0.77, "reason": "次选"},
+        )
+    )
+
+    result = SkillResolutionService(
+        db_path,
+        context_ranker=_StaticRanker(ranking),
+    ).resolve(_request("题干中的具体角关系", topic_hint="线与角"))
+
+    assert result.outcome is ResolutionOutcome.RESOLVED_EXISTING
+    assert result.skill_id == first["id"]
+    assert result.confidence == 0.92
+
+
+def test_context_candidate_rejects_below_threshold_or_margin(tmp_path: Path) -> None:
+    from question_bank.services.skill_context_ranker import ContextRanking
+    from question_bank.services.skill_resolution_service import SkillResolutionService
+
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    catalog = SkillCatalogService(db_path)
+    first = catalog.find_by_stable_key("math.geometry.line_angle.bisector")
+    second = catalog.find_by_stable_key("math.geometry.line_angle.parallel_property")
+    cases = (
+        (0.9199, 0.60),
+        (0.92, 0.7701),
+    )
+    for index, (first_score, second_score) in enumerate(cases, start=1):
+        ranking = ContextRanking(
+            candidates=(
+                {"skill_id": first["id"], "confidence": first_score, "reason": "首选"},
+                {"skill_id": second["id"], "confidence": second_score, "reason": "次选"},
+            )
+        )
+        result = SkillResolutionService(
+            db_path,
+            context_ranker=_StaticRanker(ranking),
+        ).resolve(_request(f"阈值边界{index}", source_ref=f"B{index}", topic_hint="线与角"))
+        assert result.outcome is ResolutionOutcome.CONFLICT
+
+
+def test_context_candidate_requires_matching_grade_topic_and_no_ambiguity(tmp_path: Path) -> None:
+    from question_bank.services.skill_context_ranker import ContextRanking
+    from question_bank.services.skill_resolution_service import SkillResolutionService
+
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    catalog = SkillCatalogService(db_path)
+    candidate = catalog.find_by_stable_key("math.geometry.construction.circumcenter")
+    base_candidate = ({"skill_id": candidate["id"], "confidence": 0.99, "reason": "高分"},)
+    cases = (
+        (_request("外心分析甲", source_ref="G1", grade="七年级", topic_hint="尺规作图与最短路径"), ContextRanking(candidates=base_candidate)),
+        (_request("外心分析乙", source_ref="G2", grade="八年级", topic_hint="一次函数"), ContextRanking(candidates=base_candidate)),
+        (_request("外心分析丙", source_ref="G3", grade="八年级", topic_hint="尺规作图与最短路径"), ContextRanking(candidates=base_candidate, ambiguity_flags=("作图对象不明确",))),
+    )
+    for request, ranking in cases:
+        result = SkillResolutionService(
+            db_path,
+            context_ranker=_StaticRanker(ranking),
+        ).resolve(request)
+        assert result.outcome is ResolutionOutcome.CONFLICT
+
+
+def test_archived_context_candidate_cannot_be_resolved(tmp_path: Path) -> None:
+    from question_bank.services.skill_context_ranker import ContextRanking
+    from question_bank.services.skill_resolution_service import SkillResolutionService
+
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    catalog = SkillCatalogService(db_path)
+    candidate = catalog.find_by_stable_key("math.geometry.line_angle.bisector")
+    with connect(db_path) as conn:
+        conn.execute("UPDATE skills SET status = 'archived' WHERE id = ?", (candidate["id"],))
+    ranking = ContextRanking(
+        candidates=({"skill_id": candidate["id"], "confidence": 0.99, "reason": "高分"},)
+    )
+
+    result = SkillResolutionService(
+        db_path,
+        context_ranker=_StaticRanker(ranking),
+    ).resolve(_request("上下文角关系", topic_hint="线与角"))
+
+    assert result.outcome is ResolutionOutcome.CONFLICT
+
+
+def test_ranker_outage_becomes_conflict_without_raising(tmp_path: Path) -> None:
+    from question_bank.services.skill_resolution_service import SkillResolutionService
+
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+
+    result = SkillResolutionService(
+        db_path,
+        context_ranker=_FailingRanker(),
+    ).resolve(_request("需要上下文判断的技能"))
+
+    assert result.outcome is ResolutionOutcome.CONFLICT
+    assert "不可用" in result.reason
+
+
+def test_concrete_local_skill_is_created_once(tmp_path: Path) -> None:
+    from question_bank.services.skill_context_ranker import ContextRanking
+    from question_bank.services.skill_resolution_service import SkillResolutionService
+
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    ranking = ContextRanking(
+        proposed_local_name="旋转手拉手模型",
+        proposed_topic_key="math.geometry.transformation",
+        proposed_aliases=("手拉手旋转模型",),
+        local_confidence=0.95,
+    )
+    service = SkillResolutionService(db_path, context_ranker=_StaticRanker(ranking))
+
+    first = service.resolve(_request("本校手拉手构造", source_ref="L1", topic_hint="轴对称与图形变换"))
+    second = service.resolve(_request("旋转手拉手模型", source_ref="L2", topic_hint="轴对称与图形变换"))
+
+    assert first.outcome is ResolutionOutcome.CREATED_LOCAL
+    assert second.outcome is ResolutionOutcome.RESOLVED_EXISTING
+    assert second.skill_id == first.skill_id
+    with connect(db_path) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM skills WHERE name = '旋转手拉手模型'").fetchone()[0]
+    assert count == 1
+
+
+def test_local_skill_creation_rejects_broad_or_duplicate_name(tmp_path: Path) -> None:
+    from question_bank.services.skill_context_ranker import ContextRanking
+    from question_bank.services.skill_resolution_service import SkillResolutionService
+
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    rankings = (
+        ContextRanking(proposed_local_name="作图", proposed_topic_key="math.geometry.construction", local_confidence=0.99),
+        ContextRanking(proposed_local_name="角平分线的性质", proposed_topic_key="math.geometry.line_angle", local_confidence=0.99),
+    )
+    for index, ranking in enumerate(rankings, start=1):
+        result = SkillResolutionService(
+            db_path,
+            context_ranker=_StaticRanker(ranking),
+        ).resolve(_request(f"本地候选{index}", source_ref=f"L{index}"))
+        assert result.outcome is ResolutionOutcome.CONFLICT
