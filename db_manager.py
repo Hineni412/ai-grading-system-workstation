@@ -1958,6 +1958,57 @@ class DBManager:
             rows = conn.execute(query, params).fetchall()
             return self._build_weak_point_rows([dict(row) for row in rows])
 
+    def get_active_assessment_evidence(
+        self,
+        *,
+        student_ids: list[str] | tuple[str, ...] = (),
+        session_ids: list[int] | tuple[int, ...] = (),
+    ) -> list[dict[str, Any]]:
+        query = """
+            SELECT
+                sr.session_id,
+                gs.session_name,
+                sr.id AS result_id,
+                sr.student_id,
+                s.student_code,
+                s.name AS student_name,
+                s.class_name,
+                ep.front_image,
+                ep.back_image,
+                sd.question_id,
+                sd.knowledge_id,
+                sd.knowledge_ids,
+                sd.score_awarded,
+                sd.deduction_reason,
+                sd.error_category,
+                sd.error_summary,
+                sr.graded_at
+            FROM session_details sd
+            JOIN session_results sr ON sr.id = sd.result_id
+            JOIN grading_sessions gs ON gs.id = sr.session_id
+            JOIN students s ON s.id = sr.student_id
+            JOIN exam_papers ep ON ep.id = sr.paper_id
+            WHERE COALESCE(gs.is_deleted, 0) = 0
+        """
+        params: list[Any] = []
+        normalized_students = [int(value) for value in student_ids]
+        if normalized_students:
+            placeholders = ",".join("?" for _ in normalized_students)
+            query += f" AND sr.student_id IN ({placeholders})"
+            params.extend(normalized_students)
+        normalized_sessions = [int(value) for value in session_ids]
+        if normalized_sessions:
+            placeholders = ",".join("?" for _ in normalized_sessions)
+            query += f" AND sr.session_id IN ({placeholders})"
+            params.extend(normalized_sessions)
+        query += " ORDER BY sr.session_id, sr.student_id, sd.id"
+        with self._connect() as conn:
+            rows = [dict(row) for row in conn.execute(query, params).fetchall()]
+        enriched = self._enrich_detail_rows(rows)
+        for row in enriched:
+            row["full_score"] = _safe_float(row.get("max_score"), 0.0)
+        return enriched
+
     def get_active_global_error_points(
         self,
         student_id: int | None = None,
