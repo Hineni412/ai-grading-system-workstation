@@ -88,6 +88,14 @@ class SkillLinkService:
                 ],
             )
 
+    def clear_question_links(self, question_id: int) -> None:
+        initialize_database(self.db_path)
+        with connect(self.db_path) as conn:
+            conn.execute(
+                "DELETE FROM question_skill_links WHERE question_id = ?",
+                (int(question_id),),
+            )
+
     def assessment_links_for_sessions(
         self,
         session_ids: Sequence[str],

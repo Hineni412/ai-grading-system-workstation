@@ -15,6 +15,8 @@ ALLOWED_TAG_TYPES = {
     "teaching_stage",
     "student_level",
     "sub_skill",
+    "measured_skill_name",
+    "supporting_skill_name",
 }
 
 
