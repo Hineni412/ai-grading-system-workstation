@@ -173,6 +173,13 @@ class AITaggingResult:
     quality_notes: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True, slots=True)
+class TaggingRequestEvent:
+    request_number: int
+    request_kind: str
+    question_ids: tuple[int, ...]
+
+
 COMPLETE_CONFIDENCE_THRESHOLD = 0.72
 REVIEW_CONFIDENCE_THRESHOLD = 0.45
 
@@ -312,6 +319,10 @@ class AITaggingService:
         max_workers: int | None = None,
         requests_per_minute: int | None = None,
         progress_callback: Callable[[int, int, int, AITaggingResult], None] | None = None,
+        request_callback: Callable[[TaggingRequestEvent], None] | None = None,
+        allow_batch_fallback: bool = True,
+        quality_retry_limit: int = 1,
+        enable_review: bool = True,
     ) -> dict[int, AITaggingResult]:
         items = list(contexts.items())
         if not items:
@@ -331,14 +342,22 @@ class AITaggingService:
             1,
             10000,
         )
-        rate_limiter = _RateLimiter(rpm_limit)
+        request_controller = _TaggingRequestController(rpm_limit, request_callback)
         results: dict[int, AITaggingResult] = {}
         completed = 0
         total = len(items)
         
         with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="qb-tagging") as executor:
             future_map = {
-                executor.submit(_analyze_one_batch, self, batch, rate_limiter): batch
+                executor.submit(
+                    _analyze_one_batch,
+                    self,
+                    batch,
+                    request_controller,
+                    allow_batch_fallback,
+                    max(0, int(quality_retry_limit)),
+                    enable_review,
+                ): batch
                 for batch in batches
             }
             for future in as_completed(future_map):
@@ -759,12 +778,15 @@ def _mock_batch_analysis(batch_contexts: list[tuple[int, TaggingContext]]) -> di
 def _analyze_one_batch(
     service: AITaggingService,
     batch_items: list[tuple[int, TaggingContext]],
-    rate_limiter: "_RateLimiter",
+    request_controller: "_TaggingRequestController",
+    allow_batch_fallback: bool,
+    quality_retry_limit: int,
+    enable_review: bool,
 ) -> dict[int, AITaggingResult]:
-    rate_limiter.acquire()
-    
     if service.mock_mode:
         return _finalize_batch_results(service, batch_items, _mock_batch_analysis(batch_items))
+
+    request_controller.begin("batch", tuple(qid for qid, _context in batch_items))
         
     try:
         if service.llm_client is not None:
@@ -812,7 +834,14 @@ def _analyze_one_batch(
             for qid, ctx in batch_items:
                 if qid not in results:
                     results[qid] = AITaggingResult(ok=False, mock_mode=False, error="LLM response did not include results for this question ID", model_name=service.model, quality_status="invalid")
-            return _finalize_batch_results(service, batch_items, results)
+            return _finalize_batch_results(
+                service,
+                batch_items,
+                results,
+                request_controller=request_controller,
+                quality_retry_limit=quality_retry_limit,
+                enable_review=enable_review,
+            )
             
         # Standard OpenAI-style / Google Responses API client
         response = service._client().responses.create(
@@ -837,16 +866,50 @@ def _analyze_one_batch(
         for qid, ctx in batch_items:
             if qid not in results:
                 results[qid] = AITaggingResult(ok=False, mock_mode=False, error="API response did not include results for this question ID", model_name=service.model, quality_status="invalid")
-        return _finalize_batch_results(service, batch_items, results)
+        return _finalize_batch_results(
+            service,
+            batch_items,
+            results,
+            request_controller=request_controller,
+            quality_retry_limit=quality_retry_limit,
+            enable_review=enable_review,
+        )
     except Exception as exc:
-        # Fallback to single-question tagging for the failed batch
-        fallback_results = {}
-        for qid, ctx in batch_items:
-            try:
-                fallback_results[qid] = service.analyze_question(ctx)
-            except Exception as single_exc:
-                fallback_results[qid] = AITaggingResult(ok=False, mock_mode=False, error=str(single_exc), model_name=service.model, quality_status="invalid", quality_notes=[str(single_exc)])
-        return _finalize_batch_results(service, batch_items, fallback_results)
+        if not allow_batch_fallback:
+            fallback_results = {
+                qid: AITaggingResult(
+                    ok=False,
+                    mock_mode=False,
+                    error=str(exc),
+                    model_name=service.model,
+                    quality_status="invalid",
+                    quality_notes=[str(exc)],
+                )
+                for qid, _context in batch_items
+            }
+        else:
+            fallback_results = {}
+            for qid, ctx in batch_items:
+                try:
+                    request_controller.begin("single_fallback", (qid,))
+                    fallback_results[qid] = service.analyze_question(ctx)
+                except Exception as single_exc:
+                    fallback_results[qid] = AITaggingResult(
+                        ok=False,
+                        mock_mode=False,
+                        error=str(single_exc),
+                        model_name=service.model,
+                        quality_status="invalid",
+                        quality_notes=[str(single_exc)],
+                    )
+        return _finalize_batch_results(
+            service,
+            batch_items,
+            fallback_results,
+            request_controller=request_controller,
+            quality_retry_limit=quality_retry_limit,
+            enable_review=enable_review,
+        )
 
 
 def _adaptive_batches(items: list[tuple[int, TaggingContext]]) -> list[list[tuple[int, TaggingContext]]]:
@@ -896,6 +959,10 @@ def _finalize_batch_results(
     service: AITaggingService,
     batch_items: list[tuple[int, TaggingContext]],
     raw_results: dict[int, AITaggingResult],
+    *,
+    request_controller: "_TaggingRequestController | None" = None,
+    quality_retry_limit: int = 1,
+    enable_review: bool = True,
 ) -> dict[int, AITaggingResult]:
     contexts = dict(batch_items)
     final: dict[int, AITaggingResult] = {}
@@ -907,12 +974,30 @@ def _finalize_batch_results(
             model_name=service.model,
             quality_status="invalid",
         ), context)
-        if result.analysis is not None and result.quality_status == "invalid":
+        retries_remaining = max(0, int(quality_retry_limit))
+        while (
+            result.analysis is not None
+            and result.quality_status == "invalid"
+            and retries_remaining > 0
+        ):
+            if request_controller is not None:
+                request_controller.begin("quality_retry", (qid,))
             retry = _with_quality(service.analyze_question(context), context)
             if _is_better_quality(retry, result):
                 result = retry
-        if result.analysis is not None and result.quality_status in {"low_confidence", "conflict"}:
-            result = _review_low_confidence_result(service, context, result)
+            retries_remaining -= 1
+        if (
+            enable_review
+            and result.analysis is not None
+            and result.quality_status in {"low_confidence", "conflict"}
+        ):
+            result = _review_low_confidence_result(
+                service,
+                context,
+                result,
+                request_controller=request_controller,
+                question_id=qid,
+            )
         final[qid] = result
     return final
 
@@ -1001,9 +1086,14 @@ def _review_low_confidence_result(
     service: AITaggingService,
     context: TaggingContext,
     primary: AITaggingResult,
+    *,
+    request_controller: "_TaggingRequestController | None" = None,
+    question_id: int | None = None,
 ) -> AITaggingResult:
     if not service.review_configured:
         return primary
+    if request_controller is not None and question_id is not None:
+        request_controller.begin("review", (question_id,))
     review = _with_quality(service.analyze_review_question(context), context)
     if not review.ok or review.analysis is None or primary.analysis is None:
         return AITaggingResult(
@@ -1120,3 +1210,41 @@ class _RateLimiter:
         
         if wait_seconds > 0.0:
             time.sleep(wait_seconds)
+
+
+class _TaggingRequestController:
+    def __init__(
+        self,
+        requests_per_minute: int,
+        callback: Callable[[TaggingRequestEvent], None] | None,
+    ) -> None:
+        self._rate_limiter = _RateLimiter(requests_per_minute)
+        self._callback = callback
+        self._lock = threading.Lock()
+        self._request_number = 0
+
+    def begin(
+        self,
+        request_kind: str,
+        question_ids: tuple[int, ...],
+    ) -> TaggingRequestEvent:
+        self._rate_limiter.acquire()
+        with self._lock:
+            self._request_number += 1
+            event = TaggingRequestEvent(
+                request_number=self._request_number,
+                request_kind=str(request_kind),
+                question_ids=tuple(int(question_id) for question_id in question_ids),
+            )
+            if self._callback is not None:
+                self._callback(event)
+        return event
+
+    def run(
+        self,
+        request_kind: str,
+        question_ids: tuple[int, ...],
+        operation: Callable[[], Any],
+    ) -> Any:
+        self.begin(request_kind, question_ids)
+        return operation()
