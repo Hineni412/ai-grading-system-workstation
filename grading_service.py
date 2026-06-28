@@ -27,6 +27,7 @@ from grading_limits import (
 )
 from grading_completeness import audit_grading_details, major_question_id, major_question_ids_for_issues
 from image_preprocessor import enhance_image_file
+from integration.question_tag_projection_service import QuestionTagProjectionService
 from llm_client import LLMClient
 from path_manager import get_path_manager
 from hybrid_batch_grading_service import run_hybrid_batch_grading
@@ -79,9 +80,27 @@ def _rubric_major_question_ids(rubric: dict) -> set[str]:
 
 
 class GradingService:
-    def __init__(self, db_manager: DBManager, llm_client: LLMClient) -> None:
+    def __init__(
+        self,
+        db_manager: DBManager,
+        llm_client: LLMClient,
+        question_bank_db_path: Path | None = None,
+    ) -> None:
         self.db = db_manager
         self.llm_client = llm_client
+        self.question_bank_db_path = Path(question_bank_db_path) if question_bank_db_path else None
+
+    def _question_tag_context(
+        self,
+        session_id: int,
+        rubric: dict[str, Any],
+    ) -> dict[str, dict[str, list[str]]]:
+        if self.question_bank_db_path is None:
+            return {}
+        return QuestionTagProjectionService(self.question_bank_db_path).project_session(
+            grading_session_id=session_id,
+            rubric=rubric,
+        ).context_by_item()
 
     def run_session_grading(
         self,
@@ -130,6 +149,7 @@ class GradingService:
             grading_model=grading_model,
             target_question_ids=target_question_ids,
             answer_regions=answer_regions,
+            question_tag_context=self._question_tag_context(session_id, rubric),
         )
 
         if not failed_only:
@@ -358,6 +378,7 @@ class GradingService:
                         progress_callback=_hybrid_progress,
                         rubric_images_dir=get_path_manager().templates_dir / f"session_{session_id}" / "rubric_images",
                         skipped_questions_by_student=skipped_questions_by_student,
+                        question_tag_context=grader.question_tag_context,
                     )
                     while not future.done():
                         try:

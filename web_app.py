@@ -3299,7 +3299,11 @@ def render_grading_tab(
                     _write_json_file(decisions_path, manual_decisions)
 
                 llm_client = LLMClient(llm_settings)
-                service = GradingService(db, llm_client=llm_client)
+                service = GradingService(
+                    db,
+                    llm_client=llm_client,
+                    question_bank_db_path=question_bank_db_path(),
+                )
 
                 progress_bar = st.progress(0)
                 logs: list[str] = list(st.session_state.get(grading_log_key, []))
