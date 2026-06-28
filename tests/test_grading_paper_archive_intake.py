@@ -8,10 +8,35 @@ from question_bank.database.schema import initialize_database
 from question_bank.importers.batch_importer import BatchImportResult, PaperImportFileResult
 from question_bank.services import grading_paper_intake_service
 from question_bank.services.grading_paper_intake_service import (
+    archive_uploaded_grading_paper,
     copy_existing_grading_paper_to_raw_dir,
     intake_grading_paper_to_question_bank,
     save_uploaded_grading_paper,
 )
+
+
+def test_archive_uploaded_grading_paper_returns_portable_hash_evidence(tmp_path: Path) -> None:
+    data_root = tmp_path / "user_data"
+    raw = data_root / "question_bank" / "raw_papers"
+
+    first = archive_uploaded_grading_paper(
+        filename="paper.docx",
+        content=b"paper-content",
+        data_root=data_root,
+        raw_papers_dir=raw,
+    )
+    reused = archive_uploaded_grading_paper(
+        filename="renamed.docx",
+        content=b"paper-content",
+        data_root=data_root,
+        raw_papers_dir=raw,
+    )
+
+    assert first.stored_path.startswith("question_bank/raw_papers/")
+    assert len(first.sha256) == 64
+    assert reused.physical_path == first.physical_path
+    assert reused.sha256 == first.sha256
+    assert reused.reused is True
 
 
 def test_uploaded_grading_paper_uses_hash_archive(tmp_path: Path) -> None:

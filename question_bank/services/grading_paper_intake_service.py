@@ -19,6 +19,7 @@ from question_bank.services.asset_path_service import resolve_question_bank_asse
 from question_bank.services.question_service import QuestionService
 from question_bank.services.skill_resolution_service import SkillResolutionService
 from question_bank.services.source_paper_archive_service import (
+    ArchivedSourcePaper,
     archive_source_bytes,
     archive_source_paper,
 )
@@ -36,13 +37,28 @@ class GradingPaperIntakeResult:
     unresolved_links: int = 0
 
 
+def archive_uploaded_grading_paper(
+    *,
+    filename: str,
+    content: bytes,
+    data_root: str | Path | None = None,
+    raw_papers_dir: str | Path | None = None,
+) -> ArchivedSourcePaper:
+    return archive_source_bytes(
+        filename=filename,
+        content=content,
+        data_root=data_root,
+        raw_papers_dir=raw_papers_dir,
+    )
+
+
 def save_uploaded_grading_paper(
     *,
     filename: str,
     content: bytes,
     raw_papers_dir: str | Path | None = None,
 ) -> Path:
-    return archive_source_bytes(
+    return archive_uploaded_grading_paper(
         filename=filename,
         content=content,
         raw_papers_dir=raw_papers_dir,

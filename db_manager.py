@@ -20,6 +20,9 @@ except Exception:
     _registry_canonicalize = None  # type: ignore[assignment]
 
 
+QUESTION_BANK_SYNC_STATES = {"not_started", "running", "ready", "partial", "failed"}
+
+
 @dataclass
 class StudentRecord:
     student_code: str
@@ -150,6 +153,22 @@ class DBManager:
             self._ensure_column(conn, "grading_sessions", "deleted_at", "TEXT")
             self._ensure_column(conn, "grading_sessions", "updated_at", "TEXT")
             self._ensure_column(conn, "grading_sessions", "template_config_path", "TEXT")
+            self._ensure_column(conn, "grading_sessions", "source_paper_path", "TEXT")
+            self._ensure_column(conn, "grading_sessions", "source_paper_sha256", "TEXT")
+            self._ensure_column(
+                conn,
+                "grading_sessions",
+                "question_bank_sync_state",
+                "TEXT NOT NULL DEFAULT 'not_started'",
+            )
+            self._ensure_column(
+                conn,
+                "grading_sessions",
+                "question_bank_sync_details_json",
+                "TEXT NOT NULL DEFAULT '{}'",
+            )
+            self._ensure_column(conn, "grading_sessions", "question_bank_sync_error", "TEXT")
+            self._ensure_column(conn, "grading_sessions", "question_bank_sync_updated_at", "TEXT")
             conn.execute(
                 """
                 UPDATE grading_sessions
@@ -609,18 +628,107 @@ class DBManager:
             ).fetchone()
         return str(row["setting_value"]) if row else default
 
-    def create_grading_session(self, session_name: str, rubric_path: str, answer_key_path: str) -> int:
+    def create_grading_session(
+        self,
+        session_name: str,
+        rubric_path: str,
+        answer_key_path: str,
+        *,
+        source_paper_path: str = "",
+        source_paper_sha256: str = "",
+    ) -> int:
+        source_path, source_sha256 = _validated_source_binding(
+            source_paper_path,
+            source_paper_sha256,
+        )
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT INTO grading_sessions (session_name, rubric_path, answer_key_path, status, is_deleted, updated_at)
-                VALUES (?, ?, ?, 'created', 0, datetime('now','localtime'))
+                INSERT INTO grading_sessions (
+                    session_name, rubric_path, answer_key_path, status, is_deleted,
+                    source_paper_path, source_paper_sha256, updated_at
+                )
+                VALUES (?, ?, ?, 'created', 0, ?, ?, datetime('now','localtime'))
                 """,
-                (session_name, rubric_path, answer_key_path),
+                (session_name, rubric_path, answer_key_path, source_path or None, source_sha256 or None),
             )
             conn.commit()
             return int(cursor.lastrowid)
+
+    def bind_grading_session_source(
+        self,
+        session_id: int,
+        *,
+        source_paper_path: str,
+        source_paper_sha256: str,
+    ) -> None:
+        source_path, source_sha256 = _validated_source_binding(
+            source_paper_path,
+            source_paper_sha256,
+        )
+        with self._connect() as conn:
+            current = conn.execute(
+                "SELECT source_paper_sha256 FROM grading_sessions WHERE id = ?",
+                (int(session_id),),
+            ).fetchone()
+            if current is None:
+                raise KeyError(f"grading session not found: {session_id}")
+            changed = str(current["source_paper_sha256"] or "") != source_sha256
+            conn.execute(
+                """
+                UPDATE grading_sessions
+                SET source_paper_path = ?, source_paper_sha256 = ?,
+                    question_bank_sync_state = CASE WHEN ? THEN 'not_started' ELSE question_bank_sync_state END,
+                    question_bank_sync_details_json = CASE WHEN ? THEN '{}' ELSE question_bank_sync_details_json END,
+                    question_bank_sync_error = CASE WHEN ? THEN NULL ELSE question_bank_sync_error END,
+                    question_bank_sync_updated_at = CASE WHEN ? THEN NULL ELSE question_bank_sync_updated_at END,
+                    updated_at = datetime('now','localtime')
+                WHERE id = ?
+                """,
+                (
+                    source_path,
+                    source_sha256,
+                    changed,
+                    changed,
+                    changed,
+                    changed,
+                    int(session_id),
+                ),
+            )
+            conn.commit()
+
+    def update_question_bank_sync_state(
+        self,
+        session_id: int,
+        *,
+        state: str,
+        details: dict[str, object] | None = None,
+        error: str | None = None,
+    ) -> None:
+        normalized = str(state or "").strip().casefold()
+        if normalized not in QUESTION_BANK_SYNC_STATES:
+            raise ValueError(f"unsupported question-bank sync state: {state}")
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE grading_sessions
+                SET question_bank_sync_state = ?, question_bank_sync_details_json = ?,
+                    question_bank_sync_error = ?,
+                    question_bank_sync_updated_at = datetime('now','localtime'),
+                    updated_at = datetime('now','localtime')
+                WHERE id = ?
+                """,
+                (
+                    normalized,
+                    json.dumps(dict(details or {}), ensure_ascii=False, sort_keys=True),
+                    str(error).strip() if error else None,
+                    int(session_id),
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"grading session not found: {session_id}")
+            conn.commit()
 
     def rename_grading_session(self, session_id: int, new_name: str) -> None:
         with self._connect() as conn:
@@ -689,7 +797,10 @@ class DBManager:
     def list_grading_sessions(self, include_deleted: bool = False) -> list[dict[str, Any]]:
         query = """
             SELECT id, session_name, rubric_path, answer_key_path, template_config_path,
-                   status, is_deleted, deleted_at, created_at, updated_at
+                   status, is_deleted, deleted_at, source_paper_path, source_paper_sha256,
+                   question_bank_sync_state, question_bank_sync_details_json,
+                   question_bank_sync_error, question_bank_sync_updated_at,
+                   created_at, updated_at
             FROM grading_sessions
         """
         if not include_deleted:
@@ -705,7 +816,10 @@ class DBManager:
             row = conn.execute(
                 """
                 SELECT id, session_name, rubric_path, answer_key_path, template_config_path,
-                       status, is_deleted, deleted_at, created_at, updated_at
+                       status, is_deleted, deleted_at, source_paper_path, source_paper_sha256,
+                       question_bank_sync_state, question_bank_sync_details_json,
+                       question_bank_sync_error, question_bank_sync_updated_at,
+                       created_at, updated_at
                 FROM grading_sessions
                 WHERE id = ?
                 """,
@@ -2944,6 +3058,16 @@ def _format_knowledge_label(knowledge_id: str, label: str) -> str:
     if not text or text == kid:
         return kid
     return f"{kid} · {text}"
+
+
+def _validated_source_binding(source_paper_path: object, source_paper_sha256: object) -> tuple[str, str]:
+    source_path = str(source_paper_path or "").strip()
+    source_sha256 = str(source_paper_sha256 or "").strip().lower()
+    if not source_path and not source_sha256:
+        return "", ""
+    if not source_path or not re.fullmatch(r"[0-9a-f]{64}", source_sha256):
+        raise ValueError("source paper path and full SHA-256 are required")
+    return source_path, source_sha256
 
 
 def _fallback_knowledge_label(knowledge_id: str, question_id: str) -> str:
