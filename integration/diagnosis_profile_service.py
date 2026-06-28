@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from db_manager import DBManager
 from integration.knowledge_term_identity import build_grading_knowledge_term
+from integration.question_tag_projection_service import (
+    QuestionTagProjection,
+    QuestionTagProjectionService,
+)
 from question_bank.models.knowledge_alignment import AlignmentStatus
 from question_bank.services.concept_alignment_service import ConceptAlignmentService
 from question_bank.database.schema import connect, initialize_database
@@ -37,21 +41,14 @@ class DiagnosisProfileService:
         scope: Mapping[str, Any],
         exam_scope: Mapping[str, Any],
     ) -> dict[str, Any]:
-        read_mode = self._skill_read_mode()
-        if read_mode == "skill":
-            return self._build_skill_profiles(scope=scope, exam_scope=exam_scope)
-        if read_mode == "shadow":
-            skill_profile = self._build_skill_profiles(scope=scope, exam_scope=exam_scope)
-            legacy_profile = self._build_legacy_profiles(scope=scope, exam_scope=exam_scope)
-            skill_profile["legacy_comparison"] = {
-                "student_count": len(legacy_profile.get("students") or []),
-                "weak_point_count": sum(
-                    len(item.get("weak_points") or [])
-                    for item in legacy_profile.get("students") or []
-                ),
-                "confirmed_concept_count": len(legacy_profile.get("confirmed_concept_ids") or []),
-            }
-            return skill_profile
+        return self.build_tag_profiles(scope=scope, exam_scope=exam_scope)
+
+    def build_legacy_profiles(
+        self,
+        *,
+        scope: Mapping[str, Any],
+        exam_scope: Mapping[str, Any],
+    ) -> dict[str, Any]:
         return self._build_legacy_profiles(scope=scope, exam_scope=exam_scope)
 
     def build_skill_profiles(
@@ -61,6 +58,275 @@ class DiagnosisProfileService:
         exam_scope: Mapping[str, Any],
     ) -> dict[str, Any]:
         return self._build_skill_profiles(scope=scope, exam_scope=exam_scope)
+
+    def build_tag_profiles(
+        self,
+        *,
+        scope: Mapping[str, Any],
+        exam_scope: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        warnings: list[str] = []
+        sessions = self._resolve_sessions(exam_scope, warnings)
+        students = self._resolve_students(scope, warnings)
+        session_ids = [int(item["id"]) for item in sessions]
+        student_ids = [str(item["id"]) for item in students]
+        score_rates = self._score_rates(students, session_ids)
+        projection_by_session = self._tag_projections(session_ids)
+        evidence_rows = self._projected_tag_evidence(
+            student_ids=student_ids,
+            session_ids=session_ids,
+            projection_by_session=projection_by_session,
+        )
+
+        grouped_by_student: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+        for row in evidence_rows:
+            student_id = str(row.get("student_id") or "")
+            awarded = max(_number(row.get("score_awarded")), 0.0)
+            full_score = max(_number(row.get("full_score")), 0.0)
+            score_for_rate = min(awarded, full_score) if full_score > 0 else awarded
+            tags = row.get("question_tags") if isinstance(row.get("question_tags"), Mapping) else {}
+            for knowledge_point in tags.get("knowledge_point", []):
+                point = str(knowledge_point or "").strip()
+                if not point:
+                    continue
+                item = grouped_by_student[student_id].setdefault(
+                    point,
+                    {
+                        "knowledge_key": f"knowledge_point:{point}",
+                        "knowledge_point": point,
+                        "score_sum": 0.0,
+                        "full_score_sum": 0.0,
+                        "deduction_count": 0,
+                        "source_question_refs": [],
+                        "actionable_reasons": [],
+                        "tag_context": defaultdict(list),
+                        "primary_errors": Counter(),
+                        "secondary_errors": Counter(),
+                    },
+                )
+                item["score_sum"] += score_for_rate
+                item["full_score_sum"] += full_score
+                if full_score > 0 and awarded < full_score - 1e-6:
+                    item["deduction_count"] += 1
+                reference = {
+                    "session_id": int(row.get("session_id") or 0),
+                    "session_name": str(row.get("session_name") or ""),
+                    "question_id": str(row.get("question_id") or ""),
+                    "bank_question_id": int(row.get("bank_question_id") or 0),
+                    "score_awarded": awarded,
+                    "full_score": full_score,
+                    "score_rate": round(awarded / full_score, 4) if full_score > 0 else None,
+                }
+                if reference not in item["source_question_refs"]:
+                    item["source_question_refs"].append(reference)
+                reasons = _actionable_reasons(
+                    ";".join(
+                        value
+                        for value in (
+                            str(row.get("deduction_reason") or "").strip(),
+                            str(row.get("error_summary") or "").strip(),
+                        )
+                        if value
+                    )
+                )
+                item["actionable_reasons"] = _unique(
+                    [*item["actionable_reasons"], *reasons]
+                )
+                for tag_type in ("sub_skill", "method", "ability", "model", "prerequisite"):
+                    for tag_value in tags.get(tag_type, []):
+                        text = str(tag_value or "").strip()
+                        if text and text not in item["tag_context"][tag_type]:
+                            item["tag_context"][tag_type].append(text)
+                primary_summary = str(row.get("error_summary") or "").strip()
+                if primary_summary:
+                    item["primary_errors"][primary_summary] += 1
+                for secondary in row.get("secondary_errors") or []:
+                    if not isinstance(secondary, Mapping):
+                        continue
+                    secondary_summary = str(secondary.get("summary") or "").strip()
+                    if secondary_summary:
+                        item["secondary_errors"][secondary_summary] += 1
+
+        student_profiles: list[dict[str, Any]] = []
+        for student in students:
+            student_id = str(student["id"])
+            weak_points: list[dict[str, Any]] = []
+            for raw_item in grouped_by_student.get(student_id, {}).values():
+                item = dict(raw_item)
+                score_sum = float(item.pop("score_sum"))
+                full_score_sum = float(item.pop("full_score_sum"))
+                tag_context = {
+                    tag_type: list(values)
+                    for tag_type, values in item.pop("tag_context").items()
+                    if values
+                }
+                primary_errors = dict(sorted(item.pop("primary_errors").items()))
+                secondary_errors = dict(sorted(item.pop("secondary_errors").items()))
+                references = sorted(
+                    item["source_question_refs"],
+                    key=lambda ref: (ref["session_id"], ref["question_id"]),
+                )
+                weak_points.append(
+                    {
+                        **item,
+                        "mastery": round(score_sum / full_score_sum, 4)
+                        if full_score_sum > 0
+                        else 1.0,
+                        "score_sum": round(score_sum, 4),
+                        "full_score_sum": round(full_score_sum, 4),
+                        "evidence_count": len(references),
+                        "exam_count": len({ref["session_id"] for ref in references}),
+                        "source_question_refs": references,
+                        "tag_context": tag_context,
+                        "error_counts": {
+                            "primary": primary_errors,
+                            "secondary": secondary_errors,
+                        },
+                    }
+                )
+            weak_points.sort(key=lambda item: (item["mastery"], item["knowledge_point"]))
+            student_profiles.append(
+                {
+                    "student_id": student_id,
+                    "student_code": str(student.get("student_code") or ""),
+                    "student_name": str(student.get("name") or ""),
+                    "class_id": str(student.get("class_name") or ""),
+                    "score_rate": score_rates.get(student_id),
+                    "weak_points": weak_points,
+                }
+            )
+
+        coverage_missing: dict[str, str] = {}
+        covered_items = 0
+        total_items = 0
+        for projection in projection_by_session.values():
+            covered_items += projection.covered_items
+            total_items += projection.total_items
+            coverage_missing.update(projection.missing_items)
+        if coverage_missing:
+            warnings.append(
+                f"知识图谱仅覆盖 {covered_items}/{total_items} 个评分题；缺失题目已列出。"
+            )
+        if not any(item["weak_points"] for item in student_profiles):
+            warnings.append("所选范围内没有已关联且带知识点标签的诊断证据。")
+
+        normalized_scope = {
+            "mode": str(scope.get("mode") or "student"),
+            "student_ids": [item["student_id"] for item in student_profiles],
+        }
+        if scope.get("class_id") or scope.get("class_name"):
+            normalized_scope["class_id"] = str(
+                scope.get("class_id") or scope.get("class_name")
+            )
+        return {
+            "scope": normalized_scope,
+            "exam_scope": {
+                "mode": str(exam_scope.get("mode") or "current"),
+                "session_ids": session_ids,
+                "sessions": [
+                    {
+                        "session_id": int(item["id"]),
+                        "session_name": str(item.get("session_name") or ""),
+                    }
+                    for item in sessions
+                ],
+            },
+            "students": student_profiles,
+            "coverage": {
+                "covered_items": covered_items,
+                "total_items": total_items,
+                "missing_items": coverage_missing,
+            },
+            "confirmed_concept_ids": [],
+            "suggested_terms": [],
+            "unmapped_terms": [],
+            "warnings": _unique(warnings),
+            "diagnosis_identity": "question_tag",
+        }
+
+    def tag_evidence(
+        self,
+        *,
+        knowledge_point: str,
+        student_ids: list[str] | tuple[str, ...] = (),
+        session_ids: list[int] | tuple[int, ...] = (),
+    ) -> list[dict[str, Any]]:
+        target = str(knowledge_point or "").strip()
+        if not target:
+            raise ValueError("knowledge_point is required")
+        selected_sessions = _int_list(session_ids)
+        if not selected_sessions:
+            selected_sessions = [
+                int(item["id"])
+                for item in self.db.list_grading_sessions()
+                if not item.get("is_deleted")
+            ]
+        rows = self._projected_tag_evidence(
+            student_ids=_text_list(student_ids),
+            session_ids=selected_sessions,
+            projection_by_session=self._tag_projections(selected_sessions),
+        )
+        return [
+            row
+            for row in rows
+            if target in row.get("question_tags", {}).get("knowledge_point", [])
+        ]
+
+    def _tag_projections(
+        self,
+        session_ids: Iterable[int],
+    ) -> dict[int, QuestionTagProjection]:
+        service = QuestionTagProjectionService(self.question_bank_db_path)
+        projections: dict[int, QuestionTagProjection] = {}
+        for session_id in session_ids:
+            rubric = self.db._load_session_rubric(int(session_id))
+            projections[int(session_id)] = service.project_session(
+                grading_session_id=int(session_id),
+                rubric=rubric,
+            )
+        return projections
+
+    def _projected_tag_evidence(
+        self,
+        *,
+        student_ids: Iterable[str],
+        session_ids: Iterable[int],
+        projection_by_session: Mapping[int, QuestionTagProjection],
+    ) -> list[dict[str, Any]]:
+        projected_by_item = {
+            (session_id, item.item_ref): item
+            for session_id, projection in projection_by_session.items()
+            for item in projection.items
+        }
+        rows = self.db.get_active_assessment_evidence(
+            student_ids=tuple(student_ids),
+            session_ids=tuple(session_ids),
+        )
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            key = (
+                int(row.get("session_id") or 0),
+                str(row.get("question_id") or ""),
+            )
+            projected = projected_by_item.get(key)
+            if projected is None or not projected.is_graph_eligible:
+                continue
+            enriched = dict(row)
+            enriched["bank_question_id"] = projected.bank_question_id
+            enriched["question_tags"] = {
+                tag_type: list(values)
+                for tag_type, values in projected.tags.items()
+            }
+            result.append(enriched)
+        return sorted(
+            result,
+            key=lambda row: (
+                int(row.get("session_id") or 0),
+                int(row.get("student_id") or 0),
+                str(row.get("question_id") or ""),
+                int(row.get("result_id") or 0),
+            ),
+        )
 
     def skill_evidence(
         self,

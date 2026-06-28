@@ -95,7 +95,7 @@ def service(tmp_path: Path) -> DiagnosisProfileService:
 def test_current_exam_single_student_profile_uses_full_score_weighting(
     service: DiagnosisProfileService,
 ) -> None:
-    profile = service.build_profiles(
+    profile = service.build_legacy_profiles(
         scope={"mode": "student", "student_ids": ["12"]},
         exam_scope={"mode": "current", "session_ids": [14]},
     )
@@ -109,7 +109,7 @@ def test_current_exam_single_student_profile_uses_full_score_weighting(
 def test_diagnosis_exposes_display_value_separately_from_mapping_term(
     service: DiagnosisProfileService,
 ) -> None:
-    profile = service.build_profiles(
+    profile = service.build_legacy_profiles(
         scope={"mode": "student", "student_ids": ["12"]},
         exam_scope={"mode": "current", "session_ids": [14]},
     )
@@ -125,7 +125,7 @@ def test_diagnosis_exposes_display_value_separately_from_mapping_term(
 def test_selected_students_and_manual_sessions_are_respected(
     service: DiagnosisProfileService,
 ) -> None:
-    profile = service.build_profiles(
+    profile = service.build_legacy_profiles(
         scope={"mode": "selected", "student_ids": ["12", "15"]},
         exam_scope={"mode": "manual", "session_ids": [12, 14]},
     )
@@ -137,7 +137,7 @@ def test_selected_students_and_manual_sessions_are_respected(
 def test_unmapped_terms_are_visible_and_not_eligible(
     service: DiagnosisProfileService,
 ) -> None:
-    profile = service.build_profiles(
+    profile = service.build_legacy_profiles(
         scope={"mode": "student", "student_ids": ["12"]},
         exam_scope={"mode": "current", "session_ids": [14]},
     )
@@ -159,7 +159,7 @@ def test_diagnosis_reuses_legacy_numbered_teacher_confirmation(
         reviewed_by="teacher",
     )
 
-    profile = service.build_profiles(
+    profile = service.build_legacy_profiles(
         scope={"mode": "student", "student_ids": ["12"]},
         exam_scope={"mode": "current", "session_ids": [14]},
     )
@@ -176,7 +176,7 @@ def test_diagnosis_reuses_legacy_numbered_teacher_confirmation(
 def test_class_scope_selects_students_from_requested_class(
     service: DiagnosisProfileService,
 ) -> None:
-    profile = service.build_profiles(
+    profile = service.build_legacy_profiles(
         scope={"mode": "class", "class_id": "九年级1班"},
         exam_scope={"mode": "cross_exam"},
     )
@@ -218,7 +218,7 @@ def test_skill_mode_aggregates_two_sessions_by_same_measured_skill_id(
             [("12:Q2",), ("14:Q2",)],
         )
 
-    profile = service.build_profiles(
+    profile = service.build_skill_profiles(
         scope={"mode": "student", "student_ids": ["12"]},
         exam_scope={"mode": "manual", "session_ids": [12, 14]},
     )
