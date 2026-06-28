@@ -52,6 +52,19 @@ def test_iter_rubric_skill_requests_uses_part_refs_and_multiple_measured_skills(
     assert "使用AAS判定全等" in rows[0][2].rubric_text
 
 
+def test_effective_rubric_items_use_parts_or_question_fallback() -> None:
+    from session_manager import iter_effective_rubric_items
+
+    rows = list(iter_effective_rubric_items(_rubric()))
+    assert [item_ref for item_ref, _question, _item in rows] == ["Q1.1", "Q1.2"]
+
+    single = {"questions": [{"question_id": "Q2", "knowledge_name": "一次函数"}]}
+    assert [
+        item_ref
+        for item_ref, _question, _item in iter_effective_rubric_items(single)
+    ] == ["Q2"]
+
+
 def test_resolve_rubric_links_every_effective_part(tmp_path: Path) -> None:
     from question_bank.services.skill_link_service import SkillLinkService
 
@@ -110,6 +123,55 @@ def test_rubric_conflict_does_not_raise_or_create_eligible_link(tmp_path: Path) 
     assert summary["conflicts"] == 1
     assert links == 0
     assert conflicts == 1
+
+
+def test_backfill_preserves_existing_measured_assessment_link(tmp_path: Path) -> None:
+    from question_bank.services.skill_link_service import SkillLinkService
+
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    with connect(db_path) as conn:
+        skill_id = int(
+            conn.execute("SELECT id FROM skills WHERE name = '角平分线性质'").fetchone()[0]
+        )
+        conn.execute(
+            """
+            INSERT INTO assessment_item_skills (
+                grading_session_id, source_question_id, skill_id, role,
+                source, confidence, evidence_json, status
+            ) VALUES ('9', 'Q9', ?, 'measured', 'admin_resolution', 1.0, '{}', 'resolved')
+            """,
+            (skill_id,),
+        )
+    rubric = {
+        "questions": [
+            {
+                "question_id": "Q9",
+                "knowledge_name": "本校未知画法",
+                "stem_summary": "按要求完成图形",
+            }
+        ]
+    }
+
+    summary = SkillLinkService(db_path).resolve_rubric(
+        "9",
+        rubric,
+        preserve_existing_measured=True,
+    )
+
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT skill_id, source FROM assessment_item_skills
+            WHERE grading_session_id = '9' AND source_question_id = 'Q9'
+            """
+        ).fetchone()
+        conflict_count = conn.execute(
+            "SELECT COUNT(*) FROM skill_resolution_conflicts WHERE source_ref = '9:Q9'"
+        ).fetchone()[0]
+    assert summary == {"items": 1, "resolved_items": 1, "conflicts": 0, "skills": 1}
+    assert tuple(row) == (skill_id, "admin_resolution")
+    assert conflict_count == 0
 
 
 def test_web_app_syncs_skill_links_after_session_create_and_update() -> None:

@@ -2893,32 +2893,24 @@ def _normalize_question_knowledge_fields(question: dict[str, Any]) -> None:
         question["knowledge_name"] = normalized[0]["knowledge_name"]
 
 
-def iter_rubric_skill_requests(
+def iter_effective_rubric_items(
     payload: Mapping[str, object],
-    *,
-    grading_session_id: str,
-) -> Iterator[tuple[str, SkillRole, SkillResolutionRequest]]:
+) -> Iterator[tuple[str, Mapping[str, object], Mapping[str, object]]]:
     rubric = payload.get("rubric") if isinstance(payload.get("rubric"), Mapping) else payload
     questions = rubric.get("questions") if isinstance(rubric, Mapping) else None
     if not isinstance(questions, list):
         return
-    grade = str(
-        (rubric.get("grade") if isinstance(rubric, Mapping) else "")
-        or payload.get("grade")
-        or ""
-    ).strip()
     for question_index, raw_question in enumerate(questions, start=1):
         if not isinstance(raw_question, Mapping):
             continue
-        question = dict(raw_question)
         question_ref = str(
-            question.get("question_id")
-            or question.get("id")
-            or question.get("number")
+            raw_question.get("question_id")
+            or raw_question.get("id")
+            or raw_question.get("number")
             or f"Q{question_index}"
         ).strip()
-        parts = question.get("parts")
-        effective_items: list[tuple[str, Mapping[str, object]]] = []
+        parts = raw_question.get("parts")
+        emitted = False
         if isinstance(parts, list) and parts:
             for part_index, raw_part in enumerate(parts, start=1):
                 if not isinstance(raw_part, Mapping):
@@ -2928,46 +2920,60 @@ def iter_rubric_skill_requests(
                     or raw_part.get("question_id")
                     or f"{question_ref}.{part_index}"
                 ).strip()
-                effective_items.append((part_ref, raw_part))
-        if not effective_items:
-            effective_items.append((question_ref, question))
+                emitted = True
+                yield part_ref, raw_question, raw_part
+        if not emitted:
+            yield question_ref, raw_question, raw_question
 
-        for item_ref, item in effective_items:
-            measured = _rubric_knowledge_points(item)
-            if not measured and item is not question:
-                measured = _rubric_knowledge_points(question)
-            supporting = _rubric_supporting_points(item)
-            context_text = _rubric_context_text(question, item)
-            for role, points in (
-                (SkillRole.MEASURED, measured),
-                (SkillRole.SUPPORTING, supporting),
-            ):
-                for raw_id, label in points:
-                    if not label:
-                        continue
-                    yield (
-                        item_ref,
-                        role,
-                        SkillResolutionRequest(
-                            source_type="assessment_item",
-                            source_ref=f"{grading_session_id}:{item_ref}",
-                            raw_label=label,
-                            stable_key_hint=raw_id,
-                            grade=grade,
-                            question_text=str(
-                                question.get("stem_summary")
-                                or question.get("question_text")
-                                or question.get("text")
-                                or ""
-                            ),
-                            rubric_text=context_text,
-                            existing_tags=tuple(
-                                value
-                                for value in (raw_id, label)
-                                if str(value or "").strip()
-                            ),
+
+def iter_rubric_skill_requests(
+    payload: Mapping[str, object],
+    *,
+    grading_session_id: str,
+) -> Iterator[tuple[str, SkillRole, SkillResolutionRequest]]:
+    rubric = payload.get("rubric") if isinstance(payload.get("rubric"), Mapping) else payload
+    grade = str(
+        (rubric.get("grade") if isinstance(rubric, Mapping) else "")
+        or payload.get("grade")
+        or ""
+    ).strip()
+
+    for item_ref, question, item in iter_effective_rubric_items(payload):
+        measured = _rubric_knowledge_points(item)
+        if not measured and item is not question:
+            measured = _rubric_knowledge_points(question)
+        supporting = _rubric_supporting_points(item)
+        context_text = _rubric_context_text(question, item)
+        for role, points in (
+            (SkillRole.MEASURED, measured),
+            (SkillRole.SUPPORTING, supporting),
+        ):
+            for raw_id, label in points:
+                if not label:
+                    continue
+                yield (
+                    item_ref,
+                    role,
+                    SkillResolutionRequest(
+                        source_type="assessment_item",
+                        source_ref=f"{grading_session_id}:{item_ref}",
+                        raw_label=label,
+                        stable_key_hint=raw_id,
+                        grade=grade,
+                        question_text=str(
+                            question.get("stem_summary")
+                            or question.get("question_text")
+                            or question.get("text")
+                            or ""
                         ),
-                    )
+                        rubric_text=context_text,
+                        existing_tags=tuple(
+                            value
+                            for value in (raw_id, label)
+                            if str(value or "").strip()
+                        ),
+                    ),
+                )
 
 
 def _rubric_knowledge_points(item: Mapping[str, object]) -> list[tuple[str, str]]:
