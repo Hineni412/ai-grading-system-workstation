@@ -14,10 +14,13 @@ from question_bank.importers.batch_importer import (
     infer_metadata_from_filename,
 )
 from question_bank.models.tag_schema import TaggingContext
-from question_bank.services.ai_tagging_service import AITaggingService, is_auto_saveable_result
+from question_bank.services.ai_tagging_service import (
+    AITaggingService,
+    TaggingRequestEvent,
+    is_auto_saveable_result,
+)
 from question_bank.services.asset_path_service import resolve_question_bank_asset_path
-from question_bank.services.question_service import QuestionService
-from question_bank.services.skill_resolution_service import SkillResolutionService
+from question_bank.services.question_service import CORE_ANALYSIS_TAG_TYPES, QuestionService
 from question_bank.services.source_paper_archive_service import (
     ArchivedSourcePaper,
     archive_source_bytes,
@@ -35,6 +38,20 @@ class GradingPaperIntakeResult:
     confirmed_links: int = 0
     suggested_links: int = 0
     unresolved_links: int = 0
+    imported_question_total: int = 0
+    request_count: int = 0
+    failed_question_ids: tuple[str, ...] = ()
+    unresolved_question_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class GradingPaperWorkflowEvent:
+    stage: str
+    completed: int
+    total: int
+    request_count: int = 0
+    failed_questions: int = 0
+    question_id: str = ""
 
 
 def archive_uploaded_grading_paper(
@@ -75,6 +92,7 @@ def intake_grading_paper_to_question_bank(
     tagging_max_workers: int | None = None,
     tagging_requests_per_minute: int | None = None,
     tagging_progress_callback: Callable[[int, int, int, Any], None] | None = None,
+    workflow_progress_callback: Callable[[GradingPaperWorkflowEvent], None] | None = None,
     grading_session_id: str | int | None = None,
     grading_source_questions: list[dict[str, Any]] | None = None,
     data_root: str | Path | None = None,
@@ -102,22 +120,56 @@ def intake_grading_paper_to_question_bank(
         for imported_source in imported_sources
         for question in _questions_for_source(database_path, imported_source)
     ]
+    request_count = 0
+    failed_question_ids: list[str] = []
+
+    def emit(
+        stage: str,
+        completed: int,
+        *,
+        failed_questions: int = 0,
+        question_id: object = "",
+    ) -> None:
+        if workflow_progress_callback is not None:
+            workflow_progress_callback(
+                GradingPaperWorkflowEvent(
+                    stage=stage,
+                    completed=completed,
+                    total=5,
+                    request_count=request_count,
+                    failed_questions=failed_questions,
+                    question_id=str(question_id or ""),
+                )
+            )
+
+    emit("import", 1)
     tagged_questions = 0
     failed_tagging = 0
-    pending_questions = _questions_needing_skill_links(database_path, questions)
+    pending_questions = _questions_needing_complete_tags(database_path, questions)
     if run_ai_tagging and pending_questions:
         service = QuestionService(database_path)
         contexts = {int(item["id"]): _tagging_context(item) for item in pending_questions}
         tagger = ai_service or AITaggingService()
-        skill_resolver = SkillResolutionService(
-            database_path,
-            context_ranker=tagger.build_skill_context_ranker(),
-        )
+
+        def on_request(event: TaggingRequestEvent) -> None:
+            nonlocal request_count
+            request_count = max(request_count, int(event.request_number))
+            emit("tag", 1)
+
+        def on_tag_progress(done: int, total: int, question_id: int, result: Any) -> None:
+            if tagging_progress_callback is not None:
+                tagging_progress_callback(done, total, question_id, result)
+            emit("tag", 1, question_id=question_id)
+
         results = tagger.analyze_questions(
             contexts,
             max_workers=tagging_max_workers,
             requests_per_minute=tagging_requests_per_minute,
-            progress_callback=tagging_progress_callback,
+            progress_callback=on_tag_progress,
+            request_callback=on_request,
+            allow_batch_fallback=False,
+            quality_retry_limit=1,
+            enable_review=False,
         )
         for question_id, result in results.items():
             if is_auto_saveable_result(result):
@@ -126,21 +178,32 @@ def intake_grading_paper_to_question_bank(
                     result.analysis,
                     model_name=result.model_name,
                     confidence=result.analysis.confidence,
-                    skill_resolver=skill_resolver,
+                    resolve_skills=False,
                 ):
                     tagged_questions += 1
                 else:
                     failed_tagging += 1
+                    failed_question_ids.append(str(question_id))
             else:
                 failed_tagging += 1
+                failed_question_ids.append(str(question_id))
+    emit("tag", 2, failed_questions=failed_tagging)
+    emit("save", 3, failed_questions=failed_tagging)
 
     link_summary = {"confirmed": 0, "suggested": 0, "unresolved": 0}
     if grading_session_id is not None and grading_source_questions:
-        link_summary = SourceQuestionLinkService(database_path).link_questions_for_session(
+        direct_summary = SourceQuestionLinkService(database_path).confirm_imported_questions_for_session(
             grading_session_id=grading_session_id,
             source_questions=grading_source_questions,
-            candidate_bank_questions=questions,
+            imported_bank_questions=questions,
         )
+        link_summary = {
+            "confirmed": int(direct_summary["confirmed"]),
+            "suggested": 0,
+            "unresolved": int(direct_summary["unresolved"]),
+            "unresolved_question_ids": list(direct_summary["unresolved_question_ids"]),
+        }
+    emit("link", 4, failed_questions=failed_tagging)
 
     stored_source = next(iter(imported_sources), str(paper_path))
     saved_file = resolve_question_bank_asset_path(stored_source, data_root=data_root)
@@ -152,6 +215,10 @@ def intake_grading_paper_to_question_bank(
         confirmed_links=link_summary["confirmed"],
         suggested_links=link_summary["suggested"],
         unresolved_links=link_summary["unresolved"],
+        imported_question_total=len(questions),
+        request_count=request_count,
+        failed_question_ids=tuple(failed_question_ids),
+        unresolved_question_ids=tuple(link_summary.get("unresolved_question_ids", [])),
     )
 
 
@@ -167,6 +234,7 @@ def copy_and_intake_uploaded_grading_paper(
     tagging_max_workers: int | None = None,
     tagging_requests_per_minute: int | None = None,
     tagging_progress_callback: Callable[[int, int, int, Any], None] | None = None,
+    workflow_progress_callback: Callable[[GradingPaperWorkflowEvent], None] | None = None,
     grading_session_id: str | int | None = None,
     grading_source_questions: list[dict[str, Any]] | None = None,
 ) -> GradingPaperIntakeResult:
@@ -181,6 +249,7 @@ def copy_and_intake_uploaded_grading_paper(
             tagging_max_workers=tagging_max_workers,
             tagging_requests_per_minute=tagging_requests_per_minute,
             tagging_progress_callback=tagging_progress_callback,
+            workflow_progress_callback=workflow_progress_callback,
             grading_session_id=grading_session_id,
             grading_source_questions=grading_source_questions,
             raw_papers_dir=raw_papers_dir,
@@ -218,7 +287,7 @@ def _questions_for_source(db_path: Path, source_file: str) -> list[dict[str, Any
     return [dict(row) for row in rows]
 
 
-def _questions_needing_skill_links(
+def _questions_needing_complete_tags(
     db_path: Path,
     questions: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -227,18 +296,24 @@ def _questions_needing_skill_links(
     question_ids = [int(item["id"]) for item in questions]
     placeholders = ",".join("?" for _ in question_ids)
     with connect(db_path) as conn:
-        resolved = {
-            int(row["question_id"])
-            for row in conn.execute(
-                f"""
-                SELECT DISTINCT question_id FROM question_skill_links
-                WHERE question_id IN ({placeholders})
-                  AND role = 'measured' AND status = 'resolved'
-                """,
-                question_ids,
-            ).fetchall()
-        }
-    return [item for item in questions if int(item["id"]) not in resolved]
+        tag_types_by_question: dict[int, set[str]] = {}
+        for row in conn.execute(
+            f"""
+            SELECT question_id, tag_type FROM question_tags
+            WHERE question_id IN ({placeholders})
+              AND COALESCE(tag_value, '') <> ''
+            """,
+            question_ids,
+        ).fetchall():
+            tag_types_by_question.setdefault(int(row["question_id"]), set()).add(
+                str(row["tag_type"])
+            )
+    required = set(CORE_ANALYSIS_TAG_TYPES)
+    return [
+        item
+        for item in questions
+        if not required.issubset(tag_types_by_question.get(int(item["id"]), set()))
+    ]
 
 
 def _tagging_context(question: dict[str, Any]) -> TaggingContext:

@@ -228,7 +228,7 @@ def test_grading_paper_intake_creates_source_links(
     assert linked_ids == {imported_id}
 
 
-def test_duplicate_intake_retries_only_questions_without_measured_skill(
+def test_duplicate_intake_retries_only_questions_without_complete_tags(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -249,13 +249,14 @@ def test_duplicate_intake_retries_only_questions_without_measured_skill(
                 (str(source_file),),
             ).lastrowid
         )
-        skill_id = int(conn.execute("SELECT id FROM skills ORDER BY id LIMIT 1").fetchone()[0])
-        conn.execute(
-            """
-            INSERT INTO question_skill_links (question_id, skill_id, role, source, status)
-            VALUES (?, ?, 'measured', 'test', 'resolved')
-            """,
-            (first_id, skill_id),
+        conn.executemany(
+            "INSERT INTO question_tags (question_id, tag_type, tag_value) VALUES (?, ?, ?)",
+            [
+                (first_id, "knowledge_point", "整式运算"),
+                (first_id, "ability", "运算能力"),
+                (first_id, "exam_scope", "七年级下册"),
+                (first_id, "student_level", "基础巩固"),
+            ],
         )
 
     monkeypatch.setattr(
@@ -275,9 +276,6 @@ def test_duplicate_intake_retries_only_questions_without_measured_skill(
     class CapturingTagger:
         def __init__(self) -> None:
             self.question_ids: list[int] = []
-
-        def build_skill_context_ranker(self):
-            return None
 
         def analyze_questions(self, contexts, **_kwargs):
             self.question_ids = sorted(contexts)

@@ -9,12 +9,13 @@ from db_manager import DBManager
 from path_manager import resolve_stored_file_path
 from question_bank.database.schema import connect, initialize_database
 from question_bank.services.grading_paper_intake_service import (
+    GradingPaperWorkflowEvent,
     archive_uploaded_grading_paper,
     intake_grading_paper_to_question_bank,
 )
-from question_bank.services.skill_link_service import SkillLinkService
+from question_bank.services.question_service import CORE_ANALYSIS_TAG_TYPES
 from question_bank.services.source_question_link_service import SourceQuestionLinkService
-from session_manager import iter_effective_rubric_items
+from integration.question_tag_projection_service import QuestionTagProjectionService
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,21 +27,46 @@ class GradingPaperWorkflowStatus:
     source_paper_path: str
     source_paper_sha256: str
     source_question_total: int
-    confirmed_source_links: int
-    suggested_source_links: int
-    bank_question_total: int
-    bank_questions_resolved: int
-    assessment_total: int
-    assessment_resolved: int
+    imported_question_total: int
+    complete_tag_question_total: int
+    linked_source_total: int
+    missing_items: tuple[tuple[str, str], ...] = ()
+    current_stage: str = ""
+    request_count: int = 0
+    failed_questions: int = 0
     error: str = ""
 
     @property
+    def confirmed_source_links(self) -> int:
+        return self.linked_source_total
+
+    @property
+    def suggested_source_links(self) -> int:
+        return 0
+
+    @property
+    def bank_question_total(self) -> int:
+        return self.imported_question_total
+
+    @property
+    def bank_questions_resolved(self) -> int:
+        return self.complete_tag_question_total
+
+    @property
+    def assessment_total(self) -> int:
+        return self.source_question_total
+
+    @property
+    def assessment_resolved(self) -> int:
+        return self.linked_source_total
+
+    @property
     def missing_source_links(self) -> int:
-        return max(0, self.source_question_total - self.confirmed_source_links)
+        return max(0, self.source_question_total - self.linked_source_total)
 
     @property
     def missing_assessment_items(self) -> int:
-        return max(0, self.assessment_total - self.assessment_resolved)
+        return self.missing_source_links
 
     def details(self) -> dict[str, object]:
         return asdict(self)
@@ -109,28 +135,40 @@ class GradingPaperSkillWorkflowService:
         ai_service: Any,
         max_workers: int,
         requests_per_minute: int,
-        progress_callback: Callable[[int, int, int, Any], None] | None = None,
+        progress_callback: Callable[[GradingPaperWorkflowEvent], None] | None = None,
     ) -> GradingPaperWorkflowStatus:
         _session, rubric, source_path = self._required_inputs(int(session_id))
         self.grading_db.update_question_bank_sync_state(int(session_id), state="running")
+        latest_event: GradingPaperWorkflowEvent | None = None
+
+        def on_event(event: GradingPaperWorkflowEvent) -> None:
+            nonlocal latest_event
+            latest_event = event
+            self.grading_db.update_question_bank_sync_state(
+                int(session_id),
+                state="running",
+                details={
+                    "current_stage": event.stage,
+                    "request_count": event.request_count,
+                    "failed_questions": event.failed_questions,
+                },
+            )
+            if progress_callback is not None:
+                progress_callback(event)
+
         try:
-            intake_grading_paper_to_question_bank(
+            intake_result = intake_grading_paper_to_question_bank(
                 source_file=source_path,
                 db_path=self.question_bank_db_path,
                 run_ai_tagging=True,
                 ai_service=ai_service,
                 tagging_max_workers=int(max_workers),
                 tagging_requests_per_minute=int(requests_per_minute),
-                tagging_progress_callback=progress_callback,
+                workflow_progress_callback=on_event,
                 grading_session_id=int(session_id),
                 grading_source_questions=list(rubric.get("questions") or []),
                 data_root=self.data_root,
                 raw_papers_dir=self.data_root / "question_bank" / "raw_papers",
-            )
-            SkillLinkService(self.question_bank_db_path).resolve_rubric(
-                str(session_id),
-                rubric,
-                preserve_existing_measured=True,
             )
         except Exception as exc:  # noqa: BLE001
             actual = self._compute_status(
@@ -140,9 +178,9 @@ class GradingPaperSkillWorkflowService:
             )
             fallback = (
                 "partial"
-                if actual.confirmed_source_links
-                or actual.bank_question_total
-                or actual.bank_questions_resolved
+                if actual.linked_source_total
+                or actual.imported_question_total
+                or actual.complete_tag_question_total
                 else "failed"
             )
             self.grading_db.update_question_bank_sync_state(
@@ -158,10 +196,29 @@ class GradingPaperSkillWorkflowService:
             persisted_state="partial",
             persisted_error="题库处理未形成完整关联。",
         )
+        complete_event = GradingPaperWorkflowEvent(
+            stage="complete",
+            completed=5,
+            total=5,
+            request_count=max(
+                int(intake_result.request_count),
+                int(latest_event.request_count) if latest_event is not None else 0,
+            ),
+            failed_questions=int(intake_result.failed_tagging),
+        )
+        on_event(complete_event)
+        final_details = actual.details()
+        final_details.update(
+            {
+                "current_stage": complete_event.stage,
+                "request_count": complete_event.request_count,
+                "failed_questions": complete_event.failed_questions,
+            }
+        )
         self.grading_db.update_question_bank_sync_state(
             int(session_id),
             state=actual.state,
-            details=actual.details(),
+            details=final_details,
             error=actual.error or None,
         )
         return self.status(int(session_id))
@@ -206,9 +263,6 @@ class GradingPaperSkillWorkflowService:
         source_available = bool(source_value and source_path.is_file())
         rubric = _read_rubric(session.get("rubric_path"), data_root=self.data_root)
         source_question_ids = _source_question_ids(rubric)
-        assessment_refs = {
-            item_ref for item_ref, _question, _item in iter_effective_rubric_items(rubric)
-        }
 
         source_links = SourceQuestionLinkService(self.question_bank_db_path).list_links(session_id)
         current_links = [
@@ -217,28 +271,23 @@ class GradingPaperSkillWorkflowService:
             if str(item.get("source_question_id") or "") in source_question_ids
         ]
         confirmed_links = [item for item in current_links if item.get("status") == "confirmed"]
-        suggested_links = [item for item in current_links if item.get("status") == "suggested"]
 
-        bank_question_total, bank_questions_resolved = self._bank_question_coverage(source_value)
-        assessment_links = SkillLinkService(self.question_bank_db_path).assessment_links_for_sessions(
-            [str(session_id)]
+        imported_question_total, complete_tag_question_total = self._bank_question_coverage(
+            source_value
         )
-        assessment_resolved = len(
-            {
-                str(item.get("source_question_id") or "")
-                for item in assessment_links
-                if str(item.get("role") or "") == "measured"
-                and str(item.get("source_question_id") or "") in assessment_refs
-            }
+        projection = QuestionTagProjectionService(self.question_bank_db_path).project_session(
+            grading_session_id=session_id,
+            rubric=rubric,
         )
+        persisted_details = _sync_details(session)
         state, error = _derive_state(
             source_available=source_available,
             source_total=len(source_question_ids),
-            confirmed_links=len(confirmed_links),
-            bank_total=bank_question_total,
-            bank_resolved=bank_questions_resolved,
-            assessment_total=len(assessment_refs),
-            assessment_resolved=assessment_resolved,
+            linked_source_total=len(confirmed_links),
+            imported_question_total=imported_question_total,
+            complete_tag_question_total=complete_tag_question_total,
+            projected_total=projection.total_items,
+            projected_covered=projection.covered_items,
             persisted_state=persisted_state,
             persisted_error=persisted_error,
         )
@@ -252,12 +301,13 @@ class GradingPaperSkillWorkflowService:
             source_paper_path=source_value,
             source_paper_sha256=str(session.get("source_paper_sha256") or ""),
             source_question_total=len(source_question_ids),
-            confirmed_source_links=len(confirmed_links),
-            suggested_source_links=len(suggested_links),
-            bank_question_total=bank_question_total,
-            bank_questions_resolved=bank_questions_resolved,
-            assessment_total=len(assessment_refs),
-            assessment_resolved=assessment_resolved,
+            imported_question_total=imported_question_total,
+            complete_tag_question_total=complete_tag_question_total,
+            linked_source_total=len(confirmed_links),
+            missing_items=tuple(sorted(projection.missing_items.items())),
+            current_stage=str(persisted_details.get("current_stage") or ""),
+            request_count=_non_negative_int(persisted_details.get("request_count")),
+            failed_questions=_non_negative_int(persisted_details.get("failed_questions")),
             error=error,
         )
 
@@ -265,23 +315,22 @@ class GradingPaperSkillWorkflowService:
         if not source_value:
             return 0, 0
         with connect(self.question_bank_db_path) as conn:
-            row = conn.execute(
-                """
-                SELECT
-                    COUNT(*) AS total,
-                    SUM(
-                        CASE WHEN EXISTS (
-                            SELECT 1 FROM question_skill_links qsl
-                            WHERE qsl.question_id = q.id
-                              AND qsl.role = 'measured' AND qsl.status = 'resolved'
-                        ) THEN 1 ELSE 0 END
-                    ) AS resolved
+            placeholders = ", ".join("?" for _ in CORE_ANALYSIS_TAG_TYPES)
+            rows = conn.execute(
+                f"""
+                SELECT q.id, COUNT(DISTINCT t.tag_type) AS complete_types
                 FROM questions q
+                LEFT JOIN question_tags t
+                  ON t.question_id = q.id
+                 AND t.tag_type IN ({placeholders})
+                 AND COALESCE(t.tag_value, '') <> ''
                 WHERE COALESCE(q.is_deleted, 0) = 0 AND q.source_file = ?
+                GROUP BY q.id
                 """,
-                (source_value,),
-            ).fetchone()
-        return int(row["total"] or 0), int(row["resolved"] or 0)
+                (*CORE_ANALYSIS_TAG_TYPES, source_value),
+            ).fetchall()
+        required_count = len(CORE_ANALYSIS_TAG_TYPES)
+        return len(rows), sum(int(row["complete_types"] or 0) == required_count for row in rows)
 
 
 def _read_rubric(value: object, *, data_root: Path) -> dict[str, Any]:
@@ -310,30 +359,54 @@ def _source_question_ids(rubric: Mapping[str, Any]) -> set[str]:
     return result
 
 
+def _sync_details(session: Mapping[str, Any]) -> dict[str, Any]:
+    raw = session.get("question_bank_sync_details_json")
+    if isinstance(raw, Mapping):
+        return dict(raw)
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return dict(parsed) if isinstance(parsed, Mapping) else {}
+
+
+def _non_negative_int(value: object) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _derive_state(
     *,
     source_available: bool,
     source_total: int,
-    confirmed_links: int,
-    bank_total: int,
-    bank_resolved: int,
-    assessment_total: int,
-    assessment_resolved: int,
+    linked_source_total: int,
+    imported_question_total: int,
+    complete_tag_question_total: int,
+    projected_total: int,
+    projected_covered: int,
     persisted_state: str,
     persisted_error: str,
 ) -> tuple[str, str]:
     ready = (
         source_available
         and source_total > 0
-        and confirmed_links == source_total
-        and bank_total >= confirmed_links
-        and bank_resolved == bank_total
-        and assessment_total > 0
-        and assessment_resolved == assessment_total
+        and linked_source_total == source_total
+        and imported_question_total >= linked_source_total
+        and complete_tag_question_total == imported_question_total
+        and projected_total > 0
+        and projected_covered == projected_total
     )
     if ready:
         return "ready", ""
-    progress = confirmed_links > 0 or bank_total > 0 or bank_resolved > 0
+    progress = (
+        linked_source_total > 0
+        or imported_question_total > 0
+        or complete_tag_question_total > 0
+    )
     if progress:
         return "partial", persisted_error
     if persisted_state == "running":

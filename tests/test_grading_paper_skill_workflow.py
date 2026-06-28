@@ -3,15 +3,14 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from db_manager import DBManager
 from question_bank.database.schema import connect, initialize_database
 from question_bank.importers.batch_importer import BatchImportResult, PaperImportFileResult
-from question_bank.models.skill_catalog import ResolvedSkillLink, SkillRole
 from question_bank.services.grading_paper_intake_service import GradingPaperIntakeResult
-from question_bank.services.skill_link_service import SkillLinkService
 from question_bank.services.source_question_link_service import SourceQuestionLinkService
 
 
@@ -70,7 +69,6 @@ def _build_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, with_sour
         source_paper_path=str(source_path) if with_source else "",
         source_paper_sha256=digest if with_source else "",
     )
-    SkillLinkService(question_bank_db_path).resolve_rubric(str(session_id), _rubric())
     tagger = FakeTagger()
 
     def fake_intake_grading_paper_to_question_bank(**kwargs):
@@ -99,32 +97,24 @@ def _build_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, with_sour
                 else:
                     question_id = int(row["id"])
                 question_ids[number] = question_id
-            skill_rows = {
-                str(row["name"]): int(row["id"])
-                for row in conn.execute(
-                    "SELECT id, name FROM skills WHERE name IN ('角平分线性质', '三角形面积计算')"
-                ).fetchall()
-            }
-        links = SkillLinkService(db_path)
-        for number, name in (("1", "角平分线性质"), ("2", "三角形面积计算")):
-            if number in tagger_arg.fail_question_numbers:
-                continue
-            links.replace_question_links(
-                question_ids[number],
-                [
-                    ResolvedSkillLink(
-                        skill_id=skill_rows[name],
-                        role=SkillRole.MEASURED,
-                        raw_knowledge_label=name,
-                        source="fake_tagger",
-                        confidence=1.0,
-                    )
-                ],
-            )
-        SourceQuestionLinkService(db_path).link_questions_for_session(
+            for number in ("1", "2"):
+                if number in tagger_arg.fail_question_numbers:
+                    continue
+                question_id = question_ids[number]
+                conn.execute("DELETE FROM question_tags WHERE question_id = ?", (question_id,))
+                conn.executemany(
+                    "INSERT INTO question_tags (question_id, tag_type, tag_value) VALUES (?, ?, ?)",
+                    [
+                        (question_id, "knowledge_point", "角平分线性质" if number == "1" else "三角形面积"),
+                        (question_id, "ability", "推理能力"),
+                        (question_id, "exam_scope", "八年级"),
+                        (question_id, "student_level", "基础巩固"),
+                    ],
+                )
+        SourceQuestionLinkService(db_path).confirm_imported_questions_for_session(
             grading_session_id=kwargs["grading_session_id"],
             source_questions=kwargs["grading_source_questions"],
-            candidate_bank_questions=[
+            imported_bank_questions=[
                 {
                     "id": question_ids[number],
                     "question_number": number,
@@ -134,6 +124,19 @@ def _build_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, with_sour
                 for number, text in (("1", "利用角平分线性质求角度"), ("2", "计算三角形面积"))
             ],
         )
+        callback = kwargs.get("workflow_progress_callback")
+        if callback is not None:
+            for completed, stage in enumerate(("import", "tag", "save", "link"), start=1):
+                callback(
+                    SimpleNamespace(
+                        stage=stage,
+                        completed=completed,
+                        total=5,
+                        request_count=1,
+                        failed_questions=len(tagger_arg.fail_question_numbers),
+                        question_id="",
+                    )
+                )
         return GradingPaperIntakeResult(
             saved_file=Path(stored_source),
             import_result=BatchImportResult(
@@ -173,9 +176,10 @@ def test_status_is_not_started_when_source_exists_without_intake_links(
 
     assert status.state == "not_started"
     assert status.source_available is True
-    assert status.assessment_total == 2
-    assert status.assessment_resolved == 2
-    assert status.bank_question_total == 0
+    assert status.source_question_total == 2
+    assert status.imported_question_total == 0
+    assert status.complete_tag_question_total == 0
+    assert status.linked_source_total == 0
 
 
 def test_run_becomes_ready_and_second_run_reuses_existing_rows(
@@ -189,7 +193,9 @@ def test_run_becomes_ready_and_second_run_reuses_existing_rows(
 
     assert first.state == "ready"
     assert second.state == "ready"
-    assert second.confirmed_source_links == first.confirmed_source_links == 2
+    assert second.linked_source_total == first.linked_source_total == 2
+    assert second.imported_question_total == 2
+    assert second.complete_tag_question_total == 2
     with connect(db_path) as conn:
         counts = {
             "questions": int(conn.execute("SELECT COUNT(*) FROM questions").fetchone()[0]),
@@ -209,7 +215,8 @@ def test_partial_results_survive_tagging_failure_and_are_retryable(
     partial = service.run(session_id, ai_service=tagger, max_workers=1, requests_per_minute=60)
 
     assert partial.state == "partial"
-    assert partial.bank_questions_resolved == 1
+    assert partial.complete_tag_question_total == 1
+    assert partial.failed_questions == 1
     tagger.fail_question_numbers.clear()
     assert service.run(
         session_id,
@@ -217,6 +224,28 @@ def test_partial_results_survive_tagging_failure_and_are_retryable(
         max_workers=1,
         requests_per_minute=60,
     ).state == "ready"
+
+
+def test_progress_reaches_complete_only_after_all_five_stages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, session_id, tagger, _db_path = _build_fixture(tmp_path, monkeypatch)
+    events = []
+
+    status = service.run(
+        session_id,
+        ai_service=tagger,
+        max_workers=3,
+        requests_per_minute=77,
+        progress_callback=events.append,
+    )
+
+    assert [event.stage for event in events] == ["import", "tag", "save", "link", "complete"]
+    assert all(event.completed < event.total for event in events[:-1])
+    assert events[-1].completed == events[-1].total
+    assert status.request_count == 1
+    assert status.current_stage == "complete"
 
 
 def test_interrupted_running_state_is_recovered_as_retryable_failure(
