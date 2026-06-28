@@ -2896,6 +2896,13 @@ def _normalize_question_knowledge_fields(question: dict[str, Any]) -> None:
 def iter_effective_rubric_items(
     payload: Mapping[str, object],
 ) -> Iterator[tuple[str, Mapping[str, object], Mapping[str, object]]]:
+    for item_ref, _parent_ref, raw_question, raw_item in iter_effective_rubric_item_refs(payload):
+        yield item_ref, raw_question, raw_item
+
+
+def iter_effective_rubric_item_refs(
+    payload: Mapping[str, object],
+) -> Iterator[tuple[str, str, Mapping[str, object], Mapping[str, object]]]:
     rubric = payload.get("rubric") if isinstance(payload.get("rubric"), Mapping) else payload
     questions = rubric.get("questions") if isinstance(rubric, Mapping) else None
     if not isinstance(questions, list):
@@ -2921,9 +2928,9 @@ def iter_effective_rubric_items(
                     or f"{question_ref}.{part_index}"
                 ).strip()
                 emitted = True
-                yield part_ref, raw_question, raw_part
+                yield part_ref, question_ref, raw_question, raw_part
         if not emitted:
-            yield question_ref, raw_question, raw_question
+            yield question_ref, question_ref, raw_question, raw_question
 
 
 def iter_rubric_skill_requests(
