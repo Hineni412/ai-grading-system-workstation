@@ -5,11 +5,11 @@
 ## 0. 文档状态与证据
 
 - **适用版本：** `VERSION` = `v1.5.0`
-- **核验基线：** `main` 分支，提交 `5a3e2a5`；核验时工作区已有用户数据库和运行产物改动
+- **核验基线：** `codex/grading-paper-skill-workflow` 功能分支，基于 `main` 提交 `4d1eb36`
 - **最后核验日期：** 2026-06-28
-- **核验方式：** Codex 静态代码/配置/测试调查、Python AST 导入图分析、便携运行时版本查询、现有 SQLite 数据库只读 Schema 查询、定向自动化测试
-- **当前状态：** 已核验，部分运行环境与业务口径待确认
-- **本次边界：** 仅更新本文件；未修改业务代码、配置、数据库或用户数据
+- **核验方式：** Codex 静态代码/配置/测试调查、Python AST 导入图分析、便携运行时版本查询、SQLite 数据库副本 Schema/幂等初始化验证、全量与定向自动化测试、真实 Streamlit 浏览器流程验证
+- **当前状态：** 本次功能已实现并核验；表中既有风险与待确认业务口径仍然保留
+- **本次边界：** 在隔离分支实现评分原卷可选入库、统一技能图谱和来源级冲突收件箱。第一次 Schema 验证因路径配置优先级误初始化了主工作区题库，影响限于内置技能目录记录的更新时间刷新；未导入或删除业务数据，阅卷库未变化。随后修复重复初始化并改用数据库副本验证
 
 ### 主要证据
 
@@ -23,8 +23,9 @@
 | 题库与训练 | `question_bank/`、`integration/`、`pages/题库管理.py`、`pages/训练推荐.py`、`pages/组卷.py` | 题库、统一技能、诊断、推荐和导出 | 已核验 |
 | 外部集成 | `llm_client.py`、`api_profiles.py`、客观题识别链、题库 AI 打标服务 | 模型协议、密钥来源、超时与降级 | 已核验代码；未调用真实 API |
 | 本地运行时 | `runtime/python` | Python 3.12.1、SQLite 3.43.1、Streamlit 1.58.0、OpenAI SDK 2.43.0 等实际版本 | 已核验 |
-| 自动化测试 | `tests/` 共 87 个测试文件；本次定向执行 37 项 | 路径、数据传输、工作流锁、训练闭环、答题区提交 | 37 项通过 |
-| 当前数据库 | `user_data/databases/grading_system.db`、`question_bank.db` | 只读核对实际表集合 | 已核验 Schema；未审查业务数据 |
+| 自动化测试 | `tests/` 共 93 个 Python 测试文件；本次全量执行 633 项，另执行功能定向与核心回归 | 原卷工作流、技能图谱、冲突分组、题库导入、数据传输及既有阅卷流程 | 631 项通过、2 项跳过；功能定向 71 项、核心回归 41 项通过 |
+| 浏览器验证 | Streamlit 本机页面、隔离合成数据 | 未处理/部分完成/重试完成、技能详情、来源级冲突分组、1366×768/1440×900/1920×1080 | 已核验；无横向溢出，浏览器控制台无错误 |
+| 数据库副本 | `grading_system.db`、`question_bank.db` 的临时副本 | 新字段、新索引和重复初始化幂等性 | 已核验；副本验证前后主工作区两库哈希均未变化 |
 | 运维文档 | `README_*.md`、`docs/maintenance/*.md`、发布清单 | 便携发布、备份、存储策略 | 已核验；存在版本漂移 |
 
 ### 未确认事项
@@ -71,6 +72,9 @@
 | 批改结果必须经过完整性审计；局部失败可保留为需复核结果 | `grading_completeness.py`、混合批改与失败重试测试 | 已核验 |
 | 统一技能推荐通过 `legacy/shadow/skill` 读取模式切换 | `skill_system_settings`、技能迁移服务和使用说明 | 已核验 |
 | AI 题库标签只有质量状态为 `complete` 才自动保存 | `is_auto_saveable_result()` | 已核验 |
+| 保存评分依据时先本地归档原始 DOCX/PDF，但题库导入与 AI 打标签只在教师点击按钮后执行 | `web_app.py`、`source_paper_archive_service.py`、`grading_paper_skill_workflow_component.py` | 已核验 |
+| 题库入库不是批改前置条件；未处理、部分完成或失败状态不阻断批改、复核和导出 | `web_app.py`、工作流 UI 契约测试 | 已核验 |
+| 全局知识图谱显式读取统一 `skill_id`，不受旧推荐读取模式影响，也不再次提交 AI 匹配 | `DiagnosisProfileService.build_skill_profiles()`、`skill_graph_projection.py` | 已核验 |
 
 ## 2. 系统上下文
 
@@ -122,6 +126,7 @@ flowchart LR
 | 题库 | 试卷导入、题目 CRUD、标签、频次、预览、富文本和组卷 | `question_bank/importers`、`services`、`exporters`、`pages/题库管理.py`、`pages/组卷.py` | 服务通常直接打开 SQLite；没有统一仓储接口 |
 | 技能与知识对齐 | 统一技能目录、旧知识映射、题目/阅卷题技能链接、冲突处理和迁移 | `question_bank/models`、`taxonomy`、技能/对齐服务 | 新旧两套身份模型通过读取模式共存 |
 | 诊断与训练 | 跨库读取阅卷证据、薄弱技能计算、候选题推荐、训练任务和导出 | `integration/`、`question_bank/recommendation`、训练服务、`pages/训练推荐.py` | 通过应用层同时访问两个数据库；无跨库事务和外键 |
+| 原卷技能工作流 | 原卷归档、题库导入、来源题匹配、技能补齐、状态重算和重试 | `integration/grading_paper_skill_workflow_service.py`、共享 Streamlit 组件、题库导入/链接服务 | 两库不能共享事务；每次运行后从实际链接重算 `ready/partial/failed` |
 | 数据与运维 | 路径、SQLite、备份、恢复、迁移、存储审计和数据包 | `path_manager.py`、`db_manager.py`、`question_bank/database`、`update_tools/`、`tools/` | 运行时建表与 SQL migrations 两套机制并存 |
 
 ### 主要依赖关系
@@ -144,6 +149,11 @@ flowchart TD
     Integration["integration 诊断适配"] --> GradingData
     Integration --> BankServices
     Integration --> BankData
+
+    PaperWorkflow["原卷技能工作流协调器"] --> GradingData
+    PaperWorkflow --> BankServices
+    PaperWorkflow --> BankData
+    PaperWorkflow --> Paths
 ```
 
 实际边界偏差必须保留为事实：
@@ -201,7 +211,7 @@ AI阅卷系统_工作机版_v1.5.0/
 
 | 文件 | 约行数 | 混合职责 |
 |---|---:|---|
-| `web_app.py` | 9,418 | UI、流程编排、上传、数据传输、复核和导出 |
+| `web_app.py` | 9,581 | UI、流程编排、上传、数据传输、复核和导出 |
 | `session_manager.py` | 4,422 | 文档解析、模型提示、重试、规范化、评分分配和文件写入 |
 | `db_manager.py` | 2,983 | Schema、迁移兼容、备份、多个聚合根的查询与写入 |
 | `pages/题库管理.py` | 2,761 | 题库导入、打标、筛选、批处理和管理 UI |
@@ -227,6 +237,8 @@ sequenceDiagram
     actor U as "教师"
     participant UI as "Streamlit"
     participant CFG as "SessionManager"
+    participant WF as "GradingPaperSkillWorkflowService"
+    participant QB as "题库 SQLite"
     participant REG as "答题区服务"
     participant GR as "GradingService"
     participant DB as "阅卷 SQLite"
@@ -237,6 +249,13 @@ sequenceDiagram
     CFG->>AI: 文本或图片结构化请求
     AI-->>CFG: 题目、答案、评分规则
     CFG-->>UI: 规范化配置与质量告警
+    UI->>UI: SHA-256 本地归档原始 DOCX/PDF
+    UI->>DB: 保存原卷相对路径、哈希与未处理状态
+    opt 教师点击“入库并打标签”（可在批改前/中/后）
+        UI->>WF: 执行可重试入库
+        WF->>QB: 导入题目、AI 标签、来源题链接、技能链接
+        WF->>DB: 缓存 ready/partial/failed 与覆盖明细
+    end
     U->>REG: 校准并确认答题区
     REG->>DB: 原子替换正式答题区
     REG-->>UI: 发布 JSON 工作流快照
@@ -258,19 +277,23 @@ sequenceDiagram
     actor U as "教师/维护者"
     participant UI as "题库/训练页面"
     participant QS as "题库与技能服务"
+    participant WF as "GradingPaperSkillWorkflowService"
     participant DP as "DiagnosisProfileService"
     participant GP as "阅卷 SQLite"
     participant QB as "题库 SQLite"
     participant AI as "模型 API"
 
-    U->>UI: 导入真题或阅卷原卷
-    UI->>QS: 解析、归档并写入题目
+    U->>UI: 点击阅卷原卷“入库并打标签”
+    UI->>WF: 读取会话原卷与评分题
+    WF->>QS: 解析归档副本并限定到本次试卷题目
     QS->>AI: AI 标签/技能消歧
-    QS->>QB: 保存标签、技能链接与冲突
+    QS->>QB: 保存 question_skill_links、grading_question_links 与冲突
+    WF->>QB: 保存 assessment_item_skills；保留已有人工 measured 链接
+    WF-->>UI: 按实际链接返回已完成/部分完成/失败
     U->>UI: 选择考试和学生
     UI->>DP: 构建诊断画像
     DP->>GP: 读取学生、成绩和题目明细
-    DP->>QB: 读取题目链接、技能与读取模式
+    DP->>QB: 读取 assessment_item_skills 与统一技能
     DP-->>UI: 薄弱技能与证据
     UI->>QS: 选题、分组、创建训练任务
     QS->>QB: 保存任务、变体、题目快照与导出状态
@@ -286,6 +309,7 @@ sequenceDiagram
 | 混合批改 | 客观题/主观题批次线程池 | 同上，另有完整性与 fallback 元数据 | 局部失败转人工复核；失败题可原子替换重试 |
 | 评分配置生成 | 单题并发线程池 | rubric/answer JSON 文件 | 瞬时错误有限重试，失败题可单独重试 |
 | 题库 AI 打标 | 线程池 + RPM 节流 | tags、skill links、conflicts | 批失败可降为单题；低质量结果不自动保存 |
+| 阅卷原卷技能入库 | 复用题库打标线程池；跨库串行编排 | `grading_sessions.question_bank_sync_*`、题目/来源/技能链接 | 成功题目立即保留；失败后为 `partial/failed`，再次点击只补缺失项 |
 | 答题区提交 | 会话内线程锁 + 文件锁 + SQLite 事务 | 正式区域、草稿、快照 token | 快照失败保留 pending，可重试发布 |
 | 训练导出 | 同步执行 | task/export 状态与文件 | 记录错误和 retry_count，可重试导出 |
 
@@ -300,12 +324,12 @@ sequenceDiagram
 | 数据库/表组 | 表 | 主要关系与用途 |
 |---|---|---|
 | 阅卷库：旧版兼容 | `exam_results`、`grading_details` | `main.py` 旧入口的结果与题目明细 |
-| 阅卷库：人员与会话 | `students`、`grading_sessions`、`app_settings` | 学生唯一编码、考试配置路径、工作流设置 |
+| 阅卷库：人员与会话 | `students`、`grading_sessions`、`app_settings` | 学生唯一编码、考试配置路径、原卷相对路径/SHA-256、题库同步状态与明细 |
 | 阅卷库：答卷与结果 | `exam_papers`、`session_results`、`session_details`、`session_attendance` | 会话答卷、学生匹配、分数、逐题证据和出勤 |
 | 阅卷库：模板与批注 | `session_templates`、`answer_regions`、`annotated_results` | 样卷、答题区、快照发布状态和批注文件索引 |
 | 题库：试卷与题目 | `papers`、`questions`、`question_tags`、`question_fingerprints`、`question_frequency_cache`、`question_previews` | 来源试卷、题目内容、AI 标签、去重/频次和预览 |
 | 题库：旧训练集 | `training_sets`、`training_set_items` | 旧式训练集合与顺序 |
-| 题库：知识对齐 | `knowledge_concepts`、`knowledge_relations`、`knowledge_source_mappings`、`grading_question_links` | 旧知识身份、关系和阅卷题/题库题映射 |
+| 题库：知识对齐 | `knowledge_concepts`、`knowledge_relations`、`knowledge_source_mappings`、`grading_question_links` | 旧知识身份/关系，以及评分来源题到本次入库题目的确认或建议链接 |
 | 题库：统一技能 | `skill_topics`、`skills`、`assessment_item_skills`、`question_skill_links`、`skill_resolution_conflicts`、`skill_neighbors`、`skill_system_settings`、`skill_migration_runs` | 稳定技能身份、直接/辅助技能、冲突、邻接和灰度切换 |
 | 题库：训练任务 | `training_tasks`、`training_variants`、`variant_students`、`training_task_items`、`training_exports`、`training_attempts` | 任务、个人/分组变体、题目快照、产物和训练回流 |
 
@@ -322,6 +346,7 @@ flowchart LR
     QPaper["papers"] --> Question["questions"]
     Question --> Tag["question_tags / fingerprints / previews"]
     Question --> QSkill["question_skill_links"]
+    Question --> GLink["grading_question_links"]
     Skill["skills"] --> QSkill
     Skill --> ASkill["assessment_item_skills"]
     Task["training_tasks"] --> Variant["training_variants"]
@@ -329,10 +354,13 @@ flowchart LR
     Question --> Item
 
     Detail -. "应用层 session/question 标识" .-> ASkill
+    Session -. "应用层 grading_session_id" .-> GLink
     Detail -. "应用层诊断读取" .-> Task
 ```
 
 虚线是跨数据库应用层关联，不受 SQLite 外键保护，也不在同一事务中。
+
+`assessment_item_skills.skill_id` 是全局知识图谱的节点身份来源；`question_skill_links.skill_id` 是训练候选精确匹配的身份来源。`grading_question_links` 只表达评分来源题与题库题的对应关系。开放冲突按规范化来源题分组：没有任何已解析 `measured` 技能的活动来源进入“必须处理”，已有主技能的附加冲突进入“可选检查”，已删除/缺失来源只读展示为历史记录。
 
 ### 6.2 文件存储
 
@@ -368,6 +396,8 @@ flowchart LR
 | 通用模型客户端 | 配置生成、整卷批改、OCR 等 | OpenAI SDK `chat.completions.create` | 客户端默认 120 秒、SDK 自动重试关闭；应用层做参数兼容和 JSON 修复/截断重试 | 抛错、单卷失败或转人工复核 |
 | 客观题识别链 | 混合批改 | OpenAI 兼容 Chat Completions | 不同路径 30 秒或无显式上限；批量并发受 RPM/worker 限制 | 规则校验、升级主模型或人工复核 |
 | 题库 AI 打标 | 题库导入/批处理 | OpenAI Responses API，部分兼容路径使用 `LLMClient` | 线程池、RPM、批失败转单题 | 低置信复核模型；非 complete 不保存 |
+| 原卷技能工作流 | 主工作台、批改页、全局图谱 | `GradingPaperSkillWorkflowService` 调用现有归档、导入、来源链接和技能链接服务 | 同一 SHA-256 归档复用；重复运行按数据库现状补缺 | 不做跨库事务承诺；每次运行后重算状态，部分成功可重试且不阻断批改 |
+| 全局技能图谱 | 全局资料页、技能详情 | `DiagnosisProfileService.build_skill_profiles()`、`skill_evidence()`、`build_skill_graph_rows()` | 只读本地两库，无 AI 请求 | 仅渲染有效正整数 `skill_id`；分别显示评分题技能完整度和题库对应完成度，缺失时显示黄色提示和补处理入口 |
 | SQLite | 所有服务 | Python `sqlite3` | busy timeout 5 秒、WAL | 事务回滚；跨库操作无统一事务 |
 | 本地文件 | 上传、模板、报告、题库、备份 | DOCX/PDF/JPG/PNG/JSON/XLSX/ZIP | 同步 I/O | 多数显示错误；部分流程有原子临时文件/快照补偿 |
 | 数据包导入导出 | 侧边栏运维 | ZIP；只接受 `user_data/` 和 `config/` 根 | 浏览器内存缓冲；200 MB 仅告警 | 导入前尽力备份；逐文件覆盖，不是事务 |
@@ -421,6 +451,8 @@ flowchart LR
 | 答题区使用草稿、正式库、不可变快照 token | 已实施 | `answer_region_*` | 可恢复；需要补偿跨 SQLite/文件系统的一致性 |
 | 统一技能目录以 `legacy/shadow/skill` 灰度切换 | 已实施 | 008 migration、技能服务 | 可回滚；新旧读路径长期并存增加复杂度 |
 | 题库原卷采用 SHA-256 归档/复用 | 已实施 | `source_paper_archive_service.py` | 减少重复并稳定引用 |
+| 阅卷原卷入库采用显式可选按钮和跨库状态重算 | 已实施 | `GradingPaperSkillWorkflowService`、共享工作流组件 | 不阻断阅卷；跨库部分成功通过幂等重试收敛 |
+| 全局图谱固定使用统一技能身份 | 已实施 | `DiagnosisProfileService.build_skill_profiles()`、`skill_graph_projection.py` | 避免旧知识点编号重复匹配；缺失项显式显示完整度 |
 
 ## 11. 已知风险与技术债
 
@@ -430,7 +462,7 @@ flowchart LR
 | P0 | 数据包导入不是事务且备份失败不阻塞 | 当前实现捕获备份异常后继续逐文件覆盖数据库和配置 | 导入中断可形成跨文件/跨库不一致，原数据可能无法恢复 | 先验证备份成功，再解压到暂存区、校验清单并原子切换；提供回滚日志 | 否 |
 | P1 | API Key 明文存储并随导出/私人包传播 | `api_profiles.py` 原样 JSON 保存；导出清单包含 `user_data/config`；README 明示包含密钥 | 本机拷贝、备份、Git 或误传均会泄密 | 使用 OS 凭据库或至少将密钥排除出默认导出/版本控制；建立轮换流程 | 否 |
 | P1 | Schema 有双重真相来源 | 运行时初始化与 SQL migrations 都改 Schema；当前数据库无 `schema_migrations` | 定义漂移、升级路径不可审计、测试库与工作库来源不同 | 选定唯一迁移主路径；运行时只做版本检查/最小引导；补基线迁移 | 否 |
-| P1 | 核心模块过大且跨域 | `web_app.py` 9,418 行、`session_manager.py` 4,422 行、`db_manager.py` 2,983 行 | 回归面大、难以独立测试、继续叠加易触发跨层调用 | 先加特征测试，再按工作流/仓储逐步抽取，保留兼容门面至少一个版本 | 否 |
+| P1 | 核心模块过大且跨域 | `web_app.py` 9,581 行、`session_manager.py` 4,428 行、`db_manager.py` 3,107 行 | 回归面大、难以独立测试、继续叠加易触发跨层调用 | 先加特征测试，再按工作流/仓储逐步抽取，保留兼容门面至少一个版本 | 否 |
 | P1 | UI 与数据层直接耦合，跨库无事务 | 多个页面直接导入 DB 模块；诊断同时访问两个库 | 页面修改容易带入业务/SQL，训练链路可部分写入 | 新增应用服务门面和明确的跨库补偿/幂等键；不做一次性大重写 | 否 |
 | P1 | 无认证，安全完全依赖 loopback | 启动器仅本机绑定，但代码无登录/权限 | 一旦监听地址放宽即完整暴露敏感数据与破坏性操作 | 固化 loopback 校验；任何远程化前先设计认证、授权、CSRF 与审计 | 否 |
 | P1 | 状态口径可能误导 | 即使部分答卷失败，批次末仍可能把 session 标记 `completed`，失败数另存于 paper 状态 | UI/报表若只看 session 会误认为全成功 | 明确 `completed_with_errors` 或规定 completed=运行结束并强制展示失败计数 | 否，需业务确认 |
@@ -455,4 +487,5 @@ flowchart LR
 
 | 日期 | 变更 | 原因 | 核验 |
 |---|---|---|---|
+| 2026-06-28 | 增加阅卷原卷可选入库、统一技能图谱、来源级冲突分组、跨库状态重算和幂等重试 | 让批改前后都能补做题库打标签，同时保持未入库不阻断批改 | 全量 631 通过/2 跳过、功能定向 71 项、核心回归 41 项、三档桌面尺寸浏览器验证、数据库副本 Schema 验证 |
 | 2026-06-28 | 将占位模板替换为当前系统、模块、运行、数据、集成、安全和风险视图 | 按 `AGENTS.md` 从现有代码库恢复实际架构 | 静态调查、AST 导入图、运行时版本、数据库只读 Schema、37 项定向测试、差异复核 |
