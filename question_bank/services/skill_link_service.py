@@ -74,6 +74,7 @@ class SkillLinkService:
         payload,
         *,
         resolver=None,
+        preserve_existing_measured: bool = False,
     ) -> dict[str, int]:
         from question_bank.models.skill_catalog import (
             ResolvedSkillLink,
@@ -94,6 +95,22 @@ class SkillLinkService:
         conflicts = 0
         skill_count = 0
         for item_ref, requests in grouped.items():
+            if preserve_existing_measured:
+                with connect(self.db_path) as conn:
+                    existing_count = int(
+                        conn.execute(
+                            """
+                            SELECT COUNT(*) FROM assessment_item_skills
+                            WHERE grading_session_id = ? AND source_question_id = ?
+                              AND role = 'measured' AND status = 'resolved'
+                            """,
+                            (str(grading_session_id), item_ref),
+                        ).fetchone()[0]
+                    )
+                if existing_count:
+                    resolved_items += 1
+                    skill_count += existing_count
+                    continue
             links: list[ResolvedSkillLink] = []
             identities: set[tuple[int, str]] = set()
             for role, request in requests:
