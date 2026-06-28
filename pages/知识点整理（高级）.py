@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import html
 import json
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 
+from integration.skill_conflict_inbox_service import (
+    ConflictInboxSummary,
+    ConflictSourceGroup,
+    SkillConflictInboxService,
+)
 from path_manager import get_path_manager
 from question_bank.services.skill_catalog_service import SkillCatalogService
 
@@ -15,6 +21,11 @@ st.set_page_config(page_title="技能目录与待处理问题", page_icon="🧭"
 
 def _service() -> SkillCatalogService:
     return SkillCatalogService(get_path_manager().qb_db_path)
+
+
+def _inbox_service() -> SkillConflictInboxService:
+    paths = get_path_manager()
+    return SkillConflictInboxService(paths.qb_db_path, paths.db_path)
 
 
 def _apply_page_style() -> None:
@@ -104,73 +115,143 @@ def _render_catalog(service: SkillCatalogService) -> None:
             st.rerun()
 
 
-def _render_conflicts(service: SkillCatalogService) -> None:
-    conflicts = service.list_open_conflicts(limit=100)
-    st.subheader(f"待处理问题 · {len(conflicts)}")
-    st.caption("只有系统无法唯一判断的叫法才会来到这里。阅卷不受影响；处理后可让后续选题更准确。")
-    if not conflicts:
-        st.success("当前没有需要人工判断的问题。")
+def _render_conflicts(
+    service: SkillCatalogService,
+    summary: ConflictInboxSummary,
+) -> None:
+    st.subheader(f"必须处理 · {len(summary.blocking)} 道题")
+    st.caption("这里只统计整道题还没有可用训练技能的来源。")
+    if summary.blocking:
+        _render_conflict_groups(service, summary.blocking, key_prefix="blocking")
+    else:
+        st.success("当前没有会阻断知识图谱或训练推荐的问题。")
+
+    with st.expander(f"可选检查 · {len(summary.advisory)} 道题", expanded=False):
+        st.caption("这些题已经有可用技能；附加词条不会阻断知识图谱或训练推荐。")
+        _render_conflict_groups(service, summary.advisory, key_prefix="advisory")
+
+    with st.expander(f"历史记录 · {len(summary.historical)} 道题", expanded=False):
+        st.caption("来源已删除或无法识别，仅供追溯，不再提供修改操作。")
+        _render_conflict_groups(
+            service,
+            summary.historical,
+            key_prefix="historical",
+            read_only=True,
+        )
+
+
+def _render_conflict_groups(
+    service: SkillCatalogService,
+    groups: tuple[ConflictSourceGroup, ...],
+    *,
+    key_prefix: str,
+    read_only: bool = False,
+) -> None:
+    if not groups:
+        st.info("这一组目前为空。")
         return
-    topics = service.list_topics()
-    all_skills = service.list_skills()
-    for conflict in conflicts:
+    topics = service.list_topics() if not read_only else []
+    all_skills = service.list_skills() if not read_only else []
+    for group in groups:
         with st.container(border=True):
-            st.markdown(f"#### {conflict['raw_label']}")
             st.markdown(
-                f"<div class='source-context'>来源：{_source_name(conflict['source_type'])}<br>"
-                f"系统没有自动决定：{conflict['reason']}</div>",
+                f"#### {html.escape(group.source_label)}\n\n"
+                f"<div class='source-context'>{html.escape(group.context)}</div>",
                 unsafe_allow_html=True,
             )
-            action = st.radio(
-                "怎么处理",
-                ("选择已有技能", "新建本校技能", "暂不处理"),
-                horizontal=True,
-                key=f"conflict_action_{conflict['id']}",
-            )
-            if action == "选择已有技能":
-                preferred_ids = {int(item["id"]) for item in conflict.get("candidates", [])}
-                choices = sorted(
-                    all_skills,
-                    key=lambda item: (0 if int(item["id"]) in preferred_ids else 1, item["topic_name"], item["name"]),
-                )
-                selected = st.selectbox(
-                    "对应到",
-                    choices,
-                    format_func=_skill_label,
-                    key=f"conflict_skill_{conflict['id']}",
-                )
-                if st.button("保存这个选择", type="primary", key=f"resolve_{conflict['id']}"):
-                    service.resolve_conflict(int(conflict["id"]), int(selected["id"]), actor="本机管理员")
-                    st.success("已保存，相关题目现在可以按这个技能参与训练推荐。")
-                    st.rerun()
-            elif action == "新建本校技能":
-                name = st.text_input("本校技能名称", value=str(conflict["raw_label"]), key=f"local_name_{conflict['id']}")
-                topic = st.selectbox("放入主题", topics, format_func=lambda item: item["name"], key=f"local_topic_{conflict['id']}")
-                if st.button("新建并使用", type="primary", key=f"create_{conflict['id']}"):
-                    service.create_local_from_conflict(
-                        int(conflict["id"]), name, int(topic["id"]), actor="本机管理员"
+            st.caption(f"该来源包含 {len(group.conflicts)} 个待核对词条。")
+            for conflict in group.conflicts:
+                st.markdown(f"**词条：{conflict['raw_label']}**")
+                st.caption(f"系统没有自动决定：{conflict['reason']}")
+                if not read_only:
+                    _render_conflict_action(
+                        service,
+                        conflict,
+                        topics=topics,
+                        all_skills=all_skills,
+                        key_prefix=key_prefix,
                     )
-                    st.success("已建立本校技能并完成关联。")
-                    st.rerun()
-            else:
-                if st.button("暂不处理", key=f"ignore_{conflict['id']}"):
-                    service.ignore_conflict(int(conflict["id"]), actor="本机管理员")
-                    st.info("已移出待处理列表；不会影响阅卷。")
-                    st.rerun()
-            with st.expander("技术详情", expanded=False):
-                st.json(
-                    {
-                        "问题编号": conflict["id"],
-                        "来源引用": conflict["source_ref"],
-                        "候选技能编号": [item["id"] for item in conflict.get("candidates", [])],
-                        "识别依据": conflict.get("evidence", {}),
-                    }
-                )
+                with st.expander("技术详情", expanded=False):
+                    st.json(
+                        {
+                            "问题编号": conflict["id"],
+                            "来源引用": conflict["source_ref"],
+                            "候选技能编号": [
+                                item["id"] for item in conflict.get("candidates", [])
+                            ],
+                            "识别依据": conflict.get("evidence", {}),
+                        }
+                    )
 
 
-def _render_coverage(service: SkillCatalogService) -> None:
+def _render_conflict_action(
+    service: SkillCatalogService,
+    conflict: dict[str, Any],
+    *,
+    topics: list[dict[str, Any]],
+    all_skills: list[dict[str, Any]],
+    key_prefix: str,
+) -> None:
+    conflict_id = int(conflict["id"])
+    action = st.radio(
+        "怎么处理",
+        ("选择已有技能", "新建本校技能", "暂不处理"),
+        horizontal=True,
+        key=f"{key_prefix}_action_{conflict_id}",
+    )
+    if action == "选择已有技能":
+        preferred_ids = {int(item["id"]) for item in conflict.get("candidates", [])}
+        choices = sorted(
+            all_skills,
+            key=lambda item: (
+                0 if int(item["id"]) in preferred_ids else 1,
+                item["topic_name"],
+                item["name"],
+            ),
+        )
+        selected = st.selectbox(
+            "对应到",
+            choices,
+            format_func=_skill_label,
+            key=f"{key_prefix}_skill_{conflict_id}",
+        )
+        if st.button("保存这个选择", type="primary", key=f"{key_prefix}_resolve_{conflict_id}"):
+            service.resolve_conflict(conflict_id, int(selected["id"]), actor="本机管理员")
+            st.success("已保存，相关题目现在可以按这个技能参与训练推荐。")
+            st.rerun()
+    elif action == "新建本校技能":
+        name = st.text_input(
+            "本校技能名称",
+            value=str(conflict["raw_label"]),
+            key=f"{key_prefix}_local_name_{conflict_id}",
+        )
+        topic = st.selectbox(
+            "放入主题",
+            topics,
+            format_func=lambda item: item["name"],
+            key=f"{key_prefix}_local_topic_{conflict_id}",
+        )
+        if st.button("新建并使用", type="primary", key=f"{key_prefix}_create_{conflict_id}"):
+            service.create_local_from_conflict(
+                conflict_id,
+                name,
+                int(topic["id"]),
+                actor="本机管理员",
+            )
+            st.success("已建立本校技能并完成关联。")
+            st.rerun()
+    elif st.button("暂不处理", key=f"{key_prefix}_ignore_{conflict_id}"):
+        service.ignore_conflict(conflict_id, actor="本机管理员")
+        st.info("已移出待处理列表；不会影响阅卷。")
+        st.rerun()
+
+
+def _render_coverage(
+    service: SkillCatalogService,
+    summary: ConflictInboxSummary,
+) -> None:
     st.subheader("覆盖情况")
-    coverage = service.coverage_summary()
+    coverage = summary.coverage
     st.markdown(
         "<div class='coverage-lane'><b>评分规则与题库现在共用同一套具体技能目录。</b> "
         "已识别内容可直接参与诊断和选题；有歧义的内容留在待处理问题中，不会被系统猜测。</div>",
@@ -179,6 +260,8 @@ def _render_coverage(service: SkillCatalogService) -> None:
     left, right = st.columns(2)
     _coverage_card(left, "已有试卷评分规则", coverage["assessment"])
     _coverage_card(right, "题库题目", coverage["question_bank"])
+    for warning in summary.warnings:
+        st.warning(warning)
 
     st.markdown("#### 相近技能预览")
     st.caption("相近关系只用于题量不足时的明确补入，不会被当作精确匹配。发现明显错误时可停用。")
@@ -227,14 +310,11 @@ def _render_migrations(service: SkillCatalogService) -> None:
 
 def _coverage_card(container, title: str, values: dict[str, int]) -> None:
     container.markdown(f"#### {title}")
-    first, second, third = container.columns(3)
+    first, second, third, fourth = container.columns(4)
     first.metric("总数", values["total"])
-    second.metric("已识别", values["resolved"])
-    third.metric("待处理", values["conflicts"])
-
-
-def _source_name(source_type: str) -> str:
-    return {"question_bank_item": "题库题目", "assessment_item": "评分规则", "legacy_term": "旧知识点叫法"}.get(source_type, "历史数据")
+    second.metric("已覆盖", values["resolved"])
+    third.metric("必须处理", values["blocking"])
+    fourth.metric("可选检查", values["advisory"])
 
 
 def _neighbor_kind(kind: str) -> str:
@@ -259,14 +339,15 @@ st.markdown(
 )
 
 catalog_service = _service()
+inbox_summary = _inbox_service().summary()
 catalog_tab, inbox_tab, coverage_tab, migration_tab = st.tabs(
     ["技能目录", "待处理问题", "覆盖情况", "迁移记录"]
 )
 with catalog_tab:
     _render_catalog(catalog_service)
 with inbox_tab:
-    _render_conflicts(catalog_service)
+    _render_conflicts(catalog_service, inbox_summary)
 with coverage_tab:
-    _render_coverage(catalog_service)
+    _render_coverage(catalog_service, inbox_summary)
 with migration_tab:
     _render_migrations(catalog_service)

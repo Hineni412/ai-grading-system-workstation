@@ -42,6 +42,15 @@ def test_page_is_a_plain_skill_catalog_and_conflict_inbox() -> None:
 
     for text in ("技能目录与待处理问题", "技能目录", "待处理问题", "覆盖情况", "迁移记录"):
         assert text in source
+    for text in (
+        "SkillConflictInboxService",
+        "必须处理",
+        "可选检查",
+        "历史记录",
+        "这里只统计整道题还没有可用训练技能的来源",
+    ):
+        assert text in source
+    assert "待处理问题 · {len(conflicts)}" not in source
     for removed in (
         "ConceptAlignmentService",
         "AlignmentReviewService",
@@ -115,3 +124,11 @@ def test_coverage_keeps_question_bank_and_rubric_counts_separate(tmp_path: Path)
     assert set(coverage) == {"question_bank", "assessment"}
     assert set(coverage["question_bank"]) >= {"total", "resolved", "conflicts"}
     assert set(coverage["assessment"]) >= {"total", "resolved", "conflicts"}
+
+
+def test_page_coverage_uses_source_level_severity_metrics() -> None:
+    source = PAGE_PATH.read_text(encoding="utf-8")
+
+    for label in ("总数", "已覆盖", "必须处理", "可选检查"):
+        assert label in source
+    assert 'summary.coverage' in source
