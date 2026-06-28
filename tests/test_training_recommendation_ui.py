@@ -4,10 +4,12 @@ from pathlib import Path
 PAGE_SOURCE = Path("pages/训练推荐.py").read_text(encoding="utf-8")
 
 
-def test_training_page_uses_real_skill_diagnosis_and_task_services() -> None:
-    for service in ("DiagnosisProfileService", "PracticePlanService", "TrainingTaskService", "SkillCatalogService"):
+def test_training_page_uses_current_question_tag_diagnosis_and_task_services() -> None:
+    for service in ("DiagnosisProfileService", "PracticePlanService", "TrainingTaskService"):
         assert service in PAGE_SOURCE
-    assert "load_sample_mastery_rows" not in PAGE_SOURCE
+    assert ".build_tag_profiles(" in PAGE_SOURCE
+    assert "SkillCatalogService" not in PAGE_SOURCE
+    assert "question_skill_links" not in PAGE_SOURCE
 
 
 def test_training_page_keeps_scope_selection_and_snapshot_safety() -> None:
@@ -19,38 +21,24 @@ def test_training_page_keeps_scope_selection_and_snapshot_safety() -> None:
     assert "PLAN_SIGNATURE_KEY" in PAGE_SOURCE
 
 
-def test_diagnosis_uses_plain_concrete_skill_columns() -> None:
-    for label in ("薄弱技能", "所属主题", "掌握率", "证据题数", "精确题数"):
+def test_diagnosis_displays_exact_knowledge_tags_and_current_candidate_counts() -> None:
+    for label in ("薄弱知识点", "掌握率", "证据题数", "题库同标签题数"):
         assert label in PAGE_SOURCE
+    assert "knowledge_point" in PAGE_SOURCE
+    assert "tag_value_counts" in PAGE_SOURCE
     for removed in (
-        "ConceptAlignmentService",
-        "AlignmentReviewService",
-        "ALIGNMENT_FOCUS_SESSION_KEY",
-        "focus_items_from_diagnosis",
-        "打开知识点整理（高级）",
-        "映射状态",
-        "置信度",
-        "canonical_knowledge_id",
-        "允许仅大类匹配的题目补足",
+        "skill_id",
+        "topic_name",
+        "target_skill_name",
+        "matched_skill_name",
+        "resolve_conflict",
+        "allow_neighbors",
+        "相近补入",
     ):
         assert removed not in PAGE_SOURCE
-    assert "background_gradient" not in PAGE_SOURCE
-    assert "matplotlib" not in PAGE_SOURCE
 
 
-def test_shortage_has_one_teacher_decision_and_neighbors_are_labeled() -> None:
-    assert '_generate_selected_plan("ask")' in PAGE_SOURCE
-    assert "related_fill_policy=fill_policy" in PAGE_SOURCE
-    assert "补入相近题" in PAGE_SOURCE
-    assert "保持较少的精确题" in PAGE_SOURCE
-    assert "allow_neighbors" in PAGE_SOURCE
-    assert "exact_only" in PAGE_SOURCE
-    assert "相近补入" in PAGE_SOURCE
-    assert "target_skill_name" in PAGE_SOURCE
-    assert "matched_skill_name" in PAGE_SOURCE
-
-
-def test_resolved_evidence_needs_no_confirmation_action() -> None:
-    assert "无需逐条确认" in PAGE_SOURCE
-    assert "本次跳过" in PAGE_SOURCE
-    assert "resolve_conflict" in PAGE_SOURCE
+def test_training_generation_is_exact_tag_only() -> None:
+    assert 'related_fill_policy="exact_only"' in PAGE_SOURCE
+    assert "知识点标签完全相同" in PAGE_SOURCE
+    assert "精确知识点标签题不足" in PAGE_SOURCE

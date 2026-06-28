@@ -61,7 +61,7 @@ def test_session_creation_and_update_bind_the_saved_source() -> None:
     assert "clear_pending_config_for_new_session(st.session_state, settings_store=db)" in source
 
 
-def test_global_graph_uses_skill_profiles_not_legacy_weak_point_rows() -> None:
+def test_global_graph_uses_current_question_tag_profiles() -> None:
     source = WEB_APP.read_text(encoding="utf-8")
     section = source.split("def render_global_weak_points_tab", 1)[1].split(
         "def _render_active_session_multiselect",
@@ -69,13 +69,15 @@ def test_global_graph_uses_skill_profiles_not_legacy_weak_point_rows() -> None:
     )[0]
 
     assert "DiagnosisProfileService" in section
-    assert "build_skill_graph_rows" in section
-    assert "get_active_global_weak_points" not in section
+    assert "build_tag_profiles" in section
+    assert "build_question_tag_graph_rows" in section
+    assert "build_skill_profiles" not in section
+    assert "build_skill_graph_rows" not in section
     assert "知识图谱完整度" in section
     assert "题库对应完成度" in section
 
 
-def test_graph_detail_routes_by_positive_skill_id() -> None:
+def test_graph_detail_routes_by_exact_knowledge_key() -> None:
     source = WEB_APP.read_text(encoding="utf-8")
     graph_section = source.split("def _render_knowledge_graph_from_rows", 1)[1].split(
         "def _group_rows_by_student",
@@ -86,22 +88,23 @@ def test_graph_detail_routes_by_positive_skill_id() -> None:
         1,
     )[0]
 
-    assert "kg_skill_id" in graph_section
-    assert "kg_knowledge_id" not in graph_section
-    assert '"skill_id": skill_id' in query_section
-    assert "_render_skill_wrong_detail" in source
+    assert "kg_knowledge_key" in graph_section
+    assert "kg_skill_id" not in graph_section
+    assert '"knowledge_key":' in query_section
+    assert "_render_question_tag_wrong_detail" in source
+    assert "skill_evidence" not in source
+    assert "SkillCatalogService" not in source
 
 
-def test_aggregate_graph_keeps_same_named_skill_ids_separate() -> None:
+def test_aggregate_graph_merges_only_the_same_exact_knowledge_key() -> None:
     from web_app import _aggregate_knowledge_rows
 
     rows = [
         {
             "student_id": 1,
             "student_name": "甲",
-            "skill_id": 10,
-            "knowledge_id": "skill:10",
-            "knowledge_label": "同名技能",
+            "knowledge_key": "knowledge_point:三角形全等",
+            "knowledge_label": "三角形全等",
             "weighted_score_rate": 50.0,
             "item_count": 1,
             "deduction_count": 1,
@@ -109,9 +112,8 @@ def test_aggregate_graph_keeps_same_named_skill_ids_separate() -> None:
         {
             "student_id": 2,
             "student_name": "乙",
-            "skill_id": 10,
-            "knowledge_id": "skill:10",
-            "knowledge_label": "同名技能",
+            "knowledge_key": "knowledge_point:三角形全等",
+            "knowledge_label": "三角形全等",
             "weighted_score_rate": 100.0,
             "item_count": 3,
             "deduction_count": 0,
@@ -119,9 +121,8 @@ def test_aggregate_graph_keeps_same_named_skill_ids_separate() -> None:
         {
             "student_id": 2,
             "student_name": "乙",
-            "skill_id": 11,
-            "knowledge_id": "skill:11",
-            "knowledge_label": "同名技能",
+            "knowledge_key": "knowledge_point:轴对称",
+            "knowledge_label": "轴对称",
             "weighted_score_rate": 80.0,
             "item_count": 1,
             "deduction_count": 1,
@@ -130,7 +131,14 @@ def test_aggregate_graph_keeps_same_named_skill_ids_separate() -> None:
 
     aggregated = _aggregate_knowledge_rows(rows)["筛选学生合计"]
 
-    assert {item["skill_id"] for item in aggregated} == {10, 11}
-    skill_10 = next(item for item in aggregated if item["skill_id"] == 10)
-    assert skill_10["weighted_score_rate"] == 87.5
-    assert skill_10["item_count"] == 4
+    assert {item["knowledge_key"] for item in aggregated} == {
+        "knowledge_point:三角形全等",
+        "knowledge_point:轴对称",
+    }
+    exact = next(
+        item
+        for item in aggregated
+        if item["knowledge_key"] == "knowledge_point:三角形全等"
+    )
+    assert exact["weighted_score_rate"] == 87.5
+    assert exact["item_count"] == 4
