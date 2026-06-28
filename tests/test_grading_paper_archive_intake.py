@@ -110,8 +110,11 @@ def test_duplicate_intake_returns_the_archived_portable_source(
     assert result.saved_file == archived
 
 
-def test_intake_source_wires_contextual_skill_resolver() -> None:
+def test_intake_source_saves_tags_without_skill_resolution() -> None:
     source = Path("question_bank/services/grading_paper_intake_service.py").read_text(encoding="utf-8")
 
-    assert "build_skill_context_ranker" in source
-    assert "skill_resolver=skill_resolver" in source
+    assert "SkillResolutionService" not in source
+    assert "build_skill_context_ranker" not in source
+    assert "resolve_skills=False" in source
+    assert "allow_batch_fallback=False" in source
+    assert "request_callback=" in source

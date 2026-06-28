@@ -28,11 +28,28 @@ def test_optional_card_is_rendered_in_config_grading_and_graph_flows() -> None:
         "入库并打标签",
         "可稍后处理，不影响批改",
         "部分完成",
-        "重新处理",
+        "继续处理缺失项",
     ):
         assert text in component
     assert "st.stop" not in component
     assert component.index("ai_service_factory()") > component.index("if st.button(button_label")
+    assert "评分题技能" not in component
+    assert "题库技能" not in component
+    assert "导入题目" in component
+    assert "完整标签" in component
+    assert "已关联" in component
+    assert "event.stage" in component
+
+
+def test_workflow_uses_saved_question_bank_concurrency_settings() -> None:
+    source = WEB_APP.read_text(encoding="utf-8")
+
+    assert "qb_tagging_workers" not in source
+    assert "qb_tagging_rpm" not in source
+    assert "_sync_session_skill_links" not in source
+    assert "SkillLinkService" not in source
+    assert source.count('st.session_state.get("tagging_max_workers_input"') >= 3
+    assert source.count('st.session_state.get("tagging_requests_per_minute_input"') >= 3
 
 
 def test_session_creation_and_update_bind_the_saved_source() -> None:
