@@ -118,6 +118,33 @@ def test_duplicate_number_inside_candidate_paper_does_not_auto_confirm(
     assert result == {"confirmed": 0, "suggested": 0, "unresolved": 1}
 
 
+def test_imported_question_linking_uses_only_explicit_id_or_unique_number(
+    link_service: SourceQuestionLinkService,
+) -> None:
+    result = link_service.confirm_imported_questions_for_session(
+        grading_session_id=18,
+        source_questions=[
+            {"question_id": "Q17"},
+            {"question_id": "Q18", "bank_question_id": 202},
+        ],
+        imported_bank_questions=[
+            {"id": 201, "question_number": "17", "question_text": "A"},
+            {"id": 202, "question_number": "Q17", "question_text": "B"},
+        ],
+    )
+
+    assert result == {
+        "confirmed": 1,
+        "unresolved": 1,
+        "unresolved_question_ids": ["Q17"],
+    }
+    links = link_service.list_links(18)
+    assert [(item["source_question_id"], item["bank_question_id"]) for item in links] == [
+        ("Q18", 202)
+    ]
+    assert links[0]["link_method"] == "source_metadata"
+
+
 def test_suggestion_never_overwrites_teacher_confirmed_link(
     link_service: SourceQuestionLinkService,
 ) -> None:

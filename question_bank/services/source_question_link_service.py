@@ -221,6 +221,75 @@ class SourceQuestionLinkService:
                 summary["unresolved"] += 1
         return summary
 
+    def confirm_imported_questions_for_session(
+        self,
+        *,
+        grading_session_id: str | int,
+        source_questions: Iterable[Mapping[str, Any]],
+        imported_bank_questions: Iterable[Mapping[str, Any]],
+    ) -> dict[str, object]:
+        """Confirm only relationships proven by import metadata or a unique paper-local number."""
+        self.initialize_database()
+        candidates = [dict(item) for item in imported_bank_questions]
+        valid_ids = {
+            candidate_id
+            for candidate in candidates
+            if (candidate_id := _optional_int(candidate.get("id"))) is not None
+        }
+        confirmed = 0
+        unresolved_ids: list[str] = []
+        for source in source_questions:
+            source_id = _source_question_id(source)
+            if not source_id:
+                unresolved_ids.append("")
+                continue
+
+            existing = self._link_for_source(grading_session_id, source_id)
+            if existing is not None and existing["status"] == "confirmed":
+                confirmed += 1
+                continue
+            if existing is not None and existing["status"] == "rejected":
+                unresolved_ids.append(source_id)
+                continue
+
+            explicit_bank_id = _optional_int(source.get("bank_question_id"))
+            if explicit_bank_id in valid_ids:
+                self.confirm_link(
+                    grading_session_id=grading_session_id,
+                    source_question_id=source_id,
+                    bank_question_id=int(explicit_bank_id),
+                    link_method="source_metadata",
+                    evidence={"source_question_id": source_id},
+                )
+                confirmed += 1
+                continue
+
+            source_number = _normalize_question_number(source_id)
+            number_matches = [
+                item
+                for item in candidates
+                if source_number
+                and _normalize_question_number(item.get("question_number")) == source_number
+            ]
+            if len(number_matches) == 1:
+                self.confirm_link(
+                    grading_session_id=grading_session_id,
+                    source_question_id=source_id,
+                    bank_question_id=int(number_matches[0]["id"]),
+                    link_method="paper_question_number",
+                    evidence={"normalized_question_number": source_number},
+                )
+                confirmed += 1
+                continue
+
+            unresolved_ids.append(source_id)
+
+        return {
+            "confirmed": confirmed,
+            "unresolved": len(unresolved_ids),
+            "unresolved_question_ids": unresolved_ids,
+        }
+
     def _active_bank_questions(self) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
