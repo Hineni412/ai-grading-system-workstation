@@ -171,11 +171,48 @@ def test_batch_incomplete_single_question_retries_without_affecting_neighbors() 
         2: TaggingContext(question_text="随机掷骰子，求概率。", question_number="2", question_type="选择题"),
     }
 
-    results = service.analyze_questions(contexts, max_workers=1)
+    events = []
+    results = service.analyze_questions(
+        contexts,
+        max_workers=1,
+        request_callback=events.append,
+    )
 
     assert results[1].quality_status == "complete"
     assert results[2].quality_status == "complete"
     assert service.primary_calls == [1, 2, 2]
+    assert [(event.request_kind, event.question_ids) for event in events] == [
+        ("batch", (1, 2)),
+        ("single_fallback", (1,)),
+        ("single_fallback", (2,)),
+        ("quality_retry", (2,)),
+    ]
+    assert [event.request_number for event in events] == [1, 2, 3, 4]
+
+
+def test_failed_batch_does_not_fan_out_when_fallback_is_disabled() -> None:
+    service = _FakeTaggingService(primary={1: [_analysis()], 2: [_analysis()]})
+    contexts = {
+        1: TaggingContext(question_text="计算 a² · a³。", question_number="1", question_type="选择题"),
+        2: TaggingContext(question_text="计算 b² · b³。", question_number="2", question_type="选择题"),
+    }
+    events = []
+
+    results = service.analyze_questions(
+        contexts,
+        max_workers=1,
+        request_callback=events.append,
+        allow_batch_fallback=False,
+        quality_retry_limit=0,
+        enable_review=False,
+    )
+
+    assert not results[1].ok
+    assert not results[2].ok
+    assert service.primary_calls == []
+    assert [(event.request_kind, event.question_ids) for event in events] == [
+        ("batch", (1, 2))
+    ]
 
 
 def test_low_confidence_uses_review_model_when_agreement_is_found() -> None:
@@ -186,13 +223,23 @@ def test_low_confidence_uses_review_model_when_agreement_is_found() -> None:
         1: TaggingContext(question_text="随机抽取一个球，求概率。", question_number="1", question_type="选择题")
     }
 
-    results = service.analyze_questions(contexts, max_workers=1)
+    events = []
+    results = service.analyze_questions(
+        contexts,
+        max_workers=1,
+        request_callback=events.append,
+    )
 
     assert results[1].quality_status == "complete"
     assert results[1].model_name == "doubao-main+deepseek-review"
     assert results[1].analysis is not None
     assert results[1].analysis.confidence >= 0.72
     assert service.review_calls == [1]
+    assert [event.request_kind for event in events] == [
+        "batch",
+        "single_fallback",
+        "review",
+    ]
 
 
 def test_low_confidence_without_review_stays_pending() -> None:
