@@ -252,6 +252,12 @@ class DBManager:
             self._ensure_column(conn, "session_details", "error_category", "TEXT")
             self._ensure_column(conn, "session_details", "error_summary", "TEXT")
             self._ensure_column(conn, "session_details", "confidence_score", "REAL")
+            self._ensure_column(
+                conn,
+                "session_details",
+                "secondary_errors_json",
+                "TEXT NOT NULL DEFAULT '[]'",
+            )
 
             # Template + annotation tables
             conn.execute(
@@ -1438,8 +1444,9 @@ class DBManager:
                     """
                     INSERT INTO session_details (
                         result_id, question_id, score_awarded, deduction_reason,
-                        knowledge_id, knowledge_ids, error_category, error_summary, confidence_score
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        knowledge_id, knowledge_ids, error_category, error_summary,
+                        confidence_score, secondary_errors_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         result_id,
@@ -1451,6 +1458,7 @@ class DBManager:
                         getattr(detail, "error_category", None),
                         getattr(detail, "error_summary", None),
                         getattr(detail, "confidence_score", None),
+                        _serialize_secondary_errors(getattr(detail, "secondary_errors", [])),
                     ),
                 )
             conn.commit()
@@ -1668,7 +1676,8 @@ class DBManager:
                     knowledge_ids,
                     error_category,
                     error_summary,
-                    confidence_score
+                    confidence_score,
+                    secondary_errors_json
                 FROM session_details
                 WHERE result_id IN ({placeholders})
                 ORDER BY id ASC
@@ -1782,14 +1791,15 @@ class DBManager:
                     knowledge_ids,
                     error_category,
                     error_summary,
-                    confidence_score
+                    confidence_score,
+                    secondary_errors_json
                 FROM session_details
                 WHERE result_id = ?
                 ORDER BY id ASC
                 """,
                 (result_id,),
             ).fetchall()
-            return [dict(row) for row in rows]
+            return [_detail_row_with_secondary_errors(dict(row)) for row in rows]
 
     def replace_result_details_atomic(
         self,
@@ -1818,8 +1828,9 @@ class DBManager:
                     """
                     INSERT INTO session_details (
                         result_id, question_id, score_awarded, deduction_reason,
-                        knowledge_id, knowledge_ids, error_category, error_summary, confidence_score
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        knowledge_id, knowledge_ids, error_category, error_summary,
+                        confidence_score, secondary_errors_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         result_id,
@@ -1831,6 +1842,7 @@ class DBManager:
                         getattr(detail, "error_category", None),
                         getattr(detail, "error_summary", None),
                         getattr(detail, "confidence_score", None),
+                        _serialize_secondary_errors(getattr(detail, "secondary_errors", [])),
                     ),
                 )
             stored_details = [
@@ -1838,7 +1850,8 @@ class DBManager:
                 for row in conn.execute(
                     """
                     SELECT question_id, score_awarded, deduction_reason, knowledge_id,
-                           knowledge_ids, error_category, error_summary, confidence_score
+                           knowledge_ids, error_category, error_summary, confidence_score,
+                           secondary_errors_json
                     FROM session_details
                     WHERE result_id = ?
                     ORDER BY id ASC
@@ -2824,6 +2837,59 @@ def _detail_knowledge_ids(detail: Any) -> list[str]:
     fallback = getattr(detail, "knowledge_id", None)
     result = _normalize_knowledge_ids(values, fallback)
     return result or ["UNKNOWN"]
+
+
+def _serialize_secondary_errors(errors: Any) -> str:
+    payload: list[dict[str, str]] = []
+    for raw_error in errors if isinstance(errors, (list, tuple)) else []:
+        if isinstance(raw_error, dict):
+            category = str(raw_error.get("category") or "").strip()
+            summary = str(raw_error.get("summary") or "").strip()
+            evidence = str(raw_error.get("evidence") or "").strip()
+        else:
+            category = str(getattr(raw_error, "category", "") or "").strip()
+            summary = str(getattr(raw_error, "summary", "") or "").strip()
+            evidence = str(getattr(raw_error, "evidence", "") or "").strip()
+        if not category or not summary:
+            continue
+        payload.append(
+            {"category": category, "summary": summary, "evidence": evidence}
+        )
+        if len(payload) == 2:
+            break
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _parse_secondary_errors(raw: Any) -> list[dict[str, str]]:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+    if not isinstance(raw, list):
+        return []
+    result: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        category = str(item.get("category") or "").strip()
+        summary = str(item.get("summary") or "").strip()
+        evidence = str(item.get("evidence") or "").strip()
+        if not category or not summary:
+            continue
+        result.append(
+            {"category": category, "summary": summary, "evidence": evidence}
+        )
+        if len(result) == 2:
+            break
+    return result
+
+
+def _detail_row_with_secondary_errors(row: dict[str, Any]) -> dict[str, Any]:
+    row["secondary_errors"] = _parse_secondary_errors(
+        row.get("secondary_errors_json")
+    )
+    return row
 
 
 def _knowledge_ids_from_row(row: dict[str, Any]) -> list[str]:

@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COM
 from pathlib import Path
 from typing import Any, Iterable
 
-from ai_grader import AIGrader, QuestionGradingDetail
+from ai_grader import AIGrader, QuestionGradingDetail, SecondaryError
 from db_manager import DBManager
 from evidence_atlas import EvidenceAtlasBuilder
 from grading_limits import (
@@ -46,6 +46,28 @@ def _detail_from_row(row: dict[str, Any]) -> QuestionGradingDetail:
         knowledge_ids = []
     if not knowledge_ids and row.get("knowledge_id"):
         knowledge_ids = [row["knowledge_id"]]
+    raw_secondary_errors = row.get("secondary_errors")
+    if not isinstance(raw_secondary_errors, list):
+        raw_secondary_errors = []
+        raw_json = row.get("secondary_errors_json")
+        if isinstance(raw_json, str):
+            try:
+                parsed = json.loads(raw_json)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = []
+            if isinstance(parsed, list):
+                raw_secondary_errors = parsed
+    secondary_errors = [
+        SecondaryError(
+            category=str(item.get("category") or "").strip(),
+            summary=str(item.get("summary") or "").strip(),
+            evidence=str(item.get("evidence") or "").strip(),
+        )
+        for item in raw_secondary_errors[:2]
+        if isinstance(item, dict)
+        and str(item.get("category") or "").strip()
+        and str(item.get("summary") or "").strip()
+    ]
     return QuestionGradingDetail(
         question_id=row["question_id"],
         score_awarded=row["score_awarded"],
@@ -55,6 +77,7 @@ def _detail_from_row(row: dict[str, Any]) -> QuestionGradingDetail:
         error_summary=row.get("error_summary"),
         confidence_score=row.get("confidence_score"),
         knowledge_ids=knowledge_ids,
+        secondary_errors=secondary_errors,
     )
 
 
