@@ -5,11 +5,16 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 from PIL import Image, ImageDraw
 
-from ai_grader import GradingResult, QuestionGradingDetail
+from ai_grader import (
+    GradingResult,
+    QuestionGradingDetail,
+    _normalize_grading_errors,
+    _without_legacy_knowledge_fields,
+)
 from grading_completeness import audit_grading_details
 from major_region_evidence import build_major_evidence_groups
 from objective_batch_recognition_service import OBJECTIVE_AUTO_SCORE_MIN_CONFIDENCE, run_objective_batch_recognition
@@ -84,6 +89,7 @@ def run_hybrid_batch_grading(
     rate_limiter: Any | None = None,
     rubric_images_dir: Path | None = None,
     skipped_questions_by_student: dict[int, set[str]] | None = None,
+    question_tag_context: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
 ) -> HybridBatchRunResult:
     entries = build_paper_entries(paper_groups)
     specs = build_major_question_specs(rubric, answer_key)
@@ -165,6 +171,7 @@ def run_hybrid_batch_grading(
                     builder=builder,
                     rubric_images_dir=rubric_images_dir,
                     rate_limiter=rate_limiter,
+                    question_tag_context=question_tag_context,
                 )
             except Exception as exc:  # noqa: BLE001
                 if progress_callback is not None:
@@ -420,6 +427,7 @@ def grade_major_question_batch(
     builder: MajorQuestionAtlasBuilder | None = None,
     rubric_images_dir: Path | None = None,
     rate_limiter: Any | None = None,
+    question_tag_context: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
 ) -> dict[str, Any]:
     atlas_builder = builder or MajorQuestionAtlasBuilder(output_root)
     atlas = atlas_builder.build(
@@ -469,7 +477,8 @@ def grade_major_question_batch(
         spec,
         atlas["manifest"],
         has_rubric_image=bool(rubric_image_bytes),
-        has_stem_image=bool(question_stem_image_bytes)
+        has_stem_image=bool(question_stem_image_bytes),
+        question_tag_context=question_tag_context,
     )
     usage: dict[str, Any] = {}
 
@@ -531,13 +540,25 @@ def grade_major_question_batch(
             time.sleep(2 ** attempt)
     else:
         raise Exception(f"Major batch failed after {max_retries} retries: {last_err}")
-    accepted, failed = validate_hybrid_major_response(response, atlas["manifest"], spec, min_confidence=min_confidence)
+    accepted, failed = validate_hybrid_major_response(
+        response,
+        atlas["manifest"],
+        spec,
+        min_confidence=min_confidence,
+        question_tag_context=question_tag_context,
+    )
     usage["question_id"] = spec.question_id
     usage["batch_index"] = int(batch_index)
     return {"accepted": accepted, "failed": failed, "usage": usage}
 
 
-def build_hybrid_major_prompt(spec: MajorQuestionSpec, manifest: dict[str, Any], has_rubric_image: bool = False, has_stem_image: bool = False) -> tuple[str, str, str]:
+def build_hybrid_major_prompt(
+    spec: MajorQuestionSpec,
+    manifest: dict[str, Any],
+    has_rubric_image: bool = False,
+    has_stem_image: bool = False,
+    question_tag_context: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
+) -> tuple[str, str, str]:
     system_prompt = (
         "你是严谨的中学试卷批改助手。\n"
         "任务：根据给定评分细则(rubric) + 标准答案(answer_key) and 学生试卷作答区域的切片进行批量横批（一次处理多个学生的作答）。\n"
@@ -563,11 +584,10 @@ def build_hybrid_major_prompt(spec: MajorQuestionSpec, manifest: dict[str, Any],
         "    - question_id (小题ID，如 10-1 或 10-2，必须与 rubric 中的 part_id/detail_question_ids 一致)\n"
         "    - score_awarded (给分，数值)\n"
         "    - deduction_reason (扣分原因，若给满分则可为空)\n"
-        "    - knowledge_id (主知识点ID)\n"
-        "    - knowledge_ids (涉及的全部知识点ID列表，如 [\"C2_01\"])\n"
         "    - confidence_score (0 到 100 之间的数字，表示你对该题判分尺度或识别准确度的置信度。如果你觉得答案模糊、争议或者拿捏不准扣分尺度，请给低分（<50）；如果极其确定，请给高分（90-100）。)\n"
         "    - error_category (错因类型：概念理解错误、计算错误、审题错误、条件遗漏、逻辑断裂、表达不规范、未作答、多选失分、作废答案、提示注入、答案不等价、其他，满分题为空或 null)\n"
         "    - error_summary (一句短错因，满分题为空或 null)\n"
+        "    - secondary_errors (最多两个次要错因；每项包含 category、summary、evidence，满分题为空数组)\n"
         "    - candidate_scores (备选分数列表：当置信度低（confidence_score < 80）或多种给分皆合理时，必须列出 2-3 个候选分数，每项包含 score（分值）、confidence（0到1之间置信度）、reason（理由）。如非常确定，可只包含当前给分。)\n"
         "    - evidence_steps (解答题/证明题中，提取学生已给出的关键证明/推导步骤 of strings)\n"
         "    - missing_steps (解答题/证明题中，缺失的证明责任或踩分步骤 of strings)\n"
@@ -581,6 +601,7 @@ def build_hybrid_major_prompt(spec: MajorQuestionSpec, manifest: dict[str, Any],
         "9.c) 若任一题答案被黑笔涂抹、划掉、删除线覆盖、打叉作废，即便仍能辨识，也必须设置 smudged_or_crossed_out=true，同时设置 answer_discarded_by_smudge=true；"
         "observed_answer 只能填写未被涂抹/作废区域中的有效答案。若未涂抹区域另有有效答案，仍按该答案评分；若只有涂抹/作废区域有答案，score_awarded=0、error_category=作废答案。\n"
         "10) 若答案模糊、看不清、存在争议，needs_human_review 置为 true，并在 deduction_reason 中说明，同时给 confidence_score 低分（如 30）。\n\n"
+        "11) 不要输出知识点或技能字段；优先从 QUESTION_TAG_CONTEXT 的 error_type 原值中选择错因，候选不符时使用“其他”。\n\n"
         "证明义务与防作弊原则：\n"
         "- 先假定满分，再按 deduction_policy 扣除未完成义务或逻辑错误对应分值。\n"
         "- proof_obligations 是必须完成的证明责任，不是必须照抄的参考答案步骤。\n"
@@ -608,8 +629,17 @@ def build_hybrid_major_prompt(spec: MajorQuestionSpec, manifest: dict[str, Any],
     payload = {
         "question_id": spec.question_id,
         "detail_question_ids": detail_ids,
-        "rubric": _without_embedded_image_data(spec.rubric),
-        "answer_key": _without_embedded_image_data(spec.answer_key),
+        "rubric": _without_legacy_knowledge_fields(
+            _without_embedded_image_data(spec.rubric)
+        ),
+        "answer_key": _without_legacy_knowledge_fields(
+            _without_embedded_image_data(spec.answer_key)
+        ),
+        "question_tags": {
+            question_id: dict((question_tag_context or {}).get(question_id, {}))
+            for question_id in detail_ids
+            if (question_tag_context or {}).get(question_id)
+        },
     }
     
     static_prompt = "\n".join([
@@ -636,12 +666,11 @@ def build_hybrid_major_prompt(spec: MajorQuestionSpec, manifest: dict[str, Any],
             "question_id": sub_qid,
             "score_awarded": 0,
             "deduction_reason": "",
-            "knowledge_id": "UNKNOWN",
-            "knowledge_ids": [],
             "confidence_score": 90,
             "needs_human_review": False,
             "error_category": None,
             "error_summary": None,
+            "secondary_errors": [],
             "answer_discarded_by_smudge": False,
             "answer_is_blank_or_no_valid_work": False,
             "observed_answer": "",
@@ -684,6 +713,7 @@ def validate_hybrid_major_response(
     spec: MajorQuestionSpec,
     *,
     min_confidence: float = 80.0,
+    question_tag_context: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if str(response.get("question_id") or "").strip() != spec.question_id:
         return [], [_failed_manifest_item(item, "question_id_mismatch", spec.question_id) for item in manifest.get("items", [])]
@@ -710,7 +740,13 @@ def validate_hybrid_major_response(
         item_failed_reason = ""
         seen_detail_qids: set[str] = set()
         for detail in item.get("grading_details", []):
-            converted, reason, detail_metadata = _detail_from_ai_item(detail, allowed_qids, min_confidence, spec=spec)
+            converted, reason, detail_metadata = _detail_from_ai_item(
+                detail,
+                allowed_qids,
+                min_confidence,
+                spec=spec,
+                question_tag_context=question_tag_context,
+            )
             if reason:
                 item_failed_reason = reason
                 break
@@ -788,6 +824,7 @@ def _detail_from_ai_item(
     min_confidence: float,
     *,
     spec: MajorQuestionSpec | None = None,
+    question_tag_context: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
 ) -> tuple[QuestionGradingDetail | None, str, dict[str, Any] | None]:
     if not isinstance(detail, dict):
         return None, "invalid_detail", None
@@ -816,10 +853,6 @@ def _detail_from_ai_item(
     if blank_or_no_work:
         score = 0.0
         confidence = 100.0
-    knowledge_ids = detail.get("knowledge_ids")
-    if not isinstance(knowledge_ids, list) or not knowledge_ids:
-        knowledge_ids = [detail.get("knowledge_id") or "UNKNOWN"]
-    normalized = [str(value) for value in knowledge_ids]
     needs_review = blank_or_no_work or confidence < min_confidence or _truthy(detail.get("needs_human_review"))
     error_category = detail.get("error_category")
     error_summary = detail.get("error_summary")
@@ -854,17 +887,34 @@ def _detail_from_ai_item(
                 deduction_reason = substance_reason
                 needs_review = False
                 confidence = 100.0
+    full_score = _detail_full_score(spec, qid) if spec is not None else None
+    clear_errors = full_score is not None and float(score) >= float(full_score) - 1e-6
+    error_candidates = (question_tag_context or {}).get(qid, {}).get("error_type", [])
+    normalized_error_item = dict(detail)
+    normalized_error_item.update(
+        {
+            "error_category": error_category,
+            "error_summary": error_summary,
+            "deduction_reason": deduction_reason,
+        }
+    )
+    error_category, error_summary, secondary_errors = _normalize_grading_errors(
+        normalized_error_item,
+        clear_errors=clear_errors,
+        error_candidates=error_candidates,
+    )
     detail_metadata = _subjective_detail_metadata(detail, qid)
     return (
         QuestionGradingDetail(
             question_id=qid,
             score_awarded=score,
             deduction_reason=deduction_reason,
-            knowledge_id=normalized[0],
+            knowledge_id="UNKNOWN",
             error_category=error_category,
             error_summary=error_summary,
             confidence_score=confidence,
-            knowledge_ids=normalized,
+            knowledge_ids=[],
+            secondary_errors=secondary_errors,
         ),
         "",
         detail_metadata,
@@ -1132,6 +1182,25 @@ def _question_max_score(question: dict[str, Any]) -> float:
     if isinstance(parts, list):
         return sum(_float_value(part.get("max_score") or part.get("part_score") or part.get("score"), 0.0) for part in parts if isinstance(part, dict))
     return 100.0
+
+
+def _detail_full_score(spec: MajorQuestionSpec, question_id: str) -> float | None:
+    normalized_id = normalize_sub_question_id(question_id)
+    parts = spec.rubric.get("parts")
+    if isinstance(parts, list):
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            part_id = str(part.get("part_id") or part.get("question_id") or "").strip()
+            if normalize_sub_question_id(part_id) != normalized_id:
+                continue
+            return _float_value(
+                part.get("max_score") or part.get("part_score") or part.get("score"),
+                None,
+            )
+    if normalize_sub_question_id(spec.question_id) == normalized_id:
+        return float(spec.max_score)
+    return None
 
 
 def _failed_manifest_item(item: dict[str, Any], reason: str, question_id: str) -> dict[str, Any]:
