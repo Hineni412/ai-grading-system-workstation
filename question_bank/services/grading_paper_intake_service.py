@@ -104,9 +104,10 @@ def intake_grading_paper_to_question_bank(
     ]
     tagged_questions = 0
     failed_tagging = 0
-    if run_ai_tagging and import_result.question_count:
+    pending_questions = _questions_needing_skill_links(database_path, questions)
+    if run_ai_tagging and pending_questions:
         service = QuestionService(database_path)
-        contexts = {int(item["id"]): _tagging_context(item) for item in questions}
+        contexts = {int(item["id"]): _tagging_context(item) for item in pending_questions}
         tagger = ai_service or AITaggingService()
         skill_resolver = SkillResolutionService(
             database_path,
@@ -138,6 +139,7 @@ def intake_grading_paper_to_question_bank(
         link_summary = SourceQuestionLinkService(database_path).link_questions_for_session(
             grading_session_id=grading_session_id,
             source_questions=grading_source_questions,
+            candidate_bank_questions=questions,
         )
 
     stored_source = next(iter(imported_sources), str(paper_path))
@@ -214,6 +216,29 @@ def _questions_for_source(db_path: Path, source_file: str) -> list[dict[str, Any
             (source_file,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def _questions_needing_skill_links(
+    db_path: Path,
+    questions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not questions:
+        return []
+    question_ids = [int(item["id"]) for item in questions]
+    placeholders = ",".join("?" for _ in question_ids)
+    with connect(db_path) as conn:
+        resolved = {
+            int(row["question_id"])
+            for row in conn.execute(
+                f"""
+                SELECT DISTINCT question_id FROM question_skill_links
+                WHERE question_id IN ({placeholders})
+                  AND role = 'measured' AND status = 'resolved'
+                """,
+                question_ids,
+            ).fetchall()
+        }
+    return [item for item in questions if int(item["id"]) not in resolved]
 
 
 def _tagging_context(question: dict[str, Any]) -> TaggingContext:

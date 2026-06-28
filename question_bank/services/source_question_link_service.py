@@ -133,6 +133,7 @@ class SourceQuestionLinkService:
         candidate_bank_questions: Iterable[Mapping[str, Any]] | None = None,
     ) -> dict[str, int]:
         self.initialize_database()
+        paper_scoped_candidates = candidate_bank_questions is not None
         candidates = (
             [dict(item) for item in candidate_bank_questions]
             if candidate_bank_questions is not None
@@ -158,6 +159,24 @@ class SourceQuestionLinkService:
                     bank_question_id=explicit_bank_id,
                     link_method="source_metadata",
                     evidence={"source_question_id": source_id},
+                )
+                summary["confirmed"] += 1
+                continue
+
+            source_number = _normalize_question_number(source_id) if paper_scoped_candidates else ""
+            number_matches = [
+                item
+                for item in candidates
+                if source_number
+                and _normalize_question_number(item.get("question_number")) == source_number
+            ]
+            if len(number_matches) == 1:
+                self.confirm_link(
+                    grading_session_id=grading_session_id,
+                    source_question_id=source_id,
+                    bank_question_id=int(number_matches[0]["id"]),
+                    link_method="paper_question_number",
+                    evidence={"normalized_question_number": source_number},
                 )
                 summary["confirmed"] += 1
                 continue
@@ -320,6 +339,13 @@ def _source_question_text(source: Mapping[str, Any]) -> str:
 def _normalize_exact_text(value: object) -> str:
     text = unicodedata.normalize("NFKC", str(value or ""))
     return re.sub(r"\s+", "", text).casefold()
+
+
+def _normalize_question_number(value: object) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
+    text = re.sub(r"^(?:第|q|题)+", "", text)
+    text = re.sub(r"(?:题)$", "", text)
+    return re.sub(r"[\s._、，,:：-]+", "", text)
 
 
 def _required_text(value: object, field_name: str) -> str:

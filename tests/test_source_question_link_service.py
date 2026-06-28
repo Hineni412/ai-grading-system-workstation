@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from question_bank.database.schema import connect, initialize_database
-from question_bank.importers.batch_importer import BatchImportResult
+from question_bank.importers.batch_importer import BatchImportResult, PaperImportFileResult
 from question_bank.services import grading_paper_intake_service
 from question_bank.services.source_question_link_service import SourceQuestionLinkService
 
@@ -81,6 +81,43 @@ def test_exact_text_match_confirms_but_similarity_only_suggests(
     assert links["Q18"]["link_method"] == "text_similarity"
 
 
+def test_unique_question_number_in_imported_paper_confirms_before_global_text(
+    link_service: SourceQuestionLinkService,
+) -> None:
+    result = link_service.link_questions_for_session(
+        grading_session_id=16,
+        source_questions=[{"question_id": "Q17", "stem_summary": "摘要不等于完整题干"}],
+        candidate_bank_questions=[
+            {
+                "id": 201,
+                "question_number": "17",
+                "question_text": "完整题干",
+                "source_file": "paper-a.docx",
+            }
+        ],
+    )
+
+    assert result == {"confirmed": 1, "suggested": 0, "unresolved": 0}
+    link = link_service.list_links(16)[0]
+    assert link["bank_question_id"] == 201
+    assert link["link_method"] == "paper_question_number"
+
+
+def test_duplicate_number_inside_candidate_paper_does_not_auto_confirm(
+    link_service: SourceQuestionLinkService,
+) -> None:
+    result = link_service.link_questions_for_session(
+        grading_session_id=17,
+        source_questions=[{"question_id": "Q17", "stem_summary": "没有可比较的完整题干"}],
+        candidate_bank_questions=[
+            {"id": 201, "question_number": "17", "question_text": "A"},
+            {"id": 202, "question_number": "Q17", "question_text": "B"},
+        ],
+    )
+
+    assert result == {"confirmed": 0, "suggested": 0, "unresolved": 1}
+
+
 def test_suggestion_never_overwrites_teacher_confirmed_link(
     link_service: SourceQuestionLinkService,
 ) -> None:
@@ -119,11 +156,25 @@ def test_grading_paper_intake_creates_source_links(
             conn.execute(
                 """
                 INSERT INTO questions (question_number, question_text, source_file)
+                VALUES ('99', '已知二次函数 y=x²-2x-3，求其顶点坐标。', 'unrelated.docx')
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO questions (question_number, question_text, source_file)
                 VALUES ('17', '已知二次函数 y=x²-2x-3，求其顶点坐标。', ?)
                 """,
                 (str(source_file),),
             )
-        return BatchImportResult([], 1, 1, 0, 0, 0, 0)
+        return BatchImportResult(
+            [PaperImportFileResult(source_file=str(source_file), status="imported", question_count=1)],
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+        )
 
     monkeypatch.setattr(grading_paper_intake_service, "import_scanned_papers", fake_import)
 
@@ -141,4 +192,76 @@ def test_grading_paper_intake_creates_source_links(
     )
 
     assert result.confirmed_links == 1
-    assert SourceQuestionLinkService(db_path).confirmed_bank_question_ids(14)
+    linked_ids = SourceQuestionLinkService(db_path).confirmed_bank_question_ids(14)
+    with connect(db_path) as conn:
+        imported_id = conn.execute(
+            "SELECT id FROM questions WHERE source_file = ?",
+            (str(source_file),),
+        ).fetchone()[0]
+    assert linked_ids == {imported_id}
+
+
+def test_duplicate_intake_retries_only_questions_without_measured_skill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "question_bank.db"
+    source_file = tmp_path / "grading-paper.docx"
+    source_file.write_bytes(b"placeholder")
+    initialize_database(db_path)
+    with connect(db_path) as conn:
+        first_id = int(
+            conn.execute(
+                "INSERT INTO questions (question_number, question_text, source_file) VALUES ('1', '第一题题干', ?)",
+                (str(source_file),),
+            ).lastrowid
+        )
+        second_id = int(
+            conn.execute(
+                "INSERT INTO questions (question_number, question_text, source_file) VALUES ('2', '第二题题干', ?)",
+                (str(source_file),),
+            ).lastrowid
+        )
+        skill_id = int(conn.execute("SELECT id FROM skills ORDER BY id LIMIT 1").fetchone()[0])
+        conn.execute(
+            """
+            INSERT INTO question_skill_links (question_id, skill_id, role, source, status)
+            VALUES (?, ?, 'measured', 'test', 'resolved')
+            """,
+            (first_id, skill_id),
+        )
+
+    monkeypatch.setattr(
+        grading_paper_intake_service,
+        "import_scanned_papers",
+        lambda *_args, **_kwargs: BatchImportResult(
+            [PaperImportFileResult(source_file=str(source_file), status="duplicate")],
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+        ),
+    )
+
+    class CapturingTagger:
+        def __init__(self) -> None:
+            self.question_ids: list[int] = []
+
+        def build_skill_context_ranker(self):
+            return None
+
+        def analyze_questions(self, contexts, **_kwargs):
+            self.question_ids = sorted(contexts)
+            return {}
+
+    tagger = CapturingTagger()
+    grading_paper_intake_service.intake_grading_paper_to_question_bank(
+        source_file=source_file,
+        db_path=db_path,
+        run_ai_tagging=True,
+        ai_service=tagger,
+    )
+
+    assert tagger.question_ids == [second_id]
