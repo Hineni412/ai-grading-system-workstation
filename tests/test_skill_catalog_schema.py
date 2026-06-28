@@ -69,6 +69,46 @@ def test_skill_read_mode_defaults_to_legacy(tmp_path: Path) -> None:
     assert value["value"] == "legacy"
 
 
+def test_repeated_initialization_does_not_touch_unchanged_builtin_catalog(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    fixed = "2000-01-01 00:00:00"
+    with connect(db_path) as conn:
+        conn.execute(
+            "UPDATE skill_topics SET updated_at = ? WHERE status = 'active'",
+            (fixed,),
+        )
+        conn.execute(
+            "UPDATE skills SET updated_at = ? WHERE origin = 'builtin' AND status = 'active'",
+            (fixed,),
+        )
+        conn.execute(
+            "UPDATE skill_neighbors SET updated_at = ? WHERE source = 'builtin'",
+            (fixed,),
+        )
+        conn.execute(
+            "UPDATE skill_system_settings SET updated_at = ? WHERE key = 'catalog_version'",
+            (fixed,),
+        )
+
+    initialize_database(db_path)
+
+    with connect(db_path) as conn:
+        timestamps = {
+            str(row["updated_at"])
+            for query in (
+                "SELECT updated_at FROM skill_topics WHERE status = 'active'",
+                "SELECT updated_at FROM skills WHERE origin = 'builtin' AND status = 'active'",
+                "SELECT updated_at FROM skill_neighbors WHERE source = 'builtin'",
+                "SELECT updated_at FROM skill_system_settings WHERE key = 'catalog_version'",
+            )
+            for row in conn.execute(query).fetchall()
+        }
+    assert timestamps == {fixed}
+
+
 def test_skill_redirect_cannot_point_to_itself(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
     initialize_database(db_path)

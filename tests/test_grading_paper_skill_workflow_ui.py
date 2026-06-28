@@ -55,6 +55,7 @@ def test_global_graph_uses_skill_profiles_not_legacy_weak_point_rows() -> None:
     assert "build_skill_graph_rows" in section
     assert "get_active_global_weak_points" not in section
     assert "知识图谱完整度" in section
+    assert "题库对应完成度" in section
 
 
 def test_graph_detail_routes_by_positive_skill_id() -> None:

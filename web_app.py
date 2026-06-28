@@ -4099,7 +4099,21 @@ def render_global_weak_points_tab(db: DBManager, analytics: AnalyticsService) ->
             workflow_errors.append(f"{session_name}：{exc}")
     assessment_total = sum(item.assessment_total for item in workflow_statuses)
     assessment_resolved = sum(item.assessment_resolved for item in workflow_statuses)
+    source_question_total = sum(item.source_question_total for item in workflow_statuses)
+    source_questions_resolved = sum(
+        min(
+            item.source_question_total,
+            item.confirmed_source_links,
+            item.bank_questions_resolved,
+            item.assessment_resolved,
+        )
+        for item in workflow_statuses
+    )
     st.markdown(f"**知识图谱完整度：{assessment_resolved} / {assessment_total} 道评分题**")
+    st.caption(
+        f"题库对应完成度：{source_questions_resolved} / {source_question_total} 道来源题；"
+        "与上方评分题技能覆盖分别统计。"
+    )
     incomplete_statuses = [item for item in workflow_statuses if item.state != "ready"]
     if incomplete_statuses or workflow_errors:
         reasons = [
