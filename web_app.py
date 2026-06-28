@@ -49,12 +49,23 @@ from grading_limits import (
     bounded_int,
 )
 from grading_service import GradingService
+from integration.diagnosis_profile_service import DiagnosisProfileService
+from integration.grading_paper_skill_workflow_service import (
+    GradingPaperSkillWorkflowService,
+)
+from integration.skill_graph_projection import build_skill_graph_rows
 from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
 from manual_review_service import ManualReviewService
 from original_paper_exporter import OriginalPaperExporter
-from question_bank.database.paths import project_data_root, question_bank_db_path
+from pages_shared.grading_paper_skill_workflow_component import (
+    render_grading_paper_skill_workflow_card,
+)
+from question_bank.database.paths import question_bank_db_path
 from question_bank.services.ai_tagging_service import AITaggingService
-from question_bank.services.grading_paper_intake_service import copy_and_intake_uploaded_grading_paper
+from question_bank.services.grading_paper_intake_service import (
+    archive_uploaded_grading_paper,
+)
+from question_bank.services.skill_catalog_service import SkillCatalogService
 from question_bank.services.skill_link_service import SkillLinkService
 from report import ReportGenerator
 from score_policy import enforce_integer_scores_by_type, MAX_QUESTION_SCORE
@@ -127,6 +138,16 @@ def _sync_session_skill_links(session_id: int, rubric_path: str | Path) -> dict[
             "skills": 0,
             "error": str(exc),
         }
+
+
+def _grading_paper_skill_workflow_service(
+    db: DBManager,
+) -> GradingPaperSkillWorkflowService:
+    return GradingPaperSkillWorkflowService(
+        grading_db_path=db.db_path,
+        question_bank_db_path=question_bank_db_path(),
+        data_root=APP_DATA_DIR,
+    )
 
 
 def _sidebar_int_setting(
@@ -2763,6 +2784,17 @@ def render_config_and_session_tab(
                         f"rubric: {Path(str(current['rubric_path'])).name}\n"
                         f"answer_key: {Path(str(current['answer_key_path'])).name}"
                     )
+                    render_grading_paper_skill_workflow_card(
+                        _grading_paper_skill_workflow_service(db),
+                        selected_session_id,
+                        key_prefix=f"config_skill_workflow_{selected_session_id}",
+                        ai_service_factory=AITaggingService,
+                        max_workers=int(st.session_state.get("qb_tagging_workers", 8) or 8),
+                        requests_per_minute=int(
+                            st.session_state.get("qb_tagging_rpm", 1000) or 1000
+                        ),
+                        compact=True,
+                    )
                 st.caption("如需新建另一场考试，请先在左侧选择“未选择”。")
             else:
                 st.markdown("### 创建考试批改")
@@ -2790,6 +2822,8 @@ def render_config_and_session_tab(
                             session_name=clean_session_name,
                             rubric_path=rubric_path,
                             answer_key_path=answer_path,
+                            source_paper_path=st.session_state.get("latest_source_paper_path", ""),
+                            source_paper_sha256=st.session_state.get("latest_source_paper_sha256", ""),
                         )
                         skill_summary = _sync_session_skill_links(created_session_id, rubric_path)
                         _write_session_workflow_state(
@@ -2799,7 +2833,7 @@ def render_config_and_session_tab(
                             {"rubric_path": rubric_path, "answer_key_path": answer_path},
                         )
                         st.session_state["_skill_sync_notice"] = skill_summary
-                        clear_pending_config_for_new_session(st.session_state)
+                        clear_pending_config_for_new_session(st.session_state, settings_store=db)
                         st.session_state["selected_session_id"] = created_session_id
                         st.success(f"考试批改创建成功：{created_session_id}")
                         st.rerun()
@@ -2814,80 +2848,39 @@ def render_config_and_session_tab(
         if not preview_ready:
             st.caption("当前评分依据存在漏题或结构风险，请重新生成或先修正文档提示后再保存。")
 
-        sync_to_question_bank = st.checkbox(
-            "同时把这份带答案 Word 导入题库并自动打标签",
-            value=False,
-            key="sync_generated_word_to_question_bank",
-            help="只调用题库导入和题库 AI 打标签流程；失败不会影响评分依据保存或后续阅卷。",
-        )
-
         if st.button("确认保存评分依据", key="confirm_save_generated_config", disabled=not preview_ready):
             try:
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 rubric_path, answer_path = save_generated_config(UPLOAD_CONFIG_DIR, payload, ts)
+                source_name = str(
+                    st.session_state.generated_doc_name or f"grading_paper_{ts}.docx"
+                )
+                source_archive = archive_uploaded_grading_paper(
+                    filename=source_name,
+                    content=bytes(st.session_state.get("generated_doc_bytes") or b""),
+                    data_root=APP_DATA_DIR,
+                    raw_papers_dir=APP_DATA_DIR / "question_bank" / "raw_papers",
+                )
                 remember_saved_config_for_new_session(
                     st.session_state,
                     selected_session_id=selected_session_id,
                     rubric_path=str(rubric_path),
                     answer_key_path=str(answer_path),
+                    source_paper_path=source_archive.stored_path,
+                    source_paper_sha256=source_archive.sha256,
+                    source_paper_name=source_name,
                     settings_store=db,
                 )
-                if sync_to_question_bank:
-                    try:
-                        tagging_workers = int(st.session_state.get("qb_tagging_workers", 8) or 8)
-                        tagging_rpm = int(st.session_state.get("qb_tagging_rpm", 1000) or 1000)
-
-                        def intake_work(report):
-                            report(
-                                0.08,
-                                "复制并解析 Word",
-                                f"随后按题库打标签设置执行：并发 {tagging_workers}，RPM {tagging_rpm}。",
-                            )
-
-                            def on_tagging_progress(done, total, question_id, result) -> None:
-                                ratio = done / max(total, 1)
-                                status = "已保存标签" if getattr(result, "ok", False) else "标签失败"
-                                report(
-                                    0.35 + ratio * 0.6,
-                                    "AI 打标签",
-                                    f"{done}/{total}，题目 {question_id}：{status}",
-                                )
-
-                            intake_result = copy_and_intake_uploaded_grading_paper(
-                                filename=str(st.session_state.generated_doc_name or f"grading_paper_{ts}.docx"),
-                                content=bytes(st.session_state.get("generated_doc_bytes") or b""),
-                                raw_papers_dir=project_data_root() / "question_bank" / "raw_papers",
-                                db_path=question_bank_db_path(),
-                                run_ai_tagging=True,
-                                ai_service=AITaggingService(),
-                                tagging_max_workers=tagging_workers,
-                                tagging_requests_per_minute=tagging_rpm,
-                                tagging_progress_callback=on_tagging_progress,
-                                grading_session_id=selected_session_id,
-                                grading_source_questions=payload.get("questions", []),
-                            )
-                            report(0.98, "写入题库同步结果")
-                            return intake_result
-
-                        intake_result = _run_with_stage_progress(
-                            "同步导入题库并 AI 打标签",
-                            intake_work,
-                            done_text="题库同步完成",
-                        )
-                        st.session_state["_question_bank_intake_notice"] = {
-                            "saved_file": intake_result.saved_file.name,
-                            "question_count": intake_result.import_result.question_count,
-                            "tagged_questions": intake_result.tagged_questions,
-                            "confirmed_links": intake_result.confirmed_links,
-                            "suggested_links": intake_result.suggested_links,
-                        }
-                    except Exception as intake_exc:  # noqa: BLE001
-                        st.warning(f"评分依据已保存，但同步题库失败：{intake_exc}")
                 if selected_session_id is not None:
                     db.update_grading_session_config(
                         selected_session_id,
                         rubric_path=str(rubric_path),
                         answer_key_path=str(answer_path),
+                    )
+                    db.bind_grading_session_source(
+                        selected_session_id,
+                        source_paper_path=source_archive.stored_path,
+                        source_paper_sha256=source_archive.sha256,
                     )
                     skill_summary = _sync_session_skill_links(selected_session_id, rubric_path)
                     st.session_state["_skill_sync_notice"] = skill_summary
@@ -3155,17 +3148,26 @@ def render_grading_tab(
     if selected_session_id is None:
         st.warning("请先在左侧选择一个考试批改")
         return
-    if llm_settings is None:
-        st.warning("请先在左侧配置 API Key/Base URL")
-        return
-
-    if not db.is_template_ready(selected_session_id):
-        st.warning("当前考试批改尚未完成模板映射确认，请先到“评分依据与考试批改”页完成模板步骤。")
-        return
 
     session = db.get_grading_session(selected_session_id)
     if not session:
         st.error("考试批改不存在。")
+        return
+
+    if llm_settings is None:
+        st.warning("请先在左侧配置 API Key/Base URL")
+    template_ready = db.is_template_ready(selected_session_id)
+    if not template_ready:
+        st.warning("当前考试批改尚未完成模板映射确认，请先到“评分依据与考试批改”页完成模板步骤。")
+    render_grading_paper_skill_workflow_card(
+        _grading_paper_skill_workflow_service(db),
+        selected_session_id,
+        key_prefix=f"grading_skill_workflow_{selected_session_id}",
+        ai_service_factory=AITaggingService,
+        max_workers=int(st.session_state.get("qb_tagging_workers", 8) or 8),
+        requests_per_minute=int(st.session_state.get("qb_tagging_rpm", 1000) or 1000),
+    )
+    if llm_settings is None or not template_ready:
         return
 
     upload_dir = _session_exam_upload_dir(selected_session_id)
@@ -4078,10 +4080,80 @@ def render_global_weak_points_tab(db: DBManager, analytics: AnalyticsService) ->
         key=lambda item: (str(item.get("student_code") or ""), str(item.get("name") or "")),
     )
     student_id = _render_student_button_selector(students, score_rates, min_rate, max_rate)
-    rows = db.get_active_global_weak_points(student_id=student_id, session_ids=selected_session_ids)
-    if student_id is None:
-        rows = [row for row in rows if int(row.get("student_id") or 0) in eligible_ids]
-    weak_df = analytics._weak_points_dataframe_from_rows(rows)
+
+    workflow_service = _grading_paper_skill_workflow_service(db)
+    workflow_statuses = []
+    workflow_errors: list[str] = []
+    for session_id in selected_session_ids:
+        try:
+            workflow_statuses.append(workflow_service.status(session_id))
+        except Exception as exc:  # noqa: BLE001
+            session_name = next(
+                (
+                    str(item.get("session_name") or session_id)
+                    for item in active_sessions
+                    if int(item["id"]) == session_id
+                ),
+                str(session_id),
+            )
+            workflow_errors.append(f"{session_name}：{exc}")
+    assessment_total = sum(item.assessment_total for item in workflow_statuses)
+    assessment_resolved = sum(item.assessment_resolved for item in workflow_statuses)
+    st.markdown(f"**知识图谱完整度：{assessment_resolved} / {assessment_total} 道评分题**")
+    incomplete_statuses = [item for item in workflow_statuses if item.state != "ready"]
+    if incomplete_statuses or workflow_errors:
+        reasons = [
+            f"{item.session_name}：{item.error or ('未保存原始试卷' if not item.source_available else '尚未完成题库打标签')}"
+            for item in incomplete_statuses
+        ]
+        st.warning(
+            "部分考试尚未完成题库打标签，当前知识图谱只显示已关联技能；"
+            + "；".join([*reasons, *workflow_errors])
+        )
+        for status in incomplete_statuses:
+            render_grading_paper_skill_workflow_card(
+                workflow_service,
+                status.session_id,
+                key_prefix=f"graph_skill_workflow_{status.session_id}",
+                ai_service_factory=AITaggingService,
+                max_workers=int(st.session_state.get("qb_tagging_workers", 8) or 8),
+                requests_per_minute=int(
+                    st.session_state.get("qb_tagging_rpm", 1000) or 1000
+                ),
+                compact=True,
+            )
+
+    diagnosis_service = DiagnosisProfileService(db.db_path, question_bank_db_path())
+    diagnosis = diagnosis_service.build_skill_profiles(
+        scope={
+            "mode": "selected" if student_id is not None else "class",
+            "student_ids": (
+                [str(student_id)]
+                if student_id is not None
+                else [str(value) for value in sorted(eligible_ids)]
+            ),
+            "class_id": "",
+        },
+        exam_scope={"mode": "manual", "session_ids": selected_session_ids},
+    )
+    rows = build_skill_graph_rows(diagnosis)
+    weak_df = pd.DataFrame(
+        [
+            {
+                "学号": row["student_code"],
+                "学生姓名": row["student_name"],
+                "训练技能": row["knowledge_label"],
+                "所属主题": row["topic_name"],
+                "技能得分率": row["weighted_score_rate"],
+                "失分条目数": row["deduction_count"],
+                "证据题数": row["item_count"],
+                "典型扣分原因": row["sample_reasons"],
+            }
+            for row in rows
+        ]
+    )
+    for warning in diagnosis.get("warnings") or []:
+        st.caption(str(warning))
 
     if weak_df.empty:
         st.info("暂无可用于生成知识图谱的薄弱点数据")
@@ -4092,11 +4164,12 @@ def render_global_weak_points_tab(db: DBManager, analytics: AnalyticsService) ->
         st.dataframe(weak_df, use_container_width=True, hide_index=True)
 
     detail = _read_graph_detail_query()
-    if detail and detail.get("view") == "kg_detail" and detail.get("knowledge_id"):
-        _render_knowledge_wrong_detail(
+    if detail and detail.get("view") == "kg_detail" and detail.get("skill_id"):
+        _render_skill_wrong_detail(
             db,
+            diagnosis_service,
             detail.get("student_id"),
-            str(detail.get("knowledge_id")),
+            int(detail["skill_id"]),
             detail.get("session_ids") or None,
         )
     elif detail and detail.get("view") == "error_detail" and detail.get("error_category"):
@@ -4155,16 +4228,21 @@ def _render_knowledge_graph_from_rows(
             ),
         )[:14]
         for row in sorted_rows:
-            raw_knowledge_id = str(row.get("knowledge_id") or "UNKNOWN")
-            query_knowledge_id = _knowledge_query_id(row) or raw_knowledge_id
+            skill_id = int(row.get("skill_id") or 0)
+            if skill_id <= 0:
+                continue
+            raw_knowledge_id = str(row.get("knowledge_id") or f"skill:{skill_id}")
             raw_knowledge_label = str(row.get("knowledge_label") or raw_knowledge_id)
             knowledge_title = html.escape(_knowledge_display_label(raw_knowledge_id, raw_knowledge_label))
             student_id = int(row.get("student_id") or 0)
             session_query = _graph_session_query(session_ids)
             if aggregate or student_id <= 0:
-                link = f"?view=kg_detail&kg_knowledge_id={quote(query_knowledge_id)}{session_query}"
+                link = f"?view=kg_detail&kg_skill_id={skill_id}{session_query}"
             else:
-                link = f"?view=kg_detail&kg_student_id={student_id}&kg_knowledge_id={quote(query_knowledge_id)}{session_query}"
+                link = (
+                    f"?view=kg_detail&kg_student_id={student_id}"
+                    f"&kg_skill_id={skill_id}{session_query}"
+                )
             deduction_count = int(row.get("deduction_count") or 0)
             item_count = max(1, int(row.get("item_count") or 1))
             score_rate = _rate_value(row.get("weighted_score_rate"), default=100.0)
@@ -4213,9 +4291,10 @@ def _aggregate_knowledge_rows(rows: list[dict[str, Any]]) -> dict[str, list[dict
     buckets: dict[str, dict[str, Any]] = {}
     for row in rows:
         kid = str(row.get("knowledge_id") or "UNKNOWN")
+        skill_id = int(row.get("skill_id") or 0)
         label = str(row.get("knowledge_label") or kid)
         display_label = _knowledge_display_label(kid, label)
-        bucket_key = display_label or kid
+        bucket_key = f"skill:{skill_id}" if skill_id > 0 else display_label or kid
         item = buckets.setdefault(
             bucket_key,
             {
@@ -4232,12 +4311,20 @@ def _aggregate_knowledge_rows(rows: list[dict[str, Any]]) -> dict[str, list[dict
                 "exam_count": 0,
                 "_exam_ids": set(),
                 "_reasons": set(),
+                "_rate_weight": 0,
+                "_rate_sum": 0.0,
             },
         )
         item["score_sum"] += float(row.get("score_sum") or 0)
         item["full_score_sum"] += float(row.get("full_score_sum") or 0)
         item["deduction_count"] += int(row.get("deduction_count") or 0)
         item["item_count"] += int(row.get("item_count") or 0)
+        rate_weight = max(1, int(row.get("item_count") or 0))
+        item["_rate_weight"] += rate_weight
+        item["_rate_sum"] += _rate_value(
+            row.get("weighted_score_rate"),
+            default=100.0,
+        ) * rate_weight
         for value in str(_knowledge_query_id(row)).replace("|", ",").split(","):
             value = value.strip()
             if value and value not in item["knowledge_ids"]:
@@ -4250,11 +4337,18 @@ def _aggregate_knowledge_rows(rows: list[dict[str, Any]]) -> dict[str, list[dict
     for item in buckets.values():
         full = float(item.get("full_score_sum") or 0)
         score = float(item.get("score_sum") or 0)
-        item["weighted_score_rate"] = round(score / full * 100, 2) if full > 0 else 100.0
+        rate_weight = int(item.get("_rate_weight") or 0)
+        item["weighted_score_rate"] = (
+            round(score / full * 100, 2)
+            if full > 0
+            else round(float(item.get("_rate_sum") or 0) / max(rate_weight, 1), 2)
+        )
         item["exam_count"] = len(item.get("_exam_ids") or [])
         item["sample_reasons"] = "；".join(sorted(item.get("_reasons") or []))
         item.pop("_exam_ids", None)
         item.pop("_reasons", None)
+        item.pop("_rate_weight", None)
+        item.pop("_rate_sum", None)
         result.append(item)
     return {"筛选学生合计": result}
 
@@ -4474,6 +4568,14 @@ def _read_graph_detail_query() -> dict[str, Any] | None:
     if student_id == 0:
         student_id = None
 
+    raw_skill = first_value("kg_skill_id")
+    try:
+        skill_id = int(raw_skill) if raw_skill not in {None, ""} else None
+    except (TypeError, ValueError):
+        skill_id = None
+    if skill_id is not None and skill_id <= 0:
+        skill_id = None
+
     raw_sessions = first_value("kg_sessions")
     session_ids: list[int] = []
     if raw_sessions:
@@ -4486,6 +4588,7 @@ def _read_graph_detail_query() -> dict[str, Any] | None:
     return {
         "view": view,
         "student_id": student_id,
+        "skill_id": skill_id,
         "knowledge_id": unquote(first_value("kg_knowledge_id") or "") or None,
         "error_category": unquote(first_value("error_category") or "") or None,
         "session_ids": session_ids,
@@ -4530,22 +4633,67 @@ def _render_knowledge_wrong_detail(
         if session_ids:
             session_set = {int(item) for item in session_ids}
             items = [item for item in items if int(item.get("session_id") or 0) in session_set]
+    detail_label = _knowledge_display_label(
+        knowledge_id,
+        str(items[0].get("knowledge_label") or "") if items else "",
+    )
+    _render_wrong_detail_items(
+        db,
+        items,
+        heading="知识点作答档案",
+        detail_label=detail_label,
+        empty_message="该学生在未放入回收站的考试中暂无该知识点的作答记录。",
+    )
+
+
+def _render_skill_wrong_detail(
+    db: DBManager,
+    diagnosis_service: DiagnosisProfileService,
+    student_id: int | None,
+    skill_id: int,
+    session_ids: list[int] | None = None,
+) -> None:
+    items = diagnosis_service.skill_evidence(
+        skill_id=skill_id,
+        student_ids=[str(student_id)] if student_id is not None else (),
+        session_ids=session_ids or (),
+    )
+    if student_id is None:
+        items = items[:1]
+    skill = SkillCatalogService(question_bank_db_path()).get_skill(skill_id)
+    skill_name = str((skill or {}).get("name") or f"技能 #{skill_id}")
+    _render_wrong_detail_items(
+        db,
+        items,
+        heading="技能作答档案",
+        detail_label=skill_name,
+        empty_message="所选考试中暂无该技能对应的作答记录。",
+    )
+
+
+def _render_wrong_detail_items(
+    db: DBManager,
+    items: list[dict[str, Any]],
+    *,
+    heading: str,
+    detail_label: str,
+    empty_message: str,
+) -> None:
     st.markdown('<div id="knowledge-detail"></div>', unsafe_allow_html=True)
-    st.markdown("### 知识点作答档案")
+    st.markdown(f"### {heading}")
     if not items:
-        st.info("该学生在未放入回收站的考试中暂无该知识点的作答记录。")
+        st.info(empty_message)
         return
 
     first = items[0]
     avg_rate = sum(float(item.get("score_rate") or 0) for item in items) / max(1, len(items))
     deducted_count = sum(1 for item in items if item.get("is_deducted"))
-    detail_knowledge_label = _knowledge_display_label(knowledge_id, str(first.get("knowledge_label") or ""))
     st.markdown(
         f"""
         <div class="kg-detail-hero">
           <div class="kg-detail-eyebrow">Knowledge Trace</div>
           <div class="kg-detail-title">[{html.escape(str(first.get('student_code') or ''))}] {html.escape(str(first.get('student_name') or ''))}</div>
-          <div class="kg-detail-subtitle">{html.escape(detail_knowledge_label)}</div>
+          <div class="kg-detail-subtitle">{html.escape(detail_label)}</div>
           <div class="kg-detail-metrics">
             <span>涉及题目 {len(items)} 道</span>
             <span>失分题 {deducted_count} 道</span>
@@ -9360,11 +9508,12 @@ def main() -> None:
     st.caption("默认工作区聚焦当前考试批改；学生库和跨考试知识图谱已移至“全局资料”。")
 
     detail = _read_graph_detail_query()
-    if detail and detail.get("view") == "kg_detail" and detail.get("knowledge_id"):
-        _render_knowledge_wrong_detail(
+    if detail and detail.get("view") == "kg_detail" and detail.get("skill_id"):
+        _render_skill_wrong_detail(
             db,
+            DiagnosisProfileService(db.db_path, question_bank_db_path()),
             detail.get("student_id"),
-            str(detail.get("knowledge_id")),
+            int(detail["skill_id"]),
             detail.get("session_ids") or None,
         )
         return
