@@ -21,7 +21,7 @@ def test_teacher_can_generate_save_and_export_grouped_practice(tmp_path: Path) -
     _build_grading_fixture(grading_db, tmp_path)
     original_question_id = _build_question_bank_fixture(question_bank_db)
 
-    diagnosis = DiagnosisProfileService(grading_db, question_bank_db).build_profiles(
+    diagnosis = DiagnosisProfileService(grading_db, question_bank_db).build_legacy_profiles(
         scope={"mode": "selected", "student_ids": ["12", "15"]},
         exam_scope={"mode": "manual", "session_ids": [12, 14]},
     )
@@ -72,7 +72,7 @@ def test_numbered_weak_point_confirmation_survives_simplified_training_flow(
         reviewed_by="teacher",
     )
 
-    diagnosis = DiagnosisProfileService(grading_db, question_bank_db).build_profiles(
+    diagnosis = DiagnosisProfileService(grading_db, question_bank_db).build_legacy_profiles(
         scope={"mode": "student", "student_ids": ["70"]},
         exam_scope={"mode": "current", "session_ids": [1]},
     )

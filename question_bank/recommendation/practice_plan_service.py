@@ -159,6 +159,18 @@ class PracticePlanService:
         related_fill_policy = _validate_related_fill_policy(related_fill_policy)
         stage_counts = allocate_stage_counts(count, stage_ratios)
         resolved_weights = dict(DEFAULT_WEIGHTS if weights is None else weights)
+        if _is_question_tag_diagnosis(diagnosis_profile):
+            return self._generate_question_tag_variant(
+                diagnosis_profile,
+                count=count,
+                stage_counts=stage_counts,
+                stage_ratios=stage_ratios,
+                weights=resolved_weights,
+                exclude_question_ids=exclude_question_ids,
+                include_historical_wrong_questions=include_historical_wrong_questions,
+                similarity_threshold=float(similarity_threshold),
+                related_fill_policy=related_fill_policy,
+            )
         if _is_skill_diagnosis(diagnosis_profile):
             return self._generate_skill_variant(
                 diagnosis_profile,
@@ -251,6 +263,267 @@ class PracticePlanService:
                 "related_fill_policy": related_fill_policy,
             },
         }
+
+    def _generate_question_tag_variant(
+        self,
+        diagnosis_profile: Mapping[str, Any],
+        *,
+        count: int,
+        stage_counts: Mapping[str, int],
+        stage_ratios: Mapping[str, object] | None,
+        weights: Mapping[str, object],
+        exclude_question_ids: Iterable[int] | None,
+        include_historical_wrong_questions: bool,
+        similarity_threshold: float,
+        related_fill_policy: str,
+    ) -> dict[str, Any]:
+        initialize_database(self.db_path)
+        targets = _question_tag_targets(diagnosis_profile)
+        generation_config = {
+            "question_count": count,
+            "stage_ratios": dict(
+                DEFAULT_STAGE_RATIOS if stage_ratios is None else stage_ratios
+            ),
+            "weights": dict(weights),
+            "include_historical_wrong_questions": bool(
+                include_historical_wrong_questions
+            ),
+            "related_fill_policy": related_fill_policy,
+        }
+        if not targets:
+            return {
+                "student_ids": _student_ids(diagnosis_profile),
+                "items": [],
+                "stage_counts": dict(stage_counts),
+                "shortages": [
+                    {
+                        "stage": stage,
+                        "requested_count": requested,
+                        "selected_count": 0,
+                        "missing_count": requested,
+                        "decision_required": False,
+                    }
+                    for stage, requested in stage_counts.items()
+                ],
+                "warnings": ["没有可用于推荐的题库知识点标签。"],
+                "dedupe_summary": {"removed_count": 0, "reason_counts": {}},
+                "generation_config": generation_config,
+            }
+
+        resolved_exclusions, source_link_warnings = self._resolved_exclusions(
+            diagnosis_profile,
+            exclude_question_ids,
+        )
+        candidates = self._load_question_tag_candidates()
+        eligible: list[dict[str, Any]] = []
+        for candidate in candidates:
+            candidate_knowledge = {
+                str(value).strip()
+                for value in candidate.get("tags", {}).get("knowledge_point", [])
+                if str(value).strip()
+            }
+            matched_points = sorted(candidate_knowledge.intersection(targets))
+            if not matched_points:
+                continue
+            target_context: dict[str, set[str]] = {
+                tag_type: set()
+                for tag_type in ("sub_skill", "method", "model", "prerequisite")
+            }
+            for point in matched_points:
+                for tag_type, values in targets[point].items():
+                    target_context[tag_type].update(values)
+            tag_matches: dict[str, list[str]] = {}
+            matched_value_count = 0
+            target_value_count = 0
+            for tag_type, values in target_context.items():
+                target_value_count += len(values)
+                candidate_values = {
+                    str(value).strip()
+                    for value in candidate.get("tags", {}).get(tag_type, [])
+                    if str(value).strip()
+                }
+                overlap = sorted(values.intersection(candidate_values))
+                if overlap:
+                    tag_matches[tag_type] = overlap
+                    matched_value_count += len(overlap)
+            tag_overlap = (
+                matched_value_count / target_value_count
+                if target_value_count
+                else 0.0
+            )
+            eligible.append(
+                {
+                    **candidate,
+                    "tag_match": {
+                        "knowledge_points": matched_points,
+                        "tag_matches": tag_matches,
+                        "tag_overlap": round(tag_overlap, 4),
+                    },
+                }
+            )
+
+        deduped, dedupe_summary = _dedupe_candidates(
+            eligible,
+            exclude_question_ids=resolved_exclusions,
+            similarity_threshold=similarity_threshold,
+            use_fingerprint=False,
+        )
+        frequency_by_id = QuestionFrequencyService(self.db_path).metrics_for_questions(
+            [int(item["id"]) for item in deduped]
+        )
+        selected: list[dict[str, Any]] = []
+        selected_ids: set[int] = set()
+        paper_counts: Counter[str] = Counter()
+        method_counts: Counter[str] = Counter()
+        shortages: list[dict[str, Any]] = []
+        warnings: list[str] = list(source_link_warnings)
+        for stage in STAGE_ORDER:
+            requested = int(stage_counts[stage])
+            stage_selected = self._select_question_tags_for_stage(
+                stage=stage,
+                requested=requested,
+                candidates=deduped,
+                selected_ids=selected_ids,
+                paper_counts=paper_counts,
+                method_counts=method_counts,
+                frequency_by_id=frequency_by_id,
+                weights=weights,
+            )
+            selected.extend(stage_selected)
+            if len(stage_selected) < requested:
+                missing = requested - len(stage_selected)
+                shortages.append(
+                    {
+                        "stage": stage,
+                        "requested_count": requested,
+                        "selected_count": len(stage_selected),
+                        "missing_count": missing,
+                        "knowledge_points": sorted(targets),
+                        "decision_required": False,
+                    }
+                )
+                warnings.append(
+                    f"{stage} 阶段缺少 {missing} 道知识点完全相同的候选题，未补入近义或相邻标签题。"
+                )
+        for item_order, item in enumerate(selected, start=1):
+            item["item_order"] = item_order
+        return {
+            "student_ids": _student_ids(diagnosis_profile),
+            "items": selected,
+            "stage_counts": dict(stage_counts),
+            "shortages": shortages,
+            "warnings": _unique_text(warnings),
+            "dedupe_summary": dedupe_summary,
+            "generation_config": generation_config,
+        }
+
+    def _load_question_tag_candidates(self) -> list[dict[str, Any]]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    q.*,
+                    p.title AS paper_title,
+                    p.source_file AS paper_source_file,
+                    p.exam_type,
+                    p.grade,
+                    p.city
+                FROM questions q
+                LEFT JOIN papers p ON p.id = q.paper_id
+                WHERE COALESCE(q.is_deleted, 0) = 0
+                  AND COALESCE(p.import_status, '') <> 'deleted'
+                ORDER BY q.id
+                """
+            ).fetchall()
+            candidates = [dict(row) for row in rows]
+            tags_by_question = _load_tags(
+                conn,
+                [int(item["id"]) for item in candidates],
+            )
+        for candidate in candidates:
+            candidate["tags"] = tags_by_question.get(int(candidate["id"]), {})
+            candidate["fingerprint"] = _candidate_fingerprint(candidate)
+        return candidates
+
+    def _select_question_tags_for_stage(
+        self,
+        *,
+        stage: str,
+        requested: int,
+        candidates: list[dict[str, Any]],
+        selected_ids: set[int],
+        paper_counts: Counter[str],
+        method_counts: Counter[str],
+        frequency_by_id: Mapping[int, Any],
+        weights: Mapping[str, object],
+    ) -> list[dict[str, Any]]:
+        scored: list[tuple[tuple[float, ...], int, dict[str, Any], dict[str, Any]]] = []
+        for candidate in candidates:
+            question_id = int(candidate["id"])
+            if question_id in selected_ids:
+                continue
+            metrics = frequency_by_id.get(question_id)
+            gradient = float(practice_gradient_fit(stage, candidate.get("difficulty")) or 0.5)
+            frequency = (
+                float(frequency_fit_score(metrics))
+                if getattr(metrics, "available", False)
+                else 0.5
+            )
+            paper_key = _paper_key(candidate)
+            method_key = _method_key(candidate)
+            diversity = _diversity_fit(
+                paper_counts[paper_key],
+                method_counts[method_key] if method_key else 0,
+            )
+            tag_overlap = float(candidate["tag_match"]["tag_overlap"])
+            result = score_candidate(
+                concept_match=1.0,
+                mapping_status="confirmed",
+                fine_skill_match=tag_overlap,
+                frequency_fit=frequency,
+                gradient_fit=gradient,
+                diversity_fit=diversity,
+                weights=weights,
+                sub_skill_boost=tag_overlap,
+                allow_broad_fallback=True,
+            )
+            components = dict(result.components)
+            components["knowledge_match"] = components.pop("concept")
+            components["tag_overlap"] = components.pop("fine_skill")
+            ranking = (
+                -tag_overlap,
+                -gradient,
+                -frequency,
+                -diversity,
+                -float(result.total_score),
+            )
+            payload = _question_tag_item_payload(
+                candidate,
+                stage,
+                result.total_score,
+                components,
+                metrics,
+                warnings=result.warnings,
+            )
+            scored.append((ranking, question_id, payload, candidate))
+        scored.sort(key=lambda item: (item[0], item[1]))
+
+        selected: list[dict[str, Any]] = []
+        for _ranking, question_id, payload, candidate in scored:
+            if len(selected) >= requested:
+                break
+            paper_key = _paper_key(candidate)
+            method_key = _method_key(candidate)
+            if paper_counts[paper_key] >= 2:
+                continue
+            if method_key and method_counts[method_key] >= 2:
+                continue
+            selected.append(payload)
+            selected_ids.add(question_id)
+            paper_counts[paper_key] += 1
+            if method_key:
+                method_counts[method_key] += 1
+        return selected
 
     def _generate_skill_variant(
         self,
@@ -669,6 +942,61 @@ def _validate_related_fill_policy(value: object) -> str:
     return policy
 
 
+def _is_question_tag_diagnosis(profile: Mapping[str, Any]) -> bool:
+    return str(profile.get("diagnosis_identity") or "").strip() == "question_tag"
+
+
+def _question_tag_targets(
+    profile: Mapping[str, Any],
+) -> dict[str, dict[str, set[str]]]:
+    if isinstance(profile.get("students"), list):
+        weak_points = [
+            weak
+            for student in profile["students"]
+            if isinstance(student, Mapping)
+            for weak in student.get("weak_points", [])
+            if isinstance(weak, Mapping)
+        ]
+    else:
+        weak_points = [
+            weak
+            for weak in profile.get("weak_points", [])
+            if isinstance(weak, Mapping)
+        ]
+
+    targets: dict[str, dict[str, set[str]]] = {}
+    for weak in weak_points:
+        if weak.get("eligible_for_recommendation") is False:
+            continue
+        knowledge_point = str(weak.get("knowledge_point") or "").strip()
+        if not knowledge_point:
+            continue
+        context = targets.setdefault(
+            knowledge_point,
+            {
+                "sub_skill": set(),
+                "method": set(),
+                "model": set(),
+                "prerequisite": set(),
+            },
+        )
+        raw_context = weak.get("tag_context")
+        if not isinstance(raw_context, Mapping):
+            continue
+        for tag_type in context:
+            values = raw_context.get(tag_type, [])
+            if isinstance(values, str):
+                values = [values]
+            if not isinstance(values, Iterable):
+                continue
+            context[tag_type].update(
+                text
+                for value in values
+                if (text := str(value or "").strip())
+            )
+    return targets
+
+
 def _is_skill_diagnosis(profile: Mapping[str, Any]) -> bool:
     if str(profile.get("diagnosis_identity") or "") == "skill":
         return True
@@ -845,6 +1173,47 @@ def _skill_item_payload(
         "source_paper": str(candidate.get("paper_title") or candidate.get("paper_source_file") or ""),
         "method_tags": list(candidate.get("tags", {}).get("method", [])),
         "model_tags": list(candidate.get("tags", {}).get("model", [])),
+        "frequency": metrics.to_dict() if metrics is not None else {},
+    }
+
+
+def _question_tag_item_payload(
+    candidate: Mapping[str, Any],
+    stage: str,
+    total_score: float,
+    components: Mapping[str, float],
+    metrics: Any,
+    *,
+    warnings: Iterable[object] = (),
+) -> dict[str, Any]:
+    match = candidate["tag_match"]
+    knowledge_points = list(match["knowledge_points"])
+    knowledge_point = str(knowledge_points[0])
+    item_warnings = _unique_text(warnings)
+    if _difficulty(candidate.get("difficulty")) is None and "题目难度缺失" not in item_warnings:
+        item_warnings.append("题目难度缺失")
+    return {
+        "question_id": int(candidate["id"]),
+        "stage": stage,
+        "knowledge_key": f"knowledge_point:{knowledge_point}",
+        "knowledge_point": knowledge_point,
+        "match_kind": "exact",
+        "reason": "与薄弱知识点标签完全相同",
+        "recommend_score": float(total_score),
+        "score_components": dict(components),
+        "tag_matches": dict(match["tag_matches"]),
+        "tags": {
+            str(tag_type): list(values)
+            for tag_type, values in candidate.get("tags", {}).items()
+        },
+        "warnings": item_warnings,
+        "question_fingerprint": str(candidate.get("fingerprint") or ""),
+        "question_text": str(candidate.get("question_text") or ""),
+        "question_number": str(candidate.get("question_number") or ""),
+        "difficulty": candidate.get("difficulty"),
+        "source_paper": str(
+            candidate.get("paper_title") or candidate.get("paper_source_file") or ""
+        ),
         "frequency": metrics.to_dict() if metrics is not None else {},
     }
 
@@ -1183,6 +1552,7 @@ def _dedupe_candidates(
     *,
     exclude_question_ids: set[int],
     similarity_threshold: float,
+    use_fingerprint: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     excluded = [item for item in candidates if int(item["id"]) in exclude_question_ids]
     reason_counts: Counter[str] = Counter()
@@ -1193,14 +1563,30 @@ def _dedupe_candidates(
             reason_counts["confirmed_current_exam_original"] += 1
             continue
         original_similarity_threshold = max(0.82, similarity_threshold - 0.08)
-        if any(_is_duplicate(candidate, original, original_similarity_threshold) for original in excluded):
+        if any(
+            _is_duplicate(
+                candidate,
+                original,
+                original_similarity_threshold,
+                use_fingerprint=use_fingerprint,
+            )
+            for original in excluded
+        ):
             reason_counts["near_current_exam_original"] += 1
             continue
         remaining.append(candidate)
 
     kept: list[dict[str, Any]] = []
     for candidate in remaining:
-        if any(_is_duplicate(candidate, existing, similarity_threshold) for existing in kept):
+        if any(
+            _is_duplicate(
+                candidate,
+                existing,
+                similarity_threshold,
+                use_fingerprint=use_fingerprint,
+            )
+            for existing in kept
+        ):
             reason_counts["candidate_duplicate"] += 1
             continue
         kept.append(candidate)
@@ -1210,12 +1596,18 @@ def _dedupe_candidates(
     }
 
 
-def _is_duplicate(left: Mapping[str, Any], right: Mapping[str, Any], threshold: float) -> bool:
+def _is_duplicate(
+    left: Mapping[str, Any],
+    right: Mapping[str, Any],
+    threshold: float,
+    *,
+    use_fingerprint: bool = True,
+) -> bool:
     if int(left["id"]) == int(right["id"]):
         return True
     left_fingerprint = str(left.get("fingerprint") or "")
     right_fingerprint = str(right.get("fingerprint") or "")
-    if left_fingerprint and left_fingerprint == right_fingerprint:
+    if use_fingerprint and left_fingerprint and left_fingerprint == right_fingerprint:
         return True
     return text_similarity(left.get("question_text"), right.get("question_text")) >= threshold
 
