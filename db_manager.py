@@ -2109,6 +2109,7 @@ class DBManager:
                 sd.deduction_reason,
                 sd.error_category,
                 sd.error_summary,
+                sd.secondary_errors_json,
                 sr.graded_at
             FROM session_details sd
             JOIN session_results sr ON sr.id = sd.result_id
@@ -2130,7 +2131,10 @@ class DBManager:
             params.extend(normalized_sessions)
         query += " ORDER BY sr.session_id, sr.student_id, sd.id"
         with self._connect() as conn:
-            rows = [dict(row) for row in conn.execute(query, params).fetchall()]
+            rows = [
+                _detail_row_with_secondary_errors(dict(row))
+                for row in conn.execute(query, params).fetchall()
+            ]
         enriched = self._enrich_detail_rows(rows)
         for row in enriched:
             row["full_score"] = _safe_float(row.get("max_score"), 0.0)

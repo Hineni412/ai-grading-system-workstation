@@ -50,7 +50,7 @@ class AlignmentReviewService:
             sub_skill_tags=[source_value],
             reviewed_by="teacher",
         )
-        return self.diagnosis.build_profiles(
+        return self.diagnosis.build_legacy_profiles(
             scope=scope,
             exam_scope=exam_scope,
         )
