@@ -54,6 +54,68 @@ class DiagnosisProfileService:
             return skill_profile
         return self._build_legacy_profiles(scope=scope, exam_scope=exam_scope)
 
+    def build_skill_profiles(
+        self,
+        *,
+        scope: Mapping[str, Any],
+        exam_scope: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        return self._build_skill_profiles(scope=scope, exam_scope=exam_scope)
+
+    def skill_evidence(
+        self,
+        *,
+        skill_id: int,
+        student_ids: list[str] | tuple[str, ...] = (),
+        session_ids: list[int] | tuple[int, ...] = (),
+    ) -> list[dict[str, Any]]:
+        normalized_skill_id = int(skill_id)
+        if normalized_skill_id <= 0:
+            raise ValueError("skill_id must be positive")
+        selected_sessions = _int_list(session_ids)
+        if not selected_sessions:
+            selected_sessions = [
+                int(item["id"])
+                for item in self.db.list_grading_sessions()
+                if not item.get("is_deleted")
+            ]
+        if not selected_sessions:
+            return []
+        source_keys = {
+            (
+                int(link.get("grading_session_id") or 0),
+                str(link.get("source_question_id") or ""),
+            )
+            for link in self.skill_links.assessment_links_for_sessions(
+                [str(value) for value in selected_sessions]
+            )
+            if str(link.get("role")) == "measured"
+            and int(link.get("skill_id") or 0) == normalized_skill_id
+        }
+        if not source_keys:
+            return []
+        rows = self.db.get_active_assessment_evidence(
+            student_ids=_text_list(student_ids),
+            session_ids=selected_sessions,
+        )
+        return sorted(
+            [
+                row
+                for row in rows
+                if (
+                    int(row.get("session_id") or 0),
+                    str(row.get("question_id") or ""),
+                )
+                in source_keys
+            ],
+            key=lambda row: (
+                int(row.get("session_id") or 0),
+                int(row.get("student_id") or 0),
+                str(row.get("question_id") or ""),
+                int(row.get("result_id") or 0),
+            ),
+        )
+
     def _build_legacy_profiles(
         self,
         *,
@@ -342,16 +404,38 @@ class DiagnosisProfileService:
     def _open_assessment_conflict_count(self, session_ids: list[int]) -> int:
         if not session_ids:
             return 0
+        resolved = {
+            (
+                int(link["grading_session_id"]),
+                str(link["source_question_id"]),
+            )
+            for link in self.skill_links.assessment_links_for_sessions(
+                [str(value) for value in session_ids]
+            )
+            if str(link.get("role")) == "measured"
+            and str(link.get("status")) == "resolved"
+        }
         initialize_database(self.question_bank_db_path)
         with connect(self.question_bank_db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT source_ref FROM skill_resolution_conflicts
-                WHERE source_type = 'assessment_item' AND state = 'open'
-                """
-            ).fetchall()
+            refs = {
+                str(row["source_ref"])
+                for row in conn.execute(
+                    """
+                    SELECT DISTINCT source_ref FROM skill_resolution_conflicts
+                    WHERE source_type = 'assessment_item' AND state = 'open'
+                    """
+                ).fetchall()
+            }
         prefixes = tuple(f"{session_id}:" for session_id in session_ids)
-        return sum(str(row["source_ref"]).startswith(prefixes) for row in rows)
+        blocking: set[tuple[int, str]] = set()
+        for source_ref in refs:
+            if not source_ref.startswith(prefixes):
+                continue
+            session_text, item_ref = source_ref.split(":", 1)
+            key = (int(session_text), item_ref)
+            if key not in resolved:
+                blocking.add(key)
+        return len(blocking)
 
     def _resolve_sessions(
         self,

@@ -238,6 +238,78 @@ def test_skill_mode_aggregates_two_sessions_by_same_measured_skill_id(
     assert supporting["id"] not in profile["confirmed_skill_ids"]
 
 
+def test_explicit_skill_profiles_ignore_legacy_mode_and_count_only_blocking_conflicts(
+    service: DiagnosisProfileService,
+) -> None:
+    catalog = SkillCatalogService(service.question_bank_db_path)
+    measured = catalog.find_by_stable_key("math.function.quadratic.graph")
+    SkillLinkService(service.question_bank_db_path).replace_assessment_links(
+        "14",
+        "Q1",
+        [ResolvedSkillLink(measured["id"], "measured")],
+    )
+    with connect_question_bank(service.question_bank_db_path) as conn:
+        conn.execute(
+            """
+            UPDATE skill_system_settings SET value = 'legacy'
+            WHERE key = 'recommendation_read_mode'
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO skill_resolution_conflicts (
+                source_type, source_ref, raw_label, normalized_label, reason, state
+            ) VALUES ('assessment_item', ?, ?, ?, '无法确定', 'open')
+            """,
+            [
+                ("14:Q1", "已有主技能的附加词条", "已有主技能的附加词条"),
+                ("14:Q2", "尚无主技能的词条", "尚无主技能的词条"),
+            ],
+        )
+
+    profile = service.build_skill_profiles(
+        scope={"mode": "student", "student_ids": ["12"]},
+        exam_scope={"mode": "current", "session_ids": [14]},
+    )
+
+    assert profile["diagnosis_identity"] == "skill"
+    assert profile["unresolved_count"] == 1
+    assert profile["students"][0]["weak_points"][0]["skill_id"] == measured["id"]
+
+
+def test_skill_evidence_obeys_skill_student_and_session_filters(
+    service: DiagnosisProfileService,
+) -> None:
+    catalog = SkillCatalogService(service.question_bank_db_path)
+    measured = catalog.find_by_stable_key("math.function.quadratic.graph")
+    other = catalog.find_by_stable_key("math.algebra.equation.quadratic_factor")
+    links = SkillLinkService(service.question_bank_db_path)
+    for session_id in (12, 14):
+        links.replace_assessment_links(
+            str(session_id),
+            "Q1",
+            [ResolvedSkillLink(measured["id"], "measured")],
+        )
+        links.replace_assessment_links(
+            str(session_id),
+            "Q2",
+            [ResolvedSkillLink(other["id"], "measured")],
+        )
+
+    rows = service.skill_evidence(
+        skill_id=measured["id"],
+        student_ids=["12"],
+        session_ids=[14],
+    )
+
+    assert [(row["session_id"], row["student_id"], row["question_id"]) for row in rows] == [
+        (14, 12, "Q1")
+    ]
+    assert rows[0]["score_awarded"] == 6
+    assert rows[0]["max_score"] == 10
+    assert rows[0]["full_score"] == 10
+
+
 def test_active_assessment_evidence_returns_detail_level_scores(
     service: DiagnosisProfileService,
 ) -> None:
