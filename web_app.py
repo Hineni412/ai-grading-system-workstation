@@ -53,7 +53,7 @@ from integration.diagnosis_profile_service import DiagnosisProfileService
 from integration.grading_paper_skill_workflow_service import (
     GradingPaperSkillWorkflowService,
 )
-from integration.skill_graph_projection import build_skill_graph_rows
+from integration.skill_graph_projection import build_question_tag_graph_rows
 from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
 from manual_review_service import ManualReviewService
 from original_paper_exporter import OriginalPaperExporter
@@ -65,7 +65,7 @@ from question_bank.services.ai_tagging_service import AITaggingService
 from question_bank.services.grading_paper_intake_service import (
     archive_uploaded_grading_paper,
 )
-from question_bank.services.skill_catalog_service import SkillCatalogService
+from question_bank.services.question_service import QuestionService
 from report import ReportGenerator
 from score_policy import enforce_integer_scores_by_type, MAX_QUESTION_SCORE
 from scanner import STUDENT_NAME_REGION_ID, ScanAnalysis, Scanner, refine_scan_analysis_matches, render_pdf_to_standard_pages, student_name_region_from_regions
@@ -4069,8 +4069,6 @@ def render_global_weak_points_tab(db: DBManager, analytics: AnalyticsService) ->
                 str(session_id),
             )
             workflow_errors.append(f"{session_name}：{exc}")
-    assessment_total = sum(item.assessment_total for item in workflow_statuses)
-    assessment_resolved = sum(item.assessment_resolved for item in workflow_statuses)
     source_question_total = sum(item.source_question_total for item in workflow_statuses)
     source_questions_resolved = sum(
         min(
@@ -4081,10 +4079,12 @@ def render_global_weak_points_tab(db: DBManager, analytics: AnalyticsService) ->
         )
         for item in workflow_statuses
     )
-    st.markdown(f"**知识图谱完整度：{assessment_resolved} / {assessment_total} 道评分题**")
+    st.markdown(
+        f"**题库流程完成度：{source_questions_resolved} / {source_question_total} 道来源题**"
+    )
     st.caption(
         f"题库对应完成度：{source_questions_resolved} / {source_question_total} 道来源题；"
-        "与上方评分题技能覆盖分别统计。"
+        "知识图谱只读取已关联题目的当前 knowledge_point 标签。"
     )
     incomplete_statuses = [item for item in workflow_statuses if item.state != "ready"]
     if incomplete_statuses or workflow_errors:
@@ -4093,7 +4093,7 @@ def render_global_weak_points_tab(db: DBManager, analytics: AnalyticsService) ->
             for item in incomplete_statuses
         ]
         st.warning(
-            "部分考试尚未完成题库打标签，当前知识图谱只显示已关联技能；"
+            "部分考试尚未完成题库打标签，当前知识图谱只显示已关联且具有知识点标签的题目；"
             + "；".join([*reasons, *workflow_errors])
         )
         for status in incomplete_statuses:
@@ -4110,7 +4110,7 @@ def render_global_weak_points_tab(db: DBManager, analytics: AnalyticsService) ->
             )
 
     diagnosis_service = DiagnosisProfileService(db.db_path, question_bank_db_path())
-    diagnosis = diagnosis_service.build_skill_profiles(
+    diagnosis = diagnosis_service.build_tag_profiles(
         scope={
             "mode": "selected" if student_id is not None else "class",
             "student_ids": (
@@ -4122,17 +4122,27 @@ def render_global_weak_points_tab(db: DBManager, analytics: AnalyticsService) ->
         },
         exam_scope={"mode": "manual", "session_ids": selected_session_ids},
     )
-    rows = build_skill_graph_rows(diagnosis)
+    coverage = diagnosis.get("coverage") if isinstance(diagnosis.get("coverage"), dict) else {}
+    st.markdown(
+        "**知识图谱完整度："
+        f"{int(coverage.get('covered_items') or 0)} / "
+        f"{int(coverage.get('total_items') or 0)} 道评分题**"
+    )
+    rows = build_question_tag_graph_rows(diagnosis)
     weak_df = pd.DataFrame(
         [
             {
                 "学号": row["student_code"],
                 "学生姓名": row["student_name"],
-                "训练技能": row["knowledge_label"],
-                "所属主题": row["topic_name"],
-                "技能得分率": row["weighted_score_rate"],
+                "知识点": row["knowledge_label"],
+                "知识点得分率": row["weighted_score_rate"],
                 "失分条目数": row["deduction_count"],
                 "证据题数": row["item_count"],
+                "支持标签": "、".join(
+                    str(value)
+                    for values in row.get("tag_context", {}).values()
+                    for value in values
+                ),
                 "典型扣分原因": row["sample_reasons"],
             }
             for row in rows
@@ -4150,12 +4160,12 @@ def render_global_weak_points_tab(db: DBManager, analytics: AnalyticsService) ->
         st.dataframe(weak_df, use_container_width=True, hide_index=True)
 
     detail = _read_graph_detail_query()
-    if detail and detail.get("view") == "kg_detail" and detail.get("skill_id"):
-        _render_skill_wrong_detail(
+    if detail and detail.get("view") == "kg_detail" and detail.get("knowledge_key"):
+        _render_question_tag_wrong_detail(
             db,
             diagnosis_service,
             detail.get("student_id"),
-            int(detail["skill_id"]),
+            str(detail["knowledge_key"]),
             detail.get("session_ids") or None,
         )
     elif detail and detail.get("view") == "error_detail" and detail.get("error_category"):
@@ -4210,24 +4220,26 @@ def _render_knowledge_graph_from_rows(
             key=lambda item: (
                 _rate_value(item.get("weighted_score_rate"), default=100.0),
                 -int(item.get("deduction_count") or 0),
-                str(item.get("knowledge_id") or ""),
+                str(item.get("knowledge_key") or ""),
             ),
         )[:14]
         for row in sorted_rows:
-            skill_id = int(row.get("skill_id") or 0)
-            if skill_id <= 0:
+            knowledge_key = str(row.get("knowledge_key") or "").strip()
+            if not knowledge_key:
                 continue
-            raw_knowledge_id = str(row.get("knowledge_id") or f"skill:{skill_id}")
-            raw_knowledge_label = str(row.get("knowledge_label") or raw_knowledge_id)
-            knowledge_title = html.escape(_knowledge_display_label(raw_knowledge_id, raw_knowledge_label))
+            raw_knowledge_label = str(row.get("knowledge_label") or knowledge_key)
+            knowledge_title = html.escape(
+                _knowledge_display_label(knowledge_key, raw_knowledge_label)
+            )
             student_id = int(row.get("student_id") or 0)
             session_query = _graph_session_query(session_ids)
+            knowledge_query = quote(knowledge_key)
             if aggregate or student_id <= 0:
-                link = f"?view=kg_detail&kg_skill_id={skill_id}{session_query}"
+                link = f"?view=kg_detail&kg_knowledge_key={knowledge_query}{session_query}"
             else:
                 link = (
                     f"?view=kg_detail&kg_student_id={student_id}"
-                    f"&kg_skill_id={skill_id}{session_query}"
+                    f"&kg_knowledge_key={knowledge_query}{session_query}"
                 )
             deduction_count = int(row.get("deduction_count") or 0)
             item_count = max(1, int(row.get("item_count") or 1))
@@ -4264,32 +4276,21 @@ def _group_rows_by_student(rows: list[dict[str, Any]]) -> dict[str, list[dict[st
     return grouped
 
 
-def _knowledge_query_id(row: dict[str, Any]) -> str:
-    values = row.get("knowledge_ids")
-    if isinstance(values, list):
-        ids = [str(item).strip() for item in values if str(item).strip()]
-        if ids:
-            return "|".join(ids)
-    return str(row.get("knowledge_id") or "").strip()
-
-
 def _aggregate_knowledge_rows(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     buckets: dict[str, dict[str, Any]] = {}
     for row in rows:
-        kid = str(row.get("knowledge_id") or "UNKNOWN")
-        skill_id = int(row.get("skill_id") or 0)
-        label = str(row.get("knowledge_label") or kid)
-        display_label = _knowledge_display_label(kid, label)
-        bucket_key = f"skill:{skill_id}" if skill_id > 0 else display_label or kid
+        knowledge_key = str(row.get("knowledge_key") or "").strip()
+        if not knowledge_key:
+            continue
+        label = str(row.get("knowledge_label") or knowledge_key)
         item = buckets.setdefault(
-            bucket_key,
+            knowledge_key,
             {
                 **row,
                 "student_id": 0,
                 "student_code": "",
                 "student_name": "筛选学生合计",
                 "knowledge_label": label,
-                "knowledge_ids": [],
                 "score_sum": 0.0,
                 "full_score_sum": 0.0,
                 "deduction_count": 0,
@@ -4311,10 +4312,6 @@ def _aggregate_knowledge_rows(rows: list[dict[str, Any]]) -> dict[str, list[dict
             row.get("weighted_score_rate"),
             default=100.0,
         ) * rate_weight
-        for value in str(_knowledge_query_id(row)).replace("|", ",").split(","):
-            value = value.strip()
-            if value and value not in item["knowledge_ids"]:
-                item["knowledge_ids"].append(value)
         item["_exam_ids"].add(str(row.get("exam_count") or ""))
         reason = str(row.get("sample_reasons") or "").strip()
         if reason:
@@ -4554,13 +4551,15 @@ def _read_graph_detail_query() -> dict[str, Any] | None:
     if student_id == 0:
         student_id = None
 
-    raw_skill = first_value("kg_skill_id")
-    try:
-        skill_id = int(raw_skill) if raw_skill not in {None, ""} else None
-    except (TypeError, ValueError):
-        skill_id = None
-    if skill_id is not None and skill_id <= 0:
-        skill_id = None
+    knowledge_key = unquote(first_value("kg_knowledge_key") or "").strip() or None
+    if knowledge_key:
+        prefix = "knowledge_point:"
+        if (
+            not knowledge_key.startswith(prefix)
+            or not knowledge_key[len(prefix) :].strip()
+            or len(knowledge_key) > 300
+        ):
+            knowledge_key = None
 
     raw_sessions = first_value("kg_sessions")
     session_ids: list[int] = []
@@ -4574,8 +4573,7 @@ def _read_graph_detail_query() -> dict[str, Any] | None:
     return {
         "view": view,
         "student_id": student_id,
-        "skill_id": skill_id,
-        "knowledge_id": unquote(first_value("kg_knowledge_id") or "") or None,
+        "knowledge_key": knowledge_key,
         "error_category": unquote(first_value("error_category") or "") or None,
         "session_ids": session_ids,
     }
@@ -4632,28 +4630,64 @@ def _render_knowledge_wrong_detail(
     )
 
 
-def _render_skill_wrong_detail(
+def _render_question_tag_wrong_detail(
     db: DBManager,
     diagnosis_service: DiagnosisProfileService,
     student_id: int | None,
-    skill_id: int,
+    knowledge_key: str,
     session_ids: list[int] | None = None,
 ) -> None:
-    items = diagnosis_service.skill_evidence(
-        skill_id=skill_id,
+    prefix = "knowledge_point:"
+    knowledge_point = str(knowledge_key or "").strip()
+    if knowledge_point.startswith(prefix):
+        knowledge_point = knowledge_point[len(prefix) :].strip()
+    if not knowledge_point:
+        st.info("知识点标签为空，无法读取作答证据。")
+        return
+
+    items = diagnosis_service.tag_evidence(
+        knowledge_point=knowledge_point,
         student_ids=[str(student_id)] if student_id is not None else (),
         session_ids=session_ids or (),
     )
-    if student_id is None:
-        items = items[:1]
-    skill = SkillCatalogService(question_bank_db_path()).get_skill(skill_id)
-    skill_name = str((skill or {}).get("name") or f"技能 #{skill_id}")
+    candidate_count = QuestionService(question_bank_db_path()).tag_value_counts(
+        "knowledge_point",
+        [knowledge_point],
+    ).get(knowledge_point, 0)
+    supporting_tags = _unique_texts([
+        str(value)
+        for item in items
+        for tag_type, values in item.get("question_tags", {}).items()
+        if tag_type != "knowledge_point"
+        for value in values
+    ])
+    primary_errors = _unique_texts([
+        str(item.get("error_summary") or "")
+        for item in items
+        if str(item.get("error_summary") or "").strip()
+    ])
+    secondary_errors = _unique_texts([
+        str(error.get("summary") or "")
+        for item in items
+        for error in item.get("secondary_errors", [])
+        if isinstance(error, dict) and str(error.get("summary") or "").strip()
+    ])
+    st.caption(f"题库中有 {candidate_count} 道推荐候选题使用这一精确知识点标签。")
+    if supporting_tags:
+        st.caption("支持标签：" + "、".join(supporting_tags))
+    if primary_errors or secondary_errors:
+        error_parts = []
+        if primary_errors:
+            error_parts.append("主错因：" + "、".join(primary_errors))
+        if secondary_errors:
+            error_parts.append("次要错因：" + "、".join(secondary_errors))
+        st.caption("；".join(error_parts))
     _render_wrong_detail_items(
         db,
         items,
-        heading="技能作答档案",
-        detail_label=skill_name,
-        empty_message="所选考试中暂无该技能对应的作答记录。",
+        heading="知识点作答档案",
+        detail_label=knowledge_point,
+        empty_message="所选考试中暂无该知识点标签对应的作答记录。",
     )
 
 
@@ -9494,12 +9528,12 @@ def main() -> None:
     st.caption("默认工作区聚焦当前考试批改；学生库和跨考试知识图谱已移至“全局资料”。")
 
     detail = _read_graph_detail_query()
-    if detail and detail.get("view") == "kg_detail" and detail.get("skill_id"):
-        _render_skill_wrong_detail(
+    if detail and detail.get("view") == "kg_detail" and detail.get("knowledge_key"):
+        _render_question_tag_wrong_detail(
             db,
             DiagnosisProfileService(db.db_path, question_bank_db_path()),
             detail.get("student_id"),
-            int(detail["skill_id"]),
+            str(detail["knowledge_key"]),
             detail.get("session_ids") or None,
         )
         return

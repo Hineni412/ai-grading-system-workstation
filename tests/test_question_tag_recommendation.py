@@ -154,3 +154,41 @@ def test_related_fill_policy_never_adds_non_exact_knowledge_candidates(tmp_path:
     assert {item["question_id"] for item in plan["items"]} == {201, 202}
     assert plan["shortages"]
     assert all(shortage["decision_required"] is False for shortage in plan["shortages"])
+
+
+def test_auto_group_uses_exact_knowledge_tags_instead_of_legacy_concept_ids(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    with connect(db_path) as conn:
+        for question_id in range(301, 311):
+            _insert_candidate(
+                conn,
+                question_id=question_id,
+                knowledge_point="三角形全等",
+                difficulty=2 + (question_id % 7),
+            )
+    profile = _profile()
+    second_student = {
+        **profile["students"][0],
+        "student_id": "15",
+        "student_name": "学生乙",
+    }
+    profile["students"] = [profile["students"][0], second_student]
+
+    plan = PracticePlanService(db_path).generate(
+        profile,
+        variant_mode="auto_group",
+        question_count=8,
+        exclude_current_exam_originals=False,
+    )
+
+    assert len(plan["variants"]) == 1
+    assert plan["variants"][0]["variant_type"] == "group"
+    assert plan["variants"][0]["student_ids"] == ["12", "15"]
+    assert plan["variants"][0]["grouping_reason"]["covered_knowledge_points"] == [
+        "三角形全等"
+    ]
+    assert "confirmed_skill_ids" not in plan["variants"][0]["diagnosis_snapshot"]
+    assert "covered_concept_ids" not in plan["variants"][0]["grouping_reason"]

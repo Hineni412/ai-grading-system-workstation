@@ -482,6 +482,44 @@ class QuestionService:
             values.setdefault(row["tag_type"], []).append(row["tag_value"])
         return values
 
+    def tag_value_counts(
+        self,
+        tag_type: str,
+        tag_values: list[str] | tuple[str, ...],
+    ) -> dict[str, int]:
+        normalized_type = str(tag_type or "").strip()
+        if normalized_type not in ALLOWED_TAG_TYPES:
+            raise ValueError(f"unsupported tag type: {normalized_type}")
+        normalized_values = list(
+            dict.fromkeys(
+                text
+                for value in tag_values
+                if (text := str(value or "").strip())
+            )
+        )
+        if not normalized_values:
+            return {}
+
+        self.initialize_database()
+        placeholders = ", ".join("?" for _ in normalized_values)
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT t.tag_value, COUNT(DISTINCT q.id) AS question_count
+                FROM question_tags t
+                JOIN questions q ON q.id = t.question_id
+                LEFT JOIN papers p ON p.id = q.paper_id
+                WHERE t.tag_type = ?
+                  AND t.tag_value IN ({placeholders})
+                  AND COALESCE(q.is_deleted, 0) = 0
+                  AND COALESCE(p.import_status, '') <> 'deleted'
+                GROUP BY t.tag_value
+                """,
+                [normalized_type, *normalized_values],
+            ).fetchall()
+        counts = {str(row["tag_value"]): int(row["question_count"] or 0) for row in rows}
+        return {value: counts.get(value, 0) for value in normalized_values}
+
     def save_question_preview(
         self,
         question_id: int,

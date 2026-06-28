@@ -59,14 +59,38 @@ class PracticePlanService:
         ]
         if variant_mode not in {"individual", "auto_group"}:
             raise ValueError(f"unsupported variant mode: {variant_mode}")
+        question_tag_diagnosis = _is_question_tag_diagnosis(profile_set)
         normalized_overrides = _normalized_teacher_groups(teacher_groups, profiles)
         if normalized_overrides:
-            grouped_profiles, ungrouped_students = _teacher_override_groups(profiles, normalized_overrides)
+            grouped_profiles, ungrouped_students = _teacher_override_groups(
+                profiles,
+                normalized_overrides,
+                question_tag_diagnosis=question_tag_diagnosis,
+            )
         elif variant_mode == "auto_group":
-            grouped_profiles, ungrouped_students = _automatic_groups(profiles)
+            if question_tag_diagnosis:
+                grouped_profiles, ungrouped_students = _automatic_question_tag_groups(
+                    profiles
+                )
+            else:
+                grouped_profiles, ungrouped_students = _automatic_groups(profiles)
         else:
             grouped_profiles = [
-                ([profile], {"rule": "individual", "covered_concept_ids": _confirmed_concept_ids(profile)})
+                (
+                    [profile],
+                    {
+                        "rule": "individual",
+                        **(
+                            {
+                                "covered_knowledge_points": sorted(
+                                    _question_tag_targets({"students": [profile]})
+                                )
+                            }
+                            if question_tag_diagnosis
+                            else {"covered_concept_ids": _confirmed_concept_ids(profile)}
+                        ),
+                    },
+                )
                 for profile in profiles
             ]
             ungrouped_students = []
@@ -85,9 +109,12 @@ class PracticePlanService:
                 "diagnosis_identity": profile_set.get("diagnosis_identity"),
                 "scope": {"mode": "selected", "student_ids": member_ids},
                 "exam_scope": exam_scope,
-                "confirmed_skill_ids": list(profile_set.get("confirmed_skill_ids") or []),
                 "students": members,
             }
+            if not question_tag_diagnosis:
+                diagnosis_snapshot["confirmed_skill_ids"] = list(
+                    profile_set.get("confirmed_skill_ids") or []
+                )
             generated = self.generate_variant(
                 diagnosis_snapshot,
                 question_count=question_count,
@@ -1261,6 +1288,48 @@ def _automatic_groups(
     return groups, sorted(ungrouped)
 
 
+def _automatic_question_tag_groups(
+    profiles: list[dict[str, Any]],
+) -> tuple[list[tuple[list[dict[str, Any]], dict[str, Any]]], list[str]]:
+    buckets: dict[tuple[str, tuple[str, ...]], list[dict[str, Any]]] = {}
+    ungrouped: list[str] = []
+    groups: list[tuple[list[dict[str, Any]], dict[str, Any]]] = []
+    for profile in profiles:
+        knowledge_points = tuple(sorted(_question_tag_targets({"students": [profile]})))
+        score_band = _score_rate_band(profile.get("score_rate"))
+        if not knowledge_points or score_band == "unknown":
+            student_id = str(profile["student_id"])
+            ungrouped.append(student_id)
+            groups.append(
+                (
+                    [profile],
+                    {
+                        "rule": "individual_missing_tag_or_score",
+                        "covered_knowledge_points": list(knowledge_points),
+                        "score_rate_band": score_band,
+                    },
+                )
+            )
+            continue
+        buckets.setdefault((score_band, knowledge_points), []).append(profile)
+    for (score_band, knowledge_points), members in sorted(
+        buckets.items(),
+        key=lambda item: (item[0][0], item[0][1], str(item[1][0]["student_id"])),
+    ):
+        groups.append(
+            (
+                members,
+                {
+                    "rule": "same_score_band_and_exact_knowledge_tags",
+                    "covered_knowledge_points": list(knowledge_points),
+                    "score_rate_band": score_band,
+                },
+            )
+        )
+    groups.sort(key=lambda item: min(str(profile["student_id"]) for profile in item[0]))
+    return groups, sorted(ungrouped)
+
+
 def _normalized_teacher_groups(
     teacher_groups: Mapping[str, Iterable[str]] | None,
     profiles: list[dict[str, Any]],
@@ -1285,6 +1354,8 @@ def _normalized_teacher_groups(
 def _teacher_override_groups(
     profiles: list[dict[str, Any]],
     assignments: Mapping[str, list[str]],
+    *,
+    question_tag_diagnosis: bool = False,
 ) -> tuple[list[tuple[list[dict[str, Any]], dict[str, Any]]], list[str]]:
     by_id = {str(item["student_id"]): item for item in profiles}
     assigned: set[str] = set()
@@ -1298,11 +1369,27 @@ def _teacher_override_groups(
                 {
                     "rule": "teacher_override",
                     "group_name": group_name,
-                    "covered_concept_ids": sorted(
+                    **(
                         {
-                            concept_id
-                            for member in members
-                            for concept_id in _confirmed_concept_ids(member)
+                            "covered_knowledge_points": sorted(
+                                {
+                                    point
+                                    for member in members
+                                    for point in _question_tag_targets(
+                                        {"students": [member]}
+                                    )
+                                }
+                            )
+                        }
+                        if question_tag_diagnosis
+                        else {
+                            "covered_concept_ids": sorted(
+                                {
+                                    concept_id
+                                    for member in members
+                                    for concept_id in _confirmed_concept_ids(member)
+                                }
+                            )
                         }
                     ),
                 },
@@ -1316,7 +1403,15 @@ def _teacher_override_groups(
                     [profile],
                     {
                         "rule": "individual_not_assigned_by_teacher",
-                        "covered_concept_ids": _confirmed_concept_ids(profile),
+                        **(
+                            {
+                                "covered_knowledge_points": sorted(
+                                    _question_tag_targets({"students": [profile]})
+                                )
+                            }
+                            if question_tag_diagnosis
+                            else {"covered_concept_ids": _confirmed_concept_ids(profile)}
+                        ),
                     },
                 )
             )

@@ -16,8 +16,6 @@ from question_bank.recommendation.practice_plan_service import PracticePlanServi
 from question_bank.services.training_export_service import TrainingExportService
 from question_bank.services.training_task_service import TrainingTaskService
 from question_bank.services.question_service import QuestionService
-from question_bank.database.schema import connect
-from question_bank.services.skill_catalog_service import SkillCatalogService
 
 # 共享组件（难度 badge / 标签 chip 群），与题库管理页风格统一
 try:
@@ -39,8 +37,6 @@ DIAGNOSIS_SIGNATURE_KEY = "training_recommendation_diagnosis_signature"
 PLAN_KEY = "training_recommendation_plan"
 PLAN_SIGNATURE_KEY = "training_recommendation_plan_signature"
 SAVED_TASK_KEY = "training_recommendation_saved_task"
-FILL_POLICY_KEY = "training_recommendation_fill_policy"
-SKIPPED_CONFLICTS_KEY = "training_recommendation_skipped_conflicts"
 
 STUDENT_MODE_MAP = {
     "单个学生": "student",
@@ -86,13 +82,13 @@ def _unique_text(values: Iterable[object]) -> list[str]:
 def _scope_signature(
     scope: Mapping[str, Any],
     exam_scope: Mapping[str, Any],
-    catalog_revision: str,
+    tag_revision: str,
 ) -> str:
     return json.dumps(
         {
             "scope": dict(scope),
             "exam_scope": dict(exam_scope),
-            "catalog_revision": catalog_revision,
+            "tag_revision": tag_revision,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -109,106 +105,62 @@ def _score_by_student(db: DBManager) -> dict[str, float | None]:
     return result
 
 
-def _render_diagnosis(diagnosis: Mapping[str, Any], *, exam_scope: Mapping[str, Any]) -> None:
+def _render_diagnosis(diagnosis: Mapping[str, Any]) -> None:
     students = list(diagnosis.get("students") or [])
-    skill_ids = sorted({
-        int(weak["skill_id"])
+    knowledge_points = sorted({
+        str(weak.get("knowledge_point") or "").strip()
         for student in students
         for weak in student.get("weak_points", [])
-        if weak.get("skill_id") is not None and weak.get("eligible_for_recommendation") is not False
+        if str(weak.get("knowledge_point") or "").strip()
     })
-    exact_counts = _exact_question_counts(skill_ids)
+    exact_counts = QuestionService(get_path_manager().qb_db_path).tag_value_counts(
+        "knowledge_point",
+        knowledge_points,
+    )
+    coverage = diagnosis.get("coverage") if isinstance(diagnosis.get("coverage"), Mapping) else {}
     columns = st.columns(3)
     columns[0].metric("学生", len(students))
-    columns[1].metric("薄弱技能", len(skill_ids))
-    columns[2].metric("待处理问题", int(diagnosis.get("unresolved_count") or 0))
+    columns[1].metric("薄弱知识点", len(knowledge_points))
+    columns[2].metric(
+        "知识图谱覆盖",
+        f"{int(coverage.get('covered_items') or 0)}/{int(coverage.get('total_items') or 0)}",
+    )
 
     rows: list[dict[str, Any]] = []
     for student in students:
         for weak in student.get("weak_points", []):
-            if weak.get("skill_id") is None:
+            knowledge_point = str(weak.get("knowledge_point") or "").strip()
+            if not knowledge_point:
                 continue
+            tag_context = weak.get("tag_context") if isinstance(weak.get("tag_context"), Mapping) else {}
+            supporting_tags = _unique_text(
+                value
+                for values in tag_context.values()
+                for value in (values if isinstance(values, list) else [])
+            )
             rows.append({
                 "学生": student.get("student_name") or student.get("student_id"),
                 "班级": student.get("class_id") or "",
-                "薄弱技能": weak.get("skill_name") or "未命名技能",
-                "所属主题": weak.get("topic_name") or "",
+                "薄弱知识点": knowledge_point,
                 "掌握率": f"{float(weak.get('mastery') or 0) * 100:.1f}%",
                 "掌握率数值": float(weak.get("mastery") or 0),
                 "证据题数": weak.get("evidence_count") or 0,
-                "精确题数": exact_counts.get(int(weak["skill_id"]), 0),
+                "题库同标签题数": exact_counts.get(knowledge_point, 0),
+                "支持标签": "、".join(supporting_tags),
             })
     if rows:
         st.dataframe(pd.DataFrame(rows).drop(columns=["掌握率数值"]), width="stretch", hide_index=True)
-        st.markdown("##### 学生技能掌握情况")
-        st.caption("按学生和具体技能汇总掌握率，空白位置显示为“-”。")
+        st.markdown("##### 学生知识点掌握情况")
+        st.caption("知识点名称直接来自题库当前 knowledge_point 标签；标签修改后重新分析即可更新。")
         pivot = pd.DataFrame(rows).pivot_table(
-            index="学生", columns="薄弱技能", values="掌握率数值", aggfunc="mean"
+            index="学生", columns="薄弱知识点", values="掌握率数值", aggfunc="mean"
         )
         display_pivot = pivot.apply(
             lambda column: column.map(lambda value: "-" if pd.isna(value) else f"{value:.1%}")
         )
         st.dataframe(display_pivot, width="stretch")
     else:
-        st.info("所选范围内暂时没有薄弱技能证据。")
-    _render_current_conflicts(exam_scope)
-
-
-def _exact_question_counts(skill_ids: list[int]) -> dict[int, int]:
-    if not skill_ids:
-        return {}
-    placeholders = ",".join("?" for _ in skill_ids)
-    with connect(get_path_manager().qb_db_path) as conn:
-        rows = conn.execute(
-            f"""
-            SELECT skill_id, COUNT(DISTINCT question_id) AS count
-            FROM question_skill_links
-            WHERE role = 'measured' AND status = 'resolved' AND skill_id IN ({placeholders})
-            GROUP BY skill_id
-            """,
-            skill_ids,
-        ).fetchall()
-    return {int(row["skill_id"]): int(row["count"]) for row in rows}
-
-
-def _render_current_conflicts(exam_scope: Mapping[str, Any]) -> None:
-    service = SkillCatalogService(get_path_manager().qb_db_path)
-    session_ids = {str(value) for value in exam_scope.get("session_ids", [])}
-    skipped = set(st.session_state.get(SKIPPED_CONFLICTS_KEY) or [])
-    conflicts = [
-        item for item in service.list_open_conflicts(limit=50)
-        if item["source_type"] == "assessment_item"
-        and str(item["source_ref"]).split(":", 1)[0] in session_ids
-        and int(item["id"]) not in skipped
-    ]
-    if not conflicts:
-        st.success("当前证据已识别到具体技能，无需逐条确认。")
-        return
-    st.warning(f"当前考试有 {len(conflicts)} 个叫法无法唯一判断。可选择一次，也可本次跳过。")
-    all_skills = service.list_skills()
-    for conflict in conflicts:
-        with st.container(border=True):
-            st.write(f"**{conflict['raw_label']}**")
-            candidate_ids = {int(item["id"]) for item in conflict.get("candidates", [])}
-            choices = sorted(
-                all_skills,
-                key=lambda item: (0 if int(item["id"]) in candidate_ids else 1, item["topic_name"], item["name"]),
-            )
-            choice = st.selectbox(
-                "这个叫法表示", choices,
-                format_func=lambda item: f"{item['name']} · {item['topic_name']}",
-                key=f"teacher_conflict_{conflict['id']}",
-            )
-            use_col, skip_col = st.columns(2)
-            if use_col.button("使用此技能", key=f"teacher_resolve_{conflict['id']}", use_container_width=True):
-                service.resolve_conflict(int(conflict["id"]), int(choice["id"]), actor="任课教师")
-                st.session_state.pop(DIAGNOSIS_KEY, None)
-                st.session_state.pop(PLAN_KEY, None)
-                st.rerun()
-            if skip_col.button("本次跳过", key=f"teacher_skip_{conflict['id']}", use_container_width=True):
-                skipped.add(int(conflict["id"]))
-                st.session_state[SKIPPED_CONFLICTS_KEY] = sorted(skipped)
-                st.rerun()
+        st.info("所选范围内暂时没有已关联题库标签的薄弱知识点证据。")
 
 def _render_question_images(question_detail: dict[str, Any]) -> None:
     IMAGE_MARKER_PATTERN = re.compile(r"\[image:\s*(?P<path>[^\]]+)\]", re.IGNORECASE)
@@ -248,13 +200,8 @@ def _render_question_detail_expander(order: int, item: dict[str, Any], qb_servic
     source = item.get("source_paper") or "题库"
     difficulty = item.get("difficulty") or 0
 
-    match_kind = str(item.get("match_kind") or "exact")
-    target_skill_name = str(item.get("target_skill_name") or "当前薄弱技能")
-    matched_skill_name = str(item.get("matched_skill_name") or target_skill_name)
-    if match_kind == "neighbor":
-        reason_desc = f"相近补入：薄弱技能「{target_skill_name}」题量不足，补入「{matched_skill_name}」并明确标注。"
-    else:
-        reason_desc = f"精确匹配：这道题直接训练「{target_skill_name}」。"
+    knowledge_point = str(item.get("knowledge_point") or "当前薄弱知识点")
+    reason_desc = f"精确匹配：这道题与薄弱知识点「{knowledge_point}」的 knowledge_point 标签完全相同。"
 
     # —— 白底卡片头部：题号标题 + 彩色 badges 一行 ——
     diff_badge = format_difficulty_badge(difficulty)
@@ -318,16 +265,20 @@ def _render_question_detail_expander(order: int, item: dict[str, Any], qb_servic
                 unsafe_allow_html=True,
             )
 
-            # 精准匹配子技能：chip 群
-            sub_skills = item.get("sub_skill_match")
-            if sub_skills:
+            tag_matches = item.get("tag_matches") if isinstance(item.get("tag_matches"), Mapping) else {}
+            matched_tags = _unique_text(
+                value
+                for values in tag_matches.values()
+                for value in (values if isinstance(values, list) else [])
+            )
+            if matched_tags:
                 chips = "".join(
                     f'<span class="qb-tag-chip">{html.escape(str(s))}</span>'
-                    for s in sub_skills
+                    for s in matched_tags
                 )
                 st.markdown(
                     f'<div class="qb-tag-row" style="margin-top:8px;">'
-                    f'<span class="qb-tag-label">🎯 命中子技能</span>'
+                    f'<span class="qb-tag-label">🎯 命中支持标签</span>'
                     f'<div class="qb-tag-panel" style="display:flex; flex-wrap:wrap; gap:4px;">{chips}</div>'
                     f'</div>',
                     unsafe_allow_html=True,
@@ -339,8 +290,8 @@ def _render_question_detail_expander(order: int, item: dict[str, Any], qb_servic
                 with st.expander("推荐依据（高级）"):
                     for comp_key, comp_val in score_comps.items():
                         comp_name = {
-                            "skill_match": "技能匹配",
-                            "fine_skill": "具体训练技能",
+                            "knowledge_match": "知识点精确匹配",
+                            "tag_overlap": "方法与模型标签重合",
                             "frequency": "常见程度",
                             "gradient": "难度合适度",
                             "diversity": "题目多样性",
@@ -385,12 +336,8 @@ def _render_plan(plan: Mapping[str, Any]) -> None:
                             "顺序": item.get("item_order"),
                             "训练环节": STAGE_LABELS.get(item.get("stage"), item.get("stage")),
                             "题库题号": item.get("question_id"),
-                            "匹配": "相近补入" if item.get("match_kind") == "neighbor" else "精确题",
-                            "训练技能": (
-                                f"{item.get('target_skill_name')} → {item.get('matched_skill_name')}"
-                                if item.get("match_kind") == "neighbor"
-                                else item.get("target_skill_name")
-                            ),
+                            "匹配": "知识点标签完全相同",
+                            "训练知识点": item.get("knowledge_point"),
                             "来源": item.get("source_paper"),
                             "难度": item.get("difficulty") or "未标注",
                         }
@@ -405,10 +352,10 @@ def _render_plan(plan: Mapping[str, Any]) -> None:
                 for item in items:
                     _render_question_detail_expander(item.get("item_order"), item, qb_service, key_prefix=f"plan_{variant.get('variant_key')}")
             else:
-                st.info("当前版本没有符合具体技能要求的候选题。")
+                st.info("当前版本没有知识点标签完全相同的候选题。")
             for shortage in variant.get("shortages") or []:
                 st.warning(
-                    f"{shortage.get('stage')} 阶段缺少 "
+                    f"{shortage.get('stage')} 阶段精确知识点标签题不足，缺少 "
                     f"{shortage.get('missing_count')} 题。"
                 )
             for warning in variant.get("warnings") or []:
@@ -632,7 +579,7 @@ except Exception:
     pass
 
 st.title("生成错题巩固练习")
-st.caption("选好学生和考试即可生成；系统默认只选直接训练薄弱技能的题目，少量歧义可当场跳过。")
+st.caption("选好学生和考试即可生成；系统只从题库中选择 knowledge_point 标签完全相同的题目。")
 
 pm = get_path_manager()
 grading_db_available = Path(pm.db_path).exists()
@@ -755,11 +702,11 @@ exam_scope = {
     "mode": exam_mode,
     "session_ids": selected_session_ids,
 }
-catalog_revision = "unified-skill-catalog" if question_bank_available else "question-bank-unavailable"
+tag_revision = "current-question-tags" if question_bank_available else "question-bank-unavailable"
 selection_signature = _scope_signature(
     scope,
     exam_scope,
-    catalog_revision,
+    tag_revision,
 )
 
 safety_reasons: list[str] = []
@@ -774,13 +721,13 @@ analyze_disabled = bool(safety_reasons)
 if safety_reasons:
     st.info("当前不能分析：" + "；".join(safety_reasons))
 if st.button(
-    "分析薄弱技能",
+    "分析薄弱知识点",
     type="primary",
     disabled=analyze_disabled,
 ):
     try:
-        with st.spinner("正在分析薄弱技能…"):
-            diagnosis = DiagnosisProfileService(pm.db_path, pm.qb_db_path).build_profiles(
+        with st.spinner("正在分析薄弱知识点…"):
+            diagnosis = DiagnosisProfileService(pm.db_path, pm.qb_db_path).build_tag_profiles(
                 scope=scope,
                 exam_scope=exam_scope,
             )
@@ -790,7 +737,7 @@ if st.button(
         selection_signature = _scope_signature(
             scope,
             exam_scope,
-            catalog_revision,
+            tag_revision,
         )
         st.session_state[DIAGNOSIS_KEY] = diagnosis
         st.session_state[DIAGNOSIS_SIGNATURE_KEY] = selection_signature
@@ -805,13 +752,10 @@ diagnosis_is_current = (
     and st.session_state.get(DIAGNOSIS_SIGNATURE_KEY) == selection_signature
 )
 if diagnosis_is_current:
-    st.subheader("3. 查看薄弱技能")
-    _render_diagnosis(
-        diagnosis,
-        exam_scope=exam_scope,
-    )
+    st.subheader("3. 查看薄弱知识点")
+    _render_diagnosis(diagnosis)
 elif diagnosis is not None:
-    st.info("学生或考试范围已变化，请重新分析薄弱技能。")
+    st.info("学生或考试范围已变化，请重新分析薄弱知识点。")
 
 st.subheader("4. 生成练习")
 variant_label = st.segmented_control(
@@ -837,7 +781,7 @@ stage_total = direct_percent + prerequisite_percent + transfer_percent
 confirmed_available = bool(
     diagnosis_is_current
     and any(
-        weak.get("skill_id") is not None and weak.get("eligible_for_recommendation") is not False
+        str(weak.get("knowledge_point") or "").strip()
         for student in diagnosis.get("students", [])
         for weak in student.get("weak_points", [])
     )
@@ -846,14 +790,14 @@ generation_reasons = list(safety_reasons)
 if not diagnosis_is_current:
     generation_reasons.append("请先分析当前选择范围")
 elif not confirmed_available:
-    generation_reasons.append("没有可用于选题的薄弱技能")
+    generation_reasons.append("没有可用于选题的薄弱知识点标签")
 if stage_total != 100:
     generation_reasons.append("训练阶段比例合计必须为 100%")
 
 if generation_reasons:
     st.info("当前不能生成：" + "；".join(_unique_text(generation_reasons)))
 
-def _generate_selected_plan(fill_policy: str) -> dict[str, Any]:
+def _generate_selected_plan() -> dict[str, Any]:
     return PracticePlanService(pm.qb_db_path).generate(
         diagnosis,
         variant_mode=VARIANT_MODE_MAP[variant_label or "每人独立个性卷"],
@@ -864,7 +808,7 @@ def _generate_selected_plan(fill_policy: str) -> dict[str, Any]:
             "transfer": transfer_percent / 100,
         },
         exclude_current_exam_originals=exclude_current_exam_originals,
-        related_fill_policy=fill_policy,
+        related_fill_policy="exact_only",
     )
 
 
@@ -875,13 +819,12 @@ if st.button(
 ):
     try:
         with st.spinner("正在生成训练任务…"):
-            plan = _generate_selected_plan("ask")
+            plan = _generate_selected_plan()
     except Exception as exc:
         st.error(f"生成训练任务失败：{exc}")
     else:
         st.session_state[PLAN_KEY] = plan
         st.session_state[PLAN_SIGNATURE_KEY] = selection_signature
-        st.session_state[FILL_POLICY_KEY] = "ask"
         st.session_state.pop(SAVED_TASK_KEY, None)
         st.rerun()
 
@@ -891,31 +834,8 @@ plan_is_current = (
     and st.session_state.get(PLAN_SIGNATURE_KEY) == selection_signature
 )
 if plan_is_current:
-    decision_required = any(
-        shortage.get("decision_required")
-        for variant in plan.get("variants", [])
-        for shortage in variant.get("shortages", [])
-    )
-    if decision_required:
-        st.warning("精确题数量不足，请为整份练习选择一次处理方式。")
-        fill_choice = st.radio(
-            "题量不足时",
-            ("补入相近题，并在练习中标明", "保持较少的精确题"),
-            horizontal=True,
-        )
-        if st.button("应用题量选择", type="primary"):
-            fill_policy = "allow_neighbors" if fill_choice.startswith("补入相近题") else "exact_only"
-            try:
-                plan = _generate_selected_plan(fill_policy)
-            except Exception as exc:
-                st.error(f"重新生成失败：{exc}")
-            else:
-                st.session_state[PLAN_KEY] = plan
-                st.session_state[FILL_POLICY_KEY] = fill_policy
-                st.session_state.pop(SAVED_TASK_KEY, None)
-                st.rerun()
     _render_plan(plan)
-    if st.button("保存训练任务", type="primary", disabled=decision_required):
+    if st.button("保存训练任务", type="primary"):
         try:
             saved_task = TrainingTaskService(pm.qb_db_path).create_task(
                 plan,
