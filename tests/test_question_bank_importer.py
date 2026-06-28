@@ -153,6 +153,13 @@ def test_import_archives_local_source_and_persists_data_relative_path(
             source_file=str(path),
             page_range="document",
             text="1. 这是长度足够的测试题目\n答案：\n1. 42",
+            rich_paragraphs=[
+                {
+                    "text": "1. 这是长度足够的测试题目",
+                    "xml": "<w:p>browser-safe-rich-content</w:p>",
+                    "image_relationships": {},
+                }
+            ],
         ),
     )
 
@@ -171,6 +178,7 @@ def test_import_archives_local_source_and_persists_data_relative_path(
     assert paper_source.startswith("question_bank/raw_papers/")
     assert question_source == paper_source
     assert (data_root / paper_source).exists()
+    assert (data_root / "question_bank" / "rich_content" / "question_1.json").exists()
     assert source.exists()
     assert result.files[0].source_file == paper_source
 

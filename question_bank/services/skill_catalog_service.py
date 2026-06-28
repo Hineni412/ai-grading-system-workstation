@@ -543,6 +543,10 @@ def seed_builtin_catalog_connection(conn, catalog: BuiltinSkillCatalog) -> dict[
             SET name = ?, subject = ?, grade_min = ?, grade_max = ?,
                 updated_at = datetime('now','localtime')
             WHERE stable_key = ?
+              AND NOT (
+                  name IS ? AND subject IS ?
+                  AND grade_min IS ? AND grade_max IS ?
+              )
             """,
             (
                 topic.name,
@@ -550,6 +554,10 @@ def seed_builtin_catalog_connection(conn, catalog: BuiltinSkillCatalog) -> dict[
                 topic.grade_min,
                 topic.grade_max,
                 topic.stable_key,
+                topic.name,
+                catalog.subject,
+                topic.grade_min,
+                topic.grade_max,
             ),
         )
     topic_ids = {
@@ -557,6 +565,10 @@ def seed_builtin_catalog_connection(conn, catalog: BuiltinSkillCatalog) -> dict[
         for row in conn.execute("SELECT id, stable_key FROM skill_topics").fetchall()
     }
     for skill in catalog.skills:
+        aliases_json = json.dumps(
+            list(dict.fromkeys((*skill.aliases, *skill.legacy_keys))),
+            ensure_ascii=False,
+        )
         cursor = conn.execute(
             """
             INSERT OR IGNORE INTO skills (
@@ -567,7 +579,7 @@ def seed_builtin_catalog_connection(conn, catalog: BuiltinSkillCatalog) -> dict[
                 skill.stable_key,
                 topic_ids[skill.topic_key],
                 skill.name,
-                json.dumps(list(dict.fromkeys((*skill.aliases, *skill.legacy_keys))), ensure_ascii=False),
+                aliases_json,
                 skill.grade_min,
                 skill.grade_max,
             ),
@@ -579,14 +591,23 @@ def seed_builtin_catalog_connection(conn, catalog: BuiltinSkillCatalog) -> dict[
             SET topic_id = ?, name = ?, aliases_json = ?, grade_min = ?, grade_max = ?,
                 updated_at = datetime('now','localtime')
             WHERE stable_key = ? AND origin = 'builtin' AND status = 'active'
+              AND NOT (
+                  topic_id IS ? AND name IS ? AND aliases_json IS ?
+                  AND grade_min IS ? AND grade_max IS ?
+              )
             """,
             (
                 topic_ids[skill.topic_key],
                 skill.name,
-                json.dumps(list(dict.fromkeys((*skill.aliases, *skill.legacy_keys))), ensure_ascii=False),
+                aliases_json,
                 skill.grade_min,
                 skill.grade_max,
                 skill.stable_key,
+                topic_ids[skill.topic_key],
+                skill.name,
+                aliases_json,
+                skill.grade_min,
+                skill.grade_max,
             ),
         )
     skill_ids = {
@@ -613,12 +634,14 @@ def seed_builtin_catalog_connection(conn, catalog: BuiltinSkillCatalog) -> dict[
             UPDATE skill_neighbors
             SET weight = ?, source = 'builtin', updated_at = datetime('now','localtime')
             WHERE source_skill_id = ? AND target_skill_id = ? AND kind = ?
+              AND NOT (weight IS ? AND source = 'builtin')
             """,
             (
                 neighbor.weight,
                 skill_ids[neighbor.source_key],
                 skill_ids[neighbor.target_key],
                 neighbor.kind,
+                neighbor.weight,
             ),
         )
     conn.execute(
@@ -628,6 +651,7 @@ def seed_builtin_catalog_connection(conn, catalog: BuiltinSkillCatalog) -> dict[
         ON CONFLICT(key) DO UPDATE SET
             value = excluded.value,
             updated_at = datetime('now','localtime')
+        WHERE skill_system_settings.value IS NOT excluded.value
         """,
         (catalog.version,),
     )
