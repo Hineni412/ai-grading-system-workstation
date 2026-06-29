@@ -12,10 +12,28 @@ def test_question_bank_import_dialog_has_no_manual_path_scan() -> None:
 
 def test_question_bank_import_dialog_has_close_and_success_prompt() -> None:
     page = Path('pages/题库管理.py').read_text(encoding='utf-8')
+    state_helper = Path('pages_shared/question_bank_import_state.py').read_text(encoding='utf-8')
 
     assert 'qb_import_dialog_close' in page
-    assert 'qb_import_success_message' in page
+    assert 'IMPORT_SUCCESS_MESSAGE_KEY' in page
+    assert 'qb_import_success_message' in state_helper
     assert '导入完成' in page
+
+
+def test_question_bank_import_dialog_dismissal_clears_pending_state() -> None:
+    page = Path('pages/题库管理.py').read_text(encoding='utf-8')
+
+    assert 'on_dismiss=_dismiss_import_dialog' in page
+    assert 'clear_import_dialog_state(st.session_state)' in page
+
+
+def test_native_picker_results_do_not_trigger_full_app_rerun() -> None:
+    page = Path('pages/题库管理.py').read_text(encoding='utf-8')
+    file_picker_block = page.split('if file_paths:', 1)[1].split('with col2:', 1)[0]
+    folder_picker_block = page.split('if dir_path:', 1)[1].split('rows = [', 1)[0]
+
+    assert 'st.rerun()' not in file_picker_block
+    assert 'st.rerun()' not in folder_picker_block
 
 
 def test_question_bank_tagging_runtime_controls_live_only_in_sidebar() -> None:
