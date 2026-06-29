@@ -32,7 +32,6 @@ from question_bank.services.ai_tagging_service import (
     is_valid_canonical_id,
 )
 from question_bank.services.question_service import QuestionService, has_complete_analysis_tags
-from question_bank.services.skill_resolution_service import SkillResolutionService
 from question_bank.services.asset_path_service import resolve_question_bank_asset_path
 from question_bank.services.question_frequency_service import (
     FrequencyMetrics,
@@ -41,6 +40,12 @@ from question_bank.services.question_frequency_service import (
 )
 from pages_shared.shared_styles import inject_shared_css
 from pages_shared.shared_components import format_difficulty_badge, format_type_badge, format_frequency_badge, render_tag_panel_markdown
+from pages_shared.question_bank_import_state import (
+    IMPORT_SUCCESS_MESSAGE_KEY,
+    SCAN_ROWS_KEY,
+    clear_import_dialog_state,
+    replace_import_scan_rows,
+)
 from question_bank.services.assembly_basket_state import load_basket_draft, save_basket_draft, ORDER_KEY
 
 from question_bank.services.question_preview_display import (
@@ -55,9 +60,6 @@ from question_bank.parsers.type_detector import detect_question_type
 
 
 LOGGER = logging.getLogger(__name__)
-SCAN_ROWS_KEY = "qb_scan_rows"
-IMPORT_DIALOG_OPEN_KEY = "qb_import_dialog_open"
-IMPORT_SUCCESS_MESSAGE_KEY = "qb_import_success_message"
 AI_RESULTS_KEY = "qb_ai_tag_results"
 SHOW_FILTERED_QUESTIONS_KEY = "qb_show_filtered_questions"
 LAST_AI_SUMMARY_KEY = "qb_last_ai_tagging_summary"
@@ -211,7 +213,11 @@ def _render_rich_content_tools(service: QuestionService) -> None:
                 st.info("没有生成新的侧车文件。可能已经回填过，或当前题目没有可匹配的 DOCX 源文件。")
 
 
-@st.dialog("批量导入真题", width="large")
+def _dismiss_import_dialog() -> None:
+    clear_import_dialog_state(st.session_state)
+
+
+@st.dialog("批量导入真题", width="large", on_dismiss=_dismiss_import_dialog)
 def _render_import_dialog(service: QuestionService, raw_papers_dir: Path) -> None:
     from question_bank.importers.batch_importer import infer_metadata_from_filename, ScannedPaper
     local_dialog = get_local_file_dialog()
@@ -219,6 +225,7 @@ def _render_import_dialog(service: QuestionService, raw_papers_dir: Path) -> Non
     header_cols = st.columns([1, 4])
     with header_cols[0]:
         if st.button("关闭", key="qb_import_dialog_close", use_container_width=True):
+            clear_import_dialog_state(st.session_state)
             st.rerun()
     with header_cols[1]:
         success_message = st.session_state.get(IMPORT_SUCCESS_MESSAGE_KEY)
@@ -257,9 +264,11 @@ def _render_import_dialog(service: QuestionService, raw_papers_dir: Path) -> Non
                         )
                         for p in file_paths
                     ]
-                    st.session_state[SCAN_ROWS_KEY] = [_scan_row(item) for item in scanned_files]
+                    replace_import_scan_rows(
+                        st.session_state,
+                        (_scan_row(item) for item in scanned_files),
+                    )
                     st.success(f"已成功加载并推断 {len(scanned_files)} 个试卷文件的元数据，请在下方确认或编辑。")
-                    st.rerun()
             except Exception as e:
                 st.error(f"无法打开文件选择框：{e}")
             finally:
@@ -281,9 +290,11 @@ def _render_import_dialog(service: QuestionService, raw_papers_dir: Path) -> Non
                 dir_path = local_dialog.filedialog.askdirectory(title="选择包含试卷的文件夹")
                 if dir_path:
                     scanned_files = scan_paper_folder(dir_path)
-                    st.session_state[SCAN_ROWS_KEY] = [_scan_row(item) for item in scanned_files]
+                    replace_import_scan_rows(
+                        st.session_state,
+                        (_scan_row(item) for item in scanned_files),
+                    )
                     st.success(f"已扫描并加载文件夹下 {len(scanned_files)} 个试卷文件，请在下方确认或编辑。")
-                    st.rerun()
             except Exception as e:
                 st.error(f"无法打开文件夹选择框：{e}")
             finally:
@@ -353,14 +364,16 @@ def _render_import_dialog(service: QuestionService, raw_papers_dir: Path) -> Non
             semester=batch_semester,
         )
         st.session_state[SCAN_ROWS_KEY] = updated_rows
-        st.rerun()
+        st.rerun(scope="fragment")
 
     if remove_unchecked:
         remaining_rows = [row for row in edited_rows if bool(row.get("导入"))]
         removed = len(edited_rows) - len(remaining_rows)
         st.session_state[SCAN_ROWS_KEY] = remaining_rows
-        st.success(f"已从本次扫描列表移除 {removed} 个文件；本地文件未删除。")
-        st.rerun()
+        st.session_state[IMPORT_SUCCESS_MESSAGE_KEY] = (
+            f"已从本次扫描列表移除 {removed} 个文件；本地文件未删除。"
+        )
+        st.rerun(scope="fragment")
 
     if import_requested:
         selected_for_import = [_row_to_scanned_paper(row) for row in edited_rows if bool(row.get("导入"))]
@@ -1419,10 +1432,6 @@ def _run_ai_tagging_for_ids(
         return
 
     tagging_service = AITaggingService()
-    skill_resolver = SkillResolutionService(
-        service.db_path,
-        context_ranker=tagging_service.build_skill_context_ranker(),
-    )
     progress_bar = st.progress(0, text=f"AI 打标签进度：0/{len(contexts)}")
     status_box = st.empty()
     reviewed_count = 0
@@ -1441,7 +1450,6 @@ def _run_ai_tagging_for_ids(
                     overwrite_manual=allow_manual_overwrite,
                     model_name=result.model_name,
                     confidence=result.analysis.confidence if result.analysis is not None else None,
-                    skill_resolver=skill_resolver,
                 )
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("Failed to auto-save AI tag analysis for question %s", question_id)

@@ -50,6 +50,7 @@ def test_save_tag_analysis_writes_measured_and_supporting_skill_links(tmp_path: 
     assert service.save_tag_analysis(
         question_id,
         _analysis(["角平分线性质"], supporting=["角平分线尺规作图"]),
+        resolve_skills=True,
     )
 
     with connect(db_path) as conn:
@@ -73,11 +74,12 @@ def test_retagging_conflict_clears_old_links_but_keeps_raw_tags(tmp_path: Path) 
     question_id = service.add_question(
         QuestionCreate(question_number="1", question_text="完成指定作图。", answer_text="略")
     )
-    service.save_tag_analysis(question_id, _analysis(["角平分线性质"]))
+    service.save_tag_analysis(question_id, _analysis(["角平分线性质"]), resolve_skills=True)
 
     assert service.save_tag_analysis(
         question_id,
         _analysis(["未登记的校本作法"], knowledge="尺规作图"),
+        resolve_skills=True,
     )
 
     with connect(db_path) as conn:
@@ -109,6 +111,52 @@ class _FailingRanker:
         raise RuntimeError("offline")
 
 
+class _UnexpectedResolver:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def resolve(self, request):
+        self.calls += 1
+        raise AssertionError("default question tag save must not resolve legacy skills")
+
+
+def test_save_tag_analysis_defaults_to_raw_tags_without_skill_resolution(tmp_path: Path) -> None:
+    db_path = tmp_path / "question_bank.db"
+    service = QuestionService(db_path)
+    question_id = service.add_question(
+        QuestionCreate(question_number="1", question_text="角平分线性质", answer_text="略")
+    )
+    resolver = _UnexpectedResolver()
+
+    assert service.save_tag_analysis(
+        question_id,
+        _analysis(["角平分线性质"], supporting=["角平分线尺规作图"]),
+        skill_resolver=resolver,
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        raw_skill_tags = conn.execute(
+            """
+            SELECT tag_type, tag_value FROM question_tags
+            WHERE question_id = ?
+              AND tag_type IN ('measured_skill_name', 'supporting_skill_name')
+            ORDER BY tag_type, tag_value
+            """,
+            (question_id,),
+        ).fetchall()
+        link_count = conn.execute(
+            "SELECT COUNT(*) FROM question_skill_links WHERE question_id = ?",
+            (question_id,),
+        ).fetchone()[0]
+
+    assert resolver.calls == 0
+    assert raw_skill_tags == [
+        ("measured_skill_name", "角平分线性质"),
+        ("supporting_skill_name", "角平分线尺规作图"),
+    ]
+    assert link_count == 0
+
+
 def test_ai_outage_does_not_block_deterministic_question_skill(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
     service = QuestionService(db_path)
@@ -121,6 +169,7 @@ def test_ai_outage_does_not_block_deterministic_question_skill(tmp_path: Path) -
         question_id,
         _analysis(["角平分线性质"]),
         skill_resolver=resolver,
+        resolve_skills=True,
     )
 
     with sqlite3.connect(db_path) as conn:
@@ -138,7 +187,11 @@ def test_two_questions_reuse_same_resolved_skill_identity(tmp_path: Path) -> Non
         for index in (1, 2)
     ]
     for question_id in question_ids:
-        service.save_tag_analysis(question_id, _analysis(["角平分线的性质"]))
+        service.save_tag_analysis(
+            question_id,
+            _analysis(["角平分线的性质"]),
+            resolve_skills=True,
+        )
 
     with sqlite3.connect(db_path) as conn:
         rows = conn.execute(

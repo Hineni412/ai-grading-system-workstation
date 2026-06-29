@@ -40,8 +40,9 @@ def test_question_bank_page_reuses_exact_duplicate_tags_before_ai_call() -> None
     assert '"reused": reused_count' in page
 
 
-def test_question_bank_page_reuses_one_skill_resolver_for_batch_save() -> None:
+def test_question_bank_page_does_not_run_legacy_skill_resolution_during_batch_save() -> None:
     page = PAGE.read_text(encoding="utf-8")
 
-    assert "build_skill_context_ranker" in page
-    assert "skill_resolver=skill_resolver" in page
+    assert "build_skill_context_ranker" not in page
+    assert "skill_resolver=skill_resolver" not in page
+    assert "SkillResolutionService" not in page

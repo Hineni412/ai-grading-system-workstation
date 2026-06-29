@@ -865,7 +865,7 @@ class QuestionService:
         model_name: str | None = None,
         confidence: float | None = None,
         skill_resolver: Any | None = None,
-        resolve_skills: bool = True,
+        resolve_skills: bool = False,
     ) -> bool:
         self.initialize_database()
         with connect(self.db_path) as conn:
@@ -921,6 +921,8 @@ class QuestionService:
             conn.commit()
         from question_bank.services.question_frequency_service import QuestionFrequencyService
         QuestionFrequencyService(self.db_path).invalidate_frequency_cache_for_question(int(question_id))
+        # Current graph and recommendation flows read question_tags directly.
+        # Keep the legacy skill-link projection available only to explicit callers.
         if resolve_skills:
             self._sync_question_skill_links(
                 int(question_id),
