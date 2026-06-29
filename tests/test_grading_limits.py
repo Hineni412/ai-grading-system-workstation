@@ -205,6 +205,7 @@ def test_hybrid_runtime_bounds_objective_batch_size_to_15(
         def __init__(self, **kwargs: Any) -> None:
             self.rubric = kwargs["rubric_path"] if isinstance(kwargs["rubric_path"], dict) else {}
             self.answer_key = kwargs["answer_key_path"] if isinstance(kwargs["answer_key_path"], dict) else {}
+            self.question_tag_context = kwargs.get("question_tag_context") or {}
 
     def fake_run_hybrid_batch_grading(**kwargs: Any) -> Any:
         captured["objective_batch_size"] = kwargs["objective_batch_size"]

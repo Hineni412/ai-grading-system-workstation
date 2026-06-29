@@ -174,14 +174,14 @@ def test_backfill_preserves_existing_measured_assessment_link(tmp_path: Path) ->
     assert conflict_count == 0
 
 
-def test_web_app_syncs_skill_links_after_session_create_and_update() -> None:
+def test_web_app_does_not_sync_legacy_skill_links_on_session_save() -> None:
     source = Path("web_app.py").read_text(encoding="utf-8")
 
-    assert "def _sync_session_skill_links" in source
-    assert "_sync_session_skill_links(created_session_id" in source
-    assert "_sync_session_skill_links(selected_session_id" in source
-    assert "已自动识别" in source
-    assert "不影响阅卷" in source
+    assert "def _sync_session_skill_links" not in source
+    assert "_sync_session_skill_links(created_session_id" not in source
+    assert "_sync_session_skill_links(selected_session_id" not in source
+    assert "SkillLinkService" not in source
+    assert "build_tag_profiles" in source
 
 
 def test_rubric_prompt_describes_knowledge_id_as_local_source_reference() -> None:
