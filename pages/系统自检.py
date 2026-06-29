@@ -244,6 +244,7 @@ st.header("API 配置")
 
 api_ok, api_msg = _check_api_key(pm.api_profiles_path)
 st.metric("API Key 状态", f"{_status_icon(api_ok)} {api_msg}")
+st.caption(f"本机独立配置：{pm.api_profiles_path}")
 
 
 

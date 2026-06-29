@@ -23,7 +23,7 @@ from analytics import AnalyticsService
 from answer_region_geometry import answer_regions_with_template_source_sizes, scaled_region_bbox
 from answer_region_focus_page import render_answer_region_focus_page
 from answer_region_session_lock import get_answer_region_session_lock
-from api_profiles import load_api_profiles, normalize_question_allowlist, save_api_profiles
+from api_profiles import get_api_profile_store, normalize_question_allowlist
 from data_transfer_service import (
     EXPORT_SIZE_WARNING_MB,
     build_export_manifest,
@@ -109,6 +109,7 @@ DEFAULT_EXAMS_DIR = _pm.exams_dir
 TEMPLATE_DIR = _pm.templates_dir
 ANNOTATED_DIR = _pm.annotated_dir
 API_PROFILES_PATH = _pm.api_profiles_path
+API_PROFILE_STORE = get_api_profile_store()
 
 
 
@@ -179,7 +180,11 @@ def ensure_env_ready() -> DBManager:
 
 
 def build_llm_settings_from_sidebar() -> LLMSettings | None:
-    profiles = load_api_profiles(API_PROFILES_PATH)
+    pending_api_inputs = st.session_state.pop("_pending_api_key_input_values", None)
+    if isinstance(pending_api_inputs, dict):
+        for state_key, state_value in pending_api_inputs.items():
+            st.session_state[state_key] = str(state_value or "")
+    profiles = API_PROFILE_STORE.load()
     saved_profile = profiles[-1] if profiles else {}
 
     if "api_provider_input" not in st.session_state:
@@ -325,6 +330,7 @@ def build_llm_settings_from_sidebar() -> LLMSettings | None:
     )
 
     with st.sidebar.expander(f"API 信息 · 批改 {grading_model_value} · 评分 {config_model_value}", expanded=not api_ready):
+        st.caption(f"本机独立配置：{API_PROFILES_PATH}")
         st.markdown("**批改/视觉 API**")
         api_key = st.text_input("批改 API Key", type="password", key="api_key_input")
         base_url = st.text_input("批改 Base URL", key="api_base_url_input")
@@ -355,48 +361,77 @@ def build_llm_settings_from_sidebar() -> LLMSettings | None:
         objective_enabled = st.checkbox("启用选填题专用模型", key="objective_enabled_input")
 
         if st.button("保存 API 配置", use_container_width=True, key="save_single_api_settings", type="primary"):
-            # Load existing profiles first to avoid overwriting unrelated configurations
-            profiles = load_api_profiles(API_PROFILES_PATH)
-            current_profile = profiles[-1] if profiles else {"name": "default"}
-
-            current_profile["provider"] = str(provider_name).strip() or "custom-openai-compatible"
-            current_profile["api_key"] = str(api_key).strip()
-            current_profile["base_url"] = normalize_openai_base_url(str(base_url).strip() or "https://api.openai.com/v1")
-            current_profile["grading_model"] = str(grading_model).strip() or DEFAULT_MODELS["grading_model"]
-            current_profile["config_provider"] = str(config_provider_name).strip() or str(provider_name).strip() or "custom-openai-compatible"
-            current_profile["config_api_key"] = str(config_api_key).strip()
-            current_profile["config_base_url"] = normalize_openai_base_url(str(config_base_url).strip() or "https://api.openai.com/v1")
-            current_profile["config_model"] = str(config_model).strip() or DEFAULT_MODELS["config_model"]
-            current_profile["ocr_model"] = str(grading_model).strip() or DEFAULT_MODELS["grading_model"]
-            current_profile["objective_api_key"] = str(objective_api_key).strip()
-            current_profile["objective_base_url"] = normalize_openai_base_url(str(objective_base_url).strip() or "https://api.openai.com/v1")
-            current_profile["objective_model"] = str(objective_model).strip()
-            current_profile["objective_temperature"] = float(objective_temperature)
-            current_profile["objective_thinking_type"] = str(objective_thinking_type).strip()
-            current_profile["objective_enabled"] = bool(objective_enabled)
-            current_profile["objective_batch_size"] = int(objective_batch_size)
-            current_profile["hybrid_major_batch_size"] = int(major_batch_size)
-            current_profile["grading_requests_per_minute"] = int(st.session_state.get("grading_requests_per_minute_input", DEFAULT_GRADING_RPM))
-            current_profile["grading_max_workers"] = int(st.session_state.get("grading_max_workers_input", DEFAULT_FULL_PAPER_WORKERS))
-            current_profile["hybrid_inflight_workers"] = int(st.session_state.get("hybrid_inflight_workers_input", DEFAULT_HYBRID_INFLIGHT_WORKERS))
-            current_profile["precheck_max_workers"] = int(st.session_state.get("precheck_max_workers_input", DEFAULT_PRECHECK_WORKERS))
+            saved_profiles = API_PROFILE_STORE.load()
+            saved_profile = saved_profiles[-1] if saved_profiles else {}
+            api_key_value = str(api_key).strip()
+            config_api_key_value = str(config_api_key).strip()
+            effective_api_key = api_key_value or str(saved_profile.get("api_key") or "").strip()
+            effective_config_api_key = config_api_key_value or str(saved_profile.get("config_api_key") or "").strip()
+            updates = {
+                "provider": str(provider_name).strip() or "custom-openai-compatible",
+                "api_key": api_key_value,
+                "base_url": normalize_openai_base_url(str(base_url).strip() or "https://api.openai.com/v1"),
+                "grading_model": str(grading_model).strip() or DEFAULT_MODELS["grading_model"],
+                "config_provider": str(config_provider_name).strip() or str(provider_name).strip() or "custom-openai-compatible",
+                "config_api_key": config_api_key_value,
+                "config_base_url": normalize_openai_base_url(str(config_base_url).strip() or "https://api.openai.com/v1"),
+                "config_model": str(config_model).strip() or DEFAULT_MODELS["config_model"],
+                "ocr_model": str(grading_model).strip() or DEFAULT_MODELS["grading_model"],
+                "objective_api_key": str(objective_api_key).strip(),
+                "objective_base_url": normalize_openai_base_url(str(objective_base_url).strip() or "https://api.openai.com/v1"),
+                "objective_model": str(objective_model).strip(),
+                "objective_temperature": float(objective_temperature),
+                "objective_thinking_type": str(objective_thinking_type).strip(),
+                "objective_enabled": bool(objective_enabled),
+                "objective_batch_size": int(objective_batch_size),
+                "hybrid_major_batch_size": int(major_batch_size),
+                "grading_requests_per_minute": int(st.session_state.get("grading_requests_per_minute_input", DEFAULT_GRADING_RPM)),
+                "grading_max_workers": int(st.session_state.get("grading_max_workers_input", DEFAULT_FULL_PAPER_WORKERS)),
+                "hybrid_inflight_workers": int(st.session_state.get("hybrid_inflight_workers_input", DEFAULT_HYBRID_INFLIGHT_WORKERS)),
+                "precheck_max_workers": int(st.session_state.get("precheck_max_workers_input", DEFAULT_PRECHECK_WORKERS)),
+            }
 
             # NOTE: 打标签 (tagging_*) 配置由「题库管理」页面独立管理并保存。
             # 此处刻意不写入，避免主页保存时用 session_state 中陈旧/默认值覆盖用户
             # 在题库管理页保存的打标签配置（历史 bug：并发数/RPM/API Key 被改回默认）。
 
-            if not current_profile["api_key"]:
+            if not effective_api_key:
                 st.error("请先填写批改 API Key")
-            elif not current_profile["config_api_key"]:
+            elif not effective_config_api_key:
                 st.error("请先填写评分标准 API Key")
             else:
-                if not profiles:
-                    profiles = [current_profile]
-                else:
-                    profiles[-1] = current_profile
-                save_api_profiles(API_PROFILES_PATH, profiles)
+                updated_profile = API_PROFILE_STORE.update_active(
+                    updates,
+                    preserve_nonempty_keys={"api_key", "config_api_key", "objective_api_key"},
+                )
+                st.session_state["_pending_api_key_input_values"] = {
+                    "api_key_input": updated_profile.get("api_key"),
+                    "config_api_key_input": updated_profile.get("config_api_key"),
+                    "objective_api_key_input": updated_profile.get("objective_api_key"),
+                }
                 st.session_state["_saved_api_settings_notice"] = True
                 st.success("API 配置已保存")
+                st.rerun()
+
+        if st.button("清除本页 API 密钥", use_container_width=True, key="request_clear_grading_api_keys"):
+            st.session_state["_confirm_clear_grading_api_keys"] = True
+        if st.session_state.get("_confirm_clear_grading_api_keys", False):
+            st.warning("此操作只清除批改、评分标准和选填题 API Key，模型及并发设置会保留。")
+            clear_columns = st.columns(2)
+            if clear_columns[0].button("确认清除", key="confirm_clear_grading_api_keys", type="primary"):
+                API_PROFILE_STORE.clear_active_keys({"api_key", "config_api_key", "objective_api_key"})
+                st.session_state["_pending_api_key_input_values"] = {
+                    "api_key_input": "",
+                    "config_api_key_input": "",
+                    "objective_api_key_input": "",
+                }
+                for environment_key in ("LLM_API_KEY", "LLM_CONFIG_API_KEY", "LLM_OBJECTIVE_API_KEY"):
+                    os.environ.pop(environment_key, None)
+                st.session_state["_confirm_clear_grading_api_keys"] = False
+                st.success("本页 API 密钥已清除")
+                st.rerun()
+            if clear_columns[1].button("取消", key="cancel_clear_grading_api_keys"):
+                st.session_state["_confirm_clear_grading_api_keys"] = False
                 st.rerun()
 
     st.sidebar.markdown("### 全局并发设置")

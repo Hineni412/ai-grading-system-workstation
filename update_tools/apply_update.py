@@ -149,7 +149,7 @@ def apply_update(
         try:
             sys.path.insert(0, str(target_dir / "update_tools"))
             from backup_core import create_backup
-            bk_result = create_backup("before_update", include_api_keys=True)
+            bk_result = create_backup("before_update", include_api_keys=False)
             if bk_result.get("error"):
                 logger.warning("数据备份失败(非致命): %s", bk_result["error"])
             else:

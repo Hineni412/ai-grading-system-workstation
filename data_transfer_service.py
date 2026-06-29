@@ -33,6 +33,10 @@ COMMON_SKIP_EXTENSIONS = {
     ".tmp",
 }
 
+SENSITIVE_FILE_NAMES = {
+    "api_profiles.json",
+}
+
 LEAN_SKIP_USER_DATA_TOP_LEVEL = {
     "annotated",
     "archives",
@@ -80,6 +84,8 @@ def should_include_export_path(path: Path, source_root: Path, arc_root: str, sco
     if any(part in COMMON_SKIP_DIR_NAMES for part in rel_parts[:-1]):
         return False
     if path.suffix.lower() in COMMON_SKIP_EXTENSIONS:
+        return False
+    if path.name.lower() in SENSITIVE_FILE_NAMES:
         return False
 
     if scope == "full":

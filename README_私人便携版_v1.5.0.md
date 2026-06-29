@@ -14,9 +14,9 @@ runtime\python\python.exe
 
 ## 数据
 
-本包保留当前 `user_data/`，包括数据库、模板、历史考试、输出文件和 `user_data/config/api_profiles.json`。
+本包保留当前 `user_data/`，包括数据库、模板、历史考试和输出文件，但不包含 API 密钥。
 
-这个包包含 API 密钥，只适合你自己使用，不要外发。
+API 配置独立保存在当前 Windows 用户的本机配置目录中。首次在新电脑运行时，需要在页面中重新填写并保存。
 
 ## 后续继续用 Codex 修改
 
