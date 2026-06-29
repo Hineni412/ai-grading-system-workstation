@@ -10,7 +10,8 @@ __pycache__/
 
 # Logs and generated runtime data
 logs/
-# user_data is fully tracked in Git as requested by the user
+# user_data remains tracked, except machine-local API credentials
+user_data/config/api_profiles.json
 
 # Packaged runtime and build outputs
 runtime/

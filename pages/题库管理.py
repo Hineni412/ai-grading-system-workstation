@@ -886,15 +886,16 @@ def _edit_question_dialog(service: QuestionService, question_id: int):
         if st.button("取消", use_container_width=True):
             st.rerun()
 def _render_local_tagging_api_config() -> None:
-    from api_profiles import load_api_profiles, save_api_profiles
+    from api_profiles import get_api_profile_store
     from llm_client import normalize_openai_base_url
-    from path_manager import get_path_manager
     import os
 
-    pm = get_path_manager()
-    profiles_path = pm.api_profiles_path
-
-    profiles = load_api_profiles(profiles_path)
+    pending_api_inputs = st.session_state.pop("_pending_tagging_api_key_input_values", None)
+    if isinstance(pending_api_inputs, dict):
+        for state_key, state_value in pending_api_inputs.items():
+            st.session_state[state_key] = str(state_value or "")
+    profile_store = get_api_profile_store()
+    profiles = profile_store.load()
     saved_profile = profiles[-1] if profiles else {}
 
     # Initialize session state keys for tagging if not present
@@ -938,6 +939,7 @@ def _render_local_tagging_api_config() -> None:
     # Render inside sidebar!
     with st.sidebar:
         st.markdown("#### 🏷️ 题库打标签大模型 API 配置")
+        st.caption(f"本机独立配置：{profile_store.path}")
 
         # Check if saved profile has key/url/model configured
         config_is_ready = bool(
@@ -965,41 +967,62 @@ def _render_local_tagging_api_config() -> None:
         tagging_review_model = st.text_input("复核模型名称", placeholder="例如 deepseek-chat / deepseek-reasoner", key="tagging_review_model_input", disabled=not tagging_review_enabled)
 
         if st.button("💾 保存打标签配置", use_container_width=True, key="save_local_tagging_api_settings", type="primary"):
-            # Load fresh profiles to avoid overwriting newer changes
-            profiles = load_api_profiles(profiles_path)
-            if not profiles:
-                profiles = [{"name": "default"}]
-
-            # Update last profile
-            profiles[-1]["tagging_api_key"] = str(tagging_api_key).strip()
-            profiles[-1]["tagging_base_url"] = normalize_openai_base_url(str(tagging_base_url).strip() or "https://api.openai.com/v1")
-            profiles[-1]["tagging_model"] = str(tagging_model).strip() or "gpt-4o-mini"
-            profiles[-1]["tagging_max_workers"] = int(tagging_max_workers)
-            profiles[-1]["tagging_requests_per_minute"] = int(tagging_requests_per_minute)
-            profiles[-1]["tagging_thinking"] = bool(tagging_thinking)
-            profiles[-1]["tagging_enabled"] = True
-            profiles[-1]["tagging_review_enabled"] = bool(tagging_review_enabled)
-            profiles[-1]["tagging_review_api_key"] = str(tagging_review_api_key).strip()
-            profiles[-1]["tagging_review_base_url"] = normalize_openai_base_url(str(tagging_review_base_url).strip() or str(tagging_base_url).strip() or "https://api.openai.com/v1")
-            profiles[-1]["tagging_review_model"] = str(tagging_review_model).strip()
-
-            save_api_profiles(profiles_path, profiles)
+            updated_profile = profile_store.update_active(
+                {
+                    "tagging_api_key": str(tagging_api_key).strip(),
+                    "tagging_base_url": normalize_openai_base_url(str(tagging_base_url).strip() or "https://api.openai.com/v1"),
+                    "tagging_model": str(tagging_model).strip() or "gpt-4o-mini",
+                    "tagging_max_workers": int(tagging_max_workers),
+                    "tagging_requests_per_minute": int(tagging_requests_per_minute),
+                    "tagging_thinking": bool(tagging_thinking),
+                    "tagging_enabled": True,
+                    "tagging_review_enabled": bool(tagging_review_enabled),
+                    "tagging_review_api_key": str(tagging_review_api_key).strip(),
+                    "tagging_review_base_url": normalize_openai_base_url(str(tagging_review_base_url).strip() or str(tagging_base_url).strip() or "https://api.openai.com/v1"),
+                    "tagging_review_model": str(tagging_review_model).strip(),
+                },
+                preserve_nonempty_keys={"tagging_api_key", "tagging_review_api_key"},
+            )
 
             # Sync immediately
             st.session_state.tagging_enabled = True
             st.session_state.tagging_enabled_input = True
-            os.environ["QUESTION_BANK_TAGGING_API_KEY"] = str(tagging_api_key).strip()
+            st.session_state["_pending_tagging_api_key_input_values"] = {
+                "tagging_api_key_input": updated_profile.get("tagging_api_key"),
+                "tagging_review_api_key_input": updated_profile.get("tagging_review_api_key"),
+            }
+            os.environ["QUESTION_BANK_TAGGING_API_KEY"] = str(updated_profile.get("tagging_api_key") or "")
             os.environ["QUESTION_BANK_TAGGING_BASE_URL"] = normalize_openai_base_url(str(tagging_base_url).strip() or "https://api.openai.com/v1")
             os.environ["QUESTION_BANK_TAGGING_MODEL"] = str(tagging_model).strip() or "gpt-4o-mini"
             os.environ["QUESTION_BANK_TAGGING_MAX_WORKERS"] = str(tagging_max_workers)
             os.environ["QUESTION_BANK_TAGGING_REQUESTS_PER_MINUTE"] = str(tagging_requests_per_minute)
             os.environ["QUESTION_BANK_TAGGING_THINKING"] = "1" if tagging_thinking else "0"
             os.environ["QUESTION_BANK_TAGGING_REVIEW_MODEL"] = str(tagging_review_model).strip() if tagging_review_enabled else ""
-            os.environ["QUESTION_BANK_TAGGING_REVIEW_API_KEY"] = str(tagging_review_api_key).strip() if tagging_review_enabled else ""
-            os.environ["QUESTION_BANK_TAGGING_REVIEW_BASE_URL"] = normalize_openai_base_url(str(tagging_review_api_key).strip() or str(tagging_base_url).strip() or "https://api.openai.com/v1") if tagging_review_enabled else ""
+            os.environ["QUESTION_BANK_TAGGING_REVIEW_API_KEY"] = str(updated_profile.get("tagging_review_api_key") or "") if tagging_review_enabled else ""
+            os.environ["QUESTION_BANK_TAGGING_REVIEW_BASE_URL"] = normalize_openai_base_url(str(tagging_review_base_url).strip() or str(tagging_base_url).strip() or "https://api.openai.com/v1") if tagging_review_enabled else ""
 
             st.success("🏷️ 专属打标签 API 配置已保存并立即生效！")
             st.rerun()
+
+        if st.button("清除打标签 API 密钥", use_container_width=True, key="request_clear_tagging_api_keys"):
+            st.session_state["_confirm_clear_tagging_api_keys"] = True
+        if st.session_state.get("_confirm_clear_tagging_api_keys", False):
+            st.warning("此操作只清除打标签和复核模型的 API Key，模型、并发和 RPM 设置会保留。")
+            clear_columns = st.columns(2)
+            if clear_columns[0].button("确认清除", key="confirm_clear_tagging_api_keys", type="primary"):
+                profile_store.clear_active_keys({"tagging_api_key", "tagging_review_api_key"})
+                st.session_state["_pending_tagging_api_key_input_values"] = {
+                    "tagging_api_key_input": "",
+                    "tagging_review_api_key_input": "",
+                }
+                os.environ.pop("QUESTION_BANK_TAGGING_API_KEY", None)
+                os.environ.pop("QUESTION_BANK_TAGGING_REVIEW_API_KEY", None)
+                st.session_state["_confirm_clear_tagging_api_keys"] = False
+                st.success("打标签 API 密钥已清除")
+                st.rerun()
+            if clear_columns[1].button("取消", key="cancel_clear_tagging_api_keys"):
+                st.session_state["_confirm_clear_tagging_api_keys"] = False
+                st.rerun()
 
 
 def _tagging_config_ready() -> bool:

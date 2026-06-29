@@ -32,7 +32,7 @@
 |------|------|
 | `user_data/databases/` | 阅卷数据库、题库数据库 |
 | `user_data/exams/` | 上传的考试答卷图片 |
-| `user_data/config/` | API 配置 |
+| `%LOCALAPPDATA%/AIGradingSystem/config/` | API 配置（独立于代码、分支和工作目录） |
 | `user_data/templates/` | 阅卷模板 |
 | `user_data/annotated/` | 批注结果图片 |
 | `user_data/reports/` | 导出的报表 |
@@ -83,7 +83,7 @@ python update_tools/restore_backup.py <备份文件名>
 1. **不要删除 `user_data/`** — 所有考试数据都在这里
 2. **不要手动修改 `user_data/databases/` 中的 .db 文件**
 3. 更新代码时只替换 .py 文件和 pages/ 等代码目录，不要覆盖 user_data/
-4. 如需修改 API Key，在"系统自检"页面或 `user_data/config/api_profiles.json` 中配置
+4. 如需修改 API Key，请在批改页或题库管理页保存；配置位于 `%LOCALAPPDATA%/AIGradingSystem/config/api_profiles.json`
 5. 定期备份，尤其在重要考试前
 
 ## 系统自检

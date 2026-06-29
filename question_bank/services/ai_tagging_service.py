@@ -10,9 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from api_profiles import load_api_profiles
+from api_profiles import get_api_profile_store
 from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
-from question_bank.database.paths import project_data_root
 from question_bank.models.tag_schema import ERROR_PRONE_CATEGORIES, SUB_SKILL_DIMENSIONS, SUB_SKILL_KEYWORD_HINTS, TagAnalysis, TaggingContext
 from question_bank.taxonomy.registry import CANONICAL_KNOWLEDGE, canonical_knowledge_seed_rows
 
@@ -617,41 +616,24 @@ def _llm_settings_from_env(env: Mapping[str, str]) -> LLMSettings | None:
 
 
 def _llm_settings_from_profile() -> LLMSettings | None:
-    for profile_path in _profile_paths():
-        profiles = load_api_profiles(profile_path)
-        if not profiles:
-            continue
-        profile = profiles[-1]
-        api_key = str(profile.get("api_key") or "").strip()
-        config_api_key = str(profile.get("config_api_key") or api_key).strip()
-        if not api_key or not config_api_key:
-            continue
-        grading_model = str(profile.get("grading_model") or DEFAULT_TAGGING_MODEL)
-        return LLMSettings(
-            api_key=api_key,
-            base_url=normalize_openai_base_url(str(profile.get("base_url") or "https://api.openai.com/v1")),
-            ocr_model=str(profile.get("ocr_model") or grading_model),
-            grading_model=grading_model,
-            config_model=str(profile.get("config_model") or DEFAULT_TAGGING_MODEL),
-            config_api_key=config_api_key,
-            config_base_url=normalize_openai_base_url(str(profile.get("config_base_url") or profile.get("base_url") or "https://api.openai.com/v1")),
-        )
-    return None
-
-
-def _profile_paths() -> list[Path]:
-    project_root = Path(__file__).resolve().parents[2]
-    candidates = [
-        Path.cwd() / "config" / "api_profiles.json",
-        project_root / "config" / "api_profiles.json",
-        project_data_root() / "config" / "api_profiles.json",
-        project_root / "data" / "config" / "api_profiles.json",
-    ]
-    unique: list[Path] = []
-    for path in candidates:
-        if path not in unique:
-            unique.append(path)
-    return unique
+    profiles = get_api_profile_store().load()
+    if not profiles:
+        return None
+    profile = profiles[-1]
+    api_key = str(profile.get("api_key") or "").strip()
+    config_api_key = str(profile.get("config_api_key") or api_key).strip()
+    if not api_key or not config_api_key:
+        return None
+    grading_model = str(profile.get("grading_model") or DEFAULT_TAGGING_MODEL)
+    return LLMSettings(
+        api_key=api_key,
+        base_url=normalize_openai_base_url(str(profile.get("base_url") or "https://api.openai.com/v1")),
+        ocr_model=str(profile.get("ocr_model") or grading_model),
+        grading_model=grading_model,
+        config_model=str(profile.get("config_model") or DEFAULT_TAGGING_MODEL),
+        config_api_key=config_api_key,
+        config_base_url=normalize_openai_base_url(str(profile.get("config_base_url") or profile.get("base_url") or "https://api.openai.com/v1")),
+    )
 
 
 def _model_for_llm_client(llm_client: Any, fallback: str) -> str:

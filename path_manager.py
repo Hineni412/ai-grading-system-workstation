@@ -74,6 +74,20 @@ class PathManager:
         else:
             self._logs_root = self._project_root / "logs"
 
+        # API credentials are machine-local configuration, not project data.
+        # Keeping this path outside the repository prevents branch/worktree
+        # changes from replacing the saved credentials.
+        api_profiles_override = os.getenv("AI_GRADING_API_PROFILES_PATH")
+        if api_profiles_override:
+            self._api_profiles_path = Path(api_profiles_override).expanduser().resolve()
+        else:
+            local_appdata = os.getenv("LOCALAPPDATA")
+            if local_appdata:
+                api_config_root = Path(local_appdata) / "AIGradingSystem" / "config"
+            else:
+                api_config_root = Path.home() / ".ai_grading_system" / "config"
+            self._api_profiles_path = api_config_root / "api_profiles.json"
+
         # --- propagate to env so legacy code keeps working ---
         os.environ["AI_GRADING_DATA_DIR"] = str(self._data_root)
 
@@ -120,7 +134,21 @@ class PathManager:
 
     @property
     def api_profiles_path(self) -> Path:
-        return self.config_dir / "api_profiles.json"
+        return self._api_profiles_path
+
+    @property
+    def legacy_api_profiles_paths(self) -> tuple[Path, ...]:
+        """Project-relative profile locations accepted only for migration."""
+        candidates = (
+            self.config_dir / "api_profiles.json",
+            self._project_root / "config" / "api_profiles.json",
+            self._project_root / "data" / "config" / "api_profiles.json",
+        )
+        unique: list[Path] = []
+        for candidate in candidates:
+            if candidate != self.api_profiles_path and candidate not in unique:
+                unique.append(candidate)
+        return tuple(unique)
 
     @property
     def templates_dir(self) -> Path:
