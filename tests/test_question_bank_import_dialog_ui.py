@@ -44,7 +44,8 @@ def test_question_bank_tagging_runtime_controls_live_only_in_sidebar() -> None:
     assert 'qb_tagging_workers' not in page
     assert 'qb_tagging_rpm' not in page
     assert 'tagging_max_workers_input' in page
-    assert '必须先在左侧配置并保存打标签 API' in page
+    assert '本机打标签配置缺少' in page
+    assert '如需修改，请编辑上方本机配置文件后刷新页面' in page
 
 
 def test_question_list_has_collapsed_answers_and_quick_pagination() -> None:
