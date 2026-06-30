@@ -2,11 +2,12 @@
 
 ## 1. 文档状态
 
-- **状态：** 已由用户确认总体设计及训练推荐扩展，等待书面规格复核
+- **状态：** 已由用户确认总体设计及训练推荐扩展，实施计划已完成
 - **日期：** 2026-06-30
 - **适用项目：** AI 阅卷系统工作机版 v1.5.0
 - **依据：** 当前题库标签、评分小问结构、诊断聚合代码、全局知识图谱页面、真实数据库只读抽样与浏览器复核
 - **用户已确认决策：** 采用“分层界面 + 小问级标签”；历史数据由系统生成候选映射，教师确认后生效；训练推荐改为小问主要子技能精确匹配和自适应难度；难度 8.0—10.0 的题不进入任何自动训练推荐；AI 按小问输出标签和一位小数难度，父题标签显示为各小问去重并集
+- **实现复核：** 复用现有统一技能目录、`assessment_item_skills` 和技能冲突收件箱；不再新增与评分小问技能关联同义的平行表
 
 ## 2. 背景与问题
 
@@ -51,7 +52,7 @@
 
 每个有效评分小问最多具有：
 
-- **一个主要诊断子技能：** `tag_type = 'sub_skill'`、`role = 'primary'`，参与子技能掌握率计算；
+- **一个主要诊断子技能：** 先以 `sub_skill` 文本供教师核对，确认后解析为统一技能目录中的稳定 `skill_id` 并标记 `is_primary = 1`，参与子技能掌握率和训练推荐；
 - **多个支持标签：** 可来自 `knowledge_point`、`method`、`model`、`ability`、`prerequisite` 和 `error_type`，仅用于分组、解释、筛选和候选生成，不重复计分。
 
 主要子技能不能由运行时默认值静默补齐。没有已确认主要子技能的小问不得生成子技能掌握率。
@@ -71,7 +72,7 @@
 - `rejected` 表示教师明确拒绝，重新生成时默认不自动恢复同一候选。
 - `stale` 表示来源题、评分小问或题库标签已变化，必须重新确认。
 
-AI 可以提出新的 `sub_skill` 文本，但确认前不得写入正式 `question_part_tags` 或父题汇总 `question_tags`。教师确认新词时，在同一事务中写入或复用精确相同的小问标签、刷新父题去重汇总，并将对应评分小问映射置为 `confirmed`。
+AI 可以提出新的 `sub_skill` 文本，但确认前不得写入正式 `question_part_tags` 或父题汇总 `question_tags`。教师确认新词时，在同一事务中写入或复用精确相同的小问标签、解析/确认统一 `skill_id`、刷新父题去重汇总，并将对应评分小问技能关联置为 `confirmed`。
 
 ### 4.4 难度精度与自动推荐上限
 
@@ -126,48 +127,51 @@ AI 可以提出新的 `sub_skill` 文本，但确认前不得写入正式 `quest
 3. 父题 `question_tags` 不再接受一套与小问相互独立的 AI 输出；它是所有小问已确认标签按题内顺序去重后的兼容汇总视图或同步结果。
 4. 父题汇总保留现有标签类型，完全相同的 `(tag_type, tag_value)` 只显示一次；来源小问数量可在界面下钻查看。
 
-### 5.3 新表：`assessment_item_tag_mappings`
+### 5.3 新表：`question_part_skill_links`
 
-该表放在题库数据库，因为它同时依赖题库题目、题库标签和现有 `grading_question_links`。它表达“某场考试的某个评分小问选择了父题当前标签中的哪些语义，以及哪个子技能负责计分”。
+该表复用现有统一技能目录 `skills`，表达“题库某个小问确认考查哪个稳定技能”。训练推荐以该表的主要技能为候选侧硬门槛，不再从父题 `sub_skill` 文本临时推断技能身份。
 
 建议字段：
 
 | 字段 | 含义 |
 |---|---|
 | `id` | 主键 |
-| `grading_session_id` | 阅卷会话标识，沿用跨库应用层关联方式 |
-| `source_item_ref` | 评分小问标识，如 `Q11(2)` |
-| `parent_source_question_id` | 父级来源题标识，如 `Q11` |
-| `bank_question_id` | 已确认关联的题库题目 ID |
-| `bank_question_part_id` | 可为空的题库小问 ID；确认后用于训练目标和候选精确对齐 |
-| `tag_type` | 标签类型 |
-| `tag_value` | 精确标签值 |
-| `role` | `primary` 或 `supporting` |
-| `status` | `suggested`、`confirmed`、`rejected` 或 `stale` |
+| `question_part_id` | 题库小问 ID |
+| `skill_id` | 统一技能目录 ID；解析冲突时为空且不写有效关联 |
+| `role` | 沿用 `measured` 或 `supporting` |
+| `is_primary` | 是否为该小问唯一主要诊断技能 |
+| `review_status` | `suggested`、`confirmed`、`rejected` 或 `stale` |
 | `confidence` | 候选生成置信度；人工确认后仅作审计依据 |
-| `source` | `ai_candidate`、`manual` 或 `migration` |
-| `evidence_json` | 生成依据摘要，如评分目标、步骤和候选说明，不保存学生敏感作答 |
+| `source` | `question_tagging`、`manual` 或 `migration` |
+| `evidence_json` | 原始标签、解析理由和候选说明 |
 | `model_name` | 生成候选时使用的模型名称；人工创建可为空 |
 | `reviewed_at` | 最近确认或拒绝时间 |
 | `created_at` / `updated_at` | 审计时间 |
 
 约束：
 
-1. `(grading_session_id, source_item_ref, tag_type, tag_value, role)` 唯一。
-2. 同一 `(grading_session_id, source_item_ref)` 最多存在一条 `status = 'confirmed' AND role = 'primary'` 的映射，通过部分唯一索引或事务校验保证。
-3. `role = 'primary'` 时 `tag_type` 必须为 `sub_skill`。
-4. `bank_question_id` 必须引用存在且未删除的题库题目。
-5. 存在 `bank_question_part_id` 时，该小问必须属于同一 `bank_question_id`。
-6. 映射确认时，`tag_type/tag_value` 必须对应同一题库小问的当前正式标签；历史父题标签候选需先确认到具体小问。新词先写入小问正式标签并刷新父题汇总，再确认映射。
+1. `(question_part_id, skill_id, role)` 唯一。
+2. 同一 `question_part_id` 最多一条 `review_status = 'confirmed' AND is_primary = 1` 的关联。
+3. `is_primary = 1` 时 `role` 必须为 `measured`。
+4. 解析冲突继续写入现有 `skill_resolution_conflicts`，不能创建无稳定 `skill_id` 的有效候选。
 
-### 5.4 不直接引用 `question_tags.id`
+### 5.4 复用并扩展：`assessment_item_skills`
 
-现有题库编辑可能删除并重建标签行。映射优先使用 `(bank_question_part_id, tag_type, tag_value)`，历史兼容期使用 `(bank_question_id, tag_type, tag_value)` 精确校验，避免因标签行 ID 重建导致无意义失效。标签值变化后，映射通过一致性检查转为 `stale`，不自动跟随改名。
+评分小问侧不再新增与现有表同义的 `assessment_item_tag_mappings`。在当前 `assessment_item_skills` 上增加 `is_primary`、`review_status`、`reviewed_by` 和 `reviewed_at`：
 
-### 5.5 迁移与回退
+1. 保留现有 `role = measured/supporting` 和 `status = resolved/conflict` 的解析语义，避免破坏统一技能目录及既有迁移工具。
+2. 新生成或历史回填的已解析技能先写为 `review_status = suggested`；教师确认主要技能后写为 `confirmed`。
+3. 图谱与训练只读取 `status = resolved AND review_status = confirmed AND is_primary = 1` 的评分小问关联。
+4. 同一评分小问其他已测或支持技能继续保留用于解释，但不重复贡献掌握率。
+
+### 5.5 不直接引用 `question_tags.id`
+
+现有题库编辑可能删除并重建标签行。稳定业务身份使用 `question_part_id + skill_id`，普通展示标签使用 `(question_part_id, tag_type, tag_value)` 精确校验，避免依赖会重建的 `question_tags.id`。标签值或主要技能变化后，关联通过一致性检查转为 `stale`，不自动跟随改名。
+
+### 5.6 迁移与回退
 
 1. 新表为空时，现有知识点图谱行为保持可用。
-2. 数据库迁移新增小问表、映射表、索引和必要校验，不改写现有评分；现有父题标签与整数难度保留，在完成小问候选确认前作为兼容数据读取。
+2. 数据库迁移新增题库小问表、小问技能关联表，并扩展现有 `assessment_item_skills`；不改写现有评分。现有父题标签、`question_skill_links` 与整数难度保留，在完成小问候选确认前作为兼容数据读取。
 3. 回退版本忽略新表即可继续使用原图谱；删除新表不是应用回退的必要条件。
 4. 发布前备份题库数据库，并对迁移做空库、现存库和重复执行验证。
 
@@ -292,7 +296,7 @@ AI 可以提出新的 `sub_skill` 文本，但确认前不得写入正式 `quest
 
 ### 9.1 诊断目标与候选资格
 
-训练目标按已确认的 `assessment_item_tag_mappings` 定位到具体题库小问和主要子技能。未确认、已失效或只有父题粗标签的目标不自动生成针对训练，只显示“待完成小问标签确认”。
+训练目标按 `assessment_item_skills` 中已确认的唯一主要 `skill_id` 定位具体评分小问；候选按 `question_part_skill_links` 的已确认主要 `skill_id` 精确匹配。未确认、已失效或只有父题粗标签的目标不自动生成针对训练，只显示“待完成小问标签确认”。
 
 候选进入排序前必须通过以下硬过滤：
 
@@ -419,7 +423,8 @@ AI 可以提出新的 `sub_skill` 文本，但确认前不得写入正式 `quest
 |---|---|
 | 题库小问仓储 | 保存稳定小问、精确难度、小问标签状态与父题去重汇总 |
 | 小问级 AI 打标服务 | 构造逐小问请求、严格校验完整性和一位小数难度、保存候选 |
-| 小问标签映射仓储 | 映射增删改查、状态转换、唯一性和事务校验 |
+| 评分小问技能关联仓储 | 扩展现有 `assessment_item_skills`，处理主要技能、审核状态、唯一性和事务校验 |
+| 题库小问技能关联仓储 | 管理 `question_part_skill_links`，复用统一技能目录与冲突收件箱 |
 | 小问标签候选服务 | 构造受限请求、校验模型输出、保存候选和请求统计 |
 | 标签投影服务 | 将评分小问、来源题、父题当前标签和已确认映射组合成只读投影 |
 | 细粒度诊断聚合器 | 按知识点、主要子技能和评分小问计算唯一证据统计 |
@@ -435,7 +440,7 @@ AI 可以提出新的 `sub_skill` 文本，但确认前不得写入正式 `quest
 1. 候选请求失败：保留已成功候选，失败小问可重试，不影响批改或知识点图谱。
 2. 输出缺少小问、包含未知题号或多个主要子技能：拒绝该父题候选并显示可诊断错误。
 3. 重复生成：未人工修改的 `suggested` 可替换；`confirmed` 和 `rejected` 不被自动覆盖。
-4. 确认新子技能：正式题库标签写入与映射确认在同一题库事务中完成。
+4. 确认新子技能：正式题库小问标签、稳定技能关联、父题汇总与审核状态在同一题库事务中完成。
 5. 跨库读取：继续承认阅卷库与题库库没有统一事务；投影发现不一致时降级并报告，不伪造完整状态。
 6. 页面数据量大：全班证据使用服务端分页/分组，不一次构造全部展开组件。
 7. 训练候选不足：返回实际题数、各类排除数量和可处理入口，不抛出空白页，也不回退到粗标签或难度上限外题目。
@@ -444,7 +449,7 @@ AI 可以提出新的 `sub_skill` 文本，但确认前不得写入正式 `quest
 
 ### 15.1 数据与服务测试
 
-- 新表迁移可重复执行，现存数据库数据不变，回退版本可忽略新表；
+- 新表及现有 `assessment_item_skills` 扩展迁移可重复执行，现存评分数据不变，回退版本可忽略新增字段与表；
 - 同一小问不能确认两个主要子技能；
 - 候选不会直接进入正式统计；
 - 确认新子技能时标签与映射原子保存；
