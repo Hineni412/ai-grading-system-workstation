@@ -251,16 +251,17 @@ def test_tagging_service_reads_the_canonical_profile_store(monkeypatch) -> None:
     assert settings.config_model == "config-v1"
 
 
-def test_api_pages_use_field_level_updates_and_explicit_key_clearing() -> None:
+def test_grading_page_updates_keys_while_question_bank_page_is_read_only() -> None:
     web_source = (ROOT / "web_app.py").read_text(encoding="utf-8")
     question_bank_source = (ROOT / "pages" / "题库管理.py").read_text(encoding="utf-8")
 
     assert "save_api_profiles(API_PROFILES_PATH" not in web_source
     assert "save_api_profiles(profiles_path" not in question_bank_source
     assert "API_PROFILE_STORE.update_active(" in web_source
-    assert "profile_store.update_active(" in question_bank_source
     assert "clear_active_keys(" in web_source
-    assert "clear_active_keys(" in question_bank_source
+    assert "profile_store.update_active(" not in question_bank_source
+    assert "clear_active_keys(" not in question_bank_source
+    assert "profile_store.load()" in question_bank_source
 
 
 def test_updates_do_not_copy_api_keys_into_data_backups() -> None:

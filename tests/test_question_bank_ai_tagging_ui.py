@@ -46,3 +46,28 @@ def test_question_bank_page_does_not_run_legacy_skill_resolution_during_batch_sa
     assert "build_skill_context_ranker" not in page
     assert "skill_resolver=skill_resolver" not in page
     assert "SkillResolutionService" not in page
+
+
+def test_tagging_config_is_disk_backed_and_read_only() -> None:
+    page = PAGE.read_text(encoding="utf-8")
+    config_block = page.split(
+        "def _render_local_tagging_api_config", 1
+    )[1].split("def _tagging_config_ready", 1)[0]
+
+    assert (
+        "replace_tagging_config_state(st.session_state, saved_profile)"
+        in config_block
+    )
+    assert config_block.count("disabled=True") >= 9
+    assert "保存打标签配置" not in config_block
+    assert "清除打标签 API 密钥" not in config_block
+    assert "如需修改，请编辑上方本机配置文件后刷新页面" in config_block
+
+
+def test_tagging_config_loads_before_paper_batch_action() -> None:
+    page = PAGE.read_text(encoding="utf-8")
+    footer = page.rsplit("st.set_page_config", 1)[1]
+
+    assert footer.index("_render_local_tagging_api_config()") < footer.index(
+        "_render_paper_list(service)"
+    )
