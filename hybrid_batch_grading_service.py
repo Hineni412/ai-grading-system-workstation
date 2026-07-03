@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, FIRST_COMPLETED, as_completed, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -68,6 +68,7 @@ class HybridBatchRunResult:
     fallback_items: list[dict[str, Any]]
     usage_records: list[dict[str, Any]]
     usage_summary: dict[str, int]
+    paused: bool = False
 
 
 def run_hybrid_batch_grading(
@@ -90,6 +91,7 @@ def run_hybrid_batch_grading(
     rubric_images_dir: Path | None = None,
     skipped_questions_by_student: dict[int, set[str]] | None = None,
     question_tag_context: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
+    should_pause: Any | None = None,
 ) -> HybridBatchRunResult:
     entries = build_paper_entries(paper_groups)
     specs = build_major_question_specs(rubric, answer_key)
@@ -224,13 +226,44 @@ def run_hybrid_batch_grading(
                 ],
             }
 
+    def _pause_now() -> bool:
+        try:
+            return should_pause is not None and bool(should_pause())
+        except Exception:
+            return False
+
+    # 安全暂停：在提交每个大题批次前检查；已提交批次照常完成并合并，
+    # 未提交批次不派发、不记为失败，恢复时按现有缺失题集合补齐。
     worker_count = max(1, min(int(batch_workers or 1), len(major_tasks) or 1))
+    paused = False
+    major_results = []
     if worker_count == 1:
-        major_results = [_run_major_task(task) for task in major_tasks]
+        for task in major_tasks:
+            if _pause_now():
+                paused = True
+                break
+            major_results.append(_run_major_task(task))
     else:
+        pending_tasks = iter(major_tasks)
+        inflight: set[Any] = set()
         with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="hybrid-major") as executor:
-            futures = [executor.submit(_run_major_task, task) for task in major_tasks]
-            major_results = [future.result() for future in as_completed(futures)]
+            while True:
+                while len(inflight) < worker_count and not paused:
+                    if _pause_now():
+                        paused = True
+                        break
+                    try:
+                        task = next(pending_tasks)
+                    except StopIteration:
+                        break
+                    inflight.add(executor.submit(_run_major_task, task))
+                if not inflight:
+                    break
+                done, inflight = wait(inflight, timeout=0.1, return_when=FIRST_COMPLETED)
+                major_results.extend(future.result() for future in done)
+                inflight = set(inflight)
+                if paused and not inflight:
+                    break
 
     for result in major_results:
         if result.get("usage"):
@@ -266,6 +299,7 @@ def run_hybrid_batch_grading(
         fallback_items=fallback_items,
         usage_records=usage_records,
         usage_summary=summarize_usage_records(usage_records),
+        paused=paused,
     )
 
 
