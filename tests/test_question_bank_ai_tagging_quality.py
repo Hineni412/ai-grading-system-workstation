@@ -181,13 +181,14 @@ def test_batch_incomplete_single_question_retries_without_affecting_neighbors() 
     assert results[1].quality_status == "complete"
     assert results[2].quality_status == "complete"
     assert service.primary_calls == [1, 2, 2]
-    assert [(event.request_kind, event.question_ids) for event in events] == [
+    started = [event for event in events if event.phase == "started"]
+    assert [(event.request_kind, event.question_ids) for event in started] == [
         ("batch", (1, 2)),
         ("single_fallback", (1,)),
         ("single_fallback", (2,)),
         ("quality_retry", (2,)),
     ]
-    assert [event.request_number for event in events] == [1, 2, 3, 4]
+    assert [event.request_number for event in started] == [1, 2, 3, 4]
 
 
 def test_failed_batch_does_not_fan_out_when_fallback_is_disabled() -> None:
@@ -210,9 +211,14 @@ def test_failed_batch_does_not_fan_out_when_fallback_is_disabled() -> None:
     assert not results[1].ok
     assert not results[2].ok
     assert service.primary_calls == []
-    assert [(event.request_kind, event.question_ids) for event in events] == [
+    started = [event for event in events if event.phase == "started"]
+    assert [(event.request_kind, event.question_ids) for event in started] == [
         ("batch", (1, 2))
     ]
+    # 批次真正失败时应发出一个 failed 阶段事件（分类 + 脱敏）
+    failed = [event for event in events if event.phase == "failed"]
+    assert len(failed) == 1
+    assert failed[0].request_kind == "batch"
 
 
 def test_low_confidence_uses_review_model_when_agreement_is_found() -> None:
@@ -235,7 +241,8 @@ def test_low_confidence_uses_review_model_when_agreement_is_found() -> None:
     assert results[1].analysis is not None
     assert results[1].analysis.confidence >= 0.72
     assert service.review_calls == [1]
-    assert [event.request_kind for event in events] == [
+    started = [event for event in events if event.phase == "started"]
+    assert [event.request_kind for event in started] == [
         "batch",
         "single_fallback",
         "review",
