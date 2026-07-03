@@ -7688,6 +7688,11 @@ def _render_region_editor_legacy(
                         with row_cols[1]:
                             qid_options = _region_binding_options(question_candidates, parent_question_ids)
                             cur_qid = str(r.get("mapped_question_id") or "")
+                            # 已绑定题号即使不在当前候选（例如旧格式 Q10(1) 而候选已是
+                            # 规范 Q10(P1)）也必须保留为可选项，避免下拉框静默回落到首项
+                            # 而把已确认答题区改绑到别的题。
+                            if cur_qid and cur_qid not in qid_options:
+                                qid_options = [*qid_options, cur_qid]
                             try:
                                 cur_idx = qid_options.index(cur_qid)
                             except ValueError:
@@ -8855,37 +8860,40 @@ def _load_question_id_candidates(session: dict[str, Any]) -> list[str]:
         rubric = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return []
+    if not isinstance(rubric, dict):
+        return []
 
-    result: list[str] = []
-    questions = rubric.get("questions") if isinstance(rubric, dict) else []
-    if not isinstance(questions, list):
-        return result
+    # 通过统一题号契约得到规范明细号（最小单元、按题目顺序）；只读，不写磁盘。
+    from question_id_contract import QuestionIdCatalog
 
-    for q in questions:
-        if not isinstance(q, dict):
-            continue
-        qid = str(q.get("question_id") or "").strip()
-        parts = q.get("parts")
-        part_ids: list[str] = []
-        if isinstance(parts, list):
-            for part in parts:
-                if not isinstance(part, dict):
-                    continue
-                pid = str(part.get("part_id") or "").strip()
-                if pid:
-                    part_ids.append(pid)
-        # When a question has split parts / scoring units, region mapping should
-        # bind to the smallest unit by default. This keeps auto-binding in the
-        # same order teachers mark boxes: Q1, Q2, Q3(1), Q3(2), ...
-        if part_ids:
-            result.extend(part_ids)
-        elif qid:
-            result.append(qid)
+    try:
+        catalog = QuestionIdCatalog.from_document(rubric)
+        detail_ids = list(catalog.detail_ids)
+    except Exception:
+        detail_ids = []
+
+    if not detail_ids:
+        # 契约无法解析时退回原始按最小单元收集，保证不因异常题号导致空候选。
+        questions = rubric.get("questions")
+        for q in questions if isinstance(questions, list) else []:
+            if not isinstance(q, dict):
+                continue
+            qid = str(q.get("question_id") or "").strip()
+            parts = q.get("parts")
+            part_ids = [
+                pid
+                for part in (parts if isinstance(parts, list) else [])
+                if isinstance(part, dict) and (pid := str(part.get("part_id") or "").strip())
+            ]
+            if part_ids:
+                detail_ids.extend(part_ids)
+            elif qid:
+                detail_ids.append(qid)
 
     seen: set[str] = set()
     uniq: list[str] = []
-    for item in result:
-        if item not in seen:
+    for item in detail_ids:
+        if item and item not in seen:
             seen.add(item)
             uniq.append(item)
     return uniq

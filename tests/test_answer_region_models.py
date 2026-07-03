@@ -158,7 +158,7 @@ def test_load_question_binding_catalog_uses_smallest_units_and_manual_parents(tm
                         "parts": [{"part_id": "Q10(1)"}, {"part_id": "Q10(2)"}],
                     },
                     {"question_id": "__student_name__"},
-                    {"question_id": "Q11", "parts": [{"part_id": "Q11-A"}]},
+                    {"question_id": "Q11", "parts": [{"part_id": "P1"}]},
                 ]
             },
             ensure_ascii=False,
@@ -169,16 +169,18 @@ def test_load_question_binding_catalog_uses_smallest_units_and_manual_parents(tm
     catalog = load_question_binding_catalog(rubric_path)
     options = {option.value: option.label for option in catalog.manual_options}
 
-    assert catalog.automatic_candidates == ("Q1", "Q10(1)", "Q10(2)", "Q11-A")
+    # 统一题号契约：旧写法 Q10(1)/Q10(2) 归一为规范 Q10(P1)/Q10(P2)；
+    # 单小问大题 Q11 折叠为父题号 Q11（不再作为"整道大题"父项）。
+    assert catalog.automatic_candidates == ("Q1", "Q10(P1)", "Q10(P2)", "Q11")
     assert catalog.parent_question_ids == frozenset({"Q10"})
     assert [option.value for option in catalog.manual_options] == [
         "",
         "__student_name__",
         "Q1",
         "Q10",
-        "Q10(1)",
-        "Q10(2)",
-        "Q11-A",
+        "Q10(P1)",
+        "Q10(P2)",
+        "Q11",
     ]
     assert options[""] == ""
     assert options["__student_name__"] == "姓名识别区域"

@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from typing import Any
 
 
-_SUB_QUESTION_ID = re.compile(r"^Q?(\d+)(?:\(|（|-|_)(\d+)(?:\)|）)?$")
+# 同时识别旧写法 Q12(1)/Q12-2/Q12_2 和统一契约的规范写法 Q12(P1)，归一到同一键，
+# 使批改明细无论用哪种题号形式都能与评分依据对齐。
+_SUB_QUESTION_ID = re.compile(r"^Q?(\d+)(?:\(|（|-|_|\.)P?(\d+)(?:\)|）)?$")
 
 
 @dataclass(frozen=True)
