@@ -139,6 +139,21 @@ class GradingRunStore:
             ).fetchone()
         return row["state"] if row is not None else None
 
+    def fail_active_runs(self, session_id: int) -> int:
+        """把该会话遗留的 running/pause_requested 运行标为 failed（进程崩溃后的清理）。
+
+        不触碰 paused 运行，避免影响正常的暂停-恢复。返回被清理的数量。
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE grading_runs SET state = 'failed', "
+                "finished_at = datetime('now','localtime'), "
+                "updated_at = datetime('now','localtime') "
+                "WHERE session_id = ? AND state IN ('running','pause_requested')",
+                (session_id,),
+            )
+            return cursor.rowcount
+
     def request_pause(self, session_id: int) -> bool:
         with self._connect() as conn:
             cursor = conn.execute(

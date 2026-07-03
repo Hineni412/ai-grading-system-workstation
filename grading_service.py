@@ -141,6 +141,7 @@ class GradingService:
         grading_mode: str = "full_paper",
         objective_escalation_question_ids: Iterable[str] | None = None,
         failed_only: bool = False,
+        resume_run_id: int | None = None,
     ) -> Iterable[dict]:
         if not self.db.is_template_ready(session_id):
             raise ValueError("当前会话尚未完成模板题框映射确认，请先在“评分依据与会话”页完成模板配置")
@@ -174,6 +175,40 @@ class GradingService:
             answer_regions=answer_regions,
             question_tag_context=self._question_tag_context(session_id, rubric),
         )
+
+        # 批改运行账本（附加层）：支持安全暂停/恢复与跨运行三元幂等。
+        # 任何账本相关异常都回退到无账本行为，保证不影响既有批改主流程。
+        run_store = None
+        run = None
+        config_fingerprint = ""
+        try:
+            from grading_run_store import GradingRunStore
+            from grading_run_identity import grading_config_fingerprint
+
+            config_fingerprint = grading_config_fingerprint(
+                rubric=grader.rubric,
+                answer_key=grader.answer_key,
+                answer_regions=answer_regions,
+                grading_mode=resolved_grading_mode,
+                grading_model=grading_model or "",
+            )
+            run_store = GradingRunStore(self.db.db_path)
+            if resume_run_id is not None:
+                run = run_store.resume(session_id, config_fingerprint, resolved_grading_mode)
+            if run is None:
+                run_store.fail_active_runs(session_id)
+                run = run_store.begin(session_id, config_fingerprint, resolved_grading_mode)
+        except Exception:
+            run_store = None
+            run = None
+
+        def _pause_requested() -> bool:
+            if run_store is None or run is None:
+                return False
+            try:
+                return run_store.control_state(run.run_token) == "pause_requested"
+            except Exception:
+                return False
 
         if not failed_only:
             if not self.db.try_start_session_run(session_id):
@@ -402,6 +437,7 @@ class GradingService:
                         rubric_images_dir=get_path_manager().templates_dir / f"session_{session_id}" / "rubric_images",
                         skipped_questions_by_student=skipped_questions_by_student,
                         question_tag_context=grader.question_tag_context,
+                        should_pause=_pause_requested,
                     )
                     while not future.done():
                         try:
@@ -575,82 +611,276 @@ class GradingService:
                         "total": total,
                     }
 
+            hybrid_paused = bool(getattr(batch_run, "paused", False))
+            if run_store is not None and run is not None:
+                try:
+                    run_store.finish(run.run_token, "paused" if hybrid_paused else "completed")
+                except Exception:
+                    pass
             self.db.finish_session_run(session_id, "completed")
             progress = self.db.get_session_progress(session_id)
-            yield {"event": "session_completed", "progress": progress}
+            if hybrid_paused:
+                yield {
+                    "event": "session_paused",
+                    "run_id": run.id if run is not None else None,
+                    "progress": progress,
+                }
+            else:
+                yield {"event": "session_completed", "progress": progress}
             return
 
-        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="grading") as executor:
-            future_map = {}
-            for idx, (paper_id, group, student_id) in enumerate(matched_records, start=1):
-                self.db.update_exam_paper_status(paper_id, "grading")
-                yield {
-                    "event": "grading_started",
-                    "paper_id": paper_id,
-                    "student_name": group.student_name,
-                    "current": idx,
-                    "total": total,
-                }
-                future = executor.submit(
-                    _grade_one_paper_with_retries,
-                    grader,
-                    group,
-                    rate_limiter,
-                    event_queue,
-                    session_id,
-                    grading_mode=resolved_grading_mode,
-                    answer_regions=answer_regions,
-                    atlas_output_root=get_path_manager().outputs_dir / "evidence_atlas",
-                )
-                future_map[future] = (idx, paper_id, group, student_id)
+        # ===== 整卷批改：候选判定 + 可暂停的有界增量派发 =====
+        grade_records, run_item_by_paper = yield from self._classify_full_paper_candidates(
+            matched_records,
+            run_store=run_store,
+            run=run,
+            session_id=session_id,
+            config_fingerprint=config_fingerprint,
+            resume_run_id=resume_run_id,
+        )
 
-            completed = 0
-            pending_futures = set(future_map.keys())
-            
-            while pending_futures or not event_queue.empty():
+        total_grade = len(grade_records)
+        completed = 0
+        paused = False
+        record_iter = iter(list(enumerate(grade_records, start=1)))
+        inflight: dict[Any, tuple[int, int, ExamPaperGroup, int]] = {}
+
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="grading") as executor:
+            while True:
+                while len(inflight) < worker_count and not paused:
+                    if _pause_requested():
+                        paused = True
+                        break
+                    try:
+                        idx, (paper_id, group, student_id) = next(record_iter)
+                    except StopIteration:
+                        break
+                    self.db.update_exam_paper_status(paper_id, "grading")
+                    if run_store is not None and paper_id in run_item_by_paper:
+                        try:
+                            run_store.mark_grading(run_item_by_paper[paper_id])
+                        except Exception:
+                            pass
+                    yield {
+                        "event": "grading_started",
+                        "paper_id": paper_id,
+                        "student_name": group.student_name,
+                        "current": idx,
+                        "total": total_grade,
+                    }
+                    future = executor.submit(
+                        _grade_one_paper_with_retries,
+                        grader,
+                        group,
+                        rate_limiter,
+                        event_queue,
+                        session_id,
+                        grading_mode=resolved_grading_mode,
+                        answer_regions=answer_regions,
+                        atlas_output_root=get_path_manager().outputs_dir / "evidence_atlas",
+                    )
+                    inflight[future] = (idx, paper_id, group, student_id)
+
                 try:
                     while True:
                         yield event_queue.get_nowait()
                 except queue.Empty:
                     pass
 
-                if pending_futures:
-                    done, pending_futures = wait(pending_futures, timeout=0.1, return_when=FIRST_COMPLETED)
-                    for future in done:
-                        idx, paper_id, group, student_id = future_map[future]
-                        completed += 1
-                        try:
-                            result = future.result()
-                            result_id = self.db.save_session_result(session_id, student_id, paper_id, result)
-                            self.db.update_exam_paper_status(paper_id, "graded")
-        
-                            yield {
-                                "event": "graded",
-                                "paper_id": paper_id,
-                                "result_id": result_id,
-                                "student_name": result.student_name,
-                                "score": result.student_score,
-                                "total_score": result.total_score,
-                                "needs_human_review": result.needs_human_review,
-                                "current": completed,
-                                "total": total,
-                            }
-                        except Exception as exc:  # noqa: BLE001
-                            self.db.update_exam_paper_status(paper_id, "failed", str(exc))
-                            yield {
-                                "event": "grading_failed",
-                                "paper_id": paper_id,
-                                "student_name": group.student_name,
-                                "error": str(exc),
-                                "current": completed,
-                                "total": total,
-                            }
-                else:
+                if not inflight:
                     break
 
+                done, _ = wait(set(inflight), timeout=0.1, return_when=FIRST_COMPLETED)
+                for future in done:
+                    idx, paper_id, group, student_id = inflight.pop(future)
+                    completed += 1
+                    try:
+                        result = future.result()
+                        result_id = self.db.save_session_result(session_id, student_id, paper_id, result)
+                        self.db.update_exam_paper_status(paper_id, "graded")
+                        if run_store is not None and paper_id in run_item_by_paper:
+                            try:
+                                run_store.set_item_status(run_item_by_paper[paper_id], "graded", result_id=result_id)
+                            except Exception:
+                                pass
+                        yield {
+                            "event": "graded",
+                            "paper_id": paper_id,
+                            "result_id": result_id,
+                            "student_name": result.student_name,
+                            "score": result.student_score,
+                            "total_score": result.total_score,
+                            "needs_human_review": result.needs_human_review,
+                            "current": completed,
+                            "total": total_grade,
+                        }
+                    except Exception as exc:  # noqa: BLE001
+                        self.db.update_exam_paper_status(paper_id, "failed", str(exc))
+                        if run_store is not None and paper_id in run_item_by_paper:
+                            try:
+                                run_store.set_item_status(
+                                    run_item_by_paper[paper_id], "failed", disposition_reason=str(exc)
+                                )
+                            except Exception:
+                                pass
+                        yield {
+                            "event": "grading_failed",
+                            "paper_id": paper_id,
+                            "student_name": group.student_name,
+                            "error": str(exc),
+                            "current": completed,
+                            "total": total_grade,
+                        }
+
+                if paused and not inflight:
+                    break
+
+        if paused:
+            # 未派发答卷保持 pending 待恢复；标记账本运行为 paused 并释放会话运行守卫。
+            if run_store is not None and run is not None:
+                try:
+                    run_store.finish(run.run_token, "paused")
+                except Exception:
+                    pass
+            self.db.finish_session_run(session_id, "completed")
+            progress = self.db.get_session_progress(session_id)
+            yield {
+                "event": "session_paused",
+                "run_id": run.id if run is not None else None,
+                "progress": progress,
+            }
+            return
+
+        if run_store is not None and run is not None:
+            try:
+                run_store.finish(run.run_token, "completed")
+            except Exception:
+                pass
         self.db.finish_session_run(session_id, "completed")
         progress = self.db.get_session_progress(session_id)
         yield {"event": "session_completed", "progress": progress}
+
+    def _classify_full_paper_candidates(
+        self,
+        matched_records: list[tuple[int, ExamPaperGroup, int]],
+        *,
+        run_store: Any,
+        run: Any,
+        session_id: int,
+        config_fingerprint: str,
+        resume_run_id: int | None,
+    ) -> Any:
+        """判定候选答卷（去重/冲突/跳过已批），发出对应事件，返回待批改集合与账本项映射。
+
+        账本不可用时退回全部批改（与旧行为一致）。跳过已批仅在"恢复运行"时启用，
+        避免全新运行（已清空成绩）误跳导致学生漏批。生成器语义：用 ``yield from`` 调用。
+        """
+        run_item_by_paper: dict[int, int] = {}
+        if run_store is None or run is None or not matched_records:
+            return list(matched_records), run_item_by_paper
+
+        from grading_run_identity import (
+            CandidatePaper,
+            CompletedIdentity,
+            classify_student_candidates,
+            paper_fingerprint,
+        )
+
+        fingerprint_by_paper: dict[int, str] = {}
+        candidates: list[CandidatePaper] = []
+        for paper_id, group, student_id in matched_records:
+            fp = paper_fingerprint(group.front_image, group.back_image)
+            fingerprint_by_paper[paper_id] = fp
+            candidates.append(
+                CandidatePaper(
+                    source_label=str(paper_id),
+                    student_id=int(student_id),
+                    paper_fingerprint=fp,
+                    paper_id=paper_id,
+                )
+            )
+
+        completed_identities: list[CompletedIdentity] = []
+        if resume_run_id is not None:
+            for row in run_store.graded_identities(session_id):
+                completed_identities.append(
+                    CompletedIdentity(
+                        int(row["student_id"]),
+                        str(row["paper_fingerprint"]),
+                        str(row["config_fingerprint"]),
+                        True,
+                    )
+                )
+
+        decisions = classify_student_candidates(candidates, completed_identities, config_fingerprint)
+        decision_by_paper = {
+            int(item.paper_id): item for item in decisions if item.paper_id is not None
+        }
+
+        grade_records: list[tuple[int, ExamPaperGroup, int]] = []
+        for paper_id, group, student_id in matched_records:
+            decision = decision_by_paper.get(paper_id)
+            action = decision.action if decision is not None else "grade"
+            reason = decision.reason if decision is not None else ""
+            fp = fingerprint_by_paper.get(paper_id, "")
+            if action == "grade":
+                grade_records.append((paper_id, group, student_id))
+                try:
+                    run_item_by_paper[paper_id] = run_store.add_item(
+                        run.id,
+                        source_label=str(paper_id),
+                        student_id=int(student_id),
+                        paper_fingerprint=fp,
+                        config_fingerprint=config_fingerprint,
+                        status="pending",
+                        paper_id=paper_id,
+                    )
+                except Exception:
+                    pass
+                continue
+
+            try:
+                run_store.add_item(
+                    run.id,
+                    source_label=str(paper_id),
+                    student_id=int(student_id),
+                    paper_fingerprint=fp,
+                    config_fingerprint=config_fingerprint,
+                    status=action,
+                    paper_id=paper_id,
+                    disposition_reason=reason,
+                )
+            except Exception:
+                pass
+
+            if action == "conflict":
+                self.db.update_exam_paper_status(paper_id, "skipped", reason or "同学生多份不同答卷冲突")
+                yield {
+                    "event": "paper_conflict",
+                    "paper_id": paper_id,
+                    "student_name": group.student_name,
+                    "reason": reason,
+                    "fingerprint": fp[:8],
+                }
+            elif action == "skipped_duplicate":
+                self.db.update_exam_paper_status(paper_id, "skipped", "本批次重复答卷")
+                yield {
+                    "event": "paper_skipped",
+                    "paper_id": paper_id,
+                    "student_name": group.student_name,
+                    "reason": reason,
+                    "kind": "duplicate",
+                }
+            else:  # skipped_existing
+                yield {
+                    "event": "paper_skipped",
+                    "paper_id": paper_id,
+                    "student_name": group.student_name,
+                    "reason": reason,
+                    "kind": "existing",
+                }
+
+        return grade_records, run_item_by_paper
 
     def _record_attendance(
         self,

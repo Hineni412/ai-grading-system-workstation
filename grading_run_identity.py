@@ -43,10 +43,22 @@ class CandidateDecision:
 
 
 def paper_fingerprint(front: Any, back: Any) -> str:
-    """对正反面原图内容做稳定 SHA-256（含长度分隔，避免拼接歧义）。"""
+    """对正反面原图内容做稳定 SHA-256（含长度分隔，避免拼接歧义）。
+
+    容忍 ``None`` 或缺失文件（单页答卷或路径异常）：缺失位置以定长占位参与哈希，
+    保证同一份答卷指纹稳定、不同内容指纹不同，且不因缺页抛错中断批改。
+    """
     digest = hashlib.sha256()
     for path in (front, back):
-        data = Path(path).read_bytes()
+        if path is None:
+            digest.update(b"\x00" * 8)
+            continue
+        candidate = Path(path)
+        try:
+            data = candidate.read_bytes()
+        except OSError:
+            digest.update(b"\xff" * 8)
+            continue
         digest.update(len(data).to_bytes(8, "big"))
         digest.update(data)
     return digest.hexdigest()
