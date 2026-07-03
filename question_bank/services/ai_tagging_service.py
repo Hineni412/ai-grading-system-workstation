@@ -177,6 +177,55 @@ class TaggingRequestEvent:
     request_number: int
     request_kind: str
     question_ids: tuple[int, ...]
+    phase: str = "started"  # started | succeeded | failed
+    error_category: str = ""
+    error_message: str = ""
+    model_name: str = ""
+
+
+# 打标请求错误分类，供页面按类别展示与决定是否重试。
+_TAGGING_ERROR_CATEGORIES = (
+    "rate_limit",
+    "timeout",
+    "network",
+    "parse",
+    "validation",
+    "quality",
+    "save",
+    "unknown",
+)
+
+_SENSITIVE_TOKEN_RE = re.compile(
+    r"(api[_-]?key|authorization|bearer|token)\s*[:=]?\s*[^\s,;'\"]+",
+    re.IGNORECASE,
+)
+
+
+def classify_tagging_error(exc: BaseException) -> str:
+    text = f"{type(exc).__name__} {exc}".lower()
+    if "rate limit" in text or "429" in text or "too many requests" in text:
+        return "rate_limit"
+    if "timeout" in text or "timed out" in text:
+        return "timeout"
+    if "connection" in text or "network" in text or "unreachable" in text or "dns" in text:
+        return "network"
+    if "json" in text or "parse" in text or "decode" in text:
+        return "parse"
+    if "validation" in text or "schema" in text or "did not include" in text or "missing" in text:
+        return "validation"
+    if "quality" in text or "low confidence" in text or "invalid" in text:
+        return "quality"
+    if "save" in text or "database" in text or "sqlite" in text or "constraint" in text:
+        return "save"
+    return "unknown"
+
+
+def sanitize_tagging_error(message: object, *, limit: int = 500) -> str:
+    text = str(message or "")
+    text = _SENSITIVE_TOKEN_RE.sub(lambda m: f"{m.group(1)}=***", text)
+    if len(text) > limit:
+        text = text[:limit] + "…"
+    return text
 
 
 COMPLETE_CONFIDENCE_THRESHOLD = 0.72
@@ -768,8 +817,8 @@ def _analyze_one_batch(
     if service.mock_mode:
         return _finalize_batch_results(service, batch_items, _mock_batch_analysis(batch_items))
 
-    request_controller.begin("batch", tuple(qid for qid, _context in batch_items))
-        
+    _batch_started = request_controller.begin("batch", tuple(qid for qid, _context in batch_items))
+
     try:
         if service.llm_client is not None:
             # Format prompt for llm_client
@@ -816,6 +865,7 @@ def _analyze_one_batch(
             for qid, ctx in batch_items:
                 if qid not in results:
                     results[qid] = AITaggingResult(ok=False, mock_mode=False, error="LLM response did not include results for this question ID", model_name=service.model, quality_status="invalid")
+            request_controller.finish(_batch_started, "succeeded", model_name=service.model)
             return _finalize_batch_results(
                 service,
                 batch_items,
@@ -824,7 +874,7 @@ def _analyze_one_batch(
                 quality_retry_limit=quality_retry_limit,
                 enable_review=enable_review,
             )
-            
+
         # Standard OpenAI-style / Google Responses API client
         response = service._client().responses.create(
             model=service.model,
@@ -848,6 +898,7 @@ def _analyze_one_batch(
         for qid, ctx in batch_items:
             if qid not in results:
                 results[qid] = AITaggingResult(ok=False, mock_mode=False, error="API response did not include results for this question ID", model_name=service.model, quality_status="invalid")
+        request_controller.finish(_batch_started, "succeeded", model_name=service.model)
         return _finalize_batch_results(
             service,
             batch_items,
@@ -857,6 +908,7 @@ def _analyze_one_batch(
             enable_review=enable_review,
         )
     except Exception as exc:
+        request_controller.finish(_batch_started, "failed", exc, model_name=service.model)
         if not allow_batch_fallback:
             fallback_results = {
                 qid: AITaggingResult(
@@ -1205,6 +1257,30 @@ class _TaggingRequestController:
         self._lock = threading.Lock()
         self._request_number = 0
 
+    def _emit(self, event: TaggingRequestEvent) -> None:
+        if self._callback is not None:
+            self._callback(event)
+
+    def finish(
+        self,
+        started: TaggingRequestEvent,
+        phase: str,
+        exc: BaseException | None = None,
+        *,
+        model_name: str = "",
+    ) -> None:
+        self._emit(
+            TaggingRequestEvent(
+                request_number=started.request_number,
+                request_kind=started.request_kind,
+                question_ids=started.question_ids,
+                phase=phase,
+                error_category=classify_tagging_error(exc) if exc is not None else "",
+                error_message=sanitize_tagging_error(exc) if exc is not None else "",
+                model_name=str(model_name or ""),
+            )
+        )
+
     def begin(
         self,
         request_kind: str,
@@ -1217,9 +1293,9 @@ class _TaggingRequestController:
                 request_number=self._request_number,
                 request_kind=str(request_kind),
                 question_ids=tuple(int(question_id) for question_id in question_ids),
+                phase="started",
             )
-            if self._callback is not None:
-                self._callback(event)
+            self._emit(event)
         return event
 
     def run(
@@ -1227,6 +1303,32 @@ class _TaggingRequestController:
         request_kind: str,
         question_ids: tuple[int, ...],
         operation: Callable[[], Any],
+        *,
+        model_name: str = "",
     ) -> Any:
-        self.begin(request_kind, question_ids)
-        return operation()
+        started = self.begin(request_kind, question_ids)
+        try:
+            result = operation()
+        except BaseException as exc:  # noqa: BLE001 - 分类后重新抛出
+            self._emit(
+                TaggingRequestEvent(
+                    request_number=started.request_number,
+                    request_kind=started.request_kind,
+                    question_ids=started.question_ids,
+                    phase="failed",
+                    error_category=classify_tagging_error(exc),
+                    error_message=sanitize_tagging_error(exc),
+                    model_name=str(model_name or ""),
+                )
+            )
+            raise
+        self._emit(
+            TaggingRequestEvent(
+                request_number=started.request_number,
+                request_kind=started.request_kind,
+                question_ids=started.question_ids,
+                phase="succeeded",
+                model_name=str(model_name or ""),
+            )
+        )
+        return result
