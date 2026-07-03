@@ -113,29 +113,51 @@ def assign_sequential_question_ids(
 
 
 def load_question_binding_catalog(rubric_path: Path) -> QuestionBindingCatalog:
-    questions: list[dict[str, Any]] = []
+    rubric: dict[str, Any] = {}
     try:
-        rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
-        raw_questions = rubric.get("questions") if isinstance(rubric, dict) else None
-        if isinstance(raw_questions, list):
-            questions = [question for question in raw_questions if isinstance(question, dict)]
+        parsed = json.loads(rubric_path.read_text(encoding="utf-8"))
+        if isinstance(parsed, dict):
+            rubric = parsed
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        pass
+        rubric = {}
 
-    automatic_candidates: list[str] = []
-    parents: list[str] = []
-    for question in questions:
-        question_id = _optional_text(question.get("question_id"))
-        part_ids = [
-            part_id
-            for part in question.get("parts", [])
-            if isinstance(part, dict)
-            and (part_id := _optional_text(part.get("part_id"))) is not None
-        ] if isinstance(question.get("parts"), list) else []
+    # 通过统一题号契约得到规范明细号；单小问大题折叠为父题号，多小问展开为 Q<n>(P<m>)。
+    from question_id_contract import QuestionIdCatalog
 
-        if question_id and question_id != _STUDENT_NAME_REGION_ID and len(part_ids) > 1:
-            parents.append(question_id)
-        automatic_candidates.extend(part_ids if part_ids else ([question_id] if question_id else []))
+    catalog = None
+    try:
+        catalog = QuestionIdCatalog.from_document(rubric)
+    except Exception:
+        catalog = None
+
+    if catalog is not None:
+        automatic_candidates = list(catalog.detail_ids)
+        # 只有含多个小问的大题才作为"整道大题"手动绑定父题。
+        parents = [
+            parent
+            for parent in catalog.parent_ids
+            if len(catalog.parts_by_parent.get(parent, ())) > 1
+        ]
+    else:
+        # 契约无法解析时退回原始逐题收集，保证异常题号不导致空目录。
+        questions = [
+            question
+            for question in (rubric.get("questions") if isinstance(rubric.get("questions"), list) else [])
+            if isinstance(question, dict)
+        ]
+        automatic_candidates = []
+        parents = []
+        for question in questions:
+            question_id = _optional_text(question.get("question_id"))
+            part_ids = [
+                part_id
+                for part in question.get("parts", [])
+                if isinstance(part, dict)
+                and (part_id := _optional_text(part.get("part_id"))) is not None
+            ] if isinstance(question.get("parts"), list) else []
+            if question_id and question_id != _STUDENT_NAME_REGION_ID and len(part_ids) > 1:
+                parents.append(question_id)
+            automatic_candidates.extend(part_ids if part_ids else ([question_id] if question_id else []))
 
     automatic = _unique_nonblank(automatic_candidates, exclude={_STUDENT_NAME_REGION_ID})
     parent_ids = _unique_nonblank(parents, exclude={_STUDENT_NAME_REGION_ID})

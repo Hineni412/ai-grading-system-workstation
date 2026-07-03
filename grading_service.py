@@ -695,28 +695,33 @@ def _target_question_ids_from_regions(regions: list[dict], rubric: dict | None =
         seen.add(qid)
         raw_ids.append(qid)
 
-    # Expand to parts if rubric is provided
-    result: list[str] = []
-    if rubric and isinstance(rubric, dict):
-        rubric_parts: dict[str, list[str]] = {}
-        for q in rubric.get("questions", []):
-            if not isinstance(q, dict):
-                continue
-            parent_qid = str(q.get("question_id") or "").strip()
-            parts = q.get("parts", [])
-            if parent_qid and isinstance(parts, list) and len(parts) > 0:
-                part_ids = [str(p.get("part_id") or "").strip() for p in parts if isinstance(p, dict) and p.get("part_id")]
-                if part_ids:
-                    rubric_parts[parent_qid] = part_ids
+    catalog = None
+    if isinstance(rubric, dict) and rubric.get("questions"):
+        from question_id_contract import QuestionIdCatalog
 
-        for qid in raw_ids:
-            if qid in rubric_parts:
-                result.extend(rubric_parts[qid])
-            else:
-                result.append(qid)
-    else:
-        result = raw_ids
+        try:
+            catalog = QuestionIdCatalog.from_document(rubric)
+        except Exception:
+            catalog = None
+
+    result: list[str] = []
+    out_seen: set[str] = set()
+    for qid in raw_ids:
+        # 父题展开为规范小问；小问/未知项解析为规范号或原样保留。
+        expanded: tuple[str, ...] = ()
+        if catalog is not None:
+            expanded = catalog.expand(qid)
+            if not expanded:
+                resolved = catalog.resolve(qid)
+                expanded = (resolved,) if resolved else (qid,)
+        else:
+            expanded = (qid,)
+        for item in expanded:
+            if item and item not in out_seen:
+                out_seen.add(item)
+                result.append(item)
     return result
+
 
 
 def _fallback_items_by_student(fallback_items: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
@@ -759,10 +764,20 @@ def _session_front_page_parity(session_id: int) -> str:
 
 
 def _load_rubric_for_preflight(rubric_path: Path) -> dict:
+    """读取评分依据并返回规范化题号的内存副本；磁盘文件保持不变。"""
     try:
-        return json.loads(rubric_path.read_text(encoding="utf-8"))
+        payload = json.loads(rubric_path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+    if not isinstance(payload, dict):
+        return {}
+    from question_id_contract import canonicalize_question_document
+
+    try:
+        return canonicalize_question_document(payload)
+    except Exception:
+        # 题号无法解析时退回原始内存副本，绝不写磁盘，也不阻断批改预检。
+        return payload
 
 
 def _validate_session_exam_identity(session: dict | None, rubric: dict) -> None:

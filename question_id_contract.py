@@ -113,11 +113,12 @@ def _question_detail_ids(question: Mapping[str, Any]) -> tuple[str, list[str], d
 
     遇到同一父题下两个小问归一到同一规范号时抛 QuestionIdContractError。
     """
-    parent = _canonical_parent(question.get("question_id"))
-    if parent is None:
-        raise QuestionIdContractError(
-            f"无法解析大题号: {question.get('question_id')!r}"
-        )
+    raw_qid = str(question.get("question_id") or "").strip()
+    # 非 Q<n> 形式的条目（如答题区里的 __student_name__、字母题号）不阻断整卷解析，
+    # 原样透传，由调用方按需过滤；只在真正的规范号重复时才报错。
+    parent = _canonical_parent(raw_qid) or raw_qid
+    if not parent:
+        return "", [], {}
     parts = question.get("parts")
     aliases: dict[str, str] = {parent: parent}
 
@@ -169,6 +170,8 @@ def _build_catalog(document: Mapping[str, Any]) -> QuestionIdCatalog:
 
     for question in _iter_questions(document):
         parent, question_details, question_aliases = _question_detail_ids(question)
+        if not parent:
+            continue
         if parent in parts_by_parent:
             raise QuestionIdContractError(f"大题号重复: {parent}")
         parent_ids.append(parent)
