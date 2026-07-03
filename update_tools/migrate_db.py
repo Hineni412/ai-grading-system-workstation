@@ -214,10 +214,46 @@ def _backup_database(db_path: Path, reason: str) -> Path | None:
     return backup_path
 
 
+def _split_sql_statements(sql: str) -> list[str]:
+    """把迁移 SQL 拆成独立语句，正确保留 CREATE TRIGGER 的 BEGIN…END 块。
+
+    触发器体内含分号，裸分号切分会破坏语句；这里跟踪 BEGIN/END 深度，
+    只在深度为 0 时把分号视为语句边界。行注释在判定关键字前剥离。
+    """
+    statements: list[str] = []
+    buffer: list[str] = []
+    depth = 0
+    for raw_line in sql.splitlines():
+        code = re.sub(r"--.*$", "", raw_line)
+        buffer.append(raw_line)
+        for match in re.finditer(r"\b(?:BEGIN|CASE|END)\b|;", code, flags=re.IGNORECASE):
+            token = match.group(0)
+            upper = token.upper()
+            if upper in {"BEGIN", "CASE"}:
+                depth += 1
+            elif upper == "END":
+                depth = max(0, depth - 1)
+            elif token == ";" and depth == 0:
+                statement = "\n".join(buffer).strip()
+                # 边界分号可能不在行尾；按最后一个深度 0 分号截断足够安全：
+                # 迁移文件约定一行内不混排两条语句。
+                statements.append(statement)
+                buffer = []
+    tail = "\n".join(buffer).strip()
+    if tail:
+        statements.append(tail)
+    # 清掉纯注释/空语句
+    result = []
+    for stmt in statements:
+        cleaned = re.sub(r"--.*$", "", stmt, flags=re.MULTILINE).strip().rstrip(";").strip()
+        if cleaned:
+            result.append(stmt.rstrip().rstrip(";"))
+    return result
+
+
 def _execute_sql_safe(conn: sqlite3.Connection, sql: str) -> str | None:
     """执行 SQL，处理 ADD COLUMN 重复等安全情况。返回错误信息或 None。"""
-    # 按分号分割多条语句
-    statements = [s.strip() for s in sql.split(";") if s.strip()]
+    statements = _split_sql_statements(sql)
 
     for stmt in statements:
         # 跳过纯注释
@@ -246,8 +282,16 @@ def run_migrations(
     target_name: str,
     *,
     dry_run: bool = False,
+    stamp_only: bool = False,
+    db_path: Path | None = None,
+    migrations_dir: Path | None = None,
 ) -> MigrationReport:
-    """对指定数据库执行所有未执行的迁移。"""
+    """对指定数据库执行所有未执行的迁移。
+
+    - ``db_path``/``migrations_dir``：显式覆盖目标路径（预演/测试用副本库）；缺省用真实目标。
+    - ``stamp_only``：把待执行迁移记录为已应用但不执行 SQL（基线打标用，
+      适用于 Schema 已由运行时初始化建成、且旧迁移含不可盲目重放的数据语句的库）。
+    """
     logger = _get_logger()
     targets = _get_targets()
 
@@ -258,8 +302,10 @@ def run_migrations(
         )
 
     config = targets[target_name]
-    db_path: Path = config["db_path"]
-    migrations_dir: Path = config["migrations_dir"]
+    db_path = Path(db_path) if db_path is not None else config["db_path"]
+    migrations_dir = (
+        Path(migrations_dir) if migrations_dir is not None else config["migrations_dir"]
+    )
 
     report = MigrationReport(target=target_name, db_path=str(db_path))
 
@@ -290,7 +336,21 @@ def run_migrations(
 
         logger.info("[%s] 待执行 %d 个迁移 (共 %d 个)", target_name, len(pending), len(migrations))
 
+        if stamp_only and not dry_run:
+            # 打标不执行 SQL，但仍在动作前做一次整体备份（只会新增 schema_migrations 行）。
+            stamp_backup = _backup_database(db_path, "stamp_only")
+            logger.info("打标前备份: %s", stamp_backup)
+
         for mig in pending:
+            if stamp_only and not dry_run:
+                # 仅记录，不执行：破坏性检查针对"将被执行的 SQL"，此处不适用。
+                _record_migration(conn, mig.name, mig.checksum, success=True)
+                logger.info("打标（未执行）: %s", mig.name)
+                report.results.append(MigrationResult(
+                    name=mig.name, status="stamped", message="记录为已应用，未执行 SQL"
+                ))
+                continue
+
             # 检查破坏性操作
             warnings = _check_destructive(mig.sql)
             if warnings:
@@ -424,6 +484,11 @@ def main() -> int:
     )
     parser.add_argument("--dry-run", action="store_true", help="只检查，不执行迁移")
     parser.add_argument("--status", action="store_true", help="显示迁移状态")
+    parser.add_argument(
+        "--stamp-only",
+        action="store_true",
+        help="把待执行迁移记录为已应用但不执行 SQL（基线打标；Schema 需已由运行时建成）",
+    )
     args = parser.parse_args()
 
     targets = [args.target] if args.target else ["grading", "question_bank"]
@@ -454,7 +519,7 @@ def main() -> int:
 
     has_error = False
     for target in targets:
-        report = run_migrations(target, dry_run=args.dry_run)
+        report = run_migrations(target, dry_run=args.dry_run, stamp_only=args.stamp_only)
         print(f"\n  [{target}] {report.db_path}")
 
         if report.error:
@@ -466,6 +531,7 @@ def main() -> int:
                 "applied": "[OK]",
                 "pending": "[PENDING]",
                 "skipped": "[SKIP]",
+                "stamped": "[STAMP]",
                 "failed": "[FAIL]",
                 "destructive_blocked": "[BLOCKED]",
             }.get(r.status, r.status)
