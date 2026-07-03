@@ -19,6 +19,9 @@ from grading_limits import (
     GRADING_RPM_MIN,
     HYBRID_INFLIGHT_WORKERS_MAX,
     HYBRID_INFLIGHT_WORKERS_MIN,
+    LARGE_REQUEST_WORKERS_DEFAULT,
+    LARGE_REQUEST_WORKERS_MAX,
+    LARGE_REQUEST_WORKERS_MIN,
     OBJECTIVE_BATCH_SIZE_MAX,
     OBJECTIVE_BATCH_SIZE_MIN,
     SUBJECTIVE_MAJOR_BATCH_SIZE_MAX,
@@ -298,6 +301,14 @@ class GradingService:
             FULL_PAPER_WORKERS_MIN,
             FULL_PAPER_WORKERS_MAX,
         )
+        # 整卷大图请求（参考图 + 学生正反面）并发上限：抑制大 payload 瞬时并发。
+        large_request_workers = bounded_int(
+            None,
+            _env_int("AI_GRADING_LARGE_REQUEST_MAX_WORKERS", LARGE_REQUEST_WORKERS_DEFAULT),
+            LARGE_REQUEST_WORKERS_MIN,
+            LARGE_REQUEST_WORKERS_MAX,
+        )
+        full_paper_workers = max(FULL_PAPER_WORKERS_MIN, min(worker_count, large_request_workers))
         rpm_limit = bounded_int(
             requests_per_minute,
             _env_int("AI_GRADING_REQUESTS_PER_MINUTE", 1000),
@@ -318,6 +329,7 @@ class GradingService:
                 "event": "batch_grading_config",
                 "total": total,
                 "max_workers": worker_count,
+                "large_request_workers": full_paper_workers,
                 "hybrid_inflight_workers": hybrid_worker_count,
                 "requests_per_minute": rpm_limit,
                 "grading_mode": resolved_grading_mode,
@@ -645,9 +657,9 @@ class GradingService:
         record_iter = iter(list(enumerate(grade_records, start=1)))
         inflight: dict[Any, tuple[int, int, ExamPaperGroup, int]] = {}
 
-        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="grading") as executor:
+        with ThreadPoolExecutor(max_workers=full_paper_workers, thread_name_prefix="grading") as executor:
             while True:
-                while len(inflight) < worker_count and not paused:
+                while len(inflight) < full_paper_workers and not paused:
                     if _pause_requested():
                         paused = True
                         break

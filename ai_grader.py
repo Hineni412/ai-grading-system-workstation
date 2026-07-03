@@ -324,9 +324,21 @@ class AIGrader:
             return json.load(f)
 
     def _reference_answer_images(self) -> list[tuple[str, bytes]]:
+        # 只在首次访问时解码 base64 并压缩参考图，之后复用缓存，避免每份答卷重复解码/编码。
+        cached = getattr(self, "_prepared_reference_images", None)
+        if cached is not None:
+            return cached
+
         questions = self.answer_key.get("questions") if isinstance(self.answer_key, dict) else []
         if not isinstance(questions, list):
-            return []
+            self._prepared_reference_images = []
+            return self._prepared_reference_images
+
+        try:
+            from reference_image_preparation import prepare_reference_image
+        except Exception:  # pragma: no cover - 依赖缺失时退回原图
+            prepare_reference_image = None
+
         result: list[tuple[str, bytes]] = []
         for question in questions:
             if not isinstance(question, dict):
@@ -335,9 +347,17 @@ class AIGrader:
             if not encoded:
                 continue
             try:
-                result.append((str(question.get("question_id") or ""), base64.b64decode(encoded)))
+                raw = base64.b64decode(encoded)
             except (ValueError, TypeError):
                 continue
+            blob = raw
+            if prepare_reference_image is not None:
+                try:
+                    blob = prepare_reference_image(raw).blob
+                except Exception:
+                    blob = raw
+            result.append((str(question.get("question_id") or ""), blob))
+        self._prepared_reference_images = result
         return result
 
     def _build_system_prompt(self) -> str:
