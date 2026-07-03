@@ -3163,6 +3163,84 @@ def _render_incomplete_results_panel(db: DBManager, session_id: int) -> bool:
     )
 
 
+def _grading_resume_key(session_id: int) -> str:
+    return f"grading_resume_run_id_{session_id}"
+
+
+def _render_grading_run_controls(db: DBManager, session_id: int | None) -> None:
+    """批改运行控制：安全暂停 / 正在安全暂停 / 继续批改，及六类账本计数。
+
+    读取批改运行账本当前状态；账本不可用时静默跳过，不影响页面其余部分。
+    """
+    if session_id is None:
+        return
+    try:
+        from grading_run_store import GradingRunStore
+
+        store = GradingRunStore(db.db_path)
+        run = store.latest(session_id)
+    except Exception:
+        return
+    if run is None:
+        return
+
+    state = run.state
+    if state == "running":
+        def _request_safe_pause() -> None:
+            try:
+                GradingRunStore(db.db_path).request_pause(session_id)
+            except Exception:
+                pass
+
+        st.button(
+            "安全暂停",
+            key=f"pause_grading_{session_id}",
+            on_click=_request_safe_pause,
+            help="停止派发新答卷；已发送的请求会完成并保存，未开始的答卷保留待恢复。",
+        )
+    elif state == "pause_requested":
+        st.button("正在安全暂停", key=f"pausing_grading_{session_id}", disabled=True)
+        st.caption("正在安全暂停：等待已发送的请求返回并保存……")
+    elif state == "paused":
+        def _resume_grading() -> None:
+            st.session_state[_grading_resume_key(session_id)] = run.id
+
+        st.button(
+            "继续批改",
+            key=f"resume_grading_{session_id}",
+            on_click=_resume_grading,
+            help="从暂停处继续：仅批改未完成的答卷，已完成的不重复批改。",
+        )
+        st.caption("批改已暂停。点击“继续批改”后再启动批改即可从断点恢复。")
+
+    try:
+        counts = store.counts(run.id)
+    except Exception:
+        counts = {}
+    if counts:
+        st.caption(
+            f"已完成 {counts.get('graded', 0)} · 在途 {counts.get('grading', 0)} · "
+            f"待处理 {counts.get('pending', 0)} · 已跳过 {counts.get('skipped', 0)} · "
+            f"失败 {counts.get('failed', 0)} · 冲突 {counts.get('conflict', 0)}"
+        )
+        conflict_rows = []
+        try:
+            for item in store.conflict_items(run.id):
+                conflict_rows.append(
+                    {
+                        "学生ID": item.get("student_id"),
+                        "来源": item.get("source_label"),
+                        "指纹": str(item.get("paper_fingerprint") or "")[:8],
+                        "原因": item.get("disposition_reason"),
+                    }
+                )
+        except Exception:
+            conflict_rows = []
+        if conflict_rows:
+            with st.expander(f"冲突答卷（{len(conflict_rows)}）", expanded=False):
+                st.dataframe(pd.DataFrame(conflict_rows), use_container_width=True, hide_index=True)
+
+
 def render_grading_tab(
     db: DBManager,
     selected_session_id: int | None,
@@ -3382,6 +3460,7 @@ def render_grading_tab(
                     requests_per_minute=grading_rpm_limit,
                     grading_mode=grading_mode,
                     failed_only=failed_only,
+                    resume_run_id=st.session_state.pop(_grading_resume_key(selected_session_id), None),
                 ):
                     et = event["event"]
                     if et == "grading_started":
@@ -3399,6 +3478,7 @@ def render_grading_tab(
                         logs.append(
                             f"并发批改启动：{event.get('total', 0)} 份，"
                             f"整卷并发 {event.get('max_workers')}，"
+                            f"实际整卷大图并发 {event.get('large_request_workers', event.get('max_workers'))}，"
                             f"混合在途 {event.get('hybrid_inflight_workers')}，"
                             f"RPM 上限 {event.get('requests_per_minute')}"
                         )
@@ -3430,6 +3510,23 @@ def render_grading_tab(
                         logs.append(f"未匹配名单 OCR={event['ocr_name']} ({event['front_image']}, {event['back_image']})")
                     elif et == "scan_issue":
                         logs.append(f"扫描异常跳过: {event.get('source_label')} - {event.get('message')}")
+                    elif event["event"] == "paper_skipped":
+                        kind = "已存在成绩" if event.get("kind") == "existing" else "本批次重复"
+                        logs.append(f"已跳过（{kind}）: {event.get('student_name')} - {event.get('reason', '')}")
+                    elif event["event"] == "paper_conflict":
+                        logs.append(
+                            f"冲突：{event.get('student_name')} 出现多份不同答卷（指纹 {event.get('fingerprint', '')}），"
+                            f"已跳过待人工处理 - {event.get('reason', '')}"
+                        )
+                    elif event["event"] == "session_paused":
+                        progress_bar.progress(1.0)
+                        logs.append("批改已安全暂停：已发送请求的结果已保存，未开始的答卷保留待恢复。")
+                        _write_session_workflow_state(
+                            db,
+                            selected_session_id,
+                            "grading_paused",
+                            {"event": event},
+                        )
                     elif et == "session_completed":
                         progress_bar.progress(1.0)
                         logs.append("考试批改完成")
@@ -3450,6 +3547,7 @@ def render_grading_tab(
                 st.error(f"批改执行失败：{exc}")
 
     with c2:
+        _render_grading_run_controls(db, selected_session_id)
         progress = db.get_session_progress(selected_session_id)
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("总试卷", progress["total_papers"])
