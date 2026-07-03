@@ -40,6 +40,9 @@ from grading_limits import (
     GRADING_RPM_MIN,
     HYBRID_INFLIGHT_WORKERS_MAX,
     HYBRID_INFLIGHT_WORKERS_MIN,
+    LARGE_REQUEST_WORKERS_DEFAULT,
+    LARGE_REQUEST_WORKERS_MAX,
+    LARGE_REQUEST_WORKERS_MIN,
     OBJECTIVE_BATCH_SIZE_MAX,
     OBJECTIVE_BATCH_SIZE_MIN,
     PRECHECK_WORKERS_MAX,
@@ -276,6 +279,15 @@ def build_llm_settings_from_sidebar() -> LLMSettings | None:
             HYBRID_INFLIGHT_WORKERS_MIN,
             HYBRID_INFLIGHT_WORKERS_MAX,
         )
+    if "grading_large_request_workers_input" not in st.session_state:
+        st.session_state.grading_large_request_workers_input = _bounded_sidebar_int_setting(
+            saved_profile,
+            "grading_large_request_max_workers",
+            "AI_GRADING_LARGE_REQUEST_MAX_WORKERS",
+            LARGE_REQUEST_WORKERS_DEFAULT,
+            LARGE_REQUEST_WORKERS_MIN,
+            LARGE_REQUEST_WORKERS_MAX,
+        )
     if "precheck_max_workers_input" not in st.session_state:
         st.session_state.precheck_max_workers_input = _bounded_sidebar_int_setting(
             saved_profile,
@@ -387,6 +399,7 @@ def build_llm_settings_from_sidebar() -> LLMSettings | None:
                 "hybrid_major_batch_size": int(major_batch_size),
                 "grading_requests_per_minute": int(st.session_state.get("grading_requests_per_minute_input", DEFAULT_GRADING_RPM)),
                 "grading_max_workers": int(st.session_state.get("grading_max_workers_input", DEFAULT_FULL_PAPER_WORKERS)),
+                "grading_large_request_max_workers": int(st.session_state.get("grading_large_request_workers_input", LARGE_REQUEST_WORKERS_DEFAULT)),
                 "hybrid_inflight_workers": int(st.session_state.get("hybrid_inflight_workers_input", DEFAULT_HYBRID_INFLIGHT_WORKERS)),
                 "precheck_max_workers": int(st.session_state.get("precheck_max_workers_input", DEFAULT_PRECHECK_WORKERS)),
             }
@@ -454,6 +467,14 @@ def build_llm_settings_from_sidebar() -> LLMSettings | None:
             help="整卷批改同时在跑的试卷数。1000 RPM 下默认 200，与混合批改在途请求数保持一致。",
         )
         st.number_input(
+            "整卷大图并发上限",
+            min_value=LARGE_REQUEST_WORKERS_MIN,
+            max_value=LARGE_REQUEST_WORKERS_MAX,
+            step=1,
+            key="grading_large_request_workers_input",
+            help="整卷大图请求（参考图+学生正反面）的实际并发上限，默认 6。实际整卷并发取此值与上面并发数的较小者，用来抑制大 payload 请求的瞬时压力。",
+        )
+        st.number_input(
             "混合批改在途请求数",
             min_value=HYBRID_INFLIGHT_WORKERS_MIN,
             max_value=HYBRID_INFLIGHT_WORKERS_MAX,
@@ -512,6 +533,7 @@ def build_llm_settings_from_sidebar() -> LLMSettings | None:
     os.environ["AI_GRADING_REQUESTS_PER_MINUTE"] = str(st.session_state.get("grading_requests_per_minute_input", DEFAULT_GRADING_RPM))
     os.environ["AI_GRADING_MAX_WORKERS"] = str(st.session_state.get("grading_max_workers_input", DEFAULT_FULL_PAPER_WORKERS))
     os.environ["AI_GRADING_CONFIG_WORKERS"] = str(st.session_state.get("grading_max_workers_input", DEFAULT_FULL_PAPER_WORKERS))
+    os.environ["AI_GRADING_LARGE_REQUEST_MAX_WORKERS"] = str(st.session_state.get("grading_large_request_workers_input", LARGE_REQUEST_WORKERS_DEFAULT))
     os.environ["AI_HYBRID_INFLIGHT_WORKERS"] = str(st.session_state.get("hybrid_inflight_workers_input", DEFAULT_HYBRID_INFLIGHT_WORKERS))
     os.environ["AI_GRADING_PRECHECK_WORKERS"] = str(st.session_state.get("precheck_max_workers_input", DEFAULT_PRECHECK_WORKERS))
 
