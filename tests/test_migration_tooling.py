@@ -134,3 +134,4 @@ def test_path_override_does_not_touch_real_targets(tmp_path: Path) -> None:
     assert report.error is None
     assert report.db_path == str(db_path)
     assert db_path.exists()
+    assert report.results[0].backup_path is None or str(report.results[0].backup_path).startswith(str(tmp_path))

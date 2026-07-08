@@ -4,6 +4,13 @@
 
 **Goal:** 两库各获得一份与当前运行时 DDL 等价的幂等基线迁移；真实库建立 schema_migrations 并打标；提供"空库+迁移 ≡ 空库+运行时初始化"的漂移守卫测试和真实库副本预演工具。
 
+**执行状态（2026-07-08，Codex 接续）：**
+
+- Task 1 已完成并已在提交 `42a4b79` 中落地。
+- Task 2/3 已在当前工作区完成但尚未提交：新增基线生成器、两库 000 基线、漂移守卫测试、迁移预演工具，并修正旧题库 002 示例迁移为 no-op。
+- 真实库已落地：阅卷库执行 000/001/002；题库库以 `--stamp-only` 记录 000-008。两库 `PRAGMA integrity_check` 均为 `ok`，`migrate_db.py --status` 无待执行迁移。
+- 验证命令：`runtime\python\python.exe -m pytest tests\test_migration_rehearsal.py tests\test_migration_tooling.py tests\test_schema_baseline.py -q` 为 8 passed；`runtime\python\python.exe tools\migration_rehearsal.py` 三项预演均 OK。
+
 **已核验事实（2026-07-03）：**
 
 1. `update_tools/migrate_db.py`（484 行）：目标 `grading`/`question_bank` 指向真实库；按文件名序号排序执行；逐文件迁移前自动备份；`_execute_sql_safe` **按分号切分语句**——含 `BEGIN…END` 的触发器会被切坏（阅卷库运行时 DDL 有 2 个 `answer_regions` 触发器，基线必须包含它们）。

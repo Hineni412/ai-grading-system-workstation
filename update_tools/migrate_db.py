@@ -197,15 +197,16 @@ def _record_migration(conn: sqlite3.Connection, name: str, checksum: str, succes
     conn.commit()
 
 
-def _backup_database(db_path: Path, reason: str) -> Path | None:
+def _backup_database(db_path: Path, reason: str, *, backup_dir: Path | None = None) -> Path | None:
     """迁移前备份数据库。"""
     if not db_path.exists():
         return None
-    try:
-        from path_manager import get_path_manager
-        backup_dir = get_path_manager().backups_dir
-    except Exception:
-        backup_dir = db_path.parent / "backups"
+    if backup_dir is None:
+        try:
+            from path_manager import get_path_manager
+            backup_dir = get_path_manager().backups_dir
+        except Exception:
+            backup_dir = db_path.parent / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     db_stem = db_path.stem
@@ -302,10 +303,12 @@ def run_migrations(
         )
 
     config = targets[target_name]
+    has_path_override = db_path is not None
     db_path = Path(db_path) if db_path is not None else config["db_path"]
     migrations_dir = (
         Path(migrations_dir) if migrations_dir is not None else config["migrations_dir"]
     )
+    backup_dir_override = db_path.parent / "backups" if has_path_override else None
 
     report = MigrationReport(target=target_name, db_path=str(db_path))
 
@@ -338,7 +341,7 @@ def run_migrations(
 
         if stamp_only and not dry_run:
             # 打标不执行 SQL，但仍在动作前做一次整体备份（只会新增 schema_migrations 行）。
-            stamp_backup = _backup_database(db_path, "stamp_only")
+            stamp_backup = _backup_database(db_path, "stamp_only", backup_dir=backup_dir_override)
             logger.info("打标前备份: %s", stamp_backup)
 
         for mig in pending:
@@ -370,7 +373,11 @@ def run_migrations(
                 continue
 
             # 备份数据库
-            backup_path = _backup_database(db_path, f"migration_{mig.name}")
+            backup_path = _backup_database(
+                db_path,
+                f"migration_{mig.name}",
+                backup_dir=backup_dir_override,
+            )
             logger.info("迁移前备份: %s", backup_path)
 
             # 执行迁移
