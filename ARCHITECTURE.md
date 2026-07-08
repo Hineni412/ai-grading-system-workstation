@@ -15,7 +15,7 @@
 
 | 类型 | 证据 | 用途 | 状态 |
 |---|---|---|---|
-| 工程规范 | `CLAUDE.md` | 分层、数据、安全、验证、文档与前端设计要求（唯一规范来源） | 已核验 |
+| 工程规范 | `AGENTS.md`（`CLAUDE.md` 为兼容指针） | 分层、数据、安全、验证、文档与前端设计要求（当前 AI 协作入口） | 已核验 |
 | 启动与运行 | `运行.bat`、`run_desktop.py`、`web_app.py`、`main.py` | 主入口、监听地址、运行进程和兼容入口 | 已核验 |
 | 路径与配置 | `path_manager.py`、`config/app_config.yaml`、`VERSION` | 数据目录、日志目录、版本来源 | 已核验 |
 | 阅卷代码 | `grading_service.py`、`hybrid_batch_grading_service.py`、`scanner.py`、`ai_grader.py`、`session_manager.py` | 阅卷主流程、并发、失败和重试 | 已核验 |
@@ -54,7 +54,7 @@
 ### 当前实现边界
 
 - 这是仅供单用户在个别受信任 Windows 工作机运行的本地单体应用，不存在独立部署的前端、后端 API 服务或远程数据库。
-- 主入口是 `运行.bat -> python -m streamlit run web_app.py`；`run_desktop.py` 是另一套桌面/冻结构建启动器，`main.py` 是较早的命令行批改入口。
+- 主入口是 `运行.bat`：默认并行启动 `python -m streamlit run web_app.py`（8501）和增量 FastAPI 骨架（8000，仅 `/healthz`，可用 `START_API=0` 跳过）；`run_desktop.py` 是另一套桌面/冻结构建启动器，`main.py` 是较早的命令行批改入口。
 - 核心状态保存在两个 SQLite 数据库和 `user_data/` 文件树中。
 - AI 能力依赖可配置的 OpenAI 兼容 HTTP 接口；当前代码路径使用 OpenAI Python SDK 的 Chat Completions 和 Responses API。
 - 公网访问、多用户/多租户、集中式账号体系、跨机器共享写入和无人值守任务队列不在当前范围内。
@@ -181,6 +181,7 @@ flowchart TD
 ```text
 AI阅卷系统_工作机版_v1.5.0/
 ├── web_app.py                     # Streamlit 主页面和主工作流编排
+├── backend/api/app.py             # 增量 FastAPI 骨架，当前仅健康检查与统一错误体
 ├── pages/                         # 题库、组卷、训练推荐、技能管理、系统自检
 ├── pages_shared/                  # 多页面共享样式与组件
 ├── components/answer_region_editor/ # 答题区自定义前端组件
@@ -227,11 +228,12 @@ AI阅卷系统_工作机版_v1.5.0/
 
 ### 5.1 启动
 
-1. `运行.bat` 选取 `runtime/python/python.exe`，设置 `AI_GRADING_DATA_DIR=user_data`，默认监听 `127.0.0.1:8501`。
-2. Streamlit 导入 `web_app.py`；模块加载时 `PathManager` 根据 `config/app_config.yaml -> AI_GRADING_DATA_DIR -> user_data` 的顺序解析路径。
-3. `main()` 调用 `ensure_env_ready()`：创建目录、对已存在阅卷库执行每日一次启动备份、运行 `DBManager.initialize()` 的幂等建表/补列逻辑。
-4. 题库数据库不是主页面启动时统一初始化，而是在题库、组卷、诊断或导入服务使用时由 `initialize_database()` 初始化并播种内置技能目录。
-5. Streamlit 页面与业务服务运行在同一 Python 进程中；没有独立后台 Worker。
+1. `运行.bat` 选取 `runtime/python/python.exe`，设置 `AI_GRADING_DATA_DIR=user_data`，默认监听 Streamlit `127.0.0.1:8501`。
+2. 当 `START_API` 未设为 `0` 时，`运行.bat` 同时用 uvicorn 启动 `backend.api.app:app`，监听 `127.0.0.1:8000`；WP1.1 阶段只提供 `/healthz` 与 `/api/healthz`。
+3. Streamlit 导入 `web_app.py`；模块加载时 `PathManager` 根据 `config/app_config.yaml -> AI_GRADING_DATA_DIR -> user_data` 的顺序解析路径。
+4. `main()` 调用 `ensure_env_ready()`：创建目录、对已存在阅卷库执行每日一次启动备份、运行 `DBManager.initialize()` 的幂等建表/补列逻辑。
+5. 题库数据库不是主页面启动时统一初始化，而是在题库、组卷、诊断或导入服务使用时由 `initialize_database()` 初始化并播种内置技能目录。
+6. Streamlit 页面与业务服务仍运行在同一 Python 进程中；FastAPI 目前只是增量本机 API 外壳，还没有承载业务任务或后台 Worker。
 
 ### 5.2 考试配置与批改
 
@@ -398,6 +400,7 @@ flowchart LR
 | 接口/服务 | 调用方 | 协议/定义 | 超时与重试 | 降级/失败策略 |
 |---|---|---|---|---|
 | Streamlit 页面 | 本机浏览器 | Streamlit HTTP/WebSocket；无公开 REST API | 由 Streamlit 会话控制 | 页面显示错误；部分长任务在同进程线程中执行 |
+| FastAPI 本机 API | 后续 Vue 前端/运维探活 | HTTP JSON；WP1.1 仅 `/healthz`、`/api/healthz`，统一错误体和 `x-request-id` | uvicorn 进程级控制；暂无业务超时 | 可用 `START_API=0` 跳过；删除 `backend/` 和启动段即可回退 |
 | 通用模型客户端 | 配置生成、整卷批改、OCR 等 | OpenAI SDK `chat.completions.create` | 客户端默认 120 秒、SDK 自动重试关闭；应用层做参数兼容和 JSON 修复/截断重试 | 抛错、单卷失败或转人工复核 |
 | 客观题识别链 | 混合批改 | OpenAI 兼容 Chat Completions | 不同路径 30 秒或无显式上限；批量并发受 RPM/worker 限制 | 规则校验、升级主模型或人工复核 |
 | 题库 AI 打标 | 题库导入/批处理 | OpenAI Responses API，部分兼容路径使用 `LLMClient` | 所有批量、回退、重试、复核请求共用计数/RPM 控制器；重试有上限 | 非 complete 不保存；保存原始标签后不再自动追加旧技能 AI 消歧；阅卷入库关闭批次扇出和复核二次请求 |
@@ -433,12 +436,12 @@ flowchart LR
 |---|---|---|---|
 | 部署形态 | Windows 私人便携源码+运行时目录 | `manifest.json`、私人版 README | 已核验 |
 | Python | 便携 CPython 3.12.1 | `runtime/python/python.exe` | 已核验 |
-| UI/服务 | Streamlit 1.58.0，同进程 | 运行时查询、启动脚本 | 已核验 |
+| UI/服务 | Streamlit 1.58.0；FastAPI 0.139.0 增量 API 骨架 | 运行时查询、启动脚本 | 已核验 |
 | 数据库 | SQLite 3.43.1，两个本地文件，WAL | 运行时查询、Schema 代码 | 已核验 |
 | 主 AI SDK | OpenAI 2.43.0 | 运行时查询 | 已核验 |
 | 文档/图像依赖 | python-docx 1.2.0、PyMuPDF 1.27.2.3、Pillow 12.2.0、OpenCV 4.13.0 | 运行时查询 | 已核验 |
 | 表格依赖 | pandas 3.0.3、openpyxl 3.1.5 | 运行时查询 | 已核验 |
-| 监听地址 | `127.0.0.1:8501`（`PORT` 可改） | `运行.bat` | 已核验 |
+| 监听地址 | Streamlit `127.0.0.1:8501`（`PORT` 可改）；API `127.0.0.1:8000`（`API_PORT` 可改，`START_API=0` 可跳过） | `运行.bat` | 已核验 |
 | 数据根 | 默认项目内 `user_data/`；配置文件优先于环境变量 | `path_manager.py` | 已核验 |
 | 备份 | 启动日备份、手工/更新/迁移前备份 | `DBManager`、`update_tools` | 已核验实现；恢复演练待确认 |
 | 监控告警 | 页面进度、日志和系统自检；无外部监控 | 代码与页面 | 已核验 |
@@ -513,4 +516,4 @@ flowchart LR
 | 2026-06-29 | 将批改上下文、知识图谱和训练推荐统一到题库当前精确标签；保留旧技能/概念路径为只读回退 | 消除重复 AI 消歧和字段分叉，让标签修改直接反映到后续图谱与新推荐 | 全量 654 通过/2 跳过；定向回归、静态编译、三档桌面尺寸浏览器验证；控制台无应用错误 |
 | 2026-06-28 | 增加阅卷原卷可选入库、统一技能图谱、来源级冲突分组、跨库状态重算和幂等重试 | 让批改前后都能补做题库打标签，同时保持未入库不阻断批改 | 全量 631 通过/2 跳过、功能定向 71 项、核心回归 41 项、三档桌面尺寸浏览器验证、数据库副本 Schema 验证 |
 | 2026-06-28 | 将六项待确认问题转为用户确认的架构约束与决策，并同步风险和当前/目标状态 | 用户明确确认部署边界、数据跟踪、状态语义、迁移权威、模型合规和停用功能 | 对照用户逐项回复、文档结构与差异复核 |
-| 2026-06-28 | 将占位模板替换为当前系统、模块、运行、数据、集成、安全和风险视图 | 按 `CLAUDE.md`（原 `AGENTS.md`）从现有代码库恢复实际架构 | 静态调查、AST 导入图、运行时版本、数据库只读 Schema、37 项定向测试、差异复核 |
+| 2026-06-28 | 将占位模板替换为当前系统、模块、运行、数据、集成、安全和风险视图 | 按当时的 `CLAUDE.md` 工程规范从现有代码库恢复实际架构；当前入口已迁移为 `AGENTS.md` | 静态调查、AST 导入图、运行时版本、数据库只读 Schema、37 项定向测试、差异复核 |

@@ -6,6 +6,7 @@
 
 altair==6.2.1
 altgraph==0.17.5
+annotated-doc==0.0.4
 annotated-types==0.7.0
 anyio==4.14.0
 attrs==26.1.0
@@ -19,6 +20,7 @@ colorama==0.4.6
 cryptography==49.0.0
 distro==1.9.0
 et_xmlfile==2.0.0
+fastapi==0.139.0
 flatbuffers==25.12.19
 gitdb==4.0.12
 GitPython==3.1.50
