@@ -23,6 +23,11 @@ build/
 *.bak
 *.log
 
+# 调试与分析产物（根目录不应再出现，杂物已归档至仓库外）
+debug_*.db
+scratch/
+analysis_outputs/
+
 # OS/editor noise
 .DS_Store
 Thumbs.db
