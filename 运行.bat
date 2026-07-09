@@ -19,10 +19,18 @@ set "PYTHONUTF8=1"
 set "STREAMLIT_BROWSER_GATHER_USAGE_STATS=false"
 set "STREAMLIT_SERVER_HEADLESS=true"
 if "%PORT%"=="" set "PORT=8501"
+if "%API_PORT%"=="" set "API_PORT=8000"
+if "%START_API%"=="" set "START_API=1"
 
 echo AI阅卷系统 工作机版 v1.5.0
 echo 数据目录: %AI_GRADING_DATA_DIR%
-echo 启动地址: http://127.0.0.1:%PORT%
+echo Streamlit 地址: http://127.0.0.1:%PORT%
+if /I not "%START_API%"=="0" (
+  echo API 地址: http://127.0.0.1:%API_PORT%/healthz
+  start "AI阅卷系统 API" "%PYTHON_EXE%" -m uvicorn backend.api.app:app --host 127.0.0.1 --port %API_PORT%
+) else (
+  echo API 启动: 已跳过 START_API=0
+)
 start "" "http://127.0.0.1:%PORT%"
 
 "%PYTHON_EXE%" -m streamlit run web_app.py --server.address 127.0.0.1 --server.port %PORT%
