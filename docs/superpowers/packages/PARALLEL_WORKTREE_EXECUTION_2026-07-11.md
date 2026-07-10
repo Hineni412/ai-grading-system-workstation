@@ -7,7 +7,7 @@
 
 ## 1. 当前 Git 与 Worktree 快照
 
-检查时间：2026-07-11。GitHub 已确认 PR #2、PR #3 与 PR #4 均已合并到 `main`。
+检查时间：2026-07-11。GitHub 已确认 PR #2 至 PR #5 均已合并到 `main`。
 
 - 当前共同基线：最新 `origin/main`；根目录本地 `main` 与三个活动 worktree 均已快进到该基线。不要在长期规则中写死会被下一次 PR 立即取代的当前提交号。
 - 初始审计时根目录分支为 `codex/wp1-2-api-routes` = `74f1789`，本地 `main` 为 `42a4b79`；治理后根目录已切换到同步的本地 `main`。
@@ -24,9 +24,6 @@
 | `.worktrees/p1-16-question-bank-write` | `codex/p1-16-question-bank-write` / 最新 `origin/main` | 源码与数据状态干净 | 当前后端领域实现：仅 P1-16 |
 | `.worktrees/p2-01-frontend-foundation` | `codex/p2-01-frontend-foundation` / 最新 `origin/main` | 源码与数据状态干净 | 当前前端实现：仅 P2-01 |
 | `.worktrees/p1-integration-verification` | `codex/p1-integration-verification` / 最新 `origin/main` | 当前集成通道，源码与数据状态干净 | 集成、冲突处理、共享文档和完整验证；不实现业务功能 |
-| `.worktrees/fine-grained-graph-training` | `codex/fine-grained-graph-training` / `8e089d4` | 干净但历史分支分叉 | 保留历史工作，禁止复用；有 14 个 `origin/main` 尚未包含的提交 |
-| `.worktrees/grading-paper-skill-workflow` | `codex/import-dialog-direct-tags` / `8be9820` | 提交已并入主线，但有 21 项 worktree 本地 `user_data/` | 保留且禁止复用；数据未另行处置前不得移除 worktree 或分支 |
-| `.worktrees/resilient-grading` | `codex/resilient-grading` / `24fc3b8` | 干净但历史分支分叉 | 保留历史工作，禁止复用；有 9 个 `origin/main` 尚未包含的提交 |
 
 旧 worktree 不得因为“目录空闲”而直接承担新包。是否归档、合并或删除必须另做调用/提交审计，并获得用户确认。
 
@@ -34,8 +31,8 @@
 
 - 已安全删除本地旧分支：`codex/wp1-2-api-routes`、`codex/grading-paper-skill-workflow`、`codex/phase0-wp11-foundation`、`pigai-v2`。
 - 已安全删除远端旧分支：`origin/codex/wp1-2-api-routes`、`origin/codex/phase0-wp11-foundation`；PR #4 合并后也已删除临时 `origin/codex/p1-integration-verification`，本地 integration 通道继续跟踪 `origin/main`。
-- 保留有独有提交的历史分支：`codex/fine-grained-graph-training`、`codex/resilient-grading`。
-- 保留含本地数据的已合并 worktree/分支：`.worktrees/grading-paper-skill-workflow`、`codex/import-dialog-direct-tags`。
+- 用户明确确认三个早期 worktree 均为放弃内容后，已删除 `.worktrees/fine-grained-graph-training`、`.worktrees/resilient-grading`、`.worktrees/grading-paper-skill-workflow` 及其本地分支。该授权明确覆盖前两者的 14/9 个未合并提交，以及第三者的 21 项 worktree 本地 `user_data/`。
+- 删除后发现根目录 `runtime/` 内容被同时清空；已从本机同版本 Python 3.12.1 缓存恢复、按 `requirements.txt` 与 `constraints.txt` 补齐，并重新通过完整 smoke（967 passed、342 个第一方文件、两库副本 `integrity_check=ok`）。真实两库大小、时间和 SHA-256 未变化。
 - 保留当前活动分支：`codex/p1-16-question-bank-write`、`codex/p2-01-frontend-foundation`、`codex/p1-integration-verification`。
 
 ## 2. 默认并行模型
@@ -248,7 +245,7 @@ P2-09 及以后复杂页面仍受 Phase 1 总门槛约束，不得因为 P2-01 �
 6. 删除已合并的远端 integration 临时分支，本地 integration 通道保留并重新跟踪 `origin/main`；其他活动功能 worktree 更新到新主线，或在旧包合并后删除并从新主线创建下一包分支。
 7. 使用 `git branch --merged origin/main` 审计候选，并分别检查源码状态与 `git status --short -- user_data`；只删除已被主线包含、源码干净、没有 worktree 本地数据且不再承担活动任务的本地/远端分支。
 8. `git branch --no-merged origin/main` 中的分支视为仍有独有历史：默认保留，不得用 `-D` 或远端强删；是否归档/丢弃必须单独获得用户明确确认。
-9. linked worktree 只能在确认其 `user_data/` 状态为空后，通过 `git worktree remove <verified-path>` 从仓库根目录移除，随后运行 `git worktree prune`；禁止资源管理器或递归删除命令直接删除目录。即使分支已合并，只要 worktree 仍含本地数据就必须保留。
+9. Windows 上还必须在移除前递归审计 worktree 内的 junction、symlink 和其他 reparse point；只要链接目标落在 worktree 外部就立即停止，不得运行 `git worktree remove`。确认 `user_data/` 为空且不存在外部链接后，才可从仓库根目录执行 `git worktree remove <verified-path>`，随后运行 `git worktree prune`；禁止资源管理器或递归删除命令直接删除目录。即使分支已合并，只要 worktree 仍含本地数据就必须保留。
 10. 清理前后比较 `user_data` 状态行数和两库大小、修改时间、SHA-256；任何变化都立即停止。
 
 本流程是后续所有执行包的默认完成动作，不需要用户逐包重复提醒。用户启动执行包即授权标准功能提交和 integration PR 流程；直接 push `main`、force push、真实数据操作和未合并历史分支丢弃仍需单独明确授权。

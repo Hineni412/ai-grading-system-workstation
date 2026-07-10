@@ -27,8 +27,9 @@
 
 - Phase 0 与 WP1.1 已通过 PR #1 合并到 `main`；代码冻结标签为 `pre-framework-switch-2026-07-09`。
 - 框架切换前完整数据备份已创建：`user_data/backups/backup_20260709_142850_before_update.zip`。默认不要提交该备份。
-- 当前共同基线：GitHub PR #2 已把 P1-02 至 P1-15 合并到 `main`；PR #3 与 PR #4 已把并行执行手册、入口文档、linked-worktree 测试兼容修复和分支清理红线合并到 `main`。根目录本地 `main` 与三个活动 worktree 必须始终快进到最新 `origin/main`，文档不写死会随下一次 PR 失效的当前提交号。
-- 2026-07-11 分支治理已删除完全并入主线的旧本地分支 `codex/wp1-2-api-routes`、`codex/grading-paper-skill-workflow`、`codex/phase0-wp11-foundation`、`pigai-v2`，并删除已合并的临时远端分支。`codex/fine-grained-graph-training` 与 `codex/resilient-grading` 仍有独有提交；`codex/import-dialog-direct-tags` 的 worktree 含独立 `user_data/`，三者均必须保留且不得复用。
+- 当前共同基线：GitHub PR #2 已把 P1-02 至 P1-15 合并到 `main`；PR #3 至 PR #5 已把并行执行手册、入口文档、linked-worktree 测试兼容修复和分支清理红线合并到 `main`。根目录本地 `main` 与三个活动 worktree 必须始终快进到最新 `origin/main`，文档不写死会随下一次 PR 失效的当前提交号。
+- 2026-07-11 分支治理已删除完全并入主线的旧本地分支和已合并的临时远端分支。用户随后明确确认 `fine-grained-graph-training`、`resilient-grading`、`grading-paper-skill-workflow` 三个早期 worktree 及其分支均为放弃内容，并授权删除其中 14/9 个未合并提交和 21 项 worktree 本地 `user_data/`。当前只保留根目录、P1-16、P2-01 与 integration 四个 worktree。
+- 删除三个旧 worktree 后发现根目录便携 `runtime/` 内容被同时清空；已从本机同版本 Python 3.12.1 缓存恢复、按锁定依赖补齐，并重新通过完整 smoke（967 passed）。真实两库指纹未变化。后续 Windows worktree 删除必须先审计目录联接、符号链接和其他 reparse point，任何指向 worktree 外部的目标都必须阻塞删除。
 - WP1.2 Batch A-D 已本地验证：sessions、students、config、template/answer-region 的只读与安全轻写 API。
 - WP1.2 Batch E 已本地验证一部分：Excel 报告导出、扫描分析、启动批改、首批 review 路由和 P1-15 Question Bank 只读 API；training、graph、ops 尚未开始。
 - 最小 WP1.3 JobManager 已本地验证：通用创建/查询/取消 API，以及 `report_export`、`scan_analysis`、`grading_run` handler。P1-10 已把 jobs 完整 DDL 收敛到 `003_add_jobs.sql` 并改为 FastAPI lifespan 所有 manager；P1-11 已让 running 取消区分“请求”与“安全停止确认”，并给三类现有 handler 补齐副作用边界。
@@ -72,7 +73,7 @@
 4. 集成分支验证通过后推送并通过 PR 合并 GitHub `main`；不默认直接 push `main`。
 5. PR 合并后同步 `origin/main`、本地 `main` 和活动 worktree；删除已合并的远端 integration 临时分支，本地 integration 通道继续保留并跟踪 `origin/main`。下一批功能 worktree 必须基于该新提交。
 6. 只有 `git branch --merged origin/main` 能证明已合并且不再承担活动任务的分支才可普通删除；有独有提交的分支必须保留或经用户明确确认后归档/丢弃。分支已合并本身不代表对应 worktree 可以删除。
-7. 删除 linked worktree 前必须分别检查源码状态与 `user_data/` 状态；只有提交已合并、源码干净、`user_data/` 无任何本地项且不再承担任务时，才可从仓库根目录执行 `git worktree remove`。禁止手工递归删除 worktree 目录。
+7. 删除 linked worktree 前必须分别检查源码状态、`user_data/` 状态和 Windows reparse point；任何目录联接或符号链接指向 worktree 外部时必须停止。只有提交已合并、源码干净、`user_data/` 无任何本地项、无外部链接且不再承担任务时，才可从仓库根目录执行 `git worktree remove`。禁止手工递归删除 worktree 目录。
 8. 任何阶段都不得暂存、提交或用 stash 打包真实 `user_data/`；真实数据库操作仍需单独明确授权。
 
 用户明确要求启动某个执行包，即视为对该包标准 Git 流程的持续授权：门槛通过后可在功能分支提交，由 integration 分支完成合并验证、push、创建并合并 PR，再同步本地 `main`，无需逐步重复询问。该持续授权不包含直接 push `main`、force push、真实数据写入、不可逆删除，或丢弃 `origin/main` 尚未包含的历史提交；这些操作仍必须单独确认。
