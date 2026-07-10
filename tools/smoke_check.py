@@ -247,11 +247,13 @@ def _remove_tree_with_retries(
 
 
 def _initialize_grading_db(db_path: Path) -> None:
+    from backend.jobs.store import JobStore
     from db_manager import DBManager
     from grading_run_store import GradingRunStore
 
     DBManager(db_path).initialize()
     GradingRunStore(db_path).initialize()
+    JobStore(db_path).initialize()
 
 
 def _initialize_question_bank_db(db_path: Path) -> None:
