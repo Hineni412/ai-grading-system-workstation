@@ -31,8 +31,9 @@ def resolve_question_bank_asset_path(
     subdirs = tuple(search_subdirs or DEFAULT_SEARCH_SUBDIRS)
     text = str(path_value or "").strip()
     stored = Path(text)
-    if text and stored.is_absolute() and stored.is_file():
-        return stored.resolve()
+    resolved_stored = _resolve_existing_file(stored) if text and stored.is_absolute() else None
+    if resolved_stored is not None:
+        return resolved_stored
 
     candidates: list[Path] = []
     if text and not stored.is_absolute():
@@ -66,8 +67,21 @@ def resolve_question_bank_asset_path(
     return stored
 
 
+def _resolve_existing_file(value: Path) -> Path | None:
+    try:
+        if not value.is_file():
+            return None
+        return value.resolve()
+    except OSError:
+        return None
+
+
 def _unique_existing_files(values: Iterable[Path]) -> list[Path]:
-    unique = {value.resolve() for value in values if value.is_file()}
+    unique: set[Path] = set()
+    for value in values:
+        resolved = _resolve_existing_file(value)
+        if resolved is not None:
+            unique.add(resolved)
     return sorted(unique, key=lambda item: str(item).lower())
 
 

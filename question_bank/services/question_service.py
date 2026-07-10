@@ -36,6 +36,125 @@ ANSWERLESS_AI_CONFIDENCE = 0.55
 CORE_ANALYSIS_TAG_TYPES = ("knowledge_point", "ability", "exam_scope", "student_level")
 
 
+def build_question_filter_query(
+    *,
+    question_number: str | None = None,
+    keyword: str | None = None,
+    knowledge_point: str | None = None,
+    difficulty: str | None = None,
+    difficulty_range: tuple[int, int] | None = None,
+    question_types: list[str] | None = None,
+    paper_ids: list[int] | None = None,
+    years: list[str] | None = None,
+    exam_types: list[str] | None = None,
+    grades: list[str] | None = None,
+    tag_filters: Mapping[str, list[str]] | None = None,
+    is_deleted: bool = False,
+    tag_status: str | None = None,
+) -> tuple[list[str], list[str], list[Any]]:
+    joins = []
+    where = []
+    params = []
+
+    joins.append("LEFT JOIN papers p ON p.id = q.paper_id")
+    if _clean_optional(knowledge_point):
+        joins.append(
+            "JOIN question_tags kt ON kt.question_id = q.id AND kt.tag_type = 'knowledge_point' AND kt.tag_value LIKE ?"
+        )
+        params.append(f"%{knowledge_point.strip()}%")
+
+    where.append("q.is_deleted = ?")
+    params.append(1 if is_deleted else 0)
+
+    where.append("COALESCE(p.import_status, '') <> 'deleted'")
+
+    if _clean_optional(question_number):
+        where.append("q.question_number = ?")
+        params.append(question_number.strip())
+    if _clean_optional(keyword):
+        where.append("(q.question_text LIKE ? OR COALESCE(q.answer_text, '') LIKE ?)")
+        params.extend([f"%{keyword.strip()}%", f"%{keyword.strip()}%"])
+    if _clean_optional(difficulty):
+        where.append("q.difficulty = ?")
+        params.append(difficulty.strip())
+    if difficulty_range is not None:
+        low, high = _normalized_range(difficulty_range)
+        where.append("CAST(q.difficulty AS REAL) BETWEEN ? AND ?")
+        params.extend([low, high])
+    cleaned_question_types = [_clean_optional(value) for value in (question_types or [])]
+    cleaned_question_types = [value for value in cleaned_question_types if value]
+    if cleaned_question_types:
+        placeholders = ", ".join("?" for _ in cleaned_question_types)
+        where.append(f"q.question_type IN ({placeholders})")
+        params.extend(cleaned_question_types)
+
+    cleaned_paper_ids = [int(value) for value in (paper_ids or []) if value]
+    if cleaned_paper_ids:
+        placeholders = ", ".join("?" for _ in cleaned_paper_ids)
+        where.append(f"q.paper_id IN ({placeholders})")
+        params.extend(cleaned_paper_ids)
+
+    cleaned_years = [_clean_optional(value) for value in (years or [])]
+    cleaned_years = [value for value in cleaned_years if value]
+    if cleaned_years:
+        placeholders = ", ".join("?" for _ in cleaned_years)
+        where.append(f"CAST(p.year AS TEXT) IN ({placeholders})")
+        params.extend(cleaned_years)
+
+    cleaned_exam_types = [_clean_optional(value) for value in (exam_types or [])]
+    cleaned_exam_types = [value for value in cleaned_exam_types if value]
+    if cleaned_exam_types:
+        placeholders = ", ".join("?" for _ in cleaned_exam_types)
+        where.append(f"p.exam_type IN ({placeholders})")
+        params.extend(cleaned_exam_types)
+
+    cleaned_grades = [_clean_optional(value) for value in (grades or [])]
+    cleaned_grades = [value for value in cleaned_grades if value]
+    if cleaned_grades:
+        placeholders = ", ".join("?" for _ in cleaned_grades)
+        where.append(f"p.grade IN ({placeholders})")
+        params.extend(cleaned_grades)
+
+    for tag_type, tag_values in (tag_filters or {}).items():
+        cleaned_values = [_clean_optional(value) for value in tag_values]
+        cleaned_values = [value for value in cleaned_values if value]
+        if not cleaned_values:
+            continue
+        placeholders = ", ".join("?" for _ in cleaned_values)
+        where.append(
+            f"""
+            EXISTS (
+                SELECT 1
+                FROM question_tags tf
+                WHERE tf.question_id = q.id
+                  AND tf.tag_type = ?
+                  AND tf.tag_value IN ({placeholders})
+            )
+            """
+        )
+        params.extend([tag_type, *cleaned_values])
+
+    if _clean_optional(tag_status) and tag_status != "全部":
+        if tag_status == "已打标签":
+            where.append("""
+                EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'knowledge_point' AND COALESCE(kt2.tag_value, '') <> '')
+                AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'ability' AND COALESCE(kt2.tag_value, '') <> '')
+                AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'exam_scope' AND COALESCE(kt2.tag_value, '') <> '')
+                AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'student_level' AND COALESCE(kt2.tag_value, '') <> '')
+            """)
+        elif tag_status == "未打标签":
+            where.append("""
+                NOT (
+                    EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'knowledge_point' AND COALESCE(kt2.tag_value, '') <> '')
+                    AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'ability' AND COALESCE(kt2.tag_value, '') <> '')
+                    AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'exam_scope' AND COALESCE(kt2.tag_value, '') <> '')
+                    AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'student_level' AND COALESCE(kt2.tag_value, '') <> '')
+                )
+            """)
+
+    return joins, where, params
+
+
 class QuestionService:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -181,107 +300,21 @@ class QuestionService:
         is_deleted: bool = False,
         tag_status: str | None = None,
     ) -> tuple[list[str], list[str], list[Any]]:
-        joins = []
-        where = []
-        params = []
-        
-        joins.append("LEFT JOIN papers p ON p.id = q.paper_id")
-        if _clean_optional(knowledge_point):
-            joins.append(
-                "JOIN question_tags kt ON kt.question_id = q.id AND kt.tag_type = 'knowledge_point' AND kt.tag_value LIKE ?"
-            )
-            params.append(f"%{knowledge_point.strip()}%")
-            
-        where.append("q.is_deleted = ?")
-        params.append(1 if is_deleted else 0)
-        
-        where.append("COALESCE(p.import_status, '') <> 'deleted'")
-        
-        if _clean_optional(question_number):
-            where.append("q.question_number = ?")
-            params.append(question_number.strip())
-        if _clean_optional(keyword):
-            where.append("(q.question_text LIKE ? OR COALESCE(q.answer_text, '') LIKE ?)")
-            params.extend([f"%{keyword.strip()}%", f"%{keyword.strip()}%"])
-        if _clean_optional(difficulty):
-            where.append("q.difficulty = ?")
-            params.append(difficulty.strip())
-        if difficulty_range is not None:
-            low, high = _normalized_range(difficulty_range)
-            where.append("CAST(q.difficulty AS REAL) BETWEEN ? AND ?")
-            params.extend([low, high])
-        cleaned_question_types = [_clean_optional(value) for value in (question_types or [])]
-        cleaned_question_types = [value for value in cleaned_question_types if value]
-        if cleaned_question_types:
-            placeholders = ", ".join("?" for _ in cleaned_question_types)
-            where.append(f"q.question_type IN ({placeholders})")
-            params.extend(cleaned_question_types)
-            
-        cleaned_paper_ids = [int(value) for value in (paper_ids or []) if value]
-        if cleaned_paper_ids:
-            placeholders = ", ".join("?" for _ in cleaned_paper_ids)
-            where.append(f"q.paper_id IN ({placeholders})")
-            params.extend(cleaned_paper_ids)
-            
-        cleaned_years = [_clean_optional(value) for value in (years or [])]
-        cleaned_years = [value for value in cleaned_years if value]
-        if cleaned_years:
-            placeholders = ", ".join("?" for _ in cleaned_years)
-            where.append(f"CAST(p.year AS TEXT) IN ({placeholders})")
-            params.extend(cleaned_years)
-            
-        cleaned_exam_types = [_clean_optional(value) for value in (exam_types or [])]
-        cleaned_exam_types = [value for value in cleaned_exam_types if value]
-        if cleaned_exam_types:
-            placeholders = ", ".join("?" for _ in cleaned_exam_types)
-            where.append(f"p.exam_type IN ({placeholders})")
-            params.extend(cleaned_exam_types)
-            
-        cleaned_grades = [_clean_optional(value) for value in (grades or [])]
-        cleaned_grades = [value for value in cleaned_grades if value]
-        if cleaned_grades:
-            placeholders = ", ".join("?" for _ in cleaned_grades)
-            where.append(f"p.grade IN ({placeholders})")
-            params.extend(cleaned_grades)
-            
-        for tag_type, tag_values in (tag_filters or {}).items():
-            cleaned_values = [_clean_optional(value) for value in tag_values]
-            cleaned_values = [value for value in cleaned_values if value]
-            if not cleaned_values:
-                continue
-            placeholders = ", ".join("?" for _ in cleaned_values)
-            where.append(
-                f"""
-                EXISTS (
-                    SELECT 1
-                    FROM question_tags tf
-                    WHERE tf.question_id = q.id
-                      AND tf.tag_type = ?
-                      AND tf.tag_value IN ({placeholders})
-                )
-                """
-            )
-            params.extend([tag_type, *cleaned_values])
-            
-        if _clean_optional(tag_status) and tag_status != "全部":
-            if tag_status == "已打标签":
-                where.append("""
-                    EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'knowledge_point' AND COALESCE(kt2.tag_value, '') <> '')
-                    AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'ability' AND COALESCE(kt2.tag_value, '') <> '')
-                    AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'exam_scope' AND COALESCE(kt2.tag_value, '') <> '')
-                    AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'student_level' AND COALESCE(kt2.tag_value, '') <> '')
-                """)
-            elif tag_status == "未打标签":
-                where.append("""
-                    NOT (
-                        EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'knowledge_point' AND COALESCE(kt2.tag_value, '') <> '')
-                        AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'ability' AND COALESCE(kt2.tag_value, '') <> '')
-                        AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'exam_scope' AND COALESCE(kt2.tag_value, '') <> '')
-                        AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'student_level' AND COALESCE(kt2.tag_value, '') <> '')
-                    )
-                """)
-            
-        return joins, where, params
+        return build_question_filter_query(
+            question_number=question_number,
+            keyword=keyword,
+            knowledge_point=knowledge_point,
+            difficulty=difficulty,
+            difficulty_range=difficulty_range,
+            question_types=question_types,
+            paper_ids=paper_ids,
+            years=years,
+            exam_types=exam_types,
+            grades=grades,
+            tag_filters=tag_filters,
+            is_deleted=is_deleted,
+            tag_status=tag_status,
+        )
 
     def count_questions(
         self,

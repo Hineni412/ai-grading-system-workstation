@@ -145,6 +145,7 @@ class GradingService:
         objective_escalation_question_ids: Iterable[str] | None = None,
         failed_only: bool = False,
         resume_run_id: int | None = None,
+        should_cancel: Any | None = None,
     ) -> Iterable[dict]:
         if not self.db.is_template_ready(session_id):
             raise ValueError("当前会话尚未完成模板题框映射确认，请先在“评分依据与会话”页完成模板配置")
@@ -213,18 +214,93 @@ class GradingService:
             except Exception:
                 return False
 
+        def _cancel_requested() -> bool:
+            if should_cancel is None:
+                return False
+            try:
+                return bool(should_cancel())
+            except Exception:
+                return False
+
+        def _finish_cancelled_run(*, release_session: bool) -> dict[str, Any]:
+            if run_store is not None and run is not None:
+                try:
+                    run_store.finish(run.run_token, "paused")
+                except Exception:
+                    pass
+            if release_session:
+                self.db.finish_session_run(session_id, "completed")
+            return {
+                "event": "session_cancelled",
+                "run_id": run.id if run is not None else None,
+                "progress": self.db.get_session_progress(session_id),
+            }
+
+        paper_cancel_restore_state: dict[int, tuple[str, str | None]] = {}
+
+        def _restore_paper_after_cancel(
+            paper_id: int,
+            run_item_id: int | None = None,
+        ) -> None:
+            restore_status, restore_error = paper_cancel_restore_state.get(
+                paper_id,
+                ("pending", None),
+            )
+            self.db.update_exam_paper_status(
+                paper_id,
+                restore_status,
+                restore_error,
+            )
+            if run_store is not None and run_item_id is not None:
+                try:
+                    run_store.set_item_status(run_item_id, "pending")
+                except Exception:
+                    pass
+
+        if _cancel_requested():
+            yield _finish_cancelled_run(release_session=False)
+            return
+
         if not failed_only:
             if not self.db.try_start_session_run(session_id):
                 raise RuntimeError("当前考试批改已有运行中的批改任务，请等待完成后再启动")
+            if _cancel_requested():
+                yield _finish_cancelled_run(release_session=True)
+                return
             self.db.clear_session_run_data(session_id)
         else:
             if not self.db.try_start_session_run(session_id):
                 raise RuntimeError("当前考试批改已有运行中的批改任务，请等待完成后再启动")
+        if _cancel_requested():
+            yield _finish_cancelled_run(release_session=True)
+            return
 
         matched_records: list[tuple[int, ExamPaperGroup, int]] = []
 
         if failed_only:
             failed_detailed = self.db.list_failed_papers_detailed(session_id)
+            failed_paper_ids = [
+                int(item["paper_id"])
+                for item in failed_detailed
+                if item.get("paper_id") is not None
+            ]
+            if failed_paper_ids:
+                placeholders = ",".join("?" for _ in failed_paper_ids)
+                with self.db._connect() as conn:
+                    original_rows = conn.execute(
+                        "SELECT id, processing_status, error_message "
+                        f"FROM exam_papers WHERE id IN ({placeholders})",
+                        failed_paper_ids,
+                    ).fetchall()
+                paper_cancel_restore_state.update(
+                    {
+                        int(row["id"]): (
+                            str(row["processing_status"]),
+                            row["error_message"],
+                        )
+                        for row in original_rows
+                    }
+                )
             for item in failed_detailed:
                 group = ExamPaperGroup(
                     front_image=Path(item["front_image"]),
@@ -261,6 +337,9 @@ class GradingService:
                 }
 
             for group in scanned_groups:
+                if _cancel_requested():
+                    yield _finish_cancelled_run(release_session=True)
+                    return
                 student = {"id": group.student_id, "name": group.student_name} if group.student_id else self.db.find_student_by_name(group.student_name)
                 if student is None:
                     paper_id = self.db.create_exam_paper(
@@ -281,6 +360,9 @@ class GradingService:
                         "back_image": group.back_image.name,
                         "message": "OCR 姓名未匹配到学生名单，已跳过",
                     }
+                    if _cancel_requested():
+                        yield _finish_cancelled_run(release_session=True)
+                        return
                     continue
 
                 paper_id = self.db.create_exam_paper(
@@ -292,7 +374,16 @@ class GradingService:
                     match_status="matched",
                     processing_status="pending",
                 )
+                paper_cancel_restore_state[paper_id] = ("pending", None)
                 matched_records.append((paper_id, group, int(student["id"])))
+
+                if _cancel_requested():
+                    yield _finish_cancelled_run(release_session=True)
+                    return
+
+        if _cancel_requested():
+            yield _finish_cancelled_run(release_session=True)
+            return
 
         total = len(matched_records)
         worker_count = bounded_int(
@@ -385,8 +476,15 @@ class GradingService:
                                     if major_question_id(grader.rubric, d["question_id"]) not in affected_major_ids
                                 }
 
+            hybrid_marked_paper_ids: list[int] = []
             for idx, (paper_id, group, student_id) in enumerate(matched_records, start=1):
+                if _cancel_requested():
+                    for marked_paper_id in hybrid_marked_paper_ids:
+                        _restore_paper_after_cancel(marked_paper_id)
+                    yield _finish_cancelled_run(release_session=True)
+                    return
                 self.db.update_exam_paper_status(paper_id, "grading")
+                hybrid_marked_paper_ids.append(paper_id)
                 yield {
                     "event": "grading_started",
                     "paper_id": paper_id,
@@ -394,6 +492,11 @@ class GradingService:
                     "current": idx,
                     "total": total,
                 }
+                if _cancel_requested():
+                    for marked_paper_id in hybrid_marked_paper_ids:
+                        _restore_paper_after_cancel(marked_paper_id)
+                    yield _finish_cancelled_run(release_session=True)
+                    return
 
             completed = 0
             try:
@@ -449,7 +552,7 @@ class GradingService:
                         rubric_images_dir=get_path_manager().templates_dir / f"session_{session_id}" / "rubric_images",
                         skipped_questions_by_student=skipped_questions_by_student,
                         question_tag_context=grader.question_tag_context,
-                        should_pause=_pause_requested,
+                        should_pause=lambda: _pause_requested() or _cancel_requested(),
                     )
                     while not future.done():
                         try:
@@ -459,12 +562,22 @@ class GradingService:
                             pass
                         time.sleep(0.1)
                     batch_run = future.result()
+                if _cancel_requested():
+                    for marked_paper_id in hybrid_marked_paper_ids:
+                        _restore_paper_after_cancel(marked_paper_id)
+                    yield _finish_cancelled_run(release_session=True)
+                    return
                 fallback_items_by_key = _fallback_items_by_paper_key(batch_run.fallback_items)
                 paper_key_by_paper_id = {
                     paper_id: entry.paper_key
                     for entry, (paper_id, _, _) in zip(batch_run.paper_entries, matched_records)
                 }
             except Exception as exc:  # noqa: BLE001
+                if _cancel_requested():
+                    for marked_paper_id in hybrid_marked_paper_ids:
+                        _restore_paper_after_cancel(marked_paper_id)
+                    yield _finish_cancelled_run(release_session=True)
+                    return
                 for _, (paper_id, group, student_id) in enumerate(matched_records, start=1):
                     completed += 1
                     retry_existing = existing_results_by_student.get(student_id) if failed_only else None
@@ -487,7 +600,12 @@ class GradingService:
                 yield {"event": "session_completed", "progress": progress}
                 return
 
-            for paper_id, group, student_id in matched_records:
+            for result_index, (paper_id, group, student_id) in enumerate(matched_records):
+                if _cancel_requested():
+                    for pending_paper_id, _, _ in matched_records[result_index:]:
+                        _restore_paper_after_cancel(pending_paper_id)
+                    yield _finish_cancelled_run(release_session=True)
+                    return
                 completed += 1
                 retry_existing = existing_results_by_student.get(student_id) if failed_only else None
                 try:
@@ -568,6 +686,12 @@ class GradingService:
                             yield event_queue.get_nowait()
                     except queue.Empty:
                         pass
+
+                    if _cancel_requested():
+                        for pending_paper_id, _, _ in matched_records[result_index:]:
+                            _restore_paper_after_cancel(pending_paper_id)
+                        yield _finish_cancelled_run(release_session=True)
+                        return
 
                     if atomic_major_retry:
                         remove_question_ids = [
@@ -654,18 +778,29 @@ class GradingService:
         total_grade = len(grade_records)
         completed = 0
         paused = False
+        cancelled = False
+        dispatch_exhausted = total_grade == 0
         record_iter = iter(list(enumerate(grade_records, start=1)))
         inflight: dict[Any, tuple[int, int, ExamPaperGroup, int]] = {}
 
         with ThreadPoolExecutor(max_workers=full_paper_workers, thread_name_prefix="grading") as executor:
             while True:
-                while len(inflight) < full_paper_workers and not paused:
+                while (
+                    len(inflight) < full_paper_workers
+                    and not paused
+                    and not dispatch_exhausted
+                ):
+                    if _cancel_requested():
+                        cancelled = True
+                        paused = True
+                        break
                     if _pause_requested():
                         paused = True
                         break
                     try:
                         idx, (paper_id, group, student_id) = next(record_iter)
                     except StopIteration:
+                        dispatch_exhausted = True
                         break
                     self.db.update_exam_paper_status(paper_id, "grading")
                     if run_store is not None and paper_id in run_item_by_paper:
@@ -680,6 +815,14 @@ class GradingService:
                         "current": idx,
                         "total": total_grade,
                     }
+                    if _cancel_requested():
+                        cancelled = True
+                        paused = True
+                        _restore_paper_after_cancel(
+                            paper_id,
+                            run_item_by_paper.get(paper_id),
+                        )
+                        break
                     future = executor.submit(
                         _grade_one_paper_with_retries,
                         grader,
@@ -692,12 +835,18 @@ class GradingService:
                         atlas_output_root=get_path_manager().outputs_dir / "evidence_atlas",
                     )
                     inflight[future] = (idx, paper_id, group, student_id)
+                    if idx >= total_grade:
+                        dispatch_exhausted = True
 
                 try:
                     while True:
                         yield event_queue.get_nowait()
                 except queue.Empty:
                     pass
+
+                if _cancel_requested() and inflight:
+                    cancelled = True
+                    paused = True
 
                 if not inflight:
                     break
@@ -706,8 +855,28 @@ class GradingService:
                 for future in done:
                     idx, paper_id, group, student_id = inflight.pop(future)
                     completed += 1
+                    if cancelled or _cancel_requested():
+                        cancelled = True
+                        paused = True
+                        try:
+                            future.result()
+                        except Exception:
+                            pass
+                        _restore_paper_after_cancel(
+                            paper_id,
+                            run_item_by_paper.get(paper_id),
+                        )
+                        continue
                     try:
                         result = future.result()
+                        if _cancel_requested():
+                            cancelled = True
+                            paused = True
+                            _restore_paper_after_cancel(
+                                paper_id,
+                                run_item_by_paper.get(paper_id),
+                            )
+                            continue
                         result_id = self.db.save_session_result(session_id, student_id, paper_id, result)
                         self.db.update_exam_paper_status(paper_id, "graded")
                         if run_store is not None and paper_id in run_item_by_paper:
@@ -746,6 +915,10 @@ class GradingService:
 
                 if paused and not inflight:
                     break
+
+        if cancelled:
+            yield _finish_cancelled_run(release_session=True)
+            return
 
         if paused:
             # 未派发答卷保持 pending 待恢复；标记账本运行为 paused 并释放会话运行守卫。
