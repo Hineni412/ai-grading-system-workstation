@@ -1,7 +1,8 @@
 # 前后端现代化与功能演进总体方案（Master Plan）
 
-> **文档性质：** 总体路线方案，不是单次可执行的 task 清单。供 Opus 等执行模型使用：每个"工作包（WP）"在实施前，应先在 `docs/superpowers/plans/` 下产出一份独立的 task-by-task 实现计划（沿用本仓库既有格式），再动手写代码。
-> **编制日期：** 2026-07-03。**依据：** 对当前工作区的直接代码调查（文中所有 `文件:行号` 均已核实）+ `ARCHITECTURE.md`（2026-06-29 核验版）。
+> **文档性质：** 总体路线与架构策略，不再承担实时任务状态。当前进度、执行顺序、验收条件和建议模型以 `docs/superpowers/packages/EXECUTION_INDEX.md` 及各 Phase 执行包为准；每个执行包开始编码前，再生成一份与当时源码对应的 task-by-task 实现计划。
+> **编制与复核：** 初稿 2026-07-03；2026-07-10 完成代码、测试与计划一致性审计。文中原始 `文件:行号` 只代表 2026-07-03 快照，执行时必须重新定位。
+> **执行入口：** `docs/superpowers/packages/README.md`（规则）→ `docs/superpowers/packages/EXECUTION_INDEX.md`（队列）→ 对应 Phase 执行包；审计结论见 `docs/superpowers/packages/PLAN_AUDIT_2026-07-10.md`。
 > **优先级（用户指定）：** ① 更换前端架构并美化界面；② 后端精细化性能优化、冗余清理、必要时调整架构；③ 功能迭代（知识图谱、个性化训练、教师命题训练、班主任学生画像）。①②优先。
 > **关键依赖顺序说明：** "更换前端"在工程上必须先有一个可供新前端调用的后端 API 层。因此实际执行顺序是：目标②的前半（API 层抽取）→ 目标①（新前端）→ 目标②的后半（深度重构与瘦身）→ 目标③。
 
@@ -11,19 +12,19 @@
 
 ### 0.1 技术形态
 
-- 单用户、本机 Windows、便携 Python 3.12 运行时，`运行.bat -> streamlit run web_app.py`，绑定 `127.0.0.1:8501`。
+- 单用户、本机 Windows、便携 Python 3.12 运行时；生产 UI 仍是绑定 `127.0.0.1:8501` 的 Streamlit，Phase 0 与 FastAPI 骨架已经合并，但 Vue SPA 尚未开始。
 - UI/业务/数据访问同进程：Streamlit 1.58.0 + 两个 SQLite（阅卷库 12 表、题库库 26 表，均 WAL）+ `user_data/` 文件树。
 - AI 调用走 OpenAI 兼容接口（OpenAI SDK 2.43.0），配置存于 `%LOCALAPPDATA%/AIGradingSystem/config/api_profiles.json`。
-- 测试资产雄厚：`tests/` 全量 659 项通过（2026-06-29 记录），含 UI 契约、迁移、回归测试——这是本次改造最重要的安全网。
+- 测试资产雄厚。2026-07-10 P1 检查点提交前的隔离完整冒烟为 967 passed，静态编译 342 个第一方 Python 文件，两库副本初始化幂等且 `integrity_check=ok`。
 
 ### 0.2 规模与耦合（量化）
 
 | 指标 | 数值 | 证据 |
 |---|---|---|
-| `web_app.py` | 9,625 行（其中 ~930 行为内联 CSS，`_DESIGN_CSS` 于 711–1641） | 行数统计 |
+| `web_app.py` | 9,750 行（2026-07-10 统计；仍含大段内联 CSS） | 行数统计 |
 | `session_manager.py` / `db_manager.py` | 4,435 / 3,177 行 | 行数统计 |
 | pages/ 五页面 | 题库管理 2,814、组卷 1,802、训练推荐 877、系统自检 447、知识点整理（高级）353 行 | 行数统计 |
-| `st.session_state` 引用 | 全仓 568 处（web_app.py 360、题库管理 88、组卷 70） | grep 计数 |
+| `st.session_state` 引用 | 全仓 589 处（2026-07-10 统计） | grep 计数 |
 | `st.rerun()` | 127 处 | grep 计数 |
 | `unsafe_allow_html=True`（手写 HTML 注入） | 70 处 | grep 计数 |
 | UI 直连数据库 | `main()` 直接持有 `DBManager`（web_app.py:9547）；pages 3 个文件 6 处直接构建 DB 连接 | grep 计数 |
@@ -31,24 +32,25 @@
 
 ### 0.3 已核实的关键问题清单
 
-1. **长任务阻塞 UI 会话**：`_run_with_stage_progress()`（web_app.py:637-708）在 `ThreadPoolExecutor(1)` 里跑任务，主线程以 0.35s 轮询刷新进度——浏览器刷新即丢进度视图，任务不可恢复展示。
-2. **两处 LLM 请求无超时**：`hybrid_batch_grading_service.py:523`（`timeout: None`）、`objective_batch_recognition_service.py:582`（`timeout=None`）。
-3. **4 处绕过统一 LLM 客户端直连 OpenAI**：`choice_recognition_chain.py:253`、`fill_blank_recognition_chain.py:193`、`objective_batch_recognition_service.py:579`、`question_bank/services/ai_tagging_service.py:385-387`（各自维护超时/重试）。
-4. **每次操作新开 SQLite 连接并重设 3 条 PRAGMA**：`db_manager.py:46-52`、`question_bank/database/schema.py:9-24`；无请求级/线程级复用。
-5. **Schema 双源漂移**：运行时 DDL（`DBManager.initialize()` + `initialize_database()`）是事实来源；`migrations/` 仅题库 8 个、阅卷库 1 个文件；两库无 `schema_migrations` 表。用户已确认（2026-06-28）以迁移文件为权威，尚未收敛。
-6. **三代答题区编辑器并存**：`_render_region_editor_legacy`（web_app.py:7492）、`_render_region_editor`（8128）、`_render_region_editor_v3`（8439）均依赖 `streamlit-drawable-canvas`；另有一套原生 JS 编辑器 `components/answer_region_editor/`（editor.html/js/css + 单测）供聚焦页使用。
-7. **死代码与杂物**：`web_app.py:19` 导入 `render_objective_admission_wizard_tab` 但全文件无调用（向导已被用户确认停用）；`run_objective_admission_wizard.py` 引用 5 个不存在的脚本；根目录留有 `debug_test.db`、`test_math.png`、`merge_staging_known_hosts.tmp`、`第十五周学情反馈.pdf`、`task.md`（已全部勾完）、`scratch/`、`analysis_outputs/`。
-8. **依赖声明与实际不符**：`requirements.txt` 声明 `google-generativeai>=0.7.2`，全仓库无任何导入（grep 零命中）→ 可删；`pyinstaller` 属构建期依赖混在运行期清单里。
-9. **旧语义体系整套保留**：题库库 11 张旧知识/技能表 + `training_sets/training_set_items` + `pages/知识点整理（高级）.py`（即旧技能目录 UI）+ `practice_plan_service.py` 的 legacy/skill 双分支 + `DiagnosisProfileService.build_legacy_profiles()/build_skill_profiles()`（integration/diagnosis_profile_service.py:46-60）。按 ARCHITECTURE.md 约定"保留一个版本后评估删除"。
-10. **旧入口链**：`main.py`（旧 CLI）+ 专属表 `exam_results/grading_details` + `DBManager` Legacy API（db_manager.py:419 起）。
-11. **知识图谱是 HTML/CSS 树，不是图**：`_render_knowledge_graph_from_rows()`（web_app.py:4237-4303）拼接 `kg-tree` 类名的 HTML 字符串，点击经 query 参数跳详情；无真正的图布局/交互/层级关系。
-12. **P0 安全事实（ARCHITECTURE.md 已记录、用户已知悉）**：Git 仍跟踪含学生数据的 `user_data/`（用户确认保留）；数据包导入非事务且备份失败不阻塞。
+1. **Streamlit 长任务仍会阻塞会话体验**：最小 JobManager 已为批改、扫描与报告导出提供后台任务，但原 UI 仍有同步/轮询路径，且任务恢复与前端展示尚未闭环。
+2. **一处 LLM 请求仍无超时**：当前明确命中为 `objective_batch_recognition_service.py` 的 `timeout=None`；4 处直连 OpenAI 的调用链仍待统一到 LLM Gateway。
+3. **SQLite 连接粒度偏细**：多数操作仍各自创建连接并设置 PRAGMA，请求级复用尚未落地。
+4. **全局 Schema 权威仍需逐步收口**：Phase 0 已落地基线迁移与 `schema_migrations`；P1-10 已让 `003_add_jobs.sql` 成为 jobs 唯一完整 DDL，并补齐 app-owned 生命周期，其他运行时 DDL 的仓储收敛仍按 Phase 3 推进。
+5. **现有三类 Job 已完成协作式取消，后续类型仍须沿用**：P1-11 已让 report/scan/grading 采用 running 请求/安全确认两阶段并保护最终副作用；未来 config/tagging/training/ops job 不得退回“只改状态”的取消方式。
+6. **复核与受控媒体闭环已收口**：P1-12 已用单 JOIN 应用读模型、跨 result SQLite 单事务和事务后批注补偿消除路由重逻辑、N+1 与部分提交；P1-13 进一步用语义化 ID、受控根/扩展名白名单、内存裁剪和 Job 下载 URL 封闭图片与导出文件访问边界。
+7. **三代 Streamlit 答题区编辑器与原生 JS 核心并存**：唯一实现的收敛应随 Phase 2 样板页完成，不在 Phase 1 提前大改 UI。
+8. **旧语义体系与旧入口链仍保留**：按 D4 在 Phase 3 分批退役；必须保留历史迁移文件，只能通过向前迁移演进。
+9. **知识图谱目前仍是 HTML/CSS 树**：真正的关系图、掌握度模型和训练闭环属于 Phase 4。
+10. **安全边界仍需持续执行**：`user_data/` 包含真实学生数据且工作区长期脏；默认不删除、不改写、不提交，数据库操作必须备份、预演和验证。
 
-### 0.4 在途工作（必须先落地或显式合并）
+### 0.4 当前进度（2026-07-10）
 
-`docs/superpowers/plans/2026-07-01-unified-question-ids-resumable-grading-tag-retry.md` 正在实施（当前工作区 `answer_key_utils.py`、`grading_service.py`、`web_app.py`、`ARCHITECTURE.md` 的未提交修改属于它）。它将新增：题号契约模块、**批改运行账本 `grading_runs/grading_run_items`（migrations/grading/002）、安全暂停/恢复**、参考图降载、打标批次重试。
+- Phase 0 与 WP1.1 已通过 PR #1 合并到 `main`，冻结标签为 `pre-framework-switch-2026-07-09`。
+- 当前分支 `codex/wp1-2-api-routes` 已实现并验证 WP1.2 Batch A-E 的一部分及最小 JobManager：sessions、students、config、template/regions、scan、grading、report export、review 首批路由与通用 jobs API。
+- 上述 Phase 1 增量已在 `codex/wp1-2-api-routes` 形成可审阅的本地 Git 检查点；状态仍为 **verified（本地验证）**，尚未合并到 `main`，不能表述成 Phase 1 已完成。
+- P1-09 至 P1-15 已本地验证：Windows 不可访问路径安全回退，fork-only skip 已由跨平台 spawn 测试替代；jobs DDL、JobManager 生命周期、三类真实 handler 协作式取消、复核单 JOIN 查询/原子确认/批注补偿、受控媒体/报告下载、OpenAPI/公开数据/并发稳定化，以及严格无源写入的 Question Bank 只读路由均已收口。下一项是 P1-16 Question Bank 轻写与导入准备。
 
-**衔接规则：** 本方案 Phase 1 的任务系统（WP1.3）**必须复用该账本作为批改类任务的持久化进度来源**，不得另建一套；Phase 0 开始前先完成/冻结该计划并提交，避免两条线同时改 `grading_service.py`。
+详细证据、包数量与顺序只在 `docs/superpowers/packages/EXECUTION_INDEX.md` 维护，避免本总体方案再次产生状态漂移。
 
 ---
 
@@ -60,9 +62,10 @@
 
 - **D1 = 已确认，推荐方案 A**：Vue 3 + TypeScript + Vite + Element Plus + Pinia + ECharts。
 - **D4 = 已确认**：旧语义体系保留一个版本后删除（v1.6 只读保留，v1.7 独立变更中执行 WP3.6）。
-- **D6 = 已确认，直接实施**：用户告知学校已支持该功能。本方案的技术红线（独立 student_affairs.db、默认排除出数据包导出/便携包、AI 输出标注"仅供参考"、按学生一键删除）**不因此取消**，作为工程默认执行。
+- **D6 = 边界已确认，实施延期**：技术红线保持不变；2026-07-10 决定 Phase 6 暂缓，不进入当前执行队列，待单独确认数据治理与产品边界后重启。
 - D2/D3/D5/D7：用户未提出异议，按推荐项执行；后续可随时调整。
 - **D8（新增，见下表）**：视觉基调分歧，默认按推荐 A 执行，用户可改。
+- **D9（2026-07-10 新增）**：Phase 1-5 建立正式执行包；Phase 5 必做但先实验和设计；Phase 6 暂缓。高不确定性设计/审查用 Sol，大多数边界清楚的实现包交给 Terra。
 
 **设计规范与参考资产（2026-07-03 用户提供，已入库 `docs/ui/`）：** `docs/ui/STYLE.md` 为前端权威设计规范；当前 AI 协作入口为根目录 `AGENTS.md`（`CLAUDE.md` 仅保留兼容指针）；7 张 AI 生成概念图位于 `docs/ui/references/mockups/`（**仅视觉参考，不是功能需求清单**，边界见 `AGENTS.md` 与 `docs/ui/STYLE.md`）。
 
@@ -76,6 +79,7 @@
 | **D6** | 学生画像功能的数据边界 | **推荐：独立 `student_affairs.db`；默认排除出数据包导出与便携包（备份包含）；AI 输出定位为"仅供参考的沟通建议"；提供一键删除** | 涉未成年人敏感个人信息（事件、家庭情况、人格推断），建议启用前与学校确认合规口径 |
 | **D7** | 打包形态 | **推荐：维持"源码 + 便携运行时"目录式发布**，不启用 PyInstaller（`run_desktop.py` 与 `pyinstaller` 依赖仅在确认无用后归入删除清单） | 保持现有更新工具链不变 |
 | **D8** | 主强调色与视觉基调 | **推荐 A：布局、密度、组件与状态规范全部按 `docs/ui/STYLE.md`；主强调色（accent）采用参考图的明亮蓝（≈#2563EB–#3B82F6 区间取一档），中性色/语义色（AI 紫、教师绿、风险色）按 STYLE.md 9.1 节**。备选 B：完全按 STYLE.md 的低饱和蓝灰 #365f7d | 参考图与 STYLE.md 布局理念一致、仅 accent 色调分歧；旧 shared_styles.py 的 #4F46E5 靛紫**废弃不用**（STYLE.md 反面清单禁蓝紫基调）。默认按 A 执行 |
+| **D9** | 执行包与模型分工 | **Phase 1-5 正式排包；Phase 5 先实验后开发；Phase 6 暂缓。** Sol Extra High 负责跨阶段设计、复杂门控和疑难审查；Terra High/Medium 负责大多数实现；Luna 只处理低风险机械任务 | 降低长期计划因源码漂移失效的风险，同时控制模型成本；具体升级条件见执行包 README |
 
 ---
 
@@ -123,9 +127,12 @@ flowchart LR
 ### 2.3 任务系统（JobManager）设计要点
 
 - 任务类型：`grading_run`（复用在途计划的 grading_runs 账本）、`config_generation`、`scan_analysis`、`tagging_sync`、`report_export`、`training_export`。
-- 通用 `jobs` 表（阅卷库，新迁移文件）：`id, job_type, payload_json, status(queued/running/paused/succeeded/failed/cancelled), progress, stage, detail, error, created_at, started_at, finished_at`。批改类任务的明细进度仍以 grading_runs 为准，jobs 行仅作统一索引。
+- 通用 `jobs` 表（阅卷库）：`id, job_type, payload_json, result_json, status(queued/running/paused/succeeded/failed/cancelled), progress, stage, detail, error, cancel_requested, created_at, started_at, updated_at, finished_at`。批改类任务的明细进度仍以 grading_runs 为准，jobs 行仅作统一索引。
+- `migrations/grading/003_add_jobs.sql` 是 jobs 表、约束和索引的唯一完整 DDL；`JobStore` 运行时直接读取该迁移，并只额外保留旧表缺 `result_json` 时的兼容补列。
 - 执行：进程内 `ThreadPoolExecutor`（沿用现有各服务的线程池与 `RequestPacer`，不改并发语义）；服务现有的 `report(progress, stage, detail)` 回调协议（web_app.py:647-648 已定义）直接对接 job 进度写入。
+- 生命周期：每个 FastAPI app 在 lifespan 启动时创建并恢复自己的 manager，放入 `app.state`；退出时等待线程池关闭。dependency override 注入的 manager 由注入方拥有，不由应用关闭。
 - API：`POST /api/jobs/{type}`、`GET /api/jobs/{id}`（轮询）、`POST /api/jobs/{id}/cancel`；SSE 可选后加。
+- 取消：queued/paused 可立即终止；running 只置 `cancel_requested`，handler 在安全边界通过专用异常确认 cancelled。普通异常保持 failed；阻塞调用已跨过最终发布边界时允许正常完成赢得竞态。
 - 恢复语义沿用现状：进程重启不续跑，启动时把 `running` 任务标 `failed`（与 grading_service 现有恢复逻辑一致）。
 
 ### 2.4 LLM Gateway 设计要点
@@ -141,8 +148,11 @@ flowchart LR
 ## 3. 分阶段路线图
 
 > 每阶段末尾的"验收"是该阶段合并回主线的硬门槛。工作量为相对量级（S<1 天级，M=数天级，L=一周级以上，均指专注执行时间）。
+> 本节保留阶段目标，不作为实时清单。正式包定义共 87 个；当前待执行 80 个（Phase 1: 14、Phase 2: 22、Phase 3: 19、Phase 4: 12、Phase 5: 13），详见 `docs/superpowers/packages/EXECUTION_INDEX.md`。
 
 ### Phase 0 — 地基与防护网（前置，量级 M）
+
+**状态：已通过 PR #1 合并。** 下表作为历史验收记录保留。
 
 | WP | 内容 | 关键文件 | 量级 |
 |---|---|---|---|
@@ -157,12 +167,14 @@ flowchart LR
 
 ### Phase 1 — 后端 API 层与任务系统（目标②前半，量级 L）
 
+**状态：进行中。** WP1.1 已合并；WP1.2 部分路由、最小 WP1.3 与 P1-09 至 P1-15 已在本地验证并形成当前分支 Git 检查点。余项为 P1-16 至 P1-29，见 `docs/superpowers/packages/phase-1-execution-packages.md`。
+
 | WP | 内容 | 依据/关键点 | 量级 |
 |---|---|---|---|
 | WP1.1 | FastAPI 骨架：`backend/api/app.py`、统一错误体、请求日志、`/healthz`；`运行.bat` 增加双入口（8501 Streamlit + 8000 API 并行） | D2；绑定 127.0.0.1 | S |
 | WP1.2 | 领域路由分批落地（资源草案见附录 A）。顺序：sessions → students → config 生成 → templates/regions → scan → grading → review → reports → question-bank → training → graph → ops。每个路由 = 薄壳，直接调用现有服务/DBManager 方法，Pydantic schema 定契约 | UI 现调用点即 API 形状来源（如 render_config_and_session_tab web_app.py:2313 起） | L |
-| WP1.3 | JobManager（2.3 节设计）；将 `_run_with_stage_progress` 覆盖的五类长任务全部任务化 | 复用 grading_runs 账本与暂停语义 | M |
-| WP1.4 | LLM Gateway 收编（2.4 节）：改 4 处直连、消灭 2 处 `timeout=None`、统一重试与用量记录 | choice:253、fill_blank:193、objective:579/582、ai_tagging:385、hybrid:523 | M |
+| WP1.3 | JobManager（2.3 节设计）；最小 manager、生命周期和现有 report/scan/grading 协作式取消已验证，继续把 config/tagging/training 等长任务迁入同一协议 | 复用 grading_runs 账本并区分暂停与取消语义 | M |
+| WP1.4 | LLM Gateway 收编（2.4 节）：改 4 处直连、消灭当前剩余 1 处 `timeout=None`、统一重试与用量记录 | 以 P1-24/P1-25 执行前重新搜索的结果为准 | M |
 | WP1.5 | 数据访问最小优化（不动 schema）：`DBManager` 与题库 `connect()` 增加"外部传入连接"形态，API 请求内复用单连接；只读端点用 `mode=ro` URI；为每个端点记录耗时日志（后续 Phase 3 性能专项的基线数据） | db_manager.py:46、schema.py:9 | M |
 | WP1.6 | 契约测试：每个路由配 API 级测试（复用现有服务层测试的构造器）；核心五流程（建会话→配置→模板/区域→批改→导出）一条 API e2e | tests/ | M |
 
@@ -170,6 +182,8 @@ flowchart LR
 **回退：** API 层是纯增量，删除 backend/ 即回到现状。
 
 ### Phase 2 — 新前端 SPA（目标①，量级 XL，分两批交付）
+
+**状态：未开始。** 已拆为 22 个依赖明确的执行包，样板页验收前不扩散页面迁移，见 `docs/superpowers/packages/phase-2-execution-packages.md`。
 
 **设计依据（2026-07-03 修订）：** 前端视觉与交互的权威规范是 `docs/ui/STYLE.md`（App Shell 三栏结构、设计 Token、组件规范、状态体系、反面清单、视觉验收）；执行约束见 `AGENTS.md`；色彩按决策 D8。旧 `pages_shared/shared_styles.py` 的 #4F46E5 色板**废弃**，不再作为 tokens 来源。
 
@@ -236,7 +250,7 @@ flowchart LR
 | WP3.3 | `session_manager.py` 拆分为五模块：docx/pdf 解析（:59-180）、提示词构建（:196-216、1968-2069）、生成编排与重试（:239-551、984-1108）、本地题块解析（:1109-1620）、质量告警（:1746-1875）。行号为当前函数骨架实测 | 骨架 grep |
 | WP3.4 | Schema 收敛：运行时 DDL 缩减为"版本检查 + 拒绝启动提示"；新变更只走 migrations；状态列补 CHECK 约束（先 `SELECT DISTINCT` 统计现值再定枚举：grading_sessions.status、exam_papers.processing_status/match_status、answer_regions.mapping_status） | 0.3-第5条 |
 | WP3.5 | 冗余字段治理（详见第 5 节清单）：`session_details.knowledge_id` 与 `knowledge_ids` 归一为后者（迁移回填+读方切换）；`grading_sessions.question_bank_sync_*` 四列评估迁入独立工作流状态表；`session_results.raw_json` **保留**（审计用途，明确记录不删原因） | schema 阅读 |
-| WP3.6 | 死代码删除（D4 时点执行，独立可回退变更，分三批）：批1 向导组（objective_admission_wizard_ui.py、run_objective_admission_wizard.py、web_app.py:19 导入——**注意 `objective_crop_calibration.py` 被 choice_recognition_chain.py:31 使用，保留**）；批2 旧入口组（main.py、exam_results/grading_details 表及 Legacy API）；批3 旧语义组（11 张技能/知识表、skill 系服务、practice_plan_service legacy 分支、DiagnosisProfileService.build_legacy_profiles/build_skill_profiles、pages/知识点整理（高级）.py、training_sets 两表、migrations 006-008 的对应回退工具） | 0.3-第7/9/10条 |
+| WP3.6 | 死代码删除（D4 时点执行，独立可回退变更，分三批）：向导组、旧入口组、旧语义组。删除运行时代码和废弃表必须走向前迁移；**历史 migration 文件永久保留，不改写、不删除** | 0.3-第7/8条 |
 | WP3.7 | 性能专项（用 WP1.5 的端点耗时日志定位后再改，避免臆测优化）：候选项见第 4 节 | — |
 
 **验收：** 全量测试通过；`ARCHITECTURE.md` 同步更新；两库迁移预演通过；删除批次各自可独立 revert。
@@ -248,24 +262,17 @@ flowchart LR
 1. **WP4.1 标签关系层**：新表 `tag_relations(source_key, target_key, relation_type CHECK(prerequisite/parent/related), source CHECK(ai_suggested/teacher_confirmed), weight)`——挂在 knowledge_point 标签键上（不是旧 concept id）。AI 批量建议 + 教师确认双态；只有 confirmed 参与图谱与推荐。
 2. **WP4.2 图谱可视化 2.0**（依赖 Phase 2 的 ECharts 图组件）：层级/先修边、班级与单生两种视图、掌握度热力着色、按考试范围过滤、点击节点下钻到证据（复用 `tag_evidence()` :247）。
 3. **WP4.3 掌握度模型 v2**：现按得分率加权；升级为"得分率 + 时间衰减 + 样本量置信度"三因子，实现为纯函数模块 + 单测，向后兼容旧口径（开关切换）。
-4. **WP4.4 个性化训练闭环**：`prerequisite` 阶段选题从 tag_relations 的先修边取候选（当前 direct/transfer 已可用）；训练结果回流——训练卷批改后写 `training_attempts`（表已存在但当前无写入方，grep 确认）→ 掌握度更新 → 图谱/下一次推荐生效。这是"按学生个性化匹配薄弱点"的完整闭环。
+4. **WP4.4 个性化训练闭环**：`prerequisite` 阶段选题从 tag_relations 的先修边取候选（当前 direct/transfer 已可用）；现有 `TrainingTaskService.record_attempt_stub()` 已能写入占位尝试，但尚未与真实训练卷批改结果闭环。正式目标是：真实批改写 `training_attempts` → 掌握度更新 → 图谱/下一次推荐生效。
 
 ### Phase 5 — 教师命题训练（目标③c，量级 M）
 
-定位：教师依据知识点/图谱命题，系统对照题库给出评审。可复用资产（已核实）：`question_fingerprints`（去重/相似）、`ai_tagging_service`（受控打标）、`question_previews`/富文本侧车渲染、组卷导出器（exporters/base_exporter 体系）、`api_profiles` 可加独立"命题评审"配置档。
+**状态：确定要做，但先实验与设计。** 前 5 个包用于工作流访谈、富文本编辑器 Spike、相似题评估、AI 评审评估和统一设计门；只有设计门通过后才进入 Schema、API、Job、UI 与试点。完整 13 包见 `docs/superpowers/packages/phase-5-execution-packages.md`。
 
-1. 新表 `authored_questions`（draft 状态机：draft→ai_reviewed→finalized→published_to_bank），入库后即普通 `questions` 行（`source='teacher_authored'`）。
-2. AI 评审维度：知识点覆盖是否命中目标标签、与题库相似题 Top-N（指纹 + 标签召回）、难度/典型性估计、表述问题清单。
-3. UI：命题工作台（左编辑右评审）+ 训练记录（教师练习历史与改进曲线）。
+可复用资产包括 `question_fingerprints`、受控打标、富文本侧车渲染和组卷导出器。2026-07-10 审计未确认 `questions.source` 字段，因此“发布到题库后的来源追踪”必须由 P5-05 设计门决定，不能在计划里预设 `source='teacher_authored'`。
 
 ### Phase 6 — 班主任学生画像（目标③d，量级 L，敏感功能）
 
-**红线先行（对应 D6）：** 独立 `student_affairs.db`；默认排除出数据包导出/便携包（本地备份包含）；所有 AI 生成内容界面标注"AI 生成，仅供参考"；提供按学生一键删除；日志不落敏感正文；启用前与学校确认合规口径（涉未成年人敏感个人信息与家长信息的 AI 处理）。
-
-1. **数据模型**：`student_events(id, student_code, event_date, category CHECK(学业/行为/家校/健康/其他), content, created_by, created_at)`；`student_profile_notes`（AI 生成的画像摘要，带 `generated_at/model_name/based_on_events_hash`，可整体重算）；`communication_advice`（针对某事件/某画像的建议记录，含教师采纳反馈字段）。
-2. **成绩画像**：复用 `build_tag_profiles()` 的按学生聚合 + 历次考试趋势（session_results 按 student_id 时间序列）——不需要新增成绩数据。
-3. **AI 环节**：新增独立 api_profile 配置档"学生画像"；输入 = 成绩画像结构化摘要 + 教师录入事件；输出 = 结构化 JSON（性格特征假设、家长沟通要点、在校教育建议、风险提示），走 LLM Gateway 统一出口。**prompt 中明确要求输出为假设性、非诊断性表述。**
-4. **UI**：班主任工作台——学生列表 → 个人页（成绩趋势 + 知识点雷达 + 事件时间线 + 建议卡片 + 生成/重算按钮）。
+**状态：暂缓，不建立活动执行包。** 当前只保留产品与数据红线：独立敏感数据边界、默认排除出数据包和便携包、AI 内容显著标注、按学生删除、日志不落敏感正文、启用前完成学校与合规确认。重启条件见 `docs/superpowers/packages/phase-6-deferred.md`；在条件满足前不得创建 Schema、接入真实数据或实现画像推断。
 
 ---
 
@@ -275,9 +282,9 @@ flowchart LR
 
 | # | 问题 | 证据 | 方案 | 落点 |
 |---|---|---|---|---|
-| 1 | 交互卡顿的结构性根源：Streamlit 每次交互重跑整个 9,625 行脚本（重建 DBManager、重查会话列表、重算侧边栏）【事实：框架行为 + main() 顶层逻辑 web_app.py:9545-9622】 | 框架模型 | SPA 迁移根治（Phase 2）；过渡期不投入局部缓存优化 | Phase 2 |
+| 1 | 交互卡顿的结构性根源：Streamlit 每次交互重跑整个约 9,750 行脚本（2026-07-10 统计）【事实：框架行为】 | 框架模型 | SPA 迁移根治（Phase 2）；过渡期不投入局部缓存优化 | Phase 2 |
 | 2 | 长任务占住 UI 会话线程，0.35s 轮询期间页面完全阻塞，刷新丢进度【事实：web_app.py:637-708】 | 同左 | JobManager 后台化 + 前端轮询 | WP1.3 |
-| 3 | 无超时模型请求可无限挂起批改线程【事实：hybrid:523、objective:582】 | 同左 | 统一超时预算 | WP1.4 |
+| 3 | 无超时模型请求可无限挂起批改线程【2026-07-10 当前明确命中：objective batch】 | 同左 | 统一超时预算 | WP1.4 |
 | 4 | 每次 DB 操作新开连接 + 3 条 PRAGMA；一次页面渲染触发数十次【事实：db_manager.py:46-52；假设：单机 SQLite 下单次开销小、但在循环/列表页会放大】 | 同左 | 请求级连接复用；只读走 `mode=ro`；**先测量再深化** | WP1.5 |
 | 5 | 复核/报告页逐行生成答题区裁剪预览图（PIL 实时裁剪）【事实：_build_answer_region_crop_preview web_app.py:5533、3918 网格调用；假设：大会话下是主要等待点】 | 同左 | 派生图磁盘缓存（键：paper+region+增强版本），批改完成时预生成 | WP3.7 |
 | 6 | 标签投影每次全量实时查询题库（设计使然，教师改标签即时生效）【事实：ARCHITECTURE.md 接口表"无标签缓存"】 | 同左 | 保留语义，加**请求内** memo（同一次图谱/推荐请求不重复查同一题） | WP3.7 |
@@ -368,9 +375,10 @@ flowchart LR
 4. 真实模型供应商 SLA/参数兼容性以 `api_profiles.json` 实际配置为准（ARCHITECTURE.md 未确认事项，本方案未改变）。
 5. 本方案行号基于 2026-07-03 工作区（含在途未提交修改）；在途计划合并后行号会漂移，各 WP 实现计划应重新定位。
 
-## 附录 C：给执行模型（Opus）的固定约束
+## 附录 C：给 Codex 执行模型的固定约束
 
-1. 遵守仓库 `AGENTS.md` 与 `docs/ui/STYLE.md`；每个 WP 先出实现计划再编码。
+1. 遵守仓库 `AGENTS.md`、执行包 README 与 `docs/ui/STYLE.md`；每个执行包先读取包定义，再按当时源码生成 task-by-task 实现计划后编码。
 2. 不改的东西：评分规则与知识点口径、`question_tags.knowledge_point` 活动语义、两库分立格局、127.0.0.1 单用户边界、`PathManager` 作为唯一路径入口、答题区"数据库+快照补偿"提交协议。
 3. 每次提交保持全量测试通过；结构性变化同步 `ARCHITECTURE.md`（按其"仅实质变化才更新"原则）。
 4. 破坏性操作（删表、删文件、改 schema）前先备份/预演，且独立成可回退的提交。
+5. 默认模型分工：Sol Extra High 用于跨域设计、实验门和高风险审查；Terra High/Medium 用于大多数实现；Luna 仅用于边界清楚、低风险、机械性的维护任务。出现执行包 README 所列升级条件时必须升档。

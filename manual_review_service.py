@@ -5,11 +5,17 @@ import math
 import re
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from annotation_renderer import render_annotated_paper
+from answer_region_session_lock import get_answer_region_session_lock
 from answer_region_geometry import answer_regions_with_template_source_sizes
 from db_manager import DBManager
 from path_manager import resolve_stored_file_path
+
+
+ANNOTATION_RETRY_MESSAGE = "Annotation rendering failed; retry required."
+_ANNOTATED_IMAGE_SUFFIXES = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".webp"})
 
 
 class ManualReviewService:
@@ -17,7 +23,24 @@ class ManualReviewService:
         self.db = db
         self.annotated_dir = annotated_dir
 
-    def render_result_annotation(self, result_id: int, highlight_qids: list[str] | None = None) -> dict[str, str] | None:
+    def render_result_annotation(
+        self,
+        result_id: int,
+        highlight_qids: list[str] | None = None,
+    ) -> dict[str, str] | None:
+        context = self.db.get_result_context(int(result_id))
+        if not context:
+            return None
+        session_id = int(context["session_id"])
+        lock_dir = self.annotated_dir / f"session_{session_id}"
+        with get_answer_region_session_lock(lock_dir):
+            return self._render_result_annotation_locked(result_id, highlight_qids)
+
+    def _render_result_annotation_locked(
+        self,
+        result_id: int,
+        highlight_qids: list[str] | None = None,
+    ) -> dict[str, str] | None:
         context = self.db.get_result_context(result_id)
         if not context:
             return None
@@ -95,25 +118,74 @@ class ManualReviewService:
 
         front_image = self._resolve_stored_file_path(context["front_image"])
         back_image = self._resolve_stored_file_path(context["back_image"])
-        front_out = self.annotated_dir / f"session_{session_id}" / f"result_{result_id}_front_annotated.jpg"
-        back_out = self.annotated_dir / f"session_{session_id}" / f"result_{result_id}_back_annotated.jpg"
+        render_id = uuid4().hex
+        output_dir = self.annotated_dir / f"session_{session_id}"
+        front_out = output_dir / f"result_{result_id}_{render_id}_front_annotated.jpg"
+        back_out = output_dir / f"result_{result_id}_{render_id}_back_annotated.jpg"
 
         filtered_regions = [
             r for r in regions 
             if str(r.get("mapped_question_id") or r.get("detected_question_id") or "") in question_scores
         ]
 
-        front_path, back_path = render_annotated_paper(
-            front_image=front_image,
-            back_image=back_image,
-            regions=filtered_regions,
-            question_scores=question_scores,
-            output_front=front_out,
-            output_back=back_out,
+        try:
+            front_path, back_path = render_annotated_paper(
+                front_image=front_image,
+                back_image=back_image,
+                regions=filtered_regions,
+                question_scores=question_scores,
+                output_front=front_out,
+                output_back=back_out,
+            )
+            previous = self.db.upsert_annotated_result(
+                session_id,
+                result_id,
+                str(front_path),
+                str(back_path),
+            )
+        except Exception:
+            for output_path in (front_out, back_out):
+                try:
+                    output_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise
+        self._cleanup_replaced_annotation_files(
+            previous,
+            current_paths={str(front_path), str(back_path)},
         )
-
-        self.db.upsert_annotated_result(session_id, result_id, str(front_path), str(back_path))
         return {"front": str(front_path), "back": str(back_path)}
+
+    def _cleanup_replaced_annotation_files(
+        self,
+        previous: dict[str, Any] | None,
+        *,
+        current_paths: set[str],
+    ) -> None:
+        if not previous:
+            return
+        try:
+            annotated_root = self.annotated_dir.resolve(strict=False)
+        except OSError:
+            return
+        for field in ("annotated_front_path", "annotated_back_path"):
+            value = previous.get(field)
+            if not isinstance(value, str) or not value or value in current_paths:
+                continue
+            try:
+                candidate = Path(value)
+                resolved = candidate.resolve(strict=False)
+                resolved.relative_to(annotated_root)
+            except (OSError, ValueError):
+                continue
+            if candidate.suffix.lower() not in _ANNOTATED_IMAGE_SUFFIXES:
+                continue
+            if self.db.is_annotated_result_path_referenced(value):
+                continue
+            try:
+                candidate.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def apply_manual_adjustments(self, result_id: int, adjustments: list[dict[str, Any]], highlight_qids: list[str] | None = None) -> dict[str, Any]:
         changed = 0
@@ -140,6 +212,37 @@ class ManualReviewService:
         self.db.recalculate_result_score(result_id)
         paths = self.render_result_annotation(result_id, highlight_qids=highlight_qids)
         return {"updated_details": changed, "annotated_paths": paths}
+
+    def apply_review_adjustments(
+        self,
+        session_id: int,
+        adjustments: list[dict[str, Any]],
+        highlight_qids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        result = self.db.apply_session_review_adjustments(session_id, adjustments)
+        result_ids = sorted({int(item["result_id"]) for item in adjustments})
+        annotation_outcomes: list[dict[str, Any]] = []
+        for result_id in result_ids:
+            try:
+                rendered = self.render_result_annotation(
+                    result_id,
+                    highlight_qids=highlight_qids,
+                )
+            except Exception:
+                rendered = None
+            if rendered is None:
+                annotation_outcomes.append(
+                    {
+                        "result_id": result_id,
+                        "status": "retry_required",
+                        "message": ANNOTATION_RETRY_MESSAGE,
+                    }
+                )
+            else:
+                annotation_outcomes.append(
+                    {"result_id": result_id, "status": "succeeded"}
+                )
+        return {**result, "annotation_outcomes": annotation_outcomes}
 
     def apply_batch_score_adjustments(
         self,

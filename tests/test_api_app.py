@@ -15,6 +15,11 @@ def test_fastapi_runtime_dependency_is_available() -> None:
 
 
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
+
+
+class ValidationRequestBody(BaseModel):
+    worker_count: int
 
 
 def test_healthz_returns_local_api_status() -> None:
@@ -64,3 +69,28 @@ def test_api_error_uses_unified_error_body() -> None:
             "request_id": "rid-test",
         }
     }
+
+
+def test_validation_error_does_not_reflect_invalid_request_values() -> None:
+    from backend.api.app import create_app
+
+    app = create_app()
+
+    @app.post("/validation-input")
+    def validate_request(body: ValidationRequestBody) -> dict[str, int]:
+        return {"worker_count": body.worker_count}
+
+    client = TestClient(app)
+    for invalid_value in (
+        {"accessToken": "secret-validation-token"},
+        r"C:\\private\\workers",
+    ):
+        response = client.post("/validation-input", json={"worker_count": invalid_value})
+
+        assert response.status_code == 422
+        assert "secret-validation-token" not in response.text
+        assert r"C:\\private\\workers" not in response.text
+        errors = response.json()["error"]["details"]["errors"]
+        assert len(errors) == 1
+        assert set(errors[0]) <= {"loc", "type"}
+        assert errors[0]["loc"] == ["body", "worker_count"]

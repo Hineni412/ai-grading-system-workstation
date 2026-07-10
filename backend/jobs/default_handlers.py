@@ -1,0 +1,249 @@
+from __future__ import annotations
+
+import os
+import tempfile
+from pathlib import Path
+from typing import Any, Callable, Protocol
+
+from api_profiles import active_api_profile, get_api_profile_store
+from db_manager import DBManager
+from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
+from report import ReportGenerator
+
+from .manager import JobContext, JobManager
+from .grading_run import run_grading_job
+from .scan_analysis import run_scan_analysis
+
+
+class ReportGeneratorFactory(Protocol):
+    def __call__(self, db_path: Path, reports_dir: Path) -> ReportGenerator:
+        ...
+
+
+def register_default_job_handlers(
+    manager: JobManager,
+    *,
+    db_path: Path,
+    reports_dir: Path,
+    exams_dir: Path | None = None,
+    templates_dir: Path | None = None,
+    data_root: Path | None = None,
+    report_generator_factory: ReportGeneratorFactory = ReportGenerator,
+    scan_runner: Callable[..., dict[str, object]] = run_scan_analysis,
+    grading_runner: Callable[..., dict[str, object]] = run_grading_job,
+    llm_client_factory: Callable[[], Any] | None = None,
+) -> None:
+    base_data_root = Path(data_root) if data_root is not None else _infer_data_root(Path(db_path))
+    scan_llm_client_factory = llm_client_factory or _active_llm_client
+    manager.register(
+        "report_export",
+        _build_report_export_handler(
+            db_path=Path(db_path),
+            reports_dir=Path(reports_dir),
+            report_generator_factory=report_generator_factory,
+        ),
+    )
+    manager.register(
+        "scan_analysis",
+        _build_scan_analysis_handler(
+            db_path=Path(db_path),
+            exams_dir=Path(exams_dir) if exams_dir is not None else base_data_root / "exams",
+            templates_dir=Path(templates_dir) if templates_dir is not None else base_data_root / "templates",
+            data_root=base_data_root,
+            scan_runner=scan_runner,
+            llm_client_factory=scan_llm_client_factory,
+        ),
+    )
+    manager.register(
+        "grading_run",
+        _build_grading_run_handler(
+            db_path=Path(db_path),
+            exams_dir=Path(exams_dir) if exams_dir is not None else base_data_root / "exams",
+            templates_dir=Path(templates_dir) if templates_dir is not None else base_data_root / "templates",
+            data_root=base_data_root,
+            question_bank_db_path=base_data_root / "databases" / "question_bank.db",
+            grading_runner=grading_runner,
+            llm_client_factory=scan_llm_client_factory,
+        ),
+    )
+
+
+def _build_report_export_handler(
+    *,
+    db_path: Path,
+    reports_dir: Path,
+    report_generator_factory: ReportGeneratorFactory,
+):
+    def handler(context: JobContext) -> dict[str, object]:
+        raw_session_id = context.payload.get("session_id")
+        if raw_session_id is None:
+            raise ValueError("session_id is required")
+        try:
+            session_id = int(raw_session_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("session_id must be an integer") from exc
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        context.raise_if_cancelled()
+        context.report(0.05, "report_export", "starting")
+        with tempfile.TemporaryDirectory(
+            dir=reports_dir,
+            prefix=f".job-{context.job_id}-",
+        ) as staging_dir_value:
+            staging_dir = Path(staging_dir_value)
+            staged_output = Path(
+                report_generator_factory(db_path, staging_dir).export_session(session_id)
+            )
+            try:
+                staged_output.resolve().relative_to(staging_dir.resolve())
+            except ValueError as exc:
+                raise ValueError("report output must stay inside the job staging directory") from exc
+            if not staged_output.is_file():
+                raise FileNotFoundError(f"report output was not created: {staged_output}")
+            context.report(0.95, "report_export", staged_output.name)
+            context.raise_if_cancelled()
+            output_path = reports_dir / (
+                f"{staged_output.stem}_job-{context.job_id}{staged_output.suffix}"
+            )
+            os.replace(staged_output, output_path)
+            return {
+                "session_id": session_id,
+                "file_path": str(output_path),
+                "filename": output_path.name,
+            }
+
+    return handler
+
+
+def _build_grading_run_handler(
+    *,
+    db_path: Path,
+    exams_dir: Path,
+    templates_dir: Path,
+    data_root: Path,
+    question_bank_db_path: Path,
+    grading_runner: Callable[..., dict[str, object]],
+    llm_client_factory: Callable[[], Any],
+):
+    def handler(context: JobContext) -> dict[str, object]:
+        session_id = _required_int(context.payload, "session_id")
+        job_exams_dir = Path(
+            str(context.payload.get("exams_dir") or exams_dir / f"session_{session_id}" / "uploaded_scans")
+        )
+        max_workers = context.payload.get("max_workers")
+        requests_per_minute = context.payload.get("requests_per_minute")
+        resume_run_id = context.payload.get("resume_run_id")
+        result = grading_runner(
+            db=DBManager(db_path),
+            session_id=session_id,
+            exams_dir=job_exams_dir,
+            session_work_dir=templates_dir / f"session_{session_id}",
+            data_root=data_root,
+            question_bank_db_path=question_bank_db_path,
+            llm_client_factory=llm_client_factory,
+            report=context.report,
+            grading_mode=str(context.payload.get("grading_mode") or "full_paper"),
+            failed_only=bool(context.payload.get("failed_only", False)),
+            enhance_images=bool(context.payload.get("enhance_images", True)),
+            max_workers=int(max_workers) if max_workers is not None else None,
+            requests_per_minute=int(requests_per_minute) if requests_per_minute is not None else None,
+            resume_run_id=int(resume_run_id) if resume_run_id is not None else None,
+            raise_if_cancelled=context.raise_if_cancelled,
+            should_cancel=context.is_cancel_requested,
+        )
+        summary = result.get("summary") if isinstance(result, dict) else {}
+        detail = "grading run complete"
+        if isinstance(summary, dict):
+            detail = f"graded={summary.get('graded', 0)} failed={summary.get('failed', 0)}"
+        context.report(0.98, "grading_run", detail)
+        return result
+
+    return handler
+
+
+def _build_scan_analysis_handler(
+    *,
+    db_path: Path,
+    exams_dir: Path,
+    templates_dir: Path,
+    data_root: Path,
+    scan_runner: Callable[..., dict[str, object]],
+    llm_client_factory: Callable[[], Any],
+):
+    def handler(context: JobContext) -> dict[str, object]:
+        session_id = _required_int(context.payload, "session_id")
+        job_exams_dir = Path(
+            str(context.payload.get("exams_dir") or exams_dir / f"session_{session_id}" / "uploaded_scans")
+        )
+        ocr_workers = context.payload.get("ocr_workers")
+        context.report(0.05, "scan_analysis", "starting")
+        result = scan_runner(
+            db=DBManager(db_path),
+            session_id=session_id,
+            exams_dir=job_exams_dir,
+            session_work_dir=templates_dir / f"session_{session_id}",
+            data_root=data_root,
+            llm_client_factory=llm_client_factory,
+            enhance_images=bool(context.payload.get("enhance_images", True)),
+            ocr_workers=int(ocr_workers) if ocr_workers is not None else None,
+            front_page_parity=str(context.payload.get("front_page_parity") or "odd"),
+            raise_if_cancelled=context.raise_if_cancelled,
+        )
+        summary = result.get("summary") if isinstance(result, dict) else {}
+        if isinstance(summary, dict):
+            detail = (
+                f"matched={summary.get('auto_matched', 0)} "
+                f"issues={summary.get('issues', 0)} "
+                f"pages={summary.get('total_pages', 0)}"
+            )
+        else:
+            detail = "scan analysis complete"
+        context.report(0.95, "scan_analysis", detail)
+        return result
+
+    return handler
+
+
+def _required_int(payload: dict[str, Any], field_name: str) -> int:
+    raw_value = payload.get(field_name)
+    if raw_value is None:
+        raise ValueError(f"{field_name} is required")
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be an integer") from exc
+
+
+def _infer_data_root(db_path: Path) -> Path:
+    parent = Path(db_path).parent
+    if parent.name == "databases":
+        return parent.parent
+    return parent
+
+
+def _active_llm_client() -> LLMClient:
+    settings = _active_llm_settings()
+    if settings is None:
+        raise ValueError("active LLM API configuration is missing")
+    return LLMClient(settings)
+
+
+def _active_llm_settings() -> LLMSettings | None:
+    profile = active_api_profile(get_api_profile_store().load())
+    api_key = str(profile.get("api_key") or os.getenv("LLM_API_KEY") or "").strip()
+    if not api_key:
+        return None
+    base_url = normalize_openai_base_url(
+        str(profile.get("base_url") or os.getenv("LLM_BASE_URL") or "https://api.openai.com/v1")
+    )
+    grading_model = str(profile.get("grading_model") or os.getenv("LLM_GRADING_MODEL") or "gpt-4o")
+    return LLMSettings(
+        api_key=api_key,
+        base_url=base_url,
+        ocr_model=str(profile.get("ocr_model") or os.getenv("LLM_OCR_MODEL") or grading_model),
+        grading_model=grading_model,
+        config_model=str(profile.get("config_model") or os.getenv("LLM_CONFIG_MODEL") or grading_model),
+        config_api_key=str(profile.get("config_api_key") or os.getenv("LLM_CONFIG_API_KEY") or api_key),
+        config_base_url=normalize_openai_base_url(
+            str(profile.get("config_base_url") or os.getenv("LLM_CONFIG_BASE_URL") or base_url)
+        ),
+    )

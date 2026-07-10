@@ -58,12 +58,14 @@ def _assert_equivalent(runtime_db: Path, migrated_db: Path) -> None:
 
 
 def test_grading_migrations_match_runtime_schema(tmp_path: Path) -> None:
+    from backend.jobs.store import JobStore
     from db_manager import DBManager
     from grading_run_store import GradingRunStore
 
     runtime_db = tmp_path / "runtime.db"
     DBManager(runtime_db).initialize()
     GradingRunStore(runtime_db).initialize()
+    JobStore(runtime_db).initialize()
 
     migrated_db = tmp_path / "migrated.db"
     report = run_migrations(
@@ -74,6 +76,52 @@ def test_grading_migrations_match_runtime_schema(tmp_path: Path) -> None:
     assert report.error is None, report.error
 
     _assert_equivalent(runtime_db, migrated_db)
+
+
+def test_jobs_schema_is_introduced_only_by_003(tmp_path: Path) -> None:
+    import shutil
+
+    through_002 = tmp_path / "through_002"
+    through_002.mkdir()
+    grading_migrations = _PROJECT_ROOT / "migrations" / "grading"
+    for name in (
+        "000_baseline_schema.sql",
+        "001_init_migration_tracking.sql",
+        "002_add_grading_run_ledger.sql",
+    ):
+        shutil.copy2(grading_migrations / name, through_002 / name)
+
+    db_path = tmp_path / "grading.db"
+    report = run_migrations(
+        "grading",
+        db_path=db_path,
+        migrations_dir=through_002,
+    )
+    assert report.error is None, report.error
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'jobs'"
+        ).fetchone() is None
+
+    report = run_migrations(
+        "grading",
+        db_path=db_path,
+        migrations_dir=grading_migrations,
+    )
+    assert report.error is None, report.error
+    with sqlite3.connect(db_path) as conn:
+        objects = {
+            (row[0], row[1])
+            for row in conn.execute(
+                "SELECT type, name FROM sqlite_master "
+                "WHERE name = 'jobs' OR name LIKE 'idx_jobs_%'"
+            )
+        }
+    assert objects == {
+        ("table", "jobs"),
+        ("index", "idx_jobs_status_created"),
+        ("index", "idx_jobs_type_created"),
+    }
 
 
 def test_question_bank_migrations_match_runtime_schema(tmp_path: Path) -> None:
