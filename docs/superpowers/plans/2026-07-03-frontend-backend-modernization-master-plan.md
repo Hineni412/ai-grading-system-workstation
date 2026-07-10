@@ -43,12 +43,12 @@
 9. **知识图谱目前仍是 HTML/CSS 树**：真正的关系图、掌握度模型和训练闭环属于 Phase 4。
 10. **安全边界仍需持续执行**：`user_data/` 包含真实学生数据且工作区长期脏；默认不删除、不改写、不提交，数据库操作必须备份、预演和验证。
 
-### 0.4 当前进度（2026-07-10）
+### 0.4 当前进度（2026-07-11）
 
 - Phase 0 与 WP1.1 已通过 PR #1 合并到 `main`，冻结标签为 `pre-framework-switch-2026-07-09`。
-- 当前分支 `codex/wp1-2-api-routes` 已实现并验证 WP1.2 Batch A-E 的一部分及最小 JobManager：sessions、students、config、template/regions、scan、grading、report export、review 首批路由与通用 jobs API。
-- 上述 Phase 1 增量已在 `codex/wp1-2-api-routes` 形成可审阅的本地 Git 检查点；状态仍为 **verified（本地验证）**，尚未合并到 `main`，不能表述成 Phase 1 已完成。
-- P1-09 至 P1-15 已本地验证：Windows 不可访问路径安全回退，fork-only skip 已由跨平台 spawn 测试替代；jobs DDL、JobManager 生命周期、三类真实 handler 协作式取消、复核单 JOIN 查询/原子确认/批注补偿、受控媒体/报告下载、OpenAPI/公开数据/并发稳定化，以及严格无源写入的 Question Bank 只读路由均已收口。下一项是 P1-16 Question Bank 轻写与导入准备。
+- GitHub PR #2 已把 P1-02 至 P1-15 合并到 `main`（合并提交 `4e8e6aa`），覆盖 sessions、students、config、template/regions、scan、grading、report export、review、受控媒体/下载、通用 jobs API 和 Question Bank 只读 API。
+- Phase 1 仍为 **in_progress**：P1-02 至 P1-15 已是 `merged`，P1-16 至 P1-29 尚未完成；“单包进入主线”不等同于整个 Phase 1 完成。
+- 当前采用两个功能 worktree 加一个 integration worktree 并行推进 P1-16 与 P2-01；每波通过 integration 完整验证和 PR 进入 GitHub `main`，再同步本地 `main`。固定流程见 `docs/superpowers/packages/PARALLEL_WORKTREE_EXECUTION_2026-07-11.md`。
 
 详细证据、包数量与顺序只在 `docs/superpowers/packages/EXECUTION_INDEX.md` 维护，避免本总体方案再次产生状态漂移。
 
@@ -167,7 +167,7 @@ flowchart LR
 
 ### Phase 1 — 后端 API 层与任务系统（目标②前半，量级 L）
 
-**状态：进行中。** WP1.1 已合并；WP1.2 部分路由、最小 WP1.3 与 P1-09 至 P1-15 已在本地验证并形成当前分支 Git 检查点。余项为 P1-16 至 P1-29，见 `docs/superpowers/packages/phase-1-execution-packages.md`。
+**状态：进行中。** P1-01 至 P1-15 已通过 PR #1/#2 合并到 `main`；余项为 P1-16 至 P1-29，见 `docs/superpowers/packages/phase-1-execution-packages.md`。
 
 | WP | 内容 | 依据/关键点 | 量级 |
 |---|---|---|---|

@@ -10,10 +10,10 @@
 |---|---:|---|
 | 总体架构方向 | 8/10 | Streamlit -> FastAPI -> Vue 的渐进顺序合理，保留旧入口回退也合理 |
 | 已完成代码工程质量 | 8/10 | 有依赖注入、契约测试、临时数据库、迁移预演和服务复用 |
-| 当前可集成状态 | 6/10 | P1-02 至 P1-15 已形成可审阅的本地 Git 检查点；尚未合并到 `main` |
+| 当前可集成状态 | 9/10 | P1-02 至 P1-15 已通过 GitHub PR #2 合并到 `main`；后续采用独立 integration worktree/PR 门槛 |
 | 原计划可执行性 | 6/10 | Phase 0/1 较具体；Phase 2-6 多为方向段落，不能直接交给执行模型 |
 | 自动化测试质量 | 8/10 | 覆盖主契约和多数异常，但欠缺大数据量、事务、真实取消和下载闭环 |
-| 文档一致性 | 5/10 | 日期、测试数量、行号、状态和“完成”口径存在漂移 |
+| 文档一致性 | 8/10 | 2026-07-11 已同步 PR #2 合并状态，并建立并行 worktree 与 main 同步强制流程 |
 
 ## 已完成部分的优点
 
@@ -27,13 +27,13 @@
 
 | 级别 | 问题 | 影响 | 对应执行包 |
 |---|---|---|---|
-| 已解决 | 当前大量 API/Job 文件尚未形成 Git 检查点 | 用户已授权把 P1-02 至 P1-15 整理为当前分支本地提交；仍未 push、创建 PR 或合并到 `main` | P1-09 至 P1-15 `verified`，当前分支 Git 检查点 |
+| 已解决 | 当前大量 API/Job 文件曾未形成 Git 检查点 | P1-02 至 P1-15 已完成检查点、复审、完整 smoke，并通过 GitHub PR #2 合并到 `main` | P1-02 至 P1-15 `merged` |
 | 已解决 | P1-11 已让 running cancel 只记录请求，并由 handler 在安全边界确认；现有 report/scan/grading 已接入 | 后续新增 job 类型必须复用同一确认协议，不能只改状态 | P1-11 verified |
-| 已修复 | `jobs` 表曾同时由 migration 和 JobStore 字面 DDL 定义 | P1-10 已改为仅从 `003_add_jobs.sql` 读取完整 DDL，并保留旧表补列兼容 | P1-10（`verified`） |
-| 已修复 | review router 曾聚合业务、逐 result 查询且多结果写入无总事务 | P1-12 已改为应用服务单 JOIN 读模型和跨 result SQLite 总事务；事务后批注采用脱敏可重试补偿 | P1-12（`verified`） |
-| 已修复 | job manager 曾为全局单例且缺少 app shutdown 生命周期 | P1-10 已改为 app state/lifespan 所有；override 外部实例不由应用关闭 | P1-10（`verified`） |
-| 已修复 | report job 曾返回绝对文件路径且缺图片/下载资源边界 | P1-13 已提供语义化媒体/下载入口、受控根/类型/所属关系校验；P1-14 进一步统一公开数据净化和二进制 OpenAPI 契约 | P1-13/P1-14（`verified`） |
-| 中 | 完整测试在失效 `Z:` 路径上稳定失败，且两个锁测试只支持 POSIX fork | 已修复并恢复跨平台全绿基线 | P1-09（`verified`） |
+| 已修复 | `jobs` 表曾同时由 migration 和 JobStore 字面 DDL 定义 | P1-10 已改为仅从 `003_add_jobs.sql` 读取完整 DDL，并保留旧表补列兼容 | P1-10（`merged`） |
+| 已修复 | review router 曾聚合业务、逐 result 查询且多结果写入无总事务 | P1-12 已改为应用服务单 JOIN 读模型和跨 result SQLite 总事务；事务后批注采用脱敏可重试补偿 | P1-12（`merged`） |
+| 已修复 | job manager 曾为全局单例且缺少 app shutdown 生命周期 | P1-10 已改为 app state/lifespan 所有；override 外部实例不由应用关闭 | P1-10（`merged`） |
+| 已修复 | report job 曾返回绝对文件路径且缺图片/下载资源边界 | P1-13 已提供语义化媒体/下载入口、受控根/类型/所属关系校验；P1-14 进一步统一公开数据净化和二进制 OpenAPI 契约 | P1-13/P1-14（`merged`） |
+| 中 | 完整测试在失效 `Z:` 路径上稳定失败，且两个锁测试只支持 POSIX fork | 已修复并恢复跨平台全绿基线 | P1-09（`merged`） |
 | 中 | WP1.3 被写成“完成”，实际只完成最小框架和三类 handler | 后续模型可能跳过 config/tagging/training job | P1-17/P1-18/P1-20 |
 | 中 | Master Plan 称 `training_attempts` 无写入方，但已有 stub | Phase 4 可能重复建设 | P4-09 已校正 |
 | 中 | 原 Phase 3 建议删除旧迁移历史 | 会破坏历史升级可追溯性 | P3-17 改为前向退役迁移 |
@@ -90,4 +90,4 @@
 
 ## 结论
 
-原路线可以继续，不需要推倒重写；P1-09 至 P1-15 已验证，review/media/公开数据/OpenAPI 稳定化门和 Question Bank 严格只读门均已通过。当前分支 Git 检查点已按用户授权形成；下一执行包是 P1-16 Question Bank 轻写与导入准备。详细进度和下一动作以 `EXECUTION_INDEX.md` 为准。
+原路线可以继续，不需要推倒重写；P1-02 至 P1-15 已通过 PR #2 进入主线，review/media/公开数据/OpenAPI 稳定化门和 Question Bank 严格只读门均已通过。后续默认采用“功能 worktree → integration 完整验证 → PR → GitHub main → 同步本地 main”的固定流程；下一执行包是 P1-16 Question Bank 轻写与导入准备。详细进度和下一动作以 `EXECUTION_INDEX.md` 为准。
