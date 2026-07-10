@@ -94,7 +94,7 @@
 3. integration 分支逐包合并并运行受影响回归；一波结束后运行完整 smoke、前端质量命令和真实数据指纹守卫。
 4. 集成结果通过后推送 integration 分支，通过 PR 合并 GitHub `main`。
 5. PR 合并后 fast-forward 本地 `main`，再从新 `main` 创建下一批 worktree。
-6. 只删除已经被 `origin/main` 包含、状态干净且不再承担活动任务的分支/worktree；有独有提交的历史分支必须保留或单独获得用户确认。
+6. 只删除已经被 `origin/main` 包含、源码状态干净、`user_data/` 无本地项且不再承担活动任务的分支/worktree；有独有提交或任何本地数据的历史 worktree 必须保留，除非单独获得用户明确授权并先完成数据处置。
 
 共享 `AGENTS.md`、`ARCHITECTURE.md`、Index、全局 OpenAPI 和入口注册冲突由 integration worktree 统一处理。任何功能 worktree 都不得通过覆盖共享文档来宣称自己已进入主线。
 
