@@ -28,6 +28,9 @@ debug_*.db
 scratch/
 analysis_outputs/
 
+# Local agent/tool session state
+.superpowers/
+
 # OS/editor noise
 .DS_Store
 Thumbs.db

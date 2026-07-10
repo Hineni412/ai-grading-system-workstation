@@ -82,8 +82,21 @@
 4. 先写失败测试并确认 RED，再做最小实现并确认 GREEN。
 5. 跑包内验收、相关回归和 `runtime\python\python.exe tools\smoke_check.py --skip-tests`。
 6. 高风险包按文档指定模型做独立复核。
-7. 用户确认后再提交、推送或创建 PR；默认排除整个 `user_data/`。
+7. 用户明确启动执行包后，门槛通过即可按本文固定流程在功能分支提交，并由 integration 分支 push、创建/合并 PR；默认排除整个 `user_data/`。直接 push `main`、force push、真实数据写入和未合并历史丢弃仍需单独确认。
 8. 更新 `EXECUTION_INDEX.md` 的状态和证据。
+
+## 并行、集成与 Main 同步
+
+并行任务必须先读 `PARALLEL_WORKTREE_EXECUTION_2026-07-11.md`。默认采用两个功能 worktree 加一个集成 worktree：
+
+1. 每个功能分支只承载一个执行包，不跨包堆叠提交。
+2. 功能分支完成测试和复核后，先合入专用 integration 分支；不得直接合入本地或 GitHub `main`。
+3. integration 分支逐包合并并运行受影响回归；一波结束后运行完整 smoke、前端质量命令和真实数据指纹守卫。
+4. 集成结果通过后推送 integration 分支，通过 PR 合并 GitHub `main`。
+5. PR 合并后 fast-forward 本地 `main`，再从新 `main` 创建下一批 worktree。
+6. 只删除已经被 `origin/main` 包含、状态干净且不再承担活动任务的分支/worktree；有独有提交的历史分支必须保留或单独获得用户确认。
+
+共享 `AGENTS.md`、`ARCHITECTURE.md`、Index、全局 OpenAPI 和入口注册冲突由 integration worktree 统一处理。任何功能 worktree 都不得通过覆盖共享文档来宣称自己已进入主线。
 
 ## 通用回退
 

@@ -1,8 +1,8 @@
 # 现代化路线执行总览
 
-> **更新时间：** 2026-07-10
+> **更新时间：** 2026-07-11
 > **当前阶段：** Phase 1 进行中
-> **当前分支：** `codex/wp1-2-api-routes`
+> **共同主线：** GitHub PR #2 已合并，`origin/main` = `4e8e6aa`；当前并行工作由 P1-16、P2-01 与 integration worktree 承担
 > **进度口径：** 只有 `merged` 计入阶段完成
 
 ## 当前证据
@@ -18,14 +18,14 @@
 | P1-15 快速冒烟 | 静态编译 342 文件；两库副本幂等且 `integrity_check=ok` | 真实源库未打开，副本检查通过 |
 | P1 检查点隔离完整冒烟 | 967 passed；静态编译 342 文件；两库副本幂等且 `integrity_check=ok` | 提交前在隔离副本完成，真实 `user_data/` 基线不变 |
 | 当前 OpenAPI | 30 paths / 38 operations / 0 duplicate IDs | 新增 5 个 Question Bank GET，运行时与文档一致 |
-| Git 检查点 | P1-02 至 P1-15 已在 `codex/wp1-2-api-routes` 形成可审阅的本地提交 | 仍为 `verified`，尚未合并到 `main`，不能表述为 Phase 1 已完成 |
+| Git 检查点 | P1-02 至 P1-15 已通过 GitHub PR #2 合并到 `main` | 单包已进入主线；Phase 1 仍因 P1-16 至 P1-29 未完成而保持 `in_progress` |
 
 ## 阶段总表
 
 | Phase | 正式范围 | 状态 | 已合并/已验证 | 待执行包 | 阶段门槛 | 默认执行模型 |
 |---|---|---|---:|---:|---|---|
 | Phase 0 | 地基与防护网 | `merged` | 5 / 5 | 0 | PR #1 与冻结标签 | 已完成 |
-| Phase 1 | API、任务、LLM、数据访问 | `in_progress` | 1 merged + 14 verified | 14 | API E2E、全量冒烟、无缺失超时 | Terra；高风险用 Sol |
+| Phase 1 | API、任务、LLM、数据访问 | `in_progress` | 15 merged | 14 | API E2E、全量冒烟、无缺失超时 | Terra；高风险用 Sol |
 | Phase 2 | Vue SPA 与 Streamlit 切换 | `planned` | 0 | 22 | 样板页先验收；真实五流程通过 | Terra；视觉门槛 Sol 复核 |
 | Phase 3 | 后端拆分、Schema 收敛、瘦身 | `planned` | 0 | 19 | 迁移预演、全量测试、删除可独立回退 | Terra High / Sol |
 | Phase 4 | 图谱 2.0 与训练闭环 | `planned` | 0 | 12 | 新旧口径对照、闭环 E2E、评估达标 | Terra High / Sol |
@@ -48,7 +48,7 @@
 |---:|---|---|---|---|
 | 1 | P1-16 Question Bank 轻写与导入准备 | `ready` | 教师确认标签与安全导入请求，耗时导入仍交给 Job | `S-XH / T-H / S-H` |
 
-最近完成：P1-15 `verified`。即时实现计划为 `docs/superpowers/plans/2026-07-10-p1-15-question-bank-read-routes-implementation.md`；新增试卷、分页筛选、详情、当前标签/富文本/预览元数据和受控图片 GET。源题库通过有界 M1-W1-W2-M2 临时快照读取，SQLite 只打开系统临时候选；持续变化返回脱敏 503，JSON/媒体不公开磁盘路径。组合回归 156 passed，Question Bank/OpenAPI 64 passed，快速冒烟编译 342 文件且两库副本幂等，整包复审 0 Critical / 0 Important / 0 Minor。该包已纳入当前分支的本地 Git 检查点，`user_data/` 基线保持不变。
+最近完成：P1-15 `merged`。即时实现计划为 `docs/superpowers/plans/2026-07-10-p1-15-question-bank-read-routes-implementation.md`；新增试卷、分页筛选、详情、当前标签/富文本/预览元数据和受控图片 GET。源题库通过有界 M1-W1-W2-M2 临时快照读取，SQLite 只打开系统临时候选；持续变化返回脱敏 503，JSON/媒体不公开磁盘路径。组合回归 156 passed，Question Bank/OpenAPI 64 passed，快速冒烟编译 342 文件且两库副本幂等，整包复审 0 Critical / 0 Important / 0 Minor。该包已随 GitHub PR #2 合并到 `main`，`user_data/` 基线保持不变。
 
 ## 文档入口
 
@@ -57,6 +57,7 @@
 | `README.md` | 执行包读取顺序、状态口径、模型代码、升级条件与通用回退 |
 | `PLAN_AUDIT_2026-07-10.md` | 原计划合理性、已完成质量、问题与验证证据 |
 | `../specs/2026-07-10-roadmap-execution-packages-design.md` | 两级计划体系、Phase 5/6 决策与生成原则 |
+| `PARALLEL_WORKTREE_EXECUTION_2026-07-11.md` | 当前 worktree 清单、并行通道、包分配、共享文件和集成门槛 |
 | `phase-1-execution-packages.md` | 当前 API/Job 状态与 14 个剩余包 |
 | `phase-2-execution-packages.md` | Vue 基础、样板页、页面迁移和切换共 22 包 |
 | `phase-3-execution-packages.md` | 仓储、SessionManager、Schema、删除和性能共 19 包 |
@@ -66,4 +67,4 @@
 
 ## 下一动作
 
-执行 `P1-16`。先重新调查 Question Bank 现有写行为并生成即时实现计划；只使用临时题库和上传目录实现教师确认标签、安全元数据轻写与导入请求准备，耗时导入仍交给 Job，不恢复旧技能自动双写。P1-02 至 P1-15 已在当前分支形成 Git 检查点，但尚未 push、创建 PR 或合并到 `main`；后续 Git 集成仍需用户明确确认。
+并行执行 `P1-16` 与 `P2-01`，由 `codex/p1-integration-verification` 统一复核和集成。P1-16 只使用临时题库和上传目录实现教师确认标签、安全元数据轻写与导入请求准备；P2-01 只建立前端工程和质量命令。每波完成后按并行手册通过 integration 分支验证、PR 合并 GitHub `main`，再同步本地 `main`。
