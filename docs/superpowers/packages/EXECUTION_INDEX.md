@@ -2,7 +2,7 @@
 
 > **更新时间：** 2026-07-11
 > **当前阶段：** Phase 1 进行中
-> **共同主线：** GitHub PR #2 已合并，`origin/main` = `4e8e6aa`；当前并行工作由 P1-16、P2-01 与 integration worktree 承担
+> **共同主线：** GitHub PR #2 已合并 P1-02 至 P1-15，PR #3 至 PR #5 已合并并行与集成治理文档；根目录和三个活动 worktree 以最新 `origin/main` 为准
 > **进度口径：** 只有 `merged` 计入阶段完成
 
 ## 当前证据
