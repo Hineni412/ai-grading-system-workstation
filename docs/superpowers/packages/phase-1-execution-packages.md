@@ -10,28 +10,28 @@
 | ID | 内容 | 状态 | 证据 |
 |---|---|---|---|
 | P1-01 | FastAPI 骨架、统一错误体、双入口 | `merged` | PR #1；`pre-framework-switch-2026-07-09` |
-| P1-02 | sessions/students 基础只读 API | `verified` | `tests/test_api_read_routes.py` |
-| P1-03 | session/student 安全写 API | `verified` | `tests/test_api_write_routes.py` |
-| P1-04 | rubric/answer_key 同步配置 API | `verified` | `tests/test_api_config_routes.py` |
-| P1-05 | template/regions 草稿与提交 API | `verified` | `tests/test_api_template_region_routes.py` |
-| P1-06 | 最小 JobManager、JobStore、Jobs API | `verified` | job/store/API 测试；尚非完整 WP1.3 |
-| P1-07 | report、scan、grading 三类业务 Job | `verified` | 三组 handler/API 测试 |
-| P1-08 | review 题目摘要、列表、确认首批 API | `verified` | `tests/test_api_review_routes.py` |
-| P1-09 | Windows 失效路径与跳过测试清理 | `verified` | 776 passed / 0 skipped / 0 failed；快速冒烟通过 |
-| P1-10 | JobManager Schema 与应用生命周期 | `verified` | 聚焦 34 passed；全量 785 passed；迁移预演与快速冒烟通过 |
-| P1-11 | 三类真实 Job 协作式取消 | `verified` | 聚焦 51 passed；API 34 passed；全量 797 passed；快速冒烟通过 |
-| P1-12 | 复核查询服务与原子写入 | `verified` | 聚焦 35 passed；API 35 passed；全量 823 passed；快速冒烟通过 |
-| P1-13 | 受控媒体与文件下载 API | `verified` | 聚焦 73 passed；API 67 passed；全量 871 passed；快速冒烟通过 |
-| P1-14 | Phase 1 稳定化检查点 | `verified` | 聚焦 87 passed；API 85 passed；全量 889 passed；完整冒烟通过；复审无遗留 |
-| P1-15 | Question Bank 只读路由 | `verified` | 组合 156 passed；Question Bank/OpenAPI 64 passed；快速冒烟编译 342 文件；整包复审无遗留 |
+| P1-02 | sessions/students 基础只读 API | `merged` | `tests/test_api_read_routes.py`；PR #2 |
+| P1-03 | session/student 安全写 API | `merged` | `tests/test_api_write_routes.py`；PR #2 |
+| P1-04 | rubric/answer_key 同步配置 API | `merged` | `tests/test_api_config_routes.py`；PR #2 |
+| P1-05 | template/regions 草稿与提交 API | `merged` | `tests/test_api_template_region_routes.py`；PR #2 |
+| P1-06 | 最小 JobManager、JobStore、Jobs API | `merged` | job/store/API 测试；PR #2；尚非完整 WP1.3 |
+| P1-07 | report、scan、grading 三类业务 Job | `merged` | 三组 handler/API 测试；PR #2 |
+| P1-08 | review 题目摘要、列表、确认首批 API | `merged` | `tests/test_api_review_routes.py`；PR #2 |
+| P1-09 | Windows 失效路径与跳过测试清理 | `merged` | 776 passed / 0 skipped / 0 failed；PR #2 |
+| P1-10 | JobManager Schema 与应用生命周期 | `merged` | 聚焦 34 passed；全量 785 passed；PR #2 |
+| P1-11 | 三类真实 Job 协作式取消 | `merged` | 聚焦 51 passed；API 34 passed；全量 797 passed；PR #2 |
+| P1-12 | 复核查询服务与原子写入 | `merged` | 聚焦 35 passed；API 35 passed；全量 823 passed；PR #2 |
+| P1-13 | 受控媒体与文件下载 API | `merged` | 聚焦 73 passed；API 67 passed；全量 871 passed；PR #2 |
+| P1-14 | Phase 1 稳定化检查点 | `merged` | 聚焦 87 passed；API 85 passed；全量 889 passed；PR #2 |
+| P1-15 | Question Bank 只读路由 | `merged` | 组合 156 passed；Question Bank/OpenAPI 64 passed；PR #2 |
 
-这些包已在当前分支形成 Git 检查点，但尚未合并到主线；因此仍不能把 WP1.2、WP1.3 或整个 Phase 1 标记为 `merged` 或完成。
+P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 P1-29 未完成而保持 `in_progress`。
 
 ## 稳定化执行包
 
 ### P1-09 Windows 失效路径与跳过测试清理
 
-- **状态/依赖：** `verified`；已纳入当前分支 Git 检查点，尚未合并到 `main`。
+- **状态/依赖：** `merged`；已随 PR #2 合并到 `main`。
 - **目标：** 失效本地盘或网络盘被视为不可用候选，题库素材继续按既有规则回退；Windows 不再因 POSIX fork-only 测试产生 skip。
 - **主要模块：** `question_bank/services/asset_path_service.py`、`tests/test_question_bank_asset_path_service.py`、`tests/test_answer_region_session_lock.py`。
 - **子任务：** 用确定性 `OSError` 复现替代真实 `Z:` 等待；统一安全文件判定；覆盖唯一/歧义回退；用 spawn 验证 fresh registry 与跨进程互斥；保留 POSIX raw-fork 条件覆盖。
@@ -42,7 +42,7 @@
 
 ### P1-10 JobManager Schema 与应用生命周期
 
-- **状态/依赖：** `verified`；P1-09 已验证，已纳入当前分支 Git 检查点，尚未合并到 `main`。
+- **状态/依赖：** `merged`；P1-09 已验证，已随 PR #2 合并到 `main`。
 - **目标：** `jobs` Schema 只有一个权威定义，FastAPI 启停能创建、恢复并关闭唯一 JobManager 线程池。
 - **主要模块：** `backend/jobs/store.py`、`migrations/grading/003_add_jobs.sql`、`backend/api/app.py`、`backend/api/dependencies.py`、Schema 工具与测试。
 - **子任务：** 以 `003_add_jobs.sql` 作为唯一完整 DDL；000 保持 Phase 0 边界；JobStore 兼容旧表并确定关闭连接；manager shutdown 与 submit 共用锁；FastAPI lifespan 创建、恢复和关闭 app-owned manager；测试 override 保持外部所有权。
@@ -53,7 +53,7 @@
 
 ### P1-11 协作式任务取消
 
-- **状态/依赖：** `verified`；P1-10 已验证，已纳入当前分支 Git 检查点，尚未合并到 `main`。
+- **状态/依赖：** `merged`；P1-10 已验证，已随 PR #2 合并到 `main`。
 - **目标：** queued 任务可立即取消；running 任务只在 handler 确认安全停止后进入 cancelled，取消后不继续写报告、扫描结果或评分结果。
 - **主要模块：** `backend/jobs/manager.py`、`backend/jobs/store.py`、三个现有 handler、相关领域服务回调。
 - **子任务：** 定义状态机；增加 `raise_if_cancelled()` 或等价协议；在安全边界轮询；区分“请求取消”和“已经取消”；覆盖阻塞调用返回后的副作用防护。
@@ -64,7 +64,7 @@
 
 ### P1-12 复核查询服务与原子写入
 
-- **状态/依赖：** `verified`；P1-09 已验证，已纳入当前分支 Git 检查点，尚未合并到 `main`。
+- **状态/依赖：** `merged`；P1-09 已验证，已随 PR #2 合并到 `main`。
 - **目标：** review router 恢复为薄壳；一次查询取得题目复核数据；多结果确认要么全部成功，要么不写入。
 - **主要模块：** `backend/api/routers/review.py`、新复核查询/应用服务、`manual_review_service.py`、`db_manager.py`、review tests。
 - **子任务：** 提取复核判定与 score map；消除逐 result 查询；定义事务边界；校验分数范围和 detail 所属关系；增加大班级查询计数测试。
@@ -75,7 +75,7 @@
 
 ### P1-13 受控媒体与文件下载 API
 
-- **状态/依赖：** `verified`；P1-12 已验证，已纳入当前分支 Git 检查点，尚未合并到 `main`。
+- **状态/依赖：** `merged`；P1-12 已验证，已随 PR #2 合并到 `main`。
 - **目标：** Vue 可查看答题区裁剪、原卷页并下载导出文件，客户端不接收或提交任意绝对路径。
 - **主要模块：** 新 media/files router 与 schema、裁剪/批注服务、`original_paper_exporter.py`、reports/job result。
 - **子任务：** 定义受控资源 ID；限制根目录和扩展名；实现图片/文件流；处理不存在、过期和越界路径；给 job result 返回下载 URL。
@@ -86,11 +86,11 @@
 
 ### P1-14 Phase 1 稳定化检查点
 
-- **状态/依赖：** `verified`；P1-09 至 P1-13 已验证，已纳入当前分支 Git 检查点，尚未合并到 `main`。
+- **状态/依赖：** `merged`；P1-09 至 P1-13 已验证，已随 PR #2 合并到 `main`。
 - **目标：** 把当前 WP1.2/WP1.3 工作整理成可审阅、可回退的 Git 检查点。
 - **主要模块：** 当前所有 `backend/`、相关迁移、测试、计划与架构文档。
 - **子任务：** 全量 review；核对 OpenAPI；跑完整测试和冒烟；检查 `git diff`/未跟踪文件；显式排除 `user_data/`；准备提交与 PR 摘要。
-- **不修改：** 本包不新增业务功能；未经用户确认不 commit/push/建 PR。
+- **不修改：** 本包不新增业务功能；只按仓库 standing integration workflow 提交、PR 和合并，不直接 push `main`。
 - **验收：** OpenAPI 为 25 paths / 33 operations、无重复 operation ID，422 统一 `ErrorResponse`，二进制 200 媒体类型准确；整包复审 0 Critical / 0 Important / 0 Minor；聚焦 87 passed，API 85 passed，完整 smoke 为 889 passed / 0 skipped / 0 failed、编译 338 个第一方文件、两库副本幂等且 `integrity_check=ok`；暂存区为空，提交范围显式排除真实数据。
 - **回退/数据风险：** 一次诊断因未完整 override lifespan 在真实 grading DB 创建了空 `jobs` 表与两个索引，用户明确要求保留；接受后两库文件指纹经完整 smoke 前后复核不变。`user_data/` 不纳入候选提交，后续无额外写入授权。
 - **模型：** `S-XH / T-H / S-H`。
@@ -99,7 +99,7 @@
 
 ### P1-15 Question Bank 只读路由
 
-- **状态/依赖：** `verified`；P1-14 已验证，已纳入当前分支 Git 检查点，尚未合并到 `main`。
+- **状态/依赖：** `merged`；P1-14 已验证，已随 PR #2 合并到 `main`。
 - **目标：** 通过严格无源写入的读模型提供试卷列表、题目分页/筛选、题目详情、当前标签、富文本与预览元数据，以及受控题目素材/预览图片。
 - **主要模块：** `question_bank/services/question_service.py`、`question_read_service.py`、新 question-bank router/schema、OpenAPI 与隔离测试。
 - **子任务：** 从现有页面提取筛选契约；绑定同一 PathManager 快照中的题库 DB/数据根；实现分页排序与统一 404；显式投影并清理 marker/路径；以语义 ID 访问素材；源 main/WAL 经有界 M1-W1-W2-M2 捕获到系统临时目录，SQLite 只打开候选，持续变化返回脱敏 503。
