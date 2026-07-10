@@ -4,6 +4,7 @@ import sqlite3
 import hashlib
 from pathlib import Path
 
+from backend.jobs.store import JobStore
 from db_manager import DBManager
 from grading_run_store import GradingRunStore
 from question_bank.database.schema import initialize_database
@@ -73,6 +74,7 @@ def test_database_idempotency_check_uses_copies_and_keeps_sources_unchanged(tmp_
 
     DBManager(grading_db).initialize()
     GradingRunStore(grading_db).initialize()
+    JobStore(grading_db).initialize()
     initialize_database(question_bank_db)
     _checkpoint(grading_db)
     _checkpoint(question_bank_db)

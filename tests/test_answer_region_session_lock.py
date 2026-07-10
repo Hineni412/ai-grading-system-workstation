@@ -16,9 +16,14 @@ import answer_region_session_lock as lock_module
 from answer_region_session_lock import AnswerRegionSessionLock, get_answer_region_session_lock
 
 
-def _acquire_inherited_lock(lock: AnswerRegionSessionLock, events: object) -> None:
+def _report_fresh_registry_lock(session_dir: str, events: object) -> None:
+    lock = get_answer_region_session_lock(Path(session_dir))
+    events.put((os.getpid(), lock_module._REGISTRY_PID, lock._pid))
+
+
+def _acquire_fresh_session_lock(session_dir: str, events: object) -> None:
     events.put("started")
-    with lock:
+    with get_answer_region_session_lock(Path(session_dir)):
         events.put("acquired")
 
 
@@ -144,11 +149,30 @@ def test_lock_registry_resets_across_process_identity_change(
     assert lock_module._REGISTRY_PID == child_pid
 
 
-@pytest.mark.skipif(
-    os.name == "nt" or not hasattr(os, "fork"),
-    reason="requires POSIX os.fork",
-)
-def test_fresh_registry_lock_after_fork_does_not_keep_its_inherited_lock(
+def test_spawned_process_uses_fresh_lock_registry(tmp_path: Path) -> None:
+    context = multiprocessing.get_context("spawn")
+    events = context.Queue()
+    process = context.Process(
+        target=_report_fresh_registry_lock,
+        args=(str(tmp_path / "session"), events),
+    )
+
+    try:
+        process.start()
+        child_pid, registry_pid, lock_pid = events.get(timeout=5)
+        process.join(5)
+        assert process.exitcode == 0
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(5)
+
+    assert child_pid != os.getpid()
+    assert registry_pid == child_pid
+    assert lock_pid == child_pid
+
+
+def _assert_fresh_registry_lock_after_fork(
     tmp_path: Path,
 ) -> None:
     inherited_lock = get_answer_region_session_lock(tmp_path / "session")
@@ -197,25 +221,37 @@ def test_fresh_registry_lock_after_fork_does_not_keep_its_inherited_lock(
             _terminate_child(child_pid)
 
 
-@pytest.mark.skipif(
-    "fork" not in multiprocessing.get_all_start_methods(),
-    reason="requires os.fork",
-)
-def test_inherited_held_lock_blocks_child_until_parent_releases(tmp_path: Path) -> None:
-    context = multiprocessing.get_context("fork")
+if os.name != "nt" and hasattr(os, "fork"):
+
+    def test_fresh_registry_lock_after_fork_does_not_keep_its_inherited_lock(
+        tmp_path: Path,
+    ) -> None:
+        _assert_fresh_registry_lock_after_fork(tmp_path)
+
+
+def test_parent_held_lock_blocks_spawned_child_until_release(tmp_path: Path) -> None:
+    context = multiprocessing.get_context("spawn")
     events = context.Queue()
     lock = AnswerRegionSessionLock(tmp_path / "session")
-    process = context.Process(target=_acquire_inherited_lock, args=(lock, events))
+    process = context.Process(
+        target=_acquire_fresh_session_lock,
+        args=(str(tmp_path / "session"), events),
+    )
 
-    with lock:
-        process.start()
-        assert events.get(timeout=5) == "started"
-        with pytest.raises(Empty):
-            events.get(timeout=0.3)
+    try:
+        with lock:
+            process.start()
+            assert events.get(timeout=5) == "started"
+            with pytest.raises(Empty):
+                events.get(timeout=0.3)
 
-    assert events.get(timeout=5) == "acquired"
-    process.join(5)
-    assert process.exitcode == 0
+        assert events.get(timeout=5) == "acquired"
+        process.join(5)
+        assert process.exitcode == 0
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(5)
 
 
 def test_windows_lock_retries_recognized_contention_then_acquires(

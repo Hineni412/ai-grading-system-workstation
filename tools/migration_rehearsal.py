@@ -182,11 +182,13 @@ def schemas_equivalent(left_db: Path, right_db: Path) -> bool:
 
 def _build_runtime_reference(target: str, output_db: Path) -> None:
     if target == "grading":
+        from backend.jobs.store import JobStore
         from db_manager import DBManager
         from grading_run_store import GradingRunStore
 
         DBManager(output_db).initialize()
         GradingRunStore(output_db).initialize()
+        JobStore(output_db).initialize()
         return
     if target == "question_bank":
         from question_bank.database.schema import initialize_database

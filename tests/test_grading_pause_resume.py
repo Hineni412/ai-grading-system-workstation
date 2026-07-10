@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -141,6 +142,326 @@ def test_pause_stops_new_dispatch_and_saves_inflight(patched, tmp_path, monkeypa
     assert counts["graded"] == grader.call_count
     assert counts["pending"] == 5 - grader.call_count
     assert any(e.get("event") == "session_paused" for e in events)
+
+
+def test_cancel_discards_inflight_full_paper_result(patched, tmp_path, monkeypatch):
+    db, session_id = _seed(tmp_path, [(1, "stu1")])
+    group = _make_group(tmp_path, "stu1", 1, b"paper-1")
+    monkeypatch.setattr(
+        grading_service,
+        "_apply_manual_decisions",
+        lambda _analysis, _decisions, _students: [group],
+    )
+    monkeypatch.setattr(db, "is_template_ready", lambda _session_id: True)
+    started = threading.Event()
+    release = threading.Event()
+    cancelled = threading.Event()
+
+    def blocking_grade(_grader, paper_group, *_args, **_kwargs):
+        started.set()
+        assert release.wait(3)
+
+        class Result:
+            student_name = paper_group.student_name
+            student_score = 1.0
+            total_score = 1.0
+            needs_human_review = False
+            raw_json = {"questions": []}
+            grading_details: list[object] = []
+
+        return Result()
+
+    monkeypatch.setattr(
+        grading_service,
+        "_grade_one_paper_with_retries",
+        blocking_grade,
+    )
+    service = _service(db)
+    events: list[dict[str, Any]] = []
+    errors: list[BaseException] = []
+
+    def consume() -> None:
+        try:
+            events.extend(
+                service.run_session_grading(
+                    session_id=session_id,
+                    exams_dir=tmp_path,
+                    rubric_path=tmp_path / "rubric.json",
+                    answer_key_path=tmp_path / "answer.json",
+                    scan_analysis={"groups": [], "issues": []},
+                    max_workers=1,
+                    grading_mode="full_paper",
+                    enhance_images=False,
+                    should_cancel=cancelled.is_set,
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    worker = threading.Thread(target=consume)
+    worker.start()
+    started_in_time = started.wait(3)
+    cancelled.set()
+    release.set()
+    worker.join(5)
+
+    assert started_in_time, errors
+    assert not worker.is_alive()
+    assert errors == []
+    assert any(event.get("event") == "session_cancelled" for event in events)
+    with db._connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_results WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT processing_status FROM exam_papers WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()[0] == "pending"
+    run = GradingRunStore(db.db_path).latest(session_id)
+    assert run is not None
+    assert run.state == "paused"
+
+
+def test_cancel_discards_unpublished_hybrid_results(patched, tmp_path, monkeypatch):
+    from hybrid_batch_grading_service import HybridBatchRunResult, PaperEntry
+
+    db, session_id = _seed(tmp_path, [(1, "stu1")])
+    group = _make_group(tmp_path, "stu1", 1, b"paper-1")
+    monkeypatch.setattr(
+        grading_service,
+        "_apply_manual_decisions",
+        lambda _analysis, _decisions, _students: [group],
+    )
+    monkeypatch.setattr(db, "is_template_ready", lambda _session_id: True)
+    started = threading.Event()
+    release = threading.Event()
+    cancelled = threading.Event()
+
+    def blocking_hybrid(**kwargs: Any) -> HybridBatchRunResult:
+        paper_group = kwargs["paper_groups"][0]
+        started.set()
+        assert release.wait(3)
+
+        class Result:
+            student_name = paper_group.student_name
+            student_score = 1.0
+            total_score = 1.0
+            needs_human_review = False
+            raw_json = {"questions": []}
+            grading_details: list[object] = []
+
+        return HybridBatchRunResult(
+            paper_entries=[PaperEntry("paper-1", 1, "stu1", paper_group)],
+            results_by_paper_key={"paper-1": Result()},
+            fallback_items=[],
+            usage_records=[],
+            usage_summary={},
+            paused=True,
+        )
+
+    monkeypatch.setattr(grading_service, "run_hybrid_batch_grading", blocking_hybrid)
+    events: list[dict[str, Any]] = []
+    errors: list[BaseException] = []
+
+    def consume() -> None:
+        try:
+            events.extend(
+                _service(db).run_session_grading(
+                    session_id=session_id,
+                    exams_dir=tmp_path,
+                    rubric_path=tmp_path / "rubric.json",
+                    answer_key_path=tmp_path / "answer.json",
+                    scan_analysis={"groups": [], "issues": []},
+                    grading_mode="hybrid_batch",
+                    enhance_images=False,
+                    should_cancel=cancelled.is_set,
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    worker = threading.Thread(target=consume)
+    worker.start()
+    started_in_time = started.wait(3)
+    cancelled.set()
+    release.set()
+    worker.join(5)
+
+    assert started_in_time, errors
+    assert not worker.is_alive()
+    assert errors == []
+    assert any(event.get("event") == "session_cancelled" for event in events)
+    with db._connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_results WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT processing_status FROM exam_papers WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()[0] == "pending"
+    run = GradingRunStore(db.db_path).latest(session_id)
+    assert run is not None
+    assert run.state == "paused"
+
+
+def test_cancelled_failed_only_retry_restores_original_paper_state(
+    patched,
+    tmp_path,
+    monkeypatch,
+):
+    db, session_id = _seed(tmp_path, [(1, "stu1")])
+    group = _make_group(tmp_path, "stu1", 1, b"paper-1")
+    paper_id = db.create_exam_paper(
+        session_id=session_id,
+        front_image=str(group.front_image),
+        back_image=str(group.back_image),
+        ocr_name="stu1",
+        student_id=1,
+        match_status="matched",
+        processing_status="failed",
+        error_message="original failure",
+    )
+    monkeypatch.setattr(db, "is_template_ready", lambda _session_id: True)
+    started = threading.Event()
+    release = threading.Event()
+    cancelled = threading.Event()
+
+    def blocking_grade(_grader, paper_group, *_args, **_kwargs):
+        started.set()
+        assert release.wait(3)
+
+        class Result:
+            student_name = paper_group.student_name
+            student_score = 1.0
+            total_score = 1.0
+            needs_human_review = False
+            raw_json = {"questions": []}
+            grading_details: list[object] = []
+
+        return Result()
+
+    monkeypatch.setattr(
+        grading_service,
+        "_grade_one_paper_with_retries",
+        blocking_grade,
+    )
+    events: list[dict[str, Any]] = []
+    worker = threading.Thread(
+        target=lambda: events.extend(
+            _service(db).run_session_grading(
+                session_id=session_id,
+                exams_dir=tmp_path,
+                rubric_path=tmp_path / "rubric.json",
+                answer_key_path=tmp_path / "answer.json",
+                failed_only=True,
+                max_workers=1,
+                grading_mode="full_paper",
+                enhance_images=False,
+                should_cancel=cancelled.is_set,
+            )
+        )
+    )
+    worker.start()
+    assert started.wait(3)
+    cancelled.set()
+    release.set()
+    worker.join(5)
+
+    assert not worker.is_alive()
+    assert any(event.get("event") == "session_cancelled" for event in events)
+    with db._connect() as conn:
+        row = conn.execute(
+            "SELECT processing_status, error_message FROM exam_papers WHERE id = ?",
+            (paper_id,),
+        ).fetchone()
+    assert row["processing_status"] == "failed"
+    assert row["error_message"] == "original failure"
+
+
+def test_cancel_before_unmatched_groups_does_not_persist_papers(
+    patched,
+    tmp_path,
+    monkeypatch,
+):
+    db, session_id = _seed(tmp_path, [])
+    groups = [
+        _make_group(tmp_path, "unknown-one", 0, b"paper-one"),
+        _make_group(tmp_path, "unknown-two", 0, b"paper-two"),
+    ]
+    cancelled = threading.Event()
+    monkeypatch.setattr(
+        grading_service,
+        "_apply_manual_decisions",
+        lambda _analysis, _decisions, _students: groups,
+    )
+    monkeypatch.setattr(db, "is_template_ready", lambda _session_id: True)
+    monkeypatch.setattr(db, "find_student_by_name", lambda _name: None)
+
+    service = _service(db)
+    # Set cancellation after the earlier lifecycle checks but before group handling.
+    monkeypatch.setattr(service, "_record_attendance", lambda *_args: cancelled.set())
+    events = list(
+        service.run_session_grading(
+            session_id=session_id,
+            exams_dir=tmp_path,
+            rubric_path=tmp_path / "rubric.json",
+            answer_key_path=tmp_path / "answer.json",
+            scan_analysis={"groups": [], "issues": []},
+            enhance_images=False,
+            should_cancel=cancelled.is_set,
+        )
+    )
+
+    assert [event["event"] for event in events] == ["session_cancelled"]
+    with db._connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM exam_papers WHERE session_id = ?", (session_id,)
+        ).fetchone()[0] == 0
+
+
+def test_cancel_after_unmatched_event_does_not_persist_later_unmatched_groups(
+    patched,
+    tmp_path,
+    monkeypatch,
+):
+    db, session_id = _seed(tmp_path, [])
+    groups = [
+        _make_group(tmp_path, "unknown-one", 0, b"paper-one"),
+        _make_group(tmp_path, "unknown-two", 0, b"paper-two"),
+    ]
+    cancelled = threading.Event()
+    monkeypatch.setattr(
+        grading_service,
+        "_apply_manual_decisions",
+        lambda _analysis, _decisions, _students: groups,
+    )
+    monkeypatch.setattr(db, "is_template_ready", lambda _session_id: True)
+    monkeypatch.setattr(db, "find_student_by_name", lambda _name: None)
+
+    events: list[dict[str, Any]] = []
+    for event in _service(db).run_session_grading(
+        session_id=session_id,
+        exams_dir=tmp_path,
+        rubric_path=tmp_path / "rubric.json",
+        answer_key_path=tmp_path / "answer.json",
+        scan_analysis={"groups": [], "issues": []},
+        enhance_images=False,
+        should_cancel=cancelled.is_set,
+    ):
+        events.append(event)
+        if event.get("event") == "paper_unmatched":
+            cancelled.set()
+
+    assert [event["event"] for event in events] == [
+        "paper_unmatched",
+        "session_cancelled",
+    ]
+    with db._connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM exam_papers WHERE session_id = ?", (session_id,)
+        ).fetchone()[0] == 1
 
 
 def test_same_student_different_papers_flagged_conflict(patched, tmp_path, monkeypatch):
