@@ -7,11 +7,11 @@
 
 ## 1. 当前 Git 与 Worktree 快照
 
-检查时间：2026-07-11。GitHub 已确认 PR #2 与 PR #3 均已合并到 `main`。
+检查时间：2026-07-11。GitHub 已确认 PR #2、PR #3 与 PR #4 均已合并到 `main`。
 
-- 当前共同基线：`origin/main` = `6bfcb75`（PR #3 合并提交）；根目录本地 `main` 与三个活动 worktree 均已快进到该提交。
+- 当前共同基线：最新 `origin/main`；根目录本地 `main` 与三个活动 worktree 均已快进到该基线。不要在长期规则中写死会被下一次 PR 立即取代的当前提交号。
 - 初始审计时根目录分支为 `codex/wp1-2-api-routes` = `74f1789`，本地 `main` 为 `42a4b79`；治理后根目录已切换到同步的本地 `main`。
-- P1-16、P2-01 与 integration 三个活动 worktree 均从当前共同基线继续，源码状态干净，并跟踪主线或当前 integration 远端。
+- P1-16、P2-01 与 integration 三个活动 worktree 均从当前共同基线继续，源码状态干净，并跟踪 `origin/main`；integration 远端分支只在发布 PR 时临时存在。
 - 根目录长期承载真实 `user_data/`，即使源码状态干净也不作为并行功能实现区；只用于本地 `main` 同步、日常运行和真实数据人工操作。
 - PR #3 合并前的 integration 提交已运行完整 smoke：967 passed、编译 342 个第一方文件、两库副本幂等且 `integrity_check=ok`；PR #3 合并提交与该已验证提交树一致。
 - 后续任何 `merged` 状态必须有 GitHub PR 或 `origin/main` 包含关系作为证据，不能只凭本地提交声明。
@@ -21,19 +21,19 @@
 | Worktree | 分支 / HEAD | 状态 | 允许用途 |
 |---|---|---|---|
 | 仓库根目录 | `main` / 与最新 `origin/main` 同步 | 源码保持干净；真实数据长期脏 | 日常运行、人工数据操作和 main 同步；不分配并行功能包 |
-| `.worktrees/p1-16-question-bank-write` | `codex/p1-16-question-bank-write` / `6bfcb75` | 源码与数据状态干净 | 当前后端领域实现：仅 P1-16 |
-| `.worktrees/p2-01-frontend-foundation` | `codex/p2-01-frontend-foundation` / `6bfcb75` | 源码与数据状态干净 | 当前前端实现：仅 P2-01 |
-| `.worktrees/p1-integration-verification` | `codex/p1-integration-verification` / `6bfcb75` | 当前集成通道，源码与数据状态干净 | 集成、冲突处理、共享文档和完整验证；不实现业务功能 |
-| `.worktrees/fine-grained-graph-training` | `codex/fine-grained-graph-training` / `8e089d4` | 干净但历史分支分叉 | 保留历史工作，禁止复用；相对 `origin/main` 14 ahead / 22 behind |
+| `.worktrees/p1-16-question-bank-write` | `codex/p1-16-question-bank-write` / 最新 `origin/main` | 源码与数据状态干净 | 当前后端领域实现：仅 P1-16 |
+| `.worktrees/p2-01-frontend-foundation` | `codex/p2-01-frontend-foundation` / 最新 `origin/main` | 源码与数据状态干净 | 当前前端实现：仅 P2-01 |
+| `.worktrees/p1-integration-verification` | `codex/p1-integration-verification` / 最新 `origin/main` | 当前集成通道，源码与数据状态干净 | 集成、冲突处理、共享文档和完整验证；不实现业务功能 |
+| `.worktrees/fine-grained-graph-training` | `codex/fine-grained-graph-training` / `8e089d4` | 干净但历史分支分叉 | 保留历史工作，禁止复用；有 14 个 `origin/main` 尚未包含的提交 |
 | `.worktrees/grading-paper-skill-workflow` | `codex/import-dialog-direct-tags` / `8be9820` | 提交已并入主线，但有 21 项 worktree 本地 `user_data/` | 保留且禁止复用；数据未另行处置前不得移除 worktree 或分支 |
-| `.worktrees/resilient-grading` | `codex/resilient-grading` / `24fc3b8` | 干净但历史分支分叉 | 保留历史工作，禁止复用；相对 `origin/main` 9 ahead / 21 behind |
+| `.worktrees/resilient-grading` | `codex/resilient-grading` / `24fc3b8` | 干净但历史分支分叉 | 保留历史工作，禁止复用；有 9 个 `origin/main` 尚未包含的提交 |
 
 旧 worktree 不得因为“目录空闲”而直接承担新包。是否归档、合并或删除必须另做调用/提交审计，并获得用户确认。
 
 ### 1.2 本次治理结果
 
 - 已安全删除本地旧分支：`codex/wp1-2-api-routes`、`codex/grading-paper-skill-workflow`、`codex/phase0-wp11-foundation`、`pigai-v2`。
-- 已安全删除远端旧分支：`origin/codex/wp1-2-api-routes`、`origin/codex/phase0-wp11-foundation`。
+- 已安全删除远端旧分支：`origin/codex/wp1-2-api-routes`、`origin/codex/phase0-wp11-foundation`；PR #4 合并后也已删除临时 `origin/codex/p1-integration-verification`，本地 integration 通道继续跟踪 `origin/main`。
 - 保留有独有提交的历史分支：`codex/fine-grained-graph-training`、`codex/resilient-grading`。
 - 保留含本地数据的已合并 worktree/分支：`.worktrees/grading-paper-skill-workflow`、`codex/import-dialog-direct-tags`。
 - 保留当前活动分支：`codex/p1-16-question-bank-write`、`codex/p2-01-frontend-foundation`、`codex/p1-integration-verification`。
@@ -244,8 +244,8 @@ P2-09 及以后复杂页面仍受 Phase 1 总门槛约束，不得因为 P2-01 �
 2. integration worktree 从最新 `origin/main` 更新后，一次合入一个功能分支；每次合入立即运行受影响回归。
 3. 全部包进入 integration 后运行完整 smoke、前端质量命令（若适用）和真实两库指纹守卫。
 4. 推送 integration 分支并创建 PR，目标固定为 GitHub `main`；等待检查通过后合并 PR。
-5. `git fetch --prune` 后，把本地 `main` fast-forward 到 `origin/main`；根目录保持检出本地 `main`。
-6. 活动功能 worktree 更新到新主线，或在旧包合并后删除并从新主线创建下一包分支。
+5. `git fetch --prune` 后，把本地 `main` 和活动 worktree fast-forward 到 `origin/main`；根目录保持检出本地 `main`。
+6. 删除已合并的远端 integration 临时分支，本地 integration 通道保留并重新跟踪 `origin/main`；其他活动功能 worktree 更新到新主线，或在旧包合并后删除并从新主线创建下一包分支。
 7. 使用 `git branch --merged origin/main` 审计候选，并分别检查源码状态与 `git status --short -- user_data`；只删除已被主线包含、源码干净、没有 worktree 本地数据且不再承担活动任务的本地/远端分支。
 8. `git branch --no-merged origin/main` 中的分支视为仍有独有历史：默认保留，不得用 `-D` 或远端强删；是否归档/丢弃必须单独获得用户明确确认。
 9. linked worktree 只能在确认其 `user_data/` 状态为空后，通过 `git worktree remove <verified-path>` 从仓库根目录移除，随后运行 `git worktree prune`；禁止资源管理器或递归删除命令直接删除目录。即使分支已合并，只要 worktree 仍含本地数据就必须保留。
