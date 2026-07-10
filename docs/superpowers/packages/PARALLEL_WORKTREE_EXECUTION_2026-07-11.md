@@ -7,27 +7,25 @@
 
 ## 1. 当前 Git 与 Worktree 快照
 
-检查时间：2026-07-11，未执行 fetch、merge、rebase、commit 或清理。
+检查时间：2026-07-11。GitHub 已确认 PR #2 于 2026-07-10 合并到 `main`。
 
 - 本地远端跟踪基线：`origin/main` = `4e8e6aa`（合并提交 `feat(p1): consolidate verified API and job increments`）。
-- 当前根目录分支：`codex/wp1-2-api-routes` = `74f1789`，比 `origin/main` 少合并提交本身，但两者文件树相同。
-- 本地 `main` 仍停在 `42a4b79`，落后于 `origin/main`，不得作为新 worktree 基线。
+- 初始审计时根目录分支为 `codex/wp1-2-api-routes` = `74f1789`，本地 `main` 为 `42a4b79`；治理完成后根目录必须切换到与 `origin/main` 同步的本地 `main`，旧功能分支普通删除。
 - 三个新并行 worktree 均从 `4e8e6aa` 创建、状态干净，并跟踪 `origin/main`。
-- 当前根目录不是干净集成区：存在 `.gitignore` 的用户改动、`migrations/grading/000_baseline_schema.sql` 的工作树状态，以及真实 `user_data/` 脏状态。不要在根目录并行实现新包。
+- 根目录长期承载真实 `user_data/`，即使源码状态干净也不作为并行功能实现区；只用于本地 `main` 同步、日常运行和真实数据人工操作。
 - 最新已记录完整基线为 967 passed、编译 342 个第一方文件、两库副本幂等且 `integrity_check=ok`；本文编写过程没有重新运行该完整基线。
-- 当前 Git 图与进度文案存在待核对差异：本地 `origin/main` 已指向包含 `74f1789` 的合并提交 `4e8e6aa`，但 `AGENTS.md`/Index 仍写“尚未合并到 main”。本文以 `4e8e6aa` 作为现有 worktree 的技术共同基线；对外状态 wording 由集成对话在核验 GitHub 后统一修正，不在功能分支猜测。
-- 本文当前只存在于集成 worktree，尚未提交。完成首次文档提交/集成前，其他对话应使用本文绝对路径读取；不要在各功能 worktree 复制出多份版本。
+- 进度文案已按 PR #2 同步；后续任何 `merged` 状态必须有 GitHub PR 或 `origin/main` 包含关系作为证据，不能只凭本地提交声明。
 
 ### 1.1 Worktree 清单与用途
 
 | Worktree | 分支 / HEAD | 状态 | 允许用途 |
 |---|---|---|---|
-| 仓库根目录 | `codex/wp1-2-api-routes` / `74f1789` | 有非数据工作树改动，且真实数据长期脏 | 只作历史工作区和人工查看；不分配新并行包 |
+| 仓库根目录 | `main` / 与最新 `origin/main` 同步 | 源码保持干净；真实数据长期脏 | 日常运行、人工数据操作和 main 同步；不分配并行功能包 |
 | `.worktrees/p1-16-question-bank-write` | `codex/p1-16-question-bank-write` / `4e8e6aa` | 干净 | 当前后端领域实现：仅 P1-16 |
 | `.worktrees/p2-01-frontend-foundation` | `codex/p2-01-frontend-foundation` / `4e8e6aa` | 干净 | 当前前端实现：仅 P2-01 |
-| `.worktrees/p1-integration-verification` | `codex/p1-integration-verification` / `4e8e6aa` | 编写本文前干净 | 集成、冲突处理、共享文档和完整验证；不实现业务功能 |
+| `.worktrees/p1-integration-verification` | `codex/p1-integration-verification` / 基于最新 `main` | 当前集成通道 | 集成、冲突处理、共享文档和完整验证；不实现业务功能 |
 | `.worktrees/fine-grained-graph-training` | `codex/fine-grained-graph-training` / `8e089d4` | 干净但历史分支分叉 | 保留历史工作，禁止复用；相对 `origin/main` 14 ahead / 18 behind |
-| `.worktrees/grading-paper-skill-workflow` | `codex/import-dialog-direct-tags` / `8be9820` | 干净但陈旧 | 保留待单独清理，禁止复用；该分支已是 `origin/main` 祖先 |
+| `.worktrees/grading-paper-skill-workflow` | `codex/import-dialog-direct-tags` / `8be9820` | 已并入 `origin/main` | 本次治理安全移除 worktree 和分支 |
 | `.worktrees/resilient-grading` | `codex/resilient-grading` / `24fc3b8` | 干净但历史分支分叉 | 保留历史工作，禁止复用；相对 `origin/main` 9 ahead / 17 behind |
 
 旧 worktree 不得因为“目录空闲”而直接承担新包。是否归档、合并或删除必须另做调用/提交审计，并获得用户确认。
@@ -98,7 +96,7 @@
 - 解决共享入口和共享文档冲突。
 - 每合入一个包先跑该包聚焦回归；一波全部合入后跑 API/前端组合验证和完整 smoke。
 - 检查 staged/commit 范围，确保无 `user_data/`、临时数据库、构建缓存、截图噪声或本机密钥。
-- 生成面向用户的非技术摘要；未经用户确认不 push、建 PR 或合并主线。
+- 生成面向用户的非技术摘要；门槛通过后按 standing workflow push integration、创建/合并 PR 和同步本地 `main`，不直接 push `main`。
 
 禁止事项：
 
@@ -184,7 +182,7 @@ P2-09 及以后复杂页面仍受 Phase 1 总门槛约束，不得因为 P2-01 �
 5. 高风险包完成指定模型的独立复核，阻塞 findings 为零。
 6. `git diff --check` 通过；提交范围不含 `user_data/`、`.superpowers/`、缓存、临时 DB、真实导出或密钥。
 7. 交付说明包含修改文件、测试数字、已知风险、回退方式和建议合并顺序。
-8. 未经用户授权，不自行 push、创建 PR 或合并主线。
+8. 用户已明确启动该执行包时，功能分支可以提交本地包结果；push、PR 和主线合并统一由 integration 流程执行，功能分支不得直接 push `main`。
 
 ## 8. 集成顺序与验证
 
@@ -203,19 +201,19 @@ P2-09 及以后复杂页面仍受 Phase 1 总门槛约束，不得因为 P2-01 �
 ### P1-16 实现对话
 
 ```text
-在 C:\Users\89418\Desktop\AI阅卷系统_工作机版_v1.5.0\.worktrees\p1-16-question-bank-write 中只执行 P1-16。先读取 AGENTS.md、ARCHITECTURE.md、packages README/Index、Phase 1 包定义、P1-15 现有契约，以及 C:\Users\89418\Desktop\AI阅卷系统_工作机版_v1.5.0\.worktrees\p1-integration-verification\docs\superpowers\packages\PARALLEL_WORKTREE_EXECUTION_2026-07-11.md，重新生成即时实现计划并按 TDD 实施。不得访问或修改真实 user_data，不得扩散到 P1-18；完成后只提交给集成 worktree 的审阅材料，未经确认不 push/PR。
+在 C:\Users\89418\Desktop\AI阅卷系统_工作机版_v1.5.0\.worktrees\p1-16-question-bank-write 中只执行 P1-16。先读取 AGENTS.md、ARCHITECTURE.md、packages README/Index、Phase 1 包定义、P1-15 现有契约，以及 C:\Users\89418\Desktop\AI阅卷系统_工作机版_v1.5.0\.worktrees\p1-integration-verification\docs\superpowers\packages\PARALLEL_WORKTREE_EXECUTION_2026-07-11.md，重新生成即时实现计划并按 TDD 实施。不得访问或修改真实 user_data，不得扩散到 P1-18；完成门槛后提交功能分支并交给 integration，不直接 push `main`。
 ```
 
 ### P2-01 实现对话
 
 ```text
-在 C:\Users\89418\Desktop\AI阅卷系统_工作机版_v1.5.0\.worktrees\p2-01-frontend-foundation 中只执行 P2-01。先读取 AGENTS.md、ARCHITECTURE.md、packages README/Index、Phase 2 包定义、docs/ui/STYLE.md，以及 C:\Users\89418\Desktop\AI阅卷系统_工作机版_v1.5.0\.worktrees\p1-integration-verification\docs\superpowers\packages\PARALLEL_WORKTREE_EXECUTION_2026-07-11.md；使用 Codex workspace dependencies 探测 Node/pnpm，生成即时实现计划后建立前端工程、锁文件和质量命令。不得开始页面视觉、P2-02/P2-04 或修改默认启动入口；未经确认不 push/PR。
+在 C:\Users\89418\Desktop\AI阅卷系统_工作机版_v1.5.0\.worktrees\p2-01-frontend-foundation 中只执行 P2-01。先读取 AGENTS.md、ARCHITECTURE.md、packages README/Index、Phase 2 包定义、docs/ui/STYLE.md，以及 C:\Users\89418\Desktop\AI阅卷系统_工作机版_v1.5.0\.worktrees\p1-integration-verification\docs\superpowers\packages\PARALLEL_WORKTREE_EXECUTION_2026-07-11.md；使用 Codex workspace dependencies 探测 Node/pnpm，生成即时实现计划后建立前端工程、锁文件和质量命令。不得开始页面视觉、P2-02/P2-04 或修改默认启动入口；完成门槛后提交功能分支并交给 integration，不直接 push `main`。
 ```
 
 ### 集成对话
 
 ```text
-在 C:\Users\89418\Desktop\AI阅卷系统_工作机版_v1.5.0\.worktrees\p1-integration-verification 中只做当前波次集成。读取并行 Worktree 执行手册和两个功能包报告，逐个审查/合入，解决共享入口与文档冲突，运行聚焦回归、前端质量命令和完整 smoke，核对真实 user_data 指纹不变。不要新增业务功能；未经确认不 push、PR 或合并主线。
+在 C:\Users\89418\Desktop\AI阅卷系统_工作机版_v1.5.0\.worktrees\p1-integration-verification 中只做当前波次集成。读取并行 Worktree 执行手册和两个功能包报告，逐个审查/合入，解决共享入口与文档冲突，运行聚焦回归、前端质量命令和完整 smoke，核对真实 user_data 指纹不变。不要新增业务功能；门槛通过后按 standing workflow push integration、创建/合并 PR 并同步本地 main，禁止直接 push main。
 ```
 
 ## 10. 必须暂停并回到集成判断的情况
@@ -229,3 +227,20 @@ P2-09 及以后复杂页面仍受 Phase 1 总门槛约束，不得因为 P2-01 �
 - P2-08 样板页尚未获得用户确认，却准备扩散其他复杂页面。
 
 出现上述任一项时，不得让并行速度优先于可回退性和数据安全。
+
+## 11. Main 同步与分支清理标准流程
+
+每一波并行开发结束后固定执行：
+
+1. 两个功能分支分别完成提交、聚焦测试、快速冒烟和独立复核。
+2. integration worktree 从最新 `origin/main` 更新后，一次合入一个功能分支；每次合入立即运行受影响回归。
+3. 全部包进入 integration 后运行完整 smoke、前端质量命令（若适用）和真实两库指纹守卫。
+4. 推送 integration 分支并创建 PR，目标固定为 GitHub `main`；等待检查通过后合并 PR。
+5. `git fetch --prune` 后，把本地 `main` fast-forward 到 `origin/main`；根目录保持检出本地 `main`。
+6. 活动功能 worktree 更新到新主线，或在旧包合并后删除并从新主线创建下一包分支。
+7. 使用 `git branch --merged origin/main` 审计候选，只删除已被主线包含、工作树干净且不再承担活动任务的本地/远端分支。
+8. `git branch --no-merged origin/main` 中的分支视为仍有独有历史：默认保留，不得用 `-D` 或远端强删；是否归档/丢弃必须单独获得用户明确确认。
+9. linked worktree 只能通过 `git worktree remove <verified-path>` 从仓库根目录移除，随后运行 `git worktree prune`；禁止资源管理器或递归删除命令直接删除目录。
+10. 清理前后比较 `user_data` 状态行数和两库大小、修改时间、SHA-256；任何变化都立即停止。
+
+本流程是后续所有执行包的默认完成动作，不需要用户逐包重复提醒。用户启动执行包即授权标准功能提交和 integration PR 流程；直接 push `main`、force push、真实数据操作和未合并历史分支丢弃仍需单独明确授权。
