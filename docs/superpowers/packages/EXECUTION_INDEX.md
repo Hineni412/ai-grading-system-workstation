@@ -57,6 +57,7 @@
 | `README.md` | 执行包读取顺序、状态口径、模型代码、升级条件与通用回退 |
 | `PLAN_AUDIT_2026-07-10.md` | 原计划合理性、已完成质量、问题与验证证据 |
 | `../specs/2026-07-10-roadmap-execution-packages-design.md` | 两级计划体系、Phase 5/6 决策与生成原则 |
+| `PARALLEL_WORKTREE_EXECUTION_2026-07-11.md` | 当前 worktree 清单、并行通道、包分配、共享文件和集成门槛 |
 | `phase-1-execution-packages.md` | 当前 API/Job 状态与 14 个剩余包 |
 | `phase-2-execution-packages.md` | Vue 基础、样板页、页面迁移和切换共 22 包 |
 | `phase-3-execution-packages.md` | 仓储、SessionManager、Schema、删除和性能共 19 包 |
