@@ -132,12 +132,17 @@ class QuestionDetailResponse(QuestionListItem):
 
 
 class QuestionTagWriteRequest(_QuestionBankModel):
-    expected_revision: str = Field(min_length=64, max_length=64)
-    tags: list[QuestionTagResponse] = Field(max_length=100)
+    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    tags: list["QuestionTagWriteItem"] = Field(max_length=100)
+
+
+class QuestionTagWriteItem(QuestionTagResponse):
+    tag_value: str = Field(min_length=1, max_length=36)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class QuestionStateChangeRequest(_QuestionBankModel):
-    expected_revision: str = Field(min_length=64, max_length=64)
+    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class QuestionWriteResponse(_QuestionBankModel):

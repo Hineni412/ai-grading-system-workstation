@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, NoReturn
 
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import FileResponse
 
 from backend.api.app import ApiError, ErrorResponse
@@ -40,6 +40,8 @@ from question_bank.services.question_write_service import (
     QuestionBankWriteService,
     QuestionImportTypeNotSupported,
     QuestionImportUploadNotFound,
+    QuestionImportStorageForbidden,
+    QuestionImportTooLarge,
     QuestionWriteConflict,
     QuestionWriteNotFound,
     QuestionWriteResult,
@@ -152,19 +154,45 @@ def restore_question(
         }
     },
     responses={
+        403: {
+            "model": ErrorResponse,
+            "description": "Question import storage is unavailable",
+        },
+        413: {
+            "model": ErrorResponse,
+            "description": "Question import upload is too large",
+        },
         415: {
             "model": ErrorResponse,
             "description": "Question import type is not supported",
         }
     },
 )
-def stage_question_import_upload(
-    content: Annotated[bytes, Body(media_type="application/octet-stream")],
+async def stage_question_import_upload(
+    request: Request,
     filename: str = Query(min_length=1, max_length=255),
     service: QuestionBankWriteService = Depends(get_question_bank_write_service),
 ) -> QuestionImportUploadResponse:
     try:
-        upload = service.stage_upload(filename=filename, content=content)
+        content_length = request.headers.get("content-length")
+        if content_length is not None and int(content_length) > service.max_upload_bytes:
+            raise QuestionImportTooLarge("Question import upload is too large")
+        upload = await service.stage_upload_stream(
+            filename=filename,
+            chunks=request.stream(),
+        )
+    except QuestionImportTooLarge as exc:
+        raise ApiError(
+            413,
+            "question_import_too_large",
+            "Question import upload is too large",
+        ) from exc
+    except QuestionImportStorageForbidden as exc:
+        raise ApiError(
+            403,
+            "question_import_storage_forbidden",
+            "Question import storage is unavailable",
+        ) from exc
     except QuestionImportTypeNotSupported as exc:
         raise ApiError(
             415,
@@ -185,6 +213,10 @@ def stage_question_import_upload(
     response_model=QuestionImportRequestResponse,
     status_code=201,
     responses={
+        403: {
+            "model": ErrorResponse,
+            "description": "Question import storage is unavailable",
+        },
         404: {
             "model": ErrorResponse,
             "description": "Question import upload not found",
@@ -197,6 +229,12 @@ def create_question_import_request(
 ) -> QuestionImportRequestResponse:
     try:
         request = service.create_import_request(upload_id=body.upload_id)
+    except QuestionImportStorageForbidden as exc:
+        raise ApiError(
+            403,
+            "question_import_storage_forbidden",
+            "Question import storage is unavailable",
+        ) from exc
     except QuestionImportUploadNotFound as exc:
         raise ApiError(
             404,
