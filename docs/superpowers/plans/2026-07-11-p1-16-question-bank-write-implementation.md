@@ -422,16 +422,26 @@ Update this plan’s evidence and handoff block to `waiting_review`, `功能提�
 - Upload/request rollback: unreferenced staged resources are server-generated, isolated and removable as a whole by a later explicit maintenance operation; this package performs no automatic destructive cleanup.
 - Integration rollback: do not merge the package if focused regression, smoke, handoff validation or real-data fingerprint guard fails.
 
+## Implementation Evidence
+
+- RED/GREEN: revision 缺失、写服务缺失、删除/恢复缺失、暂存接口缺失、API 依赖缺失、OpenAPI 二进制声明缺失、空白标签 500 和未知标签残留均先由聚焦测试复现，再以最小实现转绿。
+- P1-16 聚焦回归：`94 passed`。
+- 受影响 API 回归：`93 passed`。
+- 全量测试：`1059 passed in 244.81s`。
+- 快速冒烟：文档治理、349 个第一方 Python 文件静态编译、两库副本初始化幂等与 integrity check 全部通过。
+- `git diff --check`：通过。
+- 真实数据库：`grading_system.db` 与 `question_bank.db` 的大小、UTC 修改时间和 SHA-256 与开工基线完全一致。
+
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
 
 **执行包：** P1-16
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
