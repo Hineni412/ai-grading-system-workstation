@@ -1,7 +1,7 @@
 # Phase 5 执行包地图：教师命题训练
 
 > **阶段目标：** 让教师围绕目标知识点创作、迭代、评审并发布题目，同时保留教师最终决定、版本和证据。
-> **阶段状态：** `planned`，确定实施；P5-01 至 P5-04 是实验包，可在 Phase 4 正式实现前开展，P5-05 是强制设计门槛。
+> **阶段启动条件：** P5-01 至 P5-04 是实验包，可在 Phase 4 正式实现前开展，P5-05 是强制设计门槛。
 > **现有资产：** question fingerprints、文本相似度、富文本侧车、预览服务、题库标签、导出器、API profile 和 LLM Gateway。
 > **事实修正：** 当前 `questions` 未核实存在可直接写 `source='teacher_authored'` 的字段；发布来源建模必须由实验门槛确认，不能照抄旧 Master Plan 假设。
 > **夜间资格：** 所有包级标记以 `NIGHTLY_ELIGIBILITY_MATRIX.md` 为唯一权威，本文件不重复维护。
@@ -10,7 +10,7 @@
 
 ### P5-01 教师命题工作流研究与产品规格
 
-- **状态/依赖：** `planned`；Phase 2 App Shell/题库 UI 可供参考，无代码前置。
+- **依赖：** Phase 2 App Shell/题库 UI 可供参考，无代码前置。
 - **目标：** 明确教师从“选目标 -> 写题 -> 写答案/评分标准 -> AI 评审 -> 修改 -> 定稿 -> 入库/导出”的真实流程和最小版本。
 - **主要范围：** 教师场景、题型、必填字段、版本、评审维度、发布审批、失败恢复和成功标准。
 - **子任务：** 访谈问题；3-5 个真实命题样例；状态草图；不可逆动作；AI/教师责任；验收清单；排除项。
@@ -21,7 +21,7 @@
 
 ### P5-02 富文本命题编辑与预览技术实验
 
-- **状态/依赖：** `planned`；P5-01 初稿、P2-01/P2-02。
+- **依赖：** P5-01 初稿、P2-01/P2-02。
 - **目标：** 验证文字、公式、选项、图片、子问、答案和评分标准能稳定编辑、保存、预览和重新打开。
 - **主要范围：** 结构化编辑模型、现有 rich-content sidecar、LaTeX/图片、题目 preview、最小 Vue spike。
 - **子任务：** 选两种候选数据结构；导入/导出 round-trip；粘贴/上传图片；公式；长题；断网草稿；预览对比。
@@ -32,7 +32,7 @@
 
 ### P5-03 相似题召回评估
 
-- **状态/依赖：** `planned`；P5-01；可复用 `similarity_service.py` 与 `question_frequency_service.py`。
+- **依赖：** P5-01；可复用 `similarity_service.py` 与 `question_frequency_service.py`。
 - **目标：** 用教师标注题对评估现有 fingerprint/文本相似度能否支持 Top-N 查重，并确定是否需要新的召回方法。
 - **主要范围：** 匿名化题对集、exact/near/related/unrelated 标签、fingerprint/char n-gram/标签过滤、性能和阈值。
 - **子任务：** 建 gold set；基线 precision@N/recall@N；分题型/公式/图片误差；解释结果；记录可接受阈值。
@@ -43,7 +43,7 @@
 
 ### P5-04 AI 命题评审 Rubric 与评估集
 
-- **状态/依赖：** `planned`；P5-01/P5-03、P1-24。
+- **依赖：** P5-01/P5-03、P1-24。
 - **目标：** 定义结构化 AI 评审协议并验证其稳定性：目标知识点覆盖、相似度解释、难度/典型性、表述歧义、答案与评分标准一致性。
 - **主要范围：** review rubric、结构化输出、教师 gold reviews、prompt variants、模型/成本/延迟报告。
 - **子任务：** 正反样本；字段定义；不得越权规则；盲测；重复运行一致性；失败/不确定输出；教师采纳率。
@@ -54,7 +54,7 @@
 
 ### P5-05 实验决策与正式设计冻结
 
-- **状态/依赖：** `planned`；P5-01 至 P5-04。
+- **依赖：** P5-01 至 P5-04。
 - **目标：** 根据实验结果冻结最小版本、数据模型、编辑格式、相似召回、AI 契约、状态机和非目标。
 - **主要范围：** ADR/feature spec、Schema 草案、API 草案、状态转换、评估阈值、模型预算和回退。
 - **子任务：** 汇总证据；处理冲突；选择 provenance 方案；定义发布事务；用户逐节批准；生成后续源码级计划边界。
@@ -67,7 +67,7 @@
 
 ### P5-06 Authored Question Schema、状态机与迁移
 
-- **状态/依赖：** `planned`；P5-05、P3-11。
+- **依赖：** P5-05、P3-11。
 - **目标：** 以迁移建立草稿、版本、评审记录、教师决定和发布链接，状态转换有数据库与服务双重保护。
 - **主要范围：** authored question/revision/review tables 或 P5-05 选定等价模型、repository、forward migration。
 - **子任务：** 空库/历史库；draft/reviewed/finalized/published/archived；不可变 revision；审计；幂等；副本预演。
@@ -78,7 +78,7 @@
 
 ### P5-07 草稿 CRUD、自动保存与版本服务
 
-- **状态/依赖：** `planned`；P5-06、P5-02 选定格式。
+- **依赖：** P5-06、P5-02 选定格式。
 - **目标：** 教师可创建、编辑、复制、自动保存、恢复和显式生成版本，失败不覆盖较新草稿。
 - **主要范围：** authored repository/service、API/schema、optimistic revision、rich content storage。
 - **子任务：** create/get/list/update/archive；ETag/revision；原子侧车写；冲突响应；草稿恢复；输入校验。
@@ -89,7 +89,7 @@
 
 ### P5-08 相似题检索服务
 
-- **状态/依赖：** `planned`；P5-03/P5-05/P5-07。
+- **依赖：** P5-03/P5-05/P5-07。
 - **目标：** 对当前草稿返回可解释 Top-N 相似题、分数构成和题库证据，并满足评估阈值。
 - **主要范围：** retrieval service、fingerprint cache/version、tag filter、API、性能监控。
 - **子任务：** 正规化草稿；候选召回；重排；阈值；空结果；图片/公式降级；缓存失效。
@@ -100,7 +100,7 @@
 
 ### P5-09 AI 评审 Job 与教师逐项决策
 
-- **状态/依赖：** `planned`；P5-04/P5-05/P5-07/P5-08、JobManager/Gateway。
+- **依赖：** P5-04/P5-05/P5-07/P5-08、JobManager/Gateway。
 - **目标：** 对指定不可变 revision 发起 AI review，保存结构化结果、模型信息和教师接受/拒绝/备注，不覆盖草稿。
 - **主要范围：** review handler、API、review repository、Gateway profile“命题评审”、错误/取消/重试。
 - **子任务：** payload 无密钥；相似题上下文；结构验证；不确定状态；教师逐项反馈；过期 revision 提示。
@@ -111,7 +111,7 @@
 
 ### P5-10 定稿与发布题库事务
 
-- **状态/依赖：** `planned`；P5-06 至 P5-09、P3 repositories。
+- **依赖：** P5-06 至 P5-09、P3 repositories。
 - **目标：** 教师显式定稿后，一次事务/补偿流程创建题库 question、标签、rich content、fingerprint、preview 请求和反向 published link。
 - **主要范围：** finalization service、publish service、QuestionService/repositories、sidecar compensation、idempotency。
 - **子任务：** 定稿前校验；来源建模；唯一 publish key；DB/文件补偿；重复点击；发布后更新策略；撤回边界。
@@ -124,7 +124,7 @@
 
 ### P5-11 命题工作台 UI
 
-- **状态/依赖：** `planned`；P5-07 至 P5-10、Phase 2 App Shell。
+- **依赖：** P5-07 至 P5-10、Phase 2 App Shell。
 - **目标：** 左侧/中央编辑题目，右侧结构化显示相似题和 AI 评审，教师定稿与发布始终是唯一主动作。
 - **主要范围：** draft list、editor、preview、similar panel、review checklist、version conflict、finalize/publish flow。
 - **子任务：** 自动保存状态；断网恢复；长内容；图片/公式；评审过期；逐项决策；危险发布确认。
@@ -135,7 +135,7 @@
 
 ### P5-12 历史、改进记录、预览与导出
 
-- **状态/依赖：** `planned`；P5-09/P5-10/P5-11。
+- **依赖：** P5-09/P5-10/P5-11。
 - **目标：** 展示题目版本、AI 评审变化、教师采纳记录、发布链接，并导出可审阅题目/答案文档。
 - **主要范围：** revision timeline、review comparison、teacher feedback metrics、existing exporters、download API。
 - **子任务：** 版本 diff；评审维度趋势；发布题库跳转；教师/学生版预览；Word/Markdown export。
@@ -146,7 +146,7 @@
 
 ### P5-13 教师试点、评估与 Phase 5 门槛
 
-- **状态/依赖：** `planned`；P5-06 至 P5-12。
+- **依赖：** P5-06 至 P5-12。
 - **目标：** 用教师提供的受控样例验证编辑保真、相似题、AI 评审、版本、发布和题库后续使用。
 - **主要范围：** P5 gold sets、真实浏览器流程、模型成本/延迟、发布恢复、用户反馈和文档。
 - **子任务：** 先备份/副本；完成多个题型；盲评 AI；重复发布；题库预览/组卷；失败演练；指标对照。
