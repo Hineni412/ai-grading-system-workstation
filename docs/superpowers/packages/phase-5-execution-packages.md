@@ -4,6 +4,7 @@
 > **阶段状态：** `planned`，确定实施；P5-01 至 P5-04 是实验包，可在 Phase 4 正式实现前开展，P5-05 是强制设计门槛。
 > **现有资产：** question fingerprints、文本相似度、富文本侧车、预览服务、题库标签、导出器、API profile 和 LLM Gateway。
 > **事实修正：** 当前 `questions` 未核实存在可直接写 `source='teacher_authored'` 的字段；发布来源建模必须由实验门槛确认，不能照抄旧 Master Plan 假设。
+> **夜间资格：** 所有包级标记以 `NIGHTLY_ELIGIBILITY_MATRIX.md` 为唯一权威，本文件不重复维护。
 
 ## 实验与设计门槛
 

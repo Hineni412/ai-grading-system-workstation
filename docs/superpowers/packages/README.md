@@ -5,6 +5,7 @@
 - 方案设计：`docs/superpowers/specs/2026-07-10-roadmap-execution-packages-design.md`
 - 计划与代码质量审计：`docs/superpowers/packages/PLAN_AUDIT_2026-07-10.md`
 - 当前状态与下一动作：`docs/superpowers/packages/EXECUTION_INDEX.md`
+- 夜间执行资格矩阵：`docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md`
 - 夜间自动领取与停机规则：`docs/superpowers/packages/NIGHTLY_AUTOMATION.md`
 
 ## 权威顺序
@@ -34,7 +35,9 @@
 
 用途：开工前重新调查当前代码，写出准确文件、接口、失败测试、最小实现、验证命令和提交范围。实现计划必须使用 checkbox，并要求执行模型采用 `superpowers:subagent-driven-development` 或 `superpowers:executing-plans`。
 
-若允许每天 4:00 的 Terra 自动化执行，计划还必须包含：
+包级先天资格以 `NIGHTLY_ELIGIBILITY_MATRIX.md` 为唯一权威来源。只有标记为 `eligible_after_plan` 的包才可以进入夜间候选池；该标记不等于 `ready`，也不替代依赖、worktree 或代码漂移检查。
+
+若允许每天 4:00 的 Terra 自动化执行，即时计划还必须包含：
 
 ```markdown
 **执行包：** P1-16
