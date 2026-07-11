@@ -14,7 +14,7 @@
 `eligible_after_plan` 还必须同时满足以下运行时门槛：
 
 1. `EXECUTION_INDEX.md` 状态为 `ready`，全部依赖已进入最新 `origin/main`。
-2. 并行手册已分配专属、干净、同步共同基线的 worktree/分支。
+2. 现场能唯一确认专属、干净、同步共同基线的 worktree/分支，并符合并行手册的长期规则。
 3. Sol Extra High 即时计划包含 `ready_for_execution`、`允许夜间执行: yes` 和完整计划基线 SHA。
 4. 计划目标没有漂移或通道冲突，测试只使用临时、生成或模拟数据。
 5. 不接触真实 `user_data/`，不做数据库迁移、不可逆删除、真实密钥/模型调用、用户视觉验收或业务语义裁决。

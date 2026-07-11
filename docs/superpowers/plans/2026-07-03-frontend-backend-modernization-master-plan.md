@@ -137,7 +137,7 @@ flowchart LR
 ## 3. 分阶段路线图
 
 > 每阶段末尾的"验收"是该阶段合并回主线的硬门槛。工作量为相对量级（S<1 天级，M=数天级，L=一周级以上，均指专注执行时间）。
-> 本节保留阶段目标，不作为实时清单。正式包定义共 87 个；当前待执行 80 个（Phase 1: 14、Phase 2: 22、Phase 3: 19、Phase 4: 12、Phase 5: 13），详见 `docs/superpowers/packages/EXECUTION_INDEX.md`。
+> 本节只保留阶段目标，不保存实时完成数、待执行数或队列；这些动态信息只见 `docs/superpowers/packages/EXECUTION_INDEX.md`。
 
 ### Phase 0 — 地基与防护网（前置，量级 M）
 

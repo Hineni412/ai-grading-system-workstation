@@ -87,7 +87,7 @@ runtime\python\python.exe tools\handoff_status.py --plan $resolvedPlanPath --rep
 1. 确认资格矩阵中该包唯一标记为 `eligible_after_plan`。
 2. 用 Sol Extra High 生成并复核当前包即时计划。
 3. 写入五个夜间放行字段，并把 `允许夜间执行` 设为 `yes`。
-4. 在并行手册中分配专属 worktree/分支，并同步最新共同基线。
+4. 按并行手册现场创建或确认专属 worktree/分支，并同步最新共同基线；不要把现场路径写回持久手册。
 5. 确认该包的执行模型为 `T-M` 或 `T-H`，且没有用户验收或真实数据门槛。
 6. 保证同通道没有运行中、等待用户或状态不明的 Codex 任务。
 7. 任务首次领取后记录不可变 Stash 基线并立即维护交接块；白天结束时把可继续任务写成 `resumable`，完成实现写成 `waiting_review`，复审与必要用户验收通过后创建范围单一的最终交接提交。

@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+BACKTICK_REF_RE = re.compile(r"`([^`\n]+)`")
 PHASE_PACKAGE_RE = re.compile(r"^###\s+(P[1-5]-\d{2})\s+(.+?)\s*$")
 MODEL_RE = re.compile(r"^- \*\*模型：\*\*\s+`([^`]+)`")
 MATRIX_ROW_RE = re.compile(
@@ -25,6 +26,28 @@ FORMAL_IDS = frozenset(
     + [*(f"P4-{value:02d}" for value in range(1, 13))]
     + [*(f"P5-{value:02d}" for value in range(1, 14))]
 )
+
+AUTHORITY_REFERENCE_PATHS = (
+    "AGENTS.md",
+    "docs/superpowers/packages/README.md",
+    "docs/superpowers/packages/EXECUTION_INDEX.md",
+    "docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md",
+    "docs/superpowers/packages/NIGHTLY_AUTOMATION.md",
+    "docs/superpowers/packages/PARALLEL_WORKTREE_EXECUTION.md",
+    "docs/user-testing/README.md",
+    "docs/user-testing/USER_TEST_TEMPLATE.md",
+    "README_工作机使用说明.md",
+    "README_私人便携版_v1.5.0.md",
+)
+VERSIONED_REFERENCE_PREFIXES = ("docs/", "tools/")
+VERSIONED_ROOT_REFERENCES = {
+    "AGENTS.md",
+    "ARCHITECTURE.md",
+    "CLAUDE.md",
+    "README.md",
+    "VERSION",
+    "运行.bat",
+}
 
 GOVERNANCE_PLANNING_PATHS = frozenset(
     {
@@ -120,6 +143,37 @@ def check_markdown_links(project_root: Path) -> list[DocumentationIssue]:
                         _relative(root, path),
                         _line_number(text, match.start()),
                         f"Markdown target does not exist: {raw}",
+                    )
+                )
+    for relative_path in AUTHORITY_REFERENCE_PATHS:
+        path = root / relative_path
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        for match in BACKTICK_REF_RE.finditer(text):
+            raw = match.group(1).strip()
+            normalized = raw.replace("\\", "/").split("#", 1)[0]
+            normalized = re.sub(r":\d+$", "", normalized)
+            if (
+                not normalized
+                or any(token in normalized for token in ("*", "<", ">", "{", "}"))
+                or any(character.isspace() for character in normalized)
+                or "://" in normalized
+            ):
+                continue
+            if not (
+                normalized.startswith(VERSIONED_REFERENCE_PREFIXES)
+                or normalized in VERSIONED_ROOT_REFERENCES
+            ):
+                continue
+            candidates = (root / normalized, path.parent / normalized)
+            if not any(candidate.resolve().exists() for candidate in candidates):
+                issues.append(
+                    DocumentationIssue(
+                        "DOC002",
+                        relative_path,
+                        _line_number(text, match.start()),
+                        f"Backtick file reference does not exist: {raw}",
                     )
                 )
     return sorted(issues)
@@ -235,6 +289,24 @@ def check_status_ownership(project_root: Path) -> list[DocumentationIssue]:
                     "| 状态 |",
                     "Eligibility matrix must not copy package status.",
                 ),
+                (
+                    "DOC209",
+                    "并行手册已分配专属",
+                    "Persistent parallel rules must not store live worktree assignments.",
+                ),
+            ),
+        )
+    )
+    issues.extend(
+        _text_issues(
+            root,
+            "docs/superpowers/packages/NIGHTLY_AUTOMATION.md",
+            (
+                (
+                    "DOC210",
+                    "在并行手册中分配专属",
+                    "Automation must verify live worktree assignments at runtime.",
+                ),
             ),
         )
     )
@@ -296,6 +368,11 @@ def check_status_ownership(project_root: Path) -> list[DocumentationIssue]:
                     "DOC208",
                     "### 0.4 当前进度",
                     "Master plan must not copy current progress.",
+                ),
+                (
+                    "DOC208",
+                    "当前待执行",
+                    "Master plan must not copy current package counts.",
                 ),
             ),
         )
@@ -383,6 +460,60 @@ def check_package_registry(
     phase = _phase_packages(root)
     matrix = _matrix_packages(root)
     issues: list[DocumentationIssue] = []
+    phase_occurrences: dict[str, list[tuple[str, int]]] = {}
+    for relative_path in PHASE_PATHS:
+        path = root / relative_path
+        if not path.exists():
+            continue
+        for line_number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), 1
+        ):
+            match = PHASE_PACKAGE_RE.match(line)
+            if match:
+                phase_occurrences.setdefault(match.group(1), []).append(
+                    (relative_path, line_number)
+                )
+    matrix_occurrences: dict[str, list[int]] = {}
+    matrix_path = root / "docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md"
+    if matrix_path.exists():
+        for line_number, line in enumerate(
+            matrix_path.read_text(encoding="utf-8").splitlines(), 1
+        ):
+            match = MATRIX_ROW_RE.match(line)
+            if match:
+                matrix_occurrences.setdefault(match.group(1), []).append(line_number)
+
+    for package_id, locations in sorted(phase_occurrences.items()):
+        if len(locations) > 1:
+            issues.append(
+                DocumentationIssue(
+                    "DOC305",
+                    locations[1][0],
+                    locations[1][1],
+                    f"Duplicate Phase map package ID: {package_id}",
+                )
+            )
+    for package_id, lines in sorted(matrix_occurrences.items()):
+        if len(lines) > 1:
+            issues.append(
+                DocumentationIssue(
+                    "DOC305",
+                    "docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md",
+                    lines[1],
+                    f"Duplicate matrix package ID: {package_id}",
+                )
+            )
+    for package_id in sorted(
+        (set(phase_occurrences) | set(matrix_occurrences)) - set(expected_ids)
+    ):
+        issues.append(
+            DocumentationIssue(
+                "DOC306",
+                "docs/superpowers/packages",
+                1,
+                f"Unexpected formal package ID: {package_id}",
+            )
+        )
     for package_id in sorted(set(expected_ids) - set(phase)):
         issues.append(
             DocumentationIssue(
