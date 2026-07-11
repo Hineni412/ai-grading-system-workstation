@@ -25,6 +25,17 @@ def test_missing_relative_markdown_link_has_stable_location(tmp_path: Path) -> N
     ]
 
 
+def test_missing_backtick_authority_reference_is_rejected(tmp_path: Path) -> None:
+    _write(tmp_path / "AGENTS.md", "读取 `docs/missing.md` 和 `tools/missing.py`。\n")
+
+    issues = check_markdown_links(tmp_path)
+
+    assert [(item.code, item.path, item.line) for item in issues] == [
+        ("DOC002", "AGENTS.md", 1),
+        ("DOC002", "AGENTS.md", 1),
+    ]
+
+
 def test_user_documents_reject_obsolete_runtime_and_skill_instructions(
     tmp_path: Path,
 ) -> None:
@@ -80,6 +91,21 @@ def test_entry_documents_reject_volatile_snapshots(tmp_path: Path) -> None:
     assert {item.code for item in issues} == {"DOC205", "DOC207", "DOC208"}
 
 
+def test_persistent_docs_reject_live_worktree_assignment_claims(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md",
+        "并行手册已分配专属 worktree。\n",
+    )
+    _write(
+        tmp_path / "docs/superpowers/packages/NIGHTLY_AUTOMATION.md",
+        "在并行手册中分配专属 worktree。\n",
+    )
+
+    issues = check_status_ownership(tmp_path)
+
+    assert {item.code for item in issues} == {"DOC209", "DOC210"}
+
+
 def test_removed_document_name_is_rejected_outside_governance_plan(
     tmp_path: Path,
 ) -> None:
@@ -104,6 +130,29 @@ def test_package_registry_compares_title_model_and_formal_ids(
     )
     issues = check_package_registry(tmp_path, expected_ids={"P1-09"})
     assert {item.code for item in issues} == {"DOC301", "DOC302"}
+
+
+def test_package_registry_rejects_duplicate_and_unexpected_ids(
+    tmp_path: Path,
+) -> None:
+    phase = tmp_path / "docs/superpowers/packages/phase-1-execution-packages.md"
+    matrix = tmp_path / "docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md"
+    _write(
+        phase,
+        "### P1-09 示例包\n- **模型：** `S-XH / T-M / T-H`。\n"
+        "### P1-09 重复包\n- **模型：** `S-XH / T-M / T-H`。\n"
+        "### P1-10 额外包\n- **模型：** `S-XH / T-M / T-H`。\n",
+    )
+    _write(
+        matrix,
+        "| P1-09 | 示例包 | `T-M` | `eligible_after_plan` | test |\n"
+        "| P1-09 | 重复包 | `T-M` | `eligible_after_plan` | test |\n"
+        "| P1-10 | 额外包 | `T-M` | `eligible_after_plan` | test |\n",
+    )
+
+    issues = check_package_registry(tmp_path, expected_ids={"P1-09"})
+
+    assert {item.code for item in issues} == {"DOC305", "DOC306"}
 
 
 def test_run_checks_is_read_only(tmp_path: Path) -> None:
