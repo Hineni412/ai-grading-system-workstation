@@ -149,7 +149,7 @@ flowchart LR
 | WP0.2 | 仓库卫生：删除/移出 `debug_test.db`、`test_math.png`、`merge_staging_known_hosts.tmp`、`第十五周学情反馈.pdf`；归档 `task.md`（已全部完成）、`scratch/`、`analysis_outputs/`；`.gitignore` 补齐同类产物 | 根目录 | S |
 | WP0.3 | 依赖锁定：从便携运行时导出 `constraints.txt`（pip freeze）；`requirements.txt` 拆分运行/构建两份；删除无使用证据的 `google-generativeai`（grep 零命中，删除前跑全量测试复核） | requirements.txt | S |
 | WP0.4 | Schema 基线：为两库各生成一份"与当前运行时 DDL 等价"的基线迁移 + 建 `schema_migrations` 表并打标；写迁移预演脚本（复制库→迁移→PRAGMA integrity_check→比对 schema） | migrations/、update_tools/migrate_db.py | M |
-| WP0.5 | 冒烟脚本：一条命令跑"全量 pytest + 静态编译 + 两库副本初始化幂等检查"，作为后续每个 WP 的回归入口 | tools/ | S |
+| WP0.5 | 冒烟脚本：一条命令跑"全量 pytest + 静态编译 + 两库副本初始化幂等检查"，作为 integration 波次结束时的最终门禁入口；功能分支使用聚焦测试、受影响回归和跳过 pytest 的快速冒烟 | tools/ | S |
 
 **验收：** 全量测试保持通过；两库真实文件经迁移预演无差异；仓库根目录无杂物。
 **回退：** 全部为可逆提交；基线迁移不改现有数据。
@@ -330,7 +330,7 @@ flowchart LR
 
 ## 7. 验证策略（每个 WP 的实现计划必须含对应条目）
 
-1. **回归底座**：WP0.5 冒烟脚本（全量 pytest + 编译 + 库初始化幂等）每 WP 必跑。
+1. **回归底座**：每个执行包保持聚焦测试和受影响回归通过，并在功能分支交接前运行跳过 pytest 的快速冒烟；WP0.5 完整冒烟（全量 pytest + 编译 + 库初始化幂等）由 integration 在当前波次全部合入后只运行一次。额外全量只在执行包规则规定的高风险或候选变化条件下运行。
 2. **API 契约**：每路由的请求/响应 schema 测试 + 核心五流程 e2e（WP1.6）。
 3. **前端**：组件级测试从简；以"真实浏览器 + 真实考试数据全流程 + 三档分辨率"为硬验收（Phase 2 验收标准）；答题区编辑器沿用 editor_core.test.mjs 并扩展。
 4. **迁移**：每个 schema 变更附预演（副本库跑迁移 + integrity_check + schema diff）。
@@ -368,5 +368,5 @@ flowchart LR
 
 1. 遵守仓库 `AGENTS.md`、执行包 README 与 `docs/ui/STYLE.md`；每个执行包先读取包定义，再按当时源码生成 task-by-task 实现计划后编码。
 2. 不改的东西：评分规则与知识点口径、`question_tags.knowledge_point` 活动语义、两库分立格局、127.0.0.1 单用户边界、`PathManager` 作为唯一路径入口、答题区"数据库+快照补偿"提交协议。
-3. 每次提交保持全量测试通过；结构性变化同步 `ARCHITECTURE.md`（按其"仅实质变化才更新"原则）。
+3. 每次提交保持其聚焦测试和受影响回归通过；完整测试按 `AGENTS.md`、执行包 README 与 integration 分层门禁执行，不因复审、纯文档提交或主线同步重复运行。结构性变化同步 `ARCHITECTURE.md`（按其"仅实质变化才更新"原则）。
 4. 破坏性操作（删表、删文件、改 schema）前先备份/预演，且独立成可回退的提交。
