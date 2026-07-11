@@ -28,6 +28,7 @@ FORMAL_IDS = frozenset(
     + [*(f"P4-{value:02d}" for value in range(1, 13))]
     + [*(f"P5-{value:02d}" for value in range(1, 14))]
 )
+HISTORICAL_MATRIX_IDS = frozenset(f"P1-{value:02d}" for value in range(1, 9))
 
 AUTHORITY_REFERENCE_PATHS = (
     "AGENTS.md",
@@ -505,9 +506,10 @@ def check_package_registry(
                     f"Duplicate matrix package ID: {package_id}",
                 )
             )
-    for package_id in sorted(
-        (set(phase_occurrences) | set(matrix_occurrences)) - set(expected_ids)
-    ):
+    unexpected_ids = (set(phase_occurrences) - set(expected_ids)) | (
+        set(matrix_occurrences) - set(expected_ids) - set(HISTORICAL_MATRIX_IDS)
+    )
+    for package_id in sorted(unexpected_ids):
         issues.append(
             DocumentationIssue(
                 "DOC306",
