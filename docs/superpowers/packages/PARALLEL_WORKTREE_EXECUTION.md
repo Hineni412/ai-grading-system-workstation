@@ -1,0 +1,97 @@
+# 并行 Worktree 执行手册
+
+本文只保存长期有效的并行、集成与清理规则。当前包状态和队列见 `EXECUTION_INDEX.md`；实际 worktree、分支和提交必须在每一波开始时现场核验，不得从本文推断。
+
+## 1. 现场核验与数据红线
+
+开始任何并行波次前：
+
+1. 获取最新 `origin/main`，列出 worktree、分支、HEAD、领先/落后和工作树状态。
+2. 分别检查源码状态与 `git status --short -- user_data`，不得把根目录真实数据脏状态带入功能提交。
+3. 记录真实两库的大小、UTC 修改时间和 SHA-256；验证只在临时副本进行写操作。
+4. 核对候选包在 Index 中的状态、Phase map 依赖、即时计划和交接块。
+5. 发现未知提交、未知本地数据、依赖未进入 `origin/main` 或外部 reparse point 时停止。
+
+真实 `user_data/` 不得被修改、删除、暂存、提交或 stash。任何真实数据操作都需要针对本次具体动作的单独授权。
+
+## 2. 两实现通道加一集成通道
+
+最多可并行使用两个功能通道和一个 integration 通道；实际数量按依赖和文件所有权决定，不要求始终占满。
+
+- 功能通道只实现一个正式包，拥有该包的源码、测试和即时计划。
+- integration 通道只接收已经完成、验证并复核的提交链，解决共享入口与文档冲突并运行组合门槛。
+- integration 不顺手修业务缺陷；发现问题退回原功能分支。
+- 功能分支不直接 push 或合并 `main`，也不通过改共享状态文档宣称已经集成。
+
+## 3. 一包一分支与依赖基线
+
+1. 一个功能 worktree/分支同一时间只承载一个执行包。
+2. 下一包从最新已集成的 `origin/main` 创建新分支，不在旧功能分支继续叠包。
+3. 只有 `origin/main` 的包含关系能证明依赖已经合并；本地 `verified` 或另一个未合并分支不能满足依赖。
+4. 每包开工前根据当时源码生成即时实现计划，并在首次源码修改前建立交接块。
+5. 包的稳定边界来自 Phase map；动态状态和领取顺序只来自 Index。
+6. 若两个候选包存在共享迁移、状态机或主要业务文件，改为串行，或先由 integration 明确拆分文件所有权。
+
+## 4. 共享文件和冲突所有权
+
+| 共享范围 | 规则 |
+|---|---|
+| `AGENTS.md`、`ARCHITECTURE.md`、`EXECUTION_INDEX.md` | 功能分支只记录包专属事实；最终状态、数量和下一动作由 integration 统一整理 |
+| `backend/api/app.py`、router/schema `__init__.py` | 功能分支只做最小注册；integration 合并时同时保留各包契约 |
+| OpenAPI 与全局测试清单 | 包内新增契约测试；全局快照和组合证据由 integration 更新 |
+| Job handler 注册和 Job schemas | 多个 Job 包默认串行，不在不同 worktree 同时重排注册逻辑 |
+| `llm_client.py`、`backend/llm/`、AI tagging 链 | LLM Gateway、调用迁移和 tagging 包默认串行，除非文件所有权已明确分离 |
+| `question_bank/services/` | 题库写入、导入和 Training 包开工前重查重叠文件；重叠即串行 |
+| 依赖锁、发布清单和启动入口 | 由对应工程基础或切换包独占；升级必须有独立包边界 |
+| 数据库迁移 | 不并行创建相邻迁移号；integration 核对顺序并在副本预演 |
+
+## 5. 功能包完成门槛
+
+功能包只有同时满足以下条件才可交给 integration：
+
+1. 起点与依赖核验通过，任务范围没有扩散到其他包。
+2. 新行为有 RED → GREEN 证据，没有为测试改写业务口径。
+3. 包内聚焦测试、相关回归和 `tools/smoke_check.py --skip-tests` 通过。
+4. 高风险包完成指定级别复核，Critical/Important 为零。
+5. `git diff --check` 通过，提交不含真实数据、临时数据库、缓存、构建噪声、真实导出或密钥。
+6. 交付说明包含修改范围、验证证据、风险、回退和建议合并顺序。
+7. `tools/handoff_status.py` 验证通过，最终为 `verified_pending_integration`；功能 SHA 与只改即时计划的交接提交关系正确。
+
+## 6. 集成顺序和验证
+
+1. integration 从最新共同基线开始，确认没有未知改动或独有业务提交。
+2. 一次只接收一个正式包的完整提交链，先核对交接证据，再合入依赖更基础、共享面更小的包。
+3. 每次合入立即运行该包聚焦回归和受影响的 API/前端命令。
+4. 当前波次全部合入后运行完整 `tools/smoke_check.py`；存在前端时还运行 lint、typecheck、unit、build 和要求的浏览器检查。
+5. 比较验证前后真实两库大小、修改时间和 SHA-256；未经本次授权的任何变化都是阻塞。
+6. 最后统一更新架构事实、Index 状态和必要的包证据；测试流水数字不复制到长期入口。
+7. 只有 integration 完整门槛通过后，下一波分支才能从该提交或合并后的主线创建。
+
+linked worktree 不应复制根目录便携运行时。后端验证以目标 worktree 为工作目录调用仓库根目录运行时；前端工具链每次通过 workspace dependencies 重新探测，不把本机绝对路径写进项目配置。
+
+## 7. 必须暂停的情况
+
+- 依赖包尚未进入共同基线。
+- 两个实现包需要同时修改同一业务服务、迁移或状态机。
+- 测试需要真实数据、真实密钥、真实模型调用或不可逆文件操作，但没有本次明确授权。
+- API 字段、评分规则、标签语义或状态含义与包定义不一致。
+- 同一包连续两次修复失败，或复核仍有 Critical/Important。
+- 合入后完整冒烟、前端构建或数据库指纹守卫失败。
+- 样板页尚未获得要求的用户确认，却准备扩散复杂页面迁移。
+
+暂停后保留证据并回到原包或用户决策，不通过扩大范围绕过门槛。
+
+## 8. Main 同步与安全清理
+
+1. 功能分支分别完成提交、验证、复核和交接。
+2. integration 更新到最新 `origin/main` 后一次合入一个包，并逐包回归。
+3. 全部包进入 integration 后运行完整门槛与真实两库指纹守卫。
+4. 推送 integration 分支并创建以 GitHub `main` 为目标的 PR；检查通过后合并，禁止直接 push `main`。
+5. `git fetch --prune` 后，将本地 `main` 和活动 worktree 快进到 `origin/main`；根目录保持本地 `main`。
+6. 删除已合并的远端 integration 临时分支；本地 integration 通道保留并重新跟踪 `origin/main`。
+7. 只有 `git branch --merged origin/main` 能证明候选分支已被主线包含。未合并历史默认保留，丢弃必须单独获得用户授权。
+8. 删除 linked worktree 前分别核对源码、`user_data/` 和所有 junction/symlink/reparse point。存在本地数据、独有提交或指向外部的链接时停止。
+9. 通过核验后，只能从仓库根目录执行 `git worktree remove <verified-path>` 和 `git worktree prune`；禁止手工递归删除目录。
+10. 清理前后再次比较真实数据状态与两库指纹，任何变化立即停止。
+
+用户启动执行包即授权标准功能提交和 integration PR 流程；直接 push `main`、force push、真实数据操作和未合并历史丢弃仍需单独明确授权。
