@@ -4,6 +4,7 @@
 > **阶段状态：** `planned`；Phase 3 Schema/Repository 稳定后正式实施。
 > **事实修正：** `training_attempts` 已有 `record_attempt_stub()` 写入方，但尚未形成从真实训练卷批改结果自动关联、补齐分数和驱动推荐的闭环。
 > **不可变规则：** AI 只能建议关系；只有教师确认关系参与图谱和推荐；旧掌握度口径必须可对照和回退。
+> **夜间资格：** 所有包级标记以 `NIGHTLY_ELIGIBILITY_MATRIX.md` 为唯一权威，本文件不重复维护。
 
 ## 关系层
 

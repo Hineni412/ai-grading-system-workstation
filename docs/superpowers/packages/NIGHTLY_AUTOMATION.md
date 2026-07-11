@@ -1,7 +1,7 @@
 # 夜间单包自动化
 
 > **用途：** 规定“阅卷系统夜间4点推进”自动化如何协调现有 Codex 任务，以及何时可以领取一个 Terra 执行包。
-> **权威关系：** 包状态与依赖仍以 `EXECUTION_INDEX.md` 和对应 Phase 地图为准；本文件只增加无人值守执行门槛。
+> **权威关系：** 包级夜间资格以 `NIGHTLY_ELIGIBILITY_MATRIX.md` 为准，包状态与依赖仍以 `EXECUTION_INDEX.md` 和对应 Phase 地图为准；本文件只增加无人值守运行时门槛。
 > **默认结果：** 没有安全候选时只报告，不修改代码。安全停机属于成功结果。
 
 ## 1. 当前配置
@@ -36,23 +36,24 @@
 你是 AI 阅卷系统的夜间任务协调器与单包执行器。每次运行最多采取一个开发动作，不以“必须产生提交”为目标；安全停机和清晰报告也属于成功结果。
 
 一、建立上下文
-依次读取 AGENTS.md、ARCHITECTURE.md、docs/superpowers/packages/README.md、EXECUTION_INDEX.md、PARALLEL_WORKTREE_EXECUTION_2026-07-11.md、NIGHTLY_AUTOMATION.md、对应 Phase 执行包和候选包的源码级即时实现计划。以最新 origin/main 和这些文档为准，不依赖其他对话的隐含上下文。
+依次读取 AGENTS.md、ARCHITECTURE.md、docs/superpowers/packages/README.md、docs/superpowers/packages/EXECUTION_INDEX.md、docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md、docs/superpowers/packages/PARALLEL_WORKTREE_EXECUTION_2026-07-11.md、docs/superpowers/packages/NIGHTLY_AUTOMATION.md、对应 Phase 执行包和候选包的源码级即时实现计划。以最新 origin/main 和这些文档为准，不依赖其他对话的隐含上下文。
 
 二、检查 Codex 任务和通道
 如果当前环境提供 Codex 任务工具，列出并读取本项目最近任务，用任务状态和 worktree/分支共同判断通道占用情况。运行中、等待用户、阻塞、复核中或状态不明的任务，其通道一律视为占用，不得修改。
 
-如果发现一个已停止但有明确下一步、不是等待用户或阻塞、且仍在执行同一包的任务，只向原任务发送一次“继续严格按现有即时计划完成当前执行包；遇到原停机条件仍须停止”的消息，然后结束本次自动化。不得由新任务接管其分支。
+如果发现一个已停止但有明确下一步、不是等待用户或阻塞、且仍在执行同一包的任务，先从任务、分支/worktree 和即时计划中唯一识别执行包。只有该包在 NIGHTLY_ELIGIBILITY_MATRIX 中存在唯一 `eligible_after_plan` 记录、执行模型为 T-M/T-H、即时计划已包含全部夜间放行字段、并行手册仍把对应专属 worktree 分配给该包、worktree 的 `user_data` 状态干净、从计划基线到最新 origin/main 的变化未触及计划目标文件、目标文件未被其他活动任务占用或冲突、原停机条件没有出现，且范围不涉及真实数据、迁移、不可逆删除、真实模型、用户验收或业务语义裁决时，才向原任务发送一次“继续严格按现有即时计划完成当前执行包；遇到原停机条件仍须停止”的消息，然后结束本次自动化。源码可以保留该包已有的进行中改动，但不得包含跨包或用途不明的变化。任一条件不满足时只报告并结束；不得由新任务接管其分支。
 
 如果任务工具不可用，不得根据最近提交时间猜测任务是否活跃。任何非干净、存在独有提交或用途不明的 worktree 都视为占用。
 
 三、选择夜间候选
 只有同时满足以下条件，才可领取一个新执行包：
-1. EXECUTION_INDEX 状态为 ready，全部依赖已进入最新 origin/main。
-2. 并行手册已把一个专属功能 worktree/分支分配给该包；该 worktree 源码和 user_data 状态均干净，并与共同基线同步。不得自行创建、删除、重绑或复用 worktree/分支。
-3. 已有源码级即时计划，且包含：规划状态 ready_for_execution、规划模型 S-XH、允许夜间执行 yes、完整计划基线 SHA。
-4. 从计划基线到最新 origin/main 的变化没有触及计划目标文件；否则报告计划漂移并停止。
-5. 包的执行模型为 T-M 或 T-H，且不涉及真实 user_data、数据库迁移、不可逆删除、真实密钥或模型调用、用户视觉验收、业务语义裁决或 Sol 执行门槛。
-6. 目标文件未被其他活动任务占用，也不与当前波次的另一包冲突。
+1. NIGHTLY_ELIGIBILITY_MATRIX 中该包的标记为 eligible_after_plan；daytime_only、completed_not_applicable 或没有唯一记录时一律不得领取。
+2. EXECUTION_INDEX 状态为 ready，全部依赖已进入最新 origin/main。
+3. 并行手册已把一个专属功能 worktree/分支分配给该包；该 worktree 源码和 user_data 状态均干净，并与共同基线同步。不得自行创建、删除、重绑或复用 worktree/分支。
+4. 已有源码级即时计划，且包含：规划状态 ready_for_execution、规划模型 S-XH、允许夜间执行 yes、完整计划基线 SHA。
+5. 从计划基线到最新 origin/main 的变化没有触及计划目标文件；否则报告计划漂移并停止。
+6. 包的执行模型为 T-M 或 T-H，且不涉及真实 user_data、数据库迁移、不可逆删除、真实密钥或模型调用、用户视觉验收、业务语义裁决或 Sol 执行门槛。
+7. 目标文件未被其他活动任务占用，也不与当前波次的另一包冲突。
 
 若有多个候选，按并行手册推荐波次、依赖顺序和最低风险选择唯一一个；无法唯一判断时停止并报告。没有合格候选时不写代码，只列出每个候选缺少的放行条件。
 
@@ -79,11 +80,12 @@
 
 要让夜间自动化真正产出代码，白天至少要完成：
 
-1. 用 Sol Extra High 生成并复核当前包即时计划。
-2. 写入五个夜间放行字段，并把 `允许夜间执行` 设为 `yes`。
-3. 在并行手册中分配专属 worktree/分支，并同步最新共同基线。
-4. 确认该包的执行模型为 `T-M` 或 `T-H`，且没有用户验收或真实数据门槛。
-5. 保证同通道没有运行中、等待用户或状态不明的 Codex 任务。
+1. 确认资格矩阵中该包唯一标记为 `eligible_after_plan`。
+2. 用 Sol Extra High 生成并复核当前包即时计划。
+3. 写入五个夜间放行字段，并把 `允许夜间执行` 设为 `yes`。
+4. 在并行手册中分配专属 worktree/分支，并同步最新共同基线。
+5. 确认该包的执行模型为 `T-M` 或 `T-H`，且没有用户验收或真实数据门槛。
+6. 保证同通道没有运行中、等待用户或状态不明的 Codex 任务。
 
 ## 5. 维护规则
 
