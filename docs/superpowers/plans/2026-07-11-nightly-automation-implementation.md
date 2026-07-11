@@ -42,7 +42,7 @@
 
   Expected: exit 0，无尾随空白或冲突标记。
 
-- [ ] **Step 4: 提交仓库文档**
+- [x] **Step 4: 提交仓库文档**
 
   ```powershell
   git add AGENTS.md docs/superpowers/packages/README.md docs/superpowers/packages/NIGHTLY_AUTOMATION.md docs/superpowers/specs/2026-07-11-nightly-single-package-automation-design.md docs/superpowers/plans/2026-07-11-nightly-automation-implementation.md
@@ -59,22 +59,29 @@
 - Consumes: `NIGHTLY_AUTOMATION.md` 中 `AUTOMATION_PROMPT_START/END` 标记之间的文本。
 - Produces: 已启用的“阅卷系统夜间4点推进”自动化 prompt。
 
-- [ ] **Step 1: 使用 Codex automation 工具更新现有任务**
+- [x] **Step 1: 使用 Codex automation 工具更新现有任务**
 
   保留现有 name、schedule、model、reasoning effort、execution environment、project、cwd 与 ACTIVE 状态，只替换 prompt。不得手工写 automation TOML。
 
-- [ ] **Step 2: 反读配置并校验固定字段**
+- [x] **Step 2: 反读配置并校验固定字段**
 
   使用 `automation_update(mode=view)` 和只读 TOML 解析确认：名称不变、每天 4:00、模型为 `gpt-5.6-terra`、推理为 `xhigh`、状态为 `ACTIVE`、项目路径不变。
 
-- [ ] **Step 3: 比较配置 prompt 与权威文档**
+- [x] **Step 3: 比较配置 prompt 与权威文档**
 
   使用 Python `tomllib` 读取 automation TOML，提取 Markdown 标记间文本并进行精确字符串比较。
 
   Expected: `PROMPT_MATCH=YES`。
 
-- [ ] **Step 4: 验证仓库和真实数据守卫**
+- [x] **Step 4: 验证仓库和真实数据守卫**
 
   Run: `runtime\python\python.exe tools\smoke_check.py --skip-tests`
 
   Expected: 342 个第一方文件编译通过，两库副本初始化幂等且 `integrity_check=ok`；根目录两库大小、UTC 修改时间与 SHA-256 不变。
+
+## 执行证据
+
+- 权威文档与 automation-2 prompt 精确一致：1944 characters，`PROMPT_MATCH=YES`。
+- 名称、每天 4:00、`gpt-5.6-terra`、`xhigh`、本地项目路径和 `ACTIVE` 状态均反读一致。
+- `tools/smoke_check.py --skip-tests`：编译 342 个第一方文件；两库副本初始化幂等且 `integrity_check=ok`。
+- 真实 `grading_system.db` 与 `question_bank.db` 的大小、UTC 修改时间和 SHA-256 前后完全一致。
