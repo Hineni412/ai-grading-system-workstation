@@ -359,6 +359,68 @@ def _reviewed_waiting_user_record(repo_root: Path, plan_relative: str) -> Handof
     return parse_handoff_status(prior_text)
 
 
+def _claim_stash_baseline(
+    repo_root: Path,
+    plan_relative: str,
+    base_ref: str,
+    current_record: HandoffRecord,
+) -> tuple[frozenset[str], tuple[str, ...]]:
+    issues: list[str] = []
+    commits = tuple(
+        line
+        for line in _git(
+            repo_root,
+            "log",
+            "--first-parent",
+            "--reverse",
+            "--format=%H",
+            f"{base_ref}..HEAD",
+            "--",
+            plan_relative,
+        ).splitlines()
+        if line
+    )
+    if not commits:
+        return frozenset(), ("missing handoff claim commit",)
+
+    claim_commit = commits[0]
+    claim_text = _git(repo_root, "show", f"{claim_commit}:{plan_relative}")
+    try:
+        claim_record = parse_handoff_status(claim_text)
+        claim_package = _plan_package_id(claim_text)
+    except (ValueError, HandoffStatusError) as exc:
+        return frozenset(), (f"invalid handoff claim: {exc}",)
+
+    if claim_record.handoff_status != "in_progress":
+        issues.append("handoff claim must start in_progress")
+    if claim_record.package_id != current_record.package_id or claim_package != current_record.package_id:
+        issues.append("handoff claim package must match current package")
+    if _commit_paths(repo_root, claim_commit) != (plan_relative,):
+        issues.append("handoff claim commit must only change the plan")
+
+    claim_baseline = _stash_baseline_commits(claim_record.stash_baseline)
+    if _stash_baseline_commits(current_record.stash_baseline) != claim_baseline:
+        issues.append("stash_baseline must remain unchanged from claim")
+
+    for commit in commits[1:]:
+        history_text = _git(repo_root, "show", f"{commit}:{plan_relative}")
+        try:
+            history_record = parse_handoff_status(history_text)
+            history_package = _plan_package_id(history_text)
+        except (ValueError, HandoffStatusError) as exc:
+            issues.append(f"invalid handoff history at {commit[:12]}: {exc}")
+            continue
+        if (
+            history_record.package_id != current_record.package_id
+            or history_package != current_record.package_id
+        ):
+            issues.append("handoff history package must remain unchanged")
+        if _stash_baseline_commits(history_record.stash_baseline) != claim_baseline:
+            issues.append("stash_baseline must remain unchanged from claim")
+
+    return claim_baseline, tuple(dict.fromkeys(issues))
+
+
 def validate_handoff(
     plan_path: Path,
     repo_root: Path,
@@ -426,7 +488,16 @@ def validate_handoff(
             for line in _git(repo, "stash", "list", "--format=%H").splitlines()
             if line
         )
-        new_stashes = current_stashes - _stash_baseline_commits(record.stash_baseline)
+        claim_stash_baseline, claim_issues = _claim_stash_baseline(
+            repo,
+            plan_relative,
+            base_ref,
+            record,
+        )
+        issues.extend(claim_issues)
+        if not claim_stash_baseline.issubset(current_stashes):
+            issues.append("stash_baseline contains missing stash commits")
+        new_stashes = current_stashes - claim_stash_baseline
         if any(_stash_user_data_paths(repo, stash) for stash in new_stashes):
             issues.append("new user_data stash is not allowed")
         resolved = (
