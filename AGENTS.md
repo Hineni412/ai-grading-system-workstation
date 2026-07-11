@@ -18,10 +18,12 @@
 3. `docs/superpowers/packages/README.md`
 4. `docs/superpowers/packages/EXECUTION_INDEX.md`
 5. `docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md`
-6. `docs/superpowers/packages/PARALLEL_WORKTREE_EXECUTION_2026-07-11.md`
-7. 与当前包对应的 `docs/superpowers/packages/phase-*-execution-packages.md`
-8. `docs/superpowers/plans/2026-07-03-frontend-backend-modernization-master-plan.md`
-9. 当前执行包的即时实现计划、相关代码、测试和迁移文件
+6. `docs/superpowers/packages/NIGHTLY_AUTOMATION.md`
+7. `docs/superpowers/packages/PARALLEL_WORKTREE_EXECUTION_2026-07-11.md`
+8. `docs/user-testing/README.md`
+9. 与当前包对应的 `docs/superpowers/packages/phase-*-execution-packages.md`
+10. `docs/superpowers/plans/2026-07-03-frontend-backend-modernization-master-plan.md`
+11. 当前执行包的即时实现计划、相关代码、测试和迁移文件
 
 前端视觉或交互改造还必须读 `docs/ui/STYLE.md`。样板页通过验收前，不要扩散迁移其他页面。
 
@@ -31,6 +33,7 @@
 - 框架切换前完整数据备份已创建：`user_data/backups/backup_20260709_142850_before_update.zip`。默认不要提交该备份。
 - 当前共同基线：GitHub PR #2 已把 P1-02 至 P1-15 合并到 `main`；PR #3 至 PR #5 已把并行执行手册、入口文档、linked-worktree 测试兼容修复和分支清理红线合并到 `main`。根目录本地 `main` 与三个活动 worktree 必须始终快进到最新 `origin/main`，文档不写死会随下一次 PR 失效的当前提交号。
 - 87 个正式执行包已经过 Sol Extra High 夜间资格审查：31 个为 `eligible_after_plan`、49 个为 `daytime_only`、7 个为 `completed_not_applicable`。唯一权威标记见 `docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md`；P1-01 至 P1-08 另列为历史完成记录。
+- 正式包首次被任务领取后，源码级即时计划必须维护标记化昼夜交接块；`tools/handoff_status.py` 负责解析并核对 Git 证据。未领取的干净 `ready` 候选仍使用原五个夜间放行字段，不能伪造已完成状态。
 - 2026-07-11 分支治理已删除完全并入主线的旧本地分支和已合并的临时远端分支。用户随后明确确认 `fine-grained-graph-training`、`resilient-grading`、`grading-paper-skill-workflow` 三个早期 worktree 及其分支均为放弃内容，并授权删除其中 14/9 个未合并提交和 21 项 worktree 本地 `user_data/`。当前只保留根目录、P1-16、P2-01 与 integration 四个 worktree。
 - 删除三个旧 worktree 后发现根目录便携 `runtime/` 内容被同时清空；已从本机同版本 Python 3.12.1 缓存恢复、按锁定依赖补齐，并重新通过完整 smoke（967 passed）。真实两库指纹未变化。后续 Windows worktree 删除必须先审计目录联接、符号链接和其他 reparse point，任何指向 worktree 外部的目标都必须阻塞删除。
 - WP1.2 Batch A-D 已本地验证：sessions、students、config、template/answer-region 的只读与安全轻写 API。
@@ -64,6 +67,7 @@
 - 涉及真实 `user_data/` 的操作必须极其保守。除非用户明确要求，不要把数据库、答卷图片、导出文件或备份纳入提交。
 - 结构性变化要同步更新 `ARCHITECTURE.md`；普通局部修复不做无意义文档改写。
 - 执行包是稳定边界，不是永不过期的代码级步骤。每个包开工前必须根据当时源码生成即时实现计划；完成后更新执行索引和证据。
+- 已领取正式包必须在即时计划中维护 `in_progress`、`resumable`、`waiting_review`、`waiting_user` 或 `verified_pending_integration` 交接状态；字段或 Git 证据不一致时一律安全停机。完整矩阵见执行包 README。
 - 模型默认分工：Sol Extra High 负责跨域设计、实验门与高风险审查；Terra High/Medium 负责大多数实现；Luna 仅做低风险机械任务。升级条件见执行包 README。
 
 ## Git 与 Worktree 强制流程
@@ -83,9 +87,9 @@
 
 ## 夜间自动化
 
-每天 4:00 的“阅卷系统夜间4点推进”使用 `docs/superpowers/packages/NIGHTLY_AUTOMATION.md` 作为唯一权威提示词。夜间任务还必须读取资格矩阵、并行手册和候选包即时计划；一次最多唤醒一个原任务或实施一个已放行包。
+每天 4:00 的“阅卷系统夜间4点推进”使用 `docs/superpowers/packages/NIGHTLY_AUTOMATION.md` 作为唯一权威提示词。夜间任务还必须读取资格矩阵、并行手册和候选包即时计划，并用 `tools/handoff_status.py` 验证已经领取的包；一次最多唤醒一个原任务或实施一个已放行包。
 
-夜间自动实施只允许资格矩阵标记为 `eligible_after_plan`、已有专属干净 worktree、状态为 `ready`、执行模型为 Terra，且即时计划包含 `规划状态: ready_for_execution`、`规划模型: S-XH`、`允许夜间执行: yes` 和完整计划基线的包。夜间任务只能创建本地功能提交，不执行 push、PR、integration/main 合并、worktree/分支清理或真实数据操作。
+夜间自动实施只允许资格矩阵标记为 `eligible_after_plan`、已有专属干净 worktree、状态为 `ready`、执行模型为 Terra，且即时计划包含 `规划状态: ready_for_execution`、`规划模型: S-XH`、`允许夜间执行: yes` 和完整计划基线的包。夜间 Terra 完成后只能创建本地功能提交并留下 `waiting_review`，不得自行宣称独立复审或用户验收通过；不得执行 push、PR、integration/main 合并、worktree/分支清理或真实数据操作。
 
 ## 常用命令
 

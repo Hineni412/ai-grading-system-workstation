@@ -7,6 +7,7 @@
 - 当前状态与下一动作：`docs/superpowers/packages/EXECUTION_INDEX.md`
 - 夜间执行资格矩阵：`docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md`
 - 夜间自动领取与停机规则：`docs/superpowers/packages/NIGHTLY_AUTOMATION.md`
+- 用户自测与正式验收：`docs/user-testing/README.md`
 
 ## 权威顺序
 
@@ -35,6 +36,17 @@
 
 用途：开工前重新调查当前代码，写出准确文件、接口、失败测试、最小实现、验证命令和提交范围。实现计划必须使用 checkbox，并要求执行模型采用 `superpowers:subagent-driven-development` 或 `superpowers:executing-plans`。
 
+协议合并后新建或首次领取的正式包即时计划，文件名必须包含小写包号（例如 `2026-07-11-p1-16-...-implementation.md`），并在交接块之外恰好声明一次 `**执行包：** P1-16`。文件名、顶部字段和交接块包号必须一致；复制计划后只改其中一处会安全停机。
+
+每份即时计划还必须明确用户是否需要观察结果：
+
+```markdown
+**用户自测：** none | quick | formal
+**自测清单：** not_required | docs/user-testing/checkpoints/<版本化文件名>.md
+```
+
+纯工程或不可见包使用 `none/not_required`；明显可见的前端批次使用 `quick`；P1-29、P2-08、P2-20 和 P2-21 使用 `formal`。具体清单只能在对应页面和流程已经实现并运行验证后生成，不得根据未来设计猜测操作步骤。
+
 包级先天资格以 `NIGHTLY_ELIGIBILITY_MATRIX.md` 为唯一权威来源。只有标记为 `eligible_after_plan` 的包才可以进入夜间候选池；该标记不等于 `ready`，也不替代依赖、worktree 或代码漂移检查。
 
 若允许每天 4:00 的 Terra 自动化执行，即时计划还必须包含：
@@ -48,6 +60,49 @@
 ```
 
 这些字段只代表该包可以进入夜间候选池；自动化仍须按 `NIGHTLY_AUTOMATION.md` 检查任务占用、文件漂移、风险和数据守卫。没有 `允许夜间执行: yes` 时，自动化只能报告，不能实施。
+
+## 昼夜交接协议
+
+尚未被任何任务领取的干净 `ready` 候选继续只使用上述五个夜间放行字段。任务首次领取后，必须在首次源码修改前把下面的块写入该包唯一的源码级即时计划；此后该计划必须且只能有一对标记：
+
+```markdown
+<!-- HANDOFF_STATUS_START -->
+## 昼夜交接
+
+**执行包：** P1-16
+**交接状态：** in_progress
+**功能提交：** none
+**自动验证：** pending
+**独立复审：** pending
+**用户验收：** not_required
+**真实数据指纹：** not_touched
+**Stash 基线：** none
+**夜间动作：** report_only
+<!-- HANDOFF_STATUS_END -->
+```
+
+字段组合只能使用下表。`真实数据指纹: changed` 可以用于前四种状态记录异常，但会覆盖夜间动作并使验证失败；最终状态只允许 `not_touched` 或 `unchanged`。
+
+`Stash 基线` 不随状态变化：首次领取时把 `git stash list --format=%H` 的全部现有 SHA 用英文逗号连接；没有则写 `none`。后续不得把新 SHA 补进基线。验证器允许这些历史共享 stash 保留，但任何基线之后新增且包含 `user_data/` 的 stash 都会失败。
+
+| 交接状态 | 功能提交 | 自动验证 | 独立复审 | 用户验收 | 夜间动作 |
+|---|---|---|---|---|---|
+| `in_progress` | `none` | `pending` | `pending` | `pending` 或 `not_required` | `report_only` |
+| `resumable` | `none` | `pending` 或 `failed` | `pending` | `pending` 或 `not_required` | `resume_only` |
+| `waiting_review` | `branch_head` | `passed` | `pending` | `pending` 或 `not_required` | `report_only` |
+| `waiting_user` | 复审前为 `none`/`branch_head`；复审通过后为完整 40 位已复审 SHA | 复审前 `pending`/`passed`；复审通过后 `passed` | `pending`，或与完整 SHA 同时为 `passed` | `pending` | `report_only` |
+| `verified_pending_integration` | 完整 40 位 SHA | `passed` | `passed` | `passed` 或 `not_required` | `independent_candidate_allowed` |
+
+生命周期规则：
+
+1. 首次领取先记录不可变的 `Stash 基线`，再使用 `in_progress`；只有任务主动停下、下一步明确且不等待用户时才使用 `resumable`。
+2. 实现和自动验证通过后，功能提交内写 `waiting_review` 与 `功能提交: branch_head`。夜间 Terra 到此停止，不能自行写复审通过。
+3. 等待用户选择或验收时使用 `waiting_user`，夜间不得推断用户结论。独立复审通过后，先创建一个只改即时计划的锚点提交：它记录直接父提交的完整已复审 SHA，并把自动验证/独立复审写为 `passed`；用户只测试该锚定版本。
+4. 独立复审和必要用户验收通过后，创建最终交接提交。它只能修改当前即时计划，块内记录直接父提交的完整 SHA，并改为 `verified_pending_integration`。
+5. 通常最终交接的直接父提交就是已复审功能提交。`用户验收: passed` 时，必须紧接锚点提交创建一个证据提交；它只能修改 `docs/user-testing/checkpoints/` 下唯一一份以本包号开头的 Markdown 清单，不得改源码或其他文档。清单机器结果块必须记录同一包号、锚点中的已复审 SHA 和 `passed`，随后仍只允许一个仅改即时计划的交接提交。
+6. `merged` 不由计划自报，必须由最新 `origin/main` 的包含关系证明。未合并提交不能满足其他包依赖。
+
+已经领取的包必须用 `tools/handoff_status.py --plan <即时计划> --repo <worktree>` 验证。缺块、重复块、非法字段、包号身份不一致、脏 `branch_head`、错误父 SHA、验收证据夹带文件或交接提交夹带文件都按失败处理。领取提交必须是当前分支相对 `origin/main` 合并基线后的第一个 first-parent 提交且只能修改即时计划；`用户自测` 类型自领取起不可改变，P1-29、P2-08、P2-20、P2-21 必须为 `formal`，需要验收时交接结果不能写成 `not_required`，最终证据提交还必须精确修改计划声明的那一份清单。验证器还会检查 `origin/main..HEAD` 整段包提交历史和领取后的新增 stash；任何新增、修改、删除后保留、随后恢复或藏入新 stash 的 `user_data/` 都会失败，但主线已有且本包从未触及的历史跟踪文件及领取前已记录的共享 stash 不阻塞。一次性治理或支撑工作不得冒用正式包 ID、改变 87 包计数或进入夜间候选。
 
 ## 状态
 
