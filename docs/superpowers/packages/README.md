@@ -7,6 +7,7 @@
 - 当前状态与下一动作：`docs/superpowers/packages/EXECUTION_INDEX.md`
 - 夜间执行资格矩阵：`docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md`
 - 夜间自动领取与停机规则：`docs/superpowers/packages/NIGHTLY_AUTOMATION.md`
+- 用户自测与正式验收：`docs/user-testing/README.md`
 
 ## 权威顺序
 
@@ -34,6 +35,15 @@
 文件：`docs/superpowers/plans/YYYY-MM-DD-<package-id>-<slug>-implementation.md`
 
 用途：开工前重新调查当前代码，写出准确文件、接口、失败测试、最小实现、验证命令和提交范围。实现计划必须使用 checkbox，并要求执行模型采用 `superpowers:subagent-driven-development` 或 `superpowers:executing-plans`。
+
+每份即时计划还必须明确用户是否需要观察结果：
+
+```markdown
+**用户自测：** none | quick | formal
+**自测清单：** not_required | docs/user-testing/checkpoints/<版本化文件名>.md
+```
+
+纯工程或不可见包使用 `none/not_required`；明显可见的前端批次使用 `quick`；P1-29、P2-08、P2-20 和 P2-21 使用 `formal`。具体清单只能在对应页面和流程已经实现并运行验证后生成，不得根据未来设计猜测操作步骤。
 
 包级先天资格以 `NIGHTLY_ELIGIBILITY_MATRIX.md` 为唯一权威来源。只有标记为 `eligible_after_plan` 的包才可以进入夜间候选池；该标记不等于 `ready`，也不替代依赖、worktree 或代码漂移检查。
 

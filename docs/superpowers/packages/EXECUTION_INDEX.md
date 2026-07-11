@@ -5,6 +5,7 @@
 > **共同主线：** GitHub PR #2 已合并 P1-02 至 P1-15，PR #3 至 PR #5 已合并并行与集成治理文档；根目录和三个活动 worktree 以最新 `origin/main` 为准
 > **进度口径：** 只有 `merged` 计入阶段完成
 > **夜间资格：** 以 `NIGHTLY_ELIGIBILITY_MATRIX.md` 为唯一权威；87 个正式包中 31 个计划后可夜间、49 个仅限白天、7 个已完成不适用
+> **用户验收：** 稳定规则与反馈格式见 `docs/user-testing/README.md`；具体清单只在对应界面可运行后写入 `docs/user-testing/checkpoints/`
 
 ## 当前证据
 
@@ -61,6 +62,7 @@
 | `PARALLEL_WORKTREE_EXECUTION_2026-07-11.md` | 当前 worktree 清单、并行通道、包分配、共享文件和集成门槛 |
 | `NIGHTLY_ELIGIBILITY_MATRIX.md` | Sol 审查后的 87 包夜间资格、理由、额外门槛和历史完成附录 |
 | `NIGHTLY_AUTOMATION.md` | 每天 4:00 自动化的候选选择、停机、验证与本地提交规则 |
+| `../../user-testing/README.md` | 非专业用户的短测/正式验收节奏、数据安全、反馈格式与结果等级 |
 | `phase-1-execution-packages.md` | 当前 API/Job 状态与 14 个剩余包 |
 | `phase-2-execution-packages.md` | Vue 基础、样板页、页面迁移和切换共 22 包 |
 | `phase-3-execution-packages.md` | 仓储、SessionManager、Schema、删除和性能共 19 包 |
