@@ -1,38 +1,20 @@
 # Phase 1 执行包地图：API、任务与数据访问
 
 > **阶段目标：** 在不改变现有 Streamlit 业务行为的前提下，为 Vue 前端提供完整、可恢复、可测试的本机 API 和任务系统。
-> **阶段状态：** `in_progress`
+> **阶段状态：** 只在 `EXECUTION_INDEX.md` 维护。
 > **阶段门槛：** 五流程 API E2E、完整冒烟、模型请求无 `timeout=None`、关键媒体可安全下载。
 > **通用约束：** 不修改评分规则、题号契约和活动知识点语义；后续包不得修改真实 `user_data/`。P1-14 已获用户接受的数据例外单独记录在该包风险说明中，不构成后续授权。
 > **夜间资格：** 所有包级标记以 `NIGHTLY_ELIGIBILITY_MATRIX.md` 为唯一权威，本文件不重复维护。
 
-## 已实现证据
+## 历史完成摘要
 
-| ID | 内容 | 状态 | 证据 |
-|---|---|---|---|
-| P1-01 | FastAPI 骨架、统一错误体、双入口 | `merged` | PR #1；`pre-framework-switch-2026-07-09` |
-| P1-02 | sessions/students 基础只读 API | `merged` | `tests/test_api_read_routes.py`；PR #2 |
-| P1-03 | session/student 安全写 API | `merged` | `tests/test_api_write_routes.py`；PR #2 |
-| P1-04 | rubric/answer_key 同步配置 API | `merged` | `tests/test_api_config_routes.py`；PR #2 |
-| P1-05 | template/regions 草稿与提交 API | `merged` | `tests/test_api_template_region_routes.py`；PR #2 |
-| P1-06 | 最小 JobManager、JobStore、Jobs API | `merged` | job/store/API 测试；PR #2；尚非完整 WP1.3 |
-| P1-07 | report、scan、grading 三类业务 Job | `merged` | 三组 handler/API 测试；PR #2 |
-| P1-08 | review 题目摘要、列表、确认首批 API | `merged` | `tests/test_api_review_routes.py`；PR #2 |
-| P1-09 | Windows 失效路径与跳过测试清理 | `merged` | 776 passed / 0 skipped / 0 failed；PR #2 |
-| P1-10 | JobManager Schema 与应用生命周期 | `merged` | 聚焦 34 passed；全量 785 passed；PR #2 |
-| P1-11 | 三类真实 Job 协作式取消 | `merged` | 聚焦 51 passed；API 34 passed；全量 797 passed；PR #2 |
-| P1-12 | 复核查询服务与原子写入 | `merged` | 聚焦 35 passed；API 35 passed；全量 823 passed；PR #2 |
-| P1-13 | 受控媒体与文件下载 API | `merged` | 聚焦 73 passed；API 67 passed；全量 871 passed；PR #2 |
-| P1-14 | Phase 1 稳定化检查点 | `merged` | 聚焦 87 passed；API 85 passed；全量 889 passed；PR #2 |
-| P1-15 | Question Bank 只读路由 | `merged` | 组合 156 passed；Question Bank/OpenAPI 64 passed；PR #2 |
-
-P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 P1-29 未完成而保持 `in_progress`。
+P1-01 至 P1-08 是正式 87 包体系建立前的完成记录；P1-09 至 P1-15 的稳定目标、边界和验收定义保留在下方。是否已经合并、当前阶段状态和待执行范围只查看 `EXECUTION_INDEX.md`，本文件不复制 PR、测试数量或提交状态。
 
 ## 稳定化执行包
 
 ### P1-09 Windows 失效路径与跳过测试清理
 
-- **状态/依赖：** `merged`；已随 PR #2 合并到 `main`。
+- **依赖：** 无。
 - **目标：** 失效本地盘或网络盘被视为不可用候选，题库素材继续按既有规则回退；Windows 不再因 POSIX fork-only 测试产生 skip。
 - **主要模块：** `question_bank/services/asset_path_service.py`、`tests/test_question_bank_asset_path_service.py`、`tests/test_answer_region_session_lock.py`。
 - **子任务：** 用确定性 `OSError` 复现替代真实 `Z:` 等待；统一安全文件判定；覆盖唯一/歧义回退；用 spawn 验证 fresh registry 与跨进程互斥；保留 POSIX raw-fork 条件覆盖。
@@ -43,7 +25,7 @@ P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 
 
 ### P1-10 JobManager Schema 与应用生命周期
 
-- **状态/依赖：** `merged`；P1-09 已验证，已随 PR #2 合并到 `main`。
+- **依赖：** P1-09。
 - **目标：** `jobs` Schema 只有一个权威定义，FastAPI 启停能创建、恢复并关闭唯一 JobManager 线程池。
 - **主要模块：** `backend/jobs/store.py`、`migrations/grading/003_add_jobs.sql`、`backend/api/app.py`、`backend/api/dependencies.py`、Schema 工具与测试。
 - **子任务：** 以 `003_add_jobs.sql` 作为唯一完整 DDL；000 保持 Phase 0 边界；JobStore 兼容旧表并确定关闭连接；manager shutdown 与 submit 共用锁；FastAPI lifespan 创建、恢复和关闭 app-owned manager；测试 override 保持外部所有权。
@@ -54,7 +36,7 @@ P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 
 
 ### P1-11 协作式任务取消
 
-- **状态/依赖：** `merged`；P1-10 已验证，已随 PR #2 合并到 `main`。
+- **依赖：** P1-10。
 - **目标：** queued 任务可立即取消；running 任务只在 handler 确认安全停止后进入 cancelled，取消后不继续写报告、扫描结果或评分结果。
 - **主要模块：** `backend/jobs/manager.py`、`backend/jobs/store.py`、三个现有 handler、相关领域服务回调。
 - **子任务：** 定义状态机；增加 `raise_if_cancelled()` 或等价协议；在安全边界轮询；区分“请求取消”和“已经取消”；覆盖阻塞调用返回后的副作用防护。
@@ -65,7 +47,7 @@ P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 
 
 ### P1-12 复核查询服务与原子写入
 
-- **状态/依赖：** `merged`；P1-09 已验证，已随 PR #2 合并到 `main`。
+- **依赖：** P1-09。
 - **目标：** review router 恢复为薄壳；一次查询取得题目复核数据；多结果确认要么全部成功，要么不写入。
 - **主要模块：** `backend/api/routers/review.py`、新复核查询/应用服务、`manual_review_service.py`、`db_manager.py`、review tests。
 - **子任务：** 提取复核判定与 score map；消除逐 result 查询；定义事务边界；校验分数范围和 detail 所属关系；增加大班级查询计数测试。
@@ -76,7 +58,7 @@ P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 
 
 ### P1-13 受控媒体与文件下载 API
 
-- **状态/依赖：** `merged`；P1-12 已验证，已随 PR #2 合并到 `main`。
+- **依赖：** P1-12。
 - **目标：** Vue 可查看答题区裁剪、原卷页并下载导出文件，客户端不接收或提交任意绝对路径。
 - **主要模块：** 新 media/files router 与 schema、裁剪/批注服务、`original_paper_exporter.py`、reports/job result。
 - **子任务：** 定义受控资源 ID；限制根目录和扩展名；实现图片/文件流；处理不存在、过期和越界路径；给 job result 返回下载 URL。
@@ -87,7 +69,7 @@ P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 
 
 ### P1-14 Phase 1 稳定化检查点
 
-- **状态/依赖：** `merged`；P1-09 至 P1-13 已验证，已随 PR #2 合并到 `main`。
+- **依赖：** P1-09 至 P1-13。
 - **目标：** 把当前 WP1.2/WP1.3 工作整理成可审阅、可回退的 Git 检查点。
 - **主要模块：** 当前所有 `backend/`、相关迁移、测试、计划与架构文档。
 - **子任务：** 全量 review；核对 OpenAPI；跑完整测试和冒烟；检查 `git diff`/未跟踪文件；显式排除 `user_data/`；准备提交与 PR 摘要。
@@ -100,7 +82,7 @@ P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 
 
 ### P1-15 Question Bank 只读路由
 
-- **状态/依赖：** `merged`；P1-14 已验证，已随 PR #2 合并到 `main`。
+- **依赖：** P1-14。
 - **目标：** 通过严格无源写入的读模型提供试卷列表、题目分页/筛选、题目详情、当前标签、富文本与预览元数据，以及受控题目素材/预览图片。
 - **主要模块：** `question_bank/services/question_service.py`、`question_read_service.py`、新 question-bank router/schema、OpenAPI 与隔离测试。
 - **子任务：** 从现有页面提取筛选契约；绑定同一 PathManager 快照中的题库 DB/数据根；实现分页排序与统一 404；显式投影并清理 marker/路径；以语义 ID 访问素材；源 main/WAL 经有界 M1-W1-W2-M2 捕获到系统临时目录，SQLite 只打开候选，持续变化返回脱敏 503。
@@ -111,7 +93,7 @@ P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 
 
 ### P1-16 Question Bank 轻写与导入准备
 
-- **状态/依赖：** `ready`；P1-15 已验证。
+- **依赖：** P1-15。
 - **目标：** 支持教师确认标签、删除/恢复允许的题目元数据和创建导入请求，但耗时导入仍交给 job。
 - **主要模块：** `QuestionService`、source/archive/rich-content 服务、question-bank router/schema。
 - **子任务：** 逐项核对现有写行为；定义乐观校验；实现精确标签保存；定义上传暂存资源；测试失败不留下半成品。
@@ -122,7 +104,7 @@ P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 
 
 ### P1-17 配置生成 Job
 
-- **状态/依赖：** `planned`；P1-11、P1-14。
+- **依赖：** P1-11、P1-14。
 - **目标：** 上传试卷后以 `config_generation` job 调用现有 `session_manager` 生成 rubric/answer_key，并保存可重试结果。
 - **主要模块：** `session_manager.py`、Job handlers、config router/schema、API profile 读取。
 - **子任务：** 定义无密钥 payload；接入 progress/cancel；保存临时结果与最终绑定；覆盖部分题失败和单题重试；暴露结果摘要。
@@ -133,7 +115,7 @@ P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 
 
 ### P1-18 题库导入与 AI 打标 Job
 
-- **状态/依赖：** `planned`；P1-11、P1-16、P1-24 后可最终切换统一网关。
+- **依赖：** P1-11、P1-16、P1-24 后可最终切换统一网关。
 - **目标：** `question_import` 与 `tagging_sync` 长任务可查询进度、部分失败和重试，保持 complete 才自动保存的现有规则。
 - **主要模块：** `grading_paper_intake_service.py`、`ai_tagging_service.py`、QuestionService、Job handlers/API。
 - **子任务：** 分离导入和打标 payload；接入批次事件；持久化失败分类；取消停止后续批次；结果返回成功/失败题号。
@@ -144,7 +126,7 @@ P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 
 
 ### P1-19 Training 诊断与任务只读/轻写 API
 
-- **状态/依赖：** `planned`；P1-15。
+- **依赖：** P1-15。
 - **目标：** 提供 tag profiles、学生薄弱点、推荐草案、训练任务查询及教师确认任务的 API。
 - **主要模块：** `DiagnosisProfileService`、`PracticePlanService`、`TrainingTaskService`、training router/schema。
 - **子任务：** 固定 scope/exam_scope；适配 tag-only 主路径；分页训练任务；确认任务写入；空证据和缺标签清晰返回。
@@ -155,7 +137,7 @@ P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 
 
 ### P1-20 Training 导出 Job
 
-- **状态/依赖：** `planned`；P1-11、P1-19。
+- **依赖：** P1-11、P1-19。
 - **目标：** `training_export` job 生成现有 Word/Markdown 训练材料并返回受控下载 URL。
 - **主要模块：** `training_export_service.py`、question-bank exporters、Job handlers、media/download API。
 - **子任务：** 定义 task/plan 输入；复用导出配置；接入取消和进度；原子写输出；返回记录 ID 与下载资源。
@@ -166,7 +148,7 @@ P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 
 
 ### P1-21 Graph 查询 API
 
-- **状态/依赖：** `planned`；P1-19。
+- **依赖：** P1-19。
 - **目标：** 提供 tag profiles、graph rows、节点证据和下钻数据，为 Phase 2 图表和 Phase 4 关系层预留稳定契约。
 - **主要模块：** `DiagnosisProfileService`、`question_tag_projection_service.py`、`skill_graph_projection.py`、graph router/schema。
 - **子任务：** 定义节点/边/证据 schema；实现班级/学生/考试过滤；请求内去重；分页证据；空态与缺失来源处理。
@@ -177,7 +159,7 @@ P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 
 
 ### P1-22 Ops 只读与自检 API
 
-- **状态/依赖：** `planned`；P1-14。
+- **依赖：** P1-14。
 - **目标：** 暴露版本、目录可写性、数据库状态、迁移状态、外部工具可用性和备份清单，不返回密钥或学生正文。
 - **主要模块：** `pages/系统自检.py` 的非 UI 逻辑、`update_tools/list_backups.py`、migration status、ops router/schema。
 - **子任务：** 下沉自检服务；定义脱敏结果；限制慢检查；区分 warning/error；增加健康快照测试。
@@ -188,7 +170,7 @@ P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 
 
 ### P1-23 Ops 受保护写操作
 
-- **状态/依赖：** `planned`；P1-11、P1-22。
+- **依赖：** P1-11、P1-22。
 - **目标：** 备份、恢复、迁移、数据包导入导出通过独立 job 和预检/确认令牌执行，失败时可恢复。
 - **主要模块：** `update_tools/backup_core.py`、backup/restore/migrate、`data_transfer_service.py`、ops jobs/API。
 - **子任务：** 每类操作先 dry-run；生成短期确认令牌；执行前备份；限制目标根目录；记录结构化结果和恢复说明。
@@ -201,7 +183,7 @@ P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 
 
 ### P1-24 LLM Gateway 核心
 
-- **状态/依赖：** `planned`；P1-14。
+- **依赖：** P1-14。
 - **目标：** 建立唯一模型请求策略层，统一超时、重试分类、节流、请求 ID 和用量记录。
 - **主要模块：** `llm_client.py` 演进或 `backend/llm/`、`api_profiles.py`、`usage_logger.py`、`request_pacer.py`。
 - **子任务：** 盘点请求类型；定义超时预算；集中可重试错误；统一 usage event；兼容 Chat Completions/Responses；契约测试。
@@ -212,7 +194,7 @@ P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 
 
 ### P1-25 四处直连迁移与缺失超时清零
 
-- **状态/依赖：** `planned`；P1-24。
+- **依赖：** P1-24。
 - **目标：** choice、fill-blank、objective batch、AI tagging 全部走 Gateway，第一方代码 `timeout=None` 为零。
 - **主要模块：** 四个现有直连模块、hybrid 路径、Gateway adapters 和回归测试。
 - **子任务：** 每次只迁一条调用链；保留请求/响应协议；比较重试次数和 fallback；移除重复客户端构造；grep 守卫。
@@ -223,7 +205,7 @@ P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 
 
 ### P1-26 API/DB 性能测量基线
 
-- **状态/依赖：** `planned`；P1-15、P1-19、P1-21、P1-22。
+- **依赖：** P1-15、P1-19、P1-21、P1-22。
 - **目标：** 在优化前记录每个 API 的耗时、查询次数、返回行数和测试数据规模。
 - **主要模块：** API middleware/dependencies、DB connection hooks、benchmark fixtures、性能报告文档。
 - **子任务：** 定义低开销指标；构造小/中/大临时数据集；记录 p50/p95；定位 N+1；保存基线而不承诺优化。
@@ -234,7 +216,7 @@ P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 
 
 ### P1-27 请求级连接复用与只读连接
 
-- **状态/依赖：** `planned`；P1-26 证明收益后才 `ready`。
+- **依赖：** P1-26 证明收益后才可开始。
 - **目标：** API 请求内复用显式连接，并把安全只读连接策略扩展到经 P1-26 证明有收益的端点，同时保持 Streamlit 旧调用兼容。P1-15 已先为题库 GET 落地“源 main/WAL 捕获到临时候选、候选使用 read-only URI”的零源侧车方案；本包不是首次引入题库只读能力。
 - **主要模块：** `db_manager.py`、`question_bank/database/schema.py`、API dependencies、repositories 前置适配。
 - **子任务：** 先选高收益端点；测量 P1-15 每请求快照成本并评估是否存在不削弱零源写入边界的复用/失效协议；增加外部连接参数；请求结束关闭；写请求事务；比较优化前后数字。
@@ -247,7 +229,7 @@ P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 
 
 ### P1-28 五流程 API E2E
 
-- **状态/依赖：** `planned`；P1-13、P1-17、P1-20 和核心领域 API。
+- **依赖：** P1-13、P1-17、P1-20 和核心领域 API。
 - **目标：** 在临时数据根通过 API 完成建会话、配置、模板/区域、扫描/批改、复核、导出下载。
 - **主要模块：** 新 API E2E fixture/test；假 LLM、临时双库和临时素材。
 - **子任务：** 固定最小样例；逐阶段断言持久化；轮询 job；模拟失败恢复；确认最终文件和分数。
@@ -258,7 +240,7 @@ P1-02 至 P1-15 已随 GitHub PR #2 合并到 `main`；Phase 1 仍因 P1-16 至 
 
 ### P1-29 Phase 1 总门槛
 
-- **状态/依赖：** `planned`；P1-15 至 P1-28 全部达到 `verified`。
+- **依赖：** P1-15 至 P1-28 的验收门槛全部通过。
 - **目标：** 证明 API 与 Streamlit 双通道可用，并形成进入 Phase 2 全面迁移的稳定基线。
 - **主要模块：** 全仓测试、冒烟、OpenAPI 快照、ARCHITECTURE/AGENTS/Index、`docs/user-testing/checkpoints/P1-29-*.md` 版本化正式清单。
 - **子任务：** 完整 smoke；双入口启动；临时数据 API E2E；在实际工作机用固定演示数据执行 20-30 分钟黑盒清单；性能/已知问题报告；记录用户明确结论。
