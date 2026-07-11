@@ -1,7 +1,7 @@
 # 项目文档治理设计
 
 > **日期：** 2026-07-11
-> **状态：** 用户已批准书面规格；实施计划已生成，执行受 PR A 前置门槛约束
+> **状态：** 用户已批准书面规格；PR A 交接协议已合并，未完成的 UAT 运行环境已按用户授权放弃并删除，PR B 可以实施
 > **范围：** 项目文档权威分层、历史文档删除、用户说明修正、文档一致性守卫、integration 通道恢复和并行开工门
 > **不包含：** 业务功能实现、数据库迁移、真实 `user_data/` 操作、P1-16/P2-01 实现
 
@@ -97,7 +97,7 @@ Git 历史、旧 PR 和被删除文档只用于追溯，不得覆盖当前权威
 4. `docs/maintenance/code-ownership-map.md`。
 5. `docs/knowledge-practice-operations.md`，其有效用户操作内容并入工作机 README。
 6. `ARCHITECTURE.md` 的逐日更新日志、`AGENTS.md` 的逐包完成流水和并行手册的历史清理事故记录。
-7. PR A 合并后已经完成的昼夜交接/用户验收支撑设计和实施计划；仍在使用的 `docs/user-testing/README.md`、模板和有效验收清单保留。
+7. PR A 合并后已经完成的昼夜交接设计/计划，以及已经明确放弃的 UAT 运行环境设计/计划；仍在使用的 `docs/user-testing/README.md`、模板和有效验收清单保留，但不得声称尚未实现的隔离启动器、专用端口或页面横幅已经存在。
 
 删除目标不是追求固定数量。预计活动 Markdown 收敛到约 22 至 25 份；任何仍承担独立活动职责的文件不得为了数量被删除。
 
@@ -121,6 +121,7 @@ Git 历史、旧 PR 和被删除文档只用于追溯，不得覆盖当前权威
 - 并行手册删除 worktree 清单、分支删除历史和 runtime 恢复事故，只保留一包一分支、文件所有权、集成纪律、数据守卫和现场检查命令。
 - 夜间自动化继续动态读取任务、Git、Index、矩阵和即时计划，不依赖文档快照。
 - 夜间矩阵保留 `eligible_after_plan/daytime_only/completed_not_applicable`，但“是否 ready”只查 Index。
+- 用户验收仍保留提交证据和结果等级规则；具体运行环境、数据准备、地址和可见标识必须由对应执行包的已验证清单定义，通用文档不得预设专用 UAT runtime 已实现。
 
 ### 5.4 用户与维护文档
 
@@ -134,7 +135,7 @@ Git 历史、旧 PR 和被删除文档只用于追溯，不得覆盖当前权威
 
 ### 6.1 当前在途工作
 
-治理设计时，`.worktrees/p1-integration-verification` 比 `origin/main` 超前 9 个提交，并有 `tests/test_handoff_status.py`、`tools/handoff_status.py` 两个未提交修改。这批内容属于昼夜交接/用户验收支撑，不符合“integration 只做集成”的长期职责。
+治理设计时，`.worktrees/p1-integration-verification` 比 `origin/main` 超前 9 个提交，并有 `tests/test_handoff_status.py`、`tools/handoff_status.py` 两个未提交修改。这批内容属于昼夜交接/用户验收支撑，不符合“integration 只做集成”的长期职责。随后交接协议及验证器通过 PR #9 进入主线，integration 已恢复到最新 `origin/main`；继续扩展的 UAT runtime 分支因超出当前范围且复审存在重要问题，已经用户明确授权删除，未进入主线。
 
 ### 6.2 前置处理
 
@@ -165,12 +166,12 @@ Git 历史、旧 PR 和被删除文档只用于追溯，不得覆盖当前权威
 
 ## 8. 实施与集成
 
-### 8.1 PR A：恢复 integration
+### 8.1 PR A：恢复 integration（已完成）
 
-- 完成或无损迁出昼夜交接/用户验收支撑工作。
-- 按其原计划运行测试、独立复审和真实数据指纹守卫。
-- 独立合并 `main` 后同步根目录和活动 worktree。
-- integration 回到最新 `origin/main` 且源码、`user_data` 均干净。
+- 昼夜交接协议、验证器和通用验收证据规则已经独立合并 `main`。
+- integration 已回到最新 `origin/main` 且源码、`user_data` 均干净。
+- 未完成的专用 UAT runtime 没有进入主线；其工作树、分支及 8 个独有提交已按用户授权删除。
+- PR B 必须删除该 UAT runtime 的计划性承诺，并把通用用户验收说明改为只描述现有能力。
 
 ### 8.2 PR B：文档治理
 
