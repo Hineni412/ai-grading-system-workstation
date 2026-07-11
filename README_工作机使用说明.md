@@ -4,11 +4,11 @@
 
 ### 首次使用
 
-1. 将本文件夹整体拷贝到工作机任意位置
-2. 确保工作机已安装 Python 3.10 或更高版本
-3. 双击 `run.bat` 启动系统
-4. 首次启动会自动创建虚拟环境并安装依赖（需要网络）
-5. 浏览器自动打开 http://localhost:8501
+1. 将完整便携包整体拷贝到工作机任意位置。
+2. 双击 `运行.bat` 启动系统。
+3. 浏览器打开 <http://localhost:8501>。
+
+完整便携包已经包含 `runtime\python\python.exe` 和运行依赖，无需预装 Python，也不需要首次联网安装。开发、排查和维护命令优先使用项目自带运行时。
 
 ### 日常使用
 
@@ -46,10 +46,10 @@
 
 ```bash
 # 手动备份（推荐阅卷前执行）
-python update_tools/backup_data.py --reason before_exam
+runtime\python\python.exe update_tools/backup_data.py --reason before_exam
 
 # 查看已有备份
-python update_tools/list_backups.py
+runtime\python\python.exe update_tools/list_backups.py
 ```
 
 也可以在"系统自检"页面点击"立即备份"按钮。
@@ -58,10 +58,10 @@ python update_tools/list_backups.py
 
 ```bash
 # 查看备份列表
-python update_tools/list_backups.py
+runtime\python\python.exe update_tools/list_backups.py
 
 # 恢复指定备份（需输入 YES 确认）
-python update_tools/restore_backup.py <备份文件名>
+runtime\python\python.exe update_tools/restore_backup.py <备份文件名>
 ```
 
 ## 如何更新
@@ -100,29 +100,14 @@ python update_tools/restore_backup.py <备份文件名>
 训练推荐直接显示“薄弱知识点、掌握率、证据题数、题库同标签题数”。知识点来自已确认来源题所对应题库题的当前 `question_tags`，普通老师无需逐条做知识点编号映射或 AI 消歧。
 
 - **候选资格**：薄弱证据和候选题必须至少共享一个完全相同的 `knowledge_point` 标签值。
+- **来源关联**：只有已经确认关联到题库来源题的阅卷题目才能提供薄弱证据；未确认来源不会由系统猜测关联。
 - **排序加分**：`sub_skill`、`method`、`model`、`prerequisite` 标签重合，以及难度、频次和来源多样性只影响排序，不改变候选资格。
 - **缺题处理**：精确标签题不足时直接显示缺题；不会用近义词、相邻技能或 AI 语义匹配凑数。
 - **跟随修改**：教师修改题库标签后，下一次图谱查询或重新分析推荐会读取新标签，无需重新批改试卷。
 - **任务快照**：已经保存的训练任务和导出仍保持当时的题目快照，不随之后的标签修改而改写。
+- **结果边界**：训练作答结果自动回流尚未启用，不会自动更新学生掌握度。
 
 旧技能目录、概念映射和技能链接表只用于一个版本的只读回退，请勿手工删除或直接修改；活动知识图谱和推荐不会读取它们。
-
-### 旧技能目录回退命令（仅维护）
-
-先执行 dry-run；报告未通过覆盖率 95%、100 条金标及 98% 精度门槛时，不得 apply 或切换：
-
-```powershell
-runtime\python\python.exe -m update_tools.migrate_skill_catalog dry-run --grading-db user_data/databases/grading_system.db --question-bank-db user_data/databases/question_bank.db --report-dir user_data/reports/skill_migration --gold-file tests/fixtures/skill_migration_gold.json
-runtime\python\python.exe -m update_tools.migrate_skill_catalog apply --batch-id skill-v1-20260622 --grading-db user_data/databases/grading_system.db --question-bank-db user_data/databases/question_bank.db --report-dir user_data/reports/skill_migration --gold-file tests/fixtures/skill_migration_gold.json
-runtime\python\python.exe -m update_tools.migrate_skill_catalog set-mode --mode shadow --question-bank-db user_data/databases/question_bank.db --reason "compare unified skill recommendations"
-runtime\python\python.exe -m update_tools.migrate_skill_catalog set-mode --mode skill --question-bank-db user_data/databases/question_bank.db --batch-id skill-v1-20260622 --reason "acceptance gates passed"
-runtime\python\python.exe -m update_tools.migrate_skill_catalog rollback --batch-id skill-v1-20260622 --question-bank-db user_data/databases/question_bank.db
-runtime\python\python.exe -m update_tools.migrate_skill_catalog set-mode --mode legacy --question-bank-db user_data/databases/question_bank.db --reason "emergency rollback"
-```
-
-`shadow → skill` 还要求系统已保存代表性学生的影子推荐对比记录；如果没有记录或出现精确题差异，`set-mode --mode skill` 会直接拒绝。
-
-迁移备份位于 `user_data/databases/skill_migration_backups/<批次号>/`。回滚前不要移动该目录。
 
 ## 技术支持
 

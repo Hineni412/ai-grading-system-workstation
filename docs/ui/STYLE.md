@@ -337,9 +337,9 @@ AI 应嵌入工作流：解释误判、生成讲评、推荐训练题、检查�
   --color-text-secondary: #5c6470;
   --color-text-muted: #8a929d;
 
-  --color-accent: #365f7d;
-  --color-accent-hover: #2d526d;
-  --color-accent-subtle: #eaf1f5;
+  --color-accent: #2563EB;
+  --color-accent-hover: #1D4ED8;
+  --color-accent-subtle: #EFF6FF;
 
   --color-success: #2f7a55;
   --color-success-subtle: #eaf5ef;
