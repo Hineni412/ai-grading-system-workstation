@@ -9,11 +9,13 @@ from pathlib import Path
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 BACKTICK_REF_RE = re.compile(r"`([^`\n]+)`")
 PHASE_PACKAGE_RE = re.compile(r"^###\s+(P[1-5]-\d{2})\s+(.+?)\s*$")
+ANY_PACKAGE_HEADING_RE = re.compile(r"^###\s+(P\d+-\d{2})\s+(.+?)\s*$")
 MODEL_RE = re.compile(r"^- \*\*模型：\*\*\s+`([^`]+)`")
 MATRIX_ROW_RE = re.compile(
     r"^\|\s*(P[1-5]-\d{2})\s*\|\s*(.*?)\s*\|\s*`(T-M|T-H|S-H|S-XH)`\s*\|\s*`?"
     r"(eligible_after_plan|daytime_only|completed_not_applicable)`?\s*\|"
 )
+ANY_MATRIX_ID_RE = re.compile(r"^\|\s*(P\d+-\d{2})\s*\|")
 
 PHASE_PATHS = tuple(
     f"docs/superpowers/packages/phase-{phase}-execution-packages.md"
@@ -468,7 +470,7 @@ def check_package_registry(
         for line_number, line in enumerate(
             path.read_text(encoding="utf-8").splitlines(), 1
         ):
-            match = PHASE_PACKAGE_RE.match(line)
+            match = ANY_PACKAGE_HEADING_RE.match(line)
             if match:
                 phase_occurrences.setdefault(match.group(1), []).append(
                     (relative_path, line_number)
@@ -479,7 +481,7 @@ def check_package_registry(
         for line_number, line in enumerate(
             matrix_path.read_text(encoding="utf-8").splitlines(), 1
         ):
-            match = MATRIX_ROW_RE.match(line)
+            match = ANY_MATRIX_ID_RE.match(line)
             if match:
                 matrix_occurrences.setdefault(match.group(1), []).append(line_number)
 

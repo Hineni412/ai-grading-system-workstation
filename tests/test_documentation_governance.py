@@ -141,13 +141,13 @@ def test_package_registry_rejects_duplicate_and_unexpected_ids(
         phase,
         "### P1-09 示例包\n- **模型：** `S-XH / T-M / T-H`。\n"
         "### P1-09 重复包\n- **模型：** `S-XH / T-M / T-H`。\n"
-        "### P1-10 额外包\n- **模型：** `S-XH / T-M / T-H`。\n",
+        "### P6-01 额外包\n- **模型：** `S-XH / T-M / T-H`。\n",
     )
     _write(
         matrix,
         "| P1-09 | 示例包 | `T-M` | `eligible_after_plan` | test |\n"
         "| P1-09 | 重复包 | `T-M` | `eligible_after_plan` | test |\n"
-        "| P1-10 | 额外包 | `T-M` | `eligible_after_plan` | test |\n",
+        "| P6-01 | 额外包 | `T-M` | `eligible_after_plan` | test |\n",
     )
 
     issues = check_package_registry(tmp_path, expected_ids={"P1-09"})
