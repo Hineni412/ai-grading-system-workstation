@@ -13,6 +13,11 @@ START: Final = "<!-- HANDOFF_STATUS_START -->"
 END: Final = "<!-- HANDOFF_STATUS_END -->"
 FULL_SHA: Final = re.compile(r"^[0-9a-f]{40}$")
 PACKAGE_ID: Final = re.compile(r"^P[1-9][0-9]*-[0-9]{2}$")
+PLAN_PACKAGE_FIELD: Final = re.compile(
+    r"^\*\*执行包：\*\*\s*`?([^`\s]+)`?\s*$",
+    flags=re.MULTILINE,
+)
+CHECKPOINT_ROOT: Final = "docs/user-testing/checkpoints/"
 
 FIELDS: Final = {
     "执行包": "package_id",
@@ -171,6 +176,24 @@ def parse_handoff_status(text: str) -> HandoffRecord:
     return record
 
 
+def _plan_package_id(text: str) -> str:
+    start = text.index(START)
+    end = text.index(END, start) + len(END)
+    outside_block = text[:start] + text[end:]
+    matches = PLAN_PACKAGE_FIELD.findall(outside_block)
+    if len(matches) != 1:
+        raise HandoffStatusError("expected exactly one plan package field outside handoff block")
+    package_id = matches[0]
+    if not PACKAGE_ID.fullmatch(package_id):
+        raise HandoffStatusError("invalid plan package_id")
+    return package_id
+
+
+def _filename_matches_package(plan: Path, package_id: str) -> bool:
+    pattern = rf"(?:^|[^a-z0-9]){re.escape(package_id.casefold())}(?:[^a-z0-9]|$)"
+    return re.search(pattern, plan.stem.casefold()) is not None
+
+
 def _git(repo_root: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", "-C", str(repo_root), *args],
@@ -199,17 +222,69 @@ def _porcelain_paths(output: str) -> tuple[str, ...]:
     return tuple(paths)
 
 
-def validate_handoff(plan_path: Path, repo_root: Path) -> HandoffValidation:
+def _nul_paths(output: str) -> tuple[str, ...]:
+    return tuple(
+        token.replace("\\", "/")
+        for token in output.split("\0")
+        if token
+    )
+
+
+def _commit_paths(repo_root: Path, revision: str) -> tuple[str, ...]:
+    return _nul_paths(
+        _git(
+            repo_root,
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            "-z",
+            revision,
+        )
+    )
+
+
+def _matching_checkpoint(path: str, package_id: str) -> bool:
+    normalized = path.replace("\\", "/")
+    if not normalized.casefold().startswith(CHECKPOINT_ROOT.casefold()):
+        return False
+    name = Path(normalized).name.casefold()
+    return name.startswith(f"{package_id.casefold()}-") and name.endswith(".md")
+
+
+def _reviewed_waiting_user_record(repo_root: Path, plan_relative: str) -> HandoffRecord:
+    prior_text = _git(repo_root, "show", f"HEAD^:{plan_relative}")
+    return parse_handoff_status(prior_text)
+
+
+def validate_handoff(
+    plan_path: Path,
+    repo_root: Path,
+    *,
+    base_ref: str = "origin/main",
+) -> HandoffValidation:
     repo = repo_root.resolve()
     plan = plan_path.resolve()
     issues: list[str] = []
     try:
         plan_relative = plan.relative_to(repo).as_posix()
-        record = parse_handoff_status(plan.read_text(encoding="utf-8"))
+        plan_text = plan.read_text(encoding="utf-8")
+        record = parse_handoff_status(plan_text)
     except (OSError, ValueError, HandoffStatusError) as exc:
         return HandoffValidation(False, None, None, (str(exc),))
 
+    try:
+        declared_package = _plan_package_id(plan_text)
+        if declared_package != record.package_id:
+            issues.append("plan package must match handoff package")
+    except (ValueError, HandoffStatusError) as exc:
+        issues.append(str(exc))
+    if not _filename_matches_package(plan, record.package_id):
+        issues.append("plan filename must match handoff package")
+
     resolved: str | None = None
+    dirty_paths: tuple[str, ...] = ()
+    user_data_paths: tuple[str, ...] = ()
     try:
         head = _git(repo, "rev-parse", "HEAD")
         dirty = _git(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all")
@@ -225,24 +300,28 @@ def validate_handoff(plan_path: Path, repo_root: Path) -> HandoffValidation:
             "user_data",
         )
         user_data_paths = _porcelain_paths(user_data_status)
+        committed_user_data_paths = _nul_paths(
+            _git(
+                repo,
+                "log",
+                "--format=",
+                "--name-only",
+                "-z",
+                f"{base_ref}..HEAD",
+                "--",
+                "user_data",
+            )
+        )
+        if committed_user_data_paths:
+            issues.append("committed user_data changes are not allowed")
         resolved = head if record.implementation_commit == "branch_head" else None
 
         if record.implementation_commit == "branch_head" and dirty:
             issues.append("committed handoff worktree must be clean")
         if record.handoff_status == "verified_pending_integration":
             parent = _git(repo, "rev-parse", "HEAD^")
-            changed = tuple(
-                line
-                for line in _git(
-                    repo,
-                    "diff-tree",
-                    "--no-commit-id",
-                    "--name-only",
-                    "-r",
-                    "HEAD",
-                ).splitlines()
-                if line
-            )
+            changed = _commit_paths(repo, "HEAD")
+            parent_changed = _commit_paths(repo, "HEAD^")
             resolved = record.implementation_commit
             if record.implementation_commit != parent:
                 issues.append("implementation commit must be the direct parent of HEAD")
@@ -250,10 +329,52 @@ def validate_handoff(plan_path: Path, repo_root: Path) -> HandoffValidation:
                 issues.append("handoff commit must only change the plan")
             if dirty:
                 issues.append("verified handoff worktree must be clean")
+
+            matching_checkpoints = tuple(
+                path
+                for path in parent_changed
+                if _matching_checkpoint(path, record.package_id)
+            )
+            checkpoint_paths = tuple(
+                path
+                for path in parent_changed
+                if path.casefold().startswith(CHECKPOINT_ROOT.casefold())
+            )
+            if record.user_acceptance == "passed":
+                if not (
+                    len(parent_changed) == 1
+                    and len(matching_checkpoints) == 1
+                ):
+                    if checkpoint_paths:
+                        issues.append(
+                            "user acceptance evidence must only change one matching checklist"
+                        )
+                    else:
+                        issues.append(
+                            "passed user acceptance requires a checklist evidence commit"
+                        )
+                else:
+                    try:
+                        prior = _reviewed_waiting_user_record(repo, plan_relative)
+                    except (HandoffStatusError, subprocess.CalledProcessError) as exc:
+                        issues.append(f"invalid pre-evidence handoff: {exc}")
+                    else:
+                        if not (
+                            prior.package_id == record.package_id
+                            and prior.handoff_status == "waiting_user"
+                            and prior.implementation_commit == "branch_head"
+                            and prior.automated_validation == "passed"
+                            and prior.independent_review == "passed"
+                            and prior.user_acceptance == "pending"
+                            and prior.real_data_fingerprint != "changed"
+                        ):
+                            issues.append(
+                                "user acceptance evidence must follow reviewed waiting_user state"
+                            )
+            elif checkpoint_paths:
+                issues.append("checklist evidence requires passed user acceptance")
     except (OSError, subprocess.CalledProcessError) as exc:
         issues.append(f"git validation failed: {exc}")
-        dirty_paths = ()
-        user_data_paths = ()
 
     if record.real_data_fingerprint == "changed":
         issues.append("real data fingerprint changed")
