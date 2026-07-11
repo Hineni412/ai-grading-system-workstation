@@ -5,7 +5,7 @@ import json
 import re
 import subprocess
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Final
 
 
@@ -17,12 +17,23 @@ PLAN_PACKAGE_FIELD: Final = re.compile(
     r"^\*\*执行包：\*\*\s*`?([^`\s]+)`?\s*$",
     flags=re.MULTILINE,
 )
+PLAN_USER_TEST_FIELD: Final = re.compile(
+    r"^\*\*用户自测：\*\*\s*`?([^`\s]+)`?\s*$",
+    flags=re.MULTILINE,
+)
+PLAN_CHECKLIST_FIELD: Final = re.compile(
+    r"^\*\*自测清单：\*\*\s*`?([^`\s]+)`?\s*$",
+    flags=re.MULTILINE,
+)
 CHECKPOINT_ROOT: Final = "docs/user-testing/checkpoints/"
 FILENAME_PACKAGE_ID: Final = re.compile(
     r"(?<![a-z0-9])p[1-9][0-9]*-[0-9]{2}(?![a-z0-9])"
 )
 ACCEPTANCE_START: Final = "<!-- USER_ACCEPTANCE_RESULT_START -->"
 ACCEPTANCE_END: Final = "<!-- USER_ACCEPTANCE_RESULT_END -->"
+REQUIRED_FORMAL_USER_TEST_PACKAGES: Final = frozenset(
+    {"P1-29", "P2-08", "P2-20", "P2-21"}
+)
 
 FIELDS: Final = {
     "执行包": "package_id",
@@ -99,14 +110,20 @@ class UserAcceptanceResult:
     result: str
 
 
+@dataclass(frozen=True)
+class PlanUserTesting:
+    user_test: str
+    checklist: str
+
+
 def _extract_block(text: str) -> str:
     if text.count(START) != 1 or text.count(END) != 1:
         raise HandoffStatusError("expected exactly one handoff block")
-    before, rest = text.split(START, 1)
-    block, after = rest.split(END, 1)
-    if START in before or END in before or START in after or END in after:
-        raise HandoffStatusError("expected exactly one handoff block")
-    return block
+    start = text.index(START)
+    end = text.index(END)
+    if start >= end:
+        raise HandoffStatusError("handoff block markers are out of order")
+    return text[start + len(START) : end]
 
 
 def _read_fields(block: str) -> dict[str, str]:
@@ -200,10 +217,15 @@ def parse_handoff_status(text: str) -> HandoffRecord:
     return record
 
 
-def _plan_package_id(text: str) -> str:
+def _outside_handoff_block(text: str) -> str:
+    _extract_block(text)
     start = text.index(START)
     end = text.index(END, start) + len(END)
-    outside_block = text[:start] + text[end:]
+    return text[:start] + text[end:]
+
+
+def _plan_package_id(text: str) -> str:
+    outside_block = _outside_handoff_block(text)
     matches = PLAN_PACKAGE_FIELD.findall(outside_block)
     if len(matches) != 1:
         raise HandoffStatusError("expected exactly one plan package field outside handoff block")
@@ -211,6 +233,58 @@ def _plan_package_id(text: str) -> str:
     if not PACKAGE_ID.fullmatch(package_id):
         raise HandoffStatusError("invalid plan package_id")
     return package_id
+
+
+def _plan_user_testing(text: str, package_id: str) -> PlanUserTesting:
+    outside_block = _outside_handoff_block(text)
+    user_test_matches = PLAN_USER_TEST_FIELD.findall(outside_block)
+    if len(user_test_matches) != 1:
+        raise HandoffStatusError("expected exactly one plan user_test field")
+    checklist_matches = PLAN_CHECKLIST_FIELD.findall(outside_block)
+    if len(checklist_matches) != 1:
+        raise HandoffStatusError("expected exactly one plan checklist field")
+
+    user_test = user_test_matches[0]
+    checklist = checklist_matches[0]
+    if user_test not in {"none", "quick", "formal"}:
+        raise HandoffStatusError("invalid plan user_test")
+    if package_id in REQUIRED_FORMAL_USER_TEST_PACKAGES and user_test != "formal":
+        raise HandoffStatusError(f"{package_id} requires formal user testing")
+    if user_test == "none" and checklist != "not_required":
+        raise HandoffStatusError("plan without user testing must use not_required checklist")
+    if checklist != "not_required":
+        normalized = PurePosixPath(checklist)
+        if (
+            normalized.is_absolute()
+            or checklist != normalized.as_posix()
+            or ".." in normalized.parts
+            or not _matching_checkpoint(checklist, package_id)
+        ):
+            raise HandoffStatusError("invalid plan checklist")
+    return PlanUserTesting(user_test=user_test, checklist=checklist)
+
+
+def _plan_user_acceptance_issues(
+    record: HandoffRecord,
+    plan_user_testing: PlanUserTesting,
+) -> tuple[str, ...]:
+    if plan_user_testing.user_test == "none":
+        if record.user_acceptance != "not_required":
+            return ("plan declares no user testing",)
+        return ()
+    if record.user_acceptance == "not_required":
+        return ("plan user testing requires passed user acceptance",)
+    if (
+        record.handoff_status == "verified_pending_integration"
+        and record.user_acceptance != "passed"
+    ):
+        return ("plan user testing requires passed user acceptance",)
+    if (
+        record.user_acceptance == "passed"
+        and plan_user_testing.checklist == "not_required"
+    ):
+        return ("passed user acceptance requires a plan checklist",)
+    return ()
 
 
 def _filename_package_ids(plan: Path) -> tuple[str, ...]:
@@ -364,8 +438,10 @@ def _claim_stash_baseline(
     plan_relative: str,
     base_ref: str,
     current_record: HandoffRecord,
+    current_user_testing: PlanUserTesting | None,
 ) -> tuple[frozenset[str], tuple[str, ...]]:
     issues: list[str] = []
+    branch_base = _git(repo_root, "merge-base", base_ref, "HEAD")
     commits = tuple(
         line
         for line in _git(
@@ -374,7 +450,7 @@ def _claim_stash_baseline(
             "--first-parent",
             "--reverse",
             "--format=%H",
-            f"{base_ref}..HEAD",
+            f"{branch_base}..HEAD",
             "--",
             plan_relative,
         ).splitlines()
@@ -384,10 +460,24 @@ def _claim_stash_baseline(
         return frozenset(), ("missing handoff claim commit",)
 
     claim_commit = commits[0]
+    branch_commits = tuple(
+        line
+        for line in _git(
+            repo_root,
+            "rev-list",
+            "--first-parent",
+            "--reverse",
+            f"{branch_base}..HEAD",
+        ).splitlines()
+        if line
+    )
+    if not branch_commits or claim_commit != branch_commits[0]:
+        issues.append("handoff claim must be the first branch commit")
     claim_text = _git(repo_root, "show", f"{claim_commit}:{plan_relative}")
     try:
         claim_record = parse_handoff_status(claim_text)
         claim_package = _plan_package_id(claim_text)
+        claim_user_testing = _plan_user_testing(claim_text, claim_record.package_id)
     except (ValueError, HandoffStatusError) as exc:
         return frozenset(), (f"invalid handoff claim: {exc}",)
 
@@ -397,6 +487,11 @@ def _claim_stash_baseline(
         issues.append("handoff claim package must match current package")
     if _commit_paths(repo_root, claim_commit) != (plan_relative,):
         issues.append("handoff claim commit must only change the plan")
+    if (
+        current_user_testing is not None
+        and claim_user_testing.user_test != current_user_testing.user_test
+    ):
+        issues.append("plan user_test must remain unchanged from claim")
 
     claim_baseline = _stash_baseline_commits(claim_record.stash_baseline)
     if _stash_baseline_commits(current_record.stash_baseline) != claim_baseline:
@@ -407,6 +502,10 @@ def _claim_stash_baseline(
         try:
             history_record = parse_handoff_status(history_text)
             history_package = _plan_package_id(history_text)
+            history_user_testing = _plan_user_testing(
+                history_text,
+                history_record.package_id,
+            )
         except (ValueError, HandoffStatusError) as exc:
             issues.append(f"invalid handoff history at {commit[:12]}: {exc}")
             continue
@@ -417,6 +516,8 @@ def _claim_stash_baseline(
             issues.append("handoff history package must remain unchanged")
         if _stash_baseline_commits(history_record.stash_baseline) != claim_baseline:
             issues.append("stash_baseline must remain unchanged from claim")
+        if history_user_testing.user_test != claim_user_testing.user_test:
+            issues.append("plan user_test must remain unchanged from claim")
 
     return claim_baseline, tuple(dict.fromkeys(issues))
 
@@ -437,12 +538,19 @@ def validate_handoff(
     except (OSError, ValueError, HandoffStatusError) as exc:
         return HandoffValidation(False, None, None, (str(exc),))
 
+    plan_user_testing: PlanUserTesting | None = None
     try:
         declared_package = _plan_package_id(plan_text)
         if declared_package != record.package_id:
             issues.append("plan package must match handoff package")
     except (ValueError, HandoffStatusError) as exc:
         issues.append(str(exc))
+    try:
+        plan_user_testing = _plan_user_testing(plan_text, record.package_id)
+    except (ValueError, HandoffStatusError) as exc:
+        issues.append(str(exc))
+    else:
+        issues.extend(_plan_user_acceptance_issues(record, plan_user_testing))
     filename_packages = _filename_package_ids(plan)
     expected_filename_package = record.package_id.casefold()
     if filename_packages != (expected_filename_package,):
@@ -493,6 +601,7 @@ def validate_handoff(
             plan_relative,
             base_ref,
             record,
+            plan_user_testing,
         )
         issues.extend(claim_issues)
         if not claim_stash_baseline.issubset(current_stashes):
@@ -586,6 +695,13 @@ def validate_handoff(
                                     "user acceptance evidence must directly follow anchored waiting_user state"
                                 )
                             checklist_path = matching_checkpoints[0]
+                            if (
+                                plan_user_testing is not None
+                                and checklist_path != plan_user_testing.checklist
+                            ):
+                                issues.append(
+                                    "user acceptance evidence must match plan checklist"
+                                )
                             try:
                                 checklist_text = _git(
                                     repo,
