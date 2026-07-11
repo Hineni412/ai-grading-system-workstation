@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import argparse
+import json
 import re
+import subprocess
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Final
 
 
@@ -58,6 +62,22 @@ class HandoffRecord:
 
     def to_dict(self) -> dict[str, str]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class HandoffValidation:
+    ok: bool
+    record: HandoffRecord | None
+    resolved_implementation_commit: str | None
+    issues: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "ok": self.ok,
+            "record": self.record.to_dict() if self.record else None,
+            "resolved_implementation_commit": self.resolved_implementation_commit,
+            "issues": list(self.issues),
+        }
 
 
 def _extract_block(text: str) -> str:
@@ -149,3 +169,114 @@ def parse_handoff_status(text: str) -> HandoffRecord:
     record = HandoffRecord(**values)
     _validate_record(record)
     return record
+
+
+def _git(repo_root: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return completed.stdout.rstrip("\r\n")
+
+
+def _porcelain_paths(output: str) -> tuple[str, ...]:
+    paths: list[str] = []
+    expects_rename_source = False
+    for token in (item for item in output.split("\0") if item):
+        if expects_rename_source:
+            paths.append(token.replace("\\", "/"))
+            expects_rename_source = False
+            continue
+        if len(token) < 4 or token[2] != " ":
+            paths.append(token.replace("\\", "/"))
+            continue
+        status = token[:2]
+        paths.append(token[3:].replace("\\", "/"))
+        expects_rename_source = any(code in status for code in ("R", "C"))
+    return tuple(paths)
+
+
+def validate_handoff(plan_path: Path, repo_root: Path) -> HandoffValidation:
+    repo = repo_root.resolve()
+    plan = plan_path.resolve()
+    issues: list[str] = []
+    try:
+        plan_relative = plan.relative_to(repo).as_posix()
+        record = parse_handoff_status(plan.read_text(encoding="utf-8"))
+    except (OSError, ValueError, HandoffStatusError) as exc:
+        return HandoffValidation(False, None, None, (str(exc),))
+
+    resolved: str | None = None
+    try:
+        head = _git(repo, "rev-parse", "HEAD")
+        dirty = _git(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+        dirty_paths = _porcelain_paths(dirty)
+        user_data_status = _git(
+            repo,
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--ignored=matching",
+            "--untracked-files=all",
+            "--",
+            "user_data",
+        )
+        user_data_paths = _porcelain_paths(user_data_status)
+        resolved = head if record.implementation_commit == "branch_head" else None
+
+        if record.implementation_commit == "branch_head" and dirty:
+            issues.append("committed handoff worktree must be clean")
+        if record.handoff_status == "verified_pending_integration":
+            parent = _git(repo, "rev-parse", "HEAD^")
+            changed = tuple(
+                line
+                for line in _git(
+                    repo,
+                    "diff-tree",
+                    "--no-commit-id",
+                    "--name-only",
+                    "-r",
+                    "HEAD",
+                ).splitlines()
+                if line
+            )
+            resolved = record.implementation_commit
+            if record.implementation_commit != parent:
+                issues.append("implementation commit must be the direct parent of HEAD")
+            if changed != (plan_relative,):
+                issues.append("handoff commit must only change the plan")
+            if dirty:
+                issues.append("verified handoff worktree must be clean")
+    except (OSError, subprocess.CalledProcessError) as exc:
+        issues.append(f"git validation failed: {exc}")
+        dirty_paths = ()
+        user_data_paths = ()
+
+    if record.real_data_fingerprint == "changed":
+        issues.append("real data fingerprint changed")
+    if user_data_paths or any(
+        path.casefold() == "user_data" or path.casefold().startswith("user_data/")
+        for path in dirty_paths
+    ):
+        issues.append("user_data changes are not allowed")
+
+    return HandoffValidation(not issues, record, resolved, tuple(issues))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Validate a package handoff block and Git evidence."
+    )
+    parser.add_argument("--plan", required=True, type=Path)
+    parser.add_argument("--repo", required=True, type=Path)
+    args = parser.parse_args()
+    report = validate_handoff(args.plan, args.repo)
+    print(json.dumps(report.to_dict(), ensure_ascii=False, sort_keys=True))
+    return 0 if report.ok else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
