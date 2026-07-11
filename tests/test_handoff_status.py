@@ -26,6 +26,7 @@ def _block(
     independent_review: str = "passed",
     user_acceptance: str = "not_required",
     real_data_fingerprint: str = "unchanged",
+    stash_baseline: str = "none",
     nightly_action: str = "independent_candidate_allowed",
 ) -> str:
     return f"""\
@@ -39,6 +40,7 @@ def _block(
 **独立复审：** {independent_review}
 **用户验收：** {user_acceptance}
 **真实数据指纹：** {real_data_fingerprint}
+**Stash 基线：** {stash_baseline}
 **夜间动作：** {nightly_action}
 <!-- HANDOFF_STATUS_END -->
 """
@@ -131,6 +133,7 @@ def test_parse_accepts_backticked_values() -> None:
         (VALID.replace("P1-16", "package-one"), "invalid package_id"),
         (VALID.replace(FULL_SHA, "not-a-full-sha"), "invalid implementation_commit"),
         (VALID.replace("unchanged", "unknown"), "invalid real_data_fingerprint"),
+        (VALID.replace("**Stash 基线：** none", "**Stash 基线：** invalid"), "invalid stash_baseline"),
         (
             VALID.replace("independent_candidate_allowed", "resume_only"),
             "invalid field combination",
@@ -176,14 +179,16 @@ def _acceptance_result_block(
     *,
     package_id: str = "P1-16",
     result: str = "passed",
+    reversed_markers: bool = False,
 ) -> str:
-    return f"""\
-<!-- USER_ACCEPTANCE_RESULT_START -->
+    fields = f"""\
 **执行包：** {package_id}
 **验收提交：** {reviewed_commit}
 **结果：** {result}
-<!-- USER_ACCEPTANCE_RESULT_END -->
 """
+    if reversed_markers:
+        return f"<!-- USER_ACCEPTANCE_RESULT_END -->\n<!-- USER_ACCEPTANCE_RESULT_START -->\n{fields}"
+    return f"<!-- USER_ACCEPTANCE_RESULT_START -->\n{fields}<!-- USER_ACCEPTANCE_RESULT_END -->\n"
 
 
 def _record_origin_main(repo: Path) -> str:
@@ -201,6 +206,7 @@ def _make_verified_repo(
     final_user_acceptance: str = "not_required",
     metadata_package_id: str = "P1-16",
     filename_package_id: str = "p1-16",
+    preexisting_user_data_stash: bool = False,
 ) -> tuple[Path, Path, str]:
     repo = tmp_path / "repo"
     _initialize_repo(repo)
@@ -212,6 +218,19 @@ def _make_verified_repo(
     _git(repo, "add", "--all")
     _git(repo, "add", "--force", "user_data/historical.db")
     _record_origin_main(repo)
+    stash_baseline = "none"
+    if preexisting_user_data_stash:
+        historical.write_text("historical stashed data\n", encoding="utf-8")
+        _git(
+            repo,
+            "stash",
+            "push",
+            "-m",
+            "historical user data baseline",
+            "--",
+            "user_data/historical.db",
+        )
+        stash_baseline = _git(repo, "rev-parse", "refs/stash")
 
     (repo / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
     if committed_user_data_change == "modified":
@@ -235,6 +254,7 @@ def _make_verified_repo(
                 implementation_commit="branch_head",
                 automated_validation="passed",
                 independent_review="pending",
+                stash_baseline=stash_baseline,
                 nightly_action="report_only",
             ),
             package_id=metadata_package_id,
@@ -248,6 +268,7 @@ def _make_verified_repo(
             _block(
                 implementation_commit=recorded_sha or implementation_sha,
                 user_acceptance=final_user_acceptance,
+                stash_baseline=stash_baseline,
             ),
             package_id=metadata_package_id,
         ),
@@ -363,6 +384,72 @@ def test_unchanged_historical_user_data_does_not_block_validation(tmp_path: Path
     assert report.ok is True
 
 
+def test_preexisting_user_data_stash_baseline_does_not_block_validation(
+    tmp_path: Path,
+) -> None:
+    repo, plan, _ = _make_verified_repo(
+        tmp_path,
+        preexisting_user_data_stash=True,
+    )
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is True
+
+
+def test_new_user_data_stash_after_claim_fails_validation(tmp_path: Path) -> None:
+    repo, plan, _ = _make_verified_repo(tmp_path)
+    historical = repo / "user_data" / "historical.db"
+    historical.write_text("new stashed package data\n", encoding="utf-8")
+    _git(
+        repo,
+        "stash",
+        "push",
+        "-m",
+        "package user data",
+        "--",
+        "user_data/historical.db",
+    )
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert "new user_data stash is not allowed" in report.issues
+
+
+def test_new_ignored_user_data_stash_after_claim_fails_validation(
+    tmp_path: Path,
+) -> None:
+    repo, plan, _ = _make_verified_repo(tmp_path)
+    ignored = repo / "user_data" / "ignored-new.db"
+    ignored.write_text("ignored package data\n", encoding="utf-8")
+    _git(
+        repo,
+        "stash",
+        "push",
+        "--all",
+        "-m",
+        "ignored package user data",
+        "--",
+        "user_data/ignored-new.db",
+    )
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert "new user_data stash is not allowed" in report.issues
+
+
+def test_new_source_only_stash_does_not_trigger_user_data_guard(tmp_path: Path) -> None:
+    repo, plan, _ = _make_verified_repo(tmp_path)
+    (repo / "app.py").write_text("VALUE = 99\n", encoding="utf-8")
+    _git(repo, "stash", "push", "-m", "source-only work")
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is True
+
+
 def test_plan_package_identity_must_match_metadata_and_filename(tmp_path: Path) -> None:
     repo, plan, _ = _make_verified_repo(tmp_path, metadata_package_id="P1-17")
 
@@ -470,6 +557,7 @@ def _make_user_accepted_repo(
     checklist_result: str = "passed",
     checklist_reviewed_commit: str | None = None,
     empty_checklist: bool = False,
+    reversed_acceptance_markers: bool = False,
 ) -> tuple[Path, Path]:
     repo = tmp_path / "repo"
     _initialize_repo(repo)
@@ -529,6 +617,7 @@ def _make_user_accepted_repo(
             checklist_reviewed_commit or reviewed_sha,
             package_id=checklist_block_package_id or checkpoint_package_id,
             result=checklist_result,
+            reversed_markers=reversed_acceptance_markers,
         )
     checklist.write_text(checklist_text, encoding="utf-8")
     if extra_source_change:
@@ -643,6 +732,20 @@ def test_user_acceptance_checklist_must_match_reviewed_commit(tmp_path: Path) ->
 
 def test_user_acceptance_checklist_requires_result_block(tmp_path: Path) -> None:
     repo, plan = _make_user_accepted_repo(tmp_path, empty_checklist=True)
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert any(issue.startswith("invalid user acceptance checklist:") for issue in report.issues)
+
+
+def test_user_acceptance_checklist_rejects_reversed_result_markers(
+    tmp_path: Path,
+) -> None:
+    repo, plan = _make_user_accepted_repo(
+        tmp_path,
+        reversed_acceptance_markers=True,
+    )
 
     report = validate_handoff(plan, repo)
 
