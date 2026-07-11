@@ -427,8 +427,9 @@ Update this plan’s evidence and handoff block to `waiting_review`, `功能提�
 - RED/GREEN: revision 缺失、写服务缺失、删除/恢复缺失、暂存接口缺失、API 依赖缺失、OpenAPI 二进制声明缺失、空白标签 500 和未知标签残留均先由聚焦测试复现，再以最小实现转绿。
 - P1-16 聚焦回归：`94 passed`。
 - 首轮独立复审：6 个 Important；已补齐集合重排幂等、确定性导入请求、junction/symlink 路径守卫、完整清单校验、200 MiB 流式限额、并发/回滚/旧技能零写入测试。
-- 审查修复后受影响回归：`118 passed`。
-- 审查修复后全量测试：`1069 passed in 265.69s`。
+- 第二轮独立复审：跨 service 实例并发与流式失败路径仍不足；已改为规范化请求路径共享锁，补齐跨实例并发、删除回滚、流式溢出/发布失败、请求发布失败，并把请求校验改为分块哈希。
+- 第二轮修复后受影响回归：`122 passed`。
+- 第二轮修复后全量测试：`1073 passed in 239.92s`。
 - 快速冒烟：文档治理、349 个第一方 Python 文件静态编译、两库副本初始化幂等与 integrity check 全部通过。
 - `git diff --check`：通过。
 - 真实数据库：`grading_system.db` 与 `question_bank.db` 的大小、UTC 修改时间和 SHA-256 与开工基线完全一致。
