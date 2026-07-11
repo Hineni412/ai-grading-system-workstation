@@ -32,6 +32,7 @@ FIELDS: Final = {
     "独立复审": "independent_review",
     "用户验收": "user_acceptance",
     "真实数据指纹": "real_data_fingerprint",
+    "Stash 基线": "stash_baseline",
     "夜间动作": "nightly_action",
 }
 
@@ -68,6 +69,7 @@ class HandoffRecord:
     independent_review: str
     user_acceptance: str
     real_data_fingerprint: str
+    stash_baseline: str
     nightly_action: str
 
     def to_dict(self) -> dict[str, str]:
@@ -138,6 +140,7 @@ def _validate_record(record: HandoffRecord) -> None:
         record.implementation_commit
     ):
         raise HandoffStatusError("invalid implementation_commit")
+    _stash_baseline_commits(record.stash_baseline)
 
     status = record.handoff_status
     valid = (
@@ -214,10 +217,27 @@ def _filename_package_ids(plan: Path) -> tuple[str, ...]:
     return tuple(FILENAME_PACKAGE_ID.findall(plan.stem.casefold()))
 
 
+def _stash_baseline_commits(value: str) -> frozenset[str]:
+    if value == "none":
+        return frozenset()
+    commits = value.split(",")
+    if (
+        not commits
+        or len(commits) != len(set(commits))
+        or any(not FULL_SHA.fullmatch(commit) for commit in commits)
+    ):
+        raise HandoffStatusError("invalid stash_baseline")
+    return frozenset(commits)
+
+
 def _parse_acceptance_result(text: str) -> UserAcceptanceResult:
     if text.count(ACCEPTANCE_START) != 1 or text.count(ACCEPTANCE_END) != 1:
         raise HandoffStatusError("expected exactly one user acceptance result block")
-    block = text.split(ACCEPTANCE_START, 1)[1].split(ACCEPTANCE_END, 1)[0]
+    start = text.index(ACCEPTANCE_START)
+    end = text.index(ACCEPTANCE_END)
+    if start >= end:
+        raise HandoffStatusError("user acceptance result markers are out of order")
+    block = text[start + len(ACCEPTANCE_START) : end]
     patterns = {
         "package_id": r"^\*\*执行包：\*\*\s*`?([^`\s]+)`?\s*$",
         "reviewed_commit": r"^\*\*验收提交：\*\*\s*`?([^`\s]+)`?\s*$",
@@ -287,6 +307,43 @@ def _commit_paths(repo_root: Path, revision: str) -> tuple[str, ...]:
             revision,
         )
     )
+
+
+def _stash_user_data_paths(repo_root: Path, stash_commit: str) -> tuple[str, ...]:
+    paths = list(
+        _nul_paths(
+            _git(
+                repo_root,
+                "diff",
+                "--name-only",
+                "-z",
+                f"{stash_commit}^1",
+                stash_commit,
+                "--",
+                "user_data",
+            )
+        )
+    )
+    try:
+        untracked_tree = _git(repo_root, "rev-parse", "--verify", f"{stash_commit}^3")
+    except subprocess.CalledProcessError:
+        pass
+    else:
+        paths.extend(
+            _nul_paths(
+                _git(
+                    repo_root,
+                    "ls-tree",
+                    "-r",
+                    "--name-only",
+                    "-z",
+                    untracked_tree,
+                    "--",
+                    "user_data",
+                )
+            )
+        )
+    return tuple(paths)
 
 
 def _matching_checkpoint(path: str, package_id: str) -> bool:
@@ -364,6 +421,14 @@ def validate_handoff(
         )
         if committed_user_data_paths:
             issues.append("committed user_data changes are not allowed")
+        current_stashes = frozenset(
+            line
+            for line in _git(repo, "stash", "list", "--format=%H").splitlines()
+            if line
+        )
+        new_stashes = current_stashes - _stash_baseline_commits(record.stash_baseline)
+        if any(_stash_user_data_paths(repo, stash) for stash in new_stashes):
+            issues.append("new user_data stash is not allowed")
         resolved = (
             head
             if record.implementation_commit == "branch_head"
