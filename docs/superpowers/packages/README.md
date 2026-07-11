@@ -59,6 +59,46 @@
 
 这些字段只代表该包可以进入夜间候选池；自动化仍须按 `NIGHTLY_AUTOMATION.md` 检查任务占用、文件漂移、风险和数据守卫。没有 `允许夜间执行: yes` 时，自动化只能报告，不能实施。
 
+## 昼夜交接协议
+
+尚未被任何任务领取的干净 `ready` 候选继续只使用上述五个夜间放行字段。任务首次领取后，必须在首次源码修改前把下面的块写入该包唯一的源码级即时计划；此后该计划必须且只能有一对标记：
+
+```markdown
+<!-- HANDOFF_STATUS_START -->
+## 昼夜交接
+
+**执行包：** P1-16
+**交接状态：** in_progress
+**功能提交：** none
+**自动验证：** pending
+**独立复审：** pending
+**用户验收：** not_required
+**真实数据指纹：** not_touched
+**夜间动作：** report_only
+<!-- HANDOFF_STATUS_END -->
+```
+
+字段组合只能使用下表。`真实数据指纹: changed` 可以用于前四种状态记录异常，但会覆盖夜间动作并使验证失败；最终状态只允许 `not_touched` 或 `unchanged`。
+
+| 交接状态 | 功能提交 | 自动验证 | 独立复审 | 用户验收 | 夜间动作 |
+|---|---|---|---|---|---|
+| `in_progress` | `none` | `pending` | `pending` | `pending` 或 `not_required` | `report_only` |
+| `resumable` | `none` | `pending` 或 `failed` | `pending` | `pending` 或 `not_required` | `resume_only` |
+| `waiting_review` | `branch_head` | `passed` | `pending` | `pending` 或 `not_required` | `report_only` |
+| `waiting_user` | `none` 或 `branch_head` | `pending` 或 `passed` | `pending` 或 `passed` | `pending` | `report_only` |
+| `verified_pending_integration` | 完整 40 位 SHA | `passed` | `passed` | `passed` 或 `not_required` | `independent_candidate_allowed` |
+
+生命周期规则：
+
+1. 正常工作使用 `in_progress`；只有任务主动停下、下一步明确且不等待用户时才使用 `resumable`。
+2. 实现和自动验证通过后，功能提交内写 `waiting_review` 与 `功能提交: branch_head`。夜间 Terra 到此停止，不能自行写复审通过。
+3. 等待用户选择或验收时使用 `waiting_user`，夜间不得推断用户结论。
+4. 独立复审和必要用户验收通过后，创建最终交接提交。它只能修改当前即时计划，块内记录直接父提交的完整 SHA，并改为 `verified_pending_integration`。
+5. 通常直接父提交就是已复审功能提交；需要版本化用户结果时，可以先创建只修改该包验收清单的证据提交。证据提交不得改源码，随后仍只允许一个仅改即时计划的交接提交。
+6. `merged` 不由计划自报，必须由最新 `origin/main` 的包含关系证明。未合并提交不能满足其他包依赖。
+
+已经领取的包必须用 `tools/handoff_status.py --plan <即时计划> --repo <worktree>` 验证。缺块、重复块、非法字段、脏 `branch_head`、错误父 SHA、交接提交夹带文件或任何 `user_data/` 本地项都按失败处理。一次性治理或支撑工作不得冒用正式包 ID、改变 87 包计数或进入夜间候选。
+
 ## 状态
 
 | 状态 | 含义 |
