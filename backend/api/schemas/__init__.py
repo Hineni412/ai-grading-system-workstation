@@ -3,11 +3,17 @@ from .grading import GradingRunRequest
 from .jobs import JobResponse, JobSubmitRequest
 from .media import ReviewMediaLinksResponse
 from .question_bank import (
+    QuestionImportRequestCreate,
+    QuestionImportRequestResponse,
+    QuestionImportUploadResponse,
     QuestionListItem,
     QuestionListResponse,
     QuestionPaperListItem,
     QuestionPaperListResponse,
     QuestionTagResponse,
+    QuestionStateChangeRequest,
+    QuestionTagWriteRequest,
+    QuestionWriteResponse,
 )
 from .review import (
     ReviewAnnotationOutcomeResponse,
@@ -62,6 +68,12 @@ __all__ = [
     "QuestionPaperListItem",
     "QuestionPaperListResponse",
     "QuestionTagResponse",
+    "QuestionImportRequestCreate",
+    "QuestionImportRequestResponse",
+    "QuestionImportUploadResponse",
+    "QuestionStateChangeRequest",
+    "QuestionTagWriteRequest",
+    "QuestionWriteResponse",
     "ReviewMediaLinksResponse",
     "ReviewAnnotationOutcomeResponse",
     "ReviewConfirmItem",

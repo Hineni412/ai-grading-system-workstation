@@ -88,6 +88,35 @@ def test_read_service_lists_active_papers_without_paths_or_writes(question_bank_
     assert db_path.read_bytes() == before
 
 
+def test_question_read_payload_exposes_stable_state_revision(
+    question_bank_fixture,
+) -> None:
+    service, db_path, _ = question_bank_fixture
+
+    detail = service.get_question(1)
+    page_item = service.list_questions(
+        question_read_module.QuestionReadFilters()
+    ).items[0]
+
+    assert detail is not None
+    assert detail["revision"] == page_item["revision"]
+    assert len(detail["revision"]) == 64
+    before_revision = detail["revision"]
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO question_tags (question_id, tag_type, tag_value)
+            VALUES (1, 'method', 'Revision change')
+            """
+        )
+        conn.commit()
+
+    changed = service.get_question(1)
+    assert changed is not None
+    assert changed["revision"] != before_revision
+
+
 def _question_bank_client(
     service: QuestionBankReadService,
     *,
