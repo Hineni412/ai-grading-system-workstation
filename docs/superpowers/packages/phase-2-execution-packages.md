@@ -4,6 +4,7 @@
 > **阶段状态：** `planned`；P1 review/media 切片满足门槛后可提前开始 P2-01 至 P2-08。
 > **设计权威：** `docs/ui/STYLE.md`。所有 UI 包必须使用 `frontend-design` skill，并以真实浏览器验证。
 > **不修改：** 前端迁移不重写稳定后端，不新增未经确认的业务字段或状态。
+> **夜间资格：** 所有包级标记以 `NIGHTLY_ELIGIBILITY_MATRIX.md` 为唯一权威，本文件不重复维护。
 
 ## 工程与设计系统
 
