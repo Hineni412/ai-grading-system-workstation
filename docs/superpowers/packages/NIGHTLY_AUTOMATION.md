@@ -37,7 +37,7 @@ runtime\python\python.exe tools\handoff_status.py --plan $resolvedPlanPath --rep
 
 验证器必须只输出一行 JSON。退出码 2、`ok=false`、工具缺失、非 JSON、多份匹配计划或任一 issue 都使该包/通道降为 `report_only`；项目级映射无法唯一确定时整次运行停止。
 
-验证器同时核对即时计划文件名、块外顶部包号和交接块包号，扫描 `origin/main..HEAD` 整段提交历史中的 `user_data/` 路径，并在用户验收通过时证明直接父提交只修改一份同包验收清单。主线已有但本包未触及的历史跟踪数据不构成失败。
+验证器同时核对即时计划文件名、块外顶部包号和交接块包号，扫描 `origin/main..HEAD` 整段提交历史中的 `user_data/` 路径，并在用户验收通过时证明：已复审 SHA 由只改计划的 `waiting_user` 提交锚定，下一提交只修改一份同包验收清单，且清单机器结果块记录同一 SHA 与 `passed`。主线已有但本包未触及的历史跟踪数据不构成失败。
 
 ## 3. 权威提示词
 

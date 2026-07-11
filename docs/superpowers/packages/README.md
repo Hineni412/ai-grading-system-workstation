@@ -87,16 +87,16 @@
 | `in_progress` | `none` | `pending` | `pending` | `pending` 或 `not_required` | `report_only` |
 | `resumable` | `none` | `pending` 或 `failed` | `pending` | `pending` 或 `not_required` | `resume_only` |
 | `waiting_review` | `branch_head` | `passed` | `pending` | `pending` 或 `not_required` | `report_only` |
-| `waiting_user` | `none` 或 `branch_head` | `pending` 或 `passed` | `pending` 或 `passed` | `pending` | `report_only` |
+| `waiting_user` | 复审前为 `none`/`branch_head`；复审通过后为完整 40 位已复审 SHA | 复审前 `pending`/`passed`；复审通过后 `passed` | `pending`，或与完整 SHA 同时为 `passed` | `pending` | `report_only` |
 | `verified_pending_integration` | 完整 40 位 SHA | `passed` | `passed` | `passed` 或 `not_required` | `independent_candidate_allowed` |
 
 生命周期规则：
 
 1. 正常工作使用 `in_progress`；只有任务主动停下、下一步明确且不等待用户时才使用 `resumable`。
 2. 实现和自动验证通过后，功能提交内写 `waiting_review` 与 `功能提交: branch_head`。夜间 Terra 到此停止，不能自行写复审通过。
-3. 等待用户选择或验收时使用 `waiting_user`，夜间不得推断用户结论。
+3. 等待用户选择或验收时使用 `waiting_user`，夜间不得推断用户结论。独立复审通过后，先创建一个只改即时计划的锚点提交：它记录直接父提交的完整已复审 SHA，并把自动验证/独立复审写为 `passed`；用户只测试该锚定版本。
 4. 独立复审和必要用户验收通过后，创建最终交接提交。它只能修改当前即时计划，块内记录直接父提交的完整 SHA，并改为 `verified_pending_integration`。
-5. 通常直接父提交就是已复审功能提交。`用户验收: passed` 时，必须先从 `waiting_user` 且独立复审已通过的版本创建一个证据提交；它只能修改 `docs/user-testing/checkpoints/` 下唯一一份以本包号开头的 Markdown 清单，不得改源码或其他文档。随后仍只允许一个仅改即时计划的交接提交。
+5. 通常最终交接的直接父提交就是已复审功能提交。`用户验收: passed` 时，必须紧接锚点提交创建一个证据提交；它只能修改 `docs/user-testing/checkpoints/` 下唯一一份以本包号开头的 Markdown 清单，不得改源码或其他文档。清单机器结果块必须记录同一包号、锚点中的已复审 SHA 和 `passed`，随后仍只允许一个仅改即时计划的交接提交。
 6. `merged` 不由计划自报，必须由最新 `origin/main` 的包含关系证明。未合并提交不能满足其他包依赖。
 
 已经领取的包必须用 `tools/handoff_status.py --plan <即时计划> --repo <worktree>` 验证。缺块、重复块、非法字段、包号身份不一致、脏 `branch_head`、错误父 SHA、验收证据夹带文件或交接提交夹带文件都按失败处理。验证器还会检查 `origin/main..HEAD` 整段包提交历史；任何新增、修改、删除后保留或随后恢复的 `user_data/` 路径都会失败，但主线已有且本包从未触及的历史跟踪文件不阻塞。一次性治理或支撑工作不得冒用正式包 ID、改变 87 包计数或进入夜间候选。

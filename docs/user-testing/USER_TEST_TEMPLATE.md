@@ -53,3 +53,9 @@ Codex 已执行：<本次启动动作>
 - 脱敏证据：none
 - 用户明确结论：pending
 - 真实两库测试后指纹：pending
+
+<!-- USER_ACCEPTANCE_RESULT_START -->
+**执行包：** <P1-29>
+**验收提交：** <用户实际测试的已复审功能 40 位 SHA>
+**结果：** pending
+<!-- USER_ACCEPTANCE_RESULT_END -->

@@ -18,6 +18,11 @@ PLAN_PACKAGE_FIELD: Final = re.compile(
     flags=re.MULTILINE,
 )
 CHECKPOINT_ROOT: Final = "docs/user-testing/checkpoints/"
+FILENAME_PACKAGE_ID: Final = re.compile(
+    r"(?<![a-z0-9])p[1-9][0-9]*-[0-9]{2}(?![a-z0-9])"
+)
+ACCEPTANCE_START: Final = "<!-- USER_ACCEPTANCE_RESULT_START -->"
+ACCEPTANCE_END: Final = "<!-- USER_ACCEPTANCE_RESULT_END -->"
 
 FIELDS: Final = {
     "执行包": "package_id",
@@ -83,6 +88,13 @@ class HandoffValidation:
             "resolved_implementation_commit": self.resolved_implementation_commit,
             "issues": list(self.issues),
         }
+
+
+@dataclass(frozen=True)
+class UserAcceptanceResult:
+    package_id: str
+    reviewed_commit: str
+    result: str
 
 
 def _extract_block(text: str) -> str:
@@ -151,9 +163,18 @@ def _validate_record(record: HandoffRecord) -> None:
         and record.nightly_action == "report_only"
     ) or (
         status == "waiting_user"
-        and record.implementation_commit in {"none", "branch_head"}
-        and record.automated_validation in {"pending", "passed"}
-        and record.independent_review in {"pending", "passed"}
+        and (
+            (
+                record.implementation_commit in {"none", "branch_head"}
+                and record.automated_validation in {"pending", "passed"}
+                and record.independent_review == "pending"
+            )
+            or (
+                bool(FULL_SHA.fullmatch(record.implementation_commit))
+                and record.automated_validation == "passed"
+                and record.independent_review == "passed"
+            )
+        )
         and record.user_acceptance == "pending"
         and record.nightly_action == "report_only"
     ) or (
@@ -189,9 +210,33 @@ def _plan_package_id(text: str) -> str:
     return package_id
 
 
-def _filename_matches_package(plan: Path, package_id: str) -> bool:
-    pattern = rf"(?:^|[^a-z0-9]){re.escape(package_id.casefold())}(?:[^a-z0-9]|$)"
-    return re.search(pattern, plan.stem.casefold()) is not None
+def _filename_package_ids(plan: Path) -> tuple[str, ...]:
+    return tuple(FILENAME_PACKAGE_ID.findall(plan.stem.casefold()))
+
+
+def _parse_acceptance_result(text: str) -> UserAcceptanceResult:
+    if text.count(ACCEPTANCE_START) != 1 or text.count(ACCEPTANCE_END) != 1:
+        raise HandoffStatusError("expected exactly one user acceptance result block")
+    block = text.split(ACCEPTANCE_START, 1)[1].split(ACCEPTANCE_END, 1)[0]
+    patterns = {
+        "package_id": r"^\*\*执行包：\*\*\s*`?([^`\s]+)`?\s*$",
+        "reviewed_commit": r"^\*\*验收提交：\*\*\s*`?([^`\s]+)`?\s*$",
+        "result": r"^\*\*结果：\*\*\s*`?([^`\s]+)`?\s*$",
+    }
+    values: dict[str, str] = {}
+    for field_name, pattern in patterns.items():
+        matches = re.findall(pattern, block, flags=re.MULTILINE)
+        if len(matches) != 1:
+            raise HandoffStatusError(f"invalid user acceptance field: {field_name}")
+        values[field_name] = matches[0]
+    result = UserAcceptanceResult(**values)
+    if not PACKAGE_ID.fullmatch(result.package_id):
+        raise HandoffStatusError("invalid user acceptance package_id")
+    if not FULL_SHA.fullmatch(result.reviewed_commit):
+        raise HandoffStatusError("invalid user acceptance reviewed_commit")
+    if result.result not in {"pending", "passed", "failed"}:
+        raise HandoffStatusError("invalid user acceptance result")
+    return result
 
 
 def _git(repo_root: Path, *args: str) -> str:
@@ -279,8 +324,13 @@ def validate_handoff(
             issues.append("plan package must match handoff package")
     except (ValueError, HandoffStatusError) as exc:
         issues.append(str(exc))
-    if not _filename_matches_package(plan, record.package_id):
-        issues.append("plan filename must match handoff package")
+    filename_packages = _filename_package_ids(plan)
+    expected_filename_package = record.package_id.casefold()
+    if filename_packages != (expected_filename_package,):
+        if expected_filename_package not in filename_packages:
+            issues.append("plan filename must match handoff package")
+        else:
+            issues.append("plan filename must match exactly one handoff package")
 
     resolved: str | None = None
     dirty_paths: tuple[str, ...] = ()
@@ -314,10 +364,27 @@ def validate_handoff(
         )
         if committed_user_data_paths:
             issues.append("committed user_data changes are not allowed")
-        resolved = head if record.implementation_commit == "branch_head" else None
+        resolved = (
+            head
+            if record.implementation_commit == "branch_head"
+            else record.implementation_commit
+            if FULL_SHA.fullmatch(record.implementation_commit)
+            else None
+        )
 
         if record.implementation_commit == "branch_head" and dirty:
             issues.append("committed handoff worktree must be clean")
+        if (
+            record.handoff_status == "waiting_user"
+            and FULL_SHA.fullmatch(record.implementation_commit)
+        ):
+            waiting_user_parent = _git(repo, "rev-parse", "HEAD^")
+            if record.implementation_commit != waiting_user_parent:
+                issues.append("waiting_user must anchor the direct parent reviewed commit")
+            if _commit_paths(repo, "HEAD") != (plan_relative,):
+                issues.append("waiting_user anchor commit must only change the plan")
+            if dirty:
+                issues.append("anchored waiting_user worktree must be clean")
         if record.handoff_status == "verified_pending_integration":
             parent = _git(repo, "rev-parse", "HEAD^")
             changed = _commit_paths(repo, "HEAD")
@@ -362,7 +429,7 @@ def validate_handoff(
                         if not (
                             prior.package_id == record.package_id
                             and prior.handoff_status == "waiting_user"
-                            and prior.implementation_commit == "branch_head"
+                            and bool(FULL_SHA.fullmatch(prior.implementation_commit))
                             and prior.automated_validation == "passed"
                             and prior.independent_review == "passed"
                             and prior.user_acceptance == "pending"
@@ -371,6 +438,40 @@ def validate_handoff(
                             issues.append(
                                 "user acceptance evidence must follow reviewed waiting_user state"
                             )
+                        else:
+                            waiting_user_commit = _git(repo, "rev-parse", "HEAD^^")
+                            waiting_user_parent = _git(repo, "rev-parse", "HEAD^^^")
+                            if not (
+                                prior.implementation_commit == waiting_user_parent
+                                and _commit_paths(repo, waiting_user_commit)
+                                == (plan_relative,)
+                            ):
+                                issues.append(
+                                    "user acceptance evidence must directly follow anchored waiting_user state"
+                                )
+                            checklist_path = matching_checkpoints[0]
+                            try:
+                                checklist_text = _git(
+                                    repo,
+                                    "show",
+                                    f"HEAD^:{checklist_path}",
+                                )
+                                acceptance = _parse_acceptance_result(checklist_text)
+                            except (HandoffStatusError, subprocess.CalledProcessError) as exc:
+                                issues.append(f"invalid user acceptance checklist: {exc}")
+                            else:
+                                if acceptance.package_id != record.package_id:
+                                    issues.append(
+                                        "user acceptance checklist must match handoff package"
+                                    )
+                                if acceptance.reviewed_commit != prior.implementation_commit:
+                                    issues.append(
+                                        "user acceptance checklist must match reviewed commit"
+                                    )
+                                if acceptance.result != "passed":
+                                    issues.append(
+                                        "user acceptance checklist must record passed result"
+                                    )
             elif checkpoint_paths:
                 issues.append("checklist evidence requires passed user acceptance")
     except (OSError, subprocess.CalledProcessError) as exc:
