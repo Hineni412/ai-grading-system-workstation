@@ -116,6 +116,11 @@ def test_run_smoke_skip_tests_omits_pytest_step(monkeypatch, tmp_path: Path) -> 
 
     monkeypatch.setattr(
         smoke_check,
+        "run_documentation_check",
+        lambda project_root: smoke_check.StepResult("文档治理", True, 0, 0.0, ["ok"]),
+    )
+    monkeypatch.setattr(
+        smoke_check,
         "run_static_compile",
         lambda project_root: smoke_check.StepResult("静态编译", True, 0, 0.0, ["ok"]),
     )
@@ -141,8 +146,25 @@ def test_run_smoke_skip_tests_omits_pytest_step(monkeypatch, tmp_path: Path) -> 
     )
 
     assert calls == []
-    assert [result.name for result in results] == ["静态编译", "全量测试", "两库初始化幂等"]
-    assert results[1].skipped
+    assert [result.name for result in results] == [
+        "文档治理",
+        "静态编译",
+        "全量测试",
+        "两库初始化幂等",
+    ]
+    assert results[2].skipped
+
+
+def test_documentation_check_maps_issues_to_failed_step(tmp_path: Path) -> None:
+    from tools.smoke_check import run_documentation_check
+
+    _write(tmp_path / "README_工作机使用说明.md", "运行 run.bat\n")
+
+    result = run_documentation_check(tmp_path)
+
+    assert not result.ok
+    assert result.return_code == 1
+    assert any("DOC101" in message for message in result.messages)
 
 
 def test_temp_tree_cleanup_retries_transient_windows_lock(monkeypatch, tmp_path: Path) -> None:
