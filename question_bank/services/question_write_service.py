@@ -1,0 +1,406 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import shutil
+import sqlite3
+import tempfile
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
+from question_bank.database.schema import connect
+from question_bank.models.question import ALLOWED_TAG_TYPES
+from question_bank.services.question_revision import question_revision
+
+
+@dataclass(frozen=True)
+class ConfirmedQuestionTag:
+    tag_type: str
+    tag_value: str
+    confidence: float | None = None
+
+
+@dataclass(frozen=True)
+class QuestionWriteResult:
+    question_id: int
+    revision: str
+    deleted: bool
+    tags: tuple[ConfirmedQuestionTag, ...]
+
+
+class QuestionWriteNotFound(LookupError):
+    pass
+
+
+class QuestionWriteConflict(RuntimeError):
+    def __init__(self, current_revision: str) -> None:
+        super().__init__("Question state changed")
+        self.current_revision = current_revision
+
+
+class QuestionImportUploadNotFound(LookupError):
+    pass
+
+
+class QuestionImportTypeNotSupported(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class StagedImportUpload:
+    upload_id: str
+    filename: str
+    suffix: str
+    size: int
+    sha256: str
+
+    def to_dict(self) -> dict[str, str | int]:
+        return {
+            "upload_id": self.upload_id,
+            "filename": self.filename,
+            "suffix": self.suffix,
+            "size": self.size,
+            "sha256": self.sha256,
+        }
+
+
+@dataclass(frozen=True)
+class QuestionImportRequest:
+    request_id: str
+    upload_id: str
+    filename: str
+    size: int
+    sha256: str
+    status: str = "pending"
+
+    def to_dict(self) -> dict[str, str | int]:
+        return {
+            "request_id": self.request_id,
+            "upload_id": self.upload_id,
+            "filename": self.filename,
+            "size": self.size,
+            "sha256": self.sha256,
+            "status": self.status,
+        }
+
+
+class QuestionBankWriteService:
+    def __init__(self, db_path: Path, *, data_root: Path) -> None:
+        self.db_path = Path(db_path)
+        self.data_root = Path(data_root)
+
+    def get_revision(self, question_id: int) -> str:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            revision = question_revision(conn, int(question_id))
+        finally:
+            conn.close()
+        if revision is None:
+            raise QuestionWriteNotFound("Question not found")
+        return revision
+
+    def replace_tags(
+        self,
+        question_id: int,
+        *,
+        expected_revision: str,
+        tags: Iterable[ConfirmedQuestionTag],
+    ) -> QuestionWriteResult:
+        normalized = _normalize_tags(tags)
+        question_id = int(question_id)
+        with connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            state = _load_question_state(conn, question_id)
+            if state is None or bool(state["is_deleted"]):
+                raise QuestionWriteNotFound("Question not found")
+            current_revision = question_revision(conn, question_id)
+            assert current_revision is not None
+            if _is_exact_manual_tag_state(conn, question_id, normalized):
+                return QuestionWriteResult(
+                    question_id=question_id,
+                    revision=current_revision,
+                    deleted=False,
+                    tags=normalized,
+                )
+            if str(expected_revision) != current_revision:
+                raise QuestionWriteConflict(current_revision)
+
+            conn.execute(
+                "DELETE FROM question_tags WHERE question_id = ?",
+                (question_id,),
+            )
+            conn.executemany(
+                """
+                INSERT INTO question_tags (
+                    question_id, tag_type, tag_value, confidence, source, model_name
+                ) VALUES (?, ?, ?, ?, 'manual', NULL)
+                """,
+                [
+                    (question_id, tag.tag_type, tag.tag_value, tag.confidence)
+                    for tag in normalized
+                ],
+            )
+            _touch_question(conn, question_id)
+            updated_revision = question_revision(conn, question_id)
+            assert updated_revision is not None
+
+        try:
+            from question_bank.services.question_frequency_service import (
+                QuestionFrequencyService,
+            )
+
+            QuestionFrequencyService(self.db_path).invalidate_frequency_cache_for_question(
+                question_id
+            )
+        except Exception:
+            pass
+        return QuestionWriteResult(
+            question_id=question_id,
+            revision=updated_revision,
+            deleted=False,
+            tags=normalized,
+        )
+
+    def set_deleted(
+        self,
+        question_id: int,
+        *,
+        expected_revision: str,
+        deleted: bool,
+    ) -> QuestionWriteResult:
+        question_id = int(question_id)
+        desired = bool(deleted)
+        with connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            state = _load_question_state(conn, question_id)
+            if state is None:
+                raise QuestionWriteNotFound("Question not found")
+            current_revision = question_revision(conn, question_id)
+            assert current_revision is not None
+            tags = _load_current_tags(conn, question_id)
+            if bool(state["is_deleted"]) == desired:
+                return QuestionWriteResult(
+                    question_id=question_id,
+                    revision=current_revision,
+                    deleted=desired,
+                    tags=tags,
+                )
+            if str(expected_revision) != current_revision:
+                raise QuestionWriteConflict(current_revision)
+            conn.execute(
+                """
+                UPDATE questions
+                SET is_deleted = ?,
+                    deleted_at = CASE
+                        WHEN ? = 1 THEN strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime')
+                        ELSE NULL
+                    END,
+                    updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime')
+                WHERE id = ?
+                """,
+                (int(desired), int(desired), question_id),
+            )
+            updated_revision = question_revision(conn, question_id)
+            assert updated_revision is not None
+        return QuestionWriteResult(
+            question_id=question_id,
+            revision=updated_revision,
+            deleted=desired,
+            tags=tags,
+        )
+
+    def stage_upload(self, *, filename: str, content: bytes) -> StagedImportUpload:
+        if not content:
+            raise ValueError("Question import upload is empty")
+        safe_filename = _safe_client_filename(filename)
+        suffix = Path(safe_filename).suffix.casefold()
+        if suffix not in {".docx", ".pdf"}:
+            raise QuestionImportTypeNotSupported(
+                "Question import file type is not supported"
+            )
+        upload_id = uuid.uuid4().hex
+        uploads_root = self._staging_root / "uploads"
+        uploads_root.mkdir(parents=True, exist_ok=True)
+        temporary = Path(tempfile.mkdtemp(prefix=".upload-", dir=uploads_root))
+        destination = uploads_root / upload_id
+        digest = hashlib.sha256(content).hexdigest()
+        upload = StagedImportUpload(
+            upload_id=upload_id,
+            filename=safe_filename,
+            suffix=suffix,
+            size=len(content),
+            sha256=digest,
+        )
+        try:
+            (temporary / f"source{suffix}").write_bytes(content)
+            (temporary / "upload.json").write_text(
+                json.dumps(upload.to_dict(), ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            os.replace(temporary, destination)
+        except Exception:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
+        return upload
+
+    def create_import_request(self, *, upload_id: str) -> QuestionImportRequest:
+        normalized_upload_id = str(upload_id).strip().casefold()
+        if re.fullmatch(r"[0-9a-f]{32}", normalized_upload_id) is None:
+            raise QuestionImportUploadNotFound("Question import upload not found")
+        upload_root = self._staging_root / "uploads" / normalized_upload_id
+        manifest_path = upload_root / "upload.json"
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            upload = StagedImportUpload(
+                upload_id=str(manifest["upload_id"]),
+                filename=str(manifest["filename"]),
+                suffix=str(manifest["suffix"]),
+                size=int(manifest["size"]),
+                sha256=str(manifest["sha256"]),
+            )
+            source_path = upload_root / f"source{upload.suffix}"
+            content = source_path.read_bytes()
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise QuestionImportUploadNotFound(
+                "Question import upload not found"
+            ) from exc
+        if (
+            upload.upload_id != normalized_upload_id
+            or upload.suffix not in {".docx", ".pdf"}
+            or len(content) != upload.size
+            or hashlib.sha256(content).hexdigest() != upload.sha256
+        ):
+            raise QuestionImportUploadNotFound("Question import upload not found")
+
+        request = QuestionImportRequest(
+            request_id=uuid.uuid4().hex,
+            upload_id=upload.upload_id,
+            filename=upload.filename,
+            size=upload.size,
+            sha256=upload.sha256,
+        )
+        requests_root = self._staging_root / "requests"
+        requests_root.mkdir(parents=True, exist_ok=True)
+        temporary = requests_root / f".{request.request_id}.tmp"
+        destination = requests_root / f"{request.request_id}.json"
+        try:
+            temporary.write_text(
+                json.dumps(request.to_dict(), ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            os.replace(temporary, destination)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+        return request
+
+    @property
+    def _staging_root(self) -> Path:
+        return self.data_root / "question_bank" / "import_staging"
+
+
+def _normalize_tags(
+    tags: Iterable[ConfirmedQuestionTag],
+) -> tuple[ConfirmedQuestionTag, ...]:
+    normalized: list[ConfirmedQuestionTag] = []
+    seen: set[tuple[str, str]] = set()
+    for item in tags:
+        tag_type = str(item.tag_type).strip()
+        tag_value = str(item.tag_value).strip()
+        if tag_type not in ALLOWED_TAG_TYPES:
+            raise ValueError("Unsupported question tag type")
+        if not tag_value:
+            raise ValueError("Question tag value is required")
+        key = (tag_type, tag_value)
+        if key in seen:
+            continue
+        seen.add(key)
+        confidence = item.confidence
+        if confidence is not None:
+            confidence = min(1.0, max(0.0, float(confidence)))
+        normalized.append(ConfirmedQuestionTag(tag_type, tag_value, confidence))
+    return tuple(normalized)
+
+
+def _load_question_state(
+    conn: sqlite3.Connection,
+    question_id: int,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT id, is_deleted, updated_at FROM questions WHERE id = ?",
+        (question_id,),
+    ).fetchone()
+
+
+def _is_exact_manual_tag_state(
+    conn: sqlite3.Connection,
+    question_id: int,
+    target: tuple[ConfirmedQuestionTag, ...],
+) -> bool:
+    rows = conn.execute(
+        """
+        SELECT tag_type, tag_value, confidence, source, model_name
+        FROM question_tags
+        WHERE question_id = ?
+        ORDER BY id
+        """,
+        (question_id,),
+    ).fetchall()
+    current = tuple(
+        ConfirmedQuestionTag(
+            str(row["tag_type"]),
+            str(row["tag_value"]),
+            float(row["confidence"]) if row["confidence"] is not None else None,
+        )
+        for row in rows
+    )
+    return current == target and all(
+        row["source"] == "manual" and row["model_name"] is None for row in rows
+    )
+
+
+def _load_current_tags(
+    conn: sqlite3.Connection,
+    question_id: int,
+) -> tuple[ConfirmedQuestionTag, ...]:
+    rows = conn.execute(
+        """
+        SELECT tag_type, tag_value, confidence
+        FROM question_tags
+        WHERE question_id = ?
+        ORDER BY id
+        """,
+        (question_id,),
+    ).fetchall()
+    return tuple(
+        ConfirmedQuestionTag(
+            str(row["tag_type"]),
+            str(row["tag_value"]),
+            float(row["confidence"]) if row["confidence"] is not None else None,
+        )
+        for row in rows
+    )
+
+
+def _touch_question(conn: sqlite3.Connection, question_id: int) -> None:
+    conn.execute(
+        """
+        UPDATE questions
+        SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime')
+        WHERE id = ?
+        """,
+        (question_id,),
+    )
+
+
+def _safe_client_filename(filename: str) -> str:
+    normalized = str(filename).replace("\\", "/")
+    safe = normalized.rsplit("/", 1)[-1].strip()
+    if not safe or safe in {".", ".."}:
+        raise ValueError("Question import filename is required")
+    return safe

@@ -2,17 +2,26 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, NoReturn
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
 from fastapi.responses import FileResponse
 
 from backend.api.app import ApiError, ErrorResponse
-from backend.api.dependencies import get_question_bank_read_service
+from backend.api.dependencies import (
+    get_question_bank_read_service,
+    get_question_bank_write_service,
+)
 from backend.api.schemas.question_bank import (
     QuestionDetailResponse,
     QuestionListItem,
     QuestionListResponse,
     QuestionPaperListItem,
     QuestionPaperListResponse,
+    QuestionImportRequestCreate,
+    QuestionImportRequestResponse,
+    QuestionImportUploadResponse,
+    QuestionStateChangeRequest,
+    QuestionTagWriteRequest,
+    QuestionWriteResponse,
 )
 from backend.file_access import (
     ControlledFileExpired,
@@ -25,6 +34,15 @@ from question_bank.services.question_read_service import (
     QuestionBankSnapshotError,
     QuestionMediaNotFound,
     QuestionReadFilters,
+)
+from question_bank.services.question_write_service import (
+    ConfirmedQuestionTag,
+    QuestionBankWriteService,
+    QuestionImportTypeNotSupported,
+    QuestionImportUploadNotFound,
+    QuestionWriteConflict,
+    QuestionWriteNotFound,
+    QuestionWriteResult,
 )
 
 
@@ -41,6 +59,151 @@ QUESTION_SNAPSHOT_ERROR_RESPONSES = {
         "description": "Question bank snapshot is temporarily unavailable",
     }
 }
+QUESTION_WRITE_ERROR_RESPONSES = {
+    404: {"model": ErrorResponse, "description": "Question not found"},
+    409: {"model": ErrorResponse, "description": "Question state conflict"},
+}
+
+
+@router.put(
+    "/questions/{question_id}/tags",
+    response_model=QuestionWriteResponse,
+    responses=QUESTION_WRITE_ERROR_RESPONSES,
+)
+def replace_question_tags(
+    question_id: int,
+    body: QuestionTagWriteRequest,
+    service: QuestionBankWriteService = Depends(get_question_bank_write_service),
+) -> QuestionWriteResponse:
+    try:
+        result = service.replace_tags(
+            question_id,
+            expected_revision=body.expected_revision,
+            tags=[
+                ConfirmedQuestionTag(tag.tag_type, tag.tag_value, tag.confidence)
+                for tag in body.tags
+            ],
+        )
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "question_tags_invalid",
+            "Question tags are invalid",
+        ) from exc
+    except (QuestionWriteNotFound, QuestionWriteConflict) as exc:
+        _raise_question_write_api_error(exc, question_id)
+    return _question_write_response(result)
+
+
+@router.delete(
+    "/questions/{question_id}",
+    response_model=QuestionWriteResponse,
+    responses=QUESTION_WRITE_ERROR_RESPONSES,
+)
+def delete_question(
+    question_id: int,
+    body: QuestionStateChangeRequest,
+    service: QuestionBankWriteService = Depends(get_question_bank_write_service),
+) -> QuestionWriteResponse:
+    try:
+        result = service.set_deleted(
+            question_id,
+            expected_revision=body.expected_revision,
+            deleted=True,
+        )
+    except (QuestionWriteNotFound, QuestionWriteConflict) as exc:
+        _raise_question_write_api_error(exc, question_id)
+    return _question_write_response(result)
+
+
+@router.post(
+    "/questions/{question_id}/restore",
+    response_model=QuestionWriteResponse,
+    responses=QUESTION_WRITE_ERROR_RESPONSES,
+)
+def restore_question(
+    question_id: int,
+    body: QuestionStateChangeRequest,
+    service: QuestionBankWriteService = Depends(get_question_bank_write_service),
+) -> QuestionWriteResponse:
+    try:
+        result = service.set_deleted(
+            question_id,
+            expected_revision=body.expected_revision,
+            deleted=False,
+        )
+    except (QuestionWriteNotFound, QuestionWriteConflict) as exc:
+        _raise_question_write_api_error(exc, question_id)
+    return _question_write_response(result)
+
+
+@router.post(
+    "/import-uploads",
+    response_model=QuestionImportUploadResponse,
+    status_code=201,
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/octet-stream": {
+                    "schema": {"type": "string", "format": "binary"}
+                }
+            },
+        }
+    },
+    responses={
+        415: {
+            "model": ErrorResponse,
+            "description": "Question import type is not supported",
+        }
+    },
+)
+def stage_question_import_upload(
+    content: Annotated[bytes, Body(media_type="application/octet-stream")],
+    filename: str = Query(min_length=1, max_length=255),
+    service: QuestionBankWriteService = Depends(get_question_bank_write_service),
+) -> QuestionImportUploadResponse:
+    try:
+        upload = service.stage_upload(filename=filename, content=content)
+    except QuestionImportTypeNotSupported as exc:
+        raise ApiError(
+            415,
+            "question_import_type_not_supported",
+            "Question import file type is not supported",
+        ) from exc
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "question_import_upload_invalid",
+            "Question import upload is invalid",
+        ) from exc
+    return QuestionImportUploadResponse(**upload.to_dict())
+
+
+@router.post(
+    "/import-requests",
+    response_model=QuestionImportRequestResponse,
+    status_code=201,
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": "Question import upload not found",
+        }
+    },
+)
+def create_question_import_request(
+    body: QuestionImportRequestCreate,
+    service: QuestionBankWriteService = Depends(get_question_bank_write_service),
+) -> QuestionImportRequestResponse:
+    try:
+        request = service.create_import_request(upload_id=body.upload_id)
+    except QuestionImportUploadNotFound as exc:
+        raise ApiError(
+            404,
+            "question_import_upload_not_found",
+            "Question import upload not found",
+        ) from exc
+    return QuestionImportRequestResponse(**request.to_dict())
 
 
 @router.get(
@@ -245,6 +408,44 @@ def _raise_question_snapshot_api_error(
         "question_bank_snapshot_unavailable",
         "Question bank snapshot is unavailable",
         headers=NO_STORE_HEADERS,
+    ) from exc
+
+
+def _question_write_response(result: QuestionWriteResult) -> QuestionWriteResponse:
+    return QuestionWriteResponse(
+        question_id=result.question_id,
+        revision=result.revision,
+        deleted=result.deleted,
+        tags=[
+            {
+                "tag_type": tag.tag_type,
+                "tag_value": tag.tag_value,
+                "confidence": tag.confidence,
+            }
+            for tag in result.tags
+        ],
+    )
+
+
+def _raise_question_write_api_error(
+    exc: Exception,
+    question_id: int,
+) -> NoReturn:
+    if isinstance(exc, QuestionWriteConflict):
+        raise ApiError(
+            409,
+            "question_write_conflict",
+            "Question changed; refresh and retry",
+            {
+                "question_id": int(question_id),
+                "current_revision": exc.current_revision,
+            },
+        ) from exc
+    raise ApiError(
+        404,
+        "question_not_found",
+        "Question not found",
+        {"question_id": int(question_id)},
     ) from exc
 
 

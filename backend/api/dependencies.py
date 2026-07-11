@@ -14,6 +14,7 @@ from backend.review.service import ReviewApplicationService
 from manual_review_service import ManualReviewService
 from path_manager import PathManager, get_path_manager
 from question_bank.services.question_read_service import QuestionBankReadService
+from question_bank.services.question_write_service import QuestionBankWriteService
 
 
 def get_grading_db() -> DBManager:
@@ -50,6 +51,11 @@ def get_question_bank_read_service() -> QuestionBankReadService:
         paths.qb_db_path,
         data_root=paths.data_root,
     )
+
+
+def get_question_bank_write_service() -> QuestionBankWriteService:
+    paths = get_path_manager()
+    return QuestionBankWriteService(paths.qb_db_path, data_root=paths.data_root)
 
 
 def get_job_file_service(

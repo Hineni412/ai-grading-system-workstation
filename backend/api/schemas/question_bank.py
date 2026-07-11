@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class _QuestionBankModel(BaseModel):
@@ -54,6 +54,7 @@ class QuestionTagResponse(_QuestionBankModel):
 
 class QuestionListItem(_QuestionBankModel):
     id: int
+    revision: str
     paper_id: int | None = None
     question_number: str
     question_type: str | None = None
@@ -128,3 +129,40 @@ class QuestionDetailResponse(QuestionListItem):
     assets: list[QuestionAssetLink]
     rich_content: QuestionRichContentMetadata
     previews: list[QuestionPreviewMetadata]
+
+
+class QuestionTagWriteRequest(_QuestionBankModel):
+    expected_revision: str = Field(min_length=64, max_length=64)
+    tags: list[QuestionTagResponse] = Field(max_length=100)
+
+
+class QuestionStateChangeRequest(_QuestionBankModel):
+    expected_revision: str = Field(min_length=64, max_length=64)
+
+
+class QuestionWriteResponse(_QuestionBankModel):
+    question_id: int
+    revision: str
+    deleted: bool
+    tags: list[QuestionTagResponse]
+
+
+class QuestionImportUploadResponse(_QuestionBankModel):
+    upload_id: str
+    filename: str
+    suffix: Literal[".docx", ".pdf"]
+    size: int
+    sha256: str
+
+
+class QuestionImportRequestCreate(_QuestionBankModel):
+    upload_id: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+
+
+class QuestionImportRequestResponse(_QuestionBankModel):
+    request_id: str
+    upload_id: str
+    filename: str
+    size: int
+    sha256: str
+    status: Literal["pending"]
