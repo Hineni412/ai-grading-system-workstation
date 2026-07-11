@@ -430,6 +430,7 @@ Update this plan’s evidence and handoff block to `waiting_review`, `功能提�
 - 第二轮独立复审：跨 service 实例并发与流式失败路径仍不足；已改为规范化请求路径共享锁，补齐跨实例并发、删除回滚、流式溢出/发布失败、请求发布失败，并把请求校验改为分块哈希。
 - 第二轮修复后受影响回归：`122 passed`。
 - 第二轮修复后全量测试：`1073 passed in 239.92s`。
+- 第三轮独立复审：Critical/Important 为零，结论 `Ready to merge: Yes`；记录三个非阻塞 Minor（共享锁表生命周期、异步磁盘 I/O、SQLite busy 稳定映射）供后续性能/稳定化包处理。
 - 快速冒烟：文档治理、349 个第一方 Python 文件静态编译、两库副本初始化幂等与 integrity check 全部通过。
 - `git diff --check`：通过。
 - 真实数据库：`grading_system.db` 与 `question_bank.db` 的大小、UTC 修改时间和 SHA-256 与开工基线完全一致。
@@ -438,12 +439,12 @@ Update this plan’s evidence and handoff block to `waiting_review`, `功能提�
 ## 昼夜交接
 
 **执行包：** P1-16
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** 40c8fd5ce0841cf019375e2871b1ca71b4e09f1e
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
