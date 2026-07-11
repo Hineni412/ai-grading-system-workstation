@@ -1,75 +1,74 @@
 # 现代化路线执行总览
 
-> **更新时间：** 2026-07-11
-> **当前阶段：** Phase 1 进行中
-> **共同主线：** GitHub PR #2 已合并 P1-02 至 P1-15，PR #3 至 PR #5 已合并并行与集成治理文档；根目录和三个活动 worktree 以最新 `origin/main` 为准
-> **进度口径：** 只有 `merged` 计入阶段完成
-> **夜间资格：** 以 `NIGHTLY_ELIGIBILITY_MATRIX.md` 为唯一权威；87 个正式包中 31 个计划后可夜间、49 个仅限白天、7 个已完成不适用
-> **用户验收：** 稳定规则与反馈格式见 `docs/user-testing/README.md`；具体清单只在对应界面可运行后写入 `docs/user-testing/checkpoints/`
-
-## 当前证据
-
-| 检查 | 2026-07-10 结果 | 结论 |
-|---|---|---|
-| P1-14 聚焦回归 | 87 passed | OpenAPI、Job 生命周期/公开数据、review、media/files 稳定化契约通过 |
-| API 回归 | 85 passed | sessions/config/template/job/review/media/files 现有与新增安全契约兼容 |
-| 完整冒烟 | 静态编译 338 文件；两库副本幂等且 `integrity_check=ok` | 当前工作树完整运行门通过 |
-| 全量 pytest | 889 passed / 0 skipped / 0 failed | P1-14 后保持跨平台全绿 |
-| P1-15 组合回归 | 156 passed | Question Bank、既有 API/Job/review/media/files 契约兼容 |
-| P1-15 Question Bank/OpenAPI | 64 passed | 只读筛选/详情/媒体、WAL 临时快照、503 与 OpenAPI 契约通过 |
-| P1-15 快速冒烟 | 静态编译 342 文件；两库副本幂等且 `integrity_check=ok` | 真实源库未打开，副本检查通过 |
-| P1 检查点隔离完整冒烟 | 967 passed；静态编译 342 文件；两库副本幂等且 `integrity_check=ok` | 提交前在隔离副本完成，真实 `user_data/` 基线不变 |
-| 当前 OpenAPI | 30 paths / 38 operations / 0 duplicate IDs | 新增 5 个 Question Bank GET，运行时与文档一致 |
-| Git 检查点 | P1-02 至 P1-15 已通过 GitHub PR #2 合并到 `main` | 单包已进入主线；Phase 1 仍因 P1-16 至 P1-29 未完成而保持 `in_progress` |
+> **职责：** 本文件是正式执行包动态状态、当前队列和下一动作的唯一权威来源。
+> **进度口径：** 只有 `merged` 计入阶段完成；Phase maps 的依赖不是状态。
+> **夜间资格：** 只在 `NIGHTLY_ELIGIBILITY_MATRIX.md` 维护；资格不代表当前可以领取。
+> **用户验收：** 稳定规则与反馈格式见 `docs/user-testing/README.md`；具体清单只在对应能力已经实现并验证后写入 `docs/user-testing/checkpoints/`。
 
 ## 阶段总表
 
-| Phase | 正式范围 | 状态 | 已合并/已验证 | 待执行包 | 阶段门槛 | 默认执行模型 |
-|---|---|---|---:|---:|---|---|
-| Phase 0 | 地基与防护网 | `merged` | 5 / 5 | 0 | PR #1 与冻结标签 | 已完成 |
-| Phase 1 | API、任务、LLM、数据访问 | `in_progress` | 15 merged | 14 | API E2E、全量冒烟、无缺失超时 | Terra；高风险用 Sol |
-| Phase 2 | Vue SPA 与 Streamlit 切换 | `planned` | 0 | 22 | 样板页先验收；真实五流程通过 | Terra；视觉门槛 Sol 复核 |
-| Phase 3 | 后端拆分、Schema 收敛、瘦身 | `planned` | 0 | 19 | 迁移预演、全量测试、删除可独立回退 | Terra High / Sol |
-| Phase 4 | 图谱 2.0 与训练闭环 | `planned` | 0 | 12 | 新旧口径对照、闭环 E2E、评估达标 | Terra High / Sol |
-| Phase 5 | 教师命题训练 | `planned` | 0 | 13 | 实验门槛通过后才冻结 Schema | Sol 规划；Terra 实现 |
-| Phase 6 | 班主任学生画像 | `deferred` | 0 | 0 active | 用户重启 + 合规/数据治理确认 | 暂不分配 |
+| Phase | 正式范围 | 状态 | 已合并 | 待执行 | 阶段门槛 |
+|---|---|---|---:|---:|---|
+| Phase 0 | 地基与防护网 | `merged` | 5 | 0 | 工程防护网与冻结基线 |
+| Phase 1 | API、任务、LLM、数据访问 | `in_progress` | 15 | 14 | API E2E、完整冒烟、模型请求超时门槛 |
+| Phase 2 | Vue SPA 与 Streamlit 切换 | `ready` | 0 | 22 | 样板页先验收；真实五流程通过 |
+| Phase 3 | 后端拆分、Schema 收敛、瘦身 | `planned` | 0 | 19 | 迁移预演、全量测试、删除可独立回退 |
+| Phase 4 | 图谱 2.0 与训练闭环 | `planned` | 0 | 12 | 新旧口径对照、闭环 E2E、评估达标 |
+| Phase 5 | 教师命题训练 | `planned` | 0 | 13 | 实验门槛通过后才冻结 Schema |
+| Phase 6 | 班主任学生画像 | `deferred` | 0 | 0 | 用户重启并确认合规与数据治理边界 |
+
+## 包状态登记
+
+下列范围没有省略中间编号；同一行中的每个包均采用该状态。标题、边界、依赖和验收见对应 Phase map。
+
+| 包或连续范围 | 状态 | 说明 |
+|---|---|---|
+| P1-01 至 P1-15 | `merged` | 历史完成；P1-01 至 P1-08 不属于正式 87 包统计 |
+| P1-16 | `ready` | 下一批后端功能候选 |
+| P1-17 至 P1-29 | `planned` | 按依赖逐包放行 |
+| P2-01 | `ready` | 下一批前端工程候选 |
+| P2-02 至 P2-22 | `planned` | 样板页门槛前不得扩散迁移 |
+| P3-01 至 P3-19 | `planned` | Phase 2 切换门满足后放行 |
+| P4-01 至 P4-12 | `planned` | Phase 3 数据边界稳定后放行 |
+| P5-01 至 P5-13 | `planned` | 先实验与设计门，再进入正式实现 |
+
+状态变更只修改本表、阶段汇总和当前队列；不得同步复制到 Phase maps 或夜间资格矩阵。
 
 ## 依赖顺序
 
 | 前置门槛 | 可开始内容 |
 |---|---|
-| P1-13 完成（P1-09 至 P1-13 已验证），复核媒体与 E2E 切片可用 | Phase 2 工程基础与单题复核样板页 |
+| P1-13 的复核媒体与 E2E 切片可用 | Phase 2 工程基础与单题复核样板页 |
 | Phase 1 总门槛通过 | Phase 2 复杂页面扩散 |
 | Phase 2 真实五流程与切换完成 | Phase 3 深度拆分与删除 |
 | Phase 3 Schema/仓储稳定 | Phase 4 正式数据模型实施 |
-| Phase 4 语义和推荐接口稳定；P5 实验门槛通过 | Phase 5 正式实现 |
+| Phase 4 语义和推荐接口稳定，且 Phase 5 实验门通过 | Phase 5 正式实现 |
 
 ## 当前执行队列
 
 | 顺序 | 包 | 状态 | 目标 | 模型（规划/执行/复核） |
 |---:|---|---|---|---|
-| 1 | P1-16 Question Bank 轻写与导入准备 | `ready` | 教师确认标签与安全导入请求，耗时导入仍交给 Job | `S-XH / T-H / S-H` |
+| 1 | P1-16 Question Bank 轻写与导入准备 | `ready` | 教师确认标签与安全导入请求；耗时导入仍交给 Job | `S-XH / T-H / S-H` |
+| 2 | P2-01 前端工程、依赖锁与质量命令 | `ready` | 只建立前端工程与质量命令，不开始页面视觉迁移 | `S-XH / T-M / T-H` |
 
-最近完成：P1-15 `merged`。即时实现计划为 `docs/superpowers/plans/2026-07-10-p1-15-question-bank-read-routes-implementation.md`；新增试卷、分页筛选、详情、当前标签/富文本/预览元数据和受控图片 GET。源题库通过有界 M1-W1-W2-M2 临时快照读取，SQLite 只打开系统临时候选；持续变化返回脱敏 503，JSON/媒体不公开磁盘路径。组合回归 156 passed，Question Bank/OpenAPI 64 passed，快速冒烟编译 342 文件且两库副本幂等，整包复审 0 Critical / 0 Important / 0 Minor。该包已随 GitHub PR #2 合并到 `main`，`user_data/` 基线保持不变。
+领取任一候选前，必须根据最新源码生成即时实现计划，并现场核验该包的 worktree、分支、共同基线、真实 `user_data/` 状态和交接块。
 
 ## 文档入口
 
-| 文档 | 内容 |
+| 文档 | 职责 |
 |---|---|
-| `README.md` | 执行包读取顺序、状态口径、模型代码、升级条件与通用回退 |
-| `PLAN_AUDIT_2026-07-10.md` | 原计划合理性、已完成质量、问题与验证证据 |
-| `../specs/2026-07-10-roadmap-execution-packages-design.md` | 两级计划体系、Phase 5/6 决策与生成原则 |
-| `PARALLEL_WORKTREE_EXECUTION_2026-07-11.md` | 当前 worktree 清单、并行通道、包分配、共享文件和集成门槛 |
-| `NIGHTLY_ELIGIBILITY_MATRIX.md` | Sol 审查后的 87 包夜间资格、理由、额外门槛和历史完成附录 |
-| `NIGHTLY_AUTOMATION.md` | 每天 4:00 自动化的候选选择、停机、验证与本地提交规则 |
-| `../../user-testing/README.md` | 非专业用户的短测/正式验收节奏、数据安全、反馈格式与结果等级 |
-| `phase-1-execution-packages.md` | 当前 API/Job 状态与 14 个剩余包 |
-| `phase-2-execution-packages.md` | Vue 基础、样板页、页面迁移和切换共 22 包 |
-| `phase-3-execution-packages.md` | 仓储、SessionManager、Schema、删除和性能共 19 包 |
-| `phase-4-execution-packages.md` | 关系、图谱、掌握度和训练闭环共 12 包 |
-| `phase-5-execution-packages.md` | 四个实验、设计门槛和正式命题工作台共 13 包 |
-| `phase-6-deferred.md` | 延后原因、重启条件和不可取消红线 |
+| `README.md` | 执行包规则、状态口径、模型代码、升级条件与通用回退 |
+| `PARALLEL_WORKTREE_EXECUTION.md` | 持久并行、集成、同步与安全清理规则 |
+| `NIGHTLY_ELIGIBILITY_MATRIX.md` | 87 个正式包的稳定夜间资格、理由和额外门槛 |
+| `NIGHTLY_AUTOMATION.md` | 每天 4:00 自动化的选择、停机、验证与本地提交规则 |
+| `../../user-testing/README.md` | 短测/正式验收节奏、数据安全、反馈格式与结果等级 |
+| `phase-1-execution-packages.md` | Phase 1 包定义与依赖 |
+| `phase-2-execution-packages.md` | Phase 2 包定义与依赖 |
+| `phase-3-execution-packages.md` | Phase 3 包定义与依赖 |
+| `phase-4-execution-packages.md` | Phase 4 包定义与依赖 |
+| `phase-5-execution-packages.md` | Phase 5 包定义与依赖 |
+| `phase-6-deferred.md` | Phase 6 延后原因、重启条件和安全红线 |
 
 ## 下一动作
 
-并行执行 `P1-16` 与 `P2-01`，由 `codex/p1-integration-verification` 统一复核和集成。P1-16 只使用临时题库和上传目录实现教师确认标签、安全元数据轻写与导入请求准备；P2-01 只建立前端工程和质量命令。每波完成后按并行手册通过 integration 分支验证、PR 合并 GitHub `main`，再同步本地 `main`。
+P1-16 与 P2-01 可以在各自专属 worktree 中并行，但都必须先完成即时计划和现场门槛。功能提交逐包交给 integration 验证，通过 PR 进入 GitHub `main` 后再同步共同基线。

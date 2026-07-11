@@ -1,7 +1,7 @@
 # Phase 4 执行包地图：知识图谱 2.0 与训练闭环
 
 > **阶段目标：** 在 `question_tags.knowledge_point` 活动语义上增加教师确认的关系层、可解释掌握度 v2，并把训练批改证据回流到下一次推荐。
-> **阶段状态：** `planned`；Phase 3 Schema/Repository 稳定后正式实施。
+> **阶段启动条件：** Phase 3 Schema/Repository 稳定后正式实施。
 > **事实修正：** `training_attempts` 已有 `record_attempt_stub()` 写入方，但尚未形成从真实训练卷批改结果自动关联、补齐分数和驱动推荐的闭环。
 > **不可变规则：** AI 只能建议关系；只有教师确认关系参与图谱和推荐；旧掌握度口径必须可对照和回退。
 > **夜间资格：** 所有包级标记以 `NIGHTLY_ELIGIBILITY_MATRIX.md` 为唯一权威，本文件不重复维护。
@@ -10,7 +10,7 @@
 
 ### P4-01 标签身份、业务口径与评估基线
 
-- **状态/依赖：** `planned`；P3-19。
+- **依赖：** P3-19。
 - **目标：** 确认知识点稳定身份、关系含义、掌握度评价指标和闭环成功标准，再设计 Schema。
 - **主要范围：** 当前 tag 数据分布、标签重命名/同义情况、关系样本、诊断与推荐 golden dataset。
 - **子任务：** 抽取匿名化样本；定义 prerequisite/parent/related；确定 stable key 规则；教师标注小型 gold set；记录旧口径输出。
@@ -21,7 +21,7 @@
 
 ### P4-02 Tag Relation Schema 与 Repository
 
-- **状态/依赖：** `planned`；P4-01。
+- **依赖：** P4-01。
 - **目标：** 通过迁移建立标签身份/关系记录、来源、状态、权重和审计字段，并提供事务 repository。
 - **主要范围：** question-bank migration、relation models/repository、唯一性/外键/状态约束。
 - **子任务：** 空库和历史库迁移；建议/确认/拒绝状态；幂等 upsert；软退役；审计时间和来源；副本预演。
@@ -32,7 +32,7 @@
 
 ### P4-03 AI 关系建议 Job 与离线评估
 
-- **状态/依赖：** `planned`；P4-02、P1-24/P1-25。
+- **依赖：** P4-02、P1-24/P1-25。
 - **目标：** 批量生成候选关系和理由，经过结构/置信规则与 gold set 评估后只保存为 suggested。
 - **主要范围：** prompt/schema、Gateway、JobManager、候选去重、评估报告和重试。
 - **子任务：** 小批量上下文；限制关系类型；拒绝未知 key；记录模型/版本；离线 precision/coverage；失败分类和取消。
@@ -43,7 +43,7 @@
 
 ### P4-04 教师关系审核 API 与 UI
 
-- **状态/依赖：** `planned`；P4-02/P4-03、Phase 2 App Shell。
+- **依赖：** P4-02/P4-03、Phase 2 App Shell。
 - **目标：** 教师按关系、证据和影响范围确认、拒绝、修改权重或退役关系。
 - **主要范围：** relation API/schema、审核队列、证据 inspector、批量动作和审计记录。
 - **子任务：** suggestion 分页；冲突/重复提示；单条与受限批量确认；并发版本；撤销/退役；空/错态。
@@ -56,7 +56,7 @@
 
 ### P4-05 图谱关系查询服务与 API v2
 
-- **状态/依赖：** `planned`；P4-02/P4-04、P1-21。
+- **依赖：** P4-02/P4-04、P1-21。
 - **目标：** 在现有 tag graph rows 上合并 confirmed 关系、掌握度和证据，提供班级/学生/考试范围查询。
 - **主要范围：** graph query service、v2 schema、请求级 memo、节点/边/证据分页。
 - **子任务：** 仅 confirmed 边；过滤考试范围；孤立节点；循环/多父关系；证据链接；版本化响应。
@@ -67,7 +67,7 @@
 
 ### P4-06 ECharts 图谱 2.0 交互
 
-- **状态/依赖：** `planned`；P4-05、P2-15。
+- **依赖：** P4-05、P2-15。
 - **目标：** 显示层级/先修/相关边、掌握度热力、范围筛选和节点证据下钻。
 - **主要范围：** graph/tree layouts、legend、filters、node inspector、文本摘要和性能降级策略。
 - **子任务：** 边类型视觉；状态非纯颜色；大图聚焦；键盘可达；截图/像素检查；移动端只读降级。
@@ -80,7 +80,7 @@
 
 ### P4-07 掌握度 v2 纯函数模型
 
-- **状态/依赖：** `planned`；P4-01，现有 `build_tag_profiles()` golden 输出。
+- **依赖：** P4-01，现有 `build_tag_profiles()` golden 输出。
 - **目标：** 将得分率、时间衰减和样本量置信度实现为纯函数、可解释分项和确定性结果。
 - **主要范围：** mastery v2 domain module、参数 schema、explanation payload、property/golden tests。
 - **子任务：** 明确时间基准；小样本 shrinkage；缺失日期；满分/零分；参数边界；输出分项贡献。
@@ -91,7 +91,7 @@
 
 ### P4-08 新旧掌握度评估与功能开关
 
-- **状态/依赖：** `planned`；P4-07。
+- **依赖：** P4-07。
 - **目标：** 在同一匿名化样本上比较 v1/v2，记录差异原因，满足阈值后以显式开关灰度。
 - **主要范围：** evaluation runner、comparison report、profile service adapter、config/feature flag。
 - **子任务：** 生成差异榜；检查排名稳定；教师抽检；性能；默认保持 v1；切换/回退。
@@ -104,7 +104,7 @@
 
 ### P4-09 真实 Training Attempt 关联与回流
 
-- **状态/依赖：** `planned`；P3 repositories、P1 training API、现有 `record_attempt_stub()`。
+- **依赖：** P3 repositories、P1 training API、现有 `record_attempt_stub()`。
 - **目标：** 将训练任务项与真实 grading session/question/result 确定性关联，写入 score/full_score/evidence 并防止重复。
 - **主要范围：** TrainingTaskService 正式 record API、grading completion hook/job、跨库关联协议和审计。
 - **子任务：** 稳定 task_item_code 传播；验证学生/题目；幂等键；部分失败；补录/纠错；移除 stub 命名。
@@ -115,7 +115,7 @@
 
 ### P4-10 Prerequisite 阶段候选与推荐解释
 
-- **状态/依赖：** `planned`；P4-04/P4-05/P4-09。
+- **依赖：** P4-04/P4-05/P4-09。
 - **目标：** `prerequisite` 选题只使用 confirmed 先修边，并返回目标薄弱点、先修点、题目和证据链。
 - **主要范围：** PracticePlanService tag-only branch、question retrieval、shortage/warning 和 explanation schema。
 - **子任务：** 多层深度限制；循环防护；题量配额；缺题降级；同题去重；direct/prerequisite/transfer 平衡。
@@ -126,7 +126,7 @@
 
 ### P4-11 闭环编排、训练历史与下一轮推荐
 
-- **状态/依赖：** `planned`；P4-08/P4-09/P4-10。
+- **依赖：** P4-08/P4-09/P4-10。
 - **目标：** 训练发布、批改、attempt 回流、掌握度刷新和下一轮推荐形成可观察状态机。
 - **主要范围：** orchestration service/job、任务详情 API、历史 UI、差异解释和失败恢复。
 - **子任务：** 状态转换；回流 job；v1/v2 选择；下一计划对比；部分失败重试；审计时间线。
@@ -137,7 +137,7 @@
 
 ### P4-12 Phase 4 评估与总门槛
 
-- **状态/依赖：** `planned`；P4-02 至 P4-11。
+- **依赖：** P4-02 至 P4-11。
 - **目标：** 证明关系只由教师确认生效、掌握度可解释可回退、训练回流真正改变下一轮推荐。
 - **主要范围：** gold set、闭环 E2E、迁移预演、性能、真实教师抽检和文档。
 - **子任务：** 关系 precision；v1/v2 差异；训练前后；错误恢复；图谱视口；隐私检查；用户确认。
