@@ -120,3 +120,11 @@ def test_run_checks_is_read_only(tmp_path: Path) -> None:
         if path.is_file()
     }
     assert after == before
+
+
+def test_repository_documentation_contract() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    issues = run_checks(project_root)
+    assert not issues, "\n".join(
+        f"[{item.code}] {item.path}:{item.line} {item.message}" for item in issues
+    )
