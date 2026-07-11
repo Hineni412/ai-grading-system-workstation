@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from tools.handoff_status import (
+    END,
+    START,
     HandoffStatusError,
     parse_handoff_status,
     validate_handoff,
@@ -145,6 +147,13 @@ def test_invalid_handoff_is_rejected(text: str, message: str) -> None:
         parse_handoff_status(text)
 
 
+def test_reversed_handoff_markers_raise_handoff_error() -> None:
+    reversed_markers = f"{END}\n{START}\n"
+
+    with pytest.raises(HandoffStatusError, match="markers are out of order"):
+        parse_handoff_status(reversed_markers)
+
+
 def _git(repo: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", "-C", str(repo), *args],
@@ -170,8 +179,19 @@ def _commit_all(repo: Path, message: str) -> str:
     return _git(repo, "rev-parse", "HEAD")
 
 
-def _plan_document(block: str, *, package_id: str = "P1-16") -> str:
-    return f"**执行包：** {package_id}\n\n{block}"
+def _plan_document(
+    block: str,
+    *,
+    package_id: str = "P1-16",
+    user_test: str = "none",
+    checklist: str = "not_required",
+) -> str:
+    return (
+        f"**执行包：** {package_id}\n"
+        f"**用户自测：** {user_test}\n"
+        f"**自测清单：** {checklist}\n\n"
+        f"{block}"
+    )
 
 
 def _acceptance_result_block(
@@ -204,12 +224,16 @@ def _commit_claim(
     stash_baseline: str = "none",
     user_acceptance: str = "not_required",
     package_id: str = "P1-16",
+    handoff_package_id: str = "P1-16",
+    user_test: str = "none",
+    checklist: str = "not_required",
     extra_source: bool = False,
 ) -> str:
     plan.parent.mkdir(parents=True, exist_ok=True)
     plan.write_text(
         _plan_document(
             _block(
+                package_id=handoff_package_id,
                 handoff_status="in_progress",
                 implementation_commit="none",
                 automated_validation="pending",
@@ -220,6 +244,8 @@ def _commit_claim(
                 nightly_action="report_only",
             ),
             package_id=package_id,
+            user_test=user_test,
+            checklist=checklist,
         ),
         encoding="utf-8",
     )
@@ -236,12 +262,16 @@ def _make_verified_repo(
     committed_user_data_change: str | None = None,
     final_user_acceptance: str = "not_required",
     metadata_package_id: str = "P1-16",
+    handoff_package_id: str = "P1-16",
     filename_package_id: str = "p1-16",
     preexisting_user_data_stash: bool = False,
     claim_stash_baseline: str | None = None,
     claim_extra_source: bool = False,
     forge_new_stash_in_final: bool = False,
     intermediate_stash_baseline: str | None = None,
+    source_commit_before_claim: bool = False,
+    plan_user_test: str = "none",
+    plan_checklist: str = "not_required",
 ) -> tuple[Path, Path, str]:
     repo = tmp_path / "repo"
     _initialize_repo(repo)
@@ -267,6 +297,10 @@ def _make_verified_repo(
         )
         stash_baseline = _git(repo, "rev-parse", "refs/stash")
 
+    if source_commit_before_claim:
+        (repo / "app.py").write_text("VALUE = -1\n", encoding="utf-8")
+        _commit_all(repo, "feat: source changed before claim")
+
     recorded_stash_baseline = claim_stash_baseline or stash_baseline
     plan = repo / "docs" / f"2026-07-11-{filename_package_id}-current-plan.md"
     _commit_claim(
@@ -275,6 +309,9 @@ def _make_verified_repo(
         stash_baseline=recorded_stash_baseline,
         user_acceptance="pending" if final_user_acceptance == "passed" else "not_required",
         package_id=metadata_package_id,
+        handoff_package_id=handoff_package_id,
+        user_test=plan_user_test,
+        checklist=plan_checklist,
         extra_source=claim_extra_source,
     )
 
@@ -294,14 +331,20 @@ def _make_verified_repo(
     plan.write_text(
         _plan_document(
             _block(
+                package_id=handoff_package_id,
                 handoff_status="waiting_review",
                 implementation_commit="branch_head",
                 automated_validation="passed",
                 independent_review="pending",
+                user_acceptance=(
+                    "pending" if plan_user_test != "none" else "not_required"
+                ),
                 stash_baseline=recorded_stash_baseline,
                 nightly_action="report_only",
             ),
             package_id=metadata_package_id,
+            user_test=plan_user_test,
+            checklist=plan_checklist,
         ),
         encoding="utf-8",
     )
@@ -312,14 +355,20 @@ def _make_verified_repo(
         plan.write_text(
             _plan_document(
                 _block(
+                    package_id=handoff_package_id,
                     handoff_status="waiting_review",
                     implementation_commit="branch_head",
                     automated_validation="passed",
                     independent_review="pending",
+                    user_acceptance=(
+                        "pending" if plan_user_test != "none" else "not_required"
+                    ),
                     stash_baseline=intermediate_stash_baseline,
                     nightly_action="report_only",
                 ),
                 package_id=metadata_package_id,
+                user_test=plan_user_test,
+                checklist=plan_checklist,
             ),
             encoding="utf-8",
         )
@@ -342,11 +391,14 @@ def _make_verified_repo(
     plan.write_text(
         _plan_document(
             _block(
+                package_id=handoff_package_id,
                 implementation_commit=recorded_sha or final_parent_sha,
                 user_acceptance=final_user_acceptance,
                 stash_baseline=final_stash_baseline,
             ),
             package_id=metadata_package_id,
+            user_test=plan_user_test,
+            checklist=plan_checklist,
         ),
         encoding="utf-8",
     )
@@ -482,6 +534,15 @@ def test_handoff_claim_commit_must_only_change_plan(tmp_path: Path) -> None:
     assert "handoff claim commit must only change the plan" in report.issues
 
 
+def test_handoff_claim_must_be_first_branch_commit(tmp_path: Path) -> None:
+    repo, plan, _ = _make_verified_repo(tmp_path, source_commit_before_claim=True)
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert "handoff claim must be the first branch commit" in report.issues
+
+
 def test_stash_baseline_rejects_missing_stash_commit(tmp_path: Path) -> None:
     repo, plan, _ = _make_verified_repo(
         tmp_path,
@@ -604,6 +665,33 @@ def test_plan_filename_must_contain_exactly_one_package_id(tmp_path: Path) -> No
     assert "plan filename must match exactly one handoff package" in report.issues
 
 
+def test_formal_user_test_cannot_finish_as_not_required(tmp_path: Path) -> None:
+    repo, plan, _ = _make_verified_repo(
+        tmp_path,
+        plan_user_test="formal",
+        plan_checklist="docs/user-testing/checkpoints/P1-16-2026-07-11.md",
+    )
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert "plan user testing requires passed user acceptance" in report.issues
+
+
+def test_required_formal_package_cannot_declare_no_user_test(tmp_path: Path) -> None:
+    repo, plan, _ = _make_verified_repo(
+        tmp_path,
+        metadata_package_id="P1-29",
+        handoff_package_id="P1-29",
+        filename_package_id="p1-29",
+    )
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert "P1-29 requires formal user testing" in report.issues
+
+
 def _make_anchored_waiting_user_repo(
     tmp_path: Path,
     *,
@@ -614,7 +702,14 @@ def _make_anchored_waiting_user_repo(
     (repo / "app.py").write_text("VALUE = 0\n", encoding="utf-8")
     _record_origin_main(repo)
     plan = repo / "docs" / "2026-07-11-p1-16-current-plan.md"
-    _commit_claim(repo, plan, user_acceptance="pending")
+    checklist = "docs/user-testing/checkpoints/P1-16-2026-07-11.md"
+    _commit_claim(
+        repo,
+        plan,
+        user_acceptance="pending",
+        user_test="formal",
+        checklist=checklist,
+    )
     plan.write_text(
         _plan_document(
             _block(
@@ -624,7 +719,9 @@ def _make_anchored_waiting_user_repo(
                 independent_review="pending",
                 user_acceptance="pending",
                 nightly_action="report_only",
-            )
+            ),
+            user_test="formal",
+            checklist=checklist,
         ),
         encoding="utf-8",
     )
@@ -639,7 +736,9 @@ def _make_anchored_waiting_user_repo(
                 independent_review="passed",
                 user_acceptance="pending",
                 nightly_action="report_only",
-            )
+            ),
+            user_test="formal",
+            checklist=checklist,
         ),
         encoding="utf-8",
     )
@@ -682,6 +781,7 @@ def _make_user_accepted_repo(
     checklist_reviewed_commit: str | None = None,
     empty_checklist: bool = False,
     reversed_acceptance_markers: bool = False,
+    declared_checklist: str | None = None,
 ) -> tuple[Path, Path]:
     repo = tmp_path / "repo"
     _initialize_repo(repo)
@@ -689,7 +789,17 @@ def _make_user_accepted_repo(
     _record_origin_main(repo)
 
     plan = repo / "docs" / "2026-07-11-p1-16-current-plan.md"
-    _commit_claim(repo, plan, user_acceptance="pending")
+    actual_checklist = (
+        f"docs/user-testing/checkpoints/{checkpoint_package_id}-2026-07-11.md"
+    )
+    planned_checklist = declared_checklist or actual_checklist
+    _commit_claim(
+        repo,
+        plan,
+        user_acceptance="pending",
+        user_test="formal",
+        checklist=planned_checklist,
+    )
     plan.write_text(
         _plan_document(
             _block(
@@ -699,7 +809,9 @@ def _make_user_accepted_repo(
                 independent_review="pending",
                 user_acceptance="pending",
                 nightly_action="report_only",
-            )
+            ),
+            user_test="formal",
+            checklist=planned_checklist,
         ),
         encoding="utf-8",
     )
@@ -717,7 +829,9 @@ def _make_user_accepted_repo(
                 independent_review=independent_review,
                 user_acceptance="pending",
                 nightly_action="report_only",
-            )
+            ),
+            user_test="formal",
+            checklist=planned_checklist,
         ),
         encoding="utf-8",
     )
@@ -753,7 +867,9 @@ def _make_user_accepted_repo(
             _block(
                 implementation_commit=evidence_sha,
                 user_acceptance="passed",
-            )
+            ),
+            user_test="formal",
+            checklist=planned_checklist,
         ),
         encoding="utf-8",
     )
@@ -769,6 +885,20 @@ def test_passed_user_acceptance_allows_matching_checklist_only_evidence(
     report = validate_handoff(plan, repo)
 
     assert report.ok is True
+
+
+def test_passed_user_acceptance_must_use_plan_declared_checklist(
+    tmp_path: Path,
+) -> None:
+    repo, plan = _make_user_accepted_repo(
+        tmp_path,
+        declared_checklist="docs/user-testing/checkpoints/P1-16-other.md",
+    )
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert "user acceptance evidence must match plan checklist" in report.issues
 
 
 def test_user_acceptance_evidence_commit_rejects_source_changes(tmp_path: Path) -> None:
