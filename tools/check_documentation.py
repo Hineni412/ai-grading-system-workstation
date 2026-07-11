@@ -10,9 +10,8 @@ MARKDOWN_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 BACKTICK_REF_RE = re.compile(r"`([^`\n]+)`")
 PHASE_PACKAGE_RE = re.compile(r"^###\s+(P[1-5]-\d{2})\s+(.+?)\s*$")
 ANY_PACKAGE_HEADING_RE = re.compile(r"^###\s+(P\d+-\d{2})\s+(.+?)\s*$")
-MODEL_RE = re.compile(r"^- \*\*模型：\*\*\s+`([^`]+)`")
 MATRIX_ROW_RE = re.compile(
-    r"^\|\s*(P[1-5]-\d{2})\s*\|\s*(.*?)\s*\|\s*`(T-M|T-H|S-H|S-XH)`\s*\|\s*`?"
+    r"^\|\s*(P[1-5]-\d{2})\s*\|\s*(.*?)\s*\|\s*`?"
     r"(eligible_after_plan|daytime_only|completed_not_applicable)`?\s*\|"
 )
 ANY_MATRIX_ID_RE = re.compile(r"^\|\s*(P\d+-\d{2})\s*\|")
@@ -405,39 +404,29 @@ def check_removed_references(project_root: Path) -> list[DocumentationIssue]:
     return sorted(issues)
 
 
-def _phase_packages(root: Path) -> dict[str, tuple[str, str, str, int]]:
-    packages: dict[str, tuple[str, str, str, int]] = {}
+def _phase_packages(root: Path) -> dict[str, tuple[str, str, int]]:
+    packages: dict[str, tuple[str, str, int]] = {}
     for relative_path in PHASE_PATHS:
         path = root / relative_path
         if not path.exists():
             continue
-        current: tuple[str, str, int] | None = None
         for line_number, line in enumerate(
             path.read_text(encoding="utf-8").splitlines(), 1
         ):
             heading = PHASE_PACKAGE_RE.match(line)
             if heading:
-                current = (heading.group(1), heading.group(2).strip(), line_number)
-                continue
-            model = MODEL_RE.match(line)
-            if current and model:
-                parts = [part.strip() for part in model.group(1).split("/")]
-                if len(parts) == 3:
-                    package_id, title, heading_line = current
-                    packages[package_id] = (
-                        title,
-                        parts[1],
-                        relative_path,
-                        heading_line,
-                    )
-                current = None
+                packages[heading.group(1)] = (
+                    heading.group(2).strip(),
+                    relative_path,
+                    line_number,
+                )
     return packages
 
 
-def _matrix_packages(root: Path) -> dict[str, tuple[str, str, str, int]]:
+def _matrix_packages(root: Path) -> dict[str, tuple[str, str, int]]:
     relative_path = "docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md"
     path = root / relative_path
-    packages: dict[str, tuple[str, str, str, int]] = {}
+    packages: dict[str, tuple[str, str, int]] = {}
     if not path.exists():
         return packages
     for line_number, line in enumerate(
@@ -448,7 +437,6 @@ def _matrix_packages(root: Path) -> dict[str, tuple[str, str, str, int]]:
             packages[match.group(1)] = (
                 match.group(2).strip(),
                 match.group(3),
-                match.group(4),
                 line_number,
             )
     return packages
@@ -547,8 +535,8 @@ def check_package_registry(
             )
         )
     for package_id in sorted(set(expected_ids) & set(phase) & set(matrix)):
-        phase_title, phase_model, phase_path, phase_line = phase[package_id]
-        matrix_title, matrix_model, _, matrix_line = matrix[package_id]
+        phase_title, phase_path, phase_line = phase[package_id]
+        matrix_title, _, _ = matrix[package_id]
         if phase_title != matrix_title:
             issues.append(
                 DocumentationIssue(
@@ -556,15 +544,6 @@ def check_package_registry(
                     phase_path,
                     phase_line,
                     f"Title mismatch for {package_id}",
-                )
-            )
-        if phase_model != matrix_model:
-            issues.append(
-                DocumentationIssue(
-                    "DOC302",
-                    "docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md",
-                    matrix_line,
-                    f"Execution model mismatch for {package_id}",
                 )
             )
     return sorted(issues)

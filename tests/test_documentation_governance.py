@@ -116,20 +116,20 @@ def test_removed_document_name_is_rejected_outside_governance_plan(
     ]
 
 
-def test_package_registry_compares_title_model_and_formal_ids(
+def test_package_registry_compares_title_and_formal_ids_without_model_metadata(
     tmp_path: Path,
 ) -> None:
     phase = tmp_path / "docs/superpowers/packages/phase-1-execution-packages.md"
     matrix = tmp_path / "docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md"
-    _write(phase, "### P1-09 示例包\n- **模型：** `S-XH / T-M / T-H`。\n")
+    _write(phase, "### P1-09 示例包\n- **目标：** 示例目标。\n")
     _write(
         matrix,
-        "| 包 | 标题 | 执行模型 | 夜间资格 | 理由 |\n"
-        "|---|---|---|---|---|\n"
-        "| P1-09 | 错误标题 | `T-H` | `eligible_after_plan` | test |\n",
+        "| 包 | 标题 | 夜间资格 | 理由 |\n"
+        "|---|---|---|---|\n"
+        "| P1-09 | 错误标题 | `eligible_after_plan` | test |\n",
     )
     issues = check_package_registry(tmp_path, expected_ids={"P1-09"})
-    assert {item.code for item in issues} == {"DOC301", "DOC302"}
+    assert {item.code for item in issues} == {"DOC301"}
 
 
 def test_package_registry_rejects_duplicate_and_unexpected_ids(
@@ -139,15 +139,15 @@ def test_package_registry_rejects_duplicate_and_unexpected_ids(
     matrix = tmp_path / "docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md"
     _write(
         phase,
-        "### P1-09 示例包\n- **模型：** `S-XH / T-M / T-H`。\n"
-        "### P1-09 重复包\n- **模型：** `S-XH / T-M / T-H`。\n"
-        "### P6-01 额外包\n- **模型：** `S-XH / T-M / T-H`。\n",
+        "### P1-09 示例包\n- **目标：** 示例目标。\n"
+        "### P1-09 重复包\n- **目标：** 重复目标。\n"
+        "### P6-01 额外包\n- **目标：** 额外目标。\n",
     )
     _write(
         matrix,
-        "| P1-09 | 示例包 | `T-M` | `eligible_after_plan` | test |\n"
-        "| P1-09 | 重复包 | `T-M` | `eligible_after_plan` | test |\n"
-        "| P6-01 | 额外包 | `T-M` | `eligible_after_plan` | test |\n",
+        "| P1-09 | 示例包 | `eligible_after_plan` | test |\n"
+        "| P1-09 | 重复包 | `eligible_after_plan` | test |\n"
+        "| P6-01 | 额外包 | `eligible_after_plan` | test |\n",
     )
 
     issues = check_package_registry(tmp_path, expected_ids={"P1-09"})
@@ -162,7 +162,7 @@ def test_repository_registry_requires_all_historical_matrix_ids(
     _write(
         matrix,
         "".join(
-            f"| P1-{value:02d} | 历史包 | `T-M` | `completed_not_applicable` | done |\n"
+            f"| P1-{value:02d} | 历史包 | `completed_not_applicable` | done |\n"
             for value in range(1, 8)
         ),
     )
