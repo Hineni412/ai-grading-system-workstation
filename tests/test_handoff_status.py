@@ -197,6 +197,37 @@ def _record_origin_main(repo: Path) -> str:
     return base_sha
 
 
+def _commit_claim(
+    repo: Path,
+    plan: Path,
+    *,
+    stash_baseline: str = "none",
+    user_acceptance: str = "not_required",
+    package_id: str = "P1-16",
+    extra_source: bool = False,
+) -> str:
+    plan.parent.mkdir(parents=True, exist_ok=True)
+    plan.write_text(
+        _plan_document(
+            _block(
+                handoff_status="in_progress",
+                implementation_commit="none",
+                automated_validation="pending",
+                independent_review="pending",
+                user_acceptance=user_acceptance,
+                real_data_fingerprint="not_touched",
+                stash_baseline=stash_baseline,
+                nightly_action="report_only",
+            ),
+            package_id=package_id,
+        ),
+        encoding="utf-8",
+    )
+    if extra_source:
+        (repo / "claim-extra.txt").write_text("not allowed\n", encoding="utf-8")
+    return _commit_all(repo, "docs: claim execution package")
+
+
 def _make_verified_repo(
     tmp_path: Path,
     *,
@@ -207,6 +238,10 @@ def _make_verified_repo(
     metadata_package_id: str = "P1-16",
     filename_package_id: str = "p1-16",
     preexisting_user_data_stash: bool = False,
+    claim_stash_baseline: str | None = None,
+    claim_extra_source: bool = False,
+    forge_new_stash_in_final: bool = False,
+    intermediate_stash_baseline: str | None = None,
 ) -> tuple[Path, Path, str]:
     repo = tmp_path / "repo"
     _initialize_repo(repo)
@@ -232,6 +267,17 @@ def _make_verified_repo(
         )
         stash_baseline = _git(repo, "rev-parse", "refs/stash")
 
+    recorded_stash_baseline = claim_stash_baseline or stash_baseline
+    plan = repo / "docs" / f"2026-07-11-{filename_package_id}-current-plan.md"
+    _commit_claim(
+        repo,
+        plan,
+        stash_baseline=recorded_stash_baseline,
+        user_acceptance="pending" if final_user_acceptance == "passed" else "not_required",
+        package_id=metadata_package_id,
+        extra_source=claim_extra_source,
+    )
+
     (repo / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
     if committed_user_data_change == "modified":
         historical.write_text("package change\n", encoding="utf-8")
@@ -245,8 +291,6 @@ def _make_verified_repo(
         historical.write_text("temporarily committed package data\n", encoding="utf-8")
         _commit_all(repo, "test: accidental user data commit")
         historical.write_text("historical\n", encoding="utf-8")
-    plan = repo / "docs" / f"2026-07-11-{filename_package_id}-current-plan.md"
-    plan.parent.mkdir(parents=True)
     plan.write_text(
         _plan_document(
             _block(
@@ -254,7 +298,7 @@ def _make_verified_repo(
                 implementation_commit="branch_head",
                 automated_validation="passed",
                 independent_review="pending",
-                stash_baseline=stash_baseline,
+                stash_baseline=recorded_stash_baseline,
                 nightly_action="report_only",
             ),
             package_id=metadata_package_id,
@@ -262,13 +306,45 @@ def _make_verified_repo(
         encoding="utf-8",
     )
     implementation_sha = _commit_all(repo, "feat: implementation")
+    final_parent_sha = implementation_sha
+
+    if intermediate_stash_baseline is not None:
+        plan.write_text(
+            _plan_document(
+                _block(
+                    handoff_status="waiting_review",
+                    implementation_commit="branch_head",
+                    automated_validation="passed",
+                    independent_review="pending",
+                    stash_baseline=intermediate_stash_baseline,
+                    nightly_action="report_only",
+                ),
+                package_id=metadata_package_id,
+            ),
+            encoding="utf-8",
+        )
+        final_parent_sha = _commit_all(repo, "docs: alter stash baseline")
+
+    final_stash_baseline = recorded_stash_baseline
+    if forge_new_stash_in_final:
+        historical.write_text("forbidden stash absorbed into baseline\n", encoding="utf-8")
+        _git(
+            repo,
+            "stash",
+            "push",
+            "-m",
+            "forbidden package stash",
+            "--",
+            "user_data/historical.db",
+        )
+        final_stash_baseline = _git(repo, "rev-parse", "refs/stash")
 
     plan.write_text(
         _plan_document(
             _block(
-                implementation_commit=recorded_sha or implementation_sha,
+                implementation_commit=recorded_sha or final_parent_sha,
                 user_acceptance=final_user_acceptance,
-                stash_baseline=stash_baseline,
+                stash_baseline=final_stash_baseline,
             ),
             package_id=metadata_package_id,
         ),
@@ -286,7 +362,7 @@ def _make_branch_head_repo(tmp_path: Path) -> tuple[Path, Path, str]:
     (repo / "base.txt").write_text("base\n", encoding="utf-8")
     _record_origin_main(repo)
     plan = repo / "docs" / "2026-07-11-p1-16-current-plan.md"
-    plan.parent.mkdir(parents=True)
+    _commit_claim(repo, plan)
     plan.write_text(
         _plan_document(
             _block(
@@ -397,6 +473,54 @@ def test_preexisting_user_data_stash_baseline_does_not_block_validation(
     assert report.ok is True
 
 
+def test_handoff_claim_commit_must_only_change_plan(tmp_path: Path) -> None:
+    repo, plan, _ = _make_verified_repo(tmp_path, claim_extra_source=True)
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert "handoff claim commit must only change the plan" in report.issues
+
+
+def test_stash_baseline_rejects_missing_stash_commit(tmp_path: Path) -> None:
+    repo, plan, _ = _make_verified_repo(
+        tmp_path,
+        claim_stash_baseline="0" * 40,
+    )
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert "stash_baseline contains missing stash commits" in report.issues
+
+
+def test_final_handoff_cannot_absorb_new_user_data_stash(tmp_path: Path) -> None:
+    repo, plan, _ = _make_verified_repo(
+        tmp_path,
+        forge_new_stash_in_final=True,
+    )
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert "stash_baseline must remain unchanged from claim" in report.issues
+    assert "new user_data stash is not allowed" in report.issues
+
+
+def test_intermediate_handoff_cannot_change_and_restore_stash_baseline(
+    tmp_path: Path,
+) -> None:
+    repo, plan, _ = _make_verified_repo(
+        tmp_path,
+        intermediate_stash_baseline="0" * 40,
+    )
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert "stash_baseline must remain unchanged from claim" in report.issues
+
+
 def test_new_user_data_stash_after_claim_fails_validation(tmp_path: Path) -> None:
     repo, plan, _ = _make_verified_repo(tmp_path)
     historical = repo / "user_data" / "historical.db"
@@ -490,7 +614,7 @@ def _make_anchored_waiting_user_repo(
     (repo / "app.py").write_text("VALUE = 0\n", encoding="utf-8")
     _record_origin_main(repo)
     plan = repo / "docs" / "2026-07-11-p1-16-current-plan.md"
-    plan.parent.mkdir(parents=True)
+    _commit_claim(repo, plan, user_acceptance="pending")
     plan.write_text(
         _plan_document(
             _block(
@@ -565,7 +689,7 @@ def _make_user_accepted_repo(
     _record_origin_main(repo)
 
     plan = repo / "docs" / "2026-07-11-p1-16-current-plan.md"
-    plan.parent.mkdir(parents=True)
+    _commit_claim(repo, plan, user_acceptance="pending")
     plan.write_text(
         _plan_document(
             _block(
