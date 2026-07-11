@@ -42,6 +42,11 @@ EXPECTED_OPERATIONS = {
     ("GET", "/api/question-bank/questions/{question_id}"),
     ("GET", "/api/question-bank/questions/{question_id}/assets/{asset_index}"),
     ("GET", "/api/question-bank/questions/{question_id}/previews/{preview_type}"),
+    ("PUT", "/api/question-bank/questions/{question_id}/tags"),
+    ("DELETE", "/api/question-bank/questions/{question_id}"),
+    ("POST", "/api/question-bank/questions/{question_id}/restore"),
+    ("POST", "/api/question-bank/import-uploads"),
+    ("POST", "/api/question-bank/import-requests"),
 }
 
 
@@ -152,4 +157,31 @@ def test_binary_routes_publish_exact_200_media_types_and_binary_schemas() -> Non
             assert content[media_type]["schema"] == {
                 "type": "string",
                 "format": "binary",
+            }
+
+
+def test_question_bank_write_openapi_declares_binary_upload_and_stable_errors() -> None:
+    from backend.api.app import create_app
+
+    schema = create_app().openapi()
+    upload = schema["paths"]["/api/question-bank/import-uploads"]["post"]
+    upload_schema = upload["requestBody"]["content"]["application/octet-stream"][
+        "schema"
+    ]
+    assert upload_schema["type"] == "string"
+    assert upload_schema["format"] == "binary"
+
+    expected_errors = {
+        ("put", "/api/question-bank/questions/{question_id}/tags"): {404, 409, 422},
+        ("delete", "/api/question-bank/questions/{question_id}"): {404, 409, 422},
+        ("post", "/api/question-bank/questions/{question_id}/restore"): {404, 409, 422},
+        ("post", "/api/question-bank/import-uploads"): {415, 422},
+        ("post", "/api/question-bank/import-requests"): {404, 422},
+    }
+    for (method, path), statuses in expected_errors.items():
+        responses = schema["paths"][path][method]["responses"]
+        assert statuses <= {int(status) for status in responses}
+        for status in statuses:
+            assert responses[str(status)]["content"]["application/json"]["schema"] == {
+                "$ref": "#/components/schemas/ErrorResponse"
             }
