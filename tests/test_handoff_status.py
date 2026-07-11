@@ -85,7 +85,7 @@ def test_parse_valid_verified_handoff() -> None:
         ),
         _block(
             handoff_status="waiting_user",
-            implementation_commit="branch_head",
+            implementation_commit=FULL_SHA,
             automated_validation="passed",
             independent_review="passed",
             user_acceptance="pending",
@@ -169,6 +169,21 @@ def _commit_all(repo: Path, message: str) -> str:
 
 def _plan_document(block: str, *, package_id: str = "P1-16") -> str:
     return f"**执行包：** {package_id}\n\n{block}"
+
+
+def _acceptance_result_block(
+    reviewed_commit: str,
+    *,
+    package_id: str = "P1-16",
+    result: str = "passed",
+) -> str:
+    return f"""\
+<!-- USER_ACCEPTANCE_RESULT_START -->
+**执行包：** {package_id}
+**验收提交：** {reviewed_commit}
+**结果：** {result}
+<!-- USER_ACCEPTANCE_RESULT_END -->
+"""
 
 
 def _record_origin_main(repo: Path) -> str:
@@ -366,12 +381,95 @@ def test_plan_filename_must_match_handoff_package(tmp_path: Path) -> None:
     assert "plan filename must match handoff package" in report.issues
 
 
+def test_plan_filename_must_contain_exactly_one_package_id(tmp_path: Path) -> None:
+    repo, plan, _ = _make_verified_repo(
+        tmp_path,
+        filename_package_id="p1-16-copy-of-p1-17",
+    )
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert "plan filename must match exactly one handoff package" in report.issues
+
+
+def _make_anchored_waiting_user_repo(
+    tmp_path: Path,
+    *,
+    extra_anchor_source: bool = False,
+) -> tuple[Path, Path, str]:
+    repo = tmp_path / "repo"
+    _initialize_repo(repo)
+    (repo / "app.py").write_text("VALUE = 0\n", encoding="utf-8")
+    _record_origin_main(repo)
+    plan = repo / "docs" / "2026-07-11-p1-16-current-plan.md"
+    plan.parent.mkdir(parents=True)
+    plan.write_text(
+        _plan_document(
+            _block(
+                handoff_status="waiting_review",
+                implementation_commit="branch_head",
+                automated_validation="passed",
+                independent_review="pending",
+                user_acceptance="pending",
+                nightly_action="report_only",
+            )
+        ),
+        encoding="utf-8",
+    )
+    (repo / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    reviewed_sha = _commit_all(repo, "feat: reviewed implementation")
+    plan.write_text(
+        _plan_document(
+            _block(
+                handoff_status="waiting_user",
+                implementation_commit=reviewed_sha,
+                automated_validation="passed",
+                independent_review="passed",
+                user_acceptance="pending",
+                nightly_action="report_only",
+            )
+        ),
+        encoding="utf-8",
+    )
+    if extra_anchor_source:
+        (repo / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
+    _commit_all(repo, "docs: anchor reviewed user acceptance")
+    return repo, plan, reviewed_sha
+
+
+def test_waiting_user_full_sha_anchors_reviewed_parent(tmp_path: Path) -> None:
+    repo, plan, reviewed_sha = _make_anchored_waiting_user_repo(tmp_path)
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is True
+    assert report.resolved_implementation_commit == reviewed_sha
+
+
+def test_waiting_user_anchor_commit_rejects_source_changes(tmp_path: Path) -> None:
+    repo, plan, _ = _make_anchored_waiting_user_repo(
+        tmp_path,
+        extra_anchor_source=True,
+    )
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert "waiting_user anchor commit must only change the plan" in report.issues
+
+
 def _make_user_accepted_repo(
     tmp_path: Path,
     *,
     extra_source_change: bool = False,
+    intervening_source_change: bool = False,
     independent_review: str = "passed",
     checkpoint_package_id: str = "P1-16",
+    checklist_block_package_id: str | None = None,
+    checklist_result: str = "passed",
+    checklist_reviewed_commit: str | None = None,
+    empty_checklist: bool = False,
 ) -> tuple[Path, Path]:
     repo = tmp_path / "repo"
     _initialize_repo(repo)
@@ -383,8 +481,26 @@ def _make_user_accepted_repo(
     plan.write_text(
         _plan_document(
             _block(
-                handoff_status="waiting_user",
+                handoff_status="waiting_review",
                 implementation_commit="branch_head",
+                automated_validation="passed",
+                independent_review="pending",
+                user_acceptance="pending",
+                nightly_action="report_only",
+            )
+        ),
+        encoding="utf-8",
+    )
+    (repo / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    reviewed_sha = _commit_all(repo, "feat: reviewed implementation")
+
+    plan.write_text(
+        _plan_document(
+            _block(
+                handoff_status="waiting_user",
+                implementation_commit=(
+                    reviewed_sha if independent_review == "passed" else "branch_head"
+                ),
                 automated_validation="passed",
                 independent_review=independent_review,
                 user_acceptance="pending",
@@ -393,8 +509,11 @@ def _make_user_accepted_repo(
         ),
         encoding="utf-8",
     )
-    (repo / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
-    _commit_all(repo, "feat: reviewed implementation")
+    _commit_all(repo, "docs: anchor reviewed user acceptance")
+
+    if intervening_source_change:
+        (repo / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
+        _commit_all(repo, "feat: unreviewed source change")
 
     checklist = (
         repo
@@ -404,9 +523,16 @@ def _make_user_accepted_repo(
         / f"{checkpoint_package_id}-2026-07-11.md"
     )
     checklist.parent.mkdir(parents=True)
-    checklist.write_text("# P1-16\n\nResult: passed\n", encoding="utf-8")
+    checklist_text = ""
+    if not empty_checklist:
+        checklist_text = "# P1-16\n\n" + _acceptance_result_block(
+            checklist_reviewed_commit or reviewed_sha,
+            package_id=checklist_block_package_id or checkpoint_package_id,
+            result=checklist_result,
+        )
+    checklist.write_text(checklist_text, encoding="utf-8")
     if extra_source_change:
-        (repo / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
+        (repo / "app.py").write_text("VALUE = 3\n", encoding="utf-8")
     evidence_sha = _commit_all(repo, "docs: record user acceptance")
 
     plan.write_text(
@@ -441,6 +567,18 @@ def test_user_acceptance_evidence_commit_rejects_source_changes(tmp_path: Path) 
     assert "user acceptance evidence must only change one matching checklist" in report.issues
 
 
+def test_user_acceptance_rejects_intervening_source_commit(tmp_path: Path) -> None:
+    repo, plan = _make_user_accepted_repo(
+        tmp_path,
+        intervening_source_change=True,
+    )
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert "user acceptance evidence must directly follow anchored waiting_user state" in report.issues
+
+
 def test_user_acceptance_evidence_requires_matching_package_checklist(
     tmp_path: Path,
 ) -> None:
@@ -465,6 +603,51 @@ def test_user_acceptance_evidence_requires_prior_review_passed(tmp_path: Path) -
 
     assert report.ok is False
     assert "user acceptance evidence must follow reviewed waiting_user state" in report.issues
+
+
+def test_user_acceptance_checklist_must_record_passed_result(tmp_path: Path) -> None:
+    repo, plan = _make_user_accepted_repo(
+        tmp_path,
+        checklist_result="pending",
+    )
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert "user acceptance checklist must record passed result" in report.issues
+
+
+def test_user_acceptance_checklist_must_match_handoff_package(tmp_path: Path) -> None:
+    repo, plan = _make_user_accepted_repo(
+        tmp_path,
+        checklist_block_package_id="P1-17",
+    )
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert "user acceptance checklist must match handoff package" in report.issues
+
+
+def test_user_acceptance_checklist_must_match_reviewed_commit(tmp_path: Path) -> None:
+    repo, plan = _make_user_accepted_repo(
+        tmp_path,
+        checklist_reviewed_commit="0" * 40,
+    )
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert "user acceptance checklist must match reviewed commit" in report.issues
+
+
+def test_user_acceptance_checklist_requires_result_block(tmp_path: Path) -> None:
+    repo, plan = _make_user_accepted_repo(tmp_path, empty_checklist=True)
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert any(issue.startswith("invalid user acceptance checklist:") for issue in report.issues)
 
 
 def test_passed_user_acceptance_requires_checklist_evidence_commit(tmp_path: Path) -> None:

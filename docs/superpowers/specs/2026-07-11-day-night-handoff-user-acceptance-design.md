@@ -100,7 +100,9 @@
 
 代码或页面正在等待用户选择、授权或验收。夜间不得继续该任务，也不得推测用户结论。该通道保持占用；其他通道只有在不跨越当前用户门槛、不依赖未合并结果且文件无冲突时才可考虑。
 
-用户明确通过后，Codex 先把结果写入该包自己的版本化验收清单并创建范围受限的证据提交，期间不得改源码；随后立即创建只更新即时计划的最终交接提交。清单中的“提交”仍指用户实际操作的已复审功能版本，交接块的 40 位 SHA 则指包含该功能树和验收结果的直接父提交。
+独立复审尚未完成时，`功能提交` 只能是 `none` 或 `branch_head`，`独立复审` 保持 `pending`。复审通过后，Codex 创建一个只更新即时计划的 `waiting_user` 锚点提交：它记录直接父提交的完整已复审 SHA，且自动验证与独立复审均为 `passed`。该锚点之后不得再插入源码提交。
+
+用户明确通过后，Codex 紧接锚点提交把结果写入该包自己的版本化验收清单并创建范围受限的证据提交，期间不得改源码；随后立即创建只更新即时计划的最终交接提交。清单机器结果块中的“验收提交”指锚点记录的已复审功能 SHA，最终交接块的 40 位 SHA 则指包含该功能树和验收结果的直接父提交。
 
 #### `verified_pending_integration`
 
@@ -115,7 +117,7 @@
 | `in_progress` | `none` | `pending` | `pending` | `pending` 或 `not_required` | `report_only` |
 | `resumable` | `none` | `pending` 或 `failed` | `pending` | `pending` 或 `not_required` | `resume_only` |
 | `waiting_review` | `branch_head` | `passed` | `pending` | `pending` 或 `not_required` | `report_only` |
-| `waiting_user` | `none` 或 `branch_head` | `pending` 或 `passed` | `pending` 或 `passed` | `pending` | `report_only` |
+| `waiting_user` | 复审前为 `none`/`branch_head`；复审通过后为完整 40 位已复审 SHA | 复审前 `pending`/`passed`；复审通过后 `passed` | `pending`，或与完整 SHA 同时为 `passed` | `pending` | `report_only` |
 | `verified_pending_integration` | 完整 40 位 SHA | `passed` | `passed` | `passed` 或 `not_required` | `independent_candidate_allowed` |
 
 不符合表中组合的交接块一律视为状态不明。`independent_candidate_allowed` 只表示当前完成分支不阻止自动化考察其他通道，不授权复用当前 worktree，也不跳过其他候选包自身的全部门槛。
@@ -131,14 +133,14 @@
 3. 独立复审没有未解决的 Critical、Important 或用户要求必须修复的问题。
 4. 需要用户验收的包已经得到明确 `passed`；不能用截图自动检查替代用户决定。
 5. 根目录真实两库未接触，或大小、UTC 修改时间和 SHA-256 前后完全一致。
-6. 已创建范围单一的本地功能提交；若需要版本化用户结果，在源码不变的前提下再创建一个只更新该包验收清单的证据提交；最后创建一个仅修改当前即时计划的交接提交。
-7. 交接块记录的 40 位 SHA 必须是交接提交的直接父提交。`用户验收: passed` 时，该父提交必须只修改 `docs/user-testing/checkpoints/` 下唯一一份以本包号开头的 Markdown 清单；其父树中的即时计划必须是自动验证与独立复审均通过的 `waiting_user`。交接提交不得夹带源码、共享状态文档、验收清单或其他执行包文件。
+6. 已创建范围单一的本地功能提交。需要用户验收时，复审通过后先创建仅修改即时计划的 `waiting_user` 锚点提交，它记录直接父提交的完整已复审 SHA；再创建只更新该包验收清单的证据提交；最后创建一个仅修改当前即时计划的交接提交。
+7. 交接块记录的 40 位 SHA 必须是交接提交的直接父提交。`用户验收: passed` 时，该父提交必须只修改 `docs/user-testing/checkpoints/` 下唯一一份以本包号开头的 Markdown 清单；该清单的机器结果块必须记录同一包号、锚点中的已复审 SHA 和 `passed`。证据提交必须直接跟在只改计划的 `waiting_user` 锚点之后，锚点的直接父提交必须等于其记录的已复审 SHA；交接提交不得夹带源码、共享状态文档、验收清单或其他执行包文件。
 8. worktree 源码状态干净；`origin/main..HEAD` 整段包提交历史不得新增、修改或删除 `user_data/`，即使后续又恢复也不允许。主线已有且本包从未触及的历史跟踪文件可以保留；任何未提交或 stash 的本地数据仍然阻塞。
 9. 没有未记录的接口、评分、标签、状态或视觉差异。
 
 自动化必须现场复核这些证据。字段缺失、值不合法、SHA 不存在、功能提交不是交接提交的直接父提交、最新提交还修改了即时计划之外的文件、分支不干净或证据与 Git 实况不一致时，按状态不明处理。
 
-使用 `功能提交: branch_head` 的 `waiting_review` 或 `waiting_user` 也必须保持 worktree 干净；否则无法证明页面中的 HEAD 就是已提交、待复审或待用户确认的版本，验证器按失败处理。
+使用 `功能提交: branch_head` 的 `waiting_review`/复审前 `waiting_user`，以及使用完整 SHA 的复审后 `waiting_user`，都必须保持 worktree 干净。完整 SHA 的锚点提交还必须只修改即时计划并指向其直接父提交；否则验证器按失败处理。
 
 夜间 Terra 完成实现时仍只创建一个功能提交，并把状态保留为 `waiting_review`；它不能自行声称独立复审通过。最终交接提交由完成复审和必要用户验收的白天任务创建。
 
