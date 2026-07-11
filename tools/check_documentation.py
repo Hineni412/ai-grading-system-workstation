@@ -518,6 +518,16 @@ def check_package_registry(
                 f"Unexpected formal package ID: {package_id}",
             )
         )
+    if set(expected_ids) == set(FORMAL_IDS):
+        for package_id in sorted(HISTORICAL_MATRIX_IDS - set(matrix_occurrences)):
+            issues.append(
+                DocumentationIssue(
+                    "DOC307",
+                    "docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md",
+                    1,
+                    f"Matrix missing historical package record: {package_id}",
+                )
+            )
     for package_id in sorted(set(expected_ids) - set(phase)):
         issues.append(
             DocumentationIssue(

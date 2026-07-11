@@ -155,6 +155,25 @@ def test_package_registry_rejects_duplicate_and_unexpected_ids(
     assert {item.code for item in issues} == {"DOC305", "DOC306"}
 
 
+def test_repository_registry_requires_all_historical_matrix_ids(
+    tmp_path: Path,
+) -> None:
+    matrix = tmp_path / "docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md"
+    _write(
+        matrix,
+        "".join(
+            f"| P1-{value:02d} | 历史包 | `T-M` | `completed_not_applicable` | done |\n"
+            for value in range(1, 8)
+        ),
+    )
+
+    issues = check_package_registry(tmp_path)
+
+    assert any(
+        item.code == "DOC307" and "P1-08" in item.message for item in issues
+    )
+
+
 def test_run_checks_is_read_only(tmp_path: Path) -> None:
     _write(tmp_path / "README_工作机使用说明.md", "双击 `运行.bat`。\n")
     before = {
