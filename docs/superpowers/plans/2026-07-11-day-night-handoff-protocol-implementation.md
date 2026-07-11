@@ -52,7 +52,7 @@ All implementation and verification commands below use `$Python`. The automation
 - Produces: `parse_handoff_status(text: str) -> HandoffRecord`
 - Produces: `HandoffStatusError`, `HandoffRecord`, and enum values consumed by Task 2.
 
-- [ ] **Step 1: Write failing parser tests**
+- [x] **Step 1: Write failing parser tests**
 
 Add tests for one valid block, duplicate markers, a missing field, illegal enum, invalid package ID, invalid full SHA, and an inconsistent field combination:
 
@@ -121,7 +121,7 @@ def test_invalid_handoff_is_rejected(text: str, message: str) -> None:
         parse_handoff_status(text)
 ```
 
-- [ ] **Step 2: Run parser tests and confirm RED**
+- [x] **Step 2: Run parser tests and confirm RED**
 
 Run:
 
@@ -131,7 +131,7 @@ Run:
 
 Expected: collection fails because `tools.handoff_status` does not exist.
 
-- [ ] **Step 3: Implement enums, record, extraction, and combination validation**
+- [x] **Step 3: Implement enums, record, extraction, and combination validation**
 
 Create `tools/handoff_status.py` with these public definitions and strict markers:
 
@@ -284,13 +284,13 @@ def parse_handoff_status(text: str) -> HandoffRecord:
     return record
 ```
 
-- [ ] **Step 4: Run parser tests and confirm GREEN**
+- [x] **Step 4: Run parser tests and confirm GREEN**
 
 Run the Task 1 test command.
 
 Expected: all tests in `tests/test_handoff_status.py` pass.
 
-- [ ] **Step 5: Commit the parser slice**
+- [x] **Step 5: Commit the parser slice**
 
 ```powershell
 git add tools\handoff_status.py tests\test_handoff_status.py
@@ -308,7 +308,7 @@ git commit -m "test: validate handoff status blocks"
 - Produces: `validate_handoff(plan_path: Path, repo_root: Path) -> HandoffValidation`.
 - Produces CLI JSON with `ok`, `record`, `resolved_implementation_commit`, and `issues`.
 
-- [ ] **Step 1: Write failing temporary-repository tests**
+- [x] **Step 1: Write failing temporary-repository tests**
 
 Use a helper that initializes a temporary Git repository, creates a functional commit containing `waiting_review`, then creates a handoff-only commit containing `verified_pending_integration`. Assert the valid branch passes and these cases fail: wrong parent SHA, dirty verified worktree, dirty `branch_head` worktree, latest commit changes a second file, `real_data_fingerprint=changed`, tracked `user_data/`, and an ignored local file below `user_data/`.
 
@@ -331,7 +331,7 @@ def test_verified_handoff_rejects_extra_file_in_handoff_commit(tmp_path: Path) -
     assert "handoff commit must only change the plan" in report.issues
 ```
 
-- [ ] **Step 2: Run the focused tests and confirm RED**
+- [x] **Step 2: Run the focused tests and confirm RED**
 
 Run:
 
@@ -341,7 +341,7 @@ Run:
 
 Expected: failures because `validate_handoff` is undefined.
 
-- [ ] **Step 3: Implement Git validation and CLI**
+- [x] **Step 3: Implement Git validation and CLI**
 
 Append these public structures and functions. Use `subprocess.run(..., check=True, text=True, encoding="utf-8")`; never invoke a shell.
 
@@ -476,7 +476,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-- [ ] **Step 4: Run parser, Git, and CLI tests**
+- [x] **Step 4: Run parser, Git, and CLI tests**
 
 Run:
 
@@ -492,7 +492,7 @@ if ($report.ok -ne $false -or (($report.issues -join " ") -notmatch "handoff blo
 
 Expected: tests pass; the historical plan exits 2 with JSON explaining that the handoff block is missing. This safe failure is expected evidence, not a test failure.
 
-- [ ] **Step 5: Commit Git evidence validation**
+- [x] **Step 5: Commit Git evidence validation**
 
 ```powershell
 git add tools\handoff_status.py tests\test_handoff_status.py
@@ -514,7 +514,7 @@ git commit -m "feat: verify package handoff evidence"
 - Produces: stable user-facing entry and a just-in-time checklist template.
 - Does not produce concrete P1-29/P2 click steps before those screens are runnable.
 
-- [ ] **Step 1: Create the stable guide**
+- [x] **Step 1: Create the stable guide**
 
 `docs/user-testing/README.md` must contain these exact sections and decisions:
 
@@ -541,7 +541,7 @@ Codex 准备隔离数据、启动服务、提供地址、执行自动检查、�
 Blocker/Major 使正式门槛失败；Minor 由用户决定是否阻塞。只有用户明确确认后，正式验收才记为 passed。
 ```
 
-- [ ] **Step 2: Create the reusable checklist template**
+- [x] **Step 2: Create the reusable checklist template**
 
 `USER_TEST_TEMPLATE.md` must include metadata, safety, start URL, preflight, numbered steps, expected result, failure action, result record, and reset. Use placeholders only in angle-bracket form because this file is explicitly a template:
 
@@ -586,11 +586,11 @@ Codex 已执行：<本次启动动作>
 - 真实两库测试后指纹：pending
 ```
 
-- [ ] **Step 3: Link formal package deliverables**
+- [x] **Step 3: Link formal package deliverables**
 
 Update P1-29, P2-08, P2-20, and P2-21 so their `主要模块/范围` and `验收` explicitly require a versioned checklist under `docs/user-testing/checkpoints/`. Add `用户自测: none | quick | formal` and `自测清单` to the package README's immediate-plan requirements. Do not invent future UI steps.
 
-- [ ] **Step 4: Verify documentation structure**
+- [x] **Step 4: Verify documentation structure**
 
 Run:
 
@@ -601,7 +601,7 @@ git diff --check
 
 Expected: all four gates and the feedback protocol are linked; no whitespace errors.
 
-- [ ] **Step 5: Commit user-testing documentation**
+- [x] **Step 5: Commit user-testing documentation**
 
 ```powershell
 git add docs\user-testing docs\superpowers\packages\README.md docs\superpowers\packages\EXECUTION_INDEX.md docs\superpowers\packages\phase-1-execution-packages.md docs\superpowers\packages\phase-2-execution-packages.md
@@ -622,11 +622,11 @@ git commit -m "docs: define user acceptance workflow"
 - Consumes: the single JSON line emitted by `tools/handoff_status.py --plan $resolvedPlanPath --repo $resolvedWorktreePath`.
 - Produces: one authoritative automation prompt synchronized to automation-2.
 
-- [ ] **Step 1: Add the canonical handoff block and lifecycle rules**
+- [x] **Step 1: Add the canonical handoff block and lifecycle rules**
 
 Add the marker-delimited block from the approved design to the package README. A clean `ready` plan proven never to have been claimed may omit the block and still use the existing five nightly release fields; the worker writes `in_progress` before its first source edit. Once claimed, a missing block defaults that package/channel to `report_only`, and plans are not bulk-edited speculatively. Add the final-tree-anchor/plan-only-handoff-commit rule and full enum matrix: when user results must be versioned, a checklist-only evidence commit may be the final tree anchor, but no source may change after the reviewed functional version and the following handoff commit still changes only the instant plan.
 
-- [ ] **Step 2: Update parallel channel ownership**
+- [x] **Step 2: Update parallel channel ownership**
 
 Add these channel rules to the parallel manual:
 
@@ -637,7 +637,7 @@ Add these channel rules to the parallel manual:
 - 交接提交只能修改当前即时计划；integration 同时审查功能提交和交接提交。
 ```
 
-- [ ] **Step 3: Make the automation call the validator**
+- [x] **Step 3: Make the automation call the validator**
 
 In the authoritative prompt, apply the validator to every package that has already been claimed by an active, stopped, waiting, completed-unmerged, dirty or otherwise occupied task/worktree. Resolve exactly one current instant plan and exactly one matching worktree for that package, store the two absolute paths as `$resolvedPlanPath` and `$resolvedWorktreePath`, then execute:
 
@@ -659,11 +659,11 @@ verified_pending_integration -> freeze branch/worktree; it does not satisfy depe
 
 Only after no claimed package is resumable may the automation enter the existing new-candidate selection. A candidate plan may omit the handoff block only when task history, branch assignment and a clean worktree prove it has never been claimed; all existing matrix, `ready`, five release-field, dependency, drift, real-data, conflict and one-action gates still apply. Immediately after claiming and before the first source edit, add an `in_progress` block. If the worker stops intentionally, it must leave `resumable`; if it finishes implementation, it commits `waiting_review` with `功能提交: branch_head`. A crash that leaves `in_progress` safely requires daytime inspection.
 
-- [ ] **Step 4: Update the external automation through the app tool**
+- [x] **Step 4: Update the external automation through the app tool**
 
 Extract text between `AUTOMATION_PROMPT_START/END`; update automation-2 without changing name, RRULE, model, reasoning, project, execution environment or ACTIVE status. Do not edit automation TOML directly.
 
-- [ ] **Step 5: Compare prompt and fixed configuration exactly**
+- [x] **Step 5: Compare prompt and fixed configuration exactly**
 
 Use Python `tomllib` to read `C:\Users\89418\.codex\automations\automation-2\automation.toml`, assert the project prompt equals automation-2 prompt byte-for-byte, and verify:
 
@@ -676,7 +676,7 @@ status = ACTIVE
 execution_environment = local
 ```
 
-- [ ] **Step 6: Commit governance integration**
+- [x] **Step 6: Commit governance integration**
 
 ```powershell
 git add AGENTS.md docs\superpowers\packages\README.md docs\superpowers\packages\PARALLEL_WORKTREE_EXECUTION_2026-07-11.md docs\superpowers\packages\NIGHTLY_AUTOMATION.md
@@ -688,7 +688,7 @@ git commit -m "docs: enforce day-night handoff protocol"
 **Files:**
 - Verify only; update the current plan's checkbox/evidence section before the final handoff commit.
 
-- [ ] **Step 1: Run focused and governance tests**
+- [x] **Step 1: Run focused and governance tests**
 
 ```powershell
 & $Python -m pytest tests\test_handoff_status.py tests\test_tracked_user_data_policy.py tests\test_run_bat_api_entry.py -q
@@ -696,7 +696,7 @@ git commit -m "docs: enforce day-night handoff protocol"
 
 Expected: all selected tests pass.
 
-- [ ] **Step 2: Run repository checks**
+- [x] **Step 2: Run repository checks**
 
 ```powershell
 & $Python tools\smoke_check.py --skip-tests
@@ -706,15 +706,15 @@ git status --short
 
 Expected: first-party compilation, copied-database idempotence and integrity checks pass; only intended source/docs files appear; no `user_data/` is staged.
 
-- [ ] **Step 3: Verify real database fingerprints**
+- [x] **Step 3: Verify real database fingerprints**
 
 Compare both root databases against the recorded pre-task size, UTC mtime and SHA-256. Expected: exact match.
 
-- [ ] **Step 4: Request independent Sol Extra High review**
+- [x] **Step 4: Request independent Sol Extra High review**
 
 Review the full branch against the approved design. Fix every Critical and Important finding and rerun Steps 1-3. Expected final result: 0 Critical / 0 Important; record Minor findings explicitly.
 
-- [ ] **Step 5: Record bootstrap evidence**
+- [x] **Step 5: Record bootstrap evidence**
 
 This governance package creates the handoff validator and therefore cannot use the new protocol to validate itself. Treat it as the one documented bootstrap exception. After review, append exact test, prompt-match, database-fingerprint and Sol-review evidence to this plan and create a docs-only evidence commit:
 
@@ -724,6 +724,20 @@ git commit -m "docs: record handoff protocol bootstrap evidence"
 ```
 
 Verify `git diff-tree --no-commit-id --name-only -r HEAD` lists only this plan. Once this package is merged, all eligible formal execution packages must use the strict protocol; no second bootstrap exception is allowed.
+
+#### Bootstrap evidence (2026-07-11)
+
+- 实现与审查修复锚点：`9202e6dde80ed4da287c7a08b8001c173b0210a1`；其前一轮 stash/领取锚点修复为 `0711097dac033ee01e601180c9110ac717978dda`。
+- TDD：新增的倒序标记、领取前源码提交、正式验收不可跳过、强制正式包类型和计划清单精确绑定 5 个回归先稳定失败，最小实现后 5 项通过；随后 `tests/test_handoff_status.py` 为 `61 passed in 331.94s`。
+- 最终聚焦组合：`tests/test_handoff_status.py tests/test_tracked_user_data_policy.py tests/test_run_bat_api_entry.py` 为 `65 passed in 287.99s`。
+- 历史计划安全默认：P1-15 历史计划由 CLI 以退出码 `2` 拒绝，JSON issue 为 `expected exactly one handoff block`。
+- 快速冒烟：`tools/smoke_check.py --skip-tests` 通过；编译 344 个第一方 Python 文件，两库副本初始化幂等且 `integrity_check=ok`，总耗时 31.01 秒。
+- 自动化一致性：通过 Codex 应用自动化接口更新 automation-2；仓库提示词与托管 prompt 字节级相等。固定配置保持 `阅卷系统夜间4点推进`、每日 4:00、`gpt-5.6-terra`、`xhigh`、`ACTIVE`、`local`。
+- 真实数据库前后指纹完全一致：
+  - `grading_system.db`：2863104 bytes；UTC mtime `2026-07-10T07:10:41.1221109Z`；SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`。
+  - `question_bank.db`：3461120 bytes；UTC mtime `2026-07-08T11:58:06.3320883Z`；SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`。
+- 独立复审：首轮为 0 Critical / 3 Important / 1 Minor；修复提交 `9202e6d` 后复审为 0 Critical / 0 Important / 0 Minor。复审确认计划验收绑定、领取首提交锚点和异常契约均已根治，增量未涉及 `user_data/`。
+- 工作树证据：写入本节前 `user_data/` 状态为空，除本计划证据更新外工作树干净，`git diff --check` 无错误。
 
 - [ ] **Step 6: Leave integration to the daytime integration workflow**
 
