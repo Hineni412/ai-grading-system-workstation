@@ -4,14 +4,17 @@
 
 **Goal:** 把项目文档收敛为单一权威分层，删除已经完成、被取代或放弃的历史文档，修正用户操作口径，并用只读检查阻止状态再次漂移。
 
-**Architecture:** PR A 先独立完成或无损迁出当前 integration worktree 的昼夜交接/用户验收支撑工作，并恢复干净集成通道；本计划只实施 PR B。PR B 用一个只读 Python 检查器固定文档契约，再分层重写权威文档、修正用户说明、删除历史文件、同步夜间自动化提示词，最后经 integration 完整验证后进入主线。
+**Architecture:** PR A 已把昼夜交接协议和验证器合并主线并恢复干净 integration；后续专用 UAT runtime 因超出范围且复审存在重要问题，已按用户授权放弃并删除，未进入主线。本计划只实施 PR B：用只读 Python 检查器固定文档契约，删除 UAT 的计划性承诺，再分层重写权威文档、修正用户说明、删除历史文件、同步夜间自动化提示词，最后经 integration 完整验证后进入主线。
 
 **Tech Stack:** Markdown、Python 3.12 标准库、pytest、PowerShell、Git worktree、Codex Desktop automation。
 
 **治理类型：** `non_formal`
-**规划状态：** `blocked_until_pr_a`
+**规划状态：** `ready_for_execution`
 **设计基线：** `56e59d88b589426939a4000b756b17d4aac256fb`
 **设计规格：** `docs/superpowers/specs/2026-07-11-document-governance-design.md`
+**执行基线：** `f8e52cda269907fe70c09cd5036bdc83362e9902`
+**PR A 门槛：** `passed`
+**UAT runtime 处置：** `abandoned_and_deleted_before_pr_b`
 
 ## Global Constraints
 
@@ -39,7 +42,7 @@
 - Consumes: 已完成或无损迁出的昼夜交接/用户验收支撑工作，以及最新 `origin/main`。
 - Produces: 干净 integration 通道、同步后的治理 worktree、实际执行基线 SHA 和真实数据只读基线。
 
-- [ ] **Step 1: 只读确认 PR A 已进入主线**
+- [x] **Step 1: 只读确认 PR A 已进入主线**
 
 ```powershell
 git fetch --prune
@@ -51,7 +54,7 @@ git -C ..\p1-integration-verification status --short -- user_data
 
 Expected: integration 工作树无未提交项，`origin/main..HEAD` 无独有提交，`user_data` 状态为空。任一条件不满足时停止；不得在本计划中接管或整理 PR A。
 
-- [ ] **Step 2: 确认 integration 与主线一致**
+- [x] **Step 2: 确认 integration 与主线一致**
 
 ```powershell
 $IntegrationHead = git -C ..\p1-integration-verification rev-parse HEAD
@@ -61,7 +64,7 @@ if ($IntegrationHead -ne $MainHead) { throw "integration 尚未恢复到 origin/
 
 Expected: 两个完整 SHA 完全一致。
 
-- [ ] **Step 3: 把治理分支同步到 PR A 后主线**
+- [x] **Step 3: 把治理分支同步到 PR A 后主线**
 
 ```powershell
 git status --short
@@ -71,7 +74,7 @@ git status --short --branch
 
 Expected: rebase 无冲突，治理 worktree 仅包含本规格和本计划的已提交历史，工作树干净。若 AGENTS、Index、夜间提示词、并行手册或 Phase maps 冲突，停止并重新规划，不机械选择一侧。
 
-- [ ] **Step 4: 重新定位全部目标文件**
+- [x] **Step 4: 重新定位全部目标文件**
 
 ```powershell
 rg -n "核验基线|当前进度|状态/依赖|当前 Git 与 Worktree 快照|run\.bat|相近补入|set-mode --mode skill|--apply" AGENTS.md ARCHITECTURE.md README_*.md docs tools
@@ -80,7 +83,7 @@ git diff 56e59d88b589426939a4000b756b17d4aac256fb..origin/main -- AGENTS.md ARCH
 
 Expected: 所有新增 PR A 规则都能归入已批准规格；若出现新的业务决定、Schema、真实数据操作或未包含的用户验收语义，停止并更新规格/计划。
 
-- [ ] **Step 5: 记录执行基线与真实数据只读指纹**
+- [x] **Step 5: 记录执行基线与真实数据只读指纹**
 
 ```powershell
 $CommonDir = Resolve-Path (git rev-parse --git-common-dir)
@@ -94,7 +97,7 @@ Get-FileHash -Algorithm SHA256 "$RepoRoot\user_data\databases\grading_system.db"
 
 Expected: 输出两个数据库的路径、大小、UTC 修改时间和 SHA-256；不使用 SQLite 打开源文件。
 
-- [ ] **Step 6: 用 apply_patch 更新本计划的执行证据**
+- [x] **Step 6: 用 apply_patch 更新本计划的执行证据**
 
 在本文件头部追加两行，值取 Step 5 的真实输出：
 
@@ -103,7 +106,7 @@ Expected: 输出两个数据库的路径、大小、UTC 修改时间和 SHA-256�
 **PR A 门槛：** `passed`
 ```
 
-同时把 `规划状态` 从 `blocked_until_pr_a` 改为 `ready_for_execution`。不得写短 SHA 或推测值。
+同时把 `规划状态` 从 `blocked_until_pr_a` 改为 `ready_for_execution`，并记录 UAT runtime 已经放弃且未进入主线。不得写短 SHA 或推测值。
 
 - [ ] **Step 7: 提交计划基线刷新**
 
@@ -658,7 +661,7 @@ git commit -m "test: add documentation governance checks"
 
 “当前工作入口”只写：当前阶段、队列和下一动作必须读取 `EXECUTION_INDEX.md`，不得在 AGENTS 复制包状态。
 
-PR A 新增并已经进入主线的昼夜交接字段、用户验收入口和数据隔离红线属于当前长期规则，必须归入“执行包工作原则”或对应专项入口，不得随历史流水删除。
+PR A 新增并已经进入主线的昼夜交接字段、用户验收证据规则和数据红线属于当前长期规则，必须归入“执行包工作原则”或对应专项入口。专用 UAT runtime、独立端口、隔离启动器和页面横幅没有进入主线，不得写成现有能力。
 
 - [ ] **Step 2: 修正 Architecture 顶部证据和运行视图**
 
@@ -784,6 +787,8 @@ git commit -m "docs: make execution index the sole status source"
 - Modify: `README_私人便携版_v1.5.0.md`
 - Modify: `docs/maintenance/storage-policy.md`
 - Modify: `docs/ui/STYLE.md`
+- Modify: `docs/user-testing/README.md`
+- Modify: `docs/user-testing/USER_TEST_TEMPLATE.md`
 - Read before removal: `docs/knowledge-practice-operations.md`
 
 **Interfaces:**
@@ -830,7 +835,11 @@ git commit -m "docs: make execution index the sole status source"
 
 其他中性色、AI 色、教师色和反面清单保持不变。
 
-- [ ] **Step 6: 运行用户文档检查**
+- [ ] **Step 6: 校正用户验收能力边界**
+
+保留短测/formal 分类、Blocker/Major/Minor、用户明确确认和版本化证据块。删除“当前必有专用 UAT runtime、固定独立端口、页面持续显示用户验收模式”的通用承诺。改为：具体数据来源、启动方式、地址、可见标识和关闭方式必须由对应执行包在页面/流程实现并验证后写入版本化清单；清单没有这些已验证条件时不得开始用户验收。
+
+- [ ] **Step 7: 运行用户文档检查**
 
 ```powershell
 rg -n -F "run.bat" README_*.md docs\user-testing
@@ -840,10 +849,10 @@ rg -n "相近补入|set-mode --mode skill|首次启动.*安装依赖|--dry-run|`
 
 Expected: `rg` 零命中，测试通过。
 
-- [ ] **Step 7: 提交用户和专项文档修正**
+- [ ] **Step 8: 提交用户和专项文档修正**
 
 ```powershell
-git add README_工作机使用说明.md README_私人便携版_v1.5.0.md docs\maintenance\storage-policy.md docs\ui\STYLE.md
+git add README_工作机使用说明.md README_私人便携版_v1.5.0.md docs\maintenance\storage-policy.md docs\ui\STYLE.md docs\user-testing\README.md docs\user-testing\USER_TEST_TEMPLATE.md
 git commit -m "docs: correct user operations and design tokens"
 ```
 
@@ -984,7 +993,7 @@ docs/superpowers/specs/2026-07-11-nightly-single-package-automation-design.md
 
 - [ ] **Step 1: 删除清单中的文件**
 
-使用单个 `apply_patch` 的 `*** Delete File` 条目删除现存文件。PR A 三个支撑设计/计划只有在其状态已经完成且当前规则已迁入 AGENTS、夜间自动化、并行手册和 `docs/user-testing/` 后才删除；否则停止并更新本计划。
+使用单个 `apply_patch` 的 `*** Delete File` 条目删除现存文件。PR A 的交接协议规则迁入 AGENTS、夜间自动化、并行手册和 `docs/user-testing/` 后删除对应设计/计划；UAT runtime 设计/计划因实现已明确放弃且分支已删除，必须作为失效承诺删除，不得保留为活动计划。
 
 - [ ] **Step 2: 检查活动引用**
 
@@ -1176,7 +1185,7 @@ Expected: `user_data` 无本地项；提交范围只有批准的文档、检查�
 
 - [ ] **Step 4: 请求独立 S-H/S-XH 复审**
 
-复审必须检查：权威职责是否单一、当前业务事实是否丢失、用户操作是否准确、87/8 包口径、Matrix/Phase 模型一致性、自动化 prompt 同步、检查器只读性、删除清单、真实数据守卫和回退。最终要求 0 Critical / 0 Important；所有修复后重跑 Steps 1-3。
+复审必须检查：权威职责是否单一、当前业务事实是否丢失、用户操作是否准确、87/8 包口径、Matrix/Phase 模型一致性、自动化 prompt 同步、检查器只读性、删除清单、真实数据守卫和回退；还必须确认仓库不再声称已存在专用 UAT runtime、隔离启动器或固定验收横幅。最终要求 0 Critical / 0 Important；所有修复后重跑 Steps 1-3。
 
 - [ ] **Step 5: 删除已完成的本规格和计划**
 
