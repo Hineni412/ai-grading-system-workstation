@@ -5,6 +5,7 @@
 - 方案设计：`docs/superpowers/specs/2026-07-10-roadmap-execution-packages-design.md`
 - 计划与代码质量审计：`docs/superpowers/packages/PLAN_AUDIT_2026-07-10.md`
 - 当前状态与下一动作：`docs/superpowers/packages/EXECUTION_INDEX.md`
+- 夜间自动领取与停机规则：`docs/superpowers/packages/NIGHTLY_AUTOMATION.md`
 
 ## 权威顺序
 
@@ -32,6 +33,18 @@
 文件：`docs/superpowers/plans/YYYY-MM-DD-<package-id>-<slug>-implementation.md`
 
 用途：开工前重新调查当前代码，写出准确文件、接口、失败测试、最小实现、验证命令和提交范围。实现计划必须使用 checkbox，并要求执行模型采用 `superpowers:subagent-driven-development` 或 `superpowers:executing-plans`。
+
+若允许每天 4:00 的 Terra 自动化执行，计划还必须包含：
+
+```markdown
+**执行包：** P1-16
+**规划状态：** ready_for_execution
+**规划模型：** S-XH
+**允许夜间执行：** yes
+**计划基线：** <完整 Git 提交 SHA>
+```
+
+这些字段只代表该包可以进入夜间候选池；自动化仍须按 `NIGHTLY_AUTOMATION.md` 检查任务占用、文件漂移、风险和数据守卫。没有 `允许夜间执行: yes` 时，自动化只能报告，不能实施。
 
 ## 状态
 

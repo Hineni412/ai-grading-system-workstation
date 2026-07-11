@@ -17,9 +17,10 @@
 2. `ARCHITECTURE.md`
 3. `docs/superpowers/packages/README.md`
 4. `docs/superpowers/packages/EXECUTION_INDEX.md`
-5. 与当前包对应的 `docs/superpowers/packages/phase-*-execution-packages.md`
-6. `docs/superpowers/plans/2026-07-03-frontend-backend-modernization-master-plan.md`
-7. 当前执行包的即时实现计划、相关代码、测试和迁移文件
+5. `docs/superpowers/packages/PARALLEL_WORKTREE_EXECUTION_2026-07-11.md`
+6. 与当前包对应的 `docs/superpowers/packages/phase-*-execution-packages.md`
+7. `docs/superpowers/plans/2026-07-03-frontend-backend-modernization-master-plan.md`
+8. 当前执行包的即时实现计划、相关代码、测试和迁移文件
 
 前端视觉或交互改造还必须读 `docs/ui/STYLE.md`。样板页通过验收前，不要扩散迁移其他页面。
 
@@ -77,6 +78,12 @@
 8. 任何阶段都不得暂存、提交或用 stash 打包真实 `user_data/`；真实数据库操作仍需单独明确授权。
 
 用户明确要求启动某个执行包，即视为对该包标准 Git 流程的持续授权：门槛通过后可在功能分支提交，由 integration 分支完成合并验证、push、创建并合并 PR，再同步本地 `main`，无需逐步重复询问。该持续授权不包含直接 push `main`、force push、真实数据写入、不可逆删除，或丢弃 `origin/main` 尚未包含的历史提交；这些操作仍必须单独确认。
+
+## 夜间自动化
+
+每天 4:00 的“阅卷系统夜间4点推进”使用 `docs/superpowers/packages/NIGHTLY_AUTOMATION.md` 作为唯一权威提示词。夜间任务还必须读取并行手册和候选包即时计划；一次最多唤醒一个原任务或实施一个已放行包。
+
+夜间自动实施只允许已有专属干净 worktree、状态为 `ready`、执行模型为 Terra，且即时计划包含 `规划状态: ready_for_execution`、`规划模型: S-XH`、`允许夜间执行: yes` 和完整计划基线的包。夜间任务只能创建本地功能提交，不执行 push、PR、integration/main 合并、worktree/分支清理或真实数据操作。
 
 ## 常用命令
 
