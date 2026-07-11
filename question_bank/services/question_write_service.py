@@ -7,13 +7,15 @@ import re
 import shutil
 import sqlite3
 import tempfile
+import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from collections.abc import AsyncIterable, Iterable
 
 from question_bank.database.schema import connect
 from question_bank.models.question import ALLOWED_TAG_TYPES
+from question_bank.models.tag_schema import MAX_TAG_LENGTH
 from question_bank.services.question_revision import question_revision
 
 
@@ -47,6 +49,14 @@ class QuestionImportUploadNotFound(LookupError):
 
 
 class QuestionImportTypeNotSupported(ValueError):
+    pass
+
+
+class QuestionImportStorageForbidden(RuntimeError):
+    pass
+
+
+class QuestionImportTooLarge(ValueError):
     pass
 
 
@@ -89,9 +99,17 @@ class QuestionImportRequest:
 
 
 class QuestionBankWriteService:
-    def __init__(self, db_path: Path, *, data_root: Path) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        data_root: Path,
+        max_upload_bytes: int = 200 * 1024 * 1024,
+    ) -> None:
         self.db_path = Path(db_path)
         self.data_root = Path(data_root)
+        self.max_upload_bytes = int(max_upload_bytes)
+        self._request_publish_lock = threading.Lock()
 
     def get_revision(self, question_id: int) -> str:
         conn = sqlite3.connect(self.db_path)
@@ -217,6 +235,8 @@ class QuestionBankWriteService:
     def stage_upload(self, *, filename: str, content: bytes) -> StagedImportUpload:
         if not content:
             raise ValueError("Question import upload is empty")
+        if len(content) > self.max_upload_bytes:
+            raise QuestionImportTooLarge("Question import upload is too large")
         safe_filename = _safe_client_filename(filename)
         suffix = Path(safe_filename).suffix.casefold()
         if suffix not in {".docx", ".pdf"}:
@@ -224,7 +244,7 @@ class QuestionBankWriteService:
                 "Question import file type is not supported"
             )
         upload_id = uuid.uuid4().hex
-        uploads_root = self._staging_root / "uploads"
+        uploads_root = self._controlled_staging_path("uploads")
         uploads_root.mkdir(parents=True, exist_ok=True)
         temporary = Path(tempfile.mkdtemp(prefix=".upload-", dir=uploads_root))
         destination = uploads_root / upload_id
@@ -248,17 +268,69 @@ class QuestionBankWriteService:
             raise
         return upload
 
+    async def stage_upload_stream(
+        self,
+        *,
+        filename: str,
+        chunks: AsyncIterable[bytes],
+    ) -> StagedImportUpload:
+        safe_filename = _safe_client_filename(filename)
+        suffix = Path(safe_filename).suffix.casefold()
+        if suffix not in {".docx", ".pdf"}:
+            raise QuestionImportTypeNotSupported(
+                "Question import file type is not supported"
+            )
+        upload_id = uuid.uuid4().hex
+        uploads_root = self._controlled_staging_path("uploads")
+        uploads_root.mkdir(parents=True, exist_ok=True)
+        temporary = Path(tempfile.mkdtemp(prefix=".upload-", dir=uploads_root))
+        destination = uploads_root / upload_id
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with (temporary / f"source{suffix}").open("wb") as handle:
+                async for chunk in chunks:
+                    if not chunk:
+                        continue
+                    size += len(chunk)
+                    if size > self.max_upload_bytes:
+                        raise QuestionImportTooLarge(
+                            "Question import upload is too large"
+                        )
+                    digest.update(chunk)
+                    handle.write(chunk)
+            if size == 0:
+                raise ValueError("Question import upload is empty")
+            upload = StagedImportUpload(
+                upload_id=upload_id,
+                filename=safe_filename,
+                suffix=suffix,
+                size=size,
+                sha256=digest.hexdigest(),
+            )
+            (temporary / "upload.json").write_text(
+                json.dumps(upload.to_dict(), ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            os.replace(temporary, destination)
+        except Exception:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
+        return upload
+
     def create_import_request(self, *, upload_id: str) -> QuestionImportRequest:
         normalized_upload_id = str(upload_id).strip().casefold()
         if re.fullmatch(r"[0-9a-f]{32}", normalized_upload_id) is None:
             raise QuestionImportUploadNotFound("Question import upload not found")
-        upload_root = self._staging_root / "uploads" / normalized_upload_id
+        upload_root = self._controlled_staging_path("uploads", normalized_upload_id)
         manifest_path = upload_root / "upload.json"
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            raw_filename = str(manifest["filename"])
+            safe_filename = _safe_client_filename(raw_filename)
             upload = StagedImportUpload(
                 upload_id=str(manifest["upload_id"]),
-                filename=str(manifest["filename"]),
+                filename=safe_filename,
                 suffix=str(manifest["suffix"]),
                 size=int(manifest["size"]),
                 sha256=str(manifest["sha256"]),
@@ -271,37 +343,56 @@ class QuestionBankWriteService:
             ) from exc
         if (
             upload.upload_id != normalized_upload_id
+            or upload.filename != raw_filename
             or upload.suffix not in {".docx", ".pdf"}
+            or Path(upload.filename).suffix.casefold() != upload.suffix
             or len(content) != upload.size
             or hashlib.sha256(content).hexdigest() != upload.sha256
         ):
             raise QuestionImportUploadNotFound("Question import upload not found")
 
         request = QuestionImportRequest(
-            request_id=uuid.uuid4().hex,
+            request_id=hashlib.sha256(
+                f"question-import:{upload.upload_id}".encode("ascii")
+            ).hexdigest()[:32],
             upload_id=upload.upload_id,
             filename=upload.filename,
             size=upload.size,
             sha256=upload.sha256,
         )
-        requests_root = self._staging_root / "requests"
+        requests_root = self._controlled_staging_path("requests")
         requests_root.mkdir(parents=True, exist_ok=True)
-        temporary = requests_root / f".{request.request_id}.tmp"
         destination = requests_root / f"{request.request_id}.json"
-        try:
-            temporary.write_text(
-                json.dumps(request.to_dict(), ensure_ascii=False, sort_keys=True),
-                encoding="utf-8",
-            )
-            os.replace(temporary, destination)
-        except Exception:
-            temporary.unlink(missing_ok=True)
-            raise
+        with self._request_publish_lock:
+            if destination.exists():
+                return _load_existing_import_request(destination, request)
+            temporary = requests_root / f".{request.request_id}.{uuid.uuid4().hex}.tmp"
+            try:
+                temporary.write_text(
+                    json.dumps(request.to_dict(), ensure_ascii=False, sort_keys=True),
+                    encoding="utf-8",
+                )
+                os.replace(temporary, destination)
+            except Exception:
+                temporary.unlink(missing_ok=True)
+                raise
         return request
 
-    @property
-    def _staging_root(self) -> Path:
-        return self.data_root / "question_bank" / "import_staging"
+    def _controlled_staging_path(self, *parts: str) -> Path:
+        self.data_root.mkdir(parents=True, exist_ok=True)
+        canonical_root = self.data_root.resolve()
+        target = self.data_root.joinpath(
+            "question_bank",
+            "import_staging",
+            *parts,
+        )
+        try:
+            target.resolve(strict=False).relative_to(canonical_root)
+        except ValueError as exc:
+            raise QuestionImportStorageForbidden(
+                "Question import storage is outside the data root"
+            ) from exc
+        return target
 
 
 def _normalize_tags(
@@ -316,13 +407,17 @@ def _normalize_tags(
             raise ValueError("Unsupported question tag type")
         if not tag_value:
             raise ValueError("Question tag value is required")
+        if len(tag_value) > MAX_TAG_LENGTH:
+            raise ValueError("Question tag value is too long")
         key = (tag_type, tag_value)
         if key in seen:
             continue
         seen.add(key)
         confidence = item.confidence
         if confidence is not None:
-            confidence = min(1.0, max(0.0, float(confidence)))
+            confidence = float(confidence)
+            if not 0.0 <= confidence <= 1.0:
+                raise ValueError("Question tag confidence is out of range")
         normalized.append(ConfirmedQuestionTag(tag_type, tag_value, confidence))
     return tuple(normalized)
 
@@ -359,7 +454,12 @@ def _is_exact_manual_tag_state(
         )
         for row in rows
     )
-    return current == target and all(
+    order_key = lambda tag: (
+        tag.tag_type,
+        tag.tag_value,
+        -1.0 if tag.confidence is None else tag.confidence,
+    )
+    return sorted(current, key=order_key) == sorted(target, key=order_key) and all(
         row["source"] == "manual" and row["model_name"] is None for row in rows
     )
 
@@ -404,3 +504,18 @@ def _safe_client_filename(filename: str) -> str:
     if not safe or safe in {".", ".."}:
         raise ValueError("Question import filename is required")
     return safe
+
+
+def _load_existing_import_request(
+    path: Path,
+    expected: QuestionImportRequest,
+) -> QuestionImportRequest:
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise QuestionImportUploadNotFound(
+            "Question import request is invalid"
+        ) from exc
+    if existing != expected.to_dict():
+        raise QuestionImportUploadNotFound("Question import request is invalid")
+    return expected

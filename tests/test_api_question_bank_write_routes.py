@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from question_bank.database.schema import initialize_database
+import question_bank.services.question_write_service as write_module
 from question_bank.services.question_write_service import (
     ConfirmedQuestionTag,
     QuestionBankWriteService,
@@ -15,6 +19,8 @@ from question_bank.services.question_write_service import (
     QuestionWriteNotFound,
     QuestionImportUploadNotFound,
     QuestionImportTypeNotSupported,
+    QuestionImportStorageForbidden,
+    QuestionImportTooLarge,
 )
 
 
@@ -123,6 +129,29 @@ def test_replace_tags_is_idempotent_for_identical_retry(write_seed) -> None:
     assert len(_load_tags(service.db_path, question_id)) == 1
 
 
+def test_replace_tags_is_idempotent_when_retry_reorders_same_set(write_seed) -> None:
+    service, question_id, revision = write_seed
+    first = service.replace_tags(
+        question_id,
+        expected_revision=revision,
+        tags=[
+            ConfirmedQuestionTag("knowledge_point", "一次函数", 1.0),
+            ConfirmedQuestionTag("method", "待定系数法", None),
+        ],
+    )
+
+    second = service.replace_tags(
+        question_id,
+        expected_revision=revision,
+        tags=[
+            ConfirmedQuestionTag("method", "待定系数法", None),
+            ConfirmedQuestionTag("knowledge_point", "一次函数", 1.0),
+        ],
+    )
+
+    assert second.revision == first.revision
+
+
 def test_replace_tags_conflicts_instead_of_overwriting_newer_state(
     write_seed,
 ) -> None:
@@ -154,6 +183,38 @@ def test_replace_tags_rejects_missing_or_deleted_question(write_seed) -> None:
         service.replace_tags(question_id, expected_revision=revision, tags=[])
     with pytest.raises(QuestionWriteNotFound):
         service.replace_tags(999, expected_revision=revision, tags=[])
+
+
+def test_replace_tags_rolls_back_and_does_not_write_legacy_skills(
+    write_seed,
+) -> None:
+    service, question_id, revision = write_seed
+    with sqlite3.connect(service.db_path) as conn:
+        skill_count = conn.execute(
+            "SELECT COUNT(*) FROM question_skill_links"
+        ).fetchone()[0]
+        conn.execute(
+            """
+            CREATE TRIGGER reject_manual_tag
+            BEFORE INSERT ON question_tags
+            WHEN NEW.source = 'manual'
+            BEGIN
+                SELECT RAISE(ABORT, 'injected tag failure');
+            END
+            """
+        )
+        conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError):
+        service.replace_tags(
+            question_id,
+            expected_revision=revision,
+            tags=[ConfirmedQuestionTag("knowledge_point", "一次函数", 1.0)],
+        )
+
+    assert _load_tags(service.db_path, question_id)[0]["tag_value"] == "旧标签"
+    with sqlite3.connect(service.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM question_skill_links").fetchone()[0] == skill_count
 
 
 def test_soft_delete_and_restore_preserve_question_tags(write_seed) -> None:
@@ -224,6 +285,39 @@ def test_create_import_request_only_publishes_pending_manifest(
         assert conn.execute("SELECT COUNT(*) FROM questions").fetchone()[0] == 1
 
 
+def test_create_import_request_retry_returns_same_request(write_seed) -> None:
+    service, _, _ = write_seed
+    upload = service.stage_upload(filename="paper.pdf", content=b"%PDF-test")
+
+    first = service.create_import_request(upload_id=upload.upload_id)
+    second = service.create_import_request(upload_id=upload.upload_id)
+
+    assert second == first
+    requests_root = (
+        service.data_root / "question_bank" / "import_staging" / "requests"
+    )
+    assert len(list(requests_root.glob("*.json"))) == 1
+
+
+def test_create_import_request_concurrent_retry_publishes_one_manifest(
+    write_seed,
+) -> None:
+    service, _, _ = write_seed
+    upload = service.stage_upload(filename="paper.pdf", content=b"%PDF-test")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda _: service.create_import_request(upload_id=upload.upload_id),
+                range(2),
+            )
+        )
+
+    assert results[0] == results[1]
+    requests_root = service.data_root / "question_bank" / "import_staging" / "requests"
+    assert len(list(requests_root.glob("*.json"))) == 1
+
+
 def test_stage_upload_rejects_empty_or_unsupported_content(write_seed) -> None:
     service, _, _ = write_seed
     with pytest.raises(ValueError):
@@ -256,6 +350,106 @@ def test_create_import_request_rejects_missing_or_tampered_upload(
         service.data_root / "question_bank" / "import_staging" / "requests"
     )
     assert not requests_root.exists() or list(requests_root.iterdir()) == []
+
+
+def test_create_import_request_rejects_tampered_manifest_filename(write_seed) -> None:
+    service, _, _ = write_seed
+    upload = service.stage_upload(filename="paper.pdf", content=b"%PDF-test")
+    manifest_path = (
+        service.data_root
+        / "question_bank"
+        / "import_staging"
+        / "uploads"
+        / upload.upload_id
+        / "upload.json"
+    )
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["filename"] = "C:/private/internal-paper.pdf"
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(QuestionImportUploadNotFound):
+        service.create_import_request(upload_id=upload.upload_id)
+
+
+def test_stage_upload_enforces_size_limit_and_cleans_temporary_files(
+    tmp_path: Path,
+) -> None:
+    service = QuestionBankWriteService(
+        tmp_path / "question_bank.db",
+        data_root=tmp_path / "data",
+        max_upload_bytes=4,
+    )
+    with pytest.raises(QuestionImportTooLarge):
+        service.stage_upload(filename="paper.pdf", content=b"12345")
+    uploads_root = (
+        service.data_root / "question_bank" / "import_staging" / "uploads"
+    )
+    assert not uploads_root.exists() or list(uploads_root.iterdir()) == []
+
+
+def test_stage_upload_publish_failure_cleans_temporary_directory(
+    write_seed,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = write_seed
+
+    def fail_replace(source: Path, destination: Path) -> None:
+        raise OSError("injected publish failure")
+
+    monkeypatch.setattr(write_module.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="injected publish failure"):
+        service.stage_upload(filename="paper.pdf", content=b"%PDF-test")
+
+    uploads_root = service.data_root / "question_bank" / "import_staging" / "uploads"
+    assert uploads_root.exists()
+    assert list(uploads_root.iterdir()) == []
+
+
+def test_stage_upload_rejects_redirected_staging_root(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    question_bank_root = data_root / "question_bank"
+    question_bank_root.parent.mkdir(parents=True)
+    try:
+        question_bank_root.symlink_to(outside, target_is_directory=True)
+    except OSError as symlink_error:
+        if os.name != "nt":
+            raise
+        result = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(question_bank_root), str(outside)],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise OSError("Unable to create test junction") from symlink_error
+    service = QuestionBankWriteService(
+        tmp_path / "question_bank.db",
+        data_root=data_root,
+    )
+
+    with pytest.raises(QuestionImportStorageForbidden):
+        service.stage_upload(filename="paper.pdf", content=b"%PDF-test")
+    assert list(outside.iterdir()) == []
+
+
+def test_import_upload_route_rejects_body_over_service_limit(tmp_path: Path) -> None:
+    service = QuestionBankWriteService(
+        tmp_path / "question_bank.db",
+        data_root=tmp_path / "data",
+        max_upload_bytes=4,
+    )
+    client = _write_client(service)
+
+    response = client.post(
+        "/api/question-bank/import-uploads",
+        params={"filename": "paper.pdf"},
+        content=b"12345",
+        headers={"content-type": "application/octet-stream"},
+    )
+
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "question_import_too_large"
 
 
 def _write_client(service: QuestionBankWriteService) -> TestClient:
@@ -348,6 +542,30 @@ def test_question_tag_write_route_rejects_blank_value_without_server_error(
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "question_tags_invalid"
+
+
+def test_question_tag_write_route_rejects_out_of_range_confidence(
+    write_seed,
+) -> None:
+    service, question_id, revision = write_seed
+    client = _write_client(service)
+
+    response = client.put(
+        f"/api/question-bank/questions/{question_id}/tags",
+        json={
+            "expected_revision": revision,
+            "tags": [
+                {
+                    "tag_type": "knowledge_point",
+                    "tag_value": "一次函数",
+                    "confidence": 2.0,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
 
 
 def test_question_delete_and_restore_routes(write_seed) -> None:
