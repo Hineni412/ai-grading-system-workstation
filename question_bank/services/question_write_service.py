@@ -19,6 +19,10 @@ from question_bank.models.tag_schema import MAX_TAG_LENGTH
 from question_bank.services.question_revision import question_revision
 
 
+_REQUEST_LOCKS_GUARD = threading.Lock()
+_REQUEST_LOCKS: dict[str, threading.Lock] = {}
+
+
 @dataclass(frozen=True)
 class ConfirmedQuestionTag:
     tag_type: str
@@ -109,7 +113,6 @@ class QuestionBankWriteService:
         self.db_path = Path(db_path)
         self.data_root = Path(data_root)
         self.max_upload_bytes = int(max_upload_bytes)
-        self._request_publish_lock = threading.Lock()
 
     def get_revision(self, question_id: int) -> str:
         conn = sqlite3.connect(self.db_path)
@@ -336,7 +339,7 @@ class QuestionBankWriteService:
                 sha256=str(manifest["sha256"]),
             )
             source_path = upload_root / f"source{upload.suffix}"
-            content = source_path.read_bytes()
+            actual_size, actual_sha256 = _file_size_and_sha256(source_path)
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise QuestionImportUploadNotFound(
                 "Question import upload not found"
@@ -346,8 +349,8 @@ class QuestionBankWriteService:
             or upload.filename != raw_filename
             or upload.suffix not in {".docx", ".pdf"}
             or Path(upload.filename).suffix.casefold() != upload.suffix
-            or len(content) != upload.size
-            or hashlib.sha256(content).hexdigest() != upload.sha256
+            or actual_size != upload.size
+            or actual_sha256 != upload.sha256
         ):
             raise QuestionImportUploadNotFound("Question import upload not found")
 
@@ -363,7 +366,7 @@ class QuestionBankWriteService:
         requests_root = self._controlled_staging_path("requests")
         requests_root.mkdir(parents=True, exist_ok=True)
         destination = requests_root / f"{request.request_id}.json"
-        with self._request_publish_lock:
+        with _shared_request_lock(destination):
             if destination.exists():
                 return _load_existing_import_request(destination, request)
             temporary = requests_root / f".{request.request_id}.{uuid.uuid4().hex}.tmp"
@@ -519,3 +522,19 @@ def _load_existing_import_request(
     if existing != expected.to_dict():
         raise QuestionImportUploadNotFound("Question import request is invalid")
     return expected
+
+
+def _shared_request_lock(path: Path) -> threading.Lock:
+    key = os.path.normcase(str(path.resolve(strict=False)))
+    with _REQUEST_LOCKS_GUARD:
+        return _REQUEST_LOCKS.setdefault(key, threading.Lock())
+
+
+def _file_size_and_sha256(path: Path) -> tuple[int, str]:
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            size += len(chunk)
+            digest.update(chunk)
+    return size, digest.hexdigest()

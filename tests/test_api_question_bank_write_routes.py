@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -263,6 +264,34 @@ def test_soft_delete_is_idempotent_but_conflicts_with_different_state(
         )
 
 
+def test_soft_delete_rolls_back_when_update_fails(write_seed) -> None:
+    service, question_id, revision = write_seed
+    with sqlite3.connect(service.db_path) as conn:
+        conn.execute(
+            """
+            CREATE TRIGGER reject_question_delete
+            BEFORE UPDATE OF is_deleted ON questions
+            WHEN NEW.is_deleted = 1
+            BEGIN
+                SELECT RAISE(ABORT, 'injected delete failure');
+            END
+            """
+        )
+        conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError):
+        service.set_deleted(
+            question_id,
+            expected_revision=revision,
+            deleted=True,
+        )
+
+    with sqlite3.connect(service.db_path) as conn:
+        assert conn.execute(
+            "SELECT is_deleted FROM questions WHERE id = ?", (question_id,)
+        ).fetchone()[0] == 0
+
+
 def test_create_import_request_only_publishes_pending_manifest(
     write_seed,
 ) -> None:
@@ -305,11 +334,17 @@ def test_create_import_request_concurrent_retry_publishes_one_manifest(
     service, _, _ = write_seed
     upload = service.stage_upload(filename="paper.pdf", content=b"%PDF-test")
 
+    services = [
+        QuestionBankWriteService(service.db_path, data_root=service.data_root)
+        for _ in range(2)
+    ]
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(
             executor.map(
-                lambda _: service.create_import_request(upload_id=upload.upload_id),
-                range(2),
+                lambda current: current.create_import_request(
+                    upload_id=upload.upload_id
+                ),
+                services,
             )
         )
 
@@ -403,6 +438,64 @@ def test_stage_upload_publish_failure_cleans_temporary_directory(
     uploads_root = service.data_root / "question_bank" / "import_staging" / "uploads"
     assert uploads_root.exists()
     assert list(uploads_root.iterdir()) == []
+
+
+def test_stream_upload_overflow_cleans_temporary_directory(tmp_path: Path) -> None:
+    service = QuestionBankWriteService(
+        tmp_path / "question_bank.db",
+        data_root=tmp_path / "data",
+        max_upload_bytes=4,
+    )
+
+    async def chunks():
+        yield b"123"
+        yield b"45"
+
+    with pytest.raises(QuestionImportTooLarge):
+        asyncio.run(service.stage_upload_stream(filename="paper.pdf", chunks=chunks()))
+    uploads_root = service.data_root / "question_bank" / "import_staging" / "uploads"
+    assert uploads_root.exists()
+    assert list(uploads_root.iterdir()) == []
+
+
+def test_stream_upload_publish_failure_cleans_temporary_directory(
+    write_seed,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = write_seed
+
+    async def chunks():
+        yield b"%PDF-test"
+
+    monkeypatch.setattr(
+        write_module.os,
+        "replace",
+        lambda source, destination: (_ for _ in ()).throw(OSError("stream publish failed")),
+    )
+    with pytest.raises(OSError, match="stream publish failed"):
+        asyncio.run(service.stage_upload_stream(filename="paper.pdf", chunks=chunks()))
+    uploads_root = service.data_root / "question_bank" / "import_staging" / "uploads"
+    assert list(uploads_root.iterdir()) == []
+
+
+def test_import_request_publish_failure_cleans_temporary_manifest(
+    write_seed,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = write_seed
+    upload = service.stage_upload(filename="paper.pdf", content=b"%PDF-test")
+    monkeypatch.setattr(
+        write_module.os,
+        "replace",
+        lambda source, destination: (_ for _ in ()).throw(OSError("request publish failed")),
+    )
+
+    with pytest.raises(OSError, match="request publish failed"):
+        service.create_import_request(upload_id=upload.upload_id)
+
+    requests_root = service.data_root / "question_bank" / "import_staging" / "requests"
+    assert requests_root.exists()
+    assert list(requests_root.iterdir()) == []
 
 
 def test_stage_upload_rejects_redirected_staging_root(tmp_path: Path) -> None:
