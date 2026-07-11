@@ -24,6 +24,7 @@ from question_bank.services.asset_path_service import (
     resolve_question_bank_asset_path,
 )
 from question_bank.services.question_service import build_question_filter_query
+from question_bank.services.question_revision import question_revision, question_revisions
 
 
 ANALYSIS_TAG_TYPES = (
@@ -601,9 +602,14 @@ class QuestionBankReadService:
                 [*params, filters.page_size, offset],
             ).fetchall()
             tags_by_question = _load_page_tags(conn, [int(row["id"]) for row in rows])
+            revisions = question_revisions(conn, [int(row["id"]) for row in rows])
 
         items = [
-            _public_question_item(row, tags_by_question.get(int(row["id"]), []))
+            _public_question_item(
+                row,
+                tags_by_question.get(int(row["id"]), []),
+                revision=revisions[int(row["id"])],
+            )
             for row in rows
         ]
         return QuestionReadPage(
@@ -657,11 +663,17 @@ class QuestionBankReadService:
                 [],
             )
             previews = _load_question_previews(conn, int(question_id))
+            revision = question_revision(conn, int(question_id))
 
         rich_payload = self._load_rich_content(int(question_id))
         asset_paths, rich_blocks = _ordered_question_assets(row, rich_payload)
 
-        item = _public_question_item(row, tags, asset_paths=asset_paths)
+        item = _public_question_item(
+            row,
+            tags,
+            asset_paths=asset_paths,
+            revision=revision,
+        )
         item["page_range"] = row["page_range"]
         item["assets"] = [
             {
@@ -863,6 +875,7 @@ def _public_question_item(
     tags: list[dict[str, Any]],
     *,
     asset_paths: list[str] | None = None,
+    revision: str,
 ) -> dict[str, Any]:
     question_text = str(row["question_text"] or "")
     answer_text = str(row["answer_text"] or "") if row["answer_text"] is not None else None
@@ -875,6 +888,7 @@ def _public_question_item(
     question_id = int(row["id"])
     return {
         "id": question_id,
+        "revision": revision,
         "paper_id": int(row["paper_id"]) if row["paper_id"] is not None else None,
         "question_number": str(row["question_number"]),
         "question_type": row["question_type"],
