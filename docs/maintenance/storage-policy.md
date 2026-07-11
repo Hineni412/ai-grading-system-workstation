@@ -40,8 +40,13 @@ Never deduplicate databases, JSON config, YAML config, or files modified in the 
 
 ## Required Workflow
 
-1. Run `python tools/storage_audit.py --root .`.
-2. Review `user_data/reports/storage_audit/latest_summary.md`.
-3. Run `python tools/storage_maintenance.py --root . --dry-run`.
-4. Review the planned changes.
-5. Run with `--apply` only after confirming the plan.
+Storage tools can inspect or change real business files. Every run needs authorization for that specific operation; a previous audit or maintenance approval does not carry forward.
+
+1. Obtain authorization to generate the read-only audit report.
+2. Run `runtime\python\python.exe tools\storage_audit.py --root .`.
+3. Review `user_data/reports/storage_audit/latest_summary.md`.
+4. Run `runtime\python\python.exe tools\storage_maintenance.py --root .` to preview the supported maintenance actions.
+5. Review the exact planned files and operation type.
+6. Only after the user explicitly authorizes this real-data change, run the relevant operation separately with `--apply-hardlinks` or `--apply-archives`.
+
+The tools do not provide generic preview/apply switches beyond the commands listed above. Never infer permission to delete, archive, hardlink, or rewrite data from permission to inspect it.

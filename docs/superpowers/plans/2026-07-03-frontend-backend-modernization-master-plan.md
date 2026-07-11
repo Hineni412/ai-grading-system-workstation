@@ -1,8 +1,8 @@
 # 前后端现代化与功能演进总体方案（Master Plan）
 
 > **文档性质：** 总体路线与架构策略，不再承担实时任务状态。当前进度、执行顺序、验收条件和建议模型以 `docs/superpowers/packages/EXECUTION_INDEX.md` 及各 Phase 执行包为准；每个执行包开始编码前，再生成一份与当时源码对应的 task-by-task 实现计划。
-> **编制与复核：** 初稿 2026-07-03；2026-07-10 完成代码、测试与计划一致性审计。文中原始 `文件:行号` 只代表 2026-07-03 快照，执行时必须重新定位。
-> **执行入口：** `docs/superpowers/packages/README.md`（规则）→ `docs/superpowers/packages/EXECUTION_INDEX.md`（队列）→ 对应 Phase 执行包；审计结论见 `docs/superpowers/packages/PLAN_AUDIT_2026-07-10.md`。
+> **编制与复核：** 初稿 2026-07-03；文中原始 `文件:行号` 只代表编制时快照，执行时必须重新定位。
+> **执行入口：** `docs/superpowers/packages/README.md`（规则）→ `docs/superpowers/packages/EXECUTION_INDEX.md`（队列）→ 对应 Phase 执行包。
 > **优先级（用户指定）：** ① 更换前端架构并美化界面；② 后端精细化性能优化、冗余清理、必要时调整架构；③ 功能迭代（知识图谱、个性化训练、教师命题训练、班主任学生画像）。①②优先。
 > **关键依赖顺序说明：** "更换前端"在工程上必须先有一个可供新前端调用的后端 API 层。因此实际执行顺序是：目标②的前半（API 层抽取）→ 目标①（新前端）→ 目标②的后半（深度重构与瘦身）→ 目标③。
 
@@ -12,10 +12,10 @@
 
 ### 0.1 技术形态
 
-- 单用户、本机 Windows、便携 Python 3.12 运行时；生产 UI 仍是绑定 `127.0.0.1:8501` 的 Streamlit，Phase 0 与 FastAPI 骨架已经合并，但 Vue SPA 尚未开始。
+- 单用户、本机 Windows、便携 Python 3.12 运行时；生产 UI 仍是绑定 `127.0.0.1:8501` 的 Streamlit，增量 FastAPI 已存在，Vue SPA 尚未成为生产 UI。
 - UI/业务/数据访问同进程：Streamlit 1.58.0 + 两个 SQLite（阅卷库 12 表、题库库 26 表，均 WAL）+ `user_data/` 文件树。
 - AI 调用走 OpenAI 兼容接口（OpenAI SDK 2.43.0），配置存于 `%LOCALAPPDATA%/AIGradingSystem/config/api_profiles.json`。
-- 测试资产雄厚。2026-07-10 P1 检查点提交前的隔离完整冒烟为 967 passed，静态编译 342 个第一方 Python 文件，两库副本初始化幂等且 `integrity_check=ok`。
+- 测试资产覆盖业务回归、静态编译、迁移和数据库副本完整性；具体数量以最新共同基线的测试结果为准。
 
 ### 0.2 规模与耦合（量化）
 
@@ -43,17 +43,6 @@
 9. **知识图谱目前仍是 HTML/CSS 树**：真正的关系图、掌握度模型和训练闭环属于 Phase 4。
 10. **安全边界仍需持续执行**：`user_data/` 包含真实学生数据且工作区长期脏；默认不删除、不改写、不提交，数据库操作必须备份、预演和验证。
 
-### 0.4 当前进度（2026-07-11）
-
-- Phase 0 与 WP1.1 已通过 PR #1 合并到 `main`，冻结标签为 `pre-framework-switch-2026-07-09`。
-- GitHub PR #2 已把 P1-02 至 P1-15 合并到 `main`（合并提交 `4e8e6aa`），覆盖 sessions、students、config、template/regions、scan、grading、report export、review、受控媒体/下载、通用 jobs API 和 Question Bank 只读 API。
-- Phase 1 仍为 **in_progress**：P1-02 至 P1-15 已是 `merged`，P1-16 至 P1-29 尚未完成；“单包进入主线”不等同于整个 Phase 1 完成。
-- 当前采用两个功能 worktree 加一个 integration worktree 并行推进 P1-16 与 P2-01；每波通过 integration 完整验证和 PR 进入 GitHub `main`，再同步本地 `main`。固定流程见 `docs/superpowers/packages/PARALLEL_WORKTREE_EXECUTION_2026-07-11.md`。
-
-详细证据、包数量与顺序只在 `docs/superpowers/packages/EXECUTION_INDEX.md` 维护，避免本总体方案再次产生状态漂移。
-
----
-
 ## 1. 需要用户确认的决策点
 
 执行前请逐项确认（推荐项已给出）。确认结果应回填到本节。
@@ -78,7 +67,7 @@
 | **D5** | 答题区编辑器收敛 | **推荐：以 `components/answer_region_editor/` 原生 JS 核心为唯一实现**，包装成 Vue 组件；退役 st_canvas 三套与 `streamlit-drawable-canvas` 依赖 | 该 JS 核心已有独立单测（editor_core.test.mjs），是全仓最"可迁移"的 UI 资产 |
 | **D6** | 学生画像功能的数据边界 | **推荐：独立 `student_affairs.db`；默认排除出数据包导出与便携包（备份包含）；AI 输出定位为"仅供参考的沟通建议"；提供一键删除** | 涉未成年人敏感个人信息（事件、家庭情况、人格推断），建议启用前与学校确认合规口径 |
 | **D7** | 打包形态 | **推荐：维持"源码 + 便携运行时"目录式发布**，不启用 PyInstaller（`run_desktop.py` 与 `pyinstaller` 依赖仅在确认无用后归入删除清单） | 保持现有更新工具链不变 |
-| **D8** | 主强调色与视觉基调 | **推荐 A：布局、密度、组件与状态规范全部按 `docs/ui/STYLE.md`；主强调色（accent）采用参考图的明亮蓝（≈#2563EB–#3B82F6 区间取一档），中性色/语义色（AI 紫、教师绿、风险色）按 STYLE.md 9.1 节**。备选 B：完全按 STYLE.md 的低饱和蓝灰 #365f7d | 参考图与 STYLE.md 布局理念一致、仅 accent 色调分歧；旧 shared_styles.py 的 #4F46E5 靛紫**废弃不用**（STYLE.md 反面清单禁蓝紫基调）。默认按 A 执行 |
+| **D8** | 主强调色与视觉基调 | 布局、密度、组件、状态规范和全部设计 Token 只以 `docs/ui/STYLE.md` 为准 | 避免总体方案与视觉规范重复保存色值并产生漂移 |
 | **D9** | 执行包与模型分工 | **Phase 1-5 正式排包；Phase 5 先实验后开发；Phase 6 暂缓。** Sol Extra High 负责跨阶段设计、复杂门控和疑难审查；Terra High/Medium 负责大多数实现；Luna 只处理低风险机械任务 | 降低长期计划因源码漂移失效的风险，同时控制模型成本；具体升级条件见执行包 README |
 
 ---
@@ -148,11 +137,11 @@ flowchart LR
 ## 3. 分阶段路线图
 
 > 每阶段末尾的"验收"是该阶段合并回主线的硬门槛。工作量为相对量级（S<1 天级，M=数天级，L=一周级以上，均指专注执行时间）。
-> 本节保留阶段目标，不作为实时清单。正式包定义共 87 个；当前待执行 80 个（Phase 1: 14、Phase 2: 22、Phase 3: 19、Phase 4: 12、Phase 5: 13），详见 `docs/superpowers/packages/EXECUTION_INDEX.md`。
+> 本节只保留阶段目标，不保存实时完成数、待执行数或队列；这些动态信息只见 `docs/superpowers/packages/EXECUTION_INDEX.md`。
 
 ### Phase 0 — 地基与防护网（前置，量级 M）
 
-**状态：已通过 PR #1 合并。** 下表作为历史验收记录保留。
+**启动条件与验收：** 作为后续阶段的工程防护网；其稳定目标与验收项保留如下，完成事实只在 Index 记录。
 
 | WP | 内容 | 关键文件 | 量级 |
 |---|---|---|---|
@@ -167,7 +156,7 @@ flowchart LR
 
 ### Phase 1 — 后端 API 层与任务系统（目标②前半，量级 L）
 
-**状态：进行中。** P1-01 至 P1-15 已通过 PR #1/#2 合并到 `main`；余项为 P1-16 至 P1-29，见 `docs/superpowers/packages/phase-1-execution-packages.md`。
+**目标与验收：** 提供可供新前端调用的本机 API 与可恢复任务边界；包定义见 `docs/superpowers/packages/phase-1-execution-packages.md`。
 
 | WP | 内容 | 依据/关键点 | 量级 |
 |---|---|---|---|
@@ -183,7 +172,7 @@ flowchart LR
 
 ### Phase 2 — 新前端 SPA（目标①，量级 XL，分两批交付）
 
-**状态：未开始。** 已拆为 22 个依赖明确的执行包，样板页验收前不扩散页面迁移，见 `docs/superpowers/packages/phase-2-execution-packages.md`。
+**启动条件与验收：** 后端契约和前端工程门槛满足后按依赖推进；样板页验收前不扩散页面迁移，包定义见 `docs/superpowers/packages/phase-2-execution-packages.md`。
 
 **设计依据（2026-07-03 修订）：** 前端视觉与交互的权威规范是 `docs/ui/STYLE.md`（App Shell 三栏结构、设计 Token、组件规范、状态体系、反面清单、视觉验收）；执行约束见 `AGENTS.md`；色彩按决策 D8。旧 `pages_shared/shared_styles.py` 的 #4F46E5 色板**废弃**，不再作为 tokens 来源。
 
@@ -266,13 +255,13 @@ flowchart LR
 
 ### Phase 5 — 教师命题训练（目标③c，量级 M）
 
-**状态：确定要做，但先实验与设计。** 前 5 个包用于工作流访谈、富文本编辑器 Spike、相似题评估、AI 评审评估和统一设计门；只有设计门通过后才进入 Schema、API、Job、UI 与试点。完整 13 包见 `docs/superpowers/packages/phase-5-execution-packages.md`。
+**启动条件与验收：** 前 5 个包用于工作流访谈、富文本编辑器 Spike、相似题评估、AI 评审评估和统一设计门；只有设计门通过后才进入 Schema、API、Job、UI 与试点。完整 13 包见 `docs/superpowers/packages/phase-5-execution-packages.md`。
 
 可复用资产包括 `question_fingerprints`、受控打标、富文本侧车渲染和组卷导出器。2026-07-10 审计未确认 `questions.source` 字段，因此“发布到题库后的来源追踪”必须由 P5-05 设计门决定，不能在计划里预设 `source='teacher_authored'`。
 
 ### Phase 6 — 班主任学生画像（目标③d，量级 L，敏感功能）
 
-**状态：暂缓，不建立活动执行包。** 当前只保留产品与数据红线：独立敏感数据边界、默认排除出数据包和便携包、AI 内容显著标注、按学生删除、日志不落敏感正文、启用前完成学校与合规确认。重启条件见 `docs/superpowers/packages/phase-6-deferred.md`；在条件满足前不得创建 Schema、接入真实数据或实现画像推断。
+**启动条件与红线：** 只有 `docs/superpowers/packages/phase-6-deferred.md` 的重启条件满足并获得用户确认后才能建立活动执行包。此前只保留独立敏感数据边界、默认排除出数据包和便携包、AI 内容显著标注、按学生删除、日志不落敏感正文等约束，不得创建 Schema、接入真实数据或实现画像推断。
 
 ---
 

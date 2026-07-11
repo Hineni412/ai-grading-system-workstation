@@ -5,10 +5,10 @@
 ## 0. 文档状态与证据
 
 - **适用版本：** `VERSION` = `v1.5.0`
-- **核验基线：** `codex/wp1-2-api-routes`（P1-02 至 P1-15 本地 `verified`，已在当前分支形成 Git 检查点，尚未合并到 `main`）
-- **最后核验日期：** 2026-07-10
+- **核验基线：** 最新 `origin/main`
+- **最后核验日期：** 以本文件最近一次 Git 变更为准
 - **核验方式：** Codex 静态代码/配置/测试调查、Python AST 导入图分析、便携运行时版本查询、SQLite 数据库副本 Schema/幂等初始化验证、全量与定向自动化测试、真实 Streamlit 浏览器流程验证
-- **当前状态：** P1-15 Question Bank 只读路由已实现并核验；表中既有风险与待确认业务口径仍然保留
+- **当前状态：** 本文只描述已进入共同基线的实现事实；动态执行进度见 `docs/superpowers/packages/EXECUTION_INDEX.md`
 - **既有题库语义边界：** 在隔离分支把题库当前 `question_tags` 设为批改上下文、知识图谱和训练推荐的唯一活动语义来源；旧技能目录、概念映射和相关表保留一个版本作为只读回退，不再参与活动图谱/推荐
 - **P1-15 增量边界：** FastAPI 只公开试卷、题目分页/详情、当前标签、富文本/预览元数据和受控图片 GET；源题库通过有界 M1-W1-W2-M2 临时快照读取，SQLite 不打开源 main/WAL/SHM，持续变化以脱敏 503 fail closed
 
@@ -24,7 +24,7 @@
 | 题库与训练 | `question_bank/`、`integration/`、`pages/题库管理.py`、`pages/训练推荐.py`、`pages/组卷.py` | 题库标签、诊断投影、精确标签推荐和导出 | 已核验 |
 | 外部集成 | `llm_client.py`、`api_profiles.py`、客观题识别链、题库 AI 打标服务 | 模型协议、密钥来源、超时与降级 | 已核验代码；未调用真实 API |
 | 本地运行时 | `runtime/python` | Python 3.12.1、SQLite 3.43.1、Streamlit 1.58.0、OpenAI SDK 2.43.0 等实际版本 | 已核验 |
-| 自动化测试 | `tests/` 全量与功能定向测试 | 原卷工作流、受控打标请求、标签诊断/图谱、错因持久化、精确标签推荐及既有阅卷/API 流程 | P1-14 完整基线 889 passed；P1-15 组合 156 passed、Question Bank/OpenAPI 64 passed；提交前隔离完整冒烟 967 passed |
+| 自动化测试 | `tests/` 与 `tools/smoke_check.py` | 业务回归、静态编译、迁移与数据库副本完整性 | 以最新共同基线的测试结果为准 |
 | 浏览器验证 | Streamlit 本机页面、现有工作区数据 | 部分覆盖提示、标签诊断空态、学生选择交互、1366×768/1440×900/1920×1080 | 已核验；无横向溢出，浏览器控制台无应用错误 |
 | 数据库副本 | `grading_system.db`、`question_bank.db` 的临时副本 | 新字段、新索引和重复初始化幂等性 | 已核验；副本验证前后主工作区两库哈希均未变化 |
 | 运维文档 | `README_*.md`、`docs/maintenance/*.md`、发布清单 | 便携发布、备份、存储策略 | 已核验；存在版本漂移 |
@@ -54,7 +54,7 @@
 
 ### 当前实现边界
 
-- 这是仅供单用户在个别受信任 Windows 工作机运行的本地单体应用，不存在独立部署的前端、后端 API 服务或远程数据库。
+- 这是仅供单用户在个别受信任 Windows 工作机运行的本地应用，不存在独立部署的前端或远程数据库；Streamlit 与增量 FastAPI 均只监听 loopback，Vue 尚未成为生产 UI。
 - 主入口是 `运行.bat`：默认并行启动 `python -m streamlit run web_app.py`（8501）和增量 FastAPI 本机 API（8000，包含健康检查、基础 sessions/students/config/template/regions、JobManager、report/scan/grading/review/media/files/question-bank 路由，可用 `START_API=0` 跳过）；`run_desktop.py` 是另一套桌面/冻结构建启动器，`main.py` 是较早的命令行批改入口。
 - 核心状态保存在两个 SQLite 数据库和 `user_data/` 文件树中。
 - AI 能力依赖可配置的 OpenAI 兼容 HTTP 接口；当前代码路径使用 OpenAI Python SDK 的 Chat Completions 和 Responses API。
@@ -84,7 +84,11 @@
 ```mermaid
 flowchart LR
     User["单用户教师/维护者"] --> Browser["受信任工作机浏览器"]
-    Browser --> App["Streamlit 单进程应用"]
+    Browser --> Streamlit["Streamlit 生产 UI"]
+    Browser --> API["增量 FastAPI 本机 API"]
+
+    Streamlit --> App["现有应用服务"]
+    API --> App
 
     App --> Grading["阅卷与复核服务"]
     App --> Bank["题库标签、图谱与训练服务"]
@@ -517,31 +521,3 @@ flowchart LR
 | 6 | 不使用客观题准入向导 | 该能力不再视为受支持流程；后续删除失效入口和死代码 | 2026-06-28 |
 
 仍待外部验证的问题仅包括第 0 节所列的模型实际配置/SLA、备份恢复演练和当前打包同步性。
-
-## 13. 更新记录
-
-| 日期 | 变更 | 原因 | 核验 |
-|---|---|---|---|
-| 2026-07-10 | P1-02 至 P1-15 在 `codex/wp1-2-api-routes` 形成可审阅的本地 Git 检查点；真实 `user_data/` 不进入提交 | 为已验证的 API、JobManager、复核、媒体下载与题库只读增量建立可回退边界，不将其表述为已合并到 `main` 或 Phase 1 完成 | 在隔离副本运行完整 `tools/smoke_check.py`：967 passed，编译 342 个第一方文件，两库副本初始化幂等且 `integrity_check=ok`；源 `user_data` 状态仍为 205 行 / `b81a376b...f6e343cce8`，两库 SHA-256 与 P1-14 基线一致 |
-| 2026-07-10 | P1-15 Question Bank 只读路由：新增试卷、分页筛选、详情、当前标签/富文本/预览元数据和受控 asset/preview 图片 GET；公开投影移除路径、大小写图片 marker、富文本 XML/关系与预览内部错误。源题库不再由 API SQLite 直接打开，而是以 M1-W1-W2-M2 有界捕获到系统临时候选，候选执行事务、`quick_check` 与必要表校验；持续变化/不可用映射为脱敏 503。媒体固定根同时拒绝外部、sibling symlink/junction 和歧义旧路径 | 在保留 Streamlit 题库契约的同时为后续 Vue 页面提供严格 GET 边界，并保证本包执行及未来 API 读取不创建或改写真实题库 WAL/SHM | 组合回归 156 passed；Question Bank/OpenAPI 64 passed；快速冒烟编译 342 文件、两库副本幂等且 `integrity_check=ok`；OpenAPI 30 paths / 38 operations / 0 duplicate IDs；整包与安全复审 0 Critical / 0 Important / 0 Minor；最终 `user_data` 状态仍为 205 行、指纹 `b81a376b...f6e343cce8`，两库 SHA-256 与 P1-14 基线完全一致且无 WAL/SHM sidecar |
-| 2026-07-10 | P1-14 Phase 1 稳定化检查点：OpenAPI 422 统一为 `ErrorResponse`，二进制 200 契约与运行时对齐；新增共享公开数据净化，收口 Job 敏感键/路径和历史 review 元数据；config/template 错误不再泄露路径；完成 future 自动回收，并发报告发布到 job-owned 文件；无特权环境的越界解析测试改为确定性执行 | 把 P1-02 至 P1-13 的本地未提交增量整理成无已知重要审查问题、契约一致且范围可审阅的检查点，不增加新领域能力 | 聚焦 87 passed；API 85 passed；完整冒烟 889 passed / 0 skipped / 0 failed，编译 338 文件，两库副本幂等且 `integrity_check=ok`；OpenAPI 25 paths / 33 operations / 0 duplicate IDs；聚焦复审 0 Critical / 0 Important / 0 Minor。一次真实 grading DB 空 jobs DDL 初始化例外已由用户接受，接受后两库文件指纹不变 |
-| 2026-07-10 | P1-13 受控媒体与文件下载 API：新增通用文件守卫、review 媒体服务与 media/files 路由；review item 只返回语义化 URL，原卷/批注页限制到受控根，裁剪在内存生成；成功报告 job 只公开文件名与下载 URL，公开 job 结果和失败信息不泄露内部路径；二进制成功/失败响应均 `no-store` | 为后续 Vue 复核和报告下载提供稳定入口，同时拒绝任意绝对路径、路径穿越、旧路径 basename 碰撞和非白名单文件类型 | P1-13 聚焦 73 passed；API 回归 67 passed；快速冒烟编译 336 文件且两库副本幂等；全量 871 passed / 0 skipped / 0 failed；独立复审无 critical/important 遗留 |
-| 2026-07-10 | P1-12 复核查询与原子确认收口：新增无 FastAPI 依赖的 `ReviewApplicationService` 和单 JOIN 读模型；router 只保留依赖、schema 转换及领域错误映射；detail 四字段与受影响 result 总分跨 result 单事务提交；提交后逐 result 渲染批注，失败返回脱敏、可重试的 `retry_required` | 消除大班级 N+1、路由重逻辑和多结果逐组提交造成的部分写入，同时明确 SQLite 业务事务无法覆盖文件批注副作用时的补偿协议 | P1-12 聚焦 35 passed；API 回归 35 passed；快速冒烟编译 324 文件且两库副本幂等；全量 823 passed / 0 skipped / 0 failed |
-| 2026-07-10 | P1-11 三类真实 Job 协作式取消：running 取消从提前终态改为 request/confirmed 两阶段；专用异常才确认 cancelled，普通异常保持 failed，已发布完成可赢竞态；报告改为 staging 原子发布，扫描 latest 改为临时 JSON 替换；整卷/混合批改在派发和持久化边界轮询，取消时丢弃未发布结果并保持 failed-only 原状态；无请求的取消异常按协议错误记 failed | 避免 API 已显示 cancelled 后 handler 继续写报告、扫描分析或评分结果，同时保持“不强杀线程/不中断单次外部请求”和既有暂停/恢复语义 | P1-11 聚焦 51 passed；API 回归 34 passed；竞态测试连续 5 轮通过；快速冒烟编译 320 文件且两库副本幂等；全量 797 passed / 0 skipped / 0 failed |
-| 2026-07-10 | P1-10 JobManager Schema 与应用生命周期收口：`003_add_jobs.sql` 成为 jobs 表/索引唯一完整 DDL，JobStore 保留旧表补列并显式关闭连接；删除进程级 manager 缓存，FastAPI lifespan 创建、恢复并关闭 app-owned manager；shutdown 后提交和并发关闭均有回归守卫 | 消除 Schema 双源与 executor 泄漏，避免关机竞态留下永不执行的 queued 记录，并保持测试依赖覆盖的外部所有权 | 聚焦回归 34 passed；阅卷库临时副本迁移预演 Schema 等价且业务行数无变化；快速冒烟编译 320 文件、两库副本幂等；全量 785 passed / 0 skipped / 0 failed |
-| 2026-07-09 | WP1.2 Batch E review 首批路由落地：新增 `backend/api/routers/review.py`、`backend/api/schemas/review.py` 和 `get_manual_review_service()` 依赖；新增 `GET /api/sessions/{id}/review/questions`、`GET /api/sessions/{id}/review/questions/{qid}/items`、`POST /api/sessions/{id}/review/questions/{qid}/confirm`，复用 Streamlit 复核判定口径与 `ManualReviewService.apply_manual_adjustments()` | 为后续 Vue 复核页面提供题目级复核摘要、逐题复核列表和轻量人工确认入口，同时不引入新的复核状态表、不绕过现有批注重绘服务 | `runtime\python\python.exe -m pytest tests\test_api_review_routes.py -q` 3 passed；API 回归 34 passed；job/report/scan/grading/review/schema/smoke 组合 43 passed；全量测试 773 passed / 2 skipped |
-| 2026-07-09 | WP1.2 Batch E 第三个后台任务落地：`grading_run` 注册为默认 JobManager handler，复用 `GradingService.run_session_grading()` 与既有 `grading_runs`/`grading_run_items` 账本；新增 `backend/jobs/grading_run.py` 读取 `scan_analysis_latest.json` 与 `scan_manual_decisions_latest.json`，新增 `POST /api/sessions/{id}/grading/run` | 将批改启动从 Streamlit 同步按钮迁入统一任务体系，同时保留现有暂停/恢复、幂等和冲突判定来源；job payload 不保存 API Key | `runtime\python\python.exe -m pytest tests\test_grading_run_job.py tests\test_api_grading_jobs.py -q` 6 passed；job/report/scan/grading/schema/smoke 组合 40 passed；API 回归 31 passed；全量测试 770 passed / 2 skipped；`runtime\python\python.exe tools\smoke_check.py --skip-tests` 通过，静态编译 316 文件，两库副本幂等 OK |
-| 2026-07-09 | WP1.2 Batch E 第二个后台任务落地：`scan_analysis` 注册为默认 JobManager handler，复用 `Scanner.analyze()`；新增 `backend/jobs/scan_analysis.py` 保存 `scan_analysis_latest.json` 并返回匹配摘要；新增 `POST /api/sessions/{id}/scan/analyze` | 把扫描预检从 Streamlit 同步按钮迁入统一任务体系，同时不把 API Key 写入 job payload，为后续 grading 任务读取预检结果打基础 | `runtime\python\python.exe -m pytest tests\test_scan_analysis_job.py tests\test_api_scan_jobs.py -q` 5 passed；job/report/scan/schema/smoke 组合 34 passed；API 回归 29 passed；全量测试 764 passed / 2 skipped；`runtime\python\python.exe tools\smoke_check.py --skip-tests` 通过，静态编译 311 文件，两库副本幂等 OK |
-| 2026-07-09 | WP1.2 Batch E 首个真实后台任务落地：`report_export` 注册为默认 JobManager handler，复用 `ReportGenerator.export_session()`；`jobs` 表新增 `result_json` 记录生成文件路径；新增 `POST /api/sessions/{id}/reports/export` | 先把低风险的 Excel 成绩报表导出迁入后台任务体系，为后续 scan/grading/report PDF 等长任务提供同一返回和轮询契约 | `runtime\python\python.exe -m pytest tests\test_job_store.py tests\test_report_export_job.py tests\test_api_report_jobs.py -q` 10 passed；job/schema/smoke 组合 29 passed；API 回归 27 passed；全量测试 759 passed / 2 skipped；`runtime\python\python.exe tools\smoke_check.py --skip-tests` 通过，静态编译 306 文件，两库副本幂等 OK |
-| 2026-07-09 | WP1.3 最小 JobManager 落地：新增通用 `jobs` 表与 `003_add_jobs.sql`，新增 `backend/jobs/store.py`、`backend/jobs/manager.py` 和 Jobs API；启动时将旧的 queued/running job 标为 failed，执行仍为进程内线程池，默认不注册真实业务处理器 | 为 scan、grading、report、tagging、training 等长任务提供统一启动/查询/取消外壳；批改类明细进度继续由既有 `grading_runs` 账本负责 | `runtime\python\python.exe -m pytest tests\test_job_store.py tests\test_job_manager.py tests\test_api_jobs.py -q` 14 passed；`runtime\python\python.exe -m pytest tests\test_schema_baseline.py tests\test_migration_rehearsal.py tests\test_smoke_check.py -q` 11 passed；API 回归 25 passed；`runtime\python\python.exe tools\smoke_check.py --skip-tests` 通过，静态编译 302 文件，两库副本幂等 OK |
-| 2026-07-09 | WP1.2 Batch D 新增 template/answer-region 同步 FastAPI 路由：模板路径绑定、答题区草稿保存/读取、正式提交；正式提交复用 `AnswerRegionCommitService`，继续生成 confirmed snapshot 与 `workflow_state.json` | 为后续 Vue 考试工作台提供样卷与答题区编辑器 API，同时避免绕过现有区域校验、快照和并发锁机制 | `runtime\python\python.exe -m pytest tests\test_api_template_region_routes.py -q` 5 passed；`runtime\python\python.exe -m pytest tests\test_api_app.py tests\test_api_read_routes.py tests\test_api_write_routes.py tests\test_api_config_routes.py tests\test_api_template_region_routes.py -q` 21 passed；`runtime\python\python.exe tools\smoke_check.py --skip-tests` 通过，静态编译 294 文件，两库副本幂等 OK |
-| 2026-07-09 | WP1.2 Batch C 新增同步配置读写 FastAPI 路由：读取当前 session 的 rubric/answer_key JSON，保存已生成配置并更新 `grading_sessions.rubric_path` 与 `answer_key_path`；配置保存目录通过依赖注入隔离测试 | 为后续 Vue 考试工作台提供评分依据查看与保存入口；模型生成、DOCX/PDF 上传解析和长任务编排仍留给 WP1.3 JobManager | `runtime\python\python.exe -m pytest tests\test_api_config_routes.py -q` 4 passed；`runtime\python\python.exe -m pytest tests\test_api_app.py tests\test_api_read_routes.py tests\test_api_write_routes.py tests\test_api_config_routes.py -q` 16 passed；`runtime\python\python.exe tools\smoke_check.py --skip-tests` 通过，静态编译 291 文件，两库副本幂等 OK |
-| 2026-07-09 | WP1.2 Batch B 新增 session/student 安全写 FastAPI 路由：session 创建、重命名、软删除、恢复；学生批量 upsert、单条更新、硬删除；请求校验接入统一错误体 | 为后续 Vue 前端补齐会话与学生名单的基础写入口，同时继续复用现有 `DBManager` 业务行为和学生删除备份机制 | `runtime\python\python.exe -m pytest tests\test_api_write_routes.py -q` 4 passed；`runtime\python\python.exe -m pytest tests\test_api_app.py tests\test_api_read_routes.py tests\test_api_write_routes.py -q` 12 passed；`runtime\python\python.exe tools\smoke_check.py --skip-tests` 通过，静态编译 288 文件，两库副本幂等 OK |
-| 2026-07-09 | WP1.2 Batch A 新增第一批只读 FastAPI 路由：sessions、session detail、progress、template、regions、students；新增可注入 `get_grading_db()` 和 API 契约测试 | 为后续 Vue 前端提供稳定的本机 API 读取入口，同时保持 Streamlit 与现有服务为事实来源 | `runtime\python\python.exe -m pytest tests\test_api_app.py tests\test_api_read_routes.py -q` 8 passed；`runtime\python\python.exe tools\smoke_check.py --skip-tests` 通过，静态编译 287 文件，两库副本幂等 OK |
-| 2026-07-03 | 统一题号契约（`question_id_contract`）在读取边界纯内存规范化、不再改写磁盘评分依据；批改运行账本（`grading_runs`/`grading_run_items`，`migrations/grading/002`）支持整卷批改安全暂停/恢复与三元（学生·试卷指纹·配置指纹）幂等去重/冲突；参考图压缩缓存（`reference_image_preparation`）与大图请求并发上限；打标批次失败按类别记录并脱敏 | 消除读取即写盘隐患；让长批改可暂停恢复、可跳过已批与识别同学生多份冲突；降低大图请求负载；提升打标失败可见性 | 全量 705 通过/2 跳过；静态编译全部通过；002 迁移在真实库副本演练幂等、旧表行数不变、`integrity_check ok`。**真机批改暂停/恢复与参考图上线冒烟仍待用户在实际环境验证** |
-| 2026-06-29 | 将全部 API 配置迁移到 Windows 用户级唯一文件，增加字段级更新、文件锁、原子替换、上一版本恢复和显式清除；从 Git、导出、更新备份和便携包排除密钥 | 避免代码修改、分支/worktree 切换和并发保存清空或覆盖批改/题库 API | 673 项测试通过、2 项按既有条件跳过；静态编译；真实 Streamlit 首页、题库和系统自检验证同一路径与两步清除流程，控制台无应用错误 |
-| 2026-06-29 | 修复题库导入弹窗重跑与残留状态；题库标签保存默认停止旧技能 AI 消歧，旧双写改为显式 opt-in | 避免文件选择后弹窗关闭、未导入状态残留和保存阶段逐技能追加 AI 请求 | 全量 659 通过/2 跳过；静态编译；浏览器验证显式关闭、X 关闭及重新打开为空，控制台无应用错误 |
-| 2026-06-29 | 将批改上下文、知识图谱和训练推荐统一到题库当前精确标签；保留旧技能/概念路径为只读回退 | 消除重复 AI 消歧和字段分叉，让标签修改直接反映到后续图谱与新推荐 | 全量 654 通过/2 跳过；定向回归、静态编译、三档桌面尺寸浏览器验证；控制台无应用错误 |
-| 2026-06-28 | 增加阅卷原卷可选入库、统一技能图谱、来源级冲突分组、跨库状态重算和幂等重试 | 让批改前后都能补做题库打标签，同时保持未入库不阻断批改 | 全量 631 通过/2 跳过、功能定向 71 项、核心回归 41 项、三档桌面尺寸浏览器验证、数据库副本 Schema 验证 |
-| 2026-06-28 | 将六项待确认问题转为用户确认的架构约束与决策，并同步风险和当前/目标状态 | 用户明确确认部署边界、数据跟踪、状态语义、迁移权威、模型合规和停用功能 | 对照用户逐项回复、文档结构与差异复核 |
-| 2026-06-28 | 将占位模板替换为当前系统、模块、运行、数据、集成、安全和风险视图 | 按当时的 `CLAUDE.md` 工程规范从现有代码库恢复实际架构；当前入口已迁移为 `AGENTS.md` | 静态调查、AST 导入图、运行时版本、数据库只读 Schema、37 项定向测试、差异复核 |

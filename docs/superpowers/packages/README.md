@@ -2,8 +2,6 @@
 
 本目录把 2026-07-03 Master Plan 拆成稳定的执行包地图。执行包地图负责固定目标、依赖、范围、验收和模型选择；源码级实现计划在每个包开工前依据当时代码生成。
 
-- 方案设计：`docs/superpowers/specs/2026-07-10-roadmap-execution-packages-design.md`
-- 计划与代码质量审计：`docs/superpowers/packages/PLAN_AUDIT_2026-07-10.md`
 - 当前状态与下一动作：`docs/superpowers/packages/EXECUTION_INDEX.md`
 - 夜间执行资格矩阵：`docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md`
 - 夜间自动领取与停机规则：`docs/superpowers/packages/NIGHTLY_AUTOMATION.md`
@@ -16,7 +14,7 @@
 1. 用户当前明确指令
 2. 根目录 `AGENTS.md`
 3. `ARCHITECTURE.md` 中已经实现并核验的事实
-4. 本目录 `EXECUTION_INDEX.md` 与对应 Phase 执行包地图
+4. 本目录 `EXECUTION_INDEX.md` 的动态状态，以及对应 Phase map 的稳定包定义
 5. 2026-07-03 Master Plan
 6. 历史实现计划和旧行号
 
@@ -28,7 +26,9 @@
 
 文件：`docs/superpowers/packages/phase-*-execution-packages.md`
 
-用途：提前看清全部工作量、依赖、质量门槛和推荐模型。执行包地图不写未来可能漂移的函数签名和源码行号。
+用途：提前看清全部工作量、依赖、质量门槛和推荐模型。Phase maps 不保存动态状态；其中“依赖”只描述启动条件，不能证明前置包已经完成。执行包地图也不写未来可能漂移的函数签名和源码行号。
+
+`EXECUTION_INDEX.md` 是包状态的唯一来源；`NIGHTLY_ELIGIBILITY_MATRIX.md` 只保存稳定资格。状态变更不得复制到 Phase maps 或资格矩阵。
 
 ### 源码级实现计划
 
@@ -158,7 +158,7 @@
 
 ## 并行、集成与 Main 同步
 
-并行任务必须先读 `PARALLEL_WORKTREE_EXECUTION_2026-07-11.md`。默认采用两个功能 worktree 加一个集成 worktree：
+并行任务必须先读 `PARALLEL_WORKTREE_EXECUTION.md`。允许同时使用两个功能通道和一个集成通道，但实际通道数量必须根据当前包、依赖和现场状态核验：
 
 1. 每个功能分支只承载一个执行包，不跨包堆叠提交。
 2. 功能分支完成测试和复核后，先合入专用 integration 分支；不得直接合入本地或 GitHub `main`。

@@ -56,6 +56,27 @@ def iter_python_files(project_root: Path) -> list[Path]:
     return sorted(files)
 
 
+def run_documentation_check(project_root: Path = PROJECT_ROOT) -> StepResult:
+    from tools.check_documentation import run_checks
+
+    started = time.perf_counter()
+    issues = run_checks(Path(project_root).resolve())
+    elapsed = time.perf_counter() - started
+    if issues:
+        messages = [
+            f"[{issue.code}] {issue.path}:{issue.line} {issue.message}"
+            for issue in issues
+        ]
+        return StepResult("文档治理", False, 1, elapsed, messages)
+    return StepResult(
+        "文档治理",
+        True,
+        0,
+        elapsed,
+        ["项目文档治理检查通过。"],
+    )
+
+
 def run_static_compile(project_root: Path = PROJECT_ROOT) -> StepResult:
     started = time.perf_counter()
     root = Path(project_root).resolve()
@@ -196,7 +217,7 @@ def run_smoke(
     pm = get_path_manager()
     resolved_grading_db = Path(grading_db) if grading_db is not None else pm.db_path
     resolved_question_bank_db = Path(question_bank_db) if question_bank_db is not None else pm.qb_db_path
-    results = [run_static_compile(root)]
+    results = [run_documentation_check(root), run_static_compile(root)]
     if skip_tests:
         results.append(
             StepResult("全量测试", True, 0, 0.0, ["收到 --skip-tests，已跳过全量测试。"], skipped=True)
