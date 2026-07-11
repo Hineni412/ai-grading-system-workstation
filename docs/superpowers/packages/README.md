@@ -26,7 +26,7 @@
 
 文件：`docs/superpowers/packages/phase-*-execution-packages.md`
 
-用途：提前看清全部工作量、依赖、质量门槛和推荐模型。Phase maps 不保存动态状态；其中“依赖”只描述启动条件，不能证明前置包已经完成。执行包地图也不写未来可能漂移的函数签名和源码行号。
+用途：提前看清全部工作量、依赖、质量门槛和风险边界。Phase maps 不保存动态状态；其中“依赖”只描述启动条件，不能证明前置包已经完成。执行包地图也不写未来可能漂移的函数签名和源码行号。
 
 `EXECUTION_INDEX.md` 是包状态的唯一来源；`NIGHTLY_ELIGIBILITY_MATRIX.md` 只保存稳定资格。状态变更不得复制到 Phase maps 或资格矩阵。
 
@@ -34,7 +34,7 @@
 
 文件：`docs/superpowers/plans/YYYY-MM-DD-<package-id>-<slug>-implementation.md`
 
-用途：开工前重新调查当前代码，写出准确文件、接口、失败测试、最小实现、验证命令和提交范围。实现计划必须使用 checkbox，并要求执行模型采用 `superpowers:subagent-driven-development` 或 `superpowers:executing-plans`。
+用途：开工前重新调查当前代码，写出准确文件、接口、失败测试、最小实现、验证命令和提交范围。实现计划必须使用 checkbox，并要求执行任务采用 `superpowers:subagent-driven-development` 或 `superpowers:executing-plans`。
 
 协议合并后新建或首次领取的正式包即时计划，文件名必须包含小写包号（例如 `2026-07-11-p1-16-...-implementation.md`），并在交接块之外恰好声明一次 `**执行包：** P1-16`。文件名、顶部字段和交接块包号必须一致；复制计划后只改其中一处会安全停机。
 
@@ -117,27 +117,9 @@
 | `deferred` | 用户明确延后，不计为阻塞 |
 | `blocked` | 有明确外部依赖且无法继续 |
 
-## 模型代码
+## 安全停机条件
 
-模型建议核验于 2026-07-10。若模型选择器已更新，保持角色不变并选择当时官方等价模型；不要为了旧名称使用已弃用模型。
-
-| 代码 | 模型与强度 | 用途 |
-|---|---|---|
-| `S-XH` | GPT-5.6 Sol + Extra High | 跨阶段规划、Schema、并发、删除、高风险决策 |
-| `S-H` | GPT-5.6 Sol + High | 高风险实现或独立代码复核 |
-| `T-H` | GPT-5.6 Terra + High | 跨模块实现、复杂测试、性能工作 |
-| `T-M` | GPT-5.6 Terra + Medium | 默认 API、服务适配和页面迁移 |
-| `L-M` | GPT-5.6 Luna + Medium | 输入输出明确的机械性清单和文档同步 |
-
-每个包的 `模型` 字段依次为“规划 / 执行 / 复核”。例如 `S-XH / T-M / T-H` 表示用 Sol Extra High 生成源码级计划，用 Terra Medium 实现，用 Terra High 独立复核。
-
-87 个正式包定义的模型分配已经按用户指定策略固化：规划槽全部为 `S-XH`；执行槽为 Terra 69 包（79.3%）和 Sol 18 包（20.7%）。其中 `T-M` 6 包、`T-H` 63 包、`S-H` 6 包、`S-XH` 12 包。完成包仍保留原模型记录；复核槽单独按风险设置，不计入上述执行比例。
-
-官方模型说明：<https://learn.chatgpt.com/docs/models>
-
-## 升级条件
-
-执行模型遇到以下任一情况必须停止猜测，回到调查或升级到 `S-H/S-XH`：
+执行任务遇到以下任一情况必须停止猜测，回到调查或请求更严格的规划与复核：
 
 1. 计划中的接口、表或文件与当前代码不一致。
 2. 需要改变评分规则、题号口径、知识点语义或状态含义。
@@ -149,10 +131,10 @@
 
 1. 从 `EXECUTION_INDEX.md` 选择状态为 `ready` 的包。
 2. 读取 `AGENTS.md`、`ARCHITECTURE.md`、本 README、对应 Phase 文档和相关现有测试。
-3. 使用包内“规划模型”生成源码级实现计划。
+3. 根据包边界、最新源码和风险生成源码级实现计划。
 4. 先写失败测试并确认 RED，再做最小实现并确认 GREEN。
 5. 跑包内验收、相关回归和 `runtime\python\python.exe tools\smoke_check.py --skip-tests`。
-6. 高风险包按文档指定模型做独立复核。
+6. 高风险包按文档要求做独立复核。
 7. 用户明确启动执行包后，门槛通过即可按本文固定流程在功能分支提交，并由 integration 分支 push、创建/合并 PR；默认排除整个 `user_data/`。直接 push `main`、force push、真实数据写入和未合并历史丢弃仍需单独确认。
 8. 更新 `EXECUTION_INDEX.md` 的状态和证据。
 
