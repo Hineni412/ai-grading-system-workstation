@@ -147,6 +147,86 @@ class TrainingExportService:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def relocate_export_outputs(
+        self,
+        export_ids: Iterable[int],
+        *,
+        old_root: Path,
+        new_root: Path,
+    ) -> list[dict[str, Any]]:
+        ids = sorted({int(value) for value in export_ids})
+        if not ids:
+            return []
+        old_resolved = Path(old_root).resolve()
+        new_root = Path(new_root)
+        initialize_database(self.db_path)
+        with connect(self.db_path) as conn:
+            placeholders = ",".join("?" for _ in ids)
+            rows = conn.execute(
+                f"SELECT id, output_path FROM training_exports WHERE id IN ({placeholders}) "
+                "AND status = 'succeeded' AND output_path IS NOT NULL",
+                ids,
+            ).fetchall()
+            updates: list[tuple[str, int]] = []
+            for row in rows:
+                path = Path(str(row["output_path"])).resolve()
+                try:
+                    relative = path.relative_to(old_resolved)
+                except ValueError as exc:
+                    raise ValueError("training export record escaped staging") from exc
+                updates.append((str(new_root / relative), int(row["id"])))
+            conn.executemany(
+                """
+                UPDATE training_exports
+                SET output_path = ?, updated_at = datetime('now','localtime')
+                WHERE id = ?
+                """,
+                updates,
+            )
+        return [self._export_record(export_id) for _, export_id in updates]
+
+    def abort_unpublished_exports(
+        self,
+        export_ids: Iterable[int],
+        *,
+        task_id: int,
+        variant_ids: Iterable[int] = (),
+    ) -> None:
+        ids = sorted({int(value) for value in export_ids})
+        variants = sorted({int(value) for value in variant_ids})
+        initialize_database(self.db_path)
+        with connect(self.db_path) as conn:
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"""
+                    UPDATE training_exports
+                    SET status = 'failed', output_path = NULL,
+                        error_message = 'Export was not published.',
+                        updated_at = datetime('now','localtime')
+                    WHERE id IN ({placeholders})
+                    """,
+                    ids,
+                )
+            conn.execute(
+                """
+                UPDATE training_tasks
+                SET status = 'ready', updated_at = datetime('now','localtime')
+                WHERE id = ? AND status <> 'cancelled'
+                """,
+                (int(task_id),),
+            )
+            if variants:
+                placeholders = ",".join("?" for _ in variants)
+                conn.execute(
+                    f"""
+                    UPDATE training_variants
+                    SET status = 'ready', updated_at = datetime('now','localtime')
+                    WHERE task_id = ? AND id IN ({placeholders})
+                    """,
+                    [int(task_id), *variants],
+                )
+
     def _run_variant_export(
         self,
         task: Mapping[str, Any],

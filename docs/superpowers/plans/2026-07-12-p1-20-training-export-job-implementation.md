@@ -37,9 +37,11 @@
 - Modify: `question_bank/services/training_export_service.py`：增加输出记录路径前缀的事务性重定位与失败收敛，不改导出内容。
 - Modify: `backend/jobs/default_handlers.py`：注册 `training_export` 并注入题库路径与 Training 输出根。
 - Modify: `backend/api/schemas/training.py`：增加严格导出提交模型。
+- Modify: `backend/api/schemas/__init__.py`：导出 Training 导出请求模型，保持 schema 包公开入口完整。
 - Modify: `backend/api/routers/training.py`：增加任务/变体导出提交和失败 Job 重试端点。
 - Modify: `backend/api/routers/jobs.py`：阻止通用提交端点绕过 Training 验证，并显式投影公开 payload/result。
 - Modify: `backend/files/service.py`：为 `training_export` 增加受控输出根和 `.docx/.md/.zip` 扩展名规则。
+- Modify: `backend/file_access.py`：在共享媒体类型表增加 DOCX、Markdown 和 ZIP；各资源仍须同时通过自己的扩展名白名单。
 - Modify: `backend/api/dependencies.py`：将 `outputs_dir / "training"` 注入 Job handler 和下载服务。
 - Modify: `backend/api/routers/files.py`：声明 Word、Markdown 和 ZIP 的二进制响应契约。
 - Create: `tests/test_training_export_job.py`：成功、缺素材、失败、取消、原子发布和路径重定位。
@@ -98,7 +100,7 @@ Stable failures:
 - Establishes this package's immutable handoff identity and stash baseline before source edits.
 - Specifies `run_training_export_job()` behavior for task bundles and single variants.
 
-- [ ] **Step 1: Commit the plan-only claim**
+- [x] **Step 1: Commit the plan-only claim**
 
 ```powershell
 git add docs/superpowers/plans/2026-07-12-p1-20-training-export-job-implementation.md
@@ -107,7 +109,7 @@ git commit -m "docs: claim P1-20 training export job"
 
 Expected: the first first-parent commit after `origin/main` changes only this plan and `tools/handoff_status.py` reports a valid `in_progress` block.
 
-- [ ] **Step 2: Write failing handler tests**
+- [x] **Step 2: Write failing handler tests**
 
 Create temporary task fixtures by reusing `TrainingTaskService.create_task()`. Assert that a whole-task payload publishes one ZIP, a variant payload publishes exactly one requested Word/Markdown file, progress is monotonic, the final result contains IDs plus one internal file path, and no client path is consumed.
 
@@ -128,7 +130,7 @@ def test_training_export_job_publishes_variant_after_cancel_boundary(tmp_path):
     assert Path(result["file_path"]).is_file()
 ```
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/test_training_export_job.py -q
@@ -151,7 +153,7 @@ Expected: FAIL because `backend.jobs.training_export` and its runner do not exis
 - Consumes only `task_id`, optional `variant_id`, one existing format, optional variant audience and optional `retry_of_job_id`.
 - Produces a job-owned file tree and a result containing `task_id`, optional `variant_id`, export record IDs, `file_path`, and `filename`.
 
-- [ ] **Step 1: Add failing atomicity, cancellation and degradation cases**
+- [x] **Step 1: Add failing atomicity, cancellation and degradation cases**
 
 Use injected fake exporters to prove: failure leaves no final `job-{id}` directory; cancellation after the blocking exporter returns leaves no published output; a successful publish renames the directory before the job result is returned; missing optional media still uses existing exporter fallback; traversal-like filenames cannot escape the job directory.
 
@@ -168,7 +170,7 @@ def test_cancel_after_export_does_not_publish_file(tmp_path):
     assert not (tmp_path / "training" / f"job-{context.job_id}").exists()
 ```
 
-- [ ] **Step 2: Implement minimal runner and service relocation transaction**
+- [x] **Step 2: Implement minimal runner and service relocation transaction**
 
 In `run_training_export_job()`, validate the mode combination, create `output_root/.job-{id}-<random>` on the same filesystem, report `starting/exporting/publishing`, call `export_task_bundle()` or `export_variant()`, identify the single primary record, call `context.raise_if_cancelled()`, rename the staging directory to `job-{id}`, then transactionally replace every succeeded `training_exports.output_path` whose resolved path is under the old root with the matching path under the final root. Reject any exporter path outside staging and remove the final directory if the database relocation fails.
 
@@ -205,11 +207,11 @@ def relocate_export_outputs(
 
 The explicit export-ID filter ensures unrelated historical rows are never rewritten.
 
-- [ ] **Step 3: Register the default handler**
+- [x] **Step 3: Register the default handler**
 
 Add `training_export_runner` and `training_export_service_factory` injection points to `register_default_job_handlers()`. Register `training_export` with `question_bank_db_path` and `training_output_root`; no exporter, database connection or path is constructed at module import time.
 
-- [ ] **Step 4: Run GREEN and existing exporter regression**
+- [x] **Step 4: Run GREEN and existing exporter regression**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/test_training_export_job.py tests/test_training_export_service.py tests/test_question_bank_exporter.py -q
@@ -233,7 +235,7 @@ Expected: all pass; cancellation publishes nothing and existing Word/Markdown co
 - Retries only failed/cancelled `training_export` jobs by copying their allowlisted payload and adding `retry_of_job_id`.
 - Public Job payload/result never contains `file_path`, task snapshots, student names or raw exporter errors.
 
-- [ ] **Step 1: Write failing endpoint and sanitization tests**
+- [x] **Step 1: Write failing endpoint and sanitization tests**
 
 Cover task 404, variant ownership, invalid bundle audience, valid task/variant submissions, generic endpoint rejection, failed-job retry, succeeded/running/wrong-type retry rejection, and public query/cancel responses.
 
@@ -252,7 +254,7 @@ def test_training_export_submit_persists_only_server_identifiers(training_client
     }
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/test_api_training_export_jobs.py tests/test_api_jobs.py -q
@@ -260,15 +262,15 @@ def test_training_export_submit_persists_only_server_identifiers(training_client
 
 Expected: new endpoint tests fail with 404 and generic submission still accepts the dedicated type.
 
-- [ ] **Step 3: Implement strict request, submit and retry routes**
+- [x] **Step 3: Implement strict request, submit and retry routes**
 
 Use a Pydantic `model_validator(mode="after")` to reject `audience` without `variant_id` and require it with `variant_id`. Load the task through `TrainingTaskService` before submit; verify the variant belongs to that task. Retry only source jobs with `job_type == "training_export"` and terminal retryable state, then submit a new job with allowlisted fields plus `retry_of_job_id`.
 
-- [ ] **Step 4: Add explicit public projections and block generic submission**
+- [x] **Step 4: Add explicit public projections and block generic submission**
 
 Add `training_export` to the dedicated-type set. Allowlist payload fields and, only for a succeeded job with a primary file, return `task_id`, optional `variant_id`, export IDs, safe filename and `download_url`. Keep `public_job_error()` generic.
 
-- [ ] **Step 5: Run GREEN and P1-19/API regression**
+- [x] **Step 5: Run GREEN and P1-19/API regression**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/test_api_training_export_jobs.py tests/test_api_training_routes.py tests/test_api_jobs.py tests/test_job_manager.py -q
@@ -292,11 +294,11 @@ Expected: all pass; P1-19 diagnosis/plan/task behavior is unchanged.
 - Resolves `training_export.file_path` only under `outputs_dir / "training"` with `.docx`, `.md` or `.zip`.
 - Declares the existing report XLSX plus DOCX, Markdown and ZIP 200 content types without changing the download URL.
 
-- [ ] **Step 1: Write failing download and OpenAPI cases**
+- [x] **Step 1: Write failing download and OpenAPI cases**
 
 Add succeeded Word/Markdown/ZIP downloads, nonterminal 409, unsupported job 404, expired 410, outside-root 403, wrong suffix 415, filename/no-store assertions, and OpenAPI content-type assertions. Add both Training export operations to the expected operation set and assert their request schemas forbid extra properties.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/test_api_file_downloads.py tests/test_api_openapi_contract.py -q
@@ -304,11 +306,11 @@ Add succeeded Word/Markdown/ZIP downloads, nonterminal 409, unsupported job 404,
 
 Expected: Training download cases fail because only report XLSX is allowlisted and the new operations are absent from OpenAPI.
 
-- [ ] **Step 3: Implement root-specific file rules and media declarations**
+- [x] **Step 3: Implement root-specific file rules and media declarations**
 
 Extend `JobFileRule` with a logical root selector. Construct `JobFileService(reports_dir, training_outputs_dir)` from one `PathManager` snapshot; keep report behavior unchanged. Add the exact media types for DOCX, Markdown and ZIP to the route `responses[200].content` map.
 
-- [ ] **Step 4: Record only implemented architecture facts and run GREEN**
+- [x] **Step 4: Record only implemented architecture facts and run GREEN**
 
 Add a P1-20 increment line and update the run/job/interface tables only where behavior is now verified. Do not update package counts or Index on the feature branch.
 
@@ -328,7 +330,7 @@ Expected: all pass with no internal path in JSON and `Cache-Control: no-store` o
 **Interfaces:**
 - Produces a reviewed functional SHA and a final handoff-only commit validated as `verified_pending_integration`.
 
-- [ ] **Step 1: Run focused and affected regressions**
+- [x] **Step 1: Run focused and affected regressions**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/test_training_export_job.py tests/test_training_export_service.py tests/test_question_bank_exporter.py tests/test_api_training_export_jobs.py tests/test_api_training_routes.py tests/test_api_file_downloads.py tests/test_api_jobs.py tests/test_job_manager.py tests/test_api_openapi_contract.py -q
@@ -338,11 +340,11 @@ git diff --check
 
 Expected: all focused/affected tests pass; diff check and quick smoke exit 0. Integration runs the wave-end complete smoke because the package changes shared handler/API/download registration.
 
-- [ ] **Step 2: Recheck package scope and real-data guards**
+- [x] **Step 2: Recheck package scope and real-data guards**
 
 Confirm `git diff --name-only origin/main...HEAD`, every package commit, staged files and new stashes exclude `user_data/`. Compare the root real database sizes, UTC mtimes and SHA-256 with the claim baseline; any difference stops integration.
 
-- [ ] **Step 3: Create the functional commit**
+- [x] **Step 3: Create the functional commit**
 
 Update this plan evidence and set the handoff block to `waiting_review`, `功能提交: branch_head`, `自动验证: passed`, `独立复审: pending`, `真实数据指纹: unchanged`. Commit only P1-20 code, tests, architecture and this plan.
 
@@ -371,22 +373,22 @@ After review passes, update only this plan with the full reviewed functional SHA
 ## Implementation Evidence
 
 - Baseline: existing Training export/Training API/Job/download suite `60 passed` before source changes.
-- RED/GREEN: pending.
-- Focused regression: pending.
-- Quick smoke: pending.
+- RED/GREEN: default-handler/variant Job tests first failed `2` cases on the missing `training_output_root`; dedicated API tests first failed `6` cases with missing routes and generic endpoint bypass; controlled-download service first failed on the missing Training root, then exposed and closed root-selector/media-type gaps; the exact OpenAPI media contract first failed on the three new types. Each cycle subsequently passed.
+- Focused regression: final Training export/Training API/download/Job/OpenAPI set `100 passed`; adjacent report/config/import/tagging/App handler regression `45 passed`.
+- Quick smoke: document governance, static compile of `367` first-party Python files, two temporary database copies' idempotent initialization and `integrity_check=ok` passed. Full pytest is reserved for the integration wave-end gate under repository policy.
 - Independent review: pending.
-- Real data: pre-claim size/UTC mtime captured read-only; final SHA-256 comparison pending.
+- Real data: root grading DB remained `2863104` bytes / `2026-07-10T07:10:41.1221109Z` / SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`; root question-bank DB remained `3461120` bytes / `2026-07-08T11:58:06.3320883Z` / SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`. Worktree `user_data/` status is empty and the stash baseline is unchanged.
 
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
 
 **执行包：** P1-20
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
