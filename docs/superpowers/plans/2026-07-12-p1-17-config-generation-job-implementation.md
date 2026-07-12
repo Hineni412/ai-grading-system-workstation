@@ -34,6 +34,7 @@
 - Create: `backend/jobs/config_generation.py`：受控输入暂存、初次生成/失败题重试编排、部分草稿、原子发布和会话绑定。
 - Modify: `session_manager.py`：最终 JSON 改为逐文件原子发布；失败题重试支持明确题号子集并保留未选择失败项。
 - Modify: `backend/jobs/default_handlers.py`：注册 `config_generation` handler，复用活动 API profile 创建 LLM client。
+- Modify: `backend/jobs/manager.py`、`backend/jobs/store.py`：原子认领重试来源，并在同一 SQLite 事务完成最终会话绑定和 Job 成功落账。
 - Modify: `backend/api/dependencies.py`：把受控 upload config 目录传给默认 handler 注册。
 - Modify: `backend/api/schemas/config.py`：增加初次生成、重试和 Job 接受响应模型，禁止额外字段。
 - Modify: `backend/api/schemas/__init__.py`：导出新增模型。
@@ -52,6 +53,8 @@ stage_config_generation_input(
     upload_config_dir: Path,
     *,
     session_id: int,
+    expected_rubric_path: str,
+    expected_answer_key_path: str,
     confirmed_blocks: list[dict[str, Any]],
     document_text: str,
     question_images: dict[str, Any] | None,
@@ -312,8 +315,8 @@ Update Implementation Evidence and the handoff block to `waiting_review`, `功�
 
 - Baseline: config API, Job lifecycle/manager and generation-policy suite `81 passed` before source changes.
 - RED/GREEN: 输入暂存、原子发布、Job 注册、成功/部分失败/取消、指定失败题重试、专用 API、客户端路径拒绝和 OpenAPI 均先由聚焦测试复现失败，再以最小实现转绿。
-- Focused regression: 最终 P1-17 聚焦回归 `93 passed`；受影响 API 回归 `45 passed`。
-- Independent review: pending.
+- Focused regression: 初次功能提交 P1-17 聚焦回归 `93 passed`、受影响 API 回归 `45 passed`；首轮复审修复后聚焦回归 `101 passed`，Job/manager/store 影响面 `68 passed`。
+- Independent review: 首轮 0 Critical / 6 Important / 2 Minor；已修复通用入口绕过、路径值漏检、旧 Job 覆盖、重试源重放、缺失来源错误码和绑定后失败窗口，并补齐并发认领、事务回滚与重启测试；二次复审 pending。
 - Quick smoke: 文档治理、352 个第一方 Python 文件静态编译、两库副本初始化幂等和 `integrity_check=ok` 全部通过。
 - Real data: 工作树没有 `user_data/` 变更，stash 仍为领取时两条；真实阅卷库与题库 SHA-256 和领取基线完全一致。
 

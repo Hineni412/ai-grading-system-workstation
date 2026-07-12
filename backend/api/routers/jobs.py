@@ -115,6 +115,13 @@ def submit_job(
     request: JobSubmitRequest,
     manager: JobManager = Depends(get_job_manager),
 ) -> JobResponse:
+    if str(job_type).strip() == "config_generation":
+        raise ApiError(
+            422,
+            "dedicated_job_endpoint_required",
+            "Use the session config generation endpoint for this job type",
+            {"job_type": "config_generation"},
+        )
     if contains_sensitive_key(request.payload):
         raise ApiError(
             422,

@@ -121,6 +121,14 @@ def contains_path_key(value: Any) -> bool:
     return False
 
 
+def contains_filesystem_reference(value: Any) -> bool:
+    if isinstance(value, dict):
+        return any(contains_filesystem_reference(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(contains_filesystem_reference(item) for item in value)
+    return isinstance(value, str) and _contains_filesystem_token(value)
+
+
 def sanitize_public_mapping(value: dict[Any, Any]) -> dict[str, Any]:
     sanitized = _sanitize_public_value(value)
     return sanitized if isinstance(sanitized, dict) else {}
