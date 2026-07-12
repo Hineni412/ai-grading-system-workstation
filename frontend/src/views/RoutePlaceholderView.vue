@@ -15,12 +15,12 @@ const currentSessionName = computed(
 </script>
 
 <template>
-  <main class="route-placeholder">
+  <section class="route-placeholder" aria-labelledby="route-placeholder-title">
     <header>
-      <h1 tabindex="-1">{{ title }}</h1>
+      <h1 id="route-placeholder-title" tabindex="-1">{{ title }}</h1>
       <p>{{ description }}</p>
     </header>
     <p>此工作区将在后续执行包中迁移。当前应用外壳和考试上下文已经可用。</p>
     <p>当前考试：{{ currentSessionName }}</p>
-  </main>
+  </section>
 </template>
