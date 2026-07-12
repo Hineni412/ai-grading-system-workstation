@@ -187,17 +187,17 @@ Commit: `feat: add P2-02 design tokens and Element theme`.
 **Interfaces:**
 - Produces: `AppField` slot props `inputId`, `ariaDescribedby`, `ariaInvalid`; `StatusBadge` prop `tone: 'neutral' | 'info' | 'success' | 'warning' | 'danger' | 'ai' | 'teacher'`.
 
-- [ ] **Step 1: Write failing component tests**
+- [x] **Step 1: Write failing component tests**
 
 Mount small test hosts with `createApp`. Assert that `AppField` renders a permanent label, joins hint/error IDs in `aria-describedby`, sets `aria-invalid="true"` when an error exists, and marks required labels. For every `StatusBadge` tone, assert visible text, `data-tone`, and `aria-label="状态：<label>"`.
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run from `frontend/`: `npm run test -- --run src/components/design-system/__tests__/field-status.spec.ts`
 
 Expected: FAIL because both components are missing.
 
-- [ ] **Step 3: Implement `AppField`**
+- [x] **Step 3: Implement `AppField`**
 
 Use this public shape:
 
@@ -238,11 +238,11 @@ const describedBy = computed(() =>
 
 Style only with product tokens.
 
-- [ ] **Step 4: Implement `StatusBadge`**
+- [x] **Step 4: Implement `StatusBadge`**
 
 Define the exact tone union, require non-empty `label`, render a text-bearing `<span class="status-badge" :data-tone="tone" :aria-label="`状态：${label}`">`, and map tone classes only to product semantic foreground/background tokens.
 
-- [ ] **Step 5: Verify GREEN and commit**
+- [x] **Step 5: Verify GREEN and commit**
 
 Run the new component test, full `npm run test`, lint and typecheck.
 
