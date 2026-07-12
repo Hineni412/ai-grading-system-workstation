@@ -706,7 +706,7 @@ Update the handoff block to `waiting_review/branch_head/passed/pending/not_requi
 git commit -m "feat: add protected ops write jobs"
 ```
 
-- [ ] **Step 8: Complete independent review and final plan-only handoff**
+- [x] **Step 8: Complete independent review and final plan-only handoff**
 
 After review reports 0 Critical and 0 Important, fix findings with focused RED/GREEN tests. Then create a plan-only final handoff commit whose block records its direct parent full reviewed SHA as `verified_pending_integration`.
 
@@ -724,12 +724,12 @@ After review reports 0 Critical and 0 Important, fix findings with focused RED/G
 ## 昼夜交接
 
 **执行包：** P1-23
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** 9469a65ce99aa0688837a963b5a7144e52a9da1b
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
