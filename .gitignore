@@ -17,6 +17,11 @@ user_data/config/api_profiles.json
 runtime/
 dist/
 build/
+node_modules/
+frontend/dist/
+frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
 
 # Temporary files
 *.tmp
