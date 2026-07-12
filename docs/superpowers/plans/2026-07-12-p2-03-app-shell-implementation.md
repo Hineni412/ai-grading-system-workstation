@@ -85,7 +85,7 @@ Expected staged file list: only this plan. This must be the first first-parent c
 - Consumes: approved route table and existing `ComponentShowcase.vue`.
 - Produces: `navigationItems`, `settingsNavigationItem`, `createAppRouter(history?)`, root redirect, `/design-system`, and catch-all 404.
 
-- [ ] **Step 1: Write the failing navigation and router test**
+- [x] **Step 1: Write the failing navigation and router test**
 
 Create `frontend/src/__tests__/navigation-router.spec.ts` with these assertions:
 
@@ -122,13 +122,13 @@ describe('P2-03 navigation', () => {
 })
 ```
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run `npm run test -- src/__tests__/navigation-router.spec.ts --maxWorkers=1`.
 
 Expected: FAIL because `navigation.ts` and `router/index.ts` do not exist.
 
-- [ ] **Step 3: Implement the typed navigation source**
+- [x] **Step 3: Implement the typed navigation source**
 
 Create `frontend/src/navigation.ts`:
 
@@ -165,7 +165,7 @@ export const settingsNavigationItem: NavigationItem = {
 }
 ```
 
-- [ ] **Step 4: Implement the router and shared views**
+- [x] **Step 4: Implement the router and shared views**
 
 Create a route factory in `frontend/src/router/index.ts` using `createRouter`, `createWebHistory`, `RouterHistory`, lazy-loaded placeholder/404 views, and a direct `/design-system` route to `ComponentShowcase.vue`. Each route meta must provide `title`, `description`, and `breadcrumb`; `/` redirects to `/workbench`; the catch-all meta title is `页面未找到`.
 
@@ -173,7 +173,7 @@ Create a route factory in `frontend/src/router/index.ts` using `createRouter`, `
 
 `NotFoundView.vue` renders `StatePanel kind="error"`, explains that no data was changed, and uses `router.push('/workbench')` for `返回工作台`.
 
-- [ ] **Step 5: Run GREEN and commit the route contract**
+- [x] **Step 5: Run GREEN and commit the route contract**
 
 Run:
 
@@ -197,7 +197,7 @@ Expected: focused tests and typecheck pass.
 - Produces: `SessionSummary`, `SessionListResponse`, `SessionLoader`, `fetchSessions()`, `SESSION_STORAGE_KEY`, and `useSessionStore()`.
 - Store public API: `sessions`, `selectedSessionId`, `currentSession`, `loadState`, `errorMessage`, `initialize(loader?)`, `selectSession(id)`, `clearSelection()`.
 
-- [ ] **Step 1: Write failing adapter and Store tests**
+- [x] **Step 1: Write failing adapter and Store tests**
 
 Create `frontend/src/__tests__/session-store.spec.ts`. Use `setActivePinia(createPinia())`, clear `localStorage` before each test, and cover exactly these cases:
 
@@ -239,17 +239,17 @@ it('keeps the candidate for retry without exposing it after failure', async () =
 
 Also mock `globalThis.fetch` and assert `fetchSessions()` requests only `/api/sessions`, accepts the exact public response, and throws `SessionReadError` for non-2xx or malformed items.
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run `npm run test -- src/__tests__/session-store.spec.ts --maxWorkers=1`.
 
 Expected: FAIL because the adapter and Store do not exist.
 
-- [ ] **Step 3: Implement the narrow sessions adapter**
+- [x] **Step 3: Implement the narrow sessions adapter**
 
 Create `frontend/src/api/sessions.ts` with the approved interfaces and an `isSessionSummary()` type guard. `fetchSessions()` must call `fetch('/api/sessions', { headers: { accept: 'application/json' } })`, reject non-success responses without including response text, validate `{ items, total }`, and return only items where `is_deleted === false`. Use a stable `SessionReadError('无法读取考试列表')`; do not parse the global FastAPI error body.
 
-- [ ] **Step 4: Implement the Store with validated recovery**
+- [x] **Step 4: Implement the Store with validated recovery**
 
 Create `frontend/src/stores/session.ts` with `defineStore('session', () => ...)`. Use:
 
@@ -267,7 +267,7 @@ function readPersistedId(): number | null {
 
 During `initialize`, set `selectedSessionId` to `null` before awaiting the loader. On success, restore only if the candidate exists in the returned list; otherwise remove the key. On failure, keep the key, expose no candidate as current, and set the stable teacher-facing error `考试列表暂时无法读取。已保存的选择没有丢失，可以重新加载。`. `selectSession` rejects IDs absent from the loaded list, persists valid IDs, and removes the key for `null`.
 
-- [ ] **Step 5: Run GREEN and commit the session boundary**
+- [x] **Step 5: Run GREEN and commit the session boundary**
 
 ```powershell
 npm run test -- src/__tests__/session-store.spec.ts --maxWorkers=1
@@ -293,7 +293,7 @@ Expected: focused tests and typecheck pass; no general API client exists.
 - Consumes: route meta, navigation config, `useSessionStore`, P2-02 `StatePanel` and `FeedbackBanner`.
 - Produces: `app-shell`, `app-topbar`, `app-navigation`, `session-inspector`, `main-workspace`, mutually exclusive overlay panels, and application startup initialization.
 
-- [ ] **Step 1: Write the failing shell component test**
+- [x] **Step 1: Write the failing shell component test**
 
 Mount `AppShell` with a memory router and active Pinia. Assert:
 
@@ -308,13 +308,13 @@ expect(host.querySelector('[data-testid="session-inspector"]')?.textContent).toC
 
 Trigger the navigation and inspector buttons and assert `aria-expanded` changes. In overlay mode, opening one closes the other; dispatch `Escape` and assert the active panel closes and focus returns to its trigger.
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run `npm run test -- src/components/shell/__tests__/app-shell.spec.ts --maxWorkers=1`.
 
 Expected: FAIL because shell components do not exist.
 
-- [ ] **Step 3: Implement navigation, topbar and inspector components**
+- [x] **Step 3: Implement navigation, topbar and inspector components**
 
 `AppNavigation.vue` renders available items as `RouterLink`, the future item as a focusable disabled explanation with `aria-disabled="true"`, and settings in a bottom group. In collapsed mode, every symbol has `aria-hidden="true"` and the interactive item retains the full label as `aria-label` and `title`.
 
@@ -322,13 +322,13 @@ Expected: FAIL because shell components do not exist.
 
 `SessionInspector.vue` uses `StatePanel` for loading/empty/error. Error uses `retryLabel="重新加载考试列表"` and emits retry. Ready state renders only `currentSession.name`, `currentSession.status`, and the explanation `后续业务页面将继续使用这一考试上下文。`.
 
-- [ ] **Step 4: Implement AppShell responsive state and focus safety**
+- [x] **Step 4: Implement AppShell responsive state and focus safety**
 
 `AppShell.vue` owns `navigationOpen`, `inspectorOpen`, and a `matchMedia('(max-width: 1023px)')` listener. Desktop defaults both open; overlay mode defaults closed. `openNavigation()` and `openInspector()` close the other overlay panel. Save `document.activeElement` before opening; on Escape or backdrop close, use `nextTick()` to return focus. Remove media and key listeners in `onUnmounted`.
 
 The template order must be topbar, navigation, `main#main-workspace` with `RouterView`, inspector, then a single backdrop. The main route heading receives focus after `route.fullPath` changes.
 
-- [ ] **Step 5: Wire Pinia, Router and startup**
+- [x] **Step 5: Wire Pinia, Router and startup**
 
 Update `main.ts` to create and register Pinia before Router:
 
@@ -344,7 +344,7 @@ app.mount('#app')
 
 Keep the existing Element Plus base/button/input styles and add only styles actually used by the shell (select has native styling; no full Element bundle). Update `App.vue` so `ElConfigProvider` wraps `AppShell`; call `useSessionStore().initialize()` once from the shell startup and expose retry only through the Store action.
 
-- [ ] **Step 6: Run GREEN and commit the shell**
+- [x] **Step 6: Run GREEN and commit the shell**
 
 ```powershell
 npm run test -- src/components/shell/__tests__/app-shell.spec.ts src/__tests__/navigation-router.spec.ts src/__tests__/session-store.spec.ts --maxWorkers=1
@@ -370,7 +370,7 @@ Expected: focused tests, typecheck and lint pass.
 **Interfaces:**
 - Produces: shell sizing tokens, five-viewport behavior, synthetic sessions browser contract, focus/overflow guards, and repository scope guards.
 
-- [ ] **Step 1: Write failing repository guards**
+- [x] **Step 1: Write failing repository guards**
 
 Create `tests/test_frontend_app_shell.py` to assert:
 
@@ -394,13 +394,13 @@ def test_shell_uses_tokens_and_keeps_showcase_route() -> None:
 
 Reuse `COLOR_LITERAL` semantics from `test_frontend_design_system.py` rather than importing application code.
 
-- [ ] **Step 2: Run the guard and verify RED**
+- [x] **Step 2: Run the guard and verify RED**
 
 Run `D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe -m pytest tests\test_frontend_app_shell.py -q`.
 
 Expected: FAIL because `app-shell.css` and its tokens do not exist.
 
-- [ ] **Step 3: Add shell tokens and responsive CSS**
+- [x] **Step 3: Add shell tokens and responsive CSS**
 
 Add only these reusable dimensions to `tokens.css`: `--shell-topbar-height: 60px`, `--shell-navigation-width: 232px`, `--shell-navigation-collapsed-width: 60px`, `--shell-inspector-width: 360px`, `--shell-inspector-compact-width: 320px`, and `--shell-overlay-z-index: 30`.
 
@@ -429,13 +429,13 @@ Create `app-shell.css` using existing color, spacing, border, radius, shadow and
 
 Complete the CSS with Token-only borders/backgrounds, panel transforms, mutually exclusive backdrop, 390px wrapping, independent desktop scroll, ellipsis with full accessible names, visible focus, and reduced-motion compatibility. Import it after `base.css` in `main.ts`.
 
-- [ ] **Step 4: Replace showcase-only browser checks with shell-aware tests**
+- [x] **Step 4: Replace showcase-only browser checks with shell-aware tests**
 
 Keep P2-02 focus and design-system assertions under `/design-system`. Add `app-shell.spec.ts` that intercepts `/api/sessions` with two synthetic sessions, then for all five viewports checks no horizontal overflow, page/console errors empty, current session selection, refresh recovery, and long-name containment.
 
 Desktop checks verify navigation and inspector widths remain in approved ranges. Narrow checks open navigation, open inspector and prove the first closes; press Escape and verify focus returns. Add dedicated tests for stale localStorage cleanup, API failure preserving the saved candidate without presenting it, successful retry, disabled future entry, `/settings`, and 404 return.
 
-- [ ] **Step 5: Update the root App test and confirm GREEN**
+- [x] **Step 5: Update the root App test and confirm GREEN**
 
 Replace the P2-02 root showcase assumption in `App.spec.ts` with a memory-router/Pinia mount that mocks a successful empty sessions loader and asserts App Shell landmarks. Preserve ComponentShowcase unit coverage through a direct component test or `/design-system` router test.
 
@@ -452,7 +452,7 @@ npm run build
 
 Expected: all commands exit 0 and all five viewports have no page-level horizontal overflow.
 
-- [ ] **Step 6: Commit responsive and browser acceptance**
+- [x] **Step 6: Commit responsive and browser acceptance**
 
 ```powershell
 git add -- frontend/src/styles frontend/src/main.ts frontend/src/__tests__/App.spec.ts frontend/e2e tests/test_frontend_app_shell.py
@@ -469,11 +469,11 @@ git commit -m "test: verify P2-03 shell behavior"
 **Interfaces:**
 - Produces: contributor guidance, implemented architecture facts, a verified feature SHA, `waiting_review`, and later the reviewed anchor for quick user testing.
 
-- [ ] **Step 1: Document usage and non-goals**
+- [x] **Step 1: Document usage and non-goals**
 
 Update `frontend/README.md` with route entry points, session persistence semantics, the session-only adapter boundary, Token-only shell styling, synthetic browser testing, and explicit P2-04/business-page exclusions. Update `ARCHITECTURE.md` only with the implemented P2-03 facts: App Shell/routes/session context exist, Vue remains non-production, and the general API client does not yet exist.
 
-- [ ] **Step 2: Run the feature-branch verification gate**
+- [x] **Step 2: Run the feature-branch verification gate**
 
 ```powershell
 npm run lint
@@ -488,7 +488,7 @@ git diff --check
 
 Expected: every command exits 0. If default Vitest concurrency exceeds the command timeout, investigate active processes first; the final evidence must still include an unmodified `npm run test` pass.
 
-- [ ] **Step 3: Verify real data and commit the feature state**
+- [x] **Step 3: Verify real data and commit the feature state**
 
 Repeat root database size/UTC/SHA-256 checks and require exact equality with Task 1. Confirm `git status --short -- user_data` is empty. Set handoff to `waiting_review`, `功能提交: branch_head`, `自动验证: passed`, `独立复审: pending`, `用户验收: pending`, `真实数据指纹: unchanged`, preserve the immutable stash baseline, and commit all P2-03 source/test/docs changes without `user_data/`.
 
@@ -566,12 +566,12 @@ Fetch/prune, fast-forward root `main` and active worktrees to `origin/main`, del
 ## 昼夜交接
 
 **执行包：** P2-03
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** pending
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
