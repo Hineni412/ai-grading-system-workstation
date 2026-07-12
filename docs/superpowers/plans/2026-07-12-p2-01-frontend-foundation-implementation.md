@@ -22,7 +22,7 @@
 - 不修改 `运行.bat`、Streamlit 生产入口、FastAPI 路由、数据库、评分规则或真实 `user_data/`。
 - Node 只用于开发和构建；最终工作机只携带 `frontend/dist`，不要求安装 Node。
 - `package.json` 的所有直接依赖使用完整版本号，不允许 `^`、`~`、`*`、tag 或 workspace 浮动范围。
-- 使用 npm 11 与 Node `^22.18.0 || >=24.12.0`；提交 `package-lock.json`，忽略 `node_modules/`、`frontend/dist/`、coverage 与 Playwright 产物。
+- 使用精确 `npm@11.8.0` 与 Node `^22.18.0 || >=24.12.0`；通过 `packageManager`、`engines.npm` 和 `.npmrc` 的 `engine-strict=true` 拒绝漂移工具链，提交 `package-lock.json`，忽略 `node_modules/`、`frontend/dist/`、coverage 与 Playwright 产物。
 - Vite 开发代理仅匹配 `/api` 并指向 `http://127.0.0.1:8000`；不在浏览器配置中保存密钥。
 - 遵守 `docs/ui/STYLE.md`，但本包不创建 Token、主题、业务页面或样板页；这些分别属于 P2-02 及后续包。
 - 包内自动验证使用生成内容和临时目录；真实两库只做文件大小、UTC 修改时间和 SHA-256 的只读前后比较。
@@ -107,7 +107,7 @@ def test_frontend_vite_proxy_stays_on_loopback_api() -> None:
     assert "0.0.0.0" not in config
 ```
 
-Also assert the lockfile exists, `frontend/package.json` declares the exact Node engine, and root `.gitignore` excludes front-end generated directories.
+Also assert the lockfile exists, `frontend/package.json` declares exact Node/npm/package-manager contracts, `.npmrc` enables strict engine enforcement, `e2e:install` pins browser preparation to the locked Playwright CLI, and root `.gitignore` excludes front-end generated directories.
 
 - [x] **Step 2: Run the test to verify RED**
 
@@ -206,11 +206,11 @@ Run: `npm run test`, `npm run lint`, and `npm run typecheck`.
 
 Expected: all exit 0 with one passing unit test.
 
-- [x] **Step 5: Add the Playwright smoke contract**
+- [x] **Step 5: Add and execute the Playwright smoke contract**
 
-Create `frontend/e2e/app.spec.ts` that opens `/`, asserts the readiness marker, and asserts the page has no horizontal overflow at the default desktop viewport. Validate discovery without a browser download using `npm run e2e -- --list`.
+Create `frontend/e2e/app.spec.ts` that opens `/`, asserts the readiness marker, and asserts the page has no horizontal overflow at the default desktop viewport. Add `npm run e2e:install` for the locked Chromium and run `npm run e2e` after installation.
 
-Expected: Playwright lists exactly one smoke test.
+Expected: Playwright runs exactly one Chromium smoke test and it passes.
 
 ### Task 4: Prove portable dist inclusion without touching real data
 
@@ -271,7 +271,7 @@ Expected: exit 0 without modifying `package-lock.json`.
 
 - [x] **Step 2: Run all front-end quality commands**
 
-Run in `frontend/`: `npm run lint`, `npm run typecheck`, `npm run test`, `npm run e2e -- --list`, and `npm run build`.
+Run in `frontend/`: `npm run lint`, `npm run typecheck`, `npm run test`, `npm run e2e`, and `npm run build` after the locked Chromium has been prepared with `npm run e2e:install`.
 
 Expected: all exit 0; `dist/index.html` and hashed assets exist; the build contains no `.env` file, source map, secret-like environment value, or Node dependency directory.
 

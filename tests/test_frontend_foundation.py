@@ -21,8 +21,13 @@ def test_frontend_manifest_locks_dependencies_and_quality_commands() -> None:
     package = _package()
 
     assert package["private"] is True
-    assert package["engines"] == {"node": "^22.18.0 || >=24.12.0"}
+    assert package["packageManager"] == "npm@11.8.0"
+    assert package["engines"] == {
+        "node": "^22.18.0 || >=24.12.0",
+        "npm": "11.8.0",
+    }
     assert REQUIRED_SCRIPTS <= package["scripts"].keys()
+    assert package["scripts"]["e2e:install"] == "playwright install chromium"
     assert REQUIRED_RUNTIME <= package["dependencies"].keys()
     for section in ("dependencies", "devDependencies"):
         assert all(
@@ -35,6 +40,7 @@ def test_frontend_lockfile_and_generated_outputs_are_governed() -> None:
     lockfile = FRONTEND / "package-lock.json"
     assert lockfile.is_file()
     assert json.loads(lockfile.read_text(encoding="utf-8"))["lockfileVersion"] == 3
+    assert (FRONTEND / ".npmrc").read_text(encoding="utf-8").strip() == "engine-strict=true"
 
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
     for pattern in (

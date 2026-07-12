@@ -5,12 +5,16 @@
 ## 开发环境
 
 - Node.js：`^22.18.0 || >=24.12.0`
-- 包管理器：Node 自带的 npm
+- npm：`11.8.0`（工程会拒绝其他版本，避免锁文件解析行为漂移）
 
 ```powershell
+npm --version
 npm ci
+npm run e2e:install
 npm run dev
 ```
+
+`npm --version` 必须输出 `11.8.0`。若本机不是该版本，先运行 `npm install --global npm@11.8.0`，再执行干净安装。`e2e:install` 会下载与锁定 Playwright 版本匹配的 Chromium，仅开发和自动测试机器需要。
 
 开发服务器只监听 `127.0.0.1`，并把 `/api` 代理到本机 FastAPI `http://127.0.0.1:8000`。
 
