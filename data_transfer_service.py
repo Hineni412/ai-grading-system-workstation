@@ -135,3 +135,12 @@ def create_export_zip_bytes(entries: list[ExportEntry]) -> bytes:
         for entry in entries:
             zf.write(entry.source_path, entry.arc_name)
     return buf.getvalue()
+
+
+def write_export_zip(entries: list[ExportEntry], destination: Path) -> Path:
+    output = Path(destination)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        for entry in entries:
+            zf.write(entry.source_path, entry.arc_name)
+    return output
