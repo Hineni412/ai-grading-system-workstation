@@ -2,11 +2,14 @@
 import { ElConfigProvider } from 'element-plus'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 
-import ComponentShowcase from './components/design-system/ComponentShowcase.vue'
+import ApplicationErrorBoundary from './components/ApplicationErrorBoundary.vue'
+import AppShell from './layouts/AppShell.vue'
 </script>
 
 <template>
   <ElConfigProvider :locale="zhCn">
-    <ComponentShowcase />
+    <ApplicationErrorBoundary>
+      <AppShell />
+    </ApplicationErrorBoundary>
   </ElConfigProvider>
 </template>

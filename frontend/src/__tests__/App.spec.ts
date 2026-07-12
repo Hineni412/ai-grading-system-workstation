@@ -1,12 +1,226 @@
-import { createApp, nextTick } from 'vue'
-import { describe, expect, it } from 'vitest'
+import { createApp, defineAsyncComponent, defineComponent, h, nextTick } from 'vue'
+import { createPinia } from 'pinia'
+import { createMemoryHistory } from 'vue-router'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import App from '../App.vue'
+import { fetchSessions } from '../api/sessions'
+import ComponentShowcase from '../components/design-system/ComponentShowcase.vue'
+import { createAppRouter } from '../router'
+import { useSessionStore } from '../stores/session'
+
+vi.mock('../api/sessions', () => ({
+  fetchSessions: vi.fn(async () => []),
+}))
+
+async function settleUi(): Promise<void> {
+  await Promise.resolve()
+  await nextTick()
+  await Promise.resolve()
+  await nextTick()
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  localStorage.clear()
+  document.body.innerHTML = ''
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn(() => ({
+      matches: false,
+      media: '(max-width: 1279px)',
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  )
+})
 
 describe('App', () => {
-  it('renders every P2-02 showcase section and extreme content state', async () => {
+  it('surfaces a rejected lazy route and retries the real route factory', async () => {
+    let attempts = 0
+    const pinia = createPinia()
+    const router = createAppRouter(createMemoryHistory())
+    router.addRoute({
+      path: '/lazy-route-failure',
+      name: 'lazy-route-failure',
+      component: async () => {
+        attempts += 1
+        if (attempts === 1) throw new Error('private lazy route path and token')
+        return defineComponent(() => () => h('h1', { tabindex: '-1' }, '懒加载页面已恢复'))
+      },
+      meta: { title: '懒加载故障', description: '故障测试', breadcrumb: '懒加载故障' },
+    })
+    await router.push('/workbench')
+    await router.isReady()
     const host = document.createElement('div')
-    createApp(App).mount(host)
+    const app = createApp(App)
+    app.config.errorHandler = vi.fn()
+    app.use(pinia)
+    app.use(router)
+    app.mount(host)
+    await settleUi()
+
+    await expect(router.push('/lazy-route-failure')).rejects.toThrow(
+      'private lazy route path and token',
+    )
+    await settleUi()
+
+    expect(host.querySelector('[role="alert"]')).not.toBeNull()
+    expect(host.textContent).toContain('当前页面暂时无法显示')
+    expect(host.textContent).not.toContain('private lazy route path and token')
+    const retry = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent === '重新加载当前页面',
+    )!
+    retry.click()
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/lazy-route-failure'))
+    await settleUi()
+
+    expect(host.querySelector('h1')?.textContent).toBe('懒加载页面已恢复')
+    expect(attempts).toBe(2)
+    app.unmount()
+  })
+
+  it('returns to the workbench after a rejected lazy route', async () => {
+    const pinia = createPinia()
+    const router = createAppRouter(createMemoryHistory())
+    router.addRoute({
+      path: '/always-broken-lazy-route',
+      name: 'always-broken-lazy-route',
+      component: async () => {
+        throw new Error('private route factory detail')
+      },
+      meta: { title: '懒加载故障', description: '故障测试', breadcrumb: '懒加载故障' },
+    })
+    await router.push('/workbench')
+    await router.isReady()
+    const host = document.createElement('div')
+    const app = createApp(App)
+    app.config.errorHandler = vi.fn()
+    app.use(pinia)
+    app.use(router)
+    app.mount(host)
+    await settleUi()
+
+    await expect(router.push('/always-broken-lazy-route')).rejects.toThrow(
+      'private route factory detail',
+    )
+    await settleUi()
+    const returnButton = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent === '返回工作台',
+    )!
+    returnButton.click()
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/workbench'))
+    await settleUi()
+
+    expect(host.querySelector('#main-workspace h1')?.textContent).toBe('工作台')
+    expect(host.textContent).not.toContain('private route factory detail')
+    app.unmount()
+  })
+
+  it('sanitizes a routed render failure and retries by remounting the current route', async () => {
+    let attempts = 0
+    const asyncRouteContent = defineAsyncComponent(async () => {
+      attempts += 1
+      if (attempts === 1) throw new Error('private lazy-load path and token')
+      return defineComponent(() => () => h('h1', { tabindex: '-1' }, '已恢复当前页面'))
+    })
+    const recoveredRoute = defineComponent(() => () => h(asyncRouteContent))
+    const pinia = createPinia()
+    const router = createAppRouter(createMemoryHistory())
+    router.addRoute({
+      path: '/broken-route',
+      name: 'broken-route',
+      component: recoveredRoute,
+      meta: { title: '故障页面', description: '故障测试', breadcrumb: '故障页面' },
+    })
+    await router.push('/broken-route')
+    await router.isReady()
+    const host = document.createElement('div')
+    const app = createApp(App)
+    app.config.errorHandler = vi.fn()
+    app.use(pinia)
+    app.use(router)
+    app.mount(host)
+    await settleUi()
+
+    expect(host.querySelector('[role="alert"]')).not.toBeNull()
+    expect(host.textContent).toContain('当前页面暂时无法显示')
+    expect(host.textContent).not.toContain('private lazy-load path and token')
+    const retry = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent === '重新加载当前页面',
+    )!
+    retry.click()
+    await settleUi()
+
+    expect(host.querySelector('h1')?.textContent).toBe('已恢复当前页面')
+    expect(attempts).toBe(2)
+    app.unmount()
+  })
+
+  it('returns from a sanitized routed render failure to the workbench', async () => {
+    const brokenRoute = defineComponent(() => () => {
+      throw new Error('private render detail')
+    })
+    const pinia = createPinia()
+    const router = createAppRouter(createMemoryHistory())
+    router.addRoute({
+      path: '/broken-render',
+      name: 'broken-render',
+      component: brokenRoute,
+      meta: { title: '故障页面', description: '故障测试', breadcrumb: '故障页面' },
+    })
+    await router.push('/broken-render')
+    await router.isReady()
+    const host = document.createElement('div')
+    const app = createApp(App)
+    app.config.errorHandler = vi.fn()
+    app.use(pinia)
+    app.use(router)
+    app.mount(host)
+    await settleUi()
+
+    const returnButton = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent === '返回工作台',
+    )!
+    returnButton.click()
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/workbench'))
+    await settleUi()
+
+    expect(host.querySelector('#main-workspace h1')?.textContent).toBe('工作台')
+    app.unmount()
+  })
+
+  it('mounts the P2-03 application shell with memory routing and Pinia', async () => {
+    const pinia = createPinia()
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/workbench')
+    await router.isReady()
+    const host = document.createElement('div')
+    const app = createApp(App)
+    app.use(pinia)
+    app.use(router)
+    app.mount(host)
+    await settleUi()
+
+    expect(host.querySelector('[data-testid="app-shell"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="app-topbar"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="app-navigation"]')).not.toBeNull()
+    expect(host.querySelector('main#main-workspace')).not.toBeNull()
+    expect(host.querySelector('[data-testid="session-inspector"]')).not.toBeNull()
+    const sessionStore = useSessionStore(pinia)
+    expect(fetchSessions).toHaveBeenCalledTimes(1)
+    expect(sessionStore.loadState).toBe('ready')
+    expect(sessionStore.sessions).toEqual([])
+
+    app.unmount()
+  })
+
+  it('keeps direct unit coverage for every P2-02 showcase section', async () => {
+    const host = document.createElement('div')
+    const app = createApp(ComponentShowcase)
+    app.mount(host)
     await nextTick()
 
     expect(host.querySelector('[data-testid="design-system-showcase"]')).not.toBeNull()
@@ -29,5 +243,7 @@ describe('App', () => {
     expect(host.querySelectorAll('[data-testid="feedback-banner"]')).toHaveLength(4)
     expect(host.querySelector('[aria-invalid="true"]')).not.toBeNull()
     expect(host.querySelector('[data-testid="disabled-field"] [disabled]')).not.toBeNull()
+
+    app.unmount()
   })
 })
