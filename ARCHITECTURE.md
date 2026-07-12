@@ -16,6 +16,7 @@
 - **P2-02 增量边界：** `frontend/` 已把 `STYLE.md` 固化为唯一 CSS Token、按需 Element Plus 主题、字段/状态徽章/空加载错态/反馈基础控件和组件展示页；具备对比度、Token 散落值、键盘焦点与五视口无溢出守卫，但仍不实现 App Shell、API client、业务页面或生产入口切换
 - **P1-17 增量边界：** FastAPI 增加 `config_generation` Job；生成输入以服务器 ID 原子暂存，Job payload 不保存密钥、试卷正文或客户端路径，部分题失败只发布可重试草稿，失败题清零后才原子发布 rubric/answer_key 并绑定会话
 - **P1-18 增量边界：** FastAPI 增加独立的 `question_import` 与 `tagging_sync` Job；前者只消费 P1-16 服务器导入请求，后者只消费题目 ID 并分批调用现有打标服务。两类任务复用通用查询/取消，支持受控重试和脱敏部分失败摘要；打标仍只有 `complete` 才保存且不运行旧技能消歧，当前不切换 P1-24 LLM Gateway
+- **P1-19 增量边界：** FastAPI 增加 Training 诊断、推荐预览和训练任务确认/分页/详情 API；诊断只走现有 `question_tag` 主路径，推荐固定精确 `knowledge_point`、`exact_only` 且禁止 broad/legacy/skill 回退。任务确认以 UUID 唯一代码和计划 revision 幂等写入题库，客户端不能指定 `created_by`；公开任务快照移除源文件和输出路径
 
 ### 主要证据
 
@@ -137,7 +138,7 @@ flowchart LR
 | 人工复核与报告 | 调分、批注、分析、Excel/PDF/原卷导出 | `backend/review/service.py`、`backend/media/service.py`、`backend/files/service.py`、`manual_review_service.py`、`annotation_renderer.py`、`analytics.py`、`report.py`、`original_paper_exporter.py` | FastAPI 复核由应用服务集中判定/校验，单 JOIN 读取，跨 result 调整在一个 SQLite 事务提交；批注是事务后可重试补偿。媒体/下载只接受语义化 ID，在受控根与扩展名白名单内解析；报告查询与 Streamlit UI 编排仍有部分留在 `web_app.py` |
 | 题库 | 试卷导入、题目 CRUD、标签、频次、预览、富文本和组卷 | `question_bank/importers`、`services`、`exporters`、`pages/题库管理.py`、`pages/组卷.py` | P1-15 的 `QuestionBankReadService` 通过稳定文件捕获提供零源写入读投影；P1-16 的 `QuestionBankWriteService` 只承担教师确认标签、乐观软删除/恢复和受控导入请求准备。既有 Streamlit 写服务保持兼容，长导入仍未迁入 API Job |
 | 标签投影 | 确认来源题关联、子题继承父题关联、读取题库当前标签 | `integration/question_tag_projection_service.py`、`SourceQuestionLinkService` | 只接受显式或题号唯一对应，不做语义匹配；每次查询实时读取标签 |
-| 诊断与训练 | 跨库读取阅卷证据、按精确知识点标签聚合、精确标签候选推荐、训练任务和导出 | `integration/`、`question_bank/recommendation`、训练服务、`pages/训练推荐.py` | 通过应用层同时访问两个数据库；无跨库事务和外键 |
+| 诊断与训练 | 跨库读取阅卷证据、按精确知识点标签聚合、精确标签候选推荐、训练任务和导出 | `integration/`、`question_bank/recommendation`、训练服务、`backend/api/routers/training.py`、`pages/训练推荐.py` | FastAPI 复用现有服务提供 tag-only 诊断、推荐预览和幂等任务确认；通过应用层同时访问两个数据库，无跨库事务和外键；训练导出 Job 与真实结果回流尚未进入 API |
 | 原卷标签工作流 | 原卷归档、题库导入、受控 AI 打标、来源题确定性关联、状态重算和重试 | `integration/grading_paper_skill_workflow_service.py`、共享 Streamlit 组件、题库导入/链接服务 | 两库不能共享事务；每次运行后从实际题目、标签和链接重算 `ready/partial/failed` |
 | 旧技能与知识对齐（回退） | 统一技能目录、旧知识映射、技能链接、冲突和迁移 | `question_bank/models`、`taxonomy`、技能/对齐服务 | 保留读取与迁移工具；活动图谱/推荐不读写这些身份，题库标签保存也只在显式 `resolve_skills=True` 时双写 |
 | 数据与运维 | 路径、SQLite、备份、恢复、迁移、存储审计和数据包 | `path_manager.py`、`db_manager.py`、`question_bank/database`、`update_tools/`、`tools/` | 运行时建表与 SQL migrations 两套机制并存 |
@@ -252,9 +253,10 @@ AI阅卷系统_工作机版_v1.5.0/
 7. P1-16 的导入准备只把 `.docx/.pdf` 以 200 MiB 上限流式写入数据根内受控暂存目录，并按内容哈希验证后发布确定性 pending 请求。路径经过 canonical root 与 junction/symlink 守卫；本阶段不解析、导入或 AI 打标。
 8. P1-17 的配置生成端点把确认题块、试卷文本和可选题图写入受控配置目录，Job 数据库只记录会话、模式和服务器输入 ID；通用 Job 提交端点拒绝该类型，防止正文或客户端路径绕过专用校验进入 payload。Job 复用当前 API profile 与 `session_manager`；协作式取消在模型调用返回后的安全边界确认，不强杀单次外部请求。部分失败草稿不替换会话配置；单题/多题重试保留未选失败项，同一个部分结果通过数据库事务只允许一个有效重试后继。最终发布以开始时的配置路径为乐观校验，在同一个 SQLite 事务内同时绑定 rubric/answer_key 并把 Job 置为 succeeded；会话被删除、人工改配或被更快 Job 更新时，旧 Job 回滚且清理未绑定文件。
 9. P1-18 的题库导入 Job 在执行前重新计算服务器请求 ID，并校验 P1-16 请求清单、上传哈希和受控路径；同一导入请求与具有重叠题目 ID 的打标任务通过进程内键控锁串行执行，锁按稳定顺序获取、等待时轮询协作式取消，并在最后一个持有者/等待者离开后清理注册项。重复执行再依赖现有来源指纹或完整核心标签跳过副作用。打标 Job 在每个有界批次前后检查协作式取消，取消到达时丢弃当前未保存批次并停止后续批次。Job payload/result 不保存源路径、题干、密钥、模型配置或原始异常，候选加载和 AI 工厂初始化异常也只持久化通用失败文本。
-10. P2-01 前端开发服务器只监听 `127.0.0.1`，把 `/api` 代理到 `http://127.0.0.1:8000`；Node/npm 只用于开发和构建，当前生产启动入口仍不读取 `frontend/dist`。
-11. P2-02 的产品色彩、字体、间距、圆角、阴影和动效只在 `frontend/src/styles/tokens.css` 定义；Element Plus 只按展示页需要导入 Button/Input/Icon CSS 并由 `ElConfigProvider` 提供中文配置。状态徽章和反馈均含文字，警告正文使用主文字色满足对比度，AI 与教师语义保持独立。展示页只使用生成文案，不调用 API 或读取业务数据。
-12. Streamlit 页面与业务服务仍运行在同一 Python 进程中；FastAPI 目前是增量本机 API 外壳，JobManager 仍为进程内线程池而非独立 Worker。测试通过 dependency override 注入的 manager 由测试自身关闭，不归应用 lifespan 所有。
+10. P1-19 的 Training API 从同一 `PathManager` 快照构造诊断、推荐和任务服务。推荐预览每次重建当前 tag-only 诊断并返回脱敏计划及 SHA-256 revision；教师确认时再次生成并比对 revision，空计划拒绝写入，相同确认 UUID 依靠 `training_tasks.task_code` 唯一约束收敛到同一任务。任务列表和详情使用只读连接，写入只发生在确认端点。
+11. P2-01 前端开发服务器只监听 `127.0.0.1`，把 `/api` 代理到 `http://127.0.0.1:8000`；Node/npm 只用于开发和构建，当前生产启动入口仍不读取 `frontend/dist`。
+12. P2-02 的产品色彩、字体、间距、圆角、阴影和动效只在 `frontend/src/styles/tokens.css` 定义；Element Plus 只按展示页需要导入 Button/Input/Icon CSS 并由 `ElConfigProvider` 提供中文配置。状态徽章和反馈均含文字，警告正文使用主文字色满足对比度，AI 与教师语义保持独立。展示页只使用生成文案，不调用 API 或读取业务数据。
+13. Streamlit 页面与业务服务仍运行在同一 Python 进程中；FastAPI 目前是增量本机 API 外壳，JobManager 仍为进程内线程池而非独立 Worker。测试通过 dependency override 注入的 manager 由测试自身关闭，不归应用 lifespan 所有。
 
 ### 5.2 考试配置与批改
 
@@ -423,7 +425,7 @@ flowchart LR
 | 接口/服务 | 调用方 | 协议/定义 | 超时与重试 | 降级/失败策略 |
 |---|---|---|---|---|
 | Streamlit 页面 | 本机浏览器 | Streamlit HTTP/WebSocket；无公开 REST API | 由 Streamlit 会话控制 | 页面显示错误；部分长任务在同进程线程中执行 |
-| FastAPI 本机 API | 后续 Vue 前端/运维探活 | HTTP JSON/二进制流；健康检查、基础 sessions/students/config/template/regions、JobManager、config-generation/report/scan/grading/review/media/files/question-bank 增量路由，统一错误体、`x-request-id` 和 OpenAPI 422 `ErrorResponse`；二进制 200 明确声明 XLSX/图片媒体类型；Question Bank 提供 papers、分页 questions、detail/current tags/rich/preview metadata、受控图片 GET，以及教师标签确认、软删除/恢复、上传暂存和 pending 导入请求 | uvicorn 进程级控制；lifespan 所有唯一 JobManager；running cancel 为请求/确认两阶段；配置生成使用活动 API profile、服务器输入 ID 和原子文件发布；题库源快照 4 次/5 秒有界重试，busy/unavailable 为统一 503；题库轻写使用 revision 冲突保护和原子文件发布 | 可用 `START_API=0` 跳过；配置生成请求递归拒绝密钥、客户端路径和富文本图片文件引用，公开 Job 摘要不返回试卷正文、输入 ID 或内部路径；敏感 Job payload 在持久化前拒绝，公开 payload/result 与历史 review/题库元数据使用显式允许列表和路径/marker 脱敏；review 原子写失败整批回滚；媒体/下载越界、过期或类型不支持时返回稳定错误且 `no-store`；题库 JSON 不公开存储路径，图片仅以题目 ID + asset index/preview type 访问固定受控根；P1-16 不执行长导入或 AI |
+| FastAPI 本机 API | 后续 Vue 前端/运维探活 | HTTP JSON/二进制流；健康检查、基础 sessions/students/config/template/regions、JobManager、config-generation/report/scan/grading/review/media/files/question-bank/training 增量路由，统一错误体、`x-request-id` 和 OpenAPI 422 `ErrorResponse`；二进制 200 明确声明 XLSX/图片媒体类型；Question Bank 提供 papers、分页 questions、detail/current tags/rich/preview metadata、受控图片 GET，以及教师标签确认、软删除/恢复、上传暂存和 pending 导入请求；Training 提供 tag-only 诊断、精确标签推荐预览、任务确认及分页/详情 | uvicorn 进程级控制；lifespan 所有唯一 JobManager；running cancel 为请求/确认两阶段；配置生成使用活动 API profile、服务器输入 ID 和原子文件发布；题库源快照 4 次/5 秒有界重试，busy/unavailable 为统一 503；题库轻写使用 revision 冲突保护和原子文件发布；Training 预览/确认以计划 revision 防止旧预览写入，以确认 UUID 唯一任务代码保证重复提交幂等 | 可用 `START_API=0` 跳过；配置生成请求递归拒绝密钥、客户端路径和富文本图片文件引用，公开 Job 摘要不返回试卷正文、输入 ID 或内部路径；敏感 Job payload 在持久化前拒绝，公开 payload/result 与历史 review/题库/Training 元数据使用显式允许列表和路径/marker 脱敏；review 原子写失败整批回滚；媒体/下载越界、过期或类型不支持时返回稳定错误且 `no-store`；题库 JSON 不公开存储路径，图片仅以题目 ID + asset index/preview type 访问固定受控根；Training 不公开源文件/导出路径、不接受 created_by/broad/legacy/skill 控制；P1-16 不执行长导入或 AI |
 | 通用模型客户端 | 配置生成、整卷批改、OCR 等 | OpenAI SDK `chat.completions.create` | 客户端默认 120 秒、SDK 自动重试关闭；应用层做参数兼容和 JSON 修复/截断重试 | 抛错、单卷失败或转人工复核 |
 | 客观题识别链 | 混合批改 | OpenAI 兼容 Chat Completions | 不同路径 30 秒或无显式上限；批量并发受 RPM/worker 限制 | 规则校验、升级主模型或人工复核 |
 | 题库 AI 打标 | 题库导入/批处理 | OpenAI Responses API，部分兼容路径使用 `LLMClient` | 所有批量、回退、重试、复核请求共用计数/RPM 控制器；重试有上限 | 非 complete 不保存；保存原始标签后不再自动追加旧技能 AI 消歧；阅卷入库关闭批次扇出和复核二次请求 |

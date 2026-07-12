@@ -13,7 +13,10 @@ from backend.media.service import ReviewMediaService
 from backend.review.service import ReviewApplicationService
 from manual_review_service import ManualReviewService
 from path_manager import PathManager, get_path_manager
+from integration.diagnosis_profile_service import DiagnosisProfileService
+from question_bank.recommendation.practice_plan_service import PracticePlanService
 from question_bank.services.question_read_service import QuestionBankReadService
+from question_bank.services.training_task_service import TrainingTaskService
 from question_bank.services.question_write_service import QuestionBankWriteService
 
 
@@ -56,6 +59,19 @@ def get_question_bank_read_service() -> QuestionBankReadService:
 def get_question_bank_write_service() -> QuestionBankWriteService:
     paths = get_path_manager()
     return QuestionBankWriteService(paths.qb_db_path, data_root=paths.data_root)
+
+
+def get_diagnosis_profile_service() -> DiagnosisProfileService:
+    paths = get_path_manager()
+    return DiagnosisProfileService(paths.db_path, paths.qb_db_path)
+
+
+def get_practice_plan_service() -> PracticePlanService:
+    return PracticePlanService(get_path_manager().qb_db_path)
+
+
+def get_training_task_service() -> TrainingTaskService:
+    return TrainingTaskService(get_path_manager().qb_db_path)
 
 
 def get_job_file_service(
