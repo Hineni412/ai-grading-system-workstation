@@ -95,6 +95,11 @@
     var(--focus-ring);
 }
 
+.el-input__inner:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
 .el-input:has([aria-invalid='true']) .el-input__wrapper,
 .el-textarea__inner[aria-invalid='true'] {
   box-shadow: 0 0 0 var(--border-width) var(--color-danger) inset;

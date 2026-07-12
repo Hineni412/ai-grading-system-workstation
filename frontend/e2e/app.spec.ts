@@ -49,3 +49,21 @@ for (const viewport of viewports) {
     expect(consoleErrors).toEqual([])
   })
 }
+
+test('focused invalid input preserves the complete danger frame', async ({ page }) => {
+  await page.goto('/')
+  const input = page.locator('#teacher-score')
+
+  await input.click()
+  const styles = await input.evaluate((element) => {
+    const inputStyle = getComputedStyle(element)
+    const wrapper = element.closest('.el-input__wrapper')
+    return {
+      inputShadow: inputStyle.boxShadow,
+      wrapperShadow: wrapper ? getComputedStyle(wrapper).boxShadow : '',
+    }
+  })
+
+  expect(styles.inputShadow).toBe('none')
+  expect(styles.wrapperShadow).toContain('rgb(176, 68, 68)')
+})
