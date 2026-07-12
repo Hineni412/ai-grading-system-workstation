@@ -10,6 +10,7 @@ from .scan import router as scan_router
 from .sessions import router as sessions_router
 from .students import router as students_router
 from .templates import router as templates_router
+from .training import router as training_router
 
 __all__ = [
     "config_router",
@@ -24,4 +25,5 @@ __all__ = [
     "sessions_router",
     "students_router",
     "templates_router",
+    "training_router",
 ]

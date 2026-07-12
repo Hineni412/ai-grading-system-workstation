@@ -49,6 +49,11 @@ EXPECTED_OPERATIONS = {
     ("POST", "/api/question-bank/questions/{question_id}/restore"),
     ("POST", "/api/question-bank/import-uploads"),
     ("POST", "/api/question-bank/import-requests"),
+    ("POST", "/api/training/diagnosis"),
+    ("POST", "/api/training/plans/preview"),
+    ("POST", "/api/training/tasks"),
+    ("GET", "/api/training/tasks"),
+    ("GET", "/api/training/tasks/{task_id}"),
 }
 
 
@@ -258,3 +263,59 @@ def test_question_bank_job_openapi_declares_dedicated_safe_operations() -> None:
         "/api/question-bank/import-requests/{request_id}/jobs"
     ]["post"]
     assert "409" not in import_submit["responses"]
+
+
+def test_training_openapi_declares_strict_safe_requests_and_stable_errors() -> None:
+    from backend.api.app import create_app
+
+    schema = create_app().openapi()
+    expected_errors = {
+        ("post", "/api/training/diagnosis"): {422, 503},
+        ("post", "/api/training/plans/preview"): {422, 503},
+        ("post", "/api/training/tasks"): {409, 422, 503},
+        ("get", "/api/training/tasks"): {422, 503},
+        ("get", "/api/training/tasks/{task_id}"): {404, 422, 503},
+    }
+    forbidden = {
+        "api_key",
+        "created_by",
+        "destination",
+        "file",
+        "file_path",
+        "password",
+        "path",
+        "read_mode",
+        "secret",
+        "token",
+    }
+
+    for (method, path), statuses in expected_errors.items():
+        operation = schema["paths"][path][method]
+        responses = operation["responses"]
+        assert statuses <= {int(status) for status in responses}
+        for status in statuses:
+            assert responses[str(status)]["content"]["application/json"]["schema"] == {
+                "$ref": "#/components/schemas/ErrorResponse"
+            }
+        request_body = operation.get("requestBody")
+        if request_body is None:
+            continue
+        request_ref = request_body["content"]["application/json"]["schema"]["$ref"]
+        request_schema = schema["components"]["schemas"][request_ref.rsplit("/", 1)[-1]]
+        assert request_schema["additionalProperties"] is False
+        assert not (forbidden & set(request_schema.get("properties", {})))
+
+
+def test_training_openapi_does_not_offer_legacy_or_broad_recommendation_controls() -> None:
+    from backend.api.app import create_app
+
+    schema = create_app().openapi()
+    for path in ("/api/training/plans/preview", "/api/training/tasks"):
+        operation = schema["paths"][path]["post"]
+        request_ref = operation["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+        properties = schema["components"]["schemas"][request_ref.rsplit("/", 1)[-1]][
+            "properties"
+        ]
+        assert "allow_broad_fallback" not in properties
+        assert "related_fill_policy" not in properties
+        assert "read_mode" not in properties

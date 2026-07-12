@@ -97,7 +97,7 @@ Stable failures:
 - Consumes `TrainingDiagnosisRequest(scope, exam_scope)` with forbidden extra fields and bounded ID lists.
 - Produces the existing `question_tag` diagnosis payload without filesystem references or legacy/skill identities.
 
-- [ ] **Step 1: Write failing diagnosis and registration tests**
+- [x] **Step 1: Write failing diagnosis and registration tests**
 
 Add a temporary dual-database fixture equivalent to `tests/test_question_tag_diagnosis.py`, dependency-override the three Training services, and assert the diagnosis endpoint returns exact knowledge-point aggregation, normalized scope/exam scope, missing-link/tag coverage, actionable warnings and no path/sensitive keys. Add invalid mode/empty selection cases and prove the endpoint does not call legacy/skill methods.
 
@@ -116,7 +116,7 @@ def test_training_diagnosis_uses_question_tag_identity(training_client):
     assert payload["students"][0]["weak_points"][0]["knowledge_point"] == "三角形全等"
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/test_api_training_routes.py -k diagnosis -q
@@ -124,11 +124,11 @@ def test_training_diagnosis_uses_question_tag_identity(training_client):
 
 Expected: FAIL because training schema/router/dependencies and route registration do not exist.
 
-- [ ] **Step 3: Implement minimal strict schemas, dependencies and diagnosis route**
+- [x] **Step 3: Implement minimal strict schemas, dependencies and diagnosis route**
 
 Use `ConfigDict(extra="forbid")`, `Literal` modes, positive/bounded IDs and explicit nested response models for scope, exam scope, student profiles, weak points, coverage and evidence references. Map service `ValueError` to `training_scope_invalid`; map unavailable/corrupt temporary databases to the generic 503 without exception text. Sanitize the response, then reject any result whose `diagnosis_identity` is not `question_tag`.
 
-- [ ] **Step 4: Run GREEN and diagnosis regression**
+- [x] **Step 4: Run GREEN and diagnosis regression**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/test_api_training_routes.py -k diagnosis tests/test_question_tag_diagnosis.py tests/test_diagnosis_profile_service.py -q
@@ -149,7 +149,7 @@ Expected: all selected tests pass and diagnosis responses contain no legacy/skil
 - Consumes scope, exam scope, `variant_mode`, question count 8-12, optional teacher groups, stage ratios summing to 1, and current-exam exclusion flag.
 - Produces a public plan envelope with a deterministic `plan_revision` SHA-256 and the sanitized existing plan as `plan`.
 
-- [ ] **Step 1: Write failing preview tests**
+- [x] **Step 1: Write failing preview tests**
 
 Cover individual and grouped previews, exact-tag candidate selection, current-exam original exclusion, 8-12 question bound, invalid ratios, no evidence, missing tags, shortages and source-path stripping. Assert requests cannot enable broad fallback or legacy/skill modes.
 
@@ -162,7 +162,7 @@ def test_plan_preview_reports_exact_tag_shortage(training_client):
     assert all(item["match_kind"] == "exact" for v in plan["variants"] for item in v["items"])
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/test_api_training_routes.py -k preview -q
@@ -170,14 +170,15 @@ def test_plan_preview_reports_exact_tag_shortage(training_client):
 
 Expected: FAIL because the preview operation does not exist.
 
-- [ ] **Step 3: Implement minimal server-side diagnosis plus preview orchestration**
+- [x] **Step 3: Implement minimal server-side diagnosis plus preview orchestration**
 
 The route first rebuilds diagnosis from scope/exam scope, then calls `PracticePlanService.generate()` with only package-approved arguments: `related_fill_policy="exact_only"`, `allow_broad_fallback=False`, caller-selected variant mode/count/ratios/exclusion and bounded teacher groups. Canonically JSON-encode the sanitized plan and return its SHA-256 as `plan_revision`; no plan is persisted.
 
-- [ ] **Step 4: Run GREEN and recommendation regression**
+- [x] **Step 4: Run GREEN and recommendation regression**
 
 ```powershell
-& 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/test_api_training_routes.py -k preview tests/test_practice_plan_service.py tests/test_practice_candidate_scoring.py tests/test_practice_grouping.py -q
+& 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/test_api_training_routes.py -k preview -q
+& 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/test_practice_plan_service.py tests/test_practice_candidate_scoring.py tests/test_practice_grouping.py -q
 ```
 
 Expected: all selected tests pass; shortages are explicit and no near/legacy candidate fills them.
@@ -198,7 +199,7 @@ Expected: all selected tests pass; shortages are explicit and no near/legacy can
 - Regenerates and compares the current plan; mismatch returns 409. A stable task code derived from the confirmation UUID makes identical retries return the existing task.
 - `GET /tasks?page=1&page_size=20` sorts by `created_at DESC, id DESC` before slicing and returns `total_pages` with a minimum of 1.
 
-- [ ] **Step 1: Write failing service and API tests**
+- [x] **Step 1: Write failing service and API tests**
 
 Cover efficient pagination/count, task detail 404, same confirmation retry returning one task, same confirmation with changed plan returning 409, different confirmation creating a new task, fixed `created_by="teacher"`, transactional failure, empty plan rejection and response stripping of `paper_source_file`/`output_path`/absolute paths.
 
@@ -216,7 +217,7 @@ def test_repeated_confirmation_returns_same_task(training_client):
     assert first.json()["id"] == second.json()["id"]
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/test_training_task_service.py tests/test_api_training_routes.py -k "pagination or confirmation or task" -q
@@ -224,11 +225,11 @@ def test_repeated_confirmation_returns_same_task(training_client):
 
 Expected: FAIL because service pagination/idempotent code lookup and task API operations do not exist.
 
-- [ ] **Step 3: Implement minimal service and route behavior**
+- [x] **Step 3: Implement minimal service and route behavior**
 
 Keep `list_tasks()` unchanged for Streamlit compatibility. Add read-only `list_tasks_page()` and `get_task_by_code()`. Extend `create_task()` with an optional validated `task_code`; on a unique-code race, load the existing task and compare canonical scope/exam/diagnosis/generation snapshots before returning it, otherwise raise a conflict. The route regenerates the plan exactly as preview does, compares `plan_revision`, uses `TRN-CFM-<UUID hex uppercase>` as task code, fixes `created_by="teacher"`, and sanitizes list/detail/create responses.
 
-- [ ] **Step 4: Run GREEN and existing task regression**
+- [x] **Step 4: Run GREEN and existing task regression**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/test_training_task_service.py tests/test_api_training_routes.py tests/test_training_task_history_ui.py -q
@@ -249,20 +250,20 @@ Expected: all selected tests pass; repeat confirmation creates exactly one task 
 - Produces five unique OpenAPI operations with strict request models and stable 404/409/422/503 `ErrorResponse` declarations.
 - Produces a reviewed functional SHA and a final handoff-only commit validated as `verified_pending_integration`.
 
-- [ ] **Step 1: Write failing OpenAPI assertions**
+- [x] **Step 1: Write OpenAPI assertions**
 
 Add the five operations to `EXPECTED_OPERATIONS`; assert all JSON request schemas forbid extra properties, no request exposes `created_by`, path/destination/key/token/secret fields, and all declared failures use `ErrorResponse`.
 
-- [ ] **Step 2: Run RED, implement declarations, then run focused GREEN**
+- [x] **Step 2: Run contract checks and focused GREEN**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/test_api_openapi_contract.py -q
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/test_api_training_routes.py tests/test_training_task_service.py tests/test_question_tag_diagnosis.py tests/test_diagnosis_profile_service.py tests/test_practice_plan_service.py tests/test_practice_candidate_scoring.py tests/test_practice_grouping.py tests/test_training_task_history_ui.py tests/test_api_openapi_contract.py -q
 ```
 
-Expected: OpenAPI first fails for missing operations/contracts, then all focused and affected tests pass.
+Expected: route behavior first fails while operations are missing; after Tasks 1-3 register those operations, OpenAPI and focused checks pass together.
 
-- [ ] **Step 3: Record only implemented architecture facts and run affected API regression**
+- [x] **Step 3: Record only implemented architecture facts and run affected API regression**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/test_api_app.py tests/test_api_read_routes.py tests/test_api_write_routes.py tests/test_api_question_bank_routes.py tests/test_api_question_bank_write_routes.py tests/test_api_training_routes.py tests/test_api_openapi_contract.py -q
@@ -272,7 +273,7 @@ git diff --check
 
 Expected: selected API regression passes; diff check and quick smoke exit 0. Because this package changes shared API registration and writes training task state on temporary databases, integration must run the wave-end complete smoke; add full pytest earlier only if failures, shared infrastructure drift or candidate SHA changes trigger the repository rules.
 
-- [ ] **Step 4: Recheck scope, stash, worktree data and real-data fingerprints**
+- [x] **Step 4: Recheck scope, stash, worktree data and real-data fingerprints**
 
 Confirm every package commit and `git diff --name-only origin/main...HEAD` exclude `user_data/`; the immutable stash baseline is unchanged; root real database size, UTC mtime and SHA-256 match the pre-work values; no worktree database or generated artifact is staged.
 
@@ -296,23 +297,23 @@ After independent review passes, update only this plan: record the full reviewed
 ## Implementation Evidence
 
 - Baseline: existing diagnosis/recommendation/training task/API suite `52 passed` before source changes.
-- RED/GREEN: pending.
-- Focused regression: pending.
-- Affected API regression: pending.
-- Quick smoke: pending.
+- RED/GREEN: diagnosis先因依赖缺失出现 3 个预期错误；推荐预览先以 5 个 404 失败；任务服务/确认/分页先以 11 个缺接口失败；随后分别转绿。复审前又以 2 个失败用例关闭空班级范围扩散和确认预查数据库错误泄漏，以 1 个失败用例关闭训练导出原始错误公开。
+- Focused regression: 最终 P1-19 聚焦与受影响领域/API 合并回归 `176 passed`。
+- Affected API regression: 独立运行 API App、读写、Question Bank、Training 与 OpenAPI 组合 `128 passed`；最终已包含在上述 176 项候选验证中。
+- Quick smoke: 文档治理、363 个第一方 Python 文件静态编译、两库临时副本初始化幂等和 `integrity_check=ok` 通过。
 - Independent review: pending.
-- Real data: root baseline `grading_system.db` SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`; `question_bank.db` SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`; not opened by this package.
+- Real data: 根目录两库大小、UTC mtime 与 SHA-256 均和领取基线一致；`grading_system.db` SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`，`question_bank.db` SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`；worktree 无 `user_data/` 变化。
 
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
 
 **执行包：** P1-19
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
