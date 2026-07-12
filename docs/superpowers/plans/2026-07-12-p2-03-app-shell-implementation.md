@@ -10,9 +10,9 @@
 **用户自测：** quick
 **自测清单：** docs/user-testing/checkpoints/P2-03-v1.5.0-app-shell-quick-check.md
 
-**Goal:** 在非生产 Vue 前端中建立可响应、可访问的 App Shell、七项路由导航和经 sessions API 验证后可刷新恢复的全局考试会话上下文。
+**Goal:** 在非生产 Vue 前端中建立仅面向宽度不低于 1024px 的 Windows 桌面浏览器的可访问 App Shell、七项路由导航和经 sessions API 验证后可刷新恢复的全局考试会话上下文。
 
-**Architecture:** 路由配置与导航配置分离但共享稳定元数据；`AppShell` 只负责顶部栏、左右栏位和响应式面板状态，业务占位页不进入壳层内部。Pinia session Store 通过仅限 `GET /api/sessions` 的轻量适配器加载活动会话，只持久化 session ID，并在 API 成功验证后才暴露当前会话；P2-04 可替换适配器底层而不改变 Store 公共语义。
+**Architecture:** 路由和导航从同一份稳定工作区元数据派生；`AppShell` 只负责顶部栏、桌面左右栏位和紧凑桌面状态，业务占位页不进入壳层内部。Pinia session Store 通过仅限 `GET /api/sessions` 的轻量适配器加载活动会话，只持久化 session ID，并在 API 成功验证后才暴露当前会话；P2-04 可替换适配器底层而不改变 Store 公共语义。
 
 **Tech Stack:** Vue 3.5.39, TypeScript 6.0.3, Vite 8.1.4, Vue Router 5.1.0, Pinia 3.0.4, Element Plus 2.14.3, Vitest 4.1.10, Playwright 1.61.1, CSS Custom Properties, Python 3.12 repository guards.
 
@@ -27,8 +27,15 @@
 - 保留 P2-02 展示页并迁至 `/design-system`；继续按需导入 Element Plus 样式，不全量注册组件库。
 - 不新增依赖，不修改锁文件、后端、数据库 Schema、`运行.bat`、生产入口、评分规则、会话状态含义或 `user_data/`。
 - 所有新样式使用 P2-02 Token；除 `tokens.css` 外不得增加颜色字面量，间距、圆角和阴影不得散落裸值。
-- 1440×900、1280×800、1024×768、768×1024、390×844 必须无页面级横向溢出；低于 1024px 使用互斥覆盖面板。
+- 1920×1080、1440×900、1366×768、1280×800、1024×768 必须无页面级横向溢出；平板和手机不在实现、测试或用户验收范围内。
 - 自动测试只使用合成 sessions 响应；真实两库只读比较大小、UTC 修改时间和 SHA-256。
+
+## 2026-07-12 桌面限定范围修订
+
+- 用户明确确认不需要任何移动端或平板支持，最小支持宽度为 1024px。
+- 本修订覆盖本计划早期已执行步骤中关于 768×1024、390×844、低于 1024px 抽屉、覆盖面板、模态焦点圈和移动端降级的文字；这些内容只保留在 Git 历史中作为执行过程证据，不再是当前验收要求。
+- 当前实现必须移除只为低于 1024px 服务的 overlay 状态、背景遮罩、焦点圈、内部关闭按钮和专用 CSS；保留桌面栏位收起、键盘可达、错误边界和路由元数据单一来源。
+- P2-02 已完成的历史规格、计划和用户验收记录不回写；它们不再约束后续包的视口范围。
 
 ---
 
@@ -291,7 +298,7 @@ Expected: focused tests and typecheck pass; no general API client exists.
 
 **Interfaces:**
 - Consumes: route meta, navigation config, `useSessionStore`, P2-02 `StatePanel` and `FeedbackBanner`.
-- Produces: `app-shell`, `app-topbar`, `app-navigation`, `session-inspector`, `main-workspace`, mutually exclusive overlay panels, and application startup initialization.
+- Produces: `app-shell`, `app-topbar`, `app-navigation`, `session-inspector`, `main-workspace`, desktop collapsible panels, and application startup initialization.
 
 - [x] **Step 1: Write the failing shell component test**
 
@@ -306,7 +313,7 @@ expect(host.querySelector('label[for="current-session"]')?.textContent).toBe('�
 expect(host.querySelector('[data-testid="session-inspector"]')?.textContent).toContain('未选择当前考试')
 ```
 
-Trigger the navigation and inspector buttons and assert `aria-expanded` changes. In overlay mode, opening one closes the other; dispatch `Escape` and assert the active panel closes and focus returns to its trigger.
+Trigger the navigation and inspector buttons and assert `aria-expanded` changes and the corresponding desktop column geometry follows the announced state.
 
 - [x] **Step 2: Run the test and verify RED**
 
@@ -324,9 +331,9 @@ Expected: FAIL because shell components do not exist.
 
 - [x] **Step 4: Implement AppShell responsive state and focus safety**
 
-`AppShell.vue` owns `navigationOpen`, `inspectorOpen`, and a `matchMedia('(max-width: 1023px)')` listener. Desktop defaults both open; overlay mode defaults closed. `openNavigation()` and `openInspector()` close the other overlay panel. Save `document.activeElement` before opening; on Escape or backdrop close, use `nextTick()` to return focus. Remove media and key listeners in `onUnmounted`.
+`AppShell.vue` owns `navigationOpen` and `inspectorOpen`, plus a compact-desktop `matchMedia('(max-width: 1279px)')` listener. At ≥1280px both栏位默认展开；1024–1279px 左栏默认收起、右栏保持 320px。移除监听时必须使用同一回调引用。
 
-The template order must be topbar, navigation, `main#main-workspace` with `RouterView`, inspector, then a single backdrop. The main route heading receives focus after `route.fullPath` changes.
+The template order must be topbar, navigation, `main#main-workspace` with `RouterView`, then inspector；不渲染低于 1024px 专用 backdrop 或模态抽屉。主路由标题在 `route.fullPath` 变化后获得焦点。
 
 - [x] **Step 5: Wire Pinia, Router and startup**
 
@@ -356,7 +363,7 @@ git commit -m "feat: build P2-03 app shell"
 
 Expected: focused tests, typecheck and lint pass.
 
-### Task 5: Add Token-governed responsive styling and browser acceptance
+### Task 5: Add Token-governed desktop styling and browser acceptance
 
 **Files:**
 - Modify: `frontend/src/styles/tokens.css`
@@ -368,7 +375,7 @@ Expected: focused tests, typecheck and lint pass.
 - Create: `tests/test_frontend_app_shell.py`
 
 **Interfaces:**
-- Produces: shell sizing tokens, five-viewport behavior, synthetic sessions browser contract, focus/overflow guards, and repository scope guards.
+- Produces: shell sizing tokens, five-desktop-viewport behavior, synthetic sessions browser contract, focus/overflow guards, and repository scope guards.
 
 - [x] **Step 1: Write failing repository guards**
 
@@ -402,7 +409,7 @@ Expected: FAIL because `app-shell.css` and its tokens do not exist.
 
 - [x] **Step 3: Add shell tokens and responsive CSS**
 
-Add only these reusable dimensions to `tokens.css`: `--shell-topbar-height: 60px`, `--shell-navigation-width: 232px`, `--shell-navigation-collapsed-width: 60px`, `--shell-inspector-width: 360px`, `--shell-inspector-compact-width: 320px`, and `--shell-overlay-z-index: 30`.
+Add only these reusable dimensions to `tokens.css`: `--shell-topbar-height: 60px`, `--shell-navigation-width: 232px`, `--shell-navigation-collapsed-width: 60px`, `--shell-inspector-width: 360px`, and `--shell-inspector-compact-width: 320px`.
 
 Create `app-shell.css` using existing color, spacing, border, radius, shadow and duration variables. Required layout rules:
 
@@ -421,19 +428,15 @@ Create `app-shell.css` using existing color, spacing, border, radius, shadow and
   .app-shell { grid-template-columns: var(--shell-navigation-collapsed-width) minmax(0, 1fr) var(--shell-inspector-compact-width); }
 }
 
-@media (max-width: 1023px) {
-  .app-shell { display: block; padding-block-start: var(--shell-topbar-height); }
-  .app-navigation, .session-inspector { position: fixed; inset-block: var(--shell-topbar-height) 0; z-index: var(--shell-overlay-z-index); }
-}
 ```
 
-Complete the CSS with Token-only borders/backgrounds, panel transforms, mutually exclusive backdrop, 390px wrapping, independent desktop scroll, ellipsis with full accessible names, visible focus, and reduced-motion compatibility. Import it after `base.css` in `main.ts`.
+Complete the CSS with Token-only borders/backgrounds, desktop column collapse, independent desktop scroll, ellipsis with full accessible names, visible focus, and reduced-motion compatibility. Do not add any `max-width: 1023px` mobile/tablet branch. Import it after `base.css` in `main.ts`.
 
 - [x] **Step 4: Replace showcase-only browser checks with shell-aware tests**
 
-Keep P2-02 focus and design-system assertions under `/design-system`. Add `app-shell.spec.ts` that intercepts `/api/sessions` with two synthetic sessions, then for all five viewports checks no horizontal overflow, page/console errors empty, current session selection, refresh recovery, and long-name containment.
+Keep P2-02 focus and design-system assertions under `/design-system`. Add `app-shell.spec.ts` that intercepts `/api/sessions` with two synthetic sessions, then at 1920×1080、1440×900、1366×768、1280×800、1024×768 checks no horizontal overflow, page/console errors empty, current session selection, refresh recovery, long-name containment and desktop column geometry.
 
-Desktop checks verify navigation and inspector widths remain in approved ranges. Narrow checks open navigation, open inspector and prove the first closes; press Escape and verify focus returns. Add dedicated tests for stale localStorage cleanup, API failure preserving the saved candidate without presenting it, successful retry, disabled future entry, `/settings`, and 404 return.
+Desktop checks verify navigation and inspector widths remain in approved ranges and their toggle state matches `aria-expanded`. Add dedicated tests for stale localStorage cleanup, API failure preserving the saved candidate without presenting it, successful retry, disabled future entry, `/settings`, 404 return, runtime error fallback and shared route metadata.
 
 - [x] **Step 5: Update the root App test and confirm GREEN**
 
@@ -492,11 +495,93 @@ Expected: every command exits 0. If default Vitest concurrency exceeds the comma
 
 Repeat root database size/UTC/SHA-256 checks and require exact equality with Task 1. Confirm `git status --short -- user_data` is empty. Set handoff to `waiting_review`, `功能提交: branch_head`, `自动验证: passed`, `独立复审: pending`, `用户验收: pending`, `真实数据指纹: unchanged`, preserve the immutable stash baseline, and commit all P2-03 source/test/docs changes without `user_data/`.
 
-- [ ] **Step 4: Perform independent review and fix findings**
+### Task 6A: Apply the desktop-only scope correction and remaining final-review fixes
 
-Review `origin/main..HEAD` against the approved design and this plan. Critical/Important findings must be zero. Any fix must begin with a failing regression test and rerun the focused test plus affected front-end commands.
+**Files:**
+- Create: `frontend/src/components/ApplicationErrorBoundary.vue`
+- Modify: `frontend/src/App.vue`
+- Modify: `frontend/src/navigation.ts`
+- Modify: `frontend/src/router/index.ts`
+- Modify: `frontend/src/layouts/AppShell.vue`
+- Modify: `frontend/src/components/shell/AppNavigation.vue`
+- Modify: `frontend/src/components/shell/SessionInspector.vue`
+- Modify: `frontend/src/styles/tokens.css`
+- Modify: `frontend/src/styles/app-shell.css`
+- Modify: `frontend/src/__tests__/App.spec.ts`
+- Modify: `frontend/src/__tests__/navigation-router.spec.ts`
+- Modify: `frontend/src/components/shell/__tests__/app-shell.spec.ts`
+- Modify: `frontend/e2e/app-shell.spec.ts`
+- Modify: `tests/test_frontend_app_shell.py`
+- Modify: `frontend/README.md`
+- Modify: `ARCHITECTURE.md`
+- Modify: this plan and the approved P2-03 design/authority documents listed in the desktop scope amendment
 
-- [ ] **Step 5: Create the user-test anchor commit**
+**Interfaces:**
+- Produces: one sanitized application error boundary, one canonical route/navigation metadata source, desktop-only App Shell state, five desktop viewport browser evidence, and a new reviewed feature SHA.
+- Removes: low-width overlay mode, backdrop, focus trap, internal overlay close controls, mobile/tablet media rules and 768×1024/390×844 acceptance.
+
+- [ ] **Step 1: Add failing desktop-scope guards before changing the existing overlay implementation**
+
+Extend `tests/test_frontend_app_shell.py` so the current implementation fails on all of these forbidden contracts:
+
+```python
+shell = (SRC / "layouts" / "AppShell.vue").read_text(encoding="utf-8")
+css = (SRC / "styles" / "app-shell.css").read_text(encoding="utf-8")
+e2e = (ROOT / "frontend" / "e2e" / "app-shell.spec.ts").read_text(encoding="utf-8")
+
+for forbidden in ("max-width: 1023px", "data-overlay", "shell-overlay-z-index"):
+    assert forbidden not in shell + css
+assert "768" not in e2e
+assert "390" not in e2e
+for viewport in ("1920", "1440", "1366", "1280", "1024"):
+    assert viewport in e2e
+```
+
+Run the focused Python file and record RED from the existing overlay/mobile implementation.
+
+- [ ] **Step 2: Preserve and finish the desktop-relevant final-review fixes**
+
+Keep `ApplicationErrorBoundary.vue` around `AppShell`. It must show only fixed teacher-facing text, `重新加载当前页面`, and `返回工作台`; never render the captured exception. Retry remounts the current routed shell; return navigates to `/workbench`. Keep the RED/GREEN component tests for render failure, retry and return.
+
+Make `navigation.ts` the single source for every available workspace `path`, `label`, `title`, `description`, `breadcrumb`, `symbol` and availability. `router/index.ts` derives placeholder route records from it; tests iterate every available navigation item and compare resolved route metadata.
+
+- [ ] **Step 3: Remove the unsupported overlay/mobile implementation**
+
+Reduce `AppShell.vue` to desktop `navigationOpen` / `inspectorOpen` state plus one compact-desktop `matchMedia('(max-width: 1279px)')` listener. Remove `overlayMedia`, backdrop, `data-overlay`, inert background management, focus trap, overlay timers, route-close-overlay behavior and overlay-specific key handling.
+
+Remove modal/overlay props, internal close buttons and `aria-modal` behavior from `AppNavigation.vue` and `SessionInspector.vue`. Keep ordinary desktop navigation/aside semantics and topbar controls with correct `aria-expanded` / `aria-controls`.
+
+Delete shell-only overlay/backdrop/panel z-index tokens and every `@media (max-width: 1023px)` rule from `app-shell.css`. Preserve the 1024–1279 compact desktop rule, definite viewport height, independent column scrolling, Token-only values and reduced-motion behavior.
+
+- [ ] **Step 4: Replace mobile/tablet browser tests with the desktop matrix**
+
+The exact Playwright viewport list becomes:
+
+```ts
+const viewports = [
+  { name: 'large desktop', width: 1920, height: 1080 },
+  { name: 'desktop', width: 1440, height: 900 },
+  { name: 'standard workstation', width: 1366, height: 768 },
+  { name: 'compact desktop', width: 1280, height: 800 },
+  { name: 'minimum desktop', width: 1024, height: 768 },
+]
+```
+
+For every viewport assert no page-level horizontal overflow, no page/console errors, long-name containment and validated session selection/refresh. At 1024 assert navigation defaults to 60px with `aria-expanded=false`, expands to 232px, then collapses; inspector remains 320px and can be toggled. Remove every mobile/tablet overlay, backdrop, focus-trap and internal-close test. Preserve stale candidate, failure/retry, future entry, settings, 404, runtime error boundary, shared metadata and `/design-system` tests.
+
+- [ ] **Step 5: Run the corrected feature gate and fingerprint guard**
+
+Run unmodified lint, typecheck, test, build and e2e; the four Python front-end guard files; `tools/smoke_check.py --skip-tests`; `git diff --check`; and before/after root database size/UTC/SHA-256 comparison. Require no `user_data/` status and the immutable two-SHA stash baseline.
+
+- [ ] **Step 6: Commit the corrected feature candidate**
+
+Update completed checkboxes and handoff to `waiting_review / branch_head / passed / pending / pending / unchanged / report_only`. Stage only P2-03 source, tests and approved documentation—never `user_data` or ignored SDD artifacts—and commit with an intentional desktop-scope message. Require `tools/handoff_status.py` `ok=true`.
+
+- [ ] **Step 7: Perform a fresh whole-branch independent review**
+
+Review the new merge-base-to-head package against the amended design and this plan. Critical/Important findings must be zero; mobile/tablet behavior is explicitly out of scope. Any desktop-relevant fix starts with a failing regression and reruns the affected commands.
+
+- [ ] **Step 8: Create the user-test anchor commit**
 
 Record the reviewed feature SHA in a plan-only commit; set `交接状态: waiting_user`, `自动验证: passed`, `独立复审: passed`, `用户验收: pending`. Run `tools/handoff_status.py` and require `ok=true`.
 
@@ -512,7 +597,7 @@ Record the reviewed feature SHA in a plan-only commit; set `交接状态: waitin
 
 - [ ] **Step 1: Generate the versioned checklist only after the shell is verified**
 
-The checklist must include package, reviewed SHA, synthetic data source, exact start/stop commands, URL, visible P2-03 marker, and numbered checks for navigation order, settings location, session selection/refresh, side-panel behavior, long names, disabled future entry, 404, focus and narrow-screen overflow. Include the feedback format and machine result block required by `tools/handoff_status.py`.
+The checklist must include package, reviewed SHA, synthetic data source, exact start/stop commands, URL, visible P2-03 marker, and numbered checks for navigation order, settings location, session selection/refresh, desktop side-panel behavior, long names, disabled future entry, 404, focus and five desktop viewport overflow. Include the feedback format and machine result block required by `tools/handoff_status.py`.
 
 - [ ] **Step 2: Run the reviewed version for user inspection**
 
@@ -566,12 +651,12 @@ Fetch/prune, fast-forward root `main` and active worktrees to `origin/main`, del
 ## 昼夜交接
 
 **执行包：** P2-03
-**交接状态：** waiting_review
-**功能提交：** branch_head
-**自动验证：** passed
+**交接状态：** resumable
+**功能提交：** none
+**自动验证：** failed
 **独立复审：** pending
 **用户验收：** pending
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** resume_only
 <!-- HANDOFF_STATUS_END -->
