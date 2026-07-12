@@ -77,8 +77,6 @@
   --shell-navigation-collapsed-width: 60px;
   --shell-inspector-width: 360px;
   --shell-inspector-compact-width: 320px;
-  --shell-overlay-z-index: 30;
-  --shell-panel-z-index: 31;
   --shell-topbar-z-index: 32;
   --shell-skip-link-z-index: 33;
 

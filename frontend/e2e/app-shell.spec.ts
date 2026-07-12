@@ -23,14 +23,12 @@ const sessions = [
     updated_at: '2026-07-02T00:00:00Z',
   },
 ]
-const desktopViewports = [
-  { name: 'desktop', width: 1440, height: 900, navigationWidth: 232, inspectorWidth: 360 },
-  { name: 'compact desktop', width: 1280, height: 800, navigationWidth: 232, inspectorWidth: 360 },
-  { name: 'tablet landscape', width: 1024, height: 768, navigationWidth: 60, inspectorWidth: 320 },
-]
-const narrowViewports = [
-  { name: 'tablet portrait', width: 768, height: 1024 },
-  { name: 'mobile', width: 390, height: 844 },
+const viewports = [
+  { name: 'large desktop', width: 1920, height: 1080 },
+  { name: 'desktop', width: 1440, height: 900 },
+  { name: 'standard workstation', width: 1366, height: 768 },
+  { name: 'compact desktop', width: 1280, height: 800 },
+  { name: 'minimum desktop', width: 1024, height: 768 },
 ]
 
 async function fulfillSessions(page: Page): Promise<void> {
@@ -63,26 +61,6 @@ function trackBrowserErrors(page: Page) {
 
 async function noop(): Promise<void> {}
 
-async function openInspector(page: Page): Promise<void> {
-  await page.getByTestId('inspector-toggle').click()
-}
-
-async function closeInspector(page: Page): Promise<void> {
-  await page.keyboard.press('Escape')
-  await expect(page.getByTestId('inspector-toggle')).toBeFocused()
-}
-
-async function expectClosedNavigationSkippedByTab(page: Page): Promise<void> {
-  const navigation = page.getByTestId('app-navigation')
-  await page.getByTestId('navigation-toggle').focus()
-  for (let step = 0; step < 8; step += 1) {
-    await page.keyboard.press('Tab')
-    expect(
-      await navigation.evaluate((element) => !element.contains(document.activeElement)),
-    ).toBe(true)
-  }
-}
-
 async function exerciseSessionContext(
   page: Page,
   viewport: { width: number; height: number },
@@ -113,7 +91,7 @@ async function exerciseSessionContext(
   await expectNoHorizontalOverflow(page)
 }
 
-for (const viewport of desktopViewports) {
+for (const viewport of viewports) {
   test(`${viewport.name} preserves session context without shell overflow`, async ({ page }) => {
     const errors = trackBrowserErrors(page)
     await exerciseSessionContext(page, viewport, noop, noop)
@@ -123,34 +101,8 @@ for (const viewport of desktopViewports) {
     const inspectorWidth = await page.getByTestId('session-inspector').evaluate(
       (element) => element.getBoundingClientRect().width,
     )
-    expect(navigationWidth).toBe(viewport.navigationWidth)
-    expect(inspectorWidth).toBe(viewport.inspectorWidth)
-
-    expect(errors.pageErrors).toEqual([])
-    expect(errors.consoleErrors).toEqual([])
-  })
-}
-
-for (const viewport of narrowViewports) {
-  test(`${viewport.name} preserves session context without shell overflow`, async ({ page }) => {
-    const errors = trackBrowserErrors(page)
-    await exerciseSessionContext(page, viewport, openInspector, closeInspector)
-    const navigationToggle = page.getByTestId('navigation-toggle')
-    const inspectorToggle = page.getByTestId('inspector-toggle')
-    await page.keyboard.press('Escape')
-    await navigationToggle.click()
-    await expect(navigationToggle).toHaveAttribute('aria-expanded', 'true')
-    await inspectorToggle.click()
-    await expect(navigationToggle).toHaveAttribute('aria-expanded', 'false')
-    await expect(inspectorToggle).toHaveAttribute('aria-expanded', 'true')
-    await page.keyboard.press('Escape')
-    await expect(inspectorToggle).toHaveAttribute('aria-expanded', 'false')
-    await expect(inspectorToggle).toBeFocused()
-    await navigationToggle.click()
-    await page.getByTestId('app-navigation').getByRole('link', { name: '设置' }).click()
-    await expect(page).toHaveURL(/\/settings$/)
-    await page.keyboard.press('Escape')
-    await expectClosedNavigationSkippedByTab(page)
+    expect(navigationWidth).toBe(viewport.width === 1024 ? 60 : 232)
+    expect(inspectorWidth).toBe(viewport.width === 1024 ? 320 : 360)
 
     expect(errors.pageErrors).toEqual([])
     expect(errors.consoleErrors).toEqual([])
@@ -220,11 +172,14 @@ test('1024 compact navigation state and geometry stay synchronized', async ({ pa
   await page.goto('/workbench')
   const navigation = page.getByTestId('app-navigation')
   const toggle = page.getByTestId('navigation-toggle')
+  const inspector = page.getByTestId('session-inspector')
+  const inspectorToggle = page.getByTestId('inspector-toggle')
   const workbenchLabel = navigation.getByText('工作台', { exact: true })
 
   await expect(toggle).toHaveAttribute('aria-expanded', 'false')
   await expect(workbenchLabel).toBeHidden()
   expect(await navigation.evaluate((element) => element.getBoundingClientRect().width)).toBe(60)
+  expect(await inspector.evaluate((element) => element.getBoundingClientRect().width)).toBe(320)
 
   await toggle.click()
   await expect(toggle).toHaveAttribute('aria-expanded', 'true')
@@ -234,6 +189,13 @@ test('1024 compact navigation state and geometry stay synchronized', async ({ pa
   await toggle.click()
   await expect(toggle).toHaveAttribute('aria-expanded', 'false')
   expect(await navigation.evaluate((element) => element.getBoundingClientRect().width)).toBe(60)
+
+  await inspectorToggle.click()
+  await expect(inspectorToggle).toHaveAttribute('aria-expanded', 'false')
+  await expect(inspector).toBeHidden()
+  await inspectorToggle.click()
+  await expect(inspectorToggle).toHaveAttribute('aria-expanded', 'true')
+  expect(await inspector.evaluate((element) => element.getBoundingClientRect().width)).toBe(320)
 })
 
 test('desktop shell owns the viewport and workspace scrolls independently', async ({ page }) => {

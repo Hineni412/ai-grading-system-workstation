@@ -1,21 +1,58 @@
 export type NavigationAvailability = 'available' | 'future'
 
-export interface NavigationItem {
+export interface WorkspaceRouteDefinition {
   id: string
   label: string
   symbol: string
-  availability: NavigationAvailability
-  path?: string
+  availability: 'available'
+  path: string
+  title: string
+  description: string
+  breadcrumb: string
+  futureReason?: undefined
+}
+
+export interface FutureNavigationItem {
+  id: string
+  label: string
+  symbol: string
+  availability: 'future'
+  path?: undefined
   futureReason?: string
 }
 
+export type NavigationItem = WorkspaceRouteDefinition | FutureNavigationItem
+
+function workspaceRoute(
+  id: string,
+  path: string,
+  label: string,
+  symbol: string,
+): WorkspaceRouteDefinition {
+  return {
+    id,
+    path,
+    label,
+    symbol,
+    availability: 'available',
+    title: label,
+    description: `${label}工作区尚未迁移`,
+    breadcrumb: label,
+  }
+}
+
+export const workspaceRouteDefinitions: readonly WorkspaceRouteDefinition[] = [
+  workspaceRoute('workbench', '/workbench', '工作台', '工'),
+  workspaceRoute('grading', '/grading', '阅卷', '阅'),
+  workspaceRoute('exams', '/exams', '考试', '考'),
+  workspaceRoute('students', '/students', '学生', '生'),
+  workspaceRoute('analytics', '/analytics', '分析', '析'),
+  workspaceRoute('question-bank', '/question-bank', '题库与训练', '题'),
+  workspaceRoute('settings', '/settings', '设置', '设'),
+] as const
+
 export const navigationItems: readonly NavigationItem[] = [
-  { id: 'workbench', label: '工作台', symbol: '工', availability: 'available', path: '/workbench' },
-  { id: 'grading', label: '阅卷', symbol: '阅', availability: 'available', path: '/grading' },
-  { id: 'exams', label: '考试', symbol: '考', availability: 'available', path: '/exams' },
-  { id: 'students', label: '学生', symbol: '生', availability: 'available', path: '/students' },
-  { id: 'analytics', label: '分析', symbol: '析', availability: 'available', path: '/analytics' },
-  { id: 'question-bank', label: '题库与训练', symbol: '题', availability: 'available', path: '/question-bank' },
+  ...workspaceRouteDefinitions.slice(0, 6),
   {
     id: 'agents',
     label: '智能体与自动化',
@@ -26,6 +63,4 @@ export const navigationItems: readonly NavigationItem[] = [
   },
 ] as const
 
-export const settingsNavigationItem: NavigationItem = {
-  id: 'settings', label: '设置', symbol: '设', availability: 'available', path: '/settings',
-}
+export const settingsNavigationItem = workspaceRouteDefinitions[6]!

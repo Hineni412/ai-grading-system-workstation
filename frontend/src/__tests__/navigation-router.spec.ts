@@ -15,6 +15,23 @@ describe('P2-03 navigation', () => {
     expect(settingsNavigationItem).toMatchObject({ label: '设置', path: '/settings' })
   })
 
+  it('resolves every available navigation item from the shared workspace metadata', () => {
+    const router = createAppRouter(createMemoryHistory())
+    const availableItems = [...navigationItems, settingsNavigationItem].filter(
+      (item) => item.availability === 'available',
+    )
+
+    for (const item of availableItems) {
+      const resolved = router.resolve(item.path!)
+      expect(resolved.name).toBe(item.id)
+      expect(resolved.meta).toMatchObject({
+        title: item.title,
+        description: item.description,
+        breadcrumb: item.breadcrumb,
+      })
+    }
+  })
+
   it.each([
     ['/', '/workbench'],
     ['/grading', '/grading'],

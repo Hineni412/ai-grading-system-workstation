@@ -14,7 +14,7 @@ function installMatchMedia(matches: boolean) {
     get matches() {
       return currentMatches
     },
-    media: '(max-width: 1023px)',
+    media: '(max-width: 1279px)',
     onchange: null,
     addEventListener: vi.fn((_type: string, listener: (event: MediaQueryListEvent) => void) => {
       listeners.add(listener)
@@ -110,9 +110,7 @@ describe('AppShell', () => {
     installMatchMedia(false)
     const { app, host } = await mountShell()
 
-    expect(host.querySelector('[data-testid="app-shell"]')?.getAttribute('data-overlay')).toBe(
-      'false',
-    )
+    expect(host.querySelector('[data-testid="app-shell"]')?.hasAttribute('data-overlay')).toBe(false)
     expect(
       host.querySelector('[data-testid="navigation-toggle"]')?.getAttribute('aria-expanded'),
     ).toBe('true')
@@ -124,7 +122,7 @@ describe('AppShell', () => {
   })
 
   it('starts compact navigation collapsed and toggles its real expanded state', async () => {
-    const compactQuery = '(min-width: 1024px) and (max-width: 1279px)'
+    const compactQuery = '(max-width: 1279px)'
     const mediaQueries: MediaQueryList[] = []
     vi.stubGlobal(
       'matchMedia',
@@ -153,67 +151,17 @@ describe('AppShell', () => {
     expect(navigationTrigger.getAttribute('aria-expanded')).toBe('false')
 
     app.unmount()
-    expect(mediaQueries).toHaveLength(2)
+    expect(mediaQueries).toHaveLength(1)
     expect(mediaQueries.every((query) => vi.mocked(query.removeEventListener).mock.calls.length === 1)).toBe(true)
   })
 
-  it('keeps overlay panels mutually exclusive and restores trigger focus on Escape', async () => {
-    installMatchMedia(true)
-    const { app, host } = await mountShell()
-    const navigationTrigger = host.querySelector<HTMLButtonElement>('[data-testid="navigation-toggle"]')!
-    const inspectorTrigger = host.querySelector<HTMLButtonElement>('[data-testid="inspector-toggle"]')!
-
-    expect(navigationTrigger.getAttribute('aria-expanded')).toBe('false')
-    expect(inspectorTrigger.getAttribute('aria-expanded')).toBe('false')
-
-    navigationTrigger.click()
-    await nextTick()
-    expect(navigationTrigger.getAttribute('aria-expanded')).toBe('true')
-
-    inspectorTrigger.focus()
-    inspectorTrigger.click()
-    await nextTick()
-    expect(navigationTrigger.getAttribute('aria-expanded')).toBe('false')
-    expect(inspectorTrigger.getAttribute('aria-expanded')).toBe('true')
-
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
-    await nextTick()
-    expect(inspectorTrigger.getAttribute('aria-expanded')).toBe('false')
-    expect(document.activeElement).toBe(inspectorTrigger)
-
-    app.unmount()
-  })
-
-  it('restores trigger focus when the backdrop closes an overlay', async () => {
-    installMatchMedia(true)
-    const { app, host } = await mountShell()
-    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="navigation-toggle"]')!
-
-    trigger.focus()
-    trigger.click()
-    await nextTick()
-    host.querySelector<HTMLButtonElement>('[data-testid="shell-backdrop"]')!.click()
-    await nextTick()
-
-    expect(trigger.getAttribute('aria-expanded')).toBe('false')
-    expect(document.activeElement).toBe(trigger)
-
-    app.unmount()
-  })
-
-  it('applies media-query changes and preserves overlay exclusivity', async () => {
+  it('applies compact-desktop media-query changes without changing the inspector', async () => {
     const { change } = installMatchMedia(false)
     const { app, host } = await mountShell()
     const navigationTrigger = host.querySelector<HTMLButtonElement>('[data-testid="navigation-toggle"]')!
     const inspectorTrigger = host.querySelector<HTMLButtonElement>('[data-testid="inspector-toggle"]')!
 
     change(true)
-    await nextTick()
-    expect(navigationTrigger.getAttribute('aria-expanded')).toBe('false')
-    expect(inspectorTrigger.getAttribute('aria-expanded')).toBe('false')
-
-    navigationTrigger.click()
-    inspectorTrigger.click()
     await nextTick()
     expect(navigationTrigger.getAttribute('aria-expanded')).toBe('false')
     expect(inspectorTrigger.getAttribute('aria-expanded')).toBe('true')
@@ -226,18 +174,13 @@ describe('AppShell', () => {
     app.unmount()
   })
 
-  it('removes media-query and keyboard listeners on unmount', async () => {
+  it('removes the compact-desktop media-query listener on unmount', async () => {
     const { mediaQuery } = installMatchMedia(false)
-    const addWindowListener = vi.spyOn(window, 'addEventListener')
-    const removeWindowListener = vi.spyOn(window, 'removeEventListener')
     const { app } = await mountShell()
-    const keydownRegistration = addWindowListener.mock.calls.find(([type]) => type === 'keydown')
 
     app.unmount()
 
     expect(mediaQuery.removeEventListener).toHaveBeenCalledWith('change', expect.any(Function))
-    expect(keydownRegistration).toBeDefined()
-    expect(removeWindowListener).toHaveBeenCalledWith('keydown', keydownRegistration![1])
   })
 
   it('focuses the route heading after navigation', async () => {

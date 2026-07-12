@@ -520,7 +520,7 @@ Repeat root database size/UTC/SHA-256 checks and require exact equality with Tas
 - Produces: one sanitized application error boundary, one canonical route/navigation metadata source, desktop-only App Shell state, five desktop viewport browser evidence, and a new reviewed feature SHA.
 - Removes: low-width overlay mode, backdrop, focus trap, internal overlay close controls, mobile/tablet media rules and 768×1024/390×844 acceptance.
 
-- [ ] **Step 1: Add failing desktop-scope guards before changing the existing overlay implementation**
+- [x] **Step 1: Add failing desktop-scope guards before changing the existing overlay implementation**
 
 Extend `tests/test_frontend_app_shell.py` so the current implementation fails on all of these forbidden contracts:
 
@@ -539,13 +539,13 @@ for viewport in ("1920", "1440", "1366", "1280", "1024"):
 
 Run the focused Python file and record RED from the existing overlay/mobile implementation.
 
-- [ ] **Step 2: Preserve and finish the desktop-relevant final-review fixes**
+- [x] **Step 2: Preserve and finish the desktop-relevant final-review fixes**
 
 Keep `ApplicationErrorBoundary.vue` around `AppShell`. It must show only fixed teacher-facing text, `重新加载当前页面`, and `返回工作台`; never render the captured exception. Retry remounts the current routed shell; return navigates to `/workbench`. Keep the RED/GREEN component tests for render failure, retry and return.
 
 Make `navigation.ts` the single source for every available workspace `path`, `label`, `title`, `description`, `breadcrumb`, `symbol` and availability. `router/index.ts` derives placeholder route records from it; tests iterate every available navigation item and compare resolved route metadata.
 
-- [ ] **Step 3: Remove the unsupported overlay/mobile implementation**
+- [x] **Step 3: Remove the unsupported overlay/mobile implementation**
 
 Reduce `AppShell.vue` to desktop `navigationOpen` / `inspectorOpen` state plus one compact-desktop `matchMedia('(max-width: 1279px)')` listener. Remove `overlayMedia`, backdrop, `data-overlay`, inert background management, focus trap, overlay timers, route-close-overlay behavior and overlay-specific key handling.
 
@@ -553,7 +553,7 @@ Remove modal/overlay props, internal close buttons and `aria-modal` behavior fro
 
 Delete shell-only overlay/backdrop/panel z-index tokens and every `@media (max-width: 1023px)` rule from `app-shell.css`. Preserve the 1024–1279 compact desktop rule, definite viewport height, independent column scrolling, Token-only values and reduced-motion behavior.
 
-- [ ] **Step 4: Replace mobile/tablet browser tests with the desktop matrix**
+- [x] **Step 4: Replace mobile/tablet browser tests with the desktop matrix**
 
 The exact Playwright viewport list becomes:
 
@@ -569,11 +569,11 @@ const viewports = [
 
 For every viewport assert no page-level horizontal overflow, no page/console errors, long-name containment and validated session selection/refresh. At 1024 assert navigation defaults to 60px with `aria-expanded=false`, expands to 232px, then collapses; inspector remains 320px and can be toggled. Remove every mobile/tablet overlay, backdrop, focus-trap and internal-close test. Preserve stale candidate, failure/retry, future entry, settings, 404, runtime error boundary, shared metadata and `/design-system` tests.
 
-- [ ] **Step 5: Run the corrected feature gate and fingerprint guard**
+- [x] **Step 5: Run the corrected feature gate and fingerprint guard**
 
 Run unmodified lint, typecheck, test, build and e2e; the four Python front-end guard files; `tools/smoke_check.py --skip-tests`; `git diff --check`; and before/after root database size/UTC/SHA-256 comparison. Require no `user_data/` status and the immutable two-SHA stash baseline.
 
-- [ ] **Step 6: Commit the corrected feature candidate**
+- [x] **Step 6: Commit the corrected feature candidate**
 
 Update completed checkboxes and handoff to `waiting_review / branch_head / passed / pending / pending / unchanged / report_only`. Stage only P2-03 source, tests and approved documentation—never `user_data` or ignored SDD artifacts—and commit with an intentional desktop-scope message. Require `tools/handoff_status.py` `ok=true`.
 
@@ -651,12 +651,12 @@ Fetch/prune, fast-forward root `main` and active worktrees to `origin/main`, del
 ## 昼夜交接
 
 **执行包：** P2-03
-**交接状态：** resumable
-**功能提交：** none
-**自动验证：** failed
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** pending
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** resume_only
+**夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->

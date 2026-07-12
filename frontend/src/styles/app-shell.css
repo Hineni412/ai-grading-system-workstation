@@ -9,6 +9,47 @@
   background: var(--color-bg-app);
 }
 
+.application-boundary__content {
+  display: contents;
+}
+
+.application-error {
+  display: grid;
+  min-height: 100vh;
+  place-content: center;
+  gap: var(--space-3);
+  padding: var(--space-7);
+  background: var(--color-bg-app);
+  color: var(--color-text-primary);
+  text-align: center;
+}
+
+.application-error h1,
+.application-error p {
+  margin: 0;
+}
+
+.application-error p {
+  color: var(--color-text-secondary);
+}
+
+.application-error__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+}
+
+.application-error button {
+  min-height: var(--control-height-default);
+  padding-inline: var(--space-3);
+  border: var(--border-width) solid var(--color-border-default);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
 .app-shell[data-navigation-open="false"] {
   grid-template-columns:
     var(--shell-navigation-collapsed-width) minmax(0, 1fr)
@@ -311,10 +352,6 @@
   font-size: var(--font-size-dense);
 }
 
-.app-shell__backdrop {
-  display: none;
-}
-
 @media (min-width: 1024px) and (max-width: 1279px) {
   .app-shell,
   .app-shell[data-navigation-open="false"] {
@@ -334,111 +371,5 @@
 
   .app-shell[data-navigation-open="true"][data-inspector-open="false"] {
     grid-template-columns: var(--shell-navigation-width) minmax(0, 1fr) 0;
-  }
-}
-
-@media (max-width: 1023px) {
-  .app-shell,
-  .app-shell[data-navigation-open="false"],
-  .app-shell[data-inspector-open="false"],
-  .app-shell[data-navigation-open="false"][data-inspector-open="false"] {
-    display: block;
-    height: 100vh;
-    min-height: 100vh;
-    padding-block-start: var(--shell-topbar-height);
-  }
-
-  .app-topbar {
-    position: fixed;
-    inset-block-start: 0;
-    inset-inline: 0;
-    height: var(--shell-topbar-height);
-  }
-
-  .main-workspace {
-    height: calc(100vh - var(--shell-topbar-height));
-  }
-
-  .app-navigation,
-  .session-inspector {
-    position: fixed;
-    inset-block: var(--shell-topbar-height) 0;
-    z-index: var(--shell-panel-z-index);
-    width: min(100%, var(--shell-navigation-width));
-    box-shadow: var(--shadow-overlay);
-  }
-
-  .app-navigation {
-    inset-inline: 0 auto;
-    visibility: hidden;
-    pointer-events: none;
-    transform: translateX(-100%);
-    transition:
-      transform var(--duration-drawer),
-      visibility var(--duration-reduced);
-  }
-
-  .session-inspector {
-    inset-inline: auto 0;
-    width: min(100%, var(--shell-inspector-width));
-    transform: translateX(100%);
-  }
-
-  .app-shell[data-navigation-open="true"] .app-navigation,
-  .app-shell[data-inspector-open="true"] .session-inspector {
-    visibility: visible;
-    pointer-events: auto;
-    transform: translateX(0);
-  }
-
-  .app-navigation[data-collapsed="false"] .app-navigation__label,
-  .app-navigation[data-collapsed="false"] .app-navigation__future-reason {
-    display: block;
-  }
-
-  .app-shell__backdrop {
-    position: fixed;
-    inset: var(--shell-topbar-height) 0 0;
-    z-index: var(--shell-overlay-z-index);
-    display: block;
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    background: var(--color-overlay-mask);
-  }
-}
-
-@media (max-width: 767px) {
-  .app-topbar {
-    grid-template-columns: var(--control-height-default) minmax(0, 1fr)
-      minmax(0, 1fr) var(--control-height-default);
-    gap: var(--space-1);
-    padding-inline: var(--space-2);
-  }
-
-  .app-topbar__route {
-    gap: 0;
-    padding-inline-end: var(--space-2);
-  }
-
-  .app-topbar__route span,
-  .app-topbar__route strong::before,
-  .app-topbar__session label {
-    display: none;
-  }
-
-  .app-topbar__session select {
-    width: 100%;
-    padding-inline: var(--space-1);
-  }
-
-  .app-navigation,
-  .session-inspector {
-    width: 100%;
-  }
-
-  .route-placeholder,
-  .not-found-view {
-    padding: var(--space-5) var(--space-4);
   }
 }
