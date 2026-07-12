@@ -349,11 +349,11 @@ Commit: `feat: add P2-02 component showcase`.
 **Interfaces:**
 - Produces: contributor rules, implemented architecture facts, feature commit in `waiting_review`, and reviewed SHA for user testing.
 
-- [ ] **Step 1: Add usage and non-goal documentation**
+- [x] **Step 1: Add usage and non-goal documentation**
 
 Document import order, Token-only rules, component responsibilities, showcase commands and the explicit P2-03/P2-04 exclusions. Update `ARCHITECTURE.md` only with the implemented P2-02 boundary: design tokens, Element theme, primitives and showcase exist but Vue remains non-production.
 
-- [ ] **Step 2: Run the feature-branch verification gate**
+- [x] **Step 2: Run the feature-branch verification gate**
 
 Run:
 
@@ -370,7 +370,7 @@ git diff --check
 
 Expected: every command exits 0.
 
-- [ ] **Step 3: Verify real data and commit the feature state**
+- [x] **Step 3: Verify real data and commit the feature state**
 
 Repeat read-only size/UTC/SHA-256 checks and require both root databases to match Task 1. Confirm `git status --short -- user_data` is empty. Set handoff to `waiting_review`, `功能提交: branch_head`, `自动验证: passed`, `独立复审: pending`, `用户验收: pending`, `真实数据指纹: unchanged`, then commit all P2-02 source/test/docs changes without `user_data/`.
 
@@ -448,12 +448,12 @@ Fetch/prune, fast-forward root `main` and active worktrees to `origin/main`, del
 ## 昼夜交接
 
 **执行包：** P2-02
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** pending
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->

@@ -1,6 +1,6 @@
 # AI 阅卷系统前端工程
 
-本目录是 Vue 3 + TypeScript + Vite 前端的工程基础。P2-01 只提供可重复的安装、检查、测试和构建能力；视觉 Token、应用外壳、API Client 与业务页面由后续执行包实现。
+本目录是 Vue 3 + TypeScript + Vite 前端。P2-01 提供可重复的安装、检查、测试和构建能力；P2-02 提供设计 Token、Element Plus 主题、基础状态控件和组件展示页。应用外壳、API Client 与业务页面仍由后续执行包实现。
 
 ## 开发环境
 
@@ -29,3 +29,16 @@ npm run build
 ```
 
 生产构建输出到 `frontend/dist/`。最终工作机只携带该构建产物，不需要安装 Node.js。
+
+## 设计系统
+
+开发服务器启动后，根页面展示 P2-02 的设计系统样张。它用于核对按钮、输入、状态徽章、空/加载/错误态、操作反馈、长中文、键盘焦点和响应式布局，不是已经迁移的业务页面。
+
+- `src/styles/tokens.css` 是产品颜色、字号、间距、圆角、阴影和动效的唯一来源。
+- `src/styles/element-theme.css` 只负责把产品 Token 映射到 Element Plus；不得在这里新增独立色板。
+- `src/styles/base.css` 保存全局盒模型、字体、焦点和减少动效规则。
+- `src/components/design-system/` 保存产品语义组件。按钮和输入继续按需使用 Element Plus；字段关联、状态徽章、异步状态和反馈使用 P2-02 组件。
+- 除 `tokens.css` 外，不得在新增 Vue/CSS 源码中写十六进制、RGB 或 HSL 色值；常用间距、圆角和阴影必须使用 Token。
+- 组件样式按需导入，禁止恢复 `element-plus/dist/index.css` 或全量 `app.use(ElementPlus)`，以免把未使用控件加入启动包。
+
+P2-02 不包含 App Shell、路由、全局会话、API Client、Job Store、深色模式或业务页面。修改展示页后必须运行全部质量命令，并检查 1440×900、1280×800、1024×768、768×1024、390×844 五种视口。
