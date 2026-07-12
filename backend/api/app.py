@@ -176,6 +176,7 @@ def create_app() -> FastAPI:
         sessions_router,
         students_router,
         templates_router,
+        training_router,
     )
 
     api.include_router(config_router)
@@ -190,6 +191,7 @@ def create_app() -> FastAPI:
     api.include_router(sessions_router)
     api.include_router(students_router)
     api.include_router(templates_router)
+    api.include_router(training_router)
 
     return api
 
