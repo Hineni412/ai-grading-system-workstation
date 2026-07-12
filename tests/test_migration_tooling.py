@@ -10,6 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "update_tools"))
 
+import migrate_db  # noqa: E402
 from migrate_db import run_migrations  # noqa: E402
 
 
@@ -135,3 +136,42 @@ def test_path_override_does_not_touch_real_targets(tmp_path: Path) -> None:
     assert report.db_path == str(db_path)
     assert db_path.exists()
     assert report.results[0].backup_path is None or str(report.results[0].backup_path).startswith(str(tmp_path))
+
+
+def test_migration_status_uses_explicit_candidate_without_opening_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source.db"
+    candidate = tmp_path / "candidate.db"
+    migrations_dir = tmp_path / "migs"
+    _write_migration(migrations_dir, "001_demo.sql", "SELECT 1;")
+    with sqlite3.connect(candidate) as conn:
+        conn.execute(
+            "CREATE TABLE schema_migrations ("
+            "id INTEGER PRIMARY KEY, migration_name TEXT, applied_at TEXT, success INTEGER)"
+        )
+        conn.execute(
+            "INSERT INTO schema_migrations (migration_name, applied_at, success) "
+            "VALUES ('001_demo', '2026-07-12T12:00:00', 1)"
+        )
+
+    monkeypatch.setattr(
+        migrate_db,
+        "_get_targets",
+        lambda: {
+            "grading": {
+                "db_path": source,
+                "migrations_dir": migrations_dir,
+            }
+        },
+    )
+
+    status = migrate_db.get_migration_status(
+        "grading",
+        db_path_override=candidate,
+    )
+
+    assert status["db_exists"] is True
+    assert status["applied"] == ["001_demo"]
+    assert not source.exists()
