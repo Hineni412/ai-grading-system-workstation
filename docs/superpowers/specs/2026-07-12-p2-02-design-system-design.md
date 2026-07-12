@@ -72,7 +72,7 @@
 
 ## 6. Element Plus 集成
 
-`main.ts` 全量注册 Element Plus、导入其基础 CSS，再按顺序导入 `tokens.css`、`element-theme.css` 和 `base.css`。全局配置使用中文 locale，并保持默认 `el` namespace，避免引入 Sass 与自定义 namespace 的额外编译约束。
+`main.ts` 只导入 Element Plus 基础样式和展示页实际使用的 Button、Input、Icon 组件样式，再按顺序导入 `tokens.css`、`element-theme.css` 和 `base.css`。组件使用 TypeScript 直接导入，根组件通过 `ElConfigProvider` 提供中文 locale，并保持默认 `el` namespace；不全量注册组件库，不引入 Sass 与自定义 namespace 的额外编译约束。
 
 主题映射至少覆盖：
 

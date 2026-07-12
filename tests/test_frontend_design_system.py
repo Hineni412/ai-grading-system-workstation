@@ -52,3 +52,20 @@ def test_element_theme_maps_product_tokens() -> None:
         "--el-border-radius-base: var(--radius-control)",
     ):
         assert mapping in css
+
+
+def test_element_plus_stays_scoped_to_the_design_system_components() -> None:
+    main = (SRC / "main.ts").read_text(encoding="utf-8")
+    app = (SRC / "App.vue").read_text(encoding="utf-8")
+
+    assert "element-plus/dist/index.css" not in main
+    assert ".use(ElementPlus" not in main
+    for stylesheet in (
+        "element-plus/theme-chalk/base.css",
+        "element-plus/theme-chalk/el-icon.css",
+        "element-plus/theme-chalk/el-button.css",
+        "element-plus/theme-chalk/el-input.css",
+    ):
+        assert stylesheet in main
+    assert "ElConfigProvider" in app
+    assert "element-plus/es/locale/lang/zh-cn" in app

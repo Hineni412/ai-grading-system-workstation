@@ -153,21 +153,7 @@ Create `element-theme.css` with `:root` mappings for primary/success/warning/dan
 
 Create `base.css` with box sizing, body margin 0, product font/background/text, `min-width: 0`, `overflow-wrap: anywhere`, visible `:focus-visible`, and a `prefers-reduced-motion: reduce` rule that sets transition/animation duration to 0.
 
-Update `main.ts` to use the exact import and registration order:
-
-```ts
-import { createApp } from 'vue'
-import ElementPlus from 'element-plus'
-import zhCn from 'element-plus/es/locale/lang/zh-cn'
-import 'element-plus/dist/index.css'
-
-import App from './App.vue'
-import './styles/tokens.css'
-import './styles/element-theme.css'
-import './styles/base.css'
-
-createApp(App).use(ElementPlus, { locale: zhCn }).mount('#app')
-```
+Update `main.ts` to import only Element Plus base, icon, button and input CSS before the product style layers. Import `ElConfigProvider` and Chinese locale in `App.vue`, wrap the showcase with the provider, and do not call `app.use(ElementPlus)` so unused components stay out of the production bundle. The scoped import contract is guarded by `test_element_plus_stays_scoped_to_the_design_system_components`; a full `element-plus/dist/index.css` import or global plugin registration is a test failure.
 
 - [x] **Step 5: Verify GREEN and commit**
 
@@ -299,19 +285,19 @@ Commit: `feat: add reusable state and feedback components`.
 - Consumes: all Task 2-4 tokens and components plus Element Plus button/input.
 - Produces: visible P2-02 showcase at `/`, deterministic `data-testid` anchors, automated WCAG and viewport evidence.
 
-- [ ] **Step 1: Replace the old readiness tests with failing showcase tests**
+- [x] **Step 1: Replace the old readiness tests with failing showcase tests**
 
 Unit assertions must require `data-testid="design-system-showcase"`, the six section names `基础 Token / 按钮 / 输入 / 状态徽章 / 空、加载与错误 / 操作反馈`, long Chinese text, one invalid field, one disabled field, all seven badge tones and all feedback/state variants.
 
 In `contrast.spec.ts`, read `tokens.css`, parse the required color variables, calculate relative luminance using the WCAG formula, and assert these normal-text pairs are at least 4.5:1: primary text/surface, secondary text/surface, accent/surface, danger/danger-subtle, primary text/warning-subtle, success/success-subtle, teacher/teacher-subtle, AI/AI-subtle. The warning hue remains available for border/icon emphasis, while warning copy uses primary text because the approved warning foreground is 4.44:1 on its subtle background and therefore cannot be used for normal-size text.
 
-- [ ] **Step 2: Run unit tests to verify RED**
+- [x] **Step 2: Run unit tests to verify RED**
 
 Run: `npm run test`
 
 Expected: FAIL because the old App only renders the readiness marker.
 
-- [ ] **Step 3: Implement `ComponentShowcase` and wire `App.vue`**
+- [x] **Step 3: Implement `ComponentShowcase` and wire `App.vue`**
 
 The showcase must:
 
@@ -328,19 +314,24 @@ Replace `App.vue` with:
 
 ```vue
 <script setup lang="ts">
+import { ElConfigProvider } from 'element-plus'
+import zhCn from 'element-plus/es/locale/lang/zh-cn'
+
 import ComponentShowcase from './components/design-system/ComponentShowcase.vue'
 </script>
 
 <template>
-  <ComponentShowcase />
+  <ElConfigProvider :locale="zhCn">
+    <ComponentShowcase />
+  </ElConfigProvider>
 </template>
 ```
 
-- [ ] **Step 4: Add exact multi-viewport browser checks**
+- [x] **Step 4: Add exact multi-viewport browser checks**
 
 Update `e2e/app.spec.ts` to iterate these named viewports: desktop 1440×900, compact desktop 1280×800, tablet landscape 1024×768, tablet portrait 768×1024, mobile 390×844. For each, assert the showcase is visible, `scrollWidth <= clientWidth`, section headings are visible, a long label is not clipped, Tab reaches an interactive element with non-`none` outline style, the invalid field has `aria-invalid="true"`, and no browser `pageerror` occurs.
 
-- [ ] **Step 5: Verify GREEN and commit**
+- [x] **Step 5: Verify GREEN and commit**
 
 Run unit tests, contrast test, Python Token guard, lint, typecheck, build and Chromium e2e.
 
