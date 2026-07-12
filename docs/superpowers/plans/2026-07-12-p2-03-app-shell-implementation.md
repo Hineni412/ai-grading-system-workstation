@@ -585,11 +585,13 @@ Update completed checkboxes and handoff to `waiting_review / branch_head / passe
 - [x] Playwright keyboard coverage at 1024×768 and 1280×800 proves that a collapsed inspector—including its error-state retry control—is skipped during Tab traversal. Existing `visibility: hidden` behavior passed, so no production CSS change was required.
 - [x] Review-fix validation passed: 56 Vitest tests, 13 Playwright tests, 15 Python front-end guards, lint, typecheck and build. Final smoke, diff, fingerprint, `user_data/` and stash evidence are refreshed in the review-fix commit workflow.
 
-- [ ] **Step 7: Perform a fresh whole-branch independent review**
+- [x] **Step 7: Perform a fresh whole-branch independent review**
 
 Review the new merge-base-to-head package against the amended design and this plan. Critical/Important findings must be zero; mobile/tablet behavior is explicitly out of scope. Any desktop-relevant fix starts with a failing regression and reruns the affected commands.
 
-- [ ] **Step 8: Create the user-test anchor commit**
+Reviewed feature SHA: `30c22b9f085bcaf94d5289e1abce1e21542ba42f`. Fresh re-review result after the lazy-route recovery correction: Critical 0, Important 0, Minor 0.
+
+- [x] **Step 8: Create the user-test anchor commit**
 
 Record the reviewed feature SHA in a plan-only commit; set `交接状态: waiting_user`, `自动验证: passed`, `独立复审: passed`, `用户验收: pending`. Run `tools/handoff_status.py` and require `ok=true`.
 
@@ -659,10 +661,10 @@ Fetch/prune, fast-forward root `main` and active worktrees to `origin/main`, del
 ## 昼夜交接
 
 **执行包：** P2-03
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** waiting_user
+**功能提交：** 30c22b9f085bcaf94d5289e1abce1e21542ba42f
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** pending
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
