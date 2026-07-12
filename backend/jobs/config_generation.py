@@ -48,6 +48,8 @@ def stage_config_generation_input(
     upload_config_dir: Path,
     *,
     session_id: int,
+    expected_rubric_path: str,
+    expected_answer_key_path: str,
     confirmed_blocks: list[dict[str, Any]],
     document_text: str,
     question_images: dict[str, Any] | None,
@@ -57,6 +59,8 @@ def stage_config_generation_input(
         _input_path(upload_config_dir, input_id),
         {
             "session_id": int(session_id),
+            "expected_rubric_path": str(expected_rubric_path),
+            "expected_answer_key_path": str(expected_answer_key_path),
             "confirmed_blocks": confirmed_blocks,
             "document_text": str(document_text or ""),
             "question_images": dict(question_images or {}),
@@ -119,6 +123,13 @@ def run_config_generation_job(
     inputs = load_config_generation_input(upload_config_dir, input_id)
     if _required_int(inputs, "session_id") != session_id:
         raise ValueError("config generation input does not belong to session")
+    expected_rubric_path = str(inputs.get("expected_rubric_path") or "")
+    expected_answer_key_path = str(inputs.get("expected_answer_key_path") or "")
+    if (
+        str(session.get("rubric_path") or "") != expected_rubric_path
+        or str(session.get("answer_key_path") or "") != expected_answer_key_path
+    ):
+        raise ValueError("session config changed before generation started")
     confirmed_blocks = inputs.get("confirmed_blocks")
     question_images = inputs.get("question_images")
     if not isinstance(confirmed_blocks, list) or not confirmed_blocks:
@@ -178,15 +189,23 @@ def run_config_generation_job(
             f"job-{context.job_id}",
         )
         context.raise_if_cancelled()
-        db.update_grading_session_config(
-            session_id,
+        context.report(0.98, "config_generation", "binding")
+        context.raise_if_cancelled()
+        bound = context.store.finish_config_generation_and_bind(
+            context.job_id,
+            session_id=session_id,
+            expected_rubric_path=expected_rubric_path,
+            expected_answer_key_path=expected_answer_key_path,
             rubric_path=str(rubric_path),
             answer_key_path=str(answer_path),
+            result=summary,
         )
+        if not bound:
+            context.raise_if_cancelled()
+            raise ValueError("session config changed while generation was running")
     except Exception:
         _remove_unbound_files(rubric_path, answer_path)
         raise
-    context.report(0.98, "config_generation", "complete")
     return summary
 
 

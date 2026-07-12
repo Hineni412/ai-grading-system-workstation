@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import warnings
+import sqlite3
 from pathlib import Path
 
 warnings.filterwarnings(
@@ -139,6 +140,48 @@ def test_config_generation_route_rejects_embedded_image_file_references(
     assert "secret.png" not in response.text
 
 
+def test_config_generation_route_rejects_path_value_under_neutral_key(
+    tmp_path: Path,
+) -> None:
+    client, db, _manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    payload = _request_payload()
+    payload["confirmed_blocks"][0]["source"] = "C:/private/paper.docx"
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate",
+        json=payload,
+    )
+
+    assert response.status_code == 422
+    assert "C:/private/paper.docx" not in response.text
+
+
+def test_generic_job_route_cannot_persist_config_generation_content(
+    tmp_path: Path,
+) -> None:
+    client, _db, manager = _client(tmp_path)
+
+    response = client.post(
+        "/api/jobs/config_generation",
+        json={
+            "payload": {
+                "session_id": 1,
+                "document_text": "must not reach jobs payload",
+                "confirmed_blocks": [{"source": "C:/private/paper.docx"}],
+            }
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "dedicated_job_endpoint_required"
+    with sqlite3.connect(manager.store.db_path) as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM jobs WHERE job_type = 'config_generation'"
+        ).fetchone()[0]
+    assert count == 0
+
+
 def test_config_generation_retry_route_accepts_partial_source_job(tmp_path: Path) -> None:
     client, db, manager = _client(tmp_path)
     session_id = _session(db, tmp_path)
@@ -173,3 +216,54 @@ def test_config_generation_retry_route_accepts_partial_source_job(tmp_path: Path
     assert stored is not None
     assert stored.payload["input_id"] == "a" * 32
     assert "input_id" not in response.json()["payload"]
+
+
+def test_config_generation_retry_route_returns_404_for_missing_source_job(
+    tmp_path: Path,
+) -> None:
+    client, db, _manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate/retry",
+        json={"source_job_id": 404},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "config_generation_job_not_found"
+
+
+def test_config_generation_retry_source_cannot_be_replayed(
+    tmp_path: Path,
+) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = manager.store.create_job(
+        "config_generation",
+        {"session_id": session_id, "mode": "generate", "input_id": "a" * 32},
+    )
+    manager.store.finish(
+        source.id,
+        "succeeded",
+        result={
+            "session_id": session_id,
+            "outcome": "partial",
+            "failed_question_ids": ["Q1"],
+            "retryable": True,
+        },
+    )
+
+    first = client.post(
+        f"/api/sessions/{session_id}/config/generate/retry",
+        json={"source_job_id": source.id},
+    )
+    assert first.status_code == 202
+    manager.wait(first.json()["id"], timeout=5)
+
+    replay = client.post(
+        f"/api/sessions/{session_id}/config/generate/retry",
+        json={"source_job_id": source.id},
+    )
+
+    assert replay.status_code == 409
+    assert replay.json()["error"]["code"] == "config_generation_retry_already_submitted"

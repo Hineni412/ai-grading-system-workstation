@@ -23,7 +23,12 @@ from backend.jobs.config_generation import (
     stage_config_generation_input,
 )
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
-from backend.public_data import contains_path_key, contains_sensitive_key
+from backend.jobs.store import ConfigRetryAlreadySubmittedError
+from backend.public_data import (
+    contains_filesystem_reference,
+    contains_path_key,
+    contains_sensitive_key,
+)
 from db_manager import DBManager
 from path_manager import resolve_stored_file_path
 from session_manager import save_generated_config
@@ -184,11 +189,17 @@ def generate_session_config(
     manager: JobManager = Depends(get_job_manager),
     upload_config_dir: Path = Depends(get_upload_config_dir),
 ) -> JobResponse:
-    _require_active_session(db, session_id)
+    session = _require_active_session(db, session_id)
     request_payload = request.model_dump()
     if (
         contains_sensitive_key(request_payload)
         or contains_path_key(request_payload)
+        or contains_filesystem_reference(
+            {
+                "confirmed_blocks": request.confirmed_blocks,
+                "document_text": request.document_text,
+            }
+        )
         or _contains_embedded_image_reference(request_payload)
     ):
         raise ApiError(
@@ -199,6 +210,8 @@ def generate_session_config(
     input_id = stage_config_generation_input(
         upload_config_dir,
         session_id=int(session_id),
+        expected_rubric_path=str(session.get("rubric_path") or ""),
+        expected_answer_key_path=str(session.get("answer_key_path") or ""),
         **request_payload,
     )
     try:
@@ -229,9 +242,15 @@ def retry_session_config_generation(
 ) -> JobResponse:
     _require_active_session(db, session_id)
     source = manager.get(request.source_job_id)
+    if source is None:
+        raise ApiError(
+            404,
+            "config_generation_job_not_found",
+            "Config generation job not found",
+            {"source_job_id": int(request.source_job_id)},
+        )
     if (
-        source is None
-        or source.job_type != "config_generation"
+        source.job_type != "config_generation"
         or source.status != "succeeded"
         or source.result.get("outcome") != "partial"
         or int(source.payload.get("session_id") or 0) != int(session_id)
@@ -260,4 +279,19 @@ def retry_session_config_generation(
     }
     if request.retry_question_ids is not None:
         payload["retry_question_ids"] = request.retry_question_ids
-    return _submit_config_generation(manager, payload)
+    try:
+        return _job_response(manager.submit_config_retry(payload))
+    except ConfigRetryAlreadySubmittedError as exc:
+        raise ApiError(
+            409,
+            "config_generation_retry_already_submitted",
+            "A retry has already been submitted for this config generation job",
+            {"source_job_id": int(request.source_job_id)},
+        ) from exc
+    except UnsupportedJobTypeError as exc:
+        raise ApiError(
+            503,
+            "job_type_not_supported",
+            "Config generation is temporarily unavailable",
+            {"job_type": "config_generation"},
+        ) from exc

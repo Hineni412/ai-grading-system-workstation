@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,7 @@ from backend.jobs.config_generation import (
 from backend.jobs.manager import JobCancellationRequested, JobContext
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
+from backend.jobs.store import ConfigRetryAlreadySubmittedError
 from db_manager import DBManager
 from session_manager import save_generated_config
 
@@ -92,12 +95,20 @@ def _valid_config_payload() -> dict[str, object]:
 def test_stage_config_generation_input_round_trips_without_client_path(
     tmp_path: Path,
 ) -> None:
-    input_id = stage_config_generation_input(tmp_path, session_id=7, **_minimal_input())
+    input_id = stage_config_generation_input(
+        tmp_path,
+        session_id=7,
+        expected_rubric_path="server-rubric.json",
+        expected_answer_key_path="server-answer.json",
+        **_minimal_input(),
+    )
 
     assert len(input_id) == 32
     assert load_config_generation_input(tmp_path, input_id) == {
         **_minimal_input(),
         "session_id": 7,
+        "expected_rubric_path": "server-rubric.json",
+        "expected_answer_key_path": "server-answer.json",
     }
     assert sorted(path.name for path in tmp_path.iterdir()) == [
         f"config_generation_input_{input_id}.json"
@@ -119,7 +130,13 @@ def test_stage_config_generation_input_cleans_temp_file_when_publish_fails(
     monkeypatch.setattr("backend.jobs.config_generation.os.replace", fail_replace)
 
     with pytest.raises(OSError, match="publish failed"):
-        stage_config_generation_input(tmp_path, session_id=7, **_minimal_input())
+        stage_config_generation_input(
+            tmp_path,
+            session_id=7,
+            expected_rubric_path="server-rubric.json",
+            expected_answer_key_path="server-answer.json",
+            **_minimal_input(),
+        )
 
     assert list(tmp_path.iterdir()) == []
 
@@ -153,10 +170,10 @@ def test_save_generated_config_uses_atomic_replace_for_both_files(
 
 
 def _job_context(
-    tmp_path: Path,
+    job_db_path: Path,
     payload: dict[str, object],
 ) -> tuple[JobContext, JobStore]:
-    store = JobStore(tmp_path / "jobs.db")
+    store = JobStore(job_db_path)
     job = store.create_job("config_generation", payload)
     assert store.mark_running(job.id)
     return (
@@ -187,10 +204,16 @@ def _db_with_session(tmp_path: Path) -> tuple[DBManager, int, tuple[str, str]]:
     return db, session_id, (str(rubric_path), str(answer_path))
 
 
-def _stage_job_input(tmp_path: Path, session_id: int) -> str:
+def _stage_job_input(
+    tmp_path: Path,
+    session_id: int,
+    expected_paths: tuple[str, str],
+) -> str:
     return stage_config_generation_input(
         tmp_path / "uploaded",
         session_id=session_id,
+        expected_rubric_path=expected_paths[0],
+        expected_answer_key_path=expected_paths[1],
         **_minimal_input(),
     )
 
@@ -200,9 +223,9 @@ def test_config_generation_job_binds_complete_result_and_returns_safe_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db, session_id, old_paths = _db_with_session(tmp_path)
-    input_id = _stage_job_input(tmp_path, session_id)
+    input_id = _stage_job_input(tmp_path, session_id, old_paths)
     context, _store = _job_context(
-        tmp_path,
+        db.db_path,
         {"session_id": session_id, "mode": "generate", "input_id": input_id},
     )
     fake_client = object()
@@ -233,6 +256,10 @@ def test_config_generation_job_binds_complete_result_and_returns_safe_summary(
         "retryable": False,
     }
     assert str(tmp_path) not in json.dumps(result)
+    stored_job = context.store.get_job(context.job_id)
+    assert stored_job is not None
+    assert stored_job.status == "succeeded"
+    assert stored_job.result == result
 
 
 def test_config_generation_job_saves_partial_draft_without_binding_session(
@@ -240,9 +267,9 @@ def test_config_generation_job_saves_partial_draft_without_binding_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db, session_id, old_paths = _db_with_session(tmp_path)
-    input_id = _stage_job_input(tmp_path, session_id)
+    input_id = _stage_job_input(tmp_path, session_id, old_paths)
     context, _store = _job_context(
-        tmp_path,
+        db.db_path,
         {"session_id": session_id, "mode": "generate", "input_id": input_id},
     )
     partial = _valid_config_payload()
@@ -286,9 +313,9 @@ def test_config_generation_job_honours_cancellation_before_final_publish(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db, session_id, old_paths = _db_with_session(tmp_path)
-    input_id = _stage_job_input(tmp_path, session_id)
+    input_id = _stage_job_input(tmp_path, session_id, old_paths)
     context, store = _job_context(
-        tmp_path,
+        db.db_path,
         {"session_id": session_id, "mode": "generate", "input_id": input_id},
     )
 
@@ -365,8 +392,8 @@ def test_config_generation_retry_loads_source_draft_and_selected_questions(
 ) -> None:
     db, session_id, old_paths = _db_with_session(tmp_path)
     upload_dir = tmp_path / "uploaded"
-    input_id = _stage_job_input(tmp_path, session_id)
-    store = JobStore(tmp_path / "jobs.db")
+    input_id = _stage_job_input(tmp_path, session_id, old_paths)
+    store = JobStore(db.db_path)
     source = store.create_job(
         "config_generation",
         {"session_id": session_id, "mode": "generate", "input_id": input_id},
@@ -437,9 +464,9 @@ def test_config_generation_job_rejects_input_staged_for_another_session(
     tmp_path: Path,
 ) -> None:
     db, session_id, old_paths = _db_with_session(tmp_path)
-    input_id = _stage_job_input(tmp_path, session_id + 1)
+    input_id = _stage_job_input(tmp_path, session_id + 1, old_paths)
     context, _store = _job_context(
-        tmp_path,
+        db.db_path,
         {"session_id": session_id, "mode": "generate", "input_id": input_id},
     )
 
@@ -454,3 +481,132 @@ def test_config_generation_job_rejects_input_staged_for_another_session(
     session = db.get_grading_session(session_id)
     assert session is not None
     assert (session["rubric_path"], session["answer_key_path"]) == old_paths
+
+
+def test_config_generation_job_does_not_overwrite_manual_config_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    input_id = _stage_job_input(tmp_path, session_id, old_paths)
+    context, _store = _job_context(
+        db.db_path,
+        {"session_id": session_id, "mode": "generate", "input_id": input_id},
+    )
+    manual_rubric = tmp_path / "manual-rubric.json"
+    manual_answer = tmp_path / "manual-answer.json"
+    manual_rubric.write_text("{}", encoding="utf-8")
+    manual_answer.write_text("{}", encoding="utf-8")
+
+    def change_config_then_return(*_args: object, **_kwargs: object) -> dict[str, object]:
+        db.update_grading_session_config(
+            session_id,
+            rubric_path=str(manual_rubric),
+            answer_key_path=str(manual_answer),
+        )
+        return _valid_config_payload()
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        change_config_then_return,
+    )
+
+    with pytest.raises(ValueError, match="config changed while generation was running"):
+        run_config_generation_job(
+            context=context,
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            llm_client_factory=lambda: object(),
+        )
+
+    session = db.get_grading_session(session_id)
+    assert session is not None
+    assert session["rubric_path"] == str(manual_rubric)
+    assert session["answer_key_path"] == str(manual_answer)
+    assert not list((tmp_path / "uploaded").glob("rubric_job-*.json"))
+    assert not list((tmp_path / "uploaded").glob("answer_key_job-*.json"))
+
+
+def test_atomic_finish_rolls_back_session_bind_when_job_update_fails(
+    tmp_path: Path,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    store = JobStore(db.db_path)
+    job = store.create_job("config_generation", {"session_id": session_id})
+    assert store.mark_running(job.id)
+    with sqlite3.connect(db.db_path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER fail_config_job_finish
+            BEFORE UPDATE OF status ON jobs
+            WHEN NEW.id = ? AND NEW.status = 'succeeded'
+            BEGIN
+                SELECT RAISE(ABORT, 'injected finish failure');
+            END
+            """.replace("?", str(job.id))
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected finish failure"):
+        store.finish_config_generation_and_bind(
+            job.id,
+            session_id=session_id,
+            expected_rubric_path=old_paths[0],
+            expected_answer_key_path=old_paths[1],
+            rubric_path="new-rubric.json",
+            answer_key_path="new-answer.json",
+            result={"outcome": "complete"},
+        )
+
+    session = db.get_grading_session(session_id)
+    assert session is not None
+    assert (session["rubric_path"], session["answer_key_path"]) == old_paths
+    assert store.get_job(job.id).status == "running"
+
+
+def test_config_generation_restart_fails_interrupted_and_preserves_terminal_result(
+    tmp_path: Path,
+) -> None:
+    db = DBManager(tmp_path / "grading.db")
+    db.initialize()
+    store = JobStore(db.db_path)
+    queued = store.create_job("config_generation", {"session_id": 1})
+    running = store.create_job("config_generation", {"session_id": 1})
+    succeeded = store.create_job("config_generation", {"session_id": 1})
+    assert store.mark_running(running.id)
+    store.finish(succeeded.id, "succeeded", result={"outcome": "partial"})
+
+    manager = JobManager(JobStore(db.db_path), max_workers=1, cleanup_interrupted=True)
+    try:
+        assert manager.get(queued.id).status == "failed"
+        assert manager.get(running.id).status == "failed"
+        terminal = manager.get(succeeded.id)
+        assert terminal.status == "succeeded"
+        assert terminal.result == {"outcome": "partial"}
+    finally:
+        manager.shutdown()
+
+
+def test_config_retry_claim_is_atomic_across_concurrent_submitters(
+    tmp_path: Path,
+) -> None:
+    store = JobStore(tmp_path / "jobs.db")
+    source = store.create_job("config_generation", {"session_id": 1})
+    store.finish(source.id, "succeeded", result={"outcome": "partial"})
+    payload = {
+        "session_id": 1,
+        "mode": "retry",
+        "source_job_id": source.id,
+        "input_id": "a" * 32,
+    }
+
+    def submit() -> str:
+        try:
+            return f"job:{store.create_config_retry_job(payload).id}"
+        except ConfigRetryAlreadySubmittedError:
+            return "conflict"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = sorted(executor.map(lambda _index: submit(), range(2)))
+
+    assert outcomes[0] == "conflict"
+    assert outcomes[1].startswith("job:")
