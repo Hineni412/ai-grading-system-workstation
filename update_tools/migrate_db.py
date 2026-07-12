@@ -410,14 +410,22 @@ def run_migrations(
     return report
 
 
-def get_migration_status(target_name: str) -> dict[str, Any]:
+def get_migration_status(
+    target_name: str,
+    *,
+    db_path_override: Path | None = None,
+) -> dict[str, Any]:
     """获取指定数据库的迁移状态。"""
     targets = _get_targets()
     if target_name not in targets:
         return {"error": f"未知目标: {target_name}"}
 
     config = targets[target_name]
-    db_path: Path = config["db_path"]
+    db_path = (
+        Path(db_path_override)
+        if db_path_override is not None
+        else Path(config["db_path"])
+    )
     migrations_dir: Path = config["migrations_dir"]
 
     status: dict[str, Any] = {

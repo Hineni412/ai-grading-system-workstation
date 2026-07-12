@@ -87,7 +87,7 @@ GET /api/ops/backups?limit=50 -> OpsBackupListResponse
 **Interfaces:**
 - Produces: `OpsSelfCheckResponse`, `OpsBackupListResponse` and their nested explicit projection models.
 
-- [ ] **Step 1: Write failing schema and missing-route tests**
+- [x] **Step 1: Write failing schema and missing-route tests**
 
 ```python
 def test_ops_self_check_contract_is_path_free(ops_client):
@@ -105,12 +105,12 @@ def test_ops_exposes_no_write_operations():
     assert all(set(item) <= {"get", "parameters"} for item in ops_paths.values())
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_api_ops_routes.py -q`
 Expected: collection/import fails because `backend.api.schemas.ops` and Ops routes do not exist.
 
-- [ ] **Step 3: Implement strict response models**
+- [x] **Step 3: Implement strict response models**
 
 ```python
 class _OpsModel(BaseModel):
@@ -130,7 +130,7 @@ class OpsBackupListResponse(_OpsModel):
 
 Implement every nested model exactly as declared in Public Interfaces; do not add generic mapping fields.
 
-- [ ] **Step 4: Run schema tests**
+- [x] **Step 4: Run schema tests**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_api_ops_routes.py -q`
 Expected: direct schema assertions pass; endpoint assertions remain 404.
@@ -145,7 +145,7 @@ Expected: direct schema assertions pass; endpoint assertions remain 404.
 - Consumes: existing target metadata and migration files.
 - Produces: `get_migration_status(target_name: str, *, db_path_override: Path | None = None) -> dict[str, Any]`.
 
-- [ ] **Step 1: Write failing source-isolation test**
+- [x] **Step 1: Write failing source-isolation test**
 
 ```python
 def test_migration_status_uses_explicit_candidate_without_opening_source(tmp_path, monkeypatch):
@@ -160,12 +160,12 @@ def test_migration_status_uses_explicit_candidate_without_opening_source(tmp_pat
     assert not source.exists()
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_migration_tooling.py -q`
 Expected: `TypeError` because `db_path_override` is not accepted.
 
-- [ ] **Step 3: Add the minimal keyword-only override**
+- [x] **Step 3: Add the minimal keyword-only override**
 
 ```python
 def get_migration_status(
@@ -182,7 +182,7 @@ def get_migration_status(
 
 Keep every existing return key and CLI call unchanged.
 
-- [ ] **Step 4: Run migration tests GREEN**
+- [x] **Step 4: Run migration tests GREEN**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_migration_tooling.py tests\test_schema_baseline.py -q`
 Expected: all tests pass; default status behavior remains compatible.
@@ -198,7 +198,7 @@ Expected: all tests pass; default status behavior remains compatible.
 - Consumes: `PathManager`, `captured_sqlite_snapshot_path`, migration status override, `backup_core.list_backups`, filesystem/tool detector callables.
 - Produces: `OpsSelfCheckService.build_snapshot()` and `OpsSelfCheckService.list_backups(limit)` using only schema-compatible dictionaries.
 
-- [ ] **Step 1: Write failing service tests**
+- [x] **Step 1: Write failing service tests**
 
 ```python
 def test_snapshot_checks_candidates_without_opening_sources(ops_service, guarded_sources):
@@ -222,12 +222,12 @@ def test_backup_projection_drops_paths_and_limits_items(ops_service):
 
 Also cover missing directories, unwritable probe, absent DB, pending migrations, missing tools, malformed API config, `.db` stat races, stable sorting, and ZIP metadata containing an injected path/key.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_ops_self_check_service.py -q`
 Expected: import fails because `backend.ops.service` does not exist.
 
-- [ ] **Step 3: Implement bounded helpers**
+- [x] **Step 3: Implement bounded helpers**
 
 ```python
 def _probe_writable(directory: Path) -> bool:
@@ -259,7 +259,7 @@ def _database_check(key, source, target):
 
 Use a fixed directory allow-list (`data`, `databases`, `backups`, `logs`, `reports`, `outputs`), fixed tool IDs (`microsoft_word`, `libreoffice`, `pdflatex`), and fixed warning codes rather than exception text. Read API profiles only to compute whether any dict entry has a non-empty `api_key`; never retain profile data.
 
-- [ ] **Step 4: Run service tests GREEN**
+- [x] **Step 4: Run service tests GREEN**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_ops_self_check_service.py tests\test_migration_tooling.py -q`
 Expected: all service and migration tests pass with only `tmp_path` data.
@@ -277,7 +277,7 @@ Expected: all service and migration tests pass with only `tmp_path` data.
 - Consumes: `get_ops_self_check_service`, strict Ops response schemas.
 - Produces: `GET /api/ops/self-check` and `GET /api/ops/backups?limit=50`.
 
-- [ ] **Step 1: Extend failing route behavior tests**
+- [x] **Step 1: Extend failing route behavior tests**
 
 ```python
 def test_ops_routes_return_explicit_safe_projection(ops_client, fake_ops_service):
@@ -293,12 +293,12 @@ def test_ops_backups_enforces_bounded_limit(ops_client):
 
 Cover injected extra response keys being rejected during projection, stable 503 on service-boundary failure, and POST/PUT/DELETE returning 405/404 with no registered operation.
 
-- [ ] **Step 2: Run route RED**
+- [x] **Step 2: Run route RED**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_api_ops_routes.py -q`
 Expected: Ops requests return 404.
 
-- [ ] **Step 3: Implement router and dependency**
+- [x] **Step 3: Implement router and dependency**
 
 ```python
 router = APIRouter(prefix="/api/ops", tags=["ops"])
@@ -320,7 +320,7 @@ def get_backups(limit: int = Query(50, ge=1, le=100), service=Depends(get_ops_se
 
 Register `ops_router` exactly once in `create_app()`.
 
-- [ ] **Step 4: Run route GREEN and adjacent API regression**
+- [x] **Step 4: Run route GREEN and adjacent API regression**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_api_ops_routes.py tests\test_api_app.py tests\test_api_read_routes.py -q`
 Expected: all selected API tests pass.
@@ -336,7 +336,7 @@ Expected: all selected API tests pass.
 - Consumes: registered Ops operations and all prior evidence.
 - Produces: stable read-only OpenAPI contract, current architecture fact and valid P1-22 handoff.
 
-- [ ] **Step 1: Add exact OpenAPI assertions**
+- [x] **Step 1: Add exact OpenAPI assertions**
 
 ```python
 def test_ops_openapi_is_read_only_and_has_no_dangerous_inputs():
@@ -348,21 +348,21 @@ def test_ops_openapi_is_read_only_and_has_no_dangerous_inputs():
         assert forbidden not in ops.lower()
 ```
 
-- [ ] **Step 2: Run OpenAPI test RED, update exact operation set, then GREEN**
+- [x] **Step 2: Run OpenAPI test RED, update exact operation set, then GREEN**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_api_openapi_contract.py -q`
 Expected before update: new Ops operations are absent from the expected set; after update: pass with unique operation IDs and unified 422/503 schemas.
 
-- [ ] **Step 3: Update architecture fact after code verification**
+- [x] **Step 3: Update architecture fact after code verification**
 
 Add one P1-22 increment bullet and update FastAPI route listings: Ops returns path-free version/directory/database/migration/tool/config state plus bounded backup metadata; database inspection uses temporary candidates; no backup/restore/migration/import operation is exposed.
 
-- [ ] **Step 4: Run final focused and affected regression**
+- [x] **Step 4: Run final focused and affected regression**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_ops_self_check_service.py tests\test_api_ops_routes.py tests\test_migration_tooling.py tests\test_schema_baseline.py tests\test_api_openapi_contract.py tests\test_api_app.py tests\test_api_read_routes.py -q`
 Expected: all selected tests pass with 0 failures.
 
-- [ ] **Step 5: Run package completion gates**
+- [x] **Step 5: Run package completion gates**
 
 ```powershell
 git diff --check
@@ -373,7 +373,7 @@ git status --short -- user_data
 
 Expected: diff clean; quick smoke passes; handoff validator emits one JSON line with `ok=true`; worktree `user_data/` status empty.
 
-- [ ] **Step 6: Re-read root real database fingerprints without opening SQLite**
+- [x] **Step 6: Re-read root real database fingerprints without opening SQLite**
 
 Compare size, UTC mtime and SHA-256 to the recorded baseline:
 
@@ -393,16 +393,24 @@ The functional commit must contain `交接状态: waiting_review`, `功能提交
 - If a focused test, quick smoke, handoff validation, independent review or real-data fingerprint check fails, preserve the feature worktree and do not integrate.
 - Full pytest is not the default feature-branch gate; integration runs the wave-end full smoke once unless a repository risk trigger requires additional full testing.
 
+## Implementation Evidence
+
+- Baseline: API app/OpenAPI/migration tooling set `20 passed` on the exact plan baseline before source changes.
+- RED/GREEN: Ops schema first failed collection because `backend.api.schemas.ops` did not exist, then `3 passed`; migration candidate override first failed with an unexpected keyword argument, then migration/schema tests reached `7 passed`; service tests first failed because `backend.ops` did not exist, then the service/migration set reached `8 passed`; route tests first failed because the Ops dependency did not exist, then Ops plus adjacent API tests reached `15 passed`.
+- Focused regression: service, Ops API, migration, schema baseline, OpenAPI, API app and read routes completed with `39 passed / 0 failed`; the single warning is the existing Starlette TestClient deprecation notice.
+- Quick smoke: document governance, static compile of `376` first-party Python files, and two temporary database copies' idempotent initialization with `integrity_check=ok` passed; full pytest remains the integration wave-end gate.
+- Real data: root grading DB remained `2863104` bytes / `2026-07-10T07:10:41.1221109Z` / SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`; root question-bank DB remained `3461120` bytes / `2026-07-08T11:58:06.3320883Z` / SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`. Worktree `user_data/` status is empty.
+
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
 
 **执行包：** P1-22
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
