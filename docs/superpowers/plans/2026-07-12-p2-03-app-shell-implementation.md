@@ -605,19 +605,19 @@ Record the reviewed feature SHA in a plan-only commit; set `交接状态: waitin
 - Consumes: reviewed anchor SHA and synthetic sessions browser environment.
 - Produces: explicit user acceptance evidence and `verified_pending_integration` handoff.
 
-- [ ] **Step 1: Generate the versioned checklist only after the shell is verified**
+- [x] **Step 1: Generate the versioned checklist only after the shell is verified**
 
 The checklist must include package, reviewed SHA, synthetic data source, exact start/stop commands, URL, visible P2-03 marker, and numbered checks for navigation order, settings location, session selection/refresh, desktop side-panel behavior, long names, disabled future entry, 404, focus and five desktop viewport overflow. Include the feedback format and machine result block required by `tools/handoff_status.py`.
 
-- [ ] **Step 2: Run the reviewed version for user inspection**
+- [x] **Step 2: Run the reviewed version for user inspection**
 
 Start only the verified synthetic sessions environment on loopback, open the shell, and ask the user to complete the 5–10 minute checklist. Do not read real databases or infer a pass from silence.
 
-- [ ] **Step 3: Commit passed user evidence**
+- [x] **Step 3: Commit passed user evidence**
 
 After explicit user confirmation, commit only the declared checkpoint file with the reviewed SHA and `passed` machine result.
 
-- [ ] **Step 4: Create the plan-only final handoff commit**
+- [x] **Step 4: Create the plan-only final handoff commit**
 
 Set `交接状态: verified_pending_integration`, `功能提交` to the direct parent's full SHA, `自动验证: passed`, `独立复审: passed`, `用户验收: passed`, `真实数据指纹: unchanged`, and `夜间动作: independent_candidate_allowed`. Commit only this plan and run:
 
@@ -661,12 +661,12 @@ Fetch/prune, fast-forward root `main` and active worktrees to `origin/main`, del
 ## 昼夜交接
 
 **执行包：** P2-03
-**交接状态：** waiting_user
-**功能提交：** 30c22b9f085bcaf94d5289e1abce1e21542ba42f
+**交接状态：** verified_pending_integration
+**功能提交：** 82183ef9f1dd58777f616a7ee5e14bfe0b1ce199
 **自动验证：** passed
 **独立复审：** passed
-**用户验收：** pending
+**用户验收：** passed
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
