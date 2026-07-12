@@ -202,7 +202,7 @@ git commit -m "feat: add protected ops confirmation plans"
 - Produces: `OpsArchivePolicy(max_upload_bytes=209715200, max_members=10000, max_expanded_bytes=1073741824, max_member_bytes=268435456, max_compression_ratio=100.0)`.
 - Produces: `stage_zip_upload()`, `inspect_zip()`, `extract_validated_zip()`, `write_export_zip(entries, destination)`.
 
-- [ ] **Step 1: Write RED archive attack and stream tests**
+- [x] **Step 1: Write RED archive attack and stream tests**
 
 ```python
 @pytest.mark.parametrize("name", ["../escape.txt", "/rooted.txt", "C:/secret.txt"])
@@ -220,12 +220,12 @@ def test_write_export_zip_streams_to_destination(tmp_path):
 
 Also cover ZIP symlink mode bits, duplicate normalized names, Windows case-fold collisions, unknown roots, member count, single/total expanded size, compression ratio, CRC failure, upload cap and partial-upload cleanup.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_ops_archive.py tests\test_data_transfer_service.py -q`
 Expected: FAIL because archive primitives and `write_export_zip` do not exist.
 
-- [ ] **Step 3: Implement member normalization before any extraction**
+- [x] **Step 3: Implement member normalization before any extraction**
 
 ```python
 def normalized_member(name: str, allowed_roots: set[str]) -> tuple[str, ...]:
@@ -243,12 +243,12 @@ def normalized_member(name: str, allowed_roots: set[str]) -> tuple[str, ...]:
 
 Never call `ZipFile.extract()` or `extractall()`. Open each member and copy into a newly created regular file under a verified staging root; reject pre-existing destination entries and any parent reparse point.
 
-- [ ] **Step 4: Run archive GREEN**
+- [x] **Step 4: Run archive GREEN**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_ops_archive.py tests\test_data_transfer_service.py -q`
-Expected: PASS with no writes outside `tmp_path`.
+Expected: `16 passed` with no writes outside `tmp_path`.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 
 ```powershell
 git add backend/ops/archive.py data_transfer_service.py tests/test_ops_archive.py tests/test_data_transfer_service.py
