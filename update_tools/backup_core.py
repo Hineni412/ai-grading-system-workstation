@@ -191,7 +191,8 @@ def _should_skip(rel_path: Path) -> bool:
 
 def _is_sensitive(rel_path: Path) -> bool:
     """检查是否为敏感文件（含 API key）。"""
-    return rel_path.name in _SENSITIVE_FILES
+    sensitive = {name.casefold() for name in _SENSITIVE_FILES}
+    return rel_path.name.casefold() in sensitive
 
 
 def _is_relative_to(path: Path, parent: Path) -> bool:
@@ -200,6 +201,75 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def preview_backup(
+    *,
+    path_manager: Any,
+    include_api_keys: bool = False,
+    include_logs: bool = False,
+) -> dict[str, Any]:
+    """Collect the existing backup manifest without creating logs or directories."""
+    pm = path_manager
+    backup_sources: list[tuple[Path, str]] = [
+        (pm.data_root / "databases", "user_data/databases"),
+        (pm.data_root / "exams", "user_data/exams"),
+        (pm.data_root / "question_bank", "user_data/question_bank"),
+        (pm.data_root / "outputs", "user_data/outputs"),
+        (pm.data_root / "config", "user_data/config"),
+        (pm.data_root / "templates", "user_data/templates"),
+        (pm.data_root / "annotated", "user_data/annotated"),
+        (pm.data_root / "reports", "user_data/reports"),
+        (pm.data_root / "snapshots", "user_data/snapshots"),
+        (pm.project_root / "config", "config"),
+    ]
+    if include_logs:
+        backup_sources.append((pm.logs_dir, "logs"))
+
+    files: list[str] = []
+    skipped: list[str] = []
+    skipped_sensitive: list[str] = []
+    total_size = 0
+    for source_dir, prefix in backup_sources:
+        if not source_dir.exists():
+            continue
+        from data_transfer_service import ensure_controlled_path
+
+        ensure_controlled_path(source_dir, source_dir)
+        for item in sorted(source_dir.rglob("*")):
+            ensure_controlled_path(item, source_dir)
+            if not item.is_file():
+                continue
+            try:
+                rel = item.relative_to(source_dir)
+            except ValueError:
+                continue
+            full_rel = Path(prefix) / rel
+            public_name = full_rel.as_posix()
+            if prefix == "user_data/databases" and public_name not in {
+                "user_data/databases/grading_system.db",
+                "user_data/databases/question_bank.db",
+            }:
+                skipped.append(public_name)
+                continue
+            if _should_skip(full_rel):
+                skipped.append(public_name)
+                continue
+            if _is_sensitive(full_rel) and not include_api_keys:
+                skipped_sensitive.append(public_name)
+                continue
+            files.append(public_name)
+            try:
+                total_size += max(0, int(item.stat().st_size))
+            except OSError:
+                pass
+    return {
+        "file_count": len(files),
+        "total_size": total_size,
+        "files": files,
+        "skipped": skipped,
+        "skipped_sensitive": skipped_sensitive,
+    }
 
 
 def _safe_restore_destination(

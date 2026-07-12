@@ -11,8 +11,11 @@ from backend.files.service import JobFileService
 from backend.jobs.default_handlers import register_default_job_handlers
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
+from backend.ops.jobs import register_ops_job_handlers
 from backend.media.service import ReviewMediaService
 from backend.ops.service import OpsSelfCheckService
+from backend.ops.plan_store import OpsPlanStore
+from backend.ops.write_service import OpsWriteService
 from backend.review.service import ReviewApplicationService
 from manual_review_service import ManualReviewService
 from path_manager import PathManager, get_path_manager
@@ -37,6 +40,30 @@ def get_ops_self_check_service(
     return OpsSelfCheckService(paths)
 
 
+def create_ops_write_service(
+    path_manager: PathManager | None = None,
+) -> OpsWriteService:
+    paths = path_manager or get_path_manager()
+    project_root = Path(
+        getattr(paths, "project_root", Path(__file__).resolve().parents[2])
+    )
+    return OpsWriteService(
+        paths,
+        plan_store=OpsPlanStore(),
+        migration_dirs={
+            "grading": project_root / "migrations" / "grading",
+            "question_bank": project_root / "migrations" / "question_bank",
+        },
+    )
+
+
+def get_ops_write_service(request: Request) -> OpsWriteService:
+    service = getattr(request.app.state, "ops_write_service", None)
+    if service is None:
+        raise RuntimeError("OpsWriteService is unavailable outside application lifespan")
+    return service
+
+
 def get_upload_config_dir() -> Path:
     return get_path_manager().upload_config_dir
 
@@ -59,6 +86,10 @@ def get_exams_dir() -> Path:
 
 def get_reports_dir() -> Path:
     return get_path_manager().reports_dir
+
+
+def get_backups_dir() -> Path:
+    return get_path_manager().backups_dir
 
 
 def get_outputs_dir() -> Path:
@@ -146,11 +177,14 @@ def get_training_task_service() -> TrainingTaskService:
 
 def get_job_file_service(
     reports_dir: Path = Depends(get_reports_dir),
+    backups_dir: Path = Depends(get_backups_dir),
     outputs_dir: Path = Depends(get_outputs_dir),
 ) -> JobFileService:
     return JobFileService(
         reports_dir,
         training_outputs_dir=outputs_dir / "training",
+        backups_dir=backups_dir,
+        ops_outputs_dir=outputs_dir / "ops",
     )
 
 
@@ -212,6 +246,7 @@ def create_job_manager(path_manager: PathManager | None = None) -> JobManager:
             )
             / "training",
         )
+        register_ops_job_handlers(manager, paths=paths)
     except Exception:
         manager.shutdown()
         raise

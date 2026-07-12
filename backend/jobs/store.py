@@ -97,6 +97,19 @@ class JobStore:
             raise RuntimeError(f"created job {job_id} could not be loaded")
         return loaded
 
+    def has_active_job_types(self, job_types: set[str]) -> bool:
+        clean_types = sorted({str(item).strip() for item in job_types if str(item).strip()})
+        if not clean_types:
+            return False
+        placeholders = ",".join("?" for _ in clean_types)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT 1 FROM jobs WHERE status IN ('queued','running','paused') "
+                f"AND job_type IN ({placeholders}) LIMIT 1",
+                clean_types,
+            ).fetchone()
+        return row is not None
+
     def create_config_retry_job(self, payload: dict[str, Any]) -> JobRecord:
         source_job_id = int(payload.get("source_job_id") or 0)
         if source_job_id <= 0:

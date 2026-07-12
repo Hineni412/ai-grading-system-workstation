@@ -22,6 +22,14 @@ if "%PORT%"=="" set "PORT=8501"
 if "%API_PORT%"=="" set "API_PORT=8000"
 if "%START_API%"=="" set "START_API=1"
 
+"%PYTHON_EXE%" -m backend.ops.offline --apply-pending
+if errorlevel 1 (
+  echo 启动前数据操作未能安全完成，系统已停止启动。
+  echo 请把本窗口中的操作编号和结果代码发给 Codex 排查。
+  pause
+  exit /b 1
+)
+
 echo AI阅卷系统 工作机版 v1.5.0
 echo 数据目录: %AI_GRADING_DATA_DIR%
 echo Streamlit 地址: http://127.0.0.1:%PORT%
