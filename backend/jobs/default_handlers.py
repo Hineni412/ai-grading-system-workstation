@@ -18,6 +18,7 @@ from .grading_run import run_grading_job
 from .question_import import run_question_import_job
 from .scan_analysis import run_scan_analysis
 from .tagging_sync import run_tagging_sync_job
+from .training_export import run_training_export_job
 
 
 class ReportGeneratorFactory(Protocol):
@@ -35,12 +36,14 @@ def register_default_job_handlers(
     data_root: Path | None = None,
     question_bank_db_path: Path | None = None,
     upload_config_dir: Path | None = None,
+    training_output_root: Path | None = None,
     report_generator_factory: ReportGeneratorFactory = ReportGenerator,
     scan_runner: Callable[..., dict[str, object]] = run_scan_analysis,
     grading_runner: Callable[..., dict[str, object]] = run_grading_job,
     config_generation_runner: Callable[..., dict[str, object]] = run_config_generation_job,
     question_import_runner: Callable[..., dict[str, object]] = run_question_import_job,
     tagging_sync_runner: Callable[..., dict[str, object]] = run_tagging_sync_job,
+    training_export_runner: Callable[..., dict[str, object]] = run_training_export_job,
     tagging_ai_service_factory: Callable[[], Any] = AITaggingService,
     llm_client_factory: Callable[[], Any] | None = None,
 ) -> None:
@@ -111,6 +114,34 @@ def register_default_job_handlers(
             ai_service_factory=tagging_ai_service_factory,
         ),
     )
+    manager.register(
+        "training_export",
+        _build_training_export_handler(
+            question_bank_db_path=resolved_question_bank_db,
+            output_root=(
+                Path(training_output_root)
+                if training_output_root is not None
+                else base_data_root / "outputs" / "training"
+            ),
+            training_export_runner=training_export_runner,
+        ),
+    )
+
+
+def _build_training_export_handler(
+    *,
+    question_bank_db_path: Path,
+    output_root: Path,
+    training_export_runner: Callable[..., dict[str, object]],
+):
+    def handler(context: JobContext) -> dict[str, object]:
+        return training_export_runner(
+            context=context,
+            question_bank_db_path=question_bank_db_path,
+            output_root=output_root,
+        )
+
+    return handler
 
 
 def _build_question_import_handler(
