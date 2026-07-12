@@ -72,6 +72,13 @@
   --control-height-large: 40px;
   --content-max-width: 1180px;
 
+  --shell-topbar-height: 60px;
+  --shell-navigation-width: 232px;
+  --shell-navigation-collapsed-width: 60px;
+  --shell-inspector-width: 360px;
+  --shell-inspector-compact-width: 320px;
+  --shell-overlay-z-index: 30;
+
   --shadow-overlay: 0 8px 24px rgba(32, 36, 42, 0.14);
   --focus-ring: 0 0 0 3px var(--color-accent-subtle);
   --focus-offset: 2px;

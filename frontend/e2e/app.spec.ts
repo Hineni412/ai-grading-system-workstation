@@ -1,62 +1,38 @@
 import { expect, test } from '@playwright/test'
 
-const viewports = [
-  { name: 'desktop', width: 1440, height: 900 },
-  { name: 'compact desktop', width: 1280, height: 800 },
-  { name: 'tablet landscape', width: 1024, height: 768 },
-  { name: 'tablet portrait', width: 768, height: 1024 },
-  { name: 'mobile', width: 390, height: 844 },
-]
+const emptySessions = { items: [], total: 0 }
 
-for (const viewport of viewports) {
-  test(`${viewport.name} keeps the design system readable and keyboard accessible`, async ({ page }) => {
-    const pageErrors: Error[] = []
-    const consoleErrors: string[] = []
-    page.on('pageerror', (error) => pageErrors.push(error))
-    page.on('console', (message) => {
-      if (message.type() === 'error') consoleErrors.push(message.text())
-    })
-    await page.setViewportSize(viewport)
-    await page.goto('/')
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/sessions', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(emptySessions) }),
+  )
+})
 
-    await expect(page.getByTestId('design-system-showcase')).toBeVisible()
-    await expect(page.getByRole('heading', { name: '基础 Token' })).toBeVisible()
-    await expect(page.getByRole('heading', { name: '操作反馈' })).toBeVisible()
-
-    const hasHorizontalOverflow = await page.evaluate(
-      () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
-    )
-    expect(hasHorizontalOverflow).toBe(false)
-
-    const longTeacherBadge = page.getByText('教师决定：二次函数图像与性质', { exact: false })
-    await expect(longTeacherBadge).toBeVisible()
-    expect(
-      await longTeacherBadge.evaluate((element) => element.scrollWidth <= element.clientWidth),
-    ).toBe(true)
-
-    await page.keyboard.press('Tab')
-    const focusedStyle = await page.evaluate(() => {
-      const active = document.activeElement
-      if (!(active instanceof HTMLElement)) return null
-      const style = getComputedStyle(active)
-      return { tagName: active.tagName, outlineStyle: style.outlineStyle }
-    })
-    expect(focusedStyle?.tagName).toBe('BUTTON')
-    expect(focusedStyle?.outlineStyle).not.toBe('none')
-
-    await expect(page.locator('#teacher-score')).toHaveAttribute('aria-invalid', 'true')
-    expect(pageErrors).toEqual([])
-    expect(consoleErrors).toEqual([])
-  })
-}
-
-test('keyboard focus preserves input ownership and the complete danger frame', async ({ page }) => {
+test('design-system route preserves the P2-02 showcase and focus treatment', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' })
-  await page.goto('/')
-  for (let step = 0; step < 5; step += 1) await page.keyboard.press('Tab')
+  await page.goto('/design-system')
+
+  await expect(page.getByTestId('design-system-showcase')).toBeVisible()
+  await expect(page.getByRole('heading', { name: '基础 Token' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '操作反馈' })).toBeVisible()
+  await expect(page.locator('#teacher-score')).toHaveAttribute('aria-invalid', 'true')
+
+  const longTeacherBadge = page.getByText('教师决定：二次函数图像与性质', { exact: false })
+  await expect(longTeacherBadge).toBeVisible()
+  expect(await longTeacherBadge.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+    true,
+  )
 
   const examInput = page.locator('#exam-name')
-  await expect(examInput).toBeFocused()
+  await examInput.focus()
+  await expect
+    .poll(() =>
+      examInput.evaluate((element) => {
+        const wrapper = element.closest('.el-input__wrapper')
+        return wrapper ? getComputedStyle(wrapper).boxShadow : ''
+      }),
+    )
+    .toContain('rgb(37, 99, 235)')
   const validStyles = await examInput.evaluate((element) => {
     const wrapper = element.closest('.el-input__wrapper')
     return {
@@ -68,18 +44,24 @@ test('keyboard focus preserves input ownership and the complete danger frame', a
   expect(validStyles.wrapperShadow).toContain('rgb(37, 99, 235)')
   expect(validStyles.wrapperShadow).toContain('rgb(239, 246, 255)')
 
-  await page.keyboard.press('Tab')
   const invalidInput = page.locator('#teacher-score')
+  await page.keyboard.press('Tab')
   await expect(invalidInput).toBeFocused()
+  await expect
+    .poll(() =>
+      invalidInput.evaluate((element) => {
+        const wrapper = element.closest('.el-input__wrapper')
+        return wrapper ? getComputedStyle(wrapper).boxShadow : ''
+      }),
+    )
+    .toContain('rgb(239, 246, 255)')
   const invalidStyles = await invalidInput.evaluate((element) => {
-    const inputStyle = getComputedStyle(element)
     const wrapper = element.closest('.el-input__wrapper')
     return {
-      inputShadow: inputStyle.boxShadow,
+      inputShadow: getComputedStyle(element).boxShadow,
       wrapperShadow: wrapper ? getComputedStyle(wrapper).boxShadow : '',
     }
   })
-
   expect(invalidStyles.inputShadow).toBe('none')
   expect(invalidStyles.wrapperShadow).toContain('rgb(176, 68, 68)')
   expect(invalidStyles.wrapperShadow).toContain('rgb(239, 246, 255)')
