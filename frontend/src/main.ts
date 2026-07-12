@@ -10,6 +10,7 @@ import { createAppRouter } from './router'
 import './styles/tokens.css'
 import './styles/element-theme.css'
 import './styles/base.css'
+import './styles/app-shell.css'
 
 const app = createApp(App)
 const pinia = createPinia()

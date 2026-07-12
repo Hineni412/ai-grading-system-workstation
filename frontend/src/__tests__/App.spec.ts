@@ -1,12 +1,65 @@
 import { createApp, nextTick } from 'vue'
-import { describe, expect, it } from 'vitest'
+import { createPinia } from 'pinia'
+import { createMemoryHistory } from 'vue-router'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import App from '../App.vue'
+import ComponentShowcase from '../components/design-system/ComponentShowcase.vue'
+import { createAppRouter } from '../router'
+
+vi.mock('../api/sessions', () => ({
+  fetchSessions: vi.fn(async () => []),
+}))
+
+async function settleUi(): Promise<void> {
+  await Promise.resolve()
+  await nextTick()
+  await Promise.resolve()
+  await nextTick()
+}
+
+beforeEach(() => {
+  localStorage.clear()
+  document.body.innerHTML = ''
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn(() => ({
+      matches: false,
+      media: '(max-width: 1023px)',
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  )
+})
 
 describe('App', () => {
-  it('renders every P2-02 showcase section and extreme content state', async () => {
+  it('mounts the P2-03 application shell with memory routing and Pinia', async () => {
+    const pinia = createPinia()
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/workbench')
+    await router.isReady()
     const host = document.createElement('div')
-    createApp(App).mount(host)
+    const app = createApp(App)
+    app.use(pinia)
+    app.use(router)
+    app.mount(host)
+    await settleUi()
+
+    expect(host.querySelector('[data-testid="app-shell"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="app-topbar"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="app-navigation"]')).not.toBeNull()
+    expect(host.querySelector('main#main-workspace')).not.toBeNull()
+    expect(host.querySelector('[data-testid="session-inspector"]')).not.toBeNull()
+
+    app.unmount()
+  })
+
+  it('keeps direct unit coverage for every P2-02 showcase section', async () => {
+    const host = document.createElement('div')
+    const app = createApp(ComponentShowcase)
+    app.mount(host)
     await nextTick()
 
     expect(host.querySelector('[data-testid="design-system-showcase"]')).not.toBeNull()
@@ -29,5 +82,7 @@ describe('App', () => {
     expect(host.querySelectorAll('[data-testid="feedback-banner"]')).toHaveLength(4)
     expect(host.querySelector('[aria-invalid="true"]')).not.toBeNull()
     expect(host.querySelector('[data-testid="disabled-field"] [disabled]')).not.toBeNull()
+
+    app.unmount()
   })
 })
