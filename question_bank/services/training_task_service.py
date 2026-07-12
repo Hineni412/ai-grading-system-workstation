@@ -129,7 +129,9 @@ class TrainingTaskService:
                     if not isinstance(item, Mapping):
                         raise ValueError("training task item must be a mapping")
                     item_order = int(item.get("item_order") or fallback_order)
-                    task_item_code = f"{task_code}-V{variant_index:02d}-Q{item_order:02d}"
+                    task_item_code = (
+                        f"{resolved_task_code}-V{variant_index:02d}-Q{item_order:02d}"
+                    )
                     question_id = _optional_int(item.get("question_id") or item.get("bank_question_id"))
                     question_snapshot = _question_snapshot(conn, question_id, item)
                     concept_snapshot = {

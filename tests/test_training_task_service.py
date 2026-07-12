@@ -197,6 +197,20 @@ def test_task_service_supports_stable_task_code_lookup(
     assert loaded["created_by"] == "teacher"
 
 
+def test_default_task_codes_produce_distinct_item_codes(
+    service: TrainingTaskService,
+    practice_plan: dict,
+) -> None:
+    first = service.create_task(practice_plan, created_by="teacher")
+    second = service.create_task(practice_plan, created_by="teacher")
+
+    first_item_code = first.variants[0].items[0].task_item_code
+    second_item_code = second.variants[0].items[0].task_item_code
+    assert first_item_code.startswith(f"{first.task_code}-")
+    assert second_item_code.startswith(f"{second.task_code}-")
+    assert first_item_code != second_item_code
+
+
 def test_task_service_paginates_after_descending_sort(
     service: TrainingTaskService,
     practice_plan: dict,
