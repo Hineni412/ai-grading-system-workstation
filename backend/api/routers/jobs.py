@@ -153,7 +153,7 @@ def submit_job(
         raise ApiError(
             422,
             "dedicated_job_endpoint_required",
-            "Use the session config generation endpoint for this job type",
+            "Use the dedicated endpoint for this job type",
             {"job_type": clean_job_type},
         )
     if contains_sensitive_key(request.payload):

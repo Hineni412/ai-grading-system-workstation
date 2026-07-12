@@ -15,6 +15,7 @@ from question_bank.services.question_write_service import (
     QuestionImportUploadNotFound,
 )
 
+from .execution_locks import keyed_execution_locks
 from .manager import JobContext
 
 
@@ -28,6 +29,29 @@ def run_question_import_job(
     data_root: Path,
     write_service: QuestionBankWriteService,
     importer: ImportRunner = import_scanned_papers,
+) -> dict[str, object]:
+    request_id = str(context.payload.get("request_id") or "").strip().casefold()
+    lock_key = (
+        f"question-import:{Path(question_bank_db_path).resolve(strict=False)}:"
+        f"{request_id}"
+    )
+    with keyed_execution_locks([lock_key]):
+        return _run_question_import_job_locked(
+            context=context,
+            question_bank_db_path=question_bank_db_path,
+            data_root=data_root,
+            write_service=write_service,
+            importer=importer,
+        )
+
+
+def _run_question_import_job_locked(
+    *,
+    context: JobContext,
+    question_bank_db_path: Path,
+    data_root: Path,
+    write_service: QuestionBankWriteService,
+    importer: ImportRunner,
 ) -> dict[str, object]:
     request_id = str(context.payload.get("request_id") or "").strip().casefold()
     context.raise_if_cancelled()
@@ -53,6 +77,7 @@ def run_question_import_job(
         )
     except Exception:
         raise RuntimeError("question import failed") from None
+    context.raise_if_cancelled()
 
     successful_sources = [
         item.source_file

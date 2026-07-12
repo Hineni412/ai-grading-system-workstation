@@ -372,8 +372,15 @@ class QuestionBankWriteService:
         try:
             payload = json.loads(request_path.read_text(encoding="utf-8"))
             upload, source_path = self._load_staged_upload(str(payload["upload_id"]))
+            expected_request_id = hashlib.sha256(
+                f"question-import:{upload.upload_id}".encode("ascii")
+            ).hexdigest()[:32]
+            if normalized_request_id != expected_request_id:
+                raise QuestionImportUploadNotFound(
+                    "Question import request not found"
+                )
             expected = QuestionImportRequest(
-                request_id=normalized_request_id,
+                request_id=expected_request_id,
                 upload_id=upload.upload_id,
                 filename=upload.filename,
                 size=upload.size,
