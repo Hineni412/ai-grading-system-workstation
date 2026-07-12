@@ -54,6 +54,8 @@ EXPECTED_OPERATIONS = {
     ("POST", "/api/training/tasks"),
     ("GET", "/api/training/tasks"),
     ("GET", "/api/training/tasks/{task_id}"),
+    ("POST", "/api/training/tasks/{task_id}/exports"),
+    ("POST", "/api/training/exports/jobs/{job_id}/retry"),
 }
 
 
@@ -132,7 +134,10 @@ def test_binary_routes_publish_exact_200_media_types_and_binary_schemas() -> Non
     schema = create_app().openapi()
     expected_media_types = {
         "/api/jobs/{job_id}/download": {
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/zip",
+            "text/markdown",
         },
         "/api/sessions/{session_id}/results/{result_id}/pages/{page}": {
             "image/jpeg",
@@ -216,6 +221,39 @@ def test_config_generation_openapi_declares_safe_requests_and_stable_errors() ->
         request_schema = schema["components"]["schemas"][request_ref.rsplit("/", 1)[-1]]
         assert request_schema["additionalProperties"] is False
         assert not (forbidden & set(request_schema.get("properties", {})))
+
+
+def test_training_export_openapi_declares_dedicated_safe_operations() -> None:
+    from backend.api.app import create_app
+
+    schema = create_app().openapi()
+    expected_errors = {
+        "/api/training/tasks/{task_id}/exports": {404, 422, 503},
+        "/api/training/exports/jobs/{job_id}/retry": {404, 409, 503},
+    }
+    forbidden = {
+        "api_key",
+        "token",
+        "secret",
+        "password",
+        "path",
+        "destination",
+        "student_name",
+        "question_text",
+    }
+    for path, statuses in expected_errors.items():
+        operation = schema["paths"][path]["post"]
+        responses = operation["responses"]
+        assert statuses <= {int(status) for status in responses}
+        for status in statuses:
+            assert responses[str(status)]["content"]["application/json"]["schema"] == {
+                "$ref": "#/components/schemas/ErrorResponse"
+            }
+    submit = schema["paths"]["/api/training/tasks/{task_id}/exports"]["post"]
+    request_ref = submit["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+    request_schema = schema["components"]["schemas"][request_ref.rsplit("/", 1)[-1]]
+    assert request_schema["additionalProperties"] is False
+    assert not (forbidden & set(request_schema.get("properties", {})))
 
 
 def test_question_bank_job_openapi_declares_dedicated_safe_operations() -> None:
