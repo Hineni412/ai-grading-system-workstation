@@ -13,6 +13,10 @@ JOB_STATUSES = ("queued", "running", "paused", "succeeded", "failed", "cancelled
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 
 
+class ConfigRetryAlreadySubmittedError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class JobRecord:
     id: int
@@ -88,6 +92,53 @@ class JobStore:
                 (clean_type, payload_json),
             )
             job_id = int(cursor.lastrowid)
+        loaded = self.get_job(job_id)
+        if loaded is None:
+            raise RuntimeError(f"created job {job_id} could not be loaded")
+        return loaded
+
+    def create_config_retry_job(self, payload: dict[str, Any]) -> JobRecord:
+        source_job_id = int(payload.get("source_job_id") or 0)
+        if source_job_id <= 0:
+            raise ValueError("source_job_id must be a positive integer")
+        payload_json = json.dumps(dict(payload), ensure_ascii=False, sort_keys=True)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                rows = conn.execute(
+                    "SELECT status, payload_json FROM jobs WHERE job_type = 'config_generation'"
+                ).fetchall()
+                for row in rows:
+                    try:
+                        existing_payload = json.loads(str(row["payload_json"] or "{}"))
+                    except json.JSONDecodeError:
+                        continue
+                    try:
+                        existing_source_id = int(
+                            existing_payload.get("source_job_id") or 0
+                        ) if isinstance(existing_payload, dict) else 0
+                    except (TypeError, ValueError):
+                        existing_source_id = 0
+                    if (
+                        isinstance(existing_payload, dict)
+                        and existing_source_id == source_job_id
+                        and str(row["status"]) not in {"failed", "cancelled"}
+                    ):
+                        raise ConfigRetryAlreadySubmittedError(
+                            f"retry already submitted for config generation job {source_job_id}"
+                        )
+                cursor = conn.execute(
+                    """
+                    INSERT INTO jobs (job_type, payload_json, status)
+                    VALUES ('config_generation', ?, 'queued')
+                    """,
+                    (payload_json,),
+                )
+                job_id = int(cursor.lastrowid)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
         loaded = self.get_job(job_id)
         if loaded is None:
             raise RuntimeError(f"created job {job_id} could not be loaded")
@@ -230,6 +281,72 @@ class JobStore:
                 """
             )
             return int(cursor.rowcount)
+
+    def finish_config_generation_and_bind(
+        self,
+        job_id: int,
+        *,
+        session_id: int,
+        expected_rubric_path: str,
+        expected_answer_key_path: str,
+        rubric_path: str,
+        answer_key_path: str,
+        result: dict[str, Any],
+    ) -> bool:
+        result_json = json.dumps(dict(result), ensure_ascii=False, sort_keys=True)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                job = conn.execute(
+                    "SELECT status, cancel_requested FROM jobs WHERE id = ?",
+                    (int(job_id),),
+                ).fetchone()
+                if (
+                    job is None
+                    or str(job["status"]) != "running"
+                    or bool(int(job["cancel_requested"] or 0))
+                ):
+                    conn.rollback()
+                    return False
+                session_update = conn.execute(
+                    """
+                    UPDATE grading_sessions
+                    SET rubric_path = ?, answer_key_path = ?,
+                        updated_at = datetime('now','localtime')
+                    WHERE id = ? AND is_deleted = 0
+                      AND rubric_path = ? AND answer_key_path = ?
+                    """,
+                    (
+                        str(rubric_path),
+                        str(answer_key_path),
+                        int(session_id),
+                        str(expected_rubric_path),
+                        str(expected_answer_key_path),
+                    ),
+                )
+                if session_update.rowcount != 1:
+                    conn.rollback()
+                    return False
+                job_update = conn.execute(
+                    """
+                    UPDATE jobs
+                    SET status = 'succeeded', progress = 1.0,
+                        stage = 'config_generation', detail = 'complete',
+                        result_json = ?, error = NULL,
+                        updated_at = datetime('now','localtime'),
+                        finished_at = COALESCE(finished_at, datetime('now','localtime'))
+                    WHERE id = ? AND status = 'running' AND cancel_requested = 0
+                    """,
+                    (result_json, int(job_id)),
+                )
+                if job_update.rowcount != 1:
+                    conn.rollback()
+                    return False
+                conn.commit()
+                return True
+            except Exception:
+                conn.rollback()
+                raise
 
 
 def _job_record(row: sqlite3.Row) -> JobRecord:
