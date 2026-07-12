@@ -263,7 +263,14 @@ def _run_offline_prepare(
                 operation_id=operation_id,
                 operation=operation.value,
                 parameters=parameters,
-                resource_fingerprint=str(context.payload["resource_fingerprint"]),
+                resource_fingerprint=(
+                    OpsWriteService(
+                        paths,
+                        plan_store=OpsPlanStore(),
+                    ).migration_files_fingerprint(str(parameters["target"]))
+                    if operation is OpsOperation.MIGRATION
+                    else str(context.payload["resource_fingerprint"])
+                ),
                 staging_root=str(staging_root),
                 preparation_backup=str(preparation_backup),
                 created_at=created_at,

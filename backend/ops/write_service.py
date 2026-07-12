@@ -191,6 +191,18 @@ class OpsWriteService:
         targets = ("grading", "question_bank") if target == "all" else (target,)
         return [self._migration_preview(item) for item in targets]
 
+    def migration_files_fingerprint(self, target: str) -> str:
+        if target not in {"grading", "question_bank", "all"}:
+            raise OpsRequestInvalid("invalid migration target")
+        targets = ("grading", "question_bank") if target == "all" else (target,)
+        digest = hashlib.sha256()
+        for item in targets:
+            digest.update(item.encode("ascii"))
+            for migration in sorted(Path(self.migration_dirs[item]).glob("*.sql")):
+                digest.update(migration.name.encode("utf-8"))
+                digest.update(_file_sha256(migration).encode("ascii"))
+        return digest.hexdigest()
+
     def _preflight_backup(self, request: Any) -> OpsInternalPlan:
         reason = str(getattr(request, "reason", "") or "")
         if reason not in VALID_REASONS:

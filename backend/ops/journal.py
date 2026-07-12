@@ -84,6 +84,12 @@ class OpsOperationJournal:
     def pending_exists(self) -> bool:
         return self.pending_path.exists()
 
+    def pending_record(self) -> OpsOperationRecord | None:
+        with self._lock:
+            if not self.pending_path.exists():
+                return None
+            return self._load_record(self._read_pending_id())
+
     def claim_pending(self) -> OpsOperationManifest | None:
         with self._lock:
             if not self.pending_path.exists():
@@ -131,6 +137,53 @@ class OpsOperationJournal:
     def load_public(self, operation_id: str) -> dict[str, object]:
         with self._lock:
             return self._public(self._load_record(operation_id))
+
+    def start_apply(self, operation_id: str, apply_backup: Path) -> None:
+        with self._lock:
+            record = self._load_record(operation_id)
+            if record.status != "applying":
+                raise OpsJournalInvalid("operation is not applying")
+            backup = Path(apply_backup)
+            if not backup.name.lower().endswith(".zip"):
+                raise OpsJournalInvalid("apply backup is invalid")
+            _atomic_json(
+                self._operation_root(operation_id) / "apply.json",
+                {"backup_path": str(backup), "replacements": []},
+            )
+
+    def record_replacement(
+        self,
+        operation_id: str,
+        *,
+        target: Path,
+        archive_name: str,
+        existed: bool,
+    ) -> None:
+        with self._lock:
+            path = self._operation_root(operation_id) / "apply.json"
+            payload = _read_json(path)
+            replacements = payload.get("replacements")
+            if not isinstance(replacements, list):
+                raise OpsJournalInvalid("apply state is invalid")
+            replacements.append(
+                {
+                    "target": str(Path(target)),
+                    "archive_name": str(archive_name),
+                    "existed": bool(existed),
+                }
+            )
+            _atomic_json(path, payload)
+
+    def load_apply_state(self, operation_id: str) -> dict[str, Any]:
+        with self._lock:
+            payload = _read_json(
+                self._operation_root(operation_id) / "apply.json"
+            )
+            if not isinstance(payload.get("backup_path"), str) or not isinstance(
+                payload.get("replacements"), list
+            ):
+                raise OpsJournalInvalid("apply state is invalid")
+            return payload
 
     def mark_applied(self, operation_id: str) -> None:
         self._mark_terminal(operation_id, "applied", "applied")
@@ -247,6 +300,15 @@ class OpsOperationJournal:
             if record.status == "restart_required"
             else record.result_code
         )
+        apply_path = (
+            Path(record.manifest.staging_root).parent / "apply.json"
+        )
+        backup_filename = Path(record.manifest.preparation_backup).name
+        if apply_path.is_file():
+            try:
+                backup_filename = Path(str(_read_json(apply_path)["backup_path"])).name
+            except (KeyError, OpsJournalInvalid):
+                pass
         return {
             "operation_id": record.manifest.operation_id,
             "operation": record.manifest.operation,
@@ -256,7 +318,7 @@ class OpsOperationJournal:
             "updated_at": record.updated_at,
             "recovery": {
                 "code": recovery_code,
-                "backup_filename": Path(record.manifest.preparation_backup).name,
+                "backup_filename": backup_filename,
             },
         }
 
