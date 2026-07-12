@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections import Counter
 
 
@@ -56,6 +57,9 @@ EXPECTED_OPERATIONS = {
     ("GET", "/api/training/tasks/{task_id}"),
     ("POST", "/api/training/tasks/{task_id}/exports"),
     ("POST", "/api/training/exports/jobs/{job_id}/retry"),
+    ("POST", "/api/graph/profiles"),
+    ("POST", "/api/graph/rows"),
+    ("POST", "/api/graph/evidence"),
 }
 
 
@@ -357,3 +361,43 @@ def test_training_openapi_does_not_offer_legacy_or_broad_recommendation_controls
         assert "allow_broad_fallback" not in properties
         assert "related_fill_policy" not in properties
         assert "read_mode" not in properties
+
+
+def test_graph_openapi_declares_strict_tag_only_operations() -> None:
+    from backend.api.app import create_app
+
+    schema = create_app().openapi()
+    graph_operations = {
+        ("post", "/api/graph/profiles"),
+        ("post", "/api/graph/rows"),
+        ("post", "/api/graph/evidence"),
+    }
+    for method, path in graph_operations:
+        operation = schema["paths"][path][method]
+        responses = operation["responses"]
+        assert {422, 503} <= {int(status) for status in responses}
+        for status in (422, 503):
+            assert responses[str(status)]["content"]["application/json"]["schema"] == {
+                "$ref": "#/components/schemas/ErrorResponse"
+            }
+        request_ref = operation["requestBody"]["content"]["application/json"][
+            "schema"
+        ]["$ref"]
+        request_schema = schema["components"]["schemas"][request_ref.rsplit("/", 1)[-1]]
+        assert request_schema["additionalProperties"] is False
+
+    graph_schema = json.dumps(
+        {
+            path: schema["paths"][path]
+            for _method, path in graph_operations
+        },
+        sort_keys=True,
+    )
+    for forbidden in (
+        "allow_broad_fallback",
+        "include_relations",
+        "read_mode",
+        "related_fill_policy",
+        "tag_relations",
+    ):
+        assert forbidden not in graph_schema

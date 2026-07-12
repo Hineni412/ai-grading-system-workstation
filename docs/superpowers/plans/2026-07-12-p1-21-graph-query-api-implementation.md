@@ -84,7 +84,7 @@ POST /api/graph/evidence -> GraphEvidenceResponse
 - Consumes: `TrainingScopeRequest`, `TrainingExamScopeRequest`, current unified validation error handler.
 - Produces: `GraphQueryRequest`, `GraphEvidenceRequest`, `GraphProfilesResponse`, `GraphRowsResponse`, `GraphEvidenceResponse`.
 
-- [ ] **Step 1: Write failing schema tests**
+- [x] **Step 1: Write failing schema tests**
 
 ```python
 def test_graph_request_rejects_legacy_controls(graph_client):
@@ -99,12 +99,12 @@ def test_graph_evidence_rejects_non_tag_identity(graph_client):
     assert graph_client.post("/api/graph/evidence", json=body).status_code == 422
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_api_graph_routes.py -q`
 Expected: collection/import fails because `backend.api.schemas.graph` and Graph routes do not exist.
 
-- [ ] **Step 3: Implement strict schema models**
+- [x] **Step 3: Implement strict schema models**
 
 ```python
 class _GraphModel(BaseModel):
@@ -131,12 +131,12 @@ class GraphEvidenceRequest(GraphQueryRequest):
 
 Define response models with only the fields listed in Public Interfaces, `diagnosis_identity: Literal["question_tag"]`, `edges: list[GraphEdge]`, and bounded pagination integers.
 
-- [ ] **Step 4: Run schema tests GREEN**
+- [x] **Step 4: Run schema tests GREEN**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_api_graph_routes.py -q`
 Expected: route tests still fail only because endpoints are unregistered; direct schema validation tests pass.
 
-- [ ] **Step 5: Commit Task 1 checkpoint**
+- [x] **Step 5: Commit Task 1 checkpoint**
 
 ```powershell
 git add backend/api/schemas/graph.py backend/api/schemas/__init__.py tests/test_api_graph_routes.py
@@ -153,7 +153,7 @@ git commit -m "test: define P1-21 graph API contract"
 - Consumes: a `DiagnosisProfileService.build_tag_profiles()` mapping using `diagnosis_identity == "question_tag"`.
 - Produces: `build_question_tag_graph_rows(profile)`, `build_question_tag_graph_nodes(rows)`, `build_question_tag_graph_evidence(profile, knowledge_key)`.
 
-- [ ] **Step 1: Write failing projection tests**
+- [x] **Step 1: Write failing projection tests**
 
 ```python
 def test_tag_graph_nodes_aggregate_students_and_items():
@@ -175,12 +175,12 @@ def test_tag_graph_evidence_is_deduplicated_and_path_free():
     assert "front_image" not in items[0]
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_skill_graph_projection.py -q`
 Expected: imports fail for the two missing helper functions.
 
-- [ ] **Step 3: Implement minimal deterministic projections**
+- [x] **Step 3: Implement minimal deterministic projections**
 
 ```python
 def build_question_tag_graph_nodes(rows):
@@ -209,12 +209,12 @@ def build_question_tag_graph_evidence(profile, knowledge_key):
 
 Aggregate mastery weighted by each row's `item_count` (falling back to one), merge tag lists in first-seen order, sum primary/secondary error counters, and sort rows by `(knowledge_key, student_id)`.
 
-- [ ] **Step 4: Run projection tests GREEN**
+- [x] **Step 4: Run projection tests GREEN**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_skill_graph_projection.py -q`
 Expected: all projection tests pass, including existing legacy helper compatibility.
 
-- [ ] **Step 5: Commit Task 2 checkpoint**
+- [x] **Step 5: Commit Task 2 checkpoint**
 
 ```powershell
 git add integration/skill_graph_projection.py tests/test_skill_graph_projection.py
@@ -233,7 +233,7 @@ git commit -m "feat: project tag graph nodes and evidence"
 - Consumes: `get_diagnosis_profile_service`, Graph request schemas, projection helpers.
 - Produces: three registered `/api/graph/*` operations with unified 422/503 errors.
 
-- [ ] **Step 1: Write failing endpoint behavior tests**
+- [x] **Step 1: Write failing endpoint behavior tests**
 
 ```python
 def test_graph_rows_use_tag_only_profile_once(graph_client, graph_service):
@@ -257,12 +257,12 @@ def test_graph_evidence_paginates_without_paths(graph_client):
 
 Also cover class filter, manual/cross-exam filter, missing student/session warnings, missing tag empty state, page past end, database failure 503, and rejection of legacy/broad/relations fields.
 
-- [ ] **Step 2: Run endpoint tests to verify RED**
+- [x] **Step 2: Run endpoint tests to verify RED**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_api_graph_routes.py -q`
 Expected: 404 for the three missing Graph routes.
 
-- [ ] **Step 3: Implement thin router with one profile build per request**
+- [x] **Step 3: Implement thin router with one profile build per request**
 
 ```python
 router = APIRouter(prefix="/api/graph", tags=["graph"])
@@ -284,17 +284,17 @@ def _profile(body, service):
 
 Profiles validates the profile directly; rows calls the row/node helpers and returns `edges=[]`; evidence calls the evidence helper, slices `start=(page-1)*page_size`, and returns `total_pages=max(1, ceil(total/page_size))`. Register `graph_router` once in `create_app()`.
 
-- [ ] **Step 4: Run endpoint tests GREEN**
+- [x] **Step 4: Run endpoint tests GREEN**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_api_graph_routes.py tests\test_skill_graph_projection.py -q`
 Expected: all Graph API/projection tests pass.
 
-- [ ] **Step 5: Run adjacent tag/training regression**
+- [x] **Step 5: Run adjacent tag/training regression**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_diagnosis_profile_service.py tests\test_question_tag_diagnosis.py tests\test_question_tag_projection_service.py tests\test_api_training_routes.py -q`
 Expected: existing tag-only Training and projection behavior remains green.
 
-- [ ] **Step 6: Commit Task 3 checkpoint**
+- [x] **Step 6: Commit Task 3 checkpoint**
 
 ```powershell
 git add backend/api/routers/graph.py backend/api/routers/__init__.py backend/api/app.py tests/test_api_graph_routes.py
@@ -312,7 +312,7 @@ git commit -m "feat: add read-only graph query API"
 - Consumes: registered Graph operations and all prior task evidence.
 - Produces: stable OpenAPI contract, current architecture fact, valid P1-21 handoff.
 
-- [ ] **Step 1: Write failing OpenAPI assertions**
+- [x] **Step 1: Write failing OpenAPI assertions**
 
 ```python
 GRAPH_OPERATIONS = {
@@ -331,16 +331,16 @@ def test_graph_openapi_declares_strict_tag_only_operations():
     assert "tag_relations" not in graph_text
 ```
 
-- [ ] **Step 2: Run OpenAPI test RED, then add exact route list and response assertions**
+- [x] **Step 2: Run OpenAPI test RED, then add exact route list and response assertions**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_api_openapi_contract.py -q`
 Expected before assertion update: missing Graph operations in the expected current Phase 1 route set; after update: pass with unique operation IDs and unified 422 schemas.
 
-- [ ] **Step 3: Update architecture fact after code verification**
+- [x] **Step 3: Update architecture fact after code verification**
 
 Add one P1-21 increment bullet and update FastAPI route listings to say Graph exposes tag-only profiles, deterministic rows/nodes, empty Phase-4 relationship edges, and paginated path-free evidence; no Schema or relationship semantics changed.
 
-- [ ] **Step 4: Run final focused and affected regression**
+- [x] **Step 4: Run final focused and affected regression**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_api_graph_routes.py tests\test_skill_graph_projection.py tests\test_diagnosis_profile_service.py tests\test_question_tag_diagnosis.py tests\test_question_tag_projection_service.py tests\test_api_training_routes.py tests\test_api_openapi_contract.py tests\test_api_app.py -q`
 Expected: all selected tests pass with 0 failures.
@@ -356,7 +356,7 @@ git status --short -- user_data
 
 Expected: diff clean; quick smoke passes; handoff validator emits one JSON line with `ok=true`; worktree `user_data/` status empty.
 
-- [ ] **Step 6: Re-read root real database fingerprints without opening SQLite**
+- [x] **Step 6: Re-read root real database fingerprints without opening SQLite**
 
 Compare size, UTC mtime and SHA-256 to the recorded baseline:
 
@@ -378,22 +378,22 @@ The functional commit must contain `交接状态: waiting_review`, `功能提交
 ## Implementation Evidence
 
 - Baseline: existing diagnosis/tag projection/graph projection/Training API set `36 passed` before source changes.
-- RED/GREEN: pending.
-- Focused regression: pending.
-- Quick smoke: pending.
+- RED/GREEN: Graph schema tests first failed collection on the missing schema module; projection tests first failed imports for the missing node/evidence helpers; Graph route tests then failed `6` cases with 404. The schema cycle passed `5`, projection cycle passed `5`, and combined Graph route/projection cycle passed `16` after the minimal implementations.
+- Focused regression: final Graph/diagnosis/tag projection/Training/OpenAPI/app set `66 passed`; adjacent Graph/tag/Training set passed `49` before the final OpenAPI/app expansion.
+- Quick smoke: document governance, static compile of `370` first-party Python files, and two temporary database copies' idempotent initialization with `integrity_check=ok` passed. Full pytest remains the integration wave-end gate under repository policy.
 - Independent review: pending.
-- Real data: root grading and question-bank fingerprints recorded above; no SQLite connection was opened against either real database.
+- Real data: root grading DB remained `2863104` bytes / `2026-07-10T07:10:41.1221109Z` / SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`; root question-bank DB remained `3461120` bytes / `2026-07-08T11:58:06.3320883Z` / SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`. Worktree `user_data/` status is empty and no SQLite connection was opened against either real database.
 
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
 
 **执行包：** P1-21
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
