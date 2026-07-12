@@ -11,7 +11,11 @@ const viewports = [
 for (const viewport of viewports) {
   test(`${viewport.name} keeps the design system readable and keyboard accessible`, async ({ page }) => {
     const pageErrors: Error[] = []
+    const consoleErrors: string[] = []
     page.on('pageerror', (error) => pageErrors.push(error))
+    page.on('console', (message) => {
+      if (message.type() === 'error') consoleErrors.push(message.text())
+    })
     await page.setViewportSize(viewport)
     await page.goto('/')
 
@@ -42,5 +46,6 @@ for (const viewport of viewports) {
 
     await expect(page.locator('#teacher-score')).toHaveAttribute('aria-invalid', 'true')
     expect(pageErrors).toEqual([])
+    expect(consoleErrors).toEqual([])
   })
 }

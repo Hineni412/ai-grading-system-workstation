@@ -67,12 +67,13 @@ const tones: Array<{ tone: StatusTone; label: string }> = [
       <p class="showcase-section__intro">标签常驻，说明与错误紧邻字段，长内容允许换行而不挤压操作。</p>
       <div class="field-grid">
         <AppField id="exam-name" label="考试名称" hint="名称会显示在阅卷任务和报告中。" required>
-          <template #default="{ inputId, ariaDescribedby, ariaInvalid }">
+          <template #default="{ inputId, ariaDescribedby, ariaInvalid, ariaRequired }">
             <ElInput
               :id="inputId"
               v-model="examName"
               :aria-describedby="ariaDescribedby"
               :aria-invalid="ariaInvalid"
+              :aria-required="ariaRequired"
             />
           </template>
         </AppField>
@@ -83,13 +84,14 @@ const tones: Array<{ tone: StatusTone; label: string }> = [
           error="13.75 超过本题满分 12 分；AI 初评分 9.5 分尚未被覆盖。"
           required
         >
-          <template #default="{ inputId, ariaDescribedby, ariaInvalid }">
+          <template #default="{ inputId, ariaDescribedby, ariaInvalid, ariaRequired }">
             <ElInput
               :id="inputId"
               v-model="teacherScore"
               inputmode="decimal"
               :aria-describedby="ariaDescribedby"
               :aria-invalid="ariaInvalid"
+              :aria-required="ariaRequired"
             />
           </template>
         </AppField>
@@ -99,13 +101,14 @@ const tones: Array<{ tone: StatusTone; label: string }> = [
           label="当前学生"
           hint="学生身份来自已导入名单，当前步骤不能修改。"
         >
-          <template #default="{ inputId, ariaDescribedby, ariaInvalid }">
+          <template #default="{ inputId, ariaDescribedby, ariaInvalid, ariaRequired }">
             <ElInput
               :id="inputId"
               v-model="disabledStudent"
               disabled
               :aria-describedby="ariaDescribedby"
               :aria-invalid="ariaInvalid"
+              :aria-required="ariaRequired"
             />
           </template>
         </AppField>

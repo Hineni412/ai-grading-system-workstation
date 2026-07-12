@@ -8,6 +8,7 @@ interface FieldSlotProps {
   inputId: string
   ariaDescribedby?: string
   ariaInvalid?: string
+  ariaRequired?: string
 }
 
 async function mount(component: ReturnType<typeof defineComponent>) {
@@ -33,11 +34,17 @@ describe('AppField', () => {
                 required: true,
               },
               {
-                default: ({ inputId, ariaDescribedby, ariaInvalid }: FieldSlotProps) =>
+                default: ({
+                  inputId,
+                  ariaDescribedby,
+                  ariaInvalid,
+                  ariaRequired,
+                }: FieldSlotProps) =>
                   h('input', {
                     id: inputId,
                     'aria-describedby': ariaDescribedby,
                     'aria-invalid': ariaInvalid,
+                    'aria-required': ariaRequired,
                   }),
               },
             )
@@ -52,6 +59,7 @@ describe('AppField', () => {
       'final-score-hint final-score-error',
     )
     expect(host.querySelector('input')?.getAttribute('aria-invalid')).toBe('true')
+    expect(host.querySelector('input')?.getAttribute('aria-required')).toBe('true')
     expect(host.querySelector('#final-score-error')?.textContent).toContain('不能超过')
   })
 
@@ -61,14 +69,19 @@ describe('AppField', () => {
         setup() {
           return () =>
             h(AppField, { id: 'teacher-note', label: '教师备注' }, {
-              default: ({ inputId, ariaInvalid }: FieldSlotProps) =>
-                h('textarea', { id: inputId, 'aria-invalid': ariaInvalid }),
+              default: ({ inputId, ariaInvalid, ariaRequired }: FieldSlotProps) =>
+                h('textarea', {
+                  id: inputId,
+                  'aria-invalid': ariaInvalid,
+                  'aria-required': ariaRequired,
+                }),
             })
         },
       }),
     )
 
     expect(host.querySelector('textarea')?.hasAttribute('aria-invalid')).toBe(false)
+    expect(host.querySelector('textarea')?.hasAttribute('aria-required')).toBe(false)
   })
 })
 

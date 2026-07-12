@@ -77,6 +77,7 @@
 主题映射至少覆盖：
 
 - primary、success、warning、danger、info 色；
+- Button/Input 实际读取的 light/dark 派生色必须显式映射回产品 subtle/base/active Token，不能保留 Element Plus 默认派生色；
 - 页面、普通表面、填充、遮罩、文字和边框层级；
 - 组件圆角、控件高度、字体和过渡；
 - hover、active、focus-visible、disabled、invalid 状态；
@@ -101,7 +102,7 @@
 ## 8. 可访问性与交互
 
 - 所有交互元素支持键盘访问并显示清楚的 `:focus-visible` 轮廓。
-- 输入错误通过 `aria-invalid`、`aria-describedby` 和紧邻错误文字关联。
+- 输入错误通过 `aria-invalid`、`aria-describedby` 和紧邻错误文字关联；必填状态通过 `aria-required` 暴露给辅助技术。
 - 加载状态使用 `aria-busy`；重要反馈使用与严重程度匹配的 live region。
 - 状态徽章和反馈均包含文字，不使用单独色点表达含义。
 - 主要文字、次要文字、强调按钮和状态前景/背景组合通过 WCAG 2.1 AA 对比度自动检查；普通文字至少 4.5:1，大文字至少 3:1。
@@ -113,7 +114,7 @@
 
 - 验证全部必需 Token 存在且主强调色固定；
 - 扫描 P2-02 新增样式和组件，拒绝 Token 文件之外的散落颜色值；
-- 验证间距、圆角与阴影只来自允许的 Token；
+- 验证间距、圆角与阴影只来自允许的 Token，包括逻辑属性、轴向属性、多值声明和阴影中的任意非零裸值；
 - 验证未引入新的直接依赖或浮动版本。
 
 ### 组件单测

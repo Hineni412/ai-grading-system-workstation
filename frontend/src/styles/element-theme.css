@@ -1,10 +1,36 @@
 :root {
   --el-color-primary: var(--color-accent);
+  --el-color-primary-light-3: var(--color-accent-subtle);
+  --el-color-primary-light-5: var(--color-accent-subtle);
+  --el-color-primary-light-7: var(--color-accent-subtle);
+  --el-color-primary-light-8: var(--color-accent-subtle);
+  --el-color-primary-light-9: var(--color-accent-subtle);
+  --el-color-primary-dark-2: var(--color-accent-active);
   --el-color-success: var(--color-success);
+  --el-color-success-light-3: var(--color-success-subtle);
+  --el-color-success-light-5: var(--color-success-subtle);
+  --el-color-success-light-8: var(--color-success-subtle);
+  --el-color-success-light-9: var(--color-success-subtle);
+  --el-color-success-dark-2: var(--color-success);
   --el-color-warning: var(--color-warning);
+  --el-color-warning-light-3: var(--color-warning-subtle);
+  --el-color-warning-light-5: var(--color-warning-subtle);
+  --el-color-warning-light-8: var(--color-warning-subtle);
+  --el-color-warning-light-9: var(--color-warning-subtle);
+  --el-color-warning-dark-2: var(--color-warning);
   --el-color-danger: var(--color-danger);
+  --el-color-danger-light-3: var(--color-danger-subtle);
+  --el-color-danger-light-5: var(--color-danger-subtle);
+  --el-color-danger-light-8: var(--color-danger-subtle);
+  --el-color-danger-light-9: var(--color-danger-subtle);
+  --el-color-danger-dark-2: var(--color-danger);
   --el-color-error: var(--color-danger);
   --el-color-info: var(--color-info);
+  --el-color-info-light-3: var(--color-info-subtle);
+  --el-color-info-light-5: var(--color-info-subtle);
+  --el-color-info-light-8: var(--color-info-subtle);
+  --el-color-info-light-9: var(--color-info-subtle);
+  --el-color-info-dark-2: var(--color-info);
 
   --el-bg-color-page: var(--color-bg-app);
   --el-bg-color: var(--color-bg-surface);
@@ -16,8 +42,8 @@
 
   --el-text-color-primary: var(--color-text-primary);
   --el-text-color-regular: var(--color-text-secondary);
-  --el-text-color-secondary: var(--color-text-muted);
-  --el-text-color-placeholder: var(--color-text-muted);
+  --el-text-color-secondary: var(--color-text-secondary);
+  --el-text-color-placeholder: var(--color-text-secondary);
   --el-text-color-disabled: var(--color-text-muted);
 
   --el-border-color: var(--color-border-default);
