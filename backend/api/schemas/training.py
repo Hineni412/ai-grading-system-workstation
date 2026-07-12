@@ -120,6 +120,20 @@ class TrainingTaskConfirmRequest(TrainingPlanRequest):
     expected_plan_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class TrainingExportSubmitRequest(_TrainingModel):
+    variant_id: int | None = Field(default=None, ge=1)
+    format: Literal["docx", "markdown"] = "docx"
+    audience: Literal["student", "teacher"] | None = None
+
+    @model_validator(mode="after")
+    def validate_export_mode(self) -> "TrainingExportSubmitRequest":
+        if self.variant_id is None and self.audience is not None:
+            raise ValueError("task bundle export does not accept audience")
+        if self.variant_id is not None and self.audience is None:
+            raise ValueError("variant export requires audience")
+        return self
+
+
 class TrainingTaskSummary(_TrainingModel):
     id: int
     task_code: str
@@ -227,6 +241,7 @@ __all__ = [
     "TrainingDiagnosisRequest",
     "TrainingDiagnosisResponse",
     "TrainingExamScopeRequest",
+    "TrainingExportSubmitRequest",
     "TrainingPlanRequest",
     "TrainingPlanResponse",
     "TrainingScopeRequest",

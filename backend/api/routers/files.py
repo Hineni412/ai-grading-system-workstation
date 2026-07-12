@@ -18,6 +18,9 @@ from backend.jobs.manager import JobManager
 router = APIRouter(prefix="/api", tags=["files"])
 NO_STORE_HEADERS = {"Cache-Control": "no-store"}
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+MARKDOWN_MEDIA_TYPE = "text/markdown"
+ZIP_MEDIA_TYPE = "application/zip"
 BINARY_SCHEMA = {"type": "string", "format": "binary"}
 
 
@@ -28,6 +31,9 @@ BINARY_SCHEMA = {"type": "string", "format": "binary"}
         200: {
             "content": {
                 XLSX_MEDIA_TYPE: {"schema": BINARY_SCHEMA},
+                DOCX_MEDIA_TYPE: {"schema": BINARY_SCHEMA},
+                MARKDOWN_MEDIA_TYPE: {"schema": BINARY_SCHEMA},
+                ZIP_MEDIA_TYPE: {"schema": BINARY_SCHEMA},
             }
         }
     },

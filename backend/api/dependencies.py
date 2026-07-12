@@ -48,6 +48,10 @@ def get_reports_dir() -> Path:
     return get_path_manager().reports_dir
 
 
+def get_outputs_dir() -> Path:
+    return get_path_manager().outputs_dir
+
+
 def get_question_bank_read_service() -> QuestionBankReadService:
     paths = get_path_manager()
     return QuestionBankReadService(
@@ -76,8 +80,12 @@ def get_training_task_service() -> TrainingTaskService:
 
 def get_job_file_service(
     reports_dir: Path = Depends(get_reports_dir),
+    outputs_dir: Path = Depends(get_outputs_dir),
 ) -> JobFileService:
-    return JobFileService(reports_dir)
+    return JobFileService(
+        reports_dir,
+        training_outputs_dir=outputs_dir / "training",
+    )
 
 
 def get_media_service(
@@ -131,6 +139,12 @@ def create_job_manager(path_manager: PathManager | None = None) -> JobManager:
                 "upload_config_dir",
                 Path(paths.data_root) / "config" / "uploaded",
             ),
+            training_output_root=getattr(
+                paths,
+                "outputs_dir",
+                Path(paths.data_root) / "outputs",
+            )
+            / "training",
         )
     except Exception:
         manager.shutdown()
