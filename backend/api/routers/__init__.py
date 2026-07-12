@@ -4,6 +4,7 @@ from .grading import router as grading_router
 from .graph import router as graph_router
 from .jobs import router as jobs_router
 from .media import router as media_router
+from .ops import router as ops_router
 from .question_bank import router as question_bank_router
 from .reports import router as reports_router
 from .review import router as review_router
@@ -20,6 +21,7 @@ __all__ = [
     "graph_router",
     "jobs_router",
     "media_router",
+    "ops_router",
     "question_bank_router",
     "reports_router",
     "review_router",

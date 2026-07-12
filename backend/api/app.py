@@ -170,6 +170,7 @@ def create_app() -> FastAPI:
         graph_router,
         jobs_router,
         media_router,
+        ops_router,
         question_bank_router,
         reports_router,
         review_router,
@@ -186,6 +187,7 @@ def create_app() -> FastAPI:
     api.include_router(graph_router)
     api.include_router(jobs_router)
     api.include_router(media_router)
+    api.include_router(ops_router)
     api.include_router(question_bank_router)
     api.include_router(reports_router)
     api.include_router(review_router)
