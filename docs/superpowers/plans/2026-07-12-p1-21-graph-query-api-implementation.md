@@ -348,7 +348,7 @@ Add one P1-21 increment bullet and update FastAPI route listings to say Graph ex
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_api_graph_routes.py tests\test_skill_graph_projection.py tests\test_diagnosis_profile_service.py tests\test_question_tag_diagnosis.py tests\test_question_tag_projection_service.py tests\test_api_training_routes.py tests\test_api_openapi_contract.py tests\test_api_app.py -q`
 Expected: all selected tests pass with 0 failures.
 
-- [ ] **Step 5: Run package completion gates**
+- [x] **Step 5: Run package completion gates**
 
 ```powershell
 git diff --check
@@ -368,7 +368,7 @@ Compare size, UTC mtime and SHA-256 to the recorded baseline:
 
 Any difference is a blocking failure; do not integrate.
 
-- [ ] **Step 7: Record waiting_review, commit feature, complete independent review, then create plan-only final handoff commit**
+- [x] **Step 7: Record waiting_review, commit feature, complete independent review, then create plan-only final handoff commit**
 
 The functional commit must contain `交接状态: waiting_review`, `功能提交: branch_head`, automatic validation passed, independent review pending, user acceptance not required, unchanged fingerprint, and unchanged stash baseline. After fresh review has zero Critical/Important findings, create a plan-only final handoff commit whose block records its direct parent full SHA as `verified_pending_integration`.
 
@@ -384,19 +384,19 @@ The functional commit must contain `交接状态: waiting_review`, `功能提交
 - RED/GREEN: Graph schema tests first failed collection on the missing schema module; projection tests first failed imports for the missing node/evidence helpers; Graph route tests then failed `6` cases with 404. The schema cycle passed `5`, projection cycle passed `5`, and combined Graph route/projection cycle passed `16` after the minimal implementations.
 - Focused regression: initial Graph/diagnosis/tag projection/Training/OpenAPI/app set `66 passed`. Review fixes then passed the expanded affected set `71 passed`, plus `18` P1-15 WAL/snapshot/checkpoint/rollback-journal tests; the Graph/tag-only subset passed `35` during the fix cycle.
 - Quick smoke: document governance, static compile of `370` first-party Python files, and two temporary database copies' idempotent initialization with `integrity_check=ok` passed. Full pytest remains the integration wave-end gate under repository policy.
-- Independent review: first review of `6b22d2603ff4e23b54f5d0d2f3530d2717937b2f` found `0 Critical / 2 Important / 2 Minor`: Graph still opened both source databases through existing WAL/initialize paths, and row references used an unrestricted mapping that could publish injected paths; it also requested explicit unknown-tag/page-past-end tests and architecture wording correction. RED tests reproduced both Important findings. Graph now captures both stable main/WAL generations to validated system-temporary candidates and injects a closing candidate DBManager; source SQLite-open guards plus before/after main/WAL/SHM/journal bytes pass for all three endpoints. Row references now use a strict allow-list model/projection, and both requested pagination empty states are covered. Fresh re-review is pending.
+- Independent review: first review of `6b22d2603ff4e23b54f5d0d2f3530d2717937b2f` found `0 Critical / 2 Important / 2 Minor`: Graph still opened both source databases through existing WAL/initialize paths, and row references used an unrestricted mapping that could publish injected paths; it also requested explicit unknown-tag/page-past-end tests and architecture wording correction. RED tests reproduced both Important findings. Graph now captures both stable main/WAL generations to validated system-temporary candidates and injects a closing candidate DBManager; source SQLite-open guards plus before/after main/WAL/SHM/journal bytes pass for all three endpoints. Row references now use a strict allow-list model/projection, and both requested pagination empty states are covered. Fresh re-review of `882519c0194b89fcf95d5ed4ea3a727b716e508c` found `0 Critical / 0 Important / 1 Minor` and verdict `Ready to merge: Yes`. The remaining non-blocking hardening note is that an external Windows process retaining a temporary candidate during cleanup could surface a generic 500 instead of the stable 503; application-owned SQLite handles are explicitly closed and the issue was not reproduced.
 - Real data: root grading DB remained `2863104` bytes / `2026-07-10T07:10:41.1221109Z` / SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`; root question-bank DB remained `3461120` bytes / `2026-07-08T11:58:06.3320883Z` / SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`. Worktree `user_data/` status is empty and no SQLite connection was opened against either real database.
 
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
 
 **执行包：** P1-21
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** 882519c0194b89fcf95d5ed4ea3a727b716e508c
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
