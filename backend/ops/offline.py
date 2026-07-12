@@ -15,8 +15,13 @@ from typing import Any
 from path_manager import get_path_manager
 from update_tools.migrate_db import run_migrations
 
-from .archive import OpsArchivePolicy, extract_validated_zip
+from .archive import OpsArchivePolicy, extract_validated_zip, inspect_zip
 from .jobs import create_safety_backup
+from .database_validation import (
+    validate_archive_databases,
+    validate_live_databases,
+    validate_staged_databases,
+)
 from .journal import OpsJournalInvalid, OpsOperationJournal, OpsOperationManifest
 from .lock import OpsLockBusy, OpsOperationLock
 from .plan_store import OpsPlanStore
@@ -62,6 +67,7 @@ def _apply_pending_locked(*, paths: Any, journal: OpsOperationJournal) -> int:
             return 0
         try:
             _rollback(paths=paths, state=state)
+            validate_live_databases(paths)
         except Exception:
             journal.mark_failed(operation_id, result_code="rollback_failed")
             return 2
@@ -76,6 +82,7 @@ def _apply_pending_locked(*, paths: Any, journal: OpsOperationJournal) -> int:
     apply_started = False
     try:
         _revalidate_and_stage(paths=paths, manifest=manifest)
+        _validate_safety_backup(Path(manifest.preparation_backup))
         apply_backup = create_safety_backup(
             paths=paths, reason="before_apply", operation_id=operation_id
         )
@@ -85,10 +92,12 @@ def _apply_pending_locked(*, paths: Any, journal: OpsOperationJournal) -> int:
             _apply_migrations(paths=paths, manifest=manifest, journal=journal)
         else:
             _apply_overlay(paths=paths, manifest=manifest, journal=journal)
+        validate_live_databases(paths)
     except Exception:
         if apply_started:
             try:
                 _rollback(paths=paths, state=journal.load_apply_state(operation_id))
+                validate_live_databases(paths)
             except Exception:
                 journal.mark_failed(operation_id, result_code="rollback_failed")
                 return 2
@@ -128,6 +137,16 @@ def _revalidate_and_stage(*, paths: Any, manifest: OpsOperationManifest) -> None
     extract_validated_zip(
         source, staging, policy=OpsArchivePolicy(), allowed_roots=allowed_roots
     )
+    validate_staged_databases(staging)
+
+
+def _validate_safety_backup(path: Path) -> None:
+    inspection = inspect_zip(
+        path,
+        policy=OpsArchivePolicy(),
+        allowed_roots={"user_data", "config", "logs"},
+    )
+    validate_archive_databases(path, inspection, require_all=True)
 
 
 def _apply_overlay(*, paths: Any, manifest: OpsOperationManifest, journal: OpsOperationJournal) -> None:
@@ -166,6 +185,9 @@ def _apply_migrations(*, paths: Any, manifest: OpsOperationManifest, journal: Op
             db_path=db_path,
             migrations_dir=Path(paths.project_root) / "migrations" / target_name,
             logger_override=_QuietLogger(),
+            backup_dir_override=(
+                Path(manifest.staging_root) / "migration-backups" / target_name
+            ),
         )
         if report.error:
             raise RuntimeError("migration apply failed")

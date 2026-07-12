@@ -191,7 +191,8 @@ def _should_skip(rel_path: Path) -> bool:
 
 def _is_sensitive(rel_path: Path) -> bool:
     """检查是否为敏感文件（含 API key）。"""
-    return rel_path.name in _SENSITIVE_FILES
+    sensitive = {name.casefold() for name in _SENSITIVE_FILES}
+    return rel_path.name.casefold() in sensitive
 
 
 def _is_relative_to(path: Path, parent: Path) -> bool:
@@ -232,7 +233,11 @@ def preview_backup(
     for source_dir, prefix in backup_sources:
         if not source_dir.exists():
             continue
+        from data_transfer_service import ensure_controlled_path
+
+        ensure_controlled_path(source_dir, source_dir)
         for item in sorted(source_dir.rglob("*")):
+            ensure_controlled_path(item, source_dir)
             if not item.is_file():
                 continue
             try:

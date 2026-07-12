@@ -20,6 +20,13 @@ def _create_database(path: Path, value: str) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE sample (value TEXT)")
         connection.execute("INSERT INTO sample(value) VALUES (?)", (value,))
+        required = (
+            ("students", "grading_sessions", "exam_papers")
+            if path.name == "grading_system.db"
+            else ("papers", "questions", "question_tags")
+        )
+        for table in required:
+            connection.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)")
 
 
 def _paths(tmp_path: Path) -> SimpleNamespace:
@@ -160,6 +167,19 @@ def test_restore_rechecks_source_overlays_files_and_backs_up_latest_state(tmp_pa
     assert "apply" in str(public["recovery"]["backup_filename"])
 
 
+def test_restore_rejects_corrupt_database_before_replacing_target(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    before = paths.db_path.read_bytes()
+    journal = _prepare_restore(
+        paths,
+        {"user_data/databases/grading_system.db": b"not-sqlite"},
+    )
+
+    assert apply_pending_operation(paths=paths) == 0
+    assert paths.db_path.read_bytes() == before
+    assert journal.load_public(OPERATION_ID)["status"] == "rolled_back"
+
+
 def test_apply_failure_rolls_back_overwrite_and_new_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -275,4 +295,5 @@ def test_all_migration_failure_rolls_back_both_databases(
     assert exit_code == 0, journal.load_public(OPERATION_ID)
     assert not _table_exists(paths.db_path, "grading_added")
     assert not _table_exists(paths.qb_db_path, "question_bank_added")
+    assert not (paths.databases_dir / "backups").exists()
     assert journal.load_public(OPERATION_ID)["status"] == "rolled_back"

@@ -289,6 +289,7 @@ def run_migrations(
     db_path: Path | None = None,
     migrations_dir: Path | None = None,
     logger_override: Any | None = None,
+    backup_dir_override: Path | None = None,
 ) -> MigrationReport:
     """对指定数据库执行所有未执行的迁移。
 
@@ -311,7 +312,11 @@ def run_migrations(
     migrations_dir = (
         Path(migrations_dir) if migrations_dir is not None else config["migrations_dir"]
     )
-    backup_dir_override = db_path.parent / "backups" if has_path_override else None
+    effective_backup_dir = (
+        Path(backup_dir_override)
+        if backup_dir_override is not None
+        else (db_path.parent / "backups" if has_path_override else None)
+    )
 
     report = MigrationReport(target=target_name, db_path=str(db_path))
 
@@ -344,7 +349,7 @@ def run_migrations(
 
         if stamp_only and not dry_run:
             # 打标不执行 SQL，但仍在动作前做一次整体备份（只会新增 schema_migrations 行）。
-            stamp_backup = _backup_database(db_path, "stamp_only", backup_dir=backup_dir_override)
+            stamp_backup = _backup_database(db_path, "stamp_only", backup_dir=effective_backup_dir)
             logger.info("打标前备份: %s", stamp_backup)
 
         for mig in pending:
@@ -379,7 +384,7 @@ def run_migrations(
             backup_path = _backup_database(
                 db_path,
                 f"migration_{mig.name}",
-                backup_dir=backup_dir_override,
+                backup_dir=effective_backup_dir,
             )
             logger.info("迁移前备份: %s", backup_path)
 

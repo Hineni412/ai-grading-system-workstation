@@ -22,9 +22,10 @@ from update_tools.backup_core import VALID_REASONS, preview_backup
 from update_tools.migrate_db import preview_migrations
 
 from .archive import OpsArchivePolicy, inspect_zip, stage_zip_upload
+from .database_validation import validate_archive_databases
 from .models import OpsInternalPlan, OpsOperation
-from .journal import OpsOperationJournal, OpsOperationNotFound
-from .lock import OpsOperationLock
+from .journal import OpsOperationBusy, OpsOperationJournal, OpsOperationNotFound
+from .lock import OpsLockBusy, OpsOperationLock
 from .plan_store import OpsPlanStore
 
 
@@ -171,8 +172,20 @@ class OpsWriteService:
         confirmation_token: str,
         manager: JobManager,
     ) -> JobRecord:
-        plan = self.consume_plan(confirmation_token)
-        return manager.submit(_JOB_TYPES[plan.operation], self.build_job_payload(plan))
+        try:
+            with OpsOperationLock(
+                Path(self.paths.ops_state_dir), timeout_seconds=0.0
+            ).acquire():
+                if self.journal.pending_exists() or manager.store.has_active_job_types(
+                    set(_JOB_TYPES.values())
+                ):
+                    raise OpsOperationBusy("another ops operation is active")
+                plan = self.consume_plan(confirmation_token)
+                return manager.submit(
+                    _JOB_TYPES[plan.operation], self.build_job_payload(plan)
+                )
+        except OpsLockBusy as exc:
+            raise OpsOperationBusy("another ops operation is active") from exc
 
     def operation_status(self, _operation_id: str) -> dict[str, object]:
         try:
@@ -232,6 +245,7 @@ class OpsWriteService:
             policy=self.archive_policy,
             allowed_roots={"user_data", "config", "logs"},
         )
+        validate_archive_databases(archive, inspection)
         database_count = sum(
             member.parts[:2] == ("user_data", "databases") and not member.is_dir
             for member in inspection.members
@@ -272,6 +286,7 @@ class OpsWriteService:
             policy=self.archive_policy,
             allowed_roots={"user_data", "config"},
         )
+        validate_archive_databases(archive, inspection)
         summary = {
             "file_count": inspection.file_count,
             "total_expanded_bytes": inspection.total_expanded_bytes,
