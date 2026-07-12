@@ -291,15 +291,15 @@ Expected: all exit 0. The full repository smoke will be run once after integrati
 
 Confirm `git status --short -- user_data` is empty, no generated directory is staged, and the two root database size/UTC/SHA-256 tuples exactly match Task 1.
 
-- [ ] **Step 5: Commit the verified feature state as waiting_review**
+- [x] **Step 5: Commit the verified feature state as waiting_review**
 
 Update the handoff block to `waiting_review`, `branch_head`, `passed`, `pending`, `not_required`, `unchanged`, then stage explicit P2-01 files only and commit `feat: establish Vue frontend foundation`.
 
-- [ ] **Step 6: Request independent code review and resolve findings with TDD**
+- [x] **Step 6: Request independent code review and resolve findings with TDD**
 
 Review `origin/main..HEAD` against this plan. Fix every Critical/Important issue, rerun the affected tests and front-end commands, and leave no unresolved Critical/Important finding.
 
-- [ ] **Step 7: Create the plan-only final handoff commit**
+- [x] **Step 7: Create the plan-only final handoff commit**
 
 Set `功能提交` to the direct parent feature commit's full 40-character SHA, set `交接状态: verified_pending_integration`, `自动验证: passed`, `独立复审: passed`, `用户验收: not_required`, `真实数据指纹: unchanged`, and `夜间动作: independent_candidate_allowed`. Commit only this plan, then run:
 
@@ -313,12 +313,12 @@ Expected: exit 0, one JSON result with `ok=true` and no issues.
 ## 昼夜交接
 
 **执行包：** P2-01
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** 0baca91ea9cb0bf25ea067e4f966a611a1734c3a
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
