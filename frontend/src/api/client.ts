@@ -1,0 +1,177 @@
+import { ApiError, parseErrorResponse } from './errors'
+
+export type ApiMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+export type ResponseDecoder<T> = (payload: unknown) => T
+
+export interface ApiRequestOptions<T> {
+  method?: ApiMethod
+  body?: unknown
+  decode: ResponseDecoder<T>
+  signal?: AbortSignal
+  timeoutMs?: number
+}
+
+export interface ApiClientDependencies {
+  fetch: typeof globalThis.fetch
+  createRequestId: () => string
+  delay: (milliseconds: number, signal: AbortSignal) => Promise<void>
+}
+
+export interface ApiClient {
+  request<T>(path: string, options: ApiRequestOptions<T>): Promise<T>
+}
+
+function abortAwareDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException('aborted', 'AbortError'))
+      return
+    }
+    const handle = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, milliseconds)
+    function onAbort() {
+      clearTimeout(handle)
+      reject(new DOMException('aborted', 'AbortError'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+function generatedRequestId(): string {
+  return globalThis.crypto.randomUUID()
+}
+
+function apiError(init: ConstructorParameters<typeof ApiError>[0]): ApiError {
+  return new ApiError(init)
+}
+
+function abortError(requestId: string, timedOut: boolean): ApiError {
+  return apiError({
+    kind: timedOut ? 'timeout' : 'cancelled',
+    status: null,
+    code: timedOut ? 'request_timeout' : 'request_cancelled',
+    message: timedOut ? '请求超时' : '请求已取消',
+    details: {},
+    requestId,
+    retryable: false,
+  })
+}
+
+function networkError(requestId: string): ApiError {
+  return apiError({
+    kind: 'network',
+    status: null,
+    code: 'network_error',
+    message: '暂时无法连接服务器',
+    details: {},
+    requestId,
+    retryable: true,
+  })
+}
+
+function contractError(code: string, requestId: string, status: number | null): ApiError {
+  return apiError({
+    kind: 'contract',
+    status,
+    code,
+    message: '服务器返回了无法识别的数据',
+    details: {},
+    requestId,
+    retryable: false,
+  })
+}
+
+export function createApiClient(
+  overrides: Partial<ApiClientDependencies> = {},
+): ApiClient {
+  const dependencies: ApiClientDependencies = {
+    fetch: overrides.fetch ?? globalThis.fetch.bind(globalThis),
+    createRequestId: overrides.createRequestId ?? generatedRequestId,
+    delay: overrides.delay ?? abortAwareDelay,
+  }
+
+  return {
+    async request<T>(path: string, options: ApiRequestOptions<T>): Promise<T> {
+      const requestId = dependencies.createRequestId()
+      if (!/^\/api\//.test(path)) {
+        throw contractError('unsafe_api_path', requestId, null)
+      }
+
+      const method = options.method ?? 'GET'
+      const controller = new AbortController()
+      let timedOut = false
+      const timeoutMs = options.timeoutMs ?? 15_000
+      const timeoutHandle = setTimeout(() => {
+        timedOut = true
+        controller.abort()
+      }, timeoutMs)
+      const onCallerAbort = () => controller.abort()
+      options.signal?.addEventListener('abort', onCallerAbort, { once: true })
+      if (options.signal?.aborted) controller.abort()
+
+      const headers: Record<string, string> = {
+        accept: 'application/json',
+        'x-request-id': requestId,
+      }
+      if (options.body !== undefined) headers['content-type'] = 'application/json'
+
+      try {
+        const attempts = method === 'GET' ? 3 : 1
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+          if (controller.signal.aborted) throw abortError(requestId, timedOut)
+          try {
+            const response = await dependencies.fetch(path, {
+              method,
+              headers,
+              body: options.body === undefined ? undefined : JSON.stringify(options.body),
+              signal: controller.signal,
+            })
+            const responseRequestId = response.headers.get('x-request-id')?.trim() || requestId
+            let payload: unknown
+            try {
+              payload = await response.json()
+            } catch {
+              throw contractError(
+                response.ok ? 'invalid_success_contract' : 'invalid_error_contract',
+                responseRequestId,
+                response.status,
+              )
+            }
+
+            if (!response.ok) {
+              const error = parseErrorResponse(payload, responseRequestId, response.status)
+              if (method === 'GET' && error.kind === 'server' && attempt < attempts - 1) {
+                await dependencies.delay(250 * 2 ** attempt, controller.signal)
+                continue
+              }
+              throw error
+            }
+
+            try {
+              return options.decode(payload)
+            } catch {
+              throw contractError('invalid_success_contract', responseRequestId, response.status)
+            }
+          } catch (error) {
+            if (controller.signal.aborted) throw abortError(requestId, timedOut)
+            if (error instanceof ApiError) throw error
+            const normalized = networkError(requestId)
+            if (method === 'GET' && attempt < attempts - 1) {
+              await dependencies.delay(250 * 2 ** attempt, controller.signal)
+              continue
+            }
+            throw normalized
+          }
+        }
+        throw networkError(requestId)
+      } finally {
+        clearTimeout(timeoutHandle)
+        options.signal?.removeEventListener('abort', onCallerAbort)
+      }
+    },
+  }
+}
+
+export const apiClient = createApiClient()
