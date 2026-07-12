@@ -88,7 +88,18 @@ class OpsOperationJournal:
         with self._lock:
             if not self.pending_path.exists():
                 return None
-            return self._load_record(self._read_pending_id())
+            pending_id = self._read_pending_id()
+            active_ids: list[str] = []
+            if self.operations_root.exists():
+                for operation_root in self.operations_root.iterdir():
+                    if not operation_root.is_dir():
+                        raise OpsJournalInvalid("operation state is invalid")
+                    record = self._load_record(operation_root.name)
+                    if record.status in {"restart_required", "applying"}:
+                        active_ids.append(record.manifest.operation_id)
+            if active_ids != [pending_id]:
+                raise OpsJournalInvalid("multiple or inconsistent pending operations")
+            return self._load_record(pending_id)
 
     def claim_pending(self) -> OpsOperationManifest | None:
         with self._lock:

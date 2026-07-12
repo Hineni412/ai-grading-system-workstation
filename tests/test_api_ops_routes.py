@@ -23,6 +23,8 @@ from backend.api.dependencies import (
 )
 from backend.api.app import create_app
 from backend.jobs.store import JobRecord
+from backend.api.routers.ops import _ops_write_api_error
+from backend.ops.journal import OpsOperationBusy
 
 
 def _snapshot() -> OpsSelfCheckResponse:
@@ -360,3 +362,10 @@ def test_ops_operation_status_and_cancel_are_path_free(ops_write_client) -> None
     assert cancelled.json()["status"] == "cancelled"
     assert service.cancelled_operation == operation_id
     assert "c:/" not in (loaded.text + cancelled.text).casefold()
+
+
+def test_ops_cancel_after_apply_started_maps_to_stable_conflict() -> None:
+    error = _ops_write_api_error(OpsOperationBusy("already applying"))
+
+    assert error.status_code == 409
+    assert error.code == "ops_operation_busy"

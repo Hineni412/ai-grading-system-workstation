@@ -4,8 +4,11 @@ import argparse
 import hashlib
 import os
 import shutil
+import sqlite3
 import tempfile
+import time
 import zipfile
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +18,7 @@ from update_tools.migrate_db import run_migrations
 from .archive import OpsArchivePolicy, extract_validated_zip
 from .jobs import create_safety_backup
 from .journal import OpsJournalInvalid, OpsOperationJournal, OpsOperationManifest
+from .lock import OpsLockBusy, OpsOperationLock
 from .plan_store import OpsPlanStore
 from .write_service import OpsWriteService
 
@@ -29,7 +33,24 @@ class _QuietLogger:
 
 def apply_pending_operation(*, paths: Any) -> int:
     journal = OpsOperationJournal(Path(paths.ops_state_dir))
-    record = journal.pending_record()
+    try:
+        record = journal.pending_record()
+    except OpsJournalInvalid:
+        return 2
+    if record is None:
+        return 0
+    try:
+        with OpsOperationLock(Path(paths.ops_state_dir)).acquire():
+            return _apply_pending_locked(paths=paths, journal=journal)
+    except OpsLockBusy:
+        return 2
+
+
+def _apply_pending_locked(*, paths: Any, journal: OpsOperationJournal) -> int:
+    try:
+        record = journal.pending_record()
+    except OpsJournalInvalid:
+        return 2
     if record is None:
         return 0
     operation_id = record.manifest.operation_id
@@ -164,7 +185,7 @@ def _replace_staged_file(source: Path, target: Path) -> None:
         with temporary.open("r+b") as handle:
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, target)
+        _replace_with_retry(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -185,7 +206,14 @@ def _rollback(*, paths: Any, state: dict[str, Any]) -> None:
             if target.resolve(strict=False) != expected.resolve(strict=False):
                 raise ValueError("replacement target is outside controlled roots")
             if bool(item["existed"]):
-                with archive.open(str(item["archive_name"]), "r") as source:
+                archive_name = str(item["archive_name"])
+                if target.resolve(strict=False) in {
+                    Path(paths.db_path).resolve(strict=False),
+                    Path(paths.qb_db_path).resolve(strict=False),
+                }:
+                    _restore_database_member(archive, archive_name, target)
+                    continue
+                with archive.open(archive_name, "r") as source:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     fd, temporary_value = tempfile.mkstemp(
                         dir=target.parent, prefix=f".{target.name}.", suffix=".rollback-tmp"
@@ -196,12 +224,28 @@ def _rollback(*, paths: Any, state: dict[str, Any]) -> None:
                             shutil.copyfileobj(source, output)
                             output.flush()
                             os.fsync(output.fileno())
-                        os.replace(temporary, target)
+                        _replace_with_retry(temporary, target)
                     finally:
                         temporary.unlink(missing_ok=True)
             elif target.exists():
                 _reject_link(target)
                 target.unlink()
+
+
+def _restore_database_member(
+    archive: zipfile.ZipFile,
+    archive_name: str,
+    target: Path,
+) -> None:
+    with tempfile.TemporaryDirectory(prefix="ops-db-rollback-") as temp_value:
+        candidate = Path(temp_value) / target.name
+        with archive.open(archive_name, "r") as source, candidate.open("wb") as output:
+            shutil.copyfileobj(source, output)
+            output.flush()
+            os.fsync(output.fileno())
+        with closing(sqlite3.connect(candidate)) as source_connection:
+            with closing(sqlite3.connect(target)) as target_connection:
+                source_connection.backup(target_connection)
 
 
 def _target_for_archive_name(paths: Any, archive_name: str) -> Path:
@@ -259,6 +303,18 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _replace_with_retry(source: Path, target: Path) -> None:
+    deadline = time.monotonic() + 2.0
+    while True:
+        try:
+            os.replace(source, target)
+            return
+        except OSError as exc:
+            if time.monotonic() >= deadline:
+                raise OSError(f"replace failed for {target.name}") from exc
+            time.sleep(0.05)
 
 
 def main(argv: list[str] | None = None) -> int:

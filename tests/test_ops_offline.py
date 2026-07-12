@@ -103,8 +103,38 @@ def _table_exists(path: Path, table: str) -> bool:
 def test_no_pending_operation_is_a_side_effect_free_noop(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
 
-    assert apply_pending_operation(paths=paths) == 0
+    exit_code = apply_pending_operation(paths=paths)
+    assert exit_code == 0, journal.load_public(OPERATION_ID)
     assert not paths.ops_state_dir.exists()
+
+
+def test_multiple_active_pending_manifests_stop_startup(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _prepare_restore(paths, {"user_data/config/keep.txt": b"changed"})
+    other_root = tmp_path / "other-ops"
+    other_id = "22222222-2222-4222-8222-222222222222"
+    other_staging = other_root / "operations" / other_id / "staging"
+    other_staging.mkdir(parents=True)
+    other = OpsOperationJournal(other_root)
+    other.prepare(
+        OpsOperationManifest(
+            operation_id=other_id,
+            operation="migration",
+            parameters={"target": "grading"},
+            resource_fingerprint="a" * 64,
+            staging_root=str(other_staging),
+            preparation_backup=str(paths.backups_dir / "backup_other.zip"),
+            created_at="2026-07-12T12:01:00+08:00",
+        )
+    )
+    import shutil
+
+    shutil.copytree(
+        other_root / "operations" / other_id,
+        paths.ops_state_dir / "operations" / other_id,
+    )
+
+    assert apply_pending_operation(paths=paths) == 2
 
 
 def test_restore_rechecks_source_overlays_files_and_backs_up_latest_state(tmp_path: Path) -> None:
@@ -241,7 +271,8 @@ def test_all_migration_failure_rolls_back_both_databases(
 
     monkeypatch.setattr(offline, "run_migrations", fail_second)
 
-    assert apply_pending_operation(paths=paths) == 0
+    exit_code = apply_pending_operation(paths=paths)
+    assert exit_code == 0, journal.load_public(OPERATION_ID)
     assert not _table_exists(paths.db_path, "grading_added")
     assert not _table_exists(paths.qb_db_path, "question_bank_added")
     assert journal.load_public(OPERATION_ID)["status"] == "rolled_back"

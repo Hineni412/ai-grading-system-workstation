@@ -24,6 +24,7 @@ from update_tools.migrate_db import preview_migrations
 from .archive import OpsArchivePolicy, inspect_zip, stage_zip_upload
 from .models import OpsInternalPlan, OpsOperation
 from .journal import OpsOperationJournal, OpsOperationNotFound
+from .lock import OpsOperationLock
 from .plan_store import OpsPlanStore
 
 
@@ -181,7 +182,8 @@ class OpsWriteService:
 
     def cancel_operation(self, _operation_id: str) -> dict[str, object]:
         try:
-            return self.journal.cancel_pending(_operation_id)
+            with OpsOperationLock(Path(self.paths.ops_state_dir)).acquire():
+                return self.journal.cancel_pending(_operation_id)
         except OpsOperationNotFound as exc:
             raise OpsResourceNotFound("operation not found") from exc
 
