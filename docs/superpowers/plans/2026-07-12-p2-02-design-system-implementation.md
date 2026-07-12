@@ -260,25 +260,25 @@ Commit: `feat: add accessible field and status primitives`.
 **Interfaces:**
 - Produces: `StatePanel.kind: 'empty' | 'loading' | 'error'`, `retry` event; `FeedbackBanner.tone: 'info' | 'success' | 'warning' | 'error'`, `action` and `dismiss` events.
 
-- [ ] **Step 1: Write failing state and feedback tests**
+- [x] **Step 1: Write failing state and feedback tests**
 
 Assert loading exposes `aria-busy="true"` and three skeleton lines; empty state explains the next action; error state displays impact/saved text and emits `retry`; warning/error feedback uses `role="alert"`; info/success uses `role="status"`; optional action and dismiss buttons emit their events.
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run from `frontend/`: `npm run test -- --run src/components/design-system/__tests__/state-feedback.spec.ts`
 
 Expected: FAIL because both components are missing.
 
-- [ ] **Step 3: Implement `StatePanel`**
+- [x] **Step 3: Implement `StatePanel`**
 
 Use props `kind`, `title`, `description`, optional `detail`, optional `retryLabel`; emit `retry`. Loading renders three `.state-panel__skeleton` children and `aria-busy`; error renders the detail and retry button when supplied; empty renders explanation without decorative illustration. Use text labels and Token-only styles.
 
-- [ ] **Step 4: Implement `FeedbackBanner`**
+- [x] **Step 4: Implement `FeedbackBanner`**
 
 Use props `tone`, `title`, `description`, optional `actionLabel`, optional `dismissible`; emit `action` and `dismiss`. Derive role from tone, keep title and description visible, and render text buttons with accessible names. Use semantic Token pairs and no shadows.
 
-- [ ] **Step 5: Verify GREEN and commit**
+- [x] **Step 5: Verify GREEN and commit**
 
 Run the new test, full unit suite, lint, typecheck and Python Token guard.
 
