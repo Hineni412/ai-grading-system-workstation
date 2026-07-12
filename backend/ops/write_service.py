@@ -140,6 +140,21 @@ class OpsWriteService:
             "resource_fingerprint": plan.resource_fingerprint,
         }
 
+    def resource_fingerprint(
+        self,
+        operation: OpsOperation,
+        parameters: dict[str, object],
+    ) -> str:
+        return self._fingerprint_for_plan(
+            OpsInternalPlan(
+                operation=operation,
+                parameters=dict(parameters),
+                resource_fingerprint="",
+                summary={},
+                created_monotonic=0.0,
+            )
+        )
+
     def submit(
         self,
         confirmation_token: str,

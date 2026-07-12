@@ -35,6 +35,17 @@ def _job_response(job: JobRecord) -> JobResponse:
 
 
 def public_job_result(job: JobRecord) -> dict[str, Any]:
+    if job.job_type in {"ops_backup", "ops_transfer_export"}:
+        allowed = ("operation_id", "operation", "outcome", "filename", "file_count")
+        result = {key: job.result[key] for key in allowed if key in job.result}
+        if job.status == "succeeded" and str(job.result.get("file_path") or "").strip():
+            filename = _safe_filename(
+                job.result.get("filename") or job.result.get("file_path")
+            )
+            if filename:
+                result["filename"] = filename
+            result["download_url"] = f"/api/jobs/{job.id}/download"
+        return sanitize_public_mapping(result)
     if job.job_type == "training_export":
         result: dict[str, Any] = {}
         for key in ("task_id", "variant_id", "export_ids"):

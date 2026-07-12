@@ -11,6 +11,7 @@ from backend.files.service import JobFileService
 from backend.jobs.default_handlers import register_default_job_handlers
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
+from backend.ops.jobs import register_ops_job_handlers
 from backend.media.service import ReviewMediaService
 from backend.ops.service import OpsSelfCheckService
 from backend.ops.plan_store import OpsPlanStore
@@ -85,6 +86,10 @@ def get_exams_dir() -> Path:
 
 def get_reports_dir() -> Path:
     return get_path_manager().reports_dir
+
+
+def get_backups_dir() -> Path:
+    return get_path_manager().backups_dir
 
 
 def get_outputs_dir() -> Path:
@@ -172,11 +177,14 @@ def get_training_task_service() -> TrainingTaskService:
 
 def get_job_file_service(
     reports_dir: Path = Depends(get_reports_dir),
+    backups_dir: Path = Depends(get_backups_dir),
     outputs_dir: Path = Depends(get_outputs_dir),
 ) -> JobFileService:
     return JobFileService(
         reports_dir,
         training_outputs_dir=outputs_dir / "training",
+        backups_dir=backups_dir,
+        ops_outputs_dir=outputs_dir / "ops",
     )
 
 
@@ -238,6 +246,7 @@ def create_job_manager(path_manager: PathManager | None = None) -> JobManager:
             )
             / "training",
         )
+        register_ops_job_handlers(manager, paths=paths)
     except Exception:
         manager.shutdown()
         raise
