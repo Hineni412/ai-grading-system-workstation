@@ -122,6 +122,31 @@ describe('Job Store persistence and recovery', () => {
     expect(dependencies.api.getJob).not.toHaveBeenCalled()
   })
 
+  it('strips extra fields from an existing local reference', async () => {
+    localStorage.setItem(
+      JOB_STORAGE_KEY,
+      JSON.stringify([
+        {
+          id: 41,
+          jobType: 'report_export',
+          trackedAt: '2026-07-12T09:00:00Z',
+          payload: { api_key: 'secret' },
+          result: { filename: 'private' },
+        },
+      ]),
+    )
+    const dependencies = makeDependencies({
+      getJob: vi.fn(async () => makeJob({ status: 'succeeded' })),
+    })
+    const store = useJobStore()
+
+    await store.initialize(dependencies)
+
+    expect(JSON.parse(localStorage.getItem(JOB_STORAGE_KEY)!)).toEqual([
+      { id: 41, jobType: 'report_export', trackedAt: '2026-07-12T09:00:00Z' },
+    ])
+  })
+
   it('removes a missing Job reference and stops retrying it', async () => {
     localStorage.setItem(
       JOB_STORAGE_KEY,
@@ -156,6 +181,23 @@ describe('Job Store persistence and recovery', () => {
     expect(store.jobs[41]).toMatchObject({ id: 41, progress: 0.5 })
     expect(store.syncErrors[41]).toMatchObject({ kind: 'network', retryable: true })
     expect(dependencies.schedule).toHaveBeenCalled()
+  })
+
+  it('does not keep polling after a non-retryable contract failure', async () => {
+    const dependencies = makeDependencies({
+      getJob: vi.fn(async () => {
+        throw new ApiError({ kind: 'contract', status: 500, code: 'invalid_success_contract', message: 'invalid', details: {}, requestId: 'contract-req', retryable: false })
+      }),
+    })
+    const store = useJobStore()
+    store.track(makeJob(), dependencies)
+    store.stopPolling(41)
+    dependencies.schedule.mockClear()
+
+    await store.refresh(41)
+
+    expect(store.syncErrors[41]).toMatchObject({ kind: 'other', retryable: false })
+    expect(dependencies.schedule).not.toHaveBeenCalled()
   })
 })
 
@@ -248,5 +290,29 @@ describe('Job Store polling and cancellation', () => {
     store.$dispose()
 
     expect(dependencies.cancelScheduled).toHaveBeenCalledTimes(1)
+  })
+
+  it('aborts an in-flight cancellation and ignores its late response on stop', async () => {
+    const pendingCancel = deferred<JobResponse>()
+    let cancelSignal: AbortSignal | undefined
+    const dependencies = makeDependencies({
+      cancelJob: vi.fn((_id, signal) => {
+        cancelSignal = signal
+        return pendingCancel.promise
+      }),
+    })
+    const store = useJobStore()
+    store.track(makeJob(), dependencies)
+    const cancellation = store.cancel(41)
+    await vi.waitFor(() => expect(dependencies.api.cancelJob).toHaveBeenCalledTimes(1))
+
+    store.stopAllPolling()
+    expect(cancelSignal?.aborted).toBe(true)
+    pendingCancel.resolve(
+      makeJob({ cancel_requested: true, progress: 0.9, updated_at: '2026-07-12T10:00:09Z' }),
+    )
+    await cancellation
+
+    expect(store.jobs[41]).toMatchObject({ progress: 0.5, cancel_requested: false })
   })
 })

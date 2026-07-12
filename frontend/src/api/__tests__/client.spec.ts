@@ -42,7 +42,13 @@ describe('API client', () => {
     )
   })
 
-  it.each(['https://example.com/api/jobs/1', '/healthz', 'api/jobs/1'])(
+  it.each([
+    'https://example.com/api/jobs/1',
+    '/healthz',
+    'api/jobs/1',
+    '/api/../healthz',
+    '/api/%2e%2e/healthz',
+  ])(
     'rejects the unsafe path %s before fetch',
     async (path) => {
       const fetchMock = vi.fn()
@@ -173,5 +179,37 @@ describe('API client', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('normalizes caller cancellation while waiting for a retry', async () => {
+    const caller = new AbortController()
+    const delay = vi.fn(
+      (_milliseconds: number, signal: AbortSignal) =>
+        new Promise<void>((_resolve, reject) => {
+          signal.addEventListener(
+            'abort',
+            () => reject(new DOMException('aborted', 'AbortError')),
+            { once: true },
+          )
+        }),
+    )
+    const client = createApiClient({
+      fetch: vi.fn().mockRejectedValue(new TypeError('offline')) as typeof globalThis.fetch,
+      createRequestId: () => 'retry-request',
+      delay,
+    })
+
+    const request = client.request('/api/jobs/1', {
+      decode: (value) => value,
+      signal: caller.signal,
+    })
+    const captured = request.catch((error: unknown) => error)
+    await vi.waitFor(() => expect(delay).toHaveBeenCalledTimes(1))
+    caller.abort()
+
+    await expect(captured).resolves.toMatchObject({
+      kind: 'cancelled',
+      code: 'request_cancelled',
+    })
   })
 })

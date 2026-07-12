@@ -107,6 +107,8 @@ export const useJobStore = defineStore('jobs', () => {
   const timers = new Map<number, ReturnType<typeof setTimeout>>()
   const controllers = new Map<number, AbortController>()
   const inFlight = new Map<number, Promise<void>>()
+  const cancelControllers = new Map<number, AbortController>()
+  const cancelInFlight = new Map<number, Promise<void>>()
   const generations = new Map<number, number>()
   const retryCounts = new Map<number, number>()
   let dependencies = defaultDependencies
@@ -132,7 +134,11 @@ export const useJobStore = defineStore('jobs', () => {
     try {
       const parsed: unknown = JSON.parse(raw)
       if (!Array.isArray(parsed)) throw new Error('invalid index')
-      const valid = parsed.filter(isPersistedReference)
+      const valid = parsed.filter(isPersistedReference).map((reference) => ({
+        id: reference.id,
+        jobType: reference.jobType,
+        trackedAt: reference.trackedAt,
+      }))
       references.clear()
       for (const reference of valid) references.set(reference.id, reference)
       persistReferences()
@@ -165,6 +171,8 @@ export const useJobStore = defineStore('jobs', () => {
     timers.delete(id)
     controllers.get(id)?.abort()
     controllers.delete(id)
+    cancelControllers.get(id)?.abort()
+    cancelControllers.delete(id)
     generations.set(id, currentGeneration(id) + 1)
     retryCounts.delete(id)
   }
@@ -201,15 +209,17 @@ export const useJobStore = defineStore('jobs', () => {
           delete jobs.value[id]
           return
         }
-        const retryCount = (retryCounts.get(id) ?? 0) + 1
-        retryCounts.set(id, retryCount)
-        schedulePolling(
-          id,
-          Math.min(
-            dependencies.pollIntervalMs * 2 ** Math.max(0, retryCount - 1),
-            dependencies.maxBackoffMs,
-          ),
-        )
+        if (safe.retryable && (safe.kind === 'network' || safe.kind === 'server')) {
+          const retryCount = (retryCounts.get(id) ?? 0) + 1
+          retryCounts.set(id, retryCount)
+          schedulePolling(
+            id,
+            Math.min(
+              dependencies.pollIntervalMs * 2 ** Math.max(0, retryCount - 1),
+              dependencies.maxBackoffMs,
+            ),
+          )
+        }
       } finally {
         if (controllers.get(id) === controller) controllers.delete(id)
         inFlight.delete(id)
@@ -242,20 +252,32 @@ export const useJobStore = defineStore('jobs', () => {
   }
 
   async function cancel(id: number): Promise<void> {
+    const existing = cancelInFlight.get(id)
+    if (existing) return existing
     const current = jobs.value[id]
     if (!current || !references.has(id)) throw new Error('Job is not tracked')
     if (TERMINAL_JOB_STATUSES.has(current.status)) throw new Error('Job is already complete')
-    try {
-      const next = await dependencies.api.cancelJob(id)
-      if (!references.has(id)) return
-      if (shouldReplaceJob(jobs.value[id], next)) jobs.value[id] = next
-      delete syncErrors.value[id]
-      if (TERMINAL_JOB_STATUSES.has(jobs.value[id]!.status)) stopPolling(id)
-      else schedulePolling(id)
-    } catch (error) {
-      if (!references.has(id)) return
-      syncErrors.value[id] = safeSyncError(error)
-    }
+    const generation = currentGeneration(id)
+    const controller = new AbortController()
+    cancelControllers.set(id, controller)
+    const request = (async () => {
+      try {
+        const next = await dependencies.api.cancelJob(id, controller.signal)
+        if (currentGeneration(id) !== generation || !references.has(id)) return
+        if (shouldReplaceJob(jobs.value[id], next)) jobs.value[id] = next
+        delete syncErrors.value[id]
+        if (TERMINAL_JOB_STATUSES.has(jobs.value[id]!.status)) stopPolling(id)
+        else schedulePolling(id)
+      } catch (error) {
+        if (currentGeneration(id) !== generation || !references.has(id)) return
+        syncErrors.value[id] = safeSyncError(error)
+      } finally {
+        if (cancelControllers.get(id) === controller) cancelControllers.delete(id)
+        cancelInFlight.delete(id)
+      }
+    })()
+    cancelInFlight.set(id, request)
+    return request
   }
 
   function remove(id: number): void {
