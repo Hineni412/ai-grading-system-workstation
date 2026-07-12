@@ -5,6 +5,18 @@ from .config import (
     SessionConfigResponse,
 )
 from .grading import GradingRunRequest
+from .graph import (
+    GraphEdge,
+    GraphEvidenceItem,
+    GraphEvidenceRequest,
+    GraphEvidenceResponse,
+    GraphNode,
+    GraphProfilesResponse,
+    GraphQueryRequest,
+    GraphRow,
+    GraphRowsResponse,
+    GraphSourceQuestionReference,
+)
 from .jobs import JobResponse, JobSubmitRequest
 from .media import ReviewMediaLinksResponse
 from .question_bank import (
@@ -83,6 +95,16 @@ __all__ = [
     "ConfigGenerationRequest",
     "ConfigGenerationRetryRequest",
     "GradingRunRequest",
+    "GraphEdge",
+    "GraphEvidenceItem",
+    "GraphEvidenceRequest",
+    "GraphEvidenceResponse",
+    "GraphNode",
+    "GraphProfilesResponse",
+    "GraphQueryRequest",
+    "GraphRow",
+    "GraphRowsResponse",
+    "GraphSourceQuestionReference",
     "JobResponse",
     "JobSubmitRequest",
     "RenameSessionRequest",
