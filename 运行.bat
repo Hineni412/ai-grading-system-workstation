@@ -5,11 +5,11 @@ cd /d "%~dp0"
 
 set "PYTHON_EXE=%~dp0runtime\python\python.exe"
 if not exist "%PYTHON_EXE%" (
-  set "PYTHON_EXE=C:\Users\89418\Desktop\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe"
+  set "PYTHON_EXE=%~dp0..\..\runtime\python\python.exe"
 )
 if not exist "%PYTHON_EXE%" (
   echo 未找到便携 Python 运行时。
-  echo 请确认 %~dp0runtime\python 或 C:\Users\89418\Desktop\AI阅卷系统_工作机版_v1.5.0\runtime\python 目录完整。
+  echo 请确认主项目或当前工作树的 runtime\python 目录完整。
   pause
   exit /b 1
 )
