@@ -10,7 +10,10 @@ MEDIA_TYPES = {
     ".jpg": "image/jpeg",
     ".png": "image/png",
     ".webp": "image/webp",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".md": "text/markdown",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".zip": "application/zip",
 }
 
 

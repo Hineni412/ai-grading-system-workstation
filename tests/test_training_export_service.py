@@ -171,3 +171,144 @@ def test_bundle_is_failed_instead_of_silently_omitting_failed_audience(
 
     assert bundle["export"]["status"] == "failed"
     assert "failed" in bundle["export"]["error_message"]
+
+
+def test_aborted_attempt_preserves_prior_completed_task_and_variant(
+    saved_task_system: tuple[Path, Path, object],
+) -> None:
+    db_path, output_dir, task = saved_task_system
+    service = TrainingExportService(db_path, output_dir)
+    first = service.export_variant(
+        task.id,
+        task.variants[0].id,
+        formats=["markdown"],
+        audiences=["teacher"],
+    )["exports"][0]
+    second = service.export_variant(
+        task.id,
+        task.variants[0].id,
+        formats=["markdown"],
+        audiences=["student"],
+    )["exports"][0]
+
+    service.abort_unpublished_exports(
+        [second["id"]],
+        task_id=task.id,
+        variant_ids=[task.variants[0].id],
+    )
+
+    stored = service.tasks.get_task(task.id)
+    exports = {item["id"]: item for item in service.list_exports(task.id)}
+    assert stored["status"] == "completed"
+    assert stored["variants"][0]["status"] == "completed"
+    assert exports[first["id"]]["status"] == "succeeded"
+    assert exports[second["id"]]["status"] == "failed"
+    assert exports[second["id"]]["output_path"] is None
+
+
+def test_variant_final_state_failure_clears_succeeded_export_record(
+    saved_task_system: tuple[Path, Path, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path, output_dir, task = saved_task_system
+    service = TrainingExportService(db_path, output_dir)
+    real_mark = service.tasks.mark_export_state
+    calls = 0
+
+    def fail_final_state(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("late state failure")
+        return real_mark(*args, **kwargs)
+
+    monkeypatch.setattr(service.tasks, "mark_export_state", fail_final_state)
+
+    with pytest.raises(RuntimeError, match="late state failure"):
+        service.export_variant(
+            task.id,
+            task.variants[0].id,
+            formats=["markdown"],
+            audiences=["teacher"],
+        )
+
+    record = service.list_exports(task.id)[0]
+    assert record["status"] == "failed"
+    assert record["output_path"] is None
+
+
+def test_bundle_final_state_failure_clears_all_created_export_records(
+    saved_task_system: tuple[Path, Path, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path, output_dir, task = saved_task_system
+    service = TrainingExportService(db_path, output_dir)
+    real_mark = service.tasks.mark_export_state
+    calls = 0
+
+    def fail_bundle_final_state(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise RuntimeError("bundle final state failure")
+        return real_mark(*args, **kwargs)
+
+    monkeypatch.setattr(service.tasks, "mark_export_state", fail_bundle_final_state)
+
+    with pytest.raises(RuntimeError, match="bundle final state failure"):
+        service.export_task_bundle(task.id, formats=["markdown"])
+
+    records = service.list_exports(task.id)
+    assert len(records) == 3
+    assert {record["status"] for record in records} == {"failed"}
+    assert {record["output_path"] for record in records} == {None}
+
+
+def test_variant_record_lifecycle_does_not_require_post_commit_readback(
+    saved_task_system: tuple[Path, Path, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path, output_dir, task = saved_task_system
+    service = TrainingExportService(db_path, output_dir)
+
+    def fail_separate_readback(_export_id: int):
+        raise RuntimeError("separate readback failed")
+
+    monkeypatch.setattr(service, "_export_record", fail_separate_readback)
+
+    result = service.export_variant(
+        task.id,
+        task.variants[0].id,
+        formats=["markdown"],
+        audiences=["teacher"],
+    )
+
+    assert result["exports"][0]["status"] == "succeeded"
+    with connect(db_path) as conn:
+        record = conn.execute(
+            "SELECT status, output_path FROM training_exports WHERE task_id = ?",
+            (task.id,),
+        ).fetchone()
+    assert record["status"] == "succeeded"
+    assert Path(record["output_path"]).is_file()
+
+
+def test_bundle_record_lifecycle_does_not_require_post_commit_readback(
+    saved_task_system: tuple[Path, Path, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path, output_dir, task = saved_task_system
+    service = TrainingExportService(db_path, output_dir)
+
+    def fail_separate_readback(_export_id: int):
+        raise RuntimeError("separate readback failed")
+
+    monkeypatch.setattr(service, "_export_record", fail_separate_readback)
+
+    result = service.export_task_bundle(task.id, formats=["markdown"])
+
+    assert result["export"]["status"] == "succeeded"
+    assert Path(result["export"]["output_path"]).is_file()
+    records = service.list_exports(task.id)
+    assert len(records) == 3
+    assert {record["status"] for record in records} == {"succeeded"}

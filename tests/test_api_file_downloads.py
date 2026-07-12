@@ -34,6 +34,34 @@ def file_client(tmp_path: Path):
             manager.shutdown()
 
 
+@pytest.fixture
+def training_file_client(tmp_path: Path):
+    from backend.api.app import create_app
+    from backend.api.dependencies import (
+        get_job_manager,
+        get_outputs_dir,
+        get_reports_dir,
+    )
+    from backend.jobs.manager import JobManager
+    from backend.jobs.store import JobStore
+
+    reports_dir = tmp_path / "reports"
+    outputs_dir = tmp_path / "outputs"
+    reports_dir.mkdir()
+    (outputs_dir / "training").mkdir(parents=True)
+    store = JobStore(tmp_path / "jobs.db")
+    manager = JobManager(store, max_workers=1)
+    app = create_app()
+    app.dependency_overrides[get_job_manager] = lambda: manager
+    app.dependency_overrides[get_reports_dir] = lambda: reports_dir
+    app.dependency_overrides[get_outputs_dir] = lambda: outputs_dir
+    with TestClient(app) as client:
+        try:
+            yield client, store, outputs_dir / "training"
+        finally:
+            manager.shutdown()
+
+
 def _finish_job(
     store,
     job_type: str,
@@ -48,6 +76,72 @@ def _finish_job(
     loaded = store.get_job(job.id)
     assert loaded is not None
     return loaded
+
+
+def test_training_job_file_service_uses_training_output_root(tmp_path: Path) -> None:
+    from backend.files.service import JobFileService
+    from backend.jobs.store import JobStore
+
+    reports_dir = tmp_path / "reports"
+    training_dir = tmp_path / "outputs" / "training"
+    training_dir.mkdir(parents=True)
+    exported = training_dir / "job-1" / "practice.md"
+    exported.parent.mkdir()
+    exported.write_text("practice", encoding="utf-8")
+    store = JobStore(tmp_path / "jobs.db")
+    job = _finish_job(
+        store,
+        "training_export",
+        result={"task_id": 7, "file_path": str(exported)},
+    )
+
+    resolved = JobFileService(
+        reports_dir,
+        training_outputs_dir=training_dir,
+    ).resolve(job)
+
+    assert resolved.path == exported.resolve()
+    assert resolved.media_type == "text/markdown"
+
+
+@pytest.mark.parametrize(
+    ("suffix", "media_type"),
+    [
+        (
+            ".docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        (".md", "text/markdown; charset=utf-8"),
+        (".zip", "application/zip"),
+    ],
+)
+def test_training_job_download_streams_controlled_file(
+    training_file_client,
+    suffix: str,
+    media_type: str,
+) -> None:
+    client, store, training_dir = training_file_client
+    exported = training_dir / "job-1" / f"practice{suffix}"
+    exported.parent.mkdir()
+    exported.write_bytes(b"training")
+    job = _finish_job(
+        store,
+        "training_export",
+        result={
+            "task_id": 7,
+            "export_ids": [31],
+            "file_path": str(exported),
+            "filename": exported.name,
+        },
+    )
+
+    response = client.get(f"/api/jobs/{job.id}/download")
+
+    assert response.status_code == 200
+    assert response.content == b"training"
+    assert response.headers["content-type"] == media_type
+    assert response.headers["cache-control"] == "no-store"
+    assert exported.name in response.headers["content-disposition"]
 
 
 def test_report_job_download_streams_controlled_file(file_client) -> None:

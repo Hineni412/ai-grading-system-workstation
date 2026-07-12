@@ -53,13 +53,39 @@ class TrainingExportService:
         _validate_formats(resolved_formats, self.exporters)
         _validate_audiences(resolved_audiences)
         self.tasks.mark_export_state(task_id, status="exporting", variant_id=variant_id)
-        records = [
-            self._run_variant_export(task, variant, export_format, audience)
-            for export_format in resolved_formats
-            for audience in resolved_audiences
-        ]
+        records: list[dict[str, Any]] = []
+        try:
+            for export_format in resolved_formats:
+                for audience in resolved_audiences:
+                    records.append(
+                        self._run_variant_export(
+                            task,
+                            variant,
+                            export_format,
+                            audience,
+                        )
+                    )
+        except Exception:
+            self.abort_unpublished_exports(
+                [int(item["id"]) for item in records],
+                task_id=task_id,
+                variant_ids=[variant_id],
+            )
+            raise
         final_status = "completed" if all(item["status"] == "succeeded" for item in records) else "failed"
-        self.tasks.mark_export_state(task_id, status=final_status, variant_id=variant_id)
+        try:
+            self.tasks.mark_export_state(
+                task_id,
+                status=final_status,
+                variant_id=variant_id,
+            )
+        except Exception:
+            self.abort_unpublished_exports(
+                [int(item["id"]) for item in records],
+                task_id=task_id,
+                variant_ids=[variant_id],
+            )
+            raise
         return {"task_id": int(task_id), "variant_id": int(variant_id), "exports": records}
 
     def retry_export(self, export_id: int) -> dict[str, Any]:
@@ -80,11 +106,19 @@ class TrainingExportService:
             existing_export_id=int(record["id"]),
         )
         final_status = "completed" if retried["status"] == "succeeded" else "failed"
-        self.tasks.mark_export_state(
-            int(record["task_id"]),
-            status=final_status,
-            variant_id=int(record["variant_id"]),
-        )
+        try:
+            self.tasks.mark_export_state(
+                int(record["task_id"]),
+                status=final_status,
+                variant_id=int(record["variant_id"]),
+            )
+        except Exception:
+            self.abort_unpublished_exports(
+                [int(retried["id"])],
+                task_id=int(record["task_id"]),
+                variant_ids=[int(record["variant_id"])],
+            )
+            raise
         return retried
 
     def export_task_bundle(
@@ -100,42 +134,82 @@ class TrainingExportService:
         files: list[Path] = []
         variant_exports: list[dict[str, Any]] = []
         try:
-            for variant in task["variants"]:
-                result = self.export_variant(
-                    task_id,
-                    int(variant["id"]),
-                    formats=resolved_formats,
+            try:
+                for variant in task["variants"]:
+                    result = self.export_variant(
+                        task_id,
+                        int(variant["id"]),
+                        formats=resolved_formats,
+                    )
+                    variant_exports.extend(result["exports"])
+                    files.extend(
+                        Path(item["output_path"])
+                        for item in result["exports"]
+                        if item["status"] == "succeeded" and item.get("output_path")
+                    )
+                failed_exports = [
+                    item for item in variant_exports if item["status"] == "failed"
+                ]
+                if failed_exports:
+                    raise RuntimeError(
+                        f"{len(failed_exports)} variant exports failed; bundle was not created"
+                    )
+                if not files:
+                    raise ValueError("no successful variant exports available for bundle")
+                bundle_path = self.output_dir / f"{task['task_code']}_bundle.zip"
+                bundle_path.parent.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(
+                    bundle_path,
+                    "w",
+                    zipfile.ZIP_DEFLATED,
+                ) as archive:
+                    for path in files:
+                        archive.write(path, arcname=path.name)
+            except Exception as exc:
+                final = self._finish_record(
+                    int(bundle_record["id"]),
+                    status="failed",
+                    error_message=str(exc),
                 )
-                variant_exports.extend(result["exports"])
-                files.extend(
-                    Path(item["output_path"])
-                    for item in result["exports"]
-                    if item["status"] == "succeeded" and item.get("output_path")
+            else:
+                final = self._finish_record(
+                    int(bundle_record["id"]),
+                    status="succeeded",
+                    output_path=bundle_path,
                 )
-            failed_exports = [item for item in variant_exports if item["status"] == "failed"]
-            if failed_exports:
-                raise RuntimeError(
-                    f"{len(failed_exports)} variant exports failed; bundle was not created"
-                )
-            if not files:
-                raise ValueError("no successful variant exports available for bundle")
-            bundle_path = self.output_dir / f"{task['task_code']}_bundle.zip"
-            bundle_path.parent.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as archive:
-                for path in files:
-                    archive.write(path, arcname=path.name)
-        except Exception as exc:
-            final = self._finish_record(int(bundle_record["id"]), status="failed", error_message=str(exc))
-        else:
-            final = self._finish_record(
-                int(bundle_record["id"]),
-                status="succeeded",
-                output_path=bundle_path,
+        except Exception:
+            self.abort_unpublished_exports(
+                [
+                    int(bundle_record["id"]),
+                    *[int(item["id"]) for item in variant_exports],
+                ],
+                task_id=task_id,
+                variant_ids=[
+                    int(item["variant_id"])
+                    for item in variant_exports
+                    if item.get("variant_id") is not None
+                ],
             )
-        self.tasks.mark_export_state(
-            task_id,
-            status="completed" if final["status"] == "succeeded" else "failed",
-        )
+            raise
+        try:
+            self.tasks.mark_export_state(
+                task_id,
+                status="completed" if final["status"] == "succeeded" else "failed",
+            )
+        except Exception:
+            self.abort_unpublished_exports(
+                [
+                    *[int(item["id"]) for item in variant_exports],
+                    int(final["id"]),
+                ],
+                task_id=task_id,
+                variant_ids=[
+                    int(item["variant_id"])
+                    for item in variant_exports
+                    if item.get("variant_id") is not None
+                ],
+            )
+            raise
         return {"task_id": int(task_id), "export": final, "variant_exports": variant_exports}
 
     def list_exports(self, task_id: int) -> list[dict[str, Any]]:
@@ -146,6 +220,116 @@ class TrainingExportService:
                 (int(task_id),),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def relocate_export_outputs(
+        self,
+        export_ids: Iterable[int],
+        *,
+        old_root: Path,
+        new_root: Path,
+    ) -> list[dict[str, Any]]:
+        ids = sorted({int(value) for value in export_ids})
+        if not ids:
+            return []
+        old_resolved = Path(old_root).resolve()
+        new_root = Path(new_root)
+        initialize_database(self.db_path)
+        with connect(self.db_path) as conn:
+            placeholders = ",".join("?" for _ in ids)
+            rows = conn.execute(
+                f"SELECT id, output_path FROM training_exports WHERE id IN ({placeholders}) "
+                "AND status = 'succeeded' AND output_path IS NOT NULL",
+                ids,
+            ).fetchall()
+            updates: list[tuple[str, int]] = []
+            for row in rows:
+                path = Path(str(row["output_path"])).resolve()
+                try:
+                    relative = path.relative_to(old_resolved)
+                except ValueError as exc:
+                    raise ValueError("training export record escaped staging") from exc
+                updates.append((str(new_root / relative), int(row["id"])))
+            conn.executemany(
+                """
+                UPDATE training_exports
+                SET output_path = ?, updated_at = datetime('now','localtime')
+                WHERE id = ?
+                """,
+                updates,
+            )
+        return [self._export_record(export_id) for _, export_id in updates]
+
+    def abort_unpublished_exports(
+        self,
+        export_ids: Iterable[int],
+        *,
+        task_id: int,
+        variant_ids: Iterable[int] = (),
+    ) -> None:
+        ids = sorted({int(value) for value in export_ids})
+        variants = sorted({int(value) for value in variant_ids})
+        initialize_database(self.db_path)
+        with connect(self.db_path) as conn:
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"""
+                    UPDATE training_exports
+                    SET status = 'failed', output_path = NULL,
+                        error_message = 'Export was not published.',
+                        updated_at = datetime('now','localtime')
+                    WHERE id IN ({placeholders})
+                    """,
+                    ids,
+                )
+            has_succeeded_task_export = bool(
+                conn.execute(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1 FROM training_exports
+                        WHERE task_id = ? AND status = 'succeeded'
+                          AND output_path IS NOT NULL
+                    )
+                    """,
+                    (int(task_id),),
+                ).fetchone()[0]
+            )
+            conn.execute(
+                """
+                UPDATE training_tasks
+                SET status = ?, updated_at = datetime('now','localtime')
+                WHERE id = ? AND status <> 'cancelled'
+                """,
+                (
+                    "completed" if has_succeeded_task_export else "ready",
+                    int(task_id),
+                ),
+            )
+            for variant_id in variants:
+                has_succeeded_variant_export = bool(
+                    conn.execute(
+                        """
+                        SELECT EXISTS(
+                            SELECT 1 FROM training_exports
+                            WHERE task_id = ? AND variant_id = ?
+                              AND status = 'succeeded' AND output_path IS NOT NULL
+                        )
+                        """,
+                        (int(task_id), int(variant_id)),
+                    ).fetchone()[0]
+                )
+                conn.execute(
+                    """
+                    UPDATE training_variants
+                    SET status = ?, updated_at = datetime('now','localtime')
+                    WHERE task_id = ? AND id = ? AND status <> 'cancelled'
+                    """,
+                    (
+                        "completed" if has_succeeded_variant_export else "ready",
+                        int(task_id),
+                        int(variant_id),
+                    ),
+                )
 
     def _run_variant_export(
         self,
@@ -177,8 +361,32 @@ class TrainingExportService:
                 variant_code=str(variant["variant_key"]),
             )
         except Exception as exc:
-            return self._finish_record(int(record["id"]), status="failed", error_message=str(exc))
-        return self._finish_record(int(record["id"]), status="succeeded", output_path=output_path)
+            try:
+                return self._finish_record(
+                    int(record["id"]),
+                    status="failed",
+                    error_message=str(exc),
+                )
+            except Exception:
+                self.abort_unpublished_exports(
+                    [int(record["id"])],
+                    task_id=int(task["id"]),
+                    variant_ids=[int(variant["id"])],
+                )
+                raise
+        try:
+            return self._finish_record(
+                int(record["id"]),
+                status="succeeded",
+                output_path=output_path,
+            )
+        except Exception:
+            self.abort_unpublished_exports(
+                [int(record["id"])],
+                task_id=int(task["id"]),
+                variant_ids=[int(variant["id"])],
+            )
+            raise
 
     def _create_record(
         self,
@@ -198,7 +406,14 @@ class TrainingExportService:
                 (int(task_id), variant_id, audience, export_format),
             )
             export_id = int(cursor.lastrowid)
-        return self._export_record(export_id)
+            row = conn.execute(
+                "SELECT * FROM training_exports WHERE id = ?",
+                (export_id,),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("training export record was not created")
+            record = dict(row)
+        return record
 
     def _prepare_retry(self, export_id: int) -> dict[str, Any]:
         initialize_database(self.db_path)
@@ -213,7 +428,14 @@ class TrainingExportService:
                 """,
                 (int(export_id),),
             )
-        return self._export_record(export_id)
+            row = conn.execute(
+                "SELECT * FROM training_exports WHERE id = ?",
+                (int(export_id),),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"training export not found: {export_id}")
+            record = dict(row)
+        return record
 
     def _finish_record(
         self,
@@ -239,7 +461,14 @@ class TrainingExportService:
                     int(export_id),
                 ),
             )
-        return self._export_record(export_id)
+            row = conn.execute(
+                "SELECT * FROM training_exports WHERE id = ?",
+                (int(export_id),),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"training export not found: {export_id}")
+            record = dict(row)
+        return record
 
     def _export_record(self, export_id: int) -> dict[str, Any]:
         initialize_database(self.db_path)
