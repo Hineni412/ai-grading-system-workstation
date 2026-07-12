@@ -44,6 +44,14 @@ function makeDependencies(apiOverrides: Partial<JobApi> = {}) {
   }
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
 beforeEach(() => {
   setActivePinia(createPinia())
   localStorage.clear()
@@ -148,5 +156,97 @@ describe('Job Store persistence and recovery', () => {
     expect(store.jobs[41]).toMatchObject({ id: 41, progress: 0.5 })
     expect(store.syncErrors[41]).toMatchObject({ kind: 'network', retryable: true })
     expect(dependencies.schedule).toHaveBeenCalled()
+  })
+})
+
+describe('Job Store polling and cancellation', () => {
+  it('keeps exactly one polling timer for repeated tracking', () => {
+    const dependencies = makeDependencies()
+    const store = useJobStore()
+
+    store.track(makeJob(), dependencies)
+    store.track(makeJob({ progress: 0.6 }), dependencies)
+
+    expect(dependencies.schedule).toHaveBeenCalledTimes(1)
+    expect(store.jobs[41]?.progress).toBe(0.6)
+  })
+
+  it('stops polling and ignores an old in-flight response', async () => {
+    const pending = deferred<JobResponse>()
+    const dependencies = makeDependencies({ getJob: vi.fn(() => pending.promise) })
+    const store = useJobStore()
+    store.track(makeJob(), dependencies)
+
+    const refresh = store.refresh(41)
+    store.stopPolling(41)
+    pending.resolve(makeJob({ progress: 0.9, updated_at: '2026-07-12T10:00:09Z' }))
+    await refresh
+
+    expect(store.jobs[41]?.progress).toBe(0.5)
+    expect(dependencies.cancelScheduled).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps polling after the server acknowledges a cancellation request', async () => {
+    const dependencies = makeDependencies({
+      cancelJob: vi.fn(async () =>
+        makeJob({ cancel_requested: true, updated_at: '2026-07-12T10:00:03Z' }),
+      ),
+    })
+    const store = useJobStore()
+    store.track(makeJob(), dependencies)
+
+    await store.cancel(41)
+
+    expect(store.jobs[41]).toMatchObject({ status: 'running', cancel_requested: true })
+    expect(dependencies.cancelScheduled).not.toHaveBeenCalled()
+    expect(dependencies.schedule).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not let an older poll overwrite a newer cancellation response', async () => {
+    const pendingPoll = deferred<JobResponse>()
+    const dependencies = makeDependencies({
+      getJob: vi.fn(() => pendingPoll.promise),
+      cancelJob: vi.fn(async () =>
+        makeJob({ cancel_requested: true, progress: 0.7, updated_at: '2026-07-12T10:00:03Z' }),
+      ),
+    })
+    const store = useJobStore()
+    store.track(makeJob(), dependencies)
+    const refresh = store.refresh(41)
+
+    await store.cancel(41)
+    pendingPoll.resolve(makeJob({ progress: 0.6, updated_at: '2026-07-12T10:00:02Z' }))
+    await refresh
+
+    expect(store.jobs[41]).toMatchObject({
+      progress: 0.7,
+      cancel_requested: true,
+      updated_at: '2026-07-12T10:00:03Z',
+    })
+  })
+
+  it('preserves the Job snapshot when cancellation fails', async () => {
+    const dependencies = makeDependencies({
+      cancelJob: vi.fn(async () => {
+        throw new ApiError({ kind: 'network', status: null, code: 'network_error', message: 'offline', details: {}, requestId: 'cancel-req', retryable: true })
+      }),
+    })
+    const store = useJobStore()
+    store.track(makeJob(), dependencies)
+
+    await store.cancel(41)
+
+    expect(store.jobs[41]).toMatchObject({ progress: 0.5, cancel_requested: false })
+    expect(store.syncErrors[41]).toMatchObject({ retryable: true, requestId: 'cancel-req' })
+  })
+
+  it('cleans all timers when the Store is disposed', () => {
+    const dependencies = makeDependencies()
+    const store = useJobStore()
+    store.track(makeJob(), dependencies)
+
+    store.$dispose()
+
+    expect(dependencies.cancelScheduled).toHaveBeenCalledTimes(1)
   })
 })

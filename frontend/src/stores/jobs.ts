@@ -82,6 +82,24 @@ function safeSyncError(error: unknown): JobSyncError {
   }
 }
 
+function shouldReplaceJob(
+  current: JobResponse | undefined,
+  next: JobResponse,
+): boolean {
+  if (!current) return true
+  const currentTime = Date.parse(current.updated_at)
+  const nextTime = Date.parse(next.updated_at)
+  if (Number.isFinite(currentTime) && Number.isFinite(nextTime)) {
+    if (nextTime > currentTime) return true
+    if (nextTime < currentTime) return false
+  }
+  const currentTerminal = TERMINAL_JOB_STATUSES.has(current.status)
+  const nextTerminal = TERMINAL_JOB_STATUSES.has(next.status)
+  if (nextTerminal !== currentTerminal) return nextTerminal
+  if (next.cancel_requested !== current.cancel_requested) return next.cancel_requested
+  return true
+}
+
 export const useJobStore = defineStore('jobs', () => {
   const jobs = ref<Record<number, JobResponse>>({})
   const syncErrors = ref<Record<number, JobSyncError>>({})
@@ -168,7 +186,7 @@ export const useJobStore = defineStore('jobs', () => {
       try {
         const job = await dependencies.api.getJob(id, controller.signal)
         if (currentGeneration(id) !== generation || !references.has(id)) return
-        jobs.value[id] = job
+        if (shouldReplaceJob(jobs.value[id], job)) jobs.value[id] = job
         delete syncErrors.value[id]
         retryCounts.delete(id)
         if (TERMINAL_JOB_STATUSES.has(job.status)) stopPolling(id)
@@ -223,6 +241,23 @@ export const useJobStore = defineStore('jobs', () => {
     else schedulePolling(job.id)
   }
 
+  async function cancel(id: number): Promise<void> {
+    const current = jobs.value[id]
+    if (!current || !references.has(id)) throw new Error('Job is not tracked')
+    if (TERMINAL_JOB_STATUSES.has(current.status)) throw new Error('Job is already complete')
+    try {
+      const next = await dependencies.api.cancelJob(id)
+      if (!references.has(id)) return
+      if (shouldReplaceJob(jobs.value[id], next)) jobs.value[id] = next
+      delete syncErrors.value[id]
+      if (TERMINAL_JOB_STATUSES.has(jobs.value[id]!.status)) stopPolling(id)
+      else schedulePolling(id)
+    } catch (error) {
+      if (!references.has(id)) return
+      syncErrors.value[id] = safeSyncError(error)
+    }
+  }
+
   function remove(id: number): void {
     stopPolling(id)
     removeReference(id)
@@ -248,6 +283,7 @@ export const useJobStore = defineStore('jobs', () => {
     initialize,
     track,
     refresh,
+    cancel,
     stopPolling,
     stopAllPolling,
     remove,
