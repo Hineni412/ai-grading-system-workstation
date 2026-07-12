@@ -88,6 +88,17 @@ class PathManager:
                 api_config_root = Path.home() / ".ai_grading_system" / "config"
             self._api_profiles_path = api_config_root / "api_profiles.json"
 
+        ops_state_override = os.getenv("AI_GRADING_OPS_STATE_DIR")
+        if ops_state_override:
+            self._ops_state_dir = Path(ops_state_override).expanduser().resolve()
+        else:
+            local_appdata = os.getenv("LOCALAPPDATA")
+            if local_appdata:
+                ops_state_root = Path(local_appdata) / "AIGradingSystem" / "ops"
+            else:
+                ops_state_root = Path.home() / ".ai_grading_system" / "ops"
+            self._ops_state_dir = ops_state_root.resolve()
+
         # --- propagate to env so legacy code keeps working ---
         os.environ["AI_GRADING_DATA_DIR"] = str(self._data_root)
 
@@ -135,6 +146,11 @@ class PathManager:
     @property
     def api_profiles_path(self) -> Path:
         return self._api_profiles_path
+
+    @property
+    def ops_state_dir(self) -> Path:
+        """Machine-local Ops state excluded from data restore/export roots."""
+        return self._ops_state_dir
 
     @property
     def legacy_api_profiles_paths(self) -> tuple[Path, ...]:
