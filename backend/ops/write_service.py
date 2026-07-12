@@ -23,6 +23,7 @@ from update_tools.migrate_db import preview_migrations
 
 from .archive import OpsArchivePolicy, inspect_zip, stage_zip_upload
 from .models import OpsInternalPlan, OpsOperation
+from .journal import OpsOperationJournal, OpsOperationNotFound
 from .plan_store import OpsPlanStore
 
 
@@ -66,6 +67,7 @@ class OpsWriteService:
         migration_dirs: dict[str, Path] | None = None,
         archive_policy: OpsArchivePolicy | None = None,
         upload_id_factory: Callable[[], str] | None = None,
+        journal: OpsOperationJournal | None = None,
     ) -> None:
         self.paths = paths
         self.plan_store = plan_store
@@ -75,6 +77,14 @@ class OpsWriteService:
             "question_bank": Path(paths.project_root) / "migrations" / "question_bank",
         }
         self._upload_id_factory = upload_id_factory or (lambda: uuid.uuid4().hex)
+        state_root = Path(
+            getattr(
+                paths,
+                "ops_state_dir",
+                Path(paths.data_root).parent / "ops-state",
+            )
+        )
+        self.journal = journal or OpsOperationJournal(state_root)
 
     async def stage_import_upload(
         self,
@@ -164,10 +174,22 @@ class OpsWriteService:
         return manager.submit(_JOB_TYPES[plan.operation], self.build_job_payload(plan))
 
     def operation_status(self, _operation_id: str) -> dict[str, object]:
-        raise OpsResourceNotFound("operation not found")
+        try:
+            return self.journal.load_public(_operation_id)
+        except OpsOperationNotFound as exc:
+            raise OpsResourceNotFound("operation not found") from exc
 
     def cancel_operation(self, _operation_id: str) -> dict[str, object]:
-        raise OpsResourceNotFound("operation not found")
+        try:
+            return self.journal.cancel_pending(_operation_id)
+        except OpsOperationNotFound as exc:
+            raise OpsResourceNotFound("operation not found") from exc
+
+    def migration_previews(self, target: str) -> list[dict[str, Any]]:
+        if target not in {"grading", "question_bank", "all"}:
+            raise OpsRequestInvalid("invalid migration target")
+        targets = ("grading", "question_bank") if target == "all" else (target,)
+        return [self._migration_preview(item) for item in targets]
 
     def _preflight_backup(self, request: Any) -> OpsInternalPlan:
         reason = str(getattr(request, "reason", "") or "")
@@ -218,7 +240,7 @@ class OpsWriteService:
         if target not in {"grading", "question_bank", "all"}:
             raise OpsRequestInvalid("invalid migration target")
         targets = ("grading", "question_bank") if target == "all" else (target,)
-        previews = [self._migration_preview(item) for item in targets]
+        previews = self.migration_previews(target)
         summary = {
             "target": target,
             "pending_migrations": sum(item["pending_migrations"] for item in previews),
