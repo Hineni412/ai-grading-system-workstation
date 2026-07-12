@@ -202,6 +202,16 @@ def _should_copy_root_file(path: Path) -> bool:
     return True
 
 
+def copy_frontend_dist(src_dir: Path, pkg_dir: Path) -> int:
+    src = src_dir / "frontend" / "dist"
+    if not src.is_dir():
+        return 0
+
+    files = [path for path in src.rglob("*") if path.is_file()]
+    _copy_tree_filtered(src, pkg_dir / "frontend" / "dist")
+    return len(files)
+
+
 def copy_sources(src_dir: Path, pkg_dir: Path, version: str) -> dict[str, int]:
     copied_files = 0
 
@@ -222,8 +232,12 @@ def copy_sources(src_dir: Path, pkg_dir: Path, version: str) -> dict[str, int]:
             _copy_file(src, pkg_dir / rel)
             copied_files += 1
 
+    frontend_dist_files = copy_frontend_dist(src_dir, pkg_dir)
     (pkg_dir / "VERSION").write_text(f"{version}\n", encoding="utf-8")
-    return {"root_and_core_test_files": copied_files}
+    return {
+        "root_and_core_test_files": copied_files,
+        "frontend_dist_files": frontend_dist_files,
+    }
 
 
 def copy_private_user_data(src_dir: Path, pkg_dir: Path) -> None:
