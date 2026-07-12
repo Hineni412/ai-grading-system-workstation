@@ -1,4 +1,9 @@
-from .config import SessionConfigRequest, SessionConfigResponse
+from .config import (
+    ConfigGenerationRequest,
+    ConfigGenerationRetryRequest,
+    SessionConfigRequest,
+    SessionConfigResponse,
+)
 from .grading import GradingRunRequest
 from .jobs import JobResponse, JobSubmitRequest
 from .media import ReviewMediaLinksResponse
@@ -59,6 +64,8 @@ __all__ = [
     "AnswerRegionListResponse",
     "AnswerRegionResponse",
     "CreateSessionRequest",
+    "ConfigGenerationRequest",
+    "ConfigGenerationRetryRequest",
     "GradingRunRequest",
     "JobResponse",
     "JobSubmitRequest",

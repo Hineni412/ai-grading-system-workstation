@@ -18,6 +18,8 @@ EXPECTED_OPERATIONS = {
     ("DELETE", "/api/students/{student_id}"),
     ("GET", "/api/sessions/{session_id}/config"),
     ("PUT", "/api/sessions/{session_id}/config"),
+    ("POST", "/api/sessions/{session_id}/config/generate"),
+    ("POST", "/api/sessions/{session_id}/config/generate/retry"),
     ("GET", "/api/sessions/{session_id}/template"),
     ("PUT", "/api/sessions/{session_id}/template"),
     ("GET", "/api/sessions/{session_id}/regions"),
@@ -185,3 +187,27 @@ def test_question_bank_write_openapi_declares_binary_upload_and_stable_errors() 
             assert responses[str(status)]["content"]["application/json"]["schema"] == {
                 "$ref": "#/components/schemas/ErrorResponse"
             }
+
+
+def test_config_generation_openapi_declares_safe_requests_and_stable_errors() -> None:
+    from backend.api.app import create_app
+
+    schema = create_app().openapi()
+    expected_errors = {
+        "/api/sessions/{session_id}/config/generate": {404, 422, 503},
+        "/api/sessions/{session_id}/config/generate/retry": {404, 409, 422, 503},
+    }
+    forbidden = {"api_key", "token", "secret", "password", "path", "destination"}
+
+    for path, statuses in expected_errors.items():
+        operation = schema["paths"][path]["post"]
+        responses = operation["responses"]
+        assert statuses <= {int(status) for status in responses}
+        for status in statuses:
+            assert responses[str(status)]["content"]["application/json"]["schema"] == {
+                "$ref": "#/components/schemas/ErrorResponse"
+            }
+        request_ref = operation["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+        request_schema = schema["components"]["schemas"][request_ref.rsplit("/", 1)[-1]]
+        assert request_schema["additionalProperties"] is False
+        assert not (forbidden & set(request_schema.get("properties", {})))
