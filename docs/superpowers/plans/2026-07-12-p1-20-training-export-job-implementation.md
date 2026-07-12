@@ -348,11 +348,11 @@ Confirm `git diff --name-only origin/main...HEAD`, every package commit, staged 
 
 Update this plan evidence and set the handoff block to `waiting_review`, `功能提交: branch_head`, `自动验证: passed`, `独立复审: pending`, `真实数据指纹: unchanged`. Commit only P1-20 code, tests, architecture and this plan.
 
-- [ ] **Step 4: Perform independent review and fix findings with RED/GREEN**
+- [x] **Step 4: Perform independent review and fix findings with RED/GREEN**
 
 Review `origin/main..HEAD` against this plan and the Phase map. Fix every Critical/Important finding by first adding a failing test, then rerun the affected regression until Critical/Important are zero.
 
-- [ ] **Step 5: Create the final handoff-only commit**
+- [x] **Step 5: Create the final handoff-only commit**
 
 After review passes, update only this plan with the full reviewed functional SHA and `verified_pending_integration`; keep user acceptance `not_required`, automated verification/review `passed`, real-data fingerprint `unchanged` and the immutable stash baseline. Commit only this plan and run:
 
@@ -374,21 +374,21 @@ After review passes, update only this plan with the full reviewed functional SHA
 
 - Baseline: existing Training export/Training API/Job/download suite `60 passed` before source changes.
 - RED/GREEN: default-handler/variant Job tests first failed `2` cases on the missing `training_output_root`; dedicated API tests first failed `6` cases with missing routes and generic endpoint bypass; controlled-download service first failed on the missing Training root, then exposed and closed root-selector/media-type gaps; the exact OpenAPI media contract first failed on the three new types. Each cycle subsequently passed.
-- Focused regression: final Training export/Training API/download/Job/OpenAPI set `100 passed`; adjacent report/config/import/tagging/App handler regression `45 passed`.
+- Focused regression: final Training export/Training API/download/Job/OpenAPI set `107 passed`; adjacent report/config/import/tagging/App handler regression `45 passed`.
 - Quick smoke: document governance, static compile of `367` first-party Python files, two temporary database copies' idempotent initialization and `integrity_check=ok` passed. Full pytest is reserved for the integration wave-end gate under repository policy.
-- Independent review: first review of `3e81689158bb62c2ff116d89b207650dca8960f8` found `0 Critical / 2 Important / 0 Minor`: abort could clobber an earlier successful task/variant state, and a late final state-write exception could leave succeeded rows pointing to deleted staging. Three focused tests reproduced and closed both defects in `23e11d3`. Fresh re-review found `0 Critical / 1 Important / 0 Minor`: a later audience record-creation failure could occur after an earlier audience succeeded but before the service returned IDs to the runner; a job-level test reproduced and closed it in `67d6b0c`. The next full re-review found `0 Critical / 1 Important / 0 Minor`: bundle audit-record finalization itself was outside cleanup protection; a job-level test reproduced and closed it in `5a24514`. Release re-review then found `0 Critical / 1 Important / 0 Minor`: record insert/update committed before separate record readback, so a readback exception could hide the new ID. Variant and bundle RED tests reproduced it; create/retry/finish now read the record in the same SQLite transaction, so readback failure rolls back instead of leaving hidden rows. Latest fix candidate awaits a fresh zero-finding verdict.
+- Independent review: first review of `3e81689158bb62c2ff116d89b207650dca8960f8` found `0 Critical / 2 Important / 0 Minor`: abort could clobber an earlier successful task/variant state, and a late final state-write exception could leave succeeded rows pointing to deleted staging. Three focused tests reproduced and closed both defects in `23e11d3`. Fresh re-review found `0 Critical / 1 Important / 0 Minor`: a later audience record-creation failure could occur after an earlier audience succeeded but before the service returned IDs to the runner; a job-level test reproduced and closed it in `67d6b0c`. The next full re-review found `0 Critical / 1 Important / 0 Minor`: bundle audit-record finalization itself was outside cleanup protection; a job-level test reproduced and closed it in `5a24514`. Release re-review then found `0 Critical / 1 Important / 0 Minor`: record insert/update committed before separate record readback, so a readback exception could hide the new ID. Variant and bundle RED tests reproduced it; create/retry/finish now read the record in the same SQLite transaction, so readback failure rolls back instead of leaving hidden rows. Final fresh review of `5c7d44ed81ce276cf6161c6a28f36cefc04aa4f2` completed at `0 Critical / 0 Important / 0 Minor`; verdict `Ready to merge: Yes`.
 - Real data: root grading DB remained `2863104` bytes / `2026-07-10T07:10:41.1221109Z` / SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`; root question-bank DB remained `3461120` bytes / `2026-07-08T11:58:06.3320883Z` / SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`. Worktree `user_data/` status is empty and the stash baseline is unchanged.
 
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
 
 **执行包：** P1-20
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** 5c7d44ed81ce276cf6161c6a28f36cefc04aa4f2
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
