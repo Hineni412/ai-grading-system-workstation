@@ -167,6 +167,7 @@ def create_app() -> FastAPI:
         config_router,
         files_router,
         grading_router,
+        graph_router,
         jobs_router,
         media_router,
         question_bank_router,
@@ -182,6 +183,7 @@ def create_app() -> FastAPI:
     api.include_router(config_router)
     api.include_router(files_router)
     api.include_router(grading_router)
+    api.include_router(graph_router)
     api.include_router(jobs_router)
     api.include_router(media_router)
     api.include_router(question_bank_router)
