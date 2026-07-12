@@ -556,7 +556,7 @@ From the repository root, repeat both database size/UTC/SHA-256 reads and requir
 
 Set the handoff block to `waiting_review`, `功能提交: branch_head`, `自动验证: passed`, `独立复审: pending`, `用户验收: not_required`, `真实数据指纹: unchanged`, preserve the immutable stash baseline, and keep `夜间动作: report_only`. Commit all remaining P2-04 source/test/docs changes without `user_data/`.
 
-- [ ] **Step 4: Run handoff validation and independent review**
+- [x] **Step 4: Run handoff validation and independent review**
 
 ```powershell
 D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\2026-07-12-p2-04-api-client-job-store-implementation.md --repo .
@@ -564,7 +564,7 @@ D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe tools\handoff_st
 
 Expected before review: exit 0, single-line JSON, `ok=true`, status `waiting_review`. Perform a fresh whole-branch review against the approved design and current backend error/Job contracts. Critical/Important findings must be zero; each behavior fix starts with a failing regression and reruns its affected commands.
 
-- [ ] **Step 5: Create the plan-only final handoff commit**
+- [x] **Step 5: Create the plan-only final handoff commit**
 
 After independent review passes, set `交接状态: verified_pending_integration`, record the direct parent's full reviewed SHA in `功能提交`, set automatic verification and independent review to `passed`, keep user acceptance `not_required`, real-data fingerprint `unchanged`, and nightly action `independent_candidate_allowed`. Commit only this plan, rerun `handoff_status.py`, and require `ok=true` with no issues.
 
@@ -572,7 +572,8 @@ After independent review passes, set `交接状态: verified_pending_integration
 
 - Review of `056c8bc3737e18da0ae3851404b9d418a403c05d..910372f81b2c269018fef51afd5d2128957fbc10` found Critical 0, Important 5, Minor 0.
 - Added RED regressions for retry-delay cancellation normalization, dot-segment API path traversal, cancellation disposal races, non-retryable Store errors, and sanitizing legacy persisted references.
-- All five regressions are GREEN after minimal fixes; the affected full gate passes 99 Vitest tests, 17 Python guards, lint, typecheck and build. A fresh whole-branch re-review is still required before Step 4 can be checked.
+- All five regressions are GREEN after minimal fixes; the affected full gate passes 99 Vitest tests, 17 Python guards, lint, typecheck and build. A fresh whole-branch re-review was required before Step 4 could be checked.
+- Fresh re-review of `056c8bc3737e18da0ae3851404b9d418a403c05d..21cc0887c3bbefa93828505caad479a5decd26c8` closed all five prior findings and reported Critical 0, Important 0, Minor 0. Final Chromium 13/13, quick smoke, diff and two-database fingerprint guards also passed.
 
 ### Task 9: Integrate P2-04 through GitHub main and synchronize the baseline
 
@@ -608,12 +609,12 @@ Fetch/prune, fast-forward root `main` and active worktrees to `origin/main`, del
 ## 昼夜交接
 
 **执行包：** P2-04
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** 21cc0887c3bbefa93828505caad479a5decd26c8
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
