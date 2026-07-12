@@ -1,25 +1,16 @@
 import { createRouter, createWebHistory, type RouteRecordRaw, type RouterHistory } from 'vue-router'
 
 import ComponentShowcase from '../components/design-system/ComponentShowcase.vue'
+import { workspaceRouteDefinitions } from '../navigation'
 
-const placeholderRouteDefinitions: ReadonlyArray<readonly [string, string, string]> = [
-  ['/workbench', 'workbench', '工作台'],
-  ['/grading', 'grading', '阅卷'],
-  ['/exams', 'exams', '考试'],
-  ['/students', 'students', '学生'],
-  ['/analytics', 'analytics', '分析'],
-  ['/question-bank', 'question-bank', '题库与训练'],
-  ['/settings', 'settings', '设置'],
-]
-
-const placeholderRoutes: RouteRecordRaw[] = placeholderRouteDefinitions.map(([path, name, title]) => ({
-  path,
-  name,
+const placeholderRoutes: RouteRecordRaw[] = workspaceRouteDefinitions.map((definition) => ({
+  path: definition.path,
+  name: definition.id,
   component: () => import('../views/RoutePlaceholderView.vue'),
   meta: {
-    title,
-    description: `${title}工作区尚未迁移`,
-    breadcrumb: title,
+    title: definition.title,
+    description: definition.description,
+    breadcrumb: definition.breadcrumb,
   },
 }))
 

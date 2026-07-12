@@ -1,4 +1,4 @@
-import { createApp, nextTick } from 'vue'
+import { createApp, defineAsyncComponent, defineComponent, h, nextTick } from 'vue'
 import { createPinia } from 'pinia'
 import { createMemoryHistory } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -28,7 +28,7 @@ beforeEach(() => {
     'matchMedia',
     vi.fn(() => ({
       matches: false,
-      media: '(max-width: 1023px)',
+      media: '(max-width: 1279px)',
       onchange: null,
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
@@ -38,6 +38,79 @@ beforeEach(() => {
 })
 
 describe('App', () => {
+  it('sanitizes a routed render failure and retries by remounting the current route', async () => {
+    let attempts = 0
+    const asyncRouteContent = defineAsyncComponent(async () => {
+      attempts += 1
+      if (attempts === 1) throw new Error('private lazy-load path and token')
+      return defineComponent(() => () => h('h1', { tabindex: '-1' }, '已恢复当前页面'))
+    })
+    const recoveredRoute = defineComponent(() => () => h(asyncRouteContent))
+    const pinia = createPinia()
+    const router = createAppRouter(createMemoryHistory())
+    router.addRoute({
+      path: '/broken-route',
+      name: 'broken-route',
+      component: recoveredRoute,
+      meta: { title: '故障页面', description: '故障测试', breadcrumb: '故障页面' },
+    })
+    await router.push('/broken-route')
+    await router.isReady()
+    const host = document.createElement('div')
+    const app = createApp(App)
+    app.config.errorHandler = vi.fn()
+    app.use(pinia)
+    app.use(router)
+    app.mount(host)
+    await settleUi()
+
+    expect(host.querySelector('[role="alert"]')).not.toBeNull()
+    expect(host.textContent).toContain('当前页面暂时无法显示')
+    expect(host.textContent).not.toContain('private lazy-load path and token')
+    const retry = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent === '重新加载当前页面',
+    )!
+    retry.click()
+    await settleUi()
+
+    expect(host.querySelector('h1')?.textContent).toBe('已恢复当前页面')
+    expect(attempts).toBe(2)
+    app.unmount()
+  })
+
+  it('returns from a sanitized routed render failure to the workbench', async () => {
+    const brokenRoute = defineComponent(() => () => {
+      throw new Error('private render detail')
+    })
+    const pinia = createPinia()
+    const router = createAppRouter(createMemoryHistory())
+    router.addRoute({
+      path: '/broken-render',
+      name: 'broken-render',
+      component: brokenRoute,
+      meta: { title: '故障页面', description: '故障测试', breadcrumb: '故障页面' },
+    })
+    await router.push('/broken-render')
+    await router.isReady()
+    const host = document.createElement('div')
+    const app = createApp(App)
+    app.config.errorHandler = vi.fn()
+    app.use(pinia)
+    app.use(router)
+    app.mount(host)
+    await settleUi()
+
+    const returnButton = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent === '返回工作台',
+    )!
+    returnButton.click()
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/workbench'))
+    await settleUi()
+
+    expect(host.querySelector('#main-workspace h1')?.textContent).toBe('工作台')
+    app.unmount()
+  })
+
   it('mounts the P2-03 application shell with memory routing and Pinia', async () => {
     const pinia = createPinia()
     const router = createAppRouter(createMemoryHistory())

@@ -11,57 +11,18 @@ const route = useRoute()
 const sessionStore = useSessionStore()
 const navigationOpen = ref(true)
 const inspectorOpen = ref(true)
-const overlayMode = ref(false)
-let mediaQuery: MediaQueryList | null = null
 let compactMediaQuery: MediaQueryList | null = null
-let returnFocusTo: HTMLElement | null = null
 
-function applyMediaMode(): void {
-  const nextOverlayMode = mediaQuery?.matches ?? false
-  const nextCompactMode = compactMediaQuery?.matches ?? false
-  overlayMode.value = nextOverlayMode
-  navigationOpen.value = !nextOverlayMode && !nextCompactMode
-  inspectorOpen.value = !nextOverlayMode
-}
-
-function rememberTrigger(): void {
-  returnFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null
-}
-
-function openNavigation(): void {
-  rememberTrigger()
-  navigationOpen.value = true
-  if (overlayMode.value) inspectorOpen.value = false
-}
-
-function openInspector(): void {
-  rememberTrigger()
-  inspectorOpen.value = true
-  if (overlayMode.value) navigationOpen.value = false
+function applyDesktopMode(): void {
+  navigationOpen.value = !(compactMediaQuery?.matches ?? false)
 }
 
 function toggleNavigation(): void {
-  if (navigationOpen.value) navigationOpen.value = false
-  else openNavigation()
+  navigationOpen.value = !navigationOpen.value
 }
 
 function toggleInspector(): void {
-  if (inspectorOpen.value) inspectorOpen.value = false
-  else openInspector()
-}
-
-async function closeOverlay(): Promise<void> {
-  if (!overlayMode.value || (!navigationOpen.value && !inspectorOpen.value)) return
-  navigationOpen.value = false
-  inspectorOpen.value = false
-  const target = returnFocusTo
-  returnFocusTo = null
-  await nextTick()
-  target?.focus()
-}
-
-function handleKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape') void closeOverlay()
+  inspectorOpen.value = !inspectorOpen.value
 }
 
 watch(
@@ -73,19 +34,14 @@ watch(
 )
 
 onMounted(() => {
-  mediaQuery = window.matchMedia('(max-width: 1023px)')
-  compactMediaQuery = window.matchMedia('(min-width: 1024px) and (max-width: 1279px)')
-  applyMediaMode()
-  mediaQuery.addEventListener('change', applyMediaMode)
-  compactMediaQuery.addEventListener('change', applyMediaMode)
-  window.addEventListener('keydown', handleKeydown)
+  compactMediaQuery = window.matchMedia('(max-width: 1279px)')
+  applyDesktopMode()
+  compactMediaQuery.addEventListener('change', applyDesktopMode)
   void sessionStore.initialize()
 })
 
 onBeforeUnmount(() => {
-  mediaQuery?.removeEventListener('change', applyMediaMode)
-  compactMediaQuery?.removeEventListener('change', applyMediaMode)
-  window.removeEventListener('keydown', handleKeydown)
+  compactMediaQuery?.removeEventListener('change', applyDesktopMode)
 })
 </script>
 
@@ -93,7 +49,6 @@ onBeforeUnmount(() => {
   <div
     class="app-shell"
     data-testid="app-shell"
-    :data-overlay="overlayMode ? 'true' : 'false'"
     :data-navigation-open="navigationOpen ? 'true' : 'false'"
     :data-inspector-open="inspectorOpen ? 'true' : 'false'"
   >
@@ -103,24 +58,10 @@ onBeforeUnmount(() => {
       @toggle-navigation="toggleNavigation"
       @toggle-inspector="toggleInspector"
     />
-    <AppNavigation
-      :collapsed="!navigationOpen"
-      :inert="overlayMode && !navigationOpen"
-    />
+    <AppNavigation :collapsed="!navigationOpen" />
     <main id="main-workspace" class="main-workspace" tabindex="-1">
       <RouterView />
     </main>
-    <SessionInspector
-      :inert="overlayMode && !inspectorOpen"
-      @retry="sessionStore.initialize"
-    />
-    <button
-      v-if="overlayMode && (navigationOpen || inspectorOpen)"
-      class="app-shell__backdrop"
-      data-testid="shell-backdrop"
-      type="button"
-      aria-label="关闭当前面板"
-      @click="closeOverlay"
-    />
+    <SessionInspector @retry="sessionStore.initialize" />
   </div>
 </template>
