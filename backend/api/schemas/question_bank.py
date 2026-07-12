@@ -171,3 +171,12 @@ class QuestionImportRequestResponse(_QuestionBankModel):
     size: int
     sha256: str
     status: Literal["pending"]
+
+
+class QuestionTaggingJobRequest(_QuestionBankModel):
+    question_ids: list[int] = Field(min_length=1, max_length=500)
+    source_job_id: int | None = Field(default=None, gt=0)
+
+
+class QuestionJobRetryRequest(_QuestionBankModel):
+    question_ids: list[int] | None = Field(default=None, min_length=1, max_length=500)
