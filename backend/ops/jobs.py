@@ -22,6 +22,7 @@ from update_tools.backup_core import preview_backup
 from .models import OpsOperation
 from .archive import extract_validated_zip
 from .journal import OpsOperationJournal, OpsOperationManifest
+from .lock import OpsOperationLock
 from .plan_store import OpsPlanStore
 from .write_service import OpsWriteService
 
@@ -58,7 +59,12 @@ def run_ops_backup_job(*, context: JobContext, paths: Any) -> dict[str, object]:
     reason = str(parameters.get("reason") or "")
     if not reason:
         raise ValueError("backup reason is required")
-    with keyed_execution_locks(["ops-write"], cancel_check=context.raise_if_cancelled):
+    with (
+        OpsOperationLock(Path(paths.ops_state_dir)).acquire(
+            cancel_check=context.raise_if_cancelled
+        ),
+        keyed_execution_locks(["ops-write"], cancel_check=context.raise_if_cancelled),
+    ):
         context.report(0.05, "ops_backup", "preparing")
         output_root = Path(paths.backups_dir)
         output_root.mkdir(parents=True, exist_ok=True)
@@ -102,7 +108,12 @@ def run_ops_transfer_export_job(
     scope = str(parameters.get("scope") or "")
     if scope not in {"lean", "full"}:
         raise ValueError("export scope is invalid")
-    with keyed_execution_locks(["ops-write"], cancel_check=context.raise_if_cancelled):
+    with (
+        OpsOperationLock(Path(paths.ops_state_dir)).acquire(
+            cancel_check=context.raise_if_cancelled
+        ),
+        keyed_execution_locks(["ops-write"], cancel_check=context.raise_if_cancelled),
+    ):
         context.report(0.05, "ops_transfer_export", "preparing")
         output_root = Path(paths.outputs_dir) / "ops"
         output_root.mkdir(parents=True, exist_ok=True)
@@ -217,7 +228,12 @@ def _run_offline_prepare(
     parameters = _validate_online_payload(context, operation, paths)
     operation_id = str(context.payload.get("operation_id") or "")
     journal = OpsOperationJournal(Path(paths.ops_state_dir))
-    with keyed_execution_locks(["ops-write"], cancel_check=context.raise_if_cancelled):
+    with (
+        OpsOperationLock(Path(paths.ops_state_dir)).acquire(
+            cancel_check=context.raise_if_cancelled
+        ),
+        keyed_execution_locks(["ops-write"], cancel_check=context.raise_if_cancelled),
+    ):
         if journal.pending_exists():
             from .journal import OpsOperationBusy
 

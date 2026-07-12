@@ -24,6 +24,7 @@ from backend.api.schemas.ops import (
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from backend.ops.service import OpsSelfCheckService
 from backend.ops.archive import OpsArchiveInvalid, OpsArchiveTooLarge
+from backend.ops.journal import OpsOperationBusy
 from backend.ops.plan_store import (
     OpsConfirmationExpired,
     OpsConfirmationInvalid,
@@ -171,6 +172,8 @@ def _ops_write_api_error(exc: Exception) -> ApiError:
         return ApiError(409, "ops_confirmation_used", "Ops confirmation has already been used")
     if isinstance(exc, OpsPreflightStale):
         return ApiError(409, "ops_preflight_stale", "Ops preflight is stale")
+    if isinstance(exc, OpsOperationBusy):
+        return ApiError(409, "ops_operation_busy", "Ops operation has already started")
     if isinstance(exc, (OpsRequestInvalid, OpsArchiveInvalid)):
         return ApiError(422, "ops_request_invalid", "Ops request is invalid")
     return ApiError(503, "ops_write_unavailable", "Ops operation is temporarily unavailable")

@@ -62,6 +62,11 @@ EXPECTED_OPERATIONS = {
     ("POST", "/api/graph/evidence"),
     ("GET", "/api/ops/self-check"),
     ("GET", "/api/ops/backups"),
+    ("POST", "/api/ops/transfer-import/uploads"),
+    ("POST", "/api/ops/preflights"),
+    ("POST", "/api/ops/jobs"),
+    ("GET", "/api/ops/operations/{operation_id}"),
+    ("POST", "/api/ops/operations/{operation_id}/cancel"),
 }
 
 
@@ -405,7 +410,7 @@ def test_graph_openapi_declares_strict_tag_only_operations() -> None:
         assert forbidden not in graph_schema
 
 
-def test_ops_openapi_is_read_only_and_has_no_dangerous_inputs() -> None:
+def test_ops_write_openapi_uses_only_protected_inputs() -> None:
     from backend.api.app import create_app
 
     schema = create_app().openapi()
@@ -414,10 +419,17 @@ def test_ops_openapi_is_read_only_and_has_no_dangerous_inputs() -> None:
         for path, item in schema["paths"].items()
         if path.startswith("/api/ops")
     }
-    assert set(ops_paths) == {"/api/ops/self-check", "/api/ops/backups"}
-    assert all(set(item) <= {"get"} for item in ops_paths.values())
-    for item in ops_paths.values():
-        response = item["get"]["responses"]["503"]
+    assert set(ops_paths) == {
+        "/api/ops/self-check",
+        "/api/ops/backups",
+        "/api/ops/transfer-import/uploads",
+        "/api/ops/preflights",
+        "/api/ops/jobs",
+        "/api/ops/operations/{operation_id}",
+        "/api/ops/operations/{operation_id}/cancel",
+    }
+    for path in ("/api/ops/self-check", "/api/ops/backups"):
+        response = ops_paths[path]["get"]["responses"]["503"]
         assert response["content"]["application/json"]["schema"] == {
             "$ref": "#/components/schemas/ErrorResponse"
         }
@@ -434,13 +446,5 @@ def test_ops_openapi_is_read_only_and_has_no_dangerous_inputs() -> None:
         parameter["name"]
         for parameter in ops_paths["/api/ops/backups"]["get"]["parameters"]
     ] == ["limit"]
-    for forbidden in (
-        "restore",
-        "migrate",
-        "import",
-        "export",
-        "destination",
-        "command",
-        "api_key",
-    ):
+    for forbidden in ("destination", "command", "migrations_dir", "api_key", "password", "secret"):
         assert forbidden not in serialized

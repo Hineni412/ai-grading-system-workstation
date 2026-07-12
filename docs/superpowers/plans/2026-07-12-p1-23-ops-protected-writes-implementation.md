@@ -641,7 +641,7 @@ git commit -m "feat: apply protected ops changes before startup"
 **Interfaces:**
 - Produces exact P1-23 OpenAPI and completed handoff evidence.
 
-- [ ] **Step 1: Add exact OpenAPI operation and forbidden-input assertions**
+- [x] **Step 1: Add exact OpenAPI operation and forbidden-input assertions**
 
 ```python
 def test_ops_write_openapi_uses_only_protected_inputs():
@@ -659,16 +659,16 @@ def test_ops_write_openapi_uses_only_protected_inputs():
         assert forbidden not in serialized
 ```
 
-- [ ] **Step 2: Run OpenAPI RED then GREEN**
+- [x] **Step 2: Run OpenAPI RED then GREEN**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_api_openapi_contract.py -q`
 Expected before expectation update: exact operation set mismatch; after update: PASS with no duplicate operation IDs.
 
-- [ ] **Step 3: Update architecture only after behavior verification**
+- [x] **Step 3: Update architecture only after behavior verification**
 
 Record that P1-23 provides protected preflight/token/Job operations, online backup/export, restart-bound restore/migrate/import, machine-local Journal, startup rollback gate, path-free public results and temporary-root-only verification. Preserve P1-22 read-only facts and do not claim real-data execution.
 
-- [ ] **Step 4: Run focused and affected regression**
+- [x] **Step 4: Run focused and affected regression**
 
 Run:
 
@@ -678,7 +678,7 @@ Run:
 
 Expected: all selected tests pass with 0 failed; only known dependency deprecation warnings are acceptable.
 
-- [ ] **Step 5: Run completion gates**
+- [x] **Step 5: Run completion gates**
 
 ```powershell
 git diff --check
@@ -689,7 +689,7 @@ git status --short -- user_data
 
 Expected: diff clean; quick smoke passes; handoff validator emits one JSON line with `ok=true`; worktree `user_data/` status empty.
 
-- [ ] **Step 6: Re-read root real database fingerprints without SQLite**
+- [x] **Step 6: Re-read root real database fingerprints without SQLite**
 
 Expected baseline inherited from P1-22:
 
@@ -698,7 +698,7 @@ Expected baseline inherited from P1-22:
 
 Any difference is blocking; do not commit or integrate.
 
-- [ ] **Step 7: Record waiting_review and create the feature commit**
+- [x] **Step 7: Record waiting_review and create the feature commit**
 
 Update the handoff block to `waiting_review/branch_head/passed/pending/not_required/unchanged/report_only`, preserve the stash baseline exactly, stage only package files, and commit:
 
@@ -724,12 +724,12 @@ After review reports 0 Critical and 0 Important, fix findings with focused RED/G
 ## 昼夜交接
 
 **执行包：** P1-23
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
