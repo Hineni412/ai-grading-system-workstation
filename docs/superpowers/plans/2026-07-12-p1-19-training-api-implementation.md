@@ -277,11 +277,11 @@ Expected: selected API regression passes; diff check and quick smoke exit 0. Bec
 
 Confirm every package commit and `git diff --name-only origin/main...HEAD` exclude `user_data/`; the immutable stash baseline is unchanged; root real database size, UTC mtime and SHA-256 match the pre-work values; no worktree database or generated artifact is staged.
 
-- [ ] **Step 5: Create functional commit and perform independent review**
+- [x] **Step 5: Create functional commit and perform independent review**
 
 Update this plan evidence and handoff block to `waiting_review`, `功能提交: branch_head`, `自动验证: passed`, `独立复审: pending`, `真实数据指纹: unchanged`; commit only P1-19 code/tests/architecture/plan. Perform an independent review of `origin/main..HEAD`; fix every Critical/Important finding with a new failing test and rerun its affected verification until Critical/Important are zero.
 
-- [ ] **Step 6: Create final handoff-only commit**
+- [x] **Step 6: Create final handoff-only commit**
 
 After independent review passes, update only this plan: record the full reviewed functional SHA, change to `verified_pending_integration`, set automated verification/independent review to `passed`, keep user acceptance `not_required`, and set the real-data fingerprint `unchanged`; commit only this plan and run `tools/handoff_status.py` from the project root.
 
@@ -298,22 +298,22 @@ After independent review passes, update only this plan: record the full reviewed
 
 - Baseline: existing diagnosis/recommendation/training task/API suite `52 passed` before source changes.
 - RED/GREEN: diagnosis先因依赖缺失出现 3 个预期错误；推荐预览先以 5 个 404 失败；任务服务/确认/分页先以 11 个缺接口失败；随后分别转绿。复审前又以 2 个失败用例关闭空班级范围扩散和确认预查数据库错误泄漏，以 1 个失败用例关闭训练导出原始错误公开；首轮独立复审后以连续创建两个默认任务的失败用例复现 `None-V...` 明细码唯一约束冲突，改用 resolved task code 后转绿。
-- Focused regression: 最终 P1-19 聚焦与受影响领域/API 合并回归 `176 passed`。
+- Focused regression: 修复后的最终 P1-19 聚焦与受影响领域/API 合并回归 `177 passed`。
 - Affected API regression: 独立运行 API App、读写、Question Bank、Training 与 OpenAPI 组合 `128 passed`；最终已包含在上述 176 项候选验证中。
 - Quick smoke: 文档治理、363 个第一方 Python 文件静态编译、两库临时副本初始化幂等和 `integrity_check=ok` 通过。
-- Independent review: 首轮复审提交 `2551e195c66516a31b666ec62bca077559220639` 为 0 Critical / 1 Important / 0 Minor，发现默认任务明细码错误使用可空原始参数；修复后任务服务/API/旧 UI 相关回归 `34 passed`，等待新候选复审。
+- Independent review: 首轮复审提交 `2551e195c66516a31b666ec62bca077559220639` 为 0 Critical / 1 Important / 0 Minor，发现默认任务明细码错误使用可空原始参数；修复后的候选 `c047fb4d94eaaa7b2046e4fa56e0dad0e320cf78` 经全新复审为 0 Critical / 0 Important / 0 Minor，复审者从目标 worktree 独立运行 `42 passed` 与 `git diff --check`，结论 `Ready to merge: Yes`。
 - Real data: 根目录两库大小、UTC mtime 与 SHA-256 均和领取基线一致；`grading_system.db` SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`，`question_bank.db` SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`；worktree 无 `user_data/` 变化。
 
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
 
 **执行包：** P1-19
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** c047fb4d94eaaa7b2046e4fa56e0dad0e320cf78
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
