@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import threading
 
 from pydantic import ValidationError
 import pytest
@@ -23,6 +24,8 @@ from backend.api.dependencies import (
 )
 from backend.api.app import create_app
 from backend.jobs.store import JobRecord
+from backend.jobs.manager import JobManager
+from backend.jobs.store import JobStore
 from backend.api.routers.ops import _ops_write_api_error
 from backend.ops.journal import OpsOperationBusy
 
@@ -369,3 +372,39 @@ def test_ops_cancel_after_apply_started_maps_to_stable_conflict() -> None:
 
     assert error.status_code == 409
     assert error.code == "ops_operation_busy"
+
+
+def test_concurrent_ops_api_submissions_return_one_busy_conflict(tmp_path) -> None:
+    from tests.test_ops_write_service import _paths, _request, _service
+
+    paths = _paths(tmp_path)
+    service = _service(tmp_path, paths)
+    manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
+    release = threading.Event()
+    manager.register("ops_backup", lambda _context: release.wait(timeout=5) or {})
+    tokens = [
+        str(service.preflight(_request("backup", reason="manual"))["confirmation_token"])
+        for _ in range(2)
+    ]
+    app = create_app()
+    app.dependency_overrides[get_ops_write_service] = lambda: service
+    app.dependency_overrides[get_job_manager] = lambda: manager
+    client = TestClient(app)
+    barrier = threading.Barrier(2)
+    responses = []
+
+    def submit(token: str) -> None:
+        barrier.wait()
+        responses.append(client.post("/api/ops/jobs", json={"confirmation_token": token}))
+
+    threads = [threading.Thread(target=submit, args=(token,)) for token in tokens]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+    release.set()
+    manager.shutdown()
+
+    assert sorted(response.status_code for response in responses) == [202, 409]
+    conflict = next(response for response in responses if response.status_code == 409)
+    assert conflict.json()["error"]["code"] == "ops_operation_busy"

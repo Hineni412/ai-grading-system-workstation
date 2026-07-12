@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
-from data_transfer_service import build_export_manifest, default_export_sources
+import pytest
+
+from data_transfer_service import (
+    ExportEntry,
+    build_export_manifest,
+    default_export_sources,
+    write_export_zip,
+)
 
 
 def _write(path: Path, content: str = "x") -> Path:
@@ -63,6 +71,62 @@ def test_full_export_keeps_user_data_but_still_skips_runtime_cache(tmp_path: Pat
     assert "user_data/annotated/session_1/marked.jpg" in arc_names
     assert "user_data/config/api_profiles.json" not in arc_names
     assert "user_data/__pycache__/module.pyc" not in arc_names
+
+
+def test_export_skips_case_variant_sensitive_filename(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    data_root = project_root / "user_data"
+    _write(data_root / "config" / "API_PROFILES.JSON")
+
+    entries = build_export_manifest(default_export_sources(project_root, data_root), scope="full")
+
+    assert "user_data/config/API_PROFILES.JSON" not in _arc_names(entries)
+
+
+def test_export_rejects_symlink_below_controlled_root(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    outside = _write(tmp_path / "outside.txt", "secret")
+    source_root.mkdir()
+    link = source_root / "innocent.txt"
+    try:
+        os.symlink(outside, link)
+    except OSError:
+        pytest.skip("symlink creation is unavailable")
+
+    with pytest.raises(ValueError):
+        build_export_manifest([(source_root, "user_data")], scope="full")
+
+
+def test_export_rejects_detected_reparse_point(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    suspect = _write(source_root / "suspect.txt")
+    from data_transfer_service import _is_reparse_point
+
+    monkeypatch.setattr(
+        "data_transfer_service._is_reparse_point",
+        lambda path: Path(path) == suspect or _is_reparse_point(Path(path)),
+    )
+
+    with pytest.raises(ValueError):
+        build_export_manifest([(source_root, "user_data")], scope="full")
+
+
+def test_zip_writer_rechecks_source_after_manifest_creation(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source = _write(source_root / "safe.txt", "safe")
+    outside = _write(tmp_path / "outside.txt", "secret")
+    entry = ExportEntry(source, "user_data/safe.txt", 4, source_root)
+    source.unlink()
+    try:
+        os.symlink(outside, source)
+    except OSError:
+        pytest.skip("symlink creation is unavailable")
+
+    with pytest.raises(ValueError):
+        write_export_zip([entry], tmp_path / "out.zip")
 
 
 def test_private_package_excludes_legacy_api_profiles(tmp_path: Path) -> None:

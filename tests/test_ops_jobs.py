@@ -28,6 +28,13 @@ def _create_database(path: Path, value: str) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE sample (value TEXT)")
         connection.execute("INSERT INTO sample(value) VALUES (?)", (value,))
+        required = (
+            ("students", "grading_sessions", "exam_papers")
+            if path.name == "grading_system.db"
+            else ("papers", "questions", "question_tags")
+        )
+        for table in required:
+            connection.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)")
         connection.commit()
 
 
@@ -294,3 +301,23 @@ def test_create_safety_backup_returns_controlled_filename(tmp_path: Path) -> Non
     assert backup.name.startswith("backup_")
     assert backup.suffix == ".zip"
     assert zipfile.is_zipfile(backup)
+
+
+def test_create_safety_backup_rejects_invalid_database_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+
+    def corrupt_snapshot(_source: Path, destination: Path) -> None:
+        destination.write_bytes(b"not-sqlite")
+
+    monkeypatch.setattr("backend.ops.jobs._sqlite_snapshot", corrupt_snapshot)
+
+    with pytest.raises(OpsPreBackupFailed):
+        create_safety_backup(
+            paths=paths,
+            reason="before_restore",
+            operation_id="11111111-1111-4111-8111-111111111111",
+        )
+    assert not list(paths.backups_dir.glob("*.zip"))

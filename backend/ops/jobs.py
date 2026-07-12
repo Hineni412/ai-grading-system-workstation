@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import sqlite3
 import tempfile
-import zipfile
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -20,7 +19,11 @@ from data_transfer_service import (
 from update_tools.backup_core import preview_backup
 
 from .models import OpsOperation
-from .archive import extract_validated_zip
+from .archive import OpsArchivePolicy, extract_validated_zip, inspect_zip
+from .database_validation import (
+    validate_archive_databases,
+    validate_staged_databases,
+)
 from .journal import OpsOperationJournal, OpsOperationManifest
 from .lock import OpsOperationLock
 from .plan_store import OpsPlanStore
@@ -171,7 +174,7 @@ def create_safety_backup(
             staging_root = Path(staging_value)
             archive_path = staging_root / "safety.zip"
             write_export_zip(_backup_entries(paths, staging_root), archive_path)
-            _validate_zip(archive_path)
+            _validate_zip(archive_path, require_all_databases=True)
             os.replace(archive_path, destination)
     except Exception as exc:
         destination.unlink(missing_ok=True)
@@ -256,6 +259,7 @@ def _run_offline_prepare(
                     policy=OpsWriteService(paths, plan_store=OpsPlanStore()).archive_policy,
                     allowed_roots={"user_data", "config", "logs"},
                 )
+                validate_staged_databases(staging_root)
             elif operation is OpsOperation.TRANSFER_IMPORT:
                 source = (
                     Path(paths.ops_state_dir)
@@ -268,6 +272,7 @@ def _run_offline_prepare(
                     policy=OpsWriteService(paths, plan_store=OpsPlanStore()).archive_policy,
                     allowed_roots={"user_data", "config"},
                 )
+                validate_staged_databases(staging_root)
             else:
                 staging_root.mkdir(parents=True, exist_ok=True)
                 OpsWriteService(paths, plan_store=OpsPlanStore()).migration_previews(
@@ -348,14 +353,18 @@ def _backup_entries(paths: Any, staging_root: Path) -> list[ExportEntry]:
         if name in snapshots:
             source, snapshot = snapshots[name]
             _sqlite_snapshot(source, snapshot)
-            entries.append(ExportEntry(snapshot, name, snapshot.stat().st_size))
+            entries.append(
+                ExportEntry(snapshot, name, snapshot.stat().st_size, staging_root)
+            )
             continue
         source = _backup_source_path(paths, name)
         try:
             size_bytes = source.stat().st_size
         except OSError:
             continue
-        entries.append(ExportEntry(source, name, size_bytes))
+        entries.append(
+            ExportEntry(source, name, size_bytes, _backup_source_root(paths, name))
+        )
     return entries
 
 
@@ -370,6 +379,17 @@ def _backup_source_path(paths: Any, arc_name: str) -> Path:
     raise ValueError("backup source is invalid")
 
 
+def _backup_source_root(paths: Any, arc_name: str) -> Path:
+    parts = Path(arc_name).parts
+    if parts[0] == "user_data":
+        return Path(paths.data_root)
+    if parts[0] == "config":
+        return Path(paths.project_root) / "config"
+    if parts[0] == "logs":
+        return Path(paths.logs_dir)
+    raise ValueError("backup source is invalid")
+
+
 def _sqlite_snapshot(source: Path, destination: Path) -> None:
     if not source.is_file():
         raise FileNotFoundError("database source is missing")
@@ -378,10 +398,17 @@ def _sqlite_snapshot(source: Path, destination: Path) -> None:
             source_connection.backup(destination_connection)
 
 
-def _validate_zip(path: Path) -> None:
-    with zipfile.ZipFile(path, "r") as archive:
-        if archive.testzip() is not None:
-            raise ValueError("published archive failed CRC validation")
+def _validate_zip(path: Path, *, require_all_databases: bool = False) -> None:
+    inspection = inspect_zip(
+        path,
+        policy=OpsArchivePolicy(),
+        allowed_roots={"user_data", "config", "logs"},
+    )
+    validate_archive_databases(
+        path,
+        inspection,
+        require_all=require_all_databases,
+    )
 
 
 __all__ = [
