@@ -51,6 +51,7 @@
 stage_config_generation_input(
     upload_config_dir: Path,
     *,
+    session_id: int,
     confirmed_blocks: list[dict[str, Any]],
     document_text: str,
     question_images: dict[str, Any] | None,
@@ -104,11 +105,11 @@ Stable failures:
 - Produces atomic JSON helpers that never accept a client destination.
 - Keeps `save_generated_config(upload_dir, payload, ts) -> tuple[Path, Path]` compatible.
 
-- [ ] **Step 1: Write failing filesystem tests**
+- [x] **Step 1: Write failing filesystem tests**
 
 Add tests asserting input JSON is published by `os.replace`, IDs reject traversal, failure before replace leaves no visible input, final rubric/answer files contain valid JSON, and an injected second-file publish failure leaves the database untouched when used through the Job runner.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_config_generation_job.py -k "stage or atomic" -q
@@ -116,11 +117,11 @@ Add tests asserting input JSON is published by `os.replace`, IDs reject traversa
 
 Expected: collection/import FAIL because `backend.jobs.config_generation` does not exist and existing config saves write directly.
 
-- [ ] **Step 3: Implement minimal atomic helpers**
+- [x] **Step 3: Implement minimal atomic helpers**
 
 Use UUID hex IDs, strict `[0-9a-f]{32}` validation, `json.dump(..., ensure_ascii=False)`, a same-directory dot-prefixed temporary file, flush/close, then `os.replace`. Update `save_generated_config()` to write each final JSON through the same atomic-file pattern while preserving filenames and return type. Clean only server-created temporary files on exceptions.
 
-- [ ] **Step 4: Run atomic tests and existing config API regression**
+- [x] **Step 4: Run atomic tests and existing config API regression**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_config_generation_job.py -k "stage or atomic" tests/test_api_config_routes.py -q
@@ -143,11 +144,11 @@ Expected: all selected tests PASS.
 - Produces result `{session_id, outcome, total_questions, generated_questions, failed_count, failed_question_ids, retryable}`.
 - Registers exactly one `config_generation` handler using the active config model without persisting credentials.
 
-- [ ] **Step 1: Write failing handler tests**
+- [x] **Step 1: Write failing handler tests**
 
 Cover fake-LLM complete success and DB binding; partial failure draft without DB binding; missing session/input; input/session mismatch; cancellation before generation, after fake model return and before final binding; fake LLM exception; result without absolute paths or credentials; and final file cleanup when DB binding fails.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_config_generation_job.py -k "generate or partial or cancel" -q
@@ -155,11 +156,11 @@ Cover fake-LLM complete success and DB binding; partial failure draft without DB
 
 Expected: FAIL because the handler and registration do not exist.
 
-- [ ] **Step 3: Implement thin orchestration**
+- [x] **Step 3: Implement thin orchestration**
 
 Load only the fixed input resource, require a live non-deleted session, create the LLM client inside the worker, pass a report wrapper that reports then calls `raise_if_cancelled`, and use the client's `config_model`. On partial failure publish `config_generation_draft_job_<id>.json` and return a retryable summary without calling `update_grading_session_config`. On full success validate/publish both final files, perform one last cancellation check, bind both paths, and return a complete summary. Never place input content, prompt text, API settings or file paths in the public result.
 
-- [ ] **Step 4: Run handler and lifecycle regression**
+- [x] **Step 4: Run handler and lifecycle regression**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_config_generation_job.py tests/test_api_job_lifecycle.py tests/test_job_manager.py -q
@@ -181,11 +182,11 @@ Expected: all tests PASS, including restart cleanup of queued/running Job record
 - Consumes retry Job payload `{session_id, mode: "retry", source_job_id, retry_question_ids}`.
 - A retry may target one or more currently failed IDs; omitted IDs remain failed and retryable.
 
-- [ ] **Step 1: Write failing subset-retry tests**
+- [x] **Step 1: Write failing subset-retry tests**
 
 Create a payload with Q1 and Q2 failed, retry only Q1, and assert Q1 is replaced while Q2 remains in `failed_question_ids/failed_questions`; reject unknown, duplicate-only-empty, already successful or wrong-session IDs; then retry Q2 and assert final score allocation and DB binding happen once.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_grading_config_generation_policy.py tests/test_config_generation_job.py -k "selected or subset or retry" -q
@@ -193,11 +194,11 @@ Create a payload with Q1 and Q2 failed, retry only Q1, and assert Q1 is replaced
 
 Expected: FAIL because retry currently always consumes every failed question and the Job has no retry mode.
 
-- [ ] **Step 3: Extend retry without changing generation semantics**
+- [x] **Step 3: Extend retry without changing generation semantics**
 
 Normalize requested IDs against the existing failure set, run the existing per-question generation only for selected blocks, merge successes, and combine new selected failures with untouched prior failures in original question order. Overall score allocation remains paused while any failure remains. The Job retry loads the source Job's server-side input and draft by verified IDs; it never trusts a client path or resends credentials.
 
-- [ ] **Step 4: Run retry and generation-policy regression**
+- [x] **Step 4: Run retry and generation-policy regression**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_grading_config_generation_policy.py tests/test_config_generation_job.py -q
@@ -221,11 +222,11 @@ Expected: all tests PASS and legacy all-failed retry behavior remains unchanged 
 - Retry request contains source Job ID and optional bounded failed-question ID list.
 - Both endpoints return HTTP 202 with the standard Job representation reduced to safe config-generation metadata.
 
-- [ ] **Step 1: Write failing API contract tests**
+- [x] **Step 1: Write failing API contract tests**
 
 Cover 202 submit/query; nonexistent/deleted session; source Job missing/wrong type/wrong session/not partial; extra fields and sensitive keys; no internal path/document text/image base64 in public Job payload; cancelled/failed/public error behavior; repeated retry after completion; and generic `/api/jobs/config_generation` validation by the handler.
 
-- [ ] **Step 2: Run API tests and verify RED**
+- [x] **Step 2: Run API tests and verify RED**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_api_config_generation_jobs.py -q
@@ -233,11 +234,11 @@ Cover 202 submit/query; nonexistent/deleted session; source Job missing/wrong ty
 
 Expected: 404/405 because the dedicated routes do not exist.
 
-- [ ] **Step 3: Add strict schemas and thin routes**
+- [x] **Step 3: Add strict schemas and thin routes**
 
 Use `ConfigDict(extra="forbid")`, bounded question IDs and list sizes, stage the input before submission, remove a newly staged input if submission fails, and map unsupported Job registration to 503. Before retry submission, verify the source Job belongs to the same session, is `config_generation`, succeeded with `outcome="partial"`, and exposes requested IDs. Special-case public config Job payload/result projection so stored input references and internal paths are never returned.
 
-- [ ] **Step 4: Run API and existing Job/config regressions**
+- [x] **Step 4: Run API and existing Job/config regressions**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_api_config_generation_jobs.py tests/test_api_config_routes.py tests/test_api_jobs.py tests/test_api_job_lifecycle.py -q
@@ -258,11 +259,11 @@ Expected: all tests PASS.
 - Produces OpenAPI operations with no key/token/secret/password/path/destination fields.
 - Produces a `waiting_review` functional commit and machine-verifiable handoff.
 
-- [ ] **Step 1: Write failing OpenAPI assertions**
+- [x] **Step 1: Write failing OpenAPI assertions**
 
 Assert both endpoints and their 202/404/409/422/503 responses exist, operation IDs are unique, schemas forbid additional properties, and request/response properties do not introduce sensitive-key or destination-path fields.
 
-- [ ] **Step 2: Run OpenAPI test and verify RED**
+- [x] **Step 2: Run OpenAPI test and verify RED**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_api_openapi_contract.py -q
@@ -270,7 +271,7 @@ Assert both endpoints and their 202/404/409/422/503 responses exist, operation I
 
 Expected: FAIL until the new operations are declared.
 
-- [ ] **Step 3: Complete documentation and focused regression**
+- [x] **Step 3: Complete documentation and focused regression**
 
 Record only implemented P1-17 facts in `ARCHITECTURE.md`, then run:
 
@@ -280,7 +281,7 @@ Record only implemented P1-17 facts in `ARCHITECTURE.md`, then run:
 
 Expected: all selected tests PASS.
 
-- [ ] **Step 4: Run affected API regression, diff and quick smoke**
+- [x] **Step 4: Run affected API regression, diff and quick smoke**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_api_app.py tests/test_api_read_routes.py tests/test_api_write_routes.py tests/test_api_config_routes.py tests/test_api_config_generation_jobs.py tests/test_api_jobs.py -q
@@ -290,11 +291,11 @@ git diff --check
 
 Expected: all tests PASS; diff check and quick smoke exit 0.
 
-- [ ] **Step 5: Recheck scope, stash and real-data fingerprints**
+- [x] **Step 5: Recheck scope, stash and real-data fingerprints**
 
 Confirm no commit or stash added after领取 contains `user_data/`, and the real grading/question-bank database SHA-256 values still match the recorded baseline.
 
-- [ ] **Step 6: Create functional commit and update handoff**
+- [x] **Step 6: Create functional commit and update handoff**
 
 Update Implementation Evidence and the handoff block to `waiting_review`, `功能提交: branch_head`, `自动验证: passed`, `真实数据指纹: unchanged`; commit only P1-17 code, tests, architecture fact and this plan. Do not integrate before independent review.
 
@@ -310,22 +311,22 @@ Update Implementation Evidence and the handoff block to `waiting_review`, `功�
 ## Implementation Evidence
 
 - Baseline: config API, Job lifecycle/manager and generation-policy suite `81 passed` before source changes.
-- RED/GREEN: pending.
-- Focused/affected regression: pending.
+- RED/GREEN: 输入暂存、原子发布、Job 注册、成功/部分失败/取消、指定失败题重试、专用 API、客户端路径拒绝和 OpenAPI 均先由聚焦测试复现失败，再以最小实现转绿。
+- Focused regression: 最终 P1-17 聚焦回归 `93 passed`；受影响 API 回归 `45 passed`。
 - Independent review: pending.
-- Quick smoke/integration full gate: pending.
-- Real data: baseline SHA-256 recorded outside Git; final comparison pending.
+- Quick smoke: 文档治理、352 个第一方 Python 文件静态编译、两库副本初始化幂等和 `integrity_check=ok` 全部通过。
+- Real data: 工作树没有 `user_data/` 变更，stash 仍为领取时两条；真实阅卷库与题库 SHA-256 和领取基线完全一致。
 
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
 
 **执行包：** P1-17
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->

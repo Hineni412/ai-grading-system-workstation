@@ -35,6 +35,19 @@ def _job_response(job: JobRecord) -> JobResponse:
 
 
 def public_job_result(job: JobRecord) -> dict[str, Any]:
+    if job.job_type == "config_generation":
+        allowed = (
+            "session_id",
+            "outcome",
+            "total_questions",
+            "generated_questions",
+            "failed_count",
+            "failed_question_ids",
+            "retryable",
+        )
+        return sanitize_public_mapping(
+            {key: job.result[key] for key in allowed if key in job.result}
+        )
     if (
         job.job_type == "report_export"
         and job.status == "succeeded"
@@ -62,6 +75,16 @@ def public_job_error(job: JobRecord) -> str | None:
 
 
 def public_job_payload(job: JobRecord) -> dict[str, Any]:
+    if job.job_type == "config_generation":
+        allowed = (
+            "session_id",
+            "mode",
+            "source_job_id",
+            "retry_question_ids",
+        )
+        return sanitize_public_mapping(
+            {key: job.payload[key] for key in allowed if key in job.payload}
+        )
     return sanitize_public_mapping(job.payload)
 
 
