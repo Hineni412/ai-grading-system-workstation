@@ -374,11 +374,11 @@ Expected: every command exits 0.
 
 Repeat read-only size/UTC/SHA-256 checks and require both root databases to match Task 1. Confirm `git status --short -- user_data` is empty. Set handoff to `waiting_review`, `功能提交: branch_head`, `自动验证: passed`, `独立复审: pending`, `用户验收: pending`, `真实数据指纹: unchanged`, then commit all P2-02 source/test/docs changes without `user_data/`.
 
-- [ ] **Step 4: Perform independent review and fix findings**
+- [x] **Step 4: Perform independent review and fix findings**
 
 Review `origin/main..HEAD` against the approved spec and this plan. Critical/Important findings must be zero. Any fix reruns its focused test and affected front-end commands before amending or adding a feature commit.
 
-- [ ] **Step 5: Create the user-test anchor commit**
+- [x] **Step 5: Create the user-test anchor commit**
 
 Record the reviewed feature SHA in a plan-only commit; set `交接状态: waiting_user`, `自动验证: passed`, `独立复审: passed`, `用户验收: pending`. Run `tools/handoff_status.py` and require `ok=true`.
 
@@ -448,10 +448,10 @@ Fetch/prune, fast-forward root `main` and active worktrees to `origin/main`, del
 ## 昼夜交接
 
 **执行包：** P2-02
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** waiting_user
+**功能提交：** 5c5b970c51d30896a3ce1aab3319d940665ce5f2
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** pending
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
