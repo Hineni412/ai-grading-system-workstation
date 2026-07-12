@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 
 from backend.api.app import ApiError, ErrorResponse
-from backend.api.dependencies import get_diagnosis_profile_service
+from backend.api.dependencies import get_graph_diagnosis_profile_service
 from backend.api.schemas.graph import (
     GraphEvidenceRequest,
     GraphEvidenceResponse,
@@ -39,7 +39,7 @@ GRAPH_DATABASE_RESPONSES = {
 )
 def get_graph_profiles(
     body: GraphQueryRequest,
-    service: DiagnosisProfileService = Depends(get_diagnosis_profile_service),
+    service: DiagnosisProfileService = Depends(get_graph_diagnosis_profile_service),
 ) -> GraphProfilesResponse:
     profile = _build_profile(body, service)
     return GraphProfilesResponse.model_validate(_profile_response(profile))
@@ -52,7 +52,7 @@ def get_graph_profiles(
 )
 def get_graph_rows(
     body: GraphQueryRequest,
-    service: DiagnosisProfileService = Depends(get_diagnosis_profile_service),
+    service: DiagnosisProfileService = Depends(get_graph_diagnosis_profile_service),
 ) -> GraphRowsResponse:
     profile = _build_profile(body, service)
     rows = build_question_tag_graph_rows(profile)
@@ -73,7 +73,7 @@ def get_graph_rows(
 )
 def get_graph_evidence(
     body: GraphEvidenceRequest,
-    service: DiagnosisProfileService = Depends(get_diagnosis_profile_service),
+    service: DiagnosisProfileService = Depends(get_graph_diagnosis_profile_service),
 ) -> GraphEvidenceResponse:
     profile = _build_profile(body, service)
     evidence = build_question_tag_graph_evidence(profile, body.knowledge_key)

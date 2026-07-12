@@ -15,6 +15,7 @@ from .graph import (
     GraphQueryRequest,
     GraphRow,
     GraphRowsResponse,
+    GraphSourceQuestionReference,
 )
 from .jobs import JobResponse, JobSubmitRequest
 from .media import ReviewMediaLinksResponse
@@ -103,6 +104,7 @@ __all__ = [
     "GraphQueryRequest",
     "GraphRow",
     "GraphRowsResponse",
+    "GraphSourceQuestionReference",
     "JobResponse",
     "JobSubmitRequest",
     "RenameSessionRequest",

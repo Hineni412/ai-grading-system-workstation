@@ -169,8 +169,21 @@ class QuestionReadPage:
 
 @contextmanager
 def _read_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
+    with captured_sqlite_read_connection(
+        db_path,
+        required_tables=_SNAPSHOT_REQUIRED_TABLES,
+    ) as conn:
+        yield conn
+
+
+@contextmanager
+def captured_sqlite_read_connection(
+    db_path: Path,
+    *,
+    required_tables: frozenset[str],
+) -> Iterator[sqlite3.Connection]:
     with _captured_snapshot_candidate(db_path) as candidate:
-        conn = _open_snapshot_connection(candidate)
+        conn = _open_snapshot_connection(candidate, required_tables=required_tables)
         try:
             yield conn
         except sqlite3.DatabaseError as exc:
@@ -179,6 +192,21 @@ def _read_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
             ) from exc
         finally:
             conn.close()
+
+
+@contextmanager
+def captured_sqlite_snapshot_path(
+    db_path: Path,
+    *,
+    required_tables: frozenset[str],
+) -> Iterator[Path]:
+    with _captured_snapshot_candidate(db_path) as candidate:
+        validation = _open_snapshot_connection(
+            candidate,
+            required_tables=required_tables,
+        )
+        validation.close()
+        yield candidate
 
 
 def _snapshot_compare_hook(_source: Path, _attempt: int) -> None:
@@ -437,7 +465,11 @@ def _check_snapshot_deadline(deadline: float) -> None:
         raise _SnapshotChanged("Question bank snapshot deadline elapsed")
 
 
-def _open_snapshot_connection(candidate: Path) -> sqlite3.Connection:
+def _open_snapshot_connection(
+    candidate: Path,
+    *,
+    required_tables: frozenset[str] = _SNAPSHOT_REQUIRED_TABLES,
+) -> sqlite3.Connection:
     conn: sqlite3.Connection | None = None
     try:
         uri = f"{candidate.resolve(strict=True).as_uri()}?mode=ro"
@@ -454,17 +486,17 @@ def _open_snapshot_connection(candidate: Path) -> sqlite3.Connection:
         quick_check = conn.execute("PRAGMA quick_check").fetchall()
         if len(quick_check) != 1 or str(quick_check[0][0]).casefold() != "ok":
             raise sqlite3.DatabaseError("Snapshot quick_check failed")
-        placeholders = ", ".join("?" for _ in _SNAPSHOT_REQUIRED_TABLES)
+        placeholders = ", ".join("?" for _ in required_tables)
         rows = conn.execute(
             f"""
             SELECT name
             FROM sqlite_master
             WHERE type = 'table' AND name IN ({placeholders})
             """,
-            tuple(sorted(_SNAPSHOT_REQUIRED_TABLES)),
+            tuple(sorted(required_tables)),
         ).fetchall()
         available_tables = {str(row[0]) for row in rows}
-        if not _SNAPSHOT_REQUIRED_TABLES.issubset(available_tables):
+        if not required_tables.issubset(available_tables):
             raise sqlite3.DatabaseError("Snapshot schema is unavailable")
         return conn
     except (OSError, sqlite3.DatabaseError) as exc:

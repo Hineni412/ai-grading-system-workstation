@@ -97,7 +97,7 @@ def build_question_tag_graph_rows(profile: Mapping[str, Any]) -> list[dict[str, 
                         _unique_text(str(value or "").strip() for value in reason_values)
                     ),
                     "source_question_refs": [
-                        dict(value)
+                        _public_source_reference(value)
                         for value in source_refs
                         if isinstance(value, Mapping)
                     ]
@@ -291,6 +291,18 @@ def _optional_number(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _public_source_reference(value: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "session_id": _integer(value.get("session_id")),
+        "session_name": str(value.get("session_name") or ""),
+        "question_id": str(value.get("question_id") or ""),
+        "bank_question_id": _integer(value.get("bank_question_id")),
+        "score_awarded": _number(value.get("score_awarded")),
+        "full_score": _number(value.get("full_score")),
+        "score_rate": _optional_number(value.get("score_rate")),
+    }
 
 
 def _normalized_tag_context(value: object) -> dict[str, list[str]]:

@@ -111,7 +111,17 @@ def test_question_tag_projection_uses_exact_knowledge_identity() -> None:
             "deduction_count": 2,
             "item_count": 3,
             "sample_reasons": "辅助线缺失",
-            "source_question_refs": [{"session_id": 7, "question_id": "Q12(1)"}],
+            "source_question_refs": [
+                {
+                    "session_id": 7,
+                    "session_name": "",
+                    "question_id": "Q12(1)",
+                    "bank_question_id": 0,
+                    "score_awarded": 0.0,
+                    "full_score": 0.0,
+                    "score_rate": None,
+                }
+            ],
             "tag_context": {"method": ["构造辅助线"]},
             "error_counts": {
                 "primary": {"辅助线思路缺失": 2},
@@ -252,3 +262,30 @@ def test_tag_graph_evidence_is_deduplicated_sorted_and_path_free() -> None:
         },
     }
     assert "C:/private" not in repr(items)
+
+
+def test_tag_graph_rows_explicitly_drop_unapproved_reference_fields() -> None:
+    rows = build_question_tag_graph_rows(_tag_graph_profile())
+
+    assert rows[0]["source_question_refs"] == [
+        {
+            "session_id": 14,
+            "session_name": "当前考试",
+            "question_id": "Q1",
+            "bank_question_id": 101,
+            "score_awarded": 5.0,
+            "full_score": 10.0,
+            "score_rate": 0.5,
+        },
+        {
+            "session_id": 14,
+            "session_name": "当前考试",
+            "question_id": "Q1",
+            "bank_question_id": 101,
+            "score_awarded": 5.0,
+            "full_score": 10.0,
+            "score_rate": 0.5,
+        },
+    ]
+    assert "front_image" not in repr(rows)
+    assert "C:/private" not in repr(rows)
