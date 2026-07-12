@@ -179,3 +179,52 @@ def test_read_methods_do_not_run_database_initialization(
 
     assert service.list_tasks()[0]["id"] == task.id
     assert service.get_task(task.id)["task_code"] == task.task_code
+
+
+def test_task_service_supports_stable_task_code_lookup(
+    service: TrainingTaskService,
+    practice_plan: dict,
+) -> None:
+    task = service.create_task(
+        practice_plan,
+        created_by="teacher",
+        task_code="TRN-CFM-12345678123456781234567812345678",
+    )
+
+    loaded = service.get_task_by_code(task.task_code)
+
+    assert loaded["id"] == task.id
+    assert loaded["created_by"] == "teacher"
+
+
+def test_task_service_paginates_after_descending_sort(
+    service: TrainingTaskService,
+    practice_plan: dict,
+) -> None:
+    created = [
+        service.create_task(
+            practice_plan,
+            task_code=f"TRN-CFM-{index:032d}",
+        )
+        for index in range(1, 4)
+    ]
+
+    first_page, total = service.list_tasks_page(page=1, page_size=2)
+    second_page, second_total = service.list_tasks_page(page=2, page_size=2)
+
+    assert total == second_total == 3
+    assert [item["id"] for item in first_page] == [created[2].id, created[1].id]
+    assert [item["id"] for item in second_page] == [created[0].id]
+
+
+@pytest.mark.parametrize(
+    ("page", "page_size"),
+    [(0, 20), (1, 0), (1, 101)],
+)
+def test_task_service_rejects_invalid_pagination(
+    service: TrainingTaskService,
+    page: int,
+    page_size: int,
+) -> None:
+    with pytest.raises(ValueError):
+        service.list_tasks_page(page=page, page_size=page_size)
