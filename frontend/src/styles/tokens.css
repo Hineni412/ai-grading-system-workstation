@@ -1,0 +1,84 @@
+:root {
+  color-scheme: light;
+
+  --color-bg-app: #f6f7f8;
+  --color-bg-sidebar: #f2f3f4;
+  --color-bg-surface: #ffffff;
+  --color-bg-subtle: #f8f9fa;
+  --color-bg-selected: #eef2f6;
+  --color-overlay-mask: rgba(32, 36, 42, 0.42);
+
+  --color-border-subtle: #e7e9ec;
+  --color-border-default: #d9dde2;
+  --color-border-strong: #b9c0c9;
+
+  --color-text-primary: #20242a;
+  --color-text-secondary: #5c6470;
+  --color-text-muted: #8a929d;
+
+  --color-accent: #2563eb;
+  --color-accent-hover: #1d4ed8;
+  --color-accent-active: #1e40af;
+  --color-accent-subtle: #eff6ff;
+
+  --color-success: #2f7a55;
+  --color-success-subtle: #eaf5ef;
+  --color-warning: #9a6718;
+  --color-warning-subtle: #fff4da;
+  --color-danger: #b04444;
+  --color-danger-subtle: #faecec;
+  --color-info: #496579;
+  --color-info-subtle: #edf3f7;
+  --color-ai: #5e628d;
+  --color-ai-subtle: #efeff7;
+  --color-teacher: #255f49;
+  --color-teacher-subtle: #e9f3ee;
+
+  --font-family-sans: Inter, "PingFang SC", "Microsoft YaHei",
+    "Noto Sans CJK SC", system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  --font-size-caption: 12px;
+  --font-size-dense: 13px;
+  --font-size-body: 14px;
+  --font-size-h3: 16px;
+  --font-size-h2: 20px;
+  --font-size-h1: 24px;
+  --font-size-display: 32px;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --line-height-tight: 1.35;
+  --line-height-body: 1.5;
+  --line-height-relaxed: 1.7;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+  --space-9: 48px;
+
+  --radius-tag: 4px;
+  --radius-control: 6px;
+  --radius-panel: 8px;
+  --radius-overlay: 12px;
+  --border-width: 1px;
+
+  --control-height-small: 32px;
+  --control-height-default: 36px;
+  --control-height-large: 40px;
+  --content-max-width: 1180px;
+
+  --shadow-overlay: 0 8px 24px rgba(32, 36, 42, 0.14);
+  --focus-ring: 0 0 0 3px var(--color-accent-subtle);
+  --focus-offset: 2px;
+  --opacity-disabled: 0.54;
+
+  --duration-fast: 100ms;
+  --duration-base: 160ms;
+  --duration-drawer: 220ms;
+  --duration-reduced: 0.01ms;
+}
