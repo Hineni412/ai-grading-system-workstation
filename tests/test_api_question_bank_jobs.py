@@ -165,6 +165,49 @@ def test_question_import_retry_reuses_safe_request_id(tmp_path: Path) -> None:
     }
 
 
+def test_question_bank_retry_routes_reject_wrong_source_job_types(tmp_path: Path) -> None:
+    client, manager, _service, _request = _client(tmp_path)
+    wrong = manager.store.create_job("report_export", {"session_id": 1})
+
+    import_retry = client.post(
+        f"/api/question-bank/question-import-jobs/{wrong.id}/retry"
+    )
+    tagging_retry = client.post(
+        f"/api/question-bank/tagging-jobs/{wrong.id}/retry",
+        json={},
+    )
+
+    assert import_retry.status_code == 404
+    assert import_retry.json()["error"]["code"] == "question_import_job_not_found"
+    assert tagging_retry.status_code == 404
+    assert tagging_retry.json()["error"]["code"] == "tagging_sync_job_not_found"
+
+
+def test_tagging_retry_uses_original_ids_after_failed_or_cancelled_job(
+    tmp_path: Path,
+) -> None:
+    client, manager, _service, _request = _client(tmp_path)
+    failed = manager.store.create_job("tagging_sync", {"question_ids": [11, 12]})
+    assert manager.store.mark_running(failed.id)
+    manager.store.finish(failed.id, "failed", error="private")
+    cancelled = manager.store.create_job("tagging_sync", {"question_ids": [12]})
+    assert manager.store.request_cancel(cancelled.id)
+
+    failed_retry = client.post(
+        f"/api/question-bank/tagging-jobs/{failed.id}/retry",
+        json={},
+    )
+    cancelled_retry = client.post(
+        f"/api/question-bank/tagging-jobs/{cancelled.id}/retry",
+        json={},
+    )
+
+    assert failed_retry.status_code == 202
+    assert failed_retry.json()["payload"]["question_ids"] == [11, 12]
+    assert cancelled_retry.status_code == 202
+    assert cancelled_retry.json()["payload"]["question_ids"] == [12]
+
+
 def test_generic_job_route_rejects_dedicated_question_bank_jobs(tmp_path: Path) -> None:
     client, _manager, _service, _request = _client(tmp_path)
 
@@ -175,6 +218,9 @@ def test_generic_job_route_rejects_dedicated_question_bank_jobs(tmp_path: Path) 
         )
         assert response.status_code == 422
         assert response.json()["error"]["code"] == "dedicated_job_endpoint_required"
+        assert response.json()["error"]["message"] == (
+            "Use the dedicated endpoint for this job type"
+        )
 
 
 def test_default_handlers_register_both_question_bank_job_types(tmp_path: Path) -> None:

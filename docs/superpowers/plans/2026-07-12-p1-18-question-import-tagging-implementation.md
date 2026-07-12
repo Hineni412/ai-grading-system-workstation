@@ -305,9 +305,9 @@ After independent review passes, update only this plan: record the full reviewed
 
 - Baseline: P1-16/P1-17 Job, question-bank write/import/tagging and lifecycle regression `129 passed` before source changes.
 - RED/GREEN: `question_import`、`tagging_sync`、专用 API/重试与 OpenAPI 均先由聚焦测试复现缺失或契约偏差，再以最小实现转绿；打标分类和 Job 注册回归都通过失败用例定位根因后修复。
-- Focused regression: P1-18 聚焦回归 `82 passed`；受影响 API/Job 回归 `154 passed`；共享 Job 注册回归修复后 `15 passed`；风险触发的完整 pytest 最终 `1126 passed`。
-- Independent review: pending.
-- Quick smoke: 文档治理、359 个第一方 Python 文件静态编译、两库临时副本初始化幂等与 `integrity_check=ok` 全部通过。
+- Focused regression: 初始 P1-18 聚焦回归 `82 passed`、受影响 API/Job `154 passed`、完整 pytest `1126 passed`；独立复审修复后扩展聚焦回归 `91 passed`、受影响 API/Job `170 passed`、完整 pytest `1135 passed`。
+- Independent review: 首轮复审功能提交 `987c451cb3b8588a3bf710b7b6115c82bebc9bdf` 得到 1 Critical / 4 Important / 1 Minor；并发幂等、请求 ID 校验、导入中取消、打标初始化错误持久化安全和覆盖缺口均已按 TDD 修复，最终候选复审待执行。
+- Quick smoke: 复审修复后文档治理、360 个第一方 Python 文件静态编译、两库临时副本初始化幂等与 `integrity_check=ok` 全部通过。
 - Real data: worktree 无 `user_data/` 变化，stash 仍为领取时两条；根目录真实阅卷库与题库 SHA-256 和领取基线完全一致。
 
 <!-- HANDOFF_STATUS_START -->

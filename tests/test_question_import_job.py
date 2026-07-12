@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -73,6 +76,24 @@ def test_load_import_resource_rejects_missing_and_tampered_request(tmp_path: Pat
 
     with pytest.raises(QuestionImportUploadNotFound):
         service.load_import_resource("../outside")
+
+    forged_id = "a" * 32
+    assert forged_id != request.request_id
+    forged_payload = request.to_dict()
+    forged_payload["request_id"] = forged_id
+    forged_path = (
+        service.data_root
+        / "question_bank"
+        / "import_staging"
+        / "requests"
+        / f"{forged_id}.json"
+    )
+    forged_path.write_text(
+        json.dumps(forged_payload, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    with pytest.raises(QuestionImportUploadNotFound):
+        service.load_import_resource(forged_id)
 
     resource.source_path.write_bytes(b"tampered")
     with pytest.raises(QuestionImportUploadNotFound):
@@ -182,6 +203,76 @@ def test_question_import_job_honours_cancellation_before_import(tmp_path: Path) 
         )
 
     assert not service.db_path.exists()
+
+
+def test_question_import_job_honours_cancellation_requested_during_import(
+    tmp_path: Path,
+) -> None:
+    service, request = _service_and_request(tmp_path)
+    context, store = _context(tmp_path, {"request_id": request.request_id})
+
+    def cancelling_importer(scanned, database_path, **kwargs):
+        result = _successful_importer(scanned, database_path, **kwargs)
+        assert store.request_cancel(context.job_id)
+        return result
+
+    with pytest.raises(JobCancellationRequested):
+        run_question_import_job(
+            context=context,
+            question_bank_db_path=service.db_path,
+            data_root=service.data_root,
+            write_service=service,
+            importer=cancelling_importer,
+        )
+
+
+def test_question_import_job_serializes_same_request_execution(tmp_path: Path) -> None:
+    service, request = _service_and_request(tmp_path)
+    first, _ = _context(tmp_path / "first", {"request_id": request.request_id})
+    second, _ = _context(tmp_path / "second", {"request_id": request.request_id})
+    entered = threading.Event()
+    release = threading.Event()
+    calls: list[int] = []
+    guard = threading.Lock()
+
+    def blocking_importer(scanned, _database_path, **_kwargs):
+        with guard:
+            calls.append(len(calls) + 1)
+            call_number = len(calls)
+        if call_number == 1:
+            entered.set()
+            assert release.wait(timeout=5)
+        source = str(scanned[0].source_file)
+        return BatchImportResult(
+            [PaperImportFileResult(source, "duplicate")], 0, 0, 0, 0, 1, 0
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(
+            run_question_import_job,
+            context=first,
+            question_bank_db_path=service.db_path,
+            data_root=service.data_root,
+            write_service=service,
+            importer=blocking_importer,
+        )
+        assert entered.wait(timeout=5)
+        second_future = executor.submit(
+            run_question_import_job,
+            context=second,
+            question_bank_db_path=service.db_path,
+            data_root=service.data_root,
+            write_service=service,
+            importer=blocking_importer,
+        )
+        time.sleep(0.1)
+        calls_while_first_active = len(calls)
+        release.set()
+        first_future.result(timeout=5)
+        second_future.result(timeout=5)
+
+    assert calls_while_first_active == 1
+    assert calls == [1, 2]
 
 
 def test_question_import_job_repeat_uses_existing_questions_without_duplicates(

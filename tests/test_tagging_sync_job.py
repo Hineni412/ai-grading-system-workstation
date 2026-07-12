@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
-from backend.jobs.manager import JobCancellationRequested, JobContext
+from backend.jobs.manager import JobCancellationRequested, JobContext, JobManager
 from backend.jobs.store import JobStore
 from backend.jobs.tagging_sync import run_tagging_sync_job
 from question_bank.models.question import QuestionCreate
@@ -181,6 +184,150 @@ def test_tagging_sync_cancellation_during_batch_discards_batch_and_stops_next(
     assert fake_ai.calls == [[ids[0]]]
     assert QuestionService(db_path).get_question(ids[0])["tags"] == []
     assert QuestionService(db_path).get_question(ids[1])["tags"] == []
+
+
+def test_tagging_sync_honours_cancellation_before_first_batch(tmp_path: Path) -> None:
+    db_path = tmp_path / "qb.db"
+    ids = _seed(db_path, 1)
+    context, store = _context(tmp_path, {"question_ids": ids})
+    assert store.request_cancel(context.job_id)
+
+    with pytest.raises(JobCancellationRequested):
+        run_tagging_sync_job(
+            context=context,
+            question_bank_db_path=db_path,
+            ai_service_factory=lambda: pytest.fail("AI factory must not run"),
+        )
+
+
+def test_tagging_sync_serializes_overlapping_question_ids(tmp_path: Path) -> None:
+    db_path = tmp_path / "qb.db"
+    ids = _seed(db_path, 1)
+    first, _ = _context(tmp_path / "first", {"question_ids": ids})
+    second, _ = _context(tmp_path / "second", {"question_ids": ids})
+    entered = threading.Event()
+    release = threading.Event()
+    calls: list[list[int]] = []
+
+    class BlockingAI(FakeAI):
+        def analyze_questions(self, contexts, **kwargs):
+            calls.append(sorted(contexts))
+            entered.set()
+            assert release.wait(timeout=5)
+            return super().analyze_questions(contexts, **kwargs)
+
+    fake_ai = BlockingAI({ids[0]: _complete()})
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(
+            run_tagging_sync_job,
+            context=first,
+            question_bank_db_path=db_path,
+            ai_service_factory=lambda: fake_ai,
+            batch_size=1,
+        )
+        assert entered.wait(timeout=5)
+        second_future = executor.submit(
+            run_tagging_sync_job,
+            context=second,
+            question_bank_db_path=db_path,
+            ai_service_factory=lambda: fake_ai,
+            batch_size=1,
+        )
+        time.sleep(0.1)
+        calls_while_first_active = len(calls)
+        release.set()
+        first_result = first_future.result(timeout=5)
+        second_result = second_future.result(timeout=5)
+
+    assert calls_while_first_active == 1
+    assert calls == [[ids[0]]]
+    assert first_result["tagged_count"] == 1
+    assert second_result["skipped_complete_count"] == 1
+
+
+def test_tagging_sync_reports_monotonic_progress(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "qb.db"
+    ids = _seed(db_path, 2)
+    context, store = _context(tmp_path, {"question_ids": ids})
+    fake_ai = FakeAI({question_id: _complete() for question_id in ids})
+    progress: list[float] = []
+    original = store.update_progress
+
+    def record(job_id, *, progress: float, stage: str, detail: str = ""):
+        progress_value = float(progress)
+        progress_values.append(progress_value)
+        return original(job_id, progress=progress, stage=stage, detail=detail)
+
+    progress_values = progress
+    monkeypatch.setattr(store, "update_progress", record)
+
+    run_tagging_sync_job(
+        context=context,
+        question_bank_db_path=db_path,
+        ai_service_factory=lambda: fake_ai,
+        batch_size=1,
+    )
+
+    assert progress == sorted(progress)
+    assert progress[0] == 0.05
+    assert progress[-1] == 1.0
+
+
+def test_tagging_sync_classifies_save_failure_without_raising(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "qb.db"
+    ids = _seed(db_path, 1)
+    context, _store = _context(tmp_path, {"question_ids": ids})
+
+    def fail_save(*_args, **_kwargs):
+        raise RuntimeError(f"database failed at {tmp_path}")
+
+    monkeypatch.setattr(QuestionService, "save_tag_analysis", fail_save)
+    result = run_tagging_sync_job(
+        context=context,
+        question_bank_db_path=db_path,
+        ai_service_factory=lambda: FakeAI({ids[0]: _complete()}),
+    )
+
+    assert result["failures"] == [
+        {
+            "question_id": ids[0],
+            "category": "save",
+            "message": "Complete AI tags could not be saved.",
+        }
+    ]
+
+
+def test_tagging_sync_masks_factory_error_before_job_store_persistence(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "qb.db"
+    ids = _seed(db_path, 1)
+    manager = JobManager(JobStore(tmp_path / "manager-jobs.db"), max_workers=1)
+
+    def unsafe_factory():
+        raise RuntimeError(f"API key=super-secret at {tmp_path}")
+
+    manager.register(
+        "tagging_sync",
+        lambda context: run_tagging_sync_job(
+            context=context,
+            question_bank_db_path=db_path,
+            ai_service_factory=unsafe_factory,
+        ),
+    )
+    job = manager.submit("tagging_sync", {"question_ids": ids})
+    manager.wait(job.id, timeout=5)
+    stored = manager.get(job.id)
+    manager.shutdown()
+
+    assert stored is not None
+    assert stored.status == "failed"
+    assert stored.error == "tagging sync setup failed"
+    assert "super-secret" not in str(stored.error)
+    assert str(tmp_path) not in str(stored.error)
 
 
 def test_tagging_sync_sanitizes_ai_failure_details(tmp_path: Path) -> None:

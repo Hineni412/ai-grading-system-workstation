@@ -17,6 +17,7 @@ from question_bank.services.question_service import (
     QuestionService,
 )
 
+from .execution_locks import keyed_execution_locks
 from .manager import JobContext
 
 
@@ -50,11 +51,38 @@ def run_tagging_sync_job(
     batch_size: int = 20,
 ) -> dict[str, object]:
     question_ids = _normalize_question_ids(context.payload.get("question_ids"))
+    db_path = Path(question_bank_db_path)
+    lock_keys = [
+        f"tagging-sync:{db_path.resolve(strict=False)}:{question_id}"
+        for question_id in question_ids
+    ]
+    with keyed_execution_locks(lock_keys):
+        return _run_tagging_sync_job_locked(
+            context=context,
+            question_bank_db_path=db_path,
+            ai_service_factory=ai_service_factory,
+            batch_size=batch_size,
+            question_ids=question_ids,
+        )
+
+
+def _run_tagging_sync_job_locked(
+    *,
+    context: JobContext,
+    question_bank_db_path: Path,
+    ai_service_factory: TaggingFactory,
+    batch_size: int,
+    question_ids: list[int],
+) -> dict[str, object]:
     size = max(1, min(int(batch_size), 50))
     db_path = Path(question_bank_db_path)
-    contexts, complete_ids, unavailable_ids = _load_tagging_candidates(
-        db_path, question_ids
-    )
+    context.raise_if_cancelled()
+    try:
+        contexts, complete_ids, unavailable_ids = _load_tagging_candidates(
+            db_path, question_ids
+        )
+    except Exception:
+        raise RuntimeError("tagging sync setup failed") from None
     failures = [
         _failure(question_id, "validation") for question_id in unavailable_ids
     ]
@@ -62,10 +90,12 @@ def run_tagging_sync_job(
     tagged_count = 0
     pending_ids = [item for item in question_ids if item in contexts]
     total_batches = max(1, (len(pending_ids) + size - 1) // size)
-    ai_service = ai_service_factory() if pending_ids else None
+    try:
+        ai_service = ai_service_factory() if pending_ids else None
+    except Exception:
+        raise RuntimeError("tagging sync setup failed") from None
     service = QuestionService(db_path)
 
-    context.raise_if_cancelled()
     context.report(0.05, "tagging_sync", "loading")
     for batch_index, start in enumerate(range(0, len(pending_ids), size)):
         context.raise_if_cancelled()
