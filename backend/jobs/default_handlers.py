@@ -9,11 +9,15 @@ from api_profiles import active_api_profile, get_api_profile_store
 from db_manager import DBManager
 from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
 from report import ReportGenerator
+from question_bank.services.ai_tagging_service import AITaggingService
+from question_bank.services.question_write_service import QuestionBankWriteService
 
 from .manager import JobContext, JobManager
 from .config_generation import run_config_generation_job
 from .grading_run import run_grading_job
+from .question_import import run_question_import_job
 from .scan_analysis import run_scan_analysis
+from .tagging_sync import run_tagging_sync_job
 
 
 class ReportGeneratorFactory(Protocol):
@@ -29,15 +33,24 @@ def register_default_job_handlers(
     exams_dir: Path | None = None,
     templates_dir: Path | None = None,
     data_root: Path | None = None,
+    question_bank_db_path: Path | None = None,
     upload_config_dir: Path | None = None,
     report_generator_factory: ReportGeneratorFactory = ReportGenerator,
     scan_runner: Callable[..., dict[str, object]] = run_scan_analysis,
     grading_runner: Callable[..., dict[str, object]] = run_grading_job,
     config_generation_runner: Callable[..., dict[str, object]] = run_config_generation_job,
+    question_import_runner: Callable[..., dict[str, object]] = run_question_import_job,
+    tagging_sync_runner: Callable[..., dict[str, object]] = run_tagging_sync_job,
+    tagging_ai_service_factory: Callable[[], Any] = AITaggingService,
     llm_client_factory: Callable[[], Any] | None = None,
 ) -> None:
     base_data_root = Path(data_root) if data_root is not None else _infer_data_root(Path(db_path))
     scan_llm_client_factory = llm_client_factory or _active_llm_client
+    resolved_question_bank_db = (
+        Path(question_bank_db_path)
+        if question_bank_db_path is not None
+        else base_data_root / "databases" / "question_bank.db"
+    )
     manager.register(
         "report_export",
         _build_report_export_handler(
@@ -64,7 +77,7 @@ def register_default_job_handlers(
             exams_dir=Path(exams_dir) if exams_dir is not None else base_data_root / "exams",
             templates_dir=Path(templates_dir) if templates_dir is not None else base_data_root / "templates",
             data_root=base_data_root,
-            question_bank_db_path=base_data_root / "databases" / "question_bank.db",
+            question_bank_db_path=resolved_question_bank_db,
             grading_runner=grading_runner,
             llm_client_factory=scan_llm_client_factory,
         ),
@@ -82,6 +95,58 @@ def register_default_job_handlers(
             llm_client_factory=scan_llm_client_factory,
         ),
     )
+    manager.register(
+        "question_import",
+        _build_question_import_handler(
+            question_bank_db_path=resolved_question_bank_db,
+            data_root=base_data_root,
+            question_import_runner=question_import_runner,
+        ),
+    )
+    manager.register(
+        "tagging_sync",
+        _build_tagging_sync_handler(
+            question_bank_db_path=resolved_question_bank_db,
+            tagging_sync_runner=tagging_sync_runner,
+            ai_service_factory=tagging_ai_service_factory,
+        ),
+    )
+
+
+def _build_question_import_handler(
+    *,
+    question_bank_db_path: Path,
+    data_root: Path,
+    question_import_runner: Callable[..., dict[str, object]],
+):
+    def handler(context: JobContext) -> dict[str, object]:
+        return question_import_runner(
+            context=context,
+            question_bank_db_path=question_bank_db_path,
+            data_root=data_root,
+            write_service=QuestionBankWriteService(
+                question_bank_db_path,
+                data_root=data_root,
+            ),
+        )
+
+    return handler
+
+
+def _build_tagging_sync_handler(
+    *,
+    question_bank_db_path: Path,
+    tagging_sync_runner: Callable[..., dict[str, object]],
+    ai_service_factory: Callable[[], Any],
+):
+    def handler(context: JobContext) -> dict[str, object]:
+        return tagging_sync_runner(
+            context=context,
+            question_bank_db_path=question_bank_db_path,
+            ai_service_factory=ai_service_factory,
+        )
+
+    return handler
 
 
 def _build_config_generation_handler(

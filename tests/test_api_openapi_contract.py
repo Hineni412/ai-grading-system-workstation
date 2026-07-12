@@ -211,3 +211,50 @@ def test_config_generation_openapi_declares_safe_requests_and_stable_errors() ->
         request_schema = schema["components"]["schemas"][request_ref.rsplit("/", 1)[-1]]
         assert request_schema["additionalProperties"] is False
         assert not (forbidden & set(request_schema.get("properties", {})))
+
+
+def test_question_bank_job_openapi_declares_dedicated_safe_operations() -> None:
+    from backend.api.app import create_app
+
+    schema = create_app().openapi()
+    expected = {
+        "/api/question-bank/import-requests/{request_id}/jobs": {404, 422, 503},
+        "/api/question-bank/question-import-jobs/{job_id}/retry": {
+            404,
+            409,
+            422,
+            503,
+        },
+        "/api/question-bank/tagging-jobs": {404, 409, 422, 503},
+        "/api/question-bank/tagging-jobs/{job_id}/retry": {404, 409, 422, 503},
+    }
+    forbidden = {
+        "api_key",
+        "token",
+        "secret",
+        "password",
+        "path",
+        "destination",
+        "question_text",
+    }
+
+    for path, statuses in expected.items():
+        operation = schema["paths"][path]["post"]
+        responses = operation["responses"]
+        assert statuses <= {int(status) for status in responses}
+        for status in statuses:
+            assert responses[str(status)]["content"]["application/json"]["schema"] == {
+                "$ref": "#/components/schemas/ErrorResponse"
+            }
+        request_body = operation.get("requestBody")
+        if request_body is None:
+            continue
+        request_ref = request_body["content"]["application/json"]["schema"]["$ref"]
+        request_schema = schema["components"]["schemas"][request_ref.rsplit("/", 1)[-1]]
+        assert request_schema["additionalProperties"] is False
+        assert not (forbidden & set(request_schema.get("properties", {})))
+
+    import_submit = schema["paths"][
+        "/api/question-bank/import-requests/{request_id}/jobs"
+    ]["post"]
+    assert "409" not in import_submit["responses"]

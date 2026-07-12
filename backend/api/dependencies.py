@@ -105,6 +105,11 @@ def create_job_manager(path_manager: PathManager | None = None) -> JobManager:
             exams_dir=paths.exams_dir,
             templates_dir=paths.templates_dir,
             data_root=paths.data_root,
+            question_bank_db_path=getattr(
+                paths,
+                "qb_db_path",
+                Path(paths.data_root) / "databases" / "question_bank.db",
+            ),
             upload_config_dir=getattr(
                 paths,
                 "upload_config_dir",
