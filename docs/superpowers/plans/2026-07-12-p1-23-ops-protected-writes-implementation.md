@@ -268,7 +268,7 @@ git commit -m "feat: validate ops data archives"
 - Produces: `OpsWriteService.stage_import_upload()`, `.preflight()`, `.consume_plan()` and `.build_job_payload()`.
 - Produces: `preview_backup(..., paths: PathManager)`, `preview_migrations(target, *, db_path, migrations_dir)` with no source-side write.
 
-- [ ] **Step 1: Write RED tests proving dry-run has zero target side effects**
+- [x] **Step 1: Write RED tests proving dry-run has zero target side effects**
 
 ```python
 def test_backup_preflight_does_not_create_backup_or_log_directories(tmp_path, paths):
@@ -287,12 +287,12 @@ def test_migration_preflight_only_executes_on_candidate(tmp_path, monkeypatch, p
 
 Add restore/import/export preflight tests, source fingerprint changes, backup-list containment, no API profiles, no Phase 6 root, and stable path-free summaries.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_ops_write_service.py tests\test_migration_tooling.py -q`
 Expected: FAIL because `OpsWriteService` and pure preview adapters do not exist.
 
-- [ ] **Step 3: Implement operation-specific preflight dispatch**
+- [x] **Step 3: Implement operation-specific preflight dispatch**
 
 ```python
 def preflight(self, request: OpsPreflightRequest) -> dict[str, object]:
@@ -318,12 +318,12 @@ def preflight(self, request: OpsPreflightRequest) -> dict[str, object]:
 
 `consume_plan()` must recompute the bound source fingerprint before returning the plan; mismatch raises `OpsPreflightStale` and the consumed token remains unusable.
 
-- [ ] **Step 4: Run write-service GREEN and adjacent backup/migration tests**
+- [x] **Step 4: Run write-service GREEN and adjacent backup/migration tests**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_ops_write_service.py tests\test_migration_tooling.py tests\test_schema_baseline.py -q`
-Expected: PASS; tests assert source files and directories remain unchanged during preflight.
+Expected: `36 passed`; tests assert source files and directories remain unchanged during preflight.
 
-- [ ] **Step 5: Commit Task 3**
+- [x] **Step 5: Commit Task 3**
 
 ```powershell
 git add backend/ops/write_service.py update_tools/backup_core.py update_tools/migrate_db.py tests/test_ops_write_service.py tests/test_migration_tooling.py
