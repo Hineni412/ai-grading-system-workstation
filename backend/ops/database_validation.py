@@ -33,7 +33,7 @@ def validate_database_file(path: Path, target: str) -> None:
     candidate = Path(path)
     if not candidate.is_file() or candidate.is_symlink():
         raise OpsDatabaseInvalid("database candidate is missing")
-    uri = candidate.resolve().as_uri() + "?mode=ro&immutable=1"
+    uri = candidate.resolve().as_uri() + "?mode=ro"
     try:
         with closing(sqlite3.connect(uri, uri=True)) as connection:
             quick = connection.execute("PRAGMA quick_check").fetchone()
@@ -67,8 +67,6 @@ def validate_archive_databases(
             continue
         normalized = "/".join(member.parts)
         if member.parts[:2] != ("user_data", "databases"):
-            continue
-        if Path(member.parts[-1]).suffix.casefold() != ".db":
             continue
         target = DATABASE_MEMBERS.get(normalized)
         if target is None:
@@ -104,10 +102,8 @@ def validate_staged_databases(staging_root: Path) -> None:
         raise OpsArchiveInvalid("invalid_database_candidate")
     for candidate in database_root.iterdir():
         if candidate.is_dir():
-            continue
+            raise OpsArchiveInvalid("unexpected_database_candidate")
         normalized = f"user_data/databases/{candidate.name}"
-        if candidate.suffix.casefold() != ".db":
-            continue
         target = DATABASE_MEMBERS.get(normalized)
         if target is None:
             raise OpsArchiveInvalid("unexpected_database_candidate")
@@ -117,9 +113,28 @@ def validate_staged_databases(staging_root: Path) -> None:
             raise OpsArchiveInvalid("invalid_database_candidate") from exc
 
 
-def validate_live_databases(paths: object) -> None:
-    validate_database_file(Path(paths.db_path), "grading")
-    validate_database_file(Path(paths.qb_db_path), "question_bank")
+def validate_live_databases(
+    paths: object,
+    *,
+    require_no_companions: bool = False,
+) -> None:
+    targets = (
+        (Path(paths.db_path), "grading"),
+        (Path(paths.qb_db_path), "question_bank"),
+    )
+    if require_no_companions:
+        _reject_database_companions(targets)
+    for path, target in targets:
+        validate_database_file(path, target)
+    if require_no_companions:
+        _reject_database_companions(targets)
+
+
+def _reject_database_companions(targets: tuple[tuple[Path, str], ...]) -> None:
+    for path, _target in targets:
+        for suffix in ("-wal", "-shm", "-journal"):
+            if Path(f"{path}{suffix}").exists():
+                raise OpsDatabaseInvalid("database companion file is present")
 
 
 __all__ = [

@@ -180,6 +180,79 @@ def test_restore_rejects_corrupt_database_before_replacing_target(tmp_path: Path
     assert journal.load_public(OPERATION_ID)["status"] == "rolled_back"
 
 
+@pytest.mark.parametrize("fail_apply", [False, True])
+def test_restore_clears_preexisting_database_companions_and_rolls_back_safely(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fail_apply: bool,
+) -> None:
+    paths = _paths(tmp_path)
+    before_value = "grading"
+    journal = _prepare_restore(
+        paths,
+        {"user_data/databases/grading_system.db": paths.db_path.read_bytes()},
+    )
+    from backend.ops import offline
+
+    real_backup = offline.create_safety_backup
+
+    def backup_then_add_stale_companions(**kwargs):
+        backup = real_backup(**kwargs)
+        if kwargs["reason"] == "before_apply":
+            Path(f"{paths.db_path}-wal").write_bytes(b"stale-wal")
+            Path(f"{paths.db_path}-shm").write_bytes(b"stale-shm")
+        return backup
+
+    monkeypatch.setattr(offline, "create_safety_backup", backup_then_add_stale_companions)
+    if fail_apply:
+        monkeypatch.setattr(
+            offline,
+            "_replace_database_file",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("apply failed")),
+        )
+
+    assert apply_pending_operation(paths=paths) == 0
+    assert not Path(f"{paths.db_path}-wal").exists()
+    assert not Path(f"{paths.db_path}-shm").exists()
+    with sqlite3.connect(paths.db_path) as connection:
+        assert connection.execute("SELECT value FROM sample").fetchone()[0] == before_value
+    assert journal.load_public(OPERATION_ID)["status"] == (
+        "rolled_back" if fail_apply else "applied"
+    )
+
+
+def test_companion_cleanup_failure_already_has_main_database_rollback_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    journal = _prepare_restore(
+        paths,
+        {"user_data/databases/grading_system.db": paths.db_path.read_bytes()},
+    )
+    from backend.ops import offline
+
+    real_remove = offline._remove_database_companions
+    calls = 0
+
+    def remove_then_fail(target: Path) -> None:
+        nonlocal calls
+        calls += 1
+        real_remove(target)
+        if calls == 1:
+            raise OSError("cleanup interrupted")
+
+    monkeypatch.setattr(offline, "_remove_database_companions", remove_then_fail)
+
+    assert apply_pending_operation(paths=paths) == 0
+    state = journal.load_apply_state(OPERATION_ID)
+    assert any(
+        item["archive_name"] == "user_data/databases/grading_system.db"
+        for item in state["replacements"]
+    )
+    assert journal.load_public(OPERATION_ID)["status"] == "rolled_back"
+
+
 def test_apply_failure_rolls_back_overwrite_and_new_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
