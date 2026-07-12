@@ -6,7 +6,6 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
-from uuid import uuid4
 
 from path_manager import PathManager
 from question_bank.services.question_read_service import (
@@ -67,7 +66,9 @@ class OpsSelfCheckService:
     ) -> None:
         self.paths = paths
         self._tool_checker = tool_checker or _default_tool_checker
-        self._zip_backup_loader = zip_backup_loader or _list_zip_backups
+        self._zip_backup_loader = zip_backup_loader or (
+            lambda: _list_zip_backups(backup_dir=self.paths.backups_dir)
+        )
 
     def build_snapshot(self) -> dict[str, Any]:
         directories = [
@@ -253,18 +254,7 @@ class OpsSelfCheckService:
 
 
 def _probe_writable(directory: Path) -> bool:
-    probe = directory / f".ops-write-probe-{uuid4().hex}"
-    try:
-        with probe.open("xb"):
-            pass
-        return True
-    except OSError:
-        return False
-    finally:
-        try:
-            probe.unlink(missing_ok=True)
-        except OSError:
-            pass
+    return directory.is_dir() and os.access(directory, os.W_OK)
 
 
 def _safe_file_size(path: Path) -> int:

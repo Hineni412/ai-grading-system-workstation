@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
 from backend.ops.service import OpsSelfCheckService
+import path_manager
 
 
 def _database_state(path: Path) -> dict[str, bytes | None]:
@@ -150,3 +152,50 @@ def test_backup_projection_drops_paths_sorts_and_limits(tmp_path: Path) -> None:
     )
     assert "C:/private" not in json.dumps(payload)
     assert "sk-secret" not in json.dumps(payload)
+
+
+def test_default_zip_loader_stays_within_injected_path_manager(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    pm = _make_pm(tmp_path / "local")
+    local_zip = pm.backups_dir / "backup_20260712_120000_manual.zip"
+    local_zip.write_bytes(b"local")
+    global_dir = tmp_path / "global" / "backups"
+    global_dir.mkdir(parents=True)
+    (global_dir / "backup_20260713_120000_manual.zip").write_bytes(b"global")
+    monkeypatch.setattr(
+        path_manager,
+        "get_path_manager",
+        lambda: SimpleNamespace(backups_dir=global_dir),
+    )
+
+    payload = OpsSelfCheckService(pm, tool_checker=lambda _key: True).list_backups(10)
+
+    assert [item["filename"] for item in payload["items"]] == [local_zip.name]
+
+
+def test_directory_writability_check_never_creates_probe_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    pm = _make_pm(tmp_path)
+    original_open = Path.open
+
+    def reject_probe_open(path: Path, *args, **kwargs):
+        if path.name.startswith(".ops-write-probe-"):
+            raise AssertionError("read-only self-check attempted a write probe")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", reject_probe_open)
+    monkeypatch.setattr(os, "access", lambda _path, _mode: True)
+    service = OpsSelfCheckService(
+        pm,
+        tool_checker=lambda _key: True,
+        zip_backup_loader=lambda: [],
+    )
+
+    snapshot = service.build_snapshot()
+
+    assert all(item["writable"] is True for item in snapshot["directories"])
+    assert not list(pm.data_root.rglob(".ops-write-probe-*"))

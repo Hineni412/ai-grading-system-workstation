@@ -21,7 +21,7 @@
 - 只实现 P1-22 的只读自检快照与备份清单；不得增加备份、恢复、数据库迁移、数据包导入/导出或任意命令执行端点。
 - 不返回任何绝对/相对内部路径、API key、token、secret、password、学生姓名、答卷正文、题目正文、日志正文或原始异常。
 - 阅卷库和题库不得由 SQLite 直接打开；存在的数据库只通过 `captured_sqlite_snapshot_path()` 捕获到系统临时目录，再在候选上执行 `quick_check` 与迁移状态读取。
-- 目录可写性使用创建后立即关闭并删除的唯一临时探针；不创建缺失目录，不修改业务文件。生产端点只定义此能力，本包验证仅在 `tmp_path` 合成数据根运行，不调用真实自检端点。
+- 目录可写性只使用无文件创建的 `os.access(..., os.W_OK)` 权限检查；不创建缺失目录、探针或业务文件。本包验证仅在 `tmp_path` 合成数据根运行，不调用真实自检端点。
 - 备份 API 只返回 `kind/filename/created_at/reason/size_bytes`，按新到旧排序，默认 50 条、最大 100 条；ZIP 与旧 `.db` 备份均只扫描 PathManager 的备份根。
 - 工具可用性只做静态定位，不启动 Word、LibreOffice、pdflatex 或任何子进程；响应只返回稳定工具 ID、可用布尔值与 `ok/warning`，不返回可执行文件路径。
 - API 配置只返回 `configured: bool`；解析失败只产生稳定 warning，不返回 profile 名称、文件位置或异常文本。
@@ -39,6 +39,7 @@
 - Create: `backend/api/schemas/ops.py`：严格自检与备份响应模型。
 - Create: `backend/api/routers/ops.py`：两个 GET 端点与稳定 503 映射。
 - Modify: `update_tools/migrate_db.py`：`get_migration_status()` 增加仅供临时候选使用的显式 `db_path_override`，保持 CLI 默认行为不变。
+- Modify: `update_tools/backup_core.py`：`list_backups()` 增加显式备份根 override，保持 CLI 默认行为不变并让 Ops 服务绑定注入的 PathManager。
 - Modify: `backend/api/dependencies.py`：注入 `OpsSelfCheckService`，只传 PathManager 与可替换探测器。
 - Modify: `backend/api/routers/__init__.py`：导出 `ops_router`。
 - Modify: `backend/api/schemas/__init__.py`：导出 Ops 契约模型。
@@ -231,20 +232,7 @@ Expected: import fails because `backend.ops.service` does not exist.
 
 ```python
 def _probe_writable(directory: Path) -> bool:
-    if not directory.is_dir():
-        return False
-    probe = directory / f".ops-write-probe-{uuid.uuid4().hex}"
-    try:
-        with probe.open("xb") as handle:
-            handle.write(b"")
-        return True
-    except OSError:
-        return False
-    finally:
-        try:
-            probe.unlink(missing_ok=True)
-        except OSError:
-            pass
+    return directory.is_dir() and os.access(directory, os.W_OK)
 
 def _database_check(key, source, target):
     if not source.is_file():
@@ -398,6 +386,7 @@ The functional commit must contain `交接状态: waiting_review`, `功能提交
 - Baseline: API app/OpenAPI/migration tooling set `20 passed` on the exact plan baseline before source changes.
 - RED/GREEN: Ops schema first failed collection because `backend.api.schemas.ops` did not exist, then `3 passed`; migration candidate override first failed with an unexpected keyword argument, then migration/schema tests reached `7 passed`; service tests first failed because `backend.ops` did not exist, then the service/migration set reached `8 passed`; route tests first failed because the Ops dependency did not exist, then Ops plus adjacent API tests reached `15 passed`.
 - Focused regression: service, Ops API, migration, schema baseline, OpenAPI, API app and read routes completed with `39 passed / 0 failed`; the single warning is the existing Starlette TestClient deprecation notice.
+- Independent review of `eec11ad605305afbdc53279c96672897d7163037` found `0 Critical / 2 Important / 2 Minor` and initially returned Not Ready. RED tests reproduced both Important findings: the default ZIP loader followed the global PathManager instead of the injected backup root, and the directory writable check attempted a removable write probe. The ZIP loader now passes an explicit backup-root override; directory checks are side-effect-free `os.access` calls. The two Minor gaps are covered by stable path-free 503 tests and exact OpenAPI parameter/write-operation guards. The review-fix focused set completed with `31 passed / 0 failed` before fresh re-review.
 - Quick smoke: document governance, static compile of `376` first-party Python files, and two temporary database copies' idempotent initialization with `integrity_check=ok` passed; full pytest remains the integration wave-end gate.
 - Real data: root grading DB remained `2863104` bytes / `2026-07-10T07:10:41.1221109Z` / SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`; root question-bank DB remained `3461120` bytes / `2026-07-08T11:58:06.3320883Z` / SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`. Worktree `user_data/` status is empty.
 

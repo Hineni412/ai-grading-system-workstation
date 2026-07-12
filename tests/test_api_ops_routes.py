@@ -149,3 +149,34 @@ def test_ops_registers_no_write_operations(ops_client) -> None:
         assert client.post(path).status_code == 405
         assert client.put(path).status_code == 405
         assert client.delete(path).status_code == 405
+
+
+@pytest.mark.parametrize("operation", ["snapshot", "backups_extra_field"])
+def test_ops_service_failures_return_stable_path_free_503(operation: str) -> None:
+    class FailingService(_FakeOpsService):
+        def build_snapshot(self):
+            raise RuntimeError("C:/private api_key=sk-secret")
+
+        def list_backups(self, limit: int):
+            return {
+                "items": [],
+                "returned": 0,
+                "limit": limit,
+                "path": "C:/private api_key=sk-secret",
+            }
+
+    service = FailingService()
+    app = create_app()
+    app.dependency_overrides[get_ops_self_check_service] = lambda: service
+    client = TestClient(app)
+    path = "/api/ops/self-check" if operation == "snapshot" else "/api/ops/backups"
+
+    response = client.get(path)
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] in {
+        "ops_self_check_unavailable",
+        "ops_backup_list_unavailable",
+    }
+    assert "c:/private" not in response.text.lower()
+    assert "sk-secret" not in response.text
