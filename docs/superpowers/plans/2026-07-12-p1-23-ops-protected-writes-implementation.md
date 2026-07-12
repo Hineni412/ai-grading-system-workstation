@@ -554,7 +554,7 @@ git commit -m "feat: prepare restart-bound ops changes"
 - Produces: `apply_pending_operation(paths: PathManager) -> int` and `python -m backend.ops.offline --apply-pending`.
 - Exit `0`: no pending, applied, or apply failed but rolled back safely. Exit `2`: state invalid or rollback failed; launcher must stop.
 
-- [ ] **Step 1: Write RED apply/rollback and launcher ordering tests**
+- [x] **Step 1: Write RED apply/rollback and launcher ordering tests**
 
 ```python
 def test_restore_apply_rechecks_and_uses_latest_apply_backup(tmp_path, paths, prepared_restore):
@@ -575,12 +575,12 @@ def test_launcher_stops_before_api_and_streamlit_when_offline_gate_fails():
 
 Fault-inject each replacement index, cross-database migration second-target failure, apply-time backup failure, rollback failure, checksum change, multiple pending, overlay preservation and no-pending no-side-effect path.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_ops_offline.py tests\test_run_bat_api_entry.py -q`
 Expected: FAIL because offline module and launch gate do not exist.
 
-- [ ] **Step 3: Implement fixed dispatch and rollback journal**
+- [x] **Step 3: Implement fixed dispatch and rollback journal**
 
 ```python
 def apply_pending_operation(paths: PathManager) -> int:
@@ -604,7 +604,7 @@ def apply_pending_operation(paths: PathManager) -> int:
 
 The CLI prints only operation ID/status/result code and safe backup filename. It never prints internal paths or exception text.
 
-- [ ] **Step 4: Insert the launch gate before any `start` command**
+- [x] **Step 4: Insert the launch gate before any `start` command**
 
 ```bat
 "%PYTHON_EXE%" -m backend.ops.offline --apply-pending
@@ -616,12 +616,12 @@ if errorlevel 1 (
 )
 ```
 
-- [ ] **Step 5: Run offline GREEN and startup regression**
+- [x] **Step 5: Run offline GREEN and startup regression**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_ops_offline.py tests\test_run_bat_api_entry.py tests\test_api_app.py -q`
 Expected: PASS; no real process is started by tests.
 
-- [ ] **Step 6: Commit Task 7**
+- [x] **Step 6: Commit Task 7**
 
 ```powershell
 git add backend/ops/offline.py 运行.bat tests/test_ops_offline.py tests/test_run_bat_api_entry.py
