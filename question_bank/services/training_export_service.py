@@ -406,7 +406,14 @@ class TrainingExportService:
                 (int(task_id), variant_id, audience, export_format),
             )
             export_id = int(cursor.lastrowid)
-        return self._export_record(export_id)
+            row = conn.execute(
+                "SELECT * FROM training_exports WHERE id = ?",
+                (export_id,),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("training export record was not created")
+            record = dict(row)
+        return record
 
     def _prepare_retry(self, export_id: int) -> dict[str, Any]:
         initialize_database(self.db_path)
@@ -421,7 +428,14 @@ class TrainingExportService:
                 """,
                 (int(export_id),),
             )
-        return self._export_record(export_id)
+            row = conn.execute(
+                "SELECT * FROM training_exports WHERE id = ?",
+                (int(export_id),),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"training export not found: {export_id}")
+            record = dict(row)
+        return record
 
     def _finish_record(
         self,
@@ -447,7 +461,14 @@ class TrainingExportService:
                     int(export_id),
                 ),
             )
-        return self._export_record(export_id)
+            row = conn.execute(
+                "SELECT * FROM training_exports WHERE id = ?",
+                (int(export_id),),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"training export not found: {export_id}")
+            record = dict(row)
+        return record
 
     def _export_record(self, export_id: int) -> dict[str, Any]:
         initialize_database(self.db_path)

@@ -262,3 +262,53 @@ def test_bundle_final_state_failure_clears_all_created_export_records(
     assert len(records) == 3
     assert {record["status"] for record in records} == {"failed"}
     assert {record["output_path"] for record in records} == {None}
+
+
+def test_variant_record_lifecycle_does_not_require_post_commit_readback(
+    saved_task_system: tuple[Path, Path, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path, output_dir, task = saved_task_system
+    service = TrainingExportService(db_path, output_dir)
+
+    def fail_separate_readback(_export_id: int):
+        raise RuntimeError("separate readback failed")
+
+    monkeypatch.setattr(service, "_export_record", fail_separate_readback)
+
+    result = service.export_variant(
+        task.id,
+        task.variants[0].id,
+        formats=["markdown"],
+        audiences=["teacher"],
+    )
+
+    assert result["exports"][0]["status"] == "succeeded"
+    with connect(db_path) as conn:
+        record = conn.execute(
+            "SELECT status, output_path FROM training_exports WHERE task_id = ?",
+            (task.id,),
+        ).fetchone()
+    assert record["status"] == "succeeded"
+    assert Path(record["output_path"]).is_file()
+
+
+def test_bundle_record_lifecycle_does_not_require_post_commit_readback(
+    saved_task_system: tuple[Path, Path, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path, output_dir, task = saved_task_system
+    service = TrainingExportService(db_path, output_dir)
+
+    def fail_separate_readback(_export_id: int):
+        raise RuntimeError("separate readback failed")
+
+    monkeypatch.setattr(service, "_export_record", fail_separate_readback)
+
+    result = service.export_task_bundle(task.id, formats=["markdown"])
+
+    assert result["export"]["status"] == "succeeded"
+    assert Path(result["export"]["output_path"]).is_file()
+    records = service.list_exports(task.id)
+    assert len(records) == 3
+    assert {record["status"] for record in records} == {"succeeded"}
