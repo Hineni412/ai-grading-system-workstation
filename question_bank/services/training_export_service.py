@@ -53,11 +53,25 @@ class TrainingExportService:
         _validate_formats(resolved_formats, self.exporters)
         _validate_audiences(resolved_audiences)
         self.tasks.mark_export_state(task_id, status="exporting", variant_id=variant_id)
-        records = [
-            self._run_variant_export(task, variant, export_format, audience)
-            for export_format in resolved_formats
-            for audience in resolved_audiences
-        ]
+        records: list[dict[str, Any]] = []
+        try:
+            for export_format in resolved_formats:
+                for audience in resolved_audiences:
+                    records.append(
+                        self._run_variant_export(
+                            task,
+                            variant,
+                            export_format,
+                            audience,
+                        )
+                    )
+        except Exception:
+            self.abort_unpublished_exports(
+                [int(item["id"]) for item in records],
+                task_id=task_id,
+                variant_ids=[variant_id],
+            )
+            raise
         final_status = "completed" if all(item["status"] == "succeeded" for item in records) else "failed"
         try:
             self.tasks.mark_export_state(
@@ -322,8 +336,32 @@ class TrainingExportService:
                 variant_code=str(variant["variant_key"]),
             )
         except Exception as exc:
-            return self._finish_record(int(record["id"]), status="failed", error_message=str(exc))
-        return self._finish_record(int(record["id"]), status="succeeded", output_path=output_path)
+            try:
+                return self._finish_record(
+                    int(record["id"]),
+                    status="failed",
+                    error_message=str(exc),
+                )
+            except Exception:
+                self.abort_unpublished_exports(
+                    [int(record["id"])],
+                    task_id=int(task["id"]),
+                    variant_ids=[int(variant["id"])],
+                )
+                raise
+        try:
+            return self._finish_record(
+                int(record["id"]),
+                status="succeeded",
+                output_path=output_path,
+            )
+        except Exception:
+            self.abort_unpublished_exports(
+                [int(record["id"])],
+                task_id=int(task["id"]),
+                variant_ids=[int(variant["id"])],
+            )
+            raise
 
     def _create_record(
         self,
