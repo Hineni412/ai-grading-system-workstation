@@ -44,7 +44,7 @@
 **Interfaces:**
 - Produces: `isRecord(value): value is Record<string, unknown>`, `isNullableString(value): value is string | null`, `ApiErrorKind`, `ApiError`, `parseErrorResponse(payload, responseRequestId, status)`, and `toNotification(error, impact)`.
 
-- [ ] **Step 1: Record the clean baseline before source edits**
+- [x] **Step 1: Record the clean baseline before source edits**
 
 Run from this P2-04 worktree:
 
@@ -60,7 +60,7 @@ npm run build
 
 Expected: branch contains the plan baseline; source status and `user_data/` are clean; all four front-end commands exit 0. From the repository root, record but never open both real databases with `Get-Item` and `Get-FileHash -Algorithm SHA256`; retain size, UTC modification time and SHA-256 for the final comparison.
 
-- [ ] **Step 2: Write failing error-contract tests**
+- [x] **Step 2: Write failing error-contract tests**
 
 Create `errors.spec.ts` with direct assertions for the exact backend shape and redaction:
 
@@ -90,13 +90,13 @@ describe('API error contract', () => {
 })
 ```
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 Run `npm run test -- src/api/__tests__/errors.spec.ts --maxWorkers=1` from `frontend/`.
 
 Expected: FAIL because `validation.ts` and `errors.ts` do not exist.
 
-- [ ] **Step 4: Implement minimal validation and error primitives**
+- [x] **Step 4: Implement minimal validation and error primitives**
 
 Implement these exact public types and constructor shape:
 
@@ -130,7 +130,7 @@ export class ApiError extends Error implements ApiErrorInit {
 
 `parseErrorResponse` accepts only `{ error: { code: string, message: string, details: plain object, request_id: non-empty string } }`; map 400/422 to `validation`, 404 to `not_found`, 409 to `conflict`, and 500–599 to `server`. Any malformed body, unsupported status, or header/body request-ID mismatch returns `kind: 'contract'`, `code: 'invalid_error_contract'`, fixed safe text and no raw payload. `toNotification` returns only `{ message, impact, retryable, requestId }`.
 
-- [ ] **Step 5: Run GREEN and commit**
+- [x] **Step 5: Run GREEN and commit**
 
 ```powershell
 npm run test -- src/api/__tests__/errors.spec.ts --maxWorkers=1
@@ -151,7 +151,7 @@ Expected: focused tests and typecheck pass; commit contains only error/validatio
 - Consumes: `ApiError`, `parseErrorResponse`.
 - Produces: `ApiMethod`, `ResponseDecoder<T>`, `ApiRequestOptions<T>`, `ApiClientDependencies`, `createApiClient(dependencies)`, and singleton `apiClient` with `request<T>(path, options): Promise<T>`.
 
-- [ ] **Step 1: Write failing client tests**
+- [x] **Step 1: Write failing client tests**
 
 Cover the public contract with injected fetch, delay and request-ID dependencies:
 
@@ -168,13 +168,13 @@ expect(fetchMock).toHaveBeenCalledWith('/api/sessions', expect.objectContaining(
 
 Add separate tests proving: absolute and non-`/api/` paths reject before fetch; a successful malformed decoder throws `contract`; standard 422/404/500 bodies become `ApiError`; GET retries exactly three attempts for network and 500; POST makes one attempt; 404 makes one attempt; timeout becomes `timeout`; caller abort becomes `cancelled`; after either abort there is no delayed retry.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run `npm run test -- src/api/__tests__/client.spec.ts --maxWorkers=1`.
 
 Expected: FAIL because `client.ts` does not exist.
 
-- [ ] **Step 3: Implement the public client contract**
+- [x] **Step 3: Implement the public client contract**
 
 Use these exact interfaces:
 
@@ -201,7 +201,7 @@ export interface ApiClientDependencies {
 
 For successful responses, parse JSON and call `decode`; wrap JSON/decode failures as `ApiError(kind='contract', code='invalid_success_contract')`. For non-success responses, parse JSON only as unknown and call `parseErrorResponse`; do not preserve raw text. Retry only GET network errors and `kind='server'` responses with delays 250 ms then 500 ms, for at most three total attempts. Timeout, caller abort, contract, 4xx and every non-GET use one attempt.
 
-- [ ] **Step 4: Run GREEN, lint, and commit**
+- [x] **Step 4: Run GREEN, lint, and commit**
 
 ```powershell
 npm run test -- src/api/__tests__/client.spec.ts src/api/__tests__/errors.spec.ts --maxWorkers=1
@@ -223,7 +223,7 @@ Expected: focused tests, typecheck and lint pass.
 - Consumes: singleton `apiClient.request<T>()` and `ResponseDecoder<T>`.
 - Preserves: `SessionSummary`, `SessionListResponse`, `SessionLoader`, `SessionReadError`, `isSessionSummary`, and `fetchSessions(): Promise<SessionSummary[]>`.
 
-- [ ] **Step 1: Change adapter tests first and verify RED**
+- [x] **Step 1: Change adapter tests first and verify RED**
 
 Update the sessions adapter test to expect the shared Client behavior: the fetch call carries `accept` plus `x-request-id`, and a standard 500 error, malformed success payload, and network rejection still surface only `SessionReadError('无法读取考试列表')`. Add an assertion that `Session Store` preserves its saved candidate after a Client failure and restores it after a successful injected loader.
 
@@ -231,7 +231,7 @@ Run `npm run test -- src/__tests__/session-store.spec.ts --maxWorkers=1`.
 
 Expected: FAIL because the current adapter calls `fetch` directly and does not use shared request headers/error parsing.
 
-- [ ] **Step 2: Replace only the adapter transport**
+- [x] **Step 2: Replace only the adapter transport**
 
 Keep the existing public types and validators. Add a decoder:
 
@@ -253,7 +253,7 @@ export async function fetchSessions(): Promise<SessionSummary[]> {
 
 Do not change `stores/session.ts`, its storage key, selection semantics, messages or exported actions.
 
-- [ ] **Step 3: Run Session/App GREEN and commit**
+- [x] **Step 3: Run Session/App GREEN and commit**
 
 ```powershell
 npm run test -- src/__tests__/session-store.spec.ts src/__tests__/App.spec.ts --maxWorkers=1
@@ -274,7 +274,7 @@ Expected: Session Store and root App behavior remain green.
 **Interfaces:**
 - Produces: `JOB_STATUSES`, `TERMINAL_JOB_STATUSES`, `JobStatus`, `JobResponse`, `JobApi`, `decodeJobResponse`, singleton `jobApi.getJob(id, signal?)`, and `jobApi.cancelJob(id, signal?)`.
 
-- [ ] **Step 1: Write failing Job contract tests**
+- [x] **Step 1: Write failing Job contract tests**
 
 Use one complete synthetic response and reject every invalid status/field type:
 
@@ -292,13 +292,13 @@ expect(() => decodeJobResponse({ ...job, status: 'cancelling' })).toThrow()
 
 Mock the shared client and assert `getJob(41)` requests `/api/jobs/41` with GET, while `cancelJob(41)` requests `/api/jobs/41/cancel` with POST. Invalid, non-positive or unsafe integer IDs must reject before a request.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run `npm run test -- src/api/__tests__/jobs.spec.ts --maxWorkers=1`.
 
 Expected: FAIL because `jobs.ts` does not exist.
 
-- [ ] **Step 3: Implement the exact Job type and adapter**
+- [x] **Step 3: Implement the exact Job type and adapter**
 
 Define `JobStatus` from:
 
@@ -318,7 +318,7 @@ export interface JobApi {
 
 Use the singleton Client and decoder; do not add generic submit endpoints or domain-specific payload types in P2-04.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```powershell
 npm run test -- src/api/__tests__/jobs.spec.ts src/api/__tests__/client.spec.ts --maxWorkers=1
@@ -340,7 +340,7 @@ Expected: focused tests and checks pass.
 - Consumes: `JobApi`, `JobResponse`, `TERMINAL_JOB_STATUSES`, `ApiError`.
 - Produces: `JOB_STORAGE_KEY`, `PersistedJobReference`, `JobSyncError`, `JobStoreDependencies`, and `useJobStore` actions `initialize`, `track`, `refresh`, `stopPolling`, `remove`, `clearCompleted`.
 
-- [ ] **Step 1: Write persistence and recovery RED tests**
+- [x] **Step 1: Write persistence and recovery RED tests**
 
 Set active Pinia and clear storage before each test. Assert exact minimal persistence:
 
@@ -356,13 +356,13 @@ expect(localStorage.getItem(JOB_STORAGE_KEY)).not.toContain('result')
 
 Add tests that `initialize` requests only valid persisted IDs; active jobs remain tracked and schedule polling; terminal jobs remain visible without polling; malformed entries are removed individually; an entirely malformed storage value is cleared; 404 removes the persisted reference and leaves a runtime `not_found` sync error; network/500 preserves the last successful snapshot.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run `npm run test -- src/__tests__/job-store.spec.ts --maxWorkers=1`.
 
 Expected: FAIL because `stores/jobs.ts` does not exist.
 
-- [ ] **Step 3: Implement minimal state and storage helpers**
+- [x] **Step 3: Implement minimal state and storage helpers**
 
 Use this dependency boundary so tests control time without production globals leaking into state:
 
@@ -381,7 +381,7 @@ The Store exposes reactive `jobs: Record<number, JobResponse>` and `syncErrors: 
 
 On 404, stop the controller, remove only that persisted reference, and set a fixed safe `JobSyncError`. On network/server failure, preserve `jobs[id]`, set a fixed safe sync error, and schedule bounded Store-level backoff. Do not serialize `ApiError` or its details.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```powershell
 npm run test -- src/__tests__/job-store.spec.ts --maxWorkers=1
@@ -402,7 +402,7 @@ Expected: persistence/recovery tests and checks pass.
 **Interfaces:**
 - Adds: `cancel(id): Promise<void>`, `stopAllPolling()`, and internal `shouldReplaceJob(current, next)` semantics.
 
-- [ ] **Step 1: Add failing polling and race tests**
+- [x] **Step 1: Add failing polling and race tests**
 
 Add tests proving:
 
@@ -416,13 +416,13 @@ Add tests proving:
 
 Use deferred Promises rather than real sleeps; use injected timer spies rather than fake production time.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run `npm run test -- src/__tests__/job-store.spec.ts --maxWorkers=1`.
 
 Expected: FAIL on duplicate-loop, cancel and stale-response assertions.
 
-- [ ] **Step 3: Implement concurrency rules**
+- [x] **Step 3: Implement concurrency rules**
 
 `refresh(id)` returns the existing in-flight Promise when one exists. Each request captures the current generation; `stopPolling/remove/stopAllPolling` increment it and abort the controller. Before applying a response, require the captured generation to remain current and the Job to remain tracked.
 
@@ -430,7 +430,7 @@ Expected: FAIL on duplicate-loop, cancel and stale-response assertions.
 
 `cancel(id)` rejects unknown/terminal IDs without a network call, invokes `api.cancelJob`, applies the same freshness rule, and polls until a real terminal status. A failed cancel sets a safe sync error without changing the Job snapshot. Register `onScopeDispose(stopAllPolling)`.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```powershell
 npm run test -- src/__tests__/job-store.spec.ts src/api/__tests__/jobs.spec.ts --maxWorkers=1
@@ -454,7 +454,7 @@ Expected: all Job tests and checks pass with no real timers left open.
 - Consumes: user-safe notification returned by `toNotification`.
 - Produces: `AppNotification`, `NotificationSink`, `createMemoryNotificationSink()`, and static repository guards for the P2-04 boundary.
 
-- [ ] **Step 1: Write failing notification and repository tests**
+- [x] **Step 1: Write failing notification and repository tests**
 
 The TypeScript test proves the memory sink accepts only `{ message, impact, retryable, requestId }`, publishes once per explicit call, supports unsubscribe, and never retains `details`, `payload` or `result`.
 
@@ -482,7 +482,7 @@ def test_p2_04_job_storage_is_minimal_and_no_visible_ui_was_added() -> None:
 
 Update the P2-03 guard so it now requires `api/client.ts` and `stores/jobs.ts`, while retaining the one-navigation-source assertion and every desktop/view/style guard.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 npm run test -- src/__tests__/notifications.spec.ts --maxWorkers=1
@@ -491,7 +491,7 @@ D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe -m pytest tests\
 
 Expected: notification test fails because the port is absent; the old P2-03 guard fails because it still forbids P2-04 files.
 
-- [ ] **Step 3: Implement the non-visual notification port and guards**
+- [x] **Step 3: Implement the non-visual notification port and guards**
 
 Use exact interfaces:
 
@@ -505,7 +505,7 @@ export interface NotificationSink {
 
 `createMemoryNotificationSink` keeps only listener functions, does not persist or render notifications, and publishes a fresh shallow copy to each listener. Do not add Vue components, CSS, routes, App Shell controls, Element imports or a global toast implementation.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```powershell
 npm run test -- src/__tests__/notifications.spec.ts --maxWorkers=1
@@ -528,13 +528,13 @@ Expected: notification and repository guard tests pass; no visible UI file or st
 **Interfaces:**
 - Produces: contributor guidance, implemented architecture facts, complete verification evidence, feature commit with `waiting_review`, and later a plan-only verified handoff.
 
-- [ ] **Step 1: Document usage, safety, and non-goals**
+- [x] **Step 1: Document usage, safety, and non-goals**
 
 Update `frontend/README.md` with Client usage, decoder ownership, safe GET retry, `ApiError` fields, Job storage key/contents, refresh recovery, polling/cancel semantics, notification-port non-UI boundary and explicit business-page/backend exclusions. Replace the statement that a general Client does not exist.
 
 Update `ARCHITECTURE.md` only with implemented P2-04 facts: native Fetch Client and unified error contract exist; Session reads use it; current-browser Job references recover through GET; cancellation remains cooperative/server-authoritative; Vue remains non-production and no business page was migrated.
 
-- [ ] **Step 2: Run focused and affected regression gates**
+- [x] **Step 2: Run focused and affected regression gates**
 
 ```powershell
 npm run test -- src/api/__tests__/errors.spec.ts src/api/__tests__/client.spec.ts src/api/__tests__/jobs.spec.ts src/__tests__/session-store.spec.ts src/__tests__/job-store.spec.ts src/__tests__/notifications.spec.ts src/__tests__/App.spec.ts --maxWorkers=1
@@ -550,7 +550,7 @@ git diff --check
 
 Expected: every command exits 0; App Shell browser tests remain unchanged and use only synthetic sessions. If any test is unstable or public front-end infrastructure outside P2-04 changes, investigate and run the additional regression required by repository rules before claiming success.
 
-- [ ] **Step 3: Verify real data, update handoff, and commit the feature state**
+- [x] **Step 3: Verify real data, update handoff, and commit the feature state**
 
 From the repository root, repeat both database size/UTC/SHA-256 reads and require exact equality with Task 1. Confirm `git status --short -- user_data` is empty in the P2-04 worktree and the commit diff contains no `user_data`, caches, build output, report artifacts or secrets.
 
@@ -602,12 +602,12 @@ Fetch/prune, fast-forward root `main` and active worktrees to `origin/main`, del
 ## 昼夜交接
 
 **执行包：** P2-04
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
