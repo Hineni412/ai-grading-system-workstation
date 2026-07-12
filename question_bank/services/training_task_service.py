@@ -48,9 +48,14 @@ class TrainingTaskService:
         practice_plan: Mapping[str, Any],
         *,
         created_by: str | None = None,
+        task_code: str | None = None,
     ) -> TrainingTaskRecord:
         initialize_database(self.db_path)
-        task_code = _new_task_code()
+        resolved_task_code = (
+            str(task_code).strip() if task_code is not None else _new_task_code()
+        )
+        if not resolved_task_code:
+            raise ValueError("task_code must not be blank")
         scope_snapshot = practice_plan.get("scope_snapshot") or practice_plan.get("scope") or {}
         exam_scope = practice_plan.get("exam_scope") or {}
         diagnosis_snapshot = practice_plan.get("diagnosis_snapshot") or {}
@@ -70,7 +75,7 @@ class TrainingTaskService:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, 'ready')
                 """,
                 (
-                    task_code,
+                    resolved_task_code,
                     _optional_text(created_by),
                     _json(scope_snapshot),
                     _json(exam_scope),
@@ -124,7 +129,9 @@ class TrainingTaskService:
                     if not isinstance(item, Mapping):
                         raise ValueError("training task item must be a mapping")
                     item_order = int(item.get("item_order") or fallback_order)
-                    task_item_code = f"{task_code}-V{variant_index:02d}-Q{item_order:02d}"
+                    task_item_code = (
+                        f"{resolved_task_code}-V{variant_index:02d}-Q{item_order:02d}"
+                    )
                     question_id = _optional_int(item.get("question_id") or item.get("bank_question_id"))
                     question_snapshot = _question_snapshot(conn, question_id, item)
                     concept_snapshot = {
@@ -195,12 +202,56 @@ class TrainingTaskService:
             ]
             return result
 
+    def get_task_by_code(self, task_code: str) -> dict[str, Any]:
+        normalized = str(task_code or "").strip()
+        if not normalized:
+            raise KeyError("training task code is required")
+        with _read_connection(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT id FROM training_tasks WHERE task_code = ?",
+                (normalized,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"training task not found: {normalized}")
+        return self.get_task(int(row["id"]))
+
     def list_tasks(self) -> list[dict[str, Any]]:
         with _read_connection(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT * FROM training_tasks ORDER BY created_at DESC, id DESC"
             ).fetchall()
         return [_task_from_row(row) for row in rows]
+
+    def list_tasks_page(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[list[dict[str, Any]], int]:
+        normalized_page = int(page)
+        normalized_page_size = int(page_size)
+        if normalized_page < 1:
+            raise ValueError("page must be positive")
+        if not 1 <= normalized_page_size <= 100:
+            raise ValueError("page_size must be between 1 and 100")
+        offset = (normalized_page - 1) * normalized_page_size
+        with _read_connection(self.db_path) as conn:
+            total = int(
+                conn.execute("SELECT COUNT(*) FROM training_tasks").fetchone()[0]
+            )
+            rows = conn.execute(
+                """
+                SELECT
+                    id, task_code, created_by, scope_json, exam_scope_json,
+                    generation_config_json, warnings_json, status,
+                    created_at, updated_at
+                FROM training_tasks
+                ORDER BY created_at DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (normalized_page_size, offset),
+            ).fetchall()
+        return [_task_summary_from_row(row) for row in rows], total
 
     def cancel_task(self, task_id: int) -> bool:
         initialize_database(self.db_path)
@@ -331,6 +382,18 @@ def _task_from_row(row: Any) -> dict[str, Any]:
     item["exam_scope"] = _json_value(item.pop("exam_scope_json"), {})
     item["diagnosis_snapshot"] = _json_value(item.pop("diagnosis_snapshot_json"), {})
     item["generation_config"] = _json_value(item.pop("generation_config_json"), {})
+    item["warnings"] = _json_value(item.pop("warnings_json"), [])
+    return item
+
+
+def _task_summary_from_row(row: Any) -> dict[str, Any]:
+    item = dict(row)
+    item["scope_snapshot"] = _json_value(item.pop("scope_json"), {})
+    item["exam_scope"] = _json_value(item.pop("exam_scope_json"), {})
+    item["generation_config"] = _json_value(
+        item.pop("generation_config_json"),
+        {},
+    )
     item["warnings"] = _json_value(item.pop("warnings_json"), [])
     return item
 
