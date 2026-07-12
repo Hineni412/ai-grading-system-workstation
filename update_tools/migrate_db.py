@@ -24,6 +24,8 @@ import re
 import shutil
 import sqlite3
 import sys
+import tempfile
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -286,6 +288,8 @@ def run_migrations(
     stamp_only: bool = False,
     db_path: Path | None = None,
     migrations_dir: Path | None = None,
+    logger_override: Any | None = None,
+    backup_dir_override: Path | None = None,
 ) -> MigrationReport:
     """对指定数据库执行所有未执行的迁移。
 
@@ -293,7 +297,7 @@ def run_migrations(
     - ``stamp_only``：把待执行迁移记录为已应用但不执行 SQL（基线打标用，
       适用于 Schema 已由运行时初始化建成、且旧迁移含不可盲目重放的数据语句的库）。
     """
-    logger = _get_logger()
+    logger = logger_override or _get_logger()
     targets = _get_targets()
 
     if target_name not in targets:
@@ -308,7 +312,11 @@ def run_migrations(
     migrations_dir = (
         Path(migrations_dir) if migrations_dir is not None else config["migrations_dir"]
     )
-    backup_dir_override = db_path.parent / "backups" if has_path_override else None
+    effective_backup_dir = (
+        Path(backup_dir_override)
+        if backup_dir_override is not None
+        else (db_path.parent / "backups" if has_path_override else None)
+    )
 
     report = MigrationReport(target=target_name, db_path=str(db_path))
 
@@ -341,7 +349,7 @@ def run_migrations(
 
         if stamp_only and not dry_run:
             # 打标不执行 SQL，但仍在动作前做一次整体备份（只会新增 schema_migrations 行）。
-            stamp_backup = _backup_database(db_path, "stamp_only", backup_dir=backup_dir_override)
+            stamp_backup = _backup_database(db_path, "stamp_only", backup_dir=effective_backup_dir)
             logger.info("打标前备份: %s", stamp_backup)
 
         for mig in pending:
@@ -376,7 +384,7 @@ def run_migrations(
             backup_path = _backup_database(
                 db_path,
                 f"migration_{mig.name}",
-                backup_dir=backup_dir_override,
+                backup_dir=effective_backup_dir,
             )
             logger.info("迁移前备份: %s", backup_path)
 
@@ -410,10 +418,64 @@ def run_migrations(
     return report
 
 
+class _PreviewLogger:
+    def info(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    def error(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+def preview_migrations(
+    target_name: str,
+    *,
+    db_path: Path,
+    migrations_dir: Path,
+) -> dict[str, Any]:
+    """Execute pending migrations on a disposable copy and verify integrity."""
+    source = Path(db_path)
+    if not source.is_file():
+        raise FileNotFoundError("migration preview database is missing")
+    with tempfile.TemporaryDirectory(prefix="ai-grading-migration-preview-") as temp_value:
+        temp_root = Path(temp_value)
+        candidate = temp_root / source.name
+        shutil.copy2(source, candidate)
+        before = get_migration_status(
+            target_name,
+            db_path_override=candidate,
+            migrations_dir_override=Path(migrations_dir),
+        )
+        report = run_migrations(
+            target_name,
+            db_path=candidate,
+            migrations_dir=Path(migrations_dir),
+            logger_override=_PreviewLogger(),
+        )
+        if report.error:
+            raise RuntimeError("migration preview failed")
+        with closing(sqlite3.connect(candidate)) as connection:
+            integrity_row = connection.execute("PRAGMA integrity_check").fetchone()
+        integrity = str(integrity_row[0] if integrity_row else "unavailable")
+        if integrity.casefold() != "ok":
+            raise RuntimeError("migration preview integrity check failed")
+        applied = [
+            item.name
+            for item in report.results
+            if item.status in {"applied", "stamped"}
+        ]
+        return {
+            "target": target_name,
+            "pending_migrations": len(before.get("pending") or []),
+            "applied": applied,
+            "integrity": "ok",
+        }
+
+
 def get_migration_status(
     target_name: str,
     *,
     db_path_override: Path | None = None,
+    migrations_dir_override: Path | None = None,
 ) -> dict[str, Any]:
     """获取指定数据库的迁移状态。"""
     targets = _get_targets()
@@ -426,7 +488,11 @@ def get_migration_status(
         if db_path_override is not None
         else Path(config["db_path"])
     )
-    migrations_dir: Path = config["migrations_dir"]
+    migrations_dir = (
+        Path(migrations_dir_override)
+        if migrations_dir_override is not None
+        else Path(config["migrations_dir"])
+    )
 
     status: dict[str, Any] = {
         "target": target_name,

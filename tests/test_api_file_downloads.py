@@ -62,6 +62,38 @@ def training_file_client(tmp_path: Path):
             manager.shutdown()
 
 
+@pytest.fixture
+def ops_file_client(tmp_path: Path):
+    from backend.api.app import create_app
+    from backend.api.dependencies import (
+        get_backups_dir,
+        get_job_manager,
+        get_outputs_dir,
+        get_reports_dir,
+    )
+    from backend.jobs.manager import JobManager
+    from backend.jobs.store import JobStore
+
+    reports_dir = tmp_path / "reports"
+    backups_dir = tmp_path / "backups"
+    outputs_dir = tmp_path / "outputs"
+    reports_dir.mkdir()
+    backups_dir.mkdir()
+    (outputs_dir / "ops").mkdir(parents=True)
+    store = JobStore(tmp_path / "jobs.db")
+    manager = JobManager(store, max_workers=1)
+    app = create_app()
+    app.dependency_overrides[get_job_manager] = lambda: manager
+    app.dependency_overrides[get_reports_dir] = lambda: reports_dir
+    app.dependency_overrides[get_backups_dir] = lambda: backups_dir
+    app.dependency_overrides[get_outputs_dir] = lambda: outputs_dir
+    with TestClient(app) as client:
+        try:
+            yield client, store, backups_dir, outputs_dir / "ops"
+        finally:
+            manager.shutdown()
+
+
 def _finish_job(
     store,
     job_type: str,
@@ -168,6 +200,63 @@ def test_report_job_download_streams_controlled_file(file_client) -> None:
     assert response.headers["content-disposition"].startswith("attachment;")
     assert "report.xlsx" in response.headers["content-disposition"]
     assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.parametrize(
+    ("job_type", "root_index"),
+    [("ops_backup", 2), ("ops_transfer_export", 3)],
+)
+def test_ops_job_download_uses_operation_specific_root(
+    ops_file_client,
+    job_type: str,
+    root_index: int,
+) -> None:
+    client, store, backups_dir, ops_outputs_dir = ops_file_client
+    roots = {2: backups_dir, 3: ops_outputs_dir}
+    exported = roots[root_index] / f"{job_type}.zip"
+    exported.write_bytes(b"zip")
+    job = _finish_job(
+        store,
+        job_type,
+        result={
+            "operation_id": "11111111-1111-4111-8111-111111111111",
+            "operation": "backup" if job_type == "ops_backup" else "transfer_export",
+            "outcome": "published",
+            "file_path": str(exported),
+            "filename": exported.name,
+        },
+    )
+
+    response = client.get(f"/api/jobs/{job.id}/download")
+    public = client.get(f"/api/jobs/{job.id}")
+
+    assert response.status_code == 200
+    assert response.content == b"zip"
+    assert response.headers["content-type"] == "application/zip"
+    assert response.headers["cache-control"] == "no-store"
+    assert public.json()["result"] == {
+        "operation_id": "11111111-1111-4111-8111-111111111111",
+        "operation": "backup" if job_type == "ops_backup" else "transfer_export",
+        "outcome": "published",
+        "filename": exported.name,
+        "download_url": f"/api/jobs/{job.id}/download",
+    }
+
+
+def test_ops_job_download_rejects_other_ops_root(ops_file_client) -> None:
+    client, store, _backups_dir, ops_outputs_dir = ops_file_client
+    wrong_root = ops_outputs_dir / "backup.zip"
+    wrong_root.write_bytes(b"zip")
+    job = _finish_job(
+        store,
+        "ops_backup",
+        result={"file_path": str(wrong_root), "filename": wrong_root.name},
+    )
+
+    response = client.get(f"/api/jobs/{job.id}/download")
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "job_file_forbidden"
 
 
 def test_job_public_result_recursively_removes_internal_paths(file_client) -> None:
