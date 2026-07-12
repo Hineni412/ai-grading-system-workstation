@@ -10,7 +10,7 @@
 | Phase | 正式范围 | 状态 | 已合并 | 待执行 | 阶段门槛 |
 |---|---|---|---:|---:|---|
 | Phase 0 | 地基与防护网 | `merged` | 5 | 0 | 工程防护网与冻结基线 |
-| Phase 1 | API、任务、LLM、数据访问 | `in_progress` | 20 | 9 | API E2E、完整冒烟、模型请求超时门槛 |
+| Phase 1 | API、任务、LLM、数据访问 | `in_progress` | 21 | 8 | API E2E、完整冒烟、模型请求超时门槛 |
 | Phase 2 | Vue SPA 与 Streamlit 切换 | `in_progress` | 2 | 20 | 样板页先验收；真实五流程通过 |
 | Phase 3 | 后端拆分、Schema 收敛、瘦身 | `planned` | 0 | 19 | 迁移预演、全量测试、删除可独立回退 |
 | Phase 4 | 图谱 2.0 与训练闭环 | `planned` | 0 | 12 | 新旧口径对照、闭环 E2E、评估达标 |
@@ -27,8 +27,9 @@
 | P1-18 | `merged` | 已实现题库导入与 AI 打标 Job 的进度、取消、部分失败、重试与幂等保护；只使用临时题库和假 AI 验证 |
 | P1-19 | `merged` | 已提供 tag-only 诊断、精确标签推荐预览、幂等教师任务确认以及训练任务分页/详情；只在临时双库验证写入 |
 | P1-20 | `merged` | 已将现有 Word/Markdown 与整任务 ZIP bundle 接入可查询、可取消、可重试的 Training 导出 Job；文件在 job 专属目录原子发布并通过受控 URL 下载 |
-| P1-21 | `ready` | 下一批 Graph 查询 API 候选 |
-| P1-22 至 P1-29 | `planned` | 按依赖逐包放行 |
+| P1-21 | `merged` | 已提供 tag-only profiles、确定性 graph rows/聚合节点、固定空关系边和分页证据下钻；两库只通过稳定临时候选读取，不打开真实源库 |
+| P1-22 | `ready` | 下一批 Ops 只读与自检 API 候选 |
+| P1-23 至 P1-29 | `planned` | 按依赖逐包放行 |
 | P2-01 | `merged` | 已建立精确依赖锁、质量命令、Chromium e2e、loopback API 代理和便携 dist 复制 |
 | P2-02 | `merged` | 已固化设计 Token、Element 主题、基础控件与多视口展示页 |
 | P2-03 | `ready` | 下一批前端 App Shell 与会话上下文候选 |
@@ -53,7 +54,7 @@
 
 | 顺序 | 包 | 状态 | 目标 |
 |---:|---|---|---|
-| 1 | P1-21 Graph 查询 API | `ready` | 提供 tag profiles、graph rows、节点证据和下钻数据，不引入 Phase 4 关系语义 |
+| 1 | P1-22 Ops 只读与自检 API | `ready` | 提供版本、目录可写性、数据库/迁移状态、外部工具可用性和备份清单，不执行危险运维操作 |
 | 2 | P2-03 App Shell、路由与全局会话上下文 | `ready` | 建立应用外壳、导航、路由和 session 上下文，不提前迁移业务页面 |
 
 领取任一候选前，必须根据最新源码生成即时实现计划，并现场核验该包的 worktree、分支、共同基线、真实 `user_data/` 状态和交接块。
@@ -76,4 +77,4 @@
 
 ## 下一动作
 
-P1-21 与 P2-03 可以在各自专属 worktree 中并行，但都必须先基于最新共同基线创建或同步 worktree，并完成即时计划和现场门槛。P1-21 只提供现有 tag-only 图数据、节点证据和下钻 API，不创建 `tag_relations` 或恢复旧 concept/skill 活动语义；P2-03 只建立 App Shell、路由和 session 上下文，样板页验收前仍不得扩散迁移其他业务页面。功能提交逐包交给 integration 验证，通过 PR 进入 GitHub `main` 后再同步共同基线。
+P1-22 与 P2-03 可以在各自专属 worktree 中并行，但都必须先基于最新共同基线创建或同步 worktree，并完成即时计划和现场门槛。P1-22 只暴露脱敏只读状态和备份清单，不执行备份、恢复、迁移或数据包导入；P2-03 只建立 App Shell、路由和 session 上下文，样板页验收前仍不得扩散迁移其他业务页面。功能提交逐包交给 integration 验证，通过 PR 进入 GitHub `main` 后再同步共同基线。
