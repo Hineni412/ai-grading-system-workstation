@@ -62,7 +62,7 @@
 - Create `tests/test_ops_write_service.py`。
 - Create `tests/test_ops_jobs.py`。
 - Create `tests/test_ops_offline.py`。
-- Extend `tests/test_api_ops_routes.py`、`tests/test_api_jobs.py`、`tests/test_api_files.py`、`tests/test_data_transfer_service.py`、`tests/test_migration_tooling.py`。
+- Extend `tests/test_api_ops_routes.py`、`tests/test_api_jobs.py`、`tests/test_api_file_downloads.py`、`tests/test_data_transfer_service.py`、`tests/test_migration_tooling.py`。
 - Modify `ARCHITECTURE.md`: 验证后记录 P1-23 已实现事实。
 
 ## Public Interfaces
@@ -408,13 +408,13 @@ git commit -m "feat: expose protected ops write API"
 - Modify: `backend/api/dependencies.py`
 - Modify: `backend/api/routers/jobs.py`
 - Create: `tests/test_ops_jobs.py`
-- Modify: `tests/test_api_files.py`
+- Modify: `tests/test_api_file_downloads.py`
 
 **Interfaces:**
 - Produces: `run_ops_backup_job()`, `run_ops_transfer_export_job()`, `register_ops_job_handlers()`.
 - Extends `JobFileService` with distinct `backups_dir` and `ops_outputs_dir` roots plus ZIP-only rules: `ops_backup` resolves only under `backups_dir`; `ops_transfer_export` resolves only under `ops_outputs_dir`.
 
-- [ ] **Step 1: Write RED online Job publication/cancel tests**
+- [x] **Step 1: Write RED online Job publication/cancel tests**
 
 ```python
 def test_ops_backup_publishes_only_after_zip_validation(tmp_path, context, paths):
@@ -432,12 +432,12 @@ def test_ops_export_cancel_before_publish_leaves_no_output(tmp_path, cancelling_
 
 Assert consistent database snapshots, no main/WAL/SHM raw copy, filename/result allow-list, download success, wrong type/status/root/suffix rejection.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
-Run: `..\..\runtime\python\python.exe -m pytest tests\test_ops_jobs.py tests\test_api_files.py -q`
+Run: `..\..\runtime\python\python.exe -m pytest tests\test_ops_jobs.py tests\test_api_file_downloads.py -q`
 Expected: FAIL because Ops handlers and file rules do not exist.
 
-- [ ] **Step 3: Implement staging + atomic publication**
+- [x] **Step 3: Implement staging + atomic publication**
 
 ```python
 def _publish_zip(context, *, staging: Path, destination: Path) -> None:
@@ -452,15 +452,15 @@ def _publish_zip(context, *, staging: Path, destination: Path) -> None:
 
 Handlers persist only `operation_id/operation/outcome/filename/file_path/counts`; public projection strips `file_path` and adds download URL only on success.
 
-- [ ] **Step 4: Run online Job GREEN and affected downloads**
+- [x] **Step 4: Run online Job GREEN and affected downloads**
 
-Run: `..\..\runtime\python\python.exe -m pytest tests\test_ops_jobs.py tests\test_api_files.py tests\test_api_jobs.py -q`
-Expected: PASS.
+Run: `..\..\runtime\python\python.exe -m pytest tests\test_ops_jobs.py tests\test_api_file_downloads.py tests\test_api_jobs.py tests\test_api_job_lifecycle.py tests\test_api_app.py -q`
+Expected: `60 passed`.
 
-- [ ] **Step 5: Commit Task 5**
+- [x] **Step 5: Commit Task 5**
 
 ```powershell
-git add backend/ops/jobs.py backend/jobs/default_handlers.py backend/files/service.py backend/api/dependencies.py backend/api/routers/jobs.py tests/test_ops_jobs.py tests/test_api_files.py
+git add backend/ops/jobs.py backend/files/service.py backend/api/dependencies.py backend/api/routers/jobs.py tests/test_ops_jobs.py tests/test_api_file_downloads.py
 git commit -m "feat: run protected ops backup and export jobs"
 ```
 
@@ -633,7 +633,7 @@ git commit -m "feat: apply protected ops changes before startup"
 **Files:**
 - Modify: `tests/test_api_openapi_contract.py`
 - Modify: `tests/test_api_ops_routes.py`
-- Modify: `tests/test_api_files.py`
+- Modify: `tests/test_api_file_downloads.py`
 - Modify: `backend/ops/__init__.py`
 - Modify: `ARCHITECTURE.md`
 - Modify: `docs/superpowers/plans/2026-07-12-p1-23-ops-protected-writes-implementation.md`
@@ -673,7 +673,7 @@ Record that P1-23 provides protected preflight/token/Job operations, online back
 Run:
 
 ```powershell
-..\..\runtime\python\python.exe -m pytest tests\test_ops_plan_store.py tests\test_ops_archive.py tests\test_ops_write_service.py tests\test_ops_journal.py tests\test_ops_jobs.py tests\test_ops_offline.py tests\test_api_ops_routes.py tests\test_api_jobs.py tests\test_api_files.py tests\test_migration_tooling.py tests\test_schema_baseline.py tests\test_data_transfer_service.py tests\test_run_bat_api_entry.py tests\test_api_openapi_contract.py tests\test_api_app.py -q
+..\..\runtime\python\python.exe -m pytest tests\test_ops_plan_store.py tests\test_ops_archive.py tests\test_ops_write_service.py tests\test_ops_journal.py tests\test_ops_jobs.py tests\test_ops_offline.py tests\test_api_ops_routes.py tests\test_api_jobs.py tests\test_api_file_downloads.py tests\test_migration_tooling.py tests\test_schema_baseline.py tests\test_data_transfer_service.py tests\test_run_bat_api_entry.py tests\test_api_openapi_contract.py tests\test_api_app.py -q
 ```
 
 Expected: all selected tests pass with 0 failed; only known dependency deprecation warnings are acceptable.
