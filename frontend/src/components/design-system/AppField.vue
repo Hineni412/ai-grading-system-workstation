@@ -25,6 +25,7 @@ const describedBy = computed(() =>
       :inputId="id"
       :ariaDescribedby="describedBy"
       :ariaInvalid="error ? 'true' : undefined"
+      :ariaRequired="required ? 'true' : undefined"
     />
     <p v-if="hint" :id="`${id}-hint`" class="app-field__hint">{{ hint }}</p>
     <p v-if="error" :id="`${id}-error`" class="app-field__error">{{ error }}</p>
