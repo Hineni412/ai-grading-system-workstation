@@ -20,6 +20,7 @@ class JobFileRule:
     result_field: str
     allowed_suffixes: frozenset[str]
     root_name: str
+    data_root_depth: int
 
 
 JOB_FILE_RULES = {
@@ -27,11 +28,25 @@ JOB_FILE_RULES = {
         result_field="file_path",
         allowed_suffixes=frozenset({".xlsx"}),
         root_name="reports_dir",
+        data_root_depth=1,
     ),
     "training_export": JobFileRule(
         result_field="file_path",
         allowed_suffixes=frozenset({".docx", ".md", ".zip"}),
         root_name="training_outputs_dir",
+        data_root_depth=2,
+    ),
+    "ops_backup": JobFileRule(
+        result_field="file_path",
+        allowed_suffixes=frozenset({".zip"}),
+        root_name="backups_dir",
+        data_root_depth=1,
+    ),
+    "ops_transfer_export": JobFileRule(
+        result_field="file_path",
+        allowed_suffixes=frozenset({".zip"}),
+        root_name="ops_outputs_dir",
+        data_root_depth=2,
     ),
 }
 
@@ -42,10 +57,16 @@ class JobFileService:
         reports_dir: Path,
         *,
         training_outputs_dir: Path | None = None,
+        backups_dir: Path | None = None,
+        ops_outputs_dir: Path | None = None,
     ) -> None:
         self.reports_dir = Path(reports_dir)
         self.training_outputs_dir = (
             Path(training_outputs_dir) if training_outputs_dir is not None else None
+        )
+        self.backups_dir = Path(backups_dir) if backups_dir is not None else None
+        self.ops_outputs_dir = (
+            Path(ops_outputs_dir) if ops_outputs_dir is not None else None
         )
 
     def resolve(self, job: JobRecord) -> ResolvedFile:
@@ -60,9 +81,7 @@ class JobFileService:
         root = getattr(self, rule.root_name, None)
         if root is None:
             raise JobFileNotFound("Job does not publish a downloadable file.")
-        data_root = (
-            root.parent if rule.root_name == "reports_dir" else root.parent.parent
-        )
+        data_root = root.parents[rule.data_root_depth - 1]
         return resolve_controlled_file(
             path_value,
             root=root,
