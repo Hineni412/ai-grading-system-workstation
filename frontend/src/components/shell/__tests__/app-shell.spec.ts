@@ -197,7 +197,20 @@ describe('AppShell', () => {
 
   it('renders startup load failure and retries only through the Store action', async () => {
     installMatchMedia(false)
-    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('private network detail'))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_path, init) => {
+      const requestId = String((init?.headers as Record<string, string>)['x-request-id'])
+      return new Response(
+        JSON.stringify({
+          error: {
+            code: 'session_not_found',
+            message: 'private network detail',
+            details: {},
+            request_id: requestId,
+          },
+        }),
+        { status: 404, headers: { 'content-type': 'application/json', 'x-request-id': requestId } },
+      )
+    })
     const { app, host, initialize } = await mountShell({ prepareStore: false })
 
     await settleUi()
