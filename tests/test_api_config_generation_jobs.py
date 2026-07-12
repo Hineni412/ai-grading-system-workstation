@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import warnings
 import sqlite3
+import pytest
 from pathlib import Path
 
 warnings.filterwarnings(
@@ -157,6 +158,45 @@ def test_config_generation_route_rejects_path_value_under_neutral_key(
     assert "C:/private/paper.docx" not in response.text
 
 
+@pytest.mark.parametrize("field_name", ["question", "answer"])
+def test_config_generation_route_rejects_path_values_as_question_images(
+    tmp_path: Path,
+    field_name: str,
+) -> None:
+    client, db, _manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    payload = _request_payload()
+    payload["question_images"] = {
+        "Q1": {"question": "aGVsbG8=", field_name: "C:/private/paper.png"}
+    }
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate",
+        json=payload,
+    )
+
+    assert response.status_code == 422
+    assert "C:/private/paper.png" not in response.text
+
+
+def test_config_generation_route_accepts_bounded_base64_question_images(
+    tmp_path: Path,
+) -> None:
+    client, db, _manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    payload = _request_payload()
+    payload["question_images"] = {
+        "Q1": {"question": "aGVsbG8=", "answer": "d29ybGQ="}
+    }
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate",
+        json=payload,
+    )
+
+    assert response.status_code == 202
+
+
 def test_generic_job_route_cannot_persist_config_generation_content(
     tmp_path: Path,
 ) -> None:
@@ -266,4 +306,4 @@ def test_config_generation_retry_source_cannot_be_replayed(
     )
 
     assert replay.status_code == 409
-    assert replay.json()["error"]["code"] == "config_generation_retry_already_submitted"
+    assert replay.json()["error"]["code"] == "config_generation_retry_not_available"
