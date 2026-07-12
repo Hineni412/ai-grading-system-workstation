@@ -11,8 +11,8 @@ function returnToWorkbench(): void {
 </script>
 
 <template>
-  <main class="not-found-view">
-    <h1 tabindex="-1">页面未找到</h1>
+  <section class="not-found-view" aria-labelledby="not-found-title">
+    <h1 id="not-found-title" tabindex="-1">页面未找到</h1>
     <StatePanel
       kind="error"
       title="无法打开这个页面"
@@ -20,5 +20,5 @@ function returnToWorkbench(): void {
       retry-label="返回工作台"
       @retry="returnToWorkbench"
     />
-  </main>
+  </section>
 </template>
