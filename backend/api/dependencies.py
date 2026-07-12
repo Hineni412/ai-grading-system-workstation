@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from fastapi import Depends, Request
 
@@ -16,6 +18,10 @@ from path_manager import PathManager, get_path_manager
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from question_bank.recommendation.practice_plan_service import PracticePlanService
 from question_bank.services.question_read_service import QuestionBankReadService
+from question_bank.services.question_read_service import (
+    QuestionBankSnapshotError,
+    captured_sqlite_snapshot_path,
+)
 from question_bank.services.training_task_service import TrainingTaskService
 from question_bank.services.question_write_service import QuestionBankWriteService
 
@@ -68,6 +74,59 @@ def get_question_bank_write_service() -> QuestionBankWriteService:
 def get_diagnosis_profile_service() -> DiagnosisProfileService:
     paths = get_path_manager()
     return DiagnosisProfileService(paths.db_path, paths.qb_db_path)
+
+
+def get_graph_diagnosis_profile_service(
+    paths: PathManager = Depends(get_path_manager),
+) -> Iterator[DiagnosisProfileService]:
+    grading_tables = frozenset(
+        {
+            "exam_papers",
+            "grading_sessions",
+            "session_details",
+            "session_results",
+            "students",
+        }
+    )
+    question_bank_tables = frozenset(
+        {
+            "grading_question_links",
+            "question_tags",
+            "questions",
+        }
+    )
+    try:
+        with captured_sqlite_snapshot_path(
+            paths.db_path,
+            required_tables=grading_tables,
+        ) as grading_snapshot:
+            with captured_sqlite_snapshot_path(
+                paths.qb_db_path,
+                required_tables=question_bank_tables,
+            ) as question_bank_snapshot:
+                yield DiagnosisProfileService(
+                    grading_snapshot,
+                    question_bank_snapshot,
+                    grading_db=_ClosingDBManager(grading_snapshot),
+                )
+    except QuestionBankSnapshotError as exc:
+        from backend.api.app import ApiError
+
+        raise ApiError(
+            503,
+            "graph_database_unavailable",
+            "Graph data is temporarily unavailable",
+        ) from exc
+
+
+class _ClosingDBManager(DBManager):
+    @contextmanager
+    def _connect(self):
+        conn = super()._connect()
+        try:
+            yield conn
+        finally:
+            conn.close()
 
 
 def get_practice_plan_service() -> PracticePlanService:
