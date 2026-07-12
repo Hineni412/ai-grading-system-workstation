@@ -284,7 +284,7 @@ def retry_session_config_generation(
     except ConfigRetryAlreadySubmittedError as exc:
         raise ApiError(
             409,
-            "config_generation_retry_already_submitted",
+            "config_generation_retry_not_available",
             "A retry has already been submitted for this config generation job",
             {"source_job_id": int(request.source_job_id)},
         ) from exc
