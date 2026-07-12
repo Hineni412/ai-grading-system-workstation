@@ -392,19 +392,19 @@ Record the reviewed feature SHA in a plan-only commit; set `交接状态: waitin
 - Consumes: reviewed anchor SHA and the running showcase.
 - Produces: user acceptance evidence and `verified_pending_integration` handoff.
 
-- [ ] **Step 1: Generate the short test checklist only after the showcase is verified**
+- [x] **Step 1: Generate the short test checklist only after the showcase is verified**
 
 The checklist must state the package, reviewed SHA, local start/stop commands, URL, visible version marker, five checks (overall restraint, readability, state distinction, keyboard focus, narrow-screen overflow), feedback format and machine result block required by `tools/handoff_status.py`.
 
-- [ ] **Step 2: Run the reviewed version for user inspection**
+- [x] **Step 2: Run the reviewed version for user inspection**
 
 Start Vite on `127.0.0.1`, open the showcase, and ask the user to complete the quick checklist. Do not infer a pass from silence.
 
-- [ ] **Step 3: Commit passed user evidence**
+- [x] **Step 3: Commit passed user evidence**
 
 After explicit user confirmation, commit only the declared checkpoint file with the same reviewed SHA and `passed` machine result.
 
-- [ ] **Step 4: Create the plan-only final handoff commit**
+- [x] **Step 4: Create the plan-only final handoff commit**
 
 Set `交接状态: verified_pending_integration`, `功能提交` to the direct parent's full SHA, `自动验证: passed`, `独立复审: passed`, `用户验收: passed`, `真实数据指纹: unchanged`, and `夜间动作: independent_candidate_allowed`. Commit only this plan and run:
 
@@ -448,12 +448,12 @@ Fetch/prune, fast-forward root `main` and active worktrees to `origin/main`, del
 ## 昼夜交接
 
 **执行包：** P2-02
-**交接状态：** waiting_user
-**功能提交：** c230613410afc257645b938942703a932c331575
+**交接状态：** verified_pending_integration
+**功能提交：** e8f6727cb214608289814577b20a3171bdb31955
 **自动验证：** passed
 **独立复审：** passed
-**用户验收：** pending
+**用户验收：** passed
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
