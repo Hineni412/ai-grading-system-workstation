@@ -54,7 +54,7 @@ Run `npm ci`, `npm run lint`, `npm run typecheck`, `npm run test`, `npm run buil
 
 Expected: lint/typecheck/build exit 0; 2 Vitest tests pass; 1 Chromium test passes; 4 Python tests pass.
 
-- [ ] **Step 4: Commit only this plan as the claim commit**
+- [x] **Step 4: Commit only this plan as the claim commit**
 
 ```powershell
 git add -- docs/superpowers/plans/2026-07-12-p2-02-design-system-implementation.md
@@ -77,7 +77,7 @@ Expected staged file list: only this plan.
 - Consumes: `STYLE.md` section 9 values and Element Plus `--el-*` CSS variables.
 - Produces: canonical product variables such as `--color-accent`, `--space-4`, `--radius-control`, `--shadow-overlay`, and global Element Plus mappings.
 
-- [ ] **Step 1: Write the failing repository Token guard**
+- [x] **Step 1: Write the failing repository Token guard**
 
 Create `tests/test_frontend_design_system.py` with these exact checks:
 
@@ -137,17 +137,17 @@ def test_element_theme_maps_product_tokens() -> None:
         assert mapping in css
 ```
 
-- [ ] **Step 2: Run the guard to verify RED**
+- [x] **Step 2: Run the guard to verify RED**
 
 Run: `D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe -m pytest tests\test_frontend_design_system.py -q`
 
 Expected: FAIL because the three style files do not exist.
 
-- [ ] **Step 3: Add the canonical product Token file**
+- [x] **Step 3: Add the canonical product Token file**
 
 Create `frontend/src/styles/tokens.css`. Define `:root` variables for every color in `STYLE.md` section 9.1; the system font stack; font sizes 12/13/14/16/20/24/32; weights 400/500/600; line heights 1.35/1.5/1.7; spaces 4/8/12/16/20/24/32/40/48; radii 4/6/8/12; 1px border width; control heights 32/36/40; `--shadow-overlay: 0 8px 24px rgba(32, 36, 42, 0.14)`; durations 100/160/220ms; and `--focus-ring: 0 0 0 3px var(--color-accent-subtle)`.
 
-- [ ] **Step 4: Map tokens into Element Plus and global base styles**
+- [x] **Step 4: Map tokens into Element Plus and global base styles**
 
 Create `element-theme.css` with `:root` mappings for primary/success/warning/danger/info, page/surface/fill/text/border, base radius, base font size, component height and transition duration. Add focused overrides for primary button hover/active, disabled opacity, input focus/invalid borders, tag radii, alert borders and overlay shadows. Every value must be `var(...)`, `currentColor`, `transparent`, `inherit`, `none`, `0` or a percentage.
 
@@ -169,7 +169,7 @@ import './styles/base.css'
 createApp(App).use(ElementPlus, { locale: zhCn }).mount('#app')
 ```
 
-- [ ] **Step 5: Verify GREEN and commit**
+- [x] **Step 5: Verify GREEN and commit**
 
 Run the Python guard, `npm run lint`, `npm run typecheck`, and `npm run build`.
 
