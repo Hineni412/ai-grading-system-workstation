@@ -9,12 +9,12 @@ SRC = ROOT / "frontend" / "src"
 COLOR_LITERAL = re.compile(r"#[0-9a-fA-F]{3,8}\b|\b(?:rgb|hsl)a?\(")
 
 
-def test_p2_03_has_one_navigation_source_and_no_general_api_client() -> None:
+def test_p2_04_keeps_one_navigation_source_and_adds_the_general_client() -> None:
     navigation = (SRC / "navigation.ts").read_text(encoding="utf-8")
     assert navigation.count("futureReason: '") == 1
     assert "智能体与自动化" in navigation
-    assert not (SRC / "api" / "client.ts").exists()
-    assert not (SRC / "stores" / "jobs.ts").exists()
+    assert (SRC / "api" / "client.ts").is_file()
+    assert (SRC / "stores" / "jobs.ts").is_file()
 
 
 def test_shell_uses_tokens_and_keeps_showcase_route() -> None:

@@ -1,6 +1,6 @@
 # AI 阅卷系统前端工程
 
-本目录是 Vue 3 + TypeScript + Vite 前端。P2-01 提供可重复的安装、检查、测试和构建能力；P2-02 提供设计 Token、Element Plus 主题、基础状态控件和组件展示页；P2-03 提供尚未切入生产的 App Shell、路由和当前考试上下文。业务页面和通用 API Client 仍由后续执行包实现。
+本目录是 Vue 3 + TypeScript + Vite 前端。P2-01 提供可重复的安装、检查、测试和构建能力；P2-02 提供设计 Token 和基础控件；P2-03 提供 App Shell、路由和当前考试上下文；P2-04 提供统一 API Client、错误契约和可恢复 Job Store。Vue 仍未切入生产，业务页面由后续执行包迁移。
 
 ## 开发环境
 
@@ -42,14 +42,23 @@ npm run build
 
 ## 当前考试上下文
 
-`src/api/sessions.ts` 是仅用于 `GET /api/sessions` 的窄适配器，不是通用 API Client。`src/stores/session.ts` 负责加载考试列表、校验选择并向 App Shell 提供当前考试上下文：
+`src/api/sessions.ts` 保留 sessions 公开类型和运行时校验，请求已经由 `src/api/client.ts` 统一发送。`src/stores/session.ts` 继续负责加载考试列表、校验选择并向 App Shell 提供当前考试上下文：
 
 - 已确认的考试 ID 保存在当前浏览器的 `localStorage`，键为 `ai-grading:selected-session:v1`，刷新页面后会尝试恢复。
 - 只有服务器成功返回且列表中仍存在的未删除考试才会恢复；失效 ID 会在成功加载后清除。
 - 加载失败时不会把已保存候选误当成当前考试，也不会删除它；重新加载成功后再校验和恢复。
 - 清空选择会同步移除浏览器保存值。此持久化只属于当前浏览器，不写业务数据库，也不代表跨设备或多用户会话。
 
-P2-03 不提供统一请求封装、鉴权、Job Store、业务写操作或后台任务协作。这些能力不能绕过后续执行包直接加到 sessions 适配器中。
+## API Client、错误与 Job Store
+
+- `src/api/client.ts` 是唯一直接 `fetch` 边界，只接受以 `/api/` 开头的同源相对路径。每次请求都携带 request ID，并支持超时和显式取消。
+- 只有 GET 的临时网络错误和 5xx 会有界退避重试。写请求、422、404、409、超时、取消和契约错误不会自动重放。
+- 每个资源适配器拥有自己的受控手写类型和运行时 decoder。响应未通过 decoder 时按契约错误处理，不将原始数据交给 Store 或页面。
+- `ApiError` 只保留状态码、安全 code/message/details、request ID、错误类别和可重试提示。通知端口不传递 details、payload 或 result，当前不渲染可见通知 UI。
+- `src/stores/jobs.ts` 使用 `ai-grading:tracked-jobs:v1` 保存当前浏览器的 Job ID、类型和首次跟踪时间。刷新后只查询这些 ID，不扫描服务器历史任务。
+- 每个 Job 只有一个轮询循环。断网保留上次快照，404 移除不可恢复引用，终态停止轮询。`cancel_requested=true` 只表示服务器收到取消请求，仍需继续查询到真实终态。
+
+P2-04 不新增 Job 列表 API、通用提交契约、鉴权、业务页面或任何可见 UI。后续页面不得绕过 Client 直接调用 `fetch` 或将 API key 写入浏览器。
 
 ## 设计系统与外壳样式
 
@@ -67,4 +76,4 @@ P2-03 不提供统一请求封装、鉴权、Job Store、业务写操作或后�
 
 Playwright 浏览器测试拦截 `/api/sessions` 并使用两条合成考试数据，不读取真实数据库。测试覆盖 1920×1080、1440×900、1366×768、1280×800、1024×768 五种桌面视口，检查横向溢出、控制台/页面错误、考试选择和刷新恢复、长名称、桌面栏位收起、失效保存值、失败重试、禁用未来入口、设置页和 404 返回。
 
-P2-03 明确不包含 P2-04 的通用 API Client、错误/请求策略和后续业务接入，也不包含任何阅卷、考试、学生、分析、题库与训练或设置业务页面迁移。修改 App Shell、路由、会话 Store、样式或浏览器契约后必须运行全部质量命令；浏览器测试数据必须继续保持合成且与真实 `user_data/` 隔离。
+P2-04 没有改动 App Shell、路由、样式或业务页面。浏览器回归继续使用合成 sessions 数据并与真实 `user_data/` 隔离。
