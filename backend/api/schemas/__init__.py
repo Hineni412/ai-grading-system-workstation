@@ -61,6 +61,19 @@ from .templates import (
     RegionIssueResponse,
     TemplateUpdateRequest,
 )
+from .training import (
+    TrainingDiagnosisRequest,
+    TrainingDiagnosisResponse,
+    TrainingExamScopeRequest,
+    TrainingPlanRequest,
+    TrainingPlanResponse,
+    TrainingScopeRequest,
+    TrainingStageRatios,
+    TrainingTaskConfirmRequest,
+    TrainingTaskDetail,
+    TrainingTaskListResponse,
+    TrainingTaskSummary,
+)
 
 __all__ = [
     "AnswerRegionListResponse",
@@ -115,4 +128,15 @@ __all__ = [
     "RegionDraftResponse",
     "RegionIssueResponse",
     "TemplateUpdateRequest",
+    "TrainingDiagnosisRequest",
+    "TrainingDiagnosisResponse",
+    "TrainingExamScopeRequest",
+    "TrainingPlanRequest",
+    "TrainingPlanResponse",
+    "TrainingScopeRequest",
+    "TrainingStageRatios",
+    "TrainingTaskConfirmRequest",
+    "TrainingTaskDetail",
+    "TrainingTaskListResponse",
+    "TrainingTaskSummary",
 ]
