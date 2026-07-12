@@ -50,12 +50,28 @@ for (const viewport of viewports) {
   })
 }
 
-test('focused invalid input preserves the complete danger frame', async ({ page }) => {
+test('keyboard focus preserves input ownership and the complete danger frame', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
   await page.goto('/')
-  const input = page.locator('#teacher-score')
+  for (let step = 0; step < 5; step += 1) await page.keyboard.press('Tab')
 
-  await input.click()
-  const styles = await input.evaluate((element) => {
+  const examInput = page.locator('#exam-name')
+  await expect(examInput).toBeFocused()
+  const validStyles = await examInput.evaluate((element) => {
+    const wrapper = element.closest('.el-input__wrapper')
+    return {
+      inputShadow: getComputedStyle(element).boxShadow,
+      wrapperShadow: wrapper ? getComputedStyle(wrapper).boxShadow : '',
+    }
+  })
+  expect(validStyles.inputShadow).toBe('none')
+  expect(validStyles.wrapperShadow).toContain('rgb(37, 99, 235)')
+  expect(validStyles.wrapperShadow).toContain('rgb(239, 246, 255)')
+
+  await page.keyboard.press('Tab')
+  const invalidInput = page.locator('#teacher-score')
+  await expect(invalidInput).toBeFocused()
+  const invalidStyles = await invalidInput.evaluate((element) => {
     const inputStyle = getComputedStyle(element)
     const wrapper = element.closest('.el-input__wrapper')
     return {
@@ -64,6 +80,7 @@ test('focused invalid input preserves the complete danger frame', async ({ page 
     }
   })
 
-  expect(styles.inputShadow).toBe('none')
-  expect(styles.wrapperShadow).toContain('rgb(176, 68, 68)')
+  expect(invalidStyles.inputShadow).toBe('none')
+  expect(invalidStyles.wrapperShadow).toContain('rgb(176, 68, 68)')
+  expect(invalidStyles.wrapperShadow).toContain('rgb(239, 246, 255)')
 })

@@ -105,6 +105,11 @@
   box-shadow: 0 0 0 var(--border-width) var(--color-danger) inset;
 }
 
+.el-input:has([aria-invalid='true']) .el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 var(--border-width) var(--color-danger) inset,
+    var(--focus-ring);
+}
+
 .el-tag {
   border-radius: var(--radius-tag);
 }
