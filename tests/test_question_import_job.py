@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+import backend.jobs.question_import as question_import_module
 from backend.jobs.manager import JobCancellationRequested, JobContext
 from backend.jobs.question_import import run_question_import_job
 from backend.jobs.store import JobStore
@@ -226,25 +228,52 @@ def test_question_import_job_honours_cancellation_requested_during_import(
         )
 
 
-def test_question_import_job_serializes_same_request_execution(tmp_path: Path) -> None:
+def test_question_import_job_serializes_same_request_execution(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     service, request = _service_and_request(tmp_path)
+    initialize_database(service.db_path)
+    with sqlite3.connect(service.db_path) as conn:
+        conn.execute("CREATE TABLE import_effects (id INTEGER PRIMARY KEY)")
+        conn.commit()
     first, _ = _context(tmp_path / "first", {"request_id": request.request_id})
     second, _ = _context(tmp_path / "second", {"request_id": request.request_id})
     entered = threading.Event()
+    second_waiting = threading.Event()
     release = threading.Event()
     calls: list[int] = []
     guard = threading.Lock()
+    lock_attempts = 0
+    real_locks = question_import_module.keyed_execution_locks
+
+    @contextmanager
+    def observed_locks(keys, **kwargs):
+        nonlocal lock_attempts
+        with guard:
+            lock_attempts += 1
+            if lock_attempts == 2:
+                second_waiting.set()
+        with real_locks(keys, **kwargs):
+            yield
+
+    monkeypatch.setattr(question_import_module, "keyed_execution_locks", observed_locks)
 
     def blocking_importer(scanned, _database_path, **_kwargs):
         with guard:
             calls.append(len(calls) + 1)
             call_number = len(calls)
+        with sqlite3.connect(service.db_path) as conn:
+            existing = int(conn.execute("SELECT COUNT(*) FROM import_effects").fetchone()[0])
         if call_number == 1:
             entered.set()
             assert release.wait(timeout=5)
-        source = str(scanned[0].source_file)
+        if existing == 0:
+            with sqlite3.connect(service.db_path) as conn:
+                conn.execute("INSERT INTO import_effects DEFAULT VALUES")
+                conn.commit()
         return BatchImportResult(
-            [PaperImportFileResult(source, "duplicate")], 0, 0, 0, 0, 1, 0
+            [], 0, 0, 0, 0, 1, 0
         )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -265,14 +294,75 @@ def test_question_import_job_serializes_same_request_execution(tmp_path: Path) -
             write_service=service,
             importer=blocking_importer,
         )
-        time.sleep(0.1)
-        calls_while_first_active = len(calls)
+        assert second_waiting.wait(timeout=5)
         release.set()
         first_future.result(timeout=5)
         second_future.result(timeout=5)
 
-    assert calls_while_first_active == 1
     assert calls == [1, 2]
+    with sqlite3.connect(service.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM import_effects").fetchone()[0] == 1
+
+
+def test_question_import_job_cancels_while_waiting_for_same_request_lock(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service, request = _service_and_request(tmp_path)
+    first, _ = _context(tmp_path / "first", {"request_id": request.request_id})
+    second, second_store = _context(
+        tmp_path / "second", {"request_id": request.request_id}
+    )
+    holder_entered = threading.Event()
+    second_waiting = threading.Event()
+    release = threading.Event()
+    lock_attempts = 0
+    guard = threading.Lock()
+    real_locks = question_import_module.keyed_execution_locks
+
+    @contextmanager
+    def observed_locks(keys, **kwargs):
+        nonlocal lock_attempts
+        with guard:
+            lock_attempts += 1
+            if lock_attempts == 2:
+                second_waiting.set()
+        with real_locks(keys, **kwargs):
+            yield
+
+    monkeypatch.setattr(question_import_module, "keyed_execution_locks", observed_locks)
+
+    def blocking_importer(*_args, **_kwargs):
+        holder_entered.set()
+        assert release.wait(timeout=5)
+        return BatchImportResult([], 0, 0, 0, 0, 0, 0)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(
+            run_question_import_job,
+            context=first,
+            question_bank_db_path=service.db_path,
+            data_root=service.data_root,
+            write_service=service,
+            importer=blocking_importer,
+        )
+        assert holder_entered.wait(timeout=5)
+        second_future = executor.submit(
+            run_question_import_job,
+            context=second,
+            question_bank_db_path=service.db_path,
+            data_root=service.data_root,
+            write_service=service,
+            importer=blocking_importer,
+        )
+        assert second_waiting.wait(timeout=5)
+        assert second_store.request_cancel(second.job_id)
+        try:
+            with pytest.raises(JobCancellationRequested):
+                second_future.result(timeout=1)
+        finally:
+            release.set()
+        first_future.result(timeout=5)
 
 
 def test_question_import_job_repeat_uses_existing_questions_without_duplicates(

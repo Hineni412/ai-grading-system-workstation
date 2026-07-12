@@ -120,6 +120,38 @@ def test_tagging_route_submits_safe_batch_and_projects_partial_result(
     assert "question_text" not in queried["result"]
 
 
+def test_tagging_route_validates_question_ids_against_source_import_job(
+    tmp_path: Path,
+) -> None:
+    client, manager, _service, _request = _client(tmp_path)
+    source = manager.store.create_job("question_import", {"request_id": "a" * 32})
+    assert manager.store.mark_running(source.id)
+    manager.store.finish(
+        source.id,
+        "succeeded",
+        result={
+            "outcome": "complete",
+            "successful_question_ids": [11],
+            "failed_question_ids": [],
+            "retryable": False,
+        },
+    )
+
+    accepted = client.post(
+        "/api/question-bank/tagging-jobs",
+        json={"question_ids": [11], "source_job_id": source.id},
+    )
+    rejected = client.post(
+        "/api/question-bank/tagging-jobs",
+        json={"question_ids": [12], "source_job_id": source.id},
+    )
+
+    assert accepted.status_code == 202
+    assert accepted.json()["payload"]["source_job_id"] == source.id
+    assert rejected.status_code == 409
+    assert rejected.json()["error"]["code"] == "question_tagging_request_invalid"
+
+
 def test_tagging_retry_accepts_only_source_failed_ids(tmp_path: Path) -> None:
     client, manager, _service, _request = _client(tmp_path)
     initial = client.post(
@@ -181,6 +213,94 @@ def test_question_bank_retry_routes_reject_wrong_source_job_types(tmp_path: Path
     assert import_retry.json()["error"]["code"] == "question_import_job_not_found"
     assert tagging_retry.status_code == 404
     assert tagging_retry.json()["error"]["code"] == "tagging_sync_job_not_found"
+
+
+def test_question_bank_retry_routes_reject_missing_and_nonretryable_jobs(
+    tmp_path: Path,
+) -> None:
+    client, manager, _service, request = _client(tmp_path)
+    completed_import = manager.store.create_job(
+        "question_import", {"request_id": request.request_id}
+    )
+    assert manager.store.mark_running(completed_import.id)
+    manager.store.finish(
+        completed_import.id,
+        "succeeded",
+        result={"outcome": "complete", "retryable": False},
+    )
+    completed_tagging = manager.store.create_job(
+        "tagging_sync", {"question_ids": [11]}
+    )
+    assert manager.store.mark_running(completed_tagging.id)
+    manager.store.finish(
+        completed_tagging.id,
+        "succeeded",
+        result={"outcome": "complete", "retryable": False},
+    )
+
+    cases = [
+        (
+            f"/api/question-bank/question-import-jobs/{completed_import.id}/retry",
+            None,
+            409,
+            "question_import_retry_not_available",
+        ),
+        (
+            f"/api/question-bank/tagging-jobs/{completed_tagging.id}/retry",
+            {},
+            409,
+            "tagging_sync_retry_not_available",
+        ),
+        (
+            "/api/question-bank/question-import-jobs/999999/retry",
+            None,
+            404,
+            "question_import_job_not_found",
+        ),
+        (
+            "/api/question-bank/tagging-jobs/999999/retry",
+            {},
+            404,
+            "tagging_sync_job_not_found",
+        ),
+    ]
+    for url, body, status, code in cases:
+        response = client.post(url) if body is None else client.post(url, json=body)
+        assert response.status_code == status
+        assert response.json()["error"]["code"] == code
+
+
+def test_duplicate_tagging_retry_requests_keep_same_safe_logical_payload(
+    tmp_path: Path,
+) -> None:
+    client, manager, _service, _request = _client(tmp_path)
+    source = manager.store.create_job("tagging_sync", {"question_ids": [11, 12]})
+    assert manager.store.mark_running(source.id)
+    manager.store.finish(
+        source.id,
+        "succeeded",
+        result={
+            "outcome": "partial",
+            "failed_question_ids": [12],
+            "retryable": True,
+        },
+    )
+
+    first = client.post(
+        f"/api/question-bank/tagging-jobs/{source.id}/retry",
+        json={"question_ids": [12]},
+    )
+    second = client.post(
+        f"/api/question-bank/tagging-jobs/{source.id}/retry",
+        json={"question_ids": [12]},
+    )
+
+    assert first.status_code == second.status_code == 202
+    assert first.json()["id"] != second.json()["id"]
+    assert first.json()["payload"] == second.json()["payload"] == {
+        "question_ids": [12],
+        "retry_of_job_id": source.id,
+    }
 
 
 def test_tagging_retry_uses_original_ids_after_failed_or_cancelled_job(

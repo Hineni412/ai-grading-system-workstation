@@ -389,8 +389,15 @@ def retry_tagging_sync_job(
         )
     else:
         available = []
+    if not available:
+        raise ApiError(
+            409,
+            "tagging_sync_retry_not_available",
+            "Tagging sync job cannot retry the requested questions",
+            {"job_id": int(job_id)},
+        )
     selected = _unique_positive_ids(body.question_ids or available)
-    if not available or not set(selected).issubset(set(available)):
+    if not set(selected).issubset(set(available)):
         raise ApiError(
             409,
             "tagging_sync_retry_not_available",
