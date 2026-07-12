@@ -18,6 +18,7 @@ describe('P2-03 navigation', () => {
   it.each([
     ['/', '/workbench'],
     ['/grading', '/grading'],
+    ['/settings', '/settings'],
     ['/design-system', '/design-system'],
     ['/missing/deep/path', '/missing/deep/path'],
   ])('resolves %s safely', async (target, expectedPath) => {
@@ -26,5 +27,7 @@ describe('P2-03 navigation', () => {
     await router.isReady()
     expect(router.currentRoute.value.fullPath).toBe(expectedPath)
     expect(router.currentRoute.value.meta.title).toBeTruthy()
+    expect(router.currentRoute.value.meta.description).toBeTruthy()
+    expect(router.currentRoute.value.meta.breadcrumb).toBeTruthy()
   })
 })

@@ -13,12 +13,15 @@ const navigationOpen = ref(true)
 const inspectorOpen = ref(true)
 const overlayMode = ref(false)
 let mediaQuery: MediaQueryList | null = null
+let compactMediaQuery: MediaQueryList | null = null
 let returnFocusTo: HTMLElement | null = null
 
-function applyMediaMode(event: MediaQueryList | MediaQueryListEvent): void {
-  overlayMode.value = event.matches
-  navigationOpen.value = !event.matches
-  inspectorOpen.value = !event.matches
+function applyMediaMode(): void {
+  const nextOverlayMode = mediaQuery?.matches ?? false
+  const nextCompactMode = compactMediaQuery?.matches ?? false
+  overlayMode.value = nextOverlayMode
+  navigationOpen.value = !nextOverlayMode && !nextCompactMode
+  inspectorOpen.value = !nextOverlayMode
 }
 
 function rememberTrigger(): void {
@@ -71,14 +74,17 @@ watch(
 
 onMounted(() => {
   mediaQuery = window.matchMedia('(max-width: 1023px)')
-  applyMediaMode(mediaQuery)
+  compactMediaQuery = window.matchMedia('(min-width: 1024px) and (max-width: 1279px)')
+  applyMediaMode()
   mediaQuery.addEventListener('change', applyMediaMode)
+  compactMediaQuery.addEventListener('change', applyMediaMode)
   window.addEventListener('keydown', handleKeydown)
   void sessionStore.initialize()
 })
 
 onBeforeUnmount(() => {
   mediaQuery?.removeEventListener('change', applyMediaMode)
+  compactMediaQuery?.removeEventListener('change', applyMediaMode)
   window.removeEventListener('keydown', handleKeydown)
 })
 </script>
@@ -97,11 +103,17 @@ onBeforeUnmount(() => {
       @toggle-navigation="toggleNavigation"
       @toggle-inspector="toggleInspector"
     />
-    <AppNavigation :collapsed="!navigationOpen" />
+    <AppNavigation
+      :collapsed="!navigationOpen"
+      :inert="overlayMode && !navigationOpen"
+    />
     <main id="main-workspace" class="main-workspace" tabindex="-1">
       <RouterView />
     </main>
-    <SessionInspector @retry="sessionStore.initialize" />
+    <SessionInspector
+      :inert="overlayMode && !inspectorOpen"
+      @retry="sessionStore.initialize"
+    />
     <button
       v-if="overlayMode && (navigationOpen || inspectorOpen)"
       class="app-shell__backdrop"

@@ -123,6 +123,40 @@ describe('AppShell', () => {
     app.unmount()
   })
 
+  it('starts compact navigation collapsed and toggles its real expanded state', async () => {
+    const compactQuery = '(min-width: 1024px) and (max-width: 1279px)'
+    const mediaQueries: MediaQueryList[] = []
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn((query: string) => {
+        const mediaQuery = {
+          matches: query === compactQuery,
+          media: query,
+          onchange: null,
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+          dispatchEvent: vi.fn(),
+        } as unknown as MediaQueryList
+        mediaQueries.push(mediaQuery)
+        return mediaQuery
+      }),
+    )
+    const { app, host } = await mountShell()
+    const navigationTrigger = host.querySelector<HTMLButtonElement>('[data-testid="navigation-toggle"]')!
+
+    expect(navigationTrigger.getAttribute('aria-expanded')).toBe('false')
+    navigationTrigger.click()
+    await nextTick()
+    expect(navigationTrigger.getAttribute('aria-expanded')).toBe('true')
+    navigationTrigger.click()
+    await nextTick()
+    expect(navigationTrigger.getAttribute('aria-expanded')).toBe('false')
+
+    app.unmount()
+    expect(mediaQueries).toHaveLength(2)
+    expect(mediaQueries.every((query) => vi.mocked(query.removeEventListener).mock.calls.length === 1)).toBe(true)
+  })
+
   it('keeps overlay panels mutually exclusive and restores trigger focus on Escape', async () => {
     installMatchMedia(true)
     const { app, host } = await mountShell()

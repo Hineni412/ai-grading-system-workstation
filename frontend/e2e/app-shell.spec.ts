@@ -72,6 +72,17 @@ async function closeInspector(page: Page): Promise<void> {
   await expect(page.getByTestId('inspector-toggle')).toBeFocused()
 }
 
+async function expectClosedNavigationSkippedByTab(page: Page): Promise<void> {
+  const navigation = page.getByTestId('app-navigation')
+  await page.getByTestId('navigation-toggle').focus()
+  for (let step = 0; step < 8; step += 1) {
+    await page.keyboard.press('Tab')
+    expect(
+      await navigation.evaluate((element) => !element.contains(document.activeElement)),
+    ).toBe(true)
+  }
+}
+
 async function exerciseSessionContext(
   page: Page,
   viewport: { width: number; height: number },
@@ -135,6 +146,11 @@ for (const viewport of narrowViewports) {
     await page.keyboard.press('Escape')
     await expect(inspectorToggle).toHaveAttribute('aria-expanded', 'false')
     await expect(inspectorToggle).toBeFocused()
+    await navigationToggle.click()
+    await page.getByTestId('app-navigation').getByRole('link', { name: '设置' }).click()
+    await expect(page).toHaveURL(/\/settings$/)
+    await page.keyboard.press('Escape')
+    await expectClosedNavigationSkippedByTab(page)
 
     expect(errors.pageErrors).toEqual([])
     expect(errors.consoleErrors).toEqual([])
@@ -188,9 +204,66 @@ test('future navigation remains disabled while settings and 404 return stay usab
   await page.getByRole('link', { name: '设置' }).click()
   await expect(page).toHaveURL(/\/settings$/)
   await expect(page.getByRole('heading', { name: '设置' })).toBeVisible()
+  await expect(page.locator('.app-topbar__route')).toContainText('设置')
+  await expect(page.getByText('设置工作区尚未迁移', { exact: true })).toBeVisible()
 
   await page.goto('/missing/deep/path')
   await expect(page.getByRole('heading', { name: '页面未找到' })).toBeVisible()
+  await expect(page.getByText('请求的地址不存在；当前考试选择和业务数据都没有改变。')).toBeVisible()
   await page.getByRole('button', { name: '返回工作台' }).click()
   await expect(page).toHaveURL(/\/workbench$/)
+})
+
+test('1024 compact navigation state and geometry stay synchronized', async ({ page }) => {
+  await fulfillSessions(page)
+  await page.setViewportSize({ width: 1024, height: 768 })
+  await page.goto('/workbench')
+  const navigation = page.getByTestId('app-navigation')
+  const toggle = page.getByTestId('navigation-toggle')
+  const workbenchLabel = navigation.getByText('工作台', { exact: true })
+
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  await expect(workbenchLabel).toBeHidden()
+  expect(await navigation.evaluate((element) => element.getBoundingClientRect().width)).toBe(60)
+
+  await toggle.click()
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  await expect(workbenchLabel).toBeVisible()
+  expect(await navigation.evaluate((element) => element.getBoundingClientRect().width)).toBe(232)
+
+  await toggle.click()
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  expect(await navigation.evaluate((element) => element.getBoundingClientRect().width)).toBe(60)
+})
+
+test('desktop shell owns the viewport and workspace scrolls independently', async ({ page }) => {
+  await fulfillSessions(page)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/settings')
+
+  const metrics = await page.evaluate(() => {
+    const shell = document.querySelector<HTMLElement>('[data-testid="app-shell"]')!
+    const workspace = document.querySelector<HTMLElement>('#main-workspace')!
+    const navigation = document.querySelector<HTMLElement>('[data-testid="app-navigation"]')!
+    const inspector = document.querySelector<HTMLElement>('[data-testid="session-inspector"]')!
+    const fixture = document.createElement('div')
+    fixture.style.height = '2000px'
+    fixture.dataset.testid = 'long-route-fixture'
+    workspace.append(fixture)
+    workspace.scrollTop = 320
+    return {
+      shellHeight: shell.getBoundingClientRect().height,
+      workspaceClientHeight: workspace.clientHeight,
+      workspaceScrollHeight: workspace.scrollHeight,
+      workspaceScrollTop: workspace.scrollTop,
+      navigationScrollTop: navigation.scrollTop,
+      inspectorScrollTop: inspector.scrollTop,
+    }
+  })
+
+  expect(metrics.shellHeight).toBe(900)
+  expect(metrics.workspaceScrollHeight).toBeGreaterThan(metrics.workspaceClientHeight)
+  expect(metrics.workspaceScrollTop).toBeGreaterThan(0)
+  expect(metrics.navigationScrollTop).toBe(0)
+  expect(metrics.inspectorScrollTop).toBe(0)
 })

@@ -4,8 +4,10 @@ import { createMemoryHistory } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import App from '../App.vue'
+import { fetchSessions } from '../api/sessions'
 import ComponentShowcase from '../components/design-system/ComponentShowcase.vue'
 import { createAppRouter } from '../router'
+import { useSessionStore } from '../stores/session'
 
 vi.mock('../api/sessions', () => ({
   fetchSessions: vi.fn(async () => []),
@@ -19,6 +21,7 @@ async function settleUi(): Promise<void> {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks()
   localStorage.clear()
   document.body.innerHTML = ''
   vi.stubGlobal(
@@ -52,6 +55,10 @@ describe('App', () => {
     expect(host.querySelector('[data-testid="app-navigation"]')).not.toBeNull()
     expect(host.querySelector('main#main-workspace')).not.toBeNull()
     expect(host.querySelector('[data-testid="session-inspector"]')).not.toBeNull()
+    const sessionStore = useSessionStore(pinia)
+    expect(fetchSessions).toHaveBeenCalledTimes(1)
+    expect(sessionStore.loadState).toBe('ready')
+    expect(sessionStore.sessions).toEqual([])
 
     app.unmount()
   })
