@@ -12,6 +12,7 @@ from backend.jobs.default_handlers import register_default_job_handlers
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
 from backend.media.service import ReviewMediaService
+from backend.ops.service import OpsSelfCheckService
 from backend.review.service import ReviewApplicationService
 from manual_review_service import ManualReviewService
 from path_manager import PathManager, get_path_manager
@@ -28,6 +29,12 @@ from question_bank.services.question_write_service import QuestionBankWriteServi
 
 def get_grading_db() -> DBManager:
     return DBManager(get_path_manager().db_path)
+
+
+def get_ops_self_check_service(
+    paths: PathManager = Depends(get_path_manager),
+) -> OpsSelfCheckService:
+    return OpsSelfCheckService(paths)
 
 
 def get_upload_config_dir() -> Path:

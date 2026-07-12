@@ -372,14 +372,14 @@ def create_backup(
 
 # ── 列出备份 ──────────────────────────────────────────
 
-def list_backups() -> list[dict[str, Any]]:
+def list_backups(*, backup_dir: Path | None = None) -> list[dict[str, Any]]:
     """列出所有 zip 备份，按时间降序。"""
-    backup_dir = _backup_root()
-    if not backup_dir.exists():
+    resolved_backup_dir = Path(backup_dir) if backup_dir is not None else _backup_root()
+    if not resolved_backup_dir.exists():
         return []
 
     backups = []
-    for zp in sorted(backup_dir.glob("backup_*.zip"), reverse=True):
+    for zp in sorted(resolved_backup_dir.glob("backup_*.zip"), reverse=True):
         try:
             stat = zp.stat()
             # 解析文件名: backup_YYYYMMDD_HHMMSS_reason.zip
