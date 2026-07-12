@@ -297,11 +297,11 @@ After independent review passes, update only this plan: record the full reviewed
 ## Implementation Evidence
 
 - Baseline: existing diagnosis/recommendation/training task/API suite `52 passed` before source changes.
-- RED/GREEN: diagnosis先因依赖缺失出现 3 个预期错误；推荐预览先以 5 个 404 失败；任务服务/确认/分页先以 11 个缺接口失败；随后分别转绿。复审前又以 2 个失败用例关闭空班级范围扩散和确认预查数据库错误泄漏，以 1 个失败用例关闭训练导出原始错误公开。
+- RED/GREEN: diagnosis先因依赖缺失出现 3 个预期错误；推荐预览先以 5 个 404 失败；任务服务/确认/分页先以 11 个缺接口失败；随后分别转绿。复审前又以 2 个失败用例关闭空班级范围扩散和确认预查数据库错误泄漏，以 1 个失败用例关闭训练导出原始错误公开；首轮独立复审后以连续创建两个默认任务的失败用例复现 `None-V...` 明细码唯一约束冲突，改用 resolved task code 后转绿。
 - Focused regression: 最终 P1-19 聚焦与受影响领域/API 合并回归 `176 passed`。
 - Affected API regression: 独立运行 API App、读写、Question Bank、Training 与 OpenAPI 组合 `128 passed`；最终已包含在上述 176 项候选验证中。
 - Quick smoke: 文档治理、363 个第一方 Python 文件静态编译、两库临时副本初始化幂等和 `integrity_check=ok` 通过。
-- Independent review: pending.
+- Independent review: 首轮复审提交 `2551e195c66516a31b666ec62bca077559220639` 为 0 Critical / 1 Important / 0 Minor，发现默认任务明细码错误使用可空原始参数；修复后任务服务/API/旧 UI 相关回归 `34 passed`，等待新候选复审。
 - Real data: 根目录两库大小、UTC mtime 与 SHA-256 均和领取基线一致；`grading_system.db` SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`，`question_bank.db` SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`；worktree 无 `user_data/` 变化。
 
 <!-- HANDOFF_STATUS_START -->
