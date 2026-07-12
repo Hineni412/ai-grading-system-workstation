@@ -7,16 +7,44 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
-from backend.api.app import ApiError
-from backend.api.dependencies import get_grading_db, get_upload_config_dir
+from backend.api.app import ApiError, ErrorResponse
+from backend.api.dependencies import get_grading_db, get_job_manager, get_upload_config_dir
+from backend.api.routers.jobs import _job_response
 from backend.api.routers.sessions import _require_session
-from backend.api.schemas.config import SessionConfigRequest, SessionConfigResponse
+from backend.api.schemas.config import (
+    ConfigGenerationRequest,
+    ConfigGenerationRetryRequest,
+    SessionConfigRequest,
+    SessionConfigResponse,
+)
+from backend.api.schemas.jobs import JobResponse
+from backend.jobs.config_generation import (
+    discard_config_generation_input,
+    stage_config_generation_input,
+)
+from backend.jobs.manager import JobManager, UnsupportedJobTypeError
+from backend.jobs.store import ConfigRetryAlreadySubmittedError
+from backend.public_data import (
+    contains_filesystem_reference,
+    contains_path_key,
+    contains_sensitive_key,
+)
 from db_manager import DBManager
 from path_manager import resolve_stored_file_path
 from session_manager import save_generated_config
 
 
 router = APIRouter(prefix="/api", tags=["config"])
+
+CONFIG_GENERATION_ERROR_RESPONSES = {
+    404: {"model": ErrorResponse, "description": "Session not found"},
+    503: {"model": ErrorResponse, "description": "Config generation unavailable"},
+}
+
+CONFIG_GENERATION_RETRY_ERROR_RESPONSES = {
+    **CONFIG_GENERATION_ERROR_RESPONSES,
+    409: {"model": ErrorResponse, "description": "Config generation retry conflict"},
+}
 
 
 def _read_json_config(path_value: Any, *, field_name: str) -> dict[str, Any]:
@@ -105,3 +133,165 @@ def save_session_config(
         answer_key_path=str(answer_key_path),
     )
     return _config_response(_require_session(db, session_id))
+
+
+def _require_active_session(db: DBManager, session_id: int) -> dict[str, Any]:
+    session = _require_session(db, session_id)
+    if bool(int(session.get("is_deleted") or 0)):
+        raise ApiError(
+            404,
+            "session_not_found",
+            "Session not found",
+            {"session_id": int(session_id)},
+        )
+    return session
+
+
+def _contains_embedded_image_reference(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key) in {"question_html", "answer_html", "analysis_html"}:
+                text = str(item or "").casefold()
+                if "<img" in text or "[[image:" in text:
+                    return True
+            if _contains_embedded_image_reference(item):
+                return True
+    elif isinstance(value, (list, tuple)):
+        return any(_contains_embedded_image_reference(item) for item in value)
+    return False
+
+
+def _submit_config_generation(
+    manager: JobManager,
+    payload: dict[str, object],
+) -> JobResponse:
+    try:
+        return _job_response(manager.submit("config_generation", payload))
+    except UnsupportedJobTypeError as exc:
+        raise ApiError(
+            503,
+            "job_type_not_supported",
+            "Config generation is temporarily unavailable",
+            {"job_type": "config_generation"},
+        ) from exc
+
+
+@router.post(
+    "/sessions/{session_id}/config/generate",
+    response_model=JobResponse,
+    status_code=202,
+    responses=CONFIG_GENERATION_ERROR_RESPONSES,
+)
+def generate_session_config(
+    session_id: int,
+    request: ConfigGenerationRequest,
+    db: DBManager = Depends(get_grading_db),
+    manager: JobManager = Depends(get_job_manager),
+    upload_config_dir: Path = Depends(get_upload_config_dir),
+) -> JobResponse:
+    session = _require_active_session(db, session_id)
+    request_payload = request.model_dump()
+    if (
+        contains_sensitive_key(request_payload)
+        or contains_path_key(request_payload)
+        or contains_filesystem_reference(
+            {
+                "confirmed_blocks": request.confirmed_blocks,
+                "document_text": request.document_text,
+            }
+        )
+        or _contains_embedded_image_reference(request_payload)
+    ):
+        raise ApiError(
+            422,
+            "invalid_config_generation_request",
+            "Config generation request contains forbidden fields",
+        )
+    input_id = stage_config_generation_input(
+        upload_config_dir,
+        session_id=int(session_id),
+        expected_rubric_path=str(session.get("rubric_path") or ""),
+        expected_answer_key_path=str(session.get("answer_key_path") or ""),
+        **request_payload,
+    )
+    try:
+        return _submit_config_generation(
+            manager,
+            {
+                "session_id": int(session_id),
+                "mode": "generate",
+                "input_id": input_id,
+            },
+        )
+    except Exception:
+        discard_config_generation_input(upload_config_dir, input_id)
+        raise
+
+
+@router.post(
+    "/sessions/{session_id}/config/generate/retry",
+    response_model=JobResponse,
+    status_code=202,
+    responses=CONFIG_GENERATION_RETRY_ERROR_RESPONSES,
+)
+def retry_session_config_generation(
+    session_id: int,
+    request: ConfigGenerationRetryRequest,
+    db: DBManager = Depends(get_grading_db),
+    manager: JobManager = Depends(get_job_manager),
+) -> JobResponse:
+    _require_active_session(db, session_id)
+    source = manager.get(request.source_job_id)
+    if source is None:
+        raise ApiError(
+            404,
+            "config_generation_job_not_found",
+            "Config generation job not found",
+            {"source_job_id": int(request.source_job_id)},
+        )
+    if (
+        source.job_type != "config_generation"
+        or source.status != "succeeded"
+        or source.result.get("outcome") != "partial"
+        or int(source.payload.get("session_id") or 0) != int(session_id)
+    ):
+        raise ApiError(
+            409,
+            "config_generation_retry_not_available",
+            "Config generation job is not available for retry",
+            {"source_job_id": int(request.source_job_id)},
+        )
+    failed_ids = [str(item) for item in source.result.get("failed_question_ids") or []]
+    if request.retry_question_ids is not None:
+        unknown = [item for item in request.retry_question_ids if item not in failed_ids]
+        if unknown:
+            raise ApiError(
+                409,
+                "config_generation_retry_not_available",
+                "Requested questions are not currently failed",
+                {"source_job_id": int(request.source_job_id)},
+            )
+    payload: dict[str, object] = {
+        "session_id": int(session_id),
+        "mode": "retry",
+        "source_job_id": int(request.source_job_id),
+        "input_id": str(source.payload.get("input_id") or ""),
+    }
+    if request.retry_question_ids is not None:
+        payload["retry_question_ids"] = request.retry_question_ids
+    try:
+        return _job_response(manager.submit_config_retry(payload))
+    except ConfigRetryAlreadySubmittedError as exc:
+        raise ApiError(
+            409,
+            "config_generation_retry_not_available",
+            "A retry has already been submitted for this config generation job",
+            {"source_job_id": int(request.source_job_id)},
+        ) from exc
+    except UnsupportedJobTypeError as exc:
+        raise ApiError(
+            503,
+            "job_type_not_supported",
+            "Config generation is temporarily unavailable",
+            {"job_type": "config_generation"},
+        ) from exc

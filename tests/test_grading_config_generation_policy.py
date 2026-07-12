@@ -1096,6 +1096,66 @@ def test_retry_failed_questions_preserves_successes_and_then_scores(
     assert not any("Q2 placeholder added" in warning for warning in payload["meta"]["warnings"])
 
 
+def test_retry_selected_failed_question_preserves_unselected_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    existing = _single_question_payload("Q0", "proof")
+    blocks = [{"question_id": "Q0", "question_type": "proof", "text": "Prove A"}]
+    for qid in ("Q1", "Q2"):
+        block = {"question_id": qid, "question_type": "choice", "text": f"Choose {qid}"}
+        blocks.append(block)
+        existing["rubric"]["questions"].append(
+            session_manager._placeholder_question_from_block(block)
+        )
+        existing["answer_key"]["questions"].append(
+            {"question_id": qid, "canonical_answer": "", "accepted_forms": [], "parts": []}
+        )
+    existing["meta"] = {
+        "warnings": [
+            "parallel generation failed for Q1: upstream failure",
+            "parallel generation failed for Q2: upstream failure",
+        ],
+        "failed_question_ids": ["Q1", "Q2"],
+        "failed_questions": [
+            {
+                "question_id": qid,
+                "attempts": 3,
+                "category": "transient_network",
+                "error": "upstream failure",
+            }
+            for qid in ("Q1", "Q2")
+        ],
+    }
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def json_from_text(self, *_args, **_kwargs):
+            self.calls += 1
+            return _single_question_payload("Q1")
+
+    monkeypatch.setenv("AI_GRADING_CONFIG_RETRY_DELAYS", "0,0")
+    monkeypatch.setattr(session_manager, "force_payload_total_score", lambda *_args, **_kwargs: None)
+    client = FakeClient()
+
+    payload = session_manager.retry_failed_grading_config_questions(
+        existing,
+        blocks,
+        "",
+        client,
+        retry_question_ids=["Q1"],
+    )
+
+    assert client.calls == 1
+    assert payload["meta"]["failed_question_ids"] == ["Q2"]
+    assert [item["question_id"] for item in payload["meta"]["failed_questions"]] == ["Q2"]
+    assert payload["meta"]["score_allocation_pending"] is True
+    questions = {item["question_id"]: item for item in payload["rubric"]["questions"]}
+    assert questions["Q1"]["knowledge_name"] == "测试知识点"
+    assert questions["Q2"]["knowledge_id"] == "UNKNOWN"
+
+
 def test_word_whole_generation_is_one_request_and_uses_shared_postprocessing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
