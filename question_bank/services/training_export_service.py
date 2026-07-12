@@ -59,7 +59,19 @@ class TrainingExportService:
             for audience in resolved_audiences
         ]
         final_status = "completed" if all(item["status"] == "succeeded" for item in records) else "failed"
-        self.tasks.mark_export_state(task_id, status=final_status, variant_id=variant_id)
+        try:
+            self.tasks.mark_export_state(
+                task_id,
+                status=final_status,
+                variant_id=variant_id,
+            )
+        except Exception:
+            self.abort_unpublished_exports(
+                [int(item["id"]) for item in records],
+                task_id=task_id,
+                variant_ids=[variant_id],
+            )
+            raise
         return {"task_id": int(task_id), "variant_id": int(variant_id), "exports": records}
 
     def retry_export(self, export_id: int) -> dict[str, Any]:
@@ -80,11 +92,19 @@ class TrainingExportService:
             existing_export_id=int(record["id"]),
         )
         final_status = "completed" if retried["status"] == "succeeded" else "failed"
-        self.tasks.mark_export_state(
-            int(record["task_id"]),
-            status=final_status,
-            variant_id=int(record["variant_id"]),
-        )
+        try:
+            self.tasks.mark_export_state(
+                int(record["task_id"]),
+                status=final_status,
+                variant_id=int(record["variant_id"]),
+            )
+        except Exception:
+            self.abort_unpublished_exports(
+                [int(retried["id"])],
+                task_id=int(record["task_id"]),
+                variant_ids=[int(record["variant_id"])],
+            )
+            raise
         return retried
 
     def export_task_bundle(
@@ -132,10 +152,25 @@ class TrainingExportService:
                 status="succeeded",
                 output_path=bundle_path,
             )
-        self.tasks.mark_export_state(
-            task_id,
-            status="completed" if final["status"] == "succeeded" else "failed",
-        )
+        try:
+            self.tasks.mark_export_state(
+                task_id,
+                status="completed" if final["status"] == "succeeded" else "failed",
+            )
+        except Exception:
+            self.abort_unpublished_exports(
+                [
+                    *[int(item["id"]) for item in variant_exports],
+                    int(final["id"]),
+                ],
+                task_id=task_id,
+                variant_ids=[
+                    int(item["variant_id"])
+                    for item in variant_exports
+                    if item.get("variant_id") is not None
+                ],
+            )
+            raise
         return {"task_id": int(task_id), "export": final, "variant_exports": variant_exports}
 
     def list_exports(self, task_id: int) -> list[dict[str, Any]]:
@@ -208,23 +243,53 @@ class TrainingExportService:
                     """,
                     ids,
                 )
+            has_succeeded_task_export = bool(
+                conn.execute(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1 FROM training_exports
+                        WHERE task_id = ? AND status = 'succeeded'
+                          AND output_path IS NOT NULL
+                    )
+                    """,
+                    (int(task_id),),
+                ).fetchone()[0]
+            )
             conn.execute(
                 """
                 UPDATE training_tasks
-                SET status = 'ready', updated_at = datetime('now','localtime')
+                SET status = ?, updated_at = datetime('now','localtime')
                 WHERE id = ? AND status <> 'cancelled'
                 """,
-                (int(task_id),),
+                (
+                    "completed" if has_succeeded_task_export else "ready",
+                    int(task_id),
+                ),
             )
-            if variants:
-                placeholders = ",".join("?" for _ in variants)
+            for variant_id in variants:
+                has_succeeded_variant_export = bool(
+                    conn.execute(
+                        """
+                        SELECT EXISTS(
+                            SELECT 1 FROM training_exports
+                            WHERE task_id = ? AND variant_id = ?
+                              AND status = 'succeeded' AND output_path IS NOT NULL
+                        )
+                        """,
+                        (int(task_id), int(variant_id)),
+                    ).fetchone()[0]
+                )
                 conn.execute(
-                    f"""
+                    """
                     UPDATE training_variants
-                    SET status = 'ready', updated_at = datetime('now','localtime')
-                    WHERE task_id = ? AND id IN ({placeholders})
+                    SET status = ?, updated_at = datetime('now','localtime')
+                    WHERE task_id = ? AND id = ? AND status <> 'cancelled'
                     """,
-                    [int(task_id), *variants],
+                    (
+                        "completed" if has_succeeded_variant_export else "ready",
+                        int(task_id),
+                        int(variant_id),
+                    ),
                 )
 
     def _run_variant_export(
