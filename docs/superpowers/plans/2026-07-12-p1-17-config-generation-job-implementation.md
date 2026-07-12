@@ -315,21 +315,21 @@ Update Implementation Evidence and the handoff block to `waiting_review`, `功�
 
 - Baseline: config API, Job lifecycle/manager and generation-policy suite `81 passed` before source changes.
 - RED/GREEN: 输入暂存、原子发布、Job 注册、成功/部分失败/取消、指定失败题重试、专用 API、客户端路径拒绝和 OpenAPI 均先由聚焦测试复现失败，再以最小实现转绿。
-- Focused regression: 初次功能提交 P1-17 聚焦回归 `93 passed`、受影响 API 回归 `45 passed`；首轮复审修复后聚焦回归 `101 passed`，Job/manager/store 影响面 `68 passed`；二次复审修复后聚焦回归 `104 passed`。
-- Independent review: 首轮 0 Critical / 6 Important / 2 Minor；二次复审确认其中 4 项已关闭，剩余 2 项已通过严格 Base64 题图模型和复用既有 409 契约修复；最终复审 pending。
-- Quick smoke: 文档治理、352 个第一方 Python 文件静态编译、两库副本初始化幂等和 `integrity_check=ok` 全部通过。
+- Focused regression: 初次功能提交 P1-17 聚焦回归 `93 passed`、受影响 API 回归 `45 passed`；首轮复审修复后聚焦回归 `101 passed`，Job/manager/store 影响面 `68 passed`；二次复审修复后聚焦回归 `104 passed`；最终候选受影响 API/Job 回归 `76 passed`。
+- Independent review: 最终候选 `febe56daacfd3b29feba48879e9bf0e7d607e3e0` 为 0 Critical / 0 Important / 1 Minor，结论 `Ready to merge: Yes`。非阻塞 Minor 为题图 `question` 只含空格时可更早返回 422；为保持已复审 SHA 不漂移，留作后续输入校验清理。
+- Quick smoke: 最终候选重新通过文档治理、352 个第一方 Python 文件静态编译、两库副本初始化幂等和 `integrity_check=ok`。
 - Real data: 工作树没有 `user_data/` 变更，stash 仍为领取时两条；真实阅卷库与题库 SHA-256 和领取基线完全一致。
 
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
 
 **执行包：** P1-17
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** febe56daacfd3b29feba48879e9bf0e7d607e3e0
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
