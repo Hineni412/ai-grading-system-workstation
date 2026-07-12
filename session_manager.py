@@ -11,7 +11,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping, Sequence
 from xml.etree import ElementTree
 
 from docx import Document
@@ -989,10 +989,24 @@ def retry_failed_grading_config_questions(
     model_name: str | None = None,
     report: Any = None,
     q_images: dict[str, Any] | None = None,
+    *,
+    retry_question_ids: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    failed_qids = failed_grading_config_question_ids(existing_payload)
-    if not failed_qids:
+    all_failed_qids = failed_grading_config_question_ids(existing_payload)
+    if not all_failed_qids:
         return copy.deepcopy(existing_payload)
+
+    if retry_question_ids is None:
+        failed_qids = all_failed_qids
+    else:
+        failed_qids = list(
+            dict.fromkeys(str(qid).strip() for qid in retry_question_ids if str(qid).strip())
+        )
+        if not failed_qids:
+            raise ValueError("至少选择一道失败题目进行重试。")
+        unknown_qids = [qid for qid in failed_qids if qid not in all_failed_qids]
+        if unknown_qids:
+            raise ValueError("只能重试当前失败题目：" + ", ".join(unknown_qids))
 
     locked_blocks = [{**block, "question_type_confirmed": True} for block in question_blocks]
     block_map = {
@@ -1026,6 +1040,32 @@ def retry_failed_grading_config_questions(
     retry_payload = _merge_single_question_payloads(results, retry_blocks)
     failures = _append_unmergeable_question_failures(retry_payload, retry_blocks, failures, attempt_counts)
     failures.extend(missing_failures)
+    selected_failure_map = {
+        str(failure.get("question_id") or "").strip(): failure
+        for failure in failures
+        if str(failure.get("question_id") or "").strip()
+    }
+    existing_meta = existing_payload.get("meta") if isinstance(existing_payload, dict) else {}
+    existing_failures = existing_meta.get("failed_questions") if isinstance(existing_meta, dict) else []
+    existing_failure_map = {
+        str(failure.get("question_id") or "").strip(): copy.deepcopy(failure)
+        for failure in existing_failures
+        if isinstance(failure, dict) and str(failure.get("question_id") or "").strip()
+    } if isinstance(existing_failures, list) else {}
+    failures = []
+    for qid in all_failed_qids:
+        if qid in selected_failure_map:
+            failures.append(selected_failure_map[qid])
+        elif qid not in failed_qids:
+            failures.append(
+                existing_failure_map.get(qid)
+                or {
+                    "question_id": qid,
+                    "attempts": 0,
+                    "category": "retry_pending",
+                    "error": "Question has not been selected for retry",
+                }
+            )
     remaining_failed_qids = {
         str(failure.get("question_id") or "").strip()
         for failure in failures
@@ -4267,13 +4307,25 @@ def save_generated_config(upload_dir: Path, payload: dict[str, Any], ts: str) ->
     rubric_path = upload_dir / f"rubric_{ts}.json"
     answer_key_path = upload_dir / f"answer_key_{ts}.json"
 
-    with rubric_path.open("w", encoding="utf-8") as f:
-        json.dump(payload["rubric"], f, ensure_ascii=False, indent=2)
-
-    with answer_key_path.open("w", encoding="utf-8") as f:
-        json.dump(payload["answer_key"], f, ensure_ascii=False, indent=2)
+    _write_generated_json_atomic(rubric_path, payload["rubric"])
+    _write_generated_json_atomic(answer_key_path, payload["answer_key"])
 
     return rubric_path, answer_key_path
+
+
+def _write_generated_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    temporary = path.parent / f".{path.name}.{os.urandom(8).hex()}.tmp"
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _build_generation_prompt(doc_text: str, *, include_source_text: bool = True) -> str:

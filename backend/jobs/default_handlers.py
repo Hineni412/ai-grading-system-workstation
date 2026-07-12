@@ -11,6 +11,7 @@ from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
 from report import ReportGenerator
 
 from .manager import JobContext, JobManager
+from .config_generation import run_config_generation_job
 from .grading_run import run_grading_job
 from .scan_analysis import run_scan_analysis
 
@@ -28,9 +29,11 @@ def register_default_job_handlers(
     exams_dir: Path | None = None,
     templates_dir: Path | None = None,
     data_root: Path | None = None,
+    upload_config_dir: Path | None = None,
     report_generator_factory: ReportGeneratorFactory = ReportGenerator,
     scan_runner: Callable[..., dict[str, object]] = run_scan_analysis,
     grading_runner: Callable[..., dict[str, object]] = run_grading_job,
+    config_generation_runner: Callable[..., dict[str, object]] = run_config_generation_job,
     llm_client_factory: Callable[[], Any] | None = None,
 ) -> None:
     base_data_root = Path(data_root) if data_root is not None else _infer_data_root(Path(db_path))
@@ -66,6 +69,37 @@ def register_default_job_handlers(
             llm_client_factory=scan_llm_client_factory,
         ),
     )
+    manager.register(
+        "config_generation",
+        _build_config_generation_handler(
+            db_path=Path(db_path),
+            upload_config_dir=(
+                Path(upload_config_dir)
+                if upload_config_dir is not None
+                else base_data_root / "config" / "uploaded"
+            ),
+            config_generation_runner=config_generation_runner,
+            llm_client_factory=scan_llm_client_factory,
+        ),
+    )
+
+
+def _build_config_generation_handler(
+    *,
+    db_path: Path,
+    upload_config_dir: Path,
+    config_generation_runner: Callable[..., dict[str, object]],
+    llm_client_factory: Callable[[], Any],
+):
+    def handler(context: JobContext) -> dict[str, object]:
+        return config_generation_runner(
+            context=context,
+            db=DBManager(db_path),
+            upload_config_dir=upload_config_dir,
+            llm_client_factory=llm_client_factory,
+        )
+
+    return handler
 
 
 def _build_report_export_handler(
