@@ -67,7 +67,10 @@ def _apply_pending_locked(*, paths: Any, journal: OpsOperationJournal) -> int:
             return 0
         try:
             _rollback(paths=paths, state=state)
-            validate_live_databases(paths)
+            validate_live_databases(
+                paths,
+                require_no_companions=_state_touches_databases(state),
+            )
         except Exception:
             journal.mark_failed(operation_id, result_code="rollback_failed")
             return 2
@@ -80,8 +83,10 @@ def _apply_pending_locked(*, paths: Any, journal: OpsOperationJournal) -> int:
     if manifest is None:
         return 0
     apply_started = False
+    touches_databases = False
     try:
         _revalidate_and_stage(paths=paths, manifest=manifest)
+        touches_databases = _manifest_touches_databases(manifest)
         _validate_safety_backup(Path(manifest.preparation_backup))
         apply_backup = create_safety_backup(
             paths=paths, reason="before_apply", operation_id=operation_id
@@ -92,12 +97,18 @@ def _apply_pending_locked(*, paths: Any, journal: OpsOperationJournal) -> int:
             _apply_migrations(paths=paths, manifest=manifest, journal=journal)
         else:
             _apply_overlay(paths=paths, manifest=manifest, journal=journal)
-        validate_live_databases(paths)
+        validate_live_databases(
+            paths,
+            require_no_companions=touches_databases,
+        )
     except Exception:
         if apply_started:
             try:
                 _rollback(paths=paths, state=journal.load_apply_state(operation_id))
-                validate_live_databases(paths)
+                validate_live_databases(
+                    paths,
+                    require_no_companions=touches_databases,
+                )
             except Exception:
                 journal.mark_failed(operation_id, result_code="rollback_failed")
                 return 2
@@ -161,7 +172,20 @@ def _apply_overlay(*, paths: Any, manifest: OpsOperationManifest, journal: OpsOp
             archive_name=archive_name,
             existed=target.is_file(),
         )
-        _replace_staged_file(source, target)
+        if archive_name in {
+            "user_data/databases/grading_system.db",
+            "user_data/databases/question_bank.db",
+        }:
+            _prepare_database_target(
+                target=target,
+                archive_name=archive_name,
+                operation_id=manifest.operation_id,
+                journal=journal,
+                checkpoint=False,
+            )
+            _replace_database_file(source, target)
+        else:
+            _replace_staged_file(source, target)
 
 
 def _apply_migrations(*, paths: Any, manifest: OpsOperationManifest, journal: OpsOperationJournal) -> None:
@@ -180,6 +204,13 @@ def _apply_migrations(*, paths: Any, manifest: OpsOperationManifest, journal: Op
             archive_name=archive_name,
             existed=db_path.is_file(),
         )
+        _prepare_database_target(
+            target=db_path,
+            archive_name=archive_name,
+            operation_id=manifest.operation_id,
+            journal=journal,
+            checkpoint=True,
+        )
         report = run_migrations(
             target_name,
             db_path=db_path,
@@ -191,6 +222,74 @@ def _apply_migrations(*, paths: Any, manifest: OpsOperationManifest, journal: Op
         )
         if report.error:
             raise RuntimeError("migration apply failed")
+        _checkpoint_database(db_path)
+        _remove_database_companions(db_path)
+
+
+def _prepare_database_target(
+    *,
+    target: Path,
+    archive_name: str,
+    operation_id: str,
+    journal: OpsOperationJournal,
+    checkpoint: bool,
+) -> None:
+    if checkpoint:
+        _checkpoint_database(target)
+    for suffix in ("-wal", "-shm", "-journal"):
+        companion = Path(f"{target}{suffix}")
+        journal.record_replacement(
+            operation_id,
+            target=companion,
+            archive_name=f"{archive_name}{suffix}",
+            existed=False,
+        )
+    _remove_database_companions(target)
+
+
+def _checkpoint_database(target: Path) -> None:
+    with closing(sqlite3.connect(target)) as connection:
+        row = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    if row and int(row[0]) != 0:
+        raise RuntimeError("database checkpoint is busy")
+
+
+def _remove_database_companions(target: Path) -> None:
+    for suffix in ("-wal", "-shm", "-journal"):
+        companion = Path(f"{target}{suffix}")
+        if companion.exists() or companion.is_symlink():
+            _reject_link(companion)
+            if not companion.is_file():
+                raise ValueError("database companion is not a regular file")
+            companion.unlink()
+
+
+def _manifest_touches_databases(manifest: OpsOperationManifest) -> bool:
+    if manifest.operation == "migration":
+        return True
+    staging = Path(manifest.staging_root)
+    return any(
+        (staging / Path(name)).is_file()
+        for name in (
+            "user_data/databases/grading_system.db",
+            "user_data/databases/question_bank.db",
+        )
+    )
+
+
+def _state_touches_databases(state: dict[str, Any]) -> bool:
+    replacements = state.get("replacements")
+    if not isinstance(replacements, list):
+        return False
+    canonical = {
+        "user_data/databases/grading_system.db",
+        "user_data/databases/question_bank.db",
+    }
+    return any(
+        isinstance(item, dict)
+        and str(item.get("archive_name") or "") in canonical
+        for item in replacements
+    )
 
 
 def _replace_staged_file(source: Path, target: Path) -> None:
@@ -210,6 +309,14 @@ def _replace_staged_file(source: Path, target: Path) -> None:
         _replace_with_retry(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _replace_database_file(source: Path, target: Path) -> None:
+    with closing(sqlite3.connect(source)) as source_connection:
+        with closing(sqlite3.connect(target)) as target_connection:
+            source_connection.backup(target_connection)
+    _checkpoint_database(target)
+    _remove_database_companions(target)
 
 
 def _rollback(*, paths: Any, state: dict[str, Any]) -> None:

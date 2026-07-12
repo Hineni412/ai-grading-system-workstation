@@ -189,6 +189,8 @@ def test_restore_preflight_accepts_only_controlled_backup_name(tmp_path: Path) -
     [
         ("user_data/databases/grading_system.db", b"not-sqlite"),
         ("user_data/databases/unexpected.db", b"not-sqlite"),
+        ("user_data/databases/grading_system.db-wal", b"wal"),
+        ("user_data/databases/grading_system.sqlite", b"sqlite"),
     ],
 )
 def test_restore_preflight_rejects_invalid_database_candidates(
@@ -227,6 +229,22 @@ def test_restore_preflight_rejects_incompatible_grading_schema(
     archive = _write_zip(
         paths.backups_dir / "backup_20260712_120000_manual.zip",
         {"user_data/databases/grading_system.db": candidate.read_bytes()},
+    )
+
+    with pytest.raises(ValueError):
+        _service(tmp_path, paths).preflight(
+            _request("restore", backup_filename=archive.name)
+        )
+
+
+def test_restore_preflight_rejects_valid_main_with_wal_member(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    archive = _write_zip(
+        paths.backups_dir / "backup_20260712_120000_manual.zip",
+        {
+            "user_data/databases/grading_system.db": paths.db_path.read_bytes(),
+            "user_data/databases/grading_system.db-wal": b"unchecked-wal",
+        },
     )
 
     with pytest.raises(ValueError):

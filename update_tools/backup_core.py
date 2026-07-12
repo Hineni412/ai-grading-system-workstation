@@ -246,6 +246,12 @@ def preview_backup(
                 continue
             full_rel = Path(prefix) / rel
             public_name = full_rel.as_posix()
+            if prefix == "user_data/databases" and public_name not in {
+                "user_data/databases/grading_system.db",
+                "user_data/databases/question_bank.db",
+            }:
+                skipped.append(public_name)
+                continue
             if _should_skip(full_rel):
                 skipped.append(public_name)
                 continue
