@@ -568,6 +568,12 @@ Expected before review: exit 0, single-line JSON, `ok=true`, status `waiting_rev
 
 After independent review passes, set `交接状态: verified_pending_integration`, record the direct parent's full reviewed SHA in `功能提交`, set automatic verification and independent review to `passed`, keep user acceptance `not_required`, real-data fingerprint `unchanged`, and nightly action `independent_candidate_allowed`. Commit only this plan, rerun `handoff_status.py`, and require `ok=true` with no issues.
 
+**2026-07-12 initial independent-review correction evidence:**
+
+- Review of `056c8bc3737e18da0ae3851404b9d418a403c05d..910372f81b2c269018fef51afd5d2128957fbc10` found Critical 0, Important 5, Minor 0.
+- Added RED regressions for retry-delay cancellation normalization, dot-segment API path traversal, cancellation disposal races, non-retryable Store errors, and sanitizing legacy persisted references.
+- All five regressions are GREEN after minimal fixes; the affected full gate passes 99 Vitest tests, 17 Python guards, lint, typecheck and build. A fresh whole-branch re-review is still required before Step 4 can be checked.
+
 ### Task 9: Integrate P2-04 through GitHub main and synchronize the baseline
 
 **Files:**

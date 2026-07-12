@@ -83,6 +83,19 @@ function contractError(code: string, requestId: string, status: number | null): 
   })
 }
 
+function isSafeApiPath(path: string): boolean {
+  if (!/^\/api\//.test(path)) return false
+  try {
+    const normalized = new URL(path, 'http://local.invalid')
+    return (
+      normalized.origin === 'http://local.invalid' &&
+      normalized.pathname.startsWith('/api/')
+    )
+  } catch {
+    return false
+  }
+}
+
 export function createApiClient(
   overrides: Partial<ApiClientDependencies> = {},
 ): ApiClient {
@@ -95,7 +108,7 @@ export function createApiClient(
   return {
     async request<T>(path: string, options: ApiRequestOptions<T>): Promise<T> {
       const requestId = dependencies.createRequestId()
-      if (!/^\/api\//.test(path)) {
+      if (!isSafeApiPath(path)) {
         throw contractError('unsafe_api_path', requestId, null)
       }
 
@@ -119,6 +132,14 @@ export function createApiClient(
 
       try {
         const attempts = method === 'GET' ? 3 : 1
+        const waitBeforeRetry = async (milliseconds: number) => {
+          try {
+            await dependencies.delay(milliseconds, controller.signal)
+          } catch {
+            if (controller.signal.aborted) throw abortError(requestId, timedOut)
+            throw networkError(requestId)
+          }
+        }
         for (let attempt = 0; attempt < attempts; attempt += 1) {
           if (controller.signal.aborted) throw abortError(requestId, timedOut)
           try {
@@ -143,7 +164,7 @@ export function createApiClient(
             if (!response.ok) {
               const error = parseErrorResponse(payload, responseRequestId, response.status)
               if (method === 'GET' && error.kind === 'server' && attempt < attempts - 1) {
-                await dependencies.delay(250 * 2 ** attempt, controller.signal)
+                await waitBeforeRetry(250 * 2 ** attempt)
                 continue
               }
               throw error
@@ -159,7 +180,7 @@ export function createApiClient(
             if (error instanceof ApiError) throw error
             const normalized = networkError(requestId)
             if (method === 'GET' && attempt < attempts - 1) {
-              await dependencies.delay(250 * 2 ** attempt, controller.signal)
+              await waitBeforeRetry(250 * 2 ** attempt)
               continue
             }
             throw normalized
