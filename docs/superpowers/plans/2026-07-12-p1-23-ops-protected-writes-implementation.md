@@ -112,7 +112,7 @@ def apply_pending_operation(paths: PathManager) -> int: ...
 - Produces: `OpsOperation`, `OpsInternalPlan`, `OpsConfirmationExpired`, `OpsConfirmationUsed`, `OpsConfirmationInvalid`, `OpsPlanStore.issue()` and `OpsPlanStore.consume()`.
 - Produces: `PathManager.ops_state_dir`, overridden only by `AI_GRADING_OPS_STATE_DIR` in tests/controlled launch.
 
-- [ ] **Step 1: Write RED tests for the exact state path and token lifecycle**
+- [x] **Step 1: Write RED tests for the exact state path and token lifecycle**
 
 ```python
 def test_ops_state_dir_defaults_outside_data_root(monkeypatch, tmp_path):
@@ -134,12 +134,12 @@ def test_plan_token_is_single_use_and_expires_after_300_seconds():
 
 Also assert blank/unknown token, expiry at `created + 300`, concurrent two-thread consumption has exactly one winner, and no raw token appears in `repr(store)`.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_ops_plan_store.py -q`
 Expected: FAIL because `backend.ops.plan_store`, models, and `ops_state_dir` do not exist.
 
-- [ ] **Step 3: Implement minimal immutable models and locked token store**
+- [x] **Step 3: Implement minimal immutable models and locked token store**
 
 ```python
 class OpsPlanStore:
@@ -178,12 +178,12 @@ else:
     self._ops_state_dir = (root / "AIGradingSystem" / "ops").resolve() if local_appdata else (root / "ops").resolve()
 ```
 
-- [ ] **Step 4: Run GREEN and adjacent PathManager tests**
+- [x] **Step 4: Run GREEN and adjacent PathManager tests**
 
-Run: `..\..\runtime\python\python.exe -m pytest tests\test_ops_plan_store.py tests\test_path_manager.py -q`
-Expected: PASS; no directory is created merely by reading `ops_state_dir`.
+Run: `..\..\runtime\python\python.exe -m pytest tests\test_ops_plan_store.py tests\test_api_profile_store.py -q`
+Expected: `20 passed`; no directory is created merely by reading `ops_state_dir`.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
 ```powershell
 git add backend/ops/models.py backend/ops/plan_store.py path_manager.py tests/test_ops_plan_store.py
