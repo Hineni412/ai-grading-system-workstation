@@ -121,6 +121,11 @@ def public_job_payload(job: JobRecord) -> dict[str, Any]:
         return sanitize_public_mapping(
             {key: job.payload[key] for key in allowed if key in job.payload}
         )
+    if job.job_type.startswith("ops_"):
+        allowed = ("operation_id", "operation")
+        return sanitize_public_mapping(
+            {key: job.payload[key] for key in allowed if key in job.payload}
+        )
     if job.job_type == "question_import":
         allowed = ("request_id", "retry_of_job_id")
         return sanitize_public_mapping(
@@ -177,6 +182,11 @@ def submit_job(
         "question_import",
         "tagging_sync",
         "training_export",
+        "ops_backup",
+        "ops_restore_prepare",
+        "ops_migration_prepare",
+        "ops_transfer_import_prepare",
+        "ops_transfer_export",
     }:
         raise ApiError(
             422,

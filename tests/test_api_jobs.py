@@ -74,6 +74,33 @@ def test_jobs_api_returns_unified_error_for_unsupported_type(client_with_manager
     assert response.json()["error"]["request_id"] == "rid-unsupported-job"
 
 
+@pytest.mark.parametrize(
+    "job_type",
+    [
+        "ops_backup",
+        "ops_restore_prepare",
+        "ops_migration_prepare",
+        "ops_transfer_import_prepare",
+        "ops_transfer_export",
+    ],
+)
+def test_generic_jobs_api_rejects_ops_types_before_persistence(
+    client_with_manager,
+    job_type: str,
+) -> None:
+    import sqlite3
+
+    client, manager = client_with_manager
+    manager.register(job_type, lambda _context: {})
+
+    response = client.post(f"/api/jobs/{job_type}", json={"payload": {}})
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "dedicated_job_endpoint_required"
+    with sqlite3.connect(manager.store.db_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 0
+
+
 def test_jobs_api_returns_unified_error_for_missing_job(client_with_manager) -> None:
     client, _manager = client_with_manager
 

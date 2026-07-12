@@ -70,21 +70,29 @@ def _validation_error_details(exc: RequestValidationError) -> dict[str, Any]:
 
 @asynccontextmanager
 async def _lifespan(api: FastAPI) -> AsyncIterator[None]:
-    from backend.api.dependencies import create_job_manager, get_job_manager
+    from backend.api.dependencies import (
+        create_job_manager,
+        create_ops_write_service,
+        get_job_manager,
+        get_ops_write_service,
+    )
 
-    if get_job_manager in api.dependency_overrides:
-        yield
-        return
-
-    manager = create_job_manager()
-    api.state.job_manager = manager
+    owns_manager = get_job_manager not in api.dependency_overrides
+    owns_ops_service = get_ops_write_service not in api.dependency_overrides
+    manager = create_job_manager() if owns_manager else None
+    ops_service = create_ops_write_service() if owns_ops_service else None
+    if manager is not None:
+        api.state.job_manager = manager
+    if ops_service is not None:
+        api.state.ops_write_service = ops_service
     try:
         yield
     finally:
-        try:
+        if manager is not None:
             manager.shutdown()
-        finally:
             del api.state.job_manager
+        if ops_service is not None:
+            del api.state.ops_write_service
 
 
 def create_app() -> FastAPI:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from pydantic import ValidationError
 import pytest
 from fastapi.testclient import TestClient
@@ -11,9 +13,16 @@ from backend.api.schemas.ops import (
     OpsDirectoryCheck,
     OpsSelfCheckResponse,
     OpsToolCheck,
+    OpsJobSubmitRequest,
+    OpsPreflightResponse,
 )
-from backend.api.dependencies import get_ops_self_check_service
+from backend.api.dependencies import (
+    get_job_manager,
+    get_ops_self_check_service,
+    get_ops_write_service,
+)
 from backend.api.app import create_app
+from backend.jobs.store import JobRecord
 
 
 def _snapshot() -> OpsSelfCheckResponse:
@@ -180,3 +189,174 @@ def test_ops_service_failures_return_stable_path_free_503(operation: str) -> Non
     }
     assert "c:/private" not in response.text.lower()
     assert "sk-secret" not in response.text
+
+
+def _job_record(job_type: str = "ops_backup") -> JobRecord:
+    now = "2026-07-12T12:00:00"
+    return JobRecord(
+        id=23,
+        job_type=job_type,
+        payload={"operation_id": "11111111-1111-4111-8111-111111111111", "operation": "backup"},
+        result={},
+        status="queued",
+        progress=0.0,
+        stage="",
+        detail="",
+        error=None,
+        cancel_requested=False,
+        created_at=now,
+        started_at=None,
+        updated_at=now,
+        finished_at=None,
+    )
+
+
+class _FakeOpsWriteService:
+    def __init__(self) -> None:
+        self.uploaded = b""
+        self.preflight_operation = ""
+        self.submitted_token = ""
+        self.cancelled_operation = ""
+
+    async def stage_import_upload(self, *, filename: str, chunks):
+        self.uploaded = b"".join([chunk async for chunk in chunks])
+        return {
+            "upload_id": "a" * 32,
+            "filename": filename,
+            "size_bytes": len(self.uploaded),
+            "sha256": "b" * 64,
+        }
+
+    def preflight(self, request):
+        self.preflight_operation = request.operation
+        return {
+            "operation": request.operation,
+            "confirmation_token": "confirm-token",
+            "expires_at": datetime(2026, 7, 12, 12, 5, tzinfo=UTC),
+            "requires_restart": request.operation in {"restore", "migration", "transfer_import"},
+            "summary": {
+                "file_count": 2,
+                "total_size_bytes": 128,
+                "database_count": 2,
+                "warnings": [],
+            },
+        }
+
+    def submit(self, confirmation_token: str, _manager):
+        self.submitted_token = confirmation_token
+        return _job_record()
+
+    def operation_status(self, operation_id: str):
+        return {
+            "operation_id": operation_id,
+            "operation": "restore",
+            "status": "restart_required",
+            "result_code": "prepared_restart_required",
+            "created_at": "2026-07-12T12:00:00",
+            "updated_at": "2026-07-12T12:01:00",
+            "recovery": {"code": "restart_required", "backup_filename": "backup_safe.zip"},
+        }
+
+    def cancel_operation(self, operation_id: str):
+        self.cancelled_operation = operation_id
+        payload = self.operation_status(operation_id)
+        payload["status"] = "cancelled"
+        payload["result_code"] = "cancelled_before_apply"
+        return payload
+
+
+@pytest.fixture
+def ops_write_client() -> tuple[TestClient, _FakeOpsWriteService]:
+    service = _FakeOpsWriteService()
+    app = create_app()
+    app.dependency_overrides[get_ops_write_service] = lambda: service
+    app.dependency_overrides[get_job_manager] = lambda: object()
+    return TestClient(app), service
+
+
+def test_ops_write_schemas_reject_internal_fields() -> None:
+    with pytest.raises(ValidationError):
+        OpsJobSubmitRequest(
+            confirmation_token="confirm-token",
+            path="C:/private/user_data",
+        )
+    response = OpsPreflightResponse.model_validate(
+        {
+            "operation": "backup",
+            "confirmation_token": "confirm-token",
+            "expires_at": "2026-07-12T12:05:00Z",
+            "requires_restart": False,
+            "summary": {"file_count": 1, "warnings": []},
+        }
+    )
+    assert "path" not in response.model_dump()
+
+
+def test_ops_import_upload_streams_to_write_service(ops_write_client) -> None:
+    client, service = ops_write_client
+
+    response = client.post(
+        "/api/ops/transfer-import/uploads?filename=portable.zip",
+        content=b"zip-bytes",
+        headers={"content-type": "application/zip"},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["upload_id"] == "a" * 32
+    assert service.uploaded == b"zip-bytes"
+    assert "path" not in response.text.casefold()
+
+
+@pytest.mark.parametrize("field", ["path", "destination", "command", "sql", "migrations_dir"])
+def test_ops_preflight_rejects_dangerous_extra_fields(
+    ops_write_client,
+    field: str,
+) -> None:
+    client, _service = ops_write_client
+
+    response = client.post(
+        "/api/ops/preflights",
+        json={"operation": "backup", "reason": "manual", field: "x"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_ops_preflight_and_submit_use_dedicated_contract(ops_write_client) -> None:
+    client, service = ops_write_client
+    preflight = client.post(
+        "/api/ops/preflights",
+        json={"operation": "backup", "reason": "manual"},
+    )
+
+    assert preflight.status_code == 200
+    assert preflight.json()["confirmation_token"] == "confirm-token"
+    assert service.preflight_operation == "backup"
+
+    submitted = client.post(
+        "/api/ops/jobs",
+        json={"confirmation_token": "confirm-token"},
+    )
+
+    assert submitted.status_code == 202
+    assert submitted.json()["job_type"] == "ops_backup"
+    assert submitted.json()["payload"] == {
+        "operation_id": "11111111-1111-4111-8111-111111111111",
+        "operation": "backup",
+    }
+    assert service.submitted_token == "confirm-token"
+
+
+def test_ops_operation_status_and_cancel_are_path_free(ops_write_client) -> None:
+    client, service = ops_write_client
+    operation_id = "11111111-1111-4111-8111-111111111111"
+
+    loaded = client.get(f"/api/ops/operations/{operation_id}")
+    cancelled = client.post(f"/api/ops/operations/{operation_id}/cancel")
+
+    assert loaded.status_code == 200
+    assert loaded.json()["status"] == "restart_required"
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    assert service.cancelled_operation == operation_id
+    assert "c:/" not in (loaded.text + cancelled.text).casefold()

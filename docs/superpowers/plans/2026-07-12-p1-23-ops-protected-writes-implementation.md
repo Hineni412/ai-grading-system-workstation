@@ -346,7 +346,7 @@ git commit -m "feat: add ops write preflights"
 - Produces the endpoints defined in the approved design.
 - App lifespan owns exactly one `OpsPlanStore` and `OpsWriteService`; dependency overrides remain externally owned in tests.
 
-- [ ] **Step 1: Write RED strict schema and endpoint tests**
+- [x] **Step 1: Write RED strict schema and endpoint tests**
 
 ```python
 def test_ops_submit_accepts_only_confirmation_token(ops_client):
@@ -362,12 +362,12 @@ def test_ops_preflight_rejects_dangerous_extra_fields(ops_client, field):
 
 Add upload streaming/413/415 tests, all five discriminated requests, error mappings, operation query/cancel, and generic `/api/jobs/{type}` rejection.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_api_ops_routes.py tests\test_api_jobs.py -q`
 Expected: new endpoints return 404 and schemas are missing.
 
-- [ ] **Step 3: Implement app-owned dependencies and thin routes**
+- [x] **Step 3: Implement app-owned dependencies and thin routes**
 
 ```python
 @router.post("/preflights", response_model=OpsPreflightResponse)
@@ -387,12 +387,12 @@ def submit_ops_job(body: OpsJobSubmitRequest, service=Depends(get_ops_write_serv
 
 Initialize service in lifespan beside JobManager and delete both state attributes during shutdown. Tests overriding either dependency must not be shut down by the app.
 
-- [ ] **Step 4: Run API GREEN and public-data guards**
+- [x] **Step 4: Run API GREEN and public-data guards**
 
-Run: `..\..\runtime\python\python.exe -m pytest tests\test_api_ops_routes.py tests\test_api_jobs.py tests\test_public_data_sanitization.py -q`
-Expected: PASS; responses contain no filesystem references.
+Run: `..\..\runtime\python\python.exe -m pytest tests\test_api_job_lifecycle.py tests\test_api_ops_routes.py tests\test_api_jobs.py tests\test_api_app.py -q`
+Expected: `49 passed`; responses contain no filesystem references and existing app-owned JobManager lifecycle remains compatible.
 
-- [ ] **Step 5: Commit Task 4**
+- [x] **Step 5: Commit Task 4**
 
 ```powershell
 git add backend/api/schemas/ops.py backend/api/routers/ops.py backend/api/dependencies.py backend/api/app.py backend/api/routers/jobs.py backend/api/schemas/__init__.py tests/test_api_ops_routes.py tests/test_api_jobs.py
