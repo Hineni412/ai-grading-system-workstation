@@ -89,9 +89,16 @@ describe('sessions adapter', () => {
       .mockResolvedValue(new Response(JSON.stringify({ items: sessions, total: sessions.length })))
 
     await expect(fetchSessions()).resolves.toEqual(sessions)
-    expect(fetchMock).toHaveBeenCalledExactlyOnceWith('/api/sessions', {
-      headers: { accept: 'application/json' },
-    })
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+      '/api/sessions',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          accept: 'application/json',
+          'x-request-id': expect.any(String),
+        }),
+      }),
+    )
   })
 
   it('returns only active sessions', async () => {

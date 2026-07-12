@@ -87,7 +87,7 @@ export function createApiClient(
   overrides: Partial<ApiClientDependencies> = {},
 ): ApiClient {
   const dependencies: ApiClientDependencies = {
-    fetch: overrides.fetch ?? globalThis.fetch.bind(globalThis),
+    fetch: overrides.fetch ?? ((input, init) => globalThis.fetch(input, init)),
     createRequestId: overrides.createRequestId ?? generatedRequestId,
     delay: overrides.delay ?? abortAwareDelay,
   }
