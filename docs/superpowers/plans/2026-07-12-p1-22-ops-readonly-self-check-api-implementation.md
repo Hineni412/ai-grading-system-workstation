@@ -378,7 +378,7 @@ Compare size, UTC mtime and SHA-256 to the recorded baseline:
 
 Any difference is a blocking failure; do not integrate.
 
-- [ ] **Step 7: Record waiting_review, commit feature, complete independent review, then create plan-only final handoff commit**
+- [x] **Step 7: Record waiting_review, commit feature, complete independent review, then create plan-only final handoff commit**
 
 The functional commit must contain `交接状态: waiting_review`, `功能提交: branch_head`, automatic validation passed, independent review pending, user acceptance not required, unchanged fingerprint, and unchanged stash baseline. After fresh review has zero Critical/Important findings, create a plan-only final handoff commit whose block records its direct parent full SHA as `verified_pending_integration`.
 
@@ -395,6 +395,8 @@ The functional commit must contain `交接状态: waiting_review`, `功能提交
 - RED/GREEN: Ops schema first failed collection because `backend.api.schemas.ops` did not exist, then `3 passed`; migration candidate override first failed with an unexpected keyword argument, then migration/schema tests reached `7 passed`; service tests first failed because `backend.ops` did not exist, then the service/migration set reached `8 passed`; route tests first failed because the Ops dependency did not exist, then Ops plus adjacent API tests reached `15 passed`.
 - Focused regression: service, Ops API, migration, schema baseline, OpenAPI, API app and read routes completed with `39 passed / 0 failed`; the single warning is the existing Starlette TestClient deprecation notice.
 - Independent review of `eec11ad605305afbdc53279c96672897d7163037` found `0 Critical / 2 Important / 2 Minor` and initially returned Not Ready. RED tests reproduced both Important findings: the default ZIP loader followed the global PathManager instead of the injected backup root, and a named writable probe could remain when unlink failed. The ZIP loader now passes an explicit backup-root override. A first `os.access` fix removed side effects but fresh re-review correctly rejected it because permission hints do not prove real I/O; a second RED test reproduced that false result. Directory checks now create, write and flush an OS-managed `TemporaryFile` whose close supplies delete-on-close semantics, with no manually named probe. The two Minor gaps are covered by stable path-free 503 tests and exact OpenAPI parameter/write-operation guards.
+- Final focused regression after all review fixes completed with `44 passed / 0 failed`; quick smoke again passed document governance, static compile of `376` first-party Python files, and both temporary database-copy idempotence/integrity checks.
+- Final fresh re-review of `1d6e46fa163b7857f638441332d685a72b7032de` found `0 Critical / 0 Important / 0 blocking Minor` and verdict `Ready to merge`. It confirmed the injected ZIP root, Windows delete-on-close temporary-file probe, stable path-free 503, exact OpenAPI parameter guard, no source SQLite open, no Ops write operation and no sensitive-data files in the diff.
 - Quick smoke: document governance, static compile of `376` first-party Python files, and two temporary database copies' idempotent initialization with `integrity_check=ok` passed; full pytest remains the integration wave-end gate.
 - Real data: root grading DB remained `2863104` bytes / `2026-07-10T07:10:41.1221109Z` / SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`; root question-bank DB remained `3461120` bytes / `2026-07-08T11:58:06.3320883Z` / SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`. Worktree `user_data/` status is empty.
 
@@ -402,12 +404,12 @@ The functional commit must contain `交接状态: waiting_review`, `功能提交
 ## 昼夜交接
 
 **执行包：** P1-22
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** 1d6e46fa163b7857f638441332d685a72b7032de
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
