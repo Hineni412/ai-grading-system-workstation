@@ -1,24 +1,47 @@
 <script setup lang="ts">
-import { nextTick, onErrorCaptured, ref } from 'vue'
+import { nextTick, onErrorCaptured, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
 const failed = ref(false)
 const contentKey = ref(0)
+const failedNavigationTarget = ref<string | null>(null)
+
+const removeRouterErrorHandler = router.onError((_error, to) => {
+  failedNavigationTarget.value = to.fullPath
+  failed.value = true
+})
+
+onUnmounted(removeRouterErrorHandler)
 
 onErrorCaptured(() => {
+  failedNavigationTarget.value = null
   failed.value = true
   return false
 })
 
 async function retryCurrentPage(): Promise<void> {
+  const navigationTarget = failedNavigationTarget.value
+  if (navigationTarget !== null) {
+    try {
+      await router.push(navigationTarget)
+    } catch {
+      return
+    }
+    failedNavigationTarget.value = null
+  }
   failed.value = false
   contentKey.value += 1
   await nextTick()
 }
 
 async function returnToWorkbench(): Promise<void> {
-  await router.replace('/workbench')
+  try {
+    await router.replace('/workbench')
+  } catch {
+    return
+  }
+  failedNavigationTarget.value = null
   failed.value = false
   contentKey.value += 1
   await nextTick()

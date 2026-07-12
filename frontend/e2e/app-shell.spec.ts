@@ -229,3 +229,33 @@ test('desktop shell owns the viewport and workspace scrolls independently', asyn
   expect(metrics.navigationScrollTop).toBe(0)
   expect(metrics.inspectorScrollTop).toBe(0)
 })
+
+for (const viewport of [
+  { name: 'minimum desktop', width: 1024, height: 768 },
+  { name: 'compact desktop boundary', width: 1280, height: 800 },
+]) {
+  test(`${viewport.name} skips hidden inspector controls during keyboard navigation`, async ({
+    page,
+  }) => {
+    await page.route('**/api/sessions', (route) =>
+      route.fulfill({ status: 503, body: 'private service detail' }),
+    )
+    await page.setViewportSize(viewport)
+    await page.goto('/workbench')
+
+    const inspector = page.getByTestId('session-inspector')
+    const inspectorToggle = page.getByTestId('inspector-toggle')
+    await expect(inspector.getByRole('button', { name: '重新加载考试列表' })).toBeVisible()
+    await inspectorToggle.click()
+    await expect(inspectorToggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(inspector).toBeHidden()
+
+    await inspectorToggle.focus()
+    for (let step = 0; step < 12; step += 1) {
+      await page.keyboard.press('Tab')
+      expect(await inspector.evaluate((element) => !element.contains(document.activeElement))).toBe(
+        true,
+      )
+    }
+  })
+}

@@ -577,6 +577,14 @@ Run unmodified lint, typecheck, test, build and e2e; the four Python front-end g
 
 Update completed checkboxes and handoff to `waiting_review / branch_head / passed / pending / pending / unchanged / report_only`. Stage only P2-03 source, tests and approved documentation—never `user_data` or ignored SDD artifacts—and commit with an intentional desktop-scope message. Require `tools/handoff_status.py` `ok=true`.
 
+**2026-07-12 independent-review correction evidence:**
+
+- [x] A real Vue Router lazy component factory that rejects on its first navigation reproduced the missing recovery UI before implementation; the focused App test failed because no sanitized alert or return action was rendered.
+- [x] `ApplicationErrorBoundary` now listens to `router.onError`, retains only the failed target location, retries that target once per explicit user action, and clears the safe error state only after successful navigation. Existing component-render capture remains separate, and failed retries stay on the fixed Chinese recovery UI without rendering the exception.
+- [x] Focused tests cover lazy-route retry success on the factory's second attempt and return to `/workbench`; both pass together with the existing render-failure retry/return coverage.
+- [x] Playwright keyboard coverage at 1024×768 and 1280×800 proves that a collapsed inspector—including its error-state retry control—is skipped during Tab traversal. Existing `visibility: hidden` behavior passed, so no production CSS change was required.
+- [x] Review-fix validation passed: 56 Vitest tests, 13 Playwright tests, 15 Python front-end guards, lint, typecheck and build. Final smoke, diff, fingerprint, `user_data/` and stash evidence are refreshed in the review-fix commit workflow.
+
 - [ ] **Step 7: Perform a fresh whole-branch independent review**
 
 Review the new merge-base-to-head package against the amended design and this plan. Critical/Important findings must be zero; mobile/tablet behavior is explicitly out of scope. Any desktop-relevant fix starts with a failing regression and reruns the affected commands.
