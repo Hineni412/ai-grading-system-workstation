@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+import backend.jobs.tagging_sync as tagging_sync_module
 from backend.jobs.manager import JobCancellationRequested, JobContext, JobManager
 from backend.jobs.store import JobStore
 from backend.jobs.tagging_sync import run_tagging_sync_job
@@ -200,19 +201,104 @@ def test_tagging_sync_honours_cancellation_before_first_batch(tmp_path: Path) ->
         )
 
 
-def test_tagging_sync_serializes_overlapping_question_ids(tmp_path: Path) -> None:
+def test_tagging_sync_serializes_reversed_partially_overlapping_question_ids(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     db_path = tmp_path / "qb.db"
-    ids = _seed(db_path, 1)
-    first, _ = _context(tmp_path / "first", {"question_ids": ids})
-    second, _ = _context(tmp_path / "second", {"question_ids": ids})
+    ids = _seed(db_path, 3)
+    first, _ = _context(
+        tmp_path / "first", {"question_ids": [ids[1], ids[0]]}
+    )
+    second, _ = _context(
+        tmp_path / "second", {"question_ids": [ids[2], ids[1]]}
+    )
     entered = threading.Event()
+    second_waiting = threading.Event()
     release = threading.Event()
     calls: list[list[int]] = []
+    lock_attempts = 0
+    guard = threading.Lock()
+    real_locks = tagging_sync_module.keyed_execution_locks
+
+    @contextmanager
+    def observed_locks(keys, **kwargs):
+        nonlocal lock_attempts
+        with guard:
+            lock_attempts += 1
+            if lock_attempts == 2:
+                second_waiting.set()
+        with real_locks(keys, **kwargs):
+            yield
+
+    monkeypatch.setattr(tagging_sync_module, "keyed_execution_locks", observed_locks)
 
     class BlockingAI(FakeAI):
         def analyze_questions(self, contexts, **kwargs):
             calls.append(sorted(contexts))
             entered.set()
+            assert release.wait(timeout=5)
+            return super().analyze_questions(contexts, **kwargs)
+
+    fake_ai = BlockingAI({question_id: _complete() for question_id in ids})
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(
+            run_tagging_sync_job,
+            context=first,
+            question_bank_db_path=db_path,
+            ai_service_factory=lambda: fake_ai,
+            batch_size=2,
+        )
+        assert entered.wait(timeout=5)
+        second_future = executor.submit(
+            run_tagging_sync_job,
+            context=second,
+            question_bank_db_path=db_path,
+            ai_service_factory=lambda: fake_ai,
+            batch_size=2,
+        )
+        assert second_waiting.wait(timeout=5)
+        release.set()
+        first_result = first_future.result(timeout=5)
+        second_result = second_future.result(timeout=5)
+
+    assert calls == [[ids[0], ids[1]], [ids[2]]]
+    assert first_result["tagged_count"] == 2
+    assert second_result["skipped_complete_count"] == 1
+    assert second_result["tagged_count"] == 1
+    assert all(QuestionService(db_path).get_question(item)["tags"] for item in ids)
+
+
+def test_tagging_sync_cancels_while_waiting_for_overlapping_question_lock(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "qb.db"
+    ids = _seed(db_path, 1)
+    first, _ = _context(tmp_path / "first", {"question_ids": ids})
+    second, second_store = _context(tmp_path / "second", {"question_ids": ids})
+    holder_entered = threading.Event()
+    second_waiting = threading.Event()
+    release = threading.Event()
+    lock_attempts = 0
+    guard = threading.Lock()
+    real_locks = tagging_sync_module.keyed_execution_locks
+
+    @contextmanager
+    def observed_locks(keys, **kwargs):
+        nonlocal lock_attempts
+        with guard:
+            lock_attempts += 1
+            if lock_attempts == 2:
+                second_waiting.set()
+        with real_locks(keys, **kwargs):
+            yield
+
+    monkeypatch.setattr(tagging_sync_module, "keyed_execution_locks", observed_locks)
+
+    class BlockingAI(FakeAI):
+        def analyze_questions(self, contexts, **kwargs):
+            holder_entered.set()
             assert release.wait(timeout=5)
             return super().analyze_questions(contexts, **kwargs)
 
@@ -223,26 +309,22 @@ def test_tagging_sync_serializes_overlapping_question_ids(tmp_path: Path) -> Non
             context=first,
             question_bank_db_path=db_path,
             ai_service_factory=lambda: fake_ai,
-            batch_size=1,
         )
-        assert entered.wait(timeout=5)
+        assert holder_entered.wait(timeout=5)
         second_future = executor.submit(
             run_tagging_sync_job,
             context=second,
             question_bank_db_path=db_path,
             ai_service_factory=lambda: fake_ai,
-            batch_size=1,
         )
-        time.sleep(0.1)
-        calls_while_first_active = len(calls)
-        release.set()
-        first_result = first_future.result(timeout=5)
-        second_result = second_future.result(timeout=5)
-
-    assert calls_while_first_active == 1
-    assert calls == [[ids[0]]]
-    assert first_result["tagged_count"] == 1
-    assert second_result["skipped_complete_count"] == 1
+        assert second_waiting.wait(timeout=5)
+        assert second_store.request_cancel(second.job_id)
+        try:
+            with pytest.raises(JobCancellationRequested):
+                second_future.result(timeout=1)
+        finally:
+            release.set()
+        first_future.result(timeout=5)
 
 
 def test_tagging_sync_reports_monotonic_progress(tmp_path: Path, monkeypatch) -> None:
@@ -354,3 +436,35 @@ def test_tagging_sync_sanitizes_ai_failure_details(tmp_path: Path) -> None:
     assert result["failures"][0]["category"] == "timeout"
     assert "super-secret" not in serialized
     assert str(tmp_path) not in serialized
+
+
+@pytest.mark.parametrize(
+    ("raw_error", "expected_category"),
+    [
+        ("429 rate limit exceeded", "rate_limit"),
+        ("JSON decode parse failure", "parse"),
+    ],
+)
+def test_tagging_sync_classifies_retryable_ai_errors(
+    tmp_path: Path,
+    raw_error: str,
+    expected_category: str,
+) -> None:
+    db_path = tmp_path / "qb.db"
+    ids = _seed(db_path, 1)
+    failed = AITaggingResult(
+        ok=False,
+        mock_mode=False,
+        error=raw_error,
+        quality_status="invalid",
+    )
+    context, _store = _context(tmp_path, {"question_ids": ids})
+
+    result = run_tagging_sync_job(
+        context=context,
+        question_bank_db_path=db_path,
+        ai_service_factory=lambda: FakeAI({ids[0]: failed}),
+    )
+
+    assert result["failures"][0]["category"] == expected_category
+    assert result["retryable"] is True

@@ -56,7 +56,10 @@ def run_tagging_sync_job(
         f"tagging-sync:{db_path.resolve(strict=False)}:{question_id}"
         for question_id in question_ids
     ]
-    with keyed_execution_locks(lock_keys):
+    with keyed_execution_locks(
+        lock_keys,
+        cancel_check=context.raise_if_cancelled,
+    ):
         return _run_tagging_sync_job_locked(
             context=context,
             question_bank_db_path=db_path,

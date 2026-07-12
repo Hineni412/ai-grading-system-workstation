@@ -35,7 +35,10 @@ def run_question_import_job(
         f"question-import:{Path(question_bank_db_path).resolve(strict=False)}:"
         f"{request_id}"
     )
-    with keyed_execution_locks([lock_key]):
+    with keyed_execution_locks(
+        [lock_key],
+        cancel_check=context.raise_if_cancelled,
+    ):
         return _run_question_import_job_locked(
             context=context,
             question_bank_db_path=question_bank_db_path,
