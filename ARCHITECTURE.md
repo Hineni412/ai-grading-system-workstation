@@ -14,7 +14,7 @@
 - **P1-16 增量边界：** FastAPI 增加教师确认标签、带 revision 的题目软删除/恢复、受控 DOCX/PDF 流式暂存和 pending 导入请求；不执行长导入、不调用 AI、不写旧技能表，写入冲突以 409 fail closed
 - **P2-01 增量边界：** 仓库增加尚未切入生产的 `frontend/` Vue 3/TypeScript/Vite 空工程；直接依赖、npm 11.8.0 与锁文件固定，提供 lint/typecheck/unit/Chromium e2e/build 和 loopback `/api` 开发代理；便携发布只携带已构建的 `frontend/dist`，当前不切换 `运行.bat`、不实现页面视觉、App Shell 或 API client
 - **P2-02 增量边界：** `frontend/` 已把 `STYLE.md` 固化为唯一 CSS Token、按需 Element Plus 主题、字段/状态徽章/空加载错态/反馈基础控件和组件展示页；具备对比度、Token 散落值、键盘焦点与五视口无溢出守卫，但仍不实现 App Shell、API client、业务页面或生产入口切换
-- **P2-03 增量边界：** `frontend/` 已增加 App Shell、集中式导航与路由、404、响应式侧栏和当前考试 Pinia 上下文；浏览器只持久化经 `/api/sessions` 成功校验的考试 ID，失败时不把候选暴露为当前选择。当前仅有 sessions 专用窄适配器，尚无通用 API client、业务页面迁移或生产入口切换
+- **P2-03 增量边界：** `frontend/` 已增加 App Shell、集中式导航与路由、404、桌面响应式侧栏和当前考试 Pinia 上下文；浏览器只持久化经 `/api/sessions` 成功校验的考试 ID，失败时不把候选暴露为当前选择。当前仅支持宽度不低于 1024px 的 Windows 桌面浏览器，仅有 sessions 专用窄适配器，尚无通用 API client、业务页面迁移或生产入口切换
 - **P1-17 增量边界：** FastAPI 增加 `config_generation` Job；生成输入以服务器 ID 原子暂存，Job payload 不保存密钥、试卷正文或客户端路径，部分题失败只发布可重试草稿，失败题清零后才原子发布 rubric/answer_key 并绑定会话
 - **P1-18 增量边界：** FastAPI 增加独立的 `question_import` 与 `tagging_sync` Job；前者只消费 P1-16 服务器导入请求，后者只消费题目 ID 并分批调用现有打标服务。两类任务复用通用查询/取消，支持受控重试和脱敏部分失败摘要；打标仍只有 `complete` 才保存且不运行旧技能消歧，当前不切换 P1-24 LLM Gateway
 - **P1-19 增量边界：** FastAPI 增加 Training 诊断、推荐预览和训练任务确认/分页/详情 API；诊断只走现有 `question_tag` 主路径，推荐固定精确 `knowledge_point`、`exact_only` 且禁止 broad/legacy/skill 回退。任务确认以 UUID 唯一代码和计划 revision 幂等写入题库，客户端不能指定 `created_by`；公开任务快照移除源文件和输出路径
