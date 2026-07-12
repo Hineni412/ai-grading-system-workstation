@@ -9,10 +9,16 @@ import pytest
 
 from backend.jobs.manager import JobCancellationRequested
 from backend.ops.jobs import (
+    OpsPreBackupFailed,
+    create_safety_backup,
     register_ops_job_handlers,
     run_ops_backup_job,
+    run_ops_migration_prepare_job,
+    run_ops_restore_prepare_job,
+    run_ops_transfer_import_prepare_job,
     run_ops_transfer_export_job,
 )
+from backend.ops.journal import OpsOperationJournal
 from backend.ops.plan_store import OpsPlanStore
 from backend.ops.write_service import OpsWriteService
 
@@ -52,6 +58,18 @@ def _paths(tmp_path: Path) -> SimpleNamespace:
     (paths.config_dir / "safe.json").write_text('{"ok": true}', encoding="utf-8")
     (paths.config_dir / "api_profiles.json").write_text('{"api_key": "secret"}', encoding="utf-8")
     (project_root / "config").mkdir(parents=True)
+    grading_migrations = project_root / "migrations" / "grading"
+    question_bank_migrations = project_root / "migrations" / "question_bank"
+    grading_migrations.mkdir(parents=True)
+    question_bank_migrations.mkdir(parents=True)
+    (grading_migrations / "001_preview.sql").write_text(
+        "CREATE TABLE grading_preview (id INTEGER PRIMARY KEY);",
+        encoding="utf-8",
+    )
+    (question_bank_migrations / "001_preview.sql").write_text(
+        "CREATE TABLE question_preview (id INTEGER PRIMARY KEY);",
+        encoding="utf-8",
+    )
     return paths
 
 
@@ -165,3 +183,114 @@ def test_register_ops_job_handlers_registers_online_types(tmp_path: Path) -> Non
         assert loaded.status == "succeeded"
     finally:
         manager.shutdown()
+
+
+def _write_zip(path: Path, members: dict[str, bytes]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, content in members.items():
+            archive.writestr(name, content)
+    return path
+
+
+def test_restore_prepare_creates_safety_backup_staging_and_pending_journal(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    source = _write_zip(
+        paths.backups_dir / "backup_20260712_120000_manual.zip",
+        {"user_data/config/restored.json": b"{}"},
+    )
+    service = _service(paths)
+    context = _Context(
+        _payload(service, "restore", backup_filename=source.name)
+    )
+
+    result = run_ops_restore_prepare_job(context=context, paths=paths)
+
+    assert result["outcome"] == "prepared_restart_required"
+    assert result["operation"] == "restore"
+    assert Path(paths.backups_dir / str(result["backup_filename"])).is_file()
+    public = OpsOperationJournal(paths.ops_state_dir).load_public(
+        str(result["operation_id"])
+    )
+    assert public["status"] == "restart_required"
+    operation_dir = paths.ops_state_dir / "operations" / str(result["operation_id"])
+    assert (operation_dir / "staging" / "user_data" / "config" / "restored.json").is_file()
+
+
+def test_restore_prepare_stops_when_safety_backup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    source = _write_zip(
+        paths.backups_dir / "backup_20260712_120000_manual.zip",
+        {"user_data/config/restored.json": b"{}"},
+    )
+    context = _Context(
+        _payload(_service(paths), "restore", backup_filename=source.name)
+    )
+
+    def fail_backup(**_kwargs):
+        raise OpsPreBackupFailed("backup failed")
+
+    monkeypatch.setattr("backend.ops.jobs.create_safety_backup", fail_backup)
+
+    with pytest.raises(OpsPreBackupFailed):
+        run_ops_restore_prepare_job(context=context, paths=paths)
+    assert not OpsOperationJournal(paths.ops_state_dir).pending_exists()
+
+
+def test_transfer_import_prepare_uses_server_upload_and_preparation_backup(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    service = _service(paths)
+    payload_path = _write_zip(
+        tmp_path / "import.zip",
+        {"user_data/config/imported.json": b"{}"},
+    )
+    payload_bytes = payload_path.read_bytes()
+
+    async def chunks():
+        yield payload_bytes
+
+    import asyncio
+
+    uploaded = asyncio.run(
+        service.stage_import_upload(filename="import.zip", chunks=chunks())
+    )
+    context = _Context(
+        _payload(service, "transfer_import", upload_id=uploaded["upload_id"])
+    )
+
+    result = run_ops_transfer_import_prepare_job(context=context, paths=paths)
+
+    assert result["outcome"] == "prepared_restart_required"
+    assert result["operation"] == "transfer_import"
+    assert result["backup_filename"]
+
+
+def test_migration_prepare_rehearses_and_records_single_pending_operation(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    service = _service(paths)
+    context = _Context(_payload(service, "migration", target="all"))
+
+    result = run_ops_migration_prepare_job(context=context, paths=paths)
+
+    assert result["outcome"] == "prepared_restart_required"
+    assert result["operation"] == "migration"
+    assert result["target"] == "all"
+    assert OpsOperationJournal(paths.ops_state_dir).pending_exists()
+
+
+def test_create_safety_backup_returns_controlled_filename(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+
+    backup = create_safety_backup(
+        paths=paths,
+        reason="before_restore",
+        operation_id="11111111-1111-4111-8111-111111111111",
+    )
+
+    assert backup.parent == paths.backups_dir
+    assert backup.name.startswith("backup_")
+    assert backup.suffix == ".zip"
+    assert zipfile.is_zipfile(backup)

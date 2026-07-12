@@ -20,8 +20,14 @@ from data_transfer_service import (
 from update_tools.backup_core import preview_backup
 
 from .models import OpsOperation
+from .archive import extract_validated_zip
+from .journal import OpsOperationJournal, OpsOperationManifest
 from .plan_store import OpsPlanStore
 from .write_service import OpsWriteService
+
+
+class OpsPreBackupFailed(RuntimeError):
+    pass
 
 
 def register_ops_job_handlers(manager: JobManager, *, paths: Any) -> None:
@@ -32,6 +38,18 @@ def register_ops_job_handlers(manager: JobManager, *, paths: Any) -> None:
     manager.register(
         "ops_transfer_export",
         lambda context: run_ops_transfer_export_job(context=context, paths=paths),
+    )
+    manager.register(
+        "ops_restore_prepare",
+        lambda context: run_ops_restore_prepare_job(context=context, paths=paths),
+    )
+    manager.register(
+        "ops_migration_prepare",
+        lambda context: run_ops_migration_prepare_job(context=context, paths=paths),
+    )
+    manager.register(
+        "ops_transfer_import_prepare",
+        lambda context: run_ops_transfer_import_prepare_job(context=context, paths=paths),
     )
 
 
@@ -118,6 +136,157 @@ def run_ops_transfer_export_job(
         }
 
 
+def create_safety_backup(
+    *,
+    paths: Any,
+    reason: str,
+    operation_id: str,
+) -> Path:
+    output_root = Path(paths.backups_dir)
+    output_root.mkdir(parents=True, exist_ok=True)
+    filename = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{reason}.zip"
+    destination = output_root / filename
+    if destination.exists():
+        filename = (
+            f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{reason}_"
+            f"{operation_id[:8]}.zip"
+        )
+        destination = output_root / filename
+    try:
+        with tempfile.TemporaryDirectory(
+            dir=output_root,
+            prefix=f".safety-{operation_id}-",
+        ) as staging_value:
+            staging_root = Path(staging_value)
+            archive_path = staging_root / "safety.zip"
+            write_export_zip(_backup_entries(paths, staging_root), archive_path)
+            _validate_zip(archive_path)
+            os.replace(archive_path, destination)
+    except Exception as exc:
+        destination.unlink(missing_ok=True)
+        raise OpsPreBackupFailed("preparation safety backup failed") from exc
+    return destination
+
+
+def run_ops_restore_prepare_job(
+    *,
+    context: JobContext,
+    paths: Any,
+) -> dict[str, object]:
+    return _run_offline_prepare(
+        context=context,
+        paths=paths,
+        operation=OpsOperation.RESTORE,
+        backup_reason="before_restore",
+    )
+
+
+def run_ops_transfer_import_prepare_job(
+    *,
+    context: JobContext,
+    paths: Any,
+) -> dict[str, object]:
+    return _run_offline_prepare(
+        context=context,
+        paths=paths,
+        operation=OpsOperation.TRANSFER_IMPORT,
+        backup_reason="before_import",
+    )
+
+
+def run_ops_migration_prepare_job(
+    *,
+    context: JobContext,
+    paths: Any,
+) -> dict[str, object]:
+    return _run_offline_prepare(
+        context=context,
+        paths=paths,
+        operation=OpsOperation.MIGRATION,
+        backup_reason="before_update",
+    )
+
+
+def _run_offline_prepare(
+    *,
+    context: JobContext,
+    paths: Any,
+    operation: OpsOperation,
+    backup_reason: str,
+) -> dict[str, object]:
+    parameters = _validate_online_payload(context, operation, paths)
+    operation_id = str(context.payload.get("operation_id") or "")
+    journal = OpsOperationJournal(Path(paths.ops_state_dir))
+    with keyed_execution_locks(["ops-write"], cancel_check=context.raise_if_cancelled):
+        if journal.pending_exists():
+            from .journal import OpsOperationBusy
+
+            raise OpsOperationBusy("another ops operation is pending")
+        context.report(0.1, f"ops_{operation.value}_prepare", "creating_safety_backup")
+        preparation_backup = create_safety_backup(
+            paths=paths,
+            reason=backup_reason,
+            operation_id=operation_id,
+        )
+        context.raise_if_cancelled()
+        operation_root = Path(paths.ops_state_dir) / "operations" / operation_id
+        staging_root = operation_root / "staging"
+        try:
+            if operation is OpsOperation.RESTORE:
+                source = Path(paths.backups_dir) / str(parameters["backup_filename"])
+                extract_validated_zip(
+                    source,
+                    staging_root,
+                    policy=OpsWriteService(paths, plan_store=OpsPlanStore()).archive_policy,
+                    allowed_roots={"user_data", "config", "logs"},
+                )
+            elif operation is OpsOperation.TRANSFER_IMPORT:
+                source = (
+                    Path(paths.ops_state_dir)
+                    / "uploads"
+                    / f"{parameters['upload_id']}.zip"
+                )
+                extract_validated_zip(
+                    source,
+                    staging_root,
+                    policy=OpsWriteService(paths, plan_store=OpsPlanStore()).archive_policy,
+                    allowed_roots={"user_data", "config"},
+                )
+            else:
+                staging_root.mkdir(parents=True, exist_ok=True)
+                OpsWriteService(paths, plan_store=OpsPlanStore()).migration_previews(
+                    str(parameters["target"])
+                )
+            context.raise_if_cancelled()
+            created_at = datetime.now().astimezone().isoformat(timespec="seconds")
+            manifest = OpsOperationManifest(
+                operation_id=operation_id,
+                operation=operation.value,
+                parameters=parameters,
+                resource_fingerprint=str(context.payload["resource_fingerprint"]),
+                staging_root=str(staging_root),
+                preparation_backup=str(preparation_backup),
+                created_at=created_at,
+            )
+            journal.prepare(manifest)
+        except Exception:
+            if operation_root.exists():
+                import shutil
+
+                shutil.rmtree(operation_root, ignore_errors=True)
+            raise
+        context.report(1.0, f"ops_{operation.value}_prepare", "restart_required")
+        result = {
+            "operation_id": operation_id,
+            "operation": operation.value,
+            "outcome": "prepared_restart_required",
+            "backup_filename": preparation_backup.name,
+        }
+        if operation is OpsOperation.MIGRATION:
+            result["target"] = str(parameters["target"])
+        return result
+
+
 def _validate_online_payload(
     context: JobContext,
     operation: OpsOperation,
@@ -193,7 +362,12 @@ def _validate_zip(path: Path) -> None:
 
 
 __all__ = [
+    "OpsPreBackupFailed",
+    "create_safety_backup",
     "register_ops_job_handlers",
     "run_ops_backup_job",
+    "run_ops_migration_prepare_job",
+    "run_ops_restore_prepare_job",
+    "run_ops_transfer_import_prepare_job",
     "run_ops_transfer_export_job",
 ]

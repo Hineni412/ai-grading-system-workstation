@@ -477,7 +477,7 @@ git commit -m "feat: run protected ops backup and export jobs"
 - Produces: `OpsOperationJournal.prepare()`, `.load_public()`, `.claim_pending()`, `.mark_applied()`, `.mark_rolled_back()`, `.mark_failed()`, `.cancel_pending()`.
 - Produces prepare handlers for restore, migration, and transfer import.
 
-- [ ] **Step 1: Write RED Journal atomicity and prepare tests**
+- [x] **Step 1: Write RED Journal atomicity and prepare tests**
 
 ```python
 def test_journal_allows_exactly_one_pending_operation(tmp_path):
@@ -496,12 +496,12 @@ def test_restore_prepare_stops_when_safety_backup_fails(context, paths, monkeypa
 
 Cover atomic temp+replace JSON writes, checksum mismatch, corrupted/multiple pending, cancel only before applying, retained safety backup, prepared result path-free, and migration/import candidate verification.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_ops_journal.py tests\test_ops_jobs.py -q`
 Expected: FAIL because Journal and prepare handlers do not exist.
 
-- [ ] **Step 3: Implement immutable manifest and public projection**
+- [x] **Step 3: Implement immutable manifest and public projection**
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -530,12 +530,12 @@ def _atomic_json(path: Path, payload: dict[str, object]) -> None:
 
 Internal path fields never enter `.load_public()`.
 
-- [ ] **Step 4: Run Journal/prepare GREEN**
+- [x] **Step 4: Run Journal/prepare GREEN**
 
-Run: `..\..\runtime\python\python.exe -m pytest tests\test_ops_journal.py tests\test_ops_jobs.py tests\test_ops_write_service.py -q`
-Expected: PASS.
+Run: `..\..\runtime\python\python.exe -m pytest tests\test_ops_journal.py tests\test_ops_jobs.py tests\test_ops_write_service.py tests\test_api_ops_routes.py tests\test_api_jobs.py tests\test_api_job_lifecycle.py -q`
+Expected: `69 passed`.
 
-- [ ] **Step 5: Commit Task 6**
+- [x] **Step 5: Commit Task 6**
 
 ```powershell
 git add backend/ops/journal.py backend/ops/jobs.py backend/ops/write_service.py tests/test_ops_journal.py tests/test_ops_jobs.py

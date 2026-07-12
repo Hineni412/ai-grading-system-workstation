@@ -35,10 +35,22 @@ def _job_response(job: JobRecord) -> JobResponse:
 
 
 def public_job_result(job: JobRecord) -> dict[str, Any]:
-    if job.job_type in {"ops_backup", "ops_transfer_export"}:
-        allowed = ("operation_id", "operation", "outcome", "filename", "file_count")
+    if job.job_type.startswith("ops_"):
+        allowed = (
+            "operation_id",
+            "operation",
+            "outcome",
+            "filename",
+            "file_count",
+            "backup_filename",
+            "target",
+        )
         result = {key: job.result[key] for key in allowed if key in job.result}
-        if job.status == "succeeded" and str(job.result.get("file_path") or "").strip():
+        if (
+            job.job_type in {"ops_backup", "ops_transfer_export"}
+            and job.status == "succeeded"
+            and str(job.result.get("file_path") or "").strip()
+        ):
             filename = _safe_filename(
                 job.result.get("filename") or job.result.get("file_path")
             )
