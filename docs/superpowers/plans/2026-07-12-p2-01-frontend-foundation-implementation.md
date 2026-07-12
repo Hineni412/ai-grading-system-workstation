@@ -38,17 +38,17 @@
 - Consumes: P2-01 `ready` state at baseline `d1582855ec2273fae1d4b00dfb7b4d54824009e8`.
 - Produces: the unique P2-01 plan and immutable handoff identity used by `tools/handoff_status.py`.
 
-- [ ] **Step 1: Record the initial real-database fingerprints without opening SQLite**
+- [x] **Step 1: Record the initial real-database fingerprints without opening SQLite**
 
 Run a read-only PowerShell `Get-Item` and `Get-FileHash -Algorithm SHA256` for the root checkout's `grading_system.db` and `question_bank.db`. Record size, UTC modification time, and SHA-256 in the execution log, not in repository documents.
 
-- [ ] **Step 2: Verify the package worktree is clean and synchronized**
+- [x] **Step 2: Verify the package worktree is clean and synchronized**
 
 Run: `git status --short --branch`, `git rev-list --left-right --count HEAD...origin/main`, `git status --short -- user_data`, and `git stash list --format=%H`.
 
 Expected: branch `codex/p2-01-frontend-foundation`, ahead/behind `0 0`, no worktree-local `user_data/` change, and the stash baseline recorded below.
 
-- [ ] **Step 3: Commit only this plan as the claim commit**
+- [x] **Step 3: Commit only this plan as the claim commit**
 
 ```powershell
 git add -- docs/superpowers/plans/2026-07-12-p2-01-frontend-foundation-implementation.md
@@ -84,7 +84,7 @@ Expected staged file list: only this plan.
 - Consumes: Node `^22.18.0 || >=24.12.0`, npm lockfile v3, local FastAPI at `127.0.0.1:8000`.
 - Produces: scripts named `dev`, `build`, `lint`, `typecheck`, `test`, and `e2e`; Vite `/api` proxy; exact dependency manifest and clean-install lockfile.
 
-- [ ] **Step 1: Write the failing repository contract test**
+- [x] **Step 1: Write the failing repository contract test**
 
 Add `tests/test_frontend_foundation.py` that loads `frontend/package.json` and asserts:
 
@@ -109,13 +109,13 @@ def test_frontend_vite_proxy_stays_on_loopback_api() -> None:
 
 Also assert the lockfile exists, `frontend/package.json` declares the exact Node engine, and root `.gitignore` excludes front-end generated directories.
 
-- [ ] **Step 2: Run the test to verify RED**
+- [x] **Step 2: Run the test to verify RED**
 
 Run: `runtime\python\python.exe -m pytest tests\test_frontend_foundation.py -q` from the repository root runtime with the P2-01 worktree as current directory.
 
 Expected: FAIL because `frontend/package.json` does not exist.
 
-- [ ] **Step 3: Add the minimal official-style configuration**
+- [x] **Step 3: Add the minimal official-style configuration**
 
 Create `frontend/package.json` with exact versions and the scripts:
 
@@ -128,7 +128,7 @@ Create `frontend/package.json` with exact versions and the scripts:
   "engines": { "node": "^22.18.0 || >=24.12.0" },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "run-p typecheck build-only",
+    "build": "npm run typecheck && npm run build-only",
     "build-only": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "lint": "eslint .",
@@ -150,13 +150,13 @@ server: {
 
 Do not create router, store, theme, API client, or page modules in this task.
 
-- [ ] **Step 4: Generate the committed lockfile with a clean npm install**
+- [x] **Step 4: Generate the committed lockfile with a clean npm install**
 
 Run in `frontend/`: `npm install --package-lock-only --ignore-scripts`, then `npm ci --ignore-scripts`.
 
 Expected: exit 0; `package-lock.json` records all resolved transitive versions and integrity hashes.
 
-- [ ] **Step 5: Run the repository contract test to verify GREEN**
+- [x] **Step 5: Run the repository contract test to verify GREEN**
 
 Run: `runtime\python\python.exe -m pytest tests\test_frontend_foundation.py -q`.
 
@@ -174,37 +174,39 @@ Expected: PASS.
 - Consumes: Vue/Vitest/Playwright configuration from Task 2.
 - Produces: a mountable empty application with one stable readiness marker and a browser smoke test.
 
-- [ ] **Step 1: Write a failing unit test before the application component**
+- [x] **Step 1: Write a failing unit test before the application component**
 
 ```ts
-import { mount } from '@vue/test-utils'
+import { createApp } from 'vue'
 import { describe, expect, it } from 'vitest'
 import App from '../App.vue'
 
 describe('App', () => {
   it('renders the frontend readiness marker', () => {
-    expect(mount(App).get('[data-testid="frontend-ready"]').text()).toBe('前端工程已就绪')
+    const host = document.createElement('div')
+    createApp(App).mount(host)
+    expect(host.querySelector('[data-testid="frontend-ready"]')?.textContent).toBe('前端工程已就绪')
   })
 })
 ```
 
-- [ ] **Step 2: Run the unit test to verify RED**
+- [x] **Step 2: Run the unit test to verify RED**
 
 Run: `npm run test -- --run src/__tests__/App.spec.ts`.
 
 Expected: FAIL because `src/App.vue` is missing.
 
-- [ ] **Step 3: Add the minimal application**
+- [x] **Step 3: Add the minimal application**
 
 Create `App.vue` containing only a semantic `<main data-testid="frontend-ready">前端工程已就绪</main>` and `main.ts` that mounts it to `#app`. Do not add decorative CSS, router registration, Pinia stores, Element theme, or business content.
 
-- [ ] **Step 4: Run unit, lint, and type checks to verify GREEN**
+- [x] **Step 4: Run unit, lint, and type checks to verify GREEN**
 
 Run: `npm run test`, `npm run lint`, and `npm run typecheck`.
 
 Expected: all exit 0 with one passing unit test.
 
-- [ ] **Step 5: Add the Playwright smoke contract**
+- [x] **Step 5: Add the Playwright smoke contract**
 
 Create `frontend/e2e/app.spec.ts` that opens `/`, asserts the readiness marker, and asserts the page has no horizontal overflow at the default desktop viewport. Validate discovery without a browser download using `npm run e2e -- --list`.
 
@@ -220,17 +222,17 @@ Expected: Playwright lists exactly one smoke test.
 - Consumes: generated `frontend/dist` directory.
 - Produces: `copy_frontend_dist(src_dir, pkg_dir) -> int`, called by `copy_sources`, which copies only built assets to `<package>/frontend/dist`.
 
-- [ ] **Step 1: Write the failing portable-copy test**
+- [x] **Step 1: Write the failing portable-copy test**
 
 Use `tmp_path` to create a synthetic source tree with `frontend/dist/index.html`, `frontend/dist/assets/app.js`, `frontend/src/main.ts`, and `frontend/node_modules/noise.js`. Import `copy_sources`, run it against another temporary directory, and assert the two dist files are copied while `src` and `node_modules` are absent.
 
-- [ ] **Step 2: Run the test to verify RED**
+- [x] **Step 2: Run the test to verify RED**
 
 Run: `runtime\python\python.exe -m pytest tests\test_frontend_portable_packaging.py -q`.
 
 Expected: FAIL because the current packager does not copy `frontend/dist`.
 
-- [ ] **Step 3: Implement the narrow dist copier**
+- [x] **Step 3: Implement the narrow dist copier**
 
 Add:
 
@@ -246,7 +248,7 @@ def copy_frontend_dist(src_dir: Path, pkg_dir: Path) -> int:
 
 Call it from `copy_sources` and include its count in the returned statistics. Do not invoke `copy_private_user_data` in this test or run the real packaging command.
 
-- [ ] **Step 4: Run packaging and foundation tests to verify GREEN**
+- [x] **Step 4: Run packaging and foundation tests to verify GREEN**
 
 Run: `runtime\python\python.exe -m pytest tests\test_frontend_foundation.py tests\test_frontend_portable_packaging.py -q`.
 
@@ -261,19 +263,19 @@ Expected: PASS.
 - Consumes: all P2-01 code and tests.
 - Produces: a `waiting_review` feature commit followed, after independent review, by a plan-only `verified_pending_integration` handoff commit.
 
-- [ ] **Step 1: Perform a truly clean install**
+- [x] **Step 1: Perform a truly clean install**
 
 Remove only the verified `frontend/node_modules` generated directory, then run `npm ci --ignore-scripts` in `frontend/`.
 
 Expected: exit 0 without modifying `package-lock.json`.
 
-- [ ] **Step 2: Run all front-end quality commands**
+- [x] **Step 2: Run all front-end quality commands**
 
 Run in `frontend/`: `npm run lint`, `npm run typecheck`, `npm run test`, `npm run e2e -- --list`, and `npm run build`.
 
 Expected: all exit 0; `dist/index.html` and hashed assets exist; the build contains no `.env` file, source map, secret-like environment value, or Node dependency directory.
 
-- [ ] **Step 3: Run affected repository verification**
+- [x] **Step 3: Run affected repository verification**
 
 Run from the P2-01 worktree:
 
@@ -285,7 +287,7 @@ git diff --check
 
 Expected: all exit 0. The full repository smoke will be run once after integration because this package changes shared dependency/build infrastructure.
 
-- [ ] **Step 4: Recheck scope and real-data fingerprints**
+- [x] **Step 4: Recheck scope and real-data fingerprints**
 
 Confirm `git status --short -- user_data` is empty, no generated directory is staged, and the two root database size/UTC/SHA-256 tuples exactly match Task 1.
 
@@ -311,12 +313,12 @@ Expected: exit 0, one JSON result with `ok=true` and no issues.
 ## 昼夜交接
 
 **执行包：** P2-01
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
