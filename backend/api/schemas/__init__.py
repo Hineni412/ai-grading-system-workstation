@@ -19,6 +19,14 @@ from .graph import (
 )
 from .jobs import JobResponse, JobSubmitRequest
 from .media import ReviewMediaLinksResponse
+from .ops import (
+    OpsBackupItem,
+    OpsBackupListResponse,
+    OpsDatabaseCheck,
+    OpsDirectoryCheck,
+    OpsSelfCheckResponse,
+    OpsToolCheck,
+)
 from .question_bank import (
     QuestionImportRequestCreate,
     QuestionImportRequestResponse,
@@ -122,6 +130,12 @@ __all__ = [
     "QuestionTagWriteRequest",
     "QuestionWriteResponse",
     "ReviewMediaLinksResponse",
+    "OpsBackupItem",
+    "OpsBackupListResponse",
+    "OpsDatabaseCheck",
+    "OpsDirectoryCheck",
+    "OpsSelfCheckResponse",
+    "OpsToolCheck",
     "ReviewAnnotationOutcomeResponse",
     "ReviewConfirmItem",
     "ReviewConfirmRequest",

@@ -60,6 +60,8 @@ EXPECTED_OPERATIONS = {
     ("POST", "/api/graph/profiles"),
     ("POST", "/api/graph/rows"),
     ("POST", "/api/graph/evidence"),
+    ("GET", "/api/ops/self-check"),
+    ("GET", "/api/ops/backups"),
 }
 
 
@@ -401,3 +403,44 @@ def test_graph_openapi_declares_strict_tag_only_operations() -> None:
         "tag_relations",
     ):
         assert forbidden not in graph_schema
+
+
+def test_ops_openapi_is_read_only_and_has_no_dangerous_inputs() -> None:
+    from backend.api.app import create_app
+
+    schema = create_app().openapi()
+    ops_paths = {
+        path: item
+        for path, item in schema["paths"].items()
+        if path.startswith("/api/ops")
+    }
+    assert set(ops_paths) == {"/api/ops/self-check", "/api/ops/backups"}
+    assert all(set(item) <= {"get"} for item in ops_paths.values())
+    for item in ops_paths.values():
+        response = item["get"]["responses"]["503"]
+        assert response["content"]["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/ErrorResponse"
+        }
+    limit = next(
+        parameter
+        for parameter in ops_paths["/api/ops/backups"]["get"]["parameters"]
+        if parameter["name"] == "limit"
+    )
+    assert limit["schema"]["minimum"] == 1
+    assert limit["schema"]["maximum"] == 100
+    serialized = json.dumps(ops_paths, sort_keys=True).lower()
+    assert ops_paths["/api/ops/self-check"]["get"].get("parameters", []) == []
+    assert [
+        parameter["name"]
+        for parameter in ops_paths["/api/ops/backups"]["get"]["parameters"]
+    ] == ["limit"]
+    for forbidden in (
+        "restore",
+        "migrate",
+        "import",
+        "export",
+        "destination",
+        "command",
+        "api_key",
+    ):
+        assert forbidden not in serialized
