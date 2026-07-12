@@ -7,9 +7,12 @@ from fastapi.responses import FileResponse
 
 from backend.api.app import ApiError, ErrorResponse
 from backend.api.dependencies import (
+    get_job_manager,
     get_question_bank_read_service,
     get_question_bank_write_service,
 )
+from backend.api.routers.jobs import _job_response
+from backend.api.schemas.jobs import JobResponse
 from backend.api.schemas.question_bank import (
     QuestionDetailResponse,
     QuestionListItem,
@@ -19,8 +22,10 @@ from backend.api.schemas.question_bank import (
     QuestionImportRequestCreate,
     QuestionImportRequestResponse,
     QuestionImportUploadResponse,
+    QuestionJobRetryRequest,
     QuestionStateChangeRequest,
     QuestionTagWriteRequest,
+    QuestionTaggingJobRequest,
     QuestionWriteResponse,
 )
 from backend.file_access import (
@@ -28,6 +33,8 @@ from backend.file_access import (
     ControlledFileForbidden,
     ControlledFileTypeError,
 )
+from backend.jobs.manager import JobManager, UnsupportedJobTypeError
+from backend.jobs.store import JobRecord
 from question_bank.services.question_read_service import (
     QuestionBankReadService,
     QuestionBankSnapshotBusy,
@@ -242,6 +249,217 @@ def create_question_import_request(
             "Question import upload not found",
         ) from exc
     return QuestionImportRequestResponse(**request.to_dict())
+
+
+QUESTION_JOB_RESPONSES = {
+    404: {"model": ErrorResponse, "description": "Question bank job source not found"},
+    409: {"model": ErrorResponse, "description": "Question bank job cannot be retried"},
+    503: {"model": ErrorResponse, "description": "Question bank job type unavailable"},
+}
+QUESTION_IMPORT_SUBMIT_RESPONSES = {
+    404: {"model": ErrorResponse, "description": "Question import request not found"},
+    503: {"model": ErrorResponse, "description": "Question import job type unavailable"},
+}
+
+
+@router.post(
+    "/import-requests/{request_id}/jobs",
+    response_model=JobResponse,
+    status_code=202,
+    responses=QUESTION_IMPORT_SUBMIT_RESPONSES,
+)
+def submit_question_import_job(
+    request_id: str,
+    service: QuestionBankWriteService = Depends(get_question_bank_write_service),
+    manager: JobManager = Depends(get_job_manager),
+) -> JobResponse:
+    try:
+        resource = service.load_import_resource(request_id)
+    except QuestionImportUploadNotFound as exc:
+        raise ApiError(
+            404,
+            "question_import_request_not_found",
+            "Question import request not found",
+        ) from exc
+    return _submit_question_bank_job(
+        manager,
+        "question_import",
+        {"request_id": resource.request_id},
+    )
+
+
+@router.post(
+    "/question-import-jobs/{job_id}/retry",
+    response_model=JobResponse,
+    status_code=202,
+    responses=QUESTION_JOB_RESPONSES,
+)
+def retry_question_import_job(
+    job_id: int,
+    service: QuestionBankWriteService = Depends(get_question_bank_write_service),
+    manager: JobManager = Depends(get_job_manager),
+) -> JobResponse:
+    source = _require_question_bank_job(
+        manager,
+        job_id,
+        "question_import",
+        "question_import_job_not_found",
+    )
+    retryable = source.status in {"failed", "cancelled"} or bool(
+        source.result.get("retryable")
+    )
+    if not retryable:
+        raise ApiError(
+            409,
+            "question_import_retry_not_available",
+            "Question import job cannot be retried",
+            {"job_id": int(job_id)},
+        )
+    request_id = str(source.payload.get("request_id") or "")
+    try:
+        resource = service.load_import_resource(request_id)
+    except QuestionImportUploadNotFound as exc:
+        raise ApiError(
+            404,
+            "question_import_request_not_found",
+            "Question import request not found",
+        ) from exc
+    return _submit_question_bank_job(
+        manager,
+        "question_import",
+        {"request_id": resource.request_id, "retry_of_job_id": source.id},
+    )
+
+
+@router.post(
+    "/tagging-jobs",
+    response_model=JobResponse,
+    status_code=202,
+    responses=QUESTION_JOB_RESPONSES,
+)
+def submit_tagging_sync_job(
+    body: QuestionTaggingJobRequest,
+    manager: JobManager = Depends(get_job_manager),
+) -> JobResponse:
+    question_ids = _unique_positive_ids(body.question_ids)
+    if body.source_job_id is not None:
+        source = _require_question_bank_job(
+            manager,
+            body.source_job_id,
+            "question_import",
+            "question_import_job_not_found",
+        )
+        available = {
+            int(item) for item in source.result.get("successful_question_ids", [])
+        }
+        if source.status != "succeeded" or not set(question_ids).issubset(available):
+            raise ApiError(
+                409,
+                "question_tagging_request_invalid",
+                "Question IDs are not available from the import job",
+            )
+    payload: dict[str, object] = {"question_ids": question_ids}
+    if body.source_job_id is not None:
+        payload["source_job_id"] = int(body.source_job_id)
+    return _submit_question_bank_job(manager, "tagging_sync", payload)
+
+
+@router.post(
+    "/tagging-jobs/{job_id}/retry",
+    response_model=JobResponse,
+    status_code=202,
+    responses=QUESTION_JOB_RESPONSES,
+)
+def retry_tagging_sync_job(
+    job_id: int,
+    body: QuestionJobRetryRequest,
+    manager: JobManager = Depends(get_job_manager),
+) -> JobResponse:
+    source = _require_question_bank_job(
+        manager,
+        job_id,
+        "tagging_sync",
+        "tagging_sync_job_not_found",
+    )
+    if source.status in {"failed", "cancelled"}:
+        available = _unique_positive_ids(source.payload.get("question_ids", []))
+    elif source.status == "succeeded" and bool(source.result.get("retryable")):
+        available = _unique_positive_ids(
+            source.result.get("failed_question_ids", [])
+        )
+    else:
+        available = []
+    selected = _unique_positive_ids(body.question_ids or available)
+    if not available or not set(selected).issubset(set(available)):
+        raise ApiError(
+            409,
+            "tagging_sync_retry_not_available",
+            "Tagging sync job cannot retry the requested questions",
+            {"job_id": int(job_id)},
+        )
+    payload: dict[str, object] = {
+        "question_ids": selected,
+        "retry_of_job_id": source.id,
+    }
+    if source.payload.get("source_job_id") is not None:
+        payload["source_job_id"] = int(source.payload["source_job_id"])
+    return _submit_question_bank_job(manager, "tagging_sync", payload)
+
+
+def _submit_question_bank_job(
+    manager: JobManager,
+    job_type: str,
+    payload: dict[str, object],
+) -> JobResponse:
+    try:
+        return _job_response(manager.submit(job_type, payload))
+    except UnsupportedJobTypeError as exc:
+        raise ApiError(
+            503,
+            "job_type_not_supported",
+            "Question bank job type is unavailable",
+            {"job_type": job_type},
+        ) from exc
+
+
+def _require_question_bank_job(
+    manager: JobManager,
+    job_id: int,
+    job_type: str,
+    error_code: str,
+) -> JobRecord:
+    job = manager.get(int(job_id))
+    if job is None or job.job_type != job_type:
+        raise ApiError(
+            404,
+            error_code,
+            "Question bank job not found",
+            {"job_id": int(job_id)},
+        )
+    return job
+
+
+def _unique_positive_ids(values) -> list[int]:
+    result: list[int] = []
+    seen: set[int] = set()
+    for value in values:
+        question_id = int(value)
+        if question_id <= 0:
+            raise ApiError(
+                422,
+                "question_tagging_request_invalid",
+                "Question IDs must be positive integers",
+            )
+        if question_id not in seen:
+            seen.add(question_id)
+            result.append(question_id)
+    if not result:
+        raise ApiError(
+            422,
+            "question_tagging_request_invalid",
+            "At least one question ID is required",
+        )
+    return result
 
 
 @router.get(

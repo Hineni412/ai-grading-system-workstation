@@ -35,6 +35,25 @@ def _job_response(job: JobRecord) -> JobResponse:
 
 
 def public_job_result(job: JobRecord) -> dict[str, Any]:
+    if job.job_type in {"question_import", "tagging_sync"}:
+        allowed = (
+            "request_id",
+            "outcome",
+            "imported_papers",
+            "question_count",
+            "requested_count",
+            "skipped_complete_count",
+            "tagged_count",
+            "failed_count",
+            "successful_question_ids",
+            "failed_question_ids",
+            "failure_category",
+            "failures",
+            "retryable",
+        )
+        return sanitize_public_mapping(
+            {key: job.result[key] for key in allowed if key in job.result}
+        )
     if job.job_type == "config_generation":
         allowed = (
             "session_id",
@@ -75,6 +94,16 @@ def public_job_error(job: JobRecord) -> str | None:
 
 
 def public_job_payload(job: JobRecord) -> dict[str, Any]:
+    if job.job_type == "question_import":
+        allowed = ("request_id", "retry_of_job_id")
+        return sanitize_public_mapping(
+            {key: job.payload[key] for key in allowed if key in job.payload}
+        )
+    if job.job_type == "tagging_sync":
+        allowed = ("question_ids", "source_job_id", "retry_of_job_id")
+        return sanitize_public_mapping(
+            {key: job.payload[key] for key in allowed if key in job.payload}
+        )
     if job.job_type == "config_generation":
         allowed = (
             "session_id",
@@ -115,12 +144,17 @@ def submit_job(
     request: JobSubmitRequest,
     manager: JobManager = Depends(get_job_manager),
 ) -> JobResponse:
-    if str(job_type).strip() == "config_generation":
+    clean_job_type = str(job_type).strip()
+    if clean_job_type in {
+        "config_generation",
+        "question_import",
+        "tagging_sync",
+    }:
         raise ApiError(
             422,
             "dedicated_job_endpoint_required",
             "Use the session config generation endpoint for this job type",
-            {"job_type": "config_generation"},
+            {"job_type": clean_job_type},
         )
     if contains_sensitive_key(request.payload):
         raise ApiError(
