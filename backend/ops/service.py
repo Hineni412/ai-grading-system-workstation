@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -254,7 +255,15 @@ class OpsSelfCheckService:
 
 
 def _probe_writable(directory: Path) -> bool:
-    return directory.is_dir() and os.access(directory, os.W_OK)
+    if not directory.is_dir():
+        return False
+    try:
+        with tempfile.TemporaryFile(dir=directory) as handle:
+            handle.write(b"\0")
+            handle.flush()
+        return True
+    except OSError:
+        return False
 
 
 def _safe_file_size(path: Path) -> int:

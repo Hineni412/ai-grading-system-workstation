@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -199,3 +200,30 @@ def test_directory_writability_check_never_creates_probe_files(
 
     assert all(item["writable"] is True for item in snapshot["directories"])
     assert not list(pm.data_root.rglob(".ops-write-probe-*"))
+
+
+def test_directory_writability_uses_real_auto_deleted_temporary_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    pm = _make_pm(tmp_path)
+    opened_in: list[Path] = []
+    original_temporary_file = tempfile.TemporaryFile
+
+    def recording_temporary_file(*args, **kwargs):
+        opened_in.append(Path(kwargs["dir"]))
+        return original_temporary_file(*args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "TemporaryFile", recording_temporary_file)
+    monkeypatch.setattr(os, "access", lambda _path, _mode: False)
+    service = OpsSelfCheckService(
+        pm,
+        tool_checker=lambda _key: True,
+        zip_backup_loader=lambda: [],
+    )
+
+    snapshot = service.build_snapshot()
+
+    assert all(item["writable"] is True for item in snapshot["directories"])
+    assert len(opened_in) == len(snapshot["directories"])
+    assert not list(tmp_path.rglob(".ops-write-probe-*"))
