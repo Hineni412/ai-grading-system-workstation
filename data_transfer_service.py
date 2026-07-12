@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import stat
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ class ExportEntry:
     source_path: Path
     arc_name: str
     size_bytes: int
+    source_root: Path | None = None
 
 
 COMMON_SKIP_DIR_NAMES = {
@@ -112,7 +114,9 @@ def build_export_manifest(sources: list[tuple[Path, str]], scope: str = "lean") 
         source_root = Path(source_root)
         if not source_root.exists():
             continue
+        ensure_controlled_path(source_root, source_root)
         for path in sorted(source_root.rglob("*")):
+            ensure_controlled_path(path, source_root)
             if not should_include_export_path(path, source_root, arc_root, scope):
                 continue
             rel = path.relative_to(source_root).as_posix()
@@ -120,7 +124,14 @@ def build_export_manifest(sources: list[tuple[Path, str]], scope: str = "lean") 
             if arc_name in seen_arc_names:
                 continue
             seen_arc_names.add(arc_name)
-            entries.append(ExportEntry(source_path=path, arc_name=arc_name, size_bytes=path.stat().st_size))
+            entries.append(
+                ExportEntry(
+                    source_path=path,
+                    arc_name=arc_name,
+                    size_bytes=path.stat().st_size,
+                    source_root=source_root,
+                )
+            )
 
     return sorted(entries, key=lambda entry: entry.arc_name)
 
@@ -133,5 +144,56 @@ def create_export_zip_bytes(entries: list[ExportEntry]) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         for entry in entries:
+            validate_export_entry(entry)
             zf.write(entry.source_path, entry.arc_name)
     return buf.getvalue()
+
+
+def write_export_zip(entries: list[ExportEntry], destination: Path) -> Path:
+    output = Path(destination)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        for entry in entries:
+            validate_export_entry(entry)
+            zf.write(entry.source_path, entry.arc_name)
+    return output
+
+
+def ensure_controlled_path(path: Path, source_root: Path) -> None:
+    candidate = Path(path)
+    root = Path(source_root)
+    resolved_root = root.resolve(strict=False)
+    current = candidate
+    while True:
+        if current.exists() or current.is_symlink():
+            if _is_reparse_point(current):
+                raise ValueError("export source contains a reparse point")
+        if current.resolve(strict=False) == resolved_root:
+            break
+        if current.parent == current:
+            raise ValueError("export source is outside controlled root")
+        current = current.parent
+    try:
+        candidate.resolve(strict=False).relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError("export source is outside controlled root") from exc
+
+
+def validate_export_entry(entry: ExportEntry) -> None:
+    source = Path(entry.source_path)
+    root = Path(entry.source_root) if entry.source_root is not None else source.parent
+    ensure_controlled_path(source, root)
+    if not source.is_file() or source.is_symlink():
+        raise ValueError("export source is not a regular file")
+    if int(source.stat().st_size) != int(entry.size_bytes):
+        raise ValueError("export source changed after manifest creation")
+
+
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    except OSError:
+        return False
