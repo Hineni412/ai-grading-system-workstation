@@ -22,14 +22,6 @@ export class SessionReadError extends Error {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function isNullableString(value: unknown): value is string | null {
-  return typeof value === 'string' || value === null
-}
-
 export function isSessionSummary(value: unknown): value is SessionSummary {
   if (!isRecord(value)) return false
 
@@ -58,16 +50,16 @@ function isSessionListResponse(value: unknown): value is SessionListResponse {
 
 export async function fetchSessions(): Promise<SessionSummary[]> {
   try {
-    const response = await fetch('/api/sessions', {
-      headers: { accept: 'application/json' },
+    const payload = await apiClient.request('/api/sessions', {
+      decode: (value) => {
+        if (!isSessionListResponse(value)) throw new Error('invalid session response')
+        return value
+      },
     })
-    if (!response.ok) throw new SessionReadError()
-
-    const payload: unknown = await response.json()
-    if (!isSessionListResponse(payload)) throw new SessionReadError()
-
     return payload.items.filter((session) => session.is_deleted === false)
   } catch {
     throw new SessionReadError()
   }
 }
+import { apiClient } from './client'
+import { isNullableString, isRecord } from './validation'
