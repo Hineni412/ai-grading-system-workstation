@@ -13,6 +13,8 @@ from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
 from backend.media.service import ReviewMediaService
 from backend.ops.service import OpsSelfCheckService
+from backend.ops.plan_store import OpsPlanStore
+from backend.ops.write_service import OpsWriteService
 from backend.review.service import ReviewApplicationService
 from manual_review_service import ManualReviewService
 from path_manager import PathManager, get_path_manager
@@ -35,6 +37,30 @@ def get_ops_self_check_service(
     paths: PathManager = Depends(get_path_manager),
 ) -> OpsSelfCheckService:
     return OpsSelfCheckService(paths)
+
+
+def create_ops_write_service(
+    path_manager: PathManager | None = None,
+) -> OpsWriteService:
+    paths = path_manager or get_path_manager()
+    project_root = Path(
+        getattr(paths, "project_root", Path(__file__).resolve().parents[2])
+    )
+    return OpsWriteService(
+        paths,
+        plan_store=OpsPlanStore(),
+        migration_dirs={
+            "grading": project_root / "migrations" / "grading",
+            "question_bank": project_root / "migrations" / "question_bank",
+        },
+    )
+
+
+def get_ops_write_service(request: Request) -> OpsWriteService:
+    service = getattr(request.app.state, "ops_write_service", None)
+    if service is None:
+        raise RuntimeError("OpsWriteService is unavailable outside application lifespan")
+    return service
 
 
 def get_upload_config_dir() -> Path:

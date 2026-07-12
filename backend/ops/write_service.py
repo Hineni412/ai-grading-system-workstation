@@ -8,6 +8,9 @@ from collections.abc import AsyncIterable, Callable
 from pathlib import Path
 from typing import Any
 
+from backend.jobs.manager import JobManager
+from backend.jobs.store import JobRecord
+
 from data_transfer_service import (
     build_export_manifest,
     default_export_sources,
@@ -44,6 +47,13 @@ _OFFLINE_OPERATIONS = {
     OpsOperation.RESTORE,
     OpsOperation.MIGRATION,
     OpsOperation.TRANSFER_IMPORT,
+}
+_JOB_TYPES = {
+    OpsOperation.BACKUP: "ops_backup",
+    OpsOperation.RESTORE: "ops_restore_prepare",
+    OpsOperation.MIGRATION: "ops_migration_prepare",
+    OpsOperation.TRANSFER_IMPORT: "ops_transfer_import_prepare",
+    OpsOperation.TRANSFER_EXPORT: "ops_transfer_export",
 }
 
 
@@ -129,6 +139,20 @@ class OpsWriteService:
             "parameters": dict(plan.parameters),
             "resource_fingerprint": plan.resource_fingerprint,
         }
+
+    def submit(
+        self,
+        confirmation_token: str,
+        manager: JobManager,
+    ) -> JobRecord:
+        plan = self.consume_plan(confirmation_token)
+        return manager.submit(_JOB_TYPES[plan.operation], self.build_job_payload(plan))
+
+    def operation_status(self, _operation_id: str) -> dict[str, object]:
+        raise OpsResourceNotFound("operation not found")
+
+    def cancel_operation(self, _operation_id: str) -> dict[str, object]:
+        raise OpsResourceNotFound("operation not found")
 
     def _preflight_backup(self, request: Any) -> OpsInternalPlan:
         reason = str(getattr(request, "reason", "") or "")
