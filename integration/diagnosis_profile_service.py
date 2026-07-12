@@ -29,8 +29,10 @@ class DiagnosisProfileService:
         self,
         grading_db_path: str | Path,
         question_bank_db_path: str | Path,
+        *,
+        grading_db: DBManager | None = None,
     ) -> None:
-        self.db = DBManager(Path(grading_db_path))
+        self.db = grading_db or DBManager(Path(grading_db_path))
         self.question_bank_db_path = Path(question_bank_db_path)
         self.alignment = ConceptAlignmentService(self.question_bank_db_path)
         self.skill_links = SkillLinkService(self.question_bank_db_path)

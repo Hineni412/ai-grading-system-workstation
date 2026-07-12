@@ -41,6 +41,16 @@ class GraphEvidenceRequest(GraphQueryRequest):
         return f"{prefix}{label}"
 
 
+class GraphSourceQuestionReference(_GraphModel):
+    session_id: int
+    session_name: str
+    question_id: str
+    bank_question_id: int
+    score_awarded: float
+    full_score: float
+    score_rate: float | None = None
+
+
 class GraphRow(_GraphModel):
     student_id: int
     student_code: str
@@ -51,7 +61,7 @@ class GraphRow(_GraphModel):
     deduction_count: int
     item_count: int
     sample_reasons: str
-    source_question_refs: list[dict[str, object]]
+    source_question_refs: list[GraphSourceQuestionReference]
     tag_context: dict[str, list[str]]
     error_counts: dict[str, dict[str, int]]
 
@@ -138,4 +148,5 @@ __all__ = [
     "GraphQueryRequest",
     "GraphRow",
     "GraphRowsResponse",
+    "GraphSourceQuestionReference",
 ]

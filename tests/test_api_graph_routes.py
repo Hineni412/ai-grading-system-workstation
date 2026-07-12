@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import sqlite3
 import warnings
+import gc
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -72,8 +74,15 @@ def test_graph_evidence_request_normalizes_exact_tag_key_and_pagination() -> Non
 
 
 class CountingDiagnosisService:
-    def __init__(self, service: DiagnosisProfileService) -> None:
+    def __init__(
+        self,
+        service: DiagnosisProfileService,
+        grading_path: Path,
+        question_bank_path: Path,
+    ) -> None:
         self.service = service
+        self.grading_path = grading_path
+        self.question_bank_path = question_bank_path
         self.build_calls = 0
 
     def build_tag_profiles(self, **kwargs):
@@ -204,17 +213,19 @@ def graph_service(tmp_path: Path) -> CountingDiagnosisService:
         )
 
     return CountingDiagnosisService(
-        DiagnosisProfileService(grading_path, question_bank_path)
+        DiagnosisProfileService(grading_path, question_bank_path),
+        grading_path,
+        question_bank_path,
     )
 
 
 @pytest.fixture
 def graph_client(graph_service: CountingDiagnosisService) -> TestClient:
     from backend.api.app import create_app
-    from backend.api.dependencies import get_diagnosis_profile_service
+    from backend.api.dependencies import get_graph_diagnosis_profile_service
 
     app = create_app()
-    app.dependency_overrides[get_diagnosis_profile_service] = lambda: graph_service
+    app.dependency_overrides[get_graph_diagnosis_profile_service] = lambda: graph_service
     return TestClient(app)
 
 
@@ -304,6 +315,46 @@ def test_graph_evidence_is_paginated_and_path_free(
     assert "C:/private" not in response.text
 
 
+def test_graph_evidence_returns_stable_empty_state_for_unknown_tag(
+    graph_client: TestClient,
+) -> None:
+    response = graph_client.post(
+        "/api/graph/evidence",
+        json={
+            **_class_cross_exam_payload(),
+            "knowledge_key": "knowledge_point:不存在的标签",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["knowledge_label"] == "不存在的标签"
+    assert payload["items"] == []
+    assert payload["total"] == 0
+    assert payload["total_pages"] == 1
+
+
+def test_graph_evidence_page_past_end_is_empty_with_true_total(
+    graph_client: TestClient,
+) -> None:
+    response = graph_client.post(
+        "/api/graph/evidence",
+        json={
+            **_class_cross_exam_payload(),
+            "knowledge_key": "knowledge_point:三角形全等",
+            "page": 99,
+            "page_size": 1,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["items"] == []
+    assert payload["total"] == 2
+    assert payload["page"] == 99
+    assert payload["total_pages"] == 2
+
+
 def test_graph_routes_return_clear_empty_state_for_unknown_selection(
     graph_client: TestClient,
 ) -> None:
@@ -334,7 +385,7 @@ def test_graph_routes_reject_legacy_or_relation_controls(
 
 def test_graph_database_failures_are_sanitized() -> None:
     from backend.api.app import create_app
-    from backend.api.dependencies import get_diagnosis_profile_service
+    from backend.api.dependencies import get_graph_diagnosis_profile_service
 
     class FailingService:
         @staticmethod
@@ -342,7 +393,7 @@ def test_graph_database_failures_are_sanitized() -> None:
             raise sqlite3.OperationalError("C:/private/question_bank.db is busy")
 
     app = create_app()
-    app.dependency_overrides[get_diagnosis_profile_service] = FailingService
+    app.dependency_overrides[get_graph_diagnosis_profile_service] = FailingService
     response = TestClient(app).post(
         "/api/graph/profiles",
         headers={"x-request-id": "rid-graph-db"},
@@ -357,3 +408,121 @@ def test_graph_database_failures_are_sanitized() -> None:
         "request_id": "rid-graph-db",
     }
     assert "C:/private" not in response.text
+
+
+def test_graph_snapshot_failures_are_sanitized(
+    graph_service: CountingDiagnosisService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.api.app import create_app
+    import backend.api.dependencies as dependencies
+    from path_manager import get_path_manager
+    from question_bank.services.question_read_service import (
+        QuestionBankSnapshotUnavailable,
+    )
+
+    def fail_snapshot(*_args, **_kwargs):
+        raise QuestionBankSnapshotUnavailable("C:/private/grading.db changed")
+
+    monkeypatch.setattr(
+        dependencies,
+        "captured_sqlite_snapshot_path",
+        fail_snapshot,
+    )
+    app = create_app()
+    app.dependency_overrides[get_path_manager] = lambda: SimpleNamespace(
+        db_path=graph_service.grading_path,
+        qb_db_path=graph_service.question_bank_path,
+    )
+    response = TestClient(app).post(
+        "/api/graph/profiles",
+        headers={"x-request-id": "rid-graph-snapshot"},
+        json=_query_payload(),
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"] == {
+        "code": "graph_database_unavailable",
+        "message": "Graph data is temporarily unavailable",
+        "details": {},
+        "request_id": "rid-graph-snapshot",
+    }
+    assert "C:/private" not in response.text
+
+
+def _database_file_state(path: Path) -> dict[str, bytes | None]:
+    return {
+        suffix: candidate.read_bytes() if candidate.exists() else None
+        for suffix in ("", "-wal", "-shm", "-journal")
+        for candidate in (Path(f"{path}{suffix}"),)
+    }
+
+
+def test_graph_routes_do_not_open_or_change_source_databases(
+    graph_service: CountingDiagnosisService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.api.app import create_app
+    import integration.question_tag_projection_service as projection_module
+    import question_bank.services.source_question_link_service as link_module
+    from path_manager import get_path_manager
+
+    grading_source = graph_service.grading_path.resolve()
+    question_bank_source = graph_service.question_bank_path.resolve()
+    gc.collect()
+    before = {
+        "grading": _database_file_state(grading_source),
+        "question_bank": _database_file_state(question_bank_source),
+    }
+
+    original_db_connect = DBManager._connect
+    original_projection_initialize = projection_module.initialize_database
+    original_link_initialize = link_module.initialize_database
+
+    def guarded_db_connect(manager: DBManager):
+        assert manager.db_path.resolve() != grading_source
+        return original_db_connect(manager)
+
+    def guarded_projection_initialize(path: Path, *args, **kwargs):
+        assert Path(path).resolve() != question_bank_source
+        return original_projection_initialize(path, *args, **kwargs)
+
+    def guarded_link_initialize(path: Path, *args, **kwargs):
+        assert Path(path).resolve() != question_bank_source
+        return original_link_initialize(path, *args, **kwargs)
+
+    monkeypatch.setattr(DBManager, "_connect", guarded_db_connect)
+    monkeypatch.setattr(
+        projection_module,
+        "initialize_database",
+        guarded_projection_initialize,
+    )
+    monkeypatch.setattr(
+        link_module,
+        "initialize_database",
+        guarded_link_initialize,
+    )
+
+    app = create_app()
+    app.dependency_overrides[get_path_manager] = lambda: SimpleNamespace(
+        db_path=graph_service.grading_path,
+        qb_db_path=graph_service.question_bank_path,
+    )
+    client = TestClient(app)
+
+    requests = (
+        ("/api/graph/profiles", _class_cross_exam_payload()),
+        ("/api/graph/rows", _class_cross_exam_payload()),
+        (
+            "/api/graph/evidence",
+            {
+                **_class_cross_exam_payload(),
+                "knowledge_key": "knowledge_point:三角形全等",
+            },
+        ),
+    )
+    for path, body in requests:
+        assert client.post(path, json=body).status_code == 200
+
+    assert _database_file_state(grading_source) == before["grading"]
+    assert _database_file_state(question_bank_source) == before["question_bank"]

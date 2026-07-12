@@ -37,6 +37,9 @@
 - Create: `backend/api/schemas/graph.py`：严格请求、profile/row/node/edge/evidence 与分页响应模型。
 - Create: `backend/api/routers/graph.py`：三个只读 POST 端点、一次 profile 构建、稳定错误映射和显式响应投影。
 - Modify: `integration/skill_graph_projection.py`：对 question-tag rows 做确定性排序、节点聚合和证据分页投影；保留旧 skill helper 仅供回退调用，不在新路由使用。
+- Modify: `backend/api/dependencies.py`：Graph 专用依赖把阅卷库和题库稳定捕获到临时候选，再注入现有诊断服务；依赖失败映射为脱敏 503。
+- Modify: `question_bank/services/question_read_service.py`：公开带必需表校验的通用稳定 SQLite 候选路径/连接上下文，保持 P1-15 原只读服务使用同一实现。
+- Modify: `integration/diagnosis_profile_service.py`：允许 Graph 依赖注入会显式关闭临时候选连接的 DBManager，不改变默认 Training/Streamlit 构造方式。
 - Modify: `backend/api/routers/__init__.py`：导出 `graph_router`。
 - Modify: `backend/api/schemas/__init__.py`：导出 Graph 契约模型。
 - Modify: `backend/api/app.py`：注册独立 Graph router。
@@ -379,9 +382,9 @@ The functional commit must contain `交接状态: waiting_review`, `功能提交
 
 - Baseline: existing diagnosis/tag projection/graph projection/Training API set `36 passed` before source changes.
 - RED/GREEN: Graph schema tests first failed collection on the missing schema module; projection tests first failed imports for the missing node/evidence helpers; Graph route tests then failed `6` cases with 404. The schema cycle passed `5`, projection cycle passed `5`, and combined Graph route/projection cycle passed `16` after the minimal implementations.
-- Focused regression: final Graph/diagnosis/tag projection/Training/OpenAPI/app set `66 passed`; adjacent Graph/tag/Training set passed `49` before the final OpenAPI/app expansion.
+- Focused regression: initial Graph/diagnosis/tag projection/Training/OpenAPI/app set `66 passed`. Review fixes then passed the expanded affected set `71 passed`, plus `18` P1-15 WAL/snapshot/checkpoint/rollback-journal tests; the Graph/tag-only subset passed `35` during the fix cycle.
 - Quick smoke: document governance, static compile of `370` first-party Python files, and two temporary database copies' idempotent initialization with `integrity_check=ok` passed. Full pytest remains the integration wave-end gate under repository policy.
-- Independent review: pending.
+- Independent review: first review of `6b22d2603ff4e23b54f5d0d2f3530d2717937b2f` found `0 Critical / 2 Important / 2 Minor`: Graph still opened both source databases through existing WAL/initialize paths, and row references used an unrestricted mapping that could publish injected paths; it also requested explicit unknown-tag/page-past-end tests and architecture wording correction. RED tests reproduced both Important findings. Graph now captures both stable main/WAL generations to validated system-temporary candidates and injects a closing candidate DBManager; source SQLite-open guards plus before/after main/WAL/SHM/journal bytes pass for all three endpoints. Row references now use a strict allow-list model/projection, and both requested pagination empty states are covered. Fresh re-review is pending.
 - Real data: root grading DB remained `2863104` bytes / `2026-07-10T07:10:41.1221109Z` / SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`; root question-bank DB remained `3461120` bytes / `2026-07-08T11:58:06.3320883Z` / SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`. Worktree `user_data/` status is empty and no SQLite connection was opened against either real database.
 
 <!-- HANDOFF_STATUS_START -->
