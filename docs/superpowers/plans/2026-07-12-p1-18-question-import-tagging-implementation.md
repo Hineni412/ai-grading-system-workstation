@@ -102,7 +102,7 @@ Stable failures:
 - Produces `QuestionImportResource(request_id, upload_id, filename, suffix, size, sha256, source_path)` only for server-internal code.
 - Produces a safe Job result with `outcome`, counts, successful question IDs, failed count/category and `retryable`; no source path or parser exception text.
 
-- [ ] **Step 1: Write failing resource and runner tests**
+- [x] **Step 1: Write failing resource and runner tests**
 
 Add tests that create a staged upload/request under `tmp_path`, reject missing/traversal/tampered request resources, run a fake importer, map imported source rows to stable numeric question IDs, report progress, return sanitized failures, and prove cancellation before import or before result publication produces no new DB rows.
 
@@ -122,7 +122,7 @@ def test_question_import_job_uses_server_request_and_returns_safe_ids(tmp_path):
     assert str(tmp_path) not in json.dumps(result)
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_question_import_job.py -q
@@ -130,11 +130,11 @@ def test_question_import_job_uses_server_request_and_returns_safe_ids(tmp_path):
 
 Expected: collection/import fails because `QuestionImportResource`, `load_import_resource` and the runner do not exist.
 
-- [ ] **Step 3: Implement minimal controlled loading and import orchestration**
+- [x] **Step 3: Implement minimal controlled loading and import orchestration**
 
 Refactor the existing upload/request verification into a private shared loader. `load_import_resource()` must require a lowercase 32-hex request ID, require the request manifest to match its deterministic upload request, re-hash the staged source, constrain the resolved source below `<data_root>/question_bank/import_staging/uploads`, and return the path only to backend code. The runner checks cancellation, reports `loading/importing/indexing/complete`, calls the existing importer for exactly one `ScannedPaper`, checks cancellation before and after the import call, finds active questions by the returned stored source, and returns only safe IDs/counts/status. Importer exceptions are classified to a bounded category and raise a generic error so JobStore never persists the raw path/error.
 
-- [ ] **Step 4: Verify GREEN and existing P1-16/importer regression**
+- [x] **Step 4: Verify GREEN and existing P1-16/importer regression**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_question_import_job.py tests/test_api_question_bank_write_routes.py tests/test_question_bank_importer.py -q
@@ -154,7 +154,7 @@ Expected: all selected tests pass; repeated execution of the same request return
 - Consumes payload `{question_ids: list[int], source_job_id?: int, retry_of_job_id?: int}`.
 - Produces `{outcome, requested_count, skipped_complete_count, tagged_count, failed_count, successful_question_ids, failed_question_ids, failures, retryable}`.
 
-- [ ] **Step 1: Write failing tagging tests**
+- [x] **Step 1: Write failing tagging tests**
 
 Cover: complete result saves raw tags without skill resolution; partial/invalid result is not saved; missing/deleted IDs are classified; fake rate-limit/timeout/parse/save errors are sanitized; progress is monotonic; an already complete question is skipped without calling fake AI; cancellation before a batch starts and cancellation arriving during fake AI prevent the current and later batch from saving; retrying all original IDs only calls AI for still-incomplete IDs.
 
@@ -173,7 +173,7 @@ def test_tagging_sync_saves_only_complete_results(tmp_path):
     assert load_tags(tmp_path / "qb.db", ids[1]) == []
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_tagging_sync_job.py -q
@@ -181,11 +181,11 @@ def test_tagging_sync_saves_only_complete_results(tmp_path):
 
 Expected: collection/import fails because the tagging runner does not exist.
 
-- [ ] **Step 3: Implement minimal sequential batch orchestration**
+- [x] **Step 3: Implement minimal sequential batch orchestration**
 
 Normalize unique positive IDs with a hard maximum of 500. Query active questions and current core tag types from the temporary question-bank DB. Skip questions that already contain every `CORE_ANALYSIS_TAG_TYPES` value. For each batch, check cancellation, call one injected `AITaggingService.analyze_questions()` with `allow_batch_fallback=False`, `quality_retry_limit=1`, `enable_review=False`, then check cancellation again before any save. Save only `is_auto_saveable_result()` results through `QuestionService.save_tag_analysis(..., resolve_skills=False)`. Store only bounded `category` and `message` from `classify_tagging_error`/`sanitize_tagging_error`, never exception repr, prompt, question text or model credentials.
 
-- [ ] **Step 4: Verify GREEN and existing tagging/intake regression**
+- [x] **Step 4: Verify GREEN and existing tagging/intake regression**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_tagging_sync_job.py tests/test_grading_paper_archive_intake.py tests/test_question_bank_ai_tagging_quality.py tests/test_tagging_batch_attempts.py tests/test_question_bank_service.py -q
@@ -212,11 +212,11 @@ Expected: all selected tests pass and existing complete-only behavior remains un
 - Retry accepts optional bounded `question_ids`; omitted means all source failures/original IDs.
 - All four endpoints return HTTP 202 standard `JobResponse`.
 
-- [ ] **Step 1: Write failing registration and API contract tests**
+- [x] **Step 1: Write failing registration and API contract tests**
 
 Use a temporary `JobManager` and dependency overrides. Cover registration of exactly two new types; 202 submit/query/cancel; import source request validation; tagging source import validation; failed/partial/succeeded retry eligibility; wrong type/missing source; selected retry must be a subset of source failures; duplicate retries remain idempotent; generic `/api/jobs/question_import` and `/api/jobs/tagging_sync` are rejected; public payload/result contains no path, filename, SHA, question text, key/token/password/secret, or raw internal error.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_api_question_bank_jobs.py -q
@@ -224,11 +224,11 @@ Use a temporary `JobManager` and dependency overrides. Cover registration of exa
 
 Expected: new routes return 404/405 and handlers are not registered.
 
-- [ ] **Step 3: Add strict schemas, thin routes and explicit projections**
+- [x] **Step 3: Add strict schemas, thin routes and explicit projections**
 
 Register both handlers with the existing question-bank DB path and data root; use a dedicated tagging AI factory so tests never touch active credentials. Routes validate source Job identity and safe retry sets before `manager.submit()`. Public `question_import` payload exposes only `request_id/retry_of_job_id`; public `tagging_sync` payload exposes only numeric IDs/source/retry IDs. Public result explicitly permits only outcome/counts/ID lists/failure categories and bounded sanitized messages. Add both types to the dedicated-endpoint guard in the generic jobs route.
 
-- [ ] **Step 4: Verify GREEN and affected Job/API regression**
+- [x] **Step 4: Verify GREEN and affected Job/API regression**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_api_question_bank_jobs.py tests/test_api_question_bank_write_routes.py tests/test_api_jobs.py tests/test_api_job_lifecycle.py tests/test_job_manager.py tests/test_job_store.py -q
@@ -249,11 +249,11 @@ Expected: all selected tests pass; existing Job types remain queryable/cancellab
 - Produces four OpenAPI operations with strict bodies and stable 202/404/409/422/503 responses.
 - Produces a `waiting_review` functional commit, independent-review evidence and final `verified_pending_integration` handoff commit.
 
-- [ ] **Step 1: Write failing OpenAPI assertions**
+- [x] **Step 1: Write failing OpenAPI assertions**
 
 Assert all four paths/methods exist, operation IDs are unique, request schemas forbid additional properties, and no request/response property introduces path/destination/api-key/token/password/secret or raw question content.
 
-- [ ] **Step 2: Run OpenAPI test and verify RED**
+- [x] **Step 2: Run OpenAPI test and verify RED**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_api_openapi_contract.py -q
@@ -261,7 +261,7 @@ Assert all four paths/methods exist, operation IDs are unique, request schemas f
 
 Expected: fails until the new operations and response declarations exist.
 
-- [ ] **Step 3: Record implemented architecture facts and run focused regression**
+- [x] **Step 3: Record implemented architecture facts and run focused regression**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_question_import_job.py tests/test_tagging_sync_job.py tests/test_api_question_bank_jobs.py tests/test_api_question_bank_write_routes.py tests/test_question_bank_importer.py tests/test_grading_paper_archive_intake.py tests/test_question_bank_ai_tagging_quality.py tests/test_tagging_batch_attempts.py tests/test_api_openapi_contract.py -q
@@ -269,7 +269,7 @@ Expected: fails until the new operations and response declarations exist.
 
 Expected: all selected tests pass.
 
-- [ ] **Step 4: Run affected API/Job regression, diff and quick smoke**
+- [x] **Step 4: Run affected API/Job regression, diff and quick smoke**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_api_app.py tests/test_api_read_routes.py tests/test_api_write_routes.py tests/test_api_question_bank_routes.py tests/test_api_question_bank_write_routes.py tests/test_api_question_bank_jobs.py tests/test_api_jobs.py tests/test_api_job_lifecycle.py tests/test_job_manager.py tests/test_job_store.py -q
@@ -279,11 +279,11 @@ git diff --check
 
 Expected: all tests pass; diff check and quick smoke exit 0.
 
-- [ ] **Step 5: Recheck scope, stash and real-data fingerprints**
+- [x] **Step 5: Recheck scope, stash and real-data fingerprints**
 
 Confirm `git diff --name-only origin/main...HEAD` and every package commit exclude `user_data/`; stash list remains exactly the recorded baseline; root real grading/question-bank database size, UTC mtime and SHA-256 match the pre-work values.
 
-- [ ] **Step 6: Create functional commit and request independent review**
+- [x] **Step 6: Create functional commit and request independent review**
 
 Update evidence and the handoff block to `waiting_review`, `功能提交: branch_head`, `自动验证: passed`, `独立复审: pending`, `真实数据指纹: unchanged`; commit only P1-18 code/tests/architecture/plan. Dispatch an independent reviewer against `origin/main..HEAD`; fix all Critical/Important findings with TDD and rerun the affected verification.
 
@@ -304,22 +304,22 @@ After independent review passes, update only this plan: record the full reviewed
 ## Implementation Evidence
 
 - Baseline: P1-16/P1-17 Job, question-bank write/import/tagging and lifecycle regression `129 passed` before source changes.
-- RED/GREEN: pending.
-- Focused regression: pending.
+- RED/GREEN: `question_import`、`tagging_sync`、专用 API/重试与 OpenAPI 均先由聚焦测试复现缺失或契约偏差，再以最小实现转绿；打标分类和 Job 注册回归都通过失败用例定位根因后修复。
+- Focused regression: P1-18 聚焦回归 `82 passed`；受影响 API/Job 回归 `154 passed`；共享 Job 注册回归修复后 `15 passed`；风险触发的完整 pytest 最终 `1126 passed`。
 - Independent review: pending.
-- Quick smoke: pending.
-- Real data: root database SHA-256 baseline recorded outside this plan; final comparison pending.
+- Quick smoke: 文档治理、359 个第一方 Python 文件静态编译、两库临时副本初始化幂等与 `integrity_check=ok` 全部通过。
+- Real data: worktree 无 `user_data/` 变化，stash 仍为领取时两条；根目录真实阅卷库与题库 SHA-256 和领取基线完全一致。
 
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
 
 **执行包：** P1-18
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->

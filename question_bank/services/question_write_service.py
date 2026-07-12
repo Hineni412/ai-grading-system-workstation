@@ -102,6 +102,17 @@ class QuestionImportRequest:
         }
 
 
+@dataclass(frozen=True)
+class QuestionImportResource:
+    request_id: str
+    upload_id: str
+    filename: str
+    suffix: str
+    size: int
+    sha256: str
+    source_path: Path
+
+
 class QuestionBankWriteService:
     def __init__(
         self,
@@ -322,6 +333,79 @@ class QuestionBankWriteService:
         return upload
 
     def create_import_request(self, *, upload_id: str) -> QuestionImportRequest:
+        upload, _source_path = self._load_staged_upload(upload_id)
+
+        request = QuestionImportRequest(
+            request_id=hashlib.sha256(
+                f"question-import:{upload.upload_id}".encode("ascii")
+            ).hexdigest()[:32],
+            upload_id=upload.upload_id,
+            filename=upload.filename,
+            size=upload.size,
+            sha256=upload.sha256,
+        )
+        requests_root = self._controlled_staging_path("requests")
+        requests_root.mkdir(parents=True, exist_ok=True)
+        destination = requests_root / f"{request.request_id}.json"
+        with _shared_request_lock(destination):
+            if destination.exists():
+                return _load_existing_import_request(destination, request)
+            temporary = requests_root / f".{request.request_id}.{uuid.uuid4().hex}.tmp"
+            try:
+                temporary.write_text(
+                    json.dumps(request.to_dict(), ensure_ascii=False, sort_keys=True),
+                    encoding="utf-8",
+                )
+                os.replace(temporary, destination)
+            except Exception:
+                temporary.unlink(missing_ok=True)
+                raise
+        return request
+
+    def load_import_resource(self, request_id: str) -> QuestionImportResource:
+        normalized_request_id = str(request_id).strip().casefold()
+        if re.fullmatch(r"[0-9a-f]{32}", normalized_request_id) is None:
+            raise QuestionImportUploadNotFound("Question import request not found")
+        request_path = self._controlled_staging_path(
+            "requests", f"{normalized_request_id}.json"
+        )
+        try:
+            payload = json.loads(request_path.read_text(encoding="utf-8"))
+            upload, source_path = self._load_staged_upload(str(payload["upload_id"]))
+            expected = QuestionImportRequest(
+                request_id=normalized_request_id,
+                upload_id=upload.upload_id,
+                filename=upload.filename,
+                size=upload.size,
+                sha256=upload.sha256,
+            )
+        except (
+            OSError,
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+            QuestionImportUploadNotFound,
+        ) as exc:
+            raise QuestionImportUploadNotFound(
+                "Question import request not found"
+            ) from exc
+        if payload != expected.to_dict():
+            raise QuestionImportUploadNotFound("Question import request not found")
+        return QuestionImportResource(
+            request_id=expected.request_id,
+            upload_id=upload.upload_id,
+            filename=upload.filename,
+            suffix=upload.suffix,
+            size=upload.size,
+            sha256=upload.sha256,
+            source_path=source_path,
+        )
+
+    def _load_staged_upload(
+        self,
+        upload_id: str,
+    ) -> tuple[StagedImportUpload, Path]:
         normalized_upload_id = str(upload_id).strip().casefold()
         if re.fullmatch(r"[0-9a-f]{32}", normalized_upload_id) is None:
             raise QuestionImportUploadNotFound("Question import upload not found")
@@ -353,33 +437,7 @@ class QuestionBankWriteService:
             or actual_sha256 != upload.sha256
         ):
             raise QuestionImportUploadNotFound("Question import upload not found")
-
-        request = QuestionImportRequest(
-            request_id=hashlib.sha256(
-                f"question-import:{upload.upload_id}".encode("ascii")
-            ).hexdigest()[:32],
-            upload_id=upload.upload_id,
-            filename=upload.filename,
-            size=upload.size,
-            sha256=upload.sha256,
-        )
-        requests_root = self._controlled_staging_path("requests")
-        requests_root.mkdir(parents=True, exist_ok=True)
-        destination = requests_root / f"{request.request_id}.json"
-        with _shared_request_lock(destination):
-            if destination.exists():
-                return _load_existing_import_request(destination, request)
-            temporary = requests_root / f".{request.request_id}.{uuid.uuid4().hex}.tmp"
-            try:
-                temporary.write_text(
-                    json.dumps(request.to_dict(), ensure_ascii=False, sort_keys=True),
-                    encoding="utf-8",
-                )
-                os.replace(temporary, destination)
-            except Exception:
-                temporary.unlink(missing_ok=True)
-                raise
-        return request
+        return upload, source_path
 
     def _controlled_staging_path(self, *parts: str) -> Path:
         self.data_root.mkdir(parents=True, exist_ok=True)
