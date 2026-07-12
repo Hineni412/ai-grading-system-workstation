@@ -134,38 +134,63 @@ class TrainingExportService:
         files: list[Path] = []
         variant_exports: list[dict[str, Any]] = []
         try:
-            for variant in task["variants"]:
-                result = self.export_variant(
-                    task_id,
-                    int(variant["id"]),
-                    formats=resolved_formats,
+            try:
+                for variant in task["variants"]:
+                    result = self.export_variant(
+                        task_id,
+                        int(variant["id"]),
+                        formats=resolved_formats,
+                    )
+                    variant_exports.extend(result["exports"])
+                    files.extend(
+                        Path(item["output_path"])
+                        for item in result["exports"]
+                        if item["status"] == "succeeded" and item.get("output_path")
+                    )
+                failed_exports = [
+                    item for item in variant_exports if item["status"] == "failed"
+                ]
+                if failed_exports:
+                    raise RuntimeError(
+                        f"{len(failed_exports)} variant exports failed; bundle was not created"
+                    )
+                if not files:
+                    raise ValueError("no successful variant exports available for bundle")
+                bundle_path = self.output_dir / f"{task['task_code']}_bundle.zip"
+                bundle_path.parent.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(
+                    bundle_path,
+                    "w",
+                    zipfile.ZIP_DEFLATED,
+                ) as archive:
+                    for path in files:
+                        archive.write(path, arcname=path.name)
+            except Exception as exc:
+                final = self._finish_record(
+                    int(bundle_record["id"]),
+                    status="failed",
+                    error_message=str(exc),
                 )
-                variant_exports.extend(result["exports"])
-                files.extend(
-                    Path(item["output_path"])
-                    for item in result["exports"]
-                    if item["status"] == "succeeded" and item.get("output_path")
+            else:
+                final = self._finish_record(
+                    int(bundle_record["id"]),
+                    status="succeeded",
+                    output_path=bundle_path,
                 )
-            failed_exports = [item for item in variant_exports if item["status"] == "failed"]
-            if failed_exports:
-                raise RuntimeError(
-                    f"{len(failed_exports)} variant exports failed; bundle was not created"
-                )
-            if not files:
-                raise ValueError("no successful variant exports available for bundle")
-            bundle_path = self.output_dir / f"{task['task_code']}_bundle.zip"
-            bundle_path.parent.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as archive:
-                for path in files:
-                    archive.write(path, arcname=path.name)
-        except Exception as exc:
-            final = self._finish_record(int(bundle_record["id"]), status="failed", error_message=str(exc))
-        else:
-            final = self._finish_record(
-                int(bundle_record["id"]),
-                status="succeeded",
-                output_path=bundle_path,
+        except Exception:
+            self.abort_unpublished_exports(
+                [
+                    int(bundle_record["id"]),
+                    *[int(item["id"]) for item in variant_exports],
+                ],
+                task_id=task_id,
+                variant_ids=[
+                    int(item["variant_id"])
+                    for item in variant_exports
+                    if item.get("variant_id") is not None
+                ],
             )
+            raise
         try:
             self.tasks.mark_export_state(
                 task_id,

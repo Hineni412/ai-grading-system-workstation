@@ -346,3 +346,72 @@ def test_partial_bundle_record_failure_clears_earlier_success(tmp_path: Path) ->
         assert stored["variants"][0]["status"] == "ready"
     finally:
         manager.shutdown()
+
+
+def test_bundle_audit_finish_failure_clears_all_attempt_records(tmp_path: Path) -> None:
+    from backend.jobs.default_handlers import register_default_job_handlers
+    from backend.jobs.manager import JobManager
+    from backend.jobs.store import JobStore
+    from backend.jobs.training_export import run_training_export_job
+    from question_bank.services.training_export_service import TrainingExportService
+
+    question_bank_db = tmp_path / "question_bank.db"
+    task = _saved_task(question_bank_db)
+    output_root = tmp_path / "outputs" / "training"
+
+    def service_factory(db_path: Path, output_dir: Path) -> TrainingExportService:
+        service = TrainingExportService(db_path, output_dir)
+        real_finish = service._finish_record
+
+        def fail_bundle_finish(export_id: int, **kwargs):
+            with connect(db_path) as conn:
+                row = conn.execute(
+                    "SELECT audience FROM training_exports WHERE id = ?",
+                    (int(export_id),),
+                ).fetchone()
+            if row is not None and row["audience"] == "bundle":
+                raise RuntimeError("bundle audit finish failed")
+            return real_finish(export_id, **kwargs)
+
+        service._finish_record = fail_bundle_finish
+        return service
+
+    def runner(**kwargs):
+        return run_training_export_job(
+            **kwargs,
+            service_factory=service_factory,
+        )
+
+    manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
+    try:
+        register_default_job_handlers(
+            manager,
+            db_path=tmp_path / "grading.db",
+            reports_dir=tmp_path / "reports",
+            question_bank_db_path=question_bank_db,
+            training_output_root=output_root,
+            training_export_runner=runner,
+        )
+        job = manager.submit(
+            "training_export",
+            {"task_id": task.id, "format": "markdown"},
+        )
+        manager.wait(job.id, timeout=5)
+
+        loaded = manager.get(job.id)
+        assert loaded is not None
+        assert loaded.status == "failed"
+        assert loaded.error == "training export failed"
+        assert not (output_root / f"job-{job.id}").exists()
+        assert not list(output_root.glob(".job-*"))
+        records = TrainingExportService(question_bank_db, output_root).list_exports(
+            task.id
+        )
+        assert len(records) == 3
+        assert {record["status"] for record in records} == {"failed"}
+        assert {record["output_path"] for record in records} == {None}
+        stored = TrainingTaskService(question_bank_db).get_task(task.id)
+        assert stored["status"] == "ready"
+        assert stored["variants"][0]["status"] == "ready"
+    finally:
+        manager.shutdown()
