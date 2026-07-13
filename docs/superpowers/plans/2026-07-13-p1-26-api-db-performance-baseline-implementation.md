@@ -658,7 +658,7 @@ Change the handoff block to `waiting_review`, `功能提交: branch_head`, `自�
 - Baseline regeneration completed: the versioned JSON/Markdown were regenerated on reviewed SHA `6bb53c338d23e530ed2890afbdecce0ae6ac9fb9`. The manifests now include `papers=2/20/5` and five tags per question; both repetitions return non-zero deterministic records for `question_bank.papers` (`2/20/5`) and `question_bank.questions.filtered` (`4/40/10`).
 - Review-fix verification: the dataset/report/benchmark suite passed 56 tests; the five-file P1-26 focused suite passed 76 tests; quick smoke passed documentation governance, static compilation of 419 first-party Python files, and both temporary database idempotency/integrity checks. The new fault-injection and representative-data cases failed for the intended reasons before implementation and passed after the minimal fixes.
 
-- [ ] **Step 10: Request independent code review**
+- [x] **Step 10: Request independent code review**
 
 Invoke `superpowers:requesting-code-review` over the full package range. Review must specifically inspect:
 
@@ -673,7 +673,7 @@ Invoke `superpowers:requesting-code-review` over the full package range. Review 
 
 Reproduce every Critical/Important finding with a RED test, make the minimal fix, rerun the affected focused/regression tests and request re-review. Critical/Important must be zero.
 
-- [ ] **Step 11: Create the final plan-only handoff commit**
+- [x] **Step 11: Create the final plan-only handoff commit**
 
 After independent review passes, modify only this plan: set `verified_pending_integration`; record the direct parent full reviewed functional SHA; set automated verification/independent review `passed`, user acceptance `not_required`, real-data fingerprint `unchanged`, nightly action `independent_candidate_allowed`. Run `tools/handoff_status.py` against the clean worktree and commit only the plan.
 
@@ -690,12 +690,12 @@ After independent review passes, modify only this plan: set `verified_pending_in
 ## 昼夜交接
 
 **执行包：** P1-26
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** d8cecdf31fd80cba52075f808921543245682c86
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
