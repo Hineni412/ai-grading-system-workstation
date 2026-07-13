@@ -10,7 +10,7 @@
 | Phase | 正式范围 | 状态 | 已合并 | 待执行 | 阶段门槛 |
 |---|---|---|---:|---:|---|
 | Phase 0 | 地基与防护网 | `merged` | 5 | 0 | 工程防护网与冻结基线 |
-| Phase 1 | API、任务、LLM、数据访问 | `in_progress` | 26 | 3 | API E2E、完整冒烟、模型请求超时门槛 |
+| Phase 1 | API、任务、LLM、数据访问 | `in_progress` | 27 | 2 | API E2E、完整冒烟、模型请求超时门槛 |
 | Phase 2 | Vue SPA 与 Streamlit 切换 | `in_progress` | 8 | 14 | 样板页已通过正式验收；真实五流程通过 |
 | Phase 3 | 后端拆分、Schema 收敛、瘦身 | `planned` | 0 | 19 | 迁移预演、全量测试、删除可独立回退 |
 | Phase 4 | 图谱 2.0 与训练闭环 | `planned` | 0 | 12 | 新旧口径对照、闭环 E2E、评估达标 |
@@ -34,7 +34,8 @@
 | P1-25 | `merged` | 已将 choice、fill-blank、objective batch 和 AI tagging 四条直连迁入统一 Gateway，第一方 `timeout=None` 已清零；保留原请求、解析、评分、fallback 与并发规则，只用假客户端和临时数据验证，未执行真实 API 健康检查 |
 | P1-26 | `merged` | 已用固定生成数据建立 3 档、16 场景、2 轮的 API/DB 基线；正式运行 48/48 组合、重复性通过且真实两库指纹不变，未实施优化或记录学生正文 |
 | P1-27 | `ready` | P1-26 已证明 Training/Graph 只读请求存在显著重复初始化与连接成本；按请求复用只读连接，保持写事务和 Streamlit 兼容边界 |
-| P1-28 至 P1-29 | `planned` | 按依赖逐包放行 |
+| P1-28 | `merged` | 已用临时双库、合成图片和假外部模型覆盖配置、模板/区域、扫描失败恢复、部分批改恢复、教师复核、真实报表下载与 Job 重启恢复；真实 FastAPI/服务/Job/数据库编排保持在链路内，完整冒烟 1453 passed，未操作真实业务数据 |
+| P1-29 | `planned` | 等待 P1-26、P1-27 与 P1-28 全部门槛后执行 Phase 1 全链路收口 |
 | P2-01 | `merged` | 已建立精确依赖锁、质量命令、Chromium e2e、loopback API 代理和便携 dist 复制 |
 | P2-02 | `merged` | 已固化设计 Token、Element 主题、基础控件与多视口展示页 |
 | P2-03 | `merged` | 已建立仅支持 Windows 桌面浏览器（最小 1024px）的 App Shell、导航、路由、全局 session 上下文、404 与安全错误恢复；复杂业务页面尚未迁移 |
