@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields, is_dataclass
 import pytest
+from httpx import Response
 
 from tools.performance.dataset import ScaleDefinition, build_benchmark_dataset
 from tools.performance.runner import (
@@ -39,6 +40,171 @@ EXPECTED_NAMES = {
 }
 SCOPE = {"mode": "class", "class_id": "CLASS-001"}
 EXAM_SCOPE = {"mode": "cross_exam"}
+TRAINING_BODY = {"scope": SCOPE, "exam_scope": EXAM_SCOPE}
+
+SCENARIO_CONTRACTS = (
+    ("health", "GET", "/api/healthz", "/api/healthz", (), None, {}, 1),
+    (
+        "question_bank.papers",
+        "GET",
+        "/api/question-bank/papers",
+        "/api/question-bank/papers",
+        (),
+        None,
+        {"items": []},
+        0,
+    ),
+    (
+        "question_bank.questions.default",
+        "GET",
+        "/api/question-bank/questions",
+        "/api/question-bank/questions",
+        (),
+        None,
+        {"items": [{} for _index in range(8)]},
+        8,
+    ),
+    (
+        "question_bank.questions.filtered",
+        "GET",
+        "/api/question-bank/questions",
+        "/api/question-bank/questions",
+        (
+            ("knowledge_point", "knowledge-01"),
+            ("tag_status", "tagged"),
+            ("sort", "difficulty"),
+            ("page_size", "100"),
+        ),
+        None,
+        {"items": []},
+        0,
+    ),
+    (
+        "question_bank.question.detail",
+        "GET",
+        "/api/question-bank/questions/{question_id}",
+        "/api/question-bank/questions/1",
+        (),
+        None,
+        {},
+        1,
+    ),
+    (
+        "question_bank.question.asset",
+        "GET",
+        "/api/question-bank/questions/{question_id}/assets/{asset_index}",
+        "/api/question-bank/questions/1/assets/0",
+        (),
+        None,
+        b"generated-binary",
+        1,
+    ),
+    (
+        "question_bank.question.preview",
+        "GET",
+        "/api/question-bank/questions/{question_id}/previews/{preview_type}",
+        "/api/question-bank/questions/1/previews/question",
+        (),
+        None,
+        b"generated-binary",
+        1,
+    ),
+    (
+        "training.diagnosis",
+        "POST",
+        "/api/training/diagnosis",
+        "/api/training/diagnosis",
+        (),
+        TRAINING_BODY,
+        {"students": [{}, {}]},
+        2,
+    ),
+    (
+        "training.plan.preview",
+        "POST",
+        "/api/training/plans/preview",
+        "/api/training/plans/preview",
+        (),
+        TRAINING_BODY,
+        {"plan": {"variants": [{}, {}]}},
+        2,
+    ),
+    (
+        "training.tasks",
+        "GET",
+        "/api/training/tasks",
+        "/api/training/tasks",
+        (("page_size", "100"),),
+        None,
+        {"items": [{}, {}]},
+        2,
+    ),
+    (
+        "training.task.detail",
+        "GET",
+        "/api/training/tasks/{task_id}",
+        "/api/training/tasks/1",
+        (),
+        None,
+        {},
+        1,
+    ),
+    (
+        "graph.profiles",
+        "POST",
+        "/api/graph/profiles",
+        "/api/graph/profiles",
+        (),
+        TRAINING_BODY,
+        {"students": [{}, {}]},
+        2,
+    ),
+    (
+        "graph.rows",
+        "POST",
+        "/api/graph/rows",
+        "/api/graph/rows",
+        (),
+        TRAINING_BODY,
+        {"rows": [{}, {}, {}, {}]},
+        4,
+    ),
+    (
+        "graph.evidence",
+        "POST",
+        "/api/graph/evidence",
+        "/api/graph/evidence",
+        (),
+        {
+            **TRAINING_BODY,
+            "knowledge_key": "knowledge_point:knowledge-01",
+            "page": 1,
+            "page_size": 100,
+        },
+        {"items": [{}, {}]},
+        2,
+    ),
+    (
+        "ops.self_check",
+        "GET",
+        "/api/ops/self-check",
+        "/api/ops/self-check",
+        (),
+        None,
+        {},
+        1,
+    ),
+    (
+        "ops.backups",
+        "GET",
+        "/api/ops/backups",
+        "/api/ops/backups",
+        (("limit", "100"),),
+        None,
+        {"items": [{}, {}]},
+        2,
+    ),
+)
 
 
 @pytest.fixture(scope="module")
@@ -67,7 +233,7 @@ def _contains_field_named(value: object, forbidden: str) -> bool:
     return False
 
 
-def test_build_scenarios_has_exact_real_route_contract(micro_dataset) -> None:
+def test_build_scenarios_has_unique_real_route_contract(micro_dataset) -> None:
     scenarios = build_scenarios(micro_dataset)
 
     assert len(scenarios) == 16
@@ -85,6 +251,47 @@ def test_build_scenarios_has_exact_real_route_contract(micro_dataset) -> None:
     assert "{question_id}" in by_name["question_bank.question.preview"].route_template
     assert "{preview_type}" in by_name["question_bank.question.preview"].route_template
     assert "{task_id}" in by_name["training.task.detail"].route_template
+
+
+@pytest.mark.parametrize(
+    (
+        "name",
+        "method",
+        "route_template",
+        "path",
+        "params",
+        "json_body",
+        "response_payload",
+        "expected_records",
+    ),
+    SCENARIO_CONTRACTS,
+    ids=[contract[0] for contract in SCENARIO_CONTRACTS],
+)
+def test_each_scenario_has_the_exact_request_and_counter_contract(
+    micro_dataset,
+    name: str,
+    method: str,
+    route_template: str,
+    path: str,
+    params: tuple[tuple[str, str], ...],
+    json_body: dict[str, object] | None,
+    response_payload: object,
+    expected_records: int,
+) -> None:
+    scenario = _scenario_map(micro_dataset)[name]
+    request = scenario.build_request(micro_dataset)
+    response = (
+        Response(200, content=response_payload)
+        if isinstance(response_payload, bytes)
+        else Response(200, json=response_payload)
+    )
+
+    assert scenario.method == method
+    assert scenario.route_template == route_template
+    assert request.path == path
+    assert request.params == params
+    assert request.json_body == json_body
+    assert scenario.count_records(response) == expected_records
 
 
 def test_scenario_requests_use_only_deterministic_allowlisted_inputs(

@@ -75,7 +75,7 @@ def publish_report(
         markdown_temp.write_text(markdown_text, encoding="utf-8", newline="\n")
         os.replace(json_temp, json_output)
         os.replace(markdown_temp, markdown_output)
-    except Exception:
+    except BaseException:
         _restore_output(json_output, previous_json, token)
         _restore_output(markdown_output, previous_markdown, token)
         raise

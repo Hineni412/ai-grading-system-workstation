@@ -276,3 +276,65 @@ def test_atomic_publication_leaves_previous_pair_untouched_on_failure(
         "baseline.json",
         "baseline.md",
     ]
+
+
+@pytest.mark.parametrize("json_exists,markdown_exists", [
+    (True, True),
+    (False, False),
+    (True, False),
+    (False, True),
+])
+@pytest.mark.parametrize("failure_type", [OSError, KeyboardInterrupt, SystemExit])
+def test_second_replace_failure_restores_the_exact_previous_pair_and_reraises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    json_exists: bool,
+    markdown_exists: bool,
+    failure_type: type[BaseException],
+) -> None:
+    import tools.benchmark_api_db as cli_module
+
+    json_output = tmp_path / "baseline.json"
+    markdown_output = tmp_path / "baseline.md"
+    if json_exists:
+        json_output.write_text("old-json", encoding="utf-8")
+    if markdown_exists:
+        markdown_output.write_text("old-markdown", encoding="utf-8")
+
+    real_replace = cli_module.os.replace
+    injected = False
+
+    def interrupt_second_final_replace(source: object, destination: object) -> None:
+        nonlocal injected
+        source_path = Path(source)
+        destination_path = Path(destination)
+        if (
+            not injected
+            and destination_path == markdown_output
+            and source_path.name.endswith(".tmp")
+            and not source_path.name.endswith(".restore.tmp")
+        ):
+            injected = True
+            raise failure_type("injected second replace failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(cli_module.os, "replace", interrupt_second_final_replace)
+
+    with pytest.raises(failure_type, match="injected second replace failure"):
+        publish_report(_synthetic_report(), json_output, markdown_output)
+
+    assert json_output.exists() is json_exists
+    assert markdown_output.exists() is markdown_exists
+    if json_exists:
+        assert json_output.read_text(encoding="utf-8") == "old-json"
+    if markdown_exists:
+        assert markdown_output.read_text(encoding="utf-8") == "old-markdown"
+    expected_names = sorted(
+        name
+        for name, exists in (
+            ("baseline.json", json_exists),
+            ("baseline.md", markdown_exists),
+        )
+        if exists
+    )
+    assert sorted(path.name for path in tmp_path.iterdir()) == expected_names
