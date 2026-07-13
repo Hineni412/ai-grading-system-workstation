@@ -1,0 +1,423 @@
+# P1-27 请求级只读连接复用 Implementation Plan
+
+> **执行要求：** 使用 `superpowers:executing-plans` 或 `superpowers:subagent-driven-development` 逐任务执行；每个行为改动必须先得到明确 RED，再做最小 GREEN。
+
+**执行包：** P1-27
+**用户自测：** none
+**自测清单：** not_required
+**规划状态：** ready_for_execution
+**规划模型：** S-XH
+**允许夜间执行：** no
+**计划基线：** `0564d60697d1e6e643491679099ed3e796be32ca`
+
+**目标：** 只在 P1-26 已证明昂贵的 Training/Graph 只读请求中复用显式连接，保持请求级稳定候选、只读拒写、异常关闭和线程隔离；保留 Streamlit 与写路径的旧构造/事务行为，并用同一生成数据证明性能改善。
+
+**设计：** `docs/superpowers/specs/2026-07-14-p1-27-request-scoped-read-connections-design.md`
+
+## 固定边界
+
+- 目标路由仅为 Training diagnosis/plan preview 与 Graph profiles/rows/evidence。
+- `POST /api/training/tasks` 及所有其他写路由不注入只读连接。
+- P1-15 Question Bank GET 继续每请求捕获零源写入候选；本包只把它作为性能控制组。
+- 不引入第三方连接池、进程级池、跨请求缓存、索引、Schema、迁移、WAL/busy-timeout 调整或 Phase 3 仓储拆分。
+- 不修改评分规则、题号、活动知识点、推荐排序、响应 Schema、OpenAPI、Streamlit 或错误公开文案。
+- 所有写测试只使用临时双库；真实 `user_data/` 只允许读取文件大小、UTC mtime 与 SHA-256。
+- 性能报告只含生成数据聚合指标，不含路径、SQL、请求体、学生/题目正文、请求 ID 或逐样本原始数据。
+
+## 预期文件
+
+- Modify `db_manager.py`
+- Modify `question_bank/database/schema.py`
+- Modify `question_bank/services/question_read_service.py`
+- Create `backend/api/read_connections.py`
+- Modify `backend/api/dependencies.py`
+- Modify `backend/api/routers/training.py`
+- Modify `backend/api/routers/graph.py`
+- Modify `integration/diagnosis_profile_service.py`
+- Modify `integration/question_tag_projection_service.py`
+- Modify `question_bank/recommendation/practice_plan_service.py`
+- Modify `question_bank/services/question_frequency_service.py`
+- Modify `question_bank/services/source_question_link_service.py`
+- Create `tools/benchmark_request_connections.py`
+- Create `tools/performance/request_connection_report.py`
+- Modify `tools/performance/runner.py`
+- Create `tests/test_request_read_connections.py`
+- Create `tests/test_request_connection_benchmark.py`
+- Modify existing DB/service/API tests listed per task
+- Create `docs/performance/p1-27-request-connection-comparison.json`
+- Create `docs/performance/p1-27-request-connection-comparison.md`
+- Modify `ARCHITECTURE.md`
+- Modify this plan
+
+## Task 0: Claim P1-27 in a clean daytime feature worktree
+
+### Step 1: Recheck authority and baseline
+
+- [ ] Read `AGENTS.md`, `ARCHITECTURE.md`, packages README/Index/matrix/automation/worktree manuals, P1-27 phase definition, this design and plan.
+- [ ] Fetch `origin` and require `origin/main` to equal the full plan SHA.
+- [ ] Require Index P1-27=`ready`, matrix P1-27=`daytime_only`, local time in the supervised daytime window, and no existing P1-27 implementation branch/worktree.
+- [ ] Read-only capture root real-database size/UTC-mtime/SHA-256 outside Git.
+
+Expected: all gates pass; otherwise stop without creating the feature channel.
+
+### Step 2: Create the feature worktree
+
+```powershell
+git worktree add -b codex/p1-27-request-read-connections .worktrees/p1-27-request-read-connections origin/main
+```
+
+- [ ] Verify source status clean and `git status --short -- user_data` empty.
+- [ ] Record the immutable existing stash SHA list.
+
+### Step 3: Create the claim commit
+
+- [ ] Copy only this plan into the feature worktree.
+- [ ] Add exactly one `HANDOFF_STATUS` block:
+  - package `P1-27`
+  - status `in_progress`
+  - functional commit `none`
+  - automated validation `pending`
+  - independent review `pending`
+  - user acceptance `not_required`
+  - real-data fingerprint `unchanged`
+  - immutable stash baseline
+  - nightly action `report_only`
+- [ ] Commit only this plan:
+
+```powershell
+git add docs/superpowers/plans/2026-07-14-p1-27-request-scoped-read-connections-implementation.md
+git commit -m "docs: claim P1-27 request read connections"
+```
+
+Expected: claim is the first package commit after the merge baseline and changes one plan file.
+
+### Step 4: Bring in the approved design
+
+- [ ] Cherry-pick the standalone design commit after the claim commit.
+- [ ] Run `tools/handoff_status.py`; expect valid `in_progress`.
+
+## Task 1: Add explicit non-owning connection primitives
+
+**Files:**
+
+- Modify `db_manager.py`
+- Modify `question_bank/database/schema.py`
+- Modify `question_bank/services/question_read_service.py`
+- Create `tests/test_request_read_connections.py`
+- Modify `tests/test_db_manager.py` if required by the existing test split
+
+### Step 1: Write RED ownership tests
+
+- [ ] Add `test_db_manager_borrowed_connection_reuses_identity_without_closing`.
+- [ ] Add `test_db_manager_nested_context_does_not_commit_or_end_request_snapshot`.
+- [ ] Add `test_question_bank_connect_borrowed_connection_does_not_own_lifecycle`.
+- [ ] Add `test_snapshot_connection_allows_cross_worker_teardown_but_rejects_writes`.
+- [ ] Add `test_legacy_connections_keep_existing_pragmas_and_close_behavior`.
+
+Run:
+
+```powershell
+runtime\python\python.exe -m pytest tests\test_request_read_connections.py -q
+```
+
+Expected RED: missing external connection parameter/public request connection helper/non-owning behavior.
+
+### Step 2: Implement the minimal primitives
+
+- [ ] Add optional keyword-only `external_connection` to `DBManager.__init__`.
+- [ ] Add a private non-owning proxy returned by `_connect()` only when external connection exists.
+- [ ] Proxy `with`/`close` must not commit, roll back or close the underlying request connection; data access delegates unchanged.
+- [ ] Extend question-bank `connect()` with optional keyword-only external connection; borrowed branch only yields.
+- [ ] Expose a validated snapshot read-connection helper with `check_same_thread` parameter; defaults preserve P1-15 behavior.
+- [ ] Request use sets `check_same_thread=False`, `mode=ro`, `query_only`, stable `BEGIN`, current foreign-key/busy-timeout validation and instrumentation.
+
+### Step 3: Run GREEN and legacy regression
+
+```powershell
+runtime\python\python.exe -m pytest tests\test_request_read_connections.py tests\test_db_performance_instrumentation.py tests\test_api_question_bank_routes.py -q
+```
+
+Expected: new ownership tests and legacy snapshot/instrumentation tests pass.
+
+### Step 4: Commit Task 1
+
+```powershell
+git add db_manager.py question_bank/database/schema.py question_bank/services/question_read_service.py tests/test_request_read_connections.py
+git commit -m "feat: add borrowed readonly connection primitives"
+```
+
+## Task 2: Propagate the borrowed Question Bank connection through read services
+
+**Files:**
+
+- Modify `integration/diagnosis_profile_service.py`
+- Modify `integration/question_tag_projection_service.py`
+- Modify `question_bank/recommendation/practice_plan_service.py`
+- Modify `question_bank/services/question_frequency_service.py`
+- Modify `question_bank/services/source_question_link_service.py`
+- Modify `tests/test_diagnosis_profile_service.py`
+- Modify `tests/test_question_tag_projection_service.py`
+- Modify `tests/test_practice_plan_service.py`
+- Modify `tests/test_question_frequency_service.py`
+- Modify `tests/test_source_question_link_service.py`
+
+### Step 1: Write RED propagation tests
+
+- [ ] Diagnosis tag path uses one injected grading connection and one injected question-bank connection.
+- [ ] Projection skips `initialize_database()` when borrowed and passes the identical connection to links/questions/tags reads.
+- [ ] Practice question-tag path skips initialization and reuses the identical connection for candidate, frequency and exclusion reads.
+- [ ] Frequency batch read and SourceLink list/confirmed-ID read accept borrowed connections.
+- [ ] Service exceptions do not close the borrowed connection.
+- [ ] Existing constructors without external connections still initialize/open/close as before.
+
+Run only the named tests and confirm RED for missing parameters/extra connection identities.
+
+### Step 2: Implement minimal optional parameters
+
+- [ ] Add keyword-only `question_bank_connection` to `DiagnosisProfileService` and propagate only through tag projection.
+- [ ] Add keyword-only borrowed connection to Projection/Practice/Frequency/SourceLink constructors.
+- [ ] Guard `initialize_database()` only in borrowed read paths; legacy and write paths remain unchanged.
+- [ ] Replace relevant `connect(self.db_path)` calls with `connect(..., external_connection=...)`.
+- [ ] Pass the connection to nested read service constructors.
+- [ ] Do not modify legacy/skill branches beyond type-safe defaults required to preserve behavior.
+
+### Step 3: Run GREEN and affected service regression
+
+```powershell
+runtime\python\python.exe -m pytest tests\test_diagnosis_profile_service.py tests\test_question_tag_projection_service.py tests\test_practice_plan_service.py tests\test_question_frequency_service.py tests\test_source_question_link_service.py -q
+```
+
+Expected: propagation identity, exception ownership and all existing behavior pass.
+
+### Step 4: Commit Task 2
+
+```powershell
+git add integration/diagnosis_profile_service.py integration/question_tag_projection_service.py question_bank/recommendation/practice_plan_service.py question_bank/services/question_frequency_service.py question_bank/services/source_question_link_service.py tests/test_diagnosis_profile_service.py tests/test_question_tag_projection_service.py tests/test_practice_plan_service.py tests/test_question_frequency_service.py tests/test_source_question_link_service.py
+git commit -m "feat: reuse question bank reads within a request"
+```
+
+## Task 3: Add the FastAPI request read context and route it only to read endpoints
+
+**Files:**
+
+- Create `backend/api/read_connections.py`
+- Modify `backend/api/dependencies.py`
+- Modify `backend/api/routers/training.py`
+- Modify `backend/api/routers/graph.py`
+- Modify `tests/test_api_training_routes.py`
+- Modify `tests/test_api_graph_routes.py`
+- Extend `tests/test_request_read_connections.py`
+
+### Step 1: Write RED API lifecycle tests
+
+- [ ] One target request captures each database once and opens one working connection per database.
+- [ ] Diagnosis and Practice dependencies in plan preview resolve from the same cached context.
+- [ ] Normal response closes both connections and removes both candidates.
+- [ ] Business exception, second-candidate failure and route validation error close/clean all already-created resources.
+- [ ] Two concurrent requests have different candidate paths and connection identities.
+- [ ] A connection may be closed during dependency teardown on a different worker thread.
+- [ ] `/api/training/tasks` still receives legacy services and its write transaction succeeds on a temporary database.
+- [ ] Target OpenAPI paths/operations and response bodies remain unchanged.
+
+### Step 2: Implement the request context
+
+- [ ] Add a dataclass/context object holding both candidates, both owned request connections, borrowed DBManager and the two read services.
+- [ ] Use `ExitStack` so partial setup and exception teardown are deterministic.
+- [ ] Map snapshot errors to the existing path-free 503 codes/messages.
+- [ ] Add diagnosis/practice extractor dependencies that depend on one cached context.
+- [ ] Update only diagnosis/preview and Graph routes to the new read dependencies.
+- [ ] Leave Training task confirmation and all writes on legacy dependencies.
+
+### Step 3: Run GREEN and API regressions
+
+```powershell
+runtime\python\python.exe -m pytest tests\test_request_read_connections.py tests\test_api_training_routes.py tests\test_api_graph_routes.py tests\test_api_app.py -q
+```
+
+Expected: lifecycle/concurrency/OpenAPI tests and existing route contracts pass.
+
+### Step 4: Commit Task 3
+
+```powershell
+git add backend/api/read_connections.py backend/api/dependencies.py backend/api/routers/training.py backend/api/routers/graph.py tests/test_request_read_connections.py tests/test_api_training_routes.py tests/test_api_graph_routes.py
+git commit -m "feat: share readonly connections per API request"
+```
+
+## Task 4: Prove concurrent read/write and readonly rejection boundaries
+
+**Files:**
+
+- Extend `tests/test_request_read_connections.py`
+- Modify API/service tests only if required
+
+### Step 1: Write RED concurrency and rejection tests
+
+- [ ] Hold one read request open, update the source temporary database through the legacy writer, and prove the current request retains its captured view.
+- [ ] Start a later request and prove it sees the committed source change.
+- [ ] Execute INSERT/UPDATE/DDL through each request connection and require SQLite readonly failure.
+- [ ] Prove the source main/WAL/SHM and candidate bytes/mtime do not change after rejected writes.
+- [ ] Run multiple request threads and require no cross-request cursor/result contamination.
+- [ ] Force teardown close failure; preserve the original route error and sanitize the public response.
+
+### Step 2: Implement only lifecycle fixes exposed by RED
+
+- [ ] Add no lock/pool/cache unless a RED demonstrates request-internal concurrency; prefer per-request isolation.
+- [ ] Ensure teardown cleanup uses best effort without hiding the primary exception.
+- [ ] Keep source-write and read-snapshot ownership separate.
+
+### Step 3: Run GREEN and affected regression
+
+```powershell
+runtime\python\python.exe -m pytest tests\test_request_read_connections.py tests\test_api_training_routes.py tests\test_api_graph_routes.py tests\test_api_question_bank_routes.py -q
+```
+
+### Step 4: Commit Task 4
+
+```powershell
+git add tests/test_request_read_connections.py backend/api/read_connections.py
+git commit -m "test: verify request readonly concurrency boundaries"
+```
+
+If no production fix is needed, commit only the new tests with that message.
+
+## Task 5: Generate a reproducible before/after performance report
+
+**Files:**
+
+- Create `tools/performance/request_connection_report.py`
+- Create `tools/benchmark_request_connections.py`
+- Create `tests/test_request_connection_benchmark.py`
+- Create `docs/performance/p1-27-request-connection-comparison.json`
+- Create `docs/performance/p1-27-request-connection-comparison.md`
+- Modify this plan
+
+### Step 1: Write RED report-contract tests
+
+- [ ] Load the committed P1-26 report by allowlisted fields only.
+- [ ] Run the same seed/scales for six allowlisted scenarios: five targets plus Question Bank default control.
+- [ ] Require two repetitions, status 200, deterministic status/query/record summaries and no raw samples.
+- [ ] Compare before/after p50, total statements, SELECTs and response records.
+- [ ] Require exact response record/status equality.
+- [ ] Require target total-statement reduction and at least 20% p50 improvement for medium plan preview and all medium Graph scenarios.
+- [ ] Control scenario is measured but has no improvement requirement.
+- [ ] JSON/Markdown allowlists reject paths, SQL, request IDs, bodies and generated content.
+- [ ] Publication uses the P1-26 per-file atomic/catchable-recovery helper and documents the same sudden-termination mixed-pair limit.
+
+### Step 2: Implement the focused comparison runner
+
+- [ ] Reuse P1-26 dataset/scenario/runner primitives; add an allowlisted scenario filter without changing default P1-26 behavior.
+- [ ] Default seed/scales match P1-26; use 3 warmups, 20 samples, 2 repetitions unless a reviewed plan amendment justifies a smaller exact comparison.
+- [ ] Record the code SHA, environment, scenario set and sample counts.
+- [ ] Render only aggregates and explicit pass/fail gates.
+
+### Step 3: Run micro smoke and focused tests
+
+```powershell
+runtime\python\python.exe -m pytest tests\test_request_connection_benchmark.py tests\test_performance_benchmark.py tests\test_performance_report.py -q
+runtime\python\python.exe tools\benchmark_request_connections.py --scales small --warmups 1 --samples 2 --repetitions 2 --output-json "$env:TEMP\p1-27-smoke.json" --output-markdown "$env:TEMP\p1-27-smoke.md"
+```
+
+Expected: report structure/safety passes and micro run shows target statement reduction.
+
+### Step 4: Commit tooling before the formal run
+
+```powershell
+git add tools/benchmark_request_connections.py tools/performance/request_connection_report.py tools/performance/runner.py tests/test_request_connection_benchmark.py tests/test_performance_benchmark.py tests/test_performance_report.py
+git commit -m "perf: compare request connection reuse"
+```
+
+### Step 5: Run the formal comparison
+
+- [ ] Recheck root real-database recovery fingerprints read-only.
+- [ ] Run `runtime\python\python.exe tools\benchmark_request_connections.py` in a foreground/controlled process and preserve OS exit code/runtime.
+- [ ] Require all gates pass before reports publish.
+- [ ] Validate safety, exact scenario/sample counts, two-round repeatability and non-zero expected records.
+- [ ] Compare root fingerprints again; any difference blocks commit/integration.
+
+### Step 6: Commit the versioned comparison as `waiting_review`
+
+- [ ] Update the plan with exact before/after outcomes, runtime, limitations and current functional SHA.
+- [ ] Set handoff to `waiting_review`, implementation `branch_head`, automated `passed`, independent review `pending`, user acceptance `not_required`, real-data `unchanged`, nightly `report_only`.
+- [ ] Run focused suite, affected regressions, `smoke_check.py --skip-tests`, `git diff --check`, empty feature `user_data`, and handoff validator.
+- [ ] Commit reports and plan with no source changes:
+
+```powershell
+git add docs/performance/p1-27-request-connection-comparison.json docs/performance/p1-27-request-connection-comparison.md docs/superpowers/plans/2026-07-14-p1-27-request-scoped-read-connections-implementation.md
+git commit -m "docs: record P1-27 connection comparison"
+```
+
+## Task 6: Architecture, independent review and integration handoff
+
+**Files:**
+
+- Modify `ARCHITECTURE.md`
+- Modify this plan
+
+### Step 1: Record the implemented boundary
+
+- [ ] Add one P1-27 architecture fact: target routes, request candidate/connection ownership, readonly mode, legacy/write compatibility, no cross-request pool/cache, performance report location and real-data safety.
+- [ ] Do not copy machine paths or raw fingerprints.
+
+### Step 2: Run final feature verification
+
+```powershell
+runtime\python\python.exe -m pytest tests\test_request_read_connections.py tests\test_diagnosis_profile_service.py tests\test_question_tag_projection_service.py tests\test_practice_plan_service.py tests\test_question_frequency_service.py tests\test_source_question_link_service.py tests\test_api_training_routes.py tests\test_api_graph_routes.py tests\test_request_connection_benchmark.py -q
+runtime\python\python.exe -m pytest tests\test_api_app.py tests\test_api_question_bank_routes.py tests\test_api_training_routes.py tests\test_api_graph_routes.py tests\test_api_job_lifecycle.py tests\test_migration_tooling.py -q
+runtime\python\python.exe tools\smoke_check.py --skip-tests
+git diff --check
+git status --short -- user_data
+```
+
+Expected: zero failures; root real-database fingerprints unchanged.
+
+### Step 3: Request task and whole-package independent review
+
+- [ ] Use review packages bound to exact base/head SHAs.
+- [ ] Review connection ownership, readonly enforcement, partial setup/teardown, concurrency isolation, source-sidecar safety, write-path exclusion, Streamlit compatibility, performance math and report privacy.
+- [ ] Reproduce every Critical/Important with RED, make one minimal fix pass, rerun affected tests and request re-review.
+- [ ] Require Critical=0 and Important=0. Minor findings are recorded.
+
+### Step 4: Create the final plan-only handoff commit
+
+- [ ] Modify only this plan.
+- [ ] Set status `verified_pending_integration`.
+- [ ] Record the direct parent full reviewed functional SHA.
+- [ ] Set automated/independent review `passed`, user acceptance `not_required`, real-data `unchanged`, nightly `report_only` because P1-27 is never night-eligible.
+- [ ] Run handoff validator on the clean committed worktree.
+
+```powershell
+git add docs/superpowers/plans/2026-07-14-p1-27-request-scoped-read-connections-implementation.md
+git commit -m "docs: verify P1-27 integration handoff"
+```
+
+## Integration and release gate
+
+- Merge the complete verified feature chain into a fresh integration branch created from latest `origin/main`.
+- Resolve only shared `ARCHITECTURE.md`/Index conflicts in integration.
+- Rerun the P1-27 focused suite, affected API/database regressions and the focused performance smoke.
+- Run one complete `tools/smoke_check.py` for the combined wave because shared API/DB connection infrastructure changed.
+- Compare normalized real-database fingerprints before/after.
+- Update `EXECUTION_INDEX.md` only in integration so P1-27 becomes `merged` after the PR lands; P1-29 becomes `ready` only if all of P1-26/P1-27/P1-28 are in latest `origin/main`.
+- Push integration, create a labeled PR (`codex`, `codex-automation` when available), merge through GitHub, then synchronize `origin/main`, local `main` and active worktrees.
+- No direct push to `main`, force push, real-data write, worktree recursive deletion or loss of unmerged history.
+
+## Recovery
+
+- Before integration, revert Task 5→Task 1 commits in reverse order; no data migration is required.
+- If performance gates fail, keep the P1-26 baseline and local diagnostic evidence but do not merge P1-27 source changes or mark the package complete.
+- If readonly or concurrency tests fail, restore old route dependencies first; legacy Streamlit/write services remain available throughout.
+- If any root database fingerprint changes, stop and investigate without push/PR/merge.
+
+<!-- HANDOFF_STATUS_START -->
+## 昼夜交接
+
+**执行包：** P1-27
+**交接状态：** in_progress
+**功能提交：** none
+**自动验证：** pending
+**独立复审：** pending
+**用户验收：** not_required
+**真实数据指纹：** unchanged
+**Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
+**夜间动作：** report_only
+<!-- HANDOFF_STATUS_END -->
