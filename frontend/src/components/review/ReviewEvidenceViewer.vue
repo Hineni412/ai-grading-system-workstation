@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import type { ReviewItem } from '../../api/review'
+import { reviewShortcutBus } from '../../composables/review-shortcuts'
 import {
   useEvidenceViewer,
   type EvidenceSource,
@@ -43,6 +44,7 @@ const errorMessage = computed(() =>
 )
 
 let resizeObserver: ResizeObserver | null = null
+let stopShortcuts: () => void = () => undefined
 let activeLoad = { key: '', generation: 0 }
 let activePointerId: number | null = null
 let lastPointer: ViewerPoint = { x: 0, y: 0 }
@@ -199,6 +201,11 @@ watch(
 )
 
 onMounted(() => {
+  stopShortcuts = reviewShortcutBus.subscribe((command) => {
+    if (command === 'fit-width') viewer.fitWidth()
+    else if (command === 'zoom-in') viewer.zoomBy(0.25)
+    else if (command === 'zoom-out') viewer.zoomBy(-0.25)
+  })
   const canvas = canvasElement.value
   if (!canvas) return
   const updateSize = (width: number, height: number) => {
@@ -216,6 +223,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  stopShortcuts()
   releaseDragging()
   resizeObserver?.disconnect()
   clearPreloads()

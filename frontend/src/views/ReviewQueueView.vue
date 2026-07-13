@@ -7,6 +7,8 @@ import StatePanel from '../components/design-system/StatePanel.vue'
 import ReviewEvidenceViewer from '../components/review/ReviewEvidenceViewer.vue'
 import ReviewQueuePanel from '../components/review/ReviewQueuePanel.vue'
 import ReviewSelectionSummary from '../components/review/ReviewSelectionSummary.vue'
+import ReviewShortcutGuide from '../components/review/ReviewShortcutGuide.vue'
+import { reviewShortcutBus, type ReviewShortcutCommand } from '../composables/review-shortcuts'
 import { useReviewQueueStore, type ReviewScope, type ReviewSort } from '../stores/review-queue'
 import { useSessionStore } from '../stores/session'
 
@@ -262,21 +264,43 @@ function onKeydown(event: KeyboardEvent): void {
     event.altKey ||
     event.ctrlKey ||
     event.metaKey ||
-    event.shiftKey ||
     isShortcutProtectedTarget(event.target)
   ) return
 
   const key = event.key.toLocaleLowerCase()
   const delta = key === 'j' ? 1 : key === 'k' ? -1 : 0
-  if (delta === 0) return
-  const previousDetailId = reviewStore.selectedDetailId
-  reviewStore.moveSelection(delta)
-  if (reviewStore.selectedDetailId !== previousDetailId) event.preventDefault()
+  if (delta !== 0) {
+    if (event.shiftKey) return
+    const previousDetailId = reviewStore.selectedDetailId
+    reviewStore.moveSelection(delta)
+    if (reviewStore.selectedDetailId !== previousDetailId) event.preventDefault()
+    return
+  }
+
+  if (event.repeat && key === 'enter') return
+  if (event.shiftKey && key !== '+') return
+
+  let command: ReviewShortcutCommand | null = null
+  if (key === '/') command = 'focus-search'
+  else if (key === 'z') command = 'fit-width'
+  else if (key === '+' || key === '=') command = 'zoom-in'
+  else if (key === '-') command = 'zoom-out'
+  else if (key === 'enter') command = 'confirm-next'
+  if (command === null) return
+
+  reviewShortcutBus.dispatch(command)
+  event.preventDefault()
 }
 
 const stopSessionWatch = watch(
-  () => sessionStore.selectedSessionId,
-  (sessionId) => void loadSession(sessionId),
+  [
+    () => sessionStore.selectedSessionId,
+    () => sessionStore.loadState,
+  ],
+  ([sessionId, loadState]) => {
+    if (loadState !== 'ready') return
+    void loadSession(sessionId)
+  },
   { immediate: true },
 )
 
@@ -314,8 +338,10 @@ onBeforeUnmount(() => {
   <section ref="reviewPage" class="review-page" aria-labelledby="review-page-title">
     <header class="review-page__header">
       <h1 id="review-page-title" tabindex="-1">复核队列</h1>
-      <p>查看单题复核记录，并在不修改评分数据的前提下连续浏览。</p>
+      <p>查看单题复核记录，核对答卷证据并连续确认教师最终分。</p>
     </header>
+
+    <ReviewShortcutGuide />
 
     <FeedbackBanner
       v-if="hasRetainedContentError"
