@@ -31,6 +31,28 @@
 - 执行模型为 T-H。每个新行为必须先有可见 RED，再有最小 GREEN；同一问题连续两次修复失败时安全停机。
 - 实施前必须使用 `frontend-design`，实施过程必须使用 `test-driven-development`，完成声明前必须使用 `verification-before-completion`；本任务禁止自动派生子代理，除非用户另行明确授权。
 
+<!-- HANDOFF_STATUS_START -->
+## 昼夜交接
+
+**执行包：** P2-05
+**交接状态：** verified_pending_integration
+**功能提交：** b4dc6175457c304f5e261902611db19ecc1646b0
+**自动验证：** passed
+**独立复审：** passed
+**用户验收：** passed
+**真实数据指纹：** unchanged
+**Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
+**夜间动作：** independent_candidate_allowed
+<!-- HANDOFF_STATUS_END -->
+
+## 2026-07-13 自动验证证据
+
+- 前端：lint、typecheck、build 均通过；Vitest 16 个文件、129 项测试通过；Playwright 指定回归 18 项通过。
+- 仓库：`git diff --check`、变更范围和只读扫描通过；`user_data` 无 Git 变更；快速冒烟通过并按计划跳过全量 pytest。
+- 真实两库：仅核对文件属性与 SHA256；阅卷库 `2863104 / 93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`，题库 `3461120 / E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`，与基线一致。
+- 独立复审：固定范围 `2c291ad2330cc93685eeea9a478455fb5ca76175..22b39a390ad41f86db5906cba22e36c9d6f4d97d` 经三轮整包复审及两轮修正后通过，最终无 Critical、Important 或 Minor 发现。
+- 用户短测：用户在应用内浏览器完成匿名短测并明确回复“通过”；证据清单记录已复审功能提交 `22b39a390ad41f86db5906cba22e36c9d6f4d97d`，测试后真实两库指纹仍与基线一致。
+
 ---
 
 ### Task 1: Claim the package and add the strict Review read adapter
@@ -44,15 +66,15 @@
 - Consumes: `apiClient.request<T>(path, { decode, signal })` from `frontend/src/api/client.ts`, and `isRecord`/`isNullableString` from `frontend/src/api/validation.ts`.
 - Produces: `ReviewQuestionSummary`, `ReviewItem`, `ReviewMediaLinks`, `fetchReviewQuestions(sessionId, signal?)`, and `fetchReviewItems(sessionId, questionId, signal?)`.
 
-- [ ] **Step 1: Record the immutable claim and baseline**
+- [x] **Step 1: Record the immutable claim and baseline**
 
 Before any source edit, read `git stash list --format=%H`, then add exactly one handoff block to this plan:
 
 ```markdown
-<!-- HANDOFF_STATUS_START -->
+&lt;!-- HANDOFF_STATUS_START --&gt;
 ## 昼夜交接
 
-**执行包：** P2-05
+**执行包（示例）：** P2-05
 **交接状态：** in_progress
 **功能提交：** none
 **自动验证：** pending
@@ -61,7 +83,7 @@ Before any source edit, read `git stash list --format=%H`, then add exactly one 
 **真实数据指纹：** not_touched
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
-<!-- HANDOFF_STATUS_END -->
+&lt;!-- HANDOFF_STATUS_END --&gt;
 ```
 
 Run from the fresh implementation worktree:
@@ -78,7 +100,7 @@ git commit -m "docs: claim P2-05 review queue"
 
 Expected: the branch starts from the then-current `origin/main` containing this plan; this is the first first-parent commit after the merge base; the staged path list contains only this plan; `user_data` is clean. If the stash list differs from the two recorded baseline SHAs, stop instead of editing the block.
 
-- [ ] **Step 2: Write failing adapter tests**
+- [x] **Step 2: Write failing adapter tests**
 
 Create `frontend/src/api/__tests__/review.spec.ts` with injected `apiClient.request` spies and the exact public shapes:
 
@@ -130,7 +152,7 @@ describe('review API contract', () => {
 })
 ```
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 Run from `frontend/`:
 
@@ -140,7 +162,7 @@ npm run test -- src/api/__tests__/review.spec.ts --maxWorkers=1
 
 Expected: FAIL because `../review` does not exist.
 
-- [ ] **Step 4: Implement the strict adapter**
+- [x] **Step 4: Implement the strict adapter**
 
 Create `frontend/src/api/review.ts` with these exact public types and validators:
 
@@ -222,7 +244,7 @@ export async function fetchReviewItems(sessionId: number, questionId: string, si
 }
 ```
 
-- [ ] **Step 5: Run GREEN and commit**
+- [x] **Step 5: Run GREEN and commit**
 
 ```powershell
 npm run test -- src/api/__tests__/review.spec.ts --maxWorkers=1
@@ -244,7 +266,7 @@ Expected: adapter tests PASS; commit contains only the adapter and its tests.
 - Consumes: `ReviewQuestionSummary`, `ReviewItem`, `fetchReviewQuestions`, and `fetchReviewItems` from Task 1.
 - Produces: `ReviewScope = 'all' | 'needs_review'`, `ReviewSort = 'risk' | 'student_code' | 'student_name'`, `REVIEW_PAGE_SIZE = 100`, and `useReviewQueueStore()` with load, filter, selection, pagination, navigation, and reset actions.
 
-- [ ] **Step 1: Write failing store tests**
+- [x] **Step 1: Write failing store tests**
 
 Create `frontend/src/__tests__/review-queue-store.spec.ts` with a generated fixture and direct action assertions:
 
@@ -305,7 +327,7 @@ describe('review queue store', () => {
 })
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 npm run test -- src/__tests__/review-queue-store.spec.ts --maxWorkers=1
@@ -313,7 +335,7 @@ npm run test -- src/__tests__/review-queue-store.spec.ts --maxWorkers=1
 
 Expected: FAIL because `stores/review-queue.ts` does not exist.
 
-- [ ] **Step 3: Implement the Store**
+- [x] **Step 3: Implement the Store**
 
 Create `frontend/src/stores/review-queue.ts`. Use `defineStore`, refs and computed values with these exact public members:
 
@@ -359,7 +381,7 @@ The computed pipeline must copy before sorting, filter search against only `stud
 
 Each load action owns an `AbortController` and monotonic generation. Starting a new load aborts the previous controller; only the latest generation may assign results or error state. An `AbortError`/P2-04 cancelled `ApiError` does not set the visible error. A failed first load uses `复核题目暂时无法读取。` or `复核队列暂时无法读取。`; a failed refresh with existing content uses `，已保留上次内容。`.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```powershell
 npm run test -- src/__tests__/review-queue-store.spec.ts --maxWorkers=1
@@ -385,7 +407,7 @@ Expected: store tests PASS, including the 100/101 boundary and retained-content 
 - Consumes: `useSessionStore()`, `useReviewQueueStore()`, existing `StatusBadge`, `StatePanel`, router query APIs, and Task 1/2 public types/actions.
 - Produces: `/grading` route with the P2-05 read-only queue, validated `question`/`detail` query synchronization, and guarded `J`/`K` navigation.
 
-- [ ] **Step 1: Write failing route and view tests**
+- [x] **Step 1: Write failing route and view tests**
 
 Extend `navigation-router.spec.ts` to require `/grading` to load a component named `ReviewQueueView`. Create `review-queue-view.spec.ts` with a memory router, active Pinia, seeded Session Store and mocked Review Store actions. Cover these exact assertions:
 
@@ -400,7 +422,7 @@ it('never renders score inputs, save buttons, confirm buttons, or image elements
 
 Use generated public `ReviewItem` fixtures; assert visible Chinese labels and `router.currentRoute.value.query`, not component implementation details.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 npm run test -- src/__tests__/navigation-router.spec.ts src/__tests__/review-queue-view.spec.ts --maxWorkers=1
@@ -408,7 +430,7 @@ npm run test -- src/__tests__/navigation-router.spec.ts src/__tests__/review-que
 
 Expected: FAIL because `/grading` still resolves `RoutePlaceholderView` and Review Queue components do not exist.
 
-- [ ] **Step 3: Implement the two presentation components**
+- [x] **Step 3: Implement the two presentation components**
 
 `ReviewQueuePanel.vue` must expose explicit props and emits:
 
@@ -440,7 +462,7 @@ Render persistent labels for the question selector, search, scope, and sort. Eac
 
 `ReviewSelectionSummary.vue` accepts `item: ReviewItem | null` and `questionId: string | null`. With no item, show a `StatePanel` titled `当前筛选没有记录`. With an item, render identity, `当前得分 {score_awarded} / {max_score}`, confidence, status, and existing error text. Include the static notice `答卷证据将在 P2-06 接入；评分与确认将在 P2-07 接入。` Do not render `img`, input, textarea, editable content, save, or confirm controls.
 
-- [ ] **Step 4: Implement the route view and safe URL synchronization**
+- [x] **Step 4: Implement the route view and safe URL synchronization**
 
 Create `ReviewQueueView.vue` with `onMounted`, `onBeforeUnmount`, and watchers:
 
@@ -473,7 +495,7 @@ const placeholderRoutes = workspaceRouteDefinitions.map((definition) => ({
 }))
 ```
 
-- [ ] **Step 5: Run GREEN and commit**
+- [x] **Step 5: Run GREEN and commit**
 
 ```powershell
 npm run test -- src/__tests__/navigation-router.spec.ts src/__tests__/review-queue-view.spec.ts --maxWorkers=1
@@ -497,7 +519,7 @@ Expected: route/view tests PASS; source grep finds no confirm request and no edi
 - Consumes: existing Token variables, App Shell geometry, Review Queue page test IDs/accessible labels, and mock API routes.
 - Produces: stable two-column desktop layout, long-content truncation, keyboard focus visibility, five-viewport and 1000-row browser evidence.
 
-- [ ] **Step 1: Write failing browser checks**
+- [x] **Step 1: Write failing browser checks**
 
 Create `frontend/e2e/review-queue.spec.ts` with mock handlers for `/api/sessions`, `/api/sessions/7/review/questions`, and `/api/sessions/7/review/questions/Q1/items?needs_review_only=false`. Generate 1000 anonymous items in memory and cover:
 
@@ -511,7 +533,7 @@ test('1000-row queue has no horizontal overflow or console errors at all five de
 
 For each viewport, assert `document.documentElement.scrollWidth <= clientWidth`, queue rows rendered are at most 100, the selected row has `aria-current=true`, the summary remains visible, long names do not cross their row bounds, and browser `pageerror`/console error arrays are empty.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 npm run e2e -- review-queue.spec.ts
@@ -519,7 +541,7 @@ npm run e2e -- review-queue.spec.ts
 
 Expected: FAIL because review-specific layout styles and imported stylesheet are missing.
 
-- [ ] **Step 3: Implement Token-only styles**
+- [x] **Step 3: Implement Token-only styles**
 
 Create `review-queue.css`, import it from `main.ts` after `app-shell.css`, and use these stable structural rules:
 
@@ -566,7 +588,7 @@ Complete controls, focus, pagination, summary and feedback selectors using only 
 
 Update `App.spec.ts` to assert `main.ts` imports `./styles/review-queue.css` and P2-05 styles contain no color literals.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```powershell
 npm run test -- src/__tests__/App.spec.ts --maxWorkers=1
@@ -589,7 +611,7 @@ Expected: focused unit checks and Chromium P2-05 e2e PASS at all five viewports.
 - Consumes: `docs/user-testing/USER_TEST_TEMPLATE.md`, completed P2-05 route, generated mock API behavior, and repository handoff validator.
 - Produces: verified quick-test instructions, final automated evidence, unchanged real database fingerprints, and a `waiting_review` feature commit.
 
-- [ ] **Step 1: Run focused and affected regression gates**
+- [x] **Step 1: Run focused and affected regression gates**
 
 Run from `frontend/`:
 
@@ -603,7 +625,7 @@ npm run e2e -- review-queue.spec.ts app-shell.spec.ts app.spec.ts
 
 Expected: all commands exit 0; record test file/test counts and Playwright counts in this plan below the handoff block or in a dated evidence note within the plan.
 
-- [ ] **Step 2: Run repository gates and scope checks**
+- [x] **Step 2: Run repository gates and scope checks**
 
 Run from the P2-05 worktree root, using the repository-root portable Python for smoke:
 
@@ -617,7 +639,7 @@ rg -n "confirm|score.*input|fetch\(" frontend/src/api/review.ts frontend/src/sto
 
 Expected: no `user_data` changes; changed paths are limited to this plan/spec, P2-05 frontend sources/tests/styles, and the quick checklist; `confirm` appears only in explanatory text if at all, there is no score input or direct page `fetch`; smoke exits 0. Do not run full pytest unless a risk trigger from `AGENTS.md` occurs.
 
-- [ ] **Step 3: Compare real database fingerprints without opening SQLite**
+- [x] **Step 3: Compare real database fingerprints without opening SQLite**
 
 From the repository root, run:
 
@@ -635,7 +657,7 @@ question_bank.db|3461120|2026-07-08T11:58:06.3320883Z|E1E5123AD54C9E8AF5984BDCC5
 
 Any mismatch is a blocker; do not update the expected values.
 
-- [ ] **Step 4: Create the implemented quick-test checklist**
+- [x] **Step 4: Create the implemented quick-test checklist**
 
 After the browser flow is verified, create `docs/user-testing/checkpoints/P2-05-review-queue-quick.md` from `USER_TEST_TEMPLATE.md`. It must state:
 
@@ -650,7 +672,7 @@ After the browser flow is verified, create `docs/user-testing/checkpoints/P2-05-
 
 Do not mark the result `passed`; quick user feedback remains pending until the user performs the checklist.
 
-- [ ] **Step 5: Commit the verified feature state**
+- [x] **Step 5: Commit the verified feature state**
 
 Update every completed checkbox, then set the handoff block to:
 
