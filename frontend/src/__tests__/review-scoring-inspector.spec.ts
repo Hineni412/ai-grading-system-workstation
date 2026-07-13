@@ -179,8 +179,53 @@ describe('review scoring inspector', () => {
     queue.selectDetail(22)
     resolveConfirmation!({ updated_details: 1, updated_results: 1, annotation_outcomes: [] })
 
-    await vi.waitFor(() => expect(useReviewDraftStore(pinia).drafts['7:Q1:21']).toBeUndefined())
+    await vi.waitFor(() => expect(host.textContent).toContain('先前记录的教师最终分已确认'))
+    expect(useReviewDraftStore(pinia).drafts['7:Q1:21']).toBeUndefined()
     expect(queue.selectedDetailId).toBe(22)
+    expect(fetchReviewItems).not.toHaveBeenCalled()
+    app.unmount()
+  })
+
+  it('does not patch a new session item that reuses the submitted detail id', async () => {
+    let resolveConfirmation: ((value: {
+      updated_details: number
+      updated_results: number
+      annotation_outcomes: []
+    }) => void) | undefined
+    vi.mocked(confirmReviewItem).mockImplementation(() => new Promise((resolve) => {
+      resolveConfirmation = resolve
+    }))
+    const { app, host, pinia } = await mountInspector()
+    const queue = useReviewQueueStore(pinia)
+    const input = host.querySelector<HTMLInputElement>('[data-testid="teacher-score"]')!
+    input.value = '4'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    host.querySelector<HTMLButtonElement>('[data-testid="confirm-next"]')!.click()
+    await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
+
+    const reusedDetail = {
+      ...item,
+      session_id: 8,
+      result_id: 81,
+      question_id: 'Q2',
+      score_awarded: 1,
+      student_name: '另一考试学生',
+    }
+    queue.selectQuestion('Q2')
+    queue.replaceItems([reusedDetail], reusedDetail.detail_id)
+    await nextTick()
+    resolveConfirmation!({ updated_details: 1, updated_results: 1, annotation_outcomes: [] })
+
+    await vi.waitFor(() => expect(host.textContent).toContain('先前记录的教师最终分已确认'))
+    expect(useReviewDraftStore(pinia).drafts['7:Q1:21']).toBeUndefined()
+    expect(queue.currentItem).toMatchObject({
+      session_id: 8,
+      question_id: 'Q2',
+      detail_id: 21,
+      score_awarded: 1,
+      needs_review: true,
+    })
     expect(fetchReviewItems).not.toHaveBeenCalled()
     app.unmount()
   })

@@ -110,14 +110,18 @@ async function submitCurrent(): Promise<void> {
       },
     )
     const confirmedReason = note || '人工复核已确认'
-    reviewStore.markItemConfirmed(submittedDetailId, score, confirmedReason)
+    reviewStore.markItemConfirmed(submittedItem, score, confirmedReason)
     draftStore.markConfirmed(draft.key)
 
-    const active = reviewStore.currentItem
-    const activeContext = active
-      ? `${active.session_id}:${active.question_id}:${active.detail_id}`
-      : `${submittedSessionId}:${submittedQuestionId}:${reviewStore.selectedDetailId ?? ''}`
-    const stillOnSubmittedContext = activeContext === submittedContext || reviewStore.selectedDetailId === submittedDetailId
+    const selectedEntry = reviewStore.items.find(
+      (entry) =>
+        entry.question_id === reviewStore.selectedQuestionId &&
+        entry.detail_id === reviewStore.selectedDetailId,
+    )
+    const activeContext = selectedEntry
+      ? `${selectedEntry.session_id}:${selectedEntry.question_id}:${selectedEntry.detail_id}`
+      : null
+    const stillOnSubmittedContext = activeContext === submittedContext
     if (stillOnSubmittedContext) {
       reviewStore.reconcileAfterConfirmation(nextDetailId ?? undefined)
       await reviewStore.loadItems(submittedSessionId, submittedQuestionId, fetchReviewItems)
@@ -128,11 +132,13 @@ async function submitCurrent(): Promise<void> {
     )
     const refreshFailed = stillOnSubmittedContext && reviewStore.itemLoadState === 'error'
     feedbackTone.value = annotationRetry || refreshFailed ? 'warning' : 'success'
-    feedback.value = annotationRetry
-      ? '分数已确认，标注图需要稍后刷新。'
-      : refreshFailed
-        ? '分数已确认，队列刷新失败；草稿不会重复提交，可稍后安全刷新。'
-        : '教师最终分已确认。'
+    feedback.value = !stillOnSubmittedContext
+      ? '先前记录的教师最终分已确认；当前选择未更改。'
+      : annotationRetry
+        ? '分数已确认，标注图需要稍后刷新。'
+        : refreshFailed
+          ? '分数已确认，队列刷新失败；草稿不会重复提交，可稍后安全刷新。'
+          : '教师最终分已确认。'
   } catch {
     feedbackTone.value = 'error'
     feedback.value = '确认失败，教师草稿已保留。请检查网络后重试。'

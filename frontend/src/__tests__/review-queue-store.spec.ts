@@ -88,7 +88,7 @@ describe('review queue store', () => {
   it('patches only the confirmed item with teacher-owned status', () => {
     const store = useReviewQueueStore()
     store.replaceItems([item(1, { needs_review: true }), item(2, { needs_review: true })], 1)
-    store.markItemConfirmed(1, 4.5, '教师调整')
+    store.markItemConfirmed(store.items[0]!, 4.5, '教师调整')
 
     expect(store.items[0]).toMatchObject({
       detail_id: 1,
