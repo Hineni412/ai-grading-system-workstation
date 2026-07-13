@@ -35,10 +35,10 @@
 ## 昼夜交接
 
 **执行包：** P2-05
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** waiting_user
+**功能提交：** 22b39a390ad41f86db5906cba22e36c9d6f4d97d
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** pending
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
@@ -50,7 +50,8 @@
 - 前端：lint、typecheck、build 均通过；Vitest 16 个文件、129 项测试通过；Playwright 指定回归 18 项通过。
 - 仓库：`git diff --check`、变更范围和只读扫描通过；`user_data` 无 Git 变更；快速冒烟通过并按计划跳过全量 pytest。
 - 真实两库：仅核对文件属性与 SHA256；阅卷库 `2863104 / 93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`，题库 `3461120 / E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`，与基线一致。
-- 用户短测：清单已生成，结果保持 `pending`，等待独立复审和用户实际操作。
+- 独立复审：固定范围 `2c291ad2330cc93685eeea9a478455fb5ca76175..22b39a390ad41f86db5906cba22e36c9d6f4d97d` 经三轮整包复审及两轮修正后通过，最终无 Critical、Important 或 Minor 发现。
+- 用户短测：清单已生成，结果保持 `pending`；只测试已复审功能提交 `22b39a390ad41f86db5906cba22e36c9d6f4d97d`。
 
 ---
 
