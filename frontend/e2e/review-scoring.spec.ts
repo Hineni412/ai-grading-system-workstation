@@ -232,10 +232,22 @@ for (const status of [422, 500] as const) {
     await openScoring(page)
     await page.getByLabel('最终得分').fill('4.5')
     await page.getByLabel('教师备注').fill(`失败保留 ${status}`)
+    await page.getByTestId('scoring-scroll-region').evaluate((element) => {
+      element.scrollTop = element.scrollHeight
+    })
     await page.getByRole('button', { name: '确认并下一份' }).click()
 
-    await expect(page.getByRole('alert')).toContainText('确认失败，教师草稿已保留')
-    await expect(page.getByRole('alert')).not.toContainText('private')
+    const toast = page.getByTestId('review-feedback-toast')
+    await expect(toast).toBeVisible()
+    await expect(toast).toContainText('确认失败，教师草稿已保留')
+    await expect(toast).not.toContainText('private')
+    expect(await toast.evaluate((element) => element.parentElement === document.body)).toBe(true)
+    const stickySince = Date.now()
+    await expect.poll(
+      () => Date.now() - stickySince,
+      { intervals: [4100], timeout: 5000 },
+    ).toBeGreaterThanOrEqual(4000)
+    await expect(toast).toBeVisible()
     await expect(page.getByLabel('最终得分')).toHaveValue('4.5')
     await expect(page.getByLabel('教师备注')).toHaveValue(`失败保留 ${status}`)
     await expect(page).toHaveURL(/detail=1$/)

@@ -168,21 +168,43 @@ test('unconfirmed drafts survive record changes, warn before refresh and are not
 })
 
 test('failure retains the draft and annotation retry remains non-blocking', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 768 })
   await openReview(page, 3)
   const score = page.getByTestId('teacher-score')
   const canvas = page.getByLabel('答卷图片画布')
 
   await setMode(page, { confirm: '422' })
   await score.fill('3.5')
+  await page.getByTestId('scoring-scroll-region').evaluate((element) => {
+    element.scrollTop = element.scrollHeight
+  })
   await canvas.focus()
   await canvas.press('Enter')
-  await expect(page.getByRole('alert')).toContainText('确认失败')
+  const toast = page.getByTestId('review-feedback-toast')
+  await expect(toast).toBeVisible()
+  await expect(toast).toContainText('确认失败')
+  expect(await toast.evaluate((element) => element.parentElement === document.body)).toBe(true)
+  const geometry = await page.evaluate(() => {
+    const toastElement = document.querySelector<HTMLElement>('[data-testid="review-feedback-toast"]')!
+    const footer = document.querySelector<HTMLElement>('[data-testid="scoring-footer"]')!
+    const toastRect = toastElement.getBoundingClientRect()
+    const footerRect = footer.getBoundingClientRect()
+    return {
+      insideViewport: toastRect.left >= 0 && toastRect.right <= innerWidth &&
+        toastRect.top >= 0 && toastRect.bottom <= innerHeight,
+      overlapsFooter: toastRect.left < footerRect.right && toastRect.right > footerRect.left &&
+        toastRect.top < footerRect.bottom && toastRect.bottom > footerRect.top,
+      documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    }
+  })
+  expect(geometry).toEqual({ insideViewport: true, overlapsFooter: false, documentOverflow: 0 })
   await expect(score).toHaveValue('3.5')
   await expect(page).toHaveURL(/detail=3$/)
 
   await setMode(page, { confirm: '500' })
   await canvas.press('Enter')
-  await expect(page.getByRole('alert')).toContainText('确认失败')
+  await expect(page.getByTestId('review-feedback-toast')).toHaveCount(1)
+  await expect(page.getByTestId('review-feedback-toast')).toContainText('确认失败')
   await expect(score).toHaveValue('3.5')
 
   await setMode(page, { confirm: 'retry' })

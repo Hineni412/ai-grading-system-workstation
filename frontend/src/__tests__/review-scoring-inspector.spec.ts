@@ -124,10 +124,22 @@ describe('review scoring inspector', () => {
     await nextTick()
     host.querySelector<HTMLButtonElement>('[data-testid="confirm-next"]')!.click()
 
-    await vi.waitFor(() => expect(host.textContent).toContain('确认失败，教师草稿已保留'))
-    expect(host.textContent).not.toContain('private server detail')
+    const toast = await vi.waitFor(() => {
+      const found = document.body.querySelector<HTMLElement>('[data-testid="review-feedback-toast"]')
+      expect(found).not.toBeNull()
+      return found!
+    })
+    expect(toast.textContent).toContain('确认失败，教师草稿已保留')
+    expect(toast.textContent).not.toContain('private server detail')
+    expect(host.querySelector('[data-testid="scoring-scroll-region"]')?.contains(toast)).toBe(false)
+    expect(host.querySelector('.review-scoring-feedback')).toBeNull()
     expect(useReviewDraftStore(pinia).drafts['7:Q1:21']?.scoreText).toBe('4')
     expect(useReviewQueueStore(pinia).selectedDetailId).toBe(21)
+
+    toast.querySelector<HTMLButtonElement>('[aria-label="关闭通知"]')!.click()
+    await nextTick()
+    expect(document.body.querySelector('[data-testid="review-feedback-toast"]')).toBeNull()
+    expect(useReviewDraftStore(pinia).drafts['7:Q1:21']?.scoreText).toBe('4')
     app.unmount()
   })
 
@@ -153,7 +165,9 @@ describe('review scoring inspector', () => {
 
     await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
     await vi.waitFor(() => expect(useReviewQueueStore(pinia).selectedDetailId).toBe(22))
-    await vi.waitFor(() => expect(host.textContent).toContain('分数已确认，标注图需要稍后刷新'))
+    await vi.waitFor(() => expect(
+      document.body.querySelector('[data-testid="review-feedback-toast"]')?.textContent,
+    ).toContain('分数已确认，标注图需要稍后刷新'))
     expect(useReviewDraftStore(pinia).drafts['7:Q1:21']).toBeUndefined()
     app.unmount()
   })
@@ -249,7 +263,9 @@ describe('review scoring inspector', () => {
       annotation_outcomes: [{ result_id: 11, status: 'retry_required' }],
     })
 
-    await vi.waitFor(() => expect(host.textContent).toContain(
+    await vi.waitFor(() => expect(
+      document.body.querySelector('[data-testid="review-feedback-toast"]')?.textContent,
+    ).toContain(
       '先前记录的分数已确认，标注图需要稍后刷新；当前选择未更改',
     ))
     expect(useReviewDraftStore(pinia).drafts['7:Q1:21']).toBeUndefined()
@@ -285,7 +301,9 @@ describe('review scoring inspector', () => {
     await nextTick()
     resolveConfirmation!({ updated_details: 1, updated_results: 1, annotation_outcomes: [] })
 
-    await vi.waitFor(() => expect(host.textContent).toContain('先前记录的教师最终分已确认'))
+    await vi.waitFor(() => expect(
+      document.body.querySelector('[data-testid="review-feedback-toast"]')?.textContent,
+    ).toContain('先前记录的教师最终分已确认'))
     expect(useReviewDraftStore(pinia).drafts['7:Q1:21']).toBeUndefined()
     expect(queue.currentItem).toMatchObject({
       session_id: 8,
@@ -307,7 +325,9 @@ describe('review scoring inspector', () => {
     await nextTick()
     host.querySelector<HTMLButtonElement>('[data-testid="confirm-next"]')!.click()
 
-    await vi.waitFor(() => expect(host.textContent).toContain('分数已确认，队列刷新失败'))
+    await vi.waitFor(() => expect(
+      document.body.querySelector('[data-testid="review-feedback-toast"]')?.textContent,
+    ).toContain('分数已确认，队列刷新失败'))
     expect(confirmReviewItem).toHaveBeenCalledTimes(1)
     expect(useReviewDraftStore(pinia).drafts['7:Q1:21']).toMatchObject({
       scoreText: '4',
