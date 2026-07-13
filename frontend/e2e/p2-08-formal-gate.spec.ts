@@ -50,6 +50,16 @@ test('fixed anonymous page exposes only real shortcuts and restores confirmed st
   await expect(guide).toContainText('搜索学生')
   await expect(guide).not.toContainText(/(^|\s)R($|\s)/)
 
+  const scoreHierarchy = await page.evaluate(() => ({
+    teacher: Number.parseFloat(getComputedStyle(
+      document.querySelector<HTMLElement>('[data-testid="teacher-score"]')!,
+    ).fontSize),
+    ai: Number.parseFloat(getComputedStyle(
+      document.querySelector<HTMLElement>('.review-ai-score strong')!,
+    ).fontSize),
+  }))
+  expect(scoreHierarchy.teacher).toBeGreaterThan(scoreHierarchy.ai)
+
   const canvas = page.getByLabel('答卷图片画布')
   const scale = page.getByLabel('当前缩放比例')
   await canvas.focus()
@@ -135,7 +145,7 @@ test('unconfirmed drafts survive record changes, warn before refresh and are not
   await page.reload()
   expect(dialogType).toBe('beforeunload')
   await expect(score).toHaveValue('3')
-  await expect(page.getByText('教师草稿未确认', { exact: true })).not.toBeVisible()
+  await expect(page.getByText('教师草稿未确认', { exact: true })).toBeHidden()
 })
 
 test('failure retains the draft and annotation retry remains non-blocking', async ({ page }) => {
