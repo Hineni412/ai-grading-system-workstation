@@ -12,6 +12,7 @@ import './styles/element-theme.css'
 import './styles/base.css'
 import './styles/app-shell.css'
 import './styles/review-queue.css'
+import './styles/review-evidence.css'
 
 const app = createApp(App)
 const pinia = createPinia()

@@ -21,6 +21,10 @@ const media = {
   annotated_front_url: '/api/media/annotated/front/1',
   annotated_back_url: '/api/media/annotated/back/1',
 }
+const mediaPng = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR42mP8z8Dwn4GBgYGJAQoAHgQCAfJQZ8sAAAAASUVORK5CYII=',
+  'base64',
+)
 const focusCases: Record<
   number,
   {
@@ -109,6 +113,12 @@ function fulfillJson(route: Route, body: unknown): Promise<void> {
 }
 
 async function installReviewApi(page: Page, state: MockState): Promise<void> {
+  await page.route(/\/api\/media\//, (route) => route.fulfill({
+    status: 200,
+    contentType: 'image/png',
+    headers: { 'Cache-Control': 'no-store' },
+    body: mediaPng,
+  }))
   await page.route(/\/api\/sessions$/, (route) =>
     fulfillJson(route, { items: [session], total: 1 }),
   )
@@ -165,7 +175,7 @@ test('restores URL context and crosses the 100/101 boundary with keyboard naviga
   await page.setViewportSize({ width: 1024, height: 768 })
   await installReviewApi(page, state)
   await openReviewQueue(page, '/grading?question=Q1&detail=201&discard=me')
-  const summary = page.locator('.review-selection-summary')
+  const evidenceViewer = page.locator('.review-evidence-viewer')
 
   await expect(page).toHaveURL(/\/grading\?question=Q1&detail=201$/)
   await expect(page.getByText('当前位置 100 / 1000')).toBeVisible()
@@ -179,7 +189,7 @@ test('restores URL context and crosses the 100/101 boundary with keyboard naviga
   await expect(page.getByText('当前位置 101 / 1000')).toBeVisible()
   await expect(await selectedRow(page)).toContainText('学生0203')
   await expect(await selectedRow(page)).toBeInViewport()
-  await expect(summary).toBeInViewport()
+  await expect(evidenceViewer).toBeInViewport()
   await expect(page.getByText('第 2 / 10 页')).toBeVisible()
   const pageTwoScroll = await scrollPositions(page)
 
@@ -187,7 +197,7 @@ test('restores URL context and crosses the 100/101 boundary with keyboard naviga
   await expect(page).toHaveURL(/detail=201$/)
   await expect(page.getByText('当前位置 100 / 1000')).toBeVisible()
   await expect(await selectedRow(page)).toBeInViewport()
-  await expect(summary).toBeInViewport()
+  await expect(evidenceViewer).toBeInViewport()
   const returnedPageOneScroll = await scrollPositions(page)
 
   expect(initialScroll.page).toBe(0)
