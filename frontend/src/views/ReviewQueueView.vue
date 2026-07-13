@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
 import StatePanel from '../components/design-system/StatePanel.vue'
+import ReviewEvidenceViewer from '../components/review/ReviewEvidenceViewer.vue'
 import ReviewQueuePanel from '../components/review/ReviewQueuePanel.vue'
 import ReviewSelectionSummary from '../components/review/ReviewSelectionSummary.vue'
 import { useReviewQueueStore, type ReviewScope, type ReviewSort } from '../stores/review-queue'
@@ -57,6 +58,16 @@ const hasValidatedQuestion = computed(() =>
 )
 const currentPosition = computed(() =>
   reviewStore.currentIndex >= 0 ? reviewStore.currentIndex + 1 : 0,
+)
+const previousItem = computed(() =>
+  reviewStore.currentIndex > 0
+    ? reviewStore.filteredItems[reviewStore.currentIndex - 1] ?? null
+    : null,
+)
+const nextItem = computed(() =>
+  reviewStore.currentIndex >= 0
+    ? reviewStore.filteredItems[reviewStore.currentIndex + 1] ?? null
+    : null,
 )
 
 function stringQuery(value: unknown): string | null {
@@ -385,11 +396,18 @@ onBeforeUnmount(() => {
           title="正在读取复核记录"
           description="可以继续切换题目，当前请求会安全取消。"
         />
-        <ReviewSelectionSummary
-          v-else
-          :item="reviewStore.currentItem"
-          :question-id="reviewStore.selectedQuestionId"
-        />
+        <div v-else class="review-evidence-layout">
+          <ReviewSelectionSummary
+            :item="reviewStore.currentItem"
+            :question-id="reviewStore.selectedQuestionId"
+          />
+          <ReviewEvidenceViewer
+            v-if="reviewStore.currentItem"
+            :item="reviewStore.currentItem"
+            :previous-item="previousItem"
+            :next-item="nextItem"
+          />
+        </div>
       </section>
     </div>
   </section>
