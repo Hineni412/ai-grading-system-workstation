@@ -173,7 +173,7 @@ git commit -m "feat: add review scoring API adapters"
 - Consumes: `ReviewItem` identity/current score/max score.
 - Produces: `useReviewDraftStore()`, `ensureDraft(item)`, `updateScore(key, text)`, `updateNote(key, text)`, `scoreIssue(draft, maxScore)`, `markConfirmed(key)`, `hasDirtyDrafts`, `dirtyCount`, and `reset()`.
 
-- [ ] **Step 1: Write failing draft lifecycle tests**
+- [x] **Step 1: Write failing draft lifecycle tests**
 
 Cover one behavior per test:
 
@@ -195,13 +195,13 @@ npm test -- src/__tests__/review-drafts-store.spec.ts
 
 Expected: FAIL because the store does not exist.
 
-- [ ] **Step 2: Implement the minimal Pinia store**
+- [x] **Step 2: Implement the minimal Pinia store**
 
 Use a plain reactive record keyed by `${sessionId}:${questionId}:${detailId}`. Store only score text, note, base score/note and dirty timestamp; never store media URLs or student names. `scoreIssue` returns stable Chinese field errors and `null` when valid.
 
 Run the same test and expect PASS.
 
-- [ ] **Step 3: Commit the draft slice**
+- [x] **Step 3: Commit the draft slice**
 
 ```powershell
 git add frontend/src/stores/review-drafts.ts frontend/src/__tests__/review-drafts-store.spec.ts
