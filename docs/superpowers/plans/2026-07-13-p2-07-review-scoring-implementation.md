@@ -43,10 +43,10 @@
 ## 昼夜交接
 
 **执行包：** P2-07
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** waiting_user
+**功能提交：** 2cdb126a4dde681d595ea86972320ee7a92f2839
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** pending
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
@@ -440,6 +440,13 @@ Use `superpowers:requesting-code-review` without subagents: perform a fresh requ
 After review passes, create the required plan-only `waiting_user` anchor commit that records the reviewed 40-character SHA. Start the verified synthetic runtime and ask the user to follow the quick checklist. If the user passes it, create the checklist-only evidence commit, then the plan-only `verified_pending_integration` handoff commit. Validate after each state transition.
 
 Integrate the complete commit chain into a fresh P2-07 integration branch based on latest `origin/main`, run affected frontend gates plus one full integration smoke, recheck real database fingerprints, push integration, open and merge a GitHub PR into `main`, then fetch/prune and fast-forward local `main` and active worktrees. Do not directly push `main`, force push, delete unmerged history or remove any worktree containing data.
+
+## 2026-07-13 独立复审证据
+
+- 已复审功能提交：`2cdb126a4dde681d595ea86972320ee7a92f2839`。
+- 复审发现并修正：旧确认响应不得按重复的 `detail_id` 污染新考试/题目上下文；未确认草稿的关闭提醒必须在离开阅卷路由后仍生效；切换记录后的批注重试提示必须同时说明保存事实、批注影响和当前选择未改变。
+- 修正均经过 RED → GREEN；最终前端单元测试 171 项、受影响 Chromium 浏览器回归 16 项、lint、typecheck、生产构建和 `smoke_check.py --skip-tests` 全部通过。
+- 未发现剩余 Critical 或 Important 问题；真实两库大小、UTC 修改时间和 SHA-256 与领取证据一致。
 
 ## Plan Self-Review
 
