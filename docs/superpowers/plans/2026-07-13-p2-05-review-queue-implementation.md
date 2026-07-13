@@ -31,6 +31,20 @@
 - 执行模型为 T-H。每个新行为必须先有可见 RED，再有最小 GREEN；同一问题连续两次修复失败时安全停机。
 - 实施前必须使用 `frontend-design`，实施过程必须使用 `test-driven-development`，完成声明前必须使用 `verification-before-completion`；本任务禁止自动派生子代理，除非用户另行明确授权。
 
+<!-- HANDOFF_STATUS_START -->
+## 昼夜交接
+
+**执行包：** P2-05
+**交接状态：** in_progress
+**功能提交：** none
+**自动验证：** pending
+**独立复审：** pending
+**用户验收：** pending
+**真实数据指纹：** not_touched
+**Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
+**夜间动作：** report_only
+<!-- HANDOFF_STATUS_END -->
+
 ---
 
 ### Task 1: Claim the package and add the strict Review read adapter
@@ -49,10 +63,10 @@
 Before any source edit, read `git stash list --format=%H`, then add exactly one handoff block to this plan:
 
 ```markdown
-<!-- HANDOFF_STATUS_START -->
+&lt;!-- HANDOFF_STATUS_START --&gt;
 ## 昼夜交接
 
-**执行包：** P2-05
+**执行包（示例）：** P2-05
 **交接状态：** in_progress
 **功能提交：** none
 **自动验证：** pending
@@ -61,7 +75,7 @@ Before any source edit, read `git stash list --format=%H`, then add exactly one 
 **真实数据指纹：** not_touched
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
-<!-- HANDOFF_STATUS_END -->
+&lt;!-- HANDOFF_STATUS_END --&gt;
 ```
 
 Run from the fresh implementation worktree:
