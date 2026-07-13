@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from api_profiles import get_api_profile_store
+from backend.llm.policy import policy_overrides_from_profile
 from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
 from question_bank.models.tag_schema import ERROR_PRONE_CATEGORIES, SUB_SKILL_DIMENSIONS, SUB_SKILL_KEYWORD_HINTS, TagAnalysis, TaggingContext
 from question_bank.taxonomy.registry import CANONICAL_KNOWLEDGE, canonical_knowledge_seed_rows
@@ -682,6 +683,7 @@ def _llm_settings_from_profile() -> LLMSettings | None:
         config_model=str(profile.get("config_model") or DEFAULT_TAGGING_MODEL),
         config_api_key=config_api_key,
         config_base_url=normalize_openai_base_url(str(profile.get("config_base_url") or profile.get("base_url") or "https://api.openai.com/v1")),
+        policy_profile=policy_overrides_from_profile(profile),
     )
 
 
