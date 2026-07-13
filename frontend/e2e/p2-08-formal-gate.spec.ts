@@ -44,6 +44,7 @@ test('fixed anonymous page exposes only real shortcuts and restores confirmed st
 
   const guide = page.getByLabel('单题复核快捷键')
   await expect(guide).toContainText('J / K')
+  await expect(guide).toContainText('下一份 / 上一份')
   await expect(guide).toContainText('Enter')
   await expect(guide).toContainText('Shift + Enter')
   await expect(guide).toContainText('适应宽度')

@@ -4,7 +4,7 @@
     <dl class="review-shortcut-guide__list">
       <div>
         <dt><kbd>J</kbd> / <kbd>K</kbd></dt>
-        <dd>上一份 / 下一份</dd>
+        <dd>下一份 / 上一份</dd>
       </div>
       <div>
         <dt><kbd>Enter</kbd></dt>

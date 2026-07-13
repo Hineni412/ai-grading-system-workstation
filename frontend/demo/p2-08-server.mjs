@@ -131,6 +131,12 @@ export async function startP208Server({ port = 4188, staticRoot = resolve('dist'
         const body = await readJsonBody(request)
         const confirmModes = new Set(['success', '422', '500', 'retry'])
         const itemModes = new Set(['ready', 'empty', 'error', 'slow'])
+        if (
+          typeof body !== 'object' || body === null || Array.isArray(body) ||
+          Object.keys(body).some((key) => key !== 'confirm' && key !== 'items')
+        ) {
+          return sendJson(response, 422, { message: '匿名验收模式字段无效' })
+        }
         if (body.confirm !== undefined && !confirmModes.has(body.confirm)) {
           return sendJson(response, 422, { message: '无效的确认模式' })
         }
@@ -172,11 +178,22 @@ export async function startP208Server({ port = 4188, staticRoot = resolve('dist'
         if (modes.confirm === '422') return sendJson(response, 422, { message: '匿名验收校验失败' })
         if (modes.confirm === '500') return sendJson(response, 500, { message: '匿名验收服务失败' })
         const body = await readJsonBody(request)
-        const submitted = Array.isArray(body.items) ? body.items[0] : null
+        const submitted = Array.isArray(body.items) && body.items.length === 1
+          ? body.items[0]
+          : null
+        const questionId = decodeURIComponent(confirmMatch[2])
         const target = submitted && state.items.find(
-          (item) => item.result_id === submitted.result_id && item.detail_id === submitted.detail_id,
+          (item) =>
+            item.question_id === questionId &&
+            item.result_id === submitted.result_id &&
+            item.detail_id === submitted.detail_id,
         )
-        if (!target || !Number.isFinite(submitted.score_awarded)) {
+        if (
+          !target ||
+          !Number.isFinite(submitted.score_awarded) ||
+          submitted.score_awarded < 0 ||
+          submitted.score_awarded > target.max_score
+        ) {
           return sendJson(response, 422, { message: '匿名验收提交内容无效' })
         }
         target.score_awarded = submitted.score_awarded
@@ -195,7 +212,9 @@ export async function startP208Server({ port = 4188, staticRoot = resolve('dist'
         })
       }
 
-      const mediaMatch = pathname.match(/^\/api\/media\/([^/]+(?:\/[^/]+)*)\/(\d+)$/)
+      const mediaMatch = pathname.match(
+        /^\/api\/media\/(crop|(?:original|annotated)\/(?:front|back))\/(\d+)$/,
+      )
       if (request.method === 'GET' && mediaMatch) {
         const svg = generatedAnswerSvg(mediaMatch[2], mediaMatch[1])
         response.writeHead(200, {

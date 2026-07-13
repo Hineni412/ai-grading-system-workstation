@@ -107,6 +107,37 @@ test('exposes explicit failure, retry, empty, error and slow acceptance modes', 
   assert.ok(Date.now() - started >= 150)
 })
 
+test('rejects unknown controls, media shapes and invalid confirmation context', async () => {
+  const origin = await startDemo()
+  assert.equal(
+    (await postJson(origin, '/__p2_08__/mode', { items: 'ready', extra: 'not-allowed' })).status,
+    422,
+  )
+  assert.equal((await fetch(`${origin}/api/media/private/1`)).status, 404)
+
+  const wrongQuestion = await postJson(
+    origin,
+    '/api/sessions/7/review/questions/Q2/confirm',
+    { items: [{ result_id: 101, detail_id: 1, score_awarded: 4 }] },
+  )
+  assert.equal(wrongQuestion.status, 422)
+  const outOfRange = await postJson(
+    origin,
+    '/api/sessions/7/review/questions/Q1/confirm',
+    { items: [{ result_id: 101, detail_id: 1, score_awarded: 6 }] },
+  )
+  assert.equal(outOfRange.status, 422)
+  const multiple = await postJson(
+    origin,
+    '/api/sessions/7/review/questions/Q1/confirm',
+    { items: [
+      { result_id: 101, detail_id: 1, score_awarded: 4 },
+      { result_id: 102, detail_id: 2, score_awarded: 4 },
+    ] },
+  )
+  assert.equal(multiple.status, 422)
+})
+
 test('rejects traversal and the server source contains no production data-tree reference', async () => {
   const origin = await startDemo()
   assert.equal((await fetch(`${origin}/..%2f..%2fVERSION`)).status, 404)

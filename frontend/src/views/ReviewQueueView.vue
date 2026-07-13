@@ -338,7 +338,7 @@ onBeforeUnmount(() => {
   <section ref="reviewPage" class="review-page" aria-labelledby="review-page-title">
     <header class="review-page__header">
       <h1 id="review-page-title" tabindex="-1">复核队列</h1>
-      <p>查看单题复核记录，并在不修改评分数据的前提下连续浏览。</p>
+      <p>查看单题复核记录，核对答卷证据并连续确认教师最终分。</p>
     </header>
 
     <ReviewShortcutGuide />
