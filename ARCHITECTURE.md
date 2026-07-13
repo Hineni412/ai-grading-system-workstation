@@ -18,6 +18,7 @@
 - **P2-04 增量边界：** `frontend/` 已增加唯一原生 Fetch Client、统一脱敏 `ApiError`、sessions 运行时契约复用和 Pinia Job Store；Client 只接受同源 `/api/` 路径，只对 GET 临时失败有界重试。浏览器只持久化自己记录的 Job ID/类型/时间，刷新后按 ID 恢复；每 Job 单轮询，取消仍以服务器终态为准。本包不新增可见 UI、业务页面、后端契约、生产入口或真实数据操作
 - **P2-05 增量边界：** `frontend/` 已增加只读单题复核队列样板页，复用既有 review questions/items GET 契约，提供题目选择、姓名/学号/班级搜索、待复核筛选、稳定排序、每页 100 条分页、URL/Store 同步和上一/下一及 J/K 连续导航。1000 条生成数据与五档桌面视口已验证左队列独立滚动、当前行和右侧摘要同时可见；本包不加载答卷媒体，不提供调分、确认或其他写入口，也不切换生产 UI
 - **P2-06 增量边界：** `frontend/` 已在只读单题复核队列内增加答卷证据查看器，只使用既有受控媒体 URL 显示裁剪图、原卷正面和可用时的原卷背面；支持适应宽度、原比例、10%—400% 缩放、90° 旋转、拖拽、指针位置缩放和局部键盘操作。页面同时只挂载一张活动图片，并最多预加载相邻两张裁剪图；记录/来源切换会重置视图并隔离旧响应，失败信息脱敏且可安全重试。本包不使用 Canvas 改写图像，不持久化查看状态，不提供调分、确认或其他写入口，也不切换生产 UI
+- **P2-07 增量边界：** `frontend/` 已在单题复核样板页右栏接入当前题评分标准、AI 初评与证据、风险摘要、教师最终分草稿和单条安全确认。草稿只驻留浏览器内存，切换记录时保留；确认失败不丢输入，成功后以教师分覆盖 AI 建议并进入预先确定的下一份，写请求不自动重放，后续队列或批注刷新失败不会误报评分失败。本包只复用既有配置、Review GET 和 confirm POST，不新增后端契约、评分规则或数据库迁移，也不切换生产 UI
 - **P1-17 增量边界：** FastAPI 增加 `config_generation` Job；生成输入以服务器 ID 原子暂存，Job payload 不保存密钥、试卷正文或客户端路径，部分题失败只发布可重试草稿，失败题清零后才原子发布 rubric/answer_key 并绑定会话
 - **P1-18 增量边界：** FastAPI 增加独立的 `question_import` 与 `tagging_sync` Job；前者只消费 P1-16 服务器导入请求，后者只消费题目 ID 并分批调用现有打标服务。两类任务复用通用查询/取消，支持受控重试和脱敏部分失败摘要；打标仍只有 `complete` 才保存且不运行旧技能消歧，当前不切换 P1-24 LLM Gateway
 - **P1-19 增量边界：** FastAPI 增加 Training 诊断、推荐预览和训练任务确认/分页/详情 API；诊断只走现有 `question_tag` 主路径，推荐固定精确 `knowledge_point`、`exact_only` 且禁止 broad/legacy/skill 回退。任务确认以 UUID 唯一代码和计划 revision 幂等写入题库，客户端不能指定 `created_by`；公开任务快照移除源文件和输出路径
@@ -69,7 +70,7 @@
 
 ### 当前实现边界
 
-- 这是仅供单用户在个别受信任 Windows 工作机运行的本地应用，不存在独立部署的生产前端或远程数据库；Streamlit 与增量 FastAPI 均只监听 loopback。`frontend/` 已提供可重复构建的 Vue 工程基础、设计 Token、基础控件、App Shell、路由、当前考试上下文，以及带只读答卷证据查看器的单题复核样板页，但 Vue 尚未成为生产 UI。
+- 这是仅供单用户在个别受信任 Windows 工作机运行的本地应用，不存在独立部署的生产前端或远程数据库；Streamlit 与增量 FastAPI 均只监听 loopback。`frontend/` 已提供可重复构建的 Vue 工程基础、设计 Token、基础控件、App Shell、路由、当前考试上下文，以及带答卷证据查看器和教师评分确认的单题复核样板页，但 Vue 尚未成为生产 UI。
 - 主入口是 `运行.bat`：默认并行启动 `python -m streamlit run web_app.py`（8501）和增量 FastAPI 本机 API（8000，包含健康检查、基础 sessions/students/config/template/regions、JobManager、config-generation/report/scan/grading/review/media/files/question-bank 路由，可用 `START_API=0` 跳过）；`run_desktop.py` 是另一套桌面/冻结构建启动器，`main.py` 是较早的命令行批改入口。
 - 核心状态保存在两个 SQLite 数据库和 `user_data/` 文件树中。
 - AI 能力依赖可配置的 OpenAI 兼容 HTTP 接口；当前代码路径使用 OpenAI Python SDK 的 Chat Completions 和 Responses API。
@@ -209,7 +210,7 @@ AI阅卷系统_工作机版_v1.5.0/
 ├── pages/                         # 题库、组卷、训练推荐、技能管理、系统自检
 ├── pages_shared/                  # 多页面共享样式与组件
 ├── components/answer_region_editor/ # 答题区自定义前端组件
-├── frontend/                       # Vue 工程、设计 Token、App Shell、统一 Client 与只读复核/证据样板页；生产切换前仅开发构建使用
+├── frontend/                       # Vue 工程、设计 Token、App Shell、统一 Client 与复核/证据/教师评分样板页；生产切换前仅开发构建使用
 ├── grading_service.py             # 阅卷会话主编排
 ├── scanner.py                     # 扫描页标准化、姓名识别与配对
 ├── ai_grader.py                   # 单份答卷评分模型与校验
@@ -269,7 +270,8 @@ AI阅卷系统_工作机版_v1.5.0/
 14. P2-04 的统一前端 Client 只允许同源 `/api/` 路径并集中解析脱敏错误；GET 临时失败可有界重试，写请求不自动重放。Job Store 只恢复当前浏览器记录的任务并保证每个 Job 单轮询。
 15. P2-05 的 `/grading` Vue 路由是首个已迁移的只读业务切片：页面只调用 review questions/items 两个 GET，筛选、排序、分页和选择回收全部在浏览器内完成；问题/明细 URL 查询参数经过校验并串行同步，在途切换与卸载以 AbortController 和 generation 防止旧响应回写。队列每页最多渲染 100 条，列表与详情独立滚动；快捷键在输入和可编辑上下文中失效。
 16. P2-06 的答卷证据查看器直接把既有受控媒体 URL 交给单个活动 `<img>`，不通过 Fetch/Blob/Object URL/Canvas 复制像素；相邻预加载仅保留至多两张裁剪图。缩放、旋转和拖拽状态只存在当前组件内，记录或媒体来源变化立即释放指针捕获并回到适应宽度；generation 和当前 URL 双重校验阻止大图延迟响应污染新记录。查看器局部快捷键不劫持输入框和重试按钮；评分写入仍留给 P2-07。
-17. Streamlit 页面与业务服务仍运行在同一 Python 进程中；FastAPI 目前是增量本机 API 外壳，JobManager 仍为进程内线程池而非独立 Worker。测试通过 dependency override 注入的 manager 由测试自身关闭，不归应用 lifespan 所有。
+17. P2-07 的评分检查器在 `/grading` 右栏按当前 `session_id/question_id/detail_id` 建立内存草稿；配置读取只投影当前题或当前 part 的已有评分字段，AI 候选和证据仅作建议。确认调用既有单条 Review confirm POST 且不自动重试；成功后先以教师结果局部更新，再按提交前队列目标导航并刷新，旧响应不得抢走教师后来选择的记录。刷新失败保留成功事实与干净草稿，未确认草稿只在关闭/刷新浏览器前触发标准提醒；活动记录在 API 提供历史前保持明确占位。
+18. Streamlit 页面与业务服务仍运行在同一 Python 进程中；FastAPI 目前是增量本机 API 外壳，JobManager 仍为进程内线程池而非独立 Worker。测试通过 dependency override 注入的 manager 由测试自身关闭，不归应用 lifespan 所有。
 
 ### 5.2 考试配置与批改
 

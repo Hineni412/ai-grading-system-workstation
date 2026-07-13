@@ -178,7 +178,6 @@ export function extractReviewRubricSection(
     const part = parts.find((entry) => cleanText(entry.part_id) === requested)
     if (questionId !== requested && part === undefined) continue
 
-    const target = part ?? rawQuestion
     const maxScore = finiteNonnegative(
       part === undefined ? rawQuestion.max_score : part.part_score,
     ) ?? 0
