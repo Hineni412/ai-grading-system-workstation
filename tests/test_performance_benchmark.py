@@ -5,7 +5,7 @@ from dataclasses import fields, is_dataclass
 import pytest
 from httpx import Response
 
-from tools.performance.dataset import ScaleDefinition, build_benchmark_dataset
+from tools.performance.dataset import SCALES, ScaleDefinition, build_benchmark_dataset
 from tools.performance.runner import (
     BenchmarkRunError,
     InMemoryPerformanceSink,
@@ -251,6 +251,44 @@ def test_build_scenarios_has_unique_real_route_contract(micro_dataset) -> None:
     assert "{question_id}" in by_name["question_bank.question.preview"].route_template
     assert "{preview_type}" in by_name["question_bank.question.preview"].route_template
     assert "{task_id}" in by_name["training.task.detail"].route_template
+    assert by_name["question_bank.papers"].scale_driver == "papers"
+
+
+@pytest.mark.parametrize(
+    "scale",
+    (MICRO, *SCALES),
+    ids=lambda scale: scale.name,
+)
+def test_representative_question_bank_scenarios_return_records_for_each_workload(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    scale: ScaleDefinition,
+) -> None:
+    import tools.performance.runner as runner_module
+
+    dataset = build_benchmark_dataset(tmp_path / scale.name, scale)
+    scenarios = tuple(
+        scenario
+        for scenario in build_scenarios(dataset)
+        if scenario.name
+        in {"question_bank.papers", "question_bank.questions.filtered"}
+    )
+    monkeypatch.setattr(runner_module, "build_scenarios", lambda _dataset: scenarios)
+
+    result = runner_module.run_scale(
+        dataset,
+        warmups=1,
+        samples=1,
+        repetitions=2,
+    )
+
+    counts = {
+        summary.name: summary.response_records.minimum
+        for summary in result.repetitions[0].scenarios
+    }
+    expected_papers = max(1, (scale.question_bank_questions + 99) // 100)
+    assert counts["question_bank.papers"] == expected_papers
+    assert counts["question_bank.questions.filtered"] > 0
 
 
 @pytest.mark.parametrize(
@@ -384,6 +422,20 @@ def test_real_runner_collects_two_summaries_of_two_samples_without_ids(
     assert deterministic_projection(result.repetitions[0]) == deterministic_projection(
         result.repetitions[1]
     )
+    for scenario_name in (
+        "question_bank.papers",
+        "question_bank.questions.filtered",
+    ):
+        response_counts = [
+            next(
+                summary.response_records
+                for summary in repetition.scenarios
+                if summary.name == scenario_name
+            )
+            for repetition in result.repetitions
+        ]
+        assert all(summary.minimum > 0 for summary in response_counts)
+        assert response_counts[0] == response_counts[1]
     scale_projection = deterministic_projection(result)
     assert scale_projection["manifest"]["scale"] == "micro"
     assert scale_projection["manifest"]["seed"] == 126

@@ -72,7 +72,7 @@ def build_scenarios(
             "/api/question-bank/papers",
             _request("/api/question-bank/papers"),
             _collection("items"),
-            "questions",
+            "papers",
         ),
         BenchmarkScenario(
             "question_bank.questions.default",

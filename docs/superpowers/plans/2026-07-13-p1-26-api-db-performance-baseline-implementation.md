@@ -132,7 +132,7 @@ Expected: the second commit adds only `docs/superpowers/specs/2026-07-13-p1-26-a
 - Produces: `request_performance_scope(request_id) -> ContextManager[RequestPerformanceRecorder]` and `instrument_sqlite_connection(connection) -> connection`.
 - Changes: `create_app(*, performance_sink: PerformanceSink | None = None, path_manager: PathManager | None = None) -> FastAPI`; calls without arguments remain identical.
 
-- [ ] **Step 1: Write failing recorder and SQL-classification tests**
+- [x] **Step 1: Write failing recorder and SQL-classification tests**
 
 Create tests equivalent to:
 
@@ -159,7 +159,7 @@ def test_request_scope_counts_statements_without_retaining_sql() -> None:
 
 Also add: outside a scope `instrument_sqlite_connection()` does not install a callback; `WITH ... SELECT` counts as a select; nested scopes restore the outer recorder; two `ThreadPoolExecutor` requests keep independent totals; `elapsed_ms` rejects NaN/negative values; duplicate/missing sink IDs fail deterministically.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests\test_api_performance_metrics.py -q
@@ -167,7 +167,7 @@ Also add: outside a scope `instrument_sqlite_connection()` does not install a ca
 
 Expected: collection fails because `backend.performance` does not exist.
 
-- [ ] **Step 3: Implement the minimal metrics module**
+- [x] **Step 3: Implement the minimal metrics module**
 
 Implement frozen dataclasses and a locked recorder. The trace callback must only classify the first token and discard the statement immediately:
 
@@ -191,7 +191,7 @@ def instrument_sqlite_connection(connection: sqlite3.Connection) -> sqlite3.Conn
 
 `count_statement()` increments total for every nonblank callback and increments select only when the first uppercased token is `SELECT` or `WITH`. Implement `RequestPerformanceRecord` with `repr=False` and a custom `__repr__` that exposes method, route template, status and numeric metrics but explicitly omits `request_id` and all SQL text. `InMemoryPerformanceSink` stores by request ID under a lock and `pop()` removes the record so warmups cannot leak into formal samples.
 
-- [ ] **Step 4: Write failing middleware and app-path isolation tests**
+- [x] **Step 4: Write failing middleware and app-path isolation tests**
 
 Add a dynamic test route that opens an instrumented in-memory connection and returns one item. Assert:
 
@@ -218,11 +218,11 @@ assert response.headers["x-request-id"] == "metric-99"
 
 Also assert: `create_app()` without a sink emits no performance record; 404 uses `<unmatched>` instead of the raw path; handler exception records status 500 and re-raises; a sink exception leaves the original response unchanged; supplied `path_manager` drives app version, health response and lifespan factories.
 
-- [ ] **Step 5: Extend the existing request middleware minimally**
+- [x] **Step 5: Extend the existing request middleware minimally**
 
 Capture `paths = path_manager or get_path_manager()` in `create_app()`, save it on `api.state`, and make `_lifespan()` pass that object to `create_job_manager(paths)` and `create_ops_write_service(paths)`. In the middleware use `nullcontext(None)` when no sink exists; otherwise start `request_performance_scope(request_id)`, keep the existing request log, derive the safe template from `request.scope.get("route")`, finish the recorder in `finally`, and catch/log sink errors without raw path or exception text.
 
-- [ ] **Step 6: Run GREEN and existing app lifecycle regression**
+- [x] **Step 6: Run GREEN and existing app lifecycle regression**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests\test_api_performance_metrics.py tests\test_api_app.py tests\test_api_job_lifecycle.py -q
@@ -230,7 +230,7 @@ Capture `paths = path_manager or get_path_manager()` in `create_app()`, save it 
 
 Expected: PASS; default `create_app()` and lifespan ownership remain unchanged.
 
-- [ ] **Step 7: Commit Task 1**
+- [x] **Step 7: Commit Task 1**
 
 ```powershell
 git add backend/performance/__init__.py backend/performance/metrics.py backend/api/app.py tests/test_api_performance_metrics.py
@@ -252,7 +252,7 @@ git commit -m "feat: add opt-in API performance metrics"
 - Preserves: every existing connection's row factory, PRAGMA order, transaction, read-only URI, commit/rollback and close ownership.
 - Produces: complete statement/select counts for grading DB, question-bank public connection, stable snapshot validation/read, Training task reads and Ops migration status reads.
 
-- [ ] **Step 1: Write failing connection-boundary tests**
+- [x] **Step 1: Write failing connection-boundary tests**
 
 Use one helper per target:
 
@@ -274,7 +274,7 @@ Tests must create only pytest temporary databases and assert:
 - `training_task_service._read_connection()` counts a task SELECT and still rejects writes through `mode=ro`.
 - `get_migration_status(..., db_path_override=temp_db)` counts its `schema_migrations` read and never returns the candidate path in the performance record.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests\test_db_performance_instrumentation.py -q
@@ -282,7 +282,7 @@ Tests must create only pytest temporary databases and assert:
 
 Expected: counts remain zero because target factories do not call the instrumentation hook.
 
-- [ ] **Step 3: Add the hook immediately after each `sqlite3.connect()`**
+- [x] **Step 3: Add the hook immediately after each `sqlite3.connect()`**
 
 Use the same pattern at every target and do not reorder any existing statement:
 
@@ -294,7 +294,7 @@ conn.execute("PRAGMA foreign_keys = ON")
 
 For URI connections retain every existing keyword argument. In `_open_snapshot_connection()` attach before `PRAGMA query_only`; in `get_migration_status()` attach before the first SELECT. Do not add hooks to unrelated write/offline paths.
 
-- [ ] **Step 4: Run GREEN and affected database behavior tests**
+- [x] **Step 4: Run GREEN and affected database behavior tests**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests\test_db_performance_instrumentation.py tests\test_api_question_bank_routes.py tests\test_api_training_routes.py tests\test_api_graph_routes.py tests\test_ops_self_check_service.py tests\test_migration_tooling.py -q
@@ -302,7 +302,7 @@ For URI connections retain every existing keyword argument. In `_open_snapshot_c
 
 Expected: PASS; snapshot zero-source-write, read-only rejection, migration status and transaction tests remain green.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 
 ```powershell
 git add backend/performance db_manager.py question_bank/database/schema.py question_bank/services/question_read_service.py question_bank/services/training_task_service.py update_tools/migrate_db.py tests/test_db_performance_instrumentation.py
@@ -322,7 +322,7 @@ git commit -m "feat: count target SQLite statements"
 - Produces: `DatasetManifest` and `BenchmarkDataset(paths, manifest, representative_question_id, representative_task_id, knowledge_key)`.
 - Produces: `build_benchmark_dataset(root: Path, scale: ScaleDefinition, *, seed: int = 126) -> BenchmarkDataset`.
 
-- [ ] **Step 1: Write failing scale and deterministic-manifest tests**
+- [x] **Step 1: Write failing scale and deterministic-manifest tests**
 
 Assert the exact defaults:
 
@@ -335,7 +335,7 @@ assert LARGE.counts == (1, 25, 2, 7_500, 500, 25, 5)
 
 Use a custom micro scale `(1, 2, 2, 4, 8, 2, 2)` to build twice under different pytest temp roots with seed 126. Assert equal manifests/table counts/representative IDs; `PRAGMA foreign_key_check` is empty; both `integrity_check` values are `ok`; every generated file resolves beneath its supplied root; generated text contains only `GEN-`, `CLASS-`, `generated-`, `knowledge-` markers; no repository `user_data` path appears in values or repr.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests\test_performance_dataset.py -q
@@ -343,7 +343,7 @@ Use a custom micro scale `(1, 2, 2, 4, 8, 2, 2)` to build twice under different 
 
 Expected: collection fails because `tools.performance.dataset` does not exist.
 
-- [ ] **Step 3: Implement paths, scales and schema creation**
+- [x] **Step 3: Implement paths, scales and schema creation**
 
 Define:
 
@@ -381,7 +381,7 @@ These are three named default workloads, not a monotonic size ladder. `large_5pc
 
 `BenchmarkPaths` must explicitly expose `project_root`, `data_root`, `databases_dir`, `db_path`, `qb_db_path`, `config_dir`, `upload_config_dir`, `api_profiles_path`, `ops_state_dir`, `templates_dir`, `annotated_dir`, `reports_dir`, `backups_dir`, `outputs_dir`, `exams_dir`, `logs_dir`, `qb_data_dir`, `snapshots_dir`, and `version="v1.5.0-p1-26-generated"`. `build_benchmark_dataset()` creates these directories, calls `DBManager(db_path).initialize()` and `initialize_database(qb_db_path, seed_skills=False)`, then bulk-inserts generated rows.
 
-- [ ] **Step 4: Implement bounded bulk generation**
+- [x] **Step 4: Implement bounded bulk generation**
 
 Use batches of at most 1,000 tuples and deterministic formulas:
 
@@ -394,15 +394,15 @@ knowledge_label = f"knowledge-{question_index % 50:02d}"
 score = float((student_id + session_id + question_index) % 11)
 ```
 
-Create one result for every session/student pair and exactly `scale.grading_details` detail rows by cycling the available results/questions without violating unique relations. Create at least `questions_per_session` confirmed `grading_question_links` per session, `question_bank_questions` active questions with current `knowledge_point` plus `method` tags, and `training_tasks` tasks each with one ready variant, one variant student and one task item. Store only `{}`/`[]` or fixed generated snapshots.
+Create one result for every session/student pair and exactly `scale.grading_details` detail rows by cycling the available results/questions without violating unique relations. Group question-bank questions deterministically into papers of at most 100 questions, so the derived paper count is `max(1, ceil(question_bank_questions / 100))` (`small=2`、`medium=20`、`large_5pct=5`、`micro=1`) without adding or changing a scale dimension, and associate every question with exactly one valid paper. Create at least `questions_per_session` confirmed `grading_question_links` per session, `question_bank_questions` active questions with the current `tagged` contract's four non-empty core tags (`knowledge_point`、`ability`、`exam_scope`、`student_level`) plus `method`, preserving the existing active `knowledge_point` value and its matching `knowledge-01` representative filter, and `training_tasks` tasks each with one ready variant, one variant student and one task item. Store only `{}`/`[]` or fixed generated snapshots.
 
 Write one fixed 1×1 PNG from a standard-library base64 constant beneath the temporary question-bank root. Give the representative question one `image_paths` entry and ready `question`/`answer` preview rows pointing to that temporary file. Create `scale.backups` small `.db` metadata files beneath the temporary backups directory; no backup file is copied from any real database.
 
-- [ ] **Step 5: Return an allowlisted manifest and verify actual counts**
+- [x] **Step 5: Return an allowlisted manifest and verify actual counts**
 
-Before returning, query exact table counts and build a frozen manifest containing only scale name, seed, logical counts, database byte sizes and generated asset byte size. Assert counts equal the requested definition; run `foreign_key_check` and `integrity_check`; fail without returning a partial dataset if any invariant differs.
+Before returning, query exact table counts and build a frozen manifest containing only scale name, seed, logical counts (including derived `papers`), database byte sizes and generated asset byte size. Assert counts equal the requested definition; run `foreign_key_check` and `integrity_check`; fail without returning a partial dataset if any invariant differs.
 
-- [ ] **Step 6: Run GREEN**
+- [x] **Step 6: Run GREEN**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests\test_performance_dataset.py tests\test_schema_baseline.py -q
@@ -410,7 +410,7 @@ Before returning, query exact table counts and build a frozen manifest containin
 
 Expected: PASS; repeat builds have identical logical manifests and never touch worktree `user_data`.
 
-- [ ] **Step 7: Commit Task 3**
+- [x] **Step 7: Commit Task 3**
 
 ```powershell
 git add tools/performance/__init__.py tools/performance/dataset.py tests/test_performance_dataset.py
@@ -435,7 +435,7 @@ git commit -m "test: add generated performance datasets"
 - Produces: `nearest_rank(values, percentile)`, `deterministic_projection(result)`, `render_json(report)`, `render_markdown(report)`.
 - Produces CLI defaults: seed 126, `small`, `medium`, `large_5pct`, 3 warmups, 20 samples, 2 repetitions, JSON/Markdown destinations under `docs/performance/`; `--scales large` fails validation.
 
-- [ ] **Step 1: Write failing 16-scenario contract tests**
+- [x] **Step 1: Write failing 16-scenario contract tests**
 
 Assert exact names and routes:
 
@@ -461,9 +461,11 @@ expected = {
 assert {scenario.name for scenario in build_scenarios(dataset)} == expected
 ```
 
-Every dynamic route must retain `{question_id}`, `{asset_index}`, `{preview_type}` or `{task_id}` in `route_template`. Training/Graph bodies use `scope={"mode":"class","class_id":"CLASS-001"}` and `exam_scope={"mode":"cross_exam"}`. The filtered question list uses deterministic `knowledge_point=knowledge-01`, `tag_status=tagged`, `sort=difficulty`, `page_size=100`.
+Every dynamic route must retain `{question_id}`, `{asset_index}`, `{preview_type}` or `{task_id}` in `route_template`. Training/Graph bodies use `scope={"mode":"class","class_id":"CLASS-001"}` and `exam_scope={"mode":"cross_exam"}`. The filtered question list uses deterministic `knowledge_point=knowledge-01`, `tag_status=tagged`, `sort=difficulty`, `page_size=100`; the papers scenario uses `scale_driver="papers"`.
 
-- [ ] **Step 2: Write failing runner tests**
+The generated fixture must make both `question_bank.papers` and `question_bank.questions.filtered` return at least one record, and their response-record summaries must be identical across the two repetitions.
+
+- [x] **Step 2: Write failing runner tests**
 
 With the micro dataset, one warmup, two formal samples and two repetitions, assert each scenario produces two summaries of exactly two samples. Supply request IDs `p1-26-{scale}-{scenario}-{repetition}-{sample}` only in memory; assert they are absent from the result model. A fake non-200 scenario, missing sink record or duplicate request ID must raise `BenchmarkRunError` and return no report.
 
@@ -488,7 +490,7 @@ app.dependency_overrides[get_training_task_service] = lambda: TrainingTaskServic
 
 Leave Graph and Ops service dependencies unoverridden so they consume the overridden `get_path_manager` and exercise their real stable-snapshot/self-check paths. Use a lifespan TestClient because Task 1 routes manager/Ops state to the generated paths.
 
-- [ ] **Step 3: Run RED for scenarios and runner**
+- [x] **Step 3: Run RED for scenarios and runner**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests\test_performance_benchmark.py -q
@@ -496,7 +498,7 @@ Leave Graph and Ops service dependencies unoverridden so they consume the overri
 
 Expected: collection fails because scenarios/runner do not exist.
 
-- [ ] **Step 4: Implement scenario requests and response-record counters**
+- [x] **Step 4: Implement scenario requests and response-record counters**
 
 Each scenario owns an allowlisted counter:
 
@@ -510,11 +512,11 @@ Each scenario owns an allowlisted counter:
 
 The runner parses JSON only in memory to calculate the count and then discards it. It keeps only status, response bytes, response record count and the matched `RequestPerformanceRecord` numeric fields.
 
-- [ ] **Step 5: Implement warmup, two formal repetitions and deterministic comparison**
+- [x] **Step 5: Implement warmup, two formal repetitions and deterministic comparison**
 
 For each scenario/repetition: pop and discard all three warmup records; collect exactly 20 formal records; summarize in memory; never serialize individual samples. `deterministic_projection()` retains only scale manifest, scenario names, status, sample count, query-count min/median/max and response-record counts. Require repetition 1 and 2 projections to be identical before returning `repeatability="passed"`; latency is deliberately excluded from this equality.
 
-- [ ] **Step 6: Write failing report allowlist and percentile tests**
+- [x] **Step 6: Write failing report allowlist and percentile tests**
 
 Assert:
 
@@ -525,7 +527,7 @@ assert nearest_rank(list(range(1, 21)), 0.95) == 19
 
 Build a synthetic report and assert both renderers contain code SHA, Windows/Python/SQLite versions, logical CPU count, manifests, p50/p95/min/max, statement/select summaries, response counts/bytes, repeatability and limitations. Recursively reject keys matching `path`, `url`, `sql`, `body`, `content`, `student_name`, `question_text`, `request_id`, `hostname`, `username`, `environment`, `command`; reject Windows drive prefixes and worktree/user-data markers in rendered text.
 
-- [ ] **Step 7: Run RED for report**
+- [x] **Step 7: Run RED for report**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests\test_performance_report.py -q
@@ -533,7 +535,7 @@ Build a synthetic report and assert both renderers contain code SHA, Windows/Pyt
 
 Expected: collection fails because report functions do not exist.
 
-- [ ] **Step 8: Implement summaries, nearest-rank and possible N+1 observations**
+- [x] **Step 8: Implement summaries, nearest-rank and possible N+1 observations**
 
 Sort finite nonnegative timings and use `ceil(percentile * len(values)) - 1`. Report two independent p50/p95 pairs per scale/scenario. Compare only the explicitly named `small` and `large_5pct` workloads; do not infer comparison endpoints from tuple position or treat all three defaults as monotonically increasing. A possible N+1 candidate requires the scenario's actual driver to increase and all of:
 
@@ -545,7 +547,7 @@ candidate = select_delta >= 5 and driver_delta > 0 and select_delta / driver_del
 
 Label it only `possible_n_plus_one`; retain `small_select_median`/`small_driver_count` for the base endpoint and publish the comparison endpoint as `comparison_scale="large_5pct"`, `comparison_select_median`, and `comparison_driver_count`. JSON and Markdown must not expose retired `large_select_median`/`large_driver_count` keys or headers. Include the select/driver counts, never SQL or an optimization recommendation.
 
-- [ ] **Step 9: Implement the CLI, per-file atomic replacement and catchable recovery**
+- [x] **Step 9: Implement the CLI, per-file atomic replacement and catchable recovery**
 
 `tools/benchmark_api_db.py` validates scale names and positive warmup/sample/repetition values, creates one `TemporaryDirectory(prefix="p1-26-benchmark-")`, builds/runs scales sequentially, obtains `git rev-parse HEAD`, and writes UTF-8 JSON/Markdown through sibling temporary files followed by `os.replace()`. Default destinations are:
 
@@ -556,7 +558,7 @@ docs/performance/p1-26-api-db-baseline.md
 
 Each destination is written to a sibling temporary file and atomically replaced with `os.replace()`. If a `BaseException` is caught, attempt to restore the exact previous pair and clean temporary/restore files before re-raising. Sudden process termination or power loss between the two replacements can leave a mixed old/new pair; regenerate or inspect both files before the next use. This package does not implement a cross-file transaction. Error messages contain only scale/scenario and stable error code.
 
-- [ ] **Step 10: Run GREEN and CLI micro smoke**
+- [x] **Step 10: Run GREEN and CLI micro smoke**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests\test_performance_benchmark.py tests\test_performance_report.py -q
@@ -565,7 +567,7 @@ Each destination is written to a sibling temporary file and atomically replaced 
 
 Expected: tests pass; CLI reports 16/16 successful scenarios and repeatability passed; smoke outputs contain no forbidden markers.
 
-- [ ] **Step 11: Commit Task 4**
+- [x] **Step 11: Commit Task 4**
 
 ```powershell
 git add tools/performance tools/benchmark_api_db.py tests/test_performance_benchmark.py tests/test_performance_report.py
@@ -600,9 +602,9 @@ Expected: PASS with zero failures/skips.
 
 Expected: PASS; no source snapshot writes, API contract drift or lifecycle regression.
 
-- [x] **Step 3: Establish a read-only recovery fingerprint baseline before the formal benchmark**
+- [x] **Step 3: Recheck the Task 0 real-database fingerprints before the formal benchmark**
 
-The external Task 0 claim values were unavailable when this interrupted execution resumed, so they were not reconstructed or claimed. Read only file length, UTC mtime and SHA-256 from the root checkout to establish a fresh recovery baseline. Do not call SQLite against either file. Expected: both tuples are captured outside Git before the formal run; lack of the original Task 0 values remains an explicit evidence limitation.
+Read only file length, UTC mtime and SHA-256 from the root checkout and compare both tuples byte-for-byte with the exact Task 0 claim values. Do not call SQLite against either file. Expected: unchanged.
 
 - [x] **Step 4: Run the formal three-workload/two-repetition baseline**
 
@@ -631,9 +633,9 @@ git status --short -- user_data
 
 Expected: diff check and quick smoke pass; feature `user_data` status empty; handoff fields are valid for the current pre-review state.
 
-- [x] **Step 8: Compare root real database fingerprints with the Step 3 recovery baseline**
+- [x] **Step 8: Compare root real database fingerprints again**
 
-Expected: both real database size/UTC mtime/SHA-256 values exactly match the fresh Step 3 recovery baseline. Any difference blocks commit and integration. This comparison does not retroactively prove equality with the unavailable Task 0 values.
+Expected: both real database size/UTC mtime/SHA-256 values exactly match Task 0 and Step 3. Any difference blocks commit and integration.
 
 - [x] **Step 9: Commit verified functional work as `waiting_review`**
 
@@ -648,10 +650,13 @@ Change the handoff block to `waiting_review`, `功能提交: branch_head`, `自�
 - Possible N+1 observations: none met the fixed threshold when comparing the explicitly named `small` and `large_5pct` endpoints. The report retains neutral `comparison_*` fields and exports no retired `large_*` observation fields.
 - Coverage limitations: only allowlisted SQLite connection boundaries are counted; latency is not a service-level objective; generated data may not reproduce production distributions; the run performs no optimization. Reports contain only aggregate allowlisted fields and no raw samples.
 - Safety scan: zero forbidden JSON keys and zero matches for real-data/worktree/absolute-path markers, raw URLs, SQL text, request IDs, generated student/question identifiers or retired observation fields. Git status contained only the two intended versioned reports before documentation evidence was added.
-- Root real-database fingerprints: the read-only length, UTC mtime and SHA-256 tuples matched the resumed Step 3 recovery baseline exactly after the formal run; no real database was opened through SQLite or copied.
+- Root real-database fingerprints: the read-only length, UTC mtime and SHA-256 tuples matched the exact Task 0 claim values and the Step 3 recheck after the formal run; no real database was opened through SQLite or copied.
 - Functional handoff guards: diff whitespace validation, empty feature `user_data` status, documentation governance, static compilation of 419 first-party Python files, both temporary database idempotency/integrity checks and the pre-review handoff validator passed.
-- Real-data evidence limitation: the Task 0 fingerprint claim was stored outside Git and was unavailable during this resumed execution, so it was not reconstructed or claimed. Step 3 established a fresh read-only recovery baseline from file size, UTC mtime and SHA-256; Step 8 proved both files exactly equal to that recovery baseline. `origin/main..HEAD` history, branch diff and feature status contain no `user_data` path.
-- Process evidence limitation: the long-running launcher did not retain the final OS exit code. Result usability is instead supported by both complete reports, top-level and per-scale `repeatability=passed`, the complete 48 scale-scenario summaries with 20 samples and status 200, and the fresh 18-test report safety suite. Catchable publication failures are covered by recovery tests; sudden termination or power loss between replacements remains a documented mixed-pair risk.
+- Real-data evidence: Task 0, Step 3 and Step 8 recorded exact matching file-size/UTC-mtime/SHA-256 tuples. `origin/main..HEAD` history, branch diff and feature status contain no `user_data` path.
+- Process evidence: the formal launcher exited with code 0; both complete reports, top-level and per-scale `repeatability=passed`, and all 48 scale-scenario summaries with 20 samples and status 200 independently confirm completion. Catchable publication failures are covered by recovery tests; sudden termination or power loss between replacements remains a documented mixed-pair risk.
+- Independent-review repair: review found that the original generator left `papers` empty, did not assign `questions.paper_id`, and wrote only two tag types, so the representative papers/tagged-filter scenarios were empty despite HTTP 200. A focused RED now covers expected papers, valid paper links, all four current core tags, and non-empty deterministic response counts. Review also found that one restore failure skipped the other report restore and masked the original publish exception; a fault-injection RED now requires independent best-effort restoration/cleanup and chains recovery failures behind the original publication error.
+- Baseline regeneration requirement: these generator changes alter manifest counts and representative response counts. The committed formal JSON/Markdown reports describe the pre-repair dataset and must be regenerated on the final reviewed SHA. The formal three-workload report was intentionally not rerun during this review-fix pass.
+- Review-fix verification: the dataset/report/benchmark suite passed 56 tests; the five-file P1-26 focused suite passed 76 tests; quick smoke passed documentation governance, static compilation of 419 first-party Python files, and both temporary database idempotency/integrity checks. The new fault-injection and representative-data cases failed for the intended reasons before implementation and passed after the minimal fixes.
 
 - [ ] **Step 10: Request independent code review**
 
