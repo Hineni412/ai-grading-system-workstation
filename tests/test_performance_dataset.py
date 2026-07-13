@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import tempfile
 from dataclasses import FrozenInstanceError, fields
 from pathlib import Path
 
@@ -172,6 +173,32 @@ def test_micro_dataset_is_deterministic_valid_and_confined_to_temp_roots(
         assert actual_counts == expected_counts
         assert _integrity(dataset.paths.db_path) == ([], "ok")
         assert _integrity(dataset.paths.qb_db_path) == ([], "ok")
+        from question_bank.services.question_read_service import QuestionBankReadService
+
+        read_service = QuestionBankReadService(
+            dataset.paths.qb_db_path,
+            data_root=dataset.paths.data_root,
+        )
+        asset = read_service.resolve_asset(dataset.representative_question_id, 0)
+        question_preview = read_service.resolve_preview(
+            dataset.representative_question_id,
+            "question",
+        )
+        answer_preview = read_service.resolve_preview(
+            dataset.representative_question_id,
+            "answer",
+        )
+        assert asset.path.parent == (
+            dataset.paths.qb_data_dir / "extracted_images"
+        ).resolve()
+        assert question_preview.path.parent == (
+            dataset.paths.qb_data_dir / "previews"
+        ).resolve()
+        assert answer_preview.path == question_preview.path
+        assert all(
+            item.path.is_relative_to(dataset.paths.data_root.resolve())
+            for item in (asset, question_preview, answer_preview)
+        )
         with sqlite3.connect(dataset.paths.db_path) as conn:
             rubric_values = [
                 str(row[0])
@@ -204,3 +231,32 @@ def test_micro_dataset_is_deterministic_valid_and_confined_to_temp_roots(
     assert repository_user_data not in repr(first.manifest)
     assert repository_user_data not in repr(second)
     assert repository_user_data not in repr(second.manifest)
+
+
+def test_build_releases_sqlite_handles_for_immediate_temporary_tree_cleanup() -> None:
+    with tempfile.TemporaryDirectory(prefix="generated-dataset-cleanup-") as temp_dir:
+        temporary_root = Path(temp_dir)
+        dataset = build_benchmark_dataset(temporary_root / "dataset", MICRO)
+        assert dataset.paths.db_path.is_file()
+        assert dataset.paths.qb_db_path.is_file()
+
+    assert not temporary_root.exists()
+
+
+def test_failed_build_releases_sqlite_handles_for_immediate_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tools.performance.dataset as dataset_module
+
+    def fail_validation(_db_path: Path, _label: str) -> None:
+        raise RuntimeError("generated validation failure")
+
+    monkeypatch.setattr(dataset_module, "_assert_database_valid", fail_validation)
+    with pytest.raises(RuntimeError, match="generated validation failure"):
+        with tempfile.TemporaryDirectory(
+            prefix="generated-dataset-failure-cleanup-"
+        ) as temp_dir:
+            temporary_root = Path(temp_dir)
+            build_benchmark_dataset(temporary_root / "dataset", MICRO)
+
+    assert not temporary_root.exists()
