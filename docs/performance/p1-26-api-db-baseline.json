@@ -1,0 +1,3498 @@
+{
+  "code_sha": "a7e6de8476ece27ed87a67072756ba87ec5eb0dd",
+  "generated_at_utc": "2026-07-13T20:17:51.753513Z",
+  "limitations": [
+    "Only allowlisted SQLite connection boundaries are counted.",
+    "Latency is machine-specific and is not a service-level objective.",
+    "The benchmark uses generated data and performs no optimization."
+  ],
+  "observations": [],
+  "package": "P1-26",
+  "repeatability": "passed",
+  "runtime": {
+    "logical_cpu_count": 16,
+    "python_version": "3.12.1",
+    "sqlite_version": "3.43.1",
+    "windows_version": "Windows-11-10.0.26200"
+  },
+  "scales": [
+    {
+      "manifest": {
+        "backup_database_bytes": 40960,
+        "generated_asset_bytes": 136,
+        "grading_database_bytes": 176128,
+        "logical_counts": {
+          "backup_files": 5,
+          "exam_papers": 30,
+          "grading_question_links": 10,
+          "grading_sessions": 1,
+          "question_previews": 2,
+          "question_tags": 400,
+          "questions": 200,
+          "session_details": 300,
+          "session_results": 30,
+          "students": 30,
+          "training_task_items": 10,
+          "training_tasks": 10,
+          "training_variants": 10,
+          "variant_students": 10
+        },
+        "question_bank_database_bytes": 495616,
+        "scale": "small",
+        "seed": 126
+      },
+      "repeatability": "passed",
+      "repetitions": [
+        {
+          "repetition": 1,
+          "scenarios": [
+            {
+              "db_selects": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "db_statements": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "latency_ms": {
+                "maximum": 0.7819999882485718,
+                "minimum": 0.46370000927709043,
+                "p50": 0.5560000136028975,
+                "p95": 0.7754999969620258
+              },
+              "method": "GET",
+              "name": "health",
+              "response_bytes": {
+                "maximum": 77.0,
+                "median": 77.0,
+                "minimum": 77.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/healthz",
+              "sample_count": 20,
+              "scale_driver": "constant",
+              "scale_driver_count": 1,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 7.0,
+                "median": 7.0,
+                "minimum": 7.0
+              },
+              "latency_ms": {
+                "maximum": 14.3969000200741,
+                "minimum": 10.70759998401627,
+                "p50": 11.329100001603365,
+                "p95": 14.261700009228662
+              },
+              "method": "GET",
+              "name": "question_bank.papers",
+              "response_bytes": {
+                "maximum": 22.0,
+                "median": 22.0,
+                "minimum": 22.0
+              },
+              "response_records": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "route_template": "/api/question-bank/papers",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 200,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 6.0,
+                "median": 6.0,
+                "minimum": 6.0
+              },
+              "db_statements": {
+                "maximum": 11.0,
+                "median": 11.0,
+                "minimum": 11.0
+              },
+              "latency_ms": {
+                "maximum": 17.740399984177202,
+                "minimum": 13.667199993506074,
+                "p50": 16.052299994044006,
+                "p95": 17.328199988696724
+              },
+              "method": "GET",
+              "name": "question_bank.questions.default",
+              "response_bytes": {
+                "maximum": 15904.0,
+                "median": 15904.0,
+                "minimum": 15904.0
+              },
+              "response_records": {
+                "maximum": 20.0,
+                "median": 20.0,
+                "minimum": 20.0
+              },
+              "route_template": "/api/question-bank/questions",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 200,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 3.0,
+                "median": 3.0,
+                "minimum": 3.0
+              },
+              "db_statements": {
+                "maximum": 8.0,
+                "median": 8.0,
+                "minimum": 8.0
+              },
+              "latency_ms": {
+                "maximum": 18.06810000562109,
+                "minimum": 12.7834000159055,
+                "p50": 14.806699997279793,
+                "p95": 16.82810002239421
+              },
+              "method": "GET",
+              "name": "question_bank.questions.filtered",
+              "response_bytes": {
+                "maximum": 63.0,
+                "median": 63.0,
+                "minimum": 63.0
+              },
+              "response_records": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "route_template": "/api/question-bank/questions",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 200,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 6.0,
+                "median": 6.0,
+                "minimum": 6.0
+              },
+              "db_statements": {
+                "maximum": 11.0,
+                "median": 11.0,
+                "minimum": 11.0
+              },
+              "latency_ms": {
+                "maximum": 19.769600010477006,
+                "minimum": 11.987000005319715,
+                "p50": 14.468199980910867,
+                "p95": 16.08289999421686
+              },
+              "method": "GET",
+              "name": "question_bank.question.detail",
+              "response_bytes": {
+                "maximum": 1370.0,
+                "median": 1370.0,
+                "minimum": 1370.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/question-bank/questions/{question_id}",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 200,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 7.0,
+                "median": 7.0,
+                "minimum": 7.0
+              },
+              "latency_ms": {
+                "maximum": 17.49030000064522,
+                "minimum": 12.898999993922189,
+                "p50": 14.098499988904223,
+                "p95": 17.196000000694767
+              },
+              "method": "GET",
+              "name": "question_bank.question.asset",
+              "response_bytes": {
+                "maximum": 68.0,
+                "median": 68.0,
+                "minimum": 68.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/question-bank/questions/{question_id}/assets/{asset_index}",
+              "sample_count": 20,
+              "scale_driver": "generated_asset_bytes",
+              "scale_driver_count": 136,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 3.0,
+                "median": 3.0,
+                "minimum": 3.0
+              },
+              "db_statements": {
+                "maximum": 8.0,
+                "median": 8.0,
+                "minimum": 8.0
+              },
+              "latency_ms": {
+                "maximum": 18.29510001698509,
+                "minimum": 14.117100014118478,
+                "p50": 16.0191000031773,
+                "p95": 17.49060000292957
+              },
+              "method": "GET",
+              "name": "question_bank.question.preview",
+              "response_bytes": {
+                "maximum": 68.0,
+                "median": 68.0,
+                "minimum": 68.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/question-bank/questions/{question_id}/previews/{preview_type}",
+              "sample_count": 20,
+              "scale_driver": "generated_asset_bytes",
+              "scale_driver_count": 136,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 14.0,
+                "median": 14.0,
+                "minimum": 14.0
+              },
+              "db_statements": {
+                "maximum": 1043.0,
+                "median": 1043.0,
+                "minimum": 1043.0
+              },
+              "latency_ms": {
+                "maximum": 275.63519999966957,
+                "minimum": 138.67559999926016,
+                "p50": 155.10039997752756,
+                "p95": 249.50620002346113
+              },
+              "method": "POST",
+              "name": "training.diagnosis",
+              "response_bytes": {
+                "maximum": 168331.0,
+                "median": 168331.0,
+                "minimum": 168331.0
+              },
+              "response_records": {
+                "maximum": 30.0,
+                "median": 30.0,
+                "minimum": 30.0
+              },
+              "route_template": "/api/training/diagnosis",
+              "sample_count": 20,
+              "scale_driver": "students",
+              "scale_driver_count": 30,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 464.0,
+                "median": 464.0,
+                "minimum": 464.0
+              },
+              "db_statements": {
+                "maximum": 61973.0,
+                "median": 61973.0,
+                "minimum": 61973.0
+              },
+              "latency_ms": {
+                "maximum": 4341.896400001133,
+                "minimum": 3898.568200005684,
+                "p50": 4083.5695000132546,
+                "p95": 4282.23560002516
+              },
+              "method": "POST",
+              "name": "training.plan.preview",
+              "response_bytes": {
+                "maximum": 402018.0,
+                "median": 402018.0,
+                "minimum": 402018.0
+              },
+              "response_records": {
+                "maximum": 30.0,
+                "median": 30.0,
+                "minimum": 30.0
+              },
+              "route_template": "/api/training/plans/preview",
+              "sample_count": 20,
+              "scale_driver": "students",
+              "scale_driver_count": 30,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "latency_ms": {
+                "maximum": 26.46719999029301,
+                "minimum": 15.750599995953962,
+                "p50": 18.855600006645545,
+                "p95": 24.68500001123175
+              },
+              "method": "GET",
+              "name": "training.tasks",
+              "response_bytes": {
+                "maximum": 2334.0,
+                "median": 2334.0,
+                "minimum": 2334.0
+              },
+              "response_records": {
+                "maximum": 10.0,
+                "median": 10.0,
+                "minimum": 10.0
+              },
+              "route_template": "/api/training/tasks",
+              "sample_count": 20,
+              "scale_driver": "training_tasks",
+              "scale_driver_count": 10,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 5.0,
+                "median": 5.0,
+                "minimum": 5.0
+              },
+              "db_statements": {
+                "maximum": 5.0,
+                "median": 5.0,
+                "minimum": 5.0
+              },
+              "latency_ms": {
+                "maximum": 20.953800005372614,
+                "minimum": 15.816300001461059,
+                "p50": 17.328200017800555,
+                "p95": 19.81220001471229
+              },
+              "method": "GET",
+              "name": "training.task.detail",
+              "response_bytes": {
+                "maximum": 1021.0,
+                "median": 1021.0,
+                "minimum": 1021.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/training/tasks/{task_id}",
+              "sample_count": 20,
+              "scale_driver": "training_tasks",
+              "scale_driver_count": 10,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 16.0,
+                "median": 16.0,
+                "minimum": 16.0
+              },
+              "db_statements": {
+                "maximum": 1055.0,
+                "median": 1055.0,
+                "minimum": 1055.0
+              },
+              "latency_ms": {
+                "maximum": 227.1376999851782,
+                "minimum": 125.31899998430163,
+                "p50": 133.30889999633655,
+                "p95": 147.9647000087425
+              },
+              "method": "POST",
+              "name": "graph.profiles",
+              "response_bytes": {
+                "maximum": 168263.0,
+                "median": 168263.0,
+                "minimum": 168263.0
+              },
+              "response_records": {
+                "maximum": 30.0,
+                "median": 30.0,
+                "minimum": 30.0
+              },
+              "route_template": "/api/graph/profiles",
+              "sample_count": 20,
+              "scale_driver": "students",
+              "scale_driver_count": 30,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 16.0,
+                "median": 16.0,
+                "minimum": 16.0
+              },
+              "db_statements": {
+                "maximum": 1055.0,
+                "median": 1055.0,
+                "minimum": 1055.0
+              },
+              "latency_ms": {
+                "maximum": 240.54090000572614,
+                "minimum": 127.72920000134036,
+                "p50": 143.82340002339333,
+                "p95": 164.34439999284223
+              },
+              "method": "POST",
+              "name": "graph.rows",
+              "response_bytes": {
+                "maximum": 173015.0,
+                "median": 173015.0,
+                "minimum": 173015.0
+              },
+              "response_records": {
+                "maximum": 300.0,
+                "median": 300.0,
+                "minimum": 300.0
+              },
+              "route_template": "/api/graph/rows",
+              "sample_count": 20,
+              "scale_driver": "session_details",
+              "scale_driver_count": 300,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 16.0,
+                "median": 16.0,
+                "minimum": 16.0
+              },
+              "db_statements": {
+                "maximum": 1055.0,
+                "median": 1055.0,
+                "minimum": 1055.0
+              },
+              "latency_ms": {
+                "maximum": 238.36420002044179,
+                "minimum": 119.8236999916844,
+                "p50": 133.61669998266734,
+                "p95": 151.00559999700636
+              },
+              "method": "POST",
+              "name": "graph.evidence",
+              "response_bytes": {
+                "maximum": 15762.0,
+                "median": 15762.0,
+                "minimum": 15762.0
+              },
+              "response_records": {
+                "maximum": 30.0,
+                "median": 30.0,
+                "minimum": 30.0
+              },
+              "route_template": "/api/graph/evidence",
+              "sample_count": 20,
+              "scale_driver": "session_details",
+              "scale_driver_count": 300,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 12.0,
+                "median": 12.0,
+                "minimum": 12.0
+              },
+              "latency_ms": {
+                "maximum": 86.16550001897849,
+                "minimum": 68.466199998511,
+                "p50": 76.21699999435805,
+                "p95": 85.40889999130741
+              },
+              "method": "GET",
+              "name": "ops.self_check",
+              "response_bytes": {
+                "maximum": 1126.0,
+                "median": 1126.0,
+                "minimum": 1126.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/ops/self-check",
+              "sample_count": 20,
+              "scale_driver": "constant",
+              "scale_driver_count": 1,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "db_statements": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "latency_ms": {
+                "maximum": 2.943200001027435,
+                "minimum": 1.8140000174753368,
+                "p50": 2.1899999992456287,
+                "p95": 2.525999996578321
+              },
+              "method": "GET",
+              "name": "ops.backups",
+              "response_bytes": {
+                "maximum": 746.0,
+                "median": 746.0,
+                "minimum": 746.0
+              },
+              "response_records": {
+                "maximum": 5.0,
+                "median": 5.0,
+                "minimum": 5.0
+              },
+              "route_template": "/api/ops/backups",
+              "sample_count": 20,
+              "scale_driver": "backup_files",
+              "scale_driver_count": 5,
+              "status_code": 200
+            }
+          ]
+        },
+        {
+          "repetition": 2,
+          "scenarios": [
+            {
+              "db_selects": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "db_statements": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "latency_ms": {
+                "maximum": 1.1412999883759767,
+                "minimum": 0.5067000165581703,
+                "p50": 0.6156000017654151,
+                "p95": 0.8787999977357686
+              },
+              "method": "GET",
+              "name": "health",
+              "response_bytes": {
+                "maximum": 77.0,
+                "median": 77.0,
+                "minimum": 77.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/healthz",
+              "sample_count": 20,
+              "scale_driver": "constant",
+              "scale_driver_count": 1,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 7.0,
+                "median": 7.0,
+                "minimum": 7.0
+              },
+              "latency_ms": {
+                "maximum": 16.42200001515448,
+                "minimum": 12.259700015420094,
+                "p50": 13.45739999669604,
+                "p95": 14.875100023346022
+              },
+              "method": "GET",
+              "name": "question_bank.papers",
+              "response_bytes": {
+                "maximum": 22.0,
+                "median": 22.0,
+                "minimum": 22.0
+              },
+              "response_records": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "route_template": "/api/question-bank/papers",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 200,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 6.0,
+                "median": 6.0,
+                "minimum": 6.0
+              },
+              "db_statements": {
+                "maximum": 11.0,
+                "median": 11.0,
+                "minimum": 11.0
+              },
+              "latency_ms": {
+                "maximum": 18.6249999969732,
+                "minimum": 13.866200024494901,
+                "p50": 16.212399990763515,
+                "p95": 18.42550002038479
+              },
+              "method": "GET",
+              "name": "question_bank.questions.default",
+              "response_bytes": {
+                "maximum": 15904.0,
+                "median": 15904.0,
+                "minimum": 15904.0
+              },
+              "response_records": {
+                "maximum": 20.0,
+                "median": 20.0,
+                "minimum": 20.0
+              },
+              "route_template": "/api/question-bank/questions",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 200,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 3.0,
+                "median": 3.0,
+                "minimum": 3.0
+              },
+              "db_statements": {
+                "maximum": 8.0,
+                "median": 8.0,
+                "minimum": 8.0
+              },
+              "latency_ms": {
+                "maximum": 17.439399991417304,
+                "minimum": 13.341700017917901,
+                "p50": 14.377900020917878,
+                "p95": 16.849899984663352
+              },
+              "method": "GET",
+              "name": "question_bank.questions.filtered",
+              "response_bytes": {
+                "maximum": 63.0,
+                "median": 63.0,
+                "minimum": 63.0
+              },
+              "response_records": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "route_template": "/api/question-bank/questions",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 200,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 6.0,
+                "median": 6.0,
+                "minimum": 6.0
+              },
+              "db_statements": {
+                "maximum": 11.0,
+                "median": 11.0,
+                "minimum": 11.0
+              },
+              "latency_ms": {
+                "maximum": 19.191900006262586,
+                "minimum": 12.877900007879362,
+                "p50": 14.018199988640845,
+                "p95": 17.84169999882579
+              },
+              "method": "GET",
+              "name": "question_bank.question.detail",
+              "response_bytes": {
+                "maximum": 1370.0,
+                "median": 1370.0,
+                "minimum": 1370.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/question-bank/questions/{question_id}",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 200,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 7.0,
+                "median": 7.0,
+                "minimum": 7.0
+              },
+              "latency_ms": {
+                "maximum": 18.96909999777563,
+                "minimum": 13.164899981347844,
+                "p50": 15.038699988508597,
+                "p95": 17.838200001278892
+              },
+              "method": "GET",
+              "name": "question_bank.question.asset",
+              "response_bytes": {
+                "maximum": 68.0,
+                "median": 68.0,
+                "minimum": 68.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/question-bank/questions/{question_id}/assets/{asset_index}",
+              "sample_count": 20,
+              "scale_driver": "generated_asset_bytes",
+              "scale_driver_count": 136,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 3.0,
+                "median": 3.0,
+                "minimum": 3.0
+              },
+              "db_statements": {
+                "maximum": 8.0,
+                "median": 8.0,
+                "minimum": 8.0
+              },
+              "latency_ms": {
+                "maximum": 20.664900017436594,
+                "minimum": 13.477100001182407,
+                "p50": 15.231299999868497,
+                "p95": 18.64609998301603
+              },
+              "method": "GET",
+              "name": "question_bank.question.preview",
+              "response_bytes": {
+                "maximum": 68.0,
+                "median": 68.0,
+                "minimum": 68.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/question-bank/questions/{question_id}/previews/{preview_type}",
+              "sample_count": 20,
+              "scale_driver": "generated_asset_bytes",
+              "scale_driver_count": 136,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 14.0,
+                "median": 14.0,
+                "minimum": 14.0
+              },
+              "db_statements": {
+                "maximum": 1043.0,
+                "median": 1043.0,
+                "minimum": 1043.0
+              },
+              "latency_ms": {
+                "maximum": 234.5033999881707,
+                "minimum": 135.8186999859754,
+                "p50": 151.44760001567192,
+                "p95": 183.72319999616593
+              },
+              "method": "POST",
+              "name": "training.diagnosis",
+              "response_bytes": {
+                "maximum": 168331.0,
+                "median": 168331.0,
+                "minimum": 168331.0
+              },
+              "response_records": {
+                "maximum": 30.0,
+                "median": 30.0,
+                "minimum": 30.0
+              },
+              "route_template": "/api/training/diagnosis",
+              "sample_count": 20,
+              "scale_driver": "students",
+              "scale_driver_count": 30,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 464.0,
+                "median": 464.0,
+                "minimum": 464.0
+              },
+              "db_statements": {
+                "maximum": 61973.0,
+                "median": 61973.0,
+                "minimum": 61973.0
+              },
+              "latency_ms": {
+                "maximum": 4160.5904000170995,
+                "minimum": 3869.209399999818,
+                "p50": 3974.758700001985,
+                "p95": 4036.4833000057843
+              },
+              "method": "POST",
+              "name": "training.plan.preview",
+              "response_bytes": {
+                "maximum": 402018.0,
+                "median": 402018.0,
+                "minimum": 402018.0
+              },
+              "response_records": {
+                "maximum": 30.0,
+                "median": 30.0,
+                "minimum": 30.0
+              },
+              "route_template": "/api/training/plans/preview",
+              "sample_count": 20,
+              "scale_driver": "students",
+              "scale_driver_count": 30,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "latency_ms": {
+                "maximum": 25.256099994294345,
+                "minimum": 16.132299992023036,
+                "p50": 19.02649999829009,
+                "p95": 24.983899988001212
+              },
+              "method": "GET",
+              "name": "training.tasks",
+              "response_bytes": {
+                "maximum": 2334.0,
+                "median": 2334.0,
+                "minimum": 2334.0
+              },
+              "response_records": {
+                "maximum": 10.0,
+                "median": 10.0,
+                "minimum": 10.0
+              },
+              "route_template": "/api/training/tasks",
+              "sample_count": 20,
+              "scale_driver": "training_tasks",
+              "scale_driver_count": 10,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 5.0,
+                "median": 5.0,
+                "minimum": 5.0
+              },
+              "db_statements": {
+                "maximum": 5.0,
+                "median": 5.0,
+                "minimum": 5.0
+              },
+              "latency_ms": {
+                "maximum": 25.840999995125458,
+                "minimum": 15.492899983655661,
+                "p50": 17.236599989701062,
+                "p95": 22.315100010018796
+              },
+              "method": "GET",
+              "name": "training.task.detail",
+              "response_bytes": {
+                "maximum": 1021.0,
+                "median": 1021.0,
+                "minimum": 1021.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/training/tasks/{task_id}",
+              "sample_count": 20,
+              "scale_driver": "training_tasks",
+              "scale_driver_count": 10,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 16.0,
+                "median": 16.0,
+                "minimum": 16.0
+              },
+              "db_statements": {
+                "maximum": 1055.0,
+                "median": 1055.0,
+                "minimum": 1055.0
+              },
+              "latency_ms": {
+                "maximum": 222.82150000683032,
+                "minimum": 126.66450001415797,
+                "p50": 134.59960001637228,
+                "p95": 156.6815999976825
+              },
+              "method": "POST",
+              "name": "graph.profiles",
+              "response_bytes": {
+                "maximum": 168263.0,
+                "median": 168263.0,
+                "minimum": 168263.0
+              },
+              "response_records": {
+                "maximum": 30.0,
+                "median": 30.0,
+                "minimum": 30.0
+              },
+              "route_template": "/api/graph/profiles",
+              "sample_count": 20,
+              "scale_driver": "students",
+              "scale_driver_count": 30,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 16.0,
+                "median": 16.0,
+                "minimum": 16.0
+              },
+              "db_statements": {
+                "maximum": 1055.0,
+                "median": 1055.0,
+                "minimum": 1055.0
+              },
+              "latency_ms": {
+                "maximum": 232.54569998243824,
+                "minimum": 124.56930000917055,
+                "p50": 139.9208000220824,
+                "p95": 153.777400002582
+              },
+              "method": "POST",
+              "name": "graph.rows",
+              "response_bytes": {
+                "maximum": 173015.0,
+                "median": 173015.0,
+                "minimum": 173015.0
+              },
+              "response_records": {
+                "maximum": 300.0,
+                "median": 300.0,
+                "minimum": 300.0
+              },
+              "route_template": "/api/graph/rows",
+              "sample_count": 20,
+              "scale_driver": "session_details",
+              "scale_driver_count": 300,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 16.0,
+                "median": 16.0,
+                "minimum": 16.0
+              },
+              "db_statements": {
+                "maximum": 1055.0,
+                "median": 1055.0,
+                "minimum": 1055.0
+              },
+              "latency_ms": {
+                "maximum": 148.5977999982424,
+                "minimum": 121.05280000832863,
+                "p50": 130.91969999368303,
+                "p95": 144.5518000109587
+              },
+              "method": "POST",
+              "name": "graph.evidence",
+              "response_bytes": {
+                "maximum": 15762.0,
+                "median": 15762.0,
+                "minimum": 15762.0
+              },
+              "response_records": {
+                "maximum": 30.0,
+                "median": 30.0,
+                "minimum": 30.0
+              },
+              "route_template": "/api/graph/evidence",
+              "sample_count": 20,
+              "scale_driver": "session_details",
+              "scale_driver_count": 300,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 12.0,
+                "median": 12.0,
+                "minimum": 12.0
+              },
+              "latency_ms": {
+                "maximum": 85.90149998781271,
+                "minimum": 68.25589999789372,
+                "p50": 75.16579999355599,
+                "p95": 81.34030000655912
+              },
+              "method": "GET",
+              "name": "ops.self_check",
+              "response_bytes": {
+                "maximum": 1126.0,
+                "median": 1126.0,
+                "minimum": 1126.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/ops/self-check",
+              "sample_count": 20,
+              "scale_driver": "constant",
+              "scale_driver_count": 1,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "db_statements": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "latency_ms": {
+                "maximum": 3.480999992461875,
+                "minimum": 1.7234999977517873,
+                "p50": 2.084999985527247,
+                "p95": 2.701999997952953
+              },
+              "method": "GET",
+              "name": "ops.backups",
+              "response_bytes": {
+                "maximum": 746.0,
+                "median": 746.0,
+                "minimum": 746.0
+              },
+              "response_records": {
+                "maximum": 5.0,
+                "median": 5.0,
+                "minimum": 5.0
+              },
+              "route_template": "/api/ops/backups",
+              "sample_count": 20,
+              "scale_driver": "backup_files",
+              "scale_driver_count": 5,
+              "status_code": 200
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "manifest": {
+        "backup_database_bytes": 409600,
+        "generated_asset_bytes": 136,
+        "grading_database_bytes": 2990080,
+        "logical_counts": {
+          "backup_files": 50,
+          "exam_papers": 1000,
+          "grading_question_links": 100,
+          "grading_sessions": 5,
+          "question_previews": 2,
+          "question_tags": 4000,
+          "questions": 2000,
+          "session_details": 20000,
+          "session_results": 1000,
+          "students": 200,
+          "training_task_items": 100,
+          "training_tasks": 100,
+          "training_variants": 100,
+          "variant_students": 100
+        },
+        "question_bank_database_bytes": 1576960,
+        "scale": "medium",
+        "seed": 126
+      },
+      "repeatability": "passed",
+      "repetitions": [
+        {
+          "repetition": 1,
+          "scenarios": [
+            {
+              "db_selects": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "db_statements": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "latency_ms": {
+                "maximum": 1.226299995323643,
+                "minimum": 0.5038999952375889,
+                "p50": 0.6096999859437346,
+                "p95": 0.8021999965421855
+              },
+              "method": "GET",
+              "name": "health",
+              "response_bytes": {
+                "maximum": 77.0,
+                "median": 77.0,
+                "minimum": 77.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/healthz",
+              "sample_count": 20,
+              "scale_driver": "constant",
+              "scale_driver_count": 1,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 7.0,
+                "median": 7.0,
+                "minimum": 7.0
+              },
+              "latency_ms": {
+                "maximum": 19.968399981735274,
+                "minimum": 14.70189998508431,
+                "p50": 15.65759998629801,
+                "p95": 19.079399993643165
+              },
+              "method": "GET",
+              "name": "question_bank.papers",
+              "response_bytes": {
+                "maximum": 22.0,
+                "median": 22.0,
+                "minimum": 22.0
+              },
+              "response_records": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "route_template": "/api/question-bank/papers",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 2000,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 6.0,
+                "median": 6.0,
+                "minimum": 6.0
+              },
+              "db_statements": {
+                "maximum": 11.0,
+                "median": 11.0,
+                "minimum": 11.0
+              },
+              "latency_ms": {
+                "maximum": 32.040400023106486,
+                "minimum": 22.808600013377145,
+                "p50": 26.68650000123307,
+                "p95": 31.86350001487881
+              },
+              "method": "GET",
+              "name": "question_bank.questions.default",
+              "response_bytes": {
+                "maximum": 15926.0,
+                "median": 15926.0,
+                "minimum": 15926.0
+              },
+              "response_records": {
+                "maximum": 20.0,
+                "median": 20.0,
+                "minimum": 20.0
+              },
+              "route_template": "/api/question-bank/questions",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 2000,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 3.0,
+                "median": 3.0,
+                "minimum": 3.0
+              },
+              "db_statements": {
+                "maximum": 8.0,
+                "median": 8.0,
+                "minimum": 8.0
+              },
+              "latency_ms": {
+                "maximum": 21.640799997840077,
+                "minimum": 16.412299999501556,
+                "p50": 18.219800025690347,
+                "p95": 20.408099982887506
+              },
+              "method": "GET",
+              "name": "question_bank.questions.filtered",
+              "response_bytes": {
+                "maximum": 63.0,
+                "median": 63.0,
+                "minimum": 63.0
+              },
+              "response_records": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "route_template": "/api/question-bank/questions",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 2000,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 6.0,
+                "median": 6.0,
+                "minimum": 6.0
+              },
+              "db_statements": {
+                "maximum": 11.0,
+                "median": 11.0,
+                "minimum": 11.0
+              },
+              "latency_ms": {
+                "maximum": 21.123699989402667,
+                "minimum": 15.80130000365898,
+                "p50": 17.929900001036003,
+                "p95": 20.65479999873787
+              },
+              "method": "GET",
+              "name": "question_bank.question.detail",
+              "response_bytes": {
+                "maximum": 1370.0,
+                "median": 1370.0,
+                "minimum": 1370.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/question-bank/questions/{question_id}",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 2000,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 7.0,
+                "median": 7.0,
+                "minimum": 7.0
+              },
+              "latency_ms": {
+                "maximum": 22.7512999845203,
+                "minimum": 17.31239998480305,
+                "p50": 18.700100015848875,
+                "p95": 21.12309998483397
+              },
+              "method": "GET",
+              "name": "question_bank.question.asset",
+              "response_bytes": {
+                "maximum": 68.0,
+                "median": 68.0,
+                "minimum": 68.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/question-bank/questions/{question_id}/assets/{asset_index}",
+              "sample_count": 20,
+              "scale_driver": "generated_asset_bytes",
+              "scale_driver_count": 136,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 3.0,
+                "median": 3.0,
+                "minimum": 3.0
+              },
+              "db_statements": {
+                "maximum": 8.0,
+                "median": 8.0,
+                "minimum": 8.0
+              },
+              "latency_ms": {
+                "maximum": 21.879700012505054,
+                "minimum": 16.886299999896437,
+                "p50": 18.744800006970763,
+                "p95": 21.540499990805984
+              },
+              "method": "GET",
+              "name": "question_bank.question.preview",
+              "response_bytes": {
+                "maximum": 68.0,
+                "median": 68.0,
+                "minimum": 68.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/question-bank/questions/{question_id}/previews/{preview_type}",
+              "sample_count": 20,
+              "scale_driver": "generated_asset_bytes",
+              "scale_driver_count": 136,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 54.0,
+                "median": 54.0,
+                "minimum": 54.0
+              },
+              "db_statements": {
+                "maximum": 5151.0,
+                "median": 5151.0,
+                "minimum": 5151.0
+              },
+              "latency_ms": {
+                "maximum": 3570.773500017822,
+                "minimum": 3201.9006999908015,
+                "p50": 3361.6545999830123,
+                "p95": 3537.9949000198394
+              },
+              "method": "POST",
+              "name": "training.diagnosis",
+              "response_bytes": {
+                "maximum": 4678375.0,
+                "median": 4678375.0,
+                "minimum": 4678375.0
+              },
+              "response_records": {
+                "maximum": 200.0,
+                "median": 200.0,
+                "minimum": 200.0
+              },
+              "route_template": "/api/training/diagnosis",
+              "sample_count": 20,
+              "scale_driver": "students",
+              "scale_driver_count": 200,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 7854.0,
+                "median": 7854.0,
+                "minimum": 7854.0
+              },
+              "db_statements": {
+                "maximum": 1222551.0,
+                "median": 1222551.0,
+                "minimum": 1222551.0
+              },
+              "latency_ms": {
+                "maximum": 142271.25109999906,
+                "minimum": 139745.52009999752,
+                "p50": 140407.52639999846,
+                "p95": 141604.90620002383
+              },
+              "method": "POST",
+              "name": "training.plan.preview",
+              "response_bytes": {
+                "maximum": 9955557.0,
+                "median": 9955557.0,
+                "minimum": 9955557.0
+              },
+              "response_records": {
+                "maximum": 200.0,
+                "median": 200.0,
+                "minimum": 200.0
+              },
+              "route_template": "/api/training/plans/preview",
+              "sample_count": 20,
+              "scale_driver": "students",
+              "scale_driver_count": 200,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "latency_ms": {
+                "maximum": 37.08569999434985,
+                "minimum": 28.116900008171797,
+                "p50": 30.22790001705289,
+                "p95": 36.58819998963736
+              },
+              "method": "GET",
+              "name": "training.tasks",
+              "response_bytes": {
+                "maximum": 22856.0,
+                "median": 22856.0,
+                "minimum": 22856.0
+              },
+              "response_records": {
+                "maximum": 100.0,
+                "median": 100.0,
+                "minimum": 100.0
+              },
+              "route_template": "/api/training/tasks",
+              "sample_count": 20,
+              "scale_driver": "training_tasks",
+              "scale_driver_count": 100,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 5.0,
+                "median": 5.0,
+                "minimum": 5.0
+              },
+              "db_statements": {
+                "maximum": 5.0,
+                "median": 5.0,
+                "minimum": 5.0
+              },
+              "latency_ms": {
+                "maximum": 23.016099992673844,
+                "minimum": 15.582199994241819,
+                "p50": 17.119600001024082,
+                "p95": 19.75289999973029
+              },
+              "method": "GET",
+              "name": "training.task.detail",
+              "response_bytes": {
+                "maximum": 1021.0,
+                "median": 1021.0,
+                "minimum": 1021.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/training/tasks/{task_id}",
+              "sample_count": 20,
+              "scale_driver": "training_tasks",
+              "scale_driver_count": 100,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 56.0,
+                "median": 56.0,
+                "minimum": 56.0
+              },
+              "db_statements": {
+                "maximum": 5163.0,
+                "median": 5163.0,
+                "minimum": 5163.0
+              },
+              "latency_ms": {
+                "maximum": 1677.4899000010919,
+                "minimum": 1437.9582999972627,
+                "p50": 1569.4651999801863,
+                "p95": 1665.5836999998428
+              },
+              "method": "POST",
+              "name": "graph.profiles",
+              "response_bytes": {
+                "maximum": 4678307.0,
+                "median": 4678307.0,
+                "minimum": 4678307.0
+              },
+              "response_records": {
+                "maximum": 200.0,
+                "median": 200.0,
+                "minimum": 200.0
+              },
+              "route_template": "/api/graph/profiles",
+              "sample_count": 20,
+              "scale_driver": "students",
+              "scale_driver_count": 200,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 56.0,
+                "median": 56.0,
+                "minimum": 56.0
+              },
+              "db_statements": {
+                "maximum": 5163.0,
+                "median": 5163.0,
+                "minimum": 5163.0
+              },
+              "latency_ms": {
+                "maximum": 1799.6660000062548,
+                "minimum": 1578.883299982408,
+                "p50": 1725.2231999882497,
+                "p95": 1799.4149000151083
+              },
+              "method": "POST",
+              "name": "graph.rows",
+              "response_bytes": {
+                "maximum": 4734015.0,
+                "median": 4734015.0,
+                "minimum": 4734015.0
+              },
+              "response_records": {
+                "maximum": 4000.0,
+                "median": 4000.0,
+                "minimum": 4000.0
+              },
+              "route_template": "/api/graph/rows",
+              "sample_count": 20,
+              "scale_driver": "session_details",
+              "scale_driver_count": 20000,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 56.0,
+                "median": 56.0,
+                "minimum": 56.0
+              },
+              "db_statements": {
+                "maximum": 5163.0,
+                "median": 5163.0,
+                "minimum": 5163.0
+              },
+              "latency_ms": {
+                "maximum": 1571.6866999864578,
+                "minimum": 1287.7991999848746,
+                "p50": 1404.8379999876488,
+                "p95": 1506.2524000240956
+              },
+              "method": "POST",
+              "name": "graph.evidence",
+              "response_bytes": {
+                "maximum": 52377.0,
+                "median": 52377.0,
+                "minimum": 52377.0
+              },
+              "response_records": {
+                "maximum": 100.0,
+                "median": 100.0,
+                "minimum": 100.0
+              },
+              "route_template": "/api/graph/evidence",
+              "sample_count": 20,
+              "scale_driver": "session_details",
+              "scale_driver_count": 20000,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 12.0,
+                "median": 12.0,
+                "minimum": 12.0
+              },
+              "latency_ms": {
+                "maximum": 100.15899999416433,
+                "minimum": 82.19800001825206,
+                "p50": 90.55710001848638,
+                "p95": 98.9967999921646
+              },
+              "method": "GET",
+              "name": "ops.self_check",
+              "response_bytes": {
+                "maximum": 1128.0,
+                "median": 1128.0,
+                "minimum": 1128.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/ops/self-check",
+              "sample_count": 20,
+              "scale_driver": "constant",
+              "scale_driver_count": 1,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "db_statements": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "latency_ms": {
+                "maximum": 5.205599998589605,
+                "minimum": 3.2362999918404967,
+                "p50": 4.032500000903383,
+                "p95": 4.674199997680262
+              },
+              "method": "GET",
+              "name": "ops.backups",
+              "response_bytes": {
+                "maximum": 7137.0,
+                "median": 7137.0,
+                "minimum": 7137.0
+              },
+              "response_records": {
+                "maximum": 50.0,
+                "median": 50.0,
+                "minimum": 50.0
+              },
+              "route_template": "/api/ops/backups",
+              "sample_count": 20,
+              "scale_driver": "backup_files",
+              "scale_driver_count": 50,
+              "status_code": 200
+            }
+          ]
+        },
+        {
+          "repetition": 2,
+          "scenarios": [
+            {
+              "db_selects": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "db_statements": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "latency_ms": {
+                "maximum": 0.9448999771848321,
+                "minimum": 0.4515000036917627,
+                "p50": 0.5538000259548426,
+                "p95": 0.7516999903600663
+              },
+              "method": "GET",
+              "name": "health",
+              "response_bytes": {
+                "maximum": 77.0,
+                "median": 77.0,
+                "minimum": 77.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/healthz",
+              "sample_count": 20,
+              "scale_driver": "constant",
+              "scale_driver_count": 1,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 7.0,
+                "median": 7.0,
+                "minimum": 7.0
+              },
+              "latency_ms": {
+                "maximum": 21.520000009331852,
+                "minimum": 15.763300005346537,
+                "p50": 17.480299982707947,
+                "p95": 19.877599988831207
+              },
+              "method": "GET",
+              "name": "question_bank.papers",
+              "response_bytes": {
+                "maximum": 22.0,
+                "median": 22.0,
+                "minimum": 22.0
+              },
+              "response_records": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "route_template": "/api/question-bank/papers",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 2000,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 6.0,
+                "median": 6.0,
+                "minimum": 6.0
+              },
+              "db_statements": {
+                "maximum": 11.0,
+                "median": 11.0,
+                "minimum": 11.0
+              },
+              "latency_ms": {
+                "maximum": 31.348099990282208,
+                "minimum": 23.403999977745116,
+                "p50": 25.178700016112998,
+                "p95": 30.43680000700988
+              },
+              "method": "GET",
+              "name": "question_bank.questions.default",
+              "response_bytes": {
+                "maximum": 15926.0,
+                "median": 15926.0,
+                "minimum": 15926.0
+              },
+              "response_records": {
+                "maximum": 20.0,
+                "median": 20.0,
+                "minimum": 20.0
+              },
+              "route_template": "/api/question-bank/questions",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 2000,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 3.0,
+                "median": 3.0,
+                "minimum": 3.0
+              },
+              "db_statements": {
+                "maximum": 8.0,
+                "median": 8.0,
+                "minimum": 8.0
+              },
+              "latency_ms": {
+                "maximum": 23.426300002029166,
+                "minimum": 17.503100010799244,
+                "p50": 19.014099991181865,
+                "p95": 22.892000008141622
+              },
+              "method": "GET",
+              "name": "question_bank.questions.filtered",
+              "response_bytes": {
+                "maximum": 63.0,
+                "median": 63.0,
+                "minimum": 63.0
+              },
+              "response_records": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "route_template": "/api/question-bank/questions",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 2000,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 6.0,
+                "median": 6.0,
+                "minimum": 6.0
+              },
+              "db_statements": {
+                "maximum": 11.0,
+                "median": 11.0,
+                "minimum": 11.0
+              },
+              "latency_ms": {
+                "maximum": 22.79020001878962,
+                "minimum": 17.216600012034178,
+                "p50": 19.4875999877695,
+                "p95": 22.273499984294176
+              },
+              "method": "GET",
+              "name": "question_bank.question.detail",
+              "response_bytes": {
+                "maximum": 1370.0,
+                "median": 1370.0,
+                "minimum": 1370.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/question-bank/questions/{question_id}",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 2000,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 7.0,
+                "median": 7.0,
+                "minimum": 7.0
+              },
+              "latency_ms": {
+                "maximum": 30.58489999966696,
+                "minimum": 17.41760000004433,
+                "p50": 19.880699983332306,
+                "p95": 22.328199993353337
+              },
+              "method": "GET",
+              "name": "question_bank.question.asset",
+              "response_bytes": {
+                "maximum": 68.0,
+                "median": 68.0,
+                "minimum": 68.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/question-bank/questions/{question_id}/assets/{asset_index}",
+              "sample_count": 20,
+              "scale_driver": "generated_asset_bytes",
+              "scale_driver_count": 136,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 3.0,
+                "median": 3.0,
+                "minimum": 3.0
+              },
+              "db_statements": {
+                "maximum": 8.0,
+                "median": 8.0,
+                "minimum": 8.0
+              },
+              "latency_ms": {
+                "maximum": 21.32339999661781,
+                "minimum": 17.608100024517626,
+                "p50": 19.61039999150671,
+                "p95": 21.16010000463575
+              },
+              "method": "GET",
+              "name": "question_bank.question.preview",
+              "response_bytes": {
+                "maximum": 68.0,
+                "median": 68.0,
+                "minimum": 68.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/question-bank/questions/{question_id}/previews/{preview_type}",
+              "sample_count": 20,
+              "scale_driver": "generated_asset_bytes",
+              "scale_driver_count": 136,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 54.0,
+                "median": 54.0,
+                "minimum": 54.0
+              },
+              "db_statements": {
+                "maximum": 5151.0,
+                "median": 5151.0,
+                "minimum": 5151.0
+              },
+              "latency_ms": {
+                "maximum": 3567.257399990922,
+                "minimum": 3263.813099998515,
+                "p50": 3371.6874000092503,
+                "p95": 3545.051799999783
+              },
+              "method": "POST",
+              "name": "training.diagnosis",
+              "response_bytes": {
+                "maximum": 4678375.0,
+                "median": 4678375.0,
+                "minimum": 4678375.0
+              },
+              "response_records": {
+                "maximum": 200.0,
+                "median": 200.0,
+                "minimum": 200.0
+              },
+              "route_template": "/api/training/diagnosis",
+              "sample_count": 20,
+              "scale_driver": "students",
+              "scale_driver_count": 200,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 7854.0,
+                "median": 7854.0,
+                "minimum": 7854.0
+              },
+              "db_statements": {
+                "maximum": 1222551.0,
+                "median": 1222551.0,
+                "minimum": 1222551.0
+              },
+              "latency_ms": {
+                "maximum": 146123.18239998422,
+                "minimum": 139567.02750001568,
+                "p50": 140313.04350000573,
+                "p95": 145406.2769000011
+              },
+              "method": "POST",
+              "name": "training.plan.preview",
+              "response_bytes": {
+                "maximum": 9955557.0,
+                "median": 9955557.0,
+                "minimum": 9955557.0
+              },
+              "response_records": {
+                "maximum": 200.0,
+                "median": 200.0,
+                "minimum": 200.0
+              },
+              "route_template": "/api/training/plans/preview",
+              "sample_count": 20,
+              "scale_driver": "students",
+              "scale_driver_count": 200,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "latency_ms": {
+                "maximum": 41.83800000464544,
+                "minimum": 28.03769998718053,
+                "p50": 33.39430000050925,
+                "p95": 40.20669998135418
+              },
+              "method": "GET",
+              "name": "training.tasks",
+              "response_bytes": {
+                "maximum": 22856.0,
+                "median": 22856.0,
+                "minimum": 22856.0
+              },
+              "response_records": {
+                "maximum": 100.0,
+                "median": 100.0,
+                "minimum": 100.0
+              },
+              "route_template": "/api/training/tasks",
+              "sample_count": 20,
+              "scale_driver": "training_tasks",
+              "scale_driver_count": 100,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 5.0,
+                "median": 5.0,
+                "minimum": 5.0
+              },
+              "db_statements": {
+                "maximum": 5.0,
+                "median": 5.0,
+                "minimum": 5.0
+              },
+              "latency_ms": {
+                "maximum": 24.14150000549853,
+                "minimum": 18.267000006744638,
+                "p50": 20.995300001231954,
+                "p95": 24.08940001623705
+              },
+              "method": "GET",
+              "name": "training.task.detail",
+              "response_bytes": {
+                "maximum": 1021.0,
+                "median": 1021.0,
+                "minimum": 1021.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/training/tasks/{task_id}",
+              "sample_count": 20,
+              "scale_driver": "training_tasks",
+              "scale_driver_count": 100,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 56.0,
+                "median": 56.0,
+                "minimum": 56.0
+              },
+              "db_statements": {
+                "maximum": 5163.0,
+                "median": 5163.0,
+                "minimum": 5163.0
+              },
+              "latency_ms": {
+                "maximum": 1681.6022999992128,
+                "minimum": 1461.8061000073794,
+                "p50": 1579.8050000157673,
+                "p95": 1673.8226000161376
+              },
+              "method": "POST",
+              "name": "graph.profiles",
+              "response_bytes": {
+                "maximum": 4678307.0,
+                "median": 4678307.0,
+                "minimum": 4678307.0
+              },
+              "response_records": {
+                "maximum": 200.0,
+                "median": 200.0,
+                "minimum": 200.0
+              },
+              "route_template": "/api/graph/profiles",
+              "sample_count": 20,
+              "scale_driver": "students",
+              "scale_driver_count": 200,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 56.0,
+                "median": 56.0,
+                "minimum": 56.0
+              },
+              "db_statements": {
+                "maximum": 5163.0,
+                "median": 5163.0,
+                "minimum": 5163.0
+              },
+              "latency_ms": {
+                "maximum": 1891.2526000058278,
+                "minimum": 1640.2840999944601,
+                "p50": 1750.7949999999255,
+                "p95": 1850.0917000055779
+              },
+              "method": "POST",
+              "name": "graph.rows",
+              "response_bytes": {
+                "maximum": 4734015.0,
+                "median": 4734015.0,
+                "minimum": 4734015.0
+              },
+              "response_records": {
+                "maximum": 4000.0,
+                "median": 4000.0,
+                "minimum": 4000.0
+              },
+              "route_template": "/api/graph/rows",
+              "sample_count": 20,
+              "scale_driver": "session_details",
+              "scale_driver_count": 20000,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 56.0,
+                "median": 56.0,
+                "minimum": 56.0
+              },
+              "db_statements": {
+                "maximum": 5163.0,
+                "median": 5163.0,
+                "minimum": 5163.0
+              },
+              "latency_ms": {
+                "maximum": 1557.3963000206277,
+                "minimum": 1316.996300010942,
+                "p50": 1442.2328000073321,
+                "p95": 1533.6546000035014
+              },
+              "method": "POST",
+              "name": "graph.evidence",
+              "response_bytes": {
+                "maximum": 52377.0,
+                "median": 52377.0,
+                "minimum": 52377.0
+              },
+              "response_records": {
+                "maximum": 100.0,
+                "median": 100.0,
+                "minimum": 100.0
+              },
+              "route_template": "/api/graph/evidence",
+              "sample_count": 20,
+              "scale_driver": "session_details",
+              "scale_driver_count": 20000,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 12.0,
+                "median": 12.0,
+                "minimum": 12.0
+              },
+              "latency_ms": {
+                "maximum": 105.67540000192821,
+                "minimum": 85.10050000040792,
+                "p50": 91.52230000472628,
+                "p95": 101.46960002020933
+              },
+              "method": "GET",
+              "name": "ops.self_check",
+              "response_bytes": {
+                "maximum": 1128.0,
+                "median": 1128.0,
+                "minimum": 1128.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/ops/self-check",
+              "sample_count": 20,
+              "scale_driver": "constant",
+              "scale_driver_count": 1,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "db_statements": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "latency_ms": {
+                "maximum": 6.31019999855198,
+                "minimum": 3.2888000132516026,
+                "p50": 4.249399993568659,
+                "p95": 5.961799994111061
+              },
+              "method": "GET",
+              "name": "ops.backups",
+              "response_bytes": {
+                "maximum": 7137.0,
+                "median": 7137.0,
+                "minimum": 7137.0
+              },
+              "response_records": {
+                "maximum": 50.0,
+                "median": 50.0,
+                "minimum": 50.0
+              },
+              "route_template": "/api/ops/backups",
+              "sample_count": 20,
+              "scale_driver": "backup_files",
+              "scale_driver_count": 50,
+              "status_code": 200
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "manifest": {
+        "backup_database_bytes": 40960,
+        "generated_asset_bytes": 136,
+        "grading_database_bytes": 1105920,
+        "logical_counts": {
+          "backup_files": 5,
+          "exam_papers": 25,
+          "grading_question_links": 2,
+          "grading_sessions": 1,
+          "question_previews": 2,
+          "question_tags": 1000,
+          "questions": 500,
+          "session_details": 7500,
+          "session_results": 25,
+          "students": 25,
+          "training_task_items": 25,
+          "training_tasks": 25,
+          "training_variants": 25,
+          "variant_students": 25
+        },
+        "question_bank_database_bytes": 667648,
+        "scale": "large_5pct",
+        "seed": 126
+      },
+      "repeatability": "passed",
+      "repetitions": [
+        {
+          "repetition": 1,
+          "scenarios": [
+            {
+              "db_selects": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "db_statements": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "latency_ms": {
+                "maximum": 0.8756000024732202,
+                "minimum": 0.4637999809347093,
+                "p50": 0.6108999950811267,
+                "p95": 0.8282999915536493
+              },
+              "method": "GET",
+              "name": "health",
+              "response_bytes": {
+                "maximum": 77.0,
+                "median": 77.0,
+                "minimum": 77.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/healthz",
+              "sample_count": 20,
+              "scale_driver": "constant",
+              "scale_driver_count": 1,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 7.0,
+                "median": 7.0,
+                "minimum": 7.0
+              },
+              "latency_ms": {
+                "maximum": 17.26200000848621,
+                "minimum": 10.804399993503466,
+                "p50": 12.273300002561882,
+                "p95": 14.602499984903261
+              },
+              "method": "GET",
+              "name": "question_bank.papers",
+              "response_bytes": {
+                "maximum": 22.0,
+                "median": 22.0,
+                "minimum": 22.0
+              },
+              "response_records": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "route_template": "/api/question-bank/papers",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 500,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 6.0,
+                "median": 6.0,
+                "minimum": 6.0
+              },
+              "db_statements": {
+                "maximum": 11.0,
+                "median": 11.0,
+                "minimum": 11.0
+              },
+              "latency_ms": {
+                "maximum": 21.038500010035932,
+                "minimum": 14.473300019744784,
+                "p50": 16.168100002687424,
+                "p95": 19.953400013037026
+              },
+              "method": "GET",
+              "name": "question_bank.questions.default",
+              "response_bytes": {
+                "maximum": 15904.0,
+                "median": 15904.0,
+                "minimum": 15904.0
+              },
+              "response_records": {
+                "maximum": 20.0,
+                "median": 20.0,
+                "minimum": 20.0
+              },
+              "route_template": "/api/question-bank/questions",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 500,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 3.0,
+                "median": 3.0,
+                "minimum": 3.0
+              },
+              "db_statements": {
+                "maximum": 8.0,
+                "median": 8.0,
+                "minimum": 8.0
+              },
+              "latency_ms": {
+                "maximum": 18.524899991462007,
+                "minimum": 12.522100005298853,
+                "p50": 14.301200018962845,
+                "p95": 16.604699980234727
+              },
+              "method": "GET",
+              "name": "question_bank.questions.filtered",
+              "response_bytes": {
+                "maximum": 63.0,
+                "median": 63.0,
+                "minimum": 63.0
+              },
+              "response_records": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "route_template": "/api/question-bank/questions",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 500,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 6.0,
+                "median": 6.0,
+                "minimum": 6.0
+              },
+              "db_statements": {
+                "maximum": 11.0,
+                "median": 11.0,
+                "minimum": 11.0
+              },
+              "latency_ms": {
+                "maximum": 17.461499985074624,
+                "minimum": 12.677299993811175,
+                "p50": 14.735100005054846,
+                "p95": 16.939699999056756
+              },
+              "method": "GET",
+              "name": "question_bank.question.detail",
+              "response_bytes": {
+                "maximum": 1370.0,
+                "median": 1370.0,
+                "minimum": 1370.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/question-bank/questions/{question_id}",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 500,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 7.0,
+                "median": 7.0,
+                "minimum": 7.0
+              },
+              "latency_ms": {
+                "maximum": 18.057299981592223,
+                "minimum": 14.041499991435558,
+                "p50": 16.34479998028837,
+                "p95": 17.117999988840893
+              },
+              "method": "GET",
+              "name": "question_bank.question.asset",
+              "response_bytes": {
+                "maximum": 68.0,
+                "median": 68.0,
+                "minimum": 68.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/question-bank/questions/{question_id}/assets/{asset_index}",
+              "sample_count": 20,
+              "scale_driver": "generated_asset_bytes",
+              "scale_driver_count": 136,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 3.0,
+                "median": 3.0,
+                "minimum": 3.0
+              },
+              "db_statements": {
+                "maximum": 8.0,
+                "median": 8.0,
+                "minimum": 8.0
+              },
+              "latency_ms": {
+                "maximum": 17.35400001052767,
+                "minimum": 13.636199990287423,
+                "p50": 14.813999994657934,
+                "p95": 16.466900007799268
+              },
+              "method": "GET",
+              "name": "question_bank.question.preview",
+              "response_bytes": {
+                "maximum": 68.0,
+                "median": 68.0,
+                "minimum": 68.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/question-bank/questions/{question_id}/previews/{preview_type}",
+              "sample_count": 20,
+              "scale_driver": "generated_asset_bytes",
+              "scale_driver_count": 136,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 14.0,
+                "median": 14.0,
+                "minimum": 14.0
+              },
+              "db_statements": {
+                "maximum": 1043.0,
+                "median": 1043.0,
+                "minimum": 1043.0
+              },
+              "latency_ms": {
+                "maximum": 465.6505000020843,
+                "minimum": 324.61070001590997,
+                "p50": 406.03690000716597,
+                "p95": 461.2190999905579
+              },
+              "method": "POST",
+              "name": "training.diagnosis",
+              "response_bytes": {
+                "maximum": 31457.0,
+                "median": 31457.0,
+                "minimum": 31457.0
+              },
+              "response_records": {
+                "maximum": 25.0,
+                "median": 25.0,
+                "minimum": 25.0
+              },
+              "route_template": "/api/training/diagnosis",
+              "sample_count": 20,
+              "scale_driver": "students",
+              "scale_driver_count": 25,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 389.0,
+                "median": 389.0,
+                "minimum": 389.0
+              },
+              "db_statements": {
+                "maximum": 51818.0,
+                "median": 51818.0,
+                "minimum": 51818.0
+              },
+              "latency_ms": {
+                "maximum": 5024.494900018908,
+                "minimum": 4648.939500009874,
+                "p50": 4869.895300013013,
+                "p95": 5004.541099973721
+              },
+              "method": "POST",
+              "name": "training.plan.preview",
+              "response_bytes": {
+                "maximum": 105472.0,
+                "median": 105472.0,
+                "minimum": 105472.0
+              },
+              "response_records": {
+                "maximum": 25.0,
+                "median": 25.0,
+                "minimum": 25.0
+              },
+              "route_template": "/api/training/plans/preview",
+              "sample_count": 20,
+              "scale_driver": "students",
+              "scale_driver_count": 25,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "latency_ms": {
+                "maximum": 26.303799997549504,
+                "minimum": 18.321000010473654,
+                "p50": 22.65969998552464,
+                "p95": 26.15770002012141
+              },
+              "method": "GET",
+              "name": "training.tasks",
+              "response_bytes": {
+                "maximum": 5754.0,
+                "median": 5754.0,
+                "minimum": 5754.0
+              },
+              "response_records": {
+                "maximum": 25.0,
+                "median": 25.0,
+                "minimum": 25.0
+              },
+              "route_template": "/api/training/tasks",
+              "sample_count": 20,
+              "scale_driver": "training_tasks",
+              "scale_driver_count": 25,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 5.0,
+                "median": 5.0,
+                "minimum": 5.0
+              },
+              "db_statements": {
+                "maximum": 5.0,
+                "median": 5.0,
+                "minimum": 5.0
+              },
+              "latency_ms": {
+                "maximum": 23.482599994167686,
+                "minimum": 15.413500019349158,
+                "p50": 17.612700001336634,
+                "p95": 22.675399988656864
+              },
+              "method": "GET",
+              "name": "training.task.detail",
+              "response_bytes": {
+                "maximum": 1021.0,
+                "median": 1021.0,
+                "minimum": 1021.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/training/tasks/{task_id}",
+              "sample_count": 20,
+              "scale_driver": "training_tasks",
+              "scale_driver_count": 25,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 16.0,
+                "median": 16.0,
+                "minimum": 16.0
+              },
+              "db_statements": {
+                "maximum": 1055.0,
+                "median": 1055.0,
+                "minimum": 1055.0
+              },
+              "latency_ms": {
+                "maximum": 503.9628999948036,
+                "minimum": 342.23340000608005,
+                "p50": 451.371899980586,
+                "p95": 499.2801999906078
+              },
+              "method": "POST",
+              "name": "graph.profiles",
+              "response_bytes": {
+                "maximum": 31389.0,
+                "median": 31389.0,
+                "minimum": 31389.0
+              },
+              "response_records": {
+                "maximum": 25.0,
+                "median": 25.0,
+                "minimum": 25.0
+              },
+              "route_template": "/api/graph/profiles",
+              "sample_count": 20,
+              "scale_driver": "students",
+              "scale_driver_count": 25,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 16.0,
+                "median": 16.0,
+                "minimum": 16.0
+              },
+              "db_statements": {
+                "maximum": 1055.0,
+                "median": 1055.0,
+                "minimum": 1055.0
+              },
+              "latency_ms": {
+                "maximum": 524.42939998582,
+                "minimum": 355.8004000224173,
+                "p50": 445.2324000012595,
+                "p95": 518.3439000102226
+              },
+              "method": "POST",
+              "name": "graph.rows",
+              "response_bytes": {
+                "maximum": 29489.0,
+                "median": 29489.0,
+                "minimum": 29489.0
+              },
+              "response_records": {
+                "maximum": 50.0,
+                "median": 50.0,
+                "minimum": 50.0
+              },
+              "route_template": "/api/graph/rows",
+              "sample_count": 20,
+              "scale_driver": "session_details",
+              "scale_driver_count": 7500,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 16.0,
+                "median": 16.0,
+                "minimum": 16.0
+              },
+              "db_statements": {
+                "maximum": 1055.0,
+                "median": 1055.0,
+                "minimum": 1055.0
+              },
+              "latency_ms": {
+                "maximum": 541.1658999801148,
+                "minimum": 360.3091000113636,
+                "p50": 471.15759999724105,
+                "p95": 525.05550000933
+              },
+              "method": "POST",
+              "name": "graph.evidence",
+              "response_bytes": {
+                "maximum": 13254.0,
+                "median": 13254.0,
+                "minimum": 13254.0
+              },
+              "response_records": {
+                "maximum": 25.0,
+                "median": 25.0,
+                "minimum": 25.0
+              },
+              "route_template": "/api/graph/evidence",
+              "sample_count": 20,
+              "scale_driver": "session_details",
+              "scale_driver_count": 7500,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 12.0,
+                "median": 12.0,
+                "minimum": 12.0
+              },
+              "latency_ms": {
+                "maximum": 89.43650001310743,
+                "minimum": 71.79669998004101,
+                "p50": 78.60109998728149,
+                "p95": 87.4857000017073
+              },
+              "method": "GET",
+              "name": "ops.self_check",
+              "response_bytes": {
+                "maximum": 1127.0,
+                "median": 1127.0,
+                "minimum": 1127.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/ops/self-check",
+              "sample_count": 20,
+              "scale_driver": "constant",
+              "scale_driver_count": 1,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "db_statements": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "latency_ms": {
+                "maximum": 2.4099999864120036,
+                "minimum": 1.6479999758303165,
+                "p50": 2.123699989169836,
+                "p95": 2.3893000034149736
+              },
+              "method": "GET",
+              "name": "ops.backups",
+              "response_bytes": {
+                "maximum": 746.0,
+                "median": 746.0,
+                "minimum": 746.0
+              },
+              "response_records": {
+                "maximum": 5.0,
+                "median": 5.0,
+                "minimum": 5.0
+              },
+              "route_template": "/api/ops/backups",
+              "sample_count": 20,
+              "scale_driver": "backup_files",
+              "scale_driver_count": 5,
+              "status_code": 200
+            }
+          ]
+        },
+        {
+          "repetition": 2,
+          "scenarios": [
+            {
+              "db_selects": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "db_statements": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "latency_ms": {
+                "maximum": 0.8755000017117709,
+                "minimum": 0.49440001021139324,
+                "p50": 0.6849000055808574,
+                "p95": 0.8363999950233847
+              },
+              "method": "GET",
+              "name": "health",
+              "response_bytes": {
+                "maximum": 77.0,
+                "median": 77.0,
+                "minimum": 77.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/healthz",
+              "sample_count": 20,
+              "scale_driver": "constant",
+              "scale_driver_count": 1,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 7.0,
+                "median": 7.0,
+                "minimum": 7.0
+              },
+              "latency_ms": {
+                "maximum": 17.86240001092665,
+                "minimum": 11.81419999920763,
+                "p50": 12.822899996535853,
+                "p95": 17.286799993598834
+              },
+              "method": "GET",
+              "name": "question_bank.papers",
+              "response_bytes": {
+                "maximum": 22.0,
+                "median": 22.0,
+                "minimum": 22.0
+              },
+              "response_records": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "route_template": "/api/question-bank/papers",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 500,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 6.0,
+                "median": 6.0,
+                "minimum": 6.0
+              },
+              "db_statements": {
+                "maximum": 11.0,
+                "median": 11.0,
+                "minimum": 11.0
+              },
+              "latency_ms": {
+                "maximum": 22.080900002038106,
+                "minimum": 16.28599999821745,
+                "p50": 17.41909998236224,
+                "p95": 20.934500003932044
+              },
+              "method": "GET",
+              "name": "question_bank.questions.default",
+              "response_bytes": {
+                "maximum": 15904.0,
+                "median": 15904.0,
+                "minimum": 15904.0
+              },
+              "response_records": {
+                "maximum": 20.0,
+                "median": 20.0,
+                "minimum": 20.0
+              },
+              "route_template": "/api/question-bank/questions",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 500,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 3.0,
+                "median": 3.0,
+                "minimum": 3.0
+              },
+              "db_statements": {
+                "maximum": 8.0,
+                "median": 8.0,
+                "minimum": 8.0
+              },
+              "latency_ms": {
+                "maximum": 17.122599994763732,
+                "minimum": 12.849399994593114,
+                "p50": 14.822500001173466,
+                "p95": 16.99540001573041
+              },
+              "method": "GET",
+              "name": "question_bank.questions.filtered",
+              "response_bytes": {
+                "maximum": 63.0,
+                "median": 63.0,
+                "minimum": 63.0
+              },
+              "response_records": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "route_template": "/api/question-bank/questions",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 500,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 6.0,
+                "median": 6.0,
+                "minimum": 6.0
+              },
+              "db_statements": {
+                "maximum": 11.0,
+                "median": 11.0,
+                "minimum": 11.0
+              },
+              "latency_ms": {
+                "maximum": 20.32330000656657,
+                "minimum": 13.603500003227964,
+                "p50": 14.665299997432157,
+                "p95": 18.184500018833205
+              },
+              "method": "GET",
+              "name": "question_bank.question.detail",
+              "response_bytes": {
+                "maximum": 1370.0,
+                "median": 1370.0,
+                "minimum": 1370.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/question-bank/questions/{question_id}",
+              "sample_count": 20,
+              "scale_driver": "questions",
+              "scale_driver_count": 500,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 7.0,
+                "median": 7.0,
+                "minimum": 7.0
+              },
+              "latency_ms": {
+                "maximum": 20.07870000670664,
+                "minimum": 14.287500001955777,
+                "p50": 16.143999993801117,
+                "p95": 19.41800001077354
+              },
+              "method": "GET",
+              "name": "question_bank.question.asset",
+              "response_bytes": {
+                "maximum": 68.0,
+                "median": 68.0,
+                "minimum": 68.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/question-bank/questions/{question_id}/assets/{asset_index}",
+              "sample_count": 20,
+              "scale_driver": "generated_asset_bytes",
+              "scale_driver_count": 136,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 3.0,
+                "median": 3.0,
+                "minimum": 3.0
+              },
+              "db_statements": {
+                "maximum": 8.0,
+                "median": 8.0,
+                "minimum": 8.0
+              },
+              "latency_ms": {
+                "maximum": 21.12150000175461,
+                "minimum": 14.827399980276823,
+                "p50": 16.642100003082305,
+                "p95": 21.061499981442466
+              },
+              "method": "GET",
+              "name": "question_bank.question.preview",
+              "response_bytes": {
+                "maximum": 68.0,
+                "median": 68.0,
+                "minimum": 68.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/question-bank/questions/{question_id}/previews/{preview_type}",
+              "sample_count": 20,
+              "scale_driver": "generated_asset_bytes",
+              "scale_driver_count": 136,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 14.0,
+                "median": 14.0,
+                "minimum": 14.0
+              },
+              "db_statements": {
+                "maximum": 1043.0,
+                "median": 1043.0,
+                "minimum": 1043.0
+              },
+              "latency_ms": {
+                "maximum": 537.8955000196584,
+                "minimum": 306.4326000167057,
+                "p50": 417.9328999889549,
+                "p95": 462.4105999828316
+              },
+              "method": "POST",
+              "name": "training.diagnosis",
+              "response_bytes": {
+                "maximum": 31457.0,
+                "median": 31457.0,
+                "minimum": 31457.0
+              },
+              "response_records": {
+                "maximum": 25.0,
+                "median": 25.0,
+                "minimum": 25.0
+              },
+              "route_template": "/api/training/diagnosis",
+              "sample_count": 20,
+              "scale_driver": "students",
+              "scale_driver_count": 25,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 389.0,
+                "median": 389.0,
+                "minimum": 389.0
+              },
+              "db_statements": {
+                "maximum": 51818.0,
+                "median": 51818.0,
+                "minimum": 51818.0
+              },
+              "latency_ms": {
+                "maximum": 5129.390400019474,
+                "minimum": 4728.97210001247,
+                "p50": 4907.415499998024,
+                "p95": 5043.859199999133
+              },
+              "method": "POST",
+              "name": "training.plan.preview",
+              "response_bytes": {
+                "maximum": 105472.0,
+                "median": 105472.0,
+                "minimum": 105472.0
+              },
+              "response_records": {
+                "maximum": 25.0,
+                "median": 25.0,
+                "minimum": 25.0
+              },
+              "route_template": "/api/training/plans/preview",
+              "sample_count": 20,
+              "scale_driver": "students",
+              "scale_driver_count": 25,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "latency_ms": {
+                "maximum": 24.534399999538437,
+                "minimum": 18.341799994232133,
+                "p50": 21.884000016143546,
+                "p95": 23.223399999551475
+              },
+              "method": "GET",
+              "name": "training.tasks",
+              "response_bytes": {
+                "maximum": 5754.0,
+                "median": 5754.0,
+                "minimum": 5754.0
+              },
+              "response_records": {
+                "maximum": 25.0,
+                "median": 25.0,
+                "minimum": 25.0
+              },
+              "route_template": "/api/training/tasks",
+              "sample_count": 20,
+              "scale_driver": "training_tasks",
+              "scale_driver_count": 25,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 5.0,
+                "median": 5.0,
+                "minimum": 5.0
+              },
+              "db_statements": {
+                "maximum": 5.0,
+                "median": 5.0,
+                "minimum": 5.0
+              },
+              "latency_ms": {
+                "maximum": 25.441500009037554,
+                "minimum": 15.214000013656914,
+                "p50": 17.282099986914545,
+                "p95": 22.9383000114467
+              },
+              "method": "GET",
+              "name": "training.task.detail",
+              "response_bytes": {
+                "maximum": 1021.0,
+                "median": 1021.0,
+                "minimum": 1021.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/training/tasks/{task_id}",
+              "sample_count": 20,
+              "scale_driver": "training_tasks",
+              "scale_driver_count": 25,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 16.0,
+                "median": 16.0,
+                "minimum": 16.0
+              },
+              "db_statements": {
+                "maximum": 1055.0,
+                "median": 1055.0,
+                "minimum": 1055.0
+              },
+              "latency_ms": {
+                "maximum": 529.3657000001986,
+                "minimum": 343.9875000040047,
+                "p50": 458.55959999607876,
+                "p95": 501.12269999226555
+              },
+              "method": "POST",
+              "name": "graph.profiles",
+              "response_bytes": {
+                "maximum": 31389.0,
+                "median": 31389.0,
+                "minimum": 31389.0
+              },
+              "response_records": {
+                "maximum": 25.0,
+                "median": 25.0,
+                "minimum": 25.0
+              },
+              "route_template": "/api/graph/profiles",
+              "sample_count": 20,
+              "scale_driver": "students",
+              "scale_driver_count": 25,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 16.0,
+                "median": 16.0,
+                "minimum": 16.0
+              },
+              "db_statements": {
+                "maximum": 1055.0,
+                "median": 1055.0,
+                "minimum": 1055.0
+              },
+              "latency_ms": {
+                "maximum": 522.6938999840058,
+                "minimum": 373.93580001662485,
+                "p50": 465.2228000049945,
+                "p95": 519.484399992507
+              },
+              "method": "POST",
+              "name": "graph.rows",
+              "response_bytes": {
+                "maximum": 29489.0,
+                "median": 29489.0,
+                "minimum": 29489.0
+              },
+              "response_records": {
+                "maximum": 50.0,
+                "median": 50.0,
+                "minimum": 50.0
+              },
+              "route_template": "/api/graph/rows",
+              "sample_count": 20,
+              "scale_driver": "session_details",
+              "scale_driver_count": 7500,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 16.0,
+                "median": 16.0,
+                "minimum": 16.0
+              },
+              "db_statements": {
+                "maximum": 1055.0,
+                "median": 1055.0,
+                "minimum": 1055.0
+              },
+              "latency_ms": {
+                "maximum": 564.9484999885317,
+                "minimum": 334.8334000038449,
+                "p50": 462.0798999967519,
+                "p95": 501.5475999971386
+              },
+              "method": "POST",
+              "name": "graph.evidence",
+              "response_bytes": {
+                "maximum": 13254.0,
+                "median": 13254.0,
+                "minimum": 13254.0
+              },
+              "response_records": {
+                "maximum": 25.0,
+                "median": 25.0,
+                "minimum": 25.0
+              },
+              "route_template": "/api/graph/evidence",
+              "sample_count": 20,
+              "scale_driver": "session_details",
+              "scale_driver_count": 7500,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 2.0,
+                "median": 2.0,
+                "minimum": 2.0
+              },
+              "db_statements": {
+                "maximum": 12.0,
+                "median": 12.0,
+                "minimum": 12.0
+              },
+              "latency_ms": {
+                "maximum": 92.95039999415167,
+                "minimum": 72.54369999282062,
+                "p50": 79.94390002568252,
+                "p95": 88.69649999542162
+              },
+              "method": "GET",
+              "name": "ops.self_check",
+              "response_bytes": {
+                "maximum": 1127.0,
+                "median": 1127.0,
+                "minimum": 1127.0
+              },
+              "response_records": {
+                "maximum": 1.0,
+                "median": 1.0,
+                "minimum": 1.0
+              },
+              "route_template": "/api/ops/self-check",
+              "sample_count": 20,
+              "scale_driver": "constant",
+              "scale_driver_count": 1,
+              "status_code": 200
+            },
+            {
+              "db_selects": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "db_statements": {
+                "maximum": 0.0,
+                "median": 0.0,
+                "minimum": 0.0
+              },
+              "latency_ms": {
+                "maximum": 3.283000027295202,
+                "minimum": 1.580300013301894,
+                "p50": 2.0218999998178333,
+                "p95": 2.866100025130436
+              },
+              "method": "GET",
+              "name": "ops.backups",
+              "response_bytes": {
+                "maximum": 746.0,
+                "median": 746.0,
+                "minimum": 746.0
+              },
+              "response_records": {
+                "maximum": 5.0,
+                "median": 5.0,
+                "minimum": 5.0
+              },
+              "route_template": "/api/ops/backups",
+              "sample_count": 20,
+              "scale_driver": "backup_files",
+              "scale_driver_count": 5,
+              "status_code": 200
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "seed": 126
+}
