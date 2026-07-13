@@ -29,8 +29,10 @@ const hasRetainedContentError = computed(() =>
   ),
 )
 const initialLoading = computed(() =>
-  (reviewStore.questionLoadState === 'loading' && reviewStore.questions.length === 0) ||
-  (reviewStore.itemLoadState === 'loading' && reviewStore.items.length === 0),
+  reviewStore.questionLoadState === 'loading' && reviewStore.questions.length === 0,
+)
+const initialItemLoading = computed(() =>
+  reviewStore.itemLoadState === 'loading' && reviewStore.items.length === 0,
 )
 const firstLoadError = computed(() =>
   Boolean(
@@ -213,6 +215,16 @@ function moveSelection(delta: number): void {
   reviewStore.moveSelection(delta)
 }
 
+function isShortcutProtectedTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false
+  if (target.closest('input, textarea, select, button')) return true
+  if (target instanceof HTMLElement && target.isContentEditable) return true
+
+  const editableRoot = target.closest<HTMLElement>('[contenteditable]')
+  if (editableRoot === null) return false
+  return editableRoot.getAttribute('contenteditable')?.trim().toLocaleLowerCase() !== 'false'
+}
+
 function onKeydown(event: KeyboardEvent): void {
   if (
     event.defaultPrevented ||
@@ -220,9 +232,7 @@ function onKeydown(event: KeyboardEvent): void {
     event.ctrlKey ||
     event.metaKey ||
     event.shiftKey ||
-    (event.target instanceof Element && event.target.matches(
-      'input, textarea, select, button, [contenteditable="true"]',
-    ))
+    isShortcutProtectedTarget(event.target)
   ) return
 
   const key = event.key.toLocaleLowerCase()
@@ -342,7 +352,14 @@ onBeforeUnmount(() => {
             下一条
           </button>
         </nav>
+        <StatePanel
+          v-if="initialItemLoading"
+          kind="loading"
+          title="正在读取复核记录"
+          description="可以继续切换题目，当前请求会安全取消。"
+        />
         <ReviewSelectionSummary
+          v-else
           :item="reviewStore.currentItem"
           :question-id="reviewStore.selectedQuestionId"
         />

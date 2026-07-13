@@ -68,6 +68,11 @@ interface MountOptions {
   reviewQuestions?: ReviewQuestionSummary[]
   reviewItems?: Record<string, ReviewItem[]>
   failItemLoad?: boolean
+  itemLoader?: (
+    sessionId: number,
+    questionId: string,
+    signal?: AbortSignal,
+  ) => Promise<ReviewItem[]>
 }
 
 const mountedApps: App[] = []
@@ -85,6 +90,7 @@ async function mountView({
   reviewQuestions = questions,
   reviewItems = itemsByQuestion,
   failItemLoad = false,
+  itemLoader,
 }: MountOptions = {}) {
   const pinia = createPinia()
   setActivePinia(pinia)
@@ -120,8 +126,9 @@ async function mountView({
   const loadItemsSpy = vi
     .spyOn(reviewStore, 'loadItems')
     .mockImplementation((requestedSessionId, questionId) =>
-      loadItems(requestedSessionId, questionId, async () => {
+      loadItems(requestedSessionId, questionId, async (_sessionId, _questionId, signal) => {
         if (failItemLoad) throw new Error('private item failure')
+        if (itemLoader) return itemLoader(requestedSessionId, questionId, signal)
         return reviewItems[questionId] ?? []
       }),
     )
@@ -139,9 +146,15 @@ async function mountView({
     host,
     router,
     reviewStore,
+    sessionStore,
     loadItemsDirect: loadItems,
     loadQuestionsSpy,
     loadItemsSpy,
+    unmount: () => {
+      const index = mountedApps.indexOf(app)
+      if (index >= 0) mountedApps.splice(index, 1)
+      app.unmount()
+    },
   }
 }
 
@@ -156,6 +169,16 @@ function dispatchKey(target: EventTarget, key: string, init: KeyboardEventInit =
   const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init })
   target.dispatchEvent(event)
   return event
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
 }
 
 beforeEach(() => {
@@ -255,15 +278,26 @@ describe('P2-05 review queue view', () => {
     const textarea = document.createElement('textarea')
     const editable = document.createElement('div')
     editable.setAttribute('contenteditable', 'true')
-    host.append(textarea, editable)
+    const emptyEditable = document.createElement('div')
+    emptyEditable.setAttribute('contenteditable', '')
+    const emptyEditableChild = document.createElement('span')
+    emptyEditable.append(emptyEditableChild)
+    const plaintextEditable = document.createElement('div')
+    plaintextEditable.setAttribute('contenteditable', 'plaintext-only')
+    const plaintextEditableChild = document.createElement('span')
+    plaintextEditable.append(plaintextEditableChild)
+    host.append(textarea, editable, emptyEditable, plaintextEditable)
     const protectedTargets = [
       host.querySelector<HTMLInputElement>('input')!,
       host.querySelector<HTMLSelectElement>('select')!,
       host.querySelector<HTMLButtonElement>('button')!,
       textarea,
       editable,
+      emptyEditableChild,
+      plaintextEditableChild,
     ]
     for (const target of protectedTargets) {
+      reviewStore.selectDetail(11)
       expect(dispatchKey(target, 'j').defaultPrevented).toBe(false)
       expect(reviewStore.selectedDetailId).toBe(11)
     }
@@ -295,7 +329,7 @@ describe('P2-05 review queue view', () => {
   })
 
   it('keeps old items visible with non-blocking feedback when refresh fails', async () => {
-    const { host, loadItemsDirect } = await mountView()
+    const { host, reviewStore, loadItemsDirect, loadItemsSpy } = await mountView()
     await vi.waitFor(() => expect(host.textContent).toContain('学生甲'))
 
     await loadItemsDirect(7, 'Q1', async () => {
@@ -306,5 +340,133 @@ describe('P2-05 review queue view', () => {
     expect(host.querySelector('[data-testid="feedback-banner"]')).not.toBeNull()
     expect(host.textContent).toContain('复核队列暂时无法读取，已保留上次内容。')
     expect(host.textContent).toContain('学生甲')
+
+    const retryButton = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent === '重新加载',
+    )!
+    retryButton.click()
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="feedback-banner"]')).toBeNull()
+      expect(reviewStore.itemLoadState).toBe('ready')
+      expect(reviewStore.errorMessage).toBe('')
+    })
+    expect(loadItemsSpy).toHaveBeenCalledTimes(2)
+    expect(host.textContent).toContain('学生甲')
+  })
+
+  it('aborts a stale question request, resets detail, and keeps only the latest URL context', async () => {
+    const pendingQ2 = deferred<ReviewItem[]>()
+    let q2Signal: AbortSignal | undefined
+    const q3Item = item(31, { question_id: 'Q3', student_name: '学生戊' })
+    const { host, router, reviewStore } = await mountView({
+      reviewQuestions: [
+        ...questions,
+        { question_id: 'Q3', total_count: 1, needs_review_count: 0, max_score: 5 },
+      ],
+      itemLoader: async (_sessionId, questionId, signal) => {
+        if (questionId === 'Q2') {
+          q2Signal = signal
+          return pendingQ2.promise
+        }
+        if (questionId === 'Q3') return [q3Item]
+        return itemsByQuestion[questionId] ?? []
+      },
+    })
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.query).toEqual({ question: 'Q1', detail: '11' })
+    })
+
+    const questionSelect = host.querySelector<HTMLSelectElement>('#review-question')!
+    inputValue(questionSelect, 'Q2')
+    await vi.waitFor(() => {
+      expect(reviewStore.selectedQuestionId).toBe('Q2')
+      expect(reviewStore.selectedDetailId).toBeNull()
+      expect(router.currentRoute.value.query).toEqual({ question: 'Q2' })
+    })
+    expect(reviewStore.itemLoadState).toBe('loading')
+    expect(host.contains(questionSelect)).toBe(true)
+    expect(questionSelect.disabled).toBe(false)
+
+    inputValue(questionSelect, 'Q3')
+    await vi.waitFor(() => {
+      expect(q2Signal?.aborted).toBe(true)
+      expect(reviewStore.items.map((entry) => entry.question_id)).toEqual(['Q3'])
+      expect(router.currentRoute.value.query).toEqual({ question: 'Q3', detail: '31' })
+    })
+
+    pendingQ2.resolve(itemsByQuestion.Q2 ?? [])
+    await settleUi()
+    expect(reviewStore.items.map((entry) => entry.question_id)).toEqual(['Q3'])
+    expect(router.currentRoute.value.query).toEqual({ question: 'Q3', detail: '31' })
+  })
+
+  it('aborts a pending request on unmount and ignores its late result', async () => {
+    const pendingItems = deferred<ReviewItem[]>()
+    let pendingSignal: AbortSignal | undefined
+    const { reviewStore, unmount } = await mountView({
+      itemLoader: async (_sessionId, _questionId, signal) => {
+        pendingSignal = signal
+        return pendingItems.promise
+      },
+    })
+    await vi.waitFor(() => {
+      expect(reviewStore.itemLoadState).toBe('loading')
+      expect(pendingSignal).toBeDefined()
+    })
+
+    unmount()
+    expect(pendingSignal?.aborted).toBe(true)
+    expect(reviewStore.items).toEqual([])
+    expect(reviewStore.itemLoadState).toBe('idle')
+
+    pendingItems.resolve([item(71)])
+    await settleUi()
+    expect(reviewStore.items).toEqual([])
+    expect(reviewStore.itemLoadState).toBe('idle')
+  })
+
+  it('aborts the old session request and ignores its result after the new session loads', async () => {
+    const pendingSessionSeven = deferred<ReviewItem[]>()
+    let sessionSevenSignal: AbortSignal | undefined
+    const sessionNineItem = item(91, { session_id: 9, student_name: '新考试学生' })
+    const { router, reviewStore, sessionStore } = await mountView({
+      itemLoader: async (sessionId, _questionId, signal) => {
+        if (sessionId === 7) {
+          sessionSevenSignal = signal
+          return pendingSessionSeven.promise
+        }
+        return [sessionNineItem]
+      },
+    })
+    await vi.waitFor(() => {
+      expect(reviewStore.itemLoadState).toBe('loading')
+      expect(sessionSevenSignal).toBeDefined()
+    })
+
+    sessionStore.$patch({
+      sessions: [
+        ...sessionStore.sessions,
+        {
+          id: 9,
+          name: '九年级数学测试',
+          status: 'grading',
+          is_deleted: false,
+          deleted_at: null,
+          created_at: null,
+          updated_at: null,
+        },
+      ],
+      selectedSessionId: 9,
+    })
+    await vi.waitFor(() => {
+      expect(sessionSevenSignal?.aborted).toBe(true)
+      expect(reviewStore.items.map((entry) => entry.detail_id)).toEqual([91])
+      expect(router.currentRoute.value.query).toEqual({ question: 'Q1', detail: '91' })
+    })
+
+    pendingSessionSeven.resolve([item(71)])
+    await settleUi()
+    expect(reviewStore.items.map((entry) => entry.detail_id)).toEqual([91])
+    expect(router.currentRoute.value.query).toEqual({ question: 'Q1', detail: '91' })
   })
 })

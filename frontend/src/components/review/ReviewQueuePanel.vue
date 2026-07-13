@@ -74,7 +74,6 @@ function updateSort(event: Event): void {
         <select
           id="review-question"
           :value="selectedQuestionId ?? ''"
-          :disabled="loading"
           @change="selectQuestion"
         >
           <option
