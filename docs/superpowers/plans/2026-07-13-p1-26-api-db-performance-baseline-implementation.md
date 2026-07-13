@@ -44,7 +44,7 @@
 - Create `tools/performance/scenarios.py`: 16 个确定性只读场景、依赖覆盖和返回记录计数。
 - Create `tools/performance/runner.py`: TestClient 运行、预热/正式采样、请求记录关联、两轮可重复性比较和摘要。
 - Create `tools/performance/report.py`: nearest-rank、环境摘要、可能 N+1 观察、JSON/Markdown allowlist 渲染。
-- Create `tools/benchmark_api_db.py`: 参数校验、临时环境、三档运行和两个版本化报告原子写入。
+- Create `tools/benchmark_api_db.py`: 参数校验、临时环境、三档运行，以及两个版本化报告的逐文件原子替换和可捕获失败恢复。
 - Create `tests/test_api_performance_metrics.py`: recorder、中间件、脱敏、异常和并发隔离。
 - Create `tests/test_db_performance_instrumentation.py`: 五类目标连接路径计数且语义不变。
 - Create `tests/test_performance_dataset.py`: 固定种子、规模、外键、素材、路径和文本安全。
@@ -545,7 +545,7 @@ candidate = select_delta >= 5 and driver_delta > 0 and select_delta / driver_del
 
 Label it only `possible_n_plus_one`; retain `small_select_median`/`small_driver_count` for the base endpoint and publish the comparison endpoint as `comparison_scale="large_5pct"`, `comparison_select_median`, and `comparison_driver_count`. JSON and Markdown must not expose retired `large_select_median`/`large_driver_count` keys or headers. Include the select/driver counts, never SQL or an optimization recommendation.
 
-- [ ] **Step 9: Implement the CLI and atomic report publication**
+- [ ] **Step 9: Implement the CLI, per-file atomic replacement and catchable recovery**
 
 `tools/benchmark_api_db.py` validates scale names and positive warmup/sample/repetition values, creates one `TemporaryDirectory(prefix="p1-26-benchmark-")`, builds/runs scales sequentially, obtains `git rev-parse HEAD`, and writes UTF-8 JSON/Markdown through sibling temporary files followed by `os.replace()`. Default destinations are:
 
@@ -554,7 +554,7 @@ docs/performance/p1-26-api-db-baseline.json
 docs/performance/p1-26-api-db-baseline.md
 ```
 
-On failure remove temporary output siblings and leave any previous complete report untouched. Error messages contain only scale/scenario and stable error code.
+Each destination is written to a sibling temporary file and atomically replaced with `os.replace()`. If a `BaseException` is caught, attempt to restore the exact previous pair and clean temporary/restore files before re-raising. Sudden process termination or power loss between the two replacements can leave a mixed old/new pair; regenerate or inspect both files before the next use. This package does not implement a cross-file transaction. Error messages contain only scale/scenario and stable error code.
 
 - [ ] **Step 10: Run GREEN and CLI micro smoke**
 
@@ -610,7 +610,7 @@ Read only file length, UTC mtime and SHA-256 from the root checkout. Compare byt
 ..\..\runtime\python\python.exe tools\benchmark_api_db.py
 ```
 
-Expected: `small`、`medium`、`large_5pct` 3 个命名工作负载 × 16 scenarios × 2 repetitions complete; every repetition has 20 samples after 3 discarded warmups; deterministic projection matches; both versioned reports are atomically published. The reports use manifest counts rather than implying that the three names form a monotonic size sequence.
+Expected: `small`、`medium`、`large_5pct` 3 个命名工作负载 × 16 scenarios × 2 repetitions complete; every repetition has 20 samples after 3 discarded warmups; deterministic projection matches; both versioned reports are complete and each destination was atomically replaced. The reports use manifest counts rather than implying that the three names form a monotonic size sequence. A sudden termination or power loss between replacements remains a documented mixed-pair risk.
 
 - [x] **Step 5: Validate report safety and scope**
 
@@ -648,8 +648,10 @@ Change the handoff block to `waiting_review`, `功能提交: branch_head`, `自�
 - Possible N+1 observations: none met the fixed threshold when comparing the explicitly named `small` and `large_5pct` endpoints. The report retains neutral `comparison_*` fields and exports no retired `large_*` observation fields.
 - Coverage limitations: only allowlisted SQLite connection boundaries are counted; latency is not a service-level objective; generated data may not reproduce production distributions; the run performs no optimization. Reports contain only aggregate allowlisted fields and no raw samples.
 - Safety scan: zero forbidden JSON keys and zero matches for real-data/worktree/absolute-path markers, raw URLs, SQL text, request IDs, generated student/question identifiers or retired observation fields. Git status contained only the two intended versioned reports before documentation evidence was added.
-- Root real-database fingerprints: Step 3 and Step 8 each matched every user/Task 0-provided exact file length, UTC mtime and SHA-256 tuple; no real database was opened through SQLite or copied.
+- Root real-database fingerprints: the read-only length, UTC mtime and SHA-256 tuples matched the resumed Step 3 recovery baseline exactly after the formal run; no real database was opened through SQLite or copied.
 - Functional handoff guards: diff whitespace validation, empty feature `user_data` status, documentation governance, static compilation of 419 first-party Python files, both temporary database idempotency/integrity checks and the pre-review handoff validator passed.
+- Real-data evidence limitation: the Task 0 fingerprint claim was stored outside Git and was unavailable during this resumed execution, so it was not reconstructed or claimed. Step 3 established a fresh read-only recovery baseline from file size, UTC mtime and SHA-256; Step 8 proved both files exactly equal to that recovery baseline. `origin/main..HEAD` history, branch diff and feature status contain no `user_data` path.
+- Process evidence limitation: the long-running launcher did not retain the final OS exit code. Result usability is instead supported by both complete reports, top-level and per-scale `repeatability=passed`, the complete 48 scale-scenario summaries with 20 samples and status 200, and the fresh 18-test report safety suite. Catchable publication failures are covered by recovery tests; sudden termination or power loss between replacements remains a documented mixed-pair risk.
 
 - [ ] **Step 10: Request independent code review**
 
@@ -661,7 +663,7 @@ Invoke `superpowers:requesting-code-review` over the full package range. Review 
 - query-count completeness and accidental double instrumentation;
 - generated dataset counts, scale realism and absence of real data;
 - percentile/repeatability math and raw-sample exclusion;
-- benchmark failure atomicity and no partial report;
+- per-file atomic replacement, catchable-failure recovery and the documented crash/power-loss mixed-pair limitation;
 - no optimization, Schema or API-contract scope creep.
 
 Reproduce every Critical/Important finding with a RED test, make the minimal fix, rerun the affected focused/regression tests and request re-review. Critical/Important must be zero.
