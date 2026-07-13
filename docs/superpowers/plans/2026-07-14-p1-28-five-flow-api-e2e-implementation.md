@@ -33,14 +33,14 @@
 ## 昼夜交接
 
 **执行包：** P1-28
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** 8380c7bc13602dcfa177269b9b397fe5b7d630e0
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
 
 - 功能 worktree 分支：`codex/p1-28-api-e2e`
@@ -656,7 +656,7 @@ Check every plan box through this step, add a concise verification evidence sect
 
 Keep the original Stash baseline unchanged, then commit all remaining test/plan changes as the final functional commit.
 
-Task 6 Steps 1–3 evidence: the complete P1-28 and affected API/Job selection produced `70 passed, 0 failed, 0 skipped, 1 warning` in 12.11s. `git diff --check origin/main...HEAD` passed and the feature worktree had no `user_data/` status. Quick smoke passed in 4.82s, including documentation governance, compilation of 413 first-party Python files and idempotent initialization/integrity checks against isolated copies of both databases; the full pytest stage was intentionally skipped by `--skip-tests`. Before and after smoke, the root grading database remained 2863104 bytes with UTC mtime `2026-07-10T07:10:41.1221109Z` and SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`; the root question-bank database remained 3461120 bytes with UTC mtime `2026-07-08T11:58:06.3320883Z` and SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`. The warning is the existing dependency-level `StarletteDeprecationWarning` from `fastapi.testclient`. No production file changed, so `ARCHITECTURE.md` was not modified. Independent review remains pending and Tasks 4–6 were not started.
+Task 6 Steps 1–3 evidence: the complete P1-28 and affected API/Job selection produced `70 passed, 0 failed, 0 skipped, 1 warning` in 12.11s. `git diff --check origin/main...HEAD` passed and the feature worktree had no `user_data/` status. Quick smoke passed in 4.82s, including documentation governance, compilation of 413 first-party Python files and idempotent initialization/integrity checks against isolated copies of both databases; the full pytest stage was intentionally skipped by `--skip-tests`. Before and after smoke, the root grading database remained 2863104 bytes with UTC mtime `2026-07-10T07:10:41.1221109Z` and SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`; the root question-bank database remained 3461120 bytes with UTC mtime `2026-07-08T11:58:06.3320883Z` and SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`. The warning is the existing dependency-level `StarletteDeprecationWarning` from `fastapi.testclient`. No production file changed, so `ARCHITECTURE.md` was not modified. At that point Task 6 Steps 4–6 had not started.
 
 #### Whole-package review fixes (2026-07-14)
 
@@ -667,13 +667,15 @@ The whole-package review reported three Important findings and one Minor finding
 - **重启隔离边界：** RED installed a fail-spy on `create_ops_write_service()` and TestClient startup called it. GREEN overrides `get_ops_write_service` with an inert object before entering TestClient; the same spy records zero calls while all restart-state and teardown assertions remain active.
 - **临时题库边界：** RED proved `paths.qb_db_path` did not exist. GREEN initializes that exact temporary file through `question_bank.database.schema.initialize_database()`, proves its resolved path is under the fixture data root, and records that both synthetic grading-service instances receive that exact path.
 
-Review-fix verification: the four focused GREEN tests each passed; the complete `tests/api_e2e` slice produced `6 passed, 0 failed, 0 skipped, 1 warning` in 5.24s; the plan-selected affected API/Job regression set produced `70 passed, 0 failed, 0 skipped, 1 warning` in 13.02s. `git diff --check` passed, the feature worktree had no `user_data/` status, and quick smoke passed in 5.17s with 413 first-party Python files compiled and both isolated database copies idempotent/integrity-check clean. Before and after smoke, both root database size/UTC mtime/SHA-256 triples exactly matched the immutable claim record above. The only warning remains the existing dependency-level `StarletteDeprecationWarning` from `fastapi.testclient`. Handoff remains `waiting_review` with review pending until the reviewer verifies this fix commit.
+Review-fix verification: the four focused GREEN tests each passed; the complete `tests/api_e2e` slice produced `6 passed, 0 failed, 0 skipped, 1 warning` in 5.24s; the plan-selected affected API/Job regression set produced `70 passed, 0 failed, 0 skipped, 1 warning` in 13.02s. `git diff --check` passed, the feature worktree had no `user_data/` status, and quick smoke passed in 5.17s with 413 first-party Python files compiled and both isolated database copies idempotent/integrity-check clean. Before and after smoke, both root database size/UTC mtime/SHA-256 triples exactly matched the immutable claim record above. The only warning remains the existing dependency-level `StarletteDeprecationWarning` from `fastapi.testclient`. The fix commit stayed at `waiting_review` until the reviewer verified it.
 
-- [ ] **Step 4: Request independent code review and fix all Critical/Important findings**
+Independent re-review of functional commit `8380c7bc13602dcfa177269b9b397fe5b7d630e0` passed with no Critical, Important or Minor findings. The reviewer reran the 70-test selection, repeated the concurrent five-flow test three times, reran quick smoke and confirmed the real database fingerprints were unchanged.
+
+- [x] **Step 4: Request independent code review and fix all Critical/Important findings**
 
 Set `$headSha = git rev-parse HEAD`, then use `superpowers:requesting-code-review` with `BASE_SHA=85d7cc664f24313408a01e75127b03fa7620bf12` and `HEAD_SHA=$headSha`. Reviewer must compare package map, design, plan and code; explicitly inspect isolation, real-vs-fake boundaries, Job polling, completed-with-failures semantics, final workbook score and resource cleanup. Any fix follows RED→GREEN and reruns its affected tests.
 
-- [ ] **Step 5: Create the final handoff-only commit**
+- [x] **Step 5: Create the final handoff-only commit**
 
 After review passes, record the full reviewed functional SHA and set `verified_pending_integration`, `自动验证: passed`, `独立复审: passed`, `用户验收: not_required`, `真实数据指纹: unchanged`, `夜间动作: independent_candidate_allowed`. This commit may modify only this plan.
 
