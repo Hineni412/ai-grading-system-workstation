@@ -570,3 +570,38 @@ def test_explicit_falsy_request_id_is_preserved(
     )
 
     assert sink.events[0].request_id == expected
+
+
+def test_compatibility_fallback_metadata_is_recorded_for_physical_attempt():
+    sink = RecordingSink()
+    operation = FakeCreate([_response()])
+    gateway = _gateway(sink=sink)
+
+    gateway.chat_completions(
+        request_kind=LLMRequestKind.CONFIG_GENERATION,
+        client=_client_for("chat", operation),
+        model="config-model",
+        kwargs={"messages": []},
+        request_id="req-compat",
+        allow_retry=False,
+        compatibility_fallback="response_format",
+    )
+
+    assert sink.events[0].request_id == "req-compat"
+    assert sink.events[0].compatibility_fallback == "response_format"
+
+
+def test_unknown_compatibility_fallback_metadata_is_not_persisted():
+    sink = RecordingSink()
+    operation = FakeCreate([_response()])
+    gateway = _gateway(sink=sink)
+
+    gateway.chat_completions(
+        request_kind=LLMRequestKind.CONFIG_GENERATION,
+        client=_client_for("chat", operation),
+        model="config-model",
+        kwargs={"messages": []},
+        compatibility_fallback="secret-key C:\\private\\answer.png",
+    )
+
+    assert sink.events[0].compatibility_fallback == ""
