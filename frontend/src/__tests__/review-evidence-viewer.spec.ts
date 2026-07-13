@@ -162,16 +162,25 @@ describe('P2-06 review evidence viewer', () => {
     const { host } = await mountViewer()
     const failedImage = host.querySelector<HTMLImageElement>('img')!
     const failedUrl = failedImage.getAttribute('src')
+    const failedKey = failedImage.dataset.loadKey
     failedImage.dispatchEvent(new Event('error'))
     await settle()
     expect(host.textContent).toContain('裁剪图暂时无法读取。')
     expect(host.textContent).not.toContain(failedUrl)
 
-    clickButton(host, '重新加载')
+    const retryButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '重新加载')!
+    const retryPointerDown = new Event('pointerdown', { bubbles: true })
+    Object.assign(retryPointerDown, { pointerId: 9, clientX: 100, clientY: 100, button: 0 })
+    retryButton.dispatchEvent(retryPointerDown)
+    expect(host.querySelector<HTMLElement>('.review-evidence-canvas')!.setPointerCapture)
+      .not.toHaveBeenCalled()
+    retryButton.click()
     await settle()
     const retriedImage = host.querySelector<HTMLImageElement>('img')!
     expect(retriedImage).not.toBe(failedImage)
     expect(retriedImage.getAttribute('src')).toBe(failedUrl)
+    expect(retriedImage.dataset.loadKey).not.toBe(failedKey)
   })
 
   it('ignores stale load events after a rapid item change', async () => {
