@@ -57,6 +57,15 @@ def publish_report(
     json_output: Path,
     markdown_output: Path,
 ) -> None:
+    """Publish two reports with per-file replacement and catchable recovery.
+
+    Each destination is replaced atomically from a temporary file in the same
+    directory.  After a caught BaseException, the function attempts to restore
+    both previous outputs and remove temporary/restore files.  Even a sudden
+    termination or power loss between the two replacements can still leave a
+    mixed old/new pair; regenerate or inspect both files before the next use.
+    This is not a cross-file transaction.
+    """
     json_text = render_json(report)
     markdown_text = render_markdown(report)
     json_output = Path(json_output)

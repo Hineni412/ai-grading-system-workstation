@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import re
 import subprocess
 import sys
@@ -282,7 +283,17 @@ def test_cli_supports_direct_script_execution() -> None:
     assert "--scales" in completed.stdout
 
 
-def test_atomic_publication_leaves_previous_pair_untouched_on_failure(
+def test_publish_report_contract_states_per_file_atomicity_and_power_loss_gap() -> None:
+    contract = inspect.getdoc(publish_report)
+
+    assert contract is not None
+    assert "Each destination is replaced atomically" in contract
+    assert "caught BaseException" in contract
+    assert "termination or power loss" in contract
+    assert "mixed old/new pair" in contract
+
+
+def test_render_failure_leaves_existing_outputs_untouched(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -316,7 +327,7 @@ def test_atomic_publication_leaves_previous_pair_untouched_on_failure(
     (False, True),
 ])
 @pytest.mark.parametrize("failure_type", [OSError, KeyboardInterrupt, SystemExit])
-def test_second_replace_failure_restores_the_exact_previous_pair_and_reraises(
+def test_catchable_second_replace_failure_restores_previous_outputs_and_reraises(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     json_exists: bool,
