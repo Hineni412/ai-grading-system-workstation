@@ -114,5 +114,5 @@ def log_llm_usage(record: dict, *, log_file: Path = LOG_FILE) -> None:
         
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(default_record, ensure_ascii=False) + "\n")
-    except Exception as e:
-        print(f"Warning: Failed to log usage: {e}")
+    except Exception:
+        print("Warning: Failed to log usage")
