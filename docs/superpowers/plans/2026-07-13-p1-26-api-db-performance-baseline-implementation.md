@@ -1,0 +1,678 @@
+# P1-26 API/DB 性能测量基线 Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 用默认关闭的请求测量器和固定生成数据，为 P1-15/P1-19/P1-21/P1-22 的代表性只读 API 建立可重复的耗时、数据库语句数、返回记录数和样本规模基线。
+
+**Architecture:** 在独立 `backend/performance/` 模块用 `contextvars` 隔离每个 FastAPI 请求，以 SQLite trace callback 只计数、不保存 SQL；`create_app()` 接受可选 sink 和隔离路径对象，正常生产调用保持测量关闭。`tools/performance/` 生成 small/medium/large 临时双库和受控素材，真实 TestClient 请求运行 16 个场景，内存聚合两轮 p50/p95 后只输出脱敏 JSON/Markdown 摘要。
+
+**Tech Stack:** Python 3.12、FastAPI 0.139.0、Starlette TestClient、SQLite 3.43.1、pytest、标准库 `contextvars`/`sqlite3`/`statistics`/`tempfile`。
+
+## Global Constraints
+
+**执行包：** P1-26
+**用户自测：** none
+**自测清单：** not_required
+- **规划状态：** ready_for_execution
+- **规划模型：** S-XH
+- **允许夜间执行：** yes
+- **计划基线：** ae840b05db68999a3a315c4ed3c60fcfa460941b
+- 只使用固定随机种子生成的数据和系统临时目录；Git 创建 worktree 时自动检出的主线历史跟踪 `user_data/` 仅作为不可触碰基线，实施和测试不得主动读取、复制、用 SQLite 打开、修改或删除，任何阶段都不得暂存、提交或 stash。
+- 根目录真实两库只允许读取文件大小、UTC 修改时间和 SHA-256；功能开始、基准运行前后、交接前必须完全一致。
+- 不添加缓存、索引、连接池、请求级连接复用，不修改 SQL、分页、排序、事务、WAL、busy timeout、评分、题号、状态或活动 `knowledge_point` 语义。
+- 不记录 SQL 文本、原始 URL、查询词、资源 ID、请求/响应正文、学生/题目正文、密钥、文件名、主机名、用户名、环境变量、命令行或内部绝对路径。
+- 性能测量默认关闭；关闭时不安装 SQLite trace callback、不增加响应 header、不改变公开 API/OpenAPI 契约。
+- 正式矩阵固定为 16 个场景、3 次预热、20 次正式样本、2 次完整重复；p95 使用 nearest-rank。
+- 本包只报告可能的 N+1 候选，不提出或实施优化；P1-27/P3-18 另行决定是否优化。
+- 计划文件名、顶部包号和领取后的交接块必须始终一致；首次功能分支提交只能修改本计划并写入 `in_progress` 交接证据。
+
+---
+
+## File Structure
+
+- Create `backend/performance/__init__.py`: 只导出请求记录、sink、请求 scope 与 SQLite instrumentation 的稳定接口。
+- Create `backend/performance/metrics.py`: 不可变记录、线程安全内存 sink、contextvar recorder、SQL token 分类和 trace callback。
+- Modify `backend/api/app.py`: `create_app()` 注入可选性能 sink/隔离路径；请求中间件启停 recorder并提交安全路由模板记录；默认行为不变。
+- Modify `db_manager.py`: 新建 grading 连接后、PRAGMA 前挂接可选计数器。
+- Modify `question_bank/database/schema.py`: 题库公共连接在 PRAGMA 前挂接可选计数器。
+- Modify `question_bank/services/question_read_service.py`: 稳定临时候选只读连接在任何 PRAGMA/SELECT 前挂接计数器。
+- Modify `question_bank/services/training_task_service.py`: 训练任务只读连接挂接计数器。
+- Modify `update_tools/migrate_db.py`: Ops 自检调用的迁移状态只读连接挂接计数器。
+- Create `tools/performance/__init__.py`: 导出生成数据和基准运行接口。
+- Create `tools/performance/dataset.py`: 三档规模定义、隔离路径对象、双库/素材/备份元数据生成和 manifest。
+- Create `tools/performance/scenarios.py`: 16 个确定性只读场景、依赖覆盖和返回记录计数。
+- Create `tools/performance/runner.py`: TestClient 运行、预热/正式采样、请求记录关联、两轮可重复性比较和摘要。
+- Create `tools/performance/report.py`: nearest-rank、环境摘要、可能 N+1 观察、JSON/Markdown allowlist 渲染。
+- Create `tools/benchmark_api_db.py`: 参数校验、临时环境、三档运行和两个版本化报告原子写入。
+- Create `tests/test_api_performance_metrics.py`: recorder、中间件、脱敏、异常和并发隔离。
+- Create `tests/test_db_performance_instrumentation.py`: 五类目标连接路径计数且语义不变。
+- Create `tests/test_performance_dataset.py`: 固定种子、规模、外键、素材、路径和文本安全。
+- Create `tests/test_performance_benchmark.py`: 16 场景、预热排除、样本关联、失败即停和可重复性。
+- Create `tests/test_performance_report.py`: percentile、allowlist、N+1 候选和禁止内容守卫。
+- Create `docs/performance/p1-26-api-db-baseline.json`: 当前候选 SHA 上两轮三档聚合数字，不含逐次原始样本。
+- Create `docs/performance/p1-26-api-db-baseline.md`: 用户可读基线、环境、规模、限制和候选观察。
+- Modify `ARCHITECTURE.md`: 自动验证通过后记录 P1-26 已实现测量边界和基线事实。
+- Modify this plan: checkbox、验证数字、交接状态、复审 SHA 与回退证据。
+
+### Task 0: Claim P1-26 in a clean feature worktree
+
+**Files:**
+- Create on feature branch: `docs/superpowers/plans/2026-07-13-p1-26-api-db-performance-baseline-implementation.md`
+- Import after claim: `docs/superpowers/specs/2026-07-13-p1-26-api-db-performance-baseline-design.md`
+
+**Interfaces:**
+- Consumes: `origin/main` at `ae840b05db68999a3a315c4ed3c60fcfa460941b`, design commit `0207f1c`, current `git stash list --format=%H`.
+- Produces: branch `codex/p1-26-performance-baseline`, dedicated worktree, first-parent claim commit containing only this plan, then the approved design commit.
+
+- [x] **Step 1: Use the worktree skill and verify the launch gate**
+
+Invoke `superpowers:using-git-worktrees`. Fetch `origin`, require `origin/main` to equal the plan baseline, require no existing P1-26 feature branch/worktree, and require root database fingerprints to equal the claim baseline recorded outside Git. Run:
+
+```powershell
+git fetch --prune origin
+git rev-parse origin/main
+git worktree list --porcelain
+git branch --all --verbose --no-abbrev
+git stash list --format='%H'
+git status --short -- user_data
+```
+
+Expected: `origin/main` is the full plan SHA; no P1-26 implementation channel exists; root `user_data` may contain pre-existing real changes but is never carried into the new worktree; the new worktree's `git status --short -- user_data` is empty.
+
+- [x] **Step 2: Create the feature branch from the exact baseline**
+
+After the worktree skill's safety checks, create `codex/p1-26-performance-baseline` from `origin/main` in `.worktrees/p1-26-performance-baseline`. Do not base it on the design branch.
+
+- [x] **Step 3: Copy only this plan and write the initial handoff block**
+
+Restore this one plan from `codex/p1-26-design`, then use `apply_patch` to add the single handoff block required by the packages README with exactly these values:
+
+- package `P1-26`
+- status `in_progress`
+- functional commit `none`
+- automated verification `pending`
+- independent review `pending`
+- user acceptance `not_required`
+- real-data fingerprint `not_touched`
+- immutable stash baseline equal to every SHA returned in Step 1, comma-separated, or `none`
+- nightly action `report_only`
+
+Run the handoff validator before committing. It may report only the expected absence of a claim commit until the commit is made; every field and package identity check must otherwise pass.
+
+- [ ] **Step 4: Commit the plan-only claim**
+
+```powershell
+git add docs/superpowers/plans/2026-07-13-p1-26-api-db-performance-baseline-implementation.md
+git diff --cached --name-only
+git commit -m "docs: claim P1-26 performance baseline"
+```
+
+Expected: the first commit after the merge base modifies exactly one file, this plan.
+
+- [ ] **Step 5: Import the approved design as the second commit**
+
+```powershell
+git cherry-pick 0207f1c
+```
+
+Expected: the second commit adds only `docs/superpowers/specs/2026-07-13-p1-26-api-db-performance-baseline-design.md`; source code remains unchanged.
+
+### Task 1: Add opt-in request measurement and isolated app injection
+
+**Files:**
+- Create: `backend/performance/__init__.py`
+- Create: `backend/performance/metrics.py`
+- Modify: `backend/api/app.py:73-130`
+- Create: `tests/test_api_performance_metrics.py`
+
+**Interfaces:**
+- Produces: `RequestPerformanceRecord(request_id, method, route_template, status_code, elapsed_ms, db_statements_total, db_select_statements)`.
+- Produces: `PerformanceSink.record(record) -> None`, `InMemoryPerformanceSink.record()`, `InMemoryPerformanceSink.pop(request_id)`.
+- Produces: `request_performance_scope(request_id) -> ContextManager[RequestPerformanceRecorder]` and `instrument_sqlite_connection(connection) -> connection`.
+- Changes: `create_app(*, performance_sink: PerformanceSink | None = None, path_manager: PathManager | None = None) -> FastAPI`; calls without arguments remain identical.
+
+- [ ] **Step 1: Write failing recorder and SQL-classification tests**
+
+Create tests equivalent to:
+
+```python
+def test_request_scope_counts_statements_without_retaining_sql() -> None:
+    sink = InMemoryPerformanceSink()
+    with request_performance_scope("req-1") as recorder:
+        connection = instrument_sqlite_connection(sqlite3.connect(":memory:"))
+        connection.execute("CREATE TABLE sample(id INTEGER)")
+        connection.execute("INSERT INTO sample VALUES (1)")
+        connection.execute("SELECT id FROM sample").fetchall()
+        record = recorder.finish(
+            method="GET",
+            route_template="/api/sample/{item_id}",
+            status_code=200,
+            elapsed_ms=1.25,
+        )
+    sink.record(record)
+    captured = sink.pop("req-1")
+    assert captured.db_statements_total >= 3
+    assert captured.db_select_statements == 1
+    assert "sample" not in repr(captured)
+```
+
+Also add: outside a scope `instrument_sqlite_connection()` does not install a callback; `WITH ... SELECT` counts as a select; nested scopes restore the outer recorder; two `ThreadPoolExecutor` requests keep independent totals; `elapsed_ms` rejects NaN/negative values; duplicate/missing sink IDs fail deterministically.
+
+- [ ] **Step 2: Run RED**
+
+```powershell
+..\..\runtime\python\python.exe -m pytest tests\test_api_performance_metrics.py -q
+```
+
+Expected: collection fails because `backend.performance` does not exist.
+
+- [ ] **Step 3: Implement the minimal metrics module**
+
+Implement frozen dataclasses and a locked recorder. The trace callback must only classify the first token and discard the statement immediately:
+
+```python
+_ACTIVE_RECORDER: ContextVar[RequestPerformanceRecorder | None] = ContextVar(
+    "api_performance_recorder", default=None
+)
+
+def instrument_sqlite_connection(connection: sqlite3.Connection) -> sqlite3.Connection:
+    if _ACTIVE_RECORDER.get() is None:
+        return connection
+
+    def trace(statement: str) -> None:
+        recorder = _ACTIVE_RECORDER.get()
+        if recorder is not None:
+            recorder.count_statement(statement)
+
+    connection.set_trace_callback(trace)
+    return connection
+```
+
+`count_statement()` increments total for every nonblank callback and increments select only when the first uppercased token is `SELECT` or `WITH`. Implement `RequestPerformanceRecord` with `repr=False` and a custom `__repr__` that exposes method, route template, status and numeric metrics but explicitly omits `request_id` and all SQL text. `InMemoryPerformanceSink` stores by request ID under a lock and `pop()` removes the record so warmups cannot leak into formal samples.
+
+- [ ] **Step 4: Write failing middleware and app-path isolation tests**
+
+Add a dynamic test route that opens an instrumented in-memory connection and returns one item. Assert:
+
+```python
+sink = InMemoryPerformanceSink()
+paths = SimpleNamespace(version="v-test")
+app = create_app(performance_sink=sink, path_manager=paths)
+
+@app.get("/api/perf/{item_id}")
+def measured(item_id: int):
+    connection = instrument_sqlite_connection(sqlite3.connect(":memory:"))
+    connection.execute("SELECT 1").fetchone()
+    connection.close()
+    return {"id": item_id}
+
+response = TestClient(app).get(
+    "/api/perf/99", headers={"x-request-id": "metric-99"}
+)
+record = sink.pop("metric-99")
+assert record.route_template == "/api/perf/{item_id}"
+assert "99" not in repr(record)
+assert response.headers["x-request-id"] == "metric-99"
+```
+
+Also assert: `create_app()` without a sink emits no performance record; 404 uses `<unmatched>` instead of the raw path; handler exception records status 500 and re-raises; a sink exception leaves the original response unchanged; supplied `path_manager` drives app version, health response and lifespan factories.
+
+- [ ] **Step 5: Extend the existing request middleware minimally**
+
+Capture `paths = path_manager or get_path_manager()` in `create_app()`, save it on `api.state`, and make `_lifespan()` pass that object to `create_job_manager(paths)` and `create_ops_write_service(paths)`. In the middleware use `nullcontext(None)` when no sink exists; otherwise start `request_performance_scope(request_id)`, keep the existing request log, derive the safe template from `request.scope.get("route")`, finish the recorder in `finally`, and catch/log sink errors without raw path or exception text.
+
+- [ ] **Step 6: Run GREEN and existing app lifecycle regression**
+
+```powershell
+..\..\runtime\python\python.exe -m pytest tests\test_api_performance_metrics.py tests\test_api_app.py tests\test_api_job_lifecycle.py -q
+```
+
+Expected: PASS; default `create_app()` and lifespan ownership remain unchanged.
+
+- [ ] **Step 7: Commit Task 1**
+
+```powershell
+git add backend/performance/__init__.py backend/performance/metrics.py backend/api/app.py tests/test_api_performance_metrics.py
+git commit -m "feat: add opt-in API performance metrics"
+```
+
+### Task 2: Attach query counting to every target connection boundary
+
+**Files:**
+- Modify: `db_manager.py:64-72`
+- Modify: `question_bank/database/schema.py:9-24`
+- Modify: `question_bank/services/question_read_service.py:468-500`
+- Modify: `question_bank/services/training_task_service.py:501-510`
+- Modify: `update_tools/migrate_db.py:521-545`
+- Create: `tests/test_db_performance_instrumentation.py`
+
+**Interfaces:**
+- Consumes: `instrument_sqlite_connection(connection)` from Task 1.
+- Preserves: every existing connection's row factory, PRAGMA order, transaction, read-only URI, commit/rollback and close ownership.
+- Produces: complete statement/select counts for grading DB, question-bank public connection, stable snapshot validation/read, Training task reads and Ops migration status reads.
+
+- [ ] **Step 1: Write failing connection-boundary tests**
+
+Use one helper per target:
+
+```python
+def measured_counts(action: Callable[[], None]) -> tuple[int, int]:
+    with request_performance_scope("db-boundary") as recorder:
+        action()
+        record = recorder.finish(
+            method="GET", route_template="/api/test", status_code=200, elapsed_ms=1.0
+        )
+    return record.db_statements_total, record.db_select_statements
+```
+
+Tests must create only pytest temporary databases and assert:
+
+- `DBManager._connect()` counts its three PRAGMAs plus an explicit SELECT and still returns `sqlite3.Row`.
+- `question_bank.database.schema.connect()` counts PRAGMAs/SELECT and still commits on success/rolls back on exception.
+- `captured_sqlite_read_connection()` counts `quick_check`, schema validation and service SELECT while source main/WAL bytes remain unchanged.
+- `training_task_service._read_connection()` counts a task SELECT and still rejects writes through `mode=ro`.
+- `get_migration_status(..., db_path_override=temp_db)` counts its `schema_migrations` read and never returns the candidate path in the performance record.
+
+- [ ] **Step 2: Run RED**
+
+```powershell
+..\..\runtime\python\python.exe -m pytest tests\test_db_performance_instrumentation.py -q
+```
+
+Expected: counts remain zero because target factories do not call the instrumentation hook.
+
+- [ ] **Step 3: Add the hook immediately after each `sqlite3.connect()`**
+
+Use the same pattern at every target and do not reorder any existing statement:
+
+```python
+conn = instrument_sqlite_connection(sqlite3.connect(self.db_path))
+conn.row_factory = sqlite3.Row
+conn.execute("PRAGMA foreign_keys = ON")
+```
+
+For URI connections retain every existing keyword argument. In `_open_snapshot_connection()` attach before `PRAGMA query_only`; in `get_migration_status()` attach before the first SELECT. Do not add hooks to unrelated write/offline paths.
+
+- [ ] **Step 4: Run GREEN and affected database behavior tests**
+
+```powershell
+..\..\runtime\python\python.exe -m pytest tests\test_db_performance_instrumentation.py tests\test_api_question_bank_routes.py tests\test_api_training_routes.py tests\test_api_graph_routes.py tests\test_ops_self_check_service.py tests\test_migration_tooling.py -q
+```
+
+Expected: PASS; snapshot zero-source-write, read-only rejection, migration status and transaction tests remain green.
+
+- [ ] **Step 5: Commit Task 2**
+
+```powershell
+git add backend/performance db_manager.py question_bank/database/schema.py question_bank/services/question_read_service.py question_bank/services/training_task_service.py update_tools/migrate_db.py tests/test_db_performance_instrumentation.py
+git commit -m "feat: count target SQLite statements"
+```
+
+### Task 3: Build deterministic small, medium and large temporary datasets
+
+**Files:**
+- Create: `tools/performance/__init__.py`
+- Create: `tools/performance/dataset.py`
+- Create: `tests/test_performance_dataset.py`
+
+**Interfaces:**
+- Produces: `ScaleDefinition`, `SMALL`, `MEDIUM`, `LARGE`, `SCALES` with the exact design sizes.
+- Produces: `BenchmarkPaths` exposing the PathManager properties used by API dependencies without reading repository config.
+- Produces: `DatasetManifest` and `BenchmarkDataset(paths, manifest, representative_question_id, representative_task_id, knowledge_key)`.
+- Produces: `build_benchmark_dataset(root: Path, scale: ScaleDefinition, *, seed: int = 126) -> BenchmarkDataset`.
+
+- [ ] **Step 1: Write failing scale and deterministic-manifest tests**
+
+Assert the exact defaults:
+
+```python
+assert SMALL.counts == (1, 30, 10, 300, 200, 10, 5)
+assert MEDIUM.counts == (5, 200, 20, 20_000, 2_000, 100, 50)
+assert LARGE.counts == (10, 500, 30, 150_000, 10_000, 500, 100)
+```
+
+Use a custom micro scale `(1, 2, 2, 4, 8, 2, 2)` to build twice under different pytest temp roots with seed 126. Assert equal manifests/table counts/representative IDs; `PRAGMA foreign_key_check` is empty; both `integrity_check` values are `ok`; every generated file resolves beneath its supplied root; generated text contains only `GEN-`, `CLASS-`, `generated-`, `knowledge-` markers; no repository `user_data` path appears in values or repr.
+
+- [ ] **Step 2: Run RED**
+
+```powershell
+..\..\runtime\python\python.exe -m pytest tests\test_performance_dataset.py -q
+```
+
+Expected: collection fails because `tools.performance.dataset` does not exist.
+
+- [ ] **Step 3: Implement paths, scales and schema creation**
+
+Define:
+
+```python
+@dataclass(frozen=True)
+class ScaleDefinition:
+    name: str
+    sessions: int
+    students: int
+    questions_per_session: int
+    grading_details: int
+    question_bank_questions: int
+    training_tasks: int
+    backups: int
+
+    @property
+    def counts(self) -> tuple[int, int, int, int, int, int, int]:
+        return (
+            self.sessions,
+            self.students,
+            self.questions_per_session,
+            self.grading_details,
+            self.question_bank_questions,
+            self.training_tasks,
+            self.backups,
+        )
+
+SMALL = ScaleDefinition("small", 1, 30, 10, 300, 200, 10, 5)
+MEDIUM = ScaleDefinition("medium", 5, 200, 20, 20_000, 2_000, 100, 50)
+LARGE = ScaleDefinition("large", 10, 500, 30, 150_000, 10_000, 500, 100)
+SCALES = (SMALL, MEDIUM, LARGE)
+```
+
+`BenchmarkPaths` must explicitly expose `project_root`, `data_root`, `databases_dir`, `db_path`, `qb_db_path`, `config_dir`, `upload_config_dir`, `api_profiles_path`, `ops_state_dir`, `templates_dir`, `annotated_dir`, `reports_dir`, `backups_dir`, `outputs_dir`, `exams_dir`, `logs_dir`, `qb_data_dir`, `snapshots_dir`, and `version="v1.5.0-p1-26-generated"`. `build_benchmark_dataset()` creates these directories, calls `DBManager(db_path).initialize()` and `initialize_database(qb_db_path, seed_skills=False)`, then bulk-inserts generated rows.
+
+- [ ] **Step 4: Implement bounded bulk generation**
+
+Use batches of at most 1,000 tuples and deterministic formulas:
+
+```python
+student_code = f"GEN-{student_id:05d}"
+student_name = student_code
+class_name = "CLASS-001"
+question_id = f"Q{question_index:03d}"
+knowledge_label = f"knowledge-{question_index % 50:02d}"
+score = float((student_id + session_id + question_index) % 11)
+```
+
+Create one result for every session/student pair and exactly `scale.grading_details` detail rows by cycling the available results/questions without violating unique relations. Create at least `questions_per_session` confirmed `grading_question_links` per session, `question_bank_questions` active questions with current `knowledge_point` plus `method` tags, and `training_tasks` tasks each with one ready variant, one variant student and one task item. Store only `{}`/`[]` or fixed generated snapshots.
+
+Write one fixed 1×1 PNG from a standard-library base64 constant beneath the temporary question-bank root. Give the representative question one `image_paths` entry and ready `question`/`answer` preview rows pointing to that temporary file. Create `scale.backups` small `.db` metadata files beneath the temporary backups directory; no backup file is copied from any real database.
+
+- [ ] **Step 5: Return an allowlisted manifest and verify actual counts**
+
+Before returning, query exact table counts and build a frozen manifest containing only scale name, seed, logical counts, database byte sizes and generated asset byte size. Assert counts equal the requested definition; run `foreign_key_check` and `integrity_check`; fail without returning a partial dataset if any invariant differs.
+
+- [ ] **Step 6: Run GREEN**
+
+```powershell
+..\..\runtime\python\python.exe -m pytest tests\test_performance_dataset.py tests\test_schema_baseline.py -q
+```
+
+Expected: PASS; repeat builds have identical logical manifests and never touch worktree `user_data`.
+
+- [ ] **Step 7: Commit Task 3**
+
+```powershell
+git add tools/performance/__init__.py tools/performance/dataset.py tests/test_performance_dataset.py
+git commit -m "test: add generated performance datasets"
+```
+
+### Task 4: Run 16 real API scenarios and render safe repeatable reports
+
+**Files:**
+- Create: `tools/performance/scenarios.py`
+- Create: `tools/performance/runner.py`
+- Create: `tools/performance/report.py`
+- Create: `tools/benchmark_api_db.py`
+- Create: `tests/test_performance_benchmark.py`
+- Create: `tests/test_performance_report.py`
+
+**Interfaces:**
+- Produces: frozen `ScenarioRequest(path: str, params: tuple[tuple[str, str], ...] = (), json_body: dict[str, object] | None = None)`.
+- Produces: frozen `BenchmarkScenario(name, method, route_template, build_request: Callable[[BenchmarkDataset], ScenarioRequest], count_records: Callable[[Response], int], scale_driver: str)`.
+- Produces: `build_scenarios(dataset) -> tuple[BenchmarkScenario, ...]` of length 16.
+- Produces: `run_scale(dataset, *, warmups=3, samples=20, repetitions=2) -> ScaleBenchmarkResult`.
+- Produces: `nearest_rank(values, percentile)`, `deterministic_projection(result)`, `render_json(report)`, `render_markdown(report)`.
+- Produces CLI defaults: seed 126, all three scales, 3 warmups, 20 samples, 2 repetitions, JSON/Markdown destinations under `docs/performance/`.
+
+- [ ] **Step 1: Write failing 16-scenario contract tests**
+
+Assert exact names and routes:
+
+```python
+expected = {
+    "health",
+    "question_bank.papers",
+    "question_bank.questions.default",
+    "question_bank.questions.filtered",
+    "question_bank.question.detail",
+    "question_bank.question.asset",
+    "question_bank.question.preview",
+    "training.diagnosis",
+    "training.plan.preview",
+    "training.tasks",
+    "training.task.detail",
+    "graph.profiles",
+    "graph.rows",
+    "graph.evidence",
+    "ops.self_check",
+    "ops.backups",
+}
+assert {scenario.name for scenario in build_scenarios(dataset)} == expected
+```
+
+Every dynamic route must retain `{question_id}`, `{asset_index}`, `{preview_type}` or `{task_id}` in `route_template`. Training/Graph bodies use `scope={"mode":"class","class_id":"CLASS-001"}` and `exam_scope={"mode":"cross_exam"}`. The filtered question list uses deterministic `knowledge_point=knowledge-01`, `tag_status=tagged`, `sort=difficulty`, `page_size=100`.
+
+- [ ] **Step 2: Write failing runner tests**
+
+With the micro dataset, one warmup, two formal samples and two repetitions, assert each scenario produces two summaries of exactly two samples. Supply request IDs `p1-26-{scale}-{scenario}-{repetition}-{sample}` only in memory; assert they are absent from the result model. A fake non-200 scenario, missing sink record or duplicate request ID must raise `BenchmarkRunError` and return no report.
+
+Assert dependency wiring uses:
+
+```python
+app = create_app(performance_sink=sink, path_manager=dataset.paths)
+app.dependency_overrides[get_path_manager] = lambda: dataset.paths
+app.dependency_overrides[get_question_bank_read_service] = lambda: QuestionBankReadService(
+    dataset.paths.qb_db_path, data_root=dataset.paths.data_root
+)
+app.dependency_overrides[get_diagnosis_profile_service] = lambda: DiagnosisProfileService(
+    dataset.paths.db_path, dataset.paths.qb_db_path
+)
+app.dependency_overrides[get_practice_plan_service] = lambda: PracticePlanService(
+    dataset.paths.qb_db_path
+)
+app.dependency_overrides[get_training_task_service] = lambda: TrainingTaskService(
+    dataset.paths.qb_db_path
+)
+```
+
+Leave Graph and Ops service dependencies unoverridden so they consume the overridden `get_path_manager` and exercise their real stable-snapshot/self-check paths. Use a lifespan TestClient because Task 1 routes manager/Ops state to the generated paths.
+
+- [ ] **Step 3: Run RED for scenarios and runner**
+
+```powershell
+..\..\runtime\python\python.exe -m pytest tests\test_performance_benchmark.py -q
+```
+
+Expected: collection fails because scenarios/runner do not exist.
+
+- [ ] **Step 4: Implement scenario requests and response-record counters**
+
+Each scenario owns an allowlisted counter:
+
+- list responses: `len(payload["items"])`;
+- Training diagnosis and Graph profiles: `len(payload["students"])`;
+- Training plan: `len(payload["plan"]["variants"])`;
+- Graph rows: `len(payload["rows"])`;
+- Graph evidence: `len(payload["items"])`;
+- single object/binary/health/self-check: 1;
+- empty successful collections: 0.
+
+The runner parses JSON only in memory to calculate the count and then discards it. It keeps only status, response bytes, response record count and the matched `RequestPerformanceRecord` numeric fields.
+
+- [ ] **Step 5: Implement warmup, two formal repetitions and deterministic comparison**
+
+For each scenario/repetition: pop and discard all three warmup records; collect exactly 20 formal records; summarize in memory; never serialize individual samples. `deterministic_projection()` retains only scale manifest, scenario names, status, sample count, query-count min/median/max and response-record counts. Require repetition 1 and 2 projections to be identical before returning `repeatability="passed"`; latency is deliberately excluded from this equality.
+
+- [ ] **Step 6: Write failing report allowlist and percentile tests**
+
+Assert:
+
+```python
+assert nearest_rank(list(range(1, 21)), 0.50) == 10
+assert nearest_rank(list(range(1, 21)), 0.95) == 19
+```
+
+Build a synthetic report and assert both renderers contain code SHA, Windows/Python/SQLite versions, logical CPU count, manifests, p50/p95/min/max, statement/select summaries, response counts/bytes, repeatability and limitations. Recursively reject keys matching `path`, `url`, `sql`, `body`, `content`, `student_name`, `question_text`, `request_id`, `hostname`, `username`, `environment`, `command`; reject Windows drive prefixes and worktree/user-data markers in rendered text.
+
+- [ ] **Step 7: Run RED for report**
+
+```powershell
+..\..\runtime\python\python.exe -m pytest tests\test_performance_report.py -q
+```
+
+Expected: collection fails because report functions do not exist.
+
+- [ ] **Step 8: Implement summaries, nearest-rank and possible N+1 observations**
+
+Sort finite nonnegative timings and use `ceil(percentile * len(values)) - 1`. Report two independent p50/p95 pairs per scale/scenario. A possible N+1 candidate requires all of:
+
+```python
+select_delta = large.select_median - small.select_median
+driver_delta = large.scale_driver_count - small.scale_driver_count
+candidate = select_delta >= 5 and driver_delta > 0 and select_delta / driver_delta >= 0.10
+```
+
+Label it only `possible_n_plus_one`; include the select/driver counts, never SQL or an optimization recommendation.
+
+- [ ] **Step 9: Implement the CLI and atomic report publication**
+
+`tools/benchmark_api_db.py` validates scale names and positive warmup/sample/repetition values, creates one `TemporaryDirectory(prefix="p1-26-benchmark-")`, builds/runs scales sequentially, obtains `git rev-parse HEAD`, and writes UTF-8 JSON/Markdown through sibling temporary files followed by `os.replace()`. Default destinations are:
+
+```text
+docs/performance/p1-26-api-db-baseline.json
+docs/performance/p1-26-api-db-baseline.md
+```
+
+On failure remove temporary output siblings and leave any previous complete report untouched. Error messages contain only scale/scenario and stable error code.
+
+- [ ] **Step 10: Run GREEN and CLI micro smoke**
+
+```powershell
+..\..\runtime\python\python.exe -m pytest tests\test_performance_benchmark.py tests\test_performance_report.py -q
+..\..\runtime\python\python.exe tools\benchmark_api_db.py --scales small --warmups 1 --samples 2 --repetitions 2 --output-json "$env:TEMP\p1-26-smoke.json" --output-markdown "$env:TEMP\p1-26-smoke.md"
+```
+
+Expected: tests pass; CLI reports 16/16 successful scenarios and repeatability passed; smoke outputs contain no forbidden markers.
+
+- [ ] **Step 11: Commit Task 4**
+
+```powershell
+git add tools/performance tools/benchmark_api_db.py tests/test_performance_benchmark.py tests/test_performance_report.py
+git commit -m "feat: add repeatable API database benchmark"
+```
+
+### Task 5: Generate the baseline, verify, review and hand off
+
+**Files:**
+- Create: `docs/performance/p1-26-api-db-baseline.json`
+- Create: `docs/performance/p1-26-api-db-baseline.md`
+- Modify: `ARCHITECTURE.md`
+- Modify: `docs/superpowers/plans/2026-07-13-p1-26-api-db-performance-baseline-implementation.md`
+
+**Interfaces:**
+- Consumes: Tasks 1-4 at one functional SHA and the exact three-scale formal CLI defaults.
+- Produces: committed reproducible baseline, architecture fact, `waiting_review` then independently reviewed `verified_pending_integration` handoff.
+
+- [ ] **Step 1: Run the full P1-26 focused suite**
+
+```powershell
+..\..\runtime\python\python.exe -m pytest tests\test_api_performance_metrics.py tests\test_db_performance_instrumentation.py tests\test_performance_dataset.py tests\test_performance_benchmark.py tests\test_performance_report.py -q
+```
+
+Expected: PASS with zero failures/skips.
+
+- [ ] **Step 2: Run affected API/database regressions**
+
+```powershell
+..\..\runtime\python\python.exe -m pytest tests\test_api_app.py tests\test_api_job_lifecycle.py tests\test_api_question_bank_routes.py tests\test_api_training_routes.py tests\test_api_graph_routes.py tests\test_api_ops_routes.py tests\test_ops_self_check_service.py tests\test_migration_tooling.py -q
+```
+
+Expected: PASS; no source snapshot writes, API contract drift or lifecycle regression.
+
+- [ ] **Step 3: Recheck root real database fingerprints before the formal benchmark**
+
+Read only file length, UTC mtime and SHA-256 from the root checkout. Compare byte-for-byte with Task 0 claim values. Do not call SQLite against either file. Expected: unchanged.
+
+- [ ] **Step 4: Run the formal three-scale/two-repetition baseline**
+
+```powershell
+..\..\runtime\python\python.exe tools\benchmark_api_db.py
+```
+
+Expected: 3 scales × 16 scenarios × 2 repetitions complete; every repetition has 20 samples after 3 discarded warmups; deterministic projection matches; both versioned reports are atomically published.
+
+- [ ] **Step 5: Validate report safety and scope**
+
+Run the report tests again, inspect the JSON keys and Markdown tables, and use repository searches to prove neither report contains `user_data`, `.worktrees`, drive-letter absolute paths, SQL text, request IDs, generated student names or question text. Confirm Git status contains no temporary DB/image/log/cache/output outside the two intended reports.
+
+- [ ] **Step 6: Update architecture and plan evidence**
+
+Add one P1-26 increment paragraph to `ARCHITECTURE.md`: opt-in/default-off measurement; generated three-scale 16-scenario baseline; statement/select and response-count semantics; report location; no optimization, Schema, real data or model calls. In this plan record exact test totals, formal runtime, baseline functional SHA, possible N+1 observations and coverage limitations without copying machine paths.
+
+- [ ] **Step 7: Run static, quick-smoke and handoff guards**
+
+```powershell
+git diff --check
+git status --short -- user_data
+..\..\runtime\python\python.exe tools\smoke_check.py --skip-tests
+..\..\runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\2026-07-13-p1-26-api-db-performance-baseline-implementation.md --repo .
+```
+
+Expected: diff check and quick smoke pass; feature `user_data` status empty; handoff fields are valid for the current pre-review state.
+
+- [ ] **Step 8: Compare root real database fingerprints again**
+
+Expected: both real database size/UTC mtime/SHA-256 values exactly match Task 0 and Step 3. Any difference blocks commit and integration.
+
+- [ ] **Step 9: Commit verified functional work as `waiting_review`**
+
+Change the handoff block to `waiting_review`, `功能提交: branch_head`, `自动验证: passed`, `独立复审: pending`, `用户验收: not_required`, `真实数据指纹: unchanged`, preserve the immutable stash baseline, and keep `夜间动作: report_only`. Commit source/tests/tools/reports/architecture/design/plan with no `user_data`.
+
+- [ ] **Step 10: Request independent code review**
+
+Invoke `superpowers:requesting-code-review` over the full package range. Review must specifically inspect:
+
+- default-off instrumentation and any production overhead;
+- contextvar/thread isolation and trace callback lifetime;
+- route-template/path/body/SQL privacy;
+- query-count completeness and accidental double instrumentation;
+- generated dataset counts, scale realism and absence of real data;
+- percentile/repeatability math and raw-sample exclusion;
+- benchmark failure atomicity and no partial report;
+- no optimization, Schema or API-contract scope creep.
+
+Reproduce every Critical/Important finding with a RED test, make the minimal fix, rerun the affected focused/regression tests and request re-review. Critical/Important must be zero.
+
+- [ ] **Step 11: Create the final plan-only handoff commit**
+
+After independent review passes, modify only this plan: set `verified_pending_integration`; record the direct parent full reviewed functional SHA; set automated verification/independent review `passed`, user acceptance `not_required`, real-data fingerprint `unchanged`, nightly action `independent_candidate_allowed`. Run `tools/handoff_status.py` against the clean worktree and commit only the plan.
+
+## Verification and Recovery
+
+- Baseline verification: run Task 1/2 affected tests on `origin/main` before source edits and record totals in this plan; no failure is accepted as “already broken” without reproducing it on the exact baseline.
+- RED/GREEN evidence: every task begins with a named failing test and records the expected missing module/count/contract failure before implementation.
+- Functional branch gate: focused suite, affected regressions, formal benchmark, report safety scan, `git diff --check`, quick smoke, empty worktree `user_data`, and root real database fingerprint equality.
+- Integration gate: merge the complete verified chain into a fresh integration branch from latest `origin/main`; rerun focused and affected tests; run the wave-end full `tools/smoke_check.py` once because instrumentation touches shared API/DB connection infrastructure; compare root fingerprints before and after.
+- Rollback: revert reports/architecture, runner/report, dataset, connection hooks and metrics/app commits in reverse order. There is no Schema or data rollback. Default-off behavior remains available until the metrics/app commit itself is reverted.
+- Performance interpretation: latency values are specific to the recorded environment and candidate SHA; query counts and returned records are deterministic invariants. No optimization is authorized by this plan.
+
+<!-- HANDOFF_STATUS_START -->
+## 昼夜交接
+
+**执行包：** P1-26
+**交接状态：** in_progress
+**功能提交：** none
+**自动验证：** pending
+**独立复审：** pending
+**用户验收：** not_required
+**真实数据指纹：** not_touched
+**Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
+**夜间动作：** report_only
+<!-- HANDOFF_STATUS_END -->
