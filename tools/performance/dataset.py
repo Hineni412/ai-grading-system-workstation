@@ -8,13 +8,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
+from types import FunctionType
 
+from backend.performance.metrics import instrument_sqlite_connection
 from db_manager import DBManager
 from question_bank.database.schema import initialize_database
 
 
 _BATCH_SIZE = 1_000
 _GENERATED_TIME = "generated-time"
+_SQLITE_CONNECT = sqlite3.connect
 _PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUB"
     "AScY42YAAAAASUVORK5CYII="
@@ -221,7 +224,7 @@ def build_benchmark_dataset(
 
     with _explicit_path_manager(paths):
         _initialize_grading_database(paths.db_path)
-    initialize_database(paths.qb_db_path, seed_skills=False)
+    _initialize_question_bank_database(paths.qb_db_path)
 
     _write_session_rubrics(paths, scale)
     _populate_grading_database(paths.db_path, scale)
@@ -293,19 +296,45 @@ def _explicit_path_manager(paths: BenchmarkPaths) -> Iterator[None]:
 
 def _initialize_grading_database(db_path: Path) -> None:
     manager = DBManager(db_path)
-    open_connection = manager._connect
 
-    @contextmanager
-    def closing_connection() -> Iterator[sqlite3.Connection]:
-        conn = open_connection()
-        try:
-            with conn:
-                yield conn
-        finally:
-            conn.close()
+    def configured_connection() -> object:
+        return _configured_sqlite_connection(db_path)
 
-    manager._connect = closing_connection  # type: ignore[method-assign]
+    manager._connect = configured_connection  # type: ignore[method-assign]
     manager.initialize()
+
+
+def _initialize_question_bank_database(db_path: Path) -> None:
+    isolated_globals = dict(initialize_database.__globals__)
+    isolated_globals["connect"] = _configured_sqlite_connection
+    isolated_initialize = FunctionType(
+        initialize_database.__code__,
+        isolated_globals,
+        initialize_database.__name__,
+        initialize_database.__defaults__,
+        initialize_database.__closure__,
+    )
+    isolated_initialize.__kwdefaults__ = initialize_database.__kwdefaults__
+    isolated_initialize(db_path, seed_skills=False)
+
+
+@contextmanager
+def _configured_sqlite_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
+    conn = _SQLITE_CONNECT(db_path)
+    try:
+        configured = instrument_sqlite_connection(conn)
+        configured.row_factory = sqlite3.Row
+        configured.execute("PRAGMA foreign_keys = ON")
+        configured.execute("PRAGMA busy_timeout = 5000")
+        configured.execute("PRAGMA journal_mode = WAL")
+        try:
+            yield configured
+            configured.commit()
+        except Exception:
+            configured.rollback()
+            raise
+    finally:
+        conn.close()
 
 
 def _populate_grading_database(db_path: Path, scale: ScaleDefinition) -> None:
@@ -722,7 +751,7 @@ def _insert_batches(
 
 @contextmanager
 def _sqlite_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
-    conn = sqlite3.connect(db_path)
+    conn = _SQLITE_CONNECT(db_path)
     try:
         with conn:
             yield conn

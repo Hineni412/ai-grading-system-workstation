@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import tempfile
 from dataclasses import FrozenInstanceError, fields
@@ -20,6 +21,63 @@ from tools.performance.dataset import (
 
 
 MICRO = ScaleDefinition("micro", 1, 2, 2, 4, 8, 2, 2)
+
+
+class _SetupFailingConnection:
+    def __init__(self, connection: sqlite3.Connection, *, fail_setup: bool) -> None:
+        self._connection = connection
+        self._fail_setup = fail_setup
+        self.closed = False
+
+    @property
+    def row_factory(self) -> object:
+        return self._connection.row_factory
+
+    @row_factory.setter
+    def row_factory(self, value: object) -> None:
+        self._connection.row_factory = value
+
+    def execute(self, statement: str, parameters: object = ()) -> object:
+        if self._fail_setup and statement.strip().casefold().startswith(
+            "pragma journal_mode"
+        ):
+            raise sqlite3.OperationalError("generated setup failure")
+        return self._connection.execute(statement, parameters)
+
+    def close(self) -> None:
+        self.closed = True
+        self._connection.close()
+
+    def __enter__(self) -> _SetupFailingConnection:
+        self._connection.__enter__()
+        return self
+
+    def __exit__(self, *args: object) -> object:
+        return self._connection.__exit__(*args)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._connection, name)
+
+
+class _SetupFailureFactory:
+    def __init__(
+        self,
+        real_connect: object,
+        *,
+        fail_connection_number: int,
+    ) -> None:
+        self._real_connect = real_connect
+        self._fail_connection_number = fail_connection_number
+        self.connections: list[_SetupFailingConnection] = []
+
+    def __call__(self, *args: object, **kwargs: object) -> _SetupFailingConnection:
+        connection = self._real_connect(*args, **kwargs)  # type: ignore[operator]
+        tracked = _SetupFailingConnection(
+            connection,
+            fail_setup=len(self.connections) + 1 == self._fail_connection_number,
+        )
+        self.connections.append(tracked)
+        return tracked
 
 
 def _integrity(db_path: Path) -> tuple[list[tuple[object, ...]], str]:
@@ -260,3 +318,49 @@ def test_failed_build_releases_sqlite_handles_for_immediate_cleanup(
             build_benchmark_dataset(temporary_root / "dataset", MICRO)
 
     assert not temporary_root.exists()
+
+
+@pytest.mark.parametrize("fail_connection_number", [1, 2])
+def test_setup_failure_closes_connection_and_restores_temporary_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fail_connection_number: int,
+) -> None:
+    import path_manager
+    import tools.performance.dataset as dataset_module
+
+    real_connect = sqlite3.connect
+    factory = _SetupFailureFactory(
+        real_connect,
+        fail_connection_number=fail_connection_number,
+    )
+    sentinel = object()
+    monkeypatch.setattr(
+        dataset_module,
+        "_SQLITE_CONNECT",
+        factory,
+        raising=False,
+    )
+    monkeypatch.setattr(path_manager, "_instance", sentinel)
+    temporary_root = tmp_path / f"setup-failure-{fail_connection_number}"
+    cleanup_error: PermissionError | None = None
+
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="generated setup failure"):
+            build_benchmark_dataset(temporary_root, MICRO)
+        assert path_manager._instance is sentinel
+        try:
+            shutil.rmtree(temporary_root)
+        except PermissionError as exc:
+            cleanup_error = exc
+
+        assert [connection.closed for connection in factory.connections] == [
+            True
+        ] * fail_connection_number
+        assert cleanup_error is None
+        assert not temporary_root.exists()
+    finally:
+        for connection in factory.connections:
+            if not connection.closed:
+                connection.close()
+        shutil.rmtree(temporary_root, ignore_errors=True)
