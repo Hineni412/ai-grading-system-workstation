@@ -37,12 +37,12 @@
 ## 昼夜交接
 
 **执行包：** P2-08
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** pending
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
@@ -415,7 +415,7 @@ Expected: lockfile diff is empty; the commit contains no generated `dist`, scree
 - Consumes: final source commit, fixed anonymous runtime, five-viewpoint browser evidence and explicit user result.
 - Produces: `waiting_review` feature commit, reviewed-SHA anchor, formal checklist-only result commit, `verified_pending_integration` handoff and standard integration PR.
 
-- [ ] **Step 1: Run package and affected regressions**
+- [x] **Step 1: Run package and affected regressions**
 
 From `frontend/`:
 
@@ -441,17 +441,17 @@ git status --short -- user_data
 
 Expected: every command passes, `user_data` is clean and no risk trigger requires full pytest. If a trigger appears, record it and run the required wider gate before proceeding.
 
-- [ ] **Step 2: Perform a fresh visual critique at all five viewports**
+- [x] **Step 2: Perform a fresh visual critique at all five viewports**
 
 Build and start the fixed anonymous runtime, then inspect the real browser at every required viewport. Confirm the evidence canvas remains the central visual focus; teacher score is more prominent than AI; the shortcut ribbon is useful but quiet; long rubric and queue content remain independently scrollable; footer and primary action are reachable; focus is visible; states are not color-only; there is no card stack, decorative gradient, overlap, overflow, console error or empty image.
 
 Remove any decoration that does not support continuous review, rerun the affected tests, and capture only repository-excluded temporary screenshots for review. Do not commit screenshots.
 
-- [ ] **Step 3: Create the verified formal checklist**
+- [x] **Step 3: Create the verified formal checklist**
 
 Only after the runtime and browser evidence pass, create `docs/user-testing/checkpoints/P2-08-sample-page-formal.md` using `docs/user-testing/USER_TEST_TEMPLATE.md`. It must state exact anonymous data source, build/start command, loopback address, visible marker, reset/mode preparation owned by Codex, 30–45 minute numbered steps, expected results, shutdown, Blocker/Major/Minor handling and machine result block. It must explicitly describe refresh semantics and state that `R` is not a supported action.
 
-- [ ] **Step 4: Recheck root real-data fingerprints and create the functional handoff commit**
+- [x] **Step 4: Recheck root real-data fingerprints and create the functional handoff commit**
 
 Read only the two root database files' size, UTC mtime and SHA-256; they must exactly equal the claim evidence. Any difference stops the package for investigation.
 

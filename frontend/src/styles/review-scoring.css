@@ -200,8 +200,9 @@
 }
 
 .review-teacher-score-field input {
+  min-height: var(--control-height-large);
   padding-inline: var(--space-3);
-  font-size: var(--font-size-h2);
+  font-size: var(--font-size-display);
   font-weight: var(--font-weight-semibold);
 }
 
