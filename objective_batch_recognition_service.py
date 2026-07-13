@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw
 from ai_grader import QuestionGradingDetail
 from answer_key_utils import answer_forms_map
 from answer_normalizer import contains_prompt_injection_or_score_bait, normalize_answer_text
+from backend.llm import LLMProtocolAdapter, LLMRequestKind
 from choice_recognition_chain import score_choice_by_program
 from fill_blank_recognition_chain import score_fill_blank_by_program
 from scanner import ExamPaperGroup
@@ -175,6 +176,7 @@ def run_objective_batch_recognition(
         atlas_builder: ObjectiveBatchAtlasBuilder | None = None,
         source: str = "objective_batch_recognition",
         primary_review_reasons: dict[str, str] | None = None,
+        allow_gateway_retry: bool = False,
     ) -> dict[str, Any]:
         spec, batch_index, batch_items = task
         atlas = (atlas_builder or builder).build(session_id=session_id, spec=spec, crop_items=batch_items, batch_index=batch_index)
@@ -202,20 +204,23 @@ def run_objective_batch_recognition(
         with Path(atlas["atlas_path"]).open("rb") as image_file:
             image_bytes = image_file.read()
         try:
-            import time
-            max_retries = 3
-            last_err = None
-            for attempt in range(max_retries):
-                try:
-                    if rate_limiter is not None:
-                        rate_limiter.acquire()
-                    response = batch_client.json_from_images(prompt, [image_bytes], model=model, usage_callback=_usage_callback)
-                    break
-                except Exception as e:
-                    last_err = e
-                    time.sleep(2 ** attempt)
-            else:
-                raise Exception(f"Objective batch failed after {max_retries} retries: {last_err}")
+            if rate_limiter is not None:
+                rate_limiter.acquire()
+            request_kwargs: dict[str, Any] = {
+                "model": model,
+                "usage_callback": _usage_callback,
+            }
+            if allow_gateway_retry:
+                from llm_client import LLMClient
+
+                if isinstance(batch_client, LLMClient):
+                    request_kwargs["allow_gateway_retry"] = True
+                    request_kwargs["request_kind"] = LLMRequestKind.RECOGNITION
+            response = batch_client.json_from_images(
+                prompt,
+                [image_bytes],
+                **request_kwargs,
+            )
         except Exception as exc:  # noqa: BLE001
             if progress_callback is not None:
                 progress_callback(
@@ -433,6 +438,7 @@ def _run_objective_fallback_batches(
             atlas_builder=fallback_builder,
             source="objective_batch_pro_recognition",
             primary_review_reasons=primary_reasons,
+            allow_gateway_retry=True,
         )
 
     if not tasks:
@@ -566,7 +572,6 @@ class ObjectiveBatchRecognitionClient:
         usage_callback: Any = None,
     ) -> dict[str, Any]:
         from api_profiles import get_objective_api_config
-        from openai import OpenAI
 
         config = get_objective_api_config()
         if not config.get("enabled"):
@@ -576,23 +581,26 @@ class ObjectiveBatchRecognitionClient:
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
         for image in images:
             content.append({"type": "image_url", "image_url": {"url": _to_data_url(image)}})
-        client = OpenAI(
+        adapter = LLMProtocolAdapter(
             api_key=config["api_key"],
             base_url=config["base_url"],
-            timeout=None,
-            max_retries=0,
+            policy_profile=config.get("policy_profile"),
         )
+        selected_model = model or config["model"]
         kwargs: dict[str, Any] = {
-            "model": model or config["model"],
             "messages": [{"role": "user", "content": content}],
             "temperature": config.get("temperature", 0.0),
             "response_format": {"type": "json_object"},
         }
         if config.get("thinking_type", "disabled") != "disabled":
             kwargs["extra_body"] = {"thinking": {"type": config.get("thinking_type", "disabled")}}
-        completion = client.chat.completions.create(**kwargs)
+        completion = adapter.chat_completions(
+            request_kind=LLMRequestKind.RECOGNITION,
+            model=selected_model,
+            kwargs=kwargs,
+        )
         if usage_callback is not None:
-            usage_callback(completion, {"model": model or config["model"]})
+            usage_callback(completion, {"model": selected_model})
         return _parse_json_text(completion.choices[0].message.content or "")
 
 

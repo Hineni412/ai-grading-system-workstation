@@ -12,6 +12,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from backend.llm import policy_overrides_from_profile
+
 
 _DEPRECATED_OBJECTIVE_PROFILE_KEYS = {
     "objective_timeout",
@@ -345,4 +347,5 @@ def get_objective_api_config() -> dict[str, Any]:
         "temperature": float(profile.get("objective_temperature", 0.0)),
         "thinking_type": str(profile.get("objective_thinking_type", "disabled")),
         "enabled": bool(profile.get("objective_enabled", False)),
+        "policy_profile": policy_overrides_from_profile(profile),
     }

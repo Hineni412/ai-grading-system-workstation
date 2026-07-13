@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import io
 from itertools import count
 import json
@@ -10,7 +9,6 @@ import os
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
-from urllib.parse import urlparse
 
 from backend.llm import (
     JsonlUsageSink,
@@ -19,12 +17,14 @@ from backend.llm import (
     LLMRequestKind,
     classify_llm_error,
 )
+from backend.llm.transport import (
+    create_openai_client as _shared_create_openai_client,
+    gateway_config_key as _shared_gateway_config_key,
+    normalize_openai_base_url as _shared_normalize_openai_base_url,
+)
 from openai import OpenAI
 from PIL import Image, ImageOps
 from usage_logger import LOG_FILE as LLM_USAGE_LOG_FILE
-
-
-_GATEWAY_CONFIG_SALT = "ai-grading-llm-gateway-config-v1"
 
 
 def _default_usage_sink() -> JsonlUsageSink:
@@ -105,6 +105,8 @@ class LLMClient:
         usage_callback=None,
         static_image_blobs: list[bytes] | None = None,
         dynamic_prompt: str | None = None,
+        allow_gateway_retry: bool = False,
+        request_kind: LLMRequestKind | None = None,
     ) -> dict[str, Any]:
         return self.json_from_images_with_options(
             prompt,
@@ -115,6 +117,8 @@ class LLMClient:
             extra_kwargs=None,
             static_image_blobs=static_image_blobs,
             dynamic_prompt=dynamic_prompt,
+            allow_gateway_retry=allow_gateway_retry,
+            request_kind=request_kind,
         )
 
     def json_from_images_with_options(
@@ -128,13 +132,13 @@ class LLMClient:
         use_config_client: bool = False,
         static_image_blobs: list[bytes] | None = None,
         dynamic_prompt: str | None = None,
+        allow_gateway_retry: bool = False,
+        request_kind: LLMRequestKind | None = None,
     ) -> dict[str, Any]:
         active_client = self.config_client if use_config_client else self.client
         default_model = self.settings.config_model if use_config_client else self.settings.grading_model
-        request_kind = (
-            LLMRequestKind.CONFIG_GENERATION
-            if use_config_client
-            else LLMRequestKind.GRADING
+        effective_request_kind = request_kind or (
+            LLMRequestKind.CONFIG_GENERATION if use_config_client else LLMRequestKind.GRADING
         )
         request_id = str(uuid.uuid4())
         next_attempt = count(1).__next__
@@ -173,9 +177,10 @@ class LLMClient:
             expect_json=True,
             usage_callback=usage_callback,
             extra_kwargs=extra_kwargs,
-            request_kind=request_kind,
+            request_kind=effective_request_kind,
             request_id=request_id,
             _next_attempt=next_attempt,
+            allow_gateway_retry=allow_gateway_retry,
         )
         text = _extract_text_from_completion(completion)
         
@@ -191,7 +196,7 @@ class LLMClient:
             client=active_client,
             usage_callback=usage_callback,
             extra_kwargs=extra_kwargs,
-            request_kind=request_kind,
+            request_kind=effective_request_kind,
             request_id=request_id,
             _next_attempt=next_attempt,
         )
@@ -395,6 +400,7 @@ class LLMClient:
         request_id: str | None = None,
         single_request: bool = False,
         _next_attempt: Callable[[], int] | None = None,
+        allow_gateway_retry: bool = False,
     ) -> Any:
         kwargs: dict[str, Any] = {
             "model": model,
@@ -452,7 +458,10 @@ class LLMClient:
             return res
 
         try:
-            return invoke("", allow_retry=False)
+            return invoke(
+                "",
+                allow_retry=allow_gateway_retry and not single_request,
+            )
         except Exception as exc:
             if not allow_parameter_fallback:
                 raise
@@ -481,26 +490,11 @@ def _is_parameter_fallback_error(exc: Exception) -> bool:
 
 
 def _create_openai_client(api_key: str, base_url: str) -> OpenAI:
-    normalized_base_url = normalize_openai_base_url(base_url)
-    kwargs: dict[str, Any] = {
-        "api_key": str(api_key or "").strip(),
-        "timeout": 120.0,
-        "max_retries": 0,
-    }
-    if normalized_base_url:
-        kwargs["base_url"] = normalized_base_url
-    return OpenAI(**kwargs)
+    return _shared_create_openai_client(api_key, base_url)
 
 
 def _gateway_config_key(api_key: str, base_url: str) -> str:
-    material = "\0".join(
-        (
-            _GATEWAY_CONFIG_SALT,
-            str(api_key or "").strip(),
-            normalize_openai_base_url(base_url),
-        )
-    )
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+    return _shared_gateway_config_key(api_key, base_url)
 
 
 def _to_data_url(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
@@ -510,16 +504,7 @@ def _to_data_url(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
 
 
 def normalize_openai_base_url(base_url: str) -> str:
-    value = str(base_url or "").strip().rstrip("/")
-    if not value:
-        return value
-    parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return value
-    path = parsed.path.strip("/")
-    if path:
-        return value
-    return f"{value}/v1"
+    return _shared_normalize_openai_base_url(base_url)
 
 
 def _compress_image_for_api(image_bytes: bytes) -> bytes:
