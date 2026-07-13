@@ -477,7 +477,7 @@ Task 3 evidence: the required RED run produced `1 failed, 1 error, 1 warning` be
 - Consumes: real ReviewApplicationService, ReportGenerator, report Job handler, JobFileService and XLSX download route.
 - Produces: HTTP proof that teacher score 90 is persisted and exported in the downloaded workbook.
 
-- [ ] **Step 1: Extend the five-flow test with failing review/export assertions**
+- [x] **Step 1: Extend the five-flow test with failing review/export assertions**
 
 After successful failed-only recovery, add:
 
@@ -506,7 +506,7 @@ assert download.headers["content-type"].startswith("application/vnd.openxmlforma
 assert api_e2e.xlsx_score(download.content, "SYN-001") == 90.0
 ```
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/api_e2e/test_five_flow.py -q
@@ -514,27 +514,29 @@ assert api_e2e.xlsx_score(download.content, "SYN-001") == 90.0
 
 Expected: FAIL at missing full-flow setup or `xlsx_score()`.
 
-- [ ] **Step 3: Implement the XLSX verifier and finish the single success workflow**
+- [x] **Step 3: Implement the XLSX verifier and finish the single success workflow**
 
-Implement `xlsx_score(content: bytes, student_code: str) -> float` using `openpyxl.load_workbook(BytesIO(content), read_only=True, data_only=True)`, select sheet `成绩总表`, map header cells to indexes, find the row whose `学号` equals the supplied code, and return the `学生得分` cell as float. Always close the workbook in `finally`.
+Implement `xlsx_score(content: bytes, student_code: str) -> float` using `openpyxl.load_workbook(BytesIO(content), read_only=True, data_only=True)`, select the current session-report sheet `成绩与小题明细`, map header cells to indexes, find the row whose `学号` equals the supplied code, and return the `总分` cell as float. Always close the workbook in `finally`. The earlier `成绩总表` / `学生得分` wording belongs to the legacy non-session `ReportGenerator.export()` path; the real report Job calls `ReportGenerator.export_session()`, so Task 4 follows the existing production session-report contract and does not change report formats.
 
 Refactor repeated setup into `ApiE2EHarness.create_configured_session()`, `scan(session_id)` and `grade(session_id, failed_only=False)` helpers; each helper submits through HTTP and calls `poll_job()`. The success test must call these helpers in business order and retain explicit assertions at each boundary.
 
-- [ ] **Step 4: Verify the complete success path GREEN**
+- [x] **Step 4: Verify the complete success path GREEN**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/api_e2e/test_five_flow.py -q
 ```
 
-Expected: success path passes; downloaded workbook contains 90 for `SYN-001`; no public response contains the temporary root.
+Expected: success path passes; downloaded session workbook contains 90 for `SYN-001`; no public response contains the temporary root.
 
-- [ ] **Step 5: Commit the complete five-flow path**
+- [x] **Step 5: Commit the complete five-flow path**
 
 ```powershell
 git add -- tests/api_e2e docs/superpowers/plans/2026-07-14-p1-28-five-flow-api-e2e-implementation.md
 git diff --cached --check
 git commit -m "test: verify review and report API flow"
 ```
+
+Task 4 evidence: the required RED run produced `1 failed, 1 warning` because `ApiE2EHarness.create_configured_session()` did not yet exist. After the HTTP helpers and XLSX verifier were implemented, the complete five-flow test produced `1 passed, 1 warning`. An intermediate focused run correctly exposed that the synthetic confidence values used the 0–1 candidate-score scale while production `confidence_score` uses 0–100; correcting the synthetic boundary to 50/100 made Q1 the only initial review item and preserved production behavior. The plan-specified affected API/Job regression set produced `69 passed, 1 warning`. The warning is the existing dependency-level `StarletteDeprecationWarning` from `fastapi.testclient`. The downloaded workbook was closed in `finally`; fixture teardown shut down JobManager; all writes stayed under pytest temporary storage; no production file or real `user_data/` path was read or modified.
 
 ---
 
