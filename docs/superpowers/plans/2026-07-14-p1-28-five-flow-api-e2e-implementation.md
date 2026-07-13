@@ -61,7 +61,7 @@
 - Consumes: approved design at `docs/superpowers/specs/2026-07-14-p1-28-five-flow-api-e2e-design.md`, latest `origin/main`, immutable stash baseline and root database fingerprints.
 - Produces: validator-compatible first first-parent claim commit with `in_progress` handoff state.
 
-- [ ] **Step 1: Verify the dedicated feature channel and immutable baselines**
+- [x] **Step 1: Verify the dedicated feature channel and immutable baselines**
 
 Run from the new P1-28 worktree:
 
@@ -76,7 +76,7 @@ rg -n "\*\*执行包：\*\* P1-28|HANDOFF_STATUS_(START|END)" docs/superpowers/p
 
 Expected: only the plan is untracked; `user_data` is clean; HEAD and `origin/main` equal the plan baseline; stash SHAs are recorded exactly once; before claim the plan has one package declaration and no handoff markers.
 
-- [ ] **Step 2: Add the handoff block and claim evidence**
+- [x] **Step 2: Add the handoff block and claim evidence**
 
 Append this exact block after Global Constraints, using the observed immutable stash baseline:
 
@@ -98,7 +98,7 @@ Append this exact block after Global Constraints, using the observed immutable s
 
 Below the block record the feature worktree branch, full baseline SHA, root database size/UTC mtime/SHA-256, baseline focused test result, and the fact that the root worktree's unrelated Phase 3 and `user_data` changes were not copied or staged.
 
-- [ ] **Step 3: Commit only the claim plan and validate it**
+- [x] **Step 3: Commit only the claim plan and validate it**
 
 ```powershell
 git add -- docs/superpowers/plans/2026-07-14-p1-28-five-flow-api-e2e-implementation.md
@@ -127,7 +127,7 @@ Expected: staged list contains only the plan; validator emits one JSON line with
 - Consumes: `create_app()`, FastAPI dependency overrides, `DBManager`, `JobManager`, `register_default_job_handlers()`, `run_config_generation_job()`, `run_scan_analysis()`, `run_grading_job()` and `JobFileService`.
 - Produces: `ApiE2EHarness(client, db, manager, paths, controls)`; `poll_job(job_id, expected_status)`; deterministic config/PNG/student fixtures; injectable scan/grading failure controls.
 
-- [ ] **Step 1: Write the first failing five-flow test through template commit**
+- [x] **Step 1: Write the first failing five-flow test through template commit**
 
 Create `tests/api_e2e/test_five_flow.py` with this initial test:
 
@@ -163,6 +163,11 @@ def test_api_five_flow_persists_config_template_and_regions(api_e2e) -> None:
     assert Path(config["answer_key_path"]).is_file()
 
     committed = api_e2e.bind_and_commit_template(session_id)
+    snapshot_path = Path(committed.pop("snapshot_path"))
+    assert snapshot_path.is_file()
+    snapshot_path.resolve().relative_to(
+        (api_e2e.paths.templates_dir / f"session_{session_id}").resolve()
+    )
     assert committed == {
         "committed": True,
         "snapshot_pending": False,
@@ -176,7 +181,7 @@ def test_api_five_flow_persists_config_template_and_regions(api_e2e) -> None:
     assert regions["items"][0]["mapped_question_id"] == "Q1"
 ```
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/api_e2e/test_five_flow.py::test_api_five_flow_persists_config_template_and_regions -q
@@ -184,7 +189,7 @@ def test_api_five_flow_persists_config_template_and_regions(api_e2e) -> None:
 
 Expected: collection fails because fixture `api_e2e` and `tests.api_e2e.harness` do not exist.
 
-- [ ] **Step 3: Implement the minimal reusable harness**
+- [x] **Step 3: Implement the minimal reusable harness**
 
 Create `tests/api_e2e/harness.py` with these public types and exact behavior:
 
@@ -283,7 +288,7 @@ class ApiE2EHarness:
         return committed.json()
 ```
 
-In the same file implement `valid_config_payload()` as one Q1 comprehensive question with `max_score=100`, one 100-point part/step, matching answer part, and `meta={"warnings": []}`. Implement `build_paths(tmp_path)` to create the listed directories, write `{}` bootstrap JSON files, and generate 120×160 PNG template/scan assets with Pillow.
+In the same file implement `valid_config_payload()` as six comprehensive questions Q1-Q6 using scores `[17, 17, 17, 17, 17, 15]`; each question has one same-score part/step and a matching answer part, and the payload has `meta={"warnings": []}`. This preserves the production `MAX_QUESTION_SCORE=18` contract while keeping Q1 first for the synthetic review flow. Implement `build_paths(tmp_path)` to create the listed directories, write `{}` bootstrap JSON files, and generate 120×160 PNG template/scan assets with Pillow.
 
 Create `tests/api_e2e/conftest.py` with fixture construction that:
 
@@ -310,17 +315,17 @@ def api_e2e(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     manager.shutdown()
 ```
 
-`build_job_manager()` must call `register_default_job_handlers()` with the real config runner and ReportGenerator, `llm_client_factory=lambda: FakeLLM([])`, plus scan/grading wrappers defined in Task 3. `install_dependency_overrides()` must override grading DB, manager, upload/templates/data/exams/reports/annotated/outputs/backups directories and `get_job_file_service` with `JobFileService(paths.reports_dir, training_outputs_dir=paths.outputs_dir / "training", backups_dir=paths.backups_dir, ops_outputs_dir=paths.outputs_dir / "ops")`.
+`build_job_manager()` must call `register_default_job_handlers()` with the real config runner and ReportGenerator plus `llm_client_factory=lambda: FakeLLM([])`. During Task 2, do not pass scan/grading runner overrides because those handlers are not invoked; Task 3 injects deterministic wrappers. `install_dependency_overrides()` must override grading DB, manager, upload/templates/data/exams/reports/annotated/outputs/backups directories and `get_job_file_service` with `JobFileService(paths.reports_dir, training_outputs_dir=paths.outputs_dir / "training", backups_dir=paths.backups_dir, ops_outputs_dir=paths.outputs_dir / "ops")`. It must also override `get_ops_write_service` with an inert object so application lifespan startup cannot create a root-bound service.
 
-- [ ] **Step 4: Run the focused test and verify GREEN**
+- [x] **Step 4: Run the focused test and verify GREEN**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/api_e2e/test_five_flow.py::test_api_five_flow_persists_config_template_and_regions -q
 ```
 
-Expected: `1 passed` with no warnings or writes outside pytest temporary storage.
+Expected: `1 passed` with no writes outside pytest temporary storage. The portable runtime currently emits one dependency-level `StarletteDeprecationWarning` from `fastapi.testclient`; record it as baseline noise rather than hiding it.
 
-- [ ] **Step 5: Commit the harness foundation**
+- [x] **Step 5: Commit the harness foundation**
 
 ```powershell
 git add -- tests/api_e2e docs/superpowers/plans/2026-07-14-p1-28-five-flow-api-e2e-implementation.md
@@ -368,14 +373,14 @@ def test_partial_grading_uses_completed_semantics_and_failed_only_recovery(api_e
     assert job["result"]["summary"]["failed"] == 1
     assert api_e2e.paper_statuses(scanned_session_id) == ["failed", "graded"]
     before = api_e2e.result_scores(scanned_session_id)
-    assert before == {"SYN-001": 80.0}
+    assert before == {"SYN-001": 85.0}
 
     retried = api_e2e.client.post(f"/api/sessions/{scanned_session_id}/grading/run", json={"failed_only": True, "enhance_images": False})
     recovered = api_e2e.poll_job(retried.json()["id"], "succeeded")
     assert recovered["result"]["summary"]["graded"] == 1
     assert recovered["result"]["summary"]["failed"] == 0
     assert api_e2e.paper_statuses(scanned_session_id) == ["graded", "graded"]
-    assert api_e2e.result_scores(scanned_session_id) == {"SYN-001": 80.0, "SYN-002": 70.0}
+    assert api_e2e.result_scores(scanned_session_id) == {"SYN-001": 85.0, "SYN-002": 70.0}
 ```
 
 Add fixtures `prepared_session_id` and `scanned_session_id` to conftest; they must call only HTTP helpers for session/config/template/scan setup.
@@ -399,7 +404,7 @@ return run_scan_analysis(
 )
 ```
 
-Implement `SyntheticGradingService`. On the first full run it creates a graded paper/result for `SYN-001` with a 100-point Q1 detail scoring 80 and `needs_human_review=True`, then creates a failed paper for `SYN-002`. On `failed_only=True` it finds only the failed paper, saves a 70-point result and marks that paper graded. It yields the existing event shapes `graded`, `failed` and `session_completed`; it never rewrites the already successful result. Use `GradingResult` and `QuestionGradingDetail` rather than raw result/detail INSERTs.
+Implement `SyntheticGradingService`. On the first full run it creates a graded paper/result for `SYN-001` with six valid details: Q1 scores 12/17 with `needs_human_review=True`, Q2-Q5 score 17 each, and Q6 scores 5/15, for an initial total of 85; it then creates a failed paper for `SYN-002`. On `failed_only=True` it finds only the failed paper, saves six valid detail scores totaling 70 and marks that paper graded. It yields the existing event shapes `graded`, `failed` and `session_completed`; it never rewrites the already successful result. Use `GradingResult` and `QuestionGradingDetail` rather than raw result/detail INSERTs.
 
 `make_grading_runner(controls)` must call the real runner with `service_factory=SyntheticGradingService`. Add these read-only temporary DB helpers to `ApiE2EHarness`:
 
@@ -424,7 +429,7 @@ def result_scores(self, session_id: int) -> dict[str, float]:
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/api_e2e/test_failure_recovery.py tests/api_e2e/test_five_flow.py -q
 ```
 
-Expected: all current P1-28 tests pass; the successful result remains 80 after failed-only recovery.
+Expected: all current P1-28 tests pass; the successful result remains 85 after failed-only recovery.
 
 - [ ] **Step 5: Commit recovery coverage**
 
@@ -460,7 +465,7 @@ assert items.status_code == 200
 first = next(item for item in items.json()["items"] if item["student_code"] == "SYN-001")
 confirmed = api_e2e.client.post(
     f"/api/sessions/{session_id}/review/questions/Q1/confirm",
-    json={"items": [{"result_id": first["result_id"], "detail_id": first["detail_id"], "score_awarded": 90, "deduction_reason": "synthetic teacher confirmation"}]},
+    json={"items": [{"result_id": first["result_id"], "detail_id": first["detail_id"], "score_awarded": 17, "deduction_reason": "synthetic teacher confirmation"}]},
 )
 assert confirmed.status_code == 200
 assert confirmed.json()["updated_details"] == 1
