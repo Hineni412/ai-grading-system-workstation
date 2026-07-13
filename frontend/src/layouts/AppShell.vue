@@ -5,6 +5,7 @@ import { RouterView, useRoute } from 'vue-router'
 import AppNavigation from '../components/shell/AppNavigation.vue'
 import AppTopbar from '../components/shell/AppTopbar.vue'
 import SessionInspector from '../components/shell/SessionInspector.vue'
+import ReviewScoringInspector from '../components/review/ReviewScoringInspector.vue'
 import { useSessionStore } from '../stores/session'
 
 const route = useRoute()
@@ -62,6 +63,7 @@ onBeforeUnmount(() => {
     <main id="main-workspace" class="main-workspace" tabindex="-1">
       <RouterView />
     </main>
-    <SessionInspector @retry="sessionStore.initialize" />
+    <ReviewScoringInspector v-if="route.name === 'grading'" />
+    <SessionInspector v-else @retry="sessionStore.initialize" />
   </div>
 </template>

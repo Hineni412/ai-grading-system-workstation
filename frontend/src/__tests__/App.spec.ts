@@ -54,13 +54,38 @@ describe('App', () => {
     const shellImport = "import './styles/app-shell.css'"
     const reviewImport = "import './styles/review-queue.css'"
     const evidenceImport = "import './styles/review-evidence.css'"
+    const scoringImport = "import './styles/review-scoring.css'"
 
     expect(mainSource).toContain(reviewImport)
     expect(mainSource).toContain(evidenceImport)
+    expect(mainSource).toContain(scoringImport)
     expect(mainSource.indexOf(reviewImport)).toBeGreaterThan(mainSource.indexOf(shellImport))
     expect(mainSource.indexOf(evidenceImport)).toBeGreaterThan(mainSource.indexOf(reviewImport))
+    expect(mainSource.indexOf(scoringImport)).toBeGreaterThan(mainSource.indexOf(evidenceImport))
     expect(reviewStyles).not.toMatch(/#[\da-f]{3,8}\b|(?:rgb|hsl)a?\s*\(/i)
     expect(evidenceStyles).not.toMatch(/#[\da-f]{3,8}\b|(?:rgb|hsl)a?\s*\(/i)
+  })
+
+  it('uses the scoring inspector only on the grading route', async () => {
+    const pinia = createPinia()
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/grading')
+    await router.isReady()
+    const host = document.createElement('div')
+    const app = createApp(App)
+    app.use(pinia)
+    app.use(router)
+    app.mount(host)
+    await settleUi()
+
+    expect(host.querySelector('[data-testid="review-scoring-inspector"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="session-inspector"]')).toBeNull()
+
+    await router.push('/workbench')
+    await settleUi()
+    expect(host.querySelector('[data-testid="session-inspector"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="review-scoring-inspector"]')).toBeNull()
+    app.unmount()
   })
 
   it('surfaces a rejected lazy route and retries the real route factory', async () => {
