@@ -73,7 +73,7 @@ def test_saving_profiles_drops_only_deprecated_objective_keys(tmp_path: Path) ->
     ]
 
 
-def test_runtime_objective_config_ignores_legacy_timeout_and_token_fields(
+def test_runtime_objective_config_ignores_legacy_fields_and_projects_safe_policy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -90,6 +90,9 @@ def test_runtime_objective_config_ignores_legacy_timeout_and_token_fields(
                     "objective_temperature": 0.25,
                     "objective_max_tokens": 100,
                     "objective_timeout": 60,
+                    "llm_recognition_timeout_seconds": 45,
+                    "llm_tagging_max_retries": 1,
+                    "llm_unrecognized_secret": "must-not-project",
                 }
             ],
             ensure_ascii=False,
@@ -110,6 +113,10 @@ def test_runtime_objective_config_ignores_legacy_timeout_and_token_fields(
         "temperature": 0.25,
         "thinking_type": "disabled",
         "enabled": True,
+        "policy_profile": {
+            "llm_recognition_timeout_seconds": 45,
+            "llm_tagging_max_retries": 1,
+        },
     }
 
 
