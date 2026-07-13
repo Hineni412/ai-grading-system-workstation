@@ -1,11 +1,25 @@
 from __future__ import annotations
 
+import json
+import math
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
+
+import backend.llm as backend_llm
+import question_bank.services.ai_tagging_service as ai_tagging_module
 
 from question_bank.models.question import QuestionCreate, TagCreate
 from question_bank.models.tag_schema import TagAnalysis, TaggingContext
-from question_bank.services.ai_tagging_service import AITaggingResult, AITaggingService, _adaptive_batches
+from question_bank.services.ai_tagging_service import (
+    AITaggingResult,
+    AITaggingService,
+    _adaptive_batches,
+    _batch_prompt_input,
+    _batch_tag_analysis_response_format,
+    _prompt_input,
+    _tag_analysis_response_format,
+)
 from question_bank.services.question_service import QuestionService, has_complete_analysis_tags
 
 
@@ -28,6 +42,258 @@ def _analysis(**overrides) -> TagAnalysis:
     }
     payload.update(overrides)
     return TagAnalysis.from_dict(payload)
+
+
+def _install_isolated_real_adapter(monkeypatch, *, init_calls, adapter_calls) -> None:
+    real_adapter_class = backend_llm.LLMProtocolAdapter
+
+    class UnexpectedLLMClient:
+        def __init__(self, settings) -> None:
+            self.settings = settings
+
+        def json_from_text(self, *_args, **_kwargs):
+            raise AssertionError("raw Responses injection was shadowed by LLMClient")
+
+    class IsolatedProtocolAdapter:
+        def __init__(
+            self,
+            api_key: str,
+            base_url: str,
+            policy_profile=None,
+            client=None,
+        ) -> None:
+            init_calls.append(
+                {
+                    "api_key": api_key,
+                    "base_url": base_url,
+                    "policy_profile": dict(policy_profile or {}),
+                    "client": client,
+                }
+            )
+            self._adapter = real_adapter_class(
+                api_key,
+                base_url,
+                policy_profile=policy_profile,
+                client=client,
+                usage_sink_factory=backend_llm.NullUsageSink,
+            )
+
+        def responses(self, **kwargs):
+            adapter_calls.append(kwargs)
+            return self._adapter.responses(**kwargs)
+
+    monkeypatch.setattr(
+        ai_tagging_module,
+        "LLMProtocolAdapter",
+        IsolatedProtocolAdapter,
+        raising=False,
+    )
+    monkeypatch.setattr("llm_client.LLMClient", UnexpectedLLMClient)
+    monkeypatch.setattr(ai_tagging_module, "LLMClient", UnexpectedLLMClient)
+
+
+def _tagging_env() -> dict[str, str]:
+    return {
+        "QUESTION_BANK_TAGGING_API_KEY": "fake-tagging-key",
+        "QUESTION_BANK_TAGGING_BASE_URL": "https://provider.invalid/v1",
+        "QUESTION_BANK_TAGGING_MODEL": "fake-tagging-model",
+    }
+
+
+def test_single_responses_uses_tagging_gateway_with_raw_client(monkeypatch) -> None:
+    provider_calls = []
+    adapter_calls = []
+    init_calls = []
+    expected_analysis = _analysis()
+
+    def fake_provider_create(**kwargs):
+        provider_calls.append(kwargs)
+        return SimpleNamespace(output_text=json.dumps(expected_analysis.to_dict()))
+
+    fake_client = SimpleNamespace(
+        responses=SimpleNamespace(create=fake_provider_create)
+    )
+    _install_isolated_real_adapter(
+        monkeypatch,
+        init_calls=init_calls,
+        adapter_calls=adapter_calls,
+    )
+    monkeypatch.setattr(ai_tagging_module, "_dotenv_values", lambda: {})
+    context = TaggingContext(
+        question_text="计算 a^2 · a^3。",
+        answer_text="a^5",
+        question_number="1",
+        question_type="选择题",
+    )
+
+    service = AITaggingService(env=_tagging_env(), client=fake_client)
+    result = service.analyze_question(context)
+
+    assert result.ok
+    assert result.quality_status == "complete"
+    assert result.analysis == expected_analysis
+    assert result.model_name == "fake-tagging-model"
+    assert init_calls == [
+        {
+            "api_key": "fake-tagging-key",
+            "base_url": "https://provider.invalid/v1",
+            "policy_profile": {},
+            "client": fake_client,
+        }
+    ]
+    assert len(adapter_calls) == 1
+    assert adapter_calls[0]["request_kind"] is backend_llm.LLMRequestKind.TAGGING
+    assert adapter_calls[0]["model"] == "fake-tagging-model"
+    assert adapter_calls[0]["kwargs"] == {
+        "text": {"format": _tag_analysis_response_format()},
+        "input": _prompt_input(context),
+    }
+    assert provider_calls == [
+        {
+            "text": {"format": _tag_analysis_response_format()},
+            "input": _prompt_input(context),
+            "model": "fake-tagging-model",
+            "timeout": 120.0,
+        }
+    ]
+    assert math.isfinite(provider_calls[0]["timeout"])
+
+
+def test_batch_responses_preserves_structured_payload_mapping_and_lazy_adapter(
+    monkeypatch,
+) -> None:
+    provider_calls = []
+    adapter_calls = []
+    init_calls = []
+    first_analysis = _analysis()
+    second_analysis = _analysis(
+        knowledge_points=["概率初步"],
+        measured_skills=["古典概型概率计算"],
+        reason="考查古典概型。",
+    )
+
+    def fake_provider_create(**kwargs):
+        provider_calls.append(kwargs)
+        if kwargs["text"]["format"]["name"] == "question_bank_batch_tag_analysis":
+            payload = {
+                "results": [
+                    {"question_id": 1, **first_analysis.to_dict()},
+                    {"question_id": 2, **second_analysis.to_dict()},
+                ]
+            }
+        else:
+            payload = first_analysis.to_dict()
+        return SimpleNamespace(output_text=json.dumps(payload))
+
+    fake_client = SimpleNamespace(
+        responses=SimpleNamespace(create=fake_provider_create)
+    )
+    _install_isolated_real_adapter(
+        monkeypatch,
+        init_calls=init_calls,
+        adapter_calls=adapter_calls,
+    )
+    monkeypatch.setattr(ai_tagging_module, "_dotenv_values", lambda: {})
+    contexts = {
+        1: TaggingContext(
+            question_text="计算 a^2 · a^3。",
+            answer_text="a^5",
+            question_number="1",
+            question_type="选择题",
+        ),
+        2: TaggingContext(
+            question_text="随机抽取一个球，求概率。",
+            answer_text="1/2",
+            question_number="2",
+            question_type="选择题",
+        ),
+    }
+    batch_items = list(contexts.items())
+
+    service = AITaggingService(env=_tagging_env(), client=fake_client)
+    single = service.analyze_question(contexts[1])
+    first_adapter = service._protocol_adapter()
+    results = service.analyze_questions(
+        contexts,
+        max_workers=1,
+        quality_retry_limit=0,
+        enable_review=False,
+    )
+
+    assert service._protocol_adapter() is first_adapter
+    assert len(init_calls) == 1
+    assert len(adapter_calls) == 2
+    assert all(
+        call["request_kind"] is backend_llm.LLMRequestKind.TAGGING
+        for call in adapter_calls
+    )
+    assert adapter_calls[1]["kwargs"] == {
+        "text": {"format": _batch_tag_analysis_response_format()},
+        "input": _batch_prompt_input(batch_items),
+    }
+    assert provider_calls == [
+        {
+            "text": {"format": _tag_analysis_response_format()},
+            "input": _prompt_input(contexts[1]),
+            "model": "fake-tagging-model",
+            "timeout": 120.0,
+        },
+        {
+            "text": {"format": _batch_tag_analysis_response_format()},
+            "input": _batch_prompt_input(batch_items),
+            "model": "fake-tagging-model",
+            "timeout": 120.0,
+        }
+    ]
+    assert all(math.isfinite(call["timeout"]) for call in provider_calls)
+    assert single.analysis == first_analysis
+    assert results[1].analysis == first_analysis
+    assert results[2].analysis == second_analysis
+    assert results[1].quality_status == "complete"
+    assert results[2].quality_status == "complete"
+
+
+def test_explicit_protocol_adapter_is_reused_for_single_and_batch_calls(
+    monkeypatch,
+) -> None:
+    calls = []
+    analysis = _analysis()
+
+    class InjectedAdapter:
+        def responses(self, **kwargs):
+            calls.append(kwargs)
+            format_name = kwargs["kwargs"]["text"]["format"]["name"]
+            if format_name == "question_bank_batch_tag_analysis":
+                payload = {"results": [{"question_id": 1, **analysis.to_dict()}]}
+            else:
+                payload = analysis.to_dict()
+            return SimpleNamespace(output_text=json.dumps(payload))
+
+    monkeypatch.setattr(ai_tagging_module, "_dotenv_values", lambda: {})
+    adapter = InjectedAdapter()
+    service = AITaggingService(
+        env=_tagging_env(),
+        protocol_adapter=adapter,
+    )
+    context = TaggingContext(
+        question_text="计算 a^2 · a^3。",
+        answer_text="a^5",
+        question_number="1",
+        question_type="选择题",
+    )
+
+    single = service.analyze_question(context)
+    batch = service.analyze_questions(
+        {1: context},
+        max_workers=1,
+        quality_retry_limit=0,
+        enable_review=False,
+    )
+
+    assert service._protocol_adapter() is adapter
+    assert single.analysis == analysis
+    assert batch[1].analysis == analysis
+    assert len(calls) == 2
 
 
 def test_tag_analysis_normalizes_confidence_and_string_list_fields() -> None:
