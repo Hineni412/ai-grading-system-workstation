@@ -37,14 +37,14 @@
 ## 昼夜交接
 
 **执行包：** P2-08
-**交接状态：** waiting_user
-**功能提交：** d71c3aa41eba35cc767870efddd80147cd6b6c12
+**交接状态：** verified_pending_integration
+**功能提交：** 38d7ff9a2f282a023cb7a4e1bb715d7aa19e7190
 **自动验证：** passed
 **独立复审：** passed
-**用户验收：** pending
+**用户验收：** passed
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
 
 ## 2026-07-13 领取证据
@@ -509,7 +509,7 @@ Use `superpowers:requesting-code-review` without subagents. Re-read the package,
 
 After review passes, create a plan-only `waiting_user` anchor commit whose handoff block records the full 40-character reviewed source SHA, with automatic verification and independent review `passed`, user acceptance `pending`, real-data fingerprint `unchanged` and `report_only`. Validate the anchor.
 
-- [ ] **Step 6: Run the 30–45 minute formal user acceptance**
+- [x] **Step 6: Run the 30–45 minute formal user acceptance**
 
 Start exactly the reviewed anonymous runtime, open the declared URL and ask the user to follow the versioned checklist. Keep reset and failure-mode preparation under Codex control. Blocker or Major stops the gate and returns to this feature branch; Minor is recorded for the user's decision. Only the user's explicit conclusion can set the result to `passed`.
 
