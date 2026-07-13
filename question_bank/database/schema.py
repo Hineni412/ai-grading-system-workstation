@@ -5,11 +5,13 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from backend.performance.metrics import instrument_sqlite_connection
+
 
 @contextmanager
 def connect(db_path: Path) -> Iterator[sqlite3.Connection]:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = instrument_sqlite_connection(sqlite3.connect(db_path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA busy_timeout = 5000")
