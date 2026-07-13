@@ -600,9 +600,9 @@ Expected: PASS with zero failures/skips.
 
 Expected: PASS; no source snapshot writes, API contract drift or lifecycle regression.
 
-- [x] **Step 3: Recheck root real database fingerprints before the formal benchmark**
+- [x] **Step 3: Establish a read-only recovery fingerprint baseline before the formal benchmark**
 
-Read only file length, UTC mtime and SHA-256 from the root checkout. Compare byte-for-byte with Task 0 claim values. Do not call SQLite against either file. Expected: unchanged.
+The external Task 0 claim values were unavailable when this interrupted execution resumed, so they were not reconstructed or claimed. Read only file length, UTC mtime and SHA-256 from the root checkout to establish a fresh recovery baseline. Do not call SQLite against either file. Expected: both tuples are captured outside Git before the formal run; lack of the original Task 0 values remains an explicit evidence limitation.
 
 - [x] **Step 4: Run the formal three-workload/two-repetition baseline**
 
@@ -631,9 +631,9 @@ git status --short -- user_data
 
 Expected: diff check and quick smoke pass; feature `user_data` status empty; handoff fields are valid for the current pre-review state.
 
-- [x] **Step 8: Compare root real database fingerprints again**
+- [x] **Step 8: Compare root real database fingerprints with the Step 3 recovery baseline**
 
-Expected: both real database size/UTC mtime/SHA-256 values exactly match Task 0 and Step 3. Any difference blocks commit and integration.
+Expected: both real database size/UTC mtime/SHA-256 values exactly match the fresh Step 3 recovery baseline. Any difference blocks commit and integration. This comparison does not retroactively prove equality with the unavailable Task 0 values.
 
 - [x] **Step 9: Commit verified functional work as `waiting_review`**
 
