@@ -32,7 +32,7 @@ describe('review workspace shortcut bus', () => {
   it('uses a snapshot so handlers may unsubscribe safely during dispatch', () => {
     const bus = new ReviewShortcutBus()
     const received: string[] = []
-    let stopFirst = () => undefined
+    let stopFirst: () => void = () => undefined
     stopFirst = bus.subscribe(() => {
       received.push('first')
       stopFirst()

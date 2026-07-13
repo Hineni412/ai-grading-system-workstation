@@ -30,7 +30,7 @@ const emit = defineEmits<{
 }>()
 
 const searchInput = ref<HTMLInputElement | null>(null)
-let stopShortcuts = () => undefined
+let stopShortcuts: () => void = () => undefined
 
 onMounted(() => {
   stopShortcuts = reviewShortcutBus.subscribe((command) => {

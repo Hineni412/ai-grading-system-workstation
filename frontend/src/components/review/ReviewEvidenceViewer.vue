@@ -44,7 +44,7 @@ const errorMessage = computed(() =>
 )
 
 let resizeObserver: ResizeObserver | null = null
-let stopShortcuts = () => undefined
+let stopShortcuts: () => void = () => undefined
 let activeLoad = { key: '', generation: 0 }
 let activePointerId: number | null = null
 let lastPointer: ViewerPoint = { x: 0, y: 0 }
