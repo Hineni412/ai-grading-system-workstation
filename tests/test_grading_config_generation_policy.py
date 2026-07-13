@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 import base64
+from types import SimpleNamespace
 
 import pytest
 
+from backend.llm.gateway import LLMGateway
 import score_policy
 import session_manager
 import llm_client
@@ -1430,6 +1432,264 @@ def test_llm_single_request_method_does_not_retry_parameter_fallback(
     assert completions.calls == 1
     assert "max_tokens" not in completions.last_kwargs
     assert "response_format" not in completions.last_kwargs
+
+
+class _GatewayTestCompletions:
+    def __init__(self, outcomes: list[object]) -> None:
+        self.outcomes = list(outcomes)
+        self.calls: list[dict[str, object]] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+class _GatewayTestSink:
+    def __init__(self) -> None:
+        self.events = []
+
+    def write(self, event: object) -> None:
+        self.events.append(event)
+
+
+class _GatewayTestPacer:
+    def acquire(self, *_args, **_kwargs) -> None:
+        return None
+
+
+def _gateway_json_completion(text: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=text))],
+        usage=SimpleNamespace(
+            prompt_tokens=1,
+            completion_tokens=1,
+            total_tokens=2,
+        ),
+    )
+
+
+def _gateway_client_factory(
+    monkeypatch: pytest.MonkeyPatch,
+    outcomes: list[object],
+):
+    completions = _GatewayTestCompletions(outcomes)
+    fake_openai = SimpleNamespace(
+        chat=SimpleNamespace(completions=completions),
+    )
+    monkeypatch.setattr(
+        llm_client,
+        "_create_openai_client",
+        lambda *_args, **_kwargs: fake_openai,
+    )
+    sink = _GatewayTestSink()
+    gateway_configs: list[dict[str, object]] = []
+
+    def gateway_factory(**kwargs):
+        gateway_configs.append(kwargs)
+        return LLMGateway(
+            **kwargs,
+            pacers=_GatewayTestPacer(),
+            usage_sink=sink,
+            sleeper=lambda _seconds: None,
+        )
+
+    settings = llm_client.LLMSettings(
+        api_key="secret-main-key",
+        base_url="https://example.invalid",
+        ocr_model="ocr-model",
+        grading_model="grading-model",
+        config_model="config-model",
+        policy_profile={"llm_config_generation_max_retries": 5},
+    )
+    return (
+        llm_client.LLMClient(settings, gateway_factory=gateway_factory),
+        completions,
+        sink,
+        gateway_configs,
+    )
+
+
+def test_llm_client_gateway_chat_uses_timeout_and_request_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, completions, sink, gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [_gateway_json_completion('{"ok": true}')],
+    )
+
+    assert client.json_from_text("prompt") == {"ok": True}
+    assert completions.calls[0]["timeout"] == 120.0
+    assert sink.events[0].request_kind == "config_generation"
+    assert sink.events[0].request_id
+    assert len(gateway_configs) == 1
+    config_key = str(gateway_configs[0]["config_key"])
+    assert len(config_key) == 64
+    assert set(config_key) <= set("0123456789abcdef")
+    assert "secret-main-key" not in config_key
+    assert "example.invalid" not in config_key
+
+
+def test_llm_client_gateway_maps_legacy_request_kinds_exactly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, completions, sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [
+            _gateway_json_completion("recognized text"),
+            _gateway_json_completion('{"ok": true}'),
+            _gateway_json_completion('{"ok": true}'),
+            _gateway_json_completion('{"ok": true}'),
+        ],
+    )
+
+    assert client.text_from_images("prompt", [b"image"]) == "recognized text"
+    assert client.json_from_images("prompt", [b"image"]) == {"ok": True}
+    assert client.json_from_images_with_options(
+        "prompt",
+        [b"image"],
+        use_config_client=True,
+    ) == {"ok": True}
+    assert client.json_from_text("prompt") == {"ok": True}
+
+    assert [event.request_kind for event in sink.events] == [
+        "recognition",
+        "grading",
+        "config_generation",
+        "config_generation",
+    ]
+    assert [call["timeout"] for call in completions.calls] == [
+        60.0,
+        300.0,
+        120.0,
+        120.0,
+    ]
+
+
+def test_parameter_fallback_is_bounded_and_not_counted_as_network_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, completions, sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [
+            RuntimeError("unsupported parameter max_tokens"),
+            RuntimeError("unsupported parameter max_completion_tokens"),
+            _gateway_json_completion('{"ok": true}'),
+        ],
+    )
+
+    assert client.json_from_text("prompt") == {"ok": True}
+    assert len(completions.calls) == 3
+    assert [event.compatibility_fallback for event in sink.events] == [
+        "",
+        "max_completion_tokens",
+        "response_format",
+    ]
+    assert [event.attempt for event in sink.events] == [1, 1, 1]
+
+
+def test_parameter_fallback_disables_nested_network_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timeout = TimeoutError("fallback timed out")
+    client, completions, sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [
+            RuntimeError("unsupported parameter max_tokens"),
+            timeout,
+        ],
+    )
+
+    with pytest.raises(TimeoutError) as raised:
+        client.json_from_text("prompt")
+
+    assert raised.value is timeout
+    assert len(completions.calls) == 2
+    assert [event.compatibility_fallback for event in sink.events] == [
+        "",
+        "max_completion_tokens",
+    ]
+
+
+def test_json_repair_truncation_shares_one_logical_request_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, completions, sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [
+            _gateway_json_completion('{"ok":'),
+            _gateway_json_completion('{"ok": true}'),
+        ],
+    )
+
+    assert client.json_from_text("prompt") == {"ok": True}
+    assert len(completions.calls) == 2
+    assert len({event.request_id for event in sink.events}) == 1
+
+
+def test_json_repair_format_fix_shares_one_logical_request_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, completions, sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [
+            _gateway_json_completion("not json"),
+            _gateway_json_completion('{"ok": true}'),
+        ],
+    )
+
+    assert client.json_from_text("prompt") == {"ok": True}
+    assert len(completions.calls) == 2
+    assert len({event.request_id for event in sink.events}) == 1
+
+
+def test_llm_client_gateway_reuses_only_identical_client_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_clients = [object(), object(), object()]
+    monkeypatch.setattr(
+        llm_client,
+        "_create_openai_client",
+        lambda *_args, **_kwargs: fake_clients.pop(0),
+    )
+    gateway_calls: list[dict[str, object]] = []
+
+    def gateway_factory(**kwargs):
+        gateway_calls.append(kwargs)
+        return object()
+
+    shared_settings = llm_client.LLMSettings(
+        api_key="shared-key",
+        base_url="https://shared.invalid",
+        ocr_model="ocr",
+        grading_model="grading",
+        config_model="config",
+    )
+    shared = llm_client.LLMClient(
+        shared_settings,
+        gateway_factory=gateway_factory,
+    )
+    assert shared.config_gateway is shared.gateway
+    assert len(gateway_calls) == 1
+
+    distinct_settings = llm_client.LLMSettings(
+        api_key="main-key",
+        base_url="https://main.invalid",
+        ocr_model="ocr",
+        grading_model="grading",
+        config_model="config",
+        config_api_key="config-key",
+        config_base_url="https://config.invalid/v1",
+    )
+    distinct = llm_client.LLMClient(
+        distinct_settings,
+        gateway_factory=gateway_factory,
+    )
+    assert distinct.config_gateway is not distinct.gateway
+    assert len(gateway_calls) == 3
+    assert len({str(call["config_key"]) for call in gateway_calls}) == 3
 
 
 def test_global_score_search_adjusts_an_infeasible_objective_budget() -> None:

@@ -14,6 +14,9 @@ from .usage import LLMUsageEvent, NullUsageSink, usage_fields
 
 logger = logging.getLogger(__name__)
 _DEFAULT_PACERS = LLMPacerRegistry()
+_COMPATIBILITY_FALLBACKS = frozenset(
+    {"max_completion_tokens", "response_format"}
+)
 
 
 def _warn_safely(message: str) -> None:
@@ -50,6 +53,7 @@ class LLMGateway:
         kwargs: Mapping[str, object],
         request_id: object | None = None,
         allow_retry: bool = True,
+        compatibility_fallback: str = "",
     ) -> object:
         return self._execute(
             protocol=LLMProtocol.CHAT_COMPLETIONS,
@@ -59,6 +63,7 @@ class LLMGateway:
             kwargs=kwargs,
             request_id=request_id,
             allow_retry=allow_retry,
+            compatibility_fallback=compatibility_fallback,
         )
 
     def responses(
@@ -70,6 +75,7 @@ class LLMGateway:
         kwargs: Mapping[str, object],
         request_id: object | None = None,
         allow_retry: bool = True,
+        compatibility_fallback: str = "",
     ) -> object:
         return self._execute(
             protocol=LLMProtocol.RESPONSES,
@@ -79,6 +85,7 @@ class LLMGateway:
             kwargs=kwargs,
             request_id=request_id,
             allow_retry=allow_retry,
+            compatibility_fallback=compatibility_fallback,
         )
 
     def _execute(
@@ -91,6 +98,7 @@ class LLMGateway:
         kwargs: Mapping[str, object],
         request_id: object | None,
         allow_retry: bool,
+        compatibility_fallback: str,
     ) -> object:
         kind = LLMRequestKind(request_kind)
         logical_request_id = str(
@@ -98,6 +106,12 @@ class LLMGateway:
         )
         policy = policy_from_profile(kind, self.profile)
         retry_limit = policy.max_retries if allow_retry else 0
+        fallback_candidate = str(compatibility_fallback or "")
+        fallback = (
+            fallback_candidate
+            if fallback_candidate in _COMPATIBILITY_FALLBACKS
+            else ""
+        )
 
         for attempt in range(1, retry_limit + 2):
             self.pacers.acquire(
@@ -121,6 +135,7 @@ class LLMGateway:
                     model=model,
                     latency_ms=latency_ms,
                     error=exc,
+                    compatibility_fallback=fallback,
                 )
                 if attempt > retry_limit or not is_retryable_error(exc):
                     raise
@@ -137,6 +152,7 @@ class LLMGateway:
                 model=model,
                 latency_ms=latency_ms,
                 response=response,
+                compatibility_fallback=fallback,
             )
             return response
 
@@ -195,6 +211,7 @@ class LLMGateway:
         model: str,
         latency_ms: int,
         error: BaseException,
+        compatibility_fallback: str,
     ) -> None:
         category = classify_llm_error(error)
         self._safe_write(
@@ -207,6 +224,7 @@ class LLMGateway:
                 latency_ms=latency_ms,
                 success=False,
                 error_category=category.value,
+                compatibility_fallback=compatibility_fallback,
             )
         )
 
@@ -220,6 +238,7 @@ class LLMGateway:
         model: str,
         latency_ms: int,
         response: object,
+        compatibility_fallback: str,
     ) -> None:
         try:
             normalized_usage = usage_fields(response)
@@ -231,6 +250,7 @@ class LLMGateway:
                 model=str(model),
                 latency_ms=latency_ms,
                 success=True,
+                compatibility_fallback=compatibility_fallback,
                 **normalized_usage,
             )
         except Exception:
@@ -243,6 +263,7 @@ class LLMGateway:
                 model=str(model),
                 latency_ms=latency_ms,
                 success=True,
+                compatibility_fallback=compatibility_fallback,
             )
         self._safe_write(event)
 

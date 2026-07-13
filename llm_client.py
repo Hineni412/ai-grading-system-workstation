@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import math
 import os
+import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import urlparse
 
+from backend.llm import LLMGateway, LLMRequestKind
 from openai import APIConnectionError, APITimeoutError, OpenAI, RateLimitError
 from PIL import Image, ImageOps
+
+
+_GATEWAY_CONFIG_SALT = "ai-grading-llm-gateway-config-v1"
 
 
 @dataclass
@@ -22,18 +28,29 @@ class LLMSettings:
     config_model: str
     config_api_key: str | None = None
     config_base_url: str | None = None
+    policy_profile: Mapping[str, object] | None = None
 
 
 class LLMClient:
-    def __init__(self, settings: LLMSettings) -> None:
+    def __init__(self, settings: LLMSettings, *, gateway_factory=LLMGateway) -> None:
         self.settings = settings
         self.client = _create_openai_client(settings.api_key, settings.base_url)
         config_api_key = settings.config_api_key or settings.api_key
         config_base_url = settings.config_base_url or settings.base_url
+        gateway_profile = dict(settings.policy_profile or {})
+        self.gateway = gateway_factory(
+            profile=gateway_profile,
+            config_key=_gateway_config_key(settings.api_key, settings.base_url),
+        )
         if config_api_key == settings.api_key and normalize_openai_base_url(config_base_url) == normalize_openai_base_url(settings.base_url):
             self.config_client = self.client
+            self.config_gateway = self.gateway
         else:
             self.config_client = _create_openai_client(config_api_key, config_base_url)
+            self.config_gateway = gateway_factory(
+                profile=gateway_profile,
+                config_key=_gateway_config_key(config_api_key, config_base_url),
+            )
 
     def text_from_images(self, prompt: str, image_blobs: list[bytes], model: str | None = None, system_prompt: str | None = None) -> str:
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
@@ -55,6 +72,7 @@ class LLMClient:
             model=model or self.settings.ocr_model,
             messages=messages,
             expect_json=False,
+            request_kind=LLMRequestKind.RECOGNITION,
         )
         return _extract_text_from_completion(completion)
 
@@ -93,6 +111,12 @@ class LLMClient:
     ) -> dict[str, Any]:
         active_client = self.config_client if use_config_client else self.client
         default_model = self.settings.config_model if use_config_client else self.settings.grading_model
+        request_kind = (
+            LLMRequestKind.CONFIG_GENERATION
+            if use_config_client
+            else LLMRequestKind.GRADING
+        )
+        request_id = str(uuid.uuid4())
         
         content: list[dict[str, Any]] = []
         if prompt:
@@ -128,6 +152,8 @@ class LLMClient:
             expect_json=True,
             usage_callback=usage_callback,
             extra_kwargs=extra_kwargs,
+            request_kind=request_kind,
+            request_id=request_id,
         )
         text = _extract_text_from_completion(completion)
         
@@ -143,15 +169,20 @@ class LLMClient:
             client=active_client,
             usage_callback=usage_callback,
             extra_kwargs=extra_kwargs,
+            request_kind=request_kind,
+            request_id=request_id,
         )
 
     def json_from_text(self, prompt: str, model: str | None = None, extra_kwargs: dict[str, Any] | None = None) -> dict[str, Any]:
+        request_id = str(uuid.uuid4())
         completion = self._create_chat_completion(
             self.config_client,
             model=model or self.settings.config_model,
             messages=[{"role": "user", "content": prompt}],
             expect_json=True,
             extra_kwargs=extra_kwargs,
+            request_kind=LLMRequestKind.CONFIG_GENERATION,
+            request_id=request_id,
         )
         text = _extract_text_from_completion(completion)
         retry_messages = [{"role": "user", "content": _with_compact_json_instruction(prompt)}]
@@ -161,6 +192,8 @@ class LLMClient:
             retry_messages=retry_messages,
             client=self.config_client,
             extra_kwargs=extra_kwargs,
+            request_kind=LLMRequestKind.CONFIG_GENERATION,
+            request_id=request_id,
         )
 
     def json_from_text_once(
@@ -179,6 +212,8 @@ class LLMClient:
             expect_json=False,
             extra_kwargs=strict_kwargs,
             allow_parameter_fallback=False,
+            request_kind=LLMRequestKind.CONFIG_GENERATION,
+            single_request=True,
         )
         return _parse_json_text(_extract_text_from_completion(completion))
 
@@ -196,6 +231,11 @@ class LLMClient:
         """Make exactly one visual model request and parse JSON locally without AI repair."""
         active_client = self.config_client if use_config_client else self.client
         default_model = self.settings.config_model if use_config_client else self.settings.grading_model
+        request_kind = (
+            LLMRequestKind.CONFIG_GENERATION
+            if use_config_client
+            else LLMRequestKind.GRADING
+        )
         strict_kwargs = dict(extra_kwargs or {})
         strict_kwargs["omit_token_limit"] = True
         
@@ -232,6 +272,8 @@ class LLMClient:
             expect_json=False,
             extra_kwargs=strict_kwargs,
             allow_parameter_fallback=False,
+            request_kind=request_kind,
+            single_request=True,
         )
         return _parse_json_text(_extract_text_from_completion(completion))
 
@@ -243,8 +285,13 @@ class LLMClient:
         client: OpenAI | None = None,
         usage_callback = None,
         extra_kwargs: dict[str, Any] | None = None,
+        request_kind: LLMRequestKind = LLMRequestKind.GRADING,
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         active_client = client or self.client
+        logical_request_id = str(
+            uuid.uuid4() if request_id is None else request_id
+        )
         try:
             return _parse_json_text(text)
         except ValueError as first_error:
@@ -268,6 +315,8 @@ class LLMClient:
                     expect_json=True,
                     usage_callback=usage_callback,
                     extra_kwargs=extra_kwargs,
+                    request_kind=request_kind,
+                    request_id=logical_request_id,
                 )
                 retried_text = _extract_text_from_completion(completion)
                 try:
@@ -293,6 +342,8 @@ class LLMClient:
                 expect_json=True,
                 usage_callback=usage_callback,
                 extra_kwargs=extra_kwargs,
+                request_kind=request_kind,
+                request_id=logical_request_id,
             )
             repaired_text = _extract_text_from_completion(completion)
             try:
@@ -310,6 +361,9 @@ class LLMClient:
         extra_kwargs: dict[str, Any] | None = None,
         *,
         allow_parameter_fallback: bool = True,
+        request_kind: LLMRequestKind = LLMRequestKind.GRADING,
+        request_id: str | None = None,
+        single_request: bool = False,
     ) -> Any:
         kwargs: dict[str, Any] = {
             "model": model,
@@ -336,12 +390,33 @@ class LLMClient:
             elif is_r1_reasoning:
                 kwargs["temperature"] = 0.6
                 
-        try:
-            res = client.chat.completions.create(**kwargs)
+        gateway = (
+            self.config_gateway
+            if client is self.config_client
+            else self.gateway
+        )
+
+        def invoke(
+            compatibility_fallback: str,
+            *,
+            allow_retry: bool,
+        ) -> Any:
+            res = gateway.chat_completions(
+                request_kind=request_kind,
+                client=client,
+                model=model,
+                kwargs=kwargs,
+                request_id=request_id,
+                allow_retry=allow_retry,
+                compatibility_fallback=compatibility_fallback,
+            )
             if usage_callback:
                 try: usage_callback(res, kwargs)
                 except: pass
             return res
+
+        try:
+            return invoke("", allow_retry=not single_request)
         except Exception as exc:
             if not allow_parameter_fallback:
                 raise
@@ -351,22 +426,17 @@ class LLMClient:
                 kwargs.pop("max_tokens", None)
                 kwargs["max_completion_tokens"] = 32000
                 try:
-                    res = client.chat.completions.create(**kwargs)
-                    if usage_callback:
-                        try: usage_callback(res, kwargs)
-                        except: pass
-                    return res
+                    return invoke(
+                        "max_completion_tokens",
+                        allow_retry=False,
+                    )
                 except Exception as retry_exc:
                     if not _is_parameter_fallback_error(retry_exc):
                         raise
                     kwargs.pop("max_completion_tokens", None)
             if expect_json:
                 kwargs.pop("response_format", None)
-                res = client.chat.completions.create(**kwargs)
-                if usage_callback:
-                    try: usage_callback(res, kwargs)
-                    except: pass
-                return res
+                return invoke("response_format", allow_retry=False)
             raise exc
 
 
@@ -401,6 +471,17 @@ def _create_openai_client(api_key: str, base_url: str) -> OpenAI:
     if normalized_base_url:
         kwargs["base_url"] = normalized_base_url
     return OpenAI(**kwargs)
+
+
+def _gateway_config_key(api_key: str, base_url: str) -> str:
+    material = "\0".join(
+        (
+            _GATEWAY_CONFIG_SALT,
+            str(api_key or "").strip(),
+            normalize_openai_base_url(base_url),
+        )
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def _to_data_url(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
