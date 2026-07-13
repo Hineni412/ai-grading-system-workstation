@@ -3,20 +3,32 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+from itertools import count
 import json
 import math
 import os
 import uuid
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
-from backend.llm import LLMGateway, LLMRequestKind
-from openai import APIConnectionError, APITimeoutError, OpenAI, RateLimitError
+from backend.llm import (
+    JsonlUsageSink,
+    LLMErrorCategory,
+    LLMGateway,
+    LLMRequestKind,
+    classify_llm_error,
+)
+from openai import OpenAI
 from PIL import Image, ImageOps
+from usage_logger import LOG_FILE as LLM_USAGE_LOG_FILE
 
 
 _GATEWAY_CONFIG_SALT = "ai-grading-llm-gateway-config-v1"
+
+
+def _default_usage_sink() -> JsonlUsageSink:
+    return JsonlUsageSink(LLM_USAGE_LOG_FILE)
 
 
 @dataclass
@@ -32,7 +44,13 @@ class LLMSettings:
 
 
 class LLMClient:
-    def __init__(self, settings: LLMSettings, *, gateway_factory=LLMGateway) -> None:
+    def __init__(
+        self,
+        settings: LLMSettings,
+        *,
+        gateway_factory=LLMGateway,
+        usage_sink_factory=_default_usage_sink,
+    ) -> None:
         self.settings = settings
         self.client = _create_openai_client(settings.api_key, settings.base_url)
         config_api_key = settings.config_api_key or settings.api_key
@@ -41,6 +59,7 @@ class LLMClient:
         self.gateway = gateway_factory(
             profile=gateway_profile,
             config_key=_gateway_config_key(settings.api_key, settings.base_url),
+            usage_sink=usage_sink_factory(),
         )
         if config_api_key == settings.api_key and normalize_openai_base_url(config_base_url) == normalize_openai_base_url(settings.base_url):
             self.config_client = self.client
@@ -50,6 +69,7 @@ class LLMClient:
             self.config_gateway = gateway_factory(
                 profile=gateway_profile,
                 config_key=_gateway_config_key(config_api_key, config_base_url),
+                usage_sink=usage_sink_factory(),
             )
 
     def text_from_images(self, prompt: str, image_blobs: list[bytes], model: str | None = None, system_prompt: str | None = None) -> str:
@@ -117,6 +137,7 @@ class LLMClient:
             else LLMRequestKind.GRADING
         )
         request_id = str(uuid.uuid4())
+        next_attempt = count(1).__next__
         
         content: list[dict[str, Any]] = []
         if prompt:
@@ -154,6 +175,7 @@ class LLMClient:
             extra_kwargs=extra_kwargs,
             request_kind=request_kind,
             request_id=request_id,
+            _next_attempt=next_attempt,
         )
         text = _extract_text_from_completion(completion)
         
@@ -171,10 +193,12 @@ class LLMClient:
             extra_kwargs=extra_kwargs,
             request_kind=request_kind,
             request_id=request_id,
+            _next_attempt=next_attempt,
         )
 
     def json_from_text(self, prompt: str, model: str | None = None, extra_kwargs: dict[str, Any] | None = None) -> dict[str, Any]:
         request_id = str(uuid.uuid4())
+        next_attempt = count(1).__next__
         completion = self._create_chat_completion(
             self.config_client,
             model=model or self.settings.config_model,
@@ -183,6 +207,7 @@ class LLMClient:
             extra_kwargs=extra_kwargs,
             request_kind=LLMRequestKind.CONFIG_GENERATION,
             request_id=request_id,
+            _next_attempt=next_attempt,
         )
         text = _extract_text_from_completion(completion)
         retry_messages = [{"role": "user", "content": _with_compact_json_instruction(prompt)}]
@@ -194,6 +219,7 @@ class LLMClient:
             extra_kwargs=extra_kwargs,
             request_kind=LLMRequestKind.CONFIG_GENERATION,
             request_id=request_id,
+            _next_attempt=next_attempt,
         )
 
     def json_from_text_once(
@@ -287,11 +313,13 @@ class LLMClient:
         extra_kwargs: dict[str, Any] | None = None,
         request_kind: LLMRequestKind = LLMRequestKind.GRADING,
         request_id: str | None = None,
+        _next_attempt: Callable[[], int] | None = None,
     ) -> dict[str, Any]:
         active_client = client or self.client
         logical_request_id = str(
             uuid.uuid4() if request_id is None else request_id
         )
+        next_attempt = _next_attempt or count(1).__next__
         try:
             return _parse_json_text(text)
         except ValueError as first_error:
@@ -317,6 +345,7 @@ class LLMClient:
                     extra_kwargs=extra_kwargs,
                     request_kind=request_kind,
                     request_id=logical_request_id,
+                    _next_attempt=next_attempt,
                 )
                 retried_text = _extract_text_from_completion(completion)
                 try:
@@ -344,6 +373,7 @@ class LLMClient:
                 extra_kwargs=extra_kwargs,
                 request_kind=request_kind,
                 request_id=logical_request_id,
+                _next_attempt=next_attempt,
             )
             repaired_text = _extract_text_from_completion(completion)
             try:
@@ -364,6 +394,7 @@ class LLMClient:
         request_kind: LLMRequestKind = LLMRequestKind.GRADING,
         request_id: str | None = None,
         single_request: bool = False,
+        _next_attempt: Callable[[], int] | None = None,
     ) -> Any:
         kwargs: dict[str, Any] = {
             "model": model,
@@ -398,6 +429,7 @@ class LLMClient:
         logical_request_id = str(
             uuid.uuid4() if request_id is None else request_id
         )
+        next_attempt = _next_attempt or count(1).__next__
 
         def invoke(
             compatibility_fallback: str,
@@ -412,6 +444,7 @@ class LLMClient:
                 request_id=logical_request_id,
                 allow_retry=allow_retry,
                 compatibility_fallback=compatibility_fallback,
+                _next_attempt=next_attempt,
             )
             if usage_callback:
                 try: usage_callback(res, kwargs)
@@ -419,7 +452,7 @@ class LLMClient:
             return res
 
         try:
-            return invoke("", allow_retry=not single_request)
+            return invoke("", allow_retry=False)
         except Exception as exc:
             if not allow_parameter_fallback:
                 raise
@@ -444,24 +477,7 @@ class LLMClient:
 
 
 def _is_parameter_fallback_error(exc: Exception) -> bool:
-    if isinstance(exc, (APITimeoutError, APIConnectionError, RateLimitError)):
-        return False
-    message = str(exc).lower()
-    parameter_markers = (
-        "max_tokens",
-        "max_completion_tokens",
-        "response_format",
-        "json_object",
-        "unsupported parameter",
-        "unknown parameter",
-        "unrecognized request argument",
-        "not supported",
-        "extra_forbidden",
-    )
-    if any(marker in message for marker in parameter_markers):
-        return True
-    status_code = getattr(exc, "status_code", None)
-    return status_code in {400, 422}
+    return classify_llm_error(exc) is LLMErrorCategory.PARAMETER_INCOMPATIBLE
 
 
 def _create_openai_client(api_key: str, base_url: str) -> OpenAI:

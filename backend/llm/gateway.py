@@ -4,6 +4,7 @@ import logging
 import math
 import time
 import uuid
+from itertools import count
 from typing import Callable, Mapping
 
 from .errors import classify_llm_error, is_retryable_error
@@ -54,6 +55,7 @@ class LLMGateway:
         request_id: object | None = None,
         allow_retry: bool = True,
         compatibility_fallback: str = "",
+        _next_attempt: Callable[[], int] | None = None,
     ) -> object:
         return self._execute(
             protocol=LLMProtocol.CHAT_COMPLETIONS,
@@ -64,6 +66,7 @@ class LLMGateway:
             request_id=request_id,
             allow_retry=allow_retry,
             compatibility_fallback=compatibility_fallback,
+            next_attempt=_next_attempt,
         )
 
     def responses(
@@ -76,6 +79,7 @@ class LLMGateway:
         request_id: object | None = None,
         allow_retry: bool = True,
         compatibility_fallback: str = "",
+        _next_attempt: Callable[[], int] | None = None,
     ) -> object:
         return self._execute(
             protocol=LLMProtocol.RESPONSES,
@@ -86,6 +90,7 @@ class LLMGateway:
             request_id=request_id,
             allow_retry=allow_retry,
             compatibility_fallback=compatibility_fallback,
+            next_attempt=_next_attempt,
         )
 
     def _execute(
@@ -99,6 +104,7 @@ class LLMGateway:
         request_id: object | None,
         allow_retry: bool,
         compatibility_fallback: str,
+        next_attempt: Callable[[], int] | None,
     ) -> object:
         kind = LLMRequestKind(request_kind)
         logical_request_id = str(
@@ -112,8 +118,10 @@ class LLMGateway:
             if fallback_candidate in _COMPATIBILITY_FALLBACKS
             else ""
         )
+        attempt_counter = next_attempt or count(1).__next__
 
-        for attempt in range(1, retry_limit + 2):
+        for retry_index in range(retry_limit + 1):
+            attempt = attempt_counter()
             self.pacers.acquire(
                 self.config_key,
                 kind,
@@ -137,9 +145,9 @@ class LLMGateway:
                     error=exc,
                     compatibility_fallback=fallback,
                 )
-                if attempt > retry_limit or not is_retryable_error(exc):
+                if retry_index >= retry_limit or not is_retryable_error(exc):
                     raise
-                deterministic_delay = policy.retry_delays[attempt - 1]
+                deterministic_delay = policy.retry_delays[retry_index]
                 self.sleeper(self._retry_delay(exc, deterministic_delay))
                 continue
 

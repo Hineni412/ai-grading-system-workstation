@@ -23,6 +23,7 @@ _PARAMETER_MARKERS = (
     "json_object",
     "unsupported parameter",
     "unknown parameter",
+    "unrecognized request argument",
     "extra_forbidden",
 )
 _RETRYABLE_CATEGORIES = frozenset(

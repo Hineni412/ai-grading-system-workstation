@@ -27,8 +27,11 @@
 - 默认超时精确为：`grading=300s`、`recognition=60s`、`config_generation=120s`、`tagging=120s`。
 - API profile 覆盖键固定为 `llm_<kind>_timeout_seconds`、`llm_<kind>_max_retries`、`llm_<kind>_requests_per_minute`；范围分别为 `1..600`、`0..5`、`1..5000`。
 - SDK 自动重试保持 `max_retries=0`；只有 Gateway 的超时、连接、限流和 5xx 分类可以消耗普通重试预算。
+- P1-24 兼容期由保留既有外层循环的调用方拥有普通重试；`LLMClient` 默认关闭其委托 Gateway 的普通重试，直接使用 Gateway 的调用方仍可使用策略中的有界重试。P1-25 迁移并移除旧外层循环后再切换所有权。
 - 参数兼容降级不消耗普通重试预算；JSON 截断重试/修复保持现有上限和业务语义。
+- 同一 `(config_key, request_kind)` 的 RPM 在进程内只允许收紧；旧/新客户端交错时复用同一 pacer、保留已预约状态，进程重启前不得被更高 RPM 放宽。
 - 用量事件不得记录 prompt、响应正文、API key、完整 Base URL、学生姓名、答卷内容或内部绝对路径；日志失败不得覆盖模型结果。
+- 生产 `LLMClient` 默认把主/配置 Gateway 的脱敏 usage event 写入既有 `logs/llm_usage.jsonl`；测试通过 sink factory 注入临时或空 sink，不写工作区运行日志。
 - `json_from_text_once` 与 `json_from_images_once` 仍只允许一次物理模型请求，不运行网络重试、参数兼容降级或 AI JSON 修复。
 - 功能分支不修改 `EXECUTION_INDEX.md`；共享 Index 与最终架构状态由 integration 更新。
 

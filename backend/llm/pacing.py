@@ -23,8 +23,12 @@ class LLMPacerRegistry:
         rpm = int(requests_per_minute)
         with self._lock:
             entry = self._entries.get(key)
-            if entry is None or entry[0] != rpm:
+            if entry is None:
                 entry = (rpm, self._factory(rpm))
+                self._entries[key] = entry
+            elif rpm < entry[0]:
+                entry[1].tighten(rpm)
+                entry = (rpm, entry[1])
                 self._entries[key] = entry
             pacer = entry[1]
         pacer.acquire()
