@@ -98,10 +98,10 @@ def possible_n_plus_one(
     scales: Iterable[ScaleBenchmarkResult],
 ) -> tuple[PossibleNPlusOneObservation, ...]:
     by_scale = {result.manifest.scale_name: result for result in scales}
-    if "small" not in by_scale or "large" not in by_scale:
+    if "small" not in by_scale or "large_5pct" not in by_scale:
         return ()
     small = _scenario_map(by_scale["small"])
-    large = _scenario_map(by_scale["large"])
+    large = _scenario_map(by_scale["large_5pct"])
     observations: list[PossibleNPlusOneObservation] = []
     for name in sorted(small.keys() & large.keys()):
         small_summary = small[name]
@@ -206,7 +206,7 @@ def render_markdown(report: BenchmarkReport) -> str:
     if report.observations:
         lines.extend(
             [
-                "| label | scenario | small selects | large selects | small driver | large driver |",
+                "| label | scenario | small selects | large_5pct selects | small driver | large_5pct driver |",
                 "|---|---|---:|---:|---:|---:|",
             ]
         )

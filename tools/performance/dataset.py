@@ -50,7 +50,7 @@ class ScaleDefinition:
 
 SMALL = ScaleDefinition("small", 1, 30, 10, 300, 200, 10, 5)
 MEDIUM = ScaleDefinition("medium", 5, 200, 20, 20_000, 2_000, 100, 50)
-LARGE = ScaleDefinition("large", 10, 500, 30, 150_000, 10_000, 500, 100)
+LARGE = ScaleDefinition("large_5pct", 1, 25, 2, 7_500, 500, 25, 5)
 SCALES = (SMALL, MEDIUM, LARGE)
 
 

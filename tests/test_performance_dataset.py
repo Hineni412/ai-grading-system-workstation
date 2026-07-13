@@ -153,7 +153,8 @@ def _assert_generated_content(dataset: BenchmarkDataset) -> None:
 def test_default_scale_counts_are_the_approved_design_sizes() -> None:
     assert SMALL.counts == (1, 30, 10, 300, 200, 10, 5)
     assert MEDIUM.counts == (5, 200, 20, 20_000, 2_000, 100, 50)
-    assert LARGE.counts == (10, 500, 30, 150_000, 10_000, 500, 100)
+    assert LARGE.name == "large_5pct"
+    assert LARGE.counts == (1, 25, 2, 7_500, 500, 25, 5)
 
 
 def test_manifest_is_frozen_and_contains_only_allowlisted_summary_fields() -> None:

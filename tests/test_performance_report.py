@@ -88,7 +88,7 @@ def _scale(name: str, *, students: int, select_median: int) -> ScaleBenchmarkRes
 def _synthetic_report():
     return build_report(
         (_scale("small", students=2, select_median=2),
-         _scale("large", students=52, select_median=8)),
+         _scale("large_5pct", students=52, select_median=8)),
         code_sha="a" * 40,
         generated_at_utc="2026-07-13T04:00:00Z",
         windows_version="Windows-11-generated",
@@ -174,7 +174,7 @@ def test_renderers_emit_only_aggregate_allowlisted_report_fields() -> None:
         "3.43.1",
         "logical CPU",
         "small",
-        "large",
+        "large_5pct",
         "p50",
         "p95",
         "minimum",
@@ -189,6 +189,9 @@ def test_renderers_emit_only_aggregate_allowlisted_report_fields() -> None:
     ):
         assert expected in rendered_markdown
 
+    assert "large_5pct selects" in rendered_markdown
+    assert "large selects" not in rendered_markdown
+
     for rendered in (rendered_json, rendered_markdown):
         assert not re.search(r"[A-Za-z]:[\\/]", rendered)
         assert ".worktrees" not in rendered.casefold()
@@ -198,7 +201,7 @@ def test_renderers_emit_only_aggregate_allowlisted_report_fields() -> None:
 
 def test_possible_n_plus_one_uses_the_required_thresholds() -> None:
     small = _scale("small", students=2, select_median=2)
-    large = _scale("large", students=52, select_median=8)
+    large = _scale("large_5pct", students=52, select_median=8)
 
     observations = possible_n_plus_one((small, large))
 
@@ -210,8 +213,8 @@ def test_possible_n_plus_one_uses_the_required_thresholds() -> None:
     assert observations[0].large_driver_count == 52
     assert "recommend" not in repr(observations).casefold()
 
-    below_select_delta = _scale("large", students=52, select_median=6)
-    below_ratio = _scale("large", students=102, select_median=8)
+    below_select_delta = _scale("large_5pct", students=52, select_median=6)
+    below_ratio = _scale("large_5pct", students=102, select_median=8)
     assert possible_n_plus_one((small, below_select_delta)) == ()
     assert possible_n_plus_one((small, below_ratio)) == ()
 
@@ -219,7 +222,7 @@ def test_possible_n_plus_one_uses_the_required_thresholds() -> None:
 def test_cli_defaults_and_positive_argument_validation() -> None:
     args = build_parser().parse_args([])
     assert args.seed == 126
-    assert args.scales == ["small", "medium", "large"]
+    assert args.scales == ["small", "medium", "large_5pct"]
     assert args.warmups == 3
     assert args.samples == 20
     assert args.repetitions == 2
@@ -235,6 +238,8 @@ def test_cli_defaults_and_positive_argument_validation() -> None:
             build_parser().parse_args([option, "0"])
     with pytest.raises(SystemExit):
         build_parser().parse_args(["--scales", "unknown"])
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--scales", "large"])
 
 
 def test_cli_supports_direct_script_execution() -> None:
