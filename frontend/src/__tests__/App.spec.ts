@@ -7,9 +7,11 @@ import { createMemoryHistory } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import App from '../App.vue'
+import type { ReviewItem } from '../api/review'
 import { fetchSessions } from '../api/sessions'
 import ComponentShowcase from '../components/design-system/ComponentShowcase.vue'
 import { createAppRouter } from '../router'
+import { useReviewDraftStore } from '../stores/review-drafts'
 import { useSessionStore } from '../stores/session'
 
 vi.mock('../api/sessions', () => ({
@@ -54,13 +56,89 @@ describe('App', () => {
     const shellImport = "import './styles/app-shell.css'"
     const reviewImport = "import './styles/review-queue.css'"
     const evidenceImport = "import './styles/review-evidence.css'"
+    const scoringImport = "import './styles/review-scoring.css'"
 
     expect(mainSource).toContain(reviewImport)
     expect(mainSource).toContain(evidenceImport)
+    expect(mainSource).toContain(scoringImport)
     expect(mainSource.indexOf(reviewImport)).toBeGreaterThan(mainSource.indexOf(shellImport))
     expect(mainSource.indexOf(evidenceImport)).toBeGreaterThan(mainSource.indexOf(reviewImport))
+    expect(mainSource.indexOf(scoringImport)).toBeGreaterThan(mainSource.indexOf(evidenceImport))
     expect(reviewStyles).not.toMatch(/#[\da-f]{3,8}\b|(?:rgb|hsl)a?\s*\(/i)
     expect(evidenceStyles).not.toMatch(/#[\da-f]{3,8}\b|(?:rgb|hsl)a?\s*\(/i)
+  })
+
+  it('uses the scoring inspector only on the grading route', async () => {
+    const pinia = createPinia()
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/grading')
+    await router.isReady()
+    const host = document.createElement('div')
+    const app = createApp(App)
+    app.use(pinia)
+    app.use(router)
+    app.mount(host)
+    await settleUi()
+
+    expect(host.querySelector('[data-testid="review-scoring-inspector"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="session-inspector"]')).toBeNull()
+
+    await router.push('/workbench')
+    await settleUi()
+    expect(host.querySelector('[data-testid="session-inspector"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="review-scoring-inspector"]')).toBeNull()
+    app.unmount()
+  })
+
+  it('keeps the dirty-draft unload warning active outside the grading route', async () => {
+    const pinia = createPinia()
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/workbench')
+    await router.isReady()
+    const host = document.createElement('div')
+    const app = createApp(App)
+    app.use(pinia)
+    app.use(router)
+    app.mount(host)
+    await settleUi()
+
+    const cleanEvent = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(cleanEvent)
+    expect(cleanEvent.defaultPrevented).toBe(false)
+
+    const draftStore = useReviewDraftStore(pinia)
+    const item = {
+      session_id: 7,
+      result_id: 11,
+      detail_id: 21,
+      question_id: 'Q1',
+      student_code: 'ANON-1',
+      student_name: '匿名学生1',
+      class_name: '匿名班级',
+      score_awarded: 3,
+      max_score: 5,
+      deduction_reason: null,
+      error_category: null,
+      error_summary: null,
+      confidence_score: 70,
+      needs_review: true,
+      candidate_scores: [],
+      metadata: {},
+      media: {
+        crop_url: '/api/crop',
+        original_front_url: '/api/front',
+        original_back_url: '/api/back',
+        annotated_front_url: '/api/annotated-front',
+        annotated_back_url: '/api/annotated-back',
+      },
+    } satisfies ReviewItem
+    const draft = draftStore.ensureDraft(item)
+    draftStore.updateScore(draft.key, '4')
+    const event = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true)
+    app.unmount()
   })
 
   it('surfaces a rejected lazy route and retries the real route factory', async () => {
