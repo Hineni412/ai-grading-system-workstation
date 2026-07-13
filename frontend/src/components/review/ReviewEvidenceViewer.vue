@@ -73,6 +73,7 @@ function refreshPreloads(): void {
 }
 
 function selectSource(source: EvidenceSource): void {
+  releaseDragging()
   viewer.selectSource(source)
 }
 
@@ -121,9 +122,13 @@ function onPointerMove(event: PointerEvent): void {
 
 function stopDragging(event?: PointerEvent): void {
   if (event && activePointerId !== null && event.pointerId !== activePointerId) return
-  const target = event?.currentTarget as HTMLElement | null
-  if (target && activePointerId !== null && target.hasPointerCapture?.(activePointerId)) {
-    target.releasePointerCapture?.(activePointerId)
+  releaseDragging()
+}
+
+function releaseDragging(): void {
+  const canvas = canvasElement.value
+  if (canvas && activePointerId !== null && canvas.hasPointerCapture?.(activePointerId)) {
+    canvas.releasePointerCapture?.(activePointerId)
   }
   activePointerId = null
   isDragging.value = false
@@ -142,6 +147,7 @@ function onWheel(event: WheelEvent): void {
 }
 
 function onCanvasKeydown(event: KeyboardEvent): void {
+  if (event.target !== event.currentTarget) return
   let handled = true
   switch (event.key.toLocaleLowerCase()) {
     case '+':
@@ -175,7 +181,10 @@ function onCanvasKeydown(event: KeyboardEvent): void {
   if (handled) event.preventDefault()
 }
 
-watch(recordKey, (key) => viewer.resetForRecord(key), { immediate: true, flush: 'sync' })
+watch(recordKey, (key) => {
+  releaseDragging()
+  viewer.resetForRecord(key)
+}, { immediate: true, flush: 'sync' })
 watch(imageRenderKey, (key) => {
   activeLoad = { key, generation: viewer.beginImageLoad() }
 }, { immediate: true, flush: 'sync' })
@@ -207,6 +216,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  releaseDragging()
   resizeObserver?.disconnect()
   clearPreloads()
 })

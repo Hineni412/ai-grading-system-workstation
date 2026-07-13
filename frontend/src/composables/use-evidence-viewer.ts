@@ -38,8 +38,12 @@ export function useEvidenceViewer() {
   function boundPan(next = pan.value): ViewerPoint {
     const renderedWidth = rotatedSize.value.width * scale.value
     const renderedHeight = rotatedSize.value.height * scale.value
-    const maxX = Math.max(0, (renderedWidth - canvas.value.width) / 2 + VISIBLE_EDGE)
-    const maxY = Math.max(0, (renderedHeight - canvas.value.height) / 2 + VISIBLE_EDGE)
+    const maxX = renderedWidth <= canvas.value.width
+      ? 0
+      : (renderedWidth - canvas.value.width) / 2 + VISIBLE_EDGE
+    const maxY = renderedHeight <= canvas.value.height
+      ? 0
+      : (renderedHeight - canvas.value.height) / 2 + VISIBLE_EDGE
     return {
       x: maxX === 0 ? 0 : clamp(next.x, -maxX, maxX),
       y: maxY === 0 ? 0 : clamp(next.y, -maxY, maxY),

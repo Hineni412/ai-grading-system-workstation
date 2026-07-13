@@ -170,6 +170,13 @@ describe('P2-06 review evidence viewer', () => {
 
     const retryButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent?.trim() === '重新加载')!
+    const retryArrow = new KeyboardEvent('keydown', {
+      key: 'ArrowRight',
+      bubbles: true,
+      cancelable: true,
+    })
+    retryButton.dispatchEvent(retryArrow)
+    expect(retryArrow.defaultPrevented).toBe(false)
     const retryPointerDown = new Event('pointerdown', { bubbles: true })
     Object.assign(retryPointerDown, { pointerId: 9, clientX: 100, clientY: 100, button: 0 })
     retryButton.dispatchEvent(retryPointerDown)
@@ -181,6 +188,32 @@ describe('P2-06 review evidence viewer', () => {
     expect(retriedImage).not.toBe(failedImage)
     expect(retriedImage.getAttribute('src')).toBe(failedUrl)
     expect(retriedImage.dataset.loadKey).not.toBe(failedKey)
+  })
+
+  it('releases pointer capture before source and record resets', async () => {
+    const { host, props } = await mountViewer()
+    const canvas = host.querySelector<HTMLElement>('.review-evidence-canvas')!
+    const releasePointerCapture = canvas.releasePointerCapture
+
+    const startDrag = (pointerId: number) => {
+      const down = new Event('pointerdown', { bubbles: true })
+      Object.assign(down, { pointerId, clientX: 200, clientY: 200, button: 0 })
+      canvas.dispatchEvent(down)
+    }
+
+    startDrag(4)
+    await nextTick()
+    expect(canvas.classList.contains('is-dragging')).toBe(true)
+    clickButton(host, '原卷正面')
+    await settle()
+    expect(releasePointerCapture).toHaveBeenCalledWith(4)
+    expect(canvas.classList.contains('is-dragging')).toBe(false)
+
+    startDrag(5)
+    props.item = makeItem(4)
+    await settle()
+    expect(releasePointerCapture).toHaveBeenCalledWith(5)
+    expect(canvas.classList.contains('is-dragging')).toBe(false)
   })
 
   it('ignores stale load events after a rapid item change', async () => {

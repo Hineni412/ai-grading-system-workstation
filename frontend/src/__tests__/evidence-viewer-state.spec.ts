@@ -51,6 +51,18 @@ describe('P2-06 evidence viewer state', () => {
     expect(viewer.pan.value).toEqual({ x: 848, y: -648 })
   })
 
+  it('centers each axis until the rendered image exceeds the canvas', () => {
+    const viewer = useEvidenceViewer()
+    viewer.setCanvasSize({ width: 800, height: 600 })
+    viewer.acceptImage(viewer.beginImageLoad(), { width: 1600, height: 1200 })
+    viewer.panBy({ x: 500, y: -500 })
+    expect(viewer.pan.value).toEqual({ x: 0, y: 0 })
+
+    viewer.setActualSize()
+    viewer.panBy({ x: 5000, y: -5000 })
+    expect(viewer.pan.value).toEqual({ x: 448, y: -348 })
+  })
+
   it('ignores stale load events and gives retry a new image key', () => {
     const viewer = useEvidenceViewer()
     const first = viewer.beginImageLoad()

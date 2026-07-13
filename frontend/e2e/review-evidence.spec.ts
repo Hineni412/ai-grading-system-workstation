@@ -160,6 +160,8 @@ function fulfillJson(route: Route, body: unknown): Promise<void> {
 
 interface MediaState {
   failedPaths: Set<string>
+  delayedPaths: Map<string, Promise<void>>
+  fulfilledPaths: string[]
   requestedPaths: string[]
 }
 
@@ -174,28 +176,37 @@ async function installApi(page: Page, mediaState: MediaState): Promise<void> {
     /\/api\/sessions\/7\/review\/questions\/Q1\/items\?needs_review_only=false$/,
     (route) => fulfillJson(route, { items, total: items.length }),
   )
-  await page.route(/\/api\/media\/(?:crop|original\/front|original\/back)\/\d+$/, (route) => {
+  await page.route(/\/api\/media\/(?:crop|original\/front|original\/back)\/\d+$/, async (route) => {
     const path = new URL(route.request().url()).pathname
     mediaState.requestedPaths.push(path)
+    const delayed = mediaState.delayedPaths.get(path)
+    if (delayed) await delayed
     if (mediaState.failedPaths.has(path)) {
-      return route.fulfill({
+      await route.fulfill({
         status: 503,
         headers: { 'Cache-Control': 'no-store' },
         body: 'anonymous media unavailable',
       })
+      mediaState.fulfilledPaths.push(path)
+      return
     }
-    return route.fulfill({
+    await route.fulfill({
       status: 200,
       contentType: 'image/png',
       headers: { 'Cache-Control': 'no-store' },
       body: path.includes('/crop/') ? cropPng : originalPng,
     })
+    mediaState.fulfilledPaths.push(path)
   })
 }
 
-async function openViewer(page: Page, detailId = 1): Promise<void> {
+async function openViewer(
+  page: Page,
+  detailId = 1,
+  waitUntil: 'load' | 'domcontentloaded' = 'load',
+): Promise<void> {
   await page.addInitScript(([key]) => localStorage.setItem(key, '7'), [STORAGE_KEY])
-  await page.goto(`/grading?question=Q1&detail=${detailId}`)
+  await page.goto(`/grading?question=Q1&detail=${detailId}`, { waitUntil })
   await expect(page.getByRole('heading', { name: '复核队列', exact: true })).toBeVisible()
   await expect(page.locator('.review-evidence-viewer img')).toHaveCount(1)
 }
@@ -287,7 +298,12 @@ function screenshotHasContent(buffer: Buffer): boolean {
 }
 
 function freshMediaState(): MediaState {
-  return { failedPaths: new Set(), requestedPaths: [] }
+  return {
+    failedPaths: new Set(),
+    delayedPaths: new Map(),
+    fulfilledPaths: [],
+    requestedPaths: [],
+  }
 }
 
 test('loads non-empty crop pixels and switches one active image across original pages', async ({
@@ -403,6 +419,31 @@ test('rapid J/K switching resets the viewer and never shows stale pixels', async
     'true',
   )
   expect(screenshotHasContent(await page.getByLabel('答卷图片画布').screenshot())).toBe(true)
+})
+
+test('a delayed old crop cannot replace the newly selected record', async ({ page }) => {
+  const state = freshMediaState()
+  let releaseOldCrop!: () => void
+  state.delayedPaths.set('/api/media/crop/1', new Promise<void>((resolve) => {
+    releaseOldCrop = resolve
+  }))
+  await installApi(page, state)
+  await openViewer(page, 1, 'domcontentloaded')
+  await expect.poll(() => state.requestedPaths).toContain('/api/media/crop/1')
+
+  await page.getByLabel('答卷图片画布').focus()
+  await page.keyboard.press('j')
+  await expect(page).toHaveURL(/detail=2$/)
+  await waitForImage(page)
+  const image = page.locator('.review-evidence-viewer img')
+  await expect(image).toHaveAttribute('src', '/api/media/crop/2')
+
+  releaseOldCrop()
+  await expect.poll(() => state.fulfilledPaths).toContain('/api/media/crop/1')
+  await expect(image).toHaveAttribute('src', '/api/media/crop/2')
+  await expect.poll(() => image.evaluate((element) =>
+    (element as HTMLImageElement).naturalWidth,
+  )).toBe(1200)
 })
 
 test('large original image keeps one active DOM image and remains interactive', async ({ page }) => {
