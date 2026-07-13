@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
 import { createApp, defineAsyncComponent, defineComponent, h, nextTick } from 'vue'
 import { createPinia } from 'pinia'
 import { createMemoryHistory } from 'vue-router'
@@ -38,6 +41,20 @@ beforeEach(() => {
 })
 
 describe('App', () => {
+  it('imports the P2-05 review queue stylesheet without color literals', () => {
+    const mainSource = readFileSync(resolve(process.cwd(), 'src/main.ts'), 'utf-8')
+    const reviewStyles = readFileSync(
+      resolve(process.cwd(), 'src/styles/review-queue.css'),
+      'utf-8',
+    )
+    const shellImport = "import './styles/app-shell.css'"
+    const reviewImport = "import './styles/review-queue.css'"
+
+    expect(mainSource).toContain(reviewImport)
+    expect(mainSource.indexOf(reviewImport)).toBeGreaterThan(mainSource.indexOf(shellImport))
+    expect(reviewStyles).not.toMatch(/#[\da-f]{3,8}\b|(?:rgb|hsl)a?\s*\(/i)
+  })
+
   it('surfaces a rejected lazy route and retries the real route factory', async () => {
     let attempts = 0
     const pinia = createPinia()
