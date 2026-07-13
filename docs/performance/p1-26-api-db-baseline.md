@@ -1,7 +1,7 @@
 # P1-26 API/DB performance baseline
 
-- code SHA: `a7e6de8476ece27ed87a67072756ba87ec5eb0dd`
-- generated at UTC: `2026-07-13T20:17:51.753513Z`
+- code SHA: `6bb53c338d23e530ed2890afbdecce0ae6ac9fb9`
+- generated at UTC: `2026-07-13T23:23:17.453962Z`
 - seed: `126`
 - repeatability: `passed`
 
@@ -15,110 +15,110 @@
 
 | scale | logical counts | grading bytes | question-bank bytes | backup bytes | generated asset bytes |
 |---|---|---:|---:|---:|---:|
-| small | students=30, grading_sessions=1, exam_papers=30, session_results=30, session_details=300, questions=200, question_tags=400, question_previews=2, grading_question_links=10, training_tasks=10, training_variants=10, variant_students=10, training_task_items=10, backup_files=5 | 176128 | 495616 | 40960 | 136 |
-| medium | students=200, grading_sessions=5, exam_papers=1000, session_results=1000, session_details=20000, questions=2000, question_tags=4000, question_previews=2, grading_question_links=100, training_tasks=100, training_variants=100, variant_students=100, training_task_items=100, backup_files=50 | 2990080 | 1576960 | 409600 | 136 |
-| large_5pct | students=25, grading_sessions=1, exam_papers=25, session_results=25, session_details=7500, questions=500, question_tags=1000, question_previews=2, grading_question_links=2, training_tasks=25, training_variants=25, variant_students=25, training_task_items=25, backup_files=5 | 1105920 | 667648 | 40960 | 136 |
+| small | students=30, grading_sessions=1, exam_papers=30, session_results=30, session_details=300, papers=2, questions=200, question_tags=1000, question_previews=2, grading_question_links=10, training_tasks=10, training_variants=10, variant_students=10, training_task_items=10, backup_files=5 | 176128 | 593920 | 40960 | 136 |
+| medium | students=200, grading_sessions=5, exam_papers=1000, session_results=1000, session_details=20000, papers=20, questions=2000, question_tags=10000, question_previews=2, grading_question_links=100, training_tasks=100, training_variants=100, variant_students=100, training_task_items=100, backup_files=50 | 2990080 | 2527232 | 409600 | 136 |
+| large_5pct | students=25, grading_sessions=1, exam_papers=25, session_results=25, session_details=7500, papers=5, questions=500, question_tags=2500, question_previews=2, grading_question_links=2, training_tasks=25, training_variants=25, variant_students=25, training_task_items=25, backup_files=5 | 1105920 | 901120 | 40960 | 136 |
 
 ## Aggregate measurements
 
 | scale | repetition | scenario | status | samples | minimum ms | p50 ms | p95 ms | maximum ms | DB statements min/median/max | DB selects min/median/max | response records min/median/max | response bytes min/median/max | scale driver |
 |---|---:|---|---:|---:|---:|---:|---:|---:|---|---|---|---|---|
-| small | 1 | health | 200 | 20 | 0.4637 | 0.556 | 0.7755 | 0.782 | 0/0/0 | 0/0/0 | 1/1/1 | 77/77/77 | constant=1 |
-| small | 1 | question_bank.papers | 200 | 20 | 10.7076 | 11.3291 | 14.2617 | 14.3969 | 7/7/7 | 2/2/2 | 0/0/0 | 22/22/22 | questions=200 |
-| small | 1 | question_bank.questions.default | 200 | 20 | 13.6672 | 16.0523 | 17.3282 | 17.7404 | 11/11/11 | 6/6/6 | 20/20/20 | 15904/15904/15904 | questions=200 |
-| small | 1 | question_bank.questions.filtered | 200 | 20 | 12.7834 | 14.8067 | 16.8281 | 18.0681 | 8/8/8 | 3/3/3 | 0/0/0 | 63/63/63 | questions=200 |
-| small | 1 | question_bank.question.detail | 200 | 20 | 11.987 | 14.4682 | 16.0829 | 19.7696 | 11/11/11 | 6/6/6 | 1/1/1 | 1370/1370/1370 | questions=200 |
-| small | 1 | question_bank.question.asset | 200 | 20 | 12.899 | 14.0985 | 17.196 | 17.4903 | 7/7/7 | 2/2/2 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
-| small | 1 | question_bank.question.preview | 200 | 20 | 14.1171 | 16.0191 | 17.4906 | 18.2951 | 8/8/8 | 3/3/3 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
-| small | 1 | training.diagnosis | 200 | 20 | 138.6756 | 155.1004 | 249.5062 | 275.6352 | 1043/1043/1043 | 14/14/14 | 30/30/30 | 168331/168331/168331 | students=30 |
-| small | 1 | training.plan.preview | 200 | 20 | 3898.5682 | 4083.5695 | 4282.2356 | 4341.8964 | 61973/61973/61973 | 464/464/464 | 30/30/30 | 402018/402018/402018 | students=30 |
-| small | 1 | training.tasks | 200 | 20 | 15.7506 | 18.8556 | 24.685 | 26.4672 | 2/2/2 | 2/2/2 | 10/10/10 | 2334/2334/2334 | training_tasks=10 |
-| small | 1 | training.task.detail | 200 | 20 | 15.8163 | 17.3282 | 19.8122 | 20.9538 | 5/5/5 | 5/5/5 | 1/1/1 | 1021/1021/1021 | training_tasks=10 |
-| small | 1 | graph.profiles | 200 | 20 | 125.319 | 133.3089 | 147.9647 | 227.1377 | 1055/1055/1055 | 16/16/16 | 30/30/30 | 168263/168263/168263 | students=30 |
-| small | 1 | graph.rows | 200 | 20 | 127.7292 | 143.8234 | 164.3444 | 240.5409 | 1055/1055/1055 | 16/16/16 | 300/300/300 | 173015/173015/173015 | session_details=300 |
-| small | 1 | graph.evidence | 200 | 20 | 119.8237 | 133.6167 | 151.0056 | 238.3642 | 1055/1055/1055 | 16/16/16 | 30/30/30 | 15762/15762/15762 | session_details=300 |
-| small | 1 | ops.self_check | 200 | 20 | 68.4662 | 76.217 | 85.4089 | 86.1655 | 12/12/12 | 2/2/2 | 1/1/1 | 1126/1126/1126 | constant=1 |
-| small | 1 | ops.backups | 200 | 20 | 1.814 | 2.19 | 2.526 | 2.9432 | 0/0/0 | 0/0/0 | 5/5/5 | 746/746/746 | backup_files=5 |
-| small | 2 | health | 200 | 20 | 0.5067 | 0.6156 | 0.8788 | 1.1413 | 0/0/0 | 0/0/0 | 1/1/1 | 77/77/77 | constant=1 |
-| small | 2 | question_bank.papers | 200 | 20 | 12.2597 | 13.4574 | 14.8751 | 16.422 | 7/7/7 | 2/2/2 | 0/0/0 | 22/22/22 | questions=200 |
-| small | 2 | question_bank.questions.default | 200 | 20 | 13.8662 | 16.2124 | 18.4255 | 18.625 | 11/11/11 | 6/6/6 | 20/20/20 | 15904/15904/15904 | questions=200 |
-| small | 2 | question_bank.questions.filtered | 200 | 20 | 13.3417 | 14.3779 | 16.8499 | 17.4394 | 8/8/8 | 3/3/3 | 0/0/0 | 63/63/63 | questions=200 |
-| small | 2 | question_bank.question.detail | 200 | 20 | 12.8779 | 14.0182 | 17.8417 | 19.1919 | 11/11/11 | 6/6/6 | 1/1/1 | 1370/1370/1370 | questions=200 |
-| small | 2 | question_bank.question.asset | 200 | 20 | 13.1649 | 15.0387 | 17.8382 | 18.9691 | 7/7/7 | 2/2/2 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
-| small | 2 | question_bank.question.preview | 200 | 20 | 13.4771 | 15.2313 | 18.6461 | 20.6649 | 8/8/8 | 3/3/3 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
-| small | 2 | training.diagnosis | 200 | 20 | 135.8187 | 151.4476 | 183.7232 | 234.5034 | 1043/1043/1043 | 14/14/14 | 30/30/30 | 168331/168331/168331 | students=30 |
-| small | 2 | training.plan.preview | 200 | 20 | 3869.2094 | 3974.7587 | 4036.4833 | 4160.5904 | 61973/61973/61973 | 464/464/464 | 30/30/30 | 402018/402018/402018 | students=30 |
-| small | 2 | training.tasks | 200 | 20 | 16.1323 | 19.0265 | 24.9839 | 25.2561 | 2/2/2 | 2/2/2 | 10/10/10 | 2334/2334/2334 | training_tasks=10 |
-| small | 2 | training.task.detail | 200 | 20 | 15.4929 | 17.2366 | 22.3151 | 25.841 | 5/5/5 | 5/5/5 | 1/1/1 | 1021/1021/1021 | training_tasks=10 |
-| small | 2 | graph.profiles | 200 | 20 | 126.6645 | 134.5996 | 156.6816 | 222.8215 | 1055/1055/1055 | 16/16/16 | 30/30/30 | 168263/168263/168263 | students=30 |
-| small | 2 | graph.rows | 200 | 20 | 124.5693 | 139.9208 | 153.7774 | 232.5457 | 1055/1055/1055 | 16/16/16 | 300/300/300 | 173015/173015/173015 | session_details=300 |
-| small | 2 | graph.evidence | 200 | 20 | 121.0528 | 130.9197 | 144.5518 | 148.5978 | 1055/1055/1055 | 16/16/16 | 30/30/30 | 15762/15762/15762 | session_details=300 |
-| small | 2 | ops.self_check | 200 | 20 | 68.2559 | 75.1658 | 81.3403 | 85.9015 | 12/12/12 | 2/2/2 | 1/1/1 | 1126/1126/1126 | constant=1 |
-| small | 2 | ops.backups | 200 | 20 | 1.7235 | 2.085 | 2.702 | 3.481 | 0/0/0 | 0/0/0 | 5/5/5 | 746/746/746 | backup_files=5 |
-| medium | 1 | health | 200 | 20 | 0.5039 | 0.6097 | 0.8022 | 1.2263 | 0/0/0 | 0/0/0 | 1/1/1 | 77/77/77 | constant=1 |
-| medium | 1 | question_bank.papers | 200 | 20 | 14.7019 | 15.6576 | 19.0794 | 19.9684 | 7/7/7 | 2/2/2 | 0/0/0 | 22/22/22 | questions=2000 |
-| medium | 1 | question_bank.questions.default | 200 | 20 | 22.8086 | 26.6865 | 31.8635 | 32.0404 | 11/11/11 | 6/6/6 | 20/20/20 | 15926/15926/15926 | questions=2000 |
-| medium | 1 | question_bank.questions.filtered | 200 | 20 | 16.4123 | 18.2198 | 20.4081 | 21.6408 | 8/8/8 | 3/3/3 | 0/0/0 | 63/63/63 | questions=2000 |
-| medium | 1 | question_bank.question.detail | 200 | 20 | 15.8013 | 17.9299 | 20.6548 | 21.1237 | 11/11/11 | 6/6/6 | 1/1/1 | 1370/1370/1370 | questions=2000 |
-| medium | 1 | question_bank.question.asset | 200 | 20 | 17.3124 | 18.7001 | 21.1231 | 22.7513 | 7/7/7 | 2/2/2 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
-| medium | 1 | question_bank.question.preview | 200 | 20 | 16.8863 | 18.7448 | 21.5405 | 21.8797 | 8/8/8 | 3/3/3 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
-| medium | 1 | training.diagnosis | 200 | 20 | 3201.9007 | 3361.6546 | 3537.9949 | 3570.7735 | 5151/5151/5151 | 54/54/54 | 200/200/200 | 4678375/4678375/4678375 | students=200 |
-| medium | 1 | training.plan.preview | 200 | 20 | 139745.5201 | 140407.5264 | 141604.9062 | 142271.2511 | 1222551/1222551/1222551 | 7854/7854/7854 | 200/200/200 | 9955557/9955557/9955557 | students=200 |
-| medium | 1 | training.tasks | 200 | 20 | 28.1169 | 30.2279 | 36.5882 | 37.0857 | 2/2/2 | 2/2/2 | 100/100/100 | 22856/22856/22856 | training_tasks=100 |
-| medium | 1 | training.task.detail | 200 | 20 | 15.5822 | 17.1196 | 19.7529 | 23.0161 | 5/5/5 | 5/5/5 | 1/1/1 | 1021/1021/1021 | training_tasks=100 |
-| medium | 1 | graph.profiles | 200 | 20 | 1437.9583 | 1569.4652 | 1665.5837 | 1677.4899 | 5163/5163/5163 | 56/56/56 | 200/200/200 | 4678307/4678307/4678307 | students=200 |
-| medium | 1 | graph.rows | 200 | 20 | 1578.8833 | 1725.2232 | 1799.4149 | 1799.666 | 5163/5163/5163 | 56/56/56 | 4000/4000/4000 | 4734015/4734015/4734015 | session_details=20000 |
-| medium | 1 | graph.evidence | 200 | 20 | 1287.7992 | 1404.838 | 1506.2524 | 1571.6867 | 5163/5163/5163 | 56/56/56 | 100/100/100 | 52377/52377/52377 | session_details=20000 |
-| medium | 1 | ops.self_check | 200 | 20 | 82.198 | 90.5571 | 98.9968 | 100.159 | 12/12/12 | 2/2/2 | 1/1/1 | 1128/1128/1128 | constant=1 |
-| medium | 1 | ops.backups | 200 | 20 | 3.2363 | 4.0325 | 4.6742 | 5.2056 | 0/0/0 | 0/0/0 | 50/50/50 | 7137/7137/7137 | backup_files=50 |
-| medium | 2 | health | 200 | 20 | 0.4515 | 0.5538 | 0.7517 | 0.9449 | 0/0/0 | 0/0/0 | 1/1/1 | 77/77/77 | constant=1 |
-| medium | 2 | question_bank.papers | 200 | 20 | 15.7633 | 17.4803 | 19.8776 | 21.52 | 7/7/7 | 2/2/2 | 0/0/0 | 22/22/22 | questions=2000 |
-| medium | 2 | question_bank.questions.default | 200 | 20 | 23.404 | 25.1787 | 30.4368 | 31.3481 | 11/11/11 | 6/6/6 | 20/20/20 | 15926/15926/15926 | questions=2000 |
-| medium | 2 | question_bank.questions.filtered | 200 | 20 | 17.5031 | 19.0141 | 22.892 | 23.4263 | 8/8/8 | 3/3/3 | 0/0/0 | 63/63/63 | questions=2000 |
-| medium | 2 | question_bank.question.detail | 200 | 20 | 17.2166 | 19.4876 | 22.2735 | 22.7902 | 11/11/11 | 6/6/6 | 1/1/1 | 1370/1370/1370 | questions=2000 |
-| medium | 2 | question_bank.question.asset | 200 | 20 | 17.4176 | 19.8807 | 22.3282 | 30.5849 | 7/7/7 | 2/2/2 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
-| medium | 2 | question_bank.question.preview | 200 | 20 | 17.6081 | 19.6104 | 21.1601 | 21.3234 | 8/8/8 | 3/3/3 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
-| medium | 2 | training.diagnosis | 200 | 20 | 3263.8131 | 3371.6874 | 3545.0518 | 3567.2574 | 5151/5151/5151 | 54/54/54 | 200/200/200 | 4678375/4678375/4678375 | students=200 |
-| medium | 2 | training.plan.preview | 200 | 20 | 139567.0275 | 140313.0435 | 145406.2769 | 146123.1824 | 1222551/1222551/1222551 | 7854/7854/7854 | 200/200/200 | 9955557/9955557/9955557 | students=200 |
-| medium | 2 | training.tasks | 200 | 20 | 28.0377 | 33.3943 | 40.2067 | 41.838 | 2/2/2 | 2/2/2 | 100/100/100 | 22856/22856/22856 | training_tasks=100 |
-| medium | 2 | training.task.detail | 200 | 20 | 18.267 | 20.9953 | 24.0894 | 24.1415 | 5/5/5 | 5/5/5 | 1/1/1 | 1021/1021/1021 | training_tasks=100 |
-| medium | 2 | graph.profiles | 200 | 20 | 1461.8061 | 1579.805 | 1673.8226 | 1681.6023 | 5163/5163/5163 | 56/56/56 | 200/200/200 | 4678307/4678307/4678307 | students=200 |
-| medium | 2 | graph.rows | 200 | 20 | 1640.2841 | 1750.795 | 1850.0917 | 1891.2526 | 5163/5163/5163 | 56/56/56 | 4000/4000/4000 | 4734015/4734015/4734015 | session_details=20000 |
-| medium | 2 | graph.evidence | 200 | 20 | 1316.9963 | 1442.2328 | 1533.6546 | 1557.3963 | 5163/5163/5163 | 56/56/56 | 100/100/100 | 52377/52377/52377 | session_details=20000 |
-| medium | 2 | ops.self_check | 200 | 20 | 85.1005 | 91.5223 | 101.4696 | 105.6754 | 12/12/12 | 2/2/2 | 1/1/1 | 1128/1128/1128 | constant=1 |
-| medium | 2 | ops.backups | 200 | 20 | 3.2888 | 4.2494 | 5.9618 | 6.3102 | 0/0/0 | 0/0/0 | 50/50/50 | 7137/7137/7137 | backup_files=50 |
-| large_5pct | 1 | health | 200 | 20 | 0.4638 | 0.6109 | 0.8283 | 0.8756 | 0/0/0 | 0/0/0 | 1/1/1 | 77/77/77 | constant=1 |
-| large_5pct | 1 | question_bank.papers | 200 | 20 | 10.8044 | 12.2733 | 14.6025 | 17.262 | 7/7/7 | 2/2/2 | 0/0/0 | 22/22/22 | questions=500 |
-| large_5pct | 1 | question_bank.questions.default | 200 | 20 | 14.4733 | 16.1681 | 19.9534 | 21.0385 | 11/11/11 | 6/6/6 | 20/20/20 | 15904/15904/15904 | questions=500 |
-| large_5pct | 1 | question_bank.questions.filtered | 200 | 20 | 12.5221 | 14.3012 | 16.6047 | 18.5249 | 8/8/8 | 3/3/3 | 0/0/0 | 63/63/63 | questions=500 |
-| large_5pct | 1 | question_bank.question.detail | 200 | 20 | 12.6773 | 14.7351 | 16.9397 | 17.4615 | 11/11/11 | 6/6/6 | 1/1/1 | 1370/1370/1370 | questions=500 |
-| large_5pct | 1 | question_bank.question.asset | 200 | 20 | 14.0415 | 16.3448 | 17.118 | 18.0573 | 7/7/7 | 2/2/2 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
-| large_5pct | 1 | question_bank.question.preview | 200 | 20 | 13.6362 | 14.814 | 16.4669 | 17.354 | 8/8/8 | 3/3/3 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
-| large_5pct | 1 | training.diagnosis | 200 | 20 | 324.6107 | 406.0369 | 461.2191 | 465.6505 | 1043/1043/1043 | 14/14/14 | 25/25/25 | 31457/31457/31457 | students=25 |
-| large_5pct | 1 | training.plan.preview | 200 | 20 | 4648.9395 | 4869.8953 | 5004.5411 | 5024.4949 | 51818/51818/51818 | 389/389/389 | 25/25/25 | 105472/105472/105472 | students=25 |
-| large_5pct | 1 | training.tasks | 200 | 20 | 18.321 | 22.6597 | 26.1577 | 26.3038 | 2/2/2 | 2/2/2 | 25/25/25 | 5754/5754/5754 | training_tasks=25 |
-| large_5pct | 1 | training.task.detail | 200 | 20 | 15.4135 | 17.6127 | 22.6754 | 23.4826 | 5/5/5 | 5/5/5 | 1/1/1 | 1021/1021/1021 | training_tasks=25 |
-| large_5pct | 1 | graph.profiles | 200 | 20 | 342.2334 | 451.3719 | 499.2802 | 503.9629 | 1055/1055/1055 | 16/16/16 | 25/25/25 | 31389/31389/31389 | students=25 |
-| large_5pct | 1 | graph.rows | 200 | 20 | 355.8004 | 445.2324 | 518.3439 | 524.4294 | 1055/1055/1055 | 16/16/16 | 50/50/50 | 29489/29489/29489 | session_details=7500 |
-| large_5pct | 1 | graph.evidence | 200 | 20 | 360.3091 | 471.1576 | 525.0555 | 541.1659 | 1055/1055/1055 | 16/16/16 | 25/25/25 | 13254/13254/13254 | session_details=7500 |
-| large_5pct | 1 | ops.self_check | 200 | 20 | 71.7967 | 78.6011 | 87.4857 | 89.4365 | 12/12/12 | 2/2/2 | 1/1/1 | 1127/1127/1127 | constant=1 |
-| large_5pct | 1 | ops.backups | 200 | 20 | 1.648 | 2.1237 | 2.3893 | 2.41 | 0/0/0 | 0/0/0 | 5/5/5 | 746/746/746 | backup_files=5 |
-| large_5pct | 2 | health | 200 | 20 | 0.4944 | 0.6849 | 0.8364 | 0.8755 | 0/0/0 | 0/0/0 | 1/1/1 | 77/77/77 | constant=1 |
-| large_5pct | 2 | question_bank.papers | 200 | 20 | 11.8142 | 12.8229 | 17.2868 | 17.8624 | 7/7/7 | 2/2/2 | 0/0/0 | 22/22/22 | questions=500 |
-| large_5pct | 2 | question_bank.questions.default | 200 | 20 | 16.286 | 17.4191 | 20.9345 | 22.0809 | 11/11/11 | 6/6/6 | 20/20/20 | 15904/15904/15904 | questions=500 |
-| large_5pct | 2 | question_bank.questions.filtered | 200 | 20 | 12.8494 | 14.8225 | 16.9954 | 17.1226 | 8/8/8 | 3/3/3 | 0/0/0 | 63/63/63 | questions=500 |
-| large_5pct | 2 | question_bank.question.detail | 200 | 20 | 13.6035 | 14.6653 | 18.1845 | 20.3233 | 11/11/11 | 6/6/6 | 1/1/1 | 1370/1370/1370 | questions=500 |
-| large_5pct | 2 | question_bank.question.asset | 200 | 20 | 14.2875 | 16.144 | 19.418 | 20.0787 | 7/7/7 | 2/2/2 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
-| large_5pct | 2 | question_bank.question.preview | 200 | 20 | 14.8274 | 16.6421 | 21.0615 | 21.1215 | 8/8/8 | 3/3/3 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
-| large_5pct | 2 | training.diagnosis | 200 | 20 | 306.4326 | 417.9329 | 462.4106 | 537.8955 | 1043/1043/1043 | 14/14/14 | 25/25/25 | 31457/31457/31457 | students=25 |
-| large_5pct | 2 | training.plan.preview | 200 | 20 | 4728.9721 | 4907.4155 | 5043.8592 | 5129.3904 | 51818/51818/51818 | 389/389/389 | 25/25/25 | 105472/105472/105472 | students=25 |
-| large_5pct | 2 | training.tasks | 200 | 20 | 18.3418 | 21.884 | 23.2234 | 24.5344 | 2/2/2 | 2/2/2 | 25/25/25 | 5754/5754/5754 | training_tasks=25 |
-| large_5pct | 2 | training.task.detail | 200 | 20 | 15.214 | 17.2821 | 22.9383 | 25.4415 | 5/5/5 | 5/5/5 | 1/1/1 | 1021/1021/1021 | training_tasks=25 |
-| large_5pct | 2 | graph.profiles | 200 | 20 | 343.9875 | 458.5596 | 501.1227 | 529.3657 | 1055/1055/1055 | 16/16/16 | 25/25/25 | 31389/31389/31389 | students=25 |
-| large_5pct | 2 | graph.rows | 200 | 20 | 373.9358 | 465.2228 | 519.4844 | 522.6939 | 1055/1055/1055 | 16/16/16 | 50/50/50 | 29489/29489/29489 | session_details=7500 |
-| large_5pct | 2 | graph.evidence | 200 | 20 | 334.8334 | 462.0799 | 501.5476 | 564.9485 | 1055/1055/1055 | 16/16/16 | 25/25/25 | 13254/13254/13254 | session_details=7500 |
-| large_5pct | 2 | ops.self_check | 200 | 20 | 72.5437 | 79.9439 | 88.6965 | 92.9504 | 12/12/12 | 2/2/2 | 1/1/1 | 1127/1127/1127 | constant=1 |
-| large_5pct | 2 | ops.backups | 200 | 20 | 1.5803 | 2.0219 | 2.8661 | 3.283 | 0/0/0 | 0/0/0 | 5/5/5 | 746/746/746 | backup_files=5 |
+| small | 1 | health | 200 | 20 | 0.5263 | 0.7041 | 0.9972 | 1.1802 | 0/0/0 | 0/0/0 | 1/1/1 | 77/77/77 | constant=1 |
+| small | 1 | question_bank.papers | 200 | 20 | 12.2383 | 14.0671 | 15.2614 | 16.1464 | 7/7/7 | 2/2/2 | 2/2/2 | 859/859/859 | papers=2 |
+| small | 1 | question_bank.questions.default | 200 | 20 | 16.5879 | 19.0871 | 22.7875 | 23.6408 | 11/11/11 | 6/6/6 | 20/20/20 | 23404/23404/23404 | questions=200 |
+| small | 1 | question_bank.questions.filtered | 200 | 20 | 14.4155 | 15.6456 | 19.7488 | 20.2094 | 11/11/11 | 6/6/6 | 4/4/4 | 4767/4767/4767 | questions=200 |
+| small | 1 | question_bank.question.detail | 200 | 20 | 12.7981 | 14.2938 | 16.0621 | 16.1175 | 11/11/11 | 6/6/6 | 1/1/1 | 1745/1745/1745 | questions=200 |
+| small | 1 | question_bank.question.asset | 200 | 20 | 12.749 | 14.6343 | 16.8616 | 17.7051 | 7/7/7 | 2/2/2 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
+| small | 1 | question_bank.question.preview | 200 | 20 | 13.1428 | 14.4296 | 16.7151 | 17.6917 | 8/8/8 | 3/3/3 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
+| small | 1 | training.diagnosis | 200 | 20 | 137.6877 | 151.2445 | 250.2823 | 253.9035 | 1043/1043/1043 | 14/14/14 | 30/30/30 | 178831/178831/178831 | students=30 |
+| small | 1 | training.plan.preview | 200 | 20 | 4099.8144 | 4245.3334 | 4475.6481 | 4679.7379 | 61973/61973/61973 | 464/464/464 | 30/30/30 | 423018/423018/423018 | students=30 |
+| small | 1 | training.tasks | 200 | 20 | 16.1444 | 19.7103 | 21.941 | 24.0642 | 2/2/2 | 2/2/2 | 10/10/10 | 2334/2334/2334 | training_tasks=10 |
+| small | 1 | training.task.detail | 200 | 20 | 15.0619 | 17.201 | 20.5869 | 22.5999 | 5/5/5 | 5/5/5 | 1/1/1 | 1021/1021/1021 | training_tasks=10 |
+| small | 1 | graph.profiles | 200 | 20 | 129.7137 | 143.6829 | 159.5564 | 216.6455 | 1055/1055/1055 | 16/16/16 | 30/30/30 | 178763/178763/178763 | students=30 |
+| small | 1 | graph.rows | 200 | 20 | 136.1281 | 145.4834 | 250.3298 | 265.8876 | 1055/1055/1055 | 16/16/16 | 300/300/300 | 183865/183865/183865 | session_details=300 |
+| small | 1 | graph.evidence | 200 | 20 | 128.3127 | 136.092 | 148.7431 | 218.1011 | 1055/1055/1055 | 16/16/16 | 30/30/30 | 16812/16812/16812 | session_details=300 |
+| small | 1 | ops.self_check | 200 | 20 | 69.4354 | 77.0439 | 83.1715 | 90.3561 | 12/12/12 | 2/2/2 | 1/1/1 | 1126/1126/1126 | constant=1 |
+| small | 1 | ops.backups | 200 | 20 | 1.7063 | 1.9278 | 2.6486 | 2.7315 | 0/0/0 | 0/0/0 | 5/5/5 | 746/746/746 | backup_files=5 |
+| small | 2 | health | 200 | 20 | 0.4878 | 0.6395 | 1.0812 | 1.4003 | 0/0/0 | 0/0/0 | 1/1/1 | 77/77/77 | constant=1 |
+| small | 2 | question_bank.papers | 200 | 20 | 12.3382 | 13.9828 | 15.7256 | 16.8427 | 7/7/7 | 2/2/2 | 2/2/2 | 859/859/859 | papers=2 |
+| small | 2 | question_bank.questions.default | 200 | 20 | 17.0013 | 18.463 | 21.2507 | 24.0944 | 11/11/11 | 6/6/6 | 20/20/20 | 23404/23404/23404 | questions=200 |
+| small | 2 | question_bank.questions.filtered | 200 | 20 | 14.7217 | 16.9327 | 19.6148 | 20.915 | 11/11/11 | 6/6/6 | 4/4/4 | 4767/4767/4767 | questions=200 |
+| small | 2 | question_bank.question.detail | 200 | 20 | 14.3568 | 15.7588 | 22.3068 | 24.2081 | 11/11/11 | 6/6/6 | 1/1/1 | 1745/1745/1745 | questions=200 |
+| small | 2 | question_bank.question.asset | 200 | 20 | 14.0926 | 15.5959 | 18.0169 | 18.1776 | 7/7/7 | 2/2/2 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
+| small | 2 | question_bank.question.preview | 200 | 20 | 13.0026 | 14.7085 | 15.7983 | 16.0857 | 8/8/8 | 3/3/3 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
+| small | 2 | training.diagnosis | 200 | 20 | 139.7834 | 157.6678 | 249.2438 | 260.284 | 1043/1043/1043 | 14/14/14 | 30/30/30 | 178831/178831/178831 | students=30 |
+| small | 2 | training.plan.preview | 200 | 20 | 4048.8786 | 4237.4679 | 4517.4687 | 4563.186 | 61973/61973/61973 | 464/464/464 | 30/30/30 | 423018/423018/423018 | students=30 |
+| small | 2 | training.tasks | 200 | 20 | 16.3701 | 18.6567 | 21.1668 | 23.7732 | 2/2/2 | 2/2/2 | 10/10/10 | 2334/2334/2334 | training_tasks=10 |
+| small | 2 | training.task.detail | 200 | 20 | 14.9131 | 17.3135 | 23.2968 | 24.2622 | 5/5/5 | 5/5/5 | 1/1/1 | 1021/1021/1021 | training_tasks=10 |
+| small | 2 | graph.profiles | 200 | 20 | 122.8543 | 131.3581 | 229.2433 | 233.9039 | 1055/1055/1055 | 16/16/16 | 30/30/30 | 178763/178763/178763 | students=30 |
+| small | 2 | graph.rows | 200 | 20 | 126.1042 | 138.0912 | 223.7158 | 228.7346 | 1055/1055/1055 | 16/16/16 | 300/300/300 | 183865/183865/183865 | session_details=300 |
+| small | 2 | graph.evidence | 200 | 20 | 120.5894 | 131.4595 | 157.6273 | 228.8504 | 1055/1055/1055 | 16/16/16 | 30/30/30 | 16812/16812/16812 | session_details=300 |
+| small | 2 | ops.self_check | 200 | 20 | 67.4272 | 75.3777 | 81.7605 | 85.8484 | 12/12/12 | 2/2/2 | 1/1/1 | 1126/1126/1126 | constant=1 |
+| small | 2 | ops.backups | 200 | 20 | 1.7065 | 2.1387 | 2.8419 | 3.0437 | 0/0/0 | 0/0/0 | 5/5/5 | 746/746/746 | backup_files=5 |
+| medium | 1 | health | 200 | 20 | 0.5004 | 0.5569 | 0.8256 | 0.8485 | 0/0/0 | 0/0/0 | 1/1/1 | 77/77/77 | constant=1 |
+| medium | 1 | question_bank.papers | 200 | 20 | 24.9593 | 27.4043 | 31.5567 | 34.4911 | 7/7/7 | 2/2/2 | 20/20/20 | 8413/8413/8413 | papers=20 |
+| medium | 1 | question_bank.questions.default | 200 | 20 | 31.5281 | 34.0294 | 37.7409 | 41.7824 | 11/11/11 | 6/6/6 | 20/20/20 | 23446/23446/23446 | questions=2000 |
+| medium | 1 | question_bank.questions.filtered | 200 | 20 | 31.0585 | 34.2835 | 39.176 | 44.3862 | 11/11/11 | 6/6/6 | 40/40/40 | 46822/46822/46822 | questions=2000 |
+| medium | 1 | question_bank.question.detail | 200 | 20 | 20.7196 | 23.5186 | 26.7491 | 30.5069 | 11/11/11 | 6/6/6 | 1/1/1 | 1745/1745/1745 | questions=2000 |
+| medium | 1 | question_bank.question.asset | 200 | 20 | 21.8777 | 23.1999 | 25.2016 | 25.2482 | 7/7/7 | 2/2/2 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
+| medium | 1 | question_bank.question.preview | 200 | 20 | 21.1713 | 23.3813 | 26.6592 | 34.8464 | 8/8/8 | 3/3/3 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
+| medium | 1 | training.diagnosis | 200 | 20 | 3580.1759 | 3704.0619 | 3950.9139 | 3958.9905 | 5151/5151/5151 | 54/54/54 | 200/200/200 | 4818375/4818375/4818375 | students=200 |
+| medium | 1 | training.plan.preview | 200 | 20 | 158847.202 | 161000.0934 | 165069.8241 | 170580.5761 | 1222551/1222551/1222551 | 7854/7854/7854 | 200/200/200 | 10235557/10235557/10235557 | students=200 |
+| medium | 1 | training.tasks | 200 | 20 | 29.2721 | 31.3432 | 37.8502 | 40.481 | 2/2/2 | 2/2/2 | 100/100/100 | 22856/22856/22856 | training_tasks=100 |
+| medium | 1 | training.task.detail | 200 | 20 | 15.8353 | 17.2689 | 20.0267 | 21.8905 | 5/5/5 | 5/5/5 | 1/1/1 | 1021/1021/1021 | training_tasks=100 |
+| medium | 1 | graph.profiles | 200 | 20 | 1492.3733 | 1636.7198 | 1692.0101 | 1707.3374 | 5163/5163/5163 | 56/56/56 | 200/200/200 | 4818307/4818307/4818307 | students=200 |
+| medium | 1 | graph.rows | 200 | 20 | 1720.4835 | 1773.3595 | 1884.5675 | 1885.7352 | 5163/5163/5163 | 56/56/56 | 4000/4000/4000 | 4874715/4874715/4874715 | session_details=20000 |
+| medium | 1 | graph.evidence | 200 | 20 | 1479.5681 | 1509.3271 | 1568.6798 | 1603.9694 | 5163/5163/5163 | 56/56/56 | 100/100/100 | 55877/55877/55877 | session_details=20000 |
+| medium | 1 | ops.self_check | 200 | 20 | 87.8423 | 99.6955 | 105.852 | 106.3472 | 12/12/12 | 2/2/2 | 1/1/1 | 1128/1128/1128 | constant=1 |
+| medium | 1 | ops.backups | 200 | 20 | 3.1232 | 3.504 | 4.5103 | 5.015 | 0/0/0 | 0/0/0 | 50/50/50 | 7137/7137/7137 | backup_files=50 |
+| medium | 2 | health | 200 | 20 | 0.4595 | 0.6084 | 0.701 | 0.7922 | 0/0/0 | 0/0/0 | 1/1/1 | 77/77/77 | constant=1 |
+| medium | 2 | question_bank.papers | 200 | 20 | 26.2836 | 29.1526 | 31.7246 | 32.4 | 7/7/7 | 2/2/2 | 20/20/20 | 8413/8413/8413 | papers=20 |
+| medium | 2 | question_bank.questions.default | 200 | 20 | 32.4462 | 35.4672 | 40.307 | 42.6194 | 11/11/11 | 6/6/6 | 20/20/20 | 23446/23446/23446 | questions=2000 |
+| medium | 2 | question_bank.questions.filtered | 200 | 20 | 31.1068 | 35.7395 | 43.8089 | 44.8346 | 11/11/11 | 6/6/6 | 40/40/40 | 46822/46822/46822 | questions=2000 |
+| medium | 2 | question_bank.question.detail | 200 | 20 | 23.3916 | 24.7975 | 28.9143 | 30.2025 | 11/11/11 | 6/6/6 | 1/1/1 | 1745/1745/1745 | questions=2000 |
+| medium | 2 | question_bank.question.asset | 200 | 20 | 22.0611 | 23.9791 | 28.6162 | 28.8189 | 7/7/7 | 2/2/2 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
+| medium | 2 | question_bank.question.preview | 200 | 20 | 20.6345 | 24.9066 | 28.6012 | 29.6868 | 8/8/8 | 3/3/3 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
+| medium | 2 | training.diagnosis | 200 | 20 | 3418.6247 | 3604.2863 | 3739.1422 | 3757.8969 | 5151/5151/5151 | 54/54/54 | 200/200/200 | 4818375/4818375/4818375 | students=200 |
+| medium | 2 | training.plan.preview | 200 | 20 | 156818.8214 | 157457.3122 | 158378.6584 | 159992.6424 | 1222551/1222551/1222551 | 7854/7854/7854 | 200/200/200 | 10235557/10235557/10235557 | students=200 |
+| medium | 2 | training.tasks | 200 | 20 | 27.4567 | 30.6283 | 34.2429 | 35.999 | 2/2/2 | 2/2/2 | 100/100/100 | 22856/22856/22856 | training_tasks=100 |
+| medium | 2 | training.task.detail | 200 | 20 | 15.3684 | 17.165 | 20.4834 | 21.0733 | 5/5/5 | 5/5/5 | 1/1/1 | 1021/1021/1021 | training_tasks=100 |
+| medium | 2 | graph.profiles | 200 | 20 | 1540.8805 | 1656.0521 | 1735.7792 | 1740.838 | 5163/5163/5163 | 56/56/56 | 200/200/200 | 4818307/4818307/4818307 | students=200 |
+| medium | 2 | graph.rows | 200 | 20 | 1727.9798 | 1762.0941 | 1815.6529 | 1847.1819 | 5163/5163/5163 | 56/56/56 | 4000/4000/4000 | 4874715/4874715/4874715 | session_details=20000 |
+| medium | 2 | graph.evidence | 200 | 20 | 1467.2843 | 1514.6516 | 1561.7593 | 1588.9544 | 5163/5163/5163 | 56/56/56 | 100/100/100 | 55877/55877/55877 | session_details=20000 |
+| medium | 2 | ops.self_check | 200 | 20 | 86.1049 | 97.4357 | 104.8634 | 105.6212 | 12/12/12 | 2/2/2 | 1/1/1 | 1128/1128/1128 | constant=1 |
+| medium | 2 | ops.backups | 200 | 20 | 3.2917 | 5.2613 | 6.2728 | 6.3434 | 0/0/0 | 0/0/0 | 50/50/50 | 7137/7137/7137 | backup_files=50 |
+| large_5pct | 1 | health | 200 | 20 | 0.5162 | 0.7187 | 1.0178 | 1.1722 | 0/0/0 | 0/0/0 | 1/1/1 | 77/77/77 | constant=1 |
+| large_5pct | 1 | question_bank.papers | 200 | 20 | 13.1214 | 14.0353 | 15.4085 | 15.8995 | 7/7/7 | 2/2/2 | 5/5/5 | 2116/2116/2116 | papers=5 |
+| large_5pct | 1 | question_bank.questions.default | 200 | 20 | 18.2188 | 20.188 | 24.3597 | 28.3403 | 11/11/11 | 6/6/6 | 20/20/20 | 23404/23404/23404 | questions=500 |
+| large_5pct | 1 | question_bank.questions.filtered | 200 | 20 | 15.2124 | 16.8848 | 19.3674 | 21.0921 | 11/11/11 | 6/6/6 | 10/10/10 | 11770/11770/11770 | questions=500 |
+| large_5pct | 1 | question_bank.question.detail | 200 | 20 | 13.5109 | 14.4876 | 16.1337 | 18.9834 | 11/11/11 | 6/6/6 | 1/1/1 | 1745/1745/1745 | questions=500 |
+| large_5pct | 1 | question_bank.question.asset | 200 | 20 | 14.0257 | 15.4447 | 16.9376 | 19.2149 | 7/7/7 | 2/2/2 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
+| large_5pct | 1 | question_bank.question.preview | 200 | 20 | 13.8134 | 15.687 | 17.5551 | 17.8268 | 8/8/8 | 3/3/3 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
+| large_5pct | 1 | training.diagnosis | 200 | 20 | 343.4712 | 461.5635 | 503.7896 | 510.8543 | 1043/1043/1043 | 14/14/14 | 25/25/25 | 33207/33207/33207 | students=25 |
+| large_5pct | 1 | training.plan.preview | 200 | 20 | 4991.5632 | 5267.4086 | 5479.4791 | 5502.2503 | 51818/51818/51818 | 389/389/389 | 25/25/25 | 108972/108972/108972 | students=25 |
+| large_5pct | 1 | training.tasks | 200 | 20 | 17.9691 | 20.7444 | 22.8126 | 29.2044 | 2/2/2 | 2/2/2 | 25/25/25 | 5754/5754/5754 | training_tasks=25 |
+| large_5pct | 1 | training.task.detail | 200 | 20 | 15.5686 | 17.8398 | 22.7926 | 23.2392 | 5/5/5 | 5/5/5 | 1/1/1 | 1021/1021/1021 | training_tasks=25 |
+| large_5pct | 1 | graph.profiles | 200 | 20 | 369.1616 | 476.5607 | 511.0015 | 525.3541 | 1055/1055/1055 | 16/16/16 | 25/25/25 | 33139/33139/33139 | students=25 |
+| large_5pct | 1 | graph.rows | 200 | 20 | 377.0843 | 467.6039 | 499.457 | 502.6406 | 1055/1055/1055 | 16/16/16 | 50/50/50 | 31309/31309/31309 | session_details=7500 |
+| large_5pct | 1 | graph.evidence | 200 | 20 | 410.8562 | 472.3349 | 508.3468 | 509.2134 | 1055/1055/1055 | 16/16/16 | 25/25/25 | 14129/14129/14129 | session_details=7500 |
+| large_5pct | 1 | ops.self_check | 200 | 20 | 73.071 | 79.1706 | 85.8631 | 90.2725 | 12/12/12 | 2/2/2 | 1/1/1 | 1127/1127/1127 | constant=1 |
+| large_5pct | 1 | ops.backups | 200 | 20 | 2.1632 | 2.6421 | 3.3132 | 3.5114 | 0/0/0 | 0/0/0 | 5/5/5 | 746/746/746 | backup_files=5 |
+| large_5pct | 2 | health | 200 | 20 | 0.578 | 0.7004 | 0.8642 | 0.876 | 0/0/0 | 0/0/0 | 1/1/1 | 77/77/77 | constant=1 |
+| large_5pct | 2 | question_bank.papers | 200 | 20 | 14.899 | 18.2612 | 19.537 | 21.0109 | 7/7/7 | 2/2/2 | 5/5/5 | 2116/2116/2116 | papers=5 |
+| large_5pct | 2 | question_bank.questions.default | 200 | 20 | 18.2881 | 20.3352 | 24.5505 | 24.8016 | 11/11/11 | 6/6/6 | 20/20/20 | 23404/23404/23404 | questions=500 |
+| large_5pct | 2 | question_bank.questions.filtered | 200 | 20 | 15.7127 | 17.391 | 21.4393 | 22.7081 | 11/11/11 | 6/6/6 | 10/10/10 | 11770/11770/11770 | questions=500 |
+| large_5pct | 2 | question_bank.question.detail | 200 | 20 | 14.1754 | 15.5437 | 18.2506 | 19.9507 | 11/11/11 | 6/6/6 | 1/1/1 | 1745/1745/1745 | questions=500 |
+| large_5pct | 2 | question_bank.question.asset | 200 | 20 | 14.8844 | 17.2726 | 18.9251 | 19.3934 | 7/7/7 | 2/2/2 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
+| large_5pct | 2 | question_bank.question.preview | 200 | 20 | 15.0205 | 15.9286 | 18.4779 | 18.7865 | 8/8/8 | 3/3/3 | 1/1/1 | 68/68/68 | generated_asset_bytes=136 |
+| large_5pct | 2 | training.diagnosis | 200 | 20 | 291.9502 | 437.4473 | 475.3975 | 487.0539 | 1043/1043/1043 | 14/14/14 | 25/25/25 | 33207/33207/33207 | students=25 |
+| large_5pct | 2 | training.plan.preview | 200 | 20 | 5186.8667 | 5266.5768 | 5370.5173 | 5418.8005 | 51818/51818/51818 | 389/389/389 | 25/25/25 | 108972/108972/108972 | students=25 |
+| large_5pct | 2 | training.tasks | 200 | 20 | 16.1422 | 20.2973 | 24.8579 | 28.2231 | 2/2/2 | 2/2/2 | 25/25/25 | 5754/5754/5754 | training_tasks=25 |
+| large_5pct | 2 | training.task.detail | 200 | 20 | 16.8354 | 18.5667 | 22.7243 | 25.104 | 5/5/5 | 5/5/5 | 1/1/1 | 1021/1021/1021 | training_tasks=25 |
+| large_5pct | 2 | graph.profiles | 200 | 20 | 379.2532 | 477.7603 | 505.6572 | 517.891 | 1055/1055/1055 | 16/16/16 | 25/25/25 | 33139/33139/33139 | students=25 |
+| large_5pct | 2 | graph.rows | 200 | 20 | 379.8767 | 463.9352 | 516.9202 | 517.2038 | 1055/1055/1055 | 16/16/16 | 50/50/50 | 31309/31309/31309 | session_details=7500 |
+| large_5pct | 2 | graph.evidence | 200 | 20 | 365.2458 | 473.5012 | 517.5918 | 521.5261 | 1055/1055/1055 | 16/16/16 | 25/25/25 | 14129/14129/14129 | session_details=7500 |
+| large_5pct | 2 | ops.self_check | 200 | 20 | 74.9625 | 79.3496 | 86.9875 | 88.8291 | 12/12/12 | 2/2/2 | 1/1/1 | 1127/1127/1127 | constant=1 |
+| large_5pct | 2 | ops.backups | 200 | 20 | 1.7295 | 2.224 | 2.5867 | 2.6135 | 0/0/0 | 0/0/0 | 5/5/5 | 746/746/746 | backup_files=5 |
 
 ## Observations
 

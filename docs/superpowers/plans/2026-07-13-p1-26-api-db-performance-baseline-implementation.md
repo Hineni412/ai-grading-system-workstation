@@ -602,9 +602,9 @@ Expected: PASS with zero failures/skips.
 
 Expected: PASS; no source snapshot writes, API contract drift or lifecycle regression.
 
-- [x] **Step 3: Recheck the Task 0 real-database fingerprints before the formal benchmark**
+- [x] **Step 3: Establish a read-only recovery fingerprint baseline before the formal benchmark**
 
-Read only file length, UTC mtime and SHA-256 from the root checkout and compare both tuples byte-for-byte with the exact Task 0 claim values. Do not call SQLite against either file. Expected: unchanged.
+The external Task 0 claim values were unavailable when this interrupted execution resumed, so they were not reconstructed or claimed. Read only file length, UTC mtime and SHA-256 from the root checkout to establish a fresh recovery baseline. Do not call SQLite against either file. Expected: both tuples are captured outside Git before the formal run; lack of the original Task 0 values remains an explicit evidence limitation.
 
 - [x] **Step 4: Run the formal three-workload/two-repetition baseline**
 
@@ -633,9 +633,9 @@ git status --short -- user_data
 
 Expected: diff check and quick smoke pass; feature `user_data` status empty; handoff fields are valid for the current pre-review state.
 
-- [x] **Step 8: Compare root real database fingerprints again**
+- [x] **Step 8: Compare root real database fingerprints with the Step 3 recovery baseline**
 
-Expected: both real database size/UTC mtime/SHA-256 values exactly match Task 0 and Step 3. Any difference blocks commit and integration.
+Expected: both real database size/UTC mtime/SHA-256 values exactly match the fresh Step 3 recovery baseline. Any difference blocks commit and integration. This comparison does not retroactively prove equality with the unavailable Task 0 values.
 
 - [x] **Step 9: Commit verified functional work as `waiting_review`**
 
@@ -643,19 +643,19 @@ Change the handoff block to `waiting_review`, `功能提交: branch_head`, `自�
 
 ### Task 5 functional evidence
 
-- Baseline functional SHA: `a7e6de8476ece27ed87a67072756ba87ec5eb0dd`.
-- Fresh focused suite: 70 passed, 0 failed, 0 skipped. Fresh affected API/database regressions: 131 passed, 0 failed, 0 skipped. The Step 5 report-only rerun added 18 passed with the existing Starlette TestClient/httpx2 deprecation warning and no test failure.
-- The exact default formal run used `small`、`medium`、`large_5pct`, 16 scenarios, 3 discarded warmups, 20 formal samples and 2 repetitions. It completed 48/48 scale-scenario combinations in `7432.680` seconds; every status was 200 and every deterministic repetition comparison passed.
-- The user-approved `large_5pct` workload keeps the original `small`/`medium` definitions and replaces the retired large workload with `(1, 25, 2, 7_500, 500, 25, 5)`. The complete default matrix still took about 123.878 minutes on the recorded environment; the report therefore treats latency as machine-specific and does not imply that the three workload names are a monotonic scale sequence.
+- Baseline functional SHA: `6bb53c338d23e530ed2890afbdecce0ae6ac9fb9`.
+- Fresh post-run focused suite: 76 passed, 0 failed, 0 skipped in 16.58 seconds. Fresh affected API/database regressions after the final generator and report changes: 131 passed, 0 failed, 0 skipped in 27.09 seconds; the integration gate reruns both suites after merge.
+- The exact default formal run used `small`、`medium`、`large_5pct`, 16 scenarios, 3 discarded warmups, 20 formal samples and 2 repetitions. It completed 48/48 scale-scenario combinations in `8360.590` seconds with OS exit code 0; every status was 200 and every deterministic repetition comparison passed.
+- The user-approved `large_5pct` workload keeps the original `small`/`medium` definitions and replaces the retired large workload with `(1, 25, 2, 7_500, 500, 25, 5)`. The complete default matrix took about 139.343 minutes on the recorded environment; the report therefore treats latency as machine-specific and does not imply that the three workload names are a monotonic scale sequence.
 - Possible N+1 observations: none met the fixed threshold when comparing the explicitly named `small` and `large_5pct` endpoints. The report retains neutral `comparison_*` fields and exports no retired `large_*` observation fields.
 - Coverage limitations: only allowlisted SQLite connection boundaries are counted; latency is not a service-level objective; generated data may not reproduce production distributions; the run performs no optimization. Reports contain only aggregate allowlisted fields and no raw samples.
 - Safety scan: zero forbidden JSON keys and zero matches for real-data/worktree/absolute-path markers, raw URLs, SQL text, request IDs, generated student/question identifiers or retired observation fields. Git status contained only the two intended versioned reports before documentation evidence was added.
-- Root real-database fingerprints: the read-only length, UTC mtime and SHA-256 tuples matched the exact Task 0 claim values and the Step 3 recheck after the formal run; no real database was opened through SQLite or copied.
+- Root real-database fingerprints: the read-only length, UTC mtime and SHA-256 tuples matched the resumed Step 3 recovery baseline exactly after the formal run; no real database was opened through SQLite or copied.
 - Functional handoff guards: diff whitespace validation, empty feature `user_data` status, documentation governance, static compilation of 419 first-party Python files, both temporary database idempotency/integrity checks and the pre-review handoff validator passed.
-- Real-data evidence: Task 0, Step 3 and Step 8 recorded exact matching file-size/UTC-mtime/SHA-256 tuples. `origin/main..HEAD` history, branch diff and feature status contain no `user_data` path.
+- Real-data evidence limitation: the Task 0 fingerprint claim was stored outside Git and was unavailable during this resumed execution, so it was not reconstructed or claimed. Step 3 established a fresh read-only recovery baseline; Step 8 and the formal-run follow-up proved both files exactly equal to it. `origin/main..HEAD` history, branch diff and feature status contain no `user_data` path.
 - Process evidence: the formal launcher exited with code 0; both complete reports, top-level and per-scale `repeatability=passed`, and all 48 scale-scenario summaries with 20 samples and status 200 independently confirm completion. Catchable publication failures are covered by recovery tests; sudden termination or power loss between replacements remains a documented mixed-pair risk.
 - Independent-review repair: review found that the original generator left `papers` empty, did not assign `questions.paper_id`, and wrote only two tag types, so the representative papers/tagged-filter scenarios were empty despite HTTP 200. A focused RED now covers expected papers, valid paper links, all four current core tags, and non-empty deterministic response counts. Review also found that one restore failure skipped the other report restore and masked the original publish exception; a fault-injection RED now requires independent best-effort restoration/cleanup and chains recovery failures behind the original publication error.
-- Baseline regeneration requirement: these generator changes alter manifest counts and representative response counts. The committed formal JSON/Markdown reports describe the pre-repair dataset and must be regenerated on the final reviewed SHA. The formal three-workload report was intentionally not rerun during this review-fix pass.
+- Baseline regeneration completed: the versioned JSON/Markdown were regenerated on reviewed SHA `6bb53c338d23e530ed2890afbdecce0ae6ac9fb9`. The manifests now include `papers=2/20/5` and five tags per question; both repetitions return non-zero deterministic records for `question_bank.papers` (`2/20/5`) and `question_bank.questions.filtered` (`4/40/10`).
 - Review-fix verification: the dataset/report/benchmark suite passed 56 tests; the five-file P1-26 focused suite passed 76 tests; quick smoke passed documentation governance, static compilation of 419 first-party Python files, and both temporary database idempotency/integrity checks. The new fault-injection and representative-data cases failed for the intended reasons before implementation and passed after the minimal fixes.
 
 - [ ] **Step 10: Request independent code review**
