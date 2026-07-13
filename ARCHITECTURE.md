@@ -25,6 +25,7 @@
 - **P1-22 增量边界：** FastAPI 增加独立 Ops 只读路由；自检只返回版本、逻辑目录可写性、数据库临时候选完整性/迁移摘要、外部工具布尔状态和 API 配置布尔状态，备份清单只返回受限数量的安全文件元数据。数据库 SQLite 不打开真实源库，响应不包含路径、密钥或业务正文，也不提供备份、恢复、迁移、导入导出或命令执行操作
 - **P1-23 增量边界：** FastAPI Ops 增加备份、恢复、数据库迁移、数据包导入和导出的严格预检、5 分钟单次确认令牌及五类独立 Job。备份和导出在线原子发布；恢复、迁移和导入只准备待重启清单，由 `运行.bat` 在 API/Streamlit 启动前离线复核、创建最新备份、应用并按 Journal 回退。五类任务、撤销与离线应用共用进程内和跨进程锁；公开结果不返回内部路径。该增量只在临时数据根验证，未对真实业务数据执行任何写操作
 - **P1-24 增量边界：** `backend/llm/` 增加统一模型请求策略核心、安全 API profile 覆盖、Chat Completions/Responses 协议适配、有限重试分类、按配置与请求类型共享的节流、逻辑请求 ID 和统一脱敏用量事件；根目录 `LLMClient` 兼容入口保留，SDK 自动重试关闭，参数兼容与 JSON 修复次数不扩张。本包只使用假客户端验证，未调用真实模型。选择、填空、批量客观题和题库 AI 打标四条直连调用链，以及批量客观题的 `timeout=None`，仍保留给 P1-25 迁移和清零
+- **P1-25 增量边界：** 选择、填空、批量客观题与题库 AI 打标的第一方 SDK 直连均已迁入 `LLMGateway`；Chat Completions 识别请求使用有限 recognition 策略，Responses 打标请求使用有限 tagging 策略，SDK 自动重试固定关闭，第一方 Python 已无 `timeout=None`。原 prompt、请求参数、解析、评分、fallback、批次大小、worker 与业务 RPM 规则保持不变；客观题批量及其 root `LLMClient` 备用路径把原三次外层尝试转交 Gateway，其他兼容调用方仍默认单次委托，避免重试倍增。验证只使用假客户端、临时文件和数据库副本，真实两库文件指纹未变，未执行真实 API 健康检查
 
 ### 主要证据
 
@@ -437,9 +438,9 @@ flowchart LR
 |---|---|---|---|---|
 | Streamlit 页面 | 本机浏览器 | Streamlit HTTP/WebSocket；无公开 REST API | 由 Streamlit 会话控制 | 页面显示错误；部分长任务在同进程线程中执行 |
 | FastAPI 本机 API | 后续 Vue 前端/运维探活 | HTTP JSON/二进制流；健康检查、基础 sessions/students/config/template/regions、JobManager、config-generation/report/scan/grading/review/media/files/question-bank/training/graph/ops 增量路由，统一错误体、`x-request-id` 和 OpenAPI 422 `ErrorResponse`；二进制 200 明确声明 XLSX/图片/DOCX/Markdown/ZIP 媒体类型；Question Bank 提供 papers、分页 questions、detail/current tags/rich/preview metadata、受控图片 GET，以及教师标签确认、软删除/恢复、上传暂存和 pending 导入请求；Training 提供 tag-only 诊断、精确标签推荐预览、任务确认、分页/详情及导出 Job；Graph 提供 tag-only profiles、确定性 rows/聚合节点、固定空关系边和分页证据下钻；Ops 提供路径无关的自检快照、有界备份清单，以及受保护的备份/恢复/迁移/数据包导入导出预检与独立 Job | uvicorn 进程级控制；lifespan 所有唯一 JobManager；running cancel 为请求/确认两阶段；配置生成使用活动 API profile、服务器输入 ID 和原子文件发布；题库源快照 4 次/5 秒有界重试，busy/unavailable 为统一 503；题库轻写使用 revision 冲突保护和原子文件发布；Training 预览/确认以计划 revision 防止旧预览写入，导出以 job 专属目录原子发布并在发布前确认取消；Graph 对阅卷库和题库分别使用同一有界稳定文件捕获，只在临时候选上运行现有服务；每请求只构建一次 tag profile，再在内存投影 rows/nodes/evidence；Ops 只在稳定临时候选上检查数据库，写操作使用单次确认令牌、进程内/跨进程锁和本机 Journal；恢复/迁移/导入在双服务启动前离线应用，失败时使用应用时备份回退 | 可用 `START_API=0` 跳过；配置生成请求递归拒绝密钥、客户端路径和富文本图片文件引用，公开 Job 摘要不返回试卷正文、输入 ID 或内部路径；敏感 Job payload 在持久化前拒绝，公开 payload/result 与历史 review/题库/Training/Ops 元数据使用显式允许列表和路径/marker 脱敏；review 原子写失败整批回滚；媒体/下载越界、过期或类型不支持时返回稳定错误且 `no-store`；题库 JSON 不公开存储路径，图片仅以题目 ID + asset index/preview type 访问固定受控根；Training 不公开源文件/导出路径、不接受客户端目标路径或 created_by/broad/legacy/skill 控制；Graph 与 Ops 读预检不以 SQLite 打开真实源库；Ops 写接口不接受客户端路径、命令、SQL 或迁移目录，回退失败会阻止启动；P1-16 不执行长导入或 AI |
-| 通用模型客户端 | 配置生成、整卷批改、OCR 等 | `LLMClient` 兼容入口委托 `LLMGateway` 的 Chat Completions；Gateway 同时提供 Responses 适配 | 按 grading/recognition/config-generation/tagging 分别使用显式策略预算；SDK 自动重试关闭；P1-24 兼容期由既有调用方外层循环拥有普通重试，`LLMClient` 每次委托只发一次普通请求，直接 Gateway 调用仍可对集中分类的临时错误做有限重试；参数兼容和 JSON 修复/截断仍维持既有有限行为 | 每次物理请求共享逻辑请求 ID、连续 attempt 并默认写入既有脱敏 JSONL usage 日志；同键 RPM 在进程内只收紧且保留节流状态；最终抛错、单卷失败或转人工复核 |
-| 客观题识别链 | 混合批改 | OpenAI 兼容 Chat Completions | 不同路径 30 秒或无显式上限；批量并发受 RPM/worker 限制 | 规则校验、升级主模型或人工复核 |
-| 题库 AI 打标 | 题库导入/批处理 | OpenAI Responses API，部分兼容路径使用 `LLMClient` | 所有批量、回退、重试、复核请求共用计数/RPM 控制器；重试有上限 | 非 complete 不保存；保存原始标签后不再自动追加旧技能 AI 消歧；阅卷入库关闭批次扇出和复核二次请求 |
+| 通用模型客户端 | 配置生成、整卷批改、OCR 等 | `LLMClient` 兼容入口委托 `LLMGateway` 的 Chat Completions；Gateway 同时提供 Responses 适配 | 按 grading/recognition/config-generation/tagging 分别使用显式策略预算；SDK 自动重试关闭；直接 Gateway 调用可对集中分类的临时错误做有限重试。保留旧外层循环的 `LLMClient` 调用方默认仍只发一次普通请求；P1-25 客观题备用路径显式把原三次尝试交给 Gateway，参数兼容和 JSON 修复/截断仍维持既有有限行为 | 每次物理请求共享逻辑请求 ID、连续 attempt 并默认写入既有脱敏 JSONL usage 日志；同键 RPM 在进程内只收紧且保留节流状态；最终抛错、单卷失败或转人工复核 |
+| 客观题识别链 | 混合批改 | 选择、填空与批量识别通过 `LLMGateway` 的 OpenAI 兼容 Chat Completions | recognition 策略提供有限显式超时与最多三次物理尝试；批量外层每个逻辑请求只调用一次，既有 RPM/worker 限制不变 | 规则校验、升级主模型或人工复核；fallback、评分和复核合并不变 |
+| 题库 AI 打标 | 题库导入/批处理 | 直接 Responses 分支通过 tagging Gateway；专用密钥与保存 profile 的兼容路径仍可使用 `LLMClient` | tagging 默认 120 秒并有限重试；请求控制器仍只统计逻辑批量、回退、质量重试和复核请求，Gateway 物理重试不放大业务事件 | 非 complete 不保存；保存原始标签后不再自动追加旧技能 AI 消歧；阅卷入库关闭批次扇出和复核二次请求 |
 | 原卷标签工作流 | 主工作台、批改页、全局图谱 | `GradingPaperSkillWorkflowService` 调用归档、导入、标签与确定性来源链接服务 | 同一 SHA-256 归档复用；重复运行按数据库现状补缺 | 不做跨库事务承诺；每次运行后重算状态，部分成功可重试且不阻断批改 |
 | 当前标签投影 | 批改、全局图谱、训练推荐 | `QuestionTagProjectionService` 读取确认链接和当前 `question_tags` | 只读本地题库，无 AI 请求、无标签缓存 | 未链接、题目缺失或缺少 `knowledge_point` 时返回显式缺失原因 |
 | 全局知识图谱 | 全局资料页、知识点详情 | `DiagnosisProfileService.build_tag_profiles()`、`tag_evidence()`、`build_question_tag_graph_rows()` | 只读本地两库，无 AI 请求 | 按精确 `knowledge_key` 聚合；显示覆盖、支持标签、主/次错因和精确候选题数 |
@@ -527,7 +528,6 @@ Python 的 `requirements.txt` 只给下限，没有锁文件；因此“重新�
 | P1 | UI 与数据层直接耦合，跨库无事务 | 多个页面直接导入 DB 模块；诊断同时访问两个库 | 页面修改容易带入业务/SQL，训练链路可部分写入 | 新增应用服务门面和明确的跨库补偿/幂等键；不做一次性大重写 | 否 |
 | P2 | 部署边界漂移会绕过安全前提 | 已确认仅单用户/个别工作机/loopback，但代码无应用登录或权限 | 若监听地址或使用人数被扩大，会完整暴露敏感数据与破坏性操作 | 固化 loopback 配置并在运维文档标明边界；任何远程化或多用户化前重新设计认证、授权、CSRF 与审计 | 否 |
 | P2 | `completed` 可能被展示层误读 | 已确认其含义是“运行结束”，允许部分答卷失败；失败数另存于 paper 状态 | 只读取 session 状态的页面或导出可能误报全成功 | 所有完成提示和报表必须同时展示 `graded/failed/skipped` 统计，并增加契约测试 | 否 |
-| P1 | 部分模型请求无超时上限 | P1-24 已为 Gateway/`LLMClient` 路径统一显式预算、有限重试和请求 ID；P1-25 范围内的客观题批量直连路径仍存在 `timeout=None` | 未迁移直连链在网络异常时仍可能长时间占住 Streamlit 任务 | P1-25 迁移选择、填空、批量客观题和题库 AI 打标四条直连链，并清零第一方 `timeout=None` | 否 |
 | P2 | 静态循环依赖由延迟导入维持 | Schema↔技能目录、题目服务↔频次服务 | 初始化顺序脆弱，重构时易出现运行时导入故障 | 抽取常量/端口接口，令 Schema 不依赖服务，频次服务不反向依赖题目服务 | 否 |
 | P2 | 状态字段缺少数据库约束 | 阅卷 session/paper 等状态是自由文本，写方法接受任意字符串 | 拼写或新旧状态不一致会污染查询 | 集中枚举和迁移 CHECK 约束；先统计现有值 | 否 |
 | P2 | 依赖不可复现 | `requirements.txt` 仅最低版本，便携运行时已远高于下限；存在未见直接导入的依赖 | 新机器安装结果随时间漂移，兼容性难复现 | 从已验收运行时生成约束/锁文件，区分运行与打包依赖 | 否 |
