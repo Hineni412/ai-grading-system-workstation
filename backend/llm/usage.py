@@ -41,7 +41,12 @@ def _value(source: object, *names: str) -> object:
 
 
 def usage_fields(response_or_usage: object) -> dict[str, int]:
-    usage = getattr(response_or_usage, "usage", None) or response_or_usage
+    nested_usage = (
+        response_or_usage.get("usage")
+        if isinstance(response_or_usage, Mapping)
+        else getattr(response_or_usage, "usage", None)
+    )
+    usage = nested_usage or response_or_usage
     if not usage:
         return {
             "prompt_tokens": 0,

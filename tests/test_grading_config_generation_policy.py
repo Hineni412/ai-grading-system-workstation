@@ -7,9 +7,11 @@ from types import SimpleNamespace
 import pytest
 
 from backend.llm.gateway import LLMGateway
+from backend.llm.usage import JsonlUsageSink, NullUsageSink
 import score_policy
 import session_manager
 import llm_client
+import usage_logger
 
 
 def _scored_question(question_id: str, question_type: str, score: int) -> dict:
@@ -1377,7 +1379,10 @@ def test_llm_single_request_json_methods_do_not_run_ai_repair(monkeypatch: pytes
         config_model="model",
     )
     monkeypatch.setattr(llm_client, "_create_openai_client", lambda *_args, **_kwargs: fake_openai)
-    client = llm_client.LLMClient(settings)
+    client = llm_client.LLMClient(
+        settings,
+        usage_sink_factory=NullUsageSink,
+    )
     monkeypatch.setattr(
         client,
         "_parse_or_repair_json",
@@ -1426,7 +1431,10 @@ def test_llm_single_request_method_does_not_retry_parameter_fallback(
         config_model="model",
     )
     monkeypatch.setattr(llm_client, "_create_openai_client", lambda *_args, **_kwargs: fake_openai)
-    client = llm_client.LLMClient(settings)
+    client = llm_client.LLMClient(
+        settings,
+        usage_sink_factory=NullUsageSink,
+    )
 
     assert client.json_from_text_once("prompt") == {"ok": True}
     assert completions.calls == 1
@@ -1474,6 +1482,8 @@ def _gateway_json_completion(text: str) -> SimpleNamespace:
 def _gateway_client_factory(
     monkeypatch: pytest.MonkeyPatch,
     outcomes: list[object],
+    *,
+    policy_profile: dict[str, object] | None = None,
 ):
     completions = _GatewayTestCompletions(outcomes)
     fake_openai = SimpleNamespace(
@@ -1492,7 +1502,6 @@ def _gateway_client_factory(
         return LLMGateway(
             **kwargs,
             pacers=_GatewayTestPacer(),
-            usage_sink=sink,
             sleeper=lambda _seconds: None,
         )
 
@@ -1502,14 +1511,59 @@ def _gateway_client_factory(
         ocr_model="ocr-model",
         grading_model="grading-model",
         config_model="config-model",
-        policy_profile={"llm_config_generation_max_retries": 5},
+        policy_profile=policy_profile
+        or {"llm_config_generation_max_retries": 5},
     )
     return (
-        llm_client.LLMClient(settings, gateway_factory=gateway_factory),
+        llm_client.LLMClient(
+            settings,
+            gateway_factory=gateway_factory,
+            usage_sink_factory=lambda: sink,
+        ),
         completions,
         sink,
         gateway_configs,
     )
+
+
+def test_llm_client_defaults_both_distinct_gateways_to_safe_jsonl_sink_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        llm_client,
+        "_create_openai_client",
+        lambda *_args, **_kwargs: object(),
+    )
+    isolated_log = tmp_path / "logs" / "llm_usage.jsonl"
+    monkeypatch.setattr(llm_client, "LLM_USAGE_LOG_FILE", isolated_log)
+    gateway_calls: list[dict[str, object]] = []
+
+    def gateway_factory(**kwargs):
+        gateway_calls.append(kwargs)
+        return object()
+
+    settings = llm_client.LLMSettings(
+        api_key="main-key",
+        base_url="https://main.invalid",
+        ocr_model="ocr",
+        grading_model="grading",
+        config_model="config",
+        config_api_key="config-key",
+        config_base_url="https://config.invalid",
+    )
+
+    client = llm_client.LLMClient(settings, gateway_factory=gateway_factory)
+
+    assert client.config_gateway is not client.gateway
+    assert len(gateway_calls) == 2
+    assert all(
+        isinstance(call["usage_sink"], JsonlUsageSink)
+        and call["usage_sink"].path == isolated_log
+        for call in gateway_calls
+    )
+    assert usage_logger.LOG_FILE == Path("logs/llm_usage.jsonl")
+    assert not isolated_log.exists()
 
 
 def test_llm_client_gateway_chat_uses_timeout_and_request_id(
@@ -1568,6 +1622,55 @@ def test_llm_client_gateway_maps_legacy_request_kinds_exactly(
     ]
 
 
+def test_three_legacy_outer_rounds_make_three_physical_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    errors = [TimeoutError("timed out") for _ in range(9)]
+    client, completions, _sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        errors,
+        policy_profile={"llm_config_generation_max_retries": 2},
+    )
+
+    for _round in range(3):
+        with pytest.raises(TimeoutError):
+            client.json_from_text("prompt")
+
+    assert len(completions.calls) == 3
+
+
+class _CompatibilityStatusError(RuntimeError):
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        TimeoutError("operation not supported before timeout"),
+        ConnectionError("connection path not supported"),
+        _CompatibilityStatusError(429, "request not supported while limited"),
+        _CompatibilityStatusError(500, "operation not supported by server"),
+        RuntimeError("operation not supported"),
+    ],
+)
+def test_retryable_or_unknown_not_supported_errors_never_enter_parameter_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    error: BaseException,
+) -> None:
+    client, completions, _sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [error] * 8,
+    )
+
+    with pytest.raises(type(error)) as raised:
+        client.json_from_text("prompt")
+
+    assert raised.value is error
+    assert len(completions.calls) == 1
+
+
 def test_text_from_images_parameter_fallback_shares_generated_request_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1609,7 +1712,7 @@ def test_parameter_fallback_is_bounded_and_not_counted_as_network_retry(
         "max_completion_tokens",
         "response_format",
     ]
-    assert [event.attempt for event in sink.events] == [1, 1, 1]
+    assert [event.attempt for event in sink.events] == [1, 2, 3]
 
 
 def test_parameter_fallback_disables_nested_network_retry(
@@ -1649,6 +1752,7 @@ def test_json_repair_truncation_shares_one_logical_request_id(
     assert client.json_from_text("prompt") == {"ok": True}
     assert len(completions.calls) == 2
     assert len({event.request_id for event in sink.events}) == 1
+    assert [event.attempt for event in sink.events] == [1, 2]
 
 
 def test_json_repair_format_fix_shares_one_logical_request_id(
@@ -1665,6 +1769,23 @@ def test_json_repair_format_fix_shares_one_logical_request_id(
     assert client.json_from_text("prompt") == {"ok": True}
     assert len(completions.calls) == 2
     assert len({event.request_id for event in sink.events}) == 1
+    assert [event.attempt for event in sink.events] == [1, 2]
+
+
+def test_separate_top_level_compatibility_calls_restart_attempt_at_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _completions, sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [
+            _gateway_json_completion('{"call": 1}'),
+            _gateway_json_completion('{"call": 2}'),
+        ],
+    )
+
+    assert client.json_from_text("first") == {"call": 1}
+    assert client.json_from_text("second") == {"call": 2}
+    assert [event.attempt for event in sink.events] == [1, 1]
 
 
 def test_llm_client_gateway_reuses_only_identical_client_configuration(

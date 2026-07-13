@@ -22,6 +22,15 @@ class FakeClock:
 
 
 class FakePacer:
+    def __init__(self, requests_per_minute: int = 60) -> None:
+        self.requests_per_minute = requests_per_minute
+
+    def tighten(self, requests_per_minute: int) -> None:
+        self.requests_per_minute = min(
+            self.requests_per_minute,
+            requests_per_minute,
+        )
+
     def acquire(self) -> None:
         pass
 
@@ -67,16 +76,41 @@ def test_registry_reuses_pacer_for_same_config_and_kind() -> None:
     assert created == [60]
 
 
-def test_policy_change_replaces_keyed_pacer() -> None:
-    created: list[int] = []
-    registry = LLMPacerRegistry(
-        factory=lambda rpm: created.append(rpm) or FakePacer()
-    )
+def test_same_key_rpm_interleaving_tightens_one_pacer_and_never_loosens() -> None:
+    created: list[FakePacer] = []
 
+    def factory(rpm: int) -> FakePacer:
+        pacer = FakePacer(rpm)
+        created.append(pacer)
+        return pacer
+
+    registry = LLMPacerRegistry(factory=factory)
+
+    registry.acquire("profile-a", LLMRequestKind.GRADING, 120)
     registry.acquire("profile-a", LLMRequestKind.GRADING, 60)
     registry.acquire("profile-a", LLMRequestKind.GRADING, 120)
 
-    assert created == [60, 120]
+    assert len(created) == 1
+    assert created[0].requests_per_minute == 60
+
+
+def test_tightening_preserves_reserved_state_without_fresh_immediate_slot() -> None:
+    clock = FakeClock()
+    created: list[RequestPacer] = []
+
+    def factory(rpm: int) -> RequestPacer:
+        pacer = RequestPacer(rpm, clock=clock.now, sleeper=clock.sleep)
+        created.append(pacer)
+        return pacer
+
+    registry = LLMPacerRegistry(factory=factory)
+
+    registry.acquire("profile-a", LLMRequestKind.GRADING, 120)
+    registry.acquire("profile-a", LLMRequestKind.GRADING, 60)
+    registry.acquire("profile-a", LLMRequestKind.GRADING, 120)
+
+    assert len(created) == 1
+    assert clock.sleep_calls == [1.0, 1.0]
 
 
 def test_registry_creates_one_pacer_for_simultaneous_first_access() -> None:

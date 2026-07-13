@@ -55,6 +55,27 @@ def test_usage_fields_supports_cached_and_reasoning_detail_objects():
     }
 
 
+def test_usage_fields_supports_nested_mapping_responses_usage_and_details():
+    response = {
+        "id": "response-1",
+        "usage": {
+            "input_tokens": 13,
+            "output_tokens": 8,
+            "total_tokens": 21,
+            "input_tokens_details": {"cached_tokens": 5},
+            "output_tokens_details": {"reasoning_tokens": 3},
+        },
+    }
+
+    assert usage_fields(response) == {
+        "prompt_tokens": 13,
+        "completion_tokens": 8,
+        "cached_tokens": 5,
+        "reasoning_tokens": 3,
+        "total_tokens": 21,
+    }
+
+
 def test_failed_request_event_defaults_to_zero_usage():
     event = _event(
         success=False,
