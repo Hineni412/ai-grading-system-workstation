@@ -16,6 +16,7 @@
 - **P2-02 增量边界：** `frontend/` 已把 `STYLE.md` 固化为唯一 CSS Token、按需 Element Plus 主题、字段/状态徽章/空加载错态/反馈基础控件和组件展示页；具备对比度、Token 散落值、键盘焦点与五视口无溢出守卫，但仍不实现 App Shell、API client、业务页面或生产入口切换
 - **P2-03 增量边界：** `frontend/` 已增加 App Shell、集中式导航与路由、404、桌面响应式侧栏和当前考试 Pinia 上下文；浏览器只持久化经 `/api/sessions` 成功校验的考试 ID，失败时不把候选暴露为当前选择。当前仅支持宽度不低于 1024px 的 Windows 桌面浏览器；P2-03 交付时的 sessions 专用窄适配器已由下列 P2-04 统一 Client 承接，业务页面和生产入口仍未切换
 - **P2-04 增量边界：** `frontend/` 已增加唯一原生 Fetch Client、统一脱敏 `ApiError`、sessions 运行时契约复用和 Pinia Job Store；Client 只接受同源 `/api/` 路径，只对 GET 临时失败有界重试。浏览器只持久化自己记录的 Job ID/类型/时间，刷新后按 ID 恢复；每 Job 单轮询，取消仍以服务器终态为准。本包不新增可见 UI、业务页面、后端契约、生产入口或真实数据操作
+- **P2-05 增量边界：** `frontend/` 已增加只读单题复核队列样板页，复用既有 review questions/items GET 契约，提供题目选择、姓名/学号/班级搜索、待复核筛选、稳定排序、每页 100 条分页、URL/Store 同步和上一/下一及 J/K 连续导航。1000 条生成数据与五档桌面视口已验证左队列独立滚动、当前行和右侧摘要同时可见；本包不加载答卷媒体，不提供调分、确认或其他写入口，也不切换生产 UI
 - **P1-17 增量边界：** FastAPI 增加 `config_generation` Job；生成输入以服务器 ID 原子暂存，Job payload 不保存密钥、试卷正文或客户端路径，部分题失败只发布可重试草稿，失败题清零后才原子发布 rubric/answer_key 并绑定会话
 - **P1-18 增量边界：** FastAPI 增加独立的 `question_import` 与 `tagging_sync` Job；前者只消费 P1-16 服务器导入请求，后者只消费题目 ID 并分批调用现有打标服务。两类任务复用通用查询/取消，支持受控重试和脱敏部分失败摘要；打标仍只有 `complete` 才保存且不运行旧技能消歧，当前不切换 P1-24 LLM Gateway
 - **P1-19 增量边界：** FastAPI 增加 Training 诊断、推荐预览和训练任务确认/分页/详情 API；诊断只走现有 `question_tag` 主路径，推荐固定精确 `knowledge_point`、`exact_only` 且禁止 broad/legacy/skill 回退。任务确认以 UUID 唯一代码和计划 revision 幂等写入题库，客户端不能指定 `created_by`；公开任务快照移除源文件和输出路径
@@ -67,7 +68,7 @@
 
 ### 当前实现边界
 
-- 这是仅供单用户在个别受信任 Windows 工作机运行的本地应用，不存在独立部署的生产前端或远程数据库；Streamlit 与增量 FastAPI 均只监听 loopback。`frontend/` 已提供可重复构建的 Vue 工程基础、设计 Token、基础控件、App Shell、路由和当前考试上下文，但 Vue 尚未成为生产 UI。
+- 这是仅供单用户在个别受信任 Windows 工作机运行的本地应用，不存在独立部署的生产前端或远程数据库；Streamlit 与增量 FastAPI 均只监听 loopback。`frontend/` 已提供可重复构建的 Vue 工程基础、设计 Token、基础控件、App Shell、路由、当前考试上下文和只读单题复核队列样板页，但 Vue 尚未成为生产 UI。
 - 主入口是 `运行.bat`：默认并行启动 `python -m streamlit run web_app.py`（8501）和增量 FastAPI 本机 API（8000，包含健康检查、基础 sessions/students/config/template/regions、JobManager、config-generation/report/scan/grading/review/media/files/question-bank 路由，可用 `START_API=0` 跳过）；`run_desktop.py` 是另一套桌面/冻结构建启动器，`main.py` 是较早的命令行批改入口。
 - 核心状态保存在两个 SQLite 数据库和 `user_data/` 文件树中。
 - AI 能力依赖可配置的 OpenAI 兼容 HTTP 接口；当前代码路径使用 OpenAI Python SDK 的 Chat Completions 和 Responses API。
@@ -207,7 +208,7 @@ AI阅卷系统_工作机版_v1.5.0/
 ├── pages/                         # 题库、组卷、训练推荐、技能管理、系统自检
 ├── pages_shared/                  # 多页面共享样式与组件
 ├── components/answer_region_editor/ # 答题区自定义前端组件
-├── frontend/                       # Vue 工程、设计 Token、基础控件与展示页；生产切换前仅开发构建使用
+├── frontend/                       # Vue 工程、设计 Token、App Shell、统一 Client 与只读复核队列样板页；生产切换前仅开发构建使用
 ├── grading_service.py             # 阅卷会话主编排
 ├── scanner.py                     # 扫描页标准化、姓名识别与配对
 ├── ai_grader.py                   # 单份答卷评分模型与校验
@@ -263,8 +264,10 @@ AI阅卷系统_工作机版_v1.5.0/
 10. P1-19 的 Training API 从同一 `PathManager` 快照构造诊断、推荐和任务服务。推荐预览每次重建当前 tag-only 诊断并返回脱敏计划及 SHA-256 revision；教师确认时再次生成并比对 revision，空计划拒绝写入，相同确认 UUID 依靠 `training_tasks.task_code` 唯一约束收敛到同一任务。任务列表和详情使用只读连接，写入只发生在确认端点。
 11. P2-01 前端开发服务器只监听 `127.0.0.1`，把 `/api` 代理到 `http://127.0.0.1:8000`；Node/npm 只用于开发和构建，当前生产启动入口仍不读取 `frontend/dist`。
 12. P2-02 的产品色彩、字体、间距、圆角、阴影和动效只在 `frontend/src/styles/tokens.css` 定义；Element Plus 只按展示页需要导入 Button/Input/Icon CSS 并由 `ElConfigProvider` 提供中文配置。状态徽章和反馈均含文字，警告正文使用主文字色满足对比度，AI 与教师语义保持独立。展示页只使用生成文案，不调用 API 或读取业务数据。
-13. P2-03 的 Vue App Shell 使用集中式导航和路由，提供工作区占位页、保留的设计系统页、设置入口与 404；Pinia 会话上下文仅经 sessions 专用适配器读取 `/api/sessions`，浏览器保存值必须在成功响应中重新确认。浏览器验收拦截该接口并使用合成考试数据；当前没有通用 API client，所有工作区仍不是已迁移业务页面。
-14. Streamlit 页面与业务服务仍运行在同一 Python 进程中；FastAPI 目前是增量本机 API 外壳，JobManager 仍为进程内线程池而非独立 Worker。测试通过 dependency override 注入的 manager 由测试自身关闭，不归应用 lifespan 所有。
+13. P2-03 的 Vue App Shell 使用集中式导航和路由，提供工作区占位页、保留的设计系统页、设置入口与 404；Pinia 会话上下文只持久化经 `/api/sessions` 成功确认的考试 ID。
+14. P2-04 的统一前端 Client 只允许同源 `/api/` 路径并集中解析脱敏错误；GET 临时失败可有界重试，写请求不自动重放。Job Store 只恢复当前浏览器记录的任务并保证每个 Job 单轮询。
+15. P2-05 的 `/grading` Vue 路由是首个已迁移的只读业务切片：页面只调用 review questions/items 两个 GET，筛选、排序、分页和选择回收全部在浏览器内完成；问题/明细 URL 查询参数经过校验并串行同步，在途切换与卸载以 AbortController 和 generation 防止旧响应回写。队列每页最多渲染 100 条，列表与详情独立滚动；快捷键在输入和可编辑上下文中失效。媒体留给 P2-06，评分写入留给 P2-07。
+16. Streamlit 页面与业务服务仍运行在同一 Python 进程中；FastAPI 目前是增量本机 API 外壳，JobManager 仍为进程内线程池而非独立 Worker。测试通过 dependency override 注入的 manager 由测试自身关闭，不归应用 lifespan 所有。
 
 ### 5.2 考试配置与批改
 
