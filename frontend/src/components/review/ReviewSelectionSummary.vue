@@ -58,7 +58,7 @@ function confidenceLabel(item: ReviewItem): string {
       </dl>
 
       <p class="review-selection-summary__notice">
-        评分与确认将在 P2-07 接入。当前页面不会修改原图或评分数据。
+        答卷原图不会被改写；分数只有在右侧完成教师确认后才会保存。
       </p>
     </template>
   </section>

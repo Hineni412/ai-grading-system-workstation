@@ -31,6 +31,74 @@
   font-size: var(--font-size-dense);
 }
 
+.review-shortcut-guide {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-6);
+  border-block-end: var(--border-width) solid var(--color-border-default);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+.review-shortcut-guide__label {
+  flex: none;
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-semibold);
+}
+
+.review-shortcut-guide__list {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+}
+
+.review-shortcut-guide__list > div,
+.review-shortcut-guide__list dt {
+  display: inline-flex;
+  align-items: center;
+}
+
+.review-shortcut-guide__list > div {
+  gap: var(--space-1);
+  white-space: nowrap;
+}
+
+.review-shortcut-guide__list dt,
+.review-shortcut-guide__list dd {
+  margin: 0;
+}
+
+.review-shortcut-guide__list dt {
+  gap: var(--border-width);
+  color: var(--color-text-primary);
+}
+
+.review-shortcut-guide kbd {
+  min-width: 20px;
+  padding: var(--border-width) var(--space-1);
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: var(--radius-tag);
+  background: var(--color-bg-surface);
+  color: inherit;
+  font: inherit;
+  font-weight: var(--font-weight-medium);
+  line-height: 18px;
+  text-align: center;
+}
+
+@media (max-width: 1100px) {
+  .review-shortcut-guide {
+    align-items: flex-start;
+    padding-inline: var(--space-4);
+  }
+}
+
 .review-page > .feedback-banner,
 .review-page > .state-panel {
   margin: var(--space-4);
