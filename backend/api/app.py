@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from typing import Any
 from uuid import uuid4
 
@@ -13,7 +13,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from path_manager import get_path_manager
+from backend.performance.metrics import PerformanceSink, request_performance_scope
+from path_manager import PathManager, get_path_manager as get_default_path_manager
 
 
 LOGGER = logging.getLogger("ai_grading.api")
@@ -79,8 +80,9 @@ async def _lifespan(api: FastAPI) -> AsyncIterator[None]:
 
     owns_manager = get_job_manager not in api.dependency_overrides
     owns_ops_service = get_ops_write_service not in api.dependency_overrides
-    manager = create_job_manager() if owns_manager else None
-    ops_service = create_ops_write_service() if owns_ops_service else None
+    paths = api.state.path_manager
+    manager = create_job_manager(paths) if owns_manager else None
+    ops_service = create_ops_write_service(paths) if owns_ops_service else None
     if manager is not None:
         api.state.job_manager = manager
     if ops_service is not None:
@@ -95,11 +97,21 @@ async def _lifespan(api: FastAPI) -> AsyncIterator[None]:
             del api.state.ops_write_service
 
 
-def create_app() -> FastAPI:
+def create_app(
+    *,
+    performance_sink: PerformanceSink | None = None,
+    path_manager: PathManager | None = None,
+) -> FastAPI:
+    from backend.api import dependencies
+
+    paths = path_manager or dependencies.get_path_manager()
+    app_version = getattr(paths, "version", None)
+    if app_version is None:
+        app_version = get_default_path_manager().version
     api = FastAPI(
         lifespan=_lifespan,
         title="AI 阅卷系统 API",
-        version=get_path_manager().version,
+        version=app_version,
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",
         responses={
@@ -109,23 +121,47 @@ def create_app() -> FastAPI:
             }
         },
     )
+    api.state.path_manager = paths
 
     @api.middleware("http")
     async def request_context(request: Request, call_next):
         request_id = request.headers.get("x-request-id") or uuid4().hex
         request.state.request_id = request_id
         started = time.perf_counter()
-        try:
-            response = await call_next(request)
-        finally:
-            elapsed_ms = (time.perf_counter() - started) * 1000
-            LOGGER.info(
-                "api_request method=%s path=%s request_id=%s elapsed_ms=%.1f",
-                request.method,
-                request.url.path,
-                request_id,
-                elapsed_ms,
-            )
+        status_code = 500
+        performance_scope = (
+            request_performance_scope(request_id)
+            if performance_sink is not None
+            else nullcontext(None)
+        )
+        with performance_scope as recorder:
+            try:
+                response = await call_next(request)
+                status_code = response.status_code
+            finally:
+                elapsed_ms = (time.perf_counter() - started) * 1000
+                LOGGER.info(
+                    "api_request method=%s path=%s request_id=%s elapsed_ms=%.1f",
+                    request.method,
+                    request.url.path,
+                    request_id,
+                    elapsed_ms,
+                )
+                if recorder is not None:
+                    try:
+                        route = request.scope.get("route")
+                        route_template = getattr(route, "path", None)
+                        if not isinstance(route_template, str):
+                            route_template = "<unmatched>"
+                        record = recorder.finish(
+                            method=request.method,
+                            route_template=route_template,
+                            status_code=status_code,
+                            elapsed_ms=elapsed_ms,
+                        )
+                        performance_sink.record(record)
+                    except Exception:
+                        LOGGER.warning("api_performance_record_failed")
         response.headers["x-request-id"] = request_id
         return response
 
@@ -169,7 +205,7 @@ def create_app() -> FastAPI:
     @api.get("/healthz", response_model=HealthResponse)
     @api.get("/api/healthz", response_model=HealthResponse)
     def healthz() -> HealthResponse:
-        return HealthResponse(version=get_path_manager().version)
+        return HealthResponse(version=app_version)
 
     from backend.api.routers import (
         config_router,

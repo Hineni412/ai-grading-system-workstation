@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from uuid import uuid4
 
+from backend.performance.metrics import instrument_sqlite_connection
 from question_bank.database.schema import connect, initialize_database
 
 
@@ -501,7 +502,7 @@ def _optional_int(value: object) -> int | None:
 @contextmanager
 def _read_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
     uri = f"{db_path.resolve().as_uri()}?mode=ro"
-    conn = sqlite3.connect(uri, uri=True)
+    conn = instrument_sqlite_connection(sqlite3.connect(uri, uri=True))
     conn.row_factory = sqlite3.Row
     try:
         yield conn
