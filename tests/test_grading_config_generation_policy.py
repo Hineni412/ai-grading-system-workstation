@@ -1568,6 +1568,28 @@ def test_llm_client_gateway_maps_legacy_request_kinds_exactly(
     ]
 
 
+def test_text_from_images_parameter_fallback_shares_generated_request_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, completions, sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [
+            RuntimeError("unsupported parameter max_tokens"),
+            _gateway_json_completion("recognized text"),
+        ],
+    )
+
+    assert client.text_from_images("prompt", [b"image"]) == "recognized text"
+    assert len(completions.calls) == 2
+    assert [event.compatibility_fallback for event in sink.events] == [
+        "",
+        "max_completion_tokens",
+    ]
+    request_ids = {event.request_id for event in sink.events}
+    assert len(request_ids) == 1
+    assert request_ids != {""}
+
+
 def test_parameter_fallback_is_bounded_and_not_counted_as_network_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

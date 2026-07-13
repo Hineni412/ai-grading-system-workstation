@@ -395,6 +395,9 @@ class LLMClient:
             if client is self.config_client
             else self.gateway
         )
+        logical_request_id = str(
+            uuid.uuid4() if request_id is None else request_id
+        )
 
         def invoke(
             compatibility_fallback: str,
@@ -406,7 +409,7 @@ class LLMClient:
                 client=client,
                 model=model,
                 kwargs=kwargs,
-                request_id=request_id,
+                request_id=logical_request_id,
                 allow_retry=allow_retry,
                 compatibility_fallback=compatibility_fallback,
             )
