@@ -37,10 +37,10 @@
 ## 昼夜交接
 
 **执行包：** P2-08
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
-**独立复审：** pending
+**交接状态：** waiting_user
+**功能提交：** d71c3aa41eba35cc767870efddd80147cd6b6c12
+**自动验证：** passed
+**独立复审：** passed
 **用户验收：** pending
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
