@@ -106,6 +106,7 @@ class LLMClient:
         static_image_blobs: list[bytes] | None = None,
         dynamic_prompt: str | None = None,
         allow_gateway_retry: bool = False,
+        request_kind: LLMRequestKind | None = None,
     ) -> dict[str, Any]:
         return self.json_from_images_with_options(
             prompt,
@@ -117,6 +118,7 @@ class LLMClient:
             static_image_blobs=static_image_blobs,
             dynamic_prompt=dynamic_prompt,
             allow_gateway_retry=allow_gateway_retry,
+            request_kind=request_kind,
         )
 
     def json_from_images_with_options(
@@ -131,13 +133,12 @@ class LLMClient:
         static_image_blobs: list[bytes] | None = None,
         dynamic_prompt: str | None = None,
         allow_gateway_retry: bool = False,
+        request_kind: LLMRequestKind | None = None,
     ) -> dict[str, Any]:
         active_client = self.config_client if use_config_client else self.client
         default_model = self.settings.config_model if use_config_client else self.settings.grading_model
-        request_kind = (
-            LLMRequestKind.CONFIG_GENERATION
-            if use_config_client
-            else LLMRequestKind.GRADING
+        effective_request_kind = request_kind or (
+            LLMRequestKind.CONFIG_GENERATION if use_config_client else LLMRequestKind.GRADING
         )
         request_id = str(uuid.uuid4())
         next_attempt = count(1).__next__
@@ -176,7 +177,7 @@ class LLMClient:
             expect_json=True,
             usage_callback=usage_callback,
             extra_kwargs=extra_kwargs,
-            request_kind=request_kind,
+            request_kind=effective_request_kind,
             request_id=request_id,
             _next_attempt=next_attempt,
             allow_gateway_retry=allow_gateway_retry,
@@ -195,7 +196,7 @@ class LLMClient:
             client=active_client,
             usage_callback=usage_callback,
             extra_kwargs=extra_kwargs,
-            request_kind=request_kind,
+            request_kind=effective_request_kind,
             request_id=request_id,
             _next_attempt=next_attempt,
         )

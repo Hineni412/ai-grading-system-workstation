@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from types import SimpleNamespace
 
+import api_profiles
 import backend.llm as backend_llm
 import openai
 import usage_logger
@@ -214,3 +215,108 @@ def test_choice_recognition_routes_existing_request_through_recognition_gateway(
     assert result["success"] is True
     assert result["error_type"] == ""
     assert workspace_usage_writes == []
+
+
+def test_choice_recognition_defaults_production_config_max_tokens_to_100(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    provider_calls: list[dict[str, object]] = []
+    profile = {
+        "name": "fake-production-profile",
+        "objective_enabled": True,
+        "objective_api_key": "fake-production-key",
+        "objective_base_url": "https://production-provider.invalid/v1",
+        "objective_model": "fake-production-model",
+        "objective_temperature": 0.15,
+        "objective_thinking_type": "disabled",
+        "llm_recognition_timeout_seconds": 23,
+        "llm_recognition_max_retries": 0,
+        "llm_recognition_requests_per_minute": 5000,
+    }
+    fake_store = SimpleNamespace(load=lambda: [profile])
+    completion = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content=(
+                        '{"selected":"B","confidence":0.97,'
+                        '"need_review":false,"review_reason":""}'
+                    )
+                )
+            )
+        ],
+        usage=None,
+    )
+
+    def fake_provider_create(**kwargs: object) -> object:
+        provider_calls.append(kwargs)
+        return completion
+
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=fake_provider_create)
+        )
+    )
+    real_adapter_class = backend_llm.LLMProtocolAdapter
+
+    class IsolatedProtocolAdapter:
+        def __init__(
+            self,
+            api_key: str,
+            base_url: str,
+            policy_profile=None,
+        ) -> None:
+            self._adapter = real_adapter_class(
+                api_key,
+                base_url,
+                policy_profile=policy_profile,
+                client=fake_client,
+                usage_sink_factory=backend_llm.NullUsageSink,
+            )
+
+        def chat_completions(self, **kwargs: object) -> object:
+            return self._adapter.chat_completions(**kwargs)
+
+    def forbid_direct_sdk(*args: object, **kwargs: object) -> object:
+        raise AssertionError("direct OpenAI SDK boundary is still in use")
+
+    monkeypatch.setattr(api_profiles, "get_api_profile_store", lambda: fake_store)
+    monkeypatch.setattr(
+        backend_llm,
+        "LLMProtocolAdapter",
+        IsolatedProtocolAdapter,
+    )
+    monkeypatch.setattr(openai, "OpenAI", forbid_direct_sdk)
+    monkeypatch.setattr(
+        usage_logger,
+        "log_llm_usage",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("workspace usage must not be logged")
+        ),
+    )
+    production_config = api_profiles.get_objective_api_config()
+    assert "max_tokens" not in production_config
+
+    image_path = tmp_path / "production-choice.jpg"
+    Image.new("RGB", (32, 24), "white").save(image_path, format="JPEG")
+
+    result = recognize_choice_answer(
+        image_path=image_path,
+        question_id="choice-production-default",
+        standard_answer="B",
+        max_score=6,
+        session_id="fake-production-session",
+        student_id="fake-production-student",
+    )
+
+    assert provider_calls, result["error_type"]
+    assert provider_calls[0]["max_tokens"] == 100
+    assert result["max_tokens"] == 100
+    assert result["selected"] == "B"
+    assert result["is_correct"] is True
+    assert result["score"] == 6
+    assert result["auto_scored"] is True
+    assert result["need_review"] is False
+    assert result["success"] is True
+    assert result["error_type"] == ""

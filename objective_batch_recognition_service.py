@@ -215,6 +215,7 @@ def run_objective_batch_recognition(
 
                 if isinstance(batch_client, LLMClient):
                     request_kwargs["allow_gateway_retry"] = True
+                    request_kwargs["request_kind"] = LLMRequestKind.RECOGNITION
             response = batch_client.json_from_images(
                 prompt,
                 [image_bytes],
