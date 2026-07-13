@@ -36,12 +36,12 @@
 ## 昼夜交接
 
 **执行包：** P2-06
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** pending
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
@@ -119,7 +119,7 @@ Expected: staged paths contain only this plan; the commit is the first first-par
 - Consumes: no Store, router, API or DOM-specific business data.
 - Produces: `EvidenceSource`, `ViewerPoint`, `ViewerSize`, `useEvidenceViewer()`, source/reset/loading actions, computed transform and bounded input actions used by Task 3.
 
-- [ ] **Step 1: Write failing state tests**
+- [x] **Step 1: Write failing state tests**
 
 Create `frontend/src/__tests__/evidence-viewer-state.spec.ts` with these exact cases:
 
@@ -192,7 +192,7 @@ describe('P2-06 evidence viewer state', () => {
 })
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 npm run test -- src/__tests__/evidence-viewer-state.spec.ts --maxWorkers=1
@@ -200,7 +200,7 @@ npm run test -- src/__tests__/evidence-viewer-state.spec.ts --maxWorkers=1
 
 Expected: FAIL because `use-evidence-viewer.ts` does not exist.
 
-- [ ] **Step 3: Implement the minimal composable**
+- [x] **Step 3: Implement the minimal composable**
 
 Create `frontend/src/composables/use-evidence-viewer.ts` with the public contract below and no Store/router imports:
 
@@ -352,7 +352,7 @@ export function useEvidenceViewer() {
 
 If the exact `VISIBLE_EDGE` expectation exposes a one-pixel arithmetic difference, adjust the test and implementation together only after writing the formula in the test name; do not weaken it to a broad range.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```powershell
 npm run test -- src/__tests__/evidence-viewer-state.spec.ts --maxWorkers=1
@@ -377,7 +377,7 @@ Expected: the focused test file passes with all five behaviors.
 - Consumes: `ReviewItem`, Task 2 `useEvidenceViewer()`, current/previous/next entries from the filtered P2-05 queue.
 - Produces: one active evidence image, safe source switching, retry, pointer/wheel/focused-keyboard operations, and at most two adjacent crop preloads.
 
-- [ ] **Step 1: Write failing component and integration tests**
+- [x] **Step 1: Write failing component and integration tests**
 
 Create `frontend/src/__tests__/review-evidence-viewer.spec.ts`. Stub `ResizeObserver` and `globalThis.Image`, mount with three anonymous items, and assert these behaviors:
 
@@ -408,7 +408,7 @@ it('renders read-only evidence without score, save, or confirm controls', async 
 
 Also add an integration case that selects the next record and expects the viewer source label `裁剪证据`, zoom label `适应宽度`, and one new `img[src]` matching the new current item.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 npm run test -- src/__tests__/review-evidence-viewer.spec.ts src/__tests__/review-queue-view.spec.ts --maxWorkers=1
@@ -416,7 +416,7 @@ npm run test -- src/__tests__/review-evidence-viewer.spec.ts src/__tests__/revie
 
 Expected: FAIL because `ReviewEvidenceViewer.vue` does not exist and the page still renders only the P2-05 notice.
 
-- [ ] **Step 3: Implement `ReviewEvidenceViewer.vue`**
+- [x] **Step 3: Implement `ReviewEvidenceViewer.vue`**
 
 Use this exact public interface:
 
@@ -470,7 +470,7 @@ The template must contain, in order:
 
 Toolbar button names are exactly `适应宽度`, `原比例`, `缩小`, `放大`, `向左旋转`, `向右旋转`; the visible percentage is `Math.round(scale * 100)%`. Loading and error content remain inside the canvas; the error action is `重新加载`.
 
-- [ ] **Step 4: Integrate current and adjacent records**
+- [x] **Step 4: Integrate current and adjacent records**
 
 In `ReviewQueueView.vue`, add:
 
@@ -504,7 +504,7 @@ Keep `StatePanel` for no current item. Do not change session/question loading, U
 
 In `ReviewSelectionSummary.vue`, keep identity, score, confidence, status and existing error text, add class `review-selection-summary--compact`, remove the old “答卷证据将在 P2-06 接入” notice, and change the notice to exactly `评分与确认将在 P2-07 接入。当前页面不会修改原图或评分数据。`.
 
-- [ ] **Step 5: Run GREEN and commit**
+- [x] **Step 5: Run GREEN and commit**
 
 ```powershell
 npm run test -- src/__tests__/review-evidence-viewer.spec.ts src/__tests__/review-queue-view.spec.ts --maxWorkers=1
@@ -529,7 +529,7 @@ Expected: component and affected view tests pass; DOM contains one evidence imag
 - Consumes: existing App Shell/review queue geometry, CSS Tokens, P2-06 accessible names/test hooks and mock Review API.
 - Produces: stable evidence canvas, visible focus/loading/error states, generated image routes, pixel checks, large-image and five-viewport evidence.
 
-- [ ] **Step 1: Write failing style/import and browser checks**
+- [x] **Step 1: Write failing style/import and browser checks**
 
 Extend `App.spec.ts` to require `main.ts` to import `./styles/review-evidence.css` after `review-queue.css`, and require the new stylesheet to contain no hex/rgb/hsl literals.
 
@@ -565,7 +565,7 @@ await expect(page.locator('.review-evidence-viewer img')).toHaveCount(1)
 
 Track `pageerror` and console `error` arrays and require both empty.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 npm run test -- src/__tests__/App.spec.ts --maxWorkers=1
@@ -574,7 +574,7 @@ npm run e2e -- review-evidence.spec.ts
 
 Expected: import/style test fails because the stylesheet is absent; browser tests fail because canvas layout is not styled.
 
-- [ ] **Step 3: Implement Token-only evidence styles**
+- [x] **Step 3: Implement Token-only evidence styles**
 
 Create `frontend/src/styles/review-evidence.css` and import it in `main.ts` after `review-queue.css`. Use the existing Token palette; the canvas background is `var(--color-text-primary)` with `var(--color-bg-sidebar)` as its border/surround, not a new raw color.
 
@@ -655,7 +655,7 @@ Buttons reuse the review navigation control border/background/focus language, se
 
 Modify `.review-detail` in `review-queue.css` from scrolling content to an internal grid/hidden overflow host so the evidence canvas receives the remaining height; keep navigation sticky and queue scrolling unchanged. Update `review-queue.spec.ts` selectors only where the former summary-specific viewport assertion must point to `.review-evidence-viewer`.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```powershell
 npm run test -- src/__tests__/App.spec.ts --maxWorkers=1
@@ -678,7 +678,7 @@ Expected: import/style guard and both P2-05/P2-06 Chromium suites pass, includin
 - Consumes: implemented viewer, `docs/user-testing/USER_TEST_TEMPLATE.md`, generated P2-06 media environment and repository handoff validator.
 - Produces: complete automated evidence, unchanged real database fingerprints, a versioned quick-test checklist and `waiting_review` feature commit.
 
-- [ ] **Step 1: Run focused and affected frontend gates**
+- [x] **Step 1: Run focused and affected frontend gates**
 
 From `frontend/`:
 
@@ -692,7 +692,7 @@ npm run e2e -- review-evidence.spec.ts review-queue.spec.ts app-shell.spec.ts ap
 
 Expected: all commands exit 0. Record exact Vitest file/test counts, Playwright counts and build result in a dated evidence section in this plan.
 
-- [ ] **Step 2: Run repository and scope guards**
+- [x] **Step 2: Run repository and scope guards**
 
 From the P2-06 worktree root:
 
@@ -709,13 +709,13 @@ rg -n "confirm|score.*input|fetch\(|Blob|createObjectURL|localStorage|canvas" `
 
 Expected: no `user_data` changes; changed paths are limited to the P2-06 spec/plan, frontend viewer sources/tests/styles and quick checklist; production viewer has no confirm/fetch/Blob/object URL/localStorage/Canvas path; smoke exits 0. Do not run full pytest unless a documented risk trigger occurs.
 
-- [ ] **Step 3: Compare real database fingerprints without opening SQLite**
+- [x] **Step 3: Compare real database fingerprints without opening SQLite**
 
 From the repository root, repeat Task 1’s `Get-Item` and `Get-FileHash` commands. Compare exact name/size/UTC/SHA-256 tuples to the recorded Task 1 baseline.
 
 Expected: both tuples are byte-for-byte identical. Any mismatch is a blocker; do not update the baseline to the new values.
 
-- [ ] **Step 4: Create the implemented quick-test checklist**
+- [x] **Step 4: Create the implemented quick-test checklist**
 
 After the actual browser environment has been run and verified, create `docs/user-testing/checkpoints/P2-06-evidence-viewer-quick.md` from `USER_TEST_TEMPLATE.md`. Fill the actual validated start command, address, visible marker and close method. The checklist must use only anonymous generated records and include these user actions:
 
@@ -729,7 +729,7 @@ After the actual browser environment has been run and verified, create `docs/use
 
 Do not mark the machine result or user result `passed`; user feedback remains pending.
 
-- [ ] **Step 5: Commit the verified feature handoff**
+- [x] **Step 5: Commit the verified feature handoff**
 
 Update completed checkboxes and add the dated evidence. Change the actual handoff block to:
 
@@ -756,6 +756,18 @@ git commit -m "docs: prepare P2-06 review handoff"
 ```
 
 Expected: validator returns `ok=true`, `state="waiting_review"`, and no issues. Stop the implementation phase for independent review; do not self-mark review or user acceptance passed.
+
+---
+
+## 2026-07-13 实施与自动验证证据
+
+- 用户在同地址媒体重试连续两次修复失败触发安全停机后明确回复“继续”，授权仅针对该问题继续根因调查。最终确认画布的指针捕获抢走了错误按钮点击；修复为交互按钮不启动拖动，并新增单元与 Chromium 回归，未扩大执行包范围。
+- 前端质量门禁：`lint` 通过；`typecheck` 通过；Vitest `18` 个文件、`144` 项测试全部通过；生产构建通过，Vite 转换 `1644` 个模块。
+- 受影响浏览器门禁：`review-evidence.spec.ts`、`review-queue.spec.ts`、`app-shell.spec.ts`、`app.spec.ts` 共 `24` 项 Chromium 测试全部通过；其中 P2-05/P2-06 两套专项共 `11` 项通过，覆盖五种桌面分辨率、程序生成 1200×800 裁剪图、4096×4096 原卷图、像素抽样、快速切换、重试和单活动图片边界。
+- 仓库快速冒烟 `tools/smoke_check.py --skip-tests` 通过：文档治理、404 个第一方 Python 文件静态编译、两库隔离副本初始化幂等均通过；按执行包规则未运行全量 pytest。
+- 生产查看器未新增后端路由、分数写入、确认请求、Blob/Object URL、localStorage、生产 Canvas 或图片持久化；`canvas` 命中仅为查看器画布 DOM/CSS 命名。
+- 根工作区真实数据库只读复核与领取基线完全一致：`grading_system.db|2863104|2026-07-10T07:10:41.1221109Z|93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`；`question_bank.db|3461120|2026-07-08T11:58:06.3320883Z|E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`。未打开 SQLite，源码工作树的 `user_data/` 状态为空。
+- 快速用户验收清单已生成：`docs/user-testing/checkpoints/P2-06-evidence-viewer-quick.md`；机器结果和用户结论保持 `pending`，等待独立复审后的精确 SHA。
 
 ---
 
