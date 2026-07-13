@@ -226,7 +226,15 @@ class LLMGateway:
             )
         except Exception:
             logger.warning("Failed to normalize LLM usage metadata")
-            return
+            event = LLMUsageEvent(
+                request_id=request_id,
+                attempt=attempt,
+                request_kind=request_kind.value,
+                protocol=protocol.value,
+                model=str(model),
+                latency_ms=latency_ms,
+                success=True,
+            )
         self._safe_write(event)
 
     def _safe_write(self, event: LLMUsageEvent) -> None:

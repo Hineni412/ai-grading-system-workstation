@@ -398,3 +398,32 @@ def test_usage_sink_failure_does_not_change_returned_response():
     )
 
     assert actual is result
+
+
+def test_malformed_usage_records_zero_token_success_without_changing_response():
+    sink = RecordingSink()
+    result = SimpleNamespace(
+        usage=SimpleNamespace(
+            prompt_tokens="not-an-int",
+            completion_tokens=3,
+            total_tokens=10,
+        )
+    )
+    operation = FakeCreate([result])
+    gateway = _gateway(sink=sink)
+
+    actual = gateway.chat_completions(
+        request_kind=LLMRequestKind.GRADING,
+        client=_client_for("chat", operation),
+        model="g",
+        kwargs={"messages": []},
+    )
+
+    assert actual is result
+    assert len(sink.events) == 1
+    event = sink.events[0]
+    assert event.success is True
+    assert event.attempt == 1
+    assert event.prompt_tokens == 0
+    assert event.completion_tokens == 0
+    assert event.total_tokens == 0
