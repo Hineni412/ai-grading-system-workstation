@@ -380,3 +380,48 @@ def test_catchable_second_replace_failure_restores_previous_outputs_and_reraises
         if exists
     )
     assert sorted(path.name for path in tmp_path.iterdir()) == expected_names
+
+
+def test_restore_attempts_both_outputs_when_first_restore_fails_and_keeps_publish_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tools.benchmark_api_db as cli_module
+
+    json_output = tmp_path / "baseline.json"
+    markdown_output = tmp_path / "baseline.md"
+    json_output.write_text("old-json", encoding="utf-8")
+    markdown_output.write_text("old-markdown", encoding="utf-8")
+    real_replace = cli_module.os.replace
+    restore_destinations: list[Path] = []
+
+    def fail_second_publish_and_first_restore(
+        source: object,
+        destination: object,
+    ) -> None:
+        source_path = Path(source)
+        destination_path = Path(destination)
+        if source_path.name.endswith(".restore.tmp"):
+            restore_destinations.append(destination_path)
+            if destination_path == json_output:
+                raise OSError("injected first restore failure")
+        elif destination_path == markdown_output and source_path.name.endswith(".tmp"):
+            raise RuntimeError("injected publish failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(cli_module.os, "replace", fail_second_publish_and_first_restore)
+
+    with pytest.raises(RuntimeError, match="injected publish failure") as captured:
+        publish_report(_synthetic_report(), json_output, markdown_output)
+
+    assert restore_destinations == [json_output, markdown_output]
+    assert isinstance(captured.value.__cause__, BaseExceptionGroup)
+    assert any(
+        "injected first restore failure" in str(error)
+        for error in captured.value.__cause__.exceptions
+    )
+    assert markdown_output.read_text(encoding="utf-8") == "old-markdown"
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "baseline.json",
+        "baseline.md",
+    ]

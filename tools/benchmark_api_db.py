@@ -84,13 +84,24 @@ def publish_report(
         markdown_temp.write_text(markdown_text, encoding="utf-8", newline="\n")
         os.replace(json_temp, json_output)
         os.replace(markdown_temp, markdown_output)
-    except BaseException:
-        _restore_output(json_output, previous_json, token)
-        _restore_output(markdown_output, previous_markdown, token)
+    except BaseException as publish_error:
+        restore_errors: list[BaseException] = []
+        for output, previous in (
+            (json_output, previous_json),
+            (markdown_output, previous_markdown),
+        ):
+            try:
+                _restore_output(output, previous, token)
+            except BaseException as restore_error:
+                restore_errors.append(restore_error)
+        if restore_errors:
+            raise publish_error from BaseExceptionGroup(
+                "report recovery failed",
+                restore_errors,
+            )
         raise
     finally:
-        json_temp.unlink(missing_ok=True)
-        markdown_temp.unlink(missing_ok=True)
+        _best_effort_unlink(json_temp, markdown_temp)
 
 
 def _restore_output(output: Path, previous: bytes | None, token: str) -> None:
@@ -102,7 +113,15 @@ def _restore_output(output: Path, previous: bytes | None, token: str) -> None:
         restore_temp.write_bytes(previous)
         os.replace(restore_temp, output)
     finally:
-        restore_temp.unlink(missing_ok=True)
+        _best_effort_unlink(restore_temp)
+
+
+def _best_effort_unlink(*paths: Path) -> None:
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except BaseException:
+            continue
 
 
 def _code_sha() -> str:
