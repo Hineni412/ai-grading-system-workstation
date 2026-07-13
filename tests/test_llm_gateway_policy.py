@@ -60,6 +60,15 @@ def test_profile_overrides_are_scoped_to_request_kind():
     assert policy.retry_delays == (0.5,)
 
 
+def test_five_retries_have_five_deterministic_delays():
+    policy = policy_from_profile(
+        LLMRequestKind.GRADING,
+        {"llm_grading_max_retries": 5},
+    )
+
+    assert policy.retry_delays == (0.5, 1.5, 3.0, 5.0, 8.0)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
