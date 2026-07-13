@@ -17,7 +17,7 @@ function confidenceLabel(item: ReviewItem): string {
 
 <template>
   <section
-    class="review-selection-summary"
+    class="review-selection-summary review-selection-summary--compact"
     :aria-labelledby="item ? 'review-selection-title' : undefined"
   >
     <StatePanel
@@ -58,7 +58,7 @@ function confidenceLabel(item: ReviewItem): string {
       </dl>
 
       <p class="review-selection-summary__notice">
-        答卷证据将在 P2-06 接入；评分与确认将在 P2-07 接入。
+        评分与确认将在 P2-07 接入。当前页面不会修改原图或评分数据。
       </p>
     </template>
   </section>
