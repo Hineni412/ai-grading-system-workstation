@@ -74,16 +74,16 @@ npm run demo:p2-08
 
 ## 结果记录（由 Codex 更新）
 
-- 结果：pending
-- 失败等级：none | Blocker | Major | Minor
+- 结果：passed
+- 失败等级：none
 - 失败步骤：none
-- 用户反馈：none
+- 用户反馈：步骤 1–14 逐项明确通过；步骤 9 修复后的右下角浮动通知位置、文案、草稿保留和持续显示符合教师操作习惯。
 - 脱敏证据：固定匿名数据、程序生成答卷与内存确认；不接触真实业务内容
-- 用户明确结论：pending
-- 真实两库测试后指纹：pending
+- 用户明确结论：通过
+- 真实两库测试后指纹：阅卷库 `2863104 / 2026-07-10T07:10:41.1221109Z / 93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`；题库 `3461120 / 2026-07-08T11:58:06.3320883Z / E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`
 
 <!-- USER_ACCEPTANCE_RESULT_START -->
 **执行包：** P2-08
-**验收提交：** pending_review_anchor
-**结果：** pending
+**验收提交：** d71c3aa41eba35cc767870efddd80147cd6b6c12
+**结果：** passed
 <!-- USER_ACCEPTANCE_RESULT_END -->
