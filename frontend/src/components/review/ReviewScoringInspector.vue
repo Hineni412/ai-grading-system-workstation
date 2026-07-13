@@ -133,7 +133,9 @@ async function submitCurrent(): Promise<void> {
     const refreshFailed = stillOnSubmittedContext && reviewStore.itemLoadState === 'error'
     feedbackTone.value = annotationRetry || refreshFailed ? 'warning' : 'success'
     feedback.value = !stillOnSubmittedContext
-      ? '先前记录的教师最终分已确认；当前选择未更改。'
+      ? annotationRetry
+        ? '先前记录的分数已确认，标注图需要稍后刷新；当前选择未更改。'
+        : '先前记录的教师最终分已确认；当前选择未更改。'
       : annotationRetry
         ? '分数已确认，标注图需要稍后刷新。'
         : refreshFailed
