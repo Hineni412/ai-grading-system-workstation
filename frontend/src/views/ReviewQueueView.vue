@@ -7,6 +7,7 @@ import StatePanel from '../components/design-system/StatePanel.vue'
 import ReviewEvidenceViewer from '../components/review/ReviewEvidenceViewer.vue'
 import ReviewQueuePanel from '../components/review/ReviewQueuePanel.vue'
 import ReviewSelectionSummary from '../components/review/ReviewSelectionSummary.vue'
+import { reviewShortcutBus, type ReviewShortcutCommand } from '../composables/review-shortcuts'
 import { useReviewQueueStore, type ReviewScope, type ReviewSort } from '../stores/review-queue'
 import { useSessionStore } from '../stores/session'
 
@@ -262,16 +263,32 @@ function onKeydown(event: KeyboardEvent): void {
     event.altKey ||
     event.ctrlKey ||
     event.metaKey ||
-    event.shiftKey ||
     isShortcutProtectedTarget(event.target)
   ) return
 
   const key = event.key.toLocaleLowerCase()
   const delta = key === 'j' ? 1 : key === 'k' ? -1 : 0
-  if (delta === 0) return
-  const previousDetailId = reviewStore.selectedDetailId
-  reviewStore.moveSelection(delta)
-  if (reviewStore.selectedDetailId !== previousDetailId) event.preventDefault()
+  if (delta !== 0) {
+    if (event.shiftKey) return
+    const previousDetailId = reviewStore.selectedDetailId
+    reviewStore.moveSelection(delta)
+    if (reviewStore.selectedDetailId !== previousDetailId) event.preventDefault()
+    return
+  }
+
+  if (event.repeat && key === 'enter') return
+  if (event.shiftKey && key !== 'enter' && key !== '+') return
+
+  let command: ReviewShortcutCommand | null = null
+  if (key === '/') command = 'focus-search'
+  else if (key === 'z') command = 'fit-width'
+  else if (key === '+' || key === '=') command = 'zoom-in'
+  else if (key === '-') command = 'zoom-out'
+  else if (key === 'enter') command = event.shiftKey ? 'confirm-next' : 'confirm-stay'
+  if (command === null) return
+
+  reviewShortcutBus.dispatch(command)
+  event.preventDefault()
 }
 
 const stopSessionWatch = watch(
