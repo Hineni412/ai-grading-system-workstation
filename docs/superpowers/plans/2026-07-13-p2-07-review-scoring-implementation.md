@@ -43,14 +43,14 @@
 ## 昼夜交接
 
 **执行包：** P2-07
-**交接状态：** waiting_user
-**功能提交：** 2cdb126a4dde681d595ea86972320ee7a92f2839
+**交接状态：** verified_pending_integration
+**功能提交：** 2b135b004bbf4a9b91e45316543cc49e0e79c455
 **自动验证：** passed
 **独立复审：** passed
-**用户验收：** pending
+**用户验收：** passed
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
 
 ## 2026-07-13 领取证据
