@@ -10,8 +10,30 @@
 
 .review-scoring-inspector__header,
 .review-scoring-section,
-.review-scoring-inspector__footer {
+.review-scoring-inspector__footer,
+.review-scoring-feedback {
   padding: var(--space-4);
+}
+
+.review-scoring-feedback {
+  margin: 0;
+  border-block-end: var(--border-width) solid var(--color-border-subtle);
+  font-size: var(--font-size-dense);
+}
+
+.review-scoring-feedback--success {
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+}
+
+.review-scoring-feedback--warning {
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+}
+
+.review-scoring-feedback--error {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
 }
 
 .review-scoring-inspector__header,

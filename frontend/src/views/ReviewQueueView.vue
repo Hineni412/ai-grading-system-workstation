@@ -8,12 +8,14 @@ import ReviewEvidenceViewer from '../components/review/ReviewEvidenceViewer.vue'
 import ReviewQueuePanel from '../components/review/ReviewQueuePanel.vue'
 import ReviewSelectionSummary from '../components/review/ReviewSelectionSummary.vue'
 import { useReviewQueueStore, type ReviewScope, type ReviewSort } from '../stores/review-queue'
+import { useReviewDraftStore } from '../stores/review-drafts'
 import { useSessionStore } from '../stores/session'
 
 const route = useRoute()
 const router = useRouter()
 const sessionStore = useSessionStore()
 const reviewStore = useReviewQueueStore()
+const draftStore = useReviewDraftStore()
 const reviewPage = ref<HTMLElement | null>(null)
 
 let contextGeneration = 0
@@ -274,6 +276,12 @@ function onKeydown(event: KeyboardEvent): void {
   if (reviewStore.selectedDetailId !== previousDetailId) event.preventDefault()
 }
 
+function onBeforeUnload(event: BeforeUnloadEvent): void {
+  if (!draftStore.hasDirtyDrafts) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+
 const stopSessionWatch = watch(
   () => sessionStore.selectedSessionId,
   (sessionId) => void loadSession(sessionId),
@@ -293,7 +301,10 @@ const stopScrollWatch = watch(
   () => void scrollSelectedRowIntoView(),
 )
 
-onMounted(() => window.addEventListener('keydown', onKeydown))
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
+  window.addEventListener('beforeunload', onBeforeUnload)
+})
 
 onBeforeUnmount(() => {
   unmounting = true
@@ -304,6 +315,7 @@ onBeforeUnmount(() => {
   stopSelectionWatch()
   stopScrollWatch()
   window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('beforeunload', onBeforeUnload)
   reviewStore.reset()
 })
 </script>

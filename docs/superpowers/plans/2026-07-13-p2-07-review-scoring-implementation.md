@@ -286,7 +286,7 @@ git commit -m "feat: add teacher scoring inspector"
 - Consumes: single-item confirm response, pre-submit filtered queue, current route/session/item generation.
 - Produces: one-shot confirmation, local authoritative patch, refresh reconciliation, next-item selection, dirty `beforeunload` guard and safe status feedback.
 
-- [ ] **Step 1: Write failing confirmation behavior tests**
+- [x] **Step 1: Write failing confirmation behavior tests**
 
 Cover:
 
@@ -306,7 +306,7 @@ npm test -- src/__tests__/review-scoring-inspector.spec.ts src/__tests__/review-
 
 Expected: FAIL on missing confirmation/reconciliation behavior.
 
-- [ ] **Step 2: Implement one-shot submit and queue reconciliation**
+- [x] **Step 2: Implement one-shot submit and queue reconciliation**
 
 Add a queue-store method that patches a confirmed detail using a new immutable item object with the teacher score, note/default confirmation reason, `needs_review=false`, and confirmed category/summary. Do not mutate other items or redefine sorting.
 
@@ -322,7 +322,7 @@ After success, patch and clear the draft. Only select `nextDetailId` when the cu
 
 Run the same tests and expect PASS.
 
-- [ ] **Step 3: Commit the integrated behavior**
+- [x] **Step 3: Commit the integrated behavior**
 
 ```powershell
 git add frontend/src/components/review/ReviewScoringInspector.vue frontend/src/stores/review-queue.ts frontend/src/views/ReviewQueueView.vue frontend/src/__tests__/review-scoring-inspector.spec.ts frontend/src/__tests__/review-queue-store.spec.ts frontend/src/__tests__/review-queue-view.spec.ts

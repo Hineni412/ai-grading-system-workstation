@@ -1,18 +1,24 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
-import { fetchReviewRubric, type ReviewRubricSection } from '../../api/review'
+import {
+  confirmReviewItem,
+  fetchReviewItems,
+  fetchReviewRubric,
+  type ReviewRubricSection,
+} from '../../api/review'
 import { scoreIssue, useReviewDraftStore, type ReviewDraft } from '../../stores/review-drafts'
 import { useReviewQueueStore } from '../../stores/review-queue'
 import StatePanel from '../design-system/StatePanel.vue'
-
-defineEmits<{ confirmRequest: [] }>()
 
 const reviewStore = useReviewQueueStore()
 const draftStore = useReviewDraftStore()
 const rubric = ref<ReviewRubricSection | null>(null)
 const rubricState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const currentDraft = ref<ReviewDraft | null>(null)
+const submitting = ref(false)
+const feedback = ref('')
+const feedbackTone = ref<'success' | 'warning' | 'error'>('success')
 let rubricController: AbortController | null = null
 let rubricGeneration = 0
 
@@ -25,12 +31,14 @@ const submitDisabled = computed(() =>
   !item.value ||
   !currentDraft.value ||
   !currentDraft.value.dirty ||
-  issue.value !== null,
+  issue.value !== null ||
+  submitting.value,
 )
 const disabledReason = computed(() => {
   if (!item.value) return '请先选择一条复核记录'
   if (issue.value) return issue.value
   if (!currentDraft.value?.dirty) return '请先修改教师最终分或备注'
+  if (submitting.value) return '正在确认当前评分'
   return ''
 })
 const evidenceSteps = computed(() => stringList(item.value?.metadata.evidence_steps))
@@ -73,6 +81,64 @@ function updateScore(event: Event): void {
 function updateNote(event: Event): void {
   if (!currentDraft.value) return
   draftStore.updateNote(currentDraft.value.key, (event.target as HTMLTextAreaElement).value)
+}
+
+async function submitCurrent(): Promise<void> {
+  const submittedItem = item.value
+  const draft = currentDraft.value
+  if (!submittedItem || !draft || submitDisabled.value || submitting.value) return
+
+  const submittedDetailId = submittedItem.detail_id
+  const submittedQuestionId = submittedItem.question_id
+  const submittedSessionId = submittedItem.session_id
+  const submittedContext = `${submittedSessionId}:${submittedQuestionId}:${submittedDetailId}`
+  const nextDetailId = reviewStore.filteredItems[reviewStore.currentIndex + 1]?.detail_id ?? null
+  const score = Number(draft.scoreText.trim())
+  const note = draft.note.trim()
+
+  submitting.value = true
+  feedback.value = ''
+  try {
+    const response = await confirmReviewItem(
+      submittedSessionId,
+      submittedQuestionId,
+      {
+        result_id: submittedItem.result_id,
+        detail_id: submittedDetailId,
+        score_awarded: score,
+        ...(note ? { deduction_reason: note } : {}),
+      },
+    )
+    const confirmedReason = note || '人工复核已确认'
+    reviewStore.markItemConfirmed(submittedDetailId, score, confirmedReason)
+    draftStore.markConfirmed(draft.key)
+
+    const active = reviewStore.currentItem
+    const activeContext = active
+      ? `${active.session_id}:${active.question_id}:${active.detail_id}`
+      : `${submittedSessionId}:${submittedQuestionId}:${reviewStore.selectedDetailId ?? ''}`
+    const stillOnSubmittedContext = activeContext === submittedContext || reviewStore.selectedDetailId === submittedDetailId
+    if (stillOnSubmittedContext) {
+      reviewStore.reconcileAfterConfirmation(nextDetailId ?? undefined)
+      await reviewStore.loadItems(submittedSessionId, submittedQuestionId, fetchReviewItems)
+    }
+
+    const annotationRetry = response.annotation_outcomes.some(
+      (outcome) => outcome.status === 'retry_required',
+    )
+    const refreshFailed = stillOnSubmittedContext && reviewStore.itemLoadState === 'error'
+    feedbackTone.value = annotationRetry || refreshFailed ? 'warning' : 'success'
+    feedback.value = annotationRetry
+      ? '分数已确认，标注图需要稍后刷新。'
+      : refreshFailed
+        ? '分数已确认，队列刷新失败；草稿不会重复提交，可稍后安全刷新。'
+        : '教师最终分已确认。'
+  } catch {
+    feedbackTone.value = 'error'
+    feedback.value = '确认失败，教师草稿已保留。请检查网络后重试。'
+  } finally {
+    submitting.value = false
+  }
 }
 
 async function loadRubric(sessionId: number, questionId: string): Promise<void> {
@@ -133,6 +199,14 @@ onBeforeUnmount(() => {
 
     <template v-else>
       <div class="review-scoring-inspector__scroll" data-testid="scoring-scroll-region">
+        <p
+          v-if="feedback"
+          class="review-scoring-feedback"
+          :class="`review-scoring-feedback--${feedbackTone}`"
+          :role="feedbackTone === 'error' ? 'alert' : 'status'"
+        >
+          {{ feedback }}
+        </p>
         <header class="review-scoring-inspector__header">
           <p>{{ item.question_id }} · 满分 {{ formatScore(item.max_score) }}</p>
           <h2>评分与复核</h2>
@@ -251,9 +325,9 @@ onBeforeUnmount(() => {
           data-testid="confirm-next"
           :disabled="submitDisabled"
           :title="disabledReason"
-          @click="$emit('confirmRequest')"
+          @click="submitCurrent"
         >
-          确认并下一份
+          {{ submitting ? '正在确认…' : '确认并下一份' }}
         </button>
       </footer>
     </template>

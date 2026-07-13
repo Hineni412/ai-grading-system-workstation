@@ -7,6 +7,7 @@ import type { ReviewItem, ReviewQuestionSummary } from '../api/review'
 import ReviewQueueView from '../views/ReviewQueueView.vue'
 import { createAppRouter } from '../router'
 import { useReviewQueueStore } from '../stores/review-queue'
+import { useReviewDraftStore } from '../stores/review-drafts'
 import { useSessionStore } from '../stores/session'
 
 const media = {
@@ -147,6 +148,7 @@ async function mountView({
 
   return {
     host,
+    pinia,
     router,
     reviewStore,
     sessionStore,
@@ -205,6 +207,20 @@ describe('P2-05 review queue view', () => {
     expect(host.textContent).toContain('请先选择考试')
     expect(loadQuestionsSpy).not.toHaveBeenCalled()
     expect(loadItemsSpy).not.toHaveBeenCalled()
+  })
+
+  it('warns before browser unload only while a teacher draft is dirty', async () => {
+    const { pinia, reviewStore } = await mountView()
+    const draftStore = useReviewDraftStore(pinia)
+    const cleanEvent = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(cleanEvent)
+    expect(cleanEvent.defaultPrevented).toBe(false)
+
+    const draft = draftStore.ensureDraft(reviewStore.currentItem!)
+    draftStore.updateScore(draft.key, '4')
+    const dirtyEvent = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(dirtyEvent)
+    expect(dirtyEvent.defaultPrevented).toBe(true)
   })
 
   it('restores a valid question and detail from the URL', async () => {
