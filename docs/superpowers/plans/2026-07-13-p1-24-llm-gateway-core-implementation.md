@@ -616,7 +616,7 @@ Before the first feature edit, the claim commit must already have added the hand
 git commit -m "feat: add unified LLM gateway core"
 ```
 
-- [ ] **Step 7: Complete independent review and final plan-only handoff**
+- [x] **Step 7: Complete independent review and final plan-only handoff**
 
 Review for retry multiplication, request-ID loss, unsafe logging, changed JSON behavior and P1-25 scope leakage. Critical/Important must be zero. Fix findings with focused RED/GREEN tests, rerun affected regression, then create a plan-only handoff commit whose block records its direct parent full reviewed SHA as `verified_pending_integration`.
 
@@ -634,20 +634,20 @@ Review for retry multiplication, request-ID loss, unsafe logging, changed JSON b
 - Claim and task chain: the immutable claim handoff preceded implementation; Tasks 1-6 are complete through `85285619ded13f1d3420318c7c511a68dd892f98`, with their focused RED/GREEN cycles and requested task reviews recorded in `.superpowers/sdd/` reports and progress ledger.
 - Final focused and affected regression: the exact fourteen-file Task 7 command completed with `219 passed / 0 failed`.
 - Boundary guard: `backend/llm/` and `llm_client.py` contain only the compatibility client constructor and the two Chat/Responses protocol execution points; neither `while True` nor `timeout=None` occurs in those paths. The four P1-25-owned direct caller chains and objective-batch `timeout=None` remain unchanged outside the P1-24 paths.
-- Completion gates: `git diff --check` passed. Quick smoke passed document governance, static compilation of `403` first-party Python files, and idempotent initialization plus `integrity_check=ok` on temporary copies of both databases; full pytest remains the integration wave-end gate. The handoff validator parsed the required `waiting_review/branch_head/passed/pending/not_required/unchanged/report_only` record and is rerun against the clean feature commit because committed handoff validation intentionally rejects a dirty pre-commit worktree.
+- Completion gates: after the final review-fix commit, the required eight-file affected regression completed with `149 passed / 0 failed`; an independent reviewer also ran `18 passed / 0 failed` against the final candidate. `git diff --check` passed. Fresh quick smoke on reviewed SHA `fc909a037d4f5dc469950cb344ebb7fdc586e70a` passed document governance, static compilation of `403` first-party Python files, and idempotent initialization plus `integrity_check=ok` on temporary copies of both databases; full pytest remains the integration wave-end gate. The handoff validator is rerun against the clean plan-only handoff commit because committed handoff validation intentionally rejects a dirty pre-commit worktree.
 - Real-data guard: before claim commit `52d3136` and any feature edit, the controller captured the root grading database as `2863104` bytes / `2026-07-10T07:10:41.1221109Z` / SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD` and the root question-bank database as `3461120` bytes / `2026-07-08T11:58:06.3320883Z` / SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`. The immutable tracked P1-23 plan Step 6, inherited from P1-22, independently preserves those same triplets. The post-feature file-only read matched every value exactly. No SQLite connection or real model call was made, and worktree `user_data/` status is empty.
-- Review boundary: Step 7 remains unchecked. Independent whole-branch review, Critical/Important disposition, and the plan-only `verified_pending_integration` handoff belong to the controller's next task.
+- Review boundary: independent whole-branch review of `532624a459a3a99d7806cde14c273f1df11257a0..fc909a037d4f5dc469950cb344ebb7fdc586e70a` passed with `0 Critical / 0 Important / 0 Minor`, explicit spec-compliance PASS, code-quality PASS and ready-to-merge YES. The final handoff commit changes only this immediate plan and records its direct parent as the reviewed functional SHA.
 
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
 
 **执行包：** P1-24
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** fc909a037d4f5dc469950cb344ebb7fdc586e70a
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
