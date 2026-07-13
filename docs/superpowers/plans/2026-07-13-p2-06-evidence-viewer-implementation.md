@@ -32,6 +32,26 @@
 - 执行模型为 T-H。每个新行为必须先有可见 RED，再有最小 GREEN；同一问题连续两次修复失败时安全停机。
 - 实施前必须使用 `frontend-design`，实施过程必须使用 `test-driven-development`，完成声明前必须使用 `verification-before-completion`；本任务禁止自动派生子代理，除非用户另行明确授权。
 
+<!-- HANDOFF_STATUS_START -->
+## 昼夜交接
+
+**执行包：** P2-06
+**交接状态：** in_progress
+**功能提交：** none
+**自动验证：** pending
+**独立复审：** pending
+**用户验收：** pending
+**真实数据指纹：** not_touched
+**Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
+**夜间动作：** report_only
+<!-- HANDOFF_STATUS_END -->
+
+## 2026-07-13 领取证据
+
+- 实现工作树 `HEAD` 与当时 `origin/main` 均为 `e080255bdcfbf982ac58164a3b8b48d964904448`；源码及该工作树的 `user_data/` 状态干净。
+- Stash 基线为 `85726b3b9863575c9aebe4ff12916e96d4bb08ba`、`67edf9783a70b42878c44ae05eea25528b51ddf2`。
+- 根工作区真实数据库只读指纹：`grading_system.db|2863104|2026-07-10T07:10:41.1221109Z|93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`；`question_bank.db|3461120|2026-07-08T11:58:06.3320883Z|E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`。仅读取名称、大小、UTC 修改时间和 SHA-256，未打开 SQLite。
+
 ---
 
 ### Task 1: Claim P2-06 without touching source or real data
@@ -43,7 +63,7 @@
 - Consumes: package identity and plan baseline already merged into `origin/main`.
 - Produces: the first first-parent claim commit and a validator-compatible `in_progress` handoff block.
 
-- [ ] **Step 1: Record immutable stash and real-database baselines**
+- [x] **Step 1: Record immutable stash and real-database baselines**
 
 From the fresh implementation worktree, run:
 
@@ -66,29 +86,13 @@ Get-FileHash user_data/databases/grading_system.db,user_data/databases/question_
 
 Expected: implementation worktree source and `user_data` are clean; `HEAD` equals then-current `origin/main` and contains plan baseline `6e5ce9122673579a0a95045e9f95bd6bd3fb3a7f`. Keep the exact stash SHA list and database outputs in this plan’s dated evidence section; do not copy paths or business content.
 
-- [ ] **Step 2: Add exactly one handoff block**
+- [x] **Step 2: Add exactly one handoff block**
 
 The current repository stash baseline is exactly the two SHA values below. If Step 1 returns anything different, stop before claiming the package; do not rewrite this baseline.
 
-```markdown
-<!-- HANDOFF_STATUS_START -->
-## 昼夜交接
+The actual handoff block now appears once near the top of this plan and uses `**执行包：** P2-06`.
 
-**执行包（示例）：** P2-06
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
-**独立复审：** pending
-**用户验收：** pending
-**真实数据指纹：** not_touched
-**Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
-<!-- HANDOFF_STATUS_END -->
-```
-
-The actual inserted block must use `**执行包：** P2-06`; the “示例” spelling above only prevents this unclaimed plan from containing a second machine identity before execution.
-
-- [ ] **Step 3: Verify and commit the claim**
+- [x] **Step 3: Verify and commit the claim**
 
 ```powershell
 git diff --check
