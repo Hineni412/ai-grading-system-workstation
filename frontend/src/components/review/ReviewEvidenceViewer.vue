@@ -102,7 +102,10 @@ function pointerPosition(event: PointerEvent): ViewerPoint {
 }
 
 function onPointerDown(event: PointerEvent): void {
-  if (event.button !== 0) return
+  if (
+    event.button !== 0 ||
+    (event.target instanceof Element && event.target.closest('button'))
+  ) return
   activePointerId = event.pointerId
   lastPointer = pointerPosition(event)
   isDragging.value = true
