@@ -278,7 +278,7 @@ npm run e2e:p2-08 -- --workers=1
 
 Expected: both suites PASS; the formal suite still covers all five desktop viewports.
 
-- [ ] **Step 3: Commit acceptance wording**
+- [x] **Step 3: Commit acceptance wording**
 
 ```powershell
 git add docs/user-testing/checkpoints/P2-08-sample-page-formal.md
@@ -298,7 +298,7 @@ git commit -m "test: align P2-08 acceptance with teacher workflow"
 - Consumes: final source commit, unchanged dependency/config baseline, focused RED/GREEN evidence, and immutable real-data/stash baselines.
 - Produces: a new reviewed source SHA, validator-compatible `waiting_user` state, and a revised formal acceptance handoff.
 
-- [ ] **Step 1: Run affected automated validation**
+- [x] **Step 1: Run affected automated validation**
 
 Run from `frontend/`:
 
@@ -324,7 +324,7 @@ git status --short -- user_data
 
 Expected: all commands PASS; `user_data` remains clean in the feature worktree.
 
-- [ ] **Step 2: Recheck immutable root data and stash evidence read-only**
+- [x] **Step 2: Recheck immutable root data and stash evidence read-only**
 
 Recompute file length, UTC modification time and SHA-256 for the two real databases without opening them. Expected values remain:
 
@@ -335,7 +335,7 @@ question_bank.db   3461120 2026-07-08T11:58:06.3320883Z E1E5123AD54C9E8AF5984BDC
 
 Expected stash SHAs remain `85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2`.
 
-- [ ] **Step 3: Perform fresh-pass requirements and quality review**
+- [x] **Step 3: Perform fresh-pass requirements and quality review**
 
 Review the complete diff from `b6ab906872653dfc06ac222c1ea3de681a0930d9` through the new candidate, checking the confirmed design, protected textarea behavior, duplicate-submit guards, failure retention, no `R`, no backend change and no real-data access. Fix every Critical/Important issue with a new failing test and rerun affected validation.
 

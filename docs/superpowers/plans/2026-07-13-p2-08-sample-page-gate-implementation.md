@@ -19,11 +19,11 @@
 ## Global Constraints
 
 - 业务事实以已合并 P2-05/P2-06/P2-07、Review API 和 `docs/ui/STYLE.md` 为准；不新增评分规则、后端路由、Schema、状态、模型调用或数据库迁移。
-- 快捷键固定为：`J/K` 下一份/上一份，`/` 聚焦搜索，`Z` 适应宽度，`+/-` 缩放，`Enter` 确认当前记录并停留，`Shift+Enter` 确认并进入提交前确定的下一份。
+- 快捷键固定为：`J/K` 下一份/上一份，`/` 聚焦搜索，`Z` 适应宽度，`+/-` 缩放，`Enter` 确认当前记录并进入提交前确定的下一份。`Shift+Enter` 不再是受支持操作。
 - `R` 不实现、不展示、不进入测试或验收。该决定来自用户对当前业务含义的明确确认，不得通过复用 confirm 接口伪造“待复核”状态。
 - 全局快捷键只在 `/grading` 生效；`input`、`textarea`、`select`、按钮、可编辑区域或已经 `preventDefault()` 的局部控件中不得误触。写快捷键的按键自动重复不得产生重复 POST。
 - 画布自身已有的 `Z/0/+/-/方向键` 必须继续工作且不得被全局处理两次；全局 `Z/+/-` 只把命令交给现有查看器状态，不复制缩放算法。
-- `Enter` 与 `Shift+Enter` 共用 P2-07 的单条 one-shot confirm；前者成功后停留，后者成功后才导航。失败保留草稿，POST 成功后的刷新失败不得恢复草稿或误报写入失败。
+- 得分框聚焦时全选旧分；得分框内外的普通 `Enter` 共用 P2-07 的单条 one-shot confirm，成功后才导航。`Shift+Enter` 不提交；失败保留草稿，POST 成功后的刷新失败不得恢复草稿或误报写入失败。
 - 页面增加一条克制、可换行的快捷键提示带作为唯一新增视觉签名；它表达真实工作序列，不引入卡片堆叠、营销标题、渐变、大圆角或新的颜色/字体。
 - 固定匿名数据集必须覆盖长姓名/学号/班级、长评分标准、待复核/已复核、不同置信度、正反面媒体、确认失败、批注稍后刷新、空队列和加载/错误恢复。所有姓名、答卷和文本均为程序生成，不得复制真实业务内容。
 - 匿名服务器只绑定 `127.0.0.1`，只服务 `frontend/dist`、固定模拟 API、程序生成媒体和受限测试控制端点；不得解析任意文件路径、代理生产 API 或读取仓库 `user_data/`。
@@ -143,7 +143,7 @@ window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z' }))
 expect(shortcutSpy).toHaveBeenCalledWith('fit-width')
 ```
 
-Cover `J/K`, `/`, `Z`, `+`/`=`, `-`, `Enter`, `Shift+Enter`; assert `R` dispatches nothing. Assert all commands are suppressed from protected targets, modifier chords and already-prevented events; repeated Enter does not dispatch a write command. Extend evidence-viewer tests so global fit/zoom commands call the same existing state methods exactly once, while a canvas-local key that already prevented default is not handled again.
+Cover `J/K`, `/`, `Z`, `+`/`=`, `-` and unshifted `Enter`; assert `Shift+Enter` and `R` dispatch nothing. Assert all commands are suppressed from protected targets, modifier chords and already-prevented events; repeated Enter does not dispatch a write command. Extend evidence-viewer tests so global fit/zoom commands call the same existing state methods exactly once, while a canvas-local key that already prevented default is not handled again.
 
 Run:
 
@@ -164,7 +164,6 @@ export type ReviewShortcutCommand =
   | 'fit-width'
   | 'zoom-in'
   | 'zoom-out'
-  | 'confirm-stay'
   | 'confirm-next'
 
 export class ReviewShortcutBus {
@@ -183,7 +182,7 @@ export class ReviewShortcutBus {
 export const reviewShortcutBus = new ReviewShortcutBus()
 ```
 
-In `ReviewQueueView.vue`, keep `J/K` local because the view owns navigation; map the other accepted keys to the bus. Permit Shift only for `Shift+Enter`. In `ReviewQueuePanel.vue`, hold a search input ref and subscribe/unsubscribe on mount/unmount; `focus-search` calls `focus()` and `select()`. In `ReviewEvidenceViewer.vue`, subscribe to `fit-width/zoom-in/zoom-out` and delegate to `viewer.fitWidth()` or `viewer.zoomBy(±0.25)`.
+In `ReviewQueueView.vue`, keep `J/K` local because the view owns navigation; map the other accepted keys to the bus. Permit Shift only when it produces `+`; shifted Enter returns without dispatch. In `ReviewQueuePanel.vue`, hold a search input ref and subscribe/unsubscribe on mount/unmount; `focus-search` calls `focus()` and `select()`. In `ReviewEvidenceViewer.vue`, subscribe to `fit-width/zoom-in/zoom-out` and delegate to `viewer.fitWidth()` or `viewer.zoomBy(±0.25)`.
 
 Run the same test command and expect PASS.
 
@@ -197,7 +196,7 @@ git commit -m "feat: coordinate review workspace shortcuts"
 
 ---
 
-### Task 3: Separate confirm-and-stay from confirm-and-next with RED → GREEN
+### Task 3: Unify Enter as confirm-and-next with RED → GREEN
 
 **Files:**
 - Modify: `frontend/src/components/review/ReviewScoringInspector.vue`
@@ -205,24 +204,26 @@ git commit -m "feat: coordinate review workspace shortcuts"
 - Modify: `frontend/e2e/review-scoring.spec.ts`
 
 **Interfaces:**
-- Consumes: `confirm-stay` and `confirm-next` bus commands, P2-07 one-shot confirm adapter, pre-submit filtered queue.
-- Produces: `submitCurrent(advance: boolean)`, Enter-confirm-and-stay, Shift+Enter-confirm-and-next, unchanged click behavior for the existing primary button.
+- Consumes: the `confirm-next` bus command, P2-07 one-shot confirm adapter and pre-submit filtered queue.
+- Produces: focus-select score entry, score-field/page Enter-confirm-and-next, inactive Shift+Enter and unchanged click behavior for the existing primary button.
 
 - [x] **Step 1: Write failing confirmation-mode tests**
 
 Add component tests proving:
 
 ```ts
-reviewShortcutBus.dispatch('confirm-stay')
-expect(confirmReviewItem).toHaveBeenCalledTimes(1)
-expect(store.selectedDetailId).toBe(submittedDetailId)
-
 reviewShortcutBus.dispatch('confirm-next')
-expect(confirmReviewItem).toHaveBeenCalledTimes(2)
+expect(confirmReviewItem).toHaveBeenCalledTimes(1)
 expect(store.selectedDetailId).toBe(nextDetailId)
+
+scoreInput.dispatchEvent(new FocusEvent('focus'))
+expect(scoreInput.select).toHaveBeenCalledTimes(1)
+
+scoreInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }))
+expect(confirmReviewItem).toHaveBeenCalledTimes(1)
 ```
 
-Also prove disabled/invalid/clean/submitting states do not POST, repeated Enter does not duplicate POST, selection changed during POST is never overwritten, failure retains the same draft, and POST success plus refresh failure remains a success for both modes. Extend Playwright to exercise Enter from the evidence workspace and Shift+Enter from the next record.
+Also prove disabled/invalid/clean/submitting states do not POST, repeated Enter does not duplicate POST, selection changed during POST is never overwritten, failure retains the same draft, and POST success plus refresh failure remains a success. Extend Playwright to prove click-and-type replaces the old score, Enter works in the score field and evidence workspace, and Shift+Enter stays inactive.
 
 Run:
 
@@ -232,7 +233,7 @@ npm test -- src/__tests__/review-scoring-inspector.spec.ts src/__tests__/review-
 npm run e2e -- review-scoring.spec.ts
 ```
 
-Expected: FAIL because all successful confirmations currently navigate to the next record and the scoring inspector does not consume workspace commands.
+Expected: FAIL because the score field does not select its old value or consume Enter, page Enter still stays in place, and Shift+Enter still submits.
 
 - [x] **Step 2: Implement one submit path with an explicit advance flag**
 
@@ -248,7 +249,7 @@ async function submitCurrent(advance = true): Promise<void> {
 }
 ```
 
-Subscribe to the shortcut bus on mount and unsubscribe on unmount. `confirm-stay` calls `submitCurrent(false)`; `confirm-next` calls `submitCurrent(true)`. Keep the button bound to `submitCurrent(true)`. Preserve the existing context equality guard, local authoritative patch, annotation warning and separate refresh-failure message.
+Subscribe to the shortcut bus on mount and unsubscribe on unmount. `confirm-next` calls `submitCurrent(true)`. Bind score focus to `input.select()` and unmodified, non-repeated score-field Enter to the same `submitCurrent(true)` path; leave the note textarea protected. Keep the button bound to `submitCurrent(true)`. Preserve the existing context equality guard, local authoritative patch, annotation warning and separate refresh-failure message.
 
 Run the same tests and expect PASS.
 
@@ -282,7 +283,8 @@ Mount the guide and assert that it contains exactly the approved actions:
 ```ts
 expect(wrapper.text()).toContain('J / K')
 expect(wrapper.text()).toContain('Enter')
-expect(wrapper.text()).toContain('Shift + Enter')
+expect(wrapper.text()).toContain('确认并下一份')
+expect(wrapper.text()).not.toContain('Shift + Enter')
 expect(wrapper.text()).toContain('Z')
 expect(wrapper.text()).toContain('+ / −')
 expect(wrapper.text()).toContain('/')
@@ -376,7 +378,7 @@ Run the same server tests and expect PASS.
 Create a Playwright suite using the same dataset and verify:
 
 1. fixed anonymous marker, queue, evidence and scoring are simultaneously discoverable;
-2. `/`, J/K, Enter, Shift+Enter, Z and +/- perform exactly one action and `R` performs none;
+2. `/`, J/K, unshifted Enter, Z and +/- perform exactly one action; Shift+Enter and `R` perform none;
 3. protected focus suppresses global shortcuts;
 4. draft survives record changes, warns before refresh, and does not claim persistence after refresh;
 5. confirmed server state and URL/session/question/detail restore after refresh;
