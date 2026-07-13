@@ -427,3 +427,146 @@ def test_malformed_usage_records_zero_token_success_without_changing_response():
     assert event.prompt_tokens == 0
     assert event.completion_tokens == 0
     assert event.total_tokens == 0
+
+
+def test_logger_failure_during_malformed_usage_does_not_change_response(
+    monkeypatch,
+):
+    def fail_to_warn(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("hostile logging handler")
+
+    monkeypatch.setattr("backend.llm.gateway.logger.warning", fail_to_warn)
+    sink = RecordingSink()
+    result = SimpleNamespace(
+        usage=SimpleNamespace(prompt_tokens="not-an-int")
+    )
+    operation = FakeCreate([result])
+    gateway = _gateway(sink=sink)
+
+    actual = gateway.responses(
+        request_kind=LLMRequestKind.TAGGING,
+        client=_client_for("responses", operation),
+        model="t",
+        kwargs={"input": "x"},
+    )
+
+    assert actual is result
+    assert len(sink.events) == 1
+    assert sink.events[0].success is True
+    assert sink.events[0].total_tokens == 0
+
+
+def test_logger_failure_during_sink_failure_does_not_change_success_response(
+    monkeypatch,
+):
+    class FailingSink:
+        def write(self, event: object) -> None:
+            raise OSError("usage sink unavailable")
+
+    def fail_to_warn(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("hostile logging handler")
+
+    monkeypatch.setattr("backend.llm.gateway.logger.warning", fail_to_warn)
+    result = _response()
+    operation = FakeCreate([result])
+    gateway = _gateway(sink=FailingSink())
+
+    actual = gateway.chat_completions(
+        request_kind=LLMRequestKind.GRADING,
+        client=_client_for("chat", operation),
+        model="g",
+        kwargs={"messages": []},
+    )
+
+    assert actual is result
+
+
+def test_logger_failure_during_failure_record_does_not_prevent_provider_retry(
+    monkeypatch,
+):
+    class FailOnceSink:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.events = []
+
+        def write(self, event: object) -> None:
+            self.calls += 1
+            if self.calls == 1:
+                raise OSError("usage sink unavailable")
+            self.events.append(event)
+
+    def fail_to_warn(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("hostile logging handler")
+
+    monkeypatch.setattr("backend.llm.gateway.logger.warning", fail_to_warn)
+    sink = FailOnceSink()
+    result = _response()
+    operation = FakeCreate([StatusError(429), result])
+    sleeper_calls: list[float] = []
+    gateway = _gateway(
+        sink=sink,
+        sleeper=sleeper_calls.append,
+    )
+
+    actual = gateway.chat_completions(
+        request_kind=LLMRequestKind.GRADING,
+        client=_client_for("chat", operation),
+        model="g",
+        kwargs={"messages": []},
+    )
+
+    assert actual is result
+    assert len(operation.calls) == 2
+    assert sleeper_calls == [0.5]
+    assert len(sink.events) == 1
+    assert sink.events[0].success is True
+    assert sink.events[0].attempt == 2
+
+
+def test_logger_failure_during_failure_record_preserves_original_provider_error(
+    monkeypatch,
+):
+    class FailingSink:
+        def write(self, event: object) -> None:
+            raise OSError("usage sink unavailable")
+
+    def fail_to_warn(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("hostile logging handler")
+
+    monkeypatch.setattr("backend.llm.gateway.logger.warning", fail_to_warn)
+    error = StatusError(401, "authentication rejected")
+    operation = FakeCreate([error])
+    gateway = _gateway(sink=FailingSink())
+
+    with pytest.raises(StatusError) as raised:
+        gateway.responses(
+            request_kind=LLMRequestKind.TAGGING,
+            client=_client_for("responses", operation),
+            model="t",
+            kwargs={"input": "x"},
+        )
+
+    assert raised.value is error
+
+
+@pytest.mark.parametrize(
+    ("request_id", "expected"),
+    [("", ""), (0, "0")],
+)
+def test_explicit_falsy_request_id_is_preserved(
+    request_id: object,
+    expected: str,
+):
+    sink = RecordingSink()
+    operation = FakeCreate([_response()])
+    gateway = _gateway(sink=sink)
+
+    gateway.responses(
+        request_kind=LLMRequestKind.TAGGING,
+        client=_client_for("responses", operation),
+        model="t",
+        kwargs={"input": "x"},
+        request_id=request_id,
+    )
+
+    assert sink.events[0].request_id == expected

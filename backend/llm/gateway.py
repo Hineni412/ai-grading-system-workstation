@@ -16,6 +16,13 @@ logger = logging.getLogger(__name__)
 _DEFAULT_PACERS = LLMPacerRegistry()
 
 
+def _warn_safely(message: str) -> None:
+    try:
+        logger.warning(message)
+    except Exception:
+        return
+
+
 class LLMGateway:
     def __init__(
         self,
@@ -86,7 +93,9 @@ class LLMGateway:
         allow_retry: bool,
     ) -> object:
         kind = LLMRequestKind(request_kind)
-        logical_request_id = str(request_id or uuid.uuid4())
+        logical_request_id = str(
+            uuid.uuid4() if request_id is None else request_id
+        )
         policy = policy_from_profile(kind, self.profile)
         retry_limit = policy.max_retries if allow_retry else 0
 
@@ -225,7 +234,7 @@ class LLMGateway:
                 **normalized_usage,
             )
         except Exception:
-            logger.warning("Failed to normalize LLM usage metadata")
+            _warn_safely("Failed to normalize LLM usage metadata")
             event = LLMUsageEvent(
                 request_id=request_id,
                 attempt=attempt,
@@ -241,4 +250,4 @@ class LLMGateway:
         try:
             self.usage_sink.write(event)
         except Exception:
-            logger.warning("Failed to record LLM usage metadata")
+            _warn_safely("Failed to record LLM usage metadata")
