@@ -411,18 +411,46 @@ describe('P2-05 review queue view', () => {
     expect(scrollIntoView).not.toHaveBeenCalled()
   })
 
-  it('never renders score inputs, save buttons, confirm buttons, or image elements', async () => {
-    const { host } = await mountView({
-      initialUrl: '/grading?question=Q1&detail=11',
-    })
+  it('renders read-only evidence without score, save, or confirm controls', async () => {
+    const { host } = await mountView({ initialUrl: '/grading?question=Q1&detail=11' })
     await vi.waitFor(() => expect(host.textContent).toContain('当前得分 3 / 5'))
-
-    expect(host.textContent).toContain('答卷证据将在 P2-06 接入；评分与确认将在 P2-07 接入。')
+    expect(host.querySelectorAll('.review-evidence-viewer img')).toHaveLength(1)
     expect(host.querySelector('input[type="number"]')).toBeNull()
-    expect(host.querySelector('textarea, [contenteditable="true"], img')).toBeNull()
-    expect(
-      [...host.querySelectorAll('button')].some((button) => /保存|确认/.test(button.textContent ?? '')),
-    ).toBe(false)
+    expect(host.querySelector('textarea, [contenteditable="true"]')).toBeNull()
+    expect([...host.querySelectorAll('button')].some((button) =>
+      /保存|确认/.test(button.textContent ?? ''),
+    )).toBe(false)
+    expect(host.textContent).toContain('评分与确认将在 P2-07 接入。')
+  })
+
+  it('resets the viewer when selecting the next record', async () => {
+    const firstMedia = { ...media, crop_url: '/api/crop/11' }
+    const secondMedia = { ...media, crop_url: '/api/crop/12' }
+    const { host, reviewStore } = await mountView({
+      initialUrl: '/grading?question=Q1&detail=11',
+      reviewItems: {
+        Q1: [
+          item(11, { student_name: '学生甲', media: firstMedia }),
+          item(12, { student_name: '学生乙', media: secondMedia }),
+        ],
+      },
+    })
+    await vi.waitFor(() => {
+      expect(reviewStore.selectedDetailId).toBe(11)
+      expect(reviewStore.itemLoadState).toBe('ready')
+    })
+    await settleUi()
+    const next = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '下一条')!
+    next.click()
+    await vi.waitFor(() => expect(reviewStore.selectedDetailId).toBe(12))
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain('裁剪证据')
+      expect(host.textContent).toContain('适应宽度')
+      const images = host.querySelectorAll<HTMLImageElement>('.review-evidence-viewer img')
+      expect(images).toHaveLength(1)
+      expect(images[0]?.getAttribute('src')).toBe('/api/crop/12')
+    })
   })
 
   it('uses a blocking state when the first item load fails', async () => {
