@@ -36,14 +36,14 @@
 ## 昼夜交接
 
 **执行包：** P2-06
-**交接状态：** waiting_user
-**功能提交：** 887d374345f8d7dc300b6ff2049fd5f238d7faa5
+**交接状态：** verified_pending_integration
+**功能提交：** 93b2a20152cb1d77799e4d23904c49b1736f10be
 **自动验证：** passed
 **独立复审：** passed
-**用户验收：** pending
+**用户验收：** passed
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
 
 ## 2026-07-13 领取证据
@@ -770,6 +770,8 @@ Expected: validator returns `ok=true`, `state="waiting_review"`, and no issues. 
 - 快速用户验收清单已生成：`docs/user-testing/checkpoints/P2-06-evidence-viewer-quick.md`；机器结果和用户结论保持 `pending`，等待独立复审后的精确 SHA。
 - 独立复审：首轮完整范围复审为 `0 Critical / 2 Important / 2 Minor`；两项重要问题分别为小图轴向居中边界和拖动时指针生命周期。修复采用聚焦 RED→GREEN，并补齐错误按钮键盘隔离和真实浏览器延迟旧响应覆盖。复审者随后对修复提交及最终测试增强逐次只读复核，最终候选 `887d374345f8d7dc300b6ff2049fd5f238d7faa5` 为 `0 Critical / 0 Important / 0 Minor`，结论 `Ready to merge: Yes`。
 - 复审修复后门禁：lint 无警告、typecheck、build 均通过；Vitest `18` 个文件、`146` 项测试全部通过；P2-05/P2-06 Chromium 专项 `12` 项全部通过；快速冒烟再次通过文档治理、404 个第一方 Python 文件静态编译和两库隔离副本幂等检查。
+- 用户短测：用户在应用内浏览器对已复审功能 SHA `887d374345f8d7dc300b6ff2049fd5f238d7faa5` 完成匿名短测并明确回复“通过”。验收只使用 4 条匿名记录和程序生成图片；临时服务已停止。清单证据提交为 `93b2a20152cb1d77799e4d23904c49b1736f10be`。
+- 用户测试后真实两库指纹仍为阅卷库 `2863104 / 93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`、题库 `3461120 / E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`，与领取基线一致。
 
 ---
 
