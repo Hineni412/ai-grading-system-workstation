@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from ai_grader import GradingResult, QuestionGradingDetail
 from backend.api.dependencies import (
     get_annotated_dir,
     get_backups_dir,
@@ -29,9 +30,12 @@ from backend.api.dependencies import (
 from backend.files.service import JobFileService
 from backend.jobs.config_generation import run_config_generation_job
 from backend.jobs.default_handlers import register_default_job_handlers
+from backend.jobs.grading_run import run_grading_job
 from backend.jobs.manager import JobManager
+from backend.jobs.scan_analysis import run_scan_analysis
 from backend.jobs.store import JobStore
 from report import ReportGenerator
+from scanner import ExamPaperGroup, ScanAnalysis
 
 
 @dataclass
@@ -64,6 +68,215 @@ class FakeLLM:
 
     def record(self, request_type: str) -> None:
         self.calls.append(request_type)
+
+
+class SyntheticScanner:
+    def __init__(self, paths: E2EPaths, scanner_kwargs: dict[str, Any]) -> None:
+        self.paths = paths
+        self.scanner_kwargs = dict(scanner_kwargs)
+
+    def analyze(self, students: list[dict[str, Any]]) -> ScanAnalysis:
+        students_by_code = {
+            str(student.get("student_code") or ""): student
+            for student in students
+        }
+        groups: list[ExamPaperGroup] = []
+        for student_code in ("SYN-001", "SYN-002"):
+            student = students_by_code[student_code]
+            groups.append(
+                ExamPaperGroup(
+                    front_image=self.paths.exams_dir / f"{student_code}_front.png",
+                    back_image=self.paths.exams_dir / f"{student_code}_back.png",
+                    student_name=str(student["name"]),
+                    student_id=int(student["id"]),
+                    detected_name=str(student["name"]),
+                    source_label=f"{student_code} synthetic scan",
+                    match_method="exact",
+                    match_score=1.0,
+                )
+            )
+        return ScanAnalysis(groups=groups, total_pages=4)
+
+
+class SyntheticGradingService:
+    def __init__(
+        self,
+        db_manager: Any,
+        llm_client: Any,
+        *,
+        controls: E2EControls,
+        question_bank_db_path: Path | None = None,
+    ) -> None:
+        self.db = db_manager
+        self.llm_client = llm_client
+        self.controls = controls
+        self.question_bank_db_path = question_bank_db_path
+
+    def run_session_grading(
+        self,
+        *,
+        session_id: int,
+        scan_analysis: dict[str, Any] | None,
+        failed_only: bool,
+        **_kwargs: Any,
+    ) -> Iterator[dict[str, Any]]:
+        self.controls.grading_runs += 1
+        self.db.try_start_session_run(session_id)
+        if failed_only:
+            failed_papers = self.db.list_failed_papers_detailed(session_id)
+            total = len(failed_papers)
+            for current, paper in enumerate(failed_papers, start=1):
+                student_id = int(paper["student_id"])
+                student = self._student_by_id(student_id)
+                result_id = self.db.save_session_result(
+                    session_id,
+                    student_id,
+                    int(paper["paper_id"]),
+                    _synthetic_grading_result(
+                        student_name=str(student["name"]),
+                        scores=[10, 12, 12, 12, 11, 13],
+                        needs_human_review=False,
+                    ),
+                )
+                self.db.update_exam_paper_status(int(paper["paper_id"]), "graded")
+                yield {
+                    "event": "graded",
+                    "student_name": str(student["name"]),
+                    "result_id": result_id,
+                    "score": 70.0,
+                    "total_score": 100.0,
+                    "current": current,
+                    "total": total,
+                }
+        else:
+            groups = list((scan_analysis or {}).get("groups") or [])
+            total = len(groups)
+            for current, group in enumerate(groups, start=1):
+                student_id = int(group["student_id"])
+                student = self._student_by_id(student_id)
+                student_code = str(student["student_code"])
+                paper_id = self.db.create_exam_paper(
+                    session_id=session_id,
+                    front_image=str(group["front_image"]),
+                    back_image=str(group["back_image"]),
+                    ocr_name=str(group.get("detected_name") or group["student_name"]),
+                    student_id=student_id,
+                    match_status="matched",
+                    processing_status="grading",
+                )
+                if student_code == "SYN-001":
+                    result_id = self.db.save_session_result(
+                        session_id,
+                        student_id,
+                        paper_id,
+                        _synthetic_grading_result(
+                            student_name=str(student["name"]),
+                            scores=[12, 17, 17, 17, 17, 5],
+                            needs_human_review=True,
+                        ),
+                    )
+                    self.db.update_exam_paper_status(paper_id, "graded")
+                    yield {
+                        "event": "graded",
+                        "student_name": str(student["name"]),
+                        "result_id": result_id,
+                        "score": 85.0,
+                        "total_score": 100.0,
+                        "current": current,
+                        "total": total,
+                    }
+                else:
+                    self.db.update_exam_paper_status(
+                        paper_id,
+                        "failed",
+                        "synthetic grading failure",
+                    )
+                    yield {
+                        "event": "grading_failed",
+                        "student_name": str(student["name"]),
+                        "current": current,
+                        "total": total,
+                    }
+
+        self.db.finish_session_run(session_id, "completed")
+        yield {
+            "event": "session_completed",
+            "progress": self.db.get_session_progress(session_id),
+        }
+
+    def _student_by_id(self, student_id: int) -> dict[str, Any]:
+        return next(
+            student
+            for student in self.db.list_students()
+            if int(student["id"]) == int(student_id)
+        )
+
+
+def _synthetic_grading_result(
+    *,
+    student_name: str,
+    scores: list[float],
+    needs_human_review: bool,
+) -> GradingResult:
+    details = [
+        QuestionGradingDetail(
+            question_id=f"Q{index}",
+            score_awarded=float(score),
+            deduction_reason=(
+                "synthetic review required"
+                if needs_human_review and index == 1
+                else "synthetic grading"
+            ),
+            knowledge_id=f"SYN-K{index}",
+            confidence_score=0.5 if needs_human_review and index == 1 else 1.0,
+            knowledge_ids=[f"SYN-K{index}"],
+        )
+        for index, score in enumerate(scores, start=1)
+    ]
+    return GradingResult(
+        student_name=student_name,
+        total_score=100.0,
+        student_score=float(sum(scores)),
+        needs_human_review=needs_human_review,
+        grading_details=details,
+        raw_json={
+            "source": "synthetic_api_e2e",
+            "grading_completeness": {"status": "complete"},
+        },
+    )
+
+
+def make_scan_runner(paths: E2EPaths, controls: E2EControls):
+    def scan_runner(**kwargs: Any) -> dict[str, object]:
+        if controls.scan_failures_remaining > 0:
+            controls.scan_failures_remaining -= 1
+            raise RuntimeError("synthetic scan failure")
+        return run_scan_analysis(
+            **kwargs,
+            scanner_factory=lambda **scanner_kwargs: SyntheticScanner(
+                paths,
+                scanner_kwargs,
+            ),
+        )
+
+    return scan_runner
+
+
+def make_grading_runner(controls: E2EControls):
+    def grading_runner(**kwargs: Any) -> dict[str, object]:
+        return run_grading_job(
+            **kwargs,
+            service_factory=lambda db_manager, llm_client, question_bank_db_path=None: (
+                SyntheticGradingService(
+                    db_manager,
+                    llm_client,
+                    controls=controls,
+                    question_bank_db_path=question_bank_db_path,
+                )
+            ),
+        )
+
+    return grading_runner
 
 
 def _iter_strings(value: Any) -> Iterator[str]:
@@ -182,6 +395,75 @@ class ApiE2EHarness:
         assert committed.status_code == 200
         return committed.json()
 
+    def paper_statuses(self, session_id: int) -> list[str]:
+        with self.db._connect() as connection:
+            rows = connection.execute(
+                "SELECT processing_status FROM exam_papers "
+                "WHERE session_id = ? ORDER BY processing_status, id",
+                (session_id,),
+            ).fetchall()
+        return [str(row["processing_status"]) for row in rows]
+
+    def result_scores(self, session_id: int) -> dict[str, float]:
+        with self.db._connect() as connection:
+            rows = connection.execute(
+                "SELECT s.student_code, sr.student_score "
+                "FROM session_results sr "
+                "JOIN students s ON s.id = sr.student_id "
+                "WHERE sr.session_id = ? ORDER BY s.student_code",
+                (session_id,),
+            ).fetchall()
+        return {
+            str(row["student_code"]): float(row["student_score"])
+            for row in rows
+        }
+
+    def result_ids(self, session_id: int) -> dict[str, int]:
+        with self.db._connect() as connection:
+            rows = connection.execute(
+                "SELECT s.student_code, sr.id "
+                "FROM session_results sr "
+                "JOIN students s ON s.id = sr.student_id "
+                "WHERE sr.session_id = ? ORDER BY s.student_code",
+                (session_id,),
+            ).fetchall()
+        return {str(row["student_code"]): int(row["id"]) for row in rows}
+
+    def result_review_flags(self, session_id: int) -> dict[str, bool]:
+        with self.db._connect() as connection:
+            rows = connection.execute(
+                "SELECT s.student_code, sr.needs_human_review "
+                "FROM session_results sr "
+                "JOIN students s ON s.id = sr.student_id "
+                "WHERE sr.session_id = ? ORDER BY s.student_code",
+                (session_id,),
+            ).fetchall()
+        return {
+            str(row["student_code"]): bool(row["needs_human_review"])
+            for row in rows
+        }
+
+    def result_details(
+        self,
+        session_id: int,
+    ) -> dict[str, list[tuple[str, float]]]:
+        with self.db._connect() as connection:
+            rows = connection.execute(
+                "SELECT s.student_code, sd.question_id, sd.score_awarded "
+                "FROM session_details sd "
+                "JOIN session_results sr ON sr.id = sd.result_id "
+                "JOIN students s ON s.id = sr.student_id "
+                "WHERE sr.session_id = ? "
+                "ORDER BY s.student_code, sd.id",
+                (session_id,),
+            ).fetchall()
+        details: dict[str, list[tuple[str, float]]] = {}
+        for row in rows:
+            details.setdefault(str(row["student_code"]), []).append(
+                (str(row["question_id"]), float(row["score_awarded"]))
+            )
+        return details
+
 
 def valid_config_payload() -> dict[str, Any]:
     rubric_questions: list[dict[str, Any]] = []
@@ -298,7 +580,6 @@ def build_paths(tmp_path: Path) -> E2EPaths:
 
 
 def build_job_manager(paths: E2EPaths, *, controls: E2EControls) -> JobManager:
-    del controls  # Task 3 injects deterministic scan and grading runners.
     manager = JobManager(JobStore(paths.db_path), max_workers=1)
     try:
         register_default_job_handlers(
@@ -312,6 +593,8 @@ def build_job_manager(paths: E2EPaths, *, controls: E2EControls) -> JobManager:
             upload_config_dir=paths.upload_config_dir,
             training_output_root=paths.outputs_dir / "training",
             report_generator_factory=ReportGenerator,
+            scan_runner=make_scan_runner(paths, controls),
+            grading_runner=make_grading_runner(controls),
             config_generation_runner=run_config_generation_job,
             llm_client_factory=lambda: FakeLLM([]),
         )
