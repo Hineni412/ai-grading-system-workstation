@@ -6,7 +6,9 @@ import { workspaceRouteDefinitions } from '../navigation'
 const placeholderRoutes: RouteRecordRaw[] = workspaceRouteDefinitions.map((definition) => ({
   path: definition.path,
   name: definition.id,
-  component: () => import('../views/RoutePlaceholderView.vue'),
+  component: definition.id === 'grading'
+    ? () => import('../views/ReviewQueueView.vue')
+    : () => import('../views/RoutePlaceholderView.vue'),
   meta: {
     title: definition.title,
     description: definition.description,

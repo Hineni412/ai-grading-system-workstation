@@ -47,4 +47,14 @@ describe('P2-03 navigation', () => {
     expect(router.currentRoute.value.meta.description).toBeTruthy()
     expect(router.currentRoute.value.meta.breadcrumb).toBeTruthy()
   })
+
+  it('loads the review queue view for grading', async () => {
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/grading')
+    await router.isReady()
+
+    const matched = router.currentRoute.value.matched
+    const component = matched[matched.length - 1]?.components?.default
+    expect((component as { __name?: string } | undefined)?.__name).toBe('ReviewQueueView')
+  })
 })
