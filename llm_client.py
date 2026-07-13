@@ -105,6 +105,7 @@ class LLMClient:
         usage_callback=None,
         static_image_blobs: list[bytes] | None = None,
         dynamic_prompt: str | None = None,
+        allow_gateway_retry: bool = False,
     ) -> dict[str, Any]:
         return self.json_from_images_with_options(
             prompt,
@@ -115,6 +116,7 @@ class LLMClient:
             extra_kwargs=None,
             static_image_blobs=static_image_blobs,
             dynamic_prompt=dynamic_prompt,
+            allow_gateway_retry=allow_gateway_retry,
         )
 
     def json_from_images_with_options(
@@ -128,6 +130,7 @@ class LLMClient:
         use_config_client: bool = False,
         static_image_blobs: list[bytes] | None = None,
         dynamic_prompt: str | None = None,
+        allow_gateway_retry: bool = False,
     ) -> dict[str, Any]:
         active_client = self.config_client if use_config_client else self.client
         default_model = self.settings.config_model if use_config_client else self.settings.grading_model
@@ -176,6 +179,7 @@ class LLMClient:
             request_kind=request_kind,
             request_id=request_id,
             _next_attempt=next_attempt,
+            allow_gateway_retry=allow_gateway_retry,
         )
         text = _extract_text_from_completion(completion)
         
@@ -395,6 +399,7 @@ class LLMClient:
         request_id: str | None = None,
         single_request: bool = False,
         _next_attempt: Callable[[], int] | None = None,
+        allow_gateway_retry: bool = False,
     ) -> Any:
         kwargs: dict[str, Any] = {
             "model": model,
@@ -452,7 +457,10 @@ class LLMClient:
             return res
 
         try:
-            return invoke("", allow_retry=False)
+            return invoke(
+                "",
+                allow_retry=allow_gateway_retry and not single_request,
+            )
         except Exception as exc:
             if not allow_parameter_fallback:
                 raise
