@@ -1,6 +1,13 @@
+import json
+from types import SimpleNamespace
+
 import pytest
 
+import backend.llm as backend_llm
+import question_bank.services.ai_tagging_service as ai_tagging_module
+from question_bank.models.tag_schema import TaggingContext
 from question_bank.services.ai_tagging_service import (
+    AITaggingService,
     TaggingRequestEvent,
     _TaggingRequestController,
     classify_tagging_error,
@@ -65,3 +72,125 @@ def test_controller_finish_helper_emits_failed_with_category() -> None:
     assert events[-1].phase == "failed"
     assert events[-1].error_category == "network"
     assert events[-1].request_number == started.request_number
+
+
+def test_batch_gateway_retry_does_not_multiply_logical_request_events(
+    monkeypatch,
+) -> None:
+    provider_calls = 0
+    events: list[TaggingRequestEvent] = []
+
+    class Retryable503Error(RuntimeError):
+        status_code = 503
+        response = type(
+            "Response",
+            (),
+            {"status_code": 503, "headers": {"retry-after": "0"}},
+        )()
+
+    def fake_provider_create(**_kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        if provider_calls == 1:
+            raise Retryable503Error("temporary provider outage")
+        payload = {
+            "results": [
+                {
+                    "question_id": 1,
+                    "knowledge_points": ["整式运算"],
+                    "method_tags": ["整体思想"],
+                    "ability_tags": ["运算能力"],
+                    "math_model_tags": [],
+                    "difficulty": 3,
+                    "error_prone_points": ["符号错误"],
+                    "prerequisite_points": ["有理数运算"],
+                    "textbook_chapter": "七年级下册 第一章 整式的乘除",
+                    "teaching_stage": "期末复习",
+                    "suitable_student_level": "基础巩固",
+                    "canonical_knowledge_id": "",
+                    "sub_skills": [],
+                    "measured_skills": ["整式乘法运算"],
+                    "supporting_skills": ["整数指数幂运算"],
+                    "reason": "考查幂运算和整式化简。",
+                    "confidence": 0.86,
+                }
+            ]
+        }
+        return SimpleNamespace(output_text=json.dumps(payload))
+
+    fake_client = SimpleNamespace(
+        responses=SimpleNamespace(create=fake_provider_create)
+    )
+    real_adapter_class = backend_llm.LLMProtocolAdapter
+
+    class IsolatedProtocolAdapter:
+        def __init__(
+            self,
+            api_key,
+            base_url,
+            policy_profile=None,
+            client=None,
+        ) -> None:
+            self._adapter = real_adapter_class(
+                api_key,
+                base_url,
+                policy_profile=policy_profile,
+                client=client,
+                gateway_factory=lambda **kwargs: backend_llm.LLMGateway(
+                    **kwargs,
+                    sleeper=lambda _seconds: None,
+                ),
+                usage_sink_factory=backend_llm.NullUsageSink,
+            )
+
+        def responses(self, **kwargs):
+            return self._adapter.responses(**kwargs)
+
+    monkeypatch.setattr(
+        ai_tagging_module,
+        "LLMProtocolAdapter",
+        IsolatedProtocolAdapter,
+        raising=False,
+    )
+
+    class UnexpectedLLMClient:
+        def __init__(self, settings) -> None:
+            self.settings = settings
+
+        def json_from_text(self, *_args, **_kwargs):
+            raise AssertionError("raw Responses injection was shadowed by LLMClient")
+
+    monkeypatch.setattr("llm_client.LLMClient", UnexpectedLLMClient)
+    monkeypatch.setattr(ai_tagging_module, "LLMClient", UnexpectedLLMClient)
+    monkeypatch.setattr(ai_tagging_module, "_dotenv_values", lambda: {})
+    service = AITaggingService(
+        env={
+            "QUESTION_BANK_TAGGING_API_KEY": "fake-tagging-key",
+            "QUESTION_BANK_TAGGING_BASE_URL": "https://provider.invalid/v1",
+            "QUESTION_BANK_TAGGING_MODEL": "fake-tagging-model",
+        },
+        client=fake_client,
+    )
+    context = TaggingContext(
+        question_text="计算 a^2 · a^3。",
+        answer_text="a^5",
+        question_number="1",
+        question_type="选择题",
+    )
+
+    results = service.analyze_questions(
+        {1: context},
+        max_workers=1,
+        requests_per_minute=10000,
+        request_callback=events.append,
+        allow_batch_fallback=False,
+        quality_retry_limit=0,
+        enable_review=False,
+    )
+
+    assert provider_calls == 2
+    assert results[1].quality_status == "complete"
+    assert [(event.request_number, event.phase) for event in events] == [
+        (1, "started"),
+        (1, "succeeded"),
+    ]

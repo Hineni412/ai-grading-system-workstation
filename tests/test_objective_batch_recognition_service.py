@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sys
 import threading
 import time
 from pathlib import Path
@@ -37,8 +36,16 @@ class FakeBatchClient:
         images: list[bytes],
         model: str | None = None,
         usage_callback: Any = None,
+        allow_gateway_retry: bool = False,
     ) -> dict[str, Any]:
-        self.calls.append({"prompt": prompt, "images": images, "model": model})
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "images": images,
+                "model": model,
+                "allow_gateway_retry": allow_gateway_retry,
+            }
+        )
         manifest = json.loads(prompt.split("BATCH_MANIFEST_JSON:", 1)[1].strip())
         if usage_callback is not None:
             usage_callback(
@@ -115,6 +122,51 @@ class CountingLimiter:
     def acquire(self) -> None:
         with self.lock:
             self.calls += 1
+
+
+def _objective_completion(content: str = '{"question_id":"Q1","items":[]}') -> Any:
+    return type(
+        "Completion",
+        (),
+        {
+            "choices": [
+                type(
+                    "Choice",
+                    (),
+                    {"message": type("Message", (), {"content": content})()},
+                )()
+            ]
+        },
+    )()
+
+
+def _install_fake_openai_client(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_openai: type,
+) -> None:
+    import openai
+    import backend.llm.transport as llm_transport
+
+    real_create_openai_client = llm_transport.create_openai_client
+
+    def create_fake_openai_client(api_key: str, base_url: str) -> object:
+        return real_create_openai_client(
+            api_key,
+            base_url,
+            client_factory=fake_openai,
+        )
+
+    monkeypatch.setattr(openai, "OpenAI", fake_openai)
+    monkeypatch.setattr(
+        llm_transport,
+        "create_openai_client",
+        create_fake_openai_client,
+    )
+    monkeypatch.setattr(
+        llm_transport.JsonlUsageSink,
+        "write",
+        lambda self, event: None,
+    )
 
 
 def test_build_objective_question_specs_uses_unified_answer_forms_before_loader_fallback(monkeypatch) -> None:
@@ -649,9 +701,187 @@ def test_objective_low_confidence_retries_with_main_model_before_review(tmp_path
     assert len(primary.calls) == 1
     assert len(fallback.calls) == 1
     assert fallback.calls[0]["model"] == "pro-model"
+    assert fallback.calls[0]["allow_gateway_retry"] is False
     assert detail.score_awarded == 8
     assert metadata["source"] == "objective_batch_pro_recognition"
     assert metadata["primary_review_reason"] == "low_confidence"
+    assert result.review_items == []
+
+
+def test_objective_legacy_fallback_client_keeps_old_call_signature(tmp_path: Path) -> None:
+    class LegacyFallbackClient:
+        def __init__(self) -> None:
+            self.delegate = FakeBatchClient(
+                confidence=0.92,
+                need_review=False,
+                answer="A",
+                review_reason="",
+            )
+
+        def json_from_images(
+            self,
+            prompt: str,
+            images: list[bytes],
+            model: str | None = None,
+            usage_callback: Any = None,
+        ) -> dict[str, Any]:
+            return self.delegate.json_from_images(
+                prompt,
+                images,
+                model=model,
+                usage_callback=usage_callback,
+            )
+
+    fallback = LegacyFallbackClient()
+    primary = FakeBatchClient(
+        confidence=0.50,
+        need_review=False,
+        answer="A",
+        review_reason="low confidence cursive A",
+    )
+
+    result = run_objective_batch_recognition(
+        session_id=13,
+        paper_groups=_groups(tmp_path, 1),
+        answer_regions=[
+            {"page": "front", "mapped_question_id": "Q7", "x": 10, "y": 10, "w": 120, "h": 80, "is_confirmed": True}
+        ],
+        rubric={"questions": [{"question_id": "Q7", "question_type": "choice", "max_score": 8}]},
+        answer_key={"questions": [{"question_id": "Q7", "standard_answer": "A"}]},
+        output_root=tmp_path / "out",
+        recognition_client=primary,
+        fallback_recognition_client=fallback,
+        fallback_model="legacy-fallback-model",
+    )
+
+    detail = next(iter(result.details_by_paper_key.values()))[0]
+    metadata = next(iter(result.metadata_by_paper_key.values()))[0]
+    assert len(fallback.delegate.calls) == 1
+    assert detail.score_awarded == 8
+    assert metadata["source"] == "objective_batch_pro_recognition"
+    assert result.review_items == []
+
+
+def test_objective_fallback_root_client_retries_two_503s_then_scores(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import llm_client
+    from backend.llm import LLMGateway
+
+    provider_calls: list[dict[str, Any]] = []
+    usage_events: list[Any] = []
+
+    class RecordingUsageSink:
+        def write(self, event: Any) -> None:
+            usage_events.append(event)
+
+    class Retryable503Error(RuntimeError):
+        status_code = 503
+        response = type(
+            "Response",
+            (),
+            {"status_code": 503, "headers": {"retry-after": "0"}},
+        )()
+
+    class FakeCompletions:
+        def create(self, **kwargs: Any) -> Any:
+            provider_calls.append(dict(kwargs))
+            if len(provider_calls) < 3:
+                raise Retryable503Error("temporary provider outage")
+            prompt = kwargs["messages"][0]["content"][0]["text"]
+            manifest = json.loads(prompt.split("BATCH_MANIFEST_JSON:", 1)[1].strip())
+            return _objective_completion(
+                json.dumps(
+                    {
+                        "question_id": manifest["question_id"],
+                        "items": [
+                            {
+                                "paper_key": item["paper_key"],
+                                "student_id": item["student_id"],
+                                "recognized_answer": "A",
+                                "confidence": 0.92,
+                                "need_review": False,
+                                "review_reason": "",
+                            }
+                            for item in manifest["items"]
+                        ],
+                    }
+                )
+            )
+
+    fake_provider = type(
+        "FakeProvider",
+        (),
+        {"chat": type("Chat", (), {"completions": FakeCompletions()})()},
+    )()
+    monkeypatch.setattr(
+        llm_client,
+        "_create_openai_client",
+        lambda *_args, **_kwargs: fake_provider,
+    )
+
+    class NoopPacer:
+        def acquire(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+    def gateway_factory(**kwargs: Any) -> LLMGateway:
+        return LLMGateway(
+            **kwargs,
+            pacers=NoopPacer(),
+            sleeper=lambda _seconds: None,
+        )
+
+    fallback = llm_client.LLMClient(
+        llm_client.LLMSettings(
+            api_key="fake-key",
+            base_url="https://example.invalid",
+            ocr_model="ocr-model",
+            grading_model="fallback-model",
+            config_model="config-model",
+            policy_profile={
+                "llm_grading_timeout_seconds": 300,
+                "llm_grading_max_retries": 0,
+                "llm_recognition_timeout_seconds": 60,
+                "llm_recognition_max_retries": 2,
+            },
+        ),
+        gateway_factory=gateway_factory,
+        usage_sink_factory=RecordingUsageSink,
+    )
+    primary = FakeBatchClient(
+        confidence=0.50,
+        need_review=False,
+        answer="A",
+        review_reason="low confidence cursive A",
+    )
+
+    result = run_objective_batch_recognition(
+        session_id=13,
+        paper_groups=_groups(tmp_path, 1),
+        answer_regions=[
+            {"page": "front", "mapped_question_id": "Q7", "x": 10, "y": 10, "w": 120, "h": 80, "is_confirmed": True}
+        ],
+        rubric={"questions": [{"question_id": "Q7", "question_type": "choice", "max_score": 8}]},
+        answer_key={"questions": [{"question_id": "Q7", "standard_answer": "A"}]},
+        output_root=tmp_path / "out",
+        recognition_client=primary,
+        fallback_recognition_client=fallback,
+        fallback_model="fallback-model",
+    )
+
+    detail = next(iter(result.details_by_paper_key.values()))[0]
+    metadata = next(iter(result.metadata_by_paper_key.values()))[0]
+    assert len(primary.calls) == 1
+    assert len(provider_calls) == 3
+    assert [call["timeout"] for call in provider_calls] == [60.0, 60.0, 60.0]
+    assert [event.request_kind for event in usage_events] == [
+        "recognition",
+        "recognition",
+        "recognition",
+    ]
+    assert detail.score_awarded == 8
+    assert metadata["source"] == "objective_batch_pro_recognition"
     assert result.review_items == []
 
 
@@ -680,21 +910,130 @@ def test_objective_batches_can_run_concurrently_with_rate_limit(tmp_path: Path) 
     assert len(result.review_items) == 0
 
 
-def test_objective_batch_client_omits_timeout_and_token_limit(monkeypatch: Any) -> None:
+@pytest.mark.parametrize(
+    ("thinking_type", "expected_extra_body"),
+    [
+        ("disabled", None),
+        ("enabled", {"thinking": {"type": "enabled"}}),
+    ],
+)
+def test_objective_batch_client_uses_recognition_gateway_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    thinking_type: str,
+    expected_extra_body: dict[str, Any] | None,
+) -> None:
     captured: dict[str, Any] = {}
 
     class FakeCompletions:
         def create(self, **kwargs: Any) -> Any:
             captured["completion_kwargs"] = kwargs
-            return type(
-                "Completion",
-                (),
-                {"choices": [type("Choice", (), {"message": type("Message", (), {"content": '{"question_id":"Q1","items":[]}'})()})()]},
-            )()
+            return _objective_completion()
 
     class FakeOpenAI:
         def __init__(self, **kwargs: Any) -> None:
             captured["client_kwargs"] = kwargs
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    import api_profiles
+    import backend.llm.transport as llm_transport
+
+    policy_profile = {
+        "llm_recognition_timeout_seconds": 60.0,
+        "llm_recognition_requests_per_minute": 5000,
+    }
+    config = {
+        "enabled": True,
+        "api_key": "key",
+        "base_url": "https://example.test/v1",
+        "model": "objective-model",
+        "temperature": 0.25,
+        "max_tokens": 100,
+        "thinking_type": thinking_type,
+        "timeout": 60,
+        "policy_profile": policy_profile,
+    }
+    real_chat_completions = llm_transport.LLMGateway.chat_completions
+
+    def recording_chat_completions(self: Any, **kwargs: Any) -> Any:
+        captured["request_kind"] = kwargs["request_kind"]
+        captured["gateway_profile"] = self.profile
+        return real_chat_completions(self, **kwargs)
+
+    monkeypatch.setattr(
+        api_profiles,
+        "get_objective_api_config",
+        lambda: config,
+    )
+    _install_fake_openai_client(monkeypatch, FakeOpenAI)
+    monkeypatch.setattr(
+        llm_transport.LLMGateway,
+        "chat_completions",
+        recording_chat_completions,
+    )
+
+    result = ObjectiveBatchRecognitionClient().json_from_images(
+        "prompt",
+        [b"fake-jpeg"],
+    )
+
+    assert result == {"question_id": "Q1", "items": []}
+    assert captured["client_kwargs"] == {
+        "api_key": "key",
+        "base_url": "https://example.test/v1",
+        "timeout": 120.0,
+        "max_retries": 0,
+    }
+    assert captured["request_kind"].value == "recognition"
+    assert captured["gateway_profile"] == policy_profile
+    completion_kwargs = captured["completion_kwargs"]
+    assert completion_kwargs["timeout"] == 60.0
+    assert completion_kwargs["model"] == "objective-model"
+    assert completion_kwargs["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "prompt"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "data:image/jpeg;base64,ZmFrZS1qcGVn"
+                    },
+                },
+            ],
+        }
+    ]
+    assert completion_kwargs["temperature"] == 0.25
+    assert completion_kwargs["response_format"] == {"type": "json_object"}
+    assert completion_kwargs.get("extra_body") == expected_extra_body
+    assert "max_tokens" not in completion_kwargs
+    assert "max_completion_tokens" not in completion_kwargs
+
+
+def test_objective_batch_client_gateway_retries_two_503s_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_calls = 0
+
+    class Retryable503Error(RuntimeError):
+        status_code = 503
+        response = type(
+            "Response",
+            (),
+            {"status_code": 503, "headers": {"retry-after": "0"}},
+        )()
+
+    class FakeCompletions:
+        def create(self, **kwargs: Any) -> Any:
+            nonlocal provider_calls
+            provider_calls += 1
+            if provider_calls < 3:
+                raise Retryable503Error("temporary provider outage")
+            return _objective_completion(
+                '{"question_id":"Q1","items":[{"paper_key":"paper-1"}]}'
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs: Any) -> None:
             self.chat = type("Chat", (), {"completions": FakeCompletions()})()
 
     import api_profiles
@@ -708,15 +1047,80 @@ def test_objective_batch_client_omits_timeout_and_token_limit(monkeypatch: Any) 
             "base_url": "https://example.test/v1",
             "model": "objective-model",
             "temperature": 0.0,
-            "max_tokens": 100,
             "thinking_type": "disabled",
-            "timeout": 60,
+            "policy_profile": {},
         },
     )
-    monkeypatch.setitem(sys.modules, "openai", type("OpenAIModule", (), {"OpenAI": FakeOpenAI})())
+    _install_fake_openai_client(monkeypatch, FakeOpenAI)
 
-    ObjectiveBatchRecognitionClient().json_from_images("prompt", [b"fake-jpeg"])
+    result = ObjectiveBatchRecognitionClient().json_from_images(
+        "prompt",
+        [b"fake-jpeg"],
+    )
 
-    assert captured["client_kwargs"]["timeout"] is None
-    assert "max_tokens" not in captured["completion_kwargs"]
-    assert "max_completion_tokens" not in captured["completion_kwargs"]
+    assert provider_calls == 3
+    assert result == {
+        "question_id": "Q1",
+        "items": [{"paper_key": "paper-1"}],
+    }
+
+
+def test_objective_batch_run_calls_failing_client_and_limiter_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FailingBatchClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def json_from_images(
+            self,
+            prompt: str,
+            images: list[bytes],
+            model: str | None = None,
+            usage_callback: Any = None,
+        ) -> dict[str, Any]:
+            self.calls += 1
+            raise RuntimeError("provider failed")
+
+    client = FailingBatchClient()
+    limiter = CountingLimiter()
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+
+    result = run_objective_batch_recognition(
+        session_id=13,
+        paper_groups=_groups(tmp_path, 1),
+        answer_regions=[
+            {
+                "page": "front",
+                "mapped_question_id": "Q7",
+                "x": 10,
+                "y": 10,
+                "w": 120,
+                "h": 80,
+                "is_confirmed": True,
+            }
+        ],
+        rubric={
+            "questions": [
+                {
+                    "question_id": "Q7",
+                    "question_type": "choice",
+                    "max_score": 8,
+                }
+            ]
+        },
+        answer_key={
+            "questions": [{"question_id": "Q7", "standard_answer": "A"}]
+        },
+        output_root=tmp_path / "out",
+        recognition_client=client,
+        rate_limiter=limiter,
+    )
+
+    assert client.calls == 1
+    assert limiter.calls == 1
+    assert len(result.review_items) == 1
+    assert result.review_items[0]["reason"] == "provider failed"
+    detail = next(iter(result.details_by_paper_key.values()))[0]
+    assert detail.error_category == "需复核"

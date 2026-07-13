@@ -85,8 +85,7 @@ def recognize_fill_blank_answer(
     session_id: str = "",
     student_id: str = ""
 ) -> dict:
-    import datetime
-    from usage_logger import log_llm_usage, extract_usage_fields
+    from backend.llm import LLMProtocolAdapter, LLMRequestKind
     start_time = time.time()
     
     config = get_objective_api_config()
@@ -189,20 +188,22 @@ def recognize_fill_blank_answer(
             }
         ]
         
-        from openai import OpenAI
-        client = OpenAI(
-            api_key=config["api_key"],
-            base_url=config["base_url"],
-            timeout=config.get("timeout", 30),
+        adapter = LLMProtocolAdapter(
+            config["api_key"],
+            config["base_url"],
+            policy_profile=config.get("policy_profile"),
         )
         
-        completion = client.chat.completions.create(
+        completion = adapter.chat_completions(
+            request_kind=LLMRequestKind.RECOGNITION,
             model=config["model"],
-            messages=messages,
-            temperature=config.get("temperature", 0.0),
-            max_tokens=config.get("max_tokens", 150),
-            response_format={"type": "json_object"},
-            extra_body={"thinking": {"type": "disabled"}} # Force disabled
+            kwargs={
+                "messages": messages,
+                "temperature": config.get("temperature", 0.0),
+                "max_tokens": config.get("max_tokens", 150),
+                "response_format": {"type": "json_object"},
+                "extra_body": {"thinking": {"type": "disabled"}},
+            },
         )
         
         end_time = time.time()
@@ -262,45 +263,6 @@ def recognize_fill_blank_answer(
         result["error_type"] = str(e)
         result["need_review"] = True
         result["review_reason"] = f"Exception: {str(e)}"
-        
-    try:
-        usage_fields = extract_usage_fields(completion if result.get("success") else None)
-        record = {
-            "timestamp": datetime.datetime.now().isoformat(),
-            "session_id": session_id,
-            "student_id": student_id,
-            "question_id": question_id,
-            "question_type": "fill_blank",
-            "chain_type": "fill_blank_recognition",
-            "flow_type": "experiment",
-            "model": result.get("model", ""),
-            "actual_model_used": result.get("actual_model_used", ""),
-            "api_base_url_masked": result.get("objective_base_url_masked", ""),
-            "thinking_type": result.get("thinking_type", "disabled"),
-            "temperature": result.get("temperature", 0.0),
-            "max_tokens": result.get("max_tokens", 0),
-            "objective_config_used": True,
-            "main_grading_config_used": False,
-            "production_grading_model_used": False,
-            "image_count": 1,
-            "image_width": result.get("image_width"),
-            "image_height": result.get("image_height"),
-            "image_file_size_kb": result.get("image_file_size_kb"),
-            "prompt_chars": result.get("prompt_chars"),
-            "latency_ms": result.get("latency_ms", 0),
-            "success": result.get("success", False),
-            "json_valid": "raw_answer" in result if result.get("success") else False,
-            "need_review": result.get("need_review", False),
-            "auto_scored": result.get("auto_scored", False),
-            "score": result.get("score"),
-            "max_score": result.get("max_score"),
-            "error_type": result.get("error_type", ""),
-            "error_message": result.get("review_reason", "") if result.get("error_type") else ""
-        }
-        record.update(usage_fields)
-        log_llm_usage(record)
-    except Exception as log_e:
-        print(f"Warning: Failed to log usage in fill blank recognition: {log_e}")
         
     return result
 

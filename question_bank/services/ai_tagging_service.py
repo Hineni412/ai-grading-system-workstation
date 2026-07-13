@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from api_profiles import get_api_profile_store
-from backend.llm.policy import policy_overrides_from_profile
+from backend.llm import LLMProtocolAdapter, LLMRequestKind, policy_overrides_from_profile
 from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
 from question_bank.models.tag_schema import ERROR_PRONE_CATEGORIES, SUB_SKILL_DIMENSIONS, SUB_SKILL_KEYWORD_HINTS, TagAnalysis, TaggingContext
 from question_bank.taxonomy.registry import CANONICAL_KNOWLEDGE, canonical_knowledge_seed_rows
@@ -239,37 +239,70 @@ class AITaggingService:
         env: Mapping[str, str] | None = None,
         client: Any | None = None,
         llm_client: Any | None = None,
+        protocol_adapter: Any | None = None,
     ) -> None:
         self.env = dict(_dotenv_values())
         self.env.update(dict(os.environ if env is None else env))
         self.api_key = str(self.env.get("QUESTION_BANK_TAGGING_API_KEY") or self.env.get("OPENAI_API_KEY") or "").strip()
         self.model = str(self.env.get("QUESTION_BANK_TAGGING_MODEL") or DEFAULT_TAGGING_MODEL).strip()
         self.client = client
+        self._protocol_adapter_instance = protocol_adapter
+        self._protocol_adapter_lock = threading.Lock()
+        self._tagging_base_url = str(
+            self.env.get("QUESTION_BANK_TAGGING_BASE_URL")
+            or self.env.get("LLM_BASE_URL")
+            or "https://api.openai.com/v1"
+        ).strip()
+        self._tagging_policy_profile: dict[str, object] = {}
         self.review_model = str(self.env.get("QUESTION_BANK_TAGGING_REVIEW_MODEL") or "").strip()
         self.review_llm_client: LLMClient | None = None
-        
-        # Build a dedicated LLM client specifically for tagging if configured
+
         tagging_api_key = str(self.env.get("QUESTION_BANK_TAGGING_API_KEY") or "").strip()
-        if tagging_api_key:
-            tagging_base_url = str(self.env.get("QUESTION_BANK_TAGGING_BASE_URL") or "https://api.openai.com/v1").strip()
-            from llm_client import LLMSettings, LLMClient
+        direct_injection = client is not None or protocol_adapter is not None
+        if direct_injection and env is None and not self.api_key:
+            profile = _active_saved_profile()
+            self.api_key = str(
+                profile.get("config_api_key") or profile.get("api_key") or ""
+            ).strip()
+            self.model = str(profile.get("config_model") or self.model).strip()
+            self._tagging_base_url = str(
+                profile.get("config_base_url")
+                or profile.get("base_url")
+                or self._tagging_base_url
+            ).strip()
+            self._tagging_policy_profile = policy_overrides_from_profile(profile)
+
+        if direct_injection:
+            self.llm_client = None
+        elif tagging_api_key:
+            dedicated_base_url = str(
+                self.env.get("QUESTION_BANK_TAGGING_BASE_URL")
+                or "https://api.openai.com/v1"
+            ).strip()
             settings = LLMSettings(
                 api_key=tagging_api_key,
-                base_url=tagging_base_url,
+                base_url=dedicated_base_url,
                 ocr_model=self.model,
                 grading_model=self.model,
                 config_model=self.model,
                 config_api_key=tagging_api_key,
-                config_base_url=tagging_base_url
+                config_base_url=dedicated_base_url,
             )
             self.llm_client = LLMClient(settings)
+        elif llm_client is not None:
+            self.llm_client = llm_client
         else:
-            self.llm_client = llm_client or (_llm_client_from_saved_profile(self.env) if env is None else None)
+            self.llm_client = _llm_client_from_saved_profile(self.env) if env is None else None
         self._configure_review_client(tagging_api_key=str(self.env.get("QUESTION_BANK_TAGGING_API_KEY") or "").strip())
 
     @property
     def mock_mode(self) -> bool:
-        return not bool(self.api_key or self.llm_client)
+        return not bool(
+            self.api_key
+            or self.llm_client
+            or self.client
+            or self._protocol_adapter_instance
+        )
 
     def build_skill_context_ranker(self):
         if self.llm_client is None:
@@ -298,10 +331,13 @@ class AITaggingService:
                     model_name=_model_for_llm_client(self.llm_client, self.model),
                 )
                 return _with_quality(result, context)
-            response = self._client().responses.create(
+            response = self._protocol_adapter().responses(
+                request_kind=LLMRequestKind.TAGGING,
                 model=self.model,
-                text={"format": _tag_analysis_response_format()},
-                input=_prompt_input(context),
+                kwargs={
+                    "text": {"format": _tag_analysis_response_format()},
+                    "input": _prompt_input(context),
+                },
             )
             output_text = str(getattr(response, "output_text", "") or "").strip()
             result = AITaggingResult(
@@ -427,15 +463,21 @@ class AITaggingService:
                         
         return results
 
-    def _client(self):
-        if self.client is None:
-            from openai import OpenAI
-            base_url = self.env.get("QUESTION_BANK_TAGGING_BASE_URL") or self.env.get("LLM_BASE_URL")
-            if base_url:
-                self.client = OpenAI(api_key=self.api_key, base_url=base_url)
-            else:
-                self.client = OpenAI(api_key=self.api_key)
-        return self.client
+    def _protocol_adapter(self):
+        adapter = self._protocol_adapter_instance
+        if adapter is not None:
+            return adapter
+        with self._protocol_adapter_lock:
+            adapter = self._protocol_adapter_instance
+            if adapter is None:
+                adapter = LLMProtocolAdapter(
+                    self.api_key,
+                    self._tagging_base_url,
+                    policy_profile=self._tagging_policy_profile,
+                    client=self.client,
+                )
+                self._protocol_adapter_instance = adapter
+        return adapter
 
 
 def _mock_analysis(context: TaggingContext) -> TagAnalysis:
@@ -666,10 +708,9 @@ def _llm_settings_from_env(env: Mapping[str, str]) -> LLMSettings | None:
 
 
 def _llm_settings_from_profile() -> LLMSettings | None:
-    profiles = get_api_profile_store().load()
-    if not profiles:
+    profile = _active_saved_profile()
+    if not profile:
         return None
-    profile = profiles[-1]
     api_key = str(profile.get("api_key") or "").strip()
     config_api_key = str(profile.get("config_api_key") or api_key).strip()
     if not api_key or not config_api_key:
@@ -685,6 +726,11 @@ def _llm_settings_from_profile() -> LLMSettings | None:
         config_base_url=normalize_openai_base_url(str(profile.get("config_base_url") or profile.get("base_url") or "https://api.openai.com/v1")),
         policy_profile=policy_overrides_from_profile(profile),
     )
+
+
+def _active_saved_profile() -> dict[str, Any]:
+    profiles = get_api_profile_store().load()
+    return dict(profiles[-1]) if profiles else {}
 
 
 def _model_for_llm_client(llm_client: Any, fallback: str) -> str:
@@ -878,10 +924,13 @@ def _analyze_one_batch(
             )
 
         # Standard OpenAI-style / Google Responses API client
-        response = service._client().responses.create(
+        response = service._protocol_adapter().responses(
+            request_kind=LLMRequestKind.TAGGING,
             model=service.model,
-            text={"format": _batch_tag_analysis_response_format()},
-            input=_batch_prompt_input(batch_items),
+            kwargs={
+                "text": {"format": _batch_tag_analysis_response_format()},
+                "input": _batch_prompt_input(batch_items),
+            },
         )
         output_text = str(getattr(response, "output_text", "") or "").strip()
         payload = json.loads(output_text)
