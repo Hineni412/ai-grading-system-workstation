@@ -543,7 +543,7 @@ driver_delta = large_5pct.scale_driver_count - small.scale_driver_count
 candidate = select_delta >= 5 and driver_delta > 0 and select_delta / driver_delta >= 0.10
 ```
 
-Label it only `possible_n_plus_one`; include the select/driver counts, never SQL or an optimization recommendation.
+Label it only `possible_n_plus_one`; retain `small_select_median`/`small_driver_count` for the base endpoint and publish the comparison endpoint as `comparison_scale="large_5pct"`, `comparison_select_median`, and `comparison_driver_count`. JSON and Markdown must not expose retired `large_select_median`/`large_driver_count` keys or headers. Include the select/driver counts, never SQL or an optimization recommendation.
 
 - [ ] **Step 9: Implement the CLI and atomic report publication**
 
