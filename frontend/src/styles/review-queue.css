@@ -75,13 +75,13 @@
 }
 
 .review-shortcut-guide__list dt {
-  gap: 2px;
+  gap: var(--border-width);
   color: var(--color-text-primary);
 }
 
 .review-shortcut-guide kbd {
   min-width: 20px;
-  padding: 1px var(--space-1);
+  padding: var(--border-width) var(--space-1);
   border: var(--border-width) solid var(--color-border-strong);
   border-radius: var(--radius-tag);
   background: var(--color-bg-surface);
