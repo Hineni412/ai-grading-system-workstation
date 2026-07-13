@@ -36,13 +36,13 @@
 - Consumes: current `ReviewShortcutCommand`, `reviewShortcutBus`, `ReviewQueueView.onKeydown` and the versioned P2-08 handoff block.
 - Produces: failing unit and browser expectations for click-to-replace, input Enter confirm-next, workspace Enter confirm-next, inactive Shift+Enter, and a five-group shortcut guide.
 
-- [ ] **Step 1: Return the canonical handoff to implementation**
+- [x] **Step 1: Return the canonical handoff to implementation**
 
 Change the handoff block in `2026-07-13-p2-08-sample-page-gate-implementation.md` to:
 
 ```markdown
 **交接状态：** in_progress
-**功能提交：** pending
+**功能提交：** none
 **自动验证：** pending
 **独立复审：** pending
 **用户验收：** pending
@@ -52,7 +52,7 @@ Change the handoff block in `2026-07-13-p2-08-sample-page-gate-implementation.md
 
 Add a dated note that user feedback during acceptance replaced the old Enter/Shift+Enter design, and that previous source SHA `4684ffa2905bf917d79e41c792b57c686c9403c2` remains historical evidence only.
 
-- [ ] **Step 2: Validate and commit the plan-only handoff transition**
+- [x] **Step 2: Validate and commit the plan-only handoff transition**
 
 Run from the worktree root:
 
@@ -67,7 +67,7 @@ git commit -m "docs: reopen P2-08 score workflow"
 
 Expected: validator reports `ok=true` and `state="in_progress"`; the staged list contains only the canonical handoff plan.
 
-- [ ] **Step 3: Write the page shortcut failing test**
+- [x] **Step 3: Write the page shortcut failing test**
 
 Replace the Enter expectations in `review-queue-view.spec.ts` with:
 
@@ -86,7 +86,7 @@ expect(received).toEqual([
 
 Keep the existing assertions for `R`, protected targets, modifier chords and repeated Enter.
 
-- [ ] **Step 4: Write the shortcut-guide failing test**
+- [x] **Step 4: Write the shortcut-guide failing test**
 
 Change `review-shortcut-guide.spec.ts` to require five `<dt>` entries, `Enter` plus `确认并下一份`, and absence of `Shift + Enter` and `确认并停留`:
 
@@ -98,7 +98,7 @@ expect(guide?.textContent).not.toContain('Shift + Enter')
 expect(guide?.textContent).not.toContain('确认并停留')
 ```
 
-- [ ] **Step 5: Write the score focus-selection failing test**
+- [x] **Step 5: Write the score focus-selection failing test**
 
 In `review-scoring-inspector.spec.ts`, spy on the real input method and dispatch focus:
 
@@ -109,7 +109,7 @@ input.dispatchEvent(new FocusEvent('focus'))
 expect(select).toHaveBeenCalledTimes(1)
 ```
 
-- [ ] **Step 6: Write the input Enter and Shift+Enter failing tests**
+- [x] **Step 6: Write the input Enter and Shift+Enter failing tests**
 
 Set a dirty valid score, dispatch an unshifted Enter from the score input, and assert one POST plus navigation:
 
@@ -126,7 +126,7 @@ await vi.waitFor(() => expect(queue.selectedDetailId).toBe(22))
 
 On a fresh dirty mount, dispatch `Shift+Enter` and assert `confirmReviewItem` remains uncalled. Dispatch Enter in the teacher-note textarea and assert it also remains uncalled, proving normal note entry stays protected.
 
-- [ ] **Step 7: Write browser tests for the real teacher sequence**
+- [x] **Step 7: Write browser tests for the real teacher sequence**
 
 In both Playwright suites, add the sequence below. Keep an exact request counter and use a fresh record for the Shift+Enter assertion:
 
@@ -142,7 +142,7 @@ await expect(page).toHaveURL(/detail=2$/)
 
 Also retain one canvas-focused ordinary Enter case and require it to confirm once and advance. Require `Shift+Enter` from both the score field and canvas to leave URL and request count unchanged.
 
-- [ ] **Step 8: Run focused unit and browser tests and verify RED**
+- [x] **Step 8: Run focused unit and browser tests and verify RED**
 
 Run:
 
@@ -172,7 +172,7 @@ Expected: FAIL for the requested missing behavior: focus does not select the val
 - Consumes: `submitCurrent(advance = true): Promise<void>` and the existing submit-disabled/one-shot guards.
 - Produces: `selectScore(event: FocusEvent): void`, `onScoreKeydown(event: KeyboardEvent): void`, and a `ReviewShortcutCommand` union containing only `confirm-next` for confirmation.
 
-- [ ] **Step 1: Implement input-owned focus and Enter behavior**
+- [x] **Step 1: Implement input-owned focus and Enter behavior**
 
 Add to `ReviewScoringInspector.vue`:
 
@@ -205,7 +205,7 @@ Bind the handlers only to the final-score input:
 
 Do not bind them to the teacher-note textarea.
 
-- [ ] **Step 2: Collapse the page confirmation shortcut to one command**
+- [x] **Step 2: Collapse the page confirmation shortcut to one command**
 
 Remove `'confirm-stay'` from `ReviewShortcutCommand`. In `ReviewQueueView.vue`, reject shifted Enter and map only unshifted Enter:
 
@@ -223,7 +223,7 @@ if (command === 'confirm-next') void submitCurrent(true)
 
 In `ReviewShortcutGuide.vue`, remove the Shift+Enter row and change the Enter description to `确认并下一份`.
 
-- [ ] **Step 3: Run focused unit and browser tests and verify GREEN**
+- [x] **Step 3: Run focused unit and browser tests and verify GREEN**
 
 Run from `frontend/`:
 
@@ -235,7 +235,7 @@ npm run e2e:p2-08 -- --grep "shortcut|score|confirmed" --workers=1
 
 Expected: all focused tests PASS with no unhandled errors or warnings; click-and-type replaces the old score in Chromium.
 
-- [ ] **Step 4: Commit the tested interaction**
+- [x] **Step 4: Commit the tested interaction**
 
 ```powershell
 git add frontend/src/composables/review-shortcuts.ts frontend/src/views/ReviewQueueView.vue frontend/src/components/review/ReviewScoringInspector.vue frontend/src/components/review/ReviewShortcutGuide.vue frontend/src/__tests__/review-queue-view.spec.ts frontend/src/__tests__/review-shortcut-guide.spec.ts frontend/src/__tests__/review-scoring-inspector.spec.ts frontend/e2e/review-scoring.spec.ts frontend/e2e/p2-08-formal-gate.spec.ts
@@ -254,7 +254,7 @@ git commit -m "feat: streamline teacher score entry"
 - Consumes: built SPA, P2-08 loopback demo server at `127.0.0.1:4188`, and existing exact-one-request counters.
 - Produces: a versioned user checklist matching the browser-proven behavior and full affected browser regression evidence.
 
-- [ ] **Step 1: Rewrite affected acceptance steps**
+- [x] **Step 1: Rewrite affected acceptance steps**
 
 Update `P2-08-sample-page-formal.md` so its visible shortcut list contains `J/K`, `/`, `Z`, `+/-`, `Enter` and no Shift+Enter or `R`. Replace the old confirmation steps with:
 
@@ -267,7 +267,7 @@ Update `P2-08-sample-page-formal.md` so its visible shortcut list contains `J/K`
 
 Update invalid-score and failure-mode steps to use ordinary Enter only. Preserve the existing anonymous-data, five-viewport, loading/empty/error and no-`R` gates.
 
-- [ ] **Step 2: Run browser regression and verify GREEN**
+- [x] **Step 2: Run browser regression and verify GREEN**
 
 Run from `frontend/`:
 
