@@ -56,9 +56,10 @@ def extract_usage_fields(response_or_usage: object) -> dict:
             
     return result
 
-def log_llm_usage(record: dict) -> None:
+def log_llm_usage(record: dict, *, log_file: Path = LOG_FILE) -> None:
     try:
-        os.makedirs(LOG_FILE.parent, exist_ok=True)
+        log_file = Path(log_file)
+        os.makedirs(log_file.parent, exist_ok=True)
         # Ensure default fields are present
         default_record = {
             "timestamp": datetime.datetime.now().isoformat(),
@@ -111,7 +112,7 @@ def log_llm_usage(record: dict) -> None:
         # Merge
         default_record.update(record)
         
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
+        with open(log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(default_record, ensure_ascii=False) + "\n")
-    except Exception as e:
-        print(f"Warning: Failed to log usage: {e}")
+    except Exception:
+        print("Warning: Failed to log usage")
