@@ -3,7 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ReviewItem } from '../api/review'
-import { fetchReviewRubric } from '../api/review'
+import { confirmReviewItem, fetchReviewItems, fetchReviewRubric } from '../api/review'
 import ReviewScoringInspector from '../components/review/ReviewScoringInspector.vue'
 import { useReviewDraftStore } from '../stores/review-drafts'
 import { useReviewQueueStore } from '../stores/review-queue'
@@ -11,6 +11,8 @@ import { useReviewQueueStore } from '../stores/review-queue'
 vi.mock('../api/review', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/review')>(),
   fetchReviewRubric: vi.fn(),
+  fetchReviewItems: vi.fn(),
+  confirmReviewItem: vi.fn(),
 }))
 
 const media = {
@@ -41,12 +43,12 @@ const item: ReviewItem = {
   media,
 }
 
-async function mountInspector() {
+async function mountInspector(items: ReviewItem[] = [item]) {
   const pinia = createPinia()
   setActivePinia(pinia)
   const queue = useReviewQueueStore(pinia)
   queue.selectQuestion('Q1')
-  queue.replaceItems([item], item.detail_id)
+  queue.replaceItems(items, items[0]?.detail_id)
   const host = document.createElement('div')
   const app = createApp(ReviewScoringInspector)
   app.use(pinia)
@@ -67,6 +69,12 @@ describe('review scoring inspector', () => {
       questionType: 'comprehensive',
       knowledgeLabels: ['一次函数'],
       lines: [{ label: '列出正确关系式'.repeat(20), score: 3 }],
+    })
+    vi.mocked(fetchReviewItems).mockResolvedValue([item])
+    vi.mocked(confirmReviewItem).mockResolvedValue({
+      updated_details: 1,
+      updated_results: 1,
+      annotation_outcomes: [],
     })
   })
 
@@ -103,6 +111,101 @@ describe('review scoring inspector', () => {
     await nextTick()
     expect(button.disabled).toBe(false)
     expect(useReviewDraftStore(pinia).dirtyCount).toBe(1)
+    app.unmount()
+  })
+
+  it('keeps the draft and current record when confirmation fails', async () => {
+    vi.mocked(confirmReviewItem).mockRejectedValue(new Error('private server detail'))
+    const { app, host, pinia } = await mountInspector()
+    const input = host.querySelector<HTMLInputElement>('[data-testid="teacher-score"]')!
+    input.value = '4'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    host.querySelector<HTMLButtonElement>('[data-testid="confirm-next"]')!.click()
+
+    await vi.waitFor(() => expect(host.textContent).toContain('确认失败，教师草稿已保留'))
+    expect(host.textContent).not.toContain('private server detail')
+    expect(useReviewDraftStore(pinia).drafts['7:Q1:21']?.scoreText).toBe('4')
+    expect(useReviewQueueStore(pinia).selectedDetailId).toBe(21)
+    app.unmount()
+  })
+
+  it('submits once, clears the draft and moves to the pre-submit next record', async () => {
+    const second = { ...item, result_id: 12, detail_id: 22, student_code: 'S002', student_name: '学生乙' }
+    vi.mocked(fetchReviewItems).mockResolvedValue([
+      { ...item, score_awarded: 4, needs_review: false, deduction_reason: '教师调整' },
+      second,
+    ])
+    vi.mocked(confirmReviewItem).mockResolvedValue({
+      updated_details: 1,
+      updated_results: 1,
+      annotation_outcomes: [{ result_id: 11, status: 'retry_required' }],
+    })
+    const { app, host, pinia } = await mountInspector([item, second])
+    const input = host.querySelector<HTMLInputElement>('[data-testid="teacher-score"]')!
+    input.value = '4'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="confirm-next"]')!
+    button.click()
+    button.click()
+
+    await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(useReviewQueueStore(pinia).selectedDetailId).toBe(22))
+    await vi.waitFor(() => expect(host.textContent).toContain('分数已确认，标注图需要稍后刷新'))
+    expect(useReviewDraftStore(pinia).drafts['7:Q1:21']).toBeUndefined()
+    app.unmount()
+  })
+
+  it('does not override a teacher selection changed while confirmation is pending', async () => {
+    const second = { ...item, result_id: 12, detail_id: 22, student_code: 'S002', student_name: '学生乙' }
+    let resolveConfirmation: ((value: {
+      updated_details: number
+      updated_results: number
+      annotation_outcomes: []
+    }) => void) | undefined
+    vi.mocked(confirmReviewItem).mockImplementation(() => new Promise((resolve) => {
+      resolveConfirmation = resolve
+    }))
+    const { app, host, pinia } = await mountInspector([item, second])
+    const queue = useReviewQueueStore(pinia)
+    const input = host.querySelector<HTMLInputElement>('[data-testid="teacher-score"]')!
+    input.value = '4'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    host.querySelector<HTMLButtonElement>('[data-testid="confirm-next"]')!.click()
+    await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
+
+    queue.selectDetail(22)
+    resolveConfirmation!({ updated_details: 1, updated_results: 1, annotation_outcomes: [] })
+
+    await vi.waitFor(() => expect(useReviewDraftStore(pinia).drafts['7:Q1:21']).toBeUndefined())
+    expect(queue.selectedDetailId).toBe(22)
+    expect(fetchReviewItems).not.toHaveBeenCalled()
+    app.unmount()
+  })
+
+  it('keeps the confirmed result when the queue refresh fails', async () => {
+    vi.mocked(fetchReviewItems).mockRejectedValue(new Error('refresh unavailable'))
+    const { app, host, pinia } = await mountInspector()
+    const input = host.querySelector<HTMLInputElement>('[data-testid="teacher-score"]')!
+    input.value = '4'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    host.querySelector<HTMLButtonElement>('[data-testid="confirm-next"]')!.click()
+
+    await vi.waitFor(() => expect(host.textContent).toContain('分数已确认，队列刷新失败'))
+    expect(confirmReviewItem).toHaveBeenCalledTimes(1)
+    expect(useReviewDraftStore(pinia).drafts['7:Q1:21']).toMatchObject({
+      scoreText: '4',
+      dirty: false,
+    })
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="confirm-next"]')!.disabled).toBe(true)
+    expect(useReviewQueueStore(pinia).items[0]).toMatchObject({
+      detail_id: 21,
+      score_awarded: 4,
+      needs_review: false,
+    })
     app.unmount()
   })
 })
