@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import io
 from itertools import count
 import json
@@ -10,7 +9,6 @@ import os
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
-from urllib.parse import urlparse
 
 from backend.llm import (
     JsonlUsageSink,
@@ -19,12 +17,14 @@ from backend.llm import (
     LLMRequestKind,
     classify_llm_error,
 )
+from backend.llm.transport import (
+    create_openai_client as _shared_create_openai_client,
+    gateway_config_key as _shared_gateway_config_key,
+    normalize_openai_base_url as _shared_normalize_openai_base_url,
+)
 from openai import OpenAI
 from PIL import Image, ImageOps
 from usage_logger import LOG_FILE as LLM_USAGE_LOG_FILE
-
-
-_GATEWAY_CONFIG_SALT = "ai-grading-llm-gateway-config-v1"
 
 
 def _default_usage_sink() -> JsonlUsageSink:
@@ -481,26 +481,11 @@ def _is_parameter_fallback_error(exc: Exception) -> bool:
 
 
 def _create_openai_client(api_key: str, base_url: str) -> OpenAI:
-    normalized_base_url = normalize_openai_base_url(base_url)
-    kwargs: dict[str, Any] = {
-        "api_key": str(api_key or "").strip(),
-        "timeout": 120.0,
-        "max_retries": 0,
-    }
-    if normalized_base_url:
-        kwargs["base_url"] = normalized_base_url
-    return OpenAI(**kwargs)
+    return _shared_create_openai_client(api_key, base_url)
 
 
 def _gateway_config_key(api_key: str, base_url: str) -> str:
-    material = "\0".join(
-        (
-            _GATEWAY_CONFIG_SALT,
-            str(api_key or "").strip(),
-            normalize_openai_base_url(base_url),
-        )
-    )
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+    return _shared_gateway_config_key(api_key, base_url)
 
 
 def _to_data_url(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
@@ -510,16 +495,7 @@ def _to_data_url(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
 
 
 def normalize_openai_base_url(base_url: str) -> str:
-    value = str(base_url or "").strip().rstrip("/")
-    if not value:
-        return value
-    parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return value
-    path = parsed.path.strip("/")
-    if path:
-        return value
-    return f"{value}/v1"
+    return _shared_normalize_openai_base_url(base_url)
 
 
 def _compress_image_for_api(image_bytes: bytes) -> bytes:
