@@ -421,15 +421,17 @@ test('rapid J/K switching resets the viewer and never shows stale pixels', async
   expect(screenshotHasContent(await page.getByLabel('答卷图片画布').screenshot())).toBe(true)
 })
 
-test('a delayed old crop cannot replace the newly selected record', async ({ page }) => {
+test('a delayed old original cannot alter the newly selected crop state', async ({ page }) => {
   const state = freshMediaState()
-  let releaseOldCrop!: () => void
-  state.delayedPaths.set('/api/media/crop/1', new Promise<void>((resolve) => {
-    releaseOldCrop = resolve
+  let releaseOldOriginal!: () => void
+  state.delayedPaths.set('/api/media/original/front/1', new Promise<void>((resolve) => {
+    releaseOldOriginal = resolve
   }))
   await installApi(page, state)
-  await openViewer(page, 1, 'domcontentloaded')
-  await expect.poll(() => state.requestedPaths).toContain('/api/media/crop/1')
+  await openViewer(page, 1)
+  await waitForImage(page)
+  await page.getByRole('button', { name: '原卷正面', exact: true }).click()
+  await expect.poll(() => state.requestedPaths).toContain('/api/media/original/front/1')
 
   await page.getByLabel('答卷图片画布').focus()
   await page.keyboard.press('j')
@@ -437,10 +439,12 @@ test('a delayed old crop cannot replace the newly selected record', async ({ pag
   await waitForImage(page)
   const image = page.locator('.review-evidence-viewer img')
   await expect(image).toHaveAttribute('src', '/api/media/crop/2')
+  const cropTransform = await image.getAttribute('style')
 
-  releaseOldCrop()
-  await expect.poll(() => state.fulfilledPaths).toContain('/api/media/crop/1')
+  releaseOldOriginal()
+  await expect.poll(() => state.fulfilledPaths).toContain('/api/media/original/front/1')
   await expect(image).toHaveAttribute('src', '/api/media/crop/2')
+  await expect(image).toHaveAttribute('style', cropTransform ?? '')
   await expect.poll(() => image.evaluate((element) =>
     (element as HTMLImageElement).naturalWidth,
   )).toBe(1200)
