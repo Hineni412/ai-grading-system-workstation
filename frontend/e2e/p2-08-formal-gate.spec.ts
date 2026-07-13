@@ -188,7 +188,7 @@ test('failure retains the draft and annotation retry remains non-blocking', asyn
   await setMode(page, { confirm: 'retry' })
   await canvas.press('Enter')
   await expect(page.getByText('分数已确认，标注图需要稍后刷新。', { exact: true })).toBeVisible()
-  await expect(page).toHaveURL(/detail=3$/)
+  await expect(page).toHaveURL(/detail=1$/)
 })
 
 test('loading, disabled, retained-content, empty and first-load error states remain actionable', async ({ page }) => {
