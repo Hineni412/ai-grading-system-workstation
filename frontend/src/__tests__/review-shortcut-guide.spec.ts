@@ -13,7 +13,7 @@ describe('ReviewShortcutGuide', () => {
     expect(guide).not.toBeNull()
     expect(guide?.querySelectorAll('dt')).toHaveLength(6)
     expect(guide?.textContent).toContain('J / K')
-    expect(guide?.textContent).toContain('上一份 / 下一份')
+    expect(guide?.textContent).toContain('下一份 / 上一份')
     expect(guide?.textContent).toContain('Enter')
     expect(guide?.textContent).toContain('确认并停留')
     expect(guide?.textContent).toContain('Shift + Enter')

@@ -494,13 +494,14 @@ describe('P2-05 review queue view', () => {
   it('renders read-only evidence without score, save, or confirm controls', async () => {
     const { host } = await mountView({ initialUrl: '/grading?question=Q1&detail=11' })
     await vi.waitFor(() => expect(host.textContent).toContain('当前得分 3 / 5'))
+    expect(host.textContent).toContain('核对答卷证据并连续确认教师最终分。')
     expect(host.querySelectorAll('.review-evidence-viewer img')).toHaveLength(1)
     expect(host.querySelector('input[type="number"]')).toBeNull()
     expect(host.querySelector('textarea, [contenteditable="true"]')).toBeNull()
     expect([...host.querySelectorAll('button')].some((button) =>
       /保存|确认/.test(button.textContent ?? ''),
     )).toBe(false)
-    expect(host.textContent).toContain('评分与确认将在 P2-07 接入。')
+    expect(host.textContent).toContain('答卷原图不会被改写；分数只有在右侧完成教师确认后才会保存。')
   })
 
   it('resets the viewer when selecting the next record', async () => {
