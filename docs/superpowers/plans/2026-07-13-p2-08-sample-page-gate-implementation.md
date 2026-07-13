@@ -37,10 +37,10 @@
 ## 昼夜交接
 
 **执行包：** P2-08
-**交接状态：** waiting_user
-**功能提交：** 4684ffa2905bf917d79e41c792b57c686c9403c2
-**自动验证：** passed
-**独立复审：** passed
+**交接状态：** in_progress
+**功能提交：** none
+**自动验证：** pending
+**独立复审：** pending
 **用户验收：** pending
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
@@ -53,6 +53,12 @@
 - 根工作区真实数据库仅读取文件大小、UTC 修改时间与 SHA-256：阅卷库 `2863104 / 2026-07-10T07:10:41.1221109Z / 93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`；题库 `3461120 / 2026-07-08T11:58:06.3320883Z / E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`。未用 SQLite 打开真实库。
 - 起点基线：前端 20 个测试文件共 171 项通过；Review queue/evidence/scoring 三个 Chromium 套件共 16 项通过。
 - 根工作区存在与本包无关的 Phase 3 文档改动和真实数据状态；本包不在根工作区实施、不暂存它们，也不将它们复制进功能提交。
+
+## 2026-07-13 用户验收反馈重开
+
+- 用户在正式验收过程中确认原实现符合旧清单，但要求改成更符合连续阅卷习惯的方案 A：得分框聚焦时全选旧分，普通 Enter 在得分框内外均“确认并下一份”，取消“确认并停留”和 `Shift+Enter`。
+- 原 reviewed source `4684ffa2905bf917d79e41c792b57c686c9403c2` 仅保留为历史证据；本次交互代码变化后不得复用其自动验证、独立复审或用户验收结论。
+- 已确认设计与增量实施计划分别为 `docs/superpowers/specs/2026-07-13-p2-08-teacher-score-entry-design.md` 和 `docs/superpowers/plans/2026-07-13-p2-08-teacher-score-entry-implementation.md`。
 
 ---
 
