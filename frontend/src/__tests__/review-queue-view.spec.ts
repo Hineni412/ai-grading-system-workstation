@@ -147,6 +147,7 @@ async function mountView({
 
   return {
     host,
+    pinia,
     router,
     reviewStore,
     sessionStore,

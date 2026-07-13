@@ -293,7 +293,9 @@ const stopScrollWatch = watch(
   () => void scrollSelectedRowIntoView(),
 )
 
-onMounted(() => window.addEventListener('keydown', onKeydown))
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
+})
 
 onBeforeUnmount(() => {
   unmounting = true

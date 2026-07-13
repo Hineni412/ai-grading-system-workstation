@@ -142,6 +142,39 @@ export const useReviewQueueStore = defineStore('review-queue', () => {
     reconcileSelection(preferredDetailId)
   }
 
+  function markItemConfirmed(
+    identity: Pick<ReviewItem, 'session_id' | 'question_id' | 'detail_id'>,
+    scoreAwarded: number,
+    deductionReason: string,
+  ): void {
+    items.value = items.value.map((entry) =>
+      entry.session_id === identity.session_id &&
+      entry.question_id === identity.question_id &&
+      entry.detail_id === identity.detail_id
+        ? {
+            ...entry,
+            score_awarded: scoreAwarded,
+            deduction_reason: deductionReason,
+            error_category: '已复核',
+            error_summary: 'manual_review_confirmed',
+            needs_review: false,
+          }
+        : entry,
+    )
+  }
+
+  function reconcileAfterConfirmation(preferredDetailId?: number): void {
+    if (
+      preferredDetailId !== undefined &&
+      filteredItems.value.some((entry) => entry.detail_id === preferredDetailId)
+    ) {
+      selectedDetailId.value = preferredDetailId
+      syncPageToSelection()
+      return
+    }
+    reconcileSelection(preferredDetailId)
+  }
+
   function selectQuestion(questionId: string): void {
     selectedQuestionId.value = questionId
   }
@@ -293,6 +326,8 @@ export const useReviewQueueStore = defineStore('review-queue', () => {
     loadQuestions,
     loadItems,
     replaceItems,
+    markItemConfirmed,
+    reconcileAfterConfirmation,
     selectQuestion,
     selectDetail,
     setSearch,
