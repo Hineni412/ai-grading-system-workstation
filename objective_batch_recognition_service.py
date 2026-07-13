@@ -176,6 +176,7 @@ def run_objective_batch_recognition(
         atlas_builder: ObjectiveBatchAtlasBuilder | None = None,
         source: str = "objective_batch_recognition",
         primary_review_reasons: dict[str, str] | None = None,
+        allow_gateway_retry: bool = False,
     ) -> dict[str, Any]:
         spec, batch_index, batch_items = task
         atlas = (atlas_builder or builder).build(session_id=session_id, spec=spec, crop_items=batch_items, batch_index=batch_index)
@@ -205,11 +206,19 @@ def run_objective_batch_recognition(
         try:
             if rate_limiter is not None:
                 rate_limiter.acquire()
+            request_kwargs: dict[str, Any] = {
+                "model": model,
+                "usage_callback": _usage_callback,
+            }
+            if allow_gateway_retry:
+                from llm_client import LLMClient
+
+                if isinstance(batch_client, LLMClient):
+                    request_kwargs["allow_gateway_retry"] = True
             response = batch_client.json_from_images(
                 prompt,
                 [image_bytes],
-                model=model,
-                usage_callback=_usage_callback,
+                **request_kwargs,
             )
         except Exception as exc:  # noqa: BLE001
             if progress_callback is not None:
@@ -428,6 +437,7 @@ def _run_objective_fallback_batches(
             atlas_builder=fallback_builder,
             source="objective_batch_pro_recognition",
             primary_review_reasons=primary_reasons,
+            allow_gateway_retry=True,
         )
 
     if not tasks:

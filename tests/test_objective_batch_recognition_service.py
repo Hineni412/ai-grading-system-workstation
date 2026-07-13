@@ -36,8 +36,16 @@ class FakeBatchClient:
         images: list[bytes],
         model: str | None = None,
         usage_callback: Any = None,
+        allow_gateway_retry: bool = False,
     ) -> dict[str, Any]:
-        self.calls.append({"prompt": prompt, "images": images, "model": model})
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "images": images,
+                "model": model,
+                "allow_gateway_retry": allow_gateway_retry,
+            }
+        )
         manifest = json.loads(prompt.split("BATCH_MANIFEST_JSON:", 1)[1].strip())
         if usage_callback is not None:
             usage_callback(
@@ -693,9 +701,171 @@ def test_objective_low_confidence_retries_with_main_model_before_review(tmp_path
     assert len(primary.calls) == 1
     assert len(fallback.calls) == 1
     assert fallback.calls[0]["model"] == "pro-model"
+    assert fallback.calls[0]["allow_gateway_retry"] is False
     assert detail.score_awarded == 8
     assert metadata["source"] == "objective_batch_pro_recognition"
     assert metadata["primary_review_reason"] == "low_confidence"
+    assert result.review_items == []
+
+
+def test_objective_legacy_fallback_client_keeps_old_call_signature(tmp_path: Path) -> None:
+    class LegacyFallbackClient:
+        def __init__(self) -> None:
+            self.delegate = FakeBatchClient(
+                confidence=0.92,
+                need_review=False,
+                answer="A",
+                review_reason="",
+            )
+
+        def json_from_images(
+            self,
+            prompt: str,
+            images: list[bytes],
+            model: str | None = None,
+            usage_callback: Any = None,
+        ) -> dict[str, Any]:
+            return self.delegate.json_from_images(
+                prompt,
+                images,
+                model=model,
+                usage_callback=usage_callback,
+            )
+
+    fallback = LegacyFallbackClient()
+    primary = FakeBatchClient(
+        confidence=0.50,
+        need_review=False,
+        answer="A",
+        review_reason="low confidence cursive A",
+    )
+
+    result = run_objective_batch_recognition(
+        session_id=13,
+        paper_groups=_groups(tmp_path, 1),
+        answer_regions=[
+            {"page": "front", "mapped_question_id": "Q7", "x": 10, "y": 10, "w": 120, "h": 80, "is_confirmed": True}
+        ],
+        rubric={"questions": [{"question_id": "Q7", "question_type": "choice", "max_score": 8}]},
+        answer_key={"questions": [{"question_id": "Q7", "standard_answer": "A"}]},
+        output_root=tmp_path / "out",
+        recognition_client=primary,
+        fallback_recognition_client=fallback,
+        fallback_model="legacy-fallback-model",
+    )
+
+    detail = next(iter(result.details_by_paper_key.values()))[0]
+    metadata = next(iter(result.metadata_by_paper_key.values()))[0]
+    assert len(fallback.delegate.calls) == 1
+    assert detail.score_awarded == 8
+    assert metadata["source"] == "objective_batch_pro_recognition"
+    assert result.review_items == []
+
+
+def test_objective_fallback_root_client_retries_two_503s_then_scores(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import llm_client
+    from backend.llm import LLMGateway, NullUsageSink
+
+    provider_calls = 0
+
+    class Retryable503Error(RuntimeError):
+        status_code = 503
+        response = type(
+            "Response",
+            (),
+            {"status_code": 503, "headers": {"retry-after": "0"}},
+        )()
+
+    class FakeCompletions:
+        def create(self, **kwargs: Any) -> Any:
+            nonlocal provider_calls
+            provider_calls += 1
+            if provider_calls < 3:
+                raise Retryable503Error("temporary provider outage")
+            prompt = kwargs["messages"][0]["content"][0]["text"]
+            manifest = json.loads(prompt.split("BATCH_MANIFEST_JSON:", 1)[1].strip())
+            return _objective_completion(
+                json.dumps(
+                    {
+                        "question_id": manifest["question_id"],
+                        "items": [
+                            {
+                                "paper_key": item["paper_key"],
+                                "student_id": item["student_id"],
+                                "recognized_answer": "A",
+                                "confidence": 0.92,
+                                "need_review": False,
+                                "review_reason": "",
+                            }
+                            for item in manifest["items"]
+                        ],
+                    }
+                )
+            )
+
+    fake_provider = type(
+        "FakeProvider",
+        (),
+        {"chat": type("Chat", (), {"completions": FakeCompletions()})()},
+    )()
+    monkeypatch.setattr(
+        llm_client,
+        "_create_openai_client",
+        lambda *_args, **_kwargs: fake_provider,
+    )
+
+    class NoopPacer:
+        def acquire(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+    def gateway_factory(**kwargs: Any) -> LLMGateway:
+        return LLMGateway(
+            **kwargs,
+            pacers=NoopPacer(),
+            sleeper=lambda _seconds: None,
+        )
+
+    fallback = llm_client.LLMClient(
+        llm_client.LLMSettings(
+            api_key="fake-key",
+            base_url="https://example.invalid",
+            ocr_model="ocr-model",
+            grading_model="fallback-model",
+            config_model="config-model",
+        ),
+        gateway_factory=gateway_factory,
+        usage_sink_factory=NullUsageSink,
+    )
+    primary = FakeBatchClient(
+        confidence=0.50,
+        need_review=False,
+        answer="A",
+        review_reason="low confidence cursive A",
+    )
+
+    result = run_objective_batch_recognition(
+        session_id=13,
+        paper_groups=_groups(tmp_path, 1),
+        answer_regions=[
+            {"page": "front", "mapped_question_id": "Q7", "x": 10, "y": 10, "w": 120, "h": 80, "is_confirmed": True}
+        ],
+        rubric={"questions": [{"question_id": "Q7", "question_type": "choice", "max_score": 8}]},
+        answer_key={"questions": [{"question_id": "Q7", "standard_answer": "A"}]},
+        output_root=tmp_path / "out",
+        recognition_client=primary,
+        fallback_recognition_client=fallback,
+        fallback_model="fallback-model",
+    )
+
+    detail = next(iter(result.details_by_paper_key.values()))[0]
+    metadata = next(iter(result.metadata_by_paper_key.values()))[0]
+    assert len(primary.calls) == 1
+    assert provider_calls == 3
+    assert detail.score_awarded == 8
+    assert metadata["source"] == "objective_batch_pro_recognition"
     assert result.review_items == []
 
 
