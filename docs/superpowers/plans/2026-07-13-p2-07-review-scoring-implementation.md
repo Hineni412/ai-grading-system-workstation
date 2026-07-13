@@ -219,13 +219,13 @@ git commit -m "feat: preserve teacher review drafts"
 - Create: `frontend/src/styles/review-scoring.css`
 - Modify: `frontend/src/layouts/AppShell.vue`
 - Modify: `frontend/src/main.ts`
-- Modify: `frontend/src/__tests__/app-shell.spec.ts`
+- Modify: `frontend/src/__tests__/App.spec.ts`
 
 **Interfaces:**
 - Consumes: current route, Session Store, Review Queue Store, Review Draft Store, Task 2 API adapters.
 - Produces: route-aware right inspector with rubric, evidence summary, AI suggestion, risk, teacher final score, note, activity placeholder and one primary confirm action.
 
-- [ ] **Step 1: Write failing rendering and hierarchy tests**
+- [x] **Step 1: Write failing rendering and hierarchy tests**
 
 Mount `/grading` with a current item and assert:
 
@@ -242,12 +242,12 @@ Also assert other routes still render `SessionInspector`; long rubric is inside 
 Run:
 
 ```powershell
-npm test -- src/__tests__/review-scoring-inspector.spec.ts src/__tests__/app-shell.spec.ts
+npm test -- src/__tests__/review-scoring-inspector.spec.ts src/__tests__/App.spec.ts
 ```
 
 Expected: FAIL because the scoring inspector is absent.
 
-- [ ] **Step 2: Implement the minimal component and route switch**
+- [x] **Step 2: Implement the minimal component and route switch**
 
 Use `route.name === 'grading'` in `AppShell.vue` to choose `ReviewScoringInspector` or `SessionInspector` in the same grid cell and with the same open/close control. The scoring inspector must use semantic sections and a sticky footer; styles derive only from existing tokens and use `--color-teacher*` for the teacher decision area.
 
@@ -262,10 +262,10 @@ Display rules:
 
 Run the same tests and expect PASS.
 
-- [ ] **Step 3: Commit the inspector slice**
+- [x] **Step 3: Commit the inspector slice**
 
 ```powershell
-git add frontend/src/components/review/ReviewScoringInspector.vue frontend/src/__tests__/review-scoring-inspector.spec.ts frontend/src/styles/review-scoring.css frontend/src/layouts/AppShell.vue frontend/src/main.ts frontend/src/__tests__/app-shell.spec.ts
+git add frontend/src/components/review/ReviewScoringInspector.vue frontend/src/__tests__/review-scoring-inspector.spec.ts frontend/src/styles/review-scoring.css frontend/src/layouts/AppShell.vue frontend/src/main.ts frontend/src/__tests__/App.spec.ts
 git diff --check
 git commit -m "feat: add teacher scoring inspector"
 ```
