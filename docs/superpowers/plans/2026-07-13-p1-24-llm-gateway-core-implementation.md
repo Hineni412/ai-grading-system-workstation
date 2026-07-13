@@ -111,7 +111,7 @@ class LLMGateway:
 - Produces: `LLMRequestKind`, `LLMProtocol`, `LLMRequestPolicy`, `policy_from_profile()`, `policy_overrides_from_profile()`.
 - Produces: `LLMErrorCategory`, `classify_llm_error()`, `is_retryable_error()`.
 
-- [ ] **Step 1: Write RED policy and classification tests**
+- [x] **Step 1: Write RED policy and classification tests**
 
 ```python
 def test_default_timeout_budgets_are_explicit():
@@ -137,12 +137,12 @@ def test_invalid_profile_override_fails_before_request(field, value):
 
 Also assert timeout/connection/rate-limit/500/502/503/504 are retryable; authentication, 400/404/422 and unknown exceptions are not; parameter incompatibility is classified separately and never ordinary-retryable.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_llm_gateway_policy.py -q`
 Expected: FAIL because `backend.llm.policy` and `backend.llm.errors` do not exist.
 
-- [ ] **Step 3: Implement immutable defaults and strict profile parsing**
+- [x] **Step 3: Implement immutable defaults and strict profile parsing**
 
 ```python
 DEFAULT_POLICIES = {
@@ -164,12 +164,12 @@ def policy_from_profile(kind, profile):
 
 `classify_llm_error()` first uses OpenAI exception types/status codes, then narrow parameter markers. Do not classify every 400/422 as parameter incompatibility; a marker such as `max_tokens`, `max_completion_tokens`, `response_format`, `json_object`, `unsupported parameter`, `unknown parameter` or `extra_forbidden` is required.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_llm_gateway_policy.py -q`
 Expected: all policy/classification tests pass.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
 ```powershell
 git add backend/llm/policy.py backend/llm/errors.py tests/test_llm_gateway_policy.py
@@ -186,7 +186,7 @@ git commit -m "feat: define LLM gateway request policies"
 - Produces: `LLMPacerRegistry.acquire(config_key: str, kind: LLMRequestKind, requests_per_minute: int) -> None`.
 - Consumes: existing `RequestPacer.acquire()` first-request-immediate and evenly spaced slot behavior.
 
-- [ ] **Step 1: Write RED keyed/concurrent pacing tests**
+- [x] **Step 1: Write RED keyed/concurrent pacing tests**
 
 ```python
 def test_registry_reuses_pacer_for_same_config_and_kind():
@@ -204,12 +204,12 @@ def test_policy_change_replaces_keyed_pacer():
 
 Retain and rerun the existing concurrent distinct-slot test; add a registry concurrency test proving one pacer is created for simultaneous first access.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_request_pacer.py -q`
 Expected: FAIL because `LLMPacerRegistry` does not exist.
 
-- [ ] **Step 3: Implement locked registry around existing pacer**
+- [x] **Step 3: Implement locked registry around existing pacer**
 
 ```python
 class LLMPacerRegistry:
@@ -230,12 +230,12 @@ class LLMPacerRegistry:
         pacer.acquire()
 ```
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_request_pacer.py -q`
 Expected: existing and new pacing tests pass.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 
 ```powershell
 git add backend/llm/pacing.py tests/test_request_pacer.py
@@ -253,7 +253,7 @@ git commit -m "feat: share LLM request pacing policies"
 - Produces: `LLMUsageEvent`, `usage_fields()`, `JsonlUsageSink`, `NullUsageSink`.
 - Preserves: `usage_logger.extract_usage_fields()` and `usage_logger.log_llm_usage(record)`.
 
-- [ ] **Step 1: Write RED usage normalization and redaction tests**
+- [x] **Step 1: Write RED usage normalization and redaction tests**
 
 ```python
 def test_usage_fields_supports_chat_and_responses_shapes():
@@ -273,12 +273,12 @@ def test_jsonl_sink_writes_only_allowlisted_metadata(tmp_path):
 
 Also cover cached/reasoning detail objects, failed request with zero usage, sink write failure not raising, and compatibility logger retaining its current default record shape.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_llm_gateway_usage.py -q`
 Expected: FAIL because Gateway usage module does not exist.
 
-- [ ] **Step 3: Implement frozen allowlisted event and injectable JSONL path**
+- [x] **Step 3: Implement frozen allowlisted event and injectable JSONL path**
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -308,12 +308,12 @@ class JsonlUsageSink:
 
 Change `log_llm_usage(record, *, log_file=LOG_FILE)` compatibly; old positional calls remain valid.
 
-- [ ] **Step 4: Run GREEN and usage-report compatibility**
+- [x] **Step 4: Run GREEN and usage-report compatibility**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_llm_gateway_usage.py -q; ..\..\runtime\python\python.exe -m py_compile usage_report.py`
 Expected: Gateway usage tests pass and `usage_report.py` compiles successfully.
 
-- [ ] **Step 5: Commit Task 3**
+- [x] **Step 5: Commit Task 3**
 
 ```powershell
 git add backend/llm/usage.py usage_logger.py tests/test_llm_gateway_usage.py
@@ -331,7 +331,7 @@ git commit -m "feat: record unified LLM usage events"
 - Produces: `LLMGateway.chat_completions()` and `.responses()` with explicit timeout and optional caller request ID.
 - Consumes: policy, classifier, pacer registry and usage sink from Tasks 1-3.
 
-- [ ] **Step 1: Write RED protocol/retry/request-ID tests**
+- [x] **Step 1: Write RED protocol/retry/request-ID tests**
 
 ```python
 def test_chat_and_responses_receive_explicit_timeout(fake_clients):
@@ -368,12 +368,12 @@ def test_rate_limit_retries_are_bounded_and_share_request_id():
 
 Also cover timeout/connection/500 success after retry, authentication/400/unknown no retry, retry budget exhaustion, deterministic sleeper delays, pacing before every physical request, generated UUID request ID, and log sink failure not changing returned response.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_llm_gateway.py -q`
 Expected: FAIL because `LLMGateway` does not exist.
 
-- [ ] **Step 3: Implement a single private execution loop**
+- [x] **Step 3: Implement a single private execution loop**
 
 ```python
 def _execute(self, *, protocol, request_kind, client, model, kwargs, request_id, allow_retry):
@@ -401,12 +401,12 @@ def _execute(self, *, protocol, request_kind, client, model, kwargs, request_id,
 
 Never mutate caller `kwargs`. `Retry-After` parsing is capped to the current policy delay; invalid/negative/non-finite values use the deterministic delay.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_llm_gateway.py tests\test_llm_gateway_policy.py tests\test_llm_gateway_usage.py tests\test_request_pacer.py -q`
 Expected: all Gateway core tests pass.
 
-- [ ] **Step 5: Commit Task 4**
+- [x] **Step 5: Commit Task 4**
 
 ```powershell
 git add backend/llm/__init__.py backend/llm/gateway.py tests/test_llm_gateway.py
@@ -424,7 +424,7 @@ git commit -m "feat: add bounded LLM gateway execution"
 - Extends `LLMSettings` with `policy_profile: Mapping[str, object] | None = None`.
 - Preserves every existing public `LLMClient` method and root-module import.
 
-- [ ] **Step 1: Write RED compatibility tests**
+- [x] **Step 1: Write RED compatibility tests**
 
 ```python
 def test_llm_client_chat_uses_gateway_timeout_and_request_id(monkeypatch):
@@ -443,12 +443,12 @@ def test_parameter_fallback_is_bounded_and_not_counted_as_network_retry():
 
 Retain the existing tests proving `json_from_text_once`/`json_from_images_once` make exactly one call. Add truncated JSON and repair tests proving all physical calls share one logical request ID and no more repair calls occur than before.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_grading_config_generation_policy.py -k "llm_single_request or llm_client_gateway or parameter_fallback or json_repair" -q`
 Expected: new tests fail because `LLMClient` still calls the SDK directly.
 
-- [ ] **Step 3: Inject one Gateway per distinct client configuration**
+- [x] **Step 3: Inject one Gateway per distinct client configuration**
 
 ```python
 @dataclass
@@ -467,11 +467,11 @@ class LLMClient:
 
 Map calls explicitly: OCR/text-from-images → `recognition`; grading image JSON → `grading`; config client text/image JSON → `config_generation`. Do not send keys or full URLs into the config key: hash normalized base URL plus a constant local salt and include only the digest.
 
-- [ ] **Step 4: Preserve finite parameter fallback and single-request bypass**
+- [x] **Step 4: Preserve finite parameter fallback and single-request bypass**
 
 `_create_chat_completion()` calls Gateway with `allow_retry=not single_request`. Each compatibility attempt calls Gateway with `allow_retry=False` so nested retries cannot multiply; the outer operation may retry only before compatibility handling. Pass an internal logical request ID through JSON truncation and repair calls.
 
-- [ ] **Step 5: Run GREEN and affected LLM/config regressions**
+- [x] **Step 5: Run GREEN and affected LLM/config regressions**
 
 Run:
 
@@ -481,7 +481,7 @@ Run:
 
 Expected: selected files that exist pass; no existing single-request or JSON policy assertion changes.
 
-- [ ] **Step 6: Commit Task 5**
+- [x] **Step 6: Commit Task 5**
 
 ```powershell
 git add llm_client.py tests/test_llm_gateway.py tests/test_grading_config_generation_policy.py
@@ -501,7 +501,7 @@ git commit -m "feat: route LLM client through gateway"
 - Consumes: `policy_overrides_from_profile(profile)`; returns only the twelve allowlisted non-secret policy keys.
 - Produces no new API endpoint, UI control or profile migration.
 
-- [ ] **Step 1: Write RED profile propagation tests**
+- [x] **Step 1: Write RED profile propagation tests**
 
 ```python
 def test_policy_override_copy_excludes_secrets_and_unrelated_fields():
@@ -522,12 +522,12 @@ def test_active_backend_settings_receive_policy_overrides(monkeypatch):
 
 Add equivalent profile-path tests for web settings and `_llm_settings_from_profile()` in tagging service. Environment-only constructors must yield `policy_profile=None` and use safe defaults.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `..\..\runtime\python\python.exe -m pytest tests\test_api_profile_store.py tests\test_llm_gateway_policy.py -q`
 Expected: new propagation assertions fail.
 
-- [ ] **Step 3: Pass only sanitized policy mappings**
+- [x] **Step 3: Pass only sanitized policy mappings**
 
 ```python
 policy_profile=policy_overrides_from_profile(profile)
@@ -535,7 +535,7 @@ policy_profile=policy_overrides_from_profile(profile)
 
 In `web_app.py`, use the already loaded `saved_profile`; do not add widgets or place policy values in environment variables. In tagging service, apply profile overrides only when the canonical profile store supplied the client; dedicated environment clients retain defaults.
 
-- [ ] **Step 4: Run GREEN and profile/tagging regressions**
+- [x] **Step 4: Run GREEN and profile/tagging regressions**
 
 Run:
 
@@ -545,7 +545,7 @@ Run:
 
 Expected: selected files that exist pass; deprecated `objective_timeout` remains ignored and absent from `web_app.py`.
 
-- [ ] **Step 5: Commit Task 6**
+- [x] **Step 5: Commit Task 6**
 
 ```powershell
 git add backend/jobs/default_handlers.py web_app.py question_bank/services/ai_tagging_service.py tests/test_api_profile_store.py tests/test_llm_gateway_policy.py
@@ -561,7 +561,7 @@ git commit -m "feat: load LLM gateway policy overrides"
 **Interfaces:**
 - Produces exact P1-24 verification evidence and valid handoff state.
 
-- [ ] **Step 1: Run the complete focused and affected regression**
+- [x] **Step 1: Run the complete focused and affected regression**
 
 Run:
 
@@ -571,7 +571,7 @@ Run:
 
 Expected: the exact selected set passes with 0 failed.
 
-- [ ] **Step 2: Assert package boundary and no infinite retry patterns**
+- [x] **Step 2: Assert package boundary and no infinite retry patterns**
 
 Run:
 
@@ -584,11 +584,11 @@ git status --short -- user_data
 
 Expected: SDK calls exist only in protocol adapter execution points; no `while True` or `timeout=None` in Gateway/compatibility client; diff check passes; feature worktree has no `user_data/` entries. Existing P1-25-owned direct calls outside these paths are allowed and must not be edited.
 
-- [ ] **Step 3: Update architecture only after verified behavior**
+- [x] **Step 3: Update architecture only after verified behavior**
 
 Record that P1-24 adds the policy core, safe profile overrides, Chat/Responses adapters, finite retry classification, keyed pacing, request IDs and unified usage events. State explicitly that four direct callers and the objective batch `timeout=None` remain for P1-25, and no real model call was executed.
 
-- [ ] **Step 4: Run completion gates**
+- [x] **Step 4: Run completion gates**
 
 ```powershell
 git diff --check
@@ -598,11 +598,11 @@ git diff --check
 
 Expected: diff clean; quick smoke passes; handoff validator emits one JSON line with `ok=true` after the handoff block is updated.
 
-- [ ] **Step 5: Compare root real-database fingerprints without SQLite**
+- [x] **Step 5: Compare root real-database fingerprints without SQLite**
 
 From the main project root, record for each real database: length, `LastWriteTimeUtc`, and SHA-256 before the first feature edit and after all tests. Expected: all three values remain byte-for-byte identical. Any difference blocks commit and integration.
 
-- [ ] **Step 6: Record `waiting_review` and create the feature commit**
+- [x] **Step 6: Record `waiting_review` and create the feature commit**
 
 Before the first feature edit, the claim commit must already have added the handoff block with immutable Stash baseline and `in_progress`. After tests pass, update it to `waiting_review/branch_head/passed/pending/not_required/unchanged/report_only`, stage only P1-24 files, and commit:
 
@@ -623,16 +623,25 @@ Review for retry multiplication, request-ID loss, unsafe logging, changed JSON b
 - Code rollback: revert the isolated P1-24 commit chain. The old root `llm_client.py` import path remains; no data or profile migration needs rollback.
 - Operational rollback: profile policy keys are optional. Removing them returns to safe defaults; invalid values fail before a request is sent.
 
+## Implementation Evidence
+
+- Claim and task chain: the immutable claim handoff preceded implementation; Tasks 1-6 are complete through `85285619ded13f1d3420318c7c511a68dd892f98`, with their focused RED/GREEN cycles and requested task reviews recorded in `.superpowers/sdd/` reports and progress ledger.
+- Final focused and affected regression: the exact fifteen-file Task 7 command completed with `219 passed / 0 failed`.
+- Boundary guard: `backend/llm/` and `llm_client.py` contain only the compatibility client constructor and the two Chat/Responses protocol execution points; neither `while True` nor `timeout=None` occurs in those paths. The four P1-25-owned direct caller chains and objective-batch `timeout=None` remain unchanged outside the P1-24 paths.
+- Completion gates: `git diff --check` passed. Quick smoke passed document governance, static compilation of `403` first-party Python files, and idempotent initialization plus `integrity_check=ok` on temporary copies of both databases; full pytest remains the integration wave-end gate. The handoff validator parsed the required `waiting_review/branch_head/passed/pending/not_required/unchanged/report_only` record and is rerun against the clean feature commit because committed handoff validation intentionally rejects a dirty pre-commit worktree.
+- Real-data guard: the root grading database remained `2863104` bytes / `2026-07-10T07:10:41.1221109Z` / SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`; the root question-bank database remained `3461120` bytes / `2026-07-08T11:58:06.3320883Z` / SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`. Both were read only as files for length, UTC mtime and SHA-256; no SQLite connection or real model call was made, and worktree `user_data/` status is empty.
+- Review boundary: Step 7 remains unchecked. Independent whole-branch review, Critical/Important disposition, and the plan-only `verified_pending_integration` handoff belong to the controller's next task.
+
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
 
 **执行包：** P1-24
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
