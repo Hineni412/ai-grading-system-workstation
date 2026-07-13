@@ -87,13 +87,28 @@ def test_jsonl_sink_writes_only_allowlisted_metadata(tmp_path):
 
 def test_jsonl_sink_write_failure_does_not_raise(monkeypatch, caplog, tmp_path):
     def fail_to_write(*args, **kwargs):
-        raise OSError("disk unavailable")
+        raise OSError("secret-key student answer C:\\private\\usage.jsonl")
 
     monkeypatch.setattr("backend.llm.usage.log_llm_usage", fail_to_write)
 
     JsonlUsageSink(tmp_path / "usage.jsonl").write(_event())
 
     assert "Failed to record LLM usage metadata" in caplog.text
+    assert "secret-key" not in caplog.text
+    assert "student answer" not in caplog.text
+    assert "C:\\" not in caplog.text
+
+
+def test_compatibility_logger_sanitizes_destination_failure(capsys, tmp_path):
+    blocked_parent = tmp_path / "blocked"
+    blocked_parent.write_text("not a directory", encoding="utf-8")
+
+    log_llm_usage({}, log_file=blocked_parent / "usage.jsonl")
+
+    warning = capsys.readouterr().out
+    assert "Failed to log usage" in warning
+    assert str(tmp_path) not in warning
+    assert blocked_parent.name not in warning
 
 
 def test_null_sink_ignores_events():

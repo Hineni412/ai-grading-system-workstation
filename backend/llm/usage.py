@@ -84,7 +84,7 @@ class JsonlUsageSink:
         try:
             log_llm_usage(asdict(event), log_file=self.path)
         except Exception:
-            logger.warning("Failed to record LLM usage metadata", exc_info=True)
+            logger.warning("Failed to record LLM usage metadata")
 
 
 class NullUsageSink:
