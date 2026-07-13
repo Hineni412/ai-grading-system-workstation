@@ -150,17 +150,28 @@ async function selectedRow(page: Page) {
   return page.locator('.review-queue-row[aria-current="true"]')
 }
 
+async function scrollPositions(page: Page) {
+  return page.evaluate(() => ({
+    page: document.scrollingElement?.scrollTop ?? 0,
+    workspace: document.querySelector<HTMLElement>('#main-workspace')?.scrollTop ?? 0,
+    queue: document.querySelector<HTMLElement>('.review-queue-list')?.scrollTop ?? 0,
+  }))
+}
+
 test('restores URL context and crosses the 100/101 boundary with keyboard navigation', async ({
   page,
 }) => {
   const state: MockState = { questions: 'ready', items: 'ready' }
+  await page.setViewportSize({ width: 1024, height: 768 })
   await installReviewApi(page, state)
   await openReviewQueue(page, '/grading?question=Q1&detail=201&discard=me')
+  const summary = page.locator('.review-selection-summary')
 
   await expect(page).toHaveURL(/\/grading\?question=Q1&detail=201$/)
   await expect(page.getByText('当前位置 100 / 1000')).toBeVisible()
   await expect(await selectedRow(page)).toContainText('学生0201')
   await expect(page.getByText('第 1 / 10 页')).toBeVisible()
+  const initialScroll = await scrollPositions(page)
 
   await page.keyboard.press('j')
 
@@ -168,12 +179,25 @@ test('restores URL context and crosses the 100/101 boundary with keyboard naviga
   await expect(page.getByText('当前位置 101 / 1000')).toBeVisible()
   await expect(await selectedRow(page)).toContainText('学生0203')
   await expect(await selectedRow(page)).toBeInViewport()
+  await expect(summary).toBeInViewport()
   await expect(page.getByText('第 2 / 10 页')).toBeVisible()
+  const pageTwoScroll = await scrollPositions(page)
 
   await page.keyboard.press('k')
   await expect(page).toHaveURL(/detail=201$/)
   await expect(page.getByText('当前位置 100 / 1000')).toBeVisible()
   await expect(await selectedRow(page)).toBeInViewport()
+  await expect(summary).toBeInViewport()
+  const returnedPageOneScroll = await scrollPositions(page)
+
+  expect(initialScroll.page).toBe(0)
+  expect(pageTwoScroll.page).toBe(0)
+  expect(returnedPageOneScroll.page).toBe(0)
+  expect(initialScroll.workspace).toBe(0)
+  expect(pageTwoScroll.workspace).toBe(0)
+  expect(returnedPageOneScroll.workspace).toBe(0)
+  expect(initialScroll.queue).toBeGreaterThan(pageTwoScroll.queue)
+  expect(returnedPageOneScroll.queue).toBeGreaterThan(pageTwoScroll.queue)
 })
 
 test('search, needs-review filter, and risk sort keep a valid current item', async ({ page }) => {
