@@ -32,7 +32,7 @@
 - Consumes: `message: string`, `tone: 'success' | 'warning' | 'error'`.
 - Produces: one `dismiss` event, one `[data-testid="review-feedback-toast"]` teleported element, and deterministic 4000ms success dismissal.
 
-- [ ] **Step 1: Write the teleported rendering and close RED test**
+- [x] **Step 1: Write the teleported rendering and close RED test**
 
 Create `review-feedback-toast.spec.ts` with a small reactive harness:
 
@@ -78,7 +78,7 @@ it('teleports one error alert to body and closes without focusing it', async () 
 })
 ```
 
-- [ ] **Step 2: Write RED tests for timeout and replacement**
+- [x] **Step 2: Write RED tests for timeout and replacement**
 
 Add tests using fake timers:
 
@@ -114,7 +114,7 @@ it('restarts the success timer when a new message replaces the old one', async (
 })
 ```
 
-- [ ] **Step 3: Run the new component test and verify RED**
+- [x] **Step 3: Run the new component test and verify RED**
 
 Run from `frontend/`:
 
@@ -124,7 +124,7 @@ npm test -- src/__tests__/review-feedback-toast.spec.ts
 
 Expected: FAIL because `ReviewFeedbackToast.vue` does not exist. A module-not-found failure is the intended first RED result.
 
-- [ ] **Step 4: Implement the minimal toast component**
+- [x] **Step 4: Implement the minimal toast component**
 
 Create `ReviewFeedbackToast.vue`:
 
@@ -181,7 +181,7 @@ onBeforeUnmount(clearDismissTimer)
 </template>
 ```
 
-- [ ] **Step 5: Run the component test and verify GREEN**
+- [x] **Step 5: Run the component test and verify GREEN**
 
 Run:
 
@@ -191,7 +191,7 @@ npm test -- src/__tests__/review-feedback-toast.spec.ts
 
 Expected: all toast lifecycle tests PASS without timer leaks or Vue warnings.
 
-- [ ] **Step 6: Commit the isolated component**
+- [x] **Step 6: Commit the isolated component**
 
 ```powershell
 git add frontend/src/components/review/ReviewFeedbackToast.vue frontend/src/__tests__/review-feedback-toast.spec.ts
@@ -214,7 +214,7 @@ git commit -m "feat: add review feedback toast"
 - Consumes: `ReviewFeedbackToast` props and `dismiss` event; existing `feedback` and `feedbackTone` refs.
 - Produces: one viewport-fixed toast outside `[data-testid="scoring-scroll-region"]`, preserving all current confirmation state transitions.
 
-- [ ] **Step 1: Write the integration RED test before changing the inspector**
+- [x] **Step 1: Write the integration RED test before changing the inspector**
 
 Update the failure test in `review-scoring-inspector.spec.ts` to assert the requested placement and dismiss behavior:
 
@@ -267,7 +267,7 @@ const geometry = await page.evaluate(() => {
 expect(geometry).toEqual({ insideViewport: true, overlapsFooter: false, documentOverflow: 0 })
 ```
 
-- [ ] **Step 2: Run scoring tests and verify RED**
+- [x] **Step 2: Run scoring tests and verify RED**
 
 Run:
 
@@ -279,7 +279,7 @@ npm run e2e:p2-08 -- --grep "failure retains" --workers=1
 
 Expected: tests FAIL because feedback is still rendered as `.review-scoring-feedback` inside the scroll region and is outside the viewport after scrolling down.
 
-- [ ] **Step 3: Replace the internal feedback paragraph with the toast**
+- [x] **Step 3: Replace the internal feedback paragraph with the toast**
 
 Import the component:
 
@@ -299,7 +299,7 @@ Inside the inspector template but outside `.review-scoring-inspector__scroll`, r
 
 Delete the old `<p v-if="feedback" class="review-scoring-feedback">` block. Do not change the existing feedback strings, submit guards or `feedbackTone` assignments.
 
-- [ ] **Step 4: Replace old feedback CSS with the viewport-fixed styles**
+- [x] **Step 4: Replace old feedback CSS with the viewport-fixed styles**
 
 Remove `.review-scoring-feedback` from the shared padding selector and delete its four old rules. Add:
 
@@ -349,7 +349,7 @@ Remove `.review-scoring-feedback` from the shared padding selector and delete it
 }
 ```
 
-- [ ] **Step 5: Run focused tests and verify GREEN**
+- [x] **Step 5: Run focused tests and verify GREEN**
 
 Run:
 
@@ -363,7 +363,7 @@ npm run typecheck
 
 Expected: component and inspector tests PASS; lint and typecheck exit 0.
 
-- [ ] **Step 6: Commit the scoring integration**
+- [x] **Step 6: Commit the scoring integration**
 
 ```powershell
 git add frontend/src/components/review/ReviewScoringInspector.vue frontend/src/__tests__/review-scoring-inspector.spec.ts frontend/src/styles/review-scoring.css frontend/e2e/review-scoring.spec.ts frontend/e2e/p2-08-formal-gate.spec.ts
@@ -382,7 +382,7 @@ git commit -m "fix: keep review feedback visible"
 - Consumes: fixed anonymous 422/500/retry modes and the browser-proven teleported `[data-testid="review-feedback-toast"]`.
 - Produces: a formal user checklist matching the reviewed popup behavior and full affected browser regression evidence.
 
-- [ ] **Step 1: Update the formal checklist wording**
+- [x] **Step 1: Update the formal checklist wording**
 
 Revise steps 9–11 in `P2-08-sample-page-formal.md`:
 
@@ -394,7 +394,7 @@ Revise steps 9–11 in `P2-08-sample-page-formal.md`:
 
 在步骤 13 增加：1024×768 下通知不超出屏幕、不产生横向滚动、不遮住“确认并下一份”。
 
-- [ ] **Step 2: Run full affected browser suites and verify GREEN**
+- [x] **Step 2: Run full affected browser suites and verify GREEN**
 
 Run:
 
@@ -405,7 +405,7 @@ npm run e2e:p2-08 -- --workers=1
 
 Expected: scoring suite and ten-test formal gate PASS; five required desktop viewports remain covered.
 
-- [ ] **Step 3: Commit the checklist alignment**
+- [x] **Step 3: Commit the checklist alignment**
 
 ```powershell
 git add docs/user-testing/checkpoints/P2-08-sample-page-formal.md
@@ -425,7 +425,7 @@ git commit -m "test: cover visible review feedback"
 - Consumes: final source candidate, unchanged dependency/config baseline, RED/GREEN evidence and immutable real-data/stash baselines.
 - Produces: a new full reviewed source SHA and validator-compatible `waiting_user` anchor for restarting at formal step 9.
 
-- [ ] **Step 1: Run complete affected automated validation**
+- [x] **Step 1: Run complete affected automated validation**
 
 From `frontend/` run:
 
@@ -450,7 +450,7 @@ git status --short -- user_data
 
 Expected: all commands PASS; `user_data` is clean in the feature worktree.
 
-- [ ] **Step 2: Recheck immutable data and stash evidence read-only**
+- [x] **Step 2: Recheck immutable data and stash evidence read-only**
 
 Recompute file length, UTC modification time and SHA-256 without opening the databases. Require the unchanged values:
 
@@ -461,7 +461,7 @@ question_bank.db   3461120 2026-07-08T11:58:06.3320883Z E1E5123AD54C9E8AF5984BDC
 
 Require stash SHAs `85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2`.
 
-- [ ] **Step 3: Perform fresh-pass review**
+- [x] **Step 3: Perform fresh-pass review**
 
 Review the complete diff from reviewed source `e446e09cfb00e3ac06bd5af30b8bbbd0cf817714` through the new candidate. Check component timer cleanup, one-toast replacement, accessibility roles, 1024×768 geometry, no focus stealing, no duplicate internal feedback, error draft retention, unchanged Enter behavior, no backend changes and no real-data access. Fix every Critical/Important issue with a failing test and rerun affected validation.
 
