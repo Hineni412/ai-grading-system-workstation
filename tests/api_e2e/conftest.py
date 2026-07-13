@@ -34,9 +34,9 @@ def api_e2e(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     controls = E2EControls()
     manager = build_job_manager(paths, controls=controls)
-    app = create_app()
-    install_dependency_overrides(app, db=db, manager=manager, paths=paths)
     try:
+        app = create_app()
+        install_dependency_overrides(app, db=db, manager=manager, paths=paths)
         with TestClient(app) as client:
             yield ApiE2EHarness(client, db, manager, paths, controls)
     finally:

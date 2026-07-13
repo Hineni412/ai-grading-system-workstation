@@ -198,6 +198,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -238,6 +239,22 @@ class FakeLLM:
         self.calls.append(request_type)
 
 
+def _iter_strings(value: Any) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield from _iter_strings(key)
+            yield from _iter_strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _iter_strings(item)
+
+
+def _normalized_public_text(value: str) -> str:
+    return value.replace("\\", "/").casefold()
+
+
 class ApiE2EHarness:
     TERMINAL = {"succeeded", "failed", "cancelled"}
 
@@ -254,9 +271,11 @@ class ApiE2EHarness:
         while time.monotonic() < deadline:
             response = self.client.get(f"/api/jobs/{job_id}")
             assert response.status_code == 200
-            assert str(self.paths.data_root) not in response.text
-            assert "api_key" not in response.text.casefold()
             last = response.json()
+            normalized_data_root = _normalized_public_text(str(self.paths.data_root)).rstrip("/")
+            for value in _iter_strings(last):
+                assert normalized_data_root not in _normalized_public_text(value), "job response exposed the temporary data root"
+                assert "api_key" not in value.casefold(), "job response exposed an API key field or value"
             if last["status"] in self.TERMINAL:
                 assert last["status"] == expected_status
                 return last
@@ -308,11 +327,13 @@ def api_e2e(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     controls = E2EControls()
     manager = build_job_manager(paths, controls=controls)
-    app = create_app()
-    install_dependency_overrides(app, db=db, manager=manager, paths=paths)
-    with TestClient(app) as client:
-        yield ApiE2EHarness(client, db, manager, paths, controls)
-    manager.shutdown()
+    try:
+        app = create_app()
+        install_dependency_overrides(app, db=db, manager=manager, paths=paths)
+        with TestClient(app) as client:
+            yield ApiE2EHarness(client, db, manager, paths, controls)
+    finally:
+        manager.shutdown()
 ```
 
 `build_job_manager()` must call `register_default_job_handlers()` with the real config runner and ReportGenerator plus `llm_client_factory=lambda: FakeLLM([])`. During Task 2, do not pass scan/grading runner overrides because those handlers are not invoked; Task 3 injects deterministic wrappers. `install_dependency_overrides()` must override grading DB, manager, upload/templates/data/exams/reports/annotated/outputs/backups directories and `get_job_file_service` with `JobFileService(paths.reports_dir, training_outputs_dir=paths.outputs_dir / "training", backups_dir=paths.backups_dir, ops_outputs_dir=paths.outputs_dir / "ops")`. It must also override `get_ops_write_service` with an inert object so application lifespan startup cannot create a root-bound service.
@@ -324,6 +345,8 @@ def api_e2e(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 ```
 
 Expected: `1 passed` with no writes outside pytest temporary storage. The portable runtime currently emits one dependency-level `StarletteDeprecationWarning` from `fastapi.testclient`; record it as baseline noise rather than hiding it.
+
+Independent-review regressions additionally prove that nested Windows paths remain detectable after JSON decoding/normalization, and that the external JobManager is shut down if `create_app()`, dependency override installation, or `TestClient` startup fails.
 
 - [x] **Step 5: Commit the harness foundation**
 
