@@ -622,3 +622,17 @@ Review for retry multiplication, request-ID loss, unsafe logging, changed JSON b
 - No user/browser acceptance is required because P1-24 has no visible production UI and uses no real API call.
 - Code rollback: revert the isolated P1-24 commit chain. The old root `llm_client.py` import path remains; no data or profile migration needs rollback.
 - Operational rollback: profile policy keys are optional. Removing them returns to safe defaults; invalid values fail before a request is sent.
+
+<!-- HANDOFF_STATUS_START -->
+## 昼夜交接
+
+**执行包：** P1-24
+**交接状态：** in_progress
+**功能提交：** none
+**自动验证：** pending
+**独立复审：** pending
+**用户验收：** not_required
+**真实数据指纹：** not_touched
+**Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
+**夜间动作：** report_only
+<!-- HANDOFF_STATUS_END -->
