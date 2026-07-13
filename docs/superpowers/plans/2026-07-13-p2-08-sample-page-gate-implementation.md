@@ -202,7 +202,7 @@ git commit -m "feat: coordinate review workspace shortcuts"
 - Consumes: `confirm-stay` and `confirm-next` bus commands, P2-07 one-shot confirm adapter, pre-submit filtered queue.
 - Produces: `submitCurrent(advance: boolean)`, Enter-confirm-and-stay, Shift+Enter-confirm-and-next, unchanged click behavior for the existing primary button.
 
-- [ ] **Step 1: Write failing confirmation-mode tests**
+- [x] **Step 1: Write failing confirmation-mode tests**
 
 Add component tests proving:
 
@@ -228,7 +228,7 @@ npm run e2e -- review-scoring.spec.ts
 
 Expected: FAIL because all successful confirmations currently navigate to the next record and the scoring inspector does not consume workspace commands.
 
-- [ ] **Step 2: Implement one submit path with an explicit advance flag**
+- [x] **Step 2: Implement one submit path with an explicit advance flag**
 
 Change the submit signature to:
 
@@ -246,7 +246,7 @@ Subscribe to the shortcut bus on mount and unsubscribe on unmount. `confirm-stay
 
 Run the same tests and expect PASS.
 
-- [ ] **Step 3: Commit the confirmation behavior**
+- [x] **Step 3: Commit the confirmation behavior**
 
 ```powershell
 git add frontend/src/components/review/ReviewScoringInspector.vue frontend/src/__tests__/review-scoring-inspector.spec.ts frontend/e2e/review-scoring.spec.ts

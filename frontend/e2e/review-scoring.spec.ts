@@ -196,6 +196,30 @@ test('preserves drafts across records, blocks invalid scores and confirms one it
   await expect(page.getByText('分数已确认，标注图需要稍后刷新。')).toBeVisible()
 })
 
+test('Enter confirms in place and Shift+Enter confirms the pre-submit next record', async ({ page }) => {
+  const state = freshState()
+  await installApi(page, state)
+  await openScoring(page)
+
+  await page.getByLabel('最终得分').fill('4')
+  await page.locator('.review-evidence-canvas').focus()
+  await page.keyboard.press('Enter')
+  await expect.poll(() => state.posts.length).toBe(1)
+  await expect(page).toHaveURL(/detail=1$/)
+  await expect(page.getByText('教师最终分已确认。')).toBeVisible()
+
+  await page.locator('.review-queue-row').filter({ hasText: '匿名学生2' }).click()
+  await page.getByLabel('最终得分').fill('4.5')
+  await page.locator('.review-evidence-canvas').focus()
+  await page.keyboard.press('Shift+Enter')
+  await expect.poll(() => state.posts.length).toBe(2)
+  await expect(page).toHaveURL(/detail=3$/)
+
+  await page.keyboard.press('r')
+  await expect.poll(() => state.posts.length).toBe(2)
+  await expect(page).toHaveURL(/detail=3$/)
+})
+
 for (const status of [422, 500] as const) {
   test(`HTTP ${status} keeps the teacher draft and does not expose server details`, async ({ page }) => {
     const state = freshState(status)
