@@ -18,6 +18,7 @@ from backend.file_access import (
     ResolvedFile,
     resolve_controlled_file,
 )
+from backend.performance.metrics import instrument_sqlite_connection
 from question_bank.models.question import ALLOWED_TAG_TYPES
 from question_bank.services.asset_path_service import (
     AmbiguousQuestionBankAssetPathError,
@@ -473,10 +474,12 @@ def _open_snapshot_connection(
     conn: sqlite3.Connection | None = None
     try:
         uri = f"{candidate.resolve(strict=True).as_uri()}?mode=ro"
-        conn = sqlite3.connect(
-            uri,
-            uri=True,
-            isolation_level=None,
+        conn = instrument_sqlite_connection(
+            sqlite3.connect(
+                uri,
+                uri=True,
+                isolation_level=None,
+            )
         )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA query_only = ON")

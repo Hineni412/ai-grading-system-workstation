@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from ai_grader import GradingResult, QuestionGradingDetail
+from backend.performance.metrics import instrument_sqlite_connection
 from grading_completeness import audit_grading_details, major_question_id
 from path_manager import resolve_stored_file_path
 from scanner import ExamPaperGroup
@@ -63,7 +64,7 @@ class DBManager:
             self.backup_dir = self.db_path.parent / "backups"
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = instrument_sqlite_connection(sqlite3.connect(self.db_path))
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 5000")

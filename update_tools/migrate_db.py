@@ -37,6 +37,8 @@ _PROJECT_ROOT = _SCRIPT_DIR.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from backend.performance.metrics import instrument_sqlite_connection
+
 # ── 日志 ──────────────────────────────────────────────
 
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
@@ -518,7 +520,7 @@ def get_migration_status(
         status["pending"] = [m.name for m in migrations]
         return status
 
-    conn = sqlite3.connect(db_path)
+    conn = instrument_sqlite_connection(sqlite3.connect(db_path))
     try:
         applied = set()
         last_time = None
