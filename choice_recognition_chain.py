@@ -260,7 +260,7 @@ def recognize_choice_answer(
             kwargs={
                 "messages": messages,
                 "temperature": config["temperature"],
-                "max_tokens": config["max_tokens"],
+                "max_tokens": config.get("max_tokens", 100),
                 "response_format": {"type": "json_object"},
                 "extra_body": {"thinking": {"type": config["thinking_type"]}}
                 if config["thinking_type"] != "disabled"

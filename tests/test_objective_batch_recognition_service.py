@@ -767,9 +767,14 @@ def test_objective_fallback_root_client_retries_two_503s_then_scores(
     tmp_path: Path,
 ) -> None:
     import llm_client
-    from backend.llm import LLMGateway, NullUsageSink
+    from backend.llm import LLMGateway
 
-    provider_calls = 0
+    provider_calls: list[dict[str, Any]] = []
+    usage_events: list[Any] = []
+
+    class RecordingUsageSink:
+        def write(self, event: Any) -> None:
+            usage_events.append(event)
 
     class Retryable503Error(RuntimeError):
         status_code = 503
@@ -781,9 +786,8 @@ def test_objective_fallback_root_client_retries_two_503s_then_scores(
 
     class FakeCompletions:
         def create(self, **kwargs: Any) -> Any:
-            nonlocal provider_calls
-            provider_calls += 1
-            if provider_calls < 3:
+            provider_calls.append(dict(kwargs))
+            if len(provider_calls) < 3:
                 raise Retryable503Error("temporary provider outage")
             prompt = kwargs["messages"][0]["content"][0]["text"]
             manifest = json.loads(prompt.split("BATCH_MANIFEST_JSON:", 1)[1].strip())
@@ -835,9 +839,15 @@ def test_objective_fallback_root_client_retries_two_503s_then_scores(
             ocr_model="ocr-model",
             grading_model="fallback-model",
             config_model="config-model",
+            policy_profile={
+                "llm_grading_timeout_seconds": 300,
+                "llm_grading_max_retries": 0,
+                "llm_recognition_timeout_seconds": 60,
+                "llm_recognition_max_retries": 2,
+            },
         ),
         gateway_factory=gateway_factory,
-        usage_sink_factory=NullUsageSink,
+        usage_sink_factory=RecordingUsageSink,
     )
     primary = FakeBatchClient(
         confidence=0.50,
@@ -863,7 +873,13 @@ def test_objective_fallback_root_client_retries_two_503s_then_scores(
     detail = next(iter(result.details_by_paper_key.values()))[0]
     metadata = next(iter(result.metadata_by_paper_key.values()))[0]
     assert len(primary.calls) == 1
-    assert provider_calls == 3
+    assert len(provider_calls) == 3
+    assert [call["timeout"] for call in provider_calls] == [60.0, 60.0, 60.0]
+    assert [event.request_kind for event in usage_events] == [
+        "recognition",
+        "recognition",
+        "recognition",
+    ]
     assert detail.score_awarded == 8
     assert metadata["source"] == "objective_batch_pro_recognition"
     assert result.review_items == []
