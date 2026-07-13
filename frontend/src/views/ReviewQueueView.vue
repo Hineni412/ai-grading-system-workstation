@@ -7,6 +7,7 @@ import StatePanel from '../components/design-system/StatePanel.vue'
 import ReviewEvidenceViewer from '../components/review/ReviewEvidenceViewer.vue'
 import ReviewQueuePanel from '../components/review/ReviewQueuePanel.vue'
 import ReviewSelectionSummary from '../components/review/ReviewSelectionSummary.vue'
+import ReviewShortcutGuide from '../components/review/ReviewShortcutGuide.vue'
 import { reviewShortcutBus, type ReviewShortcutCommand } from '../composables/review-shortcuts'
 import { useReviewQueueStore, type ReviewScope, type ReviewSort } from '../stores/review-queue'
 import { useSessionStore } from '../stores/session'
@@ -333,6 +334,8 @@ onBeforeUnmount(() => {
       <h1 id="review-page-title" tabindex="-1">复核队列</h1>
       <p>查看单题复核记录，并在不修改评分数据的前提下连续浏览。</p>
     </header>
+
+    <ReviewShortcutGuide />
 
     <FeedbackBanner
       v-if="hasRetainedContentError"

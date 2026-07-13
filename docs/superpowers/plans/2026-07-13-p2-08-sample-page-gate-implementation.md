@@ -269,7 +269,7 @@ git commit -m "feat: add explicit review confirmation shortcuts"
 - Consumes: the approved shortcut set and existing CSS Tokens.
 - Produces: a semantic, wrapping shortcut ribbon that lists only real actions and remains readable at all five desktop viewports.
 
-- [ ] **Step 1: Write the failing rendering and accessibility test**
+- [x] **Step 1: Write the failing rendering and accessibility test**
 
 Mount the guide and assert that it contains exactly the approved actions:
 
@@ -293,13 +293,13 @@ npm test -- src/__tests__/review-shortcut-guide.spec.ts src/__tests__/review-que
 
 Expected: FAIL because the guide does not exist.
 
-- [ ] **Step 2: Implement the restrained shortcut ribbon**
+- [x] **Step 2: Implement the restrained shortcut ribbon**
 
 Use semantic `<dl>`/`<kbd>` markup, plain Chinese action labels and existing `--color-*`, spacing, radius and type tokens. Place it below the page title and above feedback/workspace states. Allow wrapping at compact widths; do not add horizontal scrolling, fixed overlays, shadows or a second primary action.
 
 Run the same tests and expect PASS.
 
-- [ ] **Step 3: Commit the discoverability slice**
+- [x] **Step 3: Commit the discoverability slice**
 
 ```powershell
 git add frontend/src/components/review/ReviewShortcutGuide.vue frontend/src/__tests__/review-shortcut-guide.spec.ts frontend/src/views/ReviewQueueView.vue frontend/src/styles/review-queue.css frontend/src/main.ts
