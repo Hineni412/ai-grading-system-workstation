@@ -220,17 +220,18 @@ def build_benchmark_dataset(
         raise FileExistsError("generated benchmark databases already exist")
 
     with _explicit_path_manager(paths):
-        DBManager(paths.db_path).initialize()
+        _initialize_grading_database(paths.db_path)
     initialize_database(paths.qb_db_path, seed_skills=False)
 
     _write_session_rubrics(paths, scale)
     _populate_grading_database(paths.db_path, scale)
-    asset_path = _write_generated_asset(paths)
+    asset_path, preview_path = _write_generated_assets(paths)
     representative_question_id = _populate_question_bank_database(
         paths.qb_db_path,
         scale,
         seed=int(seed),
         asset_path=asset_path.relative_to(paths.data_root).as_posix(),
+        preview_path=preview_path.relative_to(paths.data_root).as_posix(),
     )
     representative_task_id = 1
     backup_paths = _write_backup_metadata(paths, scale.backups, int(seed))
@@ -251,7 +252,7 @@ def build_benchmark_dataset(
         grading_database_bytes=paths.db_path.stat().st_size,
         question_bank_database_bytes=paths.qb_db_path.stat().st_size,
         backup_database_bytes=sum(path.stat().st_size for path in backup_paths),
-        generated_asset_bytes=asset_path.stat().st_size,
+        generated_asset_bytes=asset_path.stat().st_size + preview_path.stat().st_size,
     )
     return BenchmarkDataset(
         paths=paths,
@@ -290,9 +291,26 @@ def _explicit_path_manager(paths: BenchmarkPaths) -> Iterator[None]:
         path_manager._instance = previous
 
 
+def _initialize_grading_database(db_path: Path) -> None:
+    manager = DBManager(db_path)
+    open_connection = manager._connect
+
+    @contextmanager
+    def closing_connection() -> Iterator[sqlite3.Connection]:
+        conn = open_connection()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
+    manager._connect = closing_connection  # type: ignore[method-assign]
+    manager.initialize()
+
+
 def _populate_grading_database(db_path: Path, scale: ScaleDefinition) -> None:
     result_count = scale.sessions * scale.students
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connection(db_path) as conn:
         conn.execute("PRAGMA foreign_keys = ON")
         _insert_batches(
             conn,
@@ -442,10 +460,14 @@ def _detail_rows(
         )
 
 
-def _write_generated_asset(paths: BenchmarkPaths) -> Path:
-    asset_path = paths.qb_data_dir / "generated-preview.png"
+def _write_generated_assets(paths: BenchmarkPaths) -> tuple[Path, Path]:
+    asset_path = paths.qb_data_dir / "extracted_images" / "generated-question.png"
+    preview_path = paths.qb_data_dir / "previews" / "generated-preview.png"
+    asset_path.parent.mkdir(parents=True, exist_ok=True)
+    preview_path.parent.mkdir(parents=True, exist_ok=True)
     asset_path.write_bytes(_PNG_BYTES)
-    return asset_path
+    preview_path.write_bytes(_PNG_BYTES)
+    return asset_path, preview_path
 
 
 def _populate_question_bank_database(
@@ -454,8 +476,9 @@ def _populate_question_bank_database(
     *,
     seed: int,
     asset_path: str,
+    preview_path: str,
 ) -> int:
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connection(db_path) as conn:
         conn.execute("PRAGMA foreign_keys = ON")
         _insert_batches(
             conn,
@@ -487,7 +510,7 @@ def _populate_question_bank_database(
             ),
         )
         _insert_batches(conn, _QUESTION_TAG_INSERT, _question_tag_rows(scale))
-        _insert_batches(conn, _QUESTION_PREVIEW_INSERT, _preview_rows(asset_path))
+        _insert_batches(conn, _QUESTION_PREVIEW_INSERT, _preview_rows(preview_path))
         _insert_batches(conn, _QUESTION_LINK_INSERT, _question_link_rows(scale))
         _insert_batches(conn, _TRAINING_TASK_INSERT, _training_task_rows(scale, seed))
         _insert_batches(conn, _TRAINING_VARIANT_INSERT, _training_variant_rows(scale))
@@ -675,7 +698,7 @@ def _write_backup_metadata(
         backup_path = paths.backups_dir / f"generated-backup-{backup_index:05d}.db"
         if backup_path.exists():
             raise FileExistsError("generated benchmark backup already exists")
-        with sqlite3.connect(backup_path) as conn:
+        with _sqlite_connection(backup_path) as conn:
             conn.execute(
                 "CREATE TABLE generated_metadata (generated_key TEXT, generated_value TEXT)"
             )
@@ -695,6 +718,16 @@ def _insert_batches(
     iterator = iter(rows)
     while batch := list(islice(iterator, _BATCH_SIZE)):
         conn.executemany(sql, batch)
+
+
+@contextmanager
+def _sqlite_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
+    conn = sqlite3.connect(db_path)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def _expected_counts(scale: ScaleDefinition) -> dict[str, int]:
@@ -722,12 +755,12 @@ def _actual_counts(paths: BenchmarkPaths) -> dict[str, int]:
     grading_names = expected_names[:5]
     question_bank_names = expected_names[5:-1]
     counts: dict[str, int] = {}
-    with sqlite3.connect(paths.db_path) as conn:
+    with _sqlite_connection(paths.db_path) as conn:
         for table_name in grading_names:
             counts[table_name] = int(
                 conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()[0]
             )
-    with sqlite3.connect(paths.qb_db_path) as conn:
+    with _sqlite_connection(paths.qb_db_path) as conn:
         for table_name in question_bank_names:
             counts[table_name] = int(
                 conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()[0]
@@ -737,7 +770,7 @@ def _actual_counts(paths: BenchmarkPaths) -> dict[str, int]:
 
 
 def _assert_database_valid(db_path: Path, label: str) -> None:
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connection(db_path) as conn:
         foreign_key_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
         integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
     if foreign_key_errors or integrity != "ok":
@@ -745,7 +778,7 @@ def _assert_database_valid(db_path: Path, label: str) -> None:
 
 
 def _checkpoint(db_path: Path) -> None:
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connection(db_path) as conn:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
