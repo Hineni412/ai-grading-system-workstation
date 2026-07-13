@@ -196,6 +196,35 @@ test('preserves drafts across records, blocks invalid scores and confirms one it
   await expect(page.getByText('分数已确认，标注图需要稍后刷新。')).toBeVisible()
 })
 
+test('click replaces the old score, Enter confirms next, and Shift+Enter stays inactive', async ({ page }) => {
+  const state = freshState()
+  await installApi(page, state)
+  await openScoring(page)
+
+  const score = page.getByLabel('最终得分')
+  await score.click()
+  await page.keyboard.type('4')
+  await expect(score).toHaveValue('4')
+  await score.press('Enter')
+  await expect.poll(() => state.posts.length).toBe(1)
+  await expect(page).toHaveURL(/detail=2$/)
+
+  await score.fill('4.5')
+  const canvas = page.locator('.review-evidence-canvas')
+  await canvas.focus()
+  await canvas.press('Shift+Enter')
+  await expect(page).toHaveURL(/detail=2$/)
+  expect(state.posts).toHaveLength(1)
+
+  await canvas.press('Enter')
+  await expect.poll(() => state.posts.length).toBe(2)
+  await expect(page).toHaveURL(/detail=3$/)
+
+  await page.keyboard.press('r')
+  await expect.poll(() => state.posts.length).toBe(2)
+  await expect(page).toHaveURL(/detail=3$/)
+})
+
 for (const status of [422, 500] as const) {
   test(`HTTP ${status} keeps the teacher draft and does not expose server details`, async ({ page }) => {
     const state = freshState(status)
@@ -203,10 +232,22 @@ for (const status of [422, 500] as const) {
     await openScoring(page)
     await page.getByLabel('最终得分').fill('4.5')
     await page.getByLabel('教师备注').fill(`失败保留 ${status}`)
+    await page.getByTestId('scoring-scroll-region').evaluate((element) => {
+      element.scrollTop = element.scrollHeight
+    })
     await page.getByRole('button', { name: '确认并下一份' }).click()
 
-    await expect(page.getByRole('alert')).toContainText('确认失败，教师草稿已保留')
-    await expect(page.getByRole('alert')).not.toContainText('private')
+    const toast = page.getByTestId('review-feedback-toast')
+    await expect(toast).toBeVisible()
+    await expect(toast).toContainText('确认失败，教师草稿已保留')
+    await expect(toast).not.toContainText('private')
+    expect(await toast.evaluate((element) => element.parentElement === document.body)).toBe(true)
+    const stickySince = Date.now()
+    await expect.poll(
+      () => Date.now() - stickySince,
+      { intervals: [4100], timeout: 5000 },
+    ).toBeGreaterThanOrEqual(4000)
+    await expect(toast).toBeVisible()
     await expect(page.getByLabel('最终得分')).toHaveValue('4.5')
     await expect(page.getByLabel('教师备注')).toHaveValue(`失败保留 ${status}`)
     await expect(page).toHaveURL(/detail=1$/)

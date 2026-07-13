@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import {
   confirmReviewItem,
@@ -7,9 +7,11 @@ import {
   fetchReviewRubric,
   type ReviewRubricSection,
 } from '../../api/review'
+import { reviewShortcutBus } from '../../composables/review-shortcuts'
 import { scoreIssue, useReviewDraftStore, type ReviewDraft } from '../../stores/review-drafts'
 import { useReviewQueueStore } from '../../stores/review-queue'
 import StatePanel from '../design-system/StatePanel.vue'
+import ReviewFeedbackToast from './ReviewFeedbackToast.vue'
 
 const reviewStore = useReviewQueueStore()
 const draftStore = useReviewDraftStore()
@@ -21,6 +23,7 @@ const feedback = ref('')
 const feedbackTone = ref<'success' | 'warning' | 'error'>('success')
 let rubricController: AbortController | null = null
 let rubricGeneration = 0
+let stopShortcuts: () => void = () => undefined
 
 const item = computed(() => reviewStore.currentItem)
 const issue = computed(() => {
@@ -83,7 +86,25 @@ function updateNote(event: Event): void {
   draftStore.updateNote(currentDraft.value.key, (event.target as HTMLTextAreaElement).value)
 }
 
-async function submitCurrent(): Promise<void> {
+function selectScore(event: FocusEvent): void {
+  ;(event.currentTarget as HTMLInputElement).select()
+}
+
+function onScoreKeydown(event: KeyboardEvent): void {
+  if (
+    event.key !== 'Enter' ||
+    event.shiftKey ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.repeat
+  ) return
+  event.preventDefault()
+  event.stopPropagation()
+  void submitCurrent(true)
+}
+
+async function submitCurrent(advance = true): Promise<void> {
   const submittedItem = item.value
   const draft = currentDraft.value
   if (!submittedItem || !draft || submitDisabled.value || submitting.value) return
@@ -92,7 +113,9 @@ async function submitCurrent(): Promise<void> {
   const submittedQuestionId = submittedItem.question_id
   const submittedSessionId = submittedItem.session_id
   const submittedContext = `${submittedSessionId}:${submittedQuestionId}:${submittedDetailId}`
-  const nextDetailId = reviewStore.filteredItems[reviewStore.currentIndex + 1]?.detail_id ?? null
+  const nextDetailId = advance
+    ? reviewStore.filteredItems[reviewStore.currentIndex + 1]?.detail_id ?? null
+    : null
   const score = Number(draft.scoreText.trim())
   const note = draft.note.trim()
 
@@ -123,7 +146,7 @@ async function submitCurrent(): Promise<void> {
       : null
     const stillOnSubmittedContext = activeContext === submittedContext
     if (stillOnSubmittedContext) {
-      reviewStore.reconcileAfterConfirmation(nextDetailId ?? undefined)
+      if (advance) reviewStore.reconcileAfterConfirmation(nextDetailId ?? undefined)
       await reviewStore.loadItems(submittedSessionId, submittedQuestionId, fetchReviewItems)
     }
 
@@ -185,7 +208,14 @@ watch(
   { immediate: true },
 )
 
+onMounted(() => {
+  stopShortcuts = reviewShortcutBus.subscribe((command) => {
+    if (command === 'confirm-next') void submitCurrent(true)
+  })
+})
+
 onBeforeUnmount(() => {
+  stopShortcuts()
   rubricGeneration += 1
   rubricController?.abort()
 })
@@ -206,15 +236,12 @@ onBeforeUnmount(() => {
     />
 
     <template v-else>
+      <ReviewFeedbackToast
+        :message="feedback"
+        :tone="feedbackTone"
+        @dismiss="feedback = ''"
+      />
       <div class="review-scoring-inspector__scroll" data-testid="scoring-scroll-region">
-        <p
-          v-if="feedback"
-          class="review-scoring-feedback"
-          :class="`review-scoring-feedback--${feedbackTone}`"
-          :role="feedbackTone === 'error' ? 'alert' : 'status'"
-        >
-          {{ feedback }}
-        </p>
         <header class="review-scoring-inspector__header">
           <p>{{ item.question_id }} · 满分 {{ formatScore(item.max_score) }}</p>
           <h2>评分与复核</h2>
@@ -305,6 +332,8 @@ onBeforeUnmount(() => {
               :aria-invalid="issue ? 'true' : 'false'"
               aria-describedby="teacher-score-help teacher-score-error"
               @input="updateScore"
+              @focus="selectScore"
+              @keydown="onScoreKeydown"
             >
             <span>/ {{ formatScore(item.max_score) }} 分</span>
           </div>
@@ -333,7 +362,7 @@ onBeforeUnmount(() => {
           data-testid="confirm-next"
           :disabled="submitDisabled"
           :title="disabledReason"
-          @click="submitCurrent"
+          @click="submitCurrent(true)"
         >
           {{ submitting ? '正在确认…' : '确认并下一份' }}
         </button>

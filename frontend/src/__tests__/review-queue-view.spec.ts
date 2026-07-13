@@ -4,6 +4,7 @@ import { createMemoryHistory, type Router } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ReviewItem, ReviewQuestionSummary } from '../api/review'
+import { reviewShortcutBus } from '../composables/review-shortcuts'
 import ReviewQueueView from '../views/ReviewQueueView.vue'
 import { createAppRouter } from '../router'
 import { useReviewQueueStore } from '../stores/review-queue'
@@ -64,6 +65,7 @@ const itemsByQuestion: Record<string, ReviewItem[]> = {
 
 interface MountOptions {
   sessionId?: number | null
+  sessionLoadState?: 'idle' | 'loading' | 'ready' | 'error'
   initialUrl?: string
   reviewQuestions?: ReviewQuestionSummary[]
   reviewItems?: Record<string, ReviewItem[]>
@@ -87,6 +89,7 @@ async function settleUi(): Promise<void> {
 
 async function mountView({
   sessionId = 7,
+  sessionLoadState = 'ready',
   initialUrl = '/grading',
   reviewQuestions = questions,
   reviewItems = itemsByQuestion,
@@ -115,7 +118,7 @@ async function mountView({
           updated_at: null,
         }],
     selectedSessionId: sessionId,
-    loadState: 'ready',
+    loadState: sessionLoadState,
   })
 
   const reviewStore = useReviewQueueStore(pinia)
@@ -206,6 +209,36 @@ describe('P2-05 review queue view', () => {
     expect(host.textContent).toContain('请先选择考试')
     expect(loadQuestionsSpy).not.toHaveBeenCalled()
     expect(loadItemsSpy).not.toHaveBeenCalled()
+  })
+
+  it('preserves the route while session initialization restores a persisted selection', async () => {
+    const { router, reviewStore, sessionStore, loadQuestionsSpy } = await mountView({
+      sessionId: null,
+      sessionLoadState: 'loading',
+      initialUrl: '/grading?question=Q1&detail=12',
+    })
+
+    expect(router.currentRoute.value.query).toEqual({ question: 'Q1', detail: '12' })
+    expect(loadQuestionsSpy).not.toHaveBeenCalled()
+
+    sessionStore.$patch({
+      sessions: [{
+        id: 7,
+        name: '匿名考试',
+        status: 'grading',
+        is_deleted: false,
+        deleted_at: null,
+        created_at: null,
+        updated_at: null,
+      }],
+      selectedSessionId: 7,
+      loadState: 'ready',
+    })
+
+    await vi.waitFor(() => {
+      expect(reviewStore.selectedDetailId).toBe(12)
+      expect(router.currentRoute.value.query).toEqual({ question: 'Q1', detail: '12' })
+    })
   })
 
   it('restores a valid question and detail from the URL', async () => {
@@ -356,6 +389,51 @@ describe('P2-05 review queue view', () => {
     expect(reviewStore.selectedDetailId).toBe(11)
   })
 
+  it('routes the approved workspace shortcuts, focuses search, and leaves R unassigned', async () => {
+    const { host, reviewStore } = await mountView({
+      initialUrl: '/grading?question=Q1&detail=11',
+    })
+    await vi.waitFor(() => expect(reviewStore.selectedDetailId).toBe(11))
+    const received: string[] = []
+    const stop = reviewShortcutBus.subscribe((command) => received.push(command))
+
+    const search = host.querySelector<HTMLInputElement>('#review-search')!
+    const searchShortcut = dispatchKey(window, '/')
+    expect(searchShortcut.defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(search)
+
+    search.blur()
+    for (const [key, init] of [
+      ['z', {}],
+      ['+', {}],
+      ['=', {}],
+      ['-', {}],
+      ['Enter', {}],
+    ] satisfies Array<[string, KeyboardEventInit]>) {
+      expect(dispatchKey(window, key, init).defaultPrevented).toBe(true)
+    }
+    expect(dispatchKey(window, 'Enter', { shiftKey: true }).defaultPrevented).toBe(false)
+
+    expect(received).toEqual([
+      'focus-search',
+      'fit-width',
+      'zoom-in',
+      'zoom-in',
+      'zoom-out',
+      'confirm-next',
+    ])
+
+    expect(dispatchKey(window, 'r').defaultPrevented).toBe(false)
+    expect(received).not.toContain('mark-review')
+
+    search.focus()
+    expect(dispatchKey(search, 'z').defaultPrevented).toBe(false)
+    expect(dispatchKey(window, 'Enter', { repeat: true }).defaultPrevented).toBe(false)
+    expect(dispatchKey(window, '/', { ctrlKey: true }).defaultPrevented).toBe(false)
+    expect(received).toHaveLength(6)
+    stop()
+  })
+
   it('scrolls the selected row into view after moving across a page boundary', async () => {
     const scrollIntoView = vi.fn()
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
@@ -415,13 +493,14 @@ describe('P2-05 review queue view', () => {
   it('renders read-only evidence without score, save, or confirm controls', async () => {
     const { host } = await mountView({ initialUrl: '/grading?question=Q1&detail=11' })
     await vi.waitFor(() => expect(host.textContent).toContain('当前得分 3 / 5'))
+    expect(host.textContent).toContain('核对答卷证据并连续确认教师最终分。')
     expect(host.querySelectorAll('.review-evidence-viewer img')).toHaveLength(1)
     expect(host.querySelector('input[type="number"]')).toBeNull()
     expect(host.querySelector('textarea, [contenteditable="true"]')).toBeNull()
     expect([...host.querySelectorAll('button')].some((button) =>
       /保存|确认/.test(button.textContent ?? ''),
     )).toBe(false)
-    expect(host.textContent).toContain('评分与确认将在 P2-07 接入。')
+    expect(host.textContent).toContain('答卷原图不会被改写；分数只有在右侧完成教师确认后才会保存。')
   })
 
   it('resets the viewer when selecting the next record', async () => {
