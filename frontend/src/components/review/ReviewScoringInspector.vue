@@ -22,7 +22,7 @@ const feedback = ref('')
 const feedbackTone = ref<'success' | 'warning' | 'error'>('success')
 let rubricController: AbortController | null = null
 let rubricGeneration = 0
-let stopShortcuts = () => undefined
+let stopShortcuts: () => void = () => undefined
 
 const item = computed(() => reviewStore.currentItem)
 const issue = computed(() => {

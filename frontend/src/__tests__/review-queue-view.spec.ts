@@ -65,6 +65,7 @@ const itemsByQuestion: Record<string, ReviewItem[]> = {
 
 interface MountOptions {
   sessionId?: number | null
+  sessionLoadState?: 'idle' | 'loading' | 'ready' | 'error'
   initialUrl?: string
   reviewQuestions?: ReviewQuestionSummary[]
   reviewItems?: Record<string, ReviewItem[]>
@@ -88,6 +89,7 @@ async function settleUi(): Promise<void> {
 
 async function mountView({
   sessionId = 7,
+  sessionLoadState = 'ready',
   initialUrl = '/grading',
   reviewQuestions = questions,
   reviewItems = itemsByQuestion,
@@ -116,7 +118,7 @@ async function mountView({
           updated_at: null,
         }],
     selectedSessionId: sessionId,
-    loadState: 'ready',
+    loadState: sessionLoadState,
   })
 
   const reviewStore = useReviewQueueStore(pinia)
@@ -207,6 +209,36 @@ describe('P2-05 review queue view', () => {
     expect(host.textContent).toContain('请先选择考试')
     expect(loadQuestionsSpy).not.toHaveBeenCalled()
     expect(loadItemsSpy).not.toHaveBeenCalled()
+  })
+
+  it('preserves the route while session initialization restores a persisted selection', async () => {
+    const { router, reviewStore, sessionStore, loadQuestionsSpy } = await mountView({
+      sessionId: null,
+      sessionLoadState: 'loading',
+      initialUrl: '/grading?question=Q1&detail=12',
+    })
+
+    expect(router.currentRoute.value.query).toEqual({ question: 'Q1', detail: '12' })
+    expect(loadQuestionsSpy).not.toHaveBeenCalled()
+
+    sessionStore.$patch({
+      sessions: [{
+        id: 7,
+        name: '匿名考试',
+        status: 'grading',
+        is_deleted: false,
+        deleted_at: null,
+        created_at: null,
+        updated_at: null,
+      }],
+      selectedSessionId: 7,
+      loadState: 'ready',
+    })
+
+    await vi.waitFor(() => {
+      expect(reviewStore.selectedDetailId).toBe(12)
+      expect(router.currentRoute.value.query).toEqual({ question: 'Q1', detail: '12' })
+    })
   })
 
   it('restores a valid question and detail from the URL', async () => {

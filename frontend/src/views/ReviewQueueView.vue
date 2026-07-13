@@ -293,8 +293,14 @@ function onKeydown(event: KeyboardEvent): void {
 }
 
 const stopSessionWatch = watch(
-  () => sessionStore.selectedSessionId,
-  (sessionId) => void loadSession(sessionId),
+  [
+    () => sessionStore.selectedSessionId,
+    () => sessionStore.loadState,
+  ],
+  ([sessionId, loadState]) => {
+    if (loadState !== 'ready') return
+    void loadSession(sessionId)
+  },
   { immediate: true },
 )
 
