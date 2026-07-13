@@ -600,7 +600,10 @@ Expected: diff clean; quick smoke passes; handoff validator emits one JSON line 
 
 - [x] **Step 5: Compare root real-database fingerprints without SQLite**
 
-From the main project root, record for each real database: length, `LastWriteTimeUtc`, and SHA-256 before the first feature edit and after all tests. Expected: all three values remain byte-for-byte identical. Any difference blocks commit and integration.
+From the main project root, record for each real database: length, `LastWriteTimeUtc`, and SHA-256 before the first feature edit and after all tests. The controller captured the pre-feature values before claim commit `52d3136` and before Task 1; the same exact triplets are preserved in the immutable tracked baseline at `docs/superpowers/plans/2026-07-12-p1-23-ops-protected-writes-implementation.md` Step 6, inherited from P1-22. Expected: all three values remain byte-for-byte identical. Any difference blocks commit and integration.
+
+- grading: `2863104` bytes / `2026-07-10T07:10:41.1221109Z` / SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`
+- question bank: `3461120` bytes / `2026-07-08T11:58:06.3320883Z` / SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`
 
 - [x] **Step 6: Record `waiting_review` and create the feature commit**
 
@@ -626,10 +629,10 @@ Review for retry multiplication, request-ID loss, unsafe logging, changed JSON b
 ## Implementation Evidence
 
 - Claim and task chain: the immutable claim handoff preceded implementation; Tasks 1-6 are complete through `85285619ded13f1d3420318c7c511a68dd892f98`, with their focused RED/GREEN cycles and requested task reviews recorded in `.superpowers/sdd/` reports and progress ledger.
-- Final focused and affected regression: the exact fifteen-file Task 7 command completed with `219 passed / 0 failed`.
+- Final focused and affected regression: the exact fourteen-file Task 7 command completed with `219 passed / 0 failed`.
 - Boundary guard: `backend/llm/` and `llm_client.py` contain only the compatibility client constructor and the two Chat/Responses protocol execution points; neither `while True` nor `timeout=None` occurs in those paths. The four P1-25-owned direct caller chains and objective-batch `timeout=None` remain unchanged outside the P1-24 paths.
 - Completion gates: `git diff --check` passed. Quick smoke passed document governance, static compilation of `403` first-party Python files, and idempotent initialization plus `integrity_check=ok` on temporary copies of both databases; full pytest remains the integration wave-end gate. The handoff validator parsed the required `waiting_review/branch_head/passed/pending/not_required/unchanged/report_only` record and is rerun against the clean feature commit because committed handoff validation intentionally rejects a dirty pre-commit worktree.
-- Real-data guard: the root grading database remained `2863104` bytes / `2026-07-10T07:10:41.1221109Z` / SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`; the root question-bank database remained `3461120` bytes / `2026-07-08T11:58:06.3320883Z` / SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`. Both were read only as files for length, UTC mtime and SHA-256; no SQLite connection or real model call was made, and worktree `user_data/` status is empty.
+- Real-data guard: before claim commit `52d3136` and any feature edit, the controller captured the root grading database as `2863104` bytes / `2026-07-10T07:10:41.1221109Z` / SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD` and the root question-bank database as `3461120` bytes / `2026-07-08T11:58:06.3320883Z` / SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`. The immutable tracked P1-23 plan Step 6, inherited from P1-22, independently preserves those same triplets. The post-feature file-only read matched every value exactly. No SQLite connection or real model call was made, and worktree `user_data/` status is empty.
 - Review boundary: Step 7 remains unchecked. Independent whole-branch review, Critical/Important disposition, and the plan-only `verified_pending_integration` handoff belong to the controller's next task.
 
 <!-- HANDOFF_STATUS_START -->
