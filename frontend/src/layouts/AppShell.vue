@@ -6,10 +6,12 @@ import AppNavigation from '../components/shell/AppNavigation.vue'
 import AppTopbar from '../components/shell/AppTopbar.vue'
 import SessionInspector from '../components/shell/SessionInspector.vue'
 import ReviewScoringInspector from '../components/review/ReviewScoringInspector.vue'
+import { useReviewDraftStore } from '../stores/review-drafts'
 import { useSessionStore } from '../stores/session'
 
 const route = useRoute()
 const sessionStore = useSessionStore()
+const draftStore = useReviewDraftStore()
 const navigationOpen = ref(true)
 const inspectorOpen = ref(true)
 let compactMediaQuery: MediaQueryList | null = null
@@ -26,6 +28,12 @@ function toggleInspector(): void {
   inspectorOpen.value = !inspectorOpen.value
 }
 
+function onBeforeUnload(event: BeforeUnloadEvent): void {
+  if (!draftStore.hasDirtyDrafts) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+
 watch(
   () => route.fullPath,
   async () => {
@@ -38,11 +46,13 @@ onMounted(() => {
   compactMediaQuery = window.matchMedia('(max-width: 1279px)')
   applyDesktopMode()
   compactMediaQuery.addEventListener('change', applyDesktopMode)
+  window.addEventListener('beforeunload', onBeforeUnload)
   void sessionStore.initialize()
 })
 
 onBeforeUnmount(() => {
   compactMediaQuery?.removeEventListener('change', applyDesktopMode)
+  window.removeEventListener('beforeunload', onBeforeUnload)
 })
 </script>
 

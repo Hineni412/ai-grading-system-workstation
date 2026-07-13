@@ -143,12 +143,14 @@ export const useReviewQueueStore = defineStore('review-queue', () => {
   }
 
   function markItemConfirmed(
-    detailId: number,
+    identity: Pick<ReviewItem, 'session_id' | 'question_id' | 'detail_id'>,
     scoreAwarded: number,
     deductionReason: string,
   ): void {
     items.value = items.value.map((entry) =>
-      entry.detail_id === detailId
+      entry.session_id === identity.session_id &&
+      entry.question_id === identity.question_id &&
+      entry.detail_id === identity.detail_id
         ? {
             ...entry,
             score_awarded: scoreAwarded,
