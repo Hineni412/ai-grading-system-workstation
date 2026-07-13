@@ -275,14 +275,18 @@ class AITaggingService:
         if direct_injection:
             self.llm_client = None
         elif tagging_api_key:
+            dedicated_base_url = str(
+                self.env.get("QUESTION_BANK_TAGGING_BASE_URL")
+                or "https://api.openai.com/v1"
+            ).strip()
             settings = LLMSettings(
                 api_key=tagging_api_key,
-                base_url=self._tagging_base_url,
+                base_url=dedicated_base_url,
                 ocr_model=self.model,
                 grading_model=self.model,
                 config_model=self.model,
                 config_api_key=tagging_api_key,
-                config_base_url=self._tagging_base_url,
+                config_base_url=dedicated_base_url,
             )
             self.llm_client = LLMClient(settings)
         elif llm_client is not None:

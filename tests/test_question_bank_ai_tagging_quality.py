@@ -100,6 +100,45 @@ def _tagging_env() -> dict[str, str]:
     }
 
 
+def test_dedicated_llm_client_uses_only_dedicated_or_default_base_url(
+    monkeypatch,
+) -> None:
+    captured_settings = []
+
+    class CapturingLLMClient:
+        def __init__(self, settings) -> None:
+            self.settings = settings
+            captured_settings.append(settings)
+
+    monkeypatch.setattr(ai_tagging_module, "_dotenv_values", lambda: {})
+    monkeypatch.setattr(ai_tagging_module, "LLMClient", CapturingLLMClient)
+
+    AITaggingService(
+        env={
+            "QUESTION_BANK_TAGGING_API_KEY": "dedicated-key",
+            "QUESTION_BANK_TAGGING_MODEL": "tag-model",
+            "LLM_BASE_URL": "https://unrelated.invalid/v1",
+        }
+    )
+    AITaggingService(
+        env={
+            "QUESTION_BANK_TAGGING_API_KEY": "dedicated-key",
+            "QUESTION_BANK_TAGGING_BASE_URL": "https://dedicated.invalid/v1",
+            "QUESTION_BANK_TAGGING_MODEL": "tag-model",
+            "LLM_BASE_URL": "https://unrelated.invalid/v1",
+        }
+    )
+
+    assert [settings.base_url for settings in captured_settings] == [
+        "https://api.openai.com/v1",
+        "https://dedicated.invalid/v1",
+    ]
+    assert [settings.config_base_url for settings in captured_settings] == [
+        "https://api.openai.com/v1",
+        "https://dedicated.invalid/v1",
+    ]
+
+
 def test_single_responses_uses_tagging_gateway_with_raw_client(monkeypatch) -> None:
     provider_calls = []
     adapter_calls = []
