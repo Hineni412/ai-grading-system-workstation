@@ -550,7 +550,7 @@ Task 4 evidence: the required RED run produced `1 failed, 1 warning` because `Ap
 - Consumes: `JobStore.create_job()`, `mark_running()`, `finish()`, `JobManager(cleanup_interrupted=True)` and jobs GET route.
 - Produces: restart contract for queued/running/succeeded records through a new TestClient.
 
-- [ ] **Step 1: Write the failing restart test**
+- [x] **Step 1: Write the failing restart test**
 
 ```python
 def test_restart_marks_inflight_jobs_failed_and_preserves_terminal(tmp_path) -> None:
@@ -572,7 +572,7 @@ def test_restart_marks_inflight_jobs_failed_and_preserves_terminal(tmp_path) -> 
     restarted.shutdown()
 ```
 
-- [ ] **Step 2: Run the test and confirm it exercises the restart boundary**
+- [x] **Step 2: Run the test and confirm it exercises the restart boundary**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/api_e2e/test_restart_recovery.py -q
@@ -580,11 +580,11 @@ def test_restart_marks_inflight_jobs_failed_and_preserves_terminal(tmp_path) -> 
 
 Expected: if it passes immediately, temporarily construct the restarted manager with `cleanup_interrupted=False` and confirm queued/running assertions fail, then restore `cleanup_interrupted=True`; this is the required RED proof for existing behavior.
 
-- [ ] **Step 3: Keep the minimal regression test and verify GREEN**
+- [x] **Step 3: Keep the minimal regression test and verify GREEN**
 
 No production change is expected. Keep the test using `cleanup_interrupted=True`, add `try/finally` around manager shutdown, and assert the failed public error contains neither `tmp_path` nor stored internal error text.
 
-- [ ] **Step 4: Run all P1-28 tests**
+- [x] **Step 4: Run all P1-28 tests**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/api_e2e -q
@@ -592,7 +592,7 @@ No production change is expected. Keep the test using `cleanup_interrupted=True`
 
 Expected: all P1-28 tests pass with no skipped tests.
 
-- [ ] **Step 5: Commit restart coverage**
+- [x] **Step 5: Commit restart coverage**
 
 ```powershell
 git add -- tests/api_e2e/test_restart_recovery.py docs/superpowers/plans/2026-07-14-p1-28-five-flow-api-e2e-implementation.md
