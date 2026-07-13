@@ -37,10 +37,10 @@
 ## 昼夜交接
 
 **执行包：** P2-08
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
-**独立复审：** pending
+**交接状态：** waiting_user
+**功能提交：** e446e09cfb00e3ac06bd5af30b8bbbd0cf817714
+**自动验证：** passed
+**独立复审：** passed
 **用户验收：** pending
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
@@ -59,6 +59,9 @@
 - 用户在正式验收过程中确认原实现符合旧清单，但要求改成更符合连续阅卷习惯的方案 A：得分框聚焦时全选旧分，普通 Enter 在得分框内外均“确认并下一份”，取消“确认并停留”和 `Shift+Enter`。
 - 原 reviewed source `4684ffa2905bf917d79e41c792b57c686c9403c2` 仅保留为历史证据；本次交互代码变化后不得复用其自动验证、独立复审或用户验收结论。
 - 已确认设计与增量实施计划分别为 `docs/superpowers/specs/2026-07-13-p2-08-teacher-score-entry-design.md` 和 `docs/superpowers/plans/2026-07-13-p2-08-teacher-score-entry-implementation.md`。
+- 新候选自动验证：前端 22 个测试文件共 179 项、评分浏览器 5 项、P2-08 正式浏览器门禁 10 项（含五种桌面尺寸）、Review 后端 22 项、匿名服务契约 5 项均通过；lint、类型检查、生产构建和 `tools/smoke_check.py --skip-tests` 通过。
+- fresh-pass 需求与代码质量复审未发现 Critical/Important；得分框全选、输入框内外 Enter 单次确认并前进、Shift+Enter 无动作、备注框换行、无效/失败/重复提交保护均有自动证据。
+- 真实两库只读指纹和 Stash 基线复核不变；本次实现与验证没有读取业务内容、写入真实数据库或暂存 `user_data/`。
 
 ---
 
