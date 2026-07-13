@@ -13,7 +13,7 @@
 **执行包：** P1-25
 **用户自测：** none
 **自测清单：** not_required
-- **规划状态：** ready_for_execution
+- **规划状态：** waiting_review
 - **规划模型：** S-XH
 - **允许夜间执行：** no
 - **计划基线：** 6e5ce9122673579a0a95045e9f95bd6bd3fb3a7f
@@ -64,7 +64,7 @@
 - Produces: `chat_completions(*, request_kind, model, kwargs, request_id=None, allow_retry=True)` and matching `responses(...)` methods.
 - Consumes: existing `LLMGateway`, `JsonlUsageSink`, `policy_overrides_from_profile()` and `usage_logger.LOG_FILE`.
 
-- [ ] **Step 1: Write failing transport and profile tests**
+- [x] **Step 1: Write failing transport and profile tests**
 
 Add tests that inject a fake SDK factory, fake Gateway and null usage sink and assert:
 
@@ -88,7 +88,7 @@ assert recording_gateway.calls[0]["client"] is fake_client
 
 Also assert the SDK factory receives `max_retries=0`, equivalent normalized URLs generate the same opaque config key, different credentials generate different keys, raw credentials/URL are absent from the key, `llm_client._create_openai_client` still exists, and `get_objective_api_config()` returns only the safe policy projection alongside existing objective fields.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -98,7 +98,7 @@ Run:
 
 Expected: FAIL because `backend.llm.transport` and the objective `policy_profile` field do not exist.
 
-- [ ] **Step 3: Implement the minimal shared adapter**
+- [x] **Step 3: Implement the minimal shared adapter**
 
 Implement an immutable ownership boundary: the adapter creates or accepts one SDK client and one Gateway, never stores prompt/response data, and forwards a fresh copy of `kwargs`. Keep these compatibility wrappers in `llm_client.py`:
 
@@ -116,7 +116,7 @@ In `get_objective_api_config()`, use the already loaded active profile:
 "policy_profile": policy_overrides_from_profile(profile),
 ```
 
-- [ ] **Step 4: Run GREEN and affected Gateway compatibility tests**
+- [x] **Step 4: Run GREEN and affected Gateway compatibility tests**
 
 Run:
 
@@ -126,7 +126,7 @@ Run:
 
 Expected: PASS; existing `LLMClient` monkeypatch tests remain green.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
 ```powershell
 git add backend/llm/transport.py backend/llm/__init__.py llm_client.py api_profiles.py tests/test_llm_transport.py tests/test_grading_limits.py
@@ -143,11 +143,11 @@ git commit -m "feat: add shared LLM gateway transport"
 - Consumes: `LLMProtocolAdapter.chat_completions()` with `LLMRequestKind.RECOGNITION`.
 - Preserves: `recognize_choice_answer(...) -> dict`, prompt text, messages, temperature, max token key/value, response format, thinking body, parsing tolerance, scoring and review fields；旧手工用量写入由 Gateway 单条事件替代。
 
-- [ ] **Step 1: Write a failing end-to-end fake-provider test**
+- [x] **Step 1: Write a failing end-to-end fake-provider test**
 
 Patch `get_objective_api_config()` with a complete fake config, inject a fake adapter/provider response, create a temporary JPEG, call `recognize_choice_answer()`, and assert the provider receives exactly the existing `messages`, `temperature`, `max_tokens`, `response_format` and `extra_body`, plus Gateway-injected `model` and finite recognition timeout. Assert the returned selected answer, score, confidence, review fields and token fields remain unchanged.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -157,7 +157,7 @@ Run:
 
 Expected: FAIL because the chain still constructs `OpenAI` and calls Chat Completions directly.
 
-- [ ] **Step 3: Replace only the physical request boundary**
+- [x] **Step 3: Replace only the physical request boundary**
 
 Construct `LLMProtocolAdapter` from the objective API key, base URL and `policy_profile`, then call:
 
@@ -179,7 +179,7 @@ completion = adapter.chat_completions(
 
 Do not alter the prompt, image resizing, parsing, score calculation or exception-to-review behavior. Remove only the duplicate final `log_llm_usage()` block; keep response usage extraction for the returned result fields and keep the separate `log_choice_recognition()` helper.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 Run:
 
@@ -189,7 +189,7 @@ Run:
 
 Expected: PASS with no real network or workspace log write.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 
 ```powershell
 git add choice_recognition_chain.py tests/test_choice_recognition_chain.py
@@ -206,11 +206,11 @@ git commit -m "refactor: route choice recognition through gateway"
 - Consumes: `LLMProtocolAdapter.chat_completions()` with `LLMRequestKind.RECOGNITION`.
 - Preserves: `recognize_fill_blank_answer(...) -> dict`, optional model override, prompt, messages, temperature, max token key/value, forced disabled thinking, parsing, normalization, scoring and review fields；旧手工用量写入由 Gateway 单条事件替代。
 
-- [ ] **Step 1: Write a failing fake-provider regression test**
+- [x] **Step 1: Write a failing fake-provider regression test**
 
 Create a temporary JPEG, return `{"raw_answer":"1/2","confidence":0.96,"need_review":false,"review_reason":""}`, and assert request kwargs are unchanged except for Gateway-injected model and finite timeout. Assert `normalized_student_answer`, score, auto-score and token fields match the current behavior. Add a separate assertion that the function-level `model` argument still overrides only the configured model.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -220,11 +220,11 @@ Run:
 
 Expected: FAIL because the chain still constructs `OpenAI` directly and uses its local timeout default.
 
-- [ ] **Step 3: Replace only the physical request boundary**
+- [x] **Step 3: Replace only the physical request boundary**
 
 Use the same objective adapter and recognition kind as Task 2. Preserve `extra_body={"thinking":{"type":"disabled"}}`, `json.loads(content)` strictness and every result field. Remove only the duplicate final `log_llm_usage()` block; keep response usage extraction and `log_fill_blank_recognition()`.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 Run:
 
@@ -234,7 +234,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 3**
+- [x] **Step 5: Commit Task 3**
 
 ```powershell
 git add fill_blank_recognition_chain.py tests/test_fill_blank_recognition_chain.py
@@ -252,7 +252,7 @@ git commit -m "refactor: route fill blank recognition through gateway"
 - Preserves: `ObjectiveBatchRecognitionClient.json_from_images(...)`, prompt/atlas creation, no token-limit parameter, response format, optional thinking body, usage callback, external `rate_limiter`, `batch_workers`, fallback model/client and review merging.
 - Changes only retry owner: three-attempt local loop becomes Gateway `max_retries=2`, so total physical attempts remain three and each attempt receives a finite timeout.
 
-- [ ] **Step 1: Replace the old timeout assertion with failing Gateway contract tests**
+- [x] **Step 1: Replace the old timeout assertion with failing Gateway contract tests**
 
 Replace `test_objective_batch_client_omits_timeout_and_token_limit` with tests that assert:
 
@@ -264,7 +264,7 @@ assert "max_tokens" not in captured["completion_kwargs"]
 
 Add a retryable 503 sequence asserting exactly three provider calls, and a run-level test proving the outer batch layer invokes `json_from_images()` once rather than multiplying Gateway retries. Existing fallback and parallel rate-limiter tests remain unchanged.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -274,11 +274,11 @@ Run:
 
 Expected: FAIL because the client still sets `timeout=None`, bypasses Gateway and the run layer still owns a three-attempt loop.
 
-- [ ] **Step 3: Route the client through Gateway and delete only the duplicate retry loop**
+- [x] **Step 3: Route the client through Gateway and delete only the duplicate retry loop**
 
 Keep the external `rate_limiter.acquire()` once per logical batch request, then call `batch_client.json_from_images(...)` exactly once. In `ObjectiveBatchRecognitionClient`, pass the same messages, temperature, response format and optional thinking body to the shared adapter. Do not add a token-limit parameter.
 
-- [ ] **Step 4: Run GREEN and hybrid affected regression**
+- [x] **Step 4: Run GREEN and hybrid affected regression**
 
 Run:
 
@@ -288,7 +288,7 @@ Run:
 
 Expected: PASS; fallback, batch size and worker behavior remain unchanged.
 
-- [ ] **Step 5: Commit Task 4**
+- [x] **Step 5: Commit Task 4**
 
 ```powershell
 git add objective_batch_recognition_service.py tests/test_objective_batch_recognition_service.py
@@ -308,11 +308,11 @@ git commit -m "refactor: route objective batches through gateway"
 - Preserves: constructor injection of a fake/provider client, `LLMClient` compatibility branch, single and batch structured-output payloads, `_TaggingRequestController`, adaptive batching, single fallback, quality retry, review model and `complete`-only persistence rule.
 - Produces: optional `protocol_adapter` constructor injection for isolated tests; production lazily constructs exactly one adapter per service instance.
 
-- [ ] **Step 1: Write failing single and batch Responses tests**
+- [x] **Step 1: Write failing single and batch Responses tests**
 
 Instantiate `AITaggingService` with a fake Responses client and environment containing only the tagging API key/model/base URL. Assert single and batch paths call Gateway with `request_kind=TAGGING`, preserve `text={"format": ...}` and `input=...`, receive a finite 120-second timeout, and still return the same `AITaggingResult`/batch mapping. Add a retryable fake provider failure followed by success to prove Gateway, not the request-event controller, owns ordinary retry.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -322,7 +322,7 @@ Run:
 
 Expected: FAIL because both Responses branches still call `service._client().responses.create(...)` directly and the SDK client retains default retries.
 
-- [ ] **Step 3: Add one lazily created tagging adapter and replace both direct calls**
+- [x] **Step 3: Add one lazily created tagging adapter and replace both direct calls**
 
 Keep an injected raw fake client usable by passing it to `LLMProtocolAdapter`. For saved profiles use `policy_overrides_from_profile(profile)`; for explicit environment-only configuration use validated defaults. Replace both calls with:
 
@@ -339,7 +339,7 @@ response = service._protocol_adapter().responses(
 
 Do not change batch request numbering, fallback fan-out, quality thresholds or persistence decisions.
 
-- [ ] **Step 4: Run GREEN and tagging affected regression**
+- [x] **Step 4: Run GREEN and tagging affected regression**
 
 Run:
 
@@ -349,7 +349,7 @@ Run:
 
 Expected: PASS with existing complete-only save and fallback event counts unchanged.
 
-- [ ] **Step 5: Commit Task 5**
+- [x] **Step 5: Commit Task 5**
 
 ```powershell
 git add question_bank/services/ai_tagging_service.py tests/test_question_bank_ai_tagging_quality.py tests/test_tagging_batch_attempts.py tests/test_tagging_sync_job.py
@@ -366,7 +366,7 @@ git commit -m "refactor: route AI tagging through gateway"
 - Consumes: all four migrated chains and P1-24 Gateway contracts.
 - Produces: static guard evidence that SDK calls remain only in the shared transport/Gateway protocol execution points and first-party Python has no `timeout=None`.
 
-- [ ] **Step 1: Run the full P1-25 focused and affected regression**
+- [x] **Step 1: Run the full P1-25 focused and affected regression**
 
 Run:
 
@@ -376,7 +376,7 @@ Run:
 
 Expected: PASS with zero failures/skips caused by P1-25.
 
-- [ ] **Step 2: Run static and quick-smoke guards**
+- [x] **Step 2: Run static and quick-smoke guards**
 
 Run:
 
@@ -390,15 +390,15 @@ git status --short -- user_data
 
 Expected: first command has zero matches; SDK construction/invocation appears only in `backend/llm/transport.py` and `backend/llm/gateway.py`; diff check and quick smoke pass; worktree `user_data/` status is empty.
 
-- [ ] **Step 3: Compare the root real-data file fingerprints**
+- [x] **Step 3: Compare the root real-data file fingerprints**
 
 Read only size, UTC mtime and SHA-256 of the two root databases and compare with the recorded claim baseline. Do not open either database with SQLite. Expected: every value is unchanged.
 
-- [ ] **Step 4: Update architecture after verified behavior**
+- [x] **Step 4: Update architecture after verified behavior**
 
 Record that four direct chains now use Gateway with explicit finite timeouts and bounded retry ownership; state that prompts, algorithms, fallback, scoring and concurrency remain unchanged, all automated verification used fakes/temporary data, and no real API health check was executed.
 
-- [ ] **Step 5: Commit verified functional work as `waiting_review`**
+- [x] **Step 5: Commit verified functional work as `waiting_review`**
 
 Update this plan's checkboxes/evidence and handoff block to `waiting_review`, `功能提交: branch_head`, `自动验证: passed`, `独立复审: pending`, `用户验收: not_required`, `真实数据指纹: unchanged`; preserve the Stash baseline. Then commit only P1-25 source/tests/architecture/plan changes.
 
@@ -409,6 +409,16 @@ Review the complete package range for retry multiplication, lost request IDs, un
 - [ ] **Step 7: Create the final plan-only handoff commit**
 
 After review passes, change only this plan: record the direct parent full reviewed functional SHA, set `verified_pending_integration`, `自动验证: passed`, `独立复审: passed`, `用户验收: not_required`, `真实数据指纹: unchanged`, and `夜间动作: independent_candidate_allowed`. Run `tools/handoff_status.py` against the clean worktree and commit the plan-only handoff.
+
+## Implementation Evidence (2026-07-13)
+
+- Shared transport and four caller migrations are committed in separate checkpoints. Objective fallback and dedicated tagging endpoint findings were reproduced with RED tests, fixed, and passed re-review.
+- Full P1-25 focused/affected gate: `264 passed in 11.26s`.
+- Static boundary gate: first-party Python has zero `timeout=None`; direct SDK protocol execution remains only in `backend/llm/gateway.py` for Chat Completions and Responses.
+- Quick smoke: documentation governance, compilation of 406 first-party Python files, and idempotent initialization/integrity checks on isolated copies all passed; full pytest was intentionally skipped by this quick-smoke command.
+- Feature worktree `user_data/` status is empty. Root real database files were not opened with SQLite; their size, UTC mtime and SHA-256 exactly match the claim baseline for both databases.
+- All automated model checks used fake clients/providers, temporary images/files, null or isolated usage sinks, and no real secrets. No real API health check was executed.
+- User testing is `none`, so user acceptance remains `not_required`.
 
 ## Verification and Recovery
 
@@ -423,12 +433,12 @@ After review passes, change only this plan: record the direct parent full review
 ## 昼夜交接
 
 **执行包：** P1-25
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
