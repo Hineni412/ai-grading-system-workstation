@@ -167,11 +167,13 @@ test('restores URL context and crosses the 100/101 boundary with keyboard naviga
   await expect(page).toHaveURL(/detail=203$/)
   await expect(page.getByText('当前位置 101 / 1000')).toBeVisible()
   await expect(await selectedRow(page)).toContainText('学生0203')
+  await expect(await selectedRow(page)).toBeInViewport()
   await expect(page.getByText('第 2 / 10 页')).toBeVisible()
 
   await page.keyboard.press('k')
   await expect(page).toHaveURL(/detail=201$/)
   await expect(page.getByText('当前位置 100 / 1000')).toBeVisible()
+  await expect(await selectedRow(page)).toBeInViewport()
 })
 
 test('search, needs-review filter, and risk sort keep a valid current item', async ({ page }) => {

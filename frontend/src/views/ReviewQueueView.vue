@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
@@ -13,9 +13,11 @@ const route = useRoute()
 const router = useRouter()
 const sessionStore = useSessionStore()
 const reviewStore = useReviewQueueStore()
+const reviewPage = ref<HTMLElement | null>(null)
 
 let contextGeneration = 0
 let itemGeneration = 0
+let scrollGeneration = 0
 let unmounting = false
 let querySync = Promise.resolve()
 
@@ -76,28 +78,46 @@ function sameQuery(query: Record<string, string>): boolean {
 }
 
 function syncValidatedQuery(): void {
-  querySync = querySync.then(async () => {
-    if (unmounting) return
-    const query: Record<string, string> = {}
-    const questionId = reviewStore.selectedQuestionId
-    const detailId = reviewStore.selectedDetailId
-    const questionIsValid = questionId !== null && reviewStore.questions.some(
-      (question) => question.question_id === questionId,
-    )
-
-    if (questionIsValid && questionId !== null) query.question = questionId
-    if (
-      questionIsValid &&
-      detailId !== null &&
-      reviewStore.items.some(
-        (item) => item.question_id === questionId && item.detail_id === detailId,
+  querySync = querySync
+    .then(async () => {
+      if (unmounting) return
+      const query: Record<string, string> = {}
+      const questionId = reviewStore.selectedQuestionId
+      const detailId = reviewStore.selectedDetailId
+      const questionIsValid = questionId !== null && reviewStore.questions.some(
+        (question) => question.question_id === questionId,
       )
-    ) {
-      query.detail = String(detailId)
-    }
 
-    if (!sameQuery(query)) await router.replace({ query })
-  })
+      if (questionIsValid && questionId !== null) query.question = questionId
+      if (
+        questionIsValid &&
+        detailId !== null &&
+        reviewStore.items.some(
+          (item) => item.question_id === questionId && item.detail_id === detailId,
+        )
+      ) {
+        query.detail = String(detailId)
+      }
+
+      if (!sameQuery(query)) await router.replace({ query })
+    })
+    .catch(() => undefined)
+}
+
+async function scrollSelectedRowIntoView(): Promise<void> {
+  const detailId = reviewStore.selectedDetailId
+  const generation = ++scrollGeneration
+  if (detailId === null) return
+
+  await nextTick()
+  if (
+    unmounting ||
+    generation !== scrollGeneration ||
+    reviewStore.selectedDetailId !== detailId
+  ) return
+  reviewPage.value
+    ?.querySelector<HTMLElement>('.review-queue-row[aria-current="true"]')
+    ?.scrollIntoView({ block: 'nearest' })
 }
 
 async function loadQuestion(
@@ -257,21 +277,28 @@ const stopSelectionWatch = watch(
   syncValidatedQuery,
 )
 
+const stopScrollWatch = watch(
+  () => reviewStore.selectedDetailId,
+  () => void scrollSelectedRowIntoView(),
+)
+
 onMounted(() => window.addEventListener('keydown', onKeydown))
 
 onBeforeUnmount(() => {
   unmounting = true
   contextGeneration += 1
   itemGeneration += 1
+  scrollGeneration += 1
   stopSessionWatch()
   stopSelectionWatch()
+  stopScrollWatch()
   window.removeEventListener('keydown', onKeydown)
   reviewStore.reset()
 })
 </script>
 
 <template>
-  <section class="review-page" aria-labelledby="review-page-title">
+  <section ref="reviewPage" class="review-page" aria-labelledby="review-page-title">
     <header class="review-page__header">
       <h1 id="review-page-title" tabindex="-1">复核队列</h1>
       <p>查看单题复核记录，并在不修改评分数据的前提下连续浏览。</p>
