@@ -8,13 +8,13 @@ from fastapi.testclient import TestClient
 
 from backend.api.app import create_app
 from db_manager import DBManager, StudentRecord
+from question_bank.database.schema import initialize_database
 from tests.api_e2e.harness import (
     ApiE2EHarness,
     E2EControls,
     build_job_manager,
     build_paths,
     install_dependency_overrides,
-    valid_config_payload,
 )
 
 
@@ -23,15 +23,12 @@ def api_e2e(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     paths = build_paths(tmp_path)
     db = DBManager(paths.db_path)
     db.initialize()
+    initialize_database(paths.qb_db_path)
     db.upsert_students(
         [
             StudentRecord("SYN-001", "Synthetic Student A", "Synthetic Class"),
             StudentRecord("SYN-002", "Synthetic Student B", "Synthetic Class"),
         ]
-    )
-    monkeypatch.setattr(
-        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
-        lambda *_args, **_kwargs: valid_config_payload(),
     )
     controls = E2EControls()
     manager = build_job_manager(paths, controls=controls)
