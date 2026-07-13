@@ -10,30 +10,71 @@
 
 .review-scoring-inspector__header,
 .review-scoring-section,
-.review-scoring-inspector__footer,
-.review-scoring-feedback {
+.review-scoring-inspector__footer {
   padding: var(--space-4);
 }
 
-.review-scoring-feedback {
-  margin: 0;
-  border-block-end: var(--border-width) solid var(--color-border-subtle);
+.review-feedback-toast {
+  position: fixed;
+  z-index: calc(var(--shell-skip-link-z-index) + 1);
+  inset-inline-end: var(--space-6);
+  inset-block-end: calc(
+    var(--control-height-large) + var(--space-9) + var(--space-6)
+  );
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-3);
+  width: min(360px, calc(100vw - var(--space-8)));
+  padding: var(--space-4);
+  border: var(--border-width) solid currentColor;
+  border-radius: var(--radius-overlay);
+  box-shadow: var(--shadow-overlay);
   font-size: var(--font-size-dense);
 }
 
-.review-scoring-feedback--success {
+.review-feedback-toast p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.review-feedback-toast button {
+  min-width: var(--control-height-small);
+  min-height: var(--control-height-small);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.review-feedback-toast button:focus-visible {
+  outline: var(--border-width) solid currentColor;
+  outline-offset: var(--focus-offset);
+  box-shadow: var(--focus-ring);
+}
+
+.review-feedback-toast--success {
   background: var(--color-success-subtle);
   color: var(--color-success);
 }
 
-.review-scoring-feedback--warning {
+.review-feedback-toast--warning {
   background: var(--color-warning-subtle);
   color: var(--color-warning);
 }
 
-.review-scoring-feedback--error {
+.review-feedback-toast--error {
   background: var(--color-danger-subtle);
   color: var(--color-danger);
+}
+
+@media (max-width: 1100px) {
+  .review-feedback-toast {
+    inset-inline-end: var(--space-4);
+  }
 }
 
 .review-scoring-inspector__header,

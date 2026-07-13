@@ -11,6 +11,7 @@ import { reviewShortcutBus } from '../../composables/review-shortcuts'
 import { scoreIssue, useReviewDraftStore, type ReviewDraft } from '../../stores/review-drafts'
 import { useReviewQueueStore } from '../../stores/review-queue'
 import StatePanel from '../design-system/StatePanel.vue'
+import ReviewFeedbackToast from './ReviewFeedbackToast.vue'
 
 const reviewStore = useReviewQueueStore()
 const draftStore = useReviewDraftStore()
@@ -235,15 +236,12 @@ onBeforeUnmount(() => {
     />
 
     <template v-else>
+      <ReviewFeedbackToast
+        :message="feedback"
+        :tone="feedbackTone"
+        @dismiss="feedback = ''"
+      />
       <div class="review-scoring-inspector__scroll" data-testid="scoring-scroll-region">
-        <p
-          v-if="feedback"
-          class="review-scoring-feedback"
-          :class="`review-scoring-feedback--${feedbackTone}`"
-          :role="feedbackTone === 'error' ? 'alert' : 'status'"
-        >
-          {{ feedback }}
-        </p>
         <header class="review-scoring-inspector__header">
           <p>{{ item.question_id }} · 满分 {{ formatScore(item.max_score) }}</p>
           <h2>评分与复核</h2>
