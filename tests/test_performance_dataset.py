@@ -125,28 +125,49 @@ def _assert_generated_content(dataset: BenchmarkDataset) -> None:
     )
 
     with sqlite3.connect(dataset.paths.qb_db_path) as conn:
+        papers = conn.execute(
+            "SELECT title, source_file, import_status FROM papers ORDER BY id"
+        ).fetchall()
         questions = conn.execute(
-            "SELECT question_text, answer_text, source_file FROM questions ORDER BY id"
+            "SELECT paper_id, question_text, answer_text, source_file FROM questions ORDER BY id"
         ).fetchall()
         tags = conn.execute(
-            "SELECT tag_type, tag_value FROM question_tags ORDER BY id"
+            "SELECT question_id, tag_type, tag_value FROM question_tags ORDER BY id"
         ).fetchall()
         tasks = conn.execute(
             "SELECT task_code, created_by FROM training_tasks ORDER BY id"
         ).fetchall()
 
+    assert papers
+    assert all(
+        title.startswith("generated-")
+        and source.startswith("generated-")
+        and status == "complete"
+        for title, source, status in papers
+    )
     assert questions
     assert all(
-        text.startswith("generated-")
+        paper_id is not None
+        and text.startswith("generated-")
         and answer.startswith("generated-")
         and source.startswith("generated-")
-        for text, answer, source in questions
+        for paper_id, text, answer, source in questions
     )
+    grouped_tags: dict[int, dict[str, str]] = {}
+    for question_id, tag_type, tag_value in tags:
+        grouped_tags.setdefault(int(question_id), {})[str(tag_type)] = str(tag_value)
+    assert set(grouped_tags) == set(range(1, len(questions) + 1))
     assert all(
-        tag_type in {"knowledge_point", "method"}
-        and tag_value.startswith(("knowledge-", "generated-"))
-        for tag_type, tag_value in tags
+        set(question_tags) == {
+            "knowledge_point",
+            "ability",
+            "exam_scope",
+            "student_level",
+            "method",
+        }
+        for question_tags in grouped_tags.values()
     )
+    assert grouped_tags[1]["knowledge_point"] == "knowledge-01"
     assert all(code.startswith("GEN-") and creator.startswith("generated-") for code, creator in tasks)
 
 
@@ -214,6 +235,7 @@ def test_micro_dataset_is_deterministic_valid_and_confined_to_temp_roots(
         "session_details",
     )
     question_bank_tables = (
+        "papers",
         "questions",
         "question_tags",
         "question_previews",
@@ -232,12 +254,40 @@ def test_micro_dataset_is_deterministic_valid_and_confined_to_temp_roots(
         assert actual_counts == expected_counts
         assert _integrity(dataset.paths.db_path) == ([], "ok")
         assert _integrity(dataset.paths.qb_db_path) == ([], "ok")
-        from question_bank.services.question_read_service import QuestionBankReadService
+        from question_bank.services.question_read_service import (
+            QuestionBankReadService,
+            QuestionReadFilters,
+        )
 
         read_service = QuestionBankReadService(
             dataset.paths.qb_db_path,
             data_root=dataset.paths.data_root,
         )
+        expected_papers = max(1, (MICRO.question_bank_questions + 99) // 100)
+        papers = read_service.list_papers()
+        filtered = read_service.list_questions(
+            QuestionReadFilters(
+                knowledge_point="knowledge-01",
+                tag_status="tagged",
+                sort="difficulty",
+                page_size=100,
+            )
+        )
+        assert expected_counts["papers"] == expected_papers
+        assert len(papers) == expected_papers
+        assert sum(int(paper["question_count"]) for paper in papers) == (
+            MICRO.question_bank_questions
+        )
+        assert all(int(paper["question_count"]) > 0 for paper in papers)
+        assert filtered.total > 0
+        assert filtered.items
+        assert [item["id"] for item in filtered.items] == [1]
+        with sqlite3.connect(dataset.paths.qb_db_path) as conn:
+            assert int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM questions WHERE paper_id IS NULL"
+                ).fetchone()[0]
+            ) == 0
         asset = read_service.resolve_asset(dataset.representative_question_id, 0)
         question_preview = read_service.resolve_preview(
             dataset.representative_question_id,

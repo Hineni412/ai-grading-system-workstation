@@ -509,16 +509,18 @@ def _populate_question_bank_database(
 ) -> int:
     with _sqlite_connection(db_path) as conn:
         conn.execute("PRAGMA foreign_keys = ON")
+        _insert_batches(conn, _PAPER_INSERT, _question_bank_paper_rows(scale))
         _insert_batches(
             conn,
             "INSERT INTO questions ("
-            "id, question_number, question_type, question_text, answer_text, source_file, "
+            "id, paper_id, question_number, question_type, question_text, answer_text, source_file, "
             "image_paths, difficulty, typicality, reason, needs_review, has_images, "
             "needs_image_review, is_deleted, created_at, updated_at"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 (
                     question_index,
+                    ((question_index - 1) // 100) + 1,
                     f"Q{question_index:05d}",
                     "generated-type",
                     f"generated-question-{question_index:05d}",
@@ -548,6 +550,12 @@ def _populate_question_bank_database(
     return 1
 
 
+_PAPER_INSERT = (
+    "INSERT INTO papers ("
+    "id, title, source_file, year, province, city, district, exam_type, grade, "
+    "semester, textbook_version, import_status, content_fingerprint, created_at, updated_at"
+    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
 _QUESTION_TAG_INSERT = (
     "INSERT INTO question_tags ("
     "id, question_id, tag_type, tag_value, confidence, source, model_name, created_at"
@@ -590,31 +598,55 @@ _TRAINING_ITEM_INSERT = (
 )
 
 
+def _question_bank_paper_count(scale: ScaleDefinition) -> int:
+    return max(1, (scale.question_bank_questions + 99) // 100)
+
+
+def _question_bank_paper_rows(
+    scale: ScaleDefinition,
+) -> Iterator[tuple[object, ...]]:
+    for paper_id in range(1, _question_bank_paper_count(scale) + 1):
+        yield (
+            paper_id,
+            f"generated-paper-{paper_id:03d}",
+            f"generated-paper-{paper_id:03d}.json",
+            "generated-year",
+            "generated-province",
+            "generated-city",
+            "generated-district",
+            "generated-exam-type",
+            "generated-grade",
+            "generated-semester",
+            "generated-textbook",
+            "complete",
+            f"generated-fingerprint-{paper_id:03d}",
+            _GENERATED_TIME,
+            _GENERATED_TIME,
+        )
+
+
 def _question_tag_rows(scale: ScaleDefinition) -> Iterator[tuple[object, ...]]:
     tag_id = 0
     for question_index in range(1, scale.question_bank_questions + 1):
-        tag_id += 1
-        yield (
-            tag_id,
-            question_index,
-            "knowledge_point",
-            f"knowledge-{question_index % 50:02d}",
-            1.0,
-            "generated-source",
-            "generated-model",
-            _GENERATED_TIME,
+        tag_values = (
+            ("knowledge_point", f"knowledge-{question_index % 50:02d}"),
+            ("ability", f"generated-ability-{question_index % 10:02d}"),
+            ("exam_scope", f"generated-exam-scope-{question_index % 10:02d}"),
+            ("student_level", f"generated-student-level-{question_index % 3:02d}"),
+            ("method", f"generated-method-{question_index % 10:02d}"),
         )
-        tag_id += 1
-        yield (
-            tag_id,
-            question_index,
-            "method",
-            f"generated-method-{question_index % 10:02d}",
-            1.0,
-            "generated-source",
-            "generated-model",
-            _GENERATED_TIME,
-        )
+        for tag_type, tag_value in tag_values:
+            tag_id += 1
+            yield (
+                tag_id,
+                question_index,
+                tag_type,
+                tag_value,
+                1.0,
+                "generated-source",
+                "generated-model",
+                _GENERATED_TIME,
+            )
 
 
 def _preview_rows(asset_path: str) -> Iterator[tuple[object, ...]]:
@@ -767,8 +799,9 @@ def _expected_counts(scale: ScaleDefinition) -> dict[str, int]:
         "exam_papers": result_count,
         "session_results": result_count,
         "session_details": scale.grading_details,
+        "papers": _question_bank_paper_count(scale),
         "questions": scale.question_bank_questions,
-        "question_tags": scale.question_bank_questions * 2,
+        "question_tags": scale.question_bank_questions * 5,
         "question_previews": 2,
         "grading_question_links": scale.sessions * scale.questions_per_session,
         "training_tasks": scale.training_tasks,
