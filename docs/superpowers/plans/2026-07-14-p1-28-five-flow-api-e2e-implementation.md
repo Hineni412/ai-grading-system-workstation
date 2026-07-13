@@ -33,12 +33,12 @@
 ## 昼夜交接
 
 **执行包：** P1-28
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
@@ -612,7 +612,7 @@ git commit -m "test: cover API job restart recovery"
 - Consumes: complete P1-28 commit range, package definition, design, handoff validator and repository test gates.
 - Produces: reviewed functional SHA and a validator-compatible `verified_pending_integration` handoff commit.
 
-- [ ] **Step 1: Run P1-28 and affected regressions**
+- [x] **Step 1: Run P1-28 and affected regressions**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest `
@@ -630,7 +630,7 @@ git commit -m "test: cover API job restart recovery"
 
 Expected: all selected tests pass, 0 failed and 0 skipped.
 
-- [ ] **Step 2: Run repository guards and compare real database fingerprints**
+- [x] **Step 2: Run repository guards and compare real database fingerprints**
 
 ```powershell
 git diff --check origin/main...HEAD
@@ -640,7 +640,7 @@ git status --short -- user_data
 
 From the root checkout, repeat `Get-Item` and `Get-FileHash -Algorithm SHA256` for both real databases. Expected: source diff has no whitespace errors; feature worktree `user_data` is clean; quick smoke passes; size/UTC mtime/SHA-256 equal the claim record.
 
-- [ ] **Step 3: Record `waiting_review` in the functional commit**
+- [x] **Step 3: Record `waiting_review` in the functional commit**
 
 Check every plan box through this step, add a concise verification evidence section, and set the handoff block to:
 
@@ -655,6 +655,8 @@ Check every plan box through this step, add a concise verification evidence sect
 ```
 
 Keep the original Stash baseline unchanged, then commit all remaining test/plan changes as the final functional commit.
+
+Task 6 Steps 1–3 evidence: the complete P1-28 and affected API/Job selection produced `70 passed, 0 failed, 0 skipped, 1 warning` in 12.11s. `git diff --check origin/main...HEAD` passed and the feature worktree had no `user_data/` status. Quick smoke passed in 4.82s, including documentation governance, compilation of 413 first-party Python files and idempotent initialization/integrity checks against isolated copies of both databases; the full pytest stage was intentionally skipped by `--skip-tests`. Before and after smoke, the root grading database remained 2863104 bytes with UTC mtime `2026-07-10T07:10:41.1221109Z` and SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`; the root question-bank database remained 3461120 bytes with UTC mtime `2026-07-08T11:58:06.3320883Z` and SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`. The warning is the existing dependency-level `StarletteDeprecationWarning` from `fastapi.testclient`. No production file changed, so `ARCHITECTURE.md` was not modified. Independent review remains pending and Tasks 4–6 were not started.
 
 - [ ] **Step 4: Request independent code review and fix all Critical/Important findings**
 
