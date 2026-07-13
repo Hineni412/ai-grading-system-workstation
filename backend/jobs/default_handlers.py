@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from api_profiles import active_api_profile, get_api_profile_store
+from backend.llm.policy import policy_overrides_from_profile
 from db_manager import DBManager
 from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
 from report import ReportGenerator
@@ -376,4 +377,5 @@ def _active_llm_settings() -> LLMSettings | None:
         config_base_url=normalize_openai_base_url(
             str(profile.get("config_base_url") or os.getenv("LLM_CONFIG_BASE_URL") or base_url)
         ),
+        policy_profile=policy_overrides_from_profile(profile),
     )

@@ -21,6 +21,14 @@ class RequestPacer:
         self._lock = threading.Lock()
         self._next_slot = self._clock()
 
+    def tighten(self, requests_per_minute: int) -> None:
+        stricter_interval = 60.0 / max(1, int(requests_per_minute))
+        with self._lock:
+            if stricter_interval <= self._interval:
+                return
+            self._next_slot += stricter_interval - self._interval
+            self._interval = stricter_interval
+
     def acquire(self) -> None:
         with self._lock:
             now = self._clock()

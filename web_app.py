@@ -24,6 +24,7 @@ from answer_region_geometry import answer_regions_with_template_source_sizes, sc
 from answer_region_focus_page import render_answer_region_focus_page
 from answer_region_session_lock import get_answer_region_session_lock
 from api_profiles import get_api_profile_store, normalize_question_allowlist
+from backend.llm.policy import policy_overrides_from_profile
 from data_transfer_service import (
     EXPORT_SIZE_WARNING_MB,
     build_export_manifest,
@@ -571,6 +572,7 @@ def build_llm_settings_from_sidebar() -> LLMSettings | None:
         config_model=data["config_model"],
         config_api_key=data["config_api_key"],
         config_base_url=data["config_base_url"],
+        policy_profile=policy_overrides_from_profile(saved_profile),
     )
 
 
