@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ReviewItem } from '../api/review'
 import ReviewEvidenceViewer from '../components/review/ReviewEvidenceViewer.vue'
+import { reviewShortcutBus } from '../composables/review-shortcuts'
 
 const makeItem = (detailId: number): ReviewItem => ({
   session_id: 7,
@@ -283,5 +284,30 @@ describe('P2-06 review evidence viewer', () => {
     })
     canvas.dispatchEvent(rightKey)
     expect(rightKey.defaultPrevented).toBe(true)
+  })
+
+  it('consumes global fit and zoom commands through the existing viewer state once', async () => {
+    const { host, unmount } = await mountViewer()
+    ResizeObserverStub.instances[0]?.emit()
+    loadActiveImage(host, 800, 600)
+    await settle()
+    const scale = () => host.querySelector('output')?.textContent
+    const fittedScale = scale()
+
+    reviewShortcutBus.dispatch('zoom-in')
+    await settle()
+    expect(scale()).not.toBe(fittedScale)
+
+    reviewShortcutBus.dispatch('zoom-out')
+    await settle()
+    expect(scale()).toBe(fittedScale)
+
+    reviewShortcutBus.dispatch('zoom-in')
+    reviewShortcutBus.dispatch('fit-width')
+    await settle()
+    expect(scale()).toBe(fittedScale)
+
+    unmount()
+    expect(() => reviewShortcutBus.dispatch('zoom-in')).not.toThrow()
   })
 })

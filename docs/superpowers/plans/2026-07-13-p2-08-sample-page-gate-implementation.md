@@ -112,7 +112,7 @@ Expected: staged list contains only this plan; validator emits one JSON line wit
 - Consumes: existing window key listener, queue selection methods and evidence viewer state methods.
 - Produces: `ReviewShortcutCommand`, `ReviewShortcutBus`, singleton `reviewShortcutBus`, synchronous `dispatch(command)` and `subscribe(handler): () => void`.
 
-- [ ] **Step 1: Write failing command-bus and shortcut-routing tests**
+- [x] **Step 1: Write failing command-bus and shortcut-routing tests**
 
 Add a unit test that proves subscription is synchronous, unsubscribe is final and dispatch order is stable:
 
@@ -148,7 +148,7 @@ npm test -- src/__tests__/review-shortcuts.spec.ts src/__tests__/review-queue-vi
 
 Expected: FAIL because the bus and cross-component routing do not exist.
 
-- [ ] **Step 2: Implement the minimal synchronous bus and ownership-safe handlers**
+- [x] **Step 2: Implement the minimal synchronous bus and ownership-safe handlers**
 
 Implement the core as:
 
@@ -181,7 +181,7 @@ In `ReviewQueueView.vue`, keep `J/K` local because the view owns navigation; map
 
 Run the same test command and expect PASS.
 
-- [ ] **Step 3: Commit the shortcut coordination slice**
+- [x] **Step 3: Commit the shortcut coordination slice**
 
 ```powershell
 git add frontend/src/composables/review-shortcuts.ts frontend/src/__tests__/review-shortcuts.spec.ts frontend/src/views/ReviewQueueView.vue frontend/src/components/review/ReviewQueuePanel.vue frontend/src/components/review/ReviewEvidenceViewer.vue frontend/src/__tests__/review-queue-view.spec.ts frontend/src/__tests__/review-evidence-viewer.spec.ts

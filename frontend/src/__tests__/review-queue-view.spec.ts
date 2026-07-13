@@ -4,6 +4,7 @@ import { createMemoryHistory, type Router } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ReviewItem, ReviewQuestionSummary } from '../api/review'
+import { reviewShortcutBus } from '../composables/review-shortcuts'
 import ReviewQueueView from '../views/ReviewQueueView.vue'
 import { createAppRouter } from '../router'
 import { useReviewQueueStore } from '../stores/review-queue'
@@ -354,6 +355,52 @@ describe('P2-05 review queue view', () => {
     window.dispatchEvent(alreadyPrevented)
     expect(alreadyPrevented.defaultPrevented).toBe(true)
     expect(reviewStore.selectedDetailId).toBe(11)
+  })
+
+  it('routes the approved workspace shortcuts, focuses search, and leaves R unassigned', async () => {
+    const { host, reviewStore } = await mountView({
+      initialUrl: '/grading?question=Q1&detail=11',
+    })
+    await vi.waitFor(() => expect(reviewStore.selectedDetailId).toBe(11))
+    const received: string[] = []
+    const stop = reviewShortcutBus.subscribe((command) => received.push(command))
+
+    const search = host.querySelector<HTMLInputElement>('#review-search')!
+    const searchShortcut = dispatchKey(window, '/')
+    expect(searchShortcut.defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(search)
+
+    search.blur()
+    for (const [key, init] of [
+      ['z', {}],
+      ['+', {}],
+      ['=', {}],
+      ['-', {}],
+      ['Enter', {}],
+      ['Enter', { shiftKey: true }],
+    ] satisfies Array<[string, KeyboardEventInit]>) {
+      expect(dispatchKey(window, key, init).defaultPrevented).toBe(true)
+    }
+
+    expect(received).toEqual([
+      'focus-search',
+      'fit-width',
+      'zoom-in',
+      'zoom-in',
+      'zoom-out',
+      'confirm-stay',
+      'confirm-next',
+    ])
+
+    expect(dispatchKey(window, 'r').defaultPrevented).toBe(false)
+    expect(received).not.toContain('mark-review')
+
+    search.focus()
+    expect(dispatchKey(search, 'z').defaultPrevented).toBe(false)
+    expect(dispatchKey(window, 'Enter', { repeat: true }).defaultPrevented).toBe(false)
+    expect(dispatchKey(window, '/', { ctrlKey: true }).defaultPrevented).toBe(false)
+    expect(received).toHaveLength(7)
+    stop()
   })
 
   it('scrolls the selected row into view after moving across a page boundary', async () => {

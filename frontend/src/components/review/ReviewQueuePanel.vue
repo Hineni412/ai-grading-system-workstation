@@ -1,5 +1,8 @@
 <script setup lang="ts">
+import { onBeforeUnmount, onMounted, ref } from 'vue'
+
 import type { ReviewItem, ReviewQuestionSummary } from '../../api/review'
+import { reviewShortcutBus } from '../../composables/review-shortcuts'
 import type { ReviewScope, ReviewSort } from '../../stores/review-queue'
 import StatusBadge from '../design-system/StatusBadge.vue'
 
@@ -25,6 +28,21 @@ const emit = defineEmits<{
   updateSort: [value: ReviewSort]
   updatePage: [page: number]
 }>()
+
+const searchInput = ref<HTMLInputElement | null>(null)
+let stopShortcuts = () => undefined
+
+onMounted(() => {
+  stopShortcuts = reviewShortcutBus.subscribe((command) => {
+    if (command !== 'focus-search') return
+    searchInput.value?.focus()
+    searchInput.value?.select()
+  })
+})
+
+onBeforeUnmount(() => {
+  stopShortcuts()
+})
 
 function questionLabel(question: ReviewQuestionSummary): string {
   return `${question.question_id} · ${question.total_count} 条 · 待复核 ${question.needs_review_count}`
@@ -90,6 +108,7 @@ function updateSort(event: Event): void {
         <label for="review-search">搜索学生</label>
         <input
           id="review-search"
+          ref="searchInput"
           type="search"
           :value="search"
           placeholder="姓名、学号或班级"
