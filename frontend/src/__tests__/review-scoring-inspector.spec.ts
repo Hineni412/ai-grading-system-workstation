@@ -158,7 +158,18 @@ describe('review scoring inspector', () => {
     app.unmount()
   })
 
-  it('uses Enter to confirm in place and Shift+Enter to confirm the next changed score', async () => {
+  it('selects the full score when the final-score field receives focus', async () => {
+    const { app, host } = await mountInspector()
+    const input = host.querySelector<HTMLInputElement>('[data-testid="teacher-score"]')!
+    const select = vi.spyOn(input, 'select')
+
+    input.dispatchEvent(new FocusEvent('focus'))
+
+    expect(select).toHaveBeenCalledTimes(1)
+    app.unmount()
+  })
+
+  it('uses score-field Enter to confirm next while Shift+Enter and note Enter remain inactive', async () => {
     const second = {
       ...item,
       result_id: 12,
@@ -174,37 +185,46 @@ describe('review scoring inspector', () => {
     const queue = useReviewQueueStore(pinia)
     const input = host.querySelector<HTMLInputElement>('[data-testid="teacher-score"]')!
 
-    reviewShortcutBus.dispatch('confirm-stay')
-    expect(confirmReviewItem).not.toHaveBeenCalled()
-
     input.value = '4'
     input.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
-    reviewShortcutBus.dispatch('confirm-stay')
+    const enter = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    })
+    input.dispatchEvent(enter)
+    expect(enter.defaultPrevented).toBe(true)
     await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
-    await vi.waitFor(() => expect(queue.selectedDetailId).toBe(21))
-    await vi.waitFor(() => expect(host.textContent).toContain('教师最终分已确认'))
-    expect(useReviewDraftStore(pinia).drafts['7:Q1:21']?.dirty).toBe(false)
+    await vi.waitFor(() => expect(queue.selectedDetailId).toBe(22))
+    expect(useReviewDraftStore(pinia).drafts['7:Q1:21']).toBeUndefined()
 
     app.unmount()
     vi.mocked(confirmReviewItem).mockClear()
 
     const nextMount = await mountInspector([item, second])
-    const nextQueue = useReviewQueueStore(nextMount.pinia)
     const nextInput = nextMount.host.querySelector<HTMLInputElement>('[data-testid="teacher-score"]')!
     nextInput.value = '4.5'
     nextInput.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
-    await vi.waitFor(() => expect(
-      nextMount.host.querySelector<HTMLButtonElement>('[data-testid="confirm-next"]')?.disabled,
-    ).toBe(false))
-    reviewShortcutBus.dispatch('confirm-next')
-    await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
-    await vi.waitFor(() => expect(nextQueue.selectedDetailId).toBe(22))
+    nextInput.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    }))
+    const note = nextMount.host.querySelector<HTMLTextAreaElement>('#teacher-note')!
+    note.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    }))
+    await nextTick()
+    expect(confirmReviewItem).not.toHaveBeenCalled()
 
     nextMount.app.unmount()
     reviewShortcutBus.dispatch('confirm-next')
-    expect(confirmReviewItem).toHaveBeenCalledTimes(1)
+    expect(confirmReviewItem).not.toHaveBeenCalled()
   })
 
   it('does not override a teacher selection changed while confirmation is pending', async () => {

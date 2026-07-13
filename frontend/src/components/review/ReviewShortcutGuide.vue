@@ -8,11 +8,7 @@
       </div>
       <div>
         <dt><kbd>Enter</kbd></dt>
-        <dd>确认并停留</dd>
-      </div>
-      <div>
-        <dt><kbd>Shift</kbd> + <kbd>Enter</kbd></dt>
-        <dd>确认并前进</dd>
+        <dd>确认并下一份</dd>
       </div>
       <div>
         <dt><kbd>Z</kbd></dt>

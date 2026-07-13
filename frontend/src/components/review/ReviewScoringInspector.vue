@@ -85,6 +85,24 @@ function updateNote(event: Event): void {
   draftStore.updateNote(currentDraft.value.key, (event.target as HTMLTextAreaElement).value)
 }
 
+function selectScore(event: FocusEvent): void {
+  ;(event.currentTarget as HTMLInputElement).select()
+}
+
+function onScoreKeydown(event: KeyboardEvent): void {
+  if (
+    event.key !== 'Enter' ||
+    event.shiftKey ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.repeat
+  ) return
+  event.preventDefault()
+  event.stopPropagation()
+  void submitCurrent(true)
+}
+
 async function submitCurrent(advance = true): Promise<void> {
   const submittedItem = item.value
   const draft = currentDraft.value
@@ -191,8 +209,7 @@ watch(
 
 onMounted(() => {
   stopShortcuts = reviewShortcutBus.subscribe((command) => {
-    if (command === 'confirm-stay') void submitCurrent(false)
-    else if (command === 'confirm-next') void submitCurrent(true)
+    if (command === 'confirm-next') void submitCurrent(true)
   })
 })
 
@@ -317,6 +334,8 @@ onBeforeUnmount(() => {
               :aria-invalid="issue ? 'true' : 'false'"
               aria-describedby="teacher-score-help teacher-score-error"
               @input="updateScore"
+              @focus="selectScore"
+              @keydown="onScoreKeydown"
             >
             <span>/ {{ formatScore(item.max_score) }} 分</span>
           </div>
