@@ -42,7 +42,7 @@ P1-24 建立唯一的模型请求策略层，集中管理显式超时、有界�
 
 ### 3.3 节流注册表
 
-`backend/llm/pacing.py` 复用现有 `RequestPacer` 的均匀起始槽语义，以配置身份和请求类型作为稳定键维护线程安全的 pacer。相同策略共享节流，不同模型用途互不误用速率。Gateway 不改变业务线程池、批次大小或上层并发上限。
+`backend/llm/pacing.py` 复用现有 `RequestPacer` 的均匀起始槽语义，以配置身份和请求类型作为稳定键维护线程安全的 pacer。相同键在进程内始终复用同一 pacer；策略值交错时只原地收紧到更低 RPM，并保留已经预约的节流状态，后续更高 RPM 不会在进程重启前放宽。不同模型用途互不误用速率。Gateway 不改变业务线程池、批次大小或上层并发上限。
 
 ### 3.4 用量事件
 
@@ -53,7 +53,7 @@ P1-24 建立唯一的模型请求策略层，集中管理显式超时、有界�
 - prompt/input、completion/output、cached、reasoning 和 total token；
 - 可选的上层关联 ID，但不记录 prompt、响应正文、密钥、完整 URL、学生姓名或答卷内容。
 
-现有 `usage_logger.py` 保留兼容函数，并委托新记录器写入现有 JSONL 目的地。日志写入失败不得使模型业务请求失败。
+现有 `usage_logger.py` 保留兼容函数，并委托新记录器写入现有 `logs/llm_usage.jsonl` 目的地。生产 `LLMClient` 默认给主/配置 Gateway 注入该脱敏 JSONL sink，测试可注入临时或空 sink。日志写入失败不得使模型业务请求失败。
 
 ### 3.5 Gateway
 
@@ -72,13 +72,15 @@ Gateway 不理解 prompt、评分结果或标签质量，不在策略层修复 J
 
 `llm_client.py` 的公开构造方式和现有 `text_from_images`、`json_from_images`、`json_from_text`、单次请求方法保持可用。内部 Chat Completions 请求经 Gateway 执行，但原有参数兼容顺序、JSON 截断重试和 JSON 修复语义保持不变。
 
+P1-24 兼容期间，仍保留既有外层循环的调用方拥有普通重试，`LLMClient` 每次兼容调用默认只允许 Gateway 发出一次普通物理请求；Gateway 核心对直接调用或显式选择的调用方继续保留策略规定的有界重试。P1-25 迁移旧外层循环后再统一切换重试所有权。参数降级只响应集中分类确认的参数不兼容，异常文本中偶然出现 `not supported` 不构成降级依据。
+
 Chat Completions 与 Responses 使用同一策略、错误分类、请求 ID 和用量记录，但各自保留协议适配器。Responses 支持对象和字典两种 usage 形状；Chat Completions 继续支持现有 `max_tokens` → `max_completion_tokens` → 去除 `response_format` 的有限兼容降级。
 
 “单次请求”方法仍只发出一次模型调用：它不运行普通重试、参数兼容降级或 AI JSON 修复。这个契约优先于 Gateway 的默认重试策略。
 
 ## 5. 数据流
 
-调用方先从当前 API profile 构造 `LLMSettings` 和策略覆盖，再通过兼容 `LLMClient` 或直接 Gateway 发起请求。Gateway 为逻辑请求分配 ID、选择策略并节流，协议适配器将显式 timeout 注入 SDK。每次返回或异常都生成脱敏用量事件；可重试错误按退避表再次进入节流，最终响应回到 `LLMClient` 执行既有文本提取与 JSON 处理。
+调用方先从当前 API profile 构造 `LLMSettings` 和策略覆盖，再通过兼容 `LLMClient` 或直接 Gateway 发起请求。Gateway 为逻辑请求分配 ID、选择策略并节流，协议适配器将显式 timeout 注入 SDK。每次返回或异常都生成脱敏用量事件；直接 Gateway 调用的可重试错误按退避表再次进入节流，兼容 `LLMClient` 则把普通重试留给旧外层循环，最终响应回到 `LLMClient` 执行既有文本提取与 JSON 处理。
 
 参数兼容降级属于同一逻辑请求，沿用请求 ID、递增尝试序号并记录降级原因。JSON 修复属于新的物理尝试，但仍关联原逻辑请求 ID，方便审计一次业务调用实际消耗了多少模型请求。
 
