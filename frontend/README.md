@@ -32,6 +32,8 @@ npm run build
 
 ## 路由与 App Shell
 
+> **来源重校准说明：** 本节只记录 P2-03 已合并的实现事实，不代表这些路由、七项导航、固定三栏或未来占位已经获得当前业务确认。它们属于 Phase 2 前端来源重校准门槛的审计对象；后续页面不得照此复制，导航和交互必须重新追溯现有生产功能或用户明确决定。
+
 开发服务器启动后，`/` 会重定向到 `/workbench`。当前路由入口如下：
 
 - `/workbench`、`/grading`、`/exams`、`/students`、`/analytics`、`/question-bank` 和 `/settings`：P2-03 App Shell 内的占位工作区，不是已经迁移的业务页面。
