@@ -13,7 +13,7 @@
 **执行包：** P1-25
 **用户自测：** none
 **自测清单：** not_required
-- **规划状态：** waiting_review
+- **规划状态：** verified_pending_integration
 - **规划模型：** S-XH
 - **允许夜间执行：** no
 - **计划基线：** 6e5ce9122673579a0a95045e9f95bd6bd3fb3a7f
@@ -402,18 +402,19 @@ Record that four direct chains now use Gateway with explicit finite timeouts and
 
 Update this plan's checkboxes/evidence and handoff block to `waiting_review`, `功能提交: branch_head`, `自动验证: passed`, `独立复审: pending`, `用户验收: not_required`, `真实数据指纹: unchanged`; preserve the Stash baseline. Then commit only P1-25 source/tests/architecture/plan changes.
 
-- [ ] **Step 6: Request independent review and fix Critical/Important findings with RED/GREEN tests**
+- [x] **Step 6: Request independent review and fix Critical/Important findings with RED/GREEN tests**
 
 Review the complete package range for retry multiplication, lost request IDs, unsafe usage logging, changed provider kwargs, prompt/response drift, fallback drift, changed batch concurrency and remaining direct SDK calls. Critical/Important must be zero before integration.
 
-- [ ] **Step 7: Create the final plan-only handoff commit**
+- [x] **Step 7: Create the final plan-only handoff commit**
 
 After review passes, change only this plan: record the direct parent full reviewed functional SHA, set `verified_pending_integration`, `自动验证: passed`, `独立复审: passed`, `用户验收: not_required`, `真实数据指纹: unchanged`, and `夜间动作: independent_candidate_allowed`. Run `tools/handoff_status.py` against the clean worktree and commit the plan-only handoff.
 
 ## Implementation Evidence (2026-07-13)
 
 - Shared transport and four caller migrations are committed in separate checkpoints. Objective fallback and dedicated tagging endpoint findings were reproduced with RED tests, fixed, and passed re-review.
-- Full P1-25 focused/affected gate: `264 passed in 11.26s`.
+- Full P1-25 focused/affected gate: `265 passed in 11.05s`.
+- Independent full-package review passed at reviewed functional SHA `fcfdead4d7aad11f13c874da62bc67122795986c` with zero Critical, Important or Minor findings after the two production-policy fixes were re-reviewed.
 - Static boundary gate: first-party Python has zero `timeout=None`; direct SDK protocol execution remains only in `backend/llm/gateway.py` for Chat Completions and Responses.
 - Quick smoke: documentation governance, compilation of 406 first-party Python files, and idempotent initialization/integrity checks on isolated copies all passed; full pytest was intentionally skipped by this quick-smoke command.
 - Feature worktree `user_data/` status is empty. Root real database files were not opened with SQLite; their size, UTC mtime and SHA-256 exactly match the claim baseline for both databases.
@@ -433,12 +434,12 @@ After review passes, change only this plan: record the direct parent full review
 ## 昼夜交接
 
 **执行包：** P1-25
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** fcfdead4d7aad11f13c874da62bc67122795986c
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
