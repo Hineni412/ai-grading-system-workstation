@@ -169,6 +169,13 @@ async function installApi(page: Page, mediaState: MediaState): Promise<void> {
   await page.route(/\/api\/sessions$/, (route) =>
     fulfillJson(route, { items: [session], total: 1 }),
   )
+  await page.route(/\/api\/sessions\/7\/config$/, (route) =>
+    fulfillJson(route, {
+      rubric: {
+        questions: [{ question_id: 'Q1', max_score: 5, core_goal: '核对解题步骤' }],
+      },
+    }),
+  )
   await page.route(/\/api\/sessions\/7\/review\/questions$/, (route) =>
     fulfillJson(route, { items: questions, total: questions.length }),
   )

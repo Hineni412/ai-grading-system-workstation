@@ -43,12 +43,12 @@
 ## 昼夜交接
 
 **执行包：** P2-07
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** pending
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
@@ -346,7 +346,7 @@ git commit -m "feat: confirm teacher scores safely"
 - Consumes: mock API routes, generated media, real built Vue app and browser.
 - Produces: browser evidence, quick-test instructions, architecture boundary and validator-compatible review handoff.
 
-- [ ] **Step 1: Write the failing Playwright workflow**
+- [x] **Step 1: Write the failing Playwright workflow**
 
 Use generated anonymous data and intercept config/Review GET/confirm POST. Assert the complete path:
 
@@ -370,7 +370,7 @@ npm run e2e -- review-scoring.spec.ts
 
 Expected before final implementation: FAIL on missing or incomplete workflow; after implementation: PASS.
 
-- [ ] **Step 2: Run package and affected regressions**
+- [x] **Step 2: Run package and affected regressions**
 
 Run from `frontend/`:
 
@@ -394,17 +394,17 @@ git status --short -- user_data
 
 Expected: all commands pass; no `user_data` paths are modified or untracked. Do not run full pytest unless a repository risk trigger appears.
 
-- [ ] **Step 3: Perform visual critique and create the verified quick checklist**
+- [x] **Step 3: Perform visual critique and create the verified quick checklist**
 
 Use the real browser at all five required viewports. Confirm the evidence canvas remains the central visual focus, teacher final score is more prominent than AI, the footer is stable, status is not color-only, long Chinese content is readable, and the page does not become a card stack. Remove any decoration that does not support scoring.
 
 Only after the synthetic runtime is proven, create `docs/user-testing/checkpoints/P2-07-review-scoring-quick.md` with exact data source, startup, URL, visible marker, five-minute steps, shutdown and machine result block. It must not mention an environment that has not been implemented.
 
-- [ ] **Step 4: Recheck root real-data fingerprints**
+- [x] **Step 4: Recheck root real-data fingerprints**
 
 From the repository root, read size, UTC mtime and SHA-256 without opening SQLite. Expected values must exactly equal the two values recorded in the claim evidence. Any difference stops the package.
 
-- [ ] **Step 5: Commit the functional handoff**
+- [x] **Step 5: Commit the functional handoff**
 
 Update `ARCHITECTURE.md` with the P2-07 implemented boundary, check every completed plan box, and set the handoff block to:
 
