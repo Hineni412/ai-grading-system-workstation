@@ -13,6 +13,81 @@ from path_manager import PathManager
 ROOT = Path(__file__).resolve().parents[1]
 
 
+POLICY_PROFILE = {
+    "name": "default",
+    "api_key": "grading-key",
+    "config_api_key": "config-key",
+    "base_url": "https://private.example/v1",
+    "config_base_url": "https://private.example/v1",
+    "grading_model": "grading-v1",
+    "config_model": "config-v1",
+    "llm_config_generation_timeout_seconds": 90,
+    "llm_tagging_max_retries": 1,
+    "objective_timeout": 60,
+}
+
+
+class _FakeStore:
+    def __init__(self, profile: dict[str, object]) -> None:
+        self.profile = profile
+
+    def load(self) -> list[dict[str, object]]:
+        return [self.profile]
+
+
+class _SessionState(dict):
+    def __getattr__(self, name: str):
+        return self[name]
+
+    def __setattr__(self, name: str, value: object) -> None:
+        self[name] = value
+
+
+class _FakeStreamlit:
+    def __init__(self) -> None:
+        self.session_state = _SessionState()
+        self.sidebar = self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+    def expander(self, *_args, **_kwargs):
+        return self
+
+    def markdown(self, *_args, **_kwargs) -> None:
+        return None
+
+    def caption(self, *_args, **_kwargs) -> None:
+        return None
+
+    def warning(self, *_args, **_kwargs) -> None:
+        return None
+
+    def success(self, *_args, **_kwargs) -> None:
+        return None
+
+    def error(self, *_args, **_kwargs) -> None:
+        return None
+
+    def text_input(self, _label: str, *, key: str, **_kwargs):
+        return self.session_state[key]
+
+    def selectbox(self, _label: str, *, key: str, **_kwargs):
+        return self.session_state[key]
+
+    def number_input(self, _label: str, *, key: str, **_kwargs):
+        return self.session_state[key]
+
+    def checkbox(self, _label: str, *, key: str, **_kwargs):
+        return self.session_state[key]
+
+    def button(self, *_args, **_kwargs) -> bool:
+        return False
+
+
 def _store(target: Path, *legacy_paths: Path):
     assert hasattr(api_profiles, "ApiProfileStore"), "ApiProfileStore must own profile persistence"
     return api_profiles.ApiProfileStore(target, legacy_paths=legacy_paths)
@@ -249,6 +324,87 @@ def test_tagging_service_reads_the_canonical_profile_store(monkeypatch) -> None:
     assert settings.api_key == "grading-key"
     assert settings.config_api_key == "config-key"
     assert settings.config_model == "config-v1"
+
+
+def test_active_backend_settings_receive_sanitized_policy_overrides(monkeypatch) -> None:
+    from backend.jobs import default_handlers
+
+    monkeypatch.setattr(
+        default_handlers,
+        "get_api_profile_store",
+        lambda: _FakeStore(POLICY_PROFILE),
+    )
+
+    settings = default_handlers._active_llm_settings()
+
+    assert settings is not None
+    assert settings.policy_profile == {
+        "llm_config_generation_timeout_seconds": 90,
+        "llm_tagging_max_retries": 1,
+    }
+
+
+def test_web_settings_receive_sanitized_saved_profile_policy(monkeypatch) -> None:
+    import web_app
+
+    monkeypatch.setattr(web_app, "API_PROFILE_STORE", _FakeStore(POLICY_PROFILE))
+    monkeypatch.setattr(web_app, "st", _FakeStreamlit())
+    monkeypatch.setattr(web_app.os, "environ", {})
+
+    settings = web_app.build_llm_settings_from_sidebar()
+
+    assert settings is not None
+    assert settings.policy_profile == {
+        "llm_config_generation_timeout_seconds": 90,
+        "llm_tagging_max_retries": 1,
+    }
+    assert not any(key.startswith("LLM_CONFIG_GENERATION_") for key in web_app.os.environ)
+    assert not any(key.startswith("LLM_TAGGING_") for key in web_app.os.environ)
+
+
+def test_tagging_profile_settings_receive_sanitized_policy_overrides(monkeypatch) -> None:
+    from question_bank.services import ai_tagging_service
+
+    monkeypatch.setattr(
+        ai_tagging_service,
+        "get_api_profile_store",
+        lambda: _FakeStore(POLICY_PROFILE),
+    )
+
+    settings = ai_tagging_service._llm_settings_from_profile()
+
+    assert settings is not None
+    assert settings.policy_profile == {
+        "llm_config_generation_timeout_seconds": 90,
+        "llm_tagging_max_retries": 1,
+    }
+
+
+def test_environment_and_dedicated_tagging_clients_keep_default_policies() -> None:
+    from question_bank.services import ai_tagging_service
+
+    environment_settings = ai_tagging_service._llm_settings_from_env(
+        {
+            "LLM_API_KEY": "environment-key",
+            "LLM_CONFIG_API_KEY": "environment-config-key",
+            "llm_tagging_max_retries": "5",
+        }
+    )
+    service = ai_tagging_service.AITaggingService(
+        env={
+            "QUESTION_BANK_TAGGING_API_KEY": "dedicated-key",
+            "QUESTION_BANK_TAGGING_MODEL": "tag-model",
+            "QUESTION_BANK_TAGGING_REVIEW_API_KEY": "review-key",
+            "QUESTION_BANK_TAGGING_REVIEW_MODEL": "review-model",
+            "llm_tagging_max_retries": "5",
+        }
+    )
+
+    assert environment_settings is not None
+    assert environment_settings.policy_profile is None
+    assert service.llm_client.settings.policy_profile is None
+    assert service.review_llm_client is not None
+    assert service.review_llm_client.settings.policy_profile is None
 
 
 def test_grading_page_updates_keys_while_question_bank_page_is_read_only() -> None:
