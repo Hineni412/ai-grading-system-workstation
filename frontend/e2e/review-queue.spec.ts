@@ -13,6 +13,7 @@ const session = {
 const questions = [
   { question_id: 'Q1', total_count: 1000, needs_review_count: 500, max_score: 5 },
 ]
+const continuousReviewText = 'A'.repeat(512)
 const media = {
   crop_url: '/api/media/crop/1',
   original_front_url: '/api/media/original/front/1',
@@ -20,28 +21,64 @@ const media = {
   annotated_front_url: '/api/media/annotated/front/1',
   annotated_back_url: '/api/media/annotated/back/1',
 }
+const focusCases: Record<
+  number,
+  {
+    studentCode: string
+    studentName: string
+    confidence: number
+    needsReview: boolean
+  }
+> = {
+  1: {
+    studentCode: 'FOCUS-900',
+    studentName: 'Alpha Focus',
+    confidence: 90,
+    needsReview: true,
+  },
+  2: {
+    studentCode: 'FOCUS-100',
+    studentName: 'Beta Normal',
+    confidence: 10,
+    needsReview: false,
+  },
+  3: {
+    studentCode: 'FOCUS-500',
+    studentName: 'Zulu Risk',
+    confidence: 5,
+    needsReview: true,
+  },
+  4: {
+    studentCode: 'FOCUS-200',
+    studentName: 'Gamma Normal',
+    confidence: 1,
+    needsReview: false,
+  },
+}
 const items = Array.from({ length: 1000 }, (_, offset) => {
   const detailId = offset + 1
   const padded = String(detailId).padStart(4, '0')
+  const focusCase = focusCases[detailId]
   return {
     session_id: 7,
     result_id: detailId,
     detail_id: detailId,
     question_id: 'Q1',
-    student_code: `S${padded}`,
+    student_code: focusCase?.studentCode ?? `S${padded}`,
     student_name:
-      detailId === 1
-        ? `学生${padded}·用于验证超长姓名在复核队列中保持单行且不会越过记录边界`
-        : `学生${padded}`,
-    class_name: detailId === 1 ? '七年级第一实验班（联合命题长班级名称）' : '七年级一班',
+      focusCase?.studentName ??
+      (detailId === 5
+          ? `学生${padded}·用于验证超长姓名在复核队列中保持单行且不会越过记录边界`
+          : `学生${padded}`),
+    class_name: focusCase ? '重点组' : '七年级一班',
     score_awarded: detailId % 6,
     max_score: 5,
-    deduction_reason: detailId === 1 ? '步骤依据需要人工核对' : null,
+    deduction_reason: detailId === 5 ? '步骤依据需要人工核对' : null,
     error_category: null,
     error_summary:
-      detailId === 1 ? '答案过程较长，需要对照评分标准确认关键步骤是否完整' : null,
-    confidence_score: 60,
-    needs_review: detailId % 2 === 1,
+      detailId === 5 ? continuousReviewText : null,
+    confidence_score: focusCase?.confidence ?? 60,
+    needs_review: focusCase?.needsReview ?? detailId % 2 === 1,
     candidate_scores: [],
     metadata: {},
     media,
@@ -118,22 +155,22 @@ test('restores URL context and crosses the 100/101 boundary with keyboard naviga
 }) => {
   const state: MockState = { questions: 'ready', items: 'ready' }
   await installReviewApi(page, state)
-  await openReviewQueue(page, '/grading?question=Q1&detail=199&discard=me')
+  await openReviewQueue(page, '/grading?question=Q1&detail=201&discard=me')
 
-  await expect(page).toHaveURL(/\/grading\?question=Q1&detail=199$/)
+  await expect(page).toHaveURL(/\/grading\?question=Q1&detail=201$/)
   await expect(page.getByText('当前位置 100 / 1000')).toBeVisible()
-  await expect(await selectedRow(page)).toContainText('学生0199')
+  await expect(await selectedRow(page)).toContainText('学生0201')
   await expect(page.getByText('第 1 / 10 页')).toBeVisible()
 
   await page.keyboard.press('j')
 
-  await expect(page).toHaveURL(/detail=201$/)
+  await expect(page).toHaveURL(/detail=203$/)
   await expect(page.getByText('当前位置 101 / 1000')).toBeVisible()
-  await expect(await selectedRow(page)).toContainText('学生0201')
+  await expect(await selectedRow(page)).toContainText('学生0203')
   await expect(page.getByText('第 2 / 10 页')).toBeVisible()
 
   await page.keyboard.press('k')
-  await expect(page).toHaveURL(/detail=199$/)
+  await expect(page).toHaveURL(/detail=201$/)
   await expect(page.getByText('当前位置 100 / 1000')).toBeVisible()
 })
 
@@ -143,15 +180,34 @@ test('search, needs-review filter, and risk sort keep a valid current item', asy
   await openReviewQueue(page)
 
   const search = page.getByRole('searchbox', { name: '搜索学生' })
-  await search.fill('学生00')
+  const names = page.locator('.review-queue-row__name')
+  await search.fill('重点组')
+  await expect(page.getByText('共 4 条', { exact: true })).toBeVisible()
+  await expect(names).toHaveText(['Zulu Risk', 'Alpha Focus', 'Gamma Normal', 'Beta Normal'])
+
+  await page.locator('.review-queue-row').filter({ hasText: 'Beta Normal' }).click()
+  await expect(page).toHaveURL(/detail=2$/)
+  await expect(page.getByRole('heading', { name: 'Beta Normal' })).toBeVisible()
+
   await page.getByRole('combobox', { name: '复核范围' }).selectOption('needs_review')
+  await expect(page.getByText('共 2 条', { exact: true })).toBeVisible()
+  await expect(names).toHaveText(['Zulu Risk', 'Alpha Focus'])
+  await expect(page.getByText('Beta Normal', { exact: true })).toHaveCount(0)
+  await expect(page).toHaveURL(/detail=3$/)
+  await expect(page.getByRole('heading', { name: 'Zulu Risk' })).toBeVisible()
+
   await page.getByRole('combobox', { name: '排序方式' }).selectOption('student_name')
+  await expect(names).toHaveText(['Alpha Focus', 'Zulu Risk'])
+  await expect(page).toHaveURL(/detail=3$/)
+
   await page.getByRole('combobox', { name: '排序方式' }).selectOption('risk')
+  await expect(names).toHaveText(['Zulu Risk', 'Alpha Focus'])
 
   await expect(await selectedRow(page)).toHaveCount(1)
   await expect(await selectedRow(page)).toHaveAttribute('aria-current', 'true')
-  await expect(page.locator('.review-selection-summary')).toBeVisible()
-  await expect(page.locator('.review-selection-summary')).toContainText('待复核')
+  await expect(await selectedRow(page)).toContainText('Zulu Risk')
+  await expect(page.getByRole('heading', { name: 'Zulu Risk' })).toBeVisible()
+  await expect(page).toHaveURL(/detail=3$/)
   await expect(page.getByText(/当前位置 1 \/ \d+/)).toBeVisible()
 })
 
@@ -171,7 +227,7 @@ test('input focus suppresses J/K navigation', async ({ page }) => {
   await expect(search).toHaveValue('')
   expect(page.url()).toBe(initialUrl)
   await expect(await selectedRow(page)).toHaveAttribute('aria-current', 'true')
-  await expect(await selectedRow(page)).toContainText('学生0001')
+  await expect(await selectedRow(page)).toContainText('Zulu Risk')
 })
 
 test('first-load, retained-content error, no-questions, and filtered-empty states are actionable', async ({
@@ -190,7 +246,7 @@ test('first-load, retained-content error, no-questions, and filtered-empty state
 
   state.questions = 'ready'
   await page.reload()
-  await expect(page.locator('.review-selection-summary')).toContainText('学生0001')
+  await expect(page.locator('.review-selection-summary')).toContainText('Zulu Risk')
 
   state.items = 'error'
   await page.evaluate(async () => {
@@ -213,7 +269,7 @@ test('first-load, retained-content error, no-questions, and filtered-empty state
     await store.loadItems(7, 'Q1')
   })
   await expect(page.getByText('复核内容刷新失败')).toBeVisible()
-  await expect(page.locator('.review-selection-summary')).toContainText('学生0001')
+  await expect(page.locator('.review-selection-summary')).toContainText('Zulu Risk')
   await expect(page.getByRole('button', { name: '重新加载' })).toBeVisible()
 
   state.items = 'ready'
@@ -235,30 +291,49 @@ test('1000-row queue has no horizontal overflow or console errors at all five de
 
   for (const viewport of viewports) {
     await page.setViewportSize(viewport)
-    await openReviewQueue(page)
+    await openReviewQueue(page, '/grading?question=Q1&detail=5')
     await expect(page.locator('.review-selection-summary')).toBeVisible()
 
-    expect(
-      await page.evaluate(
-        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
-      ),
-      viewport.name,
-    ).toBe(true)
+    const longDetail = page.locator('.review-selection-summary dd', {
+      hasText: continuousReviewText,
+    })
+    await expect(longDetail).toBeVisible()
+    const continuousTextMetrics = await longDetail.evaluate((element) => {
+      const summary = element.closest<HTMLElement>('.review-selection-summary')
+      if (!summary) return { documentFits: false, textFits: false }
+      const detailBounds = element.getBoundingClientRect()
+      const summaryBounds = summary.getBoundingClientRect()
+      return {
+        documentFits:
+          document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+        textFits:
+          element.scrollWidth <= element.clientWidth &&
+          detailBounds.left >= summaryBounds.left &&
+          detailBounds.right <= summaryBounds.right,
+      }
+    })
+    expect(continuousTextMetrics, viewport.name).toEqual({
+      documentFits: true,
+      textFits: true,
+    })
     expect(await page.locator('.review-queue-row').count(), viewport.name).toBeLessThanOrEqual(100)
     await expect(await selectedRow(page), viewport.name).toHaveCount(1)
     await expect(await selectedRow(page), viewport.name).toHaveAttribute('aria-current', 'true')
 
-    const longNameFits = await page.locator('.review-queue-row').first().evaluate((row) => {
-      const name = row.querySelector<HTMLElement>('.review-queue-row__name')
-      if (!name) return false
-      const rowBounds = row.getBoundingClientRect()
-      const nameBounds = name.getBoundingClientRect()
-      return (
-        nameBounds.left >= rowBounds.left &&
-        nameBounds.right <= rowBounds.right &&
-        getComputedStyle(name).textOverflow === 'ellipsis'
-      )
-    })
+    const longNameFits = await page
+      .locator('.review-queue-row')
+      .filter({ hasText: '学生0005' })
+      .evaluate((row) => {
+        const name = row.querySelector<HTMLElement>('.review-queue-row__name')
+        if (!name) return false
+        const rowBounds = row.getBoundingClientRect()
+        const nameBounds = name.getBoundingClientRect()
+        return (
+          nameBounds.left >= rowBounds.left &&
+          nameBounds.right <= rowBounds.right &&
+          getComputedStyle(name).textOverflow === 'ellipsis'
+        )
+      })
     expect(longNameFits, viewport.name).toBe(true)
   }
 
