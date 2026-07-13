@@ -362,15 +362,15 @@ git commit -m "test: add P1-28 API E2E harness"
 
 **Files:**
 - Modify: `tests/api_e2e/harness.py`
+- Modify: `tests/api_e2e/conftest.py`
 - Create: `tests/api_e2e/test_failure_recovery.py`
-- Modify: `tests/api_e2e/test_five_flow.py`
 - Modify: `docs/superpowers/plans/2026-07-14-p1-28-five-flow-api-e2e-implementation.md`
 
 **Interfaces:**
 - Consumes: `run_scan_analysis(..., scanner_factory=...)`, `run_grading_job(..., service_factory=...)`, `DBManager.create_exam_paper()`, `save_session_result()` and `update_exam_paper_status()`.
 - Produces: `scan_runner`, `grading_runner`, deterministic two-student database persistence, `failed_only` recovery and progress assertions.
 
-- [ ] **Step 1: Write failing recovery tests**
+- [x] **Step 1: Write failing recovery tests**
 
 Create `tests/api_e2e/test_failure_recovery.py`:
 
@@ -408,7 +408,7 @@ def test_partial_grading_uses_completed_semantics_and_failed_only_recovery(api_e
 
 Add fixtures `prepared_session_id` and `scanned_session_id` to conftest; they must call only HTTP helpers for session/config/template/scan setup.
 
-- [ ] **Step 2: Run both tests and verify RED**
+- [x] **Step 2: Run both tests and verify RED**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/api_e2e/test_failure_recovery.py -q
@@ -416,7 +416,7 @@ Add fixtures `prepared_session_id` and `scanned_session_id` to conftest; they mu
 
 Expected: FAIL because scan/grading runner wrappers and persistence query helpers are not implemented.
 
-- [ ] **Step 3: Implement deterministic scan and grading boundaries**
+- [x] **Step 3: Implement deterministic scan and grading boundaries**
 
 In `harness.py`, implement a `SyntheticScanner` whose `analyze(students)` returns two `ExamPaperGroup` values pointing at generated front/back PNGs and preserving the two synthetic student IDs. `make_scan_runner(paths, controls)` must decrement `scan_failures_remaining` and raise `RuntimeError("synthetic scan failure")` before calling the real runner; otherwise it calls:
 
@@ -427,7 +427,7 @@ return run_scan_analysis(
 )
 ```
 
-Implement `SyntheticGradingService`. On the first full run it creates a graded paper/result for `SYN-001` with six valid details: Q1 scores 12/17 with `needs_human_review=True`, Q2-Q5 score 17 each, and Q6 scores 5/15, for an initial total of 85; it then creates a failed paper for `SYN-002`. On `failed_only=True` it finds only the failed paper, saves six valid detail scores totaling 70 and marks that paper graded. It yields the existing event shapes `graded`, `failed` and `session_completed`; it never rewrites the already successful result. Use `GradingResult` and `QuestionGradingDetail` rather than raw result/detail INSERTs.
+Implement `SyntheticGradingService`. On the first full run it creates a graded paper/result for `SYN-001` with six valid details: Q1 scores 12/17 with `needs_human_review=True`, Q2-Q5 score 17 each, and Q6 scores 5/15, for an initial total of 85; it then creates a failed paper for `SYN-002`. On `failed_only=True` it finds only the failed paper, saves six valid detail scores totaling 70 and marks that paper graded. It yields the production event shapes `graded`, `grading_failed` and `session_completed`; it never rewrites the already successful result. Use `GradingResult` and `QuestionGradingDetail` rather than raw result/detail INSERTs. The current production runner lives in `backend/jobs/grading_run.py`; the earlier `backend/jobs/grading.py` reference was a filename drift only.
 
 `make_grading_runner(controls)` must call the real runner with `service_factory=SyntheticGradingService`. Add these read-only temporary DB helpers to `ApiE2EHarness`:
 
@@ -446,7 +446,7 @@ def result_scores(self, session_id: int) -> dict[str, float]:
     return {str(row["student_code"]): float(row["student_score"]) for row in rows}
 ```
 
-- [ ] **Step 4: Verify recovery tests GREEN and run the whole P1-28 slice**
+- [x] **Step 4: Verify recovery tests GREEN and run the whole P1-28 slice**
 
 ```powershell
 & 'D:\AI阅卷系统_工作机版_v1.5.0\runtime\python\python.exe' -m pytest tests/api_e2e/test_failure_recovery.py tests/api_e2e/test_five_flow.py -q
@@ -454,13 +454,15 @@ def result_scores(self, session_id: int) -> dict[str, float]:
 
 Expected: all current P1-28 tests pass; the successful result remains 85 after failed-only recovery.
 
-- [ ] **Step 5: Commit recovery coverage**
+- [x] **Step 5: Commit recovery coverage**
 
 ```powershell
 git add -- tests/api_e2e docs/superpowers/plans/2026-07-14-p1-28-five-flow-api-e2e-implementation.md
 git diff --cached --check
-git commit -m "test: cover API scan and grading recovery"
+git commit -m "test: cover P1-28 failure recovery"
 ```
+
+Task 3 evidence: the required RED run produced `1 failed, 1 error, 1 warning` because the deterministic scan boundary and persistence query helper were absent. After implementation, the recovery/five-flow slice produced `3 passed, 1 warning`; the focused scan/grading/API E2E regressions produced `18 passed, 1 warning`; and the plan-specified affected API/Job regression set produced `69 passed, 1 warning`. The warning is the existing dependency-level `StarletteDeprecationWarning` from `fastapi.testclient`. No production file or real `user_data/` path was read or modified.
 
 ---
 

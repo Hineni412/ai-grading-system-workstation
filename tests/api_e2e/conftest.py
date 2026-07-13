@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from shutil import copy2
 
 import pytest
 from fastapi.testclient import TestClient
@@ -41,3 +42,56 @@ def api_e2e(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             yield ApiE2EHarness(client, db, manager, paths, controls)
     finally:
         manager.shutdown()
+
+
+@pytest.fixture
+def prepared_session_id(api_e2e: ApiE2EHarness) -> int:
+    created = api_e2e.client.post(
+        "/api/sessions",
+        json={
+            "name": "Synthetic E2E Exam",
+            "rubric_path": str(api_e2e.paths.bootstrap_rubric),
+            "answer_key_path": str(api_e2e.paths.bootstrap_answer),
+        },
+    )
+    assert created.status_code == 201
+    session_id = int(created.json()["id"])
+
+    submitted = api_e2e.client.post(
+        f"/api/sessions/{session_id}/config/generate",
+        json=api_e2e.config_request(),
+    )
+    assert submitted.status_code == 202
+    config_job = api_e2e.poll_job(submitted.json()["id"], "succeeded")
+    assert config_job["result"]["outcome"] == "complete"
+    api_e2e.bind_and_commit_template(session_id)
+
+    upload_dir = (
+        api_e2e.paths.exams_dir
+        / f"session_{session_id}"
+        / "uploaded_scans"
+    )
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    for source in sorted(api_e2e.paths.exams_dir.glob("SYN-*.png")):
+        copy2(source, upload_dir / source.name)
+    return session_id
+
+
+@pytest.fixture
+def scanned_session_id(
+    api_e2e: ApiE2EHarness,
+    prepared_session_id: int,
+) -> int:
+    submitted = api_e2e.client.post(
+        f"/api/sessions/{prepared_session_id}/scan/analyze",
+        json={"enhance_images": False},
+    )
+    assert submitted.status_code == 202
+    job = api_e2e.poll_job(submitted.json()["id"], "succeeded")
+    assert job["result"]["summary"] == {
+        "auto_matched": 2,
+        "issues": 0,
+        "absent_candidates": 0,
+        "total_pages": 4,
+    }
+    return prepared_session_id
