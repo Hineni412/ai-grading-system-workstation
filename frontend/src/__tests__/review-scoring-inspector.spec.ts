@@ -2,7 +2,7 @@ import { createApp, nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ReviewItem } from '../api/review'
+import type { ReviewConfirmResponse, ReviewItem } from '../api/review'
 import { confirmReviewItem, fetchReviewItems, fetchReviewRubric } from '../api/review'
 import ReviewScoringInspector from '../components/review/ReviewScoringInspector.vue'
 import { useReviewDraftStore } from '../stores/review-drafts'
@@ -159,11 +159,7 @@ describe('review scoring inspector', () => {
 
   it('does not override a teacher selection changed while confirmation is pending', async () => {
     const second = { ...item, result_id: 12, detail_id: 22, student_code: 'S002', student_name: '学生乙' }
-    let resolveConfirmation: ((value: {
-      updated_details: number
-      updated_results: number
-      annotation_outcomes: []
-    }) => void) | undefined
+    let resolveConfirmation: ((value: ReviewConfirmResponse) => void) | undefined
     vi.mocked(confirmReviewItem).mockImplementation(() => new Promise((resolve) => {
       resolveConfirmation = resolve
     }))
@@ -177,9 +173,15 @@ describe('review scoring inspector', () => {
     await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
 
     queue.selectDetail(22)
-    resolveConfirmation!({ updated_details: 1, updated_results: 1, annotation_outcomes: [] })
+    resolveConfirmation!({
+      updated_details: 1,
+      updated_results: 1,
+      annotation_outcomes: [{ result_id: 11, status: 'retry_required' }],
+    })
 
-    await vi.waitFor(() => expect(host.textContent).toContain('先前记录的教师最终分已确认'))
+    await vi.waitFor(() => expect(host.textContent).toContain(
+      '先前记录的分数已确认，标注图需要稍后刷新；当前选择未更改',
+    ))
     expect(useReviewDraftStore(pinia).drafts['7:Q1:21']).toBeUndefined()
     expect(queue.selectedDetailId).toBe(22)
     expect(fetchReviewItems).not.toHaveBeenCalled()
@@ -187,11 +189,7 @@ describe('review scoring inspector', () => {
   })
 
   it('does not patch a new session item that reuses the submitted detail id', async () => {
-    let resolveConfirmation: ((value: {
-      updated_details: number
-      updated_results: number
-      annotation_outcomes: []
-    }) => void) | undefined
+    let resolveConfirmation: ((value: ReviewConfirmResponse) => void) | undefined
     vi.mocked(confirmReviewItem).mockImplementation(() => new Promise((resolve) => {
       resolveConfirmation = resolve
     }))
