@@ -4,12 +4,15 @@ import json
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
+from shutil import copy2
 from types import SimpleNamespace
 from typing import Any
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 from PIL import Image
 
 from ai_grader import GradingResult, QuestionGradingDetail
@@ -228,7 +231,7 @@ def _synthetic_grading_result(
                 else "synthetic grading"
             ),
             knowledge_id=f"SYN-K{index}",
-            confidence_score=0.5 if needs_human_review and index == 1 else 1.0,
+            confidence_score=50.0 if needs_human_review and index == 1 else 100.0,
             knowledge_ids=[f"SYN-K{index}"],
         )
         for index, score in enumerate(scores, start=1)
@@ -339,6 +342,101 @@ class ApiE2EHarness:
                 return last
             time.sleep(0.01)
         raise AssertionError(f"job {job_id} did not reach a terminal state: {last}")
+
+    def create_configured_session(self) -> int:
+        created = self.client.post(
+            "/api/sessions",
+            json={
+                "name": "Synthetic E2E Exam",
+                "rubric_path": str(self.paths.bootstrap_rubric),
+                "answer_key_path": str(self.paths.bootstrap_answer),
+            },
+        )
+        assert created.status_code == 201
+        session_id = int(created.json()["id"])
+
+        submitted = self.client.post(
+            f"/api/sessions/{session_id}/config/generate",
+            json=self.config_request(),
+        )
+        assert submitted.status_code == 202
+        config_job = self.poll_job(submitted.json()["id"], "succeeded")
+        assert config_job["result"]["outcome"] == "complete"
+
+        committed = self.bind_and_commit_template(session_id)
+        snapshot_path = Path(committed.pop("snapshot_path"))
+        assert snapshot_path.is_file()
+        snapshot_path.resolve().relative_to(
+            (self.paths.templates_dir / f"session_{session_id}").resolve()
+        )
+        assert committed == {
+            "committed": True,
+            "snapshot_pending": False,
+            "issues": [],
+            "region_count": 1,
+            "error": None,
+        }
+
+        upload_dir = (
+            self.paths.exams_dir
+            / f"session_{session_id}"
+            / "uploaded_scans"
+        )
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        for source in sorted(self.paths.exams_dir.glob("SYN-*.png")):
+            copy2(source, upload_dir / source.name)
+        return session_id
+
+    def scan(self, session_id: int) -> dict[str, Any]:
+        submitted = self.client.post(
+            f"/api/sessions/{session_id}/scan/analyze",
+            json={"enhance_images": False},
+        )
+        assert submitted.status_code == 202
+        return self.poll_job(submitted.json()["id"], "succeeded")
+
+    def grade(
+        self,
+        session_id: int,
+        *,
+        failed_only: bool = False,
+    ) -> dict[str, Any]:
+        submitted = self.client.post(
+            f"/api/sessions/{session_id}/grading/run",
+            json={
+                "grading_mode": "full_paper",
+                "failed_only": failed_only,
+                "enhance_images": False,
+            },
+        )
+        assert submitted.status_code == 202
+        return self.poll_job(submitted.json()["id"], "succeeded")
+
+    @staticmethod
+    def xlsx_score(content: bytes, student_code: str) -> float:
+        workbook = load_workbook(
+            BytesIO(content),
+            read_only=True,
+            data_only=True,
+        )
+        try:
+            sheet = workbook["成绩与小题明细"]
+            rows = sheet.iter_rows(values_only=True)
+            headers = {
+                str(value): index
+                for index, value in enumerate(next(rows))
+                if value is not None
+            }
+            code_index = headers["学号"]
+            score_index = headers["总分"]
+            for row in rows:
+                if str(row[code_index]) == str(student_code):
+                    return float(row[score_index])
+            raise AssertionError(
+                f"student {student_code!r} was not found in the downloaded report"
+            )
+        finally:
+            workbook.close()
 
     @staticmethod
     def config_request() -> dict[str, Any]:
