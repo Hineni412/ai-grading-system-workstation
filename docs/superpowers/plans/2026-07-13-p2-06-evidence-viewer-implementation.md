@@ -36,10 +36,10 @@
 ## 昼夜交接
 
 **执行包：** P2-06
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** waiting_user
+**功能提交：** 887d374345f8d7dc300b6ff2049fd5f238d7faa5
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** pending
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
@@ -768,6 +768,8 @@ Expected: validator returns `ok=true`, `state="waiting_review"`, and no issues. 
 - 生产查看器未新增后端路由、分数写入、确认请求、Blob/Object URL、localStorage、生产 Canvas 或图片持久化；`canvas` 命中仅为查看器画布 DOM/CSS 命名。
 - 根工作区真实数据库只读复核与领取基线完全一致：`grading_system.db|2863104|2026-07-10T07:10:41.1221109Z|93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`；`question_bank.db|3461120|2026-07-08T11:58:06.3320883Z|E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`。未打开 SQLite，源码工作树的 `user_data/` 状态为空。
 - 快速用户验收清单已生成：`docs/user-testing/checkpoints/P2-06-evidence-viewer-quick.md`；机器结果和用户结论保持 `pending`，等待独立复审后的精确 SHA。
+- 独立复审：首轮完整范围复审为 `0 Critical / 2 Important / 2 Minor`；两项重要问题分别为小图轴向居中边界和拖动时指针生命周期。修复采用聚焦 RED→GREEN，并补齐错误按钮键盘隔离和真实浏览器延迟旧响应覆盖。复审者随后对修复提交及最终测试增强逐次只读复核，最终候选 `887d374345f8d7dc300b6ff2049fd5f238d7faa5` 为 `0 Critical / 0 Important / 0 Minor`，结论 `Ready to merge: Yes`。
+- 复审修复后门禁：lint 无警告、typecheck、build 均通过；Vitest `18` 个文件、`146` 项测试全部通过；P2-05/P2-06 Chromium 专项 `12` 项全部通过；快速冒烟再次通过文档治理、404 个第一方 Python 文件静态编译和两库隔离副本幂等检查。
 
 ---
 
