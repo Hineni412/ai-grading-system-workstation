@@ -690,7 +690,7 @@ git commit -m "docs: hand off P1-28 for integration"
 
 Expected: staged list contains only the plan; validator returns `ok=true`, `state="verified_pending_integration"`, and no issues.
 
-- [ ] **Step 6: Integrate through the standard channel**
+- [x] **Step 6: Integrate through the standard channel**
 
 Create `codex/p1-28-integration` from current `origin/main`, merge the complete P1-28 chain, run the affected regression command, then run one complete:
 
@@ -699,3 +699,5 @@ Create `codex/p1-28-integration` from current `origin/main`, merge the complete 
 ```
 
 Recheck real database fingerprints, update `ARCHITECTURE.md` only if production structure changed, and update `EXECUTION_INDEX.md` to mark P1-28 merged and choose the next dependency-valid action. Push the integration branch, open and merge a PR to GitHub `main`, then fetch/prune and fast-forward local `main` and active channels. Do not delete any worktree or branch unless `git branch --merged origin/main`, source status, `user_data` and reparse-point guards all pass.
+
+Integration evidence: `codex/p1-28-integration` was created from `origin/main` at `85d7cc664f24313408a01e75127b03fa7620bf12`, then received the approved design specification and the complete verified feature chain without conflicts. The affected selection passed with `70 passed, 0 failed, 0 skipped, 1 warning` in 13.96s. Complete `tools/smoke_check.py` passed in 305.28s: documentation governance passed, 413 first-party Python files compiled, full pytest produced `1453 passed, 2 skipped, 1 warning`, and both isolated database copies were idempotent with `integrity_check=ok`. The root grading and question-bank database size/UTC mtime/SHA-256 triples still exactly matched the immutable claim record. No production structure changed, so `ARCHITECTURE.md` remained unchanged; `EXECUTION_INDEX.md` records P1-28 as merged while P1-26 remains the next dependency-valid candidate.
