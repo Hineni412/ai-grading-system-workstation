@@ -584,7 +584,7 @@ git commit -m "feat: add repeatable API database benchmark"
 - Consumes: Tasks 1-4 at one functional SHA and the exact `small`/`medium`/`large_5pct` formal CLI defaults.
 - Produces: committed reproducible baseline, architecture fact, `waiting_review` then independently reviewed `verified_pending_integration` handoff.
 
-- [ ] **Step 1: Run the full P1-26 focused suite**
+- [x] **Step 1: Run the full P1-26 focused suite**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests\test_api_performance_metrics.py tests\test_db_performance_instrumentation.py tests\test_performance_dataset.py tests\test_performance_benchmark.py tests\test_performance_report.py -q
@@ -592,7 +592,7 @@ git commit -m "feat: add repeatable API database benchmark"
 
 Expected: PASS with zero failures/skips.
 
-- [ ] **Step 2: Run affected API/database regressions**
+- [x] **Step 2: Run affected API/database regressions**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests\test_api_app.py tests\test_api_job_lifecycle.py tests\test_api_question_bank_routes.py tests\test_api_training_routes.py tests\test_api_graph_routes.py tests\test_api_ops_routes.py tests\test_ops_self_check_service.py tests\test_migration_tooling.py -q
@@ -600,11 +600,11 @@ Expected: PASS with zero failures/skips.
 
 Expected: PASS; no source snapshot writes, API contract drift or lifecycle regression.
 
-- [ ] **Step 3: Recheck root real database fingerprints before the formal benchmark**
+- [x] **Step 3: Recheck root real database fingerprints before the formal benchmark**
 
 Read only file length, UTC mtime and SHA-256 from the root checkout. Compare byte-for-byte with Task 0 claim values. Do not call SQLite against either file. Expected: unchanged.
 
-- [ ] **Step 4: Run the formal three-workload/two-repetition baseline**
+- [x] **Step 4: Run the formal three-workload/two-repetition baseline**
 
 ```powershell
 ..\..\runtime\python\python.exe tools\benchmark_api_db.py
@@ -612,15 +612,15 @@ Read only file length, UTC mtime and SHA-256 from the root checkout. Compare byt
 
 Expected: `small`、`medium`、`large_5pct` 3 个命名工作负载 × 16 scenarios × 2 repetitions complete; every repetition has 20 samples after 3 discarded warmups; deterministic projection matches; both versioned reports are atomically published. The reports use manifest counts rather than implying that the three names form a monotonic size sequence.
 
-- [ ] **Step 5: Validate report safety and scope**
+- [x] **Step 5: Validate report safety and scope**
 
 Run the report tests again, inspect the JSON keys and Markdown tables, and use repository searches to prove neither report contains `user_data`, `.worktrees`, drive-letter absolute paths, SQL text, request IDs, generated student names or question text. Confirm Git status contains no temporary DB/image/log/cache/output outside the two intended reports.
 
-- [ ] **Step 6: Update architecture and plan evidence**
+- [x] **Step 6: Update architecture and plan evidence**
 
 Add one P1-26 increment paragraph to `ARCHITECTURE.md`: opt-in/default-off measurement; generated three-workload (`small`/`medium`/`large_5pct`) 16-scenario baseline; statement/select and response-count semantics; report location; no optimization, Schema, real data or model calls. In this plan record exact test totals, formal runtime, baseline functional SHA, possible N+1 observations and coverage limitations without copying machine paths.
 
-- [ ] **Step 7: Run static, quick-smoke and handoff guards**
+- [x] **Step 7: Run static, quick-smoke and handoff guards**
 
 ```powershell
 git diff --check
@@ -631,13 +631,27 @@ git status --short -- user_data
 
 Expected: diff check and quick smoke pass; feature `user_data` status empty; handoff fields are valid for the current pre-review state.
 
-- [ ] **Step 8: Compare root real database fingerprints again**
+- [x] **Step 8: Compare root real database fingerprints again**
 
 Expected: both real database size/UTC mtime/SHA-256 values exactly match Task 0 and Step 3. Any difference blocks commit and integration.
 
-- [ ] **Step 9: Commit verified functional work as `waiting_review`**
+- [x] **Step 9: Commit verified functional work as `waiting_review`**
 
 Change the handoff block to `waiting_review`, `功能提交: branch_head`, `自动验证: passed`, `独立复审: pending`, `用户验收: not_required`, `真实数据指纹: unchanged`, preserve the immutable stash baseline, and keep `夜间动作: report_only`. Commit source/tests/tools/reports/architecture/design/plan with no `user_data`.
+
+### Task 5 functional evidence
+
+- Baseline functional SHA: `a7e6de8476ece27ed87a67072756ba87ec5eb0dd`.
+- Fresh focused suite: 70 passed, 0 failed, 0 skipped. Fresh affected API/database regressions: 131 passed, 0 failed, 0 skipped. The Step 5 report-only rerun added 18 passed with the existing Starlette TestClient/httpx2 deprecation warning and no test failure.
+- The exact default formal run used `small`、`medium`、`large_5pct`, 16 scenarios, 3 discarded warmups, 20 formal samples and 2 repetitions. It completed 48/48 scale-scenario combinations in `7432.680` seconds; every status was 200 and every deterministic repetition comparison passed.
+- The user-approved `large_5pct` workload keeps the original `small`/`medium` definitions and replaces the retired large workload with `(1, 25, 2, 7_500, 500, 25, 5)`. The complete default matrix still took about 123.878 minutes on the recorded environment; the report therefore treats latency as machine-specific and does not imply that the three workload names are a monotonic scale sequence.
+- Possible N+1 observations: none met the fixed threshold when comparing the explicitly named `small` and `large_5pct` endpoints. The report retains neutral `comparison_*` fields and exports no retired `large_*` observation fields.
+- Coverage limitations: only allowlisted SQLite connection boundaries are counted; latency is not a service-level objective; generated data may not reproduce production distributions; the run performs no optimization. Reports contain only aggregate allowlisted fields and no raw samples.
+- Safety scan: zero forbidden JSON keys and zero matches for real-data/worktree/absolute-path markers, raw URLs, SQL text, request IDs, generated student/question identifiers or retired observation fields. Git status contained only the two intended versioned reports before documentation evidence was added.
+- Root real-database fingerprints: the read-only length, UTC mtime and SHA-256 tuples matched the resumed Step 3 recovery baseline exactly after the formal run; no real database was opened through SQLite or copied.
+- Functional handoff guards: diff whitespace validation, empty feature `user_data` status, documentation governance, static compilation of 419 first-party Python files, both temporary database idempotency/integrity checks and the pre-review handoff validator passed.
+- Real-data evidence limitation: the Task 0 fingerprint claim was stored outside Git and was unavailable during this resumed execution, so it was not reconstructed or claimed. Step 3 established a fresh read-only recovery baseline from file size, UTC mtime and SHA-256; Step 8 proved both files exactly equal to that recovery baseline. `origin/main..HEAD` history, branch diff and feature status contain no `user_data` path.
+- Process evidence limitation: the long-running launcher did not retain the final OS exit code. Result usability is instead established by both complete atomic reports, top-level and per-scale `repeatability=passed`, the complete 48 scale-scenario summaries with 20 samples and status 200, and the fresh 18-test report safety suite; the CLI failure paths cannot leave these newly published complete reports.
 
 - [ ] **Step 10: Request independent code review**
 
@@ -671,12 +685,12 @@ After independent review passes, modify only this plan: set `verified_pending_in
 ## 昼夜交接
 
 **执行包：** P1-26
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
