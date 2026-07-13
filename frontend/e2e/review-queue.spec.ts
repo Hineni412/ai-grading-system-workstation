@@ -122,6 +122,13 @@ async function installReviewApi(page: Page, state: MockState): Promise<void> {
   await page.route(/\/api\/sessions$/, (route) =>
     fulfillJson(route, { items: [session], total: 1 }),
   )
+  await page.route(/\/api\/sessions\/7\/config$/, (route) =>
+    fulfillJson(route, {
+      rubric: {
+        questions: [{ question_id: 'Q1', max_score: 5, core_goal: '核对解题步骤' }],
+      },
+    }),
+  )
   await page.route(/\/api\/sessions\/7\/review\/questions$/, (route) => {
     if (state.questions === 'error') {
       return route.fulfill({ status: 503, body: 'private question failure' })

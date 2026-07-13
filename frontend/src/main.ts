@@ -13,6 +13,7 @@ import './styles/base.css'
 import './styles/app-shell.css'
 import './styles/review-queue.css'
 import './styles/review-evidence.css'
+import './styles/review-scoring.css'
 
 const app = createApp(App)
 const pinia = createPinia()

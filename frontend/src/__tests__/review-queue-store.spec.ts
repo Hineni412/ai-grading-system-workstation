@@ -85,6 +85,22 @@ describe('review queue store', () => {
     expect(store.selectedDetailId).toBe(2)
   })
 
+  it('patches only the confirmed item with teacher-owned status', () => {
+    const store = useReviewQueueStore()
+    store.replaceItems([item(1, { needs_review: true }), item(2, { needs_review: true })], 1)
+    store.markItemConfirmed(store.items[0]!, 4.5, '教师调整')
+
+    expect(store.items[0]).toMatchObject({
+      detail_id: 1,
+      score_awarded: 4.5,
+      deduction_reason: '教师调整',
+      error_category: '已复核',
+      error_summary: 'manual_review_confirmed',
+      needs_review: false,
+    })
+    expect(store.items[1]).toMatchObject({ detail_id: 2, needs_review: true })
+  })
+
   it('sorts by student code or name with deterministic identity tie-breakers', () => {
     const store = useReviewQueueStore()
     store.replaceItems([
