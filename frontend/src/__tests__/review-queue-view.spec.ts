@@ -1,6 +1,6 @@
 import { createApp, nextTick, type App } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
-import { createMemoryHistory } from 'vue-router'
+import { createMemoryHistory, type Router } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ReviewItem, ReviewQuestionSummary } from '../api/review'
@@ -73,6 +73,7 @@ interface MountOptions {
     questionId: string,
     signal?: AbortSignal,
   ) => Promise<ReviewItem[]>
+  configureRouter?: (router: Router) => void
 }
 
 const mountedApps: App[] = []
@@ -91,10 +92,12 @@ async function mountView({
   reviewItems = itemsByQuestion,
   failItemLoad = false,
   itemLoader,
+  configureRouter,
 }: MountOptions = {}) {
   const pinia = createPinia()
   setActivePinia(pinia)
   const router = createAppRouter(createMemoryHistory())
+  configureRouter?.(router)
   await router.push(initialUrl)
   await router.isReady()
 
@@ -185,6 +188,10 @@ beforeEach(() => {
   document.body.innerHTML = ''
   localStorage.clear()
   vi.restoreAllMocks()
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+    configurable: true,
+    value: vi.fn(),
+  })
 })
 
 afterEach(() => {
@@ -230,6 +237,28 @@ describe('P2-05 review queue view', () => {
     })
     expect(host.textContent).toContain('学生甲')
     expect(host.textContent).toContain('当前位置 1 / 2')
+  })
+
+  it('recovers URL synchronization after one router replacement is rejected', async () => {
+    let replaceCalls = 0
+    const { router } = await mountView({
+      initialUrl: '/grading?question=Q1&detail=11&unknown=discard',
+      configureRouter: (configuredRouter) => {
+        const actualReplace = configuredRouter.replace.bind(configuredRouter)
+        vi.spyOn(configuredRouter, 'replace').mockImplementation(async (target) => {
+          replaceCalls += 1
+          if (replaceCalls === 1) {
+            throw new Error('expected route replacement rejection')
+          }
+          return actualReplace(target)
+        })
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(replaceCalls).toBe(2)
+      expect(router.currentRoute.value.query).toEqual({ question: 'Q1', detail: '11' })
+    })
   })
 
   it('preserves the selected item when filters keep it and selects the first when excluded', async () => {
@@ -304,6 +333,82 @@ describe('P2-05 review queue view', () => {
 
     expect(dispatchKey(window, 'j', { ctrlKey: true }).defaultPrevented).toBe(false)
     expect(reviewStore.selectedDetailId).toBe(11)
+
+    for (const modifiers of [
+      { altKey: true },
+      { metaKey: true },
+      { shiftKey: true },
+    ]) {
+      reviewStore.selectDetail(11)
+      expect(dispatchKey(window, 'j', modifiers).defaultPrevented).toBe(false)
+      expect(reviewStore.selectedDetailId).toBe(11)
+    }
+
+    const alreadyPrevented = new KeyboardEvent('keydown', {
+      key: 'j',
+      bubbles: true,
+      cancelable: true,
+    })
+    alreadyPrevented.preventDefault()
+    window.dispatchEvent(alreadyPrevented)
+    expect(alreadyPrevented.defaultPrevented).toBe(true)
+    expect(reviewStore.selectedDetailId).toBe(11)
+  })
+
+  it('scrolls the selected row into view after moving across a page boundary', async () => {
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    })
+    const pageBoundaryItems = Array.from({ length: 101 }, (_, offset) =>
+      item(offset + 1, {
+        student_code: `S${String(offset + 1).padStart(3, '0')}`,
+        student_name: `学生${String(offset + 1).padStart(3, '0')}`,
+      }),
+    )
+    const { host, reviewStore } = await mountView({
+      initialUrl: '/grading?question=Q1&detail=100',
+      reviewItems: { Q1: pageBoundaryItems },
+    })
+    await vi.waitFor(() => expect(reviewStore.selectedDetailId).toBe(100))
+    scrollIntoView.mockClear()
+
+    dispatchKey(window, 'j')
+    await vi.waitFor(() => {
+      expect(reviewStore.selectedDetailId).toBe(101)
+      expect(reviewStore.page).toBe(2)
+      expect(host.querySelector('.review-queue-row[aria-current="true"]')?.textContent)
+        .toContain('学生101')
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' })
+    })
+  })
+
+  it('cancels pending row scrolling when selection is invalidated or the view unmounts', async () => {
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    })
+    const { reviewStore, unmount } = await mountView({
+      initialUrl: '/grading?question=Q1&detail=11',
+    })
+    await vi.waitFor(() => expect(reviewStore.selectedDetailId).toBe(11))
+    scrollIntoView.mockClear()
+
+    reviewStore.selectDetail(12)
+    reviewStore.setSearch('不存在的学生')
+    await settleUi()
+    expect(reviewStore.selectedDetailId).toBeNull()
+    expect(scrollIntoView).not.toHaveBeenCalled()
+
+    reviewStore.setSearch('')
+    await vi.waitFor(() => expect(reviewStore.selectedDetailId).toBe(11))
+    scrollIntoView.mockClear()
+    reviewStore.selectDetail(12)
+    unmount()
+    await settleUi()
+    expect(scrollIntoView).not.toHaveBeenCalled()
   })
 
   it('never renders score inputs, save buttons, confirm buttons, or image elements', async () => {
