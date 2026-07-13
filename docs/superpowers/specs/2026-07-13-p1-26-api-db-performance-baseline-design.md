@@ -102,7 +102,7 @@ P1-26 是不可见工程包，用户自测为 `none`。性能数字是后续 P1-
 
 不保存主机名、用户名、内部路径、环境变量、完整命令行或业务内容。
 
-“可能的 N+1”只作为观察标签，并且只明确比较 `small` 与 `large_5pct`。只有同一场景的 `scale_driver_count` 从 `small` 到 `large_5pct` 实际增加，且 `db_select_statements` 与返回记录数或输入实体数近似同比增长，才标记候选；驱动量没有正向增幅、查询数固定但耗时增长时都不标记 N+1。`large_5pct` 不代表大于 `medium`，三档整体也不构成单调递增序列。报告不自动建议索引、缓存或连接池，也不把机器间延迟差异解释成回归。
+“可能的 N+1”只作为观察标签，并且只明确比较 `small` 与 `large_5pct`。只有同一场景的 `scale_driver_count` 从 `small` 到 `large_5pct` 实际增加，且 `db_select_statements` 与返回记录数或输入实体数近似同比增长，才标记候选；驱动量没有正向增幅、查询数固定但耗时增长时都不标记 N+1。机器报告保留 `small_select_median`/`small_driver_count` 作为基础端，并用 `comparison_scale="large_5pct"`、`comparison_select_median`、`comparison_driver_count` 描述比较端，不再导出退役的 `large_*` 键。`large_5pct` 不代表大于 `medium`，三档整体也不构成单调递增序列。报告不自动建议索引、缓存或连接池，也不把机器间延迟差异解释成回归。
 
 可重复性的硬门槛是：相同代码、种子和场景连续两次运行时，状态码、数据 manifest、返回记录数以及查询数摘要完全一致；耗时只要求为有限非负值并完整产生 p50/p95，不要求两次相等。
 

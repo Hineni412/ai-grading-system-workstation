@@ -22,9 +22,10 @@ class PossibleNPlusOneObservation:
     label: str
     scenario: str
     small_select_median: float
-    large_select_median: float
+    comparison_scale: str
+    comparison_select_median: float
     small_driver_count: int
-    large_driver_count: int
+    comparison_driver_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,14 +102,16 @@ def possible_n_plus_one(
     if "small" not in by_scale or "large_5pct" not in by_scale:
         return ()
     small = _scenario_map(by_scale["small"])
-    large = _scenario_map(by_scale["large_5pct"])
+    comparison = _scenario_map(by_scale["large_5pct"])
     observations: list[PossibleNPlusOneObservation] = []
-    for name in sorted(small.keys() & large.keys()):
+    for name in sorted(small.keys() & comparison.keys()):
         small_summary = small[name]
-        large_summary = large[name]
-        select_delta = large_summary.select_median - small_summary.select_median
+        comparison_summary = comparison[name]
+        select_delta = (
+            comparison_summary.select_median - small_summary.select_median
+        )
         driver_delta = (
-            large_summary.scale_driver_count - small_summary.scale_driver_count
+            comparison_summary.scale_driver_count - small_summary.scale_driver_count
         )
         candidate = (
             select_delta >= 5
@@ -121,9 +124,10 @@ def possible_n_plus_one(
                     label="possible_n_plus_one",
                     scenario=name,
                     small_select_median=small_summary.select_median,
-                    large_select_median=large_summary.select_median,
+                    comparison_scale="large_5pct",
+                    comparison_select_median=comparison_summary.select_median,
                     small_driver_count=small_summary.scale_driver_count,
-                    large_driver_count=large_summary.scale_driver_count,
+                    comparison_driver_count=comparison_summary.scale_driver_count,
                 )
             )
     return tuple(observations)
@@ -206,16 +210,17 @@ def render_markdown(report: BenchmarkReport) -> str:
     if report.observations:
         lines.extend(
             [
-                "| label | scenario | small selects | large_5pct selects | small driver | large_5pct driver |",
-                "|---|---|---:|---:|---:|---:|",
+                "| label | scenario | small selects | comparison scale | comparison selects | small driver | comparison driver |",
+                "|---|---|---:|---|---:|---:|---:|",
             ]
         )
         for item in report.observations:
             lines.append(
                 f"| {item.label} | {item.scenario} | "
                 f"{_number(item.small_select_median)} | "
-                f"{_number(item.large_select_median)} | "
-                f"{item.small_driver_count} | {item.large_driver_count} |"
+                f"{item.comparison_scale} | "
+                f"{_number(item.comparison_select_median)} | "
+                f"{item.small_driver_count} | {item.comparison_driver_count} |"
             )
     else:
         lines.append("No possible_n_plus_one candidates met the fixed threshold.")
@@ -243,9 +248,10 @@ def _report_payload(report: BenchmarkReport) -> dict[str, Any]:
                 "label": item.label,
                 "scenario": item.scenario,
                 "small_select_median": item.small_select_median,
-                "large_select_median": item.large_select_median,
+                "comparison_scale": item.comparison_scale,
+                "comparison_select_median": item.comparison_select_median,
                 "small_driver_count": item.small_driver_count,
-                "large_driver_count": item.large_driver_count,
+                "comparison_driver_count": item.comparison_driver_count,
             }
             for item in report.observations
         ],

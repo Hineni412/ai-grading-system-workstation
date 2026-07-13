@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 import sys
+from dataclasses import fields
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ import pytest
 from tools.benchmark_api_db import build_parser, publish_report
 from tools.performance.dataset import DatasetManifest
 from tools.performance.report import (
+    PossibleNPlusOneObservation,
     build_report,
     nearest_rank,
     possible_n_plus_one,
@@ -165,6 +167,16 @@ def test_renderers_emit_only_aggregate_allowlisted_report_fields() -> None:
         "scale_driver_count",
     }
     assert payload["observations"][0]["label"] == "possible_n_plus_one"
+    assert set(payload["observations"][0]) == {
+        "label",
+        "scenario",
+        "small_select_median",
+        "comparison_scale",
+        "comparison_select_median",
+        "small_driver_count",
+        "comparison_driver_count",
+    }
+    assert payload["observations"][0]["comparison_scale"] == "large_5pct"
     assert payload["limitations"]
 
     for expected in (
@@ -189,10 +201,14 @@ def test_renderers_emit_only_aggregate_allowlisted_report_fields() -> None:
     ):
         assert expected in rendered_markdown
 
-    assert "large_5pct selects" in rendered_markdown
-    assert "large selects" not in rendered_markdown
+    assert "comparison scale" in rendered_markdown
+    assert "comparison selects" in rendered_markdown
+    assert "comparison driver" in rendered_markdown
 
     for rendered in (rendered_json, rendered_markdown):
+        assert "large_select_median" not in rendered
+        assert "large_driver_count" not in rendered
+        assert "large selects" not in rendered
         assert not re.search(r"[A-Za-z]:[\\/]", rendered)
         assert ".worktrees" not in rendered.casefold()
         assert "user_data" not in rendered.casefold()
@@ -200,6 +216,15 @@ def test_renderers_emit_only_aggregate_allowlisted_report_fields() -> None:
 
 
 def test_possible_n_plus_one_uses_the_required_thresholds() -> None:
+    assert tuple(field.name for field in fields(PossibleNPlusOneObservation)) == (
+        "label",
+        "scenario",
+        "small_select_median",
+        "comparison_scale",
+        "comparison_select_median",
+        "small_driver_count",
+        "comparison_driver_count",
+    )
     small = _scale("small", students=2, select_median=2)
     large = _scale("large_5pct", students=52, select_median=8)
 
@@ -208,9 +233,10 @@ def test_possible_n_plus_one_uses_the_required_thresholds() -> None:
     assert len(observations) == 1
     assert observations[0].label == "possible_n_plus_one"
     assert observations[0].small_select_median == 2
-    assert observations[0].large_select_median == 8
+    assert observations[0].comparison_scale == "large_5pct"
+    assert observations[0].comparison_select_median == 8
     assert observations[0].small_driver_count == 2
-    assert observations[0].large_driver_count == 52
+    assert observations[0].comparison_driver_count == 52
     assert "recommend" not in repr(observations).casefold()
 
     below_select_delta = _scale("large_5pct", students=52, select_median=6)
