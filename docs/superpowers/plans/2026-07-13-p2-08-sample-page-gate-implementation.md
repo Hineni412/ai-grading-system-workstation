@@ -317,12 +317,13 @@ git commit -m "feat: expose review workspace shortcuts"
 - Create: `frontend/demo/p2-08-server.test.mjs`
 - Modify: `frontend/package.json`
 - Create: `frontend/e2e/p2-08-formal-gate.spec.ts`
+- Create: `frontend/playwright.p2-08.config.ts`
 
 **Interfaces:**
 - Consumes: built `frontend/dist`, existing same-origin API paths and fixed anonymous JSON.
 - Produces: `npm run demo:p2-08`, `npm run demo:test`, loopback static/API server, reset/mode controls and repeatable formal browser evidence.
 
-- [ ] **Step 1: Write failing server contract tests**
+- [x] **Step 1: Write failing server contract tests**
 
 Using `node:test`, start the server on an ephemeral loopback port with a temporary static root and assert:
 
@@ -344,7 +345,7 @@ node --test demo/p2-08-server.test.mjs
 
 Expected: FAIL because the demo runtime does not exist.
 
-- [ ] **Step 2: Implement the loopback-only static/API server**
+- [x] **Step 2: Implement the loopback-only static/API server**
 
 Use only `node:http`, `node:fs`, `node:path`, `node:url` and `node:crypto`. Bind `127.0.0.1`; normalize and contain static paths under `dist`; serve SPA fallback only for GET/HEAD non-API routes; return JSON for the exact sessions/config/review endpoints and deterministic SVG/PNG media with `Cache-Control: no-store`. Accept only these control operations:
 
@@ -364,7 +365,7 @@ Add package scripts without changing dependencies or the lock file:
 
 Run the same server tests and expect PASS.
 
-- [ ] **Step 3: Write and pass the integrated formal browser gate**
+- [x] **Step 3: Write and pass the integrated formal browser gate**
 
 Create a Playwright suite using the same dataset and verify:
 
@@ -383,15 +384,15 @@ Run:
 
 ```powershell
 cd frontend
-npm run e2e -- p2-08-formal-gate.spec.ts
+npm run e2e:p2-08
 ```
 
 Expected before implementation: FAIL; after implementation: PASS.
 
-- [ ] **Step 4: Commit the anonymous acceptance runtime**
+- [x] **Step 4: Commit the anonymous acceptance runtime**
 
 ```powershell
-git add frontend/demo frontend/e2e/p2-08-formal-gate.spec.ts frontend/package.json
+git add frontend/demo frontend/e2e/p2-08-formal-gate.spec.ts frontend/playwright.p2-08.config.ts frontend/package.json
 git diff --check
 git diff -- frontend/package-lock.json
 git commit -m "test: add P2-08 formal acceptance runtime"
