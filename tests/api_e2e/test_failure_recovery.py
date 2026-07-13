@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 def test_scan_failure_can_be_retried_without_half_published_state(
     api_e2e,
     prepared_session_id,
@@ -18,6 +17,12 @@ def test_scan_failure_can_be_retried_without_half_published_state(
         / f"session_{prepared_session_id}"
         / "scan_analysis_latest.json"
     ).exists()
+    assert list(
+        (
+            api_e2e.paths.templates_dir
+            / f"session_{prepared_session_id}"
+        ).glob(".scan_analysis_latest.*.tmp")
+    ) == []
     assert api_e2e.paper_statuses(prepared_session_id) == []
 
     retried = api_e2e.client.post(
@@ -32,12 +37,16 @@ def test_scan_failure_can_be_retried_without_half_published_state(
         "absent_candidates": 0,
         "total_pages": 4,
     }
+    assert api_e2e.controls.scan_runner_calls == 2
+    assert api_e2e.controls.scanner_analyze_calls == 2
 
 
 def test_partial_grading_uses_completed_semantics_and_failed_only_recovery(
     api_e2e,
     scanned_session_id,
 ) -> None:
+    assert api_e2e.paths.qb_db_path.is_file()
+    api_e2e.paths.qb_db_path.resolve().relative_to(api_e2e.paths.data_root.resolve())
     submitted = api_e2e.client.post(
         f"/api/sessions/{scanned_session_id}/grading/run",
         json={"grading_mode": "full_paper", "enhance_images": False},
@@ -99,3 +108,7 @@ def test_partial_grading_uses_completed_semantics_and_failed_only_recovery(
         "Q6",
     ]
     assert sum(score for _question_id, score in details["SYN-002"]) == 70.0
+    assert api_e2e.controls.grading_qbank_paths == [
+        api_e2e.paths.qb_db_path,
+        api_e2e.paths.qb_db_path,
+    ]

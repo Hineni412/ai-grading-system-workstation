@@ -7,11 +7,36 @@ def test_api_five_flow_persists_reviewed_score_in_downloaded_report(
     api_e2e,
 ) -> None:
     session_id = api_e2e.create_configured_session()
+    assert sorted(api_e2e.controls.fake_llm_calls) == [
+        "question:Q1",
+        "question:Q2",
+        "question:Q3",
+        "question:Q4",
+        "question:Q5",
+        "question:Q6",
+        "score_allocation",
+    ]
 
     config_response = api_e2e.client.get(f"/api/sessions/{session_id}/config")
     assert config_response.status_code == 200
     config = config_response.json()
-    assert config["rubric"]["questions"][0]["question_id"] == "Q1"
+    config_questions = config["rubric"]["questions"]
+    assert [question["question_id"] for question in config_questions] == [
+        "Q1",
+        "Q2",
+        "Q3",
+        "Q4",
+        "Q5",
+        "Q6",
+    ]
+    assert [question["max_score"] for question in config_questions] == [
+        17,
+        17,
+        17,
+        17,
+        17,
+        15,
+    ]
     assert Path(config["rubric_path"]).is_file()
     assert Path(config["answer_key_path"]).is_file()
     assert api_e2e.db.is_template_ready(session_id) is True

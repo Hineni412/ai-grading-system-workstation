@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
+import threading
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from shutil import copy2
@@ -45,6 +47,31 @@ from scanner import ExamPaperGroup, ScanAnalysis
 class E2EControls:
     scan_failures_remaining: int = 0
     grading_runs: int = 0
+    scan_runner_calls: int = 0
+    scanner_analyze_calls: int = 0
+    fake_llm_calls: list[str] = field(default_factory=list)
+    grading_qbank_paths: list[Path | None] = field(default_factory=list)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def record_fake_llm_call(self, call: str) -> None:
+        with self._lock:
+            self.fake_llm_calls.append(call)
+
+    def record_scan_runner_call(self) -> None:
+        with self._lock:
+            self.scan_runner_calls += 1
+
+    def begin_scanner_analysis(self) -> bool:
+        with self._lock:
+            self.scanner_analyze_calls += 1
+            if self.scan_failures_remaining <= 0:
+                return False
+            self.scan_failures_remaining -= 1
+            return True
+
+    def record_grading_qbank_path(self, path: Path | None) -> None:
+        with self._lock:
+            self.grading_qbank_paths.append(path)
 
 
 @dataclass(frozen=True)
@@ -65,20 +92,152 @@ class E2EPaths:
     template_back: Path
 
 
-@dataclass
 class FakeLLM:
-    calls: list[str]
+    _QUESTION_ID = re.compile(r"题目 ID \(QUESTION_ID\):\s*(Q\d+)")
 
-    def record(self, request_type: str) -> None:
-        self.calls.append(request_type)
+    def __init__(self, controls: E2EControls) -> None:
+        self.controls = controls
+        self.settings = SimpleNamespace(
+            config_model=None,
+            ocr_model=None,
+            grading_model=None,
+        )
+
+    def json_from_text(
+        self,
+        prompt: str,
+        model: str | None = None,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        del model
+        if "待分值结构" in prompt:
+            self.controls.record_fake_llm_call("score_allocation")
+            return _fake_score_allocation()
+        match = self._QUESTION_ID.search(prompt)
+        if match is None:
+            raise AssertionError("unexpected synthetic config-generation prompt")
+        question_id = match.group(1)
+        self.controls.record_fake_llm_call(f"question:{question_id}")
+        return _fake_single_question_payload(question_id)
+
+    def json_from_text_once(
+        self,
+        prompt: str,
+        model: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        return self.json_from_text(prompt, model=model, **kwargs)
+
+    def json_from_images(
+        self,
+        prompt: str,
+        _images: list[bytes],
+        model: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        return self.json_from_text(prompt, model=model, **kwargs)
+
+
+def _fake_single_question_payload(question_id: str) -> dict[str, Any]:
+    part_id = f"{question_id}-P1"
+    step_id = f"{part_id}-S1"
+    return {
+        "rubric": {
+            "questions": [
+                {
+                    "question_id": question_id,
+                    "question_type": "comprehensive",
+                    "max_score": 1,
+                    "knowledge_name": f"Synthetic knowledge {question_id}",
+                    "knowledge_id": f"SYN-K{question_id[1:]}",
+                    "knowledge_points": [
+                        {
+                            "knowledge_id": f"SYN-K{question_id[1:]}",
+                            "knowledge_name": f"Synthetic knowledge {question_id}",
+                        }
+                    ],
+                    "parts": [
+                        {
+                            "part_id": part_id,
+                            "part_score": 1,
+                            "response_mode": "process_required",
+                            "visual_requirements": [],
+                            "steps": [
+                                {
+                                    "step_id": step_id,
+                                    "step_score": 1,
+                                    "core_goal": "synthetic answer",
+                                    "required_elements": ["synthetic evidence"],
+                                    "allow_alternative_methods": True,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        },
+        "answer_key": {
+            "questions": [
+                {
+                    "question_id": question_id,
+                    "canonical_answer": f"synthetic answer {question_id}",
+                    "accepted_forms": [f"synthetic answer {question_id}"],
+                    "method_variants": [],
+                    "parts": [
+                        {
+                            "part_id": part_id,
+                            "answer": f"synthetic answer {question_id}",
+                            "accepted_forms": [],
+                            "analysis": "synthetic analysis",
+                            "step_milestones": ["synthetic evidence"],
+                        }
+                    ],
+                }
+            ]
+        },
+    }
+
+
+def _fake_score_allocation() -> dict[str, Any]:
+    question_scores = []
+    for index, score in enumerate([17, 17, 17, 17, 17, 15], start=1):
+        question_id = f"Q{index}"
+        part_id = f"{question_id}-P1"
+        question_scores.append(
+            {
+                "question_id": question_id,
+                "max_score": score,
+                "parts": [
+                    {
+                        "part_id": part_id,
+                        "part_score": score,
+                        "steps": [
+                            {
+                                "step_id": f"{part_id}-S1",
+                                "step_score": score,
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    return {"question_scores": question_scores}
 
 
 class SyntheticScanner:
-    def __init__(self, paths: E2EPaths, scanner_kwargs: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        paths: E2EPaths,
+        controls: E2EControls,
+        scanner_kwargs: dict[str, Any],
+    ) -> None:
         self.paths = paths
+        self.controls = controls
         self.scanner_kwargs = dict(scanner_kwargs)
 
     def analyze(self, students: list[dict[str, Any]]) -> ScanAnalysis:
+        if self.controls.begin_scanner_analysis():
+            raise RuntimeError("synthetic scan failure")
         students_by_code = {
             str(student.get("student_code") or ""): student
             for student in students
@@ -114,6 +273,7 @@ class SyntheticGradingService:
         self.llm_client = llm_client
         self.controls = controls
         self.question_bank_db_path = question_bank_db_path
+        self.controls.record_grading_qbank_path(question_bank_db_path)
 
     def run_session_grading(
         self,
@@ -251,13 +411,12 @@ def _synthetic_grading_result(
 
 def make_scan_runner(paths: E2EPaths, controls: E2EControls):
     def scan_runner(**kwargs: Any) -> dict[str, object]:
-        if controls.scan_failures_remaining > 0:
-            controls.scan_failures_remaining -= 1
-            raise RuntimeError("synthetic scan failure")
+        controls.record_scan_runner_call()
         return run_scan_analysis(
             **kwargs,
             scanner_factory=lambda **scanner_kwargs: SyntheticScanner(
                 paths,
+                controls,
                 scanner_kwargs,
             ),
         )
@@ -443,11 +602,13 @@ class ApiE2EHarness:
         return {
             "confirmed_blocks": [
                 {
-                    "question_id": "Q1",
+                    "question_id": f"Q{index}",
                     "question_type": "comprehensive",
-                    "text": "synthetic prompt",
-                    "canonical_answer": "synthetic answer",
+                    "text": f"synthetic prompt {index}",
+                    "answer_text": f"synthetic answer {index}",
+                    "canonical_answer": f"synthetic answer {index}",
                 }
+                for index in range(1, 7)
             ],
             "document_text": "synthetic exam text",
             "question_images": {},
@@ -562,63 +723,6 @@ class ApiE2EHarness:
             )
         return details
 
-
-def valid_config_payload() -> dict[str, Any]:
-    rubric_questions: list[dict[str, Any]] = []
-    answer_questions: list[dict[str, Any]] = []
-    for index, score in enumerate([17, 17, 17, 17, 17, 15], start=1):
-        question_id = f"Q{index}"
-        part_id = f"{question_id}-P1"
-        rubric_questions.append(
-            {
-                "question_id": question_id,
-                "question_type": "comprehensive",
-                "max_score": score,
-                "knowledge_id": f"SYN-K{index}",
-                "parts": [
-                    {
-                        "part_id": part_id,
-                        "part_score": score,
-                        "steps": [
-                            {
-                                "step_id": f"{part_id}-S1",
-                                "step_score": score,
-                                "core_goal": "synthetic answer",
-                                "required_elements": ["synthetic evidence"],
-                                "allow_alternative_methods": True,
-                            }
-                        ],
-                    }
-                ],
-            }
-        )
-        answer_questions.append(
-            {
-                "question_id": question_id,
-                "canonical_answer": f"synthetic answer {index}",
-                "accepted_forms": [f"synthetic answer {index}"],
-                "method_variants": [],
-                "parts": [
-                    {
-                        "part_id": part_id,
-                        "answer": f"synthetic answer {index}",
-                        "analysis": "synthetic analysis",
-                        "step_milestones": ["synthetic evidence"],
-                    }
-                ],
-            }
-        )
-    return {
-        "rubric": {
-            "exam_title": "Synthetic E2E Exam",
-            "total_score": 100,
-            "questions": rubric_questions,
-        },
-        "answer_key": {"questions": answer_questions},
-        "meta": {"warnings": []},
-    }
-
-
 def build_paths(tmp_path: Path) -> E2EPaths:
     data_root = tmp_path / "synthetic_data"
     databases_dir = data_root / "databases"
@@ -694,7 +798,7 @@ def build_job_manager(paths: E2EPaths, *, controls: E2EControls) -> JobManager:
             scan_runner=make_scan_runner(paths, controls),
             grading_runner=make_grading_runner(controls),
             config_generation_runner=run_config_generation_job,
-            llm_client_factory=lambda: FakeLLM([]),
+            llm_client_factory=lambda: FakeLLM(controls),
         )
     except Exception:
         manager.shutdown()
