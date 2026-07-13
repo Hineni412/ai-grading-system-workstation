@@ -113,7 +113,7 @@ Expected: staged list contains only this plan; validator emits one JSON line wit
 - Consumes: `apiClient`, Review GET response, `GET /api/sessions/{id}/config`, existing confirm request/response schema.
 - Produces: `ReviewRubricSection`, `ReviewConfirmInput`, `ReviewConfirmResponse`, `fetchReviewRubric(sessionId, signal?)`, and `confirmReviewItem(sessionId, questionId, input, signal?)`.
 
-- [ ] **Step 1: Write failing adapter tests**
+- [x] **Step 1: Write failing adapter tests**
 
 Add tests proving:
 
@@ -136,7 +136,7 @@ npm test -- src/api/__tests__/review.spec.ts
 
 Expected: FAIL because the new exports do not exist.
 
-- [ ] **Step 2: Implement minimal strict decoders**
+- [x] **Step 2: Implement minimal strict decoders**
 
 Implement pure bounded extraction helpers that accept only records/arrays/finite numbers/strings. Flatten a matching question or part into display-safe fields such as `title`, `maxScore`, `questionType`, `knowledgeLabels`, and rubric lines from existing `core_goal`, `required_elements`, `step_score`, `analysis`, or equivalent known text fields. Unknown fields are ignored.
 
@@ -153,7 +153,7 @@ return apiClient.request(path, {
 
 Run the same test and expect PASS.
 
-- [ ] **Step 3: Commit the adapter slice**
+- [x] **Step 3: Commit the adapter slice**
 
 ```powershell
 git add frontend/src/api/review.ts frontend/src/api/__tests__/review.spec.ts

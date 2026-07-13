@@ -2,8 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { apiClient } from '../client'
 import {
+  confirmReviewItem,
+  extractReviewRubricSection,
   fetchReviewItems,
   fetchReviewQuestions,
+  fetchReviewRubric,
+  isReviewConfirmResponse,
   isReviewItemListResponse,
   isReviewQuestionListResponse,
 } from '../review'
@@ -41,5 +45,74 @@ describe('review API contract', () => {
     await fetchReviewItems(7, 'Q 1/甲')
     expect(request.mock.calls[0]?.[0]).toBe('/api/sessions/7/review/questions')
     expect(request.mock.calls[1]?.[0]).toBe('/api/sessions/7/review/questions/Q%201%2F%E7%94%B2/items?needs_review_only=false')
+  })
+
+  it('extracts the current question and part rubric without inventing fields', () => {
+    const rubric = {
+      questions: [{
+        question_id: 'Q1',
+        question_type: 'comprehensive',
+        max_score: 10,
+        knowledge_points: [{ knowledge_id: 'K1', knowledge_name: '一次函数' }],
+        parts: [{
+          part_id: 'Q1-P1',
+          part_score: 4,
+          steps: [{ step_id: 'S1', step_score: 4, core_goal: '列出正确关系式', required_elements: ['变量定义', '等量关系'] }],
+        }],
+      }],
+    }
+
+    expect(extractReviewRubricSection(rubric, 'Q1-P1')).toEqual({
+      questionId: 'Q1-P1',
+      parentQuestionId: 'Q1',
+      title: 'Q1-P1',
+      maxScore: 4,
+      questionType: 'comprehensive',
+      knowledgeLabels: ['一次函数'],
+      lines: [
+        { label: '列出正确关系式', score: 4 },
+        { label: '变量定义', score: null },
+        { label: '等量关系', score: null },
+      ],
+    })
+    expect(extractReviewRubricSection({ questions: 'not-an-array' }, 'Q1')).toBeNull()
+  })
+
+  it('uses the config GET and existing single-item confirm POST', async () => {
+    const request = vi.spyOn(apiClient, 'request')
+      .mockResolvedValueOnce({ questions: [] })
+      .mockResolvedValueOnce({ updated_details: 1, updated_results: 1, annotation_outcomes: [] })
+
+    await fetchReviewRubric(7, 'Q 1/甲')
+    await confirmReviewItem(7, 'Q 1/甲', {
+      result_id: 11,
+      detail_id: 21,
+      score_awarded: 8.5,
+      deduction_reason: '步骤二符号错误',
+    })
+
+    expect(request.mock.calls[0]?.[0]).toBe('/api/sessions/7/config')
+    expect(request.mock.calls[1]?.[0]).toBe('/api/sessions/7/review/questions/Q%201%2F%E7%94%B2/confirm')
+    expect(request.mock.calls[1]?.[1]).toMatchObject({
+      method: 'POST',
+      body: {
+        items: [{
+          result_id: 11,
+          detail_id: 21,
+          score_awarded: 8.5,
+          deduction_reason: '步骤二符号错误',
+        }],
+      },
+    })
+    expect(request.mock.calls[1]?.[1]?.body).not.toHaveProperty('items.0.error_category')
+    expect(request.mock.calls[1]?.[1]?.body).not.toHaveProperty('items.0.error_summary')
+  })
+
+  it.each([
+    { updated_details: 1, updated_results: 1, annotation_outcomes: [{ result_id: 11, status: 'unknown' }] },
+    { updated_details: Number.NaN, updated_results: 1, annotation_outcomes: [] },
+    { updated_details: 1, updated_results: 1, annotation_outcomes: 'invalid' },
+  ])('rejects malformed confirm response %#', (payload) => {
+    expect(isReviewConfirmResponse(payload)).toBe(false)
   })
 })
