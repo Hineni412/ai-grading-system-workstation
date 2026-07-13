@@ -409,10 +409,10 @@ describe('P2-05 review queue view', () => {
       ['=', {}],
       ['-', {}],
       ['Enter', {}],
-      ['Enter', { shiftKey: true }],
     ] satisfies Array<[string, KeyboardEventInit]>) {
       expect(dispatchKey(window, key, init).defaultPrevented).toBe(true)
     }
+    expect(dispatchKey(window, 'Enter', { shiftKey: true }).defaultPrevented).toBe(false)
 
     expect(received).toEqual([
       'focus-search',
@@ -420,7 +420,6 @@ describe('P2-05 review queue view', () => {
       'zoom-in',
       'zoom-in',
       'zoom-out',
-      'confirm-stay',
       'confirm-next',
     ])
 
@@ -431,7 +430,7 @@ describe('P2-05 review queue view', () => {
     expect(dispatchKey(search, 'z').defaultPrevented).toBe(false)
     expect(dispatchKey(window, 'Enter', { repeat: true }).defaultPrevented).toBe(false)
     expect(dispatchKey(window, '/', { ctrlKey: true }).defaultPrevented).toBe(false)
-    expect(received).toHaveLength(7)
+    expect(received).toHaveLength(6)
     stop()
   })
 

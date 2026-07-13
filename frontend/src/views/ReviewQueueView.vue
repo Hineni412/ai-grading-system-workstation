@@ -278,14 +278,14 @@ function onKeydown(event: KeyboardEvent): void {
   }
 
   if (event.repeat && key === 'enter') return
-  if (event.shiftKey && key !== 'enter' && key !== '+') return
+  if (event.shiftKey && key !== '+') return
 
   let command: ReviewShortcutCommand | null = null
   if (key === '/') command = 'focus-search'
   else if (key === 'z') command = 'fit-width'
   else if (key === '+' || key === '=') command = 'zoom-in'
   else if (key === '-') command = 'zoom-out'
-  else if (key === 'enter') command = event.shiftKey ? 'confirm-next' : 'confirm-stay'
+  else if (key === 'enter') command = 'confirm-next'
   if (command === null) return
 
   reviewShortcutBus.dispatch(command)

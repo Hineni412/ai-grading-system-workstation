@@ -46,7 +46,9 @@ test('fixed anonymous page exposes only real shortcuts and restores confirmed st
   await expect(guide).toContainText('J / K')
   await expect(guide).toContainText('下一份 / 上一份')
   await expect(guide).toContainText('Enter')
-  await expect(guide).toContainText('Shift + Enter')
+  await expect(guide).toContainText('确认并下一份')
+  await expect(guide).not.toContainText('Shift + Enter')
+  await expect(guide).not.toContainText('确认并停留')
   await expect(guide).toContainText('适应宽度')
   await expect(guide).toContainText('搜索学生')
   await expect(guide).not.toContainText(/(^|\s)R($|\s)/)
@@ -74,11 +76,12 @@ test('fixed anonymous page exposes only real shortcuts and restores confirmed st
   await canvas.focus()
 
   const score = page.getByTestId('teacher-score')
-  await score.fill('4.5')
-  await canvas.focus()
-  await canvas.press('Enter')
-  await expect(page).toHaveURL(/question=Q1&detail=1$/)
-  await expect(page.getByText('教师最终分已确认。', { exact: true })).toBeVisible()
+  await score.click()
+  await page.keyboard.type('4.5')
+  await expect(score).toHaveValue('4.5')
+  await score.press('Enter')
+  await expect(page).toHaveURL(/question=Q1&detail=2$/)
+  await page.getByRole('button', { name: /匿名学生一号/ }).click()
   await expect(page).toHaveURL(/question=Q1&detail=1$/)
 
   await page.reload()
@@ -123,11 +126,26 @@ test('navigation, protected focus and confirm-next shortcuts perform exactly one
   await expect(page).toHaveURL(/detail=1$/)
   expect(confirmRequests).toBe(0)
 
-  await protectedScore.fill('4.25')
+  await protectedScore.click()
+  await page.keyboard.type('4.25')
+  await expect(protectedScore).toHaveValue('4.25')
+  await protectedScore.press('Shift+Enter')
+  await expect(page).toHaveURL(/detail=1$/)
+  expect(confirmRequests).toBe(0)
+
+  await protectedScore.press('Enter')
+  await expect(page).toHaveURL(/detail=2$/)
+  expect(confirmRequests).toBe(1)
+
+  await protectedScore.fill('4.5')
   await canvas.focus()
   await canvas.press('Shift+Enter')
   await expect(page).toHaveURL(/detail=2$/)
   expect(confirmRequests).toBe(1)
+
+  await canvas.press('Enter')
+  await expect(page).toHaveURL(/detail=4$/)
+  expect(confirmRequests).toBe(2)
 })
 
 test('unconfirmed drafts survive record changes, warn before refresh and are not presented as saved', async ({ page }) => {
