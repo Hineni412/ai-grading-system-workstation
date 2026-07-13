@@ -4,7 +4,7 @@
 
 **Goal:** 用默认关闭的请求测量器和固定生成数据，为 P1-15/P1-19/P1-21/P1-22 的代表性只读 API 建立可重复的耗时、数据库语句数、返回记录数和样本规模基线。
 
-**Architecture:** 在独立 `backend/performance/` 模块用 `contextvars` 隔离每个 FastAPI 请求，以 SQLite trace callback 只计数、不保存 SQL；`create_app()` 接受可选 sink 和隔离路径对象，正常生产调用保持测量关闭。`tools/performance/` 生成 small/medium/large 临时双库和受控素材，真实 TestClient 请求运行 16 个场景，内存聚合两轮 p50/p95 后只输出脱敏 JSON/Markdown 摘要。
+**Architecture:** 在独立 `backend/performance/` 模块用 `contextvars` 隔离每个 FastAPI 请求，以 SQLite trace callback 只计数、不保存 SQL；`create_app()` 接受可选 sink 和隔离路径对象，正常生产调用保持测量关闭。`tools/performance/` 生成 `small`、`medium`、`large_5pct` 三个命名工作负载的临时双库和受控素材，真实 TestClient 请求运行 16 个场景，内存聚合两轮 p50/p95 后只输出脱敏 JSON/Markdown 摘要。
 
 **Tech Stack:** Python 3.12、FastAPI 0.139.0、Starlette TestClient、SQLite 3.43.1、pytest、标准库 `contextvars`/`sqlite3`/`statistics`/`tempfile`。
 
@@ -23,6 +23,7 @@
 - 不记录 SQL 文本、原始 URL、查询词、资源 ID、请求/响应正文、学生/题目正文、密钥、文件名、主机名、用户名、环境变量、命令行或内部绝对路径。
 - 性能测量默认关闭；关闭时不安装 SQLite trace callback、不增加响应 header、不改变公开 API/OpenAPI 契约。
 - 正式矩阵固定为 16 个场景、3 次预热、20 次正式样本、2 次完整重复；p95 使用 nearest-rank。
+- 2026-07-13 用户覆盖原大型档：保留 `small`/`medium`，把原 `large` 七个计数组件分别按 5% 向上取整为 `(1, 25, 2, 7_500, 500, 25, 5)`，公开名为 `large_5pct`；默认三档不是各维度单调递增序列，旧 `large` CLI 选择器必须校验失败。
 - 本包只报告可能的 N+1 候选，不提出或实施优化；P1-27/P3-18 另行决定是否优化。
 - 计划文件名、顶部包号和领取后的交接块必须始终一致；首次功能分支提交只能修改本计划并写入 `in_progress` 交接证据。
 
@@ -308,7 +309,7 @@ git add backend/performance db_manager.py question_bank/database/schema.py quest
 git commit -m "feat: count target SQLite statements"
 ```
 
-### Task 3: Build deterministic small, medium and large temporary datasets
+### Task 3: Build deterministic small, medium and large_5pct temporary datasets
 
 **Files:**
 - Create: `tools/performance/__init__.py`
@@ -316,7 +317,7 @@ git commit -m "feat: count target SQLite statements"
 - Create: `tests/test_performance_dataset.py`
 
 **Interfaces:**
-- Produces: `ScaleDefinition`, `SMALL`, `MEDIUM`, `LARGE`, `SCALES` with the exact design sizes.
+- Produces: `ScaleDefinition`, `SMALL`, `MEDIUM`, `LARGE`, `SCALES` with the exact user-overridden sizes and public names; `LARGE` remains the Python constant for compatibility, while `LARGE.name` is `large_5pct`.
 - Produces: `BenchmarkPaths` exposing the PathManager properties used by API dependencies without reading repository config.
 - Produces: `DatasetManifest` and `BenchmarkDataset(paths, manifest, representative_question_id, representative_task_id, knowledge_key)`.
 - Produces: `build_benchmark_dataset(root: Path, scale: ScaleDefinition, *, seed: int = 126) -> BenchmarkDataset`.
@@ -328,7 +329,8 @@ Assert the exact defaults:
 ```python
 assert SMALL.counts == (1, 30, 10, 300, 200, 10, 5)
 assert MEDIUM.counts == (5, 200, 20, 20_000, 2_000, 100, 50)
-assert LARGE.counts == (10, 500, 30, 150_000, 10_000, 500, 100)
+assert LARGE.name == "large_5pct"
+assert LARGE.counts == (1, 25, 2, 7_500, 500, 25, 5)
 ```
 
 Use a custom micro scale `(1, 2, 2, 4, 8, 2, 2)` to build twice under different pytest temp roots with seed 126. Assert equal manifests/table counts/representative IDs; `PRAGMA foreign_key_check` is empty; both `integrity_check` values are `ok`; every generated file resolves beneath its supplied root; generated text contains only `GEN-`, `CLASS-`, `generated-`, `knowledge-` markers; no repository `user_data` path appears in values or repr.
@@ -371,9 +373,11 @@ class ScaleDefinition:
 
 SMALL = ScaleDefinition("small", 1, 30, 10, 300, 200, 10, 5)
 MEDIUM = ScaleDefinition("medium", 5, 200, 20, 20_000, 2_000, 100, 50)
-LARGE = ScaleDefinition("large", 10, 500, 30, 150_000, 10_000, 500, 100)
+LARGE = ScaleDefinition("large_5pct", 1, 25, 2, 7_500, 500, 25, 5)
 SCALES = (SMALL, MEDIUM, LARGE)
 ```
+
+These are three named default workloads, not a monotonic size ladder. `large_5pct` identifies the 5% replacement for the original large workload and may be smaller than `small` or `medium` on individual dimensions. CLI validation accepts only the names present in `SCALES`; it must not retain `large` as an alias.
 
 `BenchmarkPaths` must explicitly expose `project_root`, `data_root`, `databases_dir`, `db_path`, `qb_db_path`, `config_dir`, `upload_config_dir`, `api_profiles_path`, `ops_state_dir`, `templates_dir`, `annotated_dir`, `reports_dir`, `backups_dir`, `outputs_dir`, `exams_dir`, `logs_dir`, `qb_data_dir`, `snapshots_dir`, and `version="v1.5.0-p1-26-generated"`. `build_benchmark_dataset()` creates these directories, calls `DBManager(db_path).initialize()` and `initialize_database(qb_db_path, seed_skills=False)`, then bulk-inserts generated rows.
 
@@ -429,7 +433,7 @@ git commit -m "test: add generated performance datasets"
 - Produces: `build_scenarios(dataset) -> tuple[BenchmarkScenario, ...]` of length 16.
 - Produces: `run_scale(dataset, *, warmups=3, samples=20, repetitions=2) -> ScaleBenchmarkResult`.
 - Produces: `nearest_rank(values, percentile)`, `deterministic_projection(result)`, `render_json(report)`, `render_markdown(report)`.
-- Produces CLI defaults: seed 126, all three scales, 3 warmups, 20 samples, 2 repetitions, JSON/Markdown destinations under `docs/performance/`.
+- Produces CLI defaults: seed 126, `small`, `medium`, `large_5pct`, 3 warmups, 20 samples, 2 repetitions, JSON/Markdown destinations under `docs/performance/`; `--scales large` fails validation.
 
 - [ ] **Step 1: Write failing 16-scenario contract tests**
 
@@ -531,11 +535,11 @@ Expected: collection fails because report functions do not exist.
 
 - [ ] **Step 8: Implement summaries, nearest-rank and possible N+1 observations**
 
-Sort finite nonnegative timings and use `ceil(percentile * len(values)) - 1`. Report two independent p50/p95 pairs per scale/scenario. A possible N+1 candidate requires all of:
+Sort finite nonnegative timings and use `ceil(percentile * len(values)) - 1`. Report two independent p50/p95 pairs per scale/scenario. Compare only the explicitly named `small` and `large_5pct` workloads; do not infer comparison endpoints from tuple position or treat all three defaults as monotonically increasing. A possible N+1 candidate requires the scenario's actual driver to increase and all of:
 
 ```python
-select_delta = large.select_median - small.select_median
-driver_delta = large.scale_driver_count - small.scale_driver_count
+select_delta = large_5pct.select_median - small.select_median
+driver_delta = large_5pct.scale_driver_count - small.scale_driver_count
 candidate = select_delta >= 5 and driver_delta > 0 and select_delta / driver_delta >= 0.10
 ```
 
@@ -577,7 +581,7 @@ git commit -m "feat: add repeatable API database benchmark"
 - Modify: `docs/superpowers/plans/2026-07-13-p1-26-api-db-performance-baseline-implementation.md`
 
 **Interfaces:**
-- Consumes: Tasks 1-4 at one functional SHA and the exact three-scale formal CLI defaults.
+- Consumes: Tasks 1-4 at one functional SHA and the exact `small`/`medium`/`large_5pct` formal CLI defaults.
 - Produces: committed reproducible baseline, architecture fact, `waiting_review` then independently reviewed `verified_pending_integration` handoff.
 
 - [ ] **Step 1: Run the full P1-26 focused suite**
@@ -600,13 +604,13 @@ Expected: PASS; no source snapshot writes, API contract drift or lifecycle regre
 
 Read only file length, UTC mtime and SHA-256 from the root checkout. Compare byte-for-byte with Task 0 claim values. Do not call SQLite against either file. Expected: unchanged.
 
-- [ ] **Step 4: Run the formal three-scale/two-repetition baseline**
+- [ ] **Step 4: Run the formal three-workload/two-repetition baseline**
 
 ```powershell
 ..\..\runtime\python\python.exe tools\benchmark_api_db.py
 ```
 
-Expected: 3 scales × 16 scenarios × 2 repetitions complete; every repetition has 20 samples after 3 discarded warmups; deterministic projection matches; both versioned reports are atomically published.
+Expected: `small`、`medium`、`large_5pct` 3 个命名工作负载 × 16 scenarios × 2 repetitions complete; every repetition has 20 samples after 3 discarded warmups; deterministic projection matches; both versioned reports are atomically published. The reports use manifest counts rather than implying that the three names form a monotonic size sequence.
 
 - [ ] **Step 5: Validate report safety and scope**
 
@@ -614,7 +618,7 @@ Run the report tests again, inspect the JSON keys and Markdown tables, and use r
 
 - [ ] **Step 6: Update architecture and plan evidence**
 
-Add one P1-26 increment paragraph to `ARCHITECTURE.md`: opt-in/default-off measurement; generated three-scale 16-scenario baseline; statement/select and response-count semantics; report location; no optimization, Schema, real data or model calls. In this plan record exact test totals, formal runtime, baseline functional SHA, possible N+1 observations and coverage limitations without copying machine paths.
+Add one P1-26 increment paragraph to `ARCHITECTURE.md`: opt-in/default-off measurement; generated three-workload (`small`/`medium`/`large_5pct`) 16-scenario baseline; statement/select and response-count semantics; report location; no optimization, Schema, real data or model calls. In this plan record exact test totals, formal runtime, baseline functional SHA, possible N+1 observations and coverage limitations without copying machine paths.
 
 - [ ] **Step 7: Run static, quick-smoke and handoff guards**
 
