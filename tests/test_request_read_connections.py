@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
+from threading import Barrier
+from types import SimpleNamespace
 
 import pytest
 
 from db_manager import DBManager
-from question_bank.database.schema import connect
+from question_bank.database.schema import connect, initialize_database
 from question_bank.services.question_read_service import (
+    QuestionBankSnapshotUnavailable,
     captured_sqlite_read_connection,
 )
 
@@ -151,3 +155,223 @@ def test_legacy_connections_keep_existing_pragmas_and_close_behavior(
 
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
         question_bank_connection.execute("SELECT 1")
+
+
+def _request_paths(tmp_path: Path) -> SimpleNamespace:
+    grading_path = tmp_path / "grading.db"
+    question_bank_path = tmp_path / "question-bank.db"
+    DBManager(grading_path).initialize()
+    initialize_database(question_bank_path)
+    return SimpleNamespace(
+        db_path=grading_path,
+        qb_db_path=question_bank_path,
+    )
+
+
+def _main_candidate_path(connection: sqlite3.Connection) -> Path:
+    row = next(
+        row
+        for row in connection.execute("PRAGMA database_list").fetchall()
+        if str(row[1]) == "main"
+    )
+    return Path(str(row[2]))
+
+
+def test_request_read_context_opens_each_database_once_and_cleans_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import backend.api.read_connections as read_connections
+
+    paths = _request_paths(tmp_path)
+    real_capture = read_connections.captured_sqlite_read_connection
+    calls: list[Path] = []
+    connections: list[sqlite3.Connection] = []
+    candidates: list[Path] = []
+
+    @contextmanager
+    def tracked_capture(db_path: Path, **kwargs):
+        calls.append(Path(db_path))
+        with real_capture(db_path, **kwargs) as connection:
+            connections.append(connection)
+            candidates.append(_main_candidate_path(connection))
+            yield connection
+
+    monkeypatch.setattr(
+        read_connections,
+        "captured_sqlite_read_connection",
+        tracked_capture,
+    )
+
+    with read_connections.request_read_context(paths) as context:
+        assert calls == [paths.db_path, paths.qb_db_path]
+        assert context.grading_connection is connections[0]
+        assert context.question_bank_connection is connections[1]
+        assert context.grading_candidate == candidates[0]
+        assert context.question_bank_candidate == candidates[1]
+        assert context.grading_db._external_connection is connections[0]
+        assert context.diagnosis_service.db is context.grading_db
+        assert context.diagnosis_service.question_bank_connection is connections[1]
+        assert context.practice_service.external_connection is connections[1]
+        assert all(candidate.exists() for candidate in candidates)
+
+    assert not any(candidate.exists() for candidate in candidates)
+    for connection in connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
+
+
+def test_request_read_context_cleans_first_database_when_second_capture_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import backend.api.read_connections as read_connections
+
+    paths = _request_paths(tmp_path)
+    real_capture = read_connections.captured_sqlite_read_connection
+    first_connection: sqlite3.Connection | None = None
+    first_candidate: Path | None = None
+
+    @contextmanager
+    def fail_second_capture(db_path: Path, **kwargs):
+        nonlocal first_connection, first_candidate
+        if Path(db_path) == paths.qb_db_path:
+            raise QuestionBankSnapshotUnavailable("private path must stay hidden")
+        with real_capture(db_path, **kwargs) as connection:
+            first_connection = connection
+            first_candidate = _main_candidate_path(connection)
+            yield connection
+
+    monkeypatch.setattr(
+        read_connections,
+        "captured_sqlite_read_connection",
+        fail_second_capture,
+    )
+
+    with pytest.raises(QuestionBankSnapshotUnavailable):
+        with read_connections.request_read_context(paths):
+            pytest.fail("the context must not yield after partial setup failure")
+
+    assert first_connection is not None
+    assert first_candidate is not None
+    assert not first_candidate.exists()
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        first_connection.execute("SELECT 1")
+
+
+def test_request_read_context_cleans_both_databases_after_business_error(
+    tmp_path: Path,
+) -> None:
+    import backend.api.read_connections as read_connections
+
+    paths = _request_paths(tmp_path)
+    context = None
+    with pytest.raises(RuntimeError, match="business failure"):
+        with read_connections.request_read_context(paths) as context:
+            raise RuntimeError("business failure")
+
+    assert context is not None
+    assert not context.grading_candidate.exists()
+    assert not context.question_bank_candidate.exists()
+    for connection in (
+        context.grading_connection,
+        context.question_bank_connection,
+    ):
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
+
+
+def test_concurrent_request_read_contexts_have_distinct_owned_resources(
+    tmp_path: Path,
+) -> None:
+    import backend.api.read_connections as read_connections
+
+    paths = _request_paths(tmp_path)
+    barrier = Barrier(2)
+
+    def capture_identity(_index: int) -> tuple[Path, Path, int, int]:
+        with read_connections.request_read_context(paths) as context:
+            identity = (
+                context.grading_candidate,
+                context.question_bank_candidate,
+                id(context.grading_connection),
+                id(context.question_bank_connection),
+            )
+            barrier.wait(timeout=10)
+            return identity
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        identities = list(executor.map(capture_identity, range(2)))
+
+    assert identities[0][0] != identities[1][0]
+    assert identities[0][1] != identities[1][1]
+    assert identities[0][2] != identities[1][2]
+    assert identities[0][3] != identities[1][3]
+    assert not any(
+        candidate.exists()
+        for identity in identities
+        for candidate in identity[:2]
+    )
+
+
+def test_request_read_context_can_teardown_on_another_worker_thread(
+    tmp_path: Path,
+) -> None:
+    import backend.api.read_connections as read_connections
+
+    manager = read_connections.request_read_context(_request_paths(tmp_path))
+    context = manager.__enter__()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        executor.submit(manager.__exit__, None, None, None).result(timeout=10)
+
+    assert not context.grading_candidate.exists()
+    assert not context.question_bank_candidate.exists()
+    for connection in (
+        context.grading_connection,
+        context.question_bank_connection,
+    ):
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
+
+
+def test_route_validation_error_cleans_request_read_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    import backend.api.read_connections as read_connections
+    from backend.api.app import create_app
+    from path_manager import get_path_manager
+
+    paths = _request_paths(tmp_path)
+    real_capture = read_connections.captured_sqlite_read_connection
+    connections: list[sqlite3.Connection] = []
+    candidates: list[Path] = []
+
+    @contextmanager
+    def tracked_capture(db_path: Path, **kwargs):
+        with real_capture(db_path, **kwargs) as connection:
+            connections.append(connection)
+            candidates.append(_main_candidate_path(connection))
+            yield connection
+
+    monkeypatch.setattr(
+        read_connections,
+        "captured_sqlite_read_connection",
+        tracked_capture,
+    )
+    app = create_app()
+    app.dependency_overrides[get_path_manager] = lambda: paths
+
+    response = TestClient(app).post(
+        "/api/graph/rows",
+        json={"scope": {"mode": "student", "student_ids": []}},
+    )
+
+    assert response.status_code == 422
+    assert len(connections) == len(candidates) == 2
+    assert not any(candidate.exists() for candidate in candidates)
+    for connection in connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
