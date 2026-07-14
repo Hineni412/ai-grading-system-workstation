@@ -9,25 +9,23 @@ SRC = ROOT / "frontend" / "src"
 COLOR_LITERAL = re.compile(r"#[0-9a-fA-F]{3,8}\b|\b(?:rgb|hsl)a?\(")
 
 
-def test_p2_04_keeps_one_navigation_source_and_adds_the_general_client() -> None:
+def test_recalibrated_shell_keeps_one_truthful_navigation_source_and_general_client() -> None:
     navigation = (SRC / "navigation.ts").read_text(encoding="utf-8")
-    assert navigation.count("futureReason: '") == 1
-    assert "智能体与自动化" in navigation
+    assert "export const navigationItems = [reviewRouteDefinition] as const" in navigation
+    assert "path: '/grading'" in navigation
+    assert "futureReason" not in navigation
+    assert "智能体与自动化" not in navigation
     assert (SRC / "api" / "client.ts").is_file()
     assert (SRC / "stores" / "jobs.ts").is_file()
 
 
-def test_shell_uses_tokens_and_keeps_showcase_route() -> None:
+def test_shell_uses_tokens_and_exposes_only_the_truthful_workspace() -> None:
     css = (SRC / "styles" / "app-shell.css").read_text(encoding="utf-8")
     tokens = (SRC / "styles" / "tokens.css").read_text(encoding="utf-8")
     main = (SRC / "main.ts").read_text(encoding="utf-8")
     assert not COLOR_LITERAL.search(css)
     required_tokens = {
         "--shell-topbar-height: 60px": "var(--shell-topbar-height)",
-        "--shell-navigation-width: 232px": "var(--shell-navigation-width)",
-        "--shell-navigation-collapsed-width: 60px": "var(--shell-navigation-collapsed-width)",
-        "--shell-inspector-width: 360px": "var(--shell-inspector-width)",
-        "--shell-inspector-compact-width: 320px": "var(--shell-inspector-compact-width)",
         "--shell-topbar-z-index: 32": "var(--shell-topbar-z-index)",
         "--shell-skip-link-z-index: 33": "var(--shell-skip-link-z-index)",
     }
@@ -35,7 +33,14 @@ def test_shell_uses_tokens_and_keeps_showcase_route() -> None:
         assert definition in tokens
         assert reference in css
     assert "z-index: calc(" not in css
-    assert "@media (min-width: 1024px) and (max-width: 1279px)" in css
+    for obsolete_reference in (
+        "var(--shell-navigation-width)",
+        "var(--shell-navigation-collapsed-width)",
+        "var(--shell-inspector-width)",
+        "var(--shell-inspector-compact-width)",
+    ):
+        assert obsolete_reference not in css
+    assert "@media (max-width: 1100px)" in css
     assert "@media (max-width: 1023px)" not in css
     assert "@media (max-width: 767px)" not in css
     assert "--shell-overlay-z-index" not in tokens
@@ -45,6 +50,7 @@ def test_shell_uses_tokens_and_keeps_showcase_route() -> None:
         "import './styles/app-shell.css'"
     )
     router = (SRC / "router" / "index.ts").read_text(encoding="utf-8")
+    assert "path: reviewRouteDefinition.path" in router
     assert "'/design-system'" in router
     assert "ComponentShowcase" in router
 

@@ -121,7 +121,7 @@
 }
 
 .review-question-strip button[aria-current="true"] {
-  box-shadow: inset 0 calc(-1 * var(--space-1)) 0 var(--color-accent);
+  box-shadow: var(--shadow-selected-inset);
   background: var(--color-bg-selected);
 }
 
