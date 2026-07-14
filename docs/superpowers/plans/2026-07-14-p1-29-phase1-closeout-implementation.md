@@ -34,14 +34,14 @@
 ## 昼夜交接
 
 **执行包：** P1-29
-**交接状态：** waiting_user
-**功能提交：** ebbdb28218e5d076138b1a76a0923905a7635db0
+**交接状态：** verified_pending_integration
+**功能提交：** e938b6792e05522768650e9f28d6c25e21d64cc9
 **自动验证：** passed
 **独立复审：** passed
-**用户验收：** pending
+**用户验收：** passed
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
 
 ## Claim and baseline evidence
@@ -251,19 +251,19 @@ Set `waiting_user`; record the direct parent full reviewed SHA; automated/indepe
 - Consumes: reviewed waiting-user anchor, exact reviewed source SHA and pending formal checklist.
 - Produces: explicit user conclusion, checklist-only evidence commit and plan-only `verified_pending_integration` commit.
 
-- [ ] **Step 1: Start exactly the reviewed anonymous runtime**
+- [x] **Step 1: Start exactly the reviewed anonymous runtime**
 
 Prepare a fresh temporary workspace from the anchored reviewed SHA, run the launcher in `serve`, open the declared Streamlit URL in the app and confirm all checklist markers before handing control to the user. Record root fingerprints immediately before acceptance.
 
-- [ ] **Step 2: Guide the user through the formal checklist**
+- [x] **Step 2: Guide the user through the formal checklist**
 
 Keep service reset/restart under Codex control. Blocker/Major stops acceptance and returns to Task 5 after root-cause fix/review; Minor is recorded for user decision. Only an explicit user `passed` conclusion may continue.
 
-- [ ] **Step 3: Stop services, verify fingerprints and commit only checklist evidence**
+- [x] **Step 3: Stop services, verify fingerprints and commit only checklist evidence**
 
 Stop both child processes, prove both ports closed, recompute unchanged root fingerprints, update only the checklist result/machine block with the reviewed functional SHA and `passed`, and commit exactly that one matching checkpoint.
 
-- [ ] **Step 4: Create the final plan-only handoff commit**
+- [x] **Step 4: Create the final plan-only handoff commit**
 
 Set `verified_pending_integration`; `功能提交` equals the direct parent checklist evidence SHA; automated/review/user acceptance `passed`; fingerprint `unchanged`; nightly `independent_candidate_allowed`. Commit only this plan and require `tools/handoff_status.py` `ok=true`.
 
