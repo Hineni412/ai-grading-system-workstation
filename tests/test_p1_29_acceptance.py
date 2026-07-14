@@ -15,6 +15,16 @@ import pytest
 from tools import p1_29_acceptance as acceptance
 
 
+SENSITIVE_API_ENV_NAMES = (
+    "LLM_API_KEY",
+    "LLM_CONFIG_API_KEY",
+    "LLM_OBJECTIVE_API_KEY",
+    "OPENAI_API_KEY",
+    "QUESTION_BANK_TAGGING_API_KEY",
+    "QUESTION_BANK_TAGGING_REVIEW_API_KEY",
+)
+
+
 def _tar_member(name: str, member_type: bytes = tarfile.REGTYPE) -> tarfile.TarInfo:
     member = tarfile.TarInfo(name)
     member.type = member_type
@@ -35,6 +45,7 @@ def test_bootstrap_loads_staged_only_module_without_repository_paths(
         "DATA_DIR: synthetic_data\nLOGS_DIR: acceptance_logs\n",
         encoding="utf-8",
     )
+    acceptance.write_anonymous_runtime_state(workspace)
     (workspace / "staged_only_marker.py").write_text(
         "MARKER = 'staged-only'\n",
         encoding="utf-8",
@@ -87,6 +98,7 @@ def test_dotted_origin_probe_does_not_import_parent_package(tmp_path: Path) -> N
         "DATA_DIR: synthetic_data\nLOGS_DIR: acceptance_logs\n",
         encoding="utf-8",
     )
+    acceptance.write_anonymous_runtime_state(workspace)
     package = workspace / "sentinel_pkg"
     package.mkdir()
     package.joinpath("__init__.py").write_text(
@@ -127,6 +139,7 @@ def test_bootstrap_validates_config_before_module_discovery(tmp_path: Path) -> N
     config = workspace / "config" / "app_config.yaml"
     config.parent.mkdir()
     config.write_text("DATA_DIR: unsafe\nLOGS_DIR: logs\n", encoding="utf-8")
+    acceptance.write_anonymous_runtime_state(workspace)
     package = workspace / "config_sentinel"
     package.mkdir()
     package.joinpath("__init__.py").write_text(
@@ -159,6 +172,109 @@ def test_bootstrap_validates_config_before_module_discovery(tmp_path: Path) -> N
     assert completed.returncode != 0
     assert "config" in completed.stderr
     assert not (package / "imported.txt").exists()
+
+
+def test_bootstrap_clears_parent_api_secrets_and_forces_private_state(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "staged"
+    staged_tools = workspace / "tools"
+    staged_tools.mkdir(parents=True)
+    shutil.copy2(Path(acceptance.__file__), staged_tools / "p1_29_acceptance.py")
+    config = workspace / "config" / "app_config.yaml"
+    config.parent.mkdir()
+    config.write_text(
+        "DATA_DIR: synthetic_data\nLOGS_DIR: acceptance_logs\n",
+        encoding="utf-8",
+    )
+    private_config = workspace / "acceptance_config"
+    private_config.mkdir()
+    profile_path = private_config / "api_profiles.json"
+    profile_path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "P1-29 Anonymous",
+                    "api_key": "",
+                    "config_api_key": "",
+                    "objective_api_key": "",
+                    "tagging_api_key": "",
+                    "tagging_review_api_key": "",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    profile_path.with_name("api_profiles.json.migration-v1").write_text(
+        "migration-v1-complete\n",
+        encoding="utf-8",
+    )
+    ops_state = workspace / "acceptance_ops"
+    ops_state.mkdir()
+    module = workspace / "environment_capture.py"
+    module.write_text(
+        "import json, os\n"
+        "from pathlib import Path\n"
+        f"NAMES = {SENSITIVE_API_ENV_NAMES!r}\n"
+        "payload = {name: os.getenv(name) for name in NAMES}\n"
+        "payload['AI_GRADING_API_PROFILES_PATH'] = os.getenv('AI_GRADING_API_PROFILES_PATH')\n"
+        "payload['AI_GRADING_OPS_STATE_DIR'] = os.getenv('AI_GRADING_OPS_STATE_DIR')\n"
+        "Path(__file__).with_name('captured_environment.json').write_text(json.dumps(payload))\n",
+        encoding="utf-8",
+    )
+    environment = dict(os.environ)
+    for name in SENSITIVE_API_ENV_NAMES:
+        environment[name] = "parent-sentinel-value"
+    environment["AI_GRADING_API_PROFILES_PATH"] = str(tmp_path / "outside.json")
+    environment["AI_GRADING_OPS_STATE_DIR"] = str(tmp_path / "outside-ops")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(staged_tools / "p1_29_acceptance.py"),
+            "_bootstrap",
+            "--workspace",
+            str(workspace),
+            "--target",
+            "probe",
+            "--probe-module",
+            "environment_capture",
+            "--forbid-root",
+            str(Path(acceptance.__file__).resolve().parents[1]),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    captured = json.loads(
+        (workspace / "captured_environment.json").read_text(encoding="utf-8")
+    )
+    leaked_names = [name for name in SENSITIVE_API_ENV_NAMES if captured.get(name)]
+    assert leaked_names == []
+    assert Path(captured["AI_GRADING_API_PROFILES_PATH"]).resolve() == profile_path
+    assert Path(captured["AI_GRADING_OPS_STATE_DIR"]).resolve() == ops_state
+
+
+def test_anonymous_runtime_state_has_only_empty_api_keys(tmp_path: Path) -> None:
+    workspace = tmp_path / "staged"
+    workspace.mkdir()
+
+    acceptance.write_anonymous_runtime_state(workspace)
+
+    profile_path = workspace / "acceptance_config" / "api_profiles.json"
+    profiles = json.loads(profile_path.read_text(encoding="utf-8"))
+    assert len(profiles) == 1
+    profile = profiles[0]
+    assert profile["name"] == "P1-29 Anonymous"
+    key_names = [name for name in profile if "key" in name.casefold()]
+    assert key_names
+    assert all(profile[name] == "" for name in key_names)
+    assert profile_path.with_name("api_profiles.json.migration-v1").is_file()
+    assert (workspace / "acceptance_ops").is_dir()
 
 
 def test_workspace_must_be_strictly_below_system_temp_root() -> None:
@@ -395,6 +511,7 @@ def test_internal_seed_executes_full_synthetic_flow(tmp_path: Path) -> None:
         workspace / "tools" / "p1_29_acceptance.py",
     )
     acceptance.rewrite_staged_config(workspace)
+    acceptance.write_anonymous_runtime_state(workspace)
 
     acceptance._run_internal_seed(workspace, source_sha)
     metadata = acceptance.load_prepared_metadata(workspace)
