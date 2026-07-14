@@ -31,15 +31,27 @@ def link_service(tmp_path: Path) -> SourceQuestionLinkService:
 
 def test_confirmed_link_can_exclude_current_exam_original(
     link_service: SourceQuestionLinkService,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from question_bank.services import source_question_link_service as source_link_module
+
     link_service.confirm_link(
         grading_session_id=14,
         source_question_id="17",
         bank_question_id=201,
         link_method="fingerprint",
     )
+    initialize_calls: list[Path] = []
+    original_initialize = source_link_module.initialize_database
+
+    def tracking_initialize(path: Path) -> None:
+        initialize_calls.append(path)
+        original_initialize(path)
+
+    monkeypatch.setattr(source_link_module, "initialize_database", tracking_initialize)
 
     assert link_service.confirmed_bank_question_ids(14) == {201}
+    assert initialize_calls == [link_service.db_path]
 
 
 def test_suggested_link_is_not_used_for_exclusion(
@@ -172,7 +184,10 @@ def test_suggestion_never_overwrites_teacher_confirmed_link(
 
 def test_borrowed_link_reads_reuse_connection_and_leave_it_open_on_error(
     link_service: SourceQuestionLinkService,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from question_bank.services import source_question_link_service as source_link_module
+
     link_service.confirm_link(
         grading_session_id=14,
         source_question_id="17",
@@ -186,6 +201,11 @@ def test_borrowed_link_reads_reuse_connection_and_leave_it_open_on_error(
         external_connection=borrowed,
     )
     try:
+        monkeypatch.setattr(
+            source_link_module,
+            "initialize_database",
+            lambda _path: pytest.fail("borrowed source-link reads must not initialize the database"),
+        )
         assert service.confirmed_bank_question_ids(14) == {201}
         assert service.list_links(14)[0]["bank_question_id"] == 201
 
