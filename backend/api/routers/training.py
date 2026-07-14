@@ -14,6 +14,8 @@ from backend.api.dependencies import (
     get_diagnosis_profile_service,
     get_job_manager,
     get_practice_plan_service,
+    get_request_diagnosis_profile_service,
+    get_request_practice_plan_service,
     get_training_task_service,
 )
 from backend.api.routers.jobs import _job_response
@@ -53,7 +55,9 @@ TRAINING_DATABASE_RESPONSES = {
 )
 def build_training_diagnosis(
     body: TrainingDiagnosisRequest,
-    service: DiagnosisProfileService = Depends(get_diagnosis_profile_service),
+    service: DiagnosisProfileService = Depends(
+        get_request_diagnosis_profile_service
+    ),
 ) -> TrainingDiagnosisResponse:
     try:
         diagnosis = service.build_profiles(
@@ -94,9 +98,11 @@ def build_training_diagnosis(
 def preview_training_plan(
     body: TrainingPlanRequest,
     diagnosis_service: DiagnosisProfileService = Depends(
-        get_diagnosis_profile_service
+        get_request_diagnosis_profile_service
     ),
-    practice_service: PracticePlanService = Depends(get_practice_plan_service),
+    practice_service: PracticePlanService = Depends(
+        get_request_practice_plan_service
+    ),
 ) -> TrainingPlanResponse:
     plan = _generate_public_plan(
         body,

@@ -32,6 +32,41 @@ def _query_payload() -> dict[str, object]:
     }
 
 
+def test_target_read_post_openapi_contracts_remain_stable() -> None:
+    from backend.api.app import create_app
+
+    schema = create_app().openapi()
+    expected = {
+        "/api/training/diagnosis": (
+            "build_training_diagnosis_api_training_diagnosis_post",
+            "TrainingDiagnosisResponse",
+        ),
+        "/api/training/plans/preview": (
+            "preview_training_plan_api_training_plans_preview_post",
+            "TrainingPlanResponse",
+        ),
+        "/api/graph/profiles": (
+            "get_graph_profiles_api_graph_profiles_post",
+            "GraphProfilesResponse",
+        ),
+        "/api/graph/rows": (
+            "get_graph_rows_api_graph_rows_post",
+            "GraphRowsResponse",
+        ),
+        "/api/graph/evidence": (
+            "get_graph_evidence_api_graph_evidence_post",
+            "GraphEvidenceResponse",
+        ),
+    }
+
+    for path, (operation_id, response_schema) in expected.items():
+        operation = schema["paths"][path]["post"]
+        assert operation["operationId"] == operation_id
+        assert operation["responses"]["200"]["content"]["application/json"][
+            "schema"
+        ] == {"$ref": f"#/components/schemas/{response_schema}"}
+
+
 def test_graph_query_request_rejects_legacy_controls() -> None:
     with pytest.raises(ValidationError):
         GraphQueryRequest.model_validate(
@@ -222,10 +257,12 @@ def graph_service(tmp_path: Path) -> CountingDiagnosisService:
 @pytest.fixture
 def graph_client(graph_service: CountingDiagnosisService) -> TestClient:
     from backend.api.app import create_app
-    from backend.api.dependencies import get_graph_diagnosis_profile_service
+    from backend.api.dependencies import get_request_diagnosis_profile_service
 
     app = create_app()
-    app.dependency_overrides[get_graph_diagnosis_profile_service] = lambda: graph_service
+    app.dependency_overrides[get_request_diagnosis_profile_service] = (
+        lambda: graph_service
+    )
     return TestClient(app)
 
 
@@ -385,7 +422,7 @@ def test_graph_routes_reject_legacy_or_relation_controls(
 
 def test_graph_database_failures_are_sanitized() -> None:
     from backend.api.app import create_app
-    from backend.api.dependencies import get_graph_diagnosis_profile_service
+    from backend.api.dependencies import get_request_diagnosis_profile_service
 
     class FailingService:
         @staticmethod
@@ -393,7 +430,7 @@ def test_graph_database_failures_are_sanitized() -> None:
             raise sqlite3.OperationalError("C:/private/question_bank.db is busy")
 
     app = create_app()
-    app.dependency_overrides[get_graph_diagnosis_profile_service] = FailingService
+    app.dependency_overrides[get_request_diagnosis_profile_service] = FailingService
     response = TestClient(app).post(
         "/api/graph/profiles",
         headers={"x-request-id": "rid-graph-db"},
@@ -415,7 +452,7 @@ def test_graph_snapshot_failures_are_sanitized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from backend.api.app import create_app
-    import backend.api.dependencies as dependencies
+    import backend.api.read_connections as read_connections
     from path_manager import get_path_manager
     from question_bank.services.question_read_service import (
         QuestionBankSnapshotUnavailable,
@@ -425,8 +462,8 @@ def test_graph_snapshot_failures_are_sanitized(
         raise QuestionBankSnapshotUnavailable("C:/private/grading.db changed")
 
     monkeypatch.setattr(
-        dependencies,
-        "captured_sqlite_snapshot_path",
+        read_connections,
+        "captured_sqlite_read_connection",
         fail_snapshot,
     )
     app = create_app()
