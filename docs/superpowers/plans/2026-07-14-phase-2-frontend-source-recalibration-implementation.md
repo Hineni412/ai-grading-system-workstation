@@ -8,7 +8,7 @@
 
 **Tech Stack:** Vue 3.5, TypeScript 6, Pinia 3, Vue Router 5, Element Plus 2, Vitest 4, Playwright 1.61, Node 22/24, existing FastAPI review contracts.
 
-**Current checkpoint (2026-07-14):** Tasks 1～6 are complete at reviewed functional SHA `080562504c19eb6ba8eee5146c2b9b663ac86b1e`. Automated verification, manual browser validation, real-data fingerprint comparison, independent review (0 Blocker / 0 Major / 0 Minor), and explicit user acceptance of both business equivalence and UX improvement are complete. Task 7 integration and PR are in progress; P2-09 retains its separate Phase 1 dependency and P2-10～P2-22 retain their formal package dependencies.
+**Current checkpoint (2026-07-15):** Tasks 1～7 are complete. Reviewed functional SHA `080562504c19eb6ba8eee5146c2b9b663ac86b1e` passed automated verification, manual browser validation, real-data fingerprint comparison, independent review (0 Blocker / 0 Major / 0 Minor), and explicit user acceptance of both business equivalence and UX improvement. Integration verification passed at `c16fe3c3e2d155dc071063185a9b483a0c83dd88`; PR #43 merged the gate to `main` at `3c987b57bea944e64add08d227673dbb1f97c702`. P2-09 is the next formal candidate; P2-10～P2-22 retain their formal package dependencies.
 
 ## Global Constraints
 
@@ -717,10 +717,10 @@ Fetch `origin`, create or update the authorized integration branch from current 
 
 Run the affected backend regression, complete frontend verification, recalibration Playwright gate, and full `runtime\python\python.exe tools\smoke_check.py` because the final integrated SHA differs from the feature verification SHA. Recompute both real database fingerprints after the run.
 
-- [ ] **Step 5: Push integration, open PR, merge, and synchronize**
+- [x] **Step 5: Push integration, open PR, merge, and synchronize**
 
 Push the integration branch, open a ready PR to `main`, wait for required checks, merge through GitHub, then fetch and fast-forward local `main` to `origin/main`. Synchronize remaining active worktrees to the new baseline without deleting branches or worktrees that retain unique commits or local data.
 
-- [ ] **Step 6: Final safety evidence**
+- [x] **Step 6: Final safety evidence**
 
 Confirm the merged commit contains the accepted checklist and index state, all required checks are green, root `main` equals `origin/main`, the feature/integration branches are merged according to `git branch --merged origin/main`, and both real database fingerprints still match. Only then report the gate complete.
