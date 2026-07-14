@@ -15,14 +15,12 @@ async function setMode(page: Page, mode: Record<string, string>) {
   expect(response.ok()).toBe(true)
 }
 
-async function openReview(page: Page, detailId = 1, expectImage = true) {
+async function openBatch(page: Page) {
   await page.addInitScript(([key]) => localStorage.setItem(key, '7'), [STORAGE_KEY])
-  await page.goto(`${ORIGIN}/grading?question=Q1&detail=${detailId}`)
-  await expect(page.getByRole('heading', { name: '复核队列', exact: true })).toBeVisible()
-  await expect(page.getByTestId('review-scoring-inspector')).toBeVisible()
-  if (expectImage) {
-    await expect(page.locator('.review-evidence-canvas img')).toHaveJSProperty('complete', true)
-  }
+  await page.goto(`${ORIGIN}/grading?question=Q1`)
+  await expect(page.getByRole('heading', { name: '评分复核', exact: true })).toBeVisible()
+  await expect(page.getByTestId('review-batch-workspace')).toBeVisible()
+  await expect(page.getByTestId('review-answer-sheet')).toHaveCount(2)
 }
 
 test.beforeEach(async ({ request }) => {
@@ -30,132 +28,170 @@ test.beforeEach(async ({ request }) => {
   expect(response.ok()).toBe(true)
 })
 
-test('fixed anonymous page exposes only real shortcuts and restores confirmed state after refresh', async ({ page }) => {
-  const consoleErrors: string[] = []
-  const pageErrors: string[] = []
-  page.on('console', (message) => {
-    if (message.type() === 'error') consoleErrors.push(message.text())
+test('starts in the truthful question-level batch workspace and confirms two answers once', async ({ page }) => {
+  const confirmBodies: unknown[] = []
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && request.url().endsWith('/confirm')) {
+      confirmBodies.push(request.postDataJSON())
+    }
   })
-  page.on('pageerror', (error) => pageErrors.push(error.message))
+  await openBatch(page)
 
-  await openReview(page)
-  await expect(page.getByRole('heading', { name: '匿名学生一号（超长姓名布局核对）' })).toBeVisible()
-  await expect(page.getByText('一次函数综合应用', { exact: true })).toBeVisible()
+  await expect(page.getByLabel('批量复核快捷键')).toContainText('J / K')
+  await expect(page.getByLabel('批量复核快捷键')).not.toContainText('Enter')
+  await expect(page.getByTestId('teacher-score-1')).toHaveValue('3')
+  await page.getByTestId('teacher-score-3').fill('3')
+  await page.getByTestId('confirm-batch').click()
 
-  const guide = page.getByLabel('单题复核快捷键')
-  await expect(guide).toContainText('J / K')
-  await expect(guide).toContainText('下一份 / 上一份')
-  await expect(guide).toContainText('Enter')
-  await expect(guide).toContainText('确认并下一份')
-  await expect(guide).not.toContainText('Shift + Enter')
-  await expect(guide).not.toContainText('确认并停留')
-  await expect(guide).toContainText('适应宽度')
-  await expect(guide).toContainText('搜索学生')
-  await expect(guide).not.toContainText(/(^|\s)R($|\s)/)
-
-  const scoreHierarchy = await page.evaluate(() => ({
-    teacher: Number.parseFloat(getComputedStyle(
-      document.querySelector<HTMLElement>('[data-testid="teacher-score"]')!,
-    ).fontSize),
-    ai: Number.parseFloat(getComputedStyle(
-      document.querySelector<HTMLElement>('.review-ai-score strong')!,
-    ).fontSize),
-  }))
-  expect(scoreHierarchy.teacher).toBeGreaterThan(scoreHierarchy.ai)
-
-  const canvas = page.getByLabel('答卷图片画布')
-  const scale = page.getByLabel('当前缩放比例')
-  await canvas.focus()
-  await canvas.press('+')
-  await expect(scale).not.toHaveText('100%')
-  await canvas.press('z')
-
-  await page.keyboard.press('/')
-  await expect(page.getByLabel('搜索学生')).toBeFocused()
-  await page.keyboard.press('Escape')
-  await canvas.focus()
-
-  const score = page.getByTestId('teacher-score')
-  await score.click()
-  await page.keyboard.type('4.5')
-  await expect(score).toHaveValue('4.5')
-  await score.press('Enter')
-  await expect(page).toHaveURL(/question=Q1&detail=2$/)
-  await page.getByRole('button', { name: /匿名学生一号/ }).click()
-  await expect(page).toHaveURL(/question=Q1&detail=1$/)
-
-  await page.reload()
-  await expect(page).toHaveURL(/question=Q1&detail=1$/)
-  await expect(page.getByRole('heading', { name: '匿名学生一号（超长姓名布局核对）' })).toBeVisible()
-  await expect(score).toHaveValue('4.5')
-  await expect(page.getByText('教师已确认', { exact: true })).toBeVisible()
-  const pixels = await page.locator('.review-evidence-canvas img').evaluate(
-    (image: HTMLImageElement) => image.naturalWidth * image.naturalHeight,
-  )
-  expect(pixels).toBeGreaterThan(0)
-  expect(consoleErrors).toEqual([])
-  expect(pageErrors).toEqual([])
+  await expect.poll(() => confirmBodies.length).toBe(1)
+  expect(confirmBodies[0]).toEqual({ items: [
+    { result_id: 103, detail_id: 3, score_awarded: 3 },
+    { result_id: 101, detail_id: 1, score_awarded: 3 },
+  ] })
+  await expect(page.getByText('本批 2 份评分已确认。', { exact: true })).toBeVisible()
 })
 
-test('navigation, protected focus and confirm-next shortcuts perform exactly one action', async ({ page }) => {
+test('invalid and failed batches retain every draft and never replay writes automatically', async ({ page }) => {
   let confirmRequests = 0
   page.on('request', (request) => {
     if (request.method() === 'POST' && request.url().endsWith('/confirm')) confirmRequests += 1
   })
-  await openReview(page)
-  const canvas = page.getByLabel('答卷图片画布')
-  const protectedScore = page.getByTestId('teacher-score')
-  const scale = page.getByLabel('当前缩放比例')
-
-  await canvas.focus()
-  await canvas.press('j')
-  await expect(page).toHaveURL(/detail=2$/)
-  await canvas.press('k')
-  await expect(page).toHaveURL(/detail=1$/)
-
-  await protectedScore.focus()
-  await protectedScore.press('j')
-  await expect(page).toHaveURL(/detail=1$/)
-  await expect(protectedScore).toBeFocused()
-
-  await canvas.focus()
-  const beforeZoom = await scale.textContent()
-  await canvas.press('-')
-  await expect(scale).not.toHaveText(beforeZoom ?? '')
-  await canvas.press('r')
-  await expect(page).toHaveURL(/detail=1$/)
+  await openBatch(page)
+  await page.getByTestId('teacher-score-1').fill('8')
+  await expect(page.getByText('教师最终分不能超过 5 分')).toBeVisible()
+  await expect(page.getByTestId('confirm-batch')).toBeDisabled()
   expect(confirmRequests).toBe(0)
 
-  await protectedScore.click()
-  await page.keyboard.type('4.25')
-  await expect(protectedScore).toHaveValue('4.25')
-  await protectedScore.press('Shift+Enter')
-  await expect(page).toHaveURL(/detail=1$/)
-  expect(confirmRequests).toBe(0)
-
-  await protectedScore.press('Enter')
-  await expect(page).toHaveURL(/detail=2$/)
+  await page.getByTestId('teacher-score-1').fill('4.5')
+  await page.getByTestId('teacher-score-3').fill('3')
+  await setMode(page, { confirm: '500' })
+  await page.getByTestId('confirm-batch').click()
+  await expect(page.getByTestId('review-feedback-toast')).toContainText('整批草稿已保留')
+  await expect(page.getByTestId('teacher-score-1')).toHaveValue('4.5')
+  await expect(page.getByTestId('teacher-score-3')).toHaveValue('3')
   expect(confirmRequests).toBe(1)
-
-  await protectedScore.fill('4.5')
-  await canvas.focus()
-  await canvas.press('Shift+Enter')
-  await expect(page).toHaveURL(/detail=2$/)
   expect(confirmRequests).toBe(1)
-
-  await canvas.press('Enter')
-  await expect(page).toHaveURL(/detail=4$/)
-  expect(confirmRequests).toBe(2)
 })
 
-test('unconfirmed drafts survive record changes, warn before refresh and are not presented as saved', async ({ page }) => {
-  await openReview(page)
-  const score = page.getByTestId('teacher-score')
-  await score.fill('4.75')
-  await page.getByRole('button', { name: /匿名学生二号/ }).click()
-  await page.getByRole('button', { name: /匿名学生一号/ }).click()
-  await expect(score).toHaveValue('4.75')
+test('annotation retry is explicit and never reverts the saved scores', async ({ page }) => {
+  let confirmRequests = 0
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && request.url().endsWith('/confirm')) confirmRequests += 1
+  })
+  await openBatch(page)
+  await setMode(page, { confirm: 'retry' })
+  await page.getByTestId('teacher-score-1').fill('4.5')
+  await page.getByTestId('confirm-batch').click()
+  await expect(page.getByText('分数已保存，2 份标注图需要重试', { exact: true })).toBeVisible()
+  expect(confirmRequests).toBe(1)
 
+  await setMode(page, { confirm: 'success' })
+  await page.getByRole('button', { name: '重试标注图' }).click()
+  await expect(page.getByText('标注图已重新生成。', { exact: true })).toBeVisible()
+  expect(confirmRequests).toBe(2)
+
+  const all = await page.request.get(
+    `${ORIGIN}/api/sessions/7/review/questions/Q1/items?needs_review_only=false`,
+  )
+  const body = await all.json()
+  expect(body.items.find((item: { detail_id: number }) => item.detail_id === 1).score_awarded).toBe(4.5)
+})
+
+test('deep review replaces the batch body, exposes all evidence, and restores exact batch context', async ({ page }) => {
+  await openBatch(page)
+  await page.getByTestId('review-search').fill('一号')
+  await page.getByTestId('teacher-score-1').fill('4.25')
+  await page.getByRole('button', { name: '深查此份答卷' }).click()
+
+  await expect(page.getByTestId('review-deep-workspace')).toBeVisible()
+  await expect(page.getByTestId('review-batch-workspace')).toHaveCount(0)
+  await expect(page).toHaveURL(/question=Q1&detail=1$/)
+  for (const source of ['裁剪证据', '原卷正面', '原卷反面', '标注正面', '标注反面']) {
+    await expect(page.getByRole('button', { name: source })).toBeVisible()
+  }
+  await page.getByRole('button', { name: '标注反面' }).click()
+  await expect(page.locator('.review-evidence-canvas img')).toHaveAttribute(
+    'src',
+    '/api/media/annotated/back/1',
+  )
+
+  await page.getByTestId('back-to-batch').click()
+  await expect(page.getByTestId('review-batch-workspace')).toBeVisible()
+  await expect(page.getByTestId('review-deep-workspace')).toHaveCount(0)
+  await expect(page.getByTestId('review-search')).toHaveValue('一号')
+  await expect(page.getByTestId('teacher-score-1')).toHaveValue('4.25')
+  await expect(page).toHaveURL(/grading\?question=Q1$/)
+})
+
+test('single deep confirmation decrements the question count and keeps annotation retry explicit', async ({ page }) => {
+  await openBatch(page)
+  await setMode(page, { confirm: 'retry' })
+  await page.locator('[data-detail-id="1"]').getByRole('button', { name: '深查此份答卷' }).click()
+  await expect(page.getByTestId('review-deep-workspace')).toBeVisible()
+  await page.getByTestId('confirm-single').click()
+
+  await expect(page.getByTestId('review-batch-workspace')).toBeVisible()
+  await expect(page.locator('[data-question-id="Q1"]')).toContainText('待复核 1 / 4')
+  await expect(page.getByText('分数已保存，1 份标注图需要重试', { exact: true })).toBeVisible()
+
+  await setMode(page, { confirm: 'success' })
+  await page.getByRole('button', { name: '重试标注图' }).click()
+  await expect(page.getByText('标注图已重新生成。', { exact: true })).toBeVisible()
+})
+
+test('keyboard focus stays safe and media failure remains locally recoverable', async ({ page }) => {
+  await openBatch(page)
+  await page.keyboard.press('/')
+  await expect(page.getByTestId('review-search')).toBeFocused()
+  await page.getByTestId('teacher-score-1').focus()
+  await page.keyboard.press('j')
+  await expect(page.getByTestId('teacher-score-1')).toBeFocused()
+
+  await page.route('**/api/media/crop/1', async (route) => route.fulfill({ status: 500 }))
+  await page.reload()
+  await expect(page.getByText('答卷图片暂时无法显示')).toBeVisible()
+  await page.unroute('**/api/media/crop/1')
+  await page.getByRole('button', { name: '重新加载答卷图片' }).click()
+  await expect(page.getByTestId('answer-crop-1')).toBeVisible()
+})
+
+test('loading, retained error, first error, empty, and no-pending states remain actionable', async ({ page }) => {
+  await setMode(page, { items: 'slow' })
+  await page.addInitScript(([key]) => localStorage.setItem(key, '7'), [STORAGE_KEY])
+  await page.goto(`${ORIGIN}/grading?question=Q1`)
+  await expect(page.getByText('正在读取本题答卷', { exact: true })).toBeVisible()
+  await expect(page.getByTestId('review-batch-workspace')).toBeVisible()
+
+  await setMode(page, { items: 'error' })
+  await page.reload()
+  await expect(page.getByText('复核内容加载失败', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '重新加载' })).toBeVisible()
+
+  await setMode(page, { items: 'empty' })
+  await page.getByRole('button', { name: '重新加载' }).click()
+  await expect(page.getByText('当前范围没有答卷', { exact: true })).toBeVisible()
+
+  await page.request.post(`${ORIGIN}/__p2_08__/reset`, { data: {} })
+  await page.reload()
+  await expect(page.getByTestId('review-answer-sheet')).toHaveCount(2)
+  await setMode(page, { items: 'error' })
+  await page.getByLabel('显示范围').selectOption('all')
+  await expect(page.getByText('复核内容刷新失败', { exact: true })).toBeVisible()
+  await expect(page.getByTestId('review-answer-sheet')).toHaveCount(2)
+  await expect(page.getByLabel('显示范围')).toHaveValue('needs_review')
+
+  await setMode(page, { items: 'ready' })
+  await page.getByLabel('显示范围').selectOption('needs_review')
+  await expect(page.getByTestId('review-answer-sheet')).toHaveCount(2)
+  await page.getByTestId('confirm-batch').click()
+  await expect(page.getByTestId('review-feedback-toast')).toContainText('本批 2 份评分已确认')
+  await page.locator('[data-question-id="Q1"]').click()
+  await expect(page.getByText('当前范围没有答卷', { exact: true })).toBeVisible()
+})
+
+test('refresh warns about dirty drafts, while saved runtime state persists until reset', async ({ page }) => {
+  await openBatch(page)
+  await page.getByTestId('teacher-score-1').fill('4.75')
   let dialogType = ''
   page.once('dialog', async (dialog) => {
     dialogType = dialog.type()
@@ -163,126 +199,52 @@ test('unconfirmed drafts survive record changes, warn before refresh and are not
   })
   await page.reload()
   expect(dialogType).toBe('beforeunload')
-  await expect(score).toHaveValue('3')
-  await expect(page.getByText('教师草稿未确认', { exact: true })).toBeHidden()
-})
+  await expect(page.getByTestId('teacher-score-1')).toHaveValue('3')
 
-test('failure retains the draft and annotation retry remains non-blocking', async ({ page }) => {
-  await page.setViewportSize({ width: 1024, height: 768 })
-  await openReview(page, 3)
-  const score = page.getByTestId('teacher-score')
-  const canvas = page.getByLabel('答卷图片画布')
-
-  await setMode(page, { confirm: '422' })
-  await score.fill('3.5')
-  await page.getByTestId('scoring-scroll-region').evaluate((element) => {
-    element.scrollTop = element.scrollHeight
-  })
-  await canvas.focus()
-  await canvas.press('Enter')
-  const toast = page.getByTestId('review-feedback-toast')
-  await expect(toast).toBeVisible()
-  await expect(toast).toContainText('确认失败')
-  expect(await toast.evaluate((element) => element.parentElement === document.body)).toBe(true)
-  const geometry = await page.evaluate(() => {
-    const toastElement = document.querySelector<HTMLElement>('[data-testid="review-feedback-toast"]')!
-    const footer = document.querySelector<HTMLElement>('[data-testid="scoring-footer"]')!
-    const toastRect = toastElement.getBoundingClientRect()
-    const footerRect = footer.getBoundingClientRect()
-    return {
-      insideViewport: toastRect.left >= 0 && toastRect.right <= innerWidth &&
-        toastRect.top >= 0 && toastRect.bottom <= innerHeight,
-      overlapsFooter: toastRect.left < footerRect.right && toastRect.right > footerRect.left &&
-        toastRect.top < footerRect.bottom && toastRect.bottom > footerRect.top,
-      documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-    }
-  })
-  expect(geometry).toEqual({ insideViewport: true, overlapsFooter: false, documentOverflow: 0 })
-  await expect(score).toHaveValue('3.5')
-  await expect(page).toHaveURL(/detail=3$/)
-
-  await setMode(page, { confirm: '500' })
-  await canvas.press('Enter')
-  await expect(page.getByTestId('review-feedback-toast')).toHaveCount(1)
-  await expect(page.getByTestId('review-feedback-toast')).toContainText('确认失败')
-  await expect(score).toHaveValue('3.5')
-
-  await setMode(page, { confirm: 'retry' })
-  await canvas.press('Enter')
-  await expect(page.getByText('分数已确认，标注图需要稍后刷新。', { exact: true })).toBeVisible()
-  await expect(page).toHaveURL(/detail=1$/)
-})
-
-test('loading, disabled, retained-content, empty and first-load error states remain actionable', async ({ page }) => {
-  await setMode(page, { items: 'slow' })
-  await page.addInitScript(([key]) => localStorage.setItem(key, '7'), [STORAGE_KEY])
-  await page.goto(`${ORIGIN}/grading?question=Q1&detail=1`)
-  await expect(page.getByText('正在读取复核记录', { exact: true })).toBeVisible()
-  await expect(page.getByTestId('review-scoring-inspector')).toBeVisible()
-  await expect(page.getByTestId('confirm-next')).toBeDisabled()
-  await expect(page.getByText('根据题意建立变量关系', { exact: false })).toBeVisible()
-
-  await setMode(page, { confirm: 'success', items: 'error' })
-  await page.getByTestId('teacher-score').fill('4.5')
-  await page.getByLabel('答卷图片画布').focus()
-  await page.getByLabel('答卷图片画布').press('Enter')
-  await expect(page.getByText(/分数已确认，队列刷新失败/)).toBeVisible()
-  await expect(page.getByText('复核内容刷新失败', { exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: '重新加载' })).toBeVisible()
+  await page.getByTestId('teacher-score-1').fill('4.5')
+  await page.getByTestId('confirm-batch').click()
+  await page.goto(`${ORIGIN}/grading?question=Q1`)
+  await page.getByLabel('显示范围').selectOption('all')
+  await expect(page.getByTestId('teacher-score-1')).toHaveValue('4.5')
 
   await page.request.post(`${ORIGIN}/__p2_08__/reset`, { data: {} })
-  await setMode(page, { items: 'empty' })
   await page.reload()
-  await expect(page.locator('.review-queue-list .review-queue-row')).toHaveCount(0)
-  await expect(page.getByText('共 0 条', { exact: true })).toBeVisible()
-
-  await setMode(page, { items: 'error' })
-  await page.reload()
-  await expect(page.getByText('复核队列加载失败', { exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: '重新加载' })).toBeVisible()
+  await page.getByLabel('显示范围').selectOption('all')
+  await expect(page.getByTestId('teacher-score-1')).toHaveValue('3')
 })
 
 for (const viewport of viewports) {
-  test(`${viewport.name} keeps the workspace reachable without horizontal overflow`, async ({ page }) => {
+  test(`${viewport.name} has no document overflow, clipping, or batch/deep overlap`, async ({ page }) => {
+    const consoleErrors: string[] = []
+    page.on('console', (message) => {
+      if (message.type() === 'error') consoleErrors.push(message.text())
+    })
     await page.setViewportSize(viewport)
-    await openReview(page)
-    const layout = await page.evaluate(() => {
-      const documentElement = document.documentElement
-      const footer = document.querySelector<HTMLElement>('[data-testid="scoring-footer"]')
-      const workspace = document.querySelector<HTMLElement>('.review-workspace')
-      const queue = document.querySelector<HTMLElement>('.review-queue-panel')
-      const evidence = document.querySelector<HTMLElement>('.review-detail')
-      const inspector = document.querySelector<HTMLElement>('[data-testid="review-scoring-inspector"]')
-      const image = document.querySelector<HTMLImageElement>('.review-evidence-canvas img')
-      const rect = (element: HTMLElement | null) => element?.getBoundingClientRect() ?? null
-      const overlap = (left: DOMRect | null, right: DOMRect | null) => {
-        if (!left || !right) return Number.POSITIVE_INFINITY
-        return Math.max(0, Math.min(left.right, right.right) - Math.max(left.left, right.left)) *
-          Math.max(0, Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top))
-      }
-      const queueRect = rect(queue)
-      const evidenceRect = rect(evidence)
-      const inspectorRect = rect(inspector)
-      const footerRect = rect(footer)
+    await openBatch(page)
+    await expect(page.getByTestId('confirm-batch')).toBeVisible()
+    await page.getByRole('button', { name: '深查此份答卷' }).first().click()
+    await expect(page.getByTestId('review-deep-workspace')).toBeVisible()
+
+    const geometry = await page.evaluate(() => {
+      const evidence = document.querySelector<HTMLElement>('.review-deep-workspace__evidence')!
+      const scoring = document.querySelector<HTMLElement>('.review-deep-workspace__scoring')!
+      const evidenceRect = evidence.getBoundingClientRect()
+      const scoringRect = scoring.getBoundingClientRect()
+      const overlapWidth = Math.max(
+        0,
+        Math.min(evidenceRect.right, scoringRect.right) - Math.max(evidenceRect.left, scoringRect.left),
+      )
+      const overlapHeight = Math.max(
+        0,
+        Math.min(evidenceRect.bottom, scoringRect.bottom) - Math.max(evidenceRect.top, scoringRect.top),
+      )
       return {
-        horizontalOverflow: documentElement.scrollWidth - documentElement.clientWidth,
-        footerWidth: footerRect?.width ?? 0,
-        footerReachable: Boolean(
-          footerRect && footerRect.left >= 0 && footerRect.right <= window.innerWidth + 1 &&
-          footerRect.top >= 0 && footerRect.bottom <= window.innerHeight + 1,
-        ),
-        workspaceWidth: workspace?.getBoundingClientRect().width ?? 0,
-        imagePixels: (image?.naturalWidth ?? 0) * (image?.naturalHeight ?? 0),
-        queueEvidenceOverlap: overlap(queueRect, evidenceRect),
-        workspaceInspectorOverlap: overlap(rect(workspace), inspectorRect),
+        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        overlap: overlapWidth * overlapHeight,
+        batchPresent: Boolean(document.querySelector('[data-testid="review-batch-workspace"]')),
       }
     })
-    expect(layout.horizontalOverflow).toBeLessThanOrEqual(1)
-    expect(layout.footerWidth).toBeGreaterThan(0)
-    expect(layout.workspaceWidth).toBeGreaterThan(0)
-    expect(layout.imagePixels).toBeGreaterThan(0)
-    expect(layout.footerReachable).toBe(true)
-    expect(layout.queueEvidenceOverlap).toBe(0)
-    expect(layout.workspaceInspectorOverlap).toBe(0)
+    expect(geometry).toEqual({ overflow: 0, overlap: 0, batchPresent: false })
+    expect(consoleErrors).toEqual([])
   })
 }

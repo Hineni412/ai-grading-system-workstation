@@ -141,7 +141,7 @@ describe('P2-06 review evidence viewer', () => {
     expect(host.textContent).toContain('裁剪证据')
   })
 
-  it('switches to original front and back while resetting transform state', async () => {
+  it('switches across crop, original, and annotated evidence while resetting transform state', async () => {
     const { host } = await mountViewer()
     ResizeObserverStub.instances[0]?.emit()
     loadActiveImage(host)
@@ -157,6 +157,14 @@ describe('P2-06 review evidence viewer', () => {
     clickButton(host, '原卷反面')
     await settle()
     expect(host.querySelector('img')?.getAttribute('src')).toBe('/api/back/2')
+
+    clickButton(host, '标注正面')
+    await settle()
+    expect(host.querySelector('img')?.getAttribute('src')).toBe('/api/front/2?variant=annotated')
+
+    clickButton(host, '标注反面')
+    await settle()
+    expect(host.querySelector('img')?.getAttribute('src')).toBe('/api/back/2?variant=annotated')
   })
 
   it('shows a safe retry state and remounts the same controlled URL', async () => {

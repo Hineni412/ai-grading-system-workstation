@@ -1,32 +1,28 @@
 import { createRouter, createWebHistory, type RouteRecordRaw, type RouterHistory } from 'vue-router'
 
 import ComponentShowcase from '../components/design-system/ComponentShowcase.vue'
-import { workspaceRouteDefinitions } from '../navigation'
-
-const placeholderRoutes: RouteRecordRaw[] = workspaceRouteDefinitions.map((definition) => ({
-  path: definition.path,
-  name: definition.id,
-  component: definition.id === 'grading'
-    ? () => import('../views/ReviewQueueView.vue')
-    : () => import('../views/RoutePlaceholderView.vue'),
-  meta: {
-    title: definition.title,
-    description: definition.description,
-    breadcrumb: definition.breadcrumb,
-  },
-}))
+import { reviewRouteDefinition } from '../navigation'
 
 const routes: RouteRecordRaw[] = [
   {
     path: '/',
-    redirect: '/workbench',
+    redirect: reviewRouteDefinition.path,
     meta: {
-      title: '工作台',
-      description: '进入工作台',
-      breadcrumb: '工作台',
+      title: reviewRouteDefinition.title,
+      description: reviewRouteDefinition.description,
+      breadcrumb: reviewRouteDefinition.breadcrumb,
     },
   },
-  ...placeholderRoutes,
+  {
+    path: reviewRouteDefinition.path,
+    name: reviewRouteDefinition.id,
+    component: () => import('../views/ReviewQueueView.vue'),
+    meta: {
+      title: reviewRouteDefinition.title,
+      description: reviewRouteDefinition.description,
+      breadcrumb: reviewRouteDefinition.breadcrumb,
+    },
+  },
   {
     path: '/design-system',
     name: 'design-system',

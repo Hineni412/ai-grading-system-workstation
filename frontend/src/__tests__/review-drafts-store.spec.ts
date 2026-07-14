@@ -93,6 +93,19 @@ describe('review draft store', () => {
     expect(store.drafts[second.key]?.scoreText).toBe('4')
   })
 
+  it('clears an explicitly confirmed batch without touching other drafts', () => {
+    const store = useReviewDraftStore()
+    const first = store.ensureDraft(item())
+    const second = store.ensureDraft(item({ detail_id: 22, result_id: 12 }))
+    const retained = store.ensureDraft(item({ detail_id: 23, result_id: 13 }))
+
+    store.markConfirmedMany([first.key, second.key, 'missing:key'])
+
+    expect(store.drafts[first.key]).toBeUndefined()
+    expect(store.drafts[second.key]).toBeUndefined()
+    expect(store.drafts[retained.key]).toBeDefined()
+  })
+
   it('does not seed an AI deduction reason as a teacher note', () => {
     const store = useReviewDraftStore()
     expect(store.ensureDraft(item()).note).toBe('')

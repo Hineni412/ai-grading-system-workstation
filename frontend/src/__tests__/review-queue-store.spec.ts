@@ -27,7 +27,7 @@ const item = (index: number, overrides: Partial<ReviewItem> = {}): ReviewItem =>
   error_category: null,
   error_summary: null,
   confidence_score: 90,
-  needs_review: false,
+  needs_review: true,
   candidate_scores: [],
   metadata: {},
   media,
@@ -58,10 +58,17 @@ function deferred<T>() {
 describe('review queue store', () => {
   beforeEach(() => setActivePinia(createPinia()))
 
+  it('defaults to pending-only batches of 24 records', () => {
+    const store = useReviewQueueStore()
+    expect(REVIEW_PAGE_SIZE).toBe(24)
+    expect(store.scope).toBe('needs_review')
+  })
+
   it('sorts risk deterministically and searches only identity fields', () => {
     const store = useReviewQueueStore()
+    store.setScope('all')
     store.replaceItems([
-      item(3),
+      item(3, { needs_review: false }),
       item(2, { needs_review: true, confidence_score: null }),
       item(1, {
         needs_review: true,
@@ -78,17 +85,19 @@ describe('review queue store', () => {
 
   it('filters by server needs_review and reconciles selection', () => {
     const store = useReviewQueueStore()
-    store.replaceItems([item(1), item(2, { needs_review: true })], 1)
-    store.setScope('needs_review')
+    store.replaceItems([item(1, { needs_review: false }), item(2)], 1)
     expect(store.selectedDetailId).toBe(2)
     store.setScope('all')
     expect(store.selectedDetailId).toBe(2)
   })
 
-  it('patches only the confirmed item with teacher-owned status', () => {
+  it('patches multiple confirmed items with teacher-owned status', () => {
     const store = useReviewQueueStore()
-    store.replaceItems([item(1, { needs_review: true }), item(2, { needs_review: true })], 1)
-    store.markItemConfirmed(store.items[0]!, 4.5, '教师调整')
+    store.replaceItems([item(1), item(2), item(3)], 1)
+    store.markItemsConfirmed([
+      { identity: store.items[0]!, scoreAwarded: 4.5, deductionReason: '教师调整' },
+      { identity: store.items[1]!, scoreAwarded: 3, deductionReason: '人工复核已确认' },
+    ])
 
     expect(store.items[0]).toMatchObject({
       detail_id: 1,
@@ -98,7 +107,30 @@ describe('review queue store', () => {
       error_summary: 'manual_review_confirmed',
       needs_review: false,
     })
-    expect(store.items[1]).toMatchObject({ detail_id: 2, needs_review: true })
+    expect(store.items[1]).toMatchObject({
+      detail_id: 2,
+      deduction_reason: '人工复核已确认',
+      error_category: '已复核',
+      error_summary: 'manual_review_confirmed',
+      needs_review: false,
+    })
+    expect(store.items[2]).toMatchObject({ detail_id: 3, needs_review: true })
+  })
+
+  it('adjusts only the matching question pending count and clamps it safely', async () => {
+    const store = useReviewQueueStore()
+    await store.loadQuestions(7, async () => [
+      question('Q1', { total_count: 3, needs_review_count: 2 }),
+      question('Q2', { total_count: 2, needs_review_count: 1 }),
+    ])
+
+    store.adjustQuestionPendingCount('Q1', -2)
+    store.adjustQuestionPendingCount('Q2', 5)
+
+    expect(store.questions).toEqual([
+      question('Q1', { total_count: 3, needs_review_count: 0 }),
+      question('Q2', { total_count: 2, needs_review_count: 2 }),
+    ])
   })
 
   it('sorts by student code or name with deterministic identity tie-breakers', () => {
@@ -116,22 +148,22 @@ describe('review queue store', () => {
     expect(store.filteredItems.map((entry) => entry.detail_id)).toEqual([3, 2, 1, 4])
   })
 
-  it('paginates 1000 rows and moves across the 100/101 boundary', () => {
+  it('paginates 1000 rows and moves across the 24/25 boundary', () => {
     const store = useReviewQueueStore()
     store.setSort('student_code')
     store.replaceItems(
       Array.from({ length: 1000 }, (_, offset) =>
         item(offset + 1, { class_name: '七年级一班' }),
       ),
-      100,
+      24,
     )
-    expect(REVIEW_PAGE_SIZE).toBe(100)
-    expect(store.totalPages).toBe(10)
+    expect(REVIEW_PAGE_SIZE).toBe(24)
+    expect(store.totalPages).toBe(42)
     store.moveSelection(1)
-    expect(store.selectedDetailId).toBe(101)
+    expect(store.selectedDetailId).toBe(25)
     expect(store.page).toBe(2)
     store.moveSelection(-1)
-    expect(store.selectedDetailId).toBe(100)
+    expect(store.selectedDetailId).toBe(24)
     expect(store.page).toBe(1)
   })
 
@@ -144,14 +176,17 @@ describe('review queue store', () => {
     expect(store.currentIndex).toBe(100)
     expect(store.canMovePrevious).toBe(true)
     expect(store.canMoveNext).toBe(false)
-    expect(store.pageItems.map((entry) => entry.detail_id)).toEqual([101])
+    expect(store.pageItems.map((entry) => entry.detail_id)).toContain(101)
+    expect(store.pageItems.length).toBeLessThanOrEqual(REVIEW_PAGE_SIZE)
 
     store.setPage(-1)
     expect(store.page).toBe(1)
     store.setPage(99)
-    expect(store.page).toBe(2)
+    expect(store.page).toBe(5)
     store.selectDetail(1)
-    expect(store.page).toBe(1)
+    expect(store.page).toBe(
+      Math.floor(store.filteredItems.findIndex((entry) => entry.detail_id === 1) / REVIEW_PAGE_SIZE) + 1,
+    )
   })
 
   it('keeps the last successful queue when refresh fails', async () => {
@@ -185,8 +220,8 @@ describe('review queue store', () => {
     const second = deferred<ReviewItem[]>()
     let firstSignal: AbortSignal | undefined
 
-    const firstLoad = store.loadItems(7, 'Q1', (_sessionId, _questionId, signal) => {
-      firstSignal = signal
+    const firstLoad = store.loadItems(7, 'Q1', (_sessionId, _questionId, options) => {
+      firstSignal = options.signal
       return first.promise
     })
     const secondLoad = store.loadItems(7, 'Q1', () => second.promise)
@@ -252,8 +287,8 @@ describe('review queue store', () => {
     const store = useReviewQueueStore()
     const pending = deferred<ReviewItem[]>()
     let signal: AbortSignal | undefined
-    const load = store.loadItems(7, 'Q1', (_sessionId, _questionId, nextSignal) => {
-      signal = nextSignal
+    const load = store.loadItems(7, 'Q1', (_sessionId, _questionId, options) => {
+      signal = options.signal
       return pending.promise
     })
     store.selectQuestion('Q1')
@@ -272,7 +307,7 @@ describe('review queue store', () => {
       selectedQuestionId: null,
       selectedDetailId: null,
       search: '',
-      scope: 'all',
+      scope: 'needs_review',
       sort: 'risk',
       page: 1,
     })
