@@ -105,6 +105,13 @@ export const useReviewDraftStore = defineStore('review-drafts', () => {
     drafts.value = next
   }
 
+  function markConfirmedMany(keys: readonly string[]): void {
+    const confirmed = new Set(keys)
+    drafts.value = Object.fromEntries(
+      Object.entries(drafts.value).filter(([key]) => !confirmed.has(key)),
+    )
+  }
+
   function reset(): void {
     drafts.value = {}
   }
@@ -117,6 +124,7 @@ export const useReviewDraftStore = defineStore('review-drafts', () => {
     updateScore,
     updateNote,
     markConfirmed,
+    markConfirmedMany,
     reset,
   }
 })

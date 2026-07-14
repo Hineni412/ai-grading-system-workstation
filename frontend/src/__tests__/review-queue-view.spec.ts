@@ -132,9 +132,9 @@ async function mountView({
   const loadItemsSpy = vi
     .spyOn(reviewStore, 'loadItems')
     .mockImplementation((requestedSessionId, questionId) =>
-      loadItems(requestedSessionId, questionId, async (_sessionId, _questionId, signal) => {
+      loadItems(requestedSessionId, questionId, async (_sessionId, _questionId, options) => {
         if (failItemLoad) throw new Error('private item failure')
-        if (itemLoader) return itemLoader(requestedSessionId, questionId, signal)
+        if (itemLoader) return itemLoader(requestedSessionId, questionId, options.signal)
         return reviewItems[questionId] ?? []
       }),
     )

@@ -5,14 +5,27 @@ import { ApiError } from '../api/errors'
 import {
   fetchReviewItems,
   fetchReviewQuestions,
+  type FetchReviewItemsOptions,
   type ReviewItem,
   type ReviewQuestionSummary,
 } from '../api/review'
 
-export const REVIEW_PAGE_SIZE = 100
+export const REVIEW_PAGE_SIZE = 24
 export type ReviewScope = 'all' | 'needs_review'
 export type ReviewSort = 'risk' | 'student_code' | 'student_name'
 export type ReviewLoadState = 'idle' | 'loading' | 'ready' | 'error'
+
+export interface ConfirmedReviewPatch {
+  identity: Pick<ReviewItem, 'session_id' | 'question_id' | 'detail_id'>
+  scoreAwarded: number
+  deductionReason: string
+}
+
+type ReviewItemsLoader = (
+  sessionId: number,
+  questionId: string,
+  options: FetchReviewItemsOptions,
+) => Promise<ReviewItem[]>
 
 const text = (value: string | null) =>
   (value ?? '').trim().toLocaleLowerCase('zh-CN')
@@ -65,7 +78,7 @@ export const useReviewQueueStore = defineStore('review-queue', () => {
   const selectedQuestionId = ref<string | null>(null)
   const selectedDetailId = ref<number | null>(null)
   const search = ref('')
-  const scope = ref<ReviewScope>('all')
+  const scope = ref<ReviewScope>('needs_review')
   const sort = ref<ReviewSort>('risk')
   const page = ref(1)
 
@@ -142,22 +155,43 @@ export const useReviewQueueStore = defineStore('review-queue', () => {
     reconcileSelection(preferredDetailId)
   }
 
+  function markItemsConfirmed(patches: readonly ConfirmedReviewPatch[]): void {
+    items.value = items.value.map((entry) => {
+      const patch = patches.find(
+        ({ identity }) =>
+          entry.session_id === identity.session_id &&
+          entry.question_id === identity.question_id &&
+          entry.detail_id === identity.detail_id,
+      )
+      if (!patch) return entry
+      return {
+        ...entry,
+        score_awarded: patch.scoreAwarded,
+        deduction_reason: patch.deductionReason,
+        error_category: '已复核',
+        error_summary: 'manual_review_confirmed',
+        needs_review: false,
+      }
+    })
+  }
+
   function markItemConfirmed(
     identity: Pick<ReviewItem, 'session_id' | 'question_id' | 'detail_id'>,
     scoreAwarded: number,
     deductionReason: string,
   ): void {
-    items.value = items.value.map((entry) =>
-      entry.session_id === identity.session_id &&
-      entry.question_id === identity.question_id &&
-      entry.detail_id === identity.detail_id
+    markItemsConfirmed([{ identity, scoreAwarded, deductionReason }])
+  }
+
+  function adjustQuestionPendingCount(questionId: string, delta: number): void {
+    questions.value = questions.value.map((entry) =>
+      entry.question_id === questionId
         ? {
             ...entry,
-            score_awarded: scoreAwarded,
-            deduction_reason: deductionReason,
-            error_category: '已复核',
-            error_summary: 'manual_review_confirmed',
-            needs_review: false,
+            needs_review_count: Math.min(
+              entry.total_count,
+              Math.max(0, entry.needs_review_count + Math.trunc(delta)),
+            ),
           }
         : entry,
     )
@@ -255,7 +289,8 @@ export const useReviewQueueStore = defineStore('review-queue', () => {
   async function loadItems(
     sessionId: number,
     questionId: string,
-    loader: typeof fetchReviewItems = fetchReviewItems,
+    loader: ReviewItemsLoader = fetchReviewItems,
+    needsReviewOnly = scope.value === 'needs_review',
   ): Promise<void> {
     itemController?.abort()
     const controller = new AbortController()
@@ -266,7 +301,10 @@ export const useReviewQueueStore = defineStore('review-queue', () => {
     errorMessage.value = ''
 
     try {
-      const loadedItems = await loader(sessionId, questionId, controller.signal)
+      const loadedItems = await loader(sessionId, questionId, {
+        needsReviewOnly,
+        signal: controller.signal,
+      })
       if (generation !== itemGeneration) return
       replaceItems(loadedItems, selectedDetailId.value ?? undefined)
       itemLoadState.value = 'ready'
@@ -299,7 +337,7 @@ export const useReviewQueueStore = defineStore('review-queue', () => {
     selectedQuestionId.value = null
     selectedDetailId.value = null
     search.value = ''
-    scope.value = 'all'
+    scope.value = 'needs_review'
     sort.value = 'risk'
     page.value = 1
   }
@@ -326,7 +364,9 @@ export const useReviewQueueStore = defineStore('review-queue', () => {
     loadQuestions,
     loadItems,
     replaceItems,
+    markItemsConfirmed,
     markItemConfirmed,
+    adjustQuestionPendingCount,
     reconcileAfterConfirmation,
     selectQuestion,
     selectDetail,
