@@ -182,9 +182,14 @@ def captured_sqlite_read_connection(
     db_path: Path,
     *,
     required_tables: frozenset[str],
+    check_same_thread: bool = True,
 ) -> Iterator[sqlite3.Connection]:
     with _captured_snapshot_candidate(db_path) as candidate:
-        conn = _open_snapshot_connection(candidate, required_tables=required_tables)
+        conn = _open_snapshot_connection(
+            candidate,
+            required_tables=required_tables,
+            check_same_thread=check_same_thread,
+        )
         try:
             yield conn
         except sqlite3.DatabaseError as exc:
@@ -470,6 +475,7 @@ def _open_snapshot_connection(
     candidate: Path,
     *,
     required_tables: frozenset[str] = _SNAPSHOT_REQUIRED_TABLES,
+    check_same_thread: bool = True,
 ) -> sqlite3.Connection:
     conn: sqlite3.Connection | None = None
     try:
@@ -479,6 +485,7 @@ def _open_snapshot_connection(
                 uri,
                 uri=True,
                 isolation_level=None,
+                check_same_thread=check_same_thread,
             )
         )
         conn.row_factory = sqlite3.Row

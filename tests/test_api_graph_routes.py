@@ -4,6 +4,7 @@ import json
 import sqlite3
 import warnings
 import gc
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -30,6 +31,41 @@ def _query_payload() -> dict[str, object]:
         "scope": {"mode": "student", "student_ids": ["12"]},
         "exam_scope": {"mode": "current", "session_ids": [14]},
     }
+
+
+def test_target_read_post_openapi_contracts_remain_stable() -> None:
+    from backend.api.app import create_app
+
+    schema = create_app().openapi()
+    expected = {
+        "/api/training/diagnosis": (
+            "build_training_diagnosis_api_training_diagnosis_post",
+            "TrainingDiagnosisResponse",
+        ),
+        "/api/training/plans/preview": (
+            "preview_training_plan_api_training_plans_preview_post",
+            "TrainingPlanResponse",
+        ),
+        "/api/graph/profiles": (
+            "get_graph_profiles_api_graph_profiles_post",
+            "GraphProfilesResponse",
+        ),
+        "/api/graph/rows": (
+            "get_graph_rows_api_graph_rows_post",
+            "GraphRowsResponse",
+        ),
+        "/api/graph/evidence": (
+            "get_graph_evidence_api_graph_evidence_post",
+            "GraphEvidenceResponse",
+        ),
+    }
+
+    for path, (operation_id, response_schema) in expected.items():
+        operation = schema["paths"][path]["post"]
+        assert operation["operationId"] == operation_id
+        assert operation["responses"]["200"]["content"]["application/json"][
+            "schema"
+        ] == {"$ref": f"#/components/schemas/{response_schema}"}
 
 
 def test_graph_query_request_rejects_legacy_controls() -> None:
@@ -222,10 +258,12 @@ def graph_service(tmp_path: Path) -> CountingDiagnosisService:
 @pytest.fixture
 def graph_client(graph_service: CountingDiagnosisService) -> TestClient:
     from backend.api.app import create_app
-    from backend.api.dependencies import get_graph_diagnosis_profile_service
+    from backend.api.dependencies import get_request_diagnosis_profile_service
 
     app = create_app()
-    app.dependency_overrides[get_graph_diagnosis_profile_service] = lambda: graph_service
+    app.dependency_overrides[get_request_diagnosis_profile_service] = (
+        lambda: graph_service
+    )
     return TestClient(app)
 
 
@@ -385,7 +423,7 @@ def test_graph_routes_reject_legacy_or_relation_controls(
 
 def test_graph_database_failures_are_sanitized() -> None:
     from backend.api.app import create_app
-    from backend.api.dependencies import get_graph_diagnosis_profile_service
+    from backend.api.dependencies import get_request_diagnosis_profile_service
 
     class FailingService:
         @staticmethod
@@ -393,7 +431,7 @@ def test_graph_database_failures_are_sanitized() -> None:
             raise sqlite3.OperationalError("C:/private/question_bank.db is busy")
 
     app = create_app()
-    app.dependency_overrides[get_graph_diagnosis_profile_service] = FailingService
+    app.dependency_overrides[get_request_diagnosis_profile_service] = FailingService
     response = TestClient(app).post(
         "/api/graph/profiles",
         headers={"x-request-id": "rid-graph-db"},
@@ -415,7 +453,7 @@ def test_graph_snapshot_failures_are_sanitized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from backend.api.app import create_app
-    import backend.api.dependencies as dependencies
+    import backend.api.read_connections as read_connections
     from path_manager import get_path_manager
     from question_bank.services.question_read_service import (
         QuestionBankSnapshotUnavailable,
@@ -425,8 +463,8 @@ def test_graph_snapshot_failures_are_sanitized(
         raise QuestionBankSnapshotUnavailable("C:/private/grading.db changed")
 
     monkeypatch.setattr(
-        dependencies,
-        "captured_sqlite_snapshot_path",
+        read_connections,
+        "captured_sqlite_read_connection",
         fail_snapshot,
     )
     app = create_app()
@@ -448,6 +486,107 @@ def test_graph_snapshot_failures_are_sanitized(
         "request_id": "rid-graph-snapshot",
     }
     assert "C:/private" not in response.text
+
+
+def _install_request_cleanup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[Path]:
+    import backend.api.read_connections as read_connections
+
+    real_capture = read_connections.captured_sqlite_read_connection
+    cleanup_attempts: list[Path] = []
+
+    @contextmanager
+    def cleanup_fails(db_path: Path, **kwargs):
+        try:
+            with real_capture(db_path, **kwargs) as connection:
+                yield connection
+        finally:
+            cleanup_attempts.append(Path(db_path))
+            raise OSError("C:/private/cleanup.db")
+
+    monkeypatch.setattr(
+        read_connections,
+        "captured_sqlite_read_connection",
+        cleanup_fails,
+    )
+    return cleanup_attempts
+
+
+def test_graph_cleanup_only_failure_returns_sanitized_503_before_success_commit(
+    graph_service: CountingDiagnosisService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.api.app import create_app
+    from path_manager import get_path_manager
+
+    cleanup_attempts = _install_request_cleanup_failure(monkeypatch)
+    app = create_app()
+    app.dependency_overrides[get_path_manager] = lambda: SimpleNamespace(
+        db_path=graph_service.grading_path,
+        qb_db_path=graph_service.question_bank_path,
+    )
+    response = TestClient(app).post(
+        "/api/graph/profiles",
+        headers={"x-request-id": "rid-graph-cleanup"},
+        json=_query_payload(),
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"] == {
+        "code": "graph_database_unavailable",
+        "message": "Graph data is temporarily unavailable",
+        "details": {},
+        "request_id": "rid-graph-cleanup",
+    }
+    assert "C:/private" not in response.text
+    assert cleanup_attempts == [
+        graph_service.question_bank_path,
+        graph_service.grading_path,
+    ]
+
+
+def test_graph_business_error_survives_request_cleanup_failure(
+    graph_service: CountingDiagnosisService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.api.app import create_app
+    from integration.diagnosis_profile_service import DiagnosisProfileService
+    from path_manager import get_path_manager
+
+    cleanup_attempts = _install_request_cleanup_failure(monkeypatch)
+
+    def fail_business(self, **_kwargs):
+        raise ValueError("C:/private/business.db")
+
+    monkeypatch.setattr(
+        DiagnosisProfileService,
+        "build_tag_profiles",
+        fail_business,
+    )
+    app = create_app()
+    app.dependency_overrides[get_path_manager] = lambda: SimpleNamespace(
+        db_path=graph_service.grading_path,
+        qb_db_path=graph_service.question_bank_path,
+    )
+    response = TestClient(app).post(
+        "/api/graph/profiles",
+        headers={"x-request-id": "rid-graph-business"},
+        json=_query_payload(),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"] == {
+        "code": "graph_scope_invalid",
+        "message": "Graph scope is invalid",
+        "details": {},
+        "request_id": "rid-graph-business",
+    }
+    assert "C:/private" not in response.text
+    assert cleanup_attempts == [
+        graph_service.question_bank_path,
+        graph_service.grading_path,
+    ]
 
 
 def _database_file_state(path: Path) -> dict[str, bytes | None]:
