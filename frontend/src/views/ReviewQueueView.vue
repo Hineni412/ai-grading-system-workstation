@@ -174,7 +174,6 @@ async function loadSession(sessionId: number | null): Promise<void> {
   itemGeneration += 1
   reviewStore.reset()
   mode.value = preferredDetailId === null ? 'batch' : 'deep'
-  annotationRetryEntries.value = []
 
   if (sessionId === null || sessionId <= 0) {
     syncValidatedQuery()
@@ -356,9 +355,10 @@ async function confirmBatch(
 async function retryAnnotations(): Promise<void> {
   if (batchSubmitting.value || annotationRetryEntries.value.length === 0) return
   const entries = [...annotationRetryEntries.value]
+  const snapshotByKey = new Map(entries.map((entry) => [annotationRetryKey(entry), entry]))
   batchSubmitting.value = true
   let hadRequestFailure = false
-  const remaining: AnnotationRetryEntry[] = []
+  const remainingKeys = new Set<string>()
   try {
     const groups = new Map<string, AnnotationRetryEntry[]>()
     for (const entry of entries) {
@@ -378,17 +378,26 @@ async function retryAnnotations(): Promise<void> {
             .filter((outcome) => outcome.status === 'retry_required')
             .map((outcome) => outcome.result_id),
         )
-        remaining.push(...group.filter((entry) => retryResultIds.has(entry.item.result_id)))
+        for (const entry of group) {
+          if (retryResultIds.has(entry.item.result_id)) {
+            remainingKeys.add(annotationRetryKey(entry))
+          }
+        }
       } catch {
         hadRequestFailure = true
-        remaining.push(...group)
+        for (const entry of group) remainingKeys.add(annotationRetryKey(entry))
       }
     }
-    annotationRetryEntries.value = remaining
-    feedbackTone.value = hadRequestFailure ? 'error' : remaining.length > 0 ? 'warning' : 'success'
+    annotationRetryEntries.value = annotationRetryEntries.value.filter((entry) => {
+      const key = annotationRetryKey(entry)
+      const snapshotEntry = snapshotByKey.get(key)
+      return snapshotEntry !== entry || remainingKeys.has(key)
+    })
+    const remainingCount = annotationRetryEntries.value.length
+    feedbackTone.value = hadRequestFailure ? 'error' : remainingCount > 0 ? 'warning' : 'success'
     feedback.value = hadRequestFailure
       ? '部分标注图重试失败；分数仍已保存，可以稍后再次重试。'
-      : remaining.length > 0
+      : remainingCount > 0
         ? '分数保持已保存；仍有标注图需要再次重试。'
         : '标注图已重新生成。'
   } finally {
@@ -578,9 +587,9 @@ onBeforeUnmount(() => {
       :item="deepItem"
       :previous-item="previousDeepItem"
       :next-item="nextDeepItem"
+      :register-annotation-retry="handleDeepAnnotationRetry"
       @back="closeDeepReview"
       @confirmed="handleDeepConfirmed"
-      @annotation-retry="handleDeepAnnotationRetry"
     />
 
     <ReviewBatchWorkspace

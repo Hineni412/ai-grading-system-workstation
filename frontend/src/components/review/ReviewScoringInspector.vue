@@ -16,6 +16,9 @@ import ReviewFeedbackToast from './ReviewFeedbackToast.vue'
 
 const reviewStore = useReviewQueueStore()
 const draftStore = useReviewDraftStore()
+const props = defineProps<{
+  registerAnnotationRetry: (entry: { input: ReviewConfirmInput; item: ReviewItem }) => void
+}>()
 const rubric = ref<ReviewRubricSection | null>(null)
 const rubricState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const currentDraft = ref<ReviewDraft | null>(null)
@@ -30,7 +33,6 @@ const emit = defineEmits<{
     detailId: number
     annotationRetry: boolean
   }]
-  annotationRetry: [entry: { input: ReviewConfirmInput; item: ReviewItem }]
 }>()
 
 const item = computed(() => reviewStore.currentItem)
@@ -137,7 +139,7 @@ async function submitCurrent(): Promise<void> {
     const annotationRetry = response.annotation_outcomes.some(
       (outcome) => outcome.status === 'retry_required',
     )
-    if (annotationRetry) emit('annotationRetry', { input: confirmInput, item: submittedItem })
+    if (annotationRetry) props.registerAnnotationRetry({ input: confirmInput, item: submittedItem })
     if (stillOnSubmittedContext) {
       if (submittedItem.needs_review) {
         reviewStore.adjustQuestionPendingCount(submittedQuestionId, -1)

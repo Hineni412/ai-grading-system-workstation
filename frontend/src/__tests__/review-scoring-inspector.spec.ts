@@ -64,8 +64,8 @@ async function mountInspector(items: ReviewItem[] = [item]) {
   const confirmed = vi.fn()
   const annotationRetry = vi.fn()
   const app = createApp(ReviewScoringInspector, {
+    registerAnnotationRetry: annotationRetry,
     onConfirmed: confirmed,
-    onAnnotationRetry: annotationRetry,
   })
   app.use(pinia)
   app.mount(host)

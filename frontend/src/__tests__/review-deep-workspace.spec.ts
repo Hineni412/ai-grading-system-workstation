@@ -59,11 +59,13 @@ describe('review deep workspace', () => {
   it('is an in-flow replacement with explicit return and confirmation events', () => {
     const back = vi.fn()
     const confirmed = vi.fn()
+    const registerAnnotationRetry = vi.fn()
     const host = document.createElement('div')
     const app = createApp(ReviewDeepWorkspace, {
       item,
       previousItem: null,
       nextItem: null,
+      registerAnnotationRetry,
       onBack: back,
       onConfirmed: confirmed,
     })
