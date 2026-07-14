@@ -71,6 +71,32 @@ function questionSummaries(state) {
   })
 }
 
+function validateSubmittedItems(submitted, sessionId, questionId, items) {
+  if (!Array.isArray(submitted) || submitted.length === 0) return null
+  const detailIds = new Set()
+  const validated = []
+  for (const entry of submitted) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return null
+    if (!Number.isSafeInteger(entry.detail_id) || detailIds.has(entry.detail_id)) return null
+    detailIds.add(entry.detail_id)
+    const target = items.find((item) =>
+      item.session_id === sessionId &&
+      item.question_id === questionId &&
+      item.result_id === entry.result_id &&
+      item.detail_id === entry.detail_id,
+    )
+    if (
+      !target ||
+      !Number.isFinite(entry.score_awarded) ||
+      entry.score_awarded < 0 ||
+      entry.score_awarded > target.max_score ||
+      (entry.deduction_reason !== undefined && typeof entry.deduction_reason !== 'string')
+    ) return null
+    validated.push({ entry, target })
+  }
+  return validated
+}
+
 function safeStaticPath(staticRoot, pathname) {
   let decoded
   try {
@@ -166,9 +192,13 @@ export async function startP208Server({ port = 4188, staticRoot = resolve('dist'
         if (modes.items === 'error') return sendJson(response, 500, { message: '匿名验收队列加载失败' })
         if (modes.items === 'slow') await new Promise((resolveDelay) => setTimeout(resolveDelay, 220))
         const questionId = decodeURIComponent(itemMatch[2])
+        const needsReviewOnly = requestUrl.searchParams.get('needs_review_only') === 'true'
+        const questionItems = state.items.filter((item) => item.question_id === questionId)
         const items = modes.items === 'empty'
           ? []
-          : state.items.filter((item) => item.question_id === questionId)
+          : needsReviewOnly
+            ? questionItems.filter((item) => item.needs_review)
+            : questionItems
         return sendJson(response, 200, { items, total: items.length })
       }
 
@@ -178,37 +208,32 @@ export async function startP208Server({ port = 4188, staticRoot = resolve('dist'
         if (modes.confirm === '422') return sendJson(response, 422, { message: '匿名验收校验失败' })
         if (modes.confirm === '500') return sendJson(response, 500, { message: '匿名验收服务失败' })
         const body = await readJsonBody(request)
-        const submitted = Array.isArray(body.items) && body.items.length === 1
-          ? body.items[0]
-          : null
         const questionId = decodeURIComponent(confirmMatch[2])
-        const target = submitted && state.items.find(
-          (item) =>
-            item.question_id === questionId &&
-            item.result_id === submitted.result_id &&
-            item.detail_id === submitted.detail_id,
+        const validated = validateSubmittedItems(
+          body.items,
+          state.session.id,
+          questionId,
+          state.items,
         )
-        if (
-          !target ||
-          !Number.isFinite(submitted.score_awarded) ||
-          submitted.score_awarded < 0 ||
-          submitted.score_awarded > target.max_score
-        ) {
+        if (!validated) {
           return sendJson(response, 422, { message: '匿名验收提交内容无效' })
         }
-        target.score_awarded = submitted.score_awarded
-        target.deduction_reason = typeof submitted.deduction_reason === 'string'
-          ? submitted.deduction_reason
-          : target.deduction_reason
-        target.error_category = '已由教师确认'
-        target.error_summary = 'anonymous_review_confirmed'
-        target.needs_review = false
+        for (const { entry, target } of validated) {
+          target.score_awarded = entry.score_awarded
+          target.deduction_reason = typeof entry.deduction_reason === 'string'
+            ? entry.deduction_reason
+            : target.deduction_reason
+          target.error_category = '已由教师确认'
+          target.error_summary = 'anonymous_review_confirmed'
+          target.needs_review = false
+        }
+        const resultIds = [...new Set(validated.map(({ target }) => target.result_id))]
         return sendJson(response, 200, {
-          updated_details: 1,
-          updated_results: 1,
-          annotation_outcomes: modes.confirm === 'retry'
-            ? [{ result_id: target.result_id, status: 'retry_required', message: '批注图片稍后重试' }]
-            : [{ result_id: target.result_id, status: 'succeeded' }],
+          updated_details: validated.length,
+          updated_results: resultIds.length,
+          annotation_outcomes: resultIds.map((resultId) => modes.confirm === 'retry'
+            ? { result_id: resultId, status: 'retry_required', message: '批注图片稍后重试' }
+            : { result_id: resultId, status: 'succeeded' }),
         })
       }
 
@@ -263,5 +288,5 @@ if (isCli) {
   const staticRoot = resolve(fileURLToPath(new URL('../dist', import.meta.url)))
   const port = Number(process.env.P2_08_PORT ?? 4188)
   const runtime = await startP208Server({ port, staticRoot })
-  process.stdout.write(`P2-08 anonymous acceptance: ${runtime.origin}/grading?question=Q1&detail=1\n`)
+  process.stdout.write(`Phase 2 anonymous recalibration: ${runtime.origin}/grading?question=Q1\n`)
 }

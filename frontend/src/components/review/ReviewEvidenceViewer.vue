@@ -19,6 +19,8 @@ const sourceOptions = [
   { value: 'crop', label: '裁剪证据' },
   { value: 'original_front', label: '原卷正面' },
   { value: 'original_back', label: '原卷反面' },
+  { value: 'annotated_front', label: '标注正面' },
+  { value: 'annotated_back', label: '标注反面' },
 ] as const
 
 const viewer = useEvidenceViewer()
@@ -28,6 +30,8 @@ const sourceUrl = computed(() => ({
   crop: props.item.media.crop_url,
   original_front: props.item.media.original_front_url,
   original_back: props.item.media.original_back_url,
+  annotated_front: props.item.media.annotated_front_url,
+  annotated_back: props.item.media.annotated_back_url,
 })[viewer.source.value])
 const recordKey = computed(() => `${props.item.session_id}:${props.item.detail_id}`)
 const sourceLabel = computed(() =>
@@ -37,11 +41,11 @@ const imageRenderKey = computed(() =>
   `${recordKey.value}:${viewer.source.value}:${viewer.imageKey.value}`,
 )
 const scaleLabel = computed(() => `${Math.round(viewer.scale.value * 100)}%`)
-const errorMessage = computed(() =>
-  viewer.source.value === 'crop'
-    ? '裁剪图暂时无法读取。'
-    : '原卷页暂时无法读取。',
-)
+const errorMessage = computed(() => {
+  if (viewer.source.value === 'crop') return '裁剪图暂时无法读取。'
+  if (viewer.source.value.startsWith('annotated')) return '标注图暂时无法读取。'
+  return '原卷页暂时无法读取。'
+})
 
 let resizeObserver: ResizeObserver | null = null
 let stopShortcuts: () => void = () => undefined

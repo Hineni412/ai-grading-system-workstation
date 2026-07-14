@@ -7,35 +7,6 @@ import AppShell from '../../../layouts/AppShell.vue'
 import { createAppRouter } from '../../../router'
 import { useSessionStore } from '../../../stores/session'
 
-function installMatchMedia(matches: boolean) {
-  const listeners = new Set<(event: MediaQueryListEvent) => void>()
-  let currentMatches = matches
-  const mediaQuery = {
-    get matches() {
-      return currentMatches
-    },
-    media: '(max-width: 1279px)',
-    onchange: null,
-    addEventListener: vi.fn((_type: string, listener: (event: MediaQueryListEvent) => void) => {
-      listeners.add(listener)
-    }),
-    removeEventListener: vi.fn((_type: string, listener: (event: MediaQueryListEvent) => void) => {
-      listeners.delete(listener)
-    }),
-    dispatchEvent: vi.fn(),
-  } as unknown as MediaQueryList
-
-  vi.stubGlobal('matchMedia', vi.fn(() => mediaQuery))
-  return {
-    mediaQuery,
-    change(nextMatches: boolean) {
-      currentMatches = nextMatches
-      const event = { matches: nextMatches, media: mediaQuery.media } as MediaQueryListEvent
-      listeners.forEach((listener) => listener(event))
-    },
-  }
-}
-
 async function settleUi(): Promise<void> {
   await Promise.resolve()
   await nextTick()
@@ -44,7 +15,7 @@ async function settleUi(): Promise<void> {
 }
 
 async function mountShell({
-  path = '/workbench',
+  path = '/grading',
   prepareStore = true,
 }: { path?: string; prepareStore?: boolean } = {}) {
   const pinia = createPinia()
@@ -76,116 +47,38 @@ beforeEach(() => {
 })
 
 describe('AppShell', () => {
-  it.each(['/workbench', '/missing/deep/path'])(
-    'renders exactly one main landmark at %s',
+  it.each(['/grading', '/missing/deep/path'])(
+    'renders one main landmark and no permanent side panels at %s',
     async (path) => {
-      installMatchMedia(false)
       const { app, host } = await mountShell({ path })
 
       expect(host.querySelectorAll('main')).toHaveLength(1)
       expect(host.querySelector('main#main-workspace')).not.toBeNull()
+      expect(host.querySelector('[data-testid="app-navigation"]')).toBeNull()
+      expect(host.querySelector('[data-testid="session-inspector"]')).toBeNull()
+      expect(host.querySelector('[data-testid="review-scoring-inspector"]')).toBeNull()
 
       app.unmount()
     },
   )
 
-  it('renders the application landmarks and session context', async () => {
-    installMatchMedia(true)
+  it('renders product, page and current-exam context in the topbar', async () => {
     const { app, host, initialize } = await mountShell()
 
     expect(initialize).toHaveBeenCalledTimes(1)
     expect(host.querySelector('[data-testid="app-shell"]')).not.toBeNull()
-    expect(host.querySelectorAll('[data-testid="primary-navigation"] a')).toHaveLength(6)
-    expect(host.textContent).toContain('智能体与自动化')
-    expect(host.querySelector('[aria-disabled="true"]')?.textContent).toContain('智能体与自动化')
+    expect(host.querySelector('[data-testid="app-topbar"]')?.textContent).toContain('AI 阅卷系统')
+    expect(host.querySelector('[data-testid="app-topbar"]')?.textContent).toContain('评分复核')
     expect(host.querySelector('label[for="current-session"]')?.textContent).toBe('当前考试')
-    expect(host.querySelector('[data-testid="session-inspector"]')?.textContent).toContain(
-      '未选择当前考试',
-    )
+    expect(host.querySelector('#current-session')).not.toBeNull()
+    expect(host.querySelector('[data-testid="navigation-toggle"]')).toBeNull()
+    expect(host.querySelector('[data-testid="inspector-toggle"]')).toBeNull()
 
     app.unmount()
-  })
-
-  it('opens both side panels by default on desktop', async () => {
-    installMatchMedia(false)
-    const { app, host } = await mountShell()
-
-    expect(host.querySelector('[data-testid="app-shell"]')?.hasAttribute('data-overlay')).toBe(false)
-    expect(
-      host.querySelector('[data-testid="navigation-toggle"]')?.getAttribute('aria-expanded'),
-    ).toBe('true')
-    expect(
-      host.querySelector('[data-testid="inspector-toggle"]')?.getAttribute('aria-expanded'),
-    ).toBe('true')
-
-    app.unmount()
-  })
-
-  it('starts compact navigation collapsed and toggles its real expanded state', async () => {
-    const compactQuery = '(max-width: 1279px)'
-    const mediaQueries: MediaQueryList[] = []
-    vi.stubGlobal(
-      'matchMedia',
-      vi.fn((query: string) => {
-        const mediaQuery = {
-          matches: query === compactQuery,
-          media: query,
-          onchange: null,
-          addEventListener: vi.fn(),
-          removeEventListener: vi.fn(),
-          dispatchEvent: vi.fn(),
-        } as unknown as MediaQueryList
-        mediaQueries.push(mediaQuery)
-        return mediaQuery
-      }),
-    )
-    const { app, host } = await mountShell()
-    const navigationTrigger = host.querySelector<HTMLButtonElement>('[data-testid="navigation-toggle"]')!
-
-    expect(navigationTrigger.getAttribute('aria-expanded')).toBe('false')
-    navigationTrigger.click()
-    await nextTick()
-    expect(navigationTrigger.getAttribute('aria-expanded')).toBe('true')
-    navigationTrigger.click()
-    await nextTick()
-    expect(navigationTrigger.getAttribute('aria-expanded')).toBe('false')
-
-    app.unmount()
-    expect(mediaQueries).toHaveLength(1)
-    expect(mediaQueries.every((query) => vi.mocked(query.removeEventListener).mock.calls.length === 1)).toBe(true)
-  })
-
-  it('applies compact-desktop media-query changes without changing the inspector', async () => {
-    const { change } = installMatchMedia(false)
-    const { app, host } = await mountShell()
-    const navigationTrigger = host.querySelector<HTMLButtonElement>('[data-testid="navigation-toggle"]')!
-    const inspectorTrigger = host.querySelector<HTMLButtonElement>('[data-testid="inspector-toggle"]')!
-
-    change(true)
-    await nextTick()
-    expect(navigationTrigger.getAttribute('aria-expanded')).toBe('false')
-    expect(inspectorTrigger.getAttribute('aria-expanded')).toBe('true')
-
-    change(false)
-    await nextTick()
-    expect(navigationTrigger.getAttribute('aria-expanded')).toBe('true')
-    expect(inspectorTrigger.getAttribute('aria-expanded')).toBe('true')
-
-    app.unmount()
-  })
-
-  it('removes the compact-desktop media-query listener on unmount', async () => {
-    const { mediaQuery } = installMatchMedia(false)
-    const { app } = await mountShell()
-
-    app.unmount()
-
-    expect(mediaQuery.removeEventListener).toHaveBeenCalledWith('change', expect.any(Function))
   })
 
   it('focuses the route heading after navigation', async () => {
-    installMatchMedia(false)
-    const { app, host, router } = await mountShell()
+    const { app, host, router } = await mountShell({ path: '/design-system' })
 
     await router.push('/grading')
     await settleUi()
@@ -195,8 +88,7 @@ describe('AppShell', () => {
     app.unmount()
   })
 
-  it('renders startup load failure and retries only through the Store action', async () => {
-    installMatchMedia(false)
+  it('shows a safe exam-list error in the topbar and retries through the store', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (_path, init) => {
       const requestId = String((init?.headers as Record<string, string>)['x-request-id'])
       return new Response(
@@ -214,11 +106,11 @@ describe('AppShell', () => {
     const { app, host, initialize } = await mountShell({ prepareStore: false })
 
     await settleUi()
-    expect(host.querySelector('[data-testid="session-inspector"] [role="alert"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="app-topbar"] [role="alert"]')).not.toBeNull()
     expect(host.textContent).not.toContain('private network detail')
     expect(initialize).toHaveBeenCalledTimes(1)
 
-    const retry = [...host.querySelectorAll<HTMLButtonElement>('[data-testid="session-inspector"] button')]
+    const retry = [...host.querySelectorAll<HTMLButtonElement>('[data-testid="app-topbar"] button')]
       .find((button) => button.textContent === '重新加载考试列表')!
     retry.click()
     await settleUi()

@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import {
   confirmReviewItem,
   fetchReviewItems,
   fetchReviewRubric,
+  type ReviewConfirmInput,
+  type ReviewItem,
   type ReviewRubricSection,
 } from '../../api/review'
-import { reviewShortcutBus } from '../../composables/review-shortcuts'
 import { scoreIssue, useReviewDraftStore, type ReviewDraft } from '../../stores/review-drafts'
 import { useReviewQueueStore } from '../../stores/review-queue'
 import StatePanel from '../design-system/StatePanel.vue'
@@ -15,6 +16,9 @@ import ReviewFeedbackToast from './ReviewFeedbackToast.vue'
 
 const reviewStore = useReviewQueueStore()
 const draftStore = useReviewDraftStore()
+const props = defineProps<{
+  registerAnnotationRetry: (entry: { input: ReviewConfirmInput; item: ReviewItem }) => void
+}>()
 const rubric = ref<ReviewRubricSection | null>(null)
 const rubricState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const currentDraft = ref<ReviewDraft | null>(null)
@@ -23,7 +27,13 @@ const feedback = ref('')
 const feedbackTone = ref<'success' | 'warning' | 'error'>('success')
 let rubricController: AbortController | null = null
 let rubricGeneration = 0
-let stopShortcuts: () => void = () => undefined
+
+const emit = defineEmits<{
+  confirmed: [payload: {
+    detailId: number
+    annotationRetry: boolean
+  }]
+}>()
 
 const item = computed(() => reviewStore.currentItem)
 const issue = computed(() => {
@@ -33,14 +43,12 @@ const issue = computed(() => {
 const submitDisabled = computed(() =>
   !item.value ||
   !currentDraft.value ||
-  !currentDraft.value.dirty ||
   issue.value !== null ||
   submitting.value,
 )
 const disabledReason = computed(() => {
   if (!item.value) return '请先选择一条复核记录'
   if (issue.value) return issue.value
-  if (!currentDraft.value?.dirty) return '请先修改教师最终分或备注'
   if (submitting.value) return '正在确认当前评分'
   return ''
 })
@@ -90,21 +98,7 @@ function selectScore(event: FocusEvent): void {
   ;(event.currentTarget as HTMLInputElement).select()
 }
 
-function onScoreKeydown(event: KeyboardEvent): void {
-  if (
-    event.key !== 'Enter' ||
-    event.shiftKey ||
-    event.altKey ||
-    event.ctrlKey ||
-    event.metaKey ||
-    event.repeat
-  ) return
-  event.preventDefault()
-  event.stopPropagation()
-  void submitCurrent(true)
-}
-
-async function submitCurrent(advance = true): Promise<void> {
+async function submitCurrent(): Promise<void> {
   const submittedItem = item.value
   const draft = currentDraft.value
   if (!submittedItem || !draft || submitDisabled.value || submitting.value) return
@@ -113,11 +107,14 @@ async function submitCurrent(advance = true): Promise<void> {
   const submittedQuestionId = submittedItem.question_id
   const submittedSessionId = submittedItem.session_id
   const submittedContext = `${submittedSessionId}:${submittedQuestionId}:${submittedDetailId}`
-  const nextDetailId = advance
-    ? reviewStore.filteredItems[reviewStore.currentIndex + 1]?.detail_id ?? null
-    : null
   const score = Number(draft.scoreText.trim())
   const note = draft.note.trim()
+  const confirmInput: ReviewConfirmInput = {
+    result_id: submittedItem.result_id,
+    detail_id: submittedDetailId,
+    score_awarded: score,
+    ...(note ? { deduction_reason: note } : {}),
+  }
 
   submitting.value = true
   feedback.value = ''
@@ -125,17 +122,8 @@ async function submitCurrent(advance = true): Promise<void> {
     const response = await confirmReviewItem(
       submittedSessionId,
       submittedQuestionId,
-      {
-        result_id: submittedItem.result_id,
-        detail_id: submittedDetailId,
-        score_awarded: score,
-        ...(note ? { deduction_reason: note } : {}),
-      },
+      confirmInput,
     )
-    const confirmedReason = note || '人工复核已确认'
-    reviewStore.markItemConfirmed(submittedItem, score, confirmedReason)
-    draftStore.markConfirmed(draft.key)
-
     const selectedEntry = reviewStore.items.find(
       (entry) =>
         entry.question_id === reviewStore.selectedQuestionId &&
@@ -145,14 +133,24 @@ async function submitCurrent(advance = true): Promise<void> {
       ? `${selectedEntry.session_id}:${selectedEntry.question_id}:${selectedEntry.detail_id}`
       : null
     const stillOnSubmittedContext = activeContext === submittedContext
-    if (stillOnSubmittedContext) {
-      if (advance) reviewStore.reconcileAfterConfirmation(nextDetailId ?? undefined)
-      await reviewStore.loadItems(submittedSessionId, submittedQuestionId, fetchReviewItems)
-    }
-
+    const confirmedReason = note || '人工复核已确认'
+    reviewStore.markItemConfirmed(submittedItem, score, confirmedReason)
+    draftStore.markConfirmed(draft.key)
     const annotationRetry = response.annotation_outcomes.some(
       (outcome) => outcome.status === 'retry_required',
     )
+    if (annotationRetry) props.registerAnnotationRetry({ input: confirmInput, item: submittedItem })
+    if (stillOnSubmittedContext) {
+      if (submittedItem.needs_review) {
+        reviewStore.adjustQuestionPendingCount(submittedQuestionId, -1)
+      }
+      emit('confirmed', {
+        detailId: submittedDetailId,
+        annotationRetry,
+      })
+      await reviewStore.loadItems(submittedSessionId, submittedQuestionId, fetchReviewItems)
+    }
+
     const refreshFailed = stillOnSubmittedContext && reviewStore.itemLoadState === 'error'
     feedbackTone.value = annotationRetry || refreshFailed ? 'warning' : 'success'
     feedback.value = !stillOnSubmittedContext
@@ -208,26 +206,23 @@ watch(
   { immediate: true },
 )
 
-onMounted(() => {
-  stopShortcuts = reviewShortcutBus.subscribe((command) => {
-    if (command === 'confirm-next') void submitCurrent(true)
-  })
-})
-
 onBeforeUnmount(() => {
-  stopShortcuts()
   rubricGeneration += 1
   rubricController?.abort()
 })
 </script>
 
 <template>
-  <aside
-    id="session-inspector"
-    class="session-inspector review-scoring-inspector"
+  <section
+    class="review-scoring-inspector"
     data-testid="review-scoring-inspector"
     aria-label="评分与复核检查器"
   >
+    <ReviewFeedbackToast
+      :message="feedback"
+      :tone="feedbackTone"
+      @dismiss="feedback = ''"
+    />
     <StatePanel
       v-if="!item || !currentDraft"
       kind="empty"
@@ -236,11 +231,6 @@ onBeforeUnmount(() => {
     />
 
     <template v-else>
-      <ReviewFeedbackToast
-        :message="feedback"
-        :tone="feedbackTone"
-        @dismiss="feedback = ''"
-      />
       <div class="review-scoring-inspector__scroll" data-testid="scoring-scroll-region">
         <header class="review-scoring-inspector__header">
           <p>{{ item.question_id }} · 满分 {{ formatScore(item.max_score) }}</p>
@@ -333,7 +323,6 @@ onBeforeUnmount(() => {
               aria-describedby="teacher-score-help teacher-score-error"
               @input="updateScore"
               @focus="selectScore"
-              @keydown="onScoreKeydown"
             >
             <span>/ {{ formatScore(item.max_score) }} 分</span>
           </div>
@@ -349,24 +338,20 @@ onBeforeUnmount(() => {
           />
         </section>
 
-        <section class="review-scoring-section" aria-labelledby="review-activity-title">
-          <h3 id="review-activity-title">活动记录</h3>
-          <p class="review-scoring-section__muted">当前接口暂未提供历史活动列表。本次确认结果仍以服务器返回为准。</p>
-        </section>
       </div>
 
       <footer class="review-scoring-inspector__footer" data-testid="scoring-footer">
         <p v-if="draftStore.dirtyCount > 0">本机内存中有 {{ draftStore.dirtyCount }} 条未确认草稿。</p>
         <button
           type="button"
-          data-testid="confirm-next"
+          data-testid="confirm-single"
           :disabled="submitDisabled"
           :title="disabledReason"
-          @click="submitCurrent(true)"
+          @click="submitCurrent"
         >
-          {{ submitting ? '正在确认…' : '确认并下一份' }}
+          {{ submitting ? '正在确认…' : '确认此份并返回' }}
         </button>
       </footer>
     </template>
-  </aside>
+  </section>
 </template>
