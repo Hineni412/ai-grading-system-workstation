@@ -87,6 +87,18 @@ const annotationRetryTitle = computed(() =>
   `分数已保存，${annotationRetryEntries.value.length} 份标注图需要重试`,
 )
 
+function annotationRetryKey(entry: AnnotationRetryEntry): string {
+  return `${entry.item.session_id}:${entry.item.question_id}:${entry.item.result_id}:${entry.item.detail_id}`
+}
+
+function mergeAnnotationRetryEntries(entries: AnnotationRetryEntry[]): void {
+  const merged = new Map(
+    annotationRetryEntries.value.map((entry) => [annotationRetryKey(entry), entry]),
+  )
+  for (const entry of entries) merged.set(annotationRetryKey(entry), entry)
+  annotationRetryEntries.value = [...merged.values()]
+}
+
 function stringQuery(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
 }
@@ -302,7 +314,7 @@ async function confirmBatch(
       sessionStore.selectedSessionId === sessionId &&
       reviewStore.selectedQuestionId === questionId
     if (!stillOnSubmittedContext) {
-      annotationRetryEntries.value = nextRetryEntries
+      mergeAnnotationRetryEntries(nextRetryEntries)
       feedbackTone.value = nextRetryEntries.length > 0 ? 'warning' : 'success'
       feedback.value = nextRetryEntries.length > 0
         ? '先前考试的本批分数已保存；部分标注图需要显式重试。当前考试未被旧响应更改。'
@@ -317,7 +329,7 @@ async function confirmBatch(
     })))
     reviewStore.adjustQuestionPendingCount(questionId, -inputs.length)
     reviewStore.reconcileAfterConfirmation()
-    annotationRetryEntries.value = nextRetryEntries
+    mergeAnnotationRetryEntries(nextRetryEntries)
 
     const currentQuestion = reviewStore.questions.find(
       (question) => question.question_id === questionId,
@@ -344,27 +356,41 @@ async function confirmBatch(
 async function retryAnnotations(): Promise<void> {
   if (batchSubmitting.value || annotationRetryEntries.value.length === 0) return
   const entries = [...annotationRetryEntries.value]
-  const first = entries[0]!
   batchSubmitting.value = true
+  let hadRequestFailure = false
+  const remaining: AnnotationRetryEntry[] = []
   try {
-    const response = await confirmReviewItems(
-      first.item.session_id,
-      first.item.question_id,
-      entries.map((entry) => entry.input),
-    )
-    const retryResultIds = new Set(
-      response.annotation_outcomes
-        .filter((outcome) => outcome.status === 'retry_required')
-        .map((outcome) => outcome.result_id),
-    )
-    annotationRetryEntries.value = entries.filter((entry) => retryResultIds.has(entry.item.result_id))
-    feedbackTone.value = annotationRetryEntries.value.length > 0 ? 'warning' : 'success'
-    feedback.value = annotationRetryEntries.value.length > 0
-      ? '分数保持已保存；仍有标注图需要再次重试。'
-      : '标注图已重新生成。'
-  } catch {
-    feedbackTone.value = 'error'
-    feedback.value = '标注图重试失败；分数仍已保存，可以稍后再次重试。'
+    const groups = new Map<string, AnnotationRetryEntry[]>()
+    for (const entry of entries) {
+      const key = `${entry.item.session_id}:${entry.item.question_id}`
+      groups.set(key, [...(groups.get(key) ?? []), entry])
+    }
+    for (const group of groups.values()) {
+      const first = group[0]!
+      try {
+        const response = await confirmReviewItems(
+          first.item.session_id,
+          first.item.question_id,
+          group.map((entry) => entry.input),
+        )
+        const retryResultIds = new Set(
+          response.annotation_outcomes
+            .filter((outcome) => outcome.status === 'retry_required')
+            .map((outcome) => outcome.result_id),
+        )
+        remaining.push(...group.filter((entry) => retryResultIds.has(entry.item.result_id)))
+      } catch {
+        hadRequestFailure = true
+        remaining.push(...group)
+      }
+    }
+    annotationRetryEntries.value = remaining
+    feedbackTone.value = hadRequestFailure ? 'error' : remaining.length > 0 ? 'warning' : 'success'
+    feedback.value = hadRequestFailure
+      ? '部分标注图重试失败；分数仍已保存，可以稍后再次重试。'
+      : remaining.length > 0
+        ? '分数保持已保存；仍有标注图需要再次重试。'
+        : '标注图已重新生成。'
   } finally {
     batchSubmitting.value = false
   }
@@ -398,14 +424,19 @@ async function closeDeepReview(): Promise<void> {
 
 function handleDeepConfirmed(payload: {
   detailId: number
-  retryEntry: AnnotationRetryEntry | null
+  annotationRetry: boolean
 }): void {
-  annotationRetryEntries.value = payload.retryEntry ? [payload.retryEntry] : []
-  feedbackTone.value = payload.retryEntry ? 'warning' : 'success'
-  feedback.value = payload.retryEntry
+  feedbackTone.value = payload.annotationRetry ? 'warning' : 'success'
+  feedback.value = payload.annotationRetry
     ? '此份分数已保存；标注图需要显式重试。'
     : '此份评分已确认。'
   void closeDeepReview()
+}
+
+function handleDeepAnnotationRetry(entry: AnnotationRetryEntry): void {
+  mergeAnnotationRetryEntries([entry])
+  feedbackTone.value = 'warning'
+  feedback.value = '分数已保存；标注图需要显式重试。'
 }
 
 function isShortcutProtectedTarget(target: EventTarget | null): boolean {
@@ -549,6 +580,7 @@ onBeforeUnmount(() => {
       :next-item="nextDeepItem"
       @back="closeDeepReview"
       @confirmed="handleDeepConfirmed"
+      @annotation-retry="handleDeepAnnotationRetry"
     />
 
     <ReviewBatchWorkspace

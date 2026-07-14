@@ -13,8 +13,9 @@ const emit = defineEmits<{
   back: []
   confirmed: [payload: {
     detailId: number
-    retryEntry: { input: ReviewConfirmInput; item: ReviewItem } | null
+    annotationRetry: boolean
   }]
+  annotationRetry: [entry: { input: ReviewConfirmInput; item: ReviewItem }]
 }>()
 </script>
 
@@ -44,7 +45,10 @@ const emit = defineEmits<{
         />
       </div>
       <div class="review-deep-workspace__scoring">
-        <ReviewScoringInspector @confirmed="emit('confirmed', $event)" />
+        <ReviewScoringInspector
+          @confirmed="emit('confirmed', $event)"
+          @annotation-retry="emit('annotationRetry', $event)"
+        />
       </div>
     </div>
   </section>

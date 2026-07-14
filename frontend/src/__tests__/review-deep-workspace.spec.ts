@@ -16,7 +16,7 @@ vi.mock('../components/review/ReviewScoringInspector.vue', () => ({
     emits: ['confirmed'],
     setup: (_props, { emit }) => () => h('button', {
       'data-testid': 'scoring-stub',
-      onClick: () => emit('confirmed', { detailId: 21, retryEntry: null }),
+      onClick: () => emit('confirmed', { detailId: 21, annotationRetry: false }),
     }, '确认此份并返回'),
   }),
 }))
@@ -81,6 +81,6 @@ describe('review deep workspace', () => {
     host.querySelector<HTMLButtonElement>('[data-testid="back-to-batch"]')!.click()
     host.querySelector<HTMLButtonElement>('[data-testid="scoring-stub"]')!.click()
     expect(back).toHaveBeenCalledTimes(1)
-    expect(confirmed).toHaveBeenCalledWith({ detailId: 21, retryEntry: null })
+    expect(confirmed).toHaveBeenCalledWith({ detailId: 21, annotationRetry: false })
   })
 })

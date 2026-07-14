@@ -28,8 +28,9 @@ let rubricGeneration = 0
 const emit = defineEmits<{
   confirmed: [payload: {
     detailId: number
-    retryEntry: { input: ReviewConfirmInput; item: ReviewItem } | null
+    annotationRetry: boolean
   }]
+  annotationRetry: [entry: { input: ReviewConfirmInput; item: ReviewItem }]
 }>()
 
 const item = computed(() => reviewStore.currentItem)
@@ -136,11 +137,14 @@ async function submitCurrent(): Promise<void> {
     const annotationRetry = response.annotation_outcomes.some(
       (outcome) => outcome.status === 'retry_required',
     )
+    if (annotationRetry) emit('annotationRetry', { input: confirmInput, item: submittedItem })
     if (stillOnSubmittedContext) {
-      reviewStore.adjustQuestionPendingCount(submittedQuestionId, -1)
+      if (submittedItem.needs_review) {
+        reviewStore.adjustQuestionPendingCount(submittedQuestionId, -1)
+      }
       emit('confirmed', {
         detailId: submittedDetailId,
-        retryEntry: annotationRetry ? { input: confirmInput, item: submittedItem } : null,
+        annotationRetry,
       })
       await reviewStore.loadItems(submittedSessionId, submittedQuestionId, fetchReviewItems)
     }
