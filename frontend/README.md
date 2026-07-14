@@ -38,7 +38,8 @@ npm run build
 
 开发服务器启动后，`/` 会重定向到 `/workbench`。当前路由入口如下：
 
-- `/workbench`、`/grading`、`/exams`、`/students`、`/analytics`、`/question-bank` 和 `/settings`：P2-03 App Shell 内的占位工作区，不是已经迁移的业务页面。
+- `/grading`：P2-05 至 P2-08 形成的单题复核样板页，已加载复核队列、答卷证据查看、评分检查、安全确认和页面级快捷键。Vue 尚未切入生产；该页面仍只是 Phase 2 前端来源重校准门槛的待核验能力清单、审计输入和复用候选，不能单独证明业务规则。
+- `/workbench`、`/exams`、`/students`、`/analytics`、`/question-bank` 和 `/settings`：P2-03 App Shell 内的占位工作区，不是已经迁移的业务页面。
 - `/design-system`：保留的 P2-02 组件展示页。
 - 其他地址：进入 404 页面，可返回工作台；不会改变当前考试选择或业务数据。
 
