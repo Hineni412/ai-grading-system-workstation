@@ -130,6 +130,69 @@ def _runtime_repository_root() -> Path:
         raise AcceptanceError("runtime repository root could not be identified") from exc
 
 
+def _log_sanitization_roots(workspace: Path) -> list[tuple[Path, str]]:
+    candidates = (
+        (Path(workspace).resolve(), "<workspace>"),
+        (Path(__file__).resolve().parents[1], "<launcher-repo>"),
+        (_runtime_repository_root(), "<runtime-repo>"),
+    )
+    roots: list[tuple[Path, str]] = []
+    seen: set[str] = set()
+    for root, placeholder in candidates:
+        key = str(root).replace("\\", "/").casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append((root, placeholder))
+    return roots
+
+
+def _sanitize_log_text(text: str, workspace: Path) -> str:
+    replacements: list[tuple[str, str]] = []
+    for root, placeholder in _log_sanitization_roots(workspace):
+        native = str(root)
+        for variant in {
+            native,
+            native.replace("\\", "/"),
+            native.replace("/", "\\"),
+        }:
+            replacements.append((variant, placeholder))
+    sanitized = text
+    for root_text, placeholder in sorted(
+        replacements,
+        key=lambda replacement: len(replacement[0]),
+        reverse=True,
+    ):
+        sanitized = re.sub(
+            re.escape(root_text),
+            lambda _match, value=placeholder: value,
+            sanitized,
+            flags=re.IGNORECASE,
+        )
+    return sanitized
+
+
+def _write_sanitized_log(log_path: Path, text: str, workspace: Path) -> None:
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            _sanitize_log_text(text, workspace),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        raise AcceptanceError("acceptance log could not be written safely") from exc
+
+
+def _sanitize_existing_log(log_path: Path, workspace: Path) -> None:
+    if not log_path.exists():
+        return
+    try:
+        raw_text = log_path.read_bytes().decode("utf-8", errors="replace")
+    except OSError as exc:
+        raise AcceptanceError("acceptance log could not be sanitized safely") from exc
+    _write_sanitized_log(log_path, raw_text, workspace)
+
+
 def _configure_staged_imports(
     workspace: Path,
     *,
@@ -715,9 +778,10 @@ def _run_internal_seed(workspace: Path, source_sha: str) -> None:
         text=True,
         check=False,
     )
-    (logs_dir / "seed.log").write_text(
+    _write_sanitized_log(
+        logs_dir / "seed.log",
         completed.stdout + completed.stderr,
-        encoding="utf-8",
+        workspace,
     )
     if completed.returncode != 0:
         raise AcceptanceError("internal synthetic seeding failed; see the workspace log")
@@ -803,9 +867,12 @@ def run_servers(
     ]
     processes: list[subprocess.Popen[Any]] = []
     log_handles: list[BinaryIO] = []
+    log_paths: list[Path] = []
     try:
         for command, log_name in zip(commands, ("api.log", "streamlit.log"), strict=True):
-            log_handle = (logs_dir / log_name).open("ab")
+            log_path = logs_dir / log_name
+            log_handle = log_path.open("ab")
+            log_paths.append(log_path)
             log_handles.append(log_handle)
             processes.append(
                 subprocess.Popen(
@@ -841,10 +908,24 @@ def run_servers(
                 raise AcceptanceError("acceptance child process exited while serving")
             time.sleep(0.5)
     finally:
+        cleanup_errors: list[Exception] = []
         for process in reversed(processes):
-            _terminate_process_tree(process)
+            try:
+                _terminate_process_tree(process)
+            except Exception as exc:
+                cleanup_errors.append(exc)
         for handle in log_handles:
-            handle.close()
+            try:
+                handle.close()
+            except Exception as exc:
+                cleanup_errors.append(exc)
+        for log_path in log_paths:
+            try:
+                _sanitize_existing_log(log_path, target)
+            except Exception as exc:
+                cleanup_errors.append(exc)
+        if cleanup_errors:
+            raise AcceptanceError("acceptance service cleanup failed") from cleanup_errors[0]
 
 
 def _parser() -> argparse.ArgumentParser:

@@ -9,6 +9,7 @@ import sys
 import tarfile
 import tempfile
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
@@ -524,3 +525,143 @@ def test_internal_seed_executes_full_synthetic_flow(tmp_path: Path) -> None:
     }
     assert metadata["source_sha"] == source_sha
     assert all((workspace / filename).is_file() for filename in metadata["files"].values())
+
+
+def _log_root_cases(workspace: Path) -> tuple[dict[str, tuple[Path, str]], str]:
+    roots = {
+        "workspace": (workspace.resolve(), "<workspace>"),
+        "launcher": (
+            Path(acceptance.__file__).resolve().parents[1],
+            "<launcher-repo>",
+        ),
+        "runtime": (acceptance._runtime_repository_root(), "<runtime-repo>"),
+    }
+    lines: list[str] = []
+    for label, (root, _placeholder) in roots.items():
+        native = str(root)
+        lines.extend(
+            (
+                f"{label}-native={native}",
+                f"{label}-forward={native.replace(chr(92), '/')}",
+                f"{label}-backward={native.replace('/', chr(92))}",
+                f"{label}-case={native.upper()}",
+            )
+        )
+    lines.append("health=http://127.0.0.1:8501/_stcore/health")
+    return roots, "\n".join(lines) + "\n"
+
+
+def _leaked_root_labels(
+    text: str,
+    roots: dict[str, tuple[Path, str]],
+) -> list[str]:
+    folded = text.casefold()
+    leaked: list[str] = []
+    for label, (root, _placeholder) in roots.items():
+        native = str(root)
+        variants = {
+            native,
+            native.replace("\\", "/"),
+            native.replace("/", "\\"),
+        }
+        if any(variant.casefold() in folded for variant in variants):
+            leaked.append(label)
+    return leaked
+
+
+def test_sanitized_log_writer_replaces_known_roots_and_preserves_urls(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "prepared"
+    workspace.mkdir()
+    roots, raw_text = _log_root_cases(workspace)
+    log_path = workspace / "acceptance_logs" / "service.log"
+
+    acceptance._write_sanitized_log(log_path, raw_text, workspace)
+
+    sanitized = log_path.read_text(encoding="utf-8")
+    assert _leaked_root_labels(sanitized, roots) == []
+    assert all(placeholder in sanitized for _root, placeholder in roots.values())
+    assert "http://127.0.0.1:8501/_stcore/health" in sanitized
+
+
+def test_internal_seed_sanitizes_captured_output_before_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "staged"
+    workspace.mkdir()
+    roots, raw_text = _log_root_cases(workspace)
+    completed = subprocess.CompletedProcess(
+        args=["seed"],
+        returncode=0,
+        stdout=raw_text,
+        stderr="",
+    )
+    monkeypatch.setattr(acceptance.subprocess, "run", lambda *args, **kwargs: completed)
+
+    acceptance._run_internal_seed(workspace, "a" * 40)
+
+    sanitized = (workspace / "acceptance_logs" / "seed.log").read_text(
+        encoding="utf-8"
+    )
+    assert _leaked_root_labels(sanitized, roots) == []
+    assert all(placeholder in sanitized for _root, placeholder in roots.values())
+
+
+def test_second_service_start_failure_cleans_process_handles_and_logs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "prepared"
+    workspace.mkdir()
+    roots, raw_text = _log_root_cases(workspace)
+    metadata = {"source_sha": "a" * 40}
+    opened_handles: list[BinaryIO] = []
+    terminated: list[object] = []
+
+    class FakeProcess:
+        pid = 12345
+
+    first_process = FakeProcess()
+    calls = 0
+
+    def fake_popen(*args: object, **kwargs: object) -> FakeProcess:
+        nonlocal calls
+        calls += 1
+        handle = kwargs["stdout"]
+        assert hasattr(handle, "write")
+        opened_handles.append(handle)  # type: ignore[arg-type]
+        handle.write(raw_text.encode("utf-8"))
+        handle.flush()
+        if calls == 2:
+            raise OSError("simulated second service startup failure")
+        return first_process
+
+    monkeypatch.setattr(
+        acceptance,
+        "validate_workspace",
+        lambda *args, **kwargs: workspace,
+    )
+    monkeypatch.setattr(acceptance, "validate_ports", lambda *args: None)
+    monkeypatch.setattr(acceptance, "_validate_staged_config", lambda *args: None)
+    monkeypatch.setattr(acceptance, "load_prepared_metadata", lambda *args: metadata)
+    monkeypatch.setattr(acceptance.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        acceptance,
+        "_terminate_process_tree",
+        lambda process: terminated.append(process),
+    )
+
+    with pytest.raises(OSError, match="second service startup failure"):
+        acceptance.run_servers(workspace, 18901, 18902, serve=False)
+
+    assert terminated == [first_process]
+    assert len(opened_handles) == 2
+    assert all(handle.closed for handle in opened_handles)
+    for log_name in ("api.log", "streamlit.log"):
+        sanitized = (workspace / "acceptance_logs" / log_name).read_text(
+            encoding="utf-8"
+        )
+        assert _leaked_root_labels(sanitized, roots) == []
+        assert all(placeholder in sanitized for _root, placeholder in roots.values())
