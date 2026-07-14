@@ -123,6 +123,22 @@ test('deep review replaces the batch body, exposes all evidence, and restores ex
   await expect(page).toHaveURL(/grading\?question=Q1$/)
 })
 
+test('single deep confirmation decrements the question count and keeps annotation retry explicit', async ({ page }) => {
+  await openBatch(page)
+  await setMode(page, { confirm: 'retry' })
+  await page.locator('[data-detail-id="1"]').getByRole('button', { name: '深查此份答卷' }).click()
+  await expect(page.getByTestId('review-deep-workspace')).toBeVisible()
+  await page.getByTestId('confirm-single').click()
+
+  await expect(page.getByTestId('review-batch-workspace')).toBeVisible()
+  await expect(page.locator('[data-question-id="Q1"]')).toContainText('待复核 1 / 4')
+  await expect(page.getByText('分数已保存，1 份标注图需要重试', { exact: true })).toBeVisible()
+
+  await setMode(page, { confirm: 'success' })
+  await page.getByRole('button', { name: '重试标注图' }).click()
+  await expect(page.getByText('标注图已重新生成。', { exact: true })).toBeVisible()
+})
+
 test('keyboard focus stays safe and media failure remains locally recoverable', async ({ page }) => {
   await openBatch(page)
   await page.keyboard.press('/')
@@ -162,6 +178,7 @@ test('loading, retained error, first error, empty, and no-pending states remain 
   await page.getByLabel('显示范围').selectOption('all')
   await expect(page.getByText('复核内容刷新失败', { exact: true })).toBeVisible()
   await expect(page.getByTestId('review-answer-sheet')).toHaveCount(2)
+  await expect(page.getByLabel('显示范围')).toHaveValue('needs_review')
 
   await setMode(page, { items: 'ready' })
   await page.getByLabel('显示范围').selectOption('needs_review')

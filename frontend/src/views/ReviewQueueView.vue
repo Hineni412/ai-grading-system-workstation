@@ -203,11 +203,20 @@ async function selectQuestion(questionId: string): Promise<void> {
 
 async function updateScope(scope: ReviewScope): Promise<void> {
   if (scope === reviewStore.scope) return
+  const previousScope = reviewStore.scope
   reviewStore.setScope(scope)
   const sessionId = sessionStore.selectedSessionId
   const questionId = reviewStore.selectedQuestionId
   if (sessionId === null || questionId === null) return
   await loadQuestion(sessionId, questionId, null, false, contextGeneration)
+  if (
+    reviewStore.scope === scope &&
+    reviewStore.itemLoadState === 'error' &&
+    sessionStore.selectedSessionId === sessionId &&
+    reviewStore.selectedQuestionId === questionId
+  ) {
+    reviewStore.setScope(previousScope)
+  }
 }
 
 async function retry(): Promise<void> {
@@ -270,29 +279,45 @@ async function confirmBatch(
   const sessionId = submittedItems[0]?.session_id
   const questionId = submittedItems[0]?.question_id
   if (!sessionId || !questionId) return
+  const submittedContextGeneration = contextGeneration
 
   batchSubmitting.value = true
   feedback.value = ''
   try {
     const response = await confirmReviewItems(sessionId, questionId, inputs)
+    const retryResultIds = new Set(
+      response.annotation_outcomes
+        .filter((outcome) => outcome.status === 'retry_required')
+        .map((outcome) => outcome.result_id),
+    )
+    const nextRetryEntries = inputs.flatMap((input, index) => {
+      const item = submittedItems[index]
+      return item && retryResultIds.has(item.result_id) ? [{ input, item }] : []
+    })
+    draftStore.markConfirmedMany(draftKeys)
+
+    const stillOnSubmittedContext =
+      !unmounting &&
+      contextGeneration === submittedContextGeneration &&
+      sessionStore.selectedSessionId === sessionId &&
+      reviewStore.selectedQuestionId === questionId
+    if (!stillOnSubmittedContext) {
+      annotationRetryEntries.value = nextRetryEntries
+      feedbackTone.value = nextRetryEntries.length > 0 ? 'warning' : 'success'
+      feedback.value = nextRetryEntries.length > 0
+        ? '先前考试的本批分数已保存；部分标注图需要显式重试。当前考试未被旧响应更改。'
+        : '先前考试的本批分数已确认；当前考试未被旧响应更改。'
+      return
+    }
+
     reviewStore.markItemsConfirmed(inputs.map((input, index) => ({
       identity: submittedItems[index]!,
       scoreAwarded: input.score_awarded,
       deductionReason: input.deduction_reason?.trim() || '人工复核已确认',
     })))
     reviewStore.adjustQuestionPendingCount(questionId, -inputs.length)
-    draftStore.markConfirmedMany(draftKeys)
     reviewStore.reconcileAfterConfirmation()
-
-    const retryResultIds = new Set(
-      response.annotation_outcomes
-        .filter((outcome) => outcome.status === 'retry_required')
-        .map((outcome) => outcome.result_id),
-    )
-    annotationRetryEntries.value = inputs.flatMap((input, index) => {
-      const item = submittedItems[index]
-      return item && retryResultIds.has(item.result_id) ? [{ input, item }] : []
-    })
+    annotationRetryEntries.value = nextRetryEntries
 
     const currentQuestion = reviewStore.questions.find(
       (question) => question.question_id === questionId,
@@ -371,9 +396,15 @@ async function closeDeepReview(): Promise<void> {
   if (scrollingElement) scrollingElement.scrollTop = batchScrollTop.value
 }
 
-function handleDeepConfirmed(): void {
-  feedbackTone.value = 'success'
-  feedback.value = '此份评分已确认。'
+function handleDeepConfirmed(payload: {
+  detailId: number
+  retryEntry: AnnotationRetryEntry | null
+}): void {
+  annotationRetryEntries.value = payload.retryEntry ? [payload.retryEntry] : []
+  feedbackTone.value = payload.retryEntry ? 'warning' : 'success'
+  feedback.value = payload.retryEntry
+    ? '此份分数已保存；标注图需要显式重试。'
+    : '此份评分已确认。'
   void closeDeepReview()
 }
 

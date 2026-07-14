@@ -5,6 +5,8 @@ import {
   confirmReviewItem,
   fetchReviewItems,
   fetchReviewRubric,
+  type ReviewConfirmInput,
+  type ReviewItem,
   type ReviewRubricSection,
 } from '../../api/review'
 import { scoreIssue, useReviewDraftStore, type ReviewDraft } from '../../stores/review-drafts'
@@ -24,7 +26,10 @@ let rubricController: AbortController | null = null
 let rubricGeneration = 0
 
 const emit = defineEmits<{
-  confirmed: [detailId: number]
+  confirmed: [payload: {
+    detailId: number
+    retryEntry: { input: ReviewConfirmInput; item: ReviewItem } | null
+  }]
 }>()
 
 const item = computed(() => reviewStore.currentItem)
@@ -101,6 +106,12 @@ async function submitCurrent(): Promise<void> {
   const submittedContext = `${submittedSessionId}:${submittedQuestionId}:${submittedDetailId}`
   const score = Number(draft.scoreText.trim())
   const note = draft.note.trim()
+  const confirmInput: ReviewConfirmInput = {
+    result_id: submittedItem.result_id,
+    detail_id: submittedDetailId,
+    score_awarded: score,
+    ...(note ? { deduction_reason: note } : {}),
+  }
 
   submitting.value = true
   feedback.value = ''
@@ -108,17 +119,8 @@ async function submitCurrent(): Promise<void> {
     const response = await confirmReviewItem(
       submittedSessionId,
       submittedQuestionId,
-      {
-        result_id: submittedItem.result_id,
-        detail_id: submittedDetailId,
-        score_awarded: score,
-        ...(note ? { deduction_reason: note } : {}),
-      },
+      confirmInput,
     )
-    const confirmedReason = note || '人工复核已确认'
-    reviewStore.markItemConfirmed(submittedItem, score, confirmedReason)
-    draftStore.markConfirmed(draft.key)
-
     const selectedEntry = reviewStore.items.find(
       (entry) =>
         entry.question_id === reviewStore.selectedQuestionId &&
@@ -128,14 +130,21 @@ async function submitCurrent(): Promise<void> {
       ? `${selectedEntry.session_id}:${selectedEntry.question_id}:${selectedEntry.detail_id}`
       : null
     const stillOnSubmittedContext = activeContext === submittedContext
-    if (stillOnSubmittedContext) {
-      await reviewStore.loadItems(submittedSessionId, submittedQuestionId, fetchReviewItems)
-      emit('confirmed', submittedDetailId)
-    }
-
+    const confirmedReason = note || '人工复核已确认'
+    reviewStore.markItemConfirmed(submittedItem, score, confirmedReason)
+    draftStore.markConfirmed(draft.key)
     const annotationRetry = response.annotation_outcomes.some(
       (outcome) => outcome.status === 'retry_required',
     )
+    if (stillOnSubmittedContext) {
+      reviewStore.adjustQuestionPendingCount(submittedQuestionId, -1)
+      emit('confirmed', {
+        detailId: submittedDetailId,
+        retryEntry: annotationRetry ? { input: confirmInput, item: submittedItem } : null,
+      })
+      await reviewStore.loadItems(submittedSessionId, submittedQuestionId, fetchReviewItems)
+    }
+
     const refreshFailed = stillOnSubmittedContext && reviewStore.itemLoadState === 'error'
     feedbackTone.value = annotationRetry || refreshFailed ? 'warning' : 'success'
     feedback.value = !stillOnSubmittedContext

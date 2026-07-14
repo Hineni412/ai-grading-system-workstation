@@ -47,6 +47,9 @@ async function mountInspector(items: ReviewItem[] = [item]) {
   const pinia = createPinia()
   setActivePinia(pinia)
   const queue = useReviewQueueStore(pinia)
+  queue.$patch({
+    questions: [{ question_id: 'Q1', total_count: items.length, needs_review_count: items.length, max_score: 5 }],
+  })
   queue.selectQuestion('Q1')
   queue.replaceItems(items, items[0]?.detail_id)
   const host = document.createElement('div')
@@ -164,7 +167,18 @@ describe('review scoring inspector', () => {
     button.click()
 
     await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
-    await vi.waitFor(() => expect(confirmed).toHaveBeenCalledWith(21))
+    await vi.waitFor(() => expect(confirmed).toHaveBeenCalledWith({
+      detailId: 21,
+      retryEntry: {
+        input: {
+          result_id: 11,
+          detail_id: 21,
+          score_awarded: 4,
+        },
+        item,
+      },
+    }))
+    expect(useReviewQueueStore(pinia).questions[0]?.needs_review_count).toBe(1)
     await vi.waitFor(() => expect(
       document.body.querySelector('[data-testid="review-feedback-toast"]')?.textContent,
     ).toContain('分数已确认，标注图需要稍后刷新'))
