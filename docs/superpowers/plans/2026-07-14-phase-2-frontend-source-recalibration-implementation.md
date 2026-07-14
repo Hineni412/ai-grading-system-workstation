@@ -75,6 +75,8 @@ Existing `ReviewSelectionSummary.vue` remains reusable inside deep review unless
 - Modify: `frontend/src/router/index.ts`
 - Modify: `frontend/src/layouts/AppShell.vue`
 - Modify: `frontend/src/components/shell/AppTopbar.vue`
+- Modify: `frontend/src/components/ApplicationErrorBoundary.vue`
+- Modify: `frontend/src/views/NotFoundView.vue`
 - Modify: `frontend/src/styles/app-shell.css`
 - Delete: `frontend/src/components/shell/AppNavigation.vue`
 - Delete: `frontend/src/components/shell/SessionInspector.vue`
