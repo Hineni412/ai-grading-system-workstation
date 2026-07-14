@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
@@ -17,6 +20,54 @@ def _tar_member(name: str, member_type: bytes = tarfile.REGTYPE) -> tarfile.TarI
     member.type = member_type
     member.size = 0
     return member
+
+
+def test_bootstrap_loads_staged_only_module_without_repository_paths(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "staged"
+    staged_tools = workspace / "tools"
+    staged_tools.mkdir(parents=True)
+    shutil.copy2(Path(acceptance.__file__), staged_tools / "p1_29_acceptance.py")
+    (workspace / "staged_only_marker.py").write_text(
+        "MARKER = 'staged-only'\n",
+        encoding="utf-8",
+    )
+    launcher_root = Path(acceptance.__file__).resolve().parents[1]
+    runtime_repository = Path(sys.executable).resolve().parents[2]
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(tmp_path / "must-not-be-used")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(staged_tools / "p1_29_acceptance.py"),
+            "_bootstrap",
+            "--workspace",
+            str(workspace),
+            "--target",
+            "probe",
+            "--probe-module",
+            "staged_only_marker",
+            "--forbid-root",
+            str(launcher_root),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout.strip())
+    assert Path(payload["origin"]).resolve() == (
+        workspace / "staged_only_marker.py"
+    ).resolve()
+    assert Path(payload["sys_path"][0]).resolve() == workspace.resolve()
+    resolved_paths = {Path(value).resolve() for value in payload["sys_path"]}
+    assert runtime_repository not in resolved_paths
+    assert launcher_root not in resolved_paths
 
 
 def test_workspace_must_be_strictly_below_system_temp_root() -> None:
@@ -234,14 +285,28 @@ def test_metadata_schema_is_allowlisted_and_paths_are_logical(tmp_path: Path) ->
 
 def test_internal_seed_executes_full_synthetic_flow(tmp_path: Path) -> None:
     workspace = tmp_path / "staged"
-    config = workspace / "config" / "app_config.yaml"
-    config.parent.mkdir(parents=True)
-    config.write_text(
-        "DATA_DIR: synthetic_data\nLOGS_DIR: acceptance_logs\n",
-        encoding="utf-8",
+    workspace.mkdir()
+    repo_root = Path(acceptance.__file__).resolve().parents[1]
+    source_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    acceptance._archive_commit(
+        source_sha,
+        repo_root=repo_root,
+        workspace=workspace,
     )
+    shutil.copy2(
+        Path(acceptance.__file__),
+        workspace / "tools" / "p1_29_acceptance.py",
+    )
+    acceptance.rewrite_staged_config(workspace)
 
-    metadata = acceptance.seed_workspace(workspace, "a" * 40)
+    acceptance._run_internal_seed(workspace, source_sha)
+    metadata = acceptance.load_prepared_metadata(workspace)
 
     assert metadata["counts"] == {
         "students": 2,
@@ -249,5 +314,5 @@ def test_internal_seed_executes_full_synthetic_flow(tmp_path: Path) -> None:
         "results": 2,
         "reports": 1,
     }
-    assert metadata["source_sha"] == "a" * 40
+    assert metadata["source_sha"] == source_sha
     assert all((workspace / filename).is_file() for filename in metadata["files"].values())
