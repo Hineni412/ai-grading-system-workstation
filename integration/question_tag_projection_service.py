@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import sqlite3
 from typing import Any, Mapping
 
 from question_bank.database.schema import connect, initialize_database
@@ -54,8 +55,14 @@ class QuestionTagProjection:
 
 
 class QuestionTagProjectionService:
-    def __init__(self, question_bank_db_path: str | Path) -> None:
+    def __init__(
+        self,
+        question_bank_db_path: str | Path,
+        *,
+        external_connection: sqlite3.Connection | None = None,
+    ) -> None:
         self.db_path = Path(question_bank_db_path)
+        self.external_connection = external_connection
 
     def project_session(
         self,
@@ -63,10 +70,14 @@ class QuestionTagProjectionService:
         grading_session_id: str | int,
         rubric: Mapping[str, Any],
     ) -> QuestionTagProjection:
-        initialize_database(self.db_path)
+        if self.external_connection is None:
+            initialize_database(self.db_path)
         confirmed_links = {
             str(item["source_question_id"]): int(item["bank_question_id"])
-            for item in SourceQuestionLinkService(self.db_path).list_links(grading_session_id)
+            for item in SourceQuestionLinkService(
+                self.db_path,
+                external_connection=self.external_connection,
+            ).list_links(grading_session_id)
             if item.get("status") == "confirmed"
         }
         item_refs = list(iter_effective_rubric_item_refs(rubric))
@@ -109,7 +120,10 @@ class QuestionTagProjectionService:
             return {}, {}
         placeholders = ", ".join("?" for _ in question_ids)
         ordered_ids = sorted(question_ids)
-        with connect(self.db_path) as conn:
+        with connect(
+            self.db_path,
+            external_connection=self.external_connection,
+        ) as conn:
             question_rows = conn.execute(
                 f"SELECT id, is_deleted FROM questions WHERE id IN ({placeholders})",
                 ordered_ids,

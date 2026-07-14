@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -392,15 +393,25 @@ def build_question_fingerprint(question: dict[str, Any] | Mapping[str, Any]) -> 
 
 
 class QuestionFrequencyService:
-    def __init__(self, db_path: Path) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        external_connection: sqlite3.Connection | None = None,
+    ) -> None:
         self.db_path = Path(db_path)
+        self.external_connection = external_connection
 
     def initialize_database(self) -> None:
         initialize_database(self.db_path)
 
     def metrics_for_questions(self, question_ids: list[int] | tuple[int, ...]) -> dict[int, FrequencyMetrics]:
-        self.initialize_database()
-        with connect(self.db_path) as conn:
+        if self.external_connection is None:
+            self.initialize_database()
+        with connect(
+            self.db_path,
+            external_connection=self.external_connection,
+        ) as conn:
             result: dict[int, FrequencyMetrics] = {}
             deduped = list(dict.fromkeys(int(value) for value in question_ids))
             # 批量加载目标题目，避免逐题 _load_question 的 2N 次查询。
@@ -424,6 +435,7 @@ class QuestionFrequencyService:
                         match_cache=match_cache,
                         all_active=all_active,
                         parents_by_qid=parents_by_qid,
+                        cache_fingerprint=self.external_connection is None,
                     )
             return result
 
@@ -723,6 +735,7 @@ def _metrics_for_target_cached(
     match_cache: dict[tuple, int],
     all_active: dict[int, dict[str, Any]] | None = None,
     parents_by_qid: dict[int, set[str]] | None = None,
+    cache_fingerprint: bool = True,
 ) -> FrequencyMetrics:
     # 与 _metrics_for_target 行为完全一致，但复用 eligible_cache / match_cache，
     # 避免在批量计算时对同一组试卷或同一指纹重复查询。
@@ -731,7 +744,8 @@ def _metrics_for_target_cached(
     fingerprint = build_question_fingerprint(target)
     if not exam_type or not fingerprint:
         return FrequencyMetrics(available=False, exam_type=exam_type, fingerprint=fingerprint)
-    _cache_fingerprint(conn, question_id, fingerprint, _style_features(target))
+    if cache_fingerprint:
+        _cache_fingerprint(conn, question_id, fingerprint, _style_features(target))
 
     if all_active is None:
         all_active = _load_all_active_questions(conn)

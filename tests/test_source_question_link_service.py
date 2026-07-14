@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -167,6 +168,34 @@ def test_suggestion_never_overwrites_teacher_confirmed_link(
     link = link_service.list_links(14)[0]
     assert link["bank_question_id"] == 201
     assert link["status"] == "confirmed"
+
+
+def test_borrowed_link_reads_reuse_connection_and_leave_it_open_on_error(
+    link_service: SourceQuestionLinkService,
+) -> None:
+    link_service.confirm_link(
+        grading_session_id=14,
+        source_question_id="17",
+        bank_question_id=201,
+        link_method="manual",
+    )
+    borrowed = sqlite3.connect(link_service.db_path)
+    borrowed.row_factory = sqlite3.Row
+    service = SourceQuestionLinkService(
+        link_service.db_path,
+        external_connection=borrowed,
+    )
+    try:
+        assert service.confirmed_bank_question_ids(14) == {201}
+        assert service.list_links(14)[0]["bank_question_id"] == 201
+
+        borrowed.execute("DROP TABLE grading_question_links")
+        with pytest.raises(sqlite3.OperationalError):
+            service.list_links(14)
+        assert borrowed.execute("SELECT 1").fetchone()[0] == 1
+    finally:
+        borrowed.rollback()
+        borrowed.close()
 
 
 def test_grading_paper_intake_creates_source_links(
