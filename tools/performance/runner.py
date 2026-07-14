@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -105,12 +105,13 @@ def run_scale(
     warmups: int = 3,
     samples: int = 20,
     repetitions: int = 2,
+    scenario_names: Iterable[str] | None = None,
 ) -> ScaleBenchmarkResult:
     if warmups <= 0 or samples <= 0 or repetitions <= 0:
         raise ValueError("benchmark counts must be positive")
+    scenarios = _select_scenarios(build_scenarios(dataset), scenario_names)
     sink = InMemoryPerformanceSink()
     app = _build_app(dataset, sink)
-    scenarios = build_scenarios(dataset)
     used_request_ids: set[str] = set()
     completed: list[RepetitionBenchmarkResult] = []
 
@@ -173,6 +174,26 @@ def run_scale(
         manifest=dataset.manifest,
         repetitions=tuple(completed),
         repeatability="passed",
+    )
+
+
+def _select_scenarios(
+    available: tuple[BenchmarkScenario, ...],
+    requested_names: Iterable[str] | None,
+) -> tuple[BenchmarkScenario, ...]:
+    if requested_names is None:
+        return available
+    requested = tuple(str(name) for name in requested_names)
+    if not requested:
+        raise BenchmarkRunError("scenario_filter:empty")
+    if len(set(requested)) != len(requested):
+        raise BenchmarkRunError("scenario_filter:duplicate")
+    available_names = {scenario.name for scenario in available}
+    if any(name not in available_names for name in requested):
+        raise BenchmarkRunError("scenario_filter:unknown")
+    requested_set = set(requested)
+    return tuple(
+        scenario for scenario in available if scenario.name in requested_set
     )
 
 
