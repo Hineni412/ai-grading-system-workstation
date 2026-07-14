@@ -15,7 +15,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tools.benchmark_api_db import _best_effort_unlink, _restore_output
-from tools.performance.dataset import SCALES, build_benchmark_dataset
+from tools.performance.dataset import SCALES, ScaleDefinition, build_benchmark_dataset
 from tools.performance.report import RuntimeSummary
 from tools.performance.request_connection_report import (
     SCENARIO_NAMES,
@@ -27,7 +27,12 @@ from tools.performance.request_connection_report import (
     render_json,
     render_markdown,
 )
-from tools.performance.runner import BenchmarkRunError, run_scale
+from tools.performance.runner import (
+    LEGACY_PER_CALL_MODE,
+    REQUEST_SCOPED_MODE,
+    BenchmarkRunError,
+    run_scale,
+)
 
 
 DEFAULT_BASELINE = Path("docs/performance/p1-26-api-db-baseline.json")
@@ -42,9 +47,26 @@ def _positive(value: str) -> int:
     return parsed
 
 
+def _fraction(value: str) -> float:
+    parsed = float(value)
+    if not 0 < parsed <= 1:
+        raise argparse.ArgumentTypeError("value must be greater than zero and at most one")
+    return parsed
+
+
+def _scaled_scale(scale: ScaleDefinition, factor: float) -> ScaleDefinition:
+    if not 0 < factor <= 1:
+        raise ValueError("data scale factor must be greater than zero and at most one")
+
+    def scaled(value: int) -> int:
+        return max(1, int(value * factor)) if value > 0 else 0
+
+    return ScaleDefinition(scale.name, *(scaled(value) for value in scale.counts))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Compare P1-27 request connections with the P1-26 baseline"
+        description="Compare legacy and request-scoped connections on identical generated data"
     )
     parser.add_argument("--seed", type=int, default=126)
     parser.add_argument(
@@ -53,8 +75,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[scale.name for scale in SCALES],
         default=[scale.name for scale in SCALES],
     )
+    parser.add_argument("--data-scale-factor", type=_fraction, default=0.1)
     parser.add_argument("--warmups", type=_positive, default=3)
-    parser.add_argument("--samples", type=_positive, default=20)
+    parser.add_argument("--samples", type=_positive, default=2)
     parser.add_argument("--repetitions", type=_positive, default=2)
     parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
     parser.add_argument("--output-json", type=Path, default=DEFAULT_JSON)
@@ -138,7 +161,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.repetitions != 2:
         print("comparison_failed comparison:requires_two_repetitions", file=sys.stderr)
         return 1
-    scale_by_name = {scale.name: scale for scale in SCALES}
+    scale_by_name = {
+        scale.name: _scaled_scale(scale, args.data_scale_factor) for scale in SCALES
+    }
     try:
         baseline = load_baseline_report(
             args.baseline,
@@ -149,25 +174,38 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("comparison:seed_mismatch")
         with tempfile.TemporaryDirectory(prefix="p1-27-connection-benchmark-") as temp_dir:
             temp_root = Path(temp_dir)
-            results = []
+            legacy_results = []
+            optimized_results = []
             for scale_name in args.scales:
                 dataset = build_benchmark_dataset(
                     temp_root / scale_name,
                     scale_by_name[scale_name],
                     seed=args.seed,
                 )
-                results.append(
+                legacy_results.append(
                     run_scale(
                         dataset,
                         warmups=args.warmups,
                         samples=args.samples,
                         repetitions=args.repetitions,
                         scenario_names=SCENARIO_NAMES,
+                        connection_mode=LEGACY_PER_CALL_MODE,
+                    )
+                )
+                optimized_results.append(
+                    run_scale(
+                        dataset,
+                        warmups=args.warmups,
+                        samples=args.samples,
+                        repetitions=args.repetitions,
+                        scenario_names=SCENARIO_NAMES,
+                        connection_mode=REQUEST_SCOPED_MODE,
                     )
                 )
             report = build_comparison_report(
                 baseline,
-                results,
+                legacy_results,
+                optimized_results,
                 code_sha=_code_sha(),
                 generated_at_utc=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 runtime=RuntimeSummary(
@@ -176,12 +214,15 @@ def main(argv: list[str] | None = None) -> int:
                     sqlite_version=sqlite3.sqlite_version,
                     logical_cpu_count=os.cpu_count() or 1,
                 ),
+                data_scale_factor=args.data_scale_factor,
                 warmups=args.warmups,
                 samples=args.samples,
                 repetitions=args.repetitions,
                 limitations=(
                     "Only aggregate measurements from generated benchmark data are included.",
-                    "Before measurements come from the committed P1-26 baseline.",
+                    "Before and after measurements use identical generated datasets.",
+                    "The committed P1-26 report is provenance only, not numeric performance evidence.",
+                    "The reduced workload has lower statistical confidence and capacity coverage.",
                     "Latency is machine-specific and is not a service-level objective.",
                     "Each file is atomic, but sudden termination can leave a mixed old/new pair.",
                 ),
@@ -195,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
         print("comparison_failed comparison:unexpected_error", file=sys.stderr)
         return 1
 
-    scenario_count = len(results) * len(SCENARIO_NAMES)
+    scenario_count = len(legacy_results) * len(SCENARIO_NAMES) * 2
     print(
         f"comparison_passed scenarios={scenario_count}/{scenario_count} "
         "repeatability=passed gates=passed"

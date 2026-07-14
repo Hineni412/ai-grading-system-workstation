@@ -291,12 +291,25 @@ If no production fix is needed, commit only the new tests with that message.
 - Create `docs/performance/p1-27-request-connection-comparison.md`
 - Modify this plan
 
+### User-approved workload amendment (2026-07-14)
+
+The original formal process exceeded one hour and was stopped without publishing reports. The user approved this exact replacement workload:
+
+- Keep the original tier names `small`, `medium`, and `large_5pct`, the fixed seed, and all six allowlisted scenarios.
+- Generate every tier at `data_scale_factor=0.1`; multiply every original logical row count by `0.1`, truncate to an integer, and clamp every positive result to at least `1`.
+- Use exactly `warmups=3`, `samples=2`, and `repetitions=2` for the formal comparison.
+- Run benchmark-only `legacy_per_call` and production `request_scoped` dependency/service behavior against the same generated 10% dataset for each tier. The legacy wiring must not change production routing or expose a runtime switch.
+- Treat the committed P1-26 report only as allowlisted provenance and seed/scenario context. Its 100% measurements must not be used as the numeric before side or as performance evidence for the amended 10% run.
+- Require exact legacy/request-scoped status and response-record equality in both repetitions, deterministic completion of both modes, target total-statement reduction, and at least 20% p50 improvement for amended medium plan preview and all amended medium Graph scenarios. The Question Bank default control is measured without an improvement requirement.
+- Preserve the existing JSON/Markdown privacy, per-file atomic publication/catchable recovery, mixed-pair limitation, and root plus feature real-database fingerprint guards.
+- Explicitly report that two samples and 10% generated data reduce statistical confidence and capacity coverage. The amended report proves behavior and focused comparative improvement only; it is not full-capacity or service-level evidence.
+
 ### Step 1: Write RED report-contract tests
 
-- [ ] Load the committed P1-26 report by allowlisted fields only.
+- [ ] Load the committed P1-26 report by allowlisted fields only as provenance/context, never as the numeric before side.
 - [ ] Run the same seed/scales for six allowlisted scenarios: five targets plus Question Bank default control.
 - [ ] Require two repetitions, status 200, deterministic status/query/record summaries and no raw samples.
-- [ ] Compare before/after p50, total statements, SELECTs and response records.
+- [ ] Compare same-dataset `legacy_per_call`/`request_scoped` p50, total statements, SELECTs and response records.
 - [ ] Require exact response record/status equality.
 - [ ] Require target total-statement reduction and at least 20% p50 improvement for medium plan preview and all medium Graph scenarios.
 - [ ] Control scenario is measured but has no improvement requirement.
@@ -306,7 +319,8 @@ If no production fix is needed, commit only the new tests with that message.
 ### Step 2: Implement the focused comparison runner
 
 - [ ] Reuse P1-26 dataset/scenario/runner primitives; add an allowlisted scenario filter without changing default P1-26 behavior.
-- [ ] Default seed/scales match P1-26; use 3 warmups, 20 samples, 2 repetitions unless a reviewed plan amendment justifies a smaller exact comparison.
+- [ ] Default seed and tier names match P1-26; generate at exactly 10% and use 3 warmups, 2 samples and 2 repetitions under the approved amendment above.
+- [ ] Add legacy behavior only in benchmark dependency wiring and reuse the exact same generated dataset object for the optimized run.
 - [ ] Record the code SHA, environment, scenario set and sample counts.
 - [ ] Render only aggregates and explicit pass/fail gates.
 
@@ -323,16 +337,16 @@ Expected: report structure/safety passes and micro run shows target statement re
 
 ```powershell
 git add tools/benchmark_request_connections.py tools/performance/request_connection_report.py tools/performance/runner.py tests/test_request_connection_benchmark.py tests/test_performance_benchmark.py tests/test_performance_report.py
-git commit -m "perf: compare request connection reuse"
+git commit -m "perf: reduce P1-27 comparison workload"
 ```
 
 ### Step 5: Run the formal comparison
 
-- [ ] Recheck root real-database recovery fingerprints read-only.
+- [ ] Capture root and feature grading/question-bank database size, UTC mtime and SHA-256 read-only before the run.
 - [ ] Run `runtime\python\python.exe tools\benchmark_request_connections.py` in a foreground/controlled process and preserve OS exit code/runtime.
 - [ ] Require all gates pass before reports publish.
 - [ ] Validate safety, exact scenario/sample counts, two-round repeatability and non-zero expected records.
-- [ ] Compare root fingerprints again; any difference blocks commit/integration.
+- [ ] Compare all root and feature fingerprints again; any difference blocks publication, commit and integration.
 
 ### Step 6: Commit the versioned comparison as `waiting_review`
 

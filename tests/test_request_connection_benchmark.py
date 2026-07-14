@@ -156,7 +156,34 @@ def _result(scale: str) -> ScaleBenchmarkResult:
     )
 
 
-def _report(tmp_path: Path, *, results: tuple[ScaleBenchmarkResult, ...] | None = None):
+def _legacy_result(scale: str) -> ScaleBenchmarkResult:
+    optimized = _result(scale)
+    scenarios = tuple(
+        replace(
+            summary,
+            latency_ms=TimingSummary(90.0, 100.0, 110.0, 120.0),
+            db_statements=NumericSummary(
+                11.0 if summary.name == CONTROL_SCENARIO else 100.0,
+                11.0 if summary.name == CONTROL_SCENARIO else 100.0,
+                11.0 if summary.name == CONTROL_SCENARIO else 100.0,
+            ),
+        )
+        for summary in optimized.repetitions[0].scenarios
+    )
+    return replace(
+        optimized,
+        repetitions=(
+            RepetitionBenchmarkResult(1, scenarios),
+            RepetitionBenchmarkResult(2, scenarios),
+        ),
+    )
+
+
+def _report(
+    tmp_path: Path,
+    *,
+    optimized_results: tuple[ScaleBenchmarkResult, ...] | None = None,
+):
     baseline = load_baseline_report(
         _write_baseline(tmp_path),
         scales=("small", "medium"),
@@ -164,10 +191,12 @@ def _report(tmp_path: Path, *, results: tuple[ScaleBenchmarkResult, ...] | None 
     )
     return build_comparison_report(
         baseline,
-        results or (_result("small"), _result("medium")),
+        (_legacy_result("small"), _legacy_result("medium")),
+        optimized_results or (_result("small"), _result("medium")),
         code_sha="b" * 40,
         generated_at_utc="2026-07-14T04:00:00Z",
         runtime=RuntimeSummary("Windows-11", "3.12.1", "3.43.1", 8),
+        data_scale_factor=0.1,
         warmups=3,
         samples=20,
         repetitions=2,
@@ -194,7 +223,8 @@ def test_cli_defaults_match_p1_26_and_exact_task_5_scope() -> None:
     assert args.seed == 126
     assert args.scales == ["small", "medium", "large_5pct"]
     assert args.warmups == 3
-    assert args.samples == 20
+    assert args.data_scale_factor == 0.1
+    assert args.samples == 2
     assert args.repetitions == 2
     assert args.baseline.as_posix().endswith("docs/performance/p1-26-api-db-baseline.json")
     assert args.output_json.as_posix().endswith(
@@ -207,6 +237,187 @@ def test_cli_defaults_match_p1_26_and_exact_task_5_scope() -> None:
     for option in ("--warmups", "--samples", "--repetitions"):
         with pytest.raises(SystemExit):
             build_parser().parse_args([option, "0"])
+
+
+def test_amended_cli_defaults_use_ten_percent_two_sample_workload() -> None:
+    import tools.benchmark_request_connections as cli_module
+
+    args = build_parser().parse_args([])
+
+    assert args.scales == ["small", "medium", "large_5pct"]
+    assert args.data_scale_factor == 0.1
+    assert args.warmups == 3
+    assert args.samples == 2
+    assert args.repetitions == 2
+
+    scaled = tuple(cli_module._scaled_scale(scale, args.data_scale_factor) for scale in cli_module.SCALES)
+    assert tuple(scale.name for scale in scaled) == ("small", "medium", "large_5pct")
+    assert tuple(scale.counts for scale in scaled) == (
+        (1, 3, 1, 30, 20, 1, 1),
+        (1, 20, 2, 2_000, 200, 10, 5),
+        (1, 2, 1, 750, 50, 2, 1),
+    )
+
+
+def test_legacy_mode_is_benchmark_only_wiring_to_production_legacy_dependencies(
+    tmp_path: Path,
+) -> None:
+    import tools.performance.runner as runner_module
+    from backend.api.dependencies import (
+        get_diagnosis_profile_service,
+        get_practice_plan_service,
+        get_request_diagnosis_profile_service,
+        get_request_practice_plan_service,
+    )
+    from backend.performance.metrics import InMemoryPerformanceSink
+
+    dataset = build_benchmark_dataset(tmp_path / "dataset", MICRO, seed=126)
+    app = runner_module._build_app(
+        dataset,
+        InMemoryPerformanceSink(),
+        connection_mode="legacy_per_call",
+    )
+
+    assert (
+        app.dependency_overrides[get_request_diagnosis_profile_service]
+        is app.dependency_overrides[get_diagnosis_profile_service]
+    )
+    assert (
+        app.dependency_overrides[get_request_practice_plan_service]
+        is app.dependency_overrides[get_practice_plan_service]
+    )
+    assert "legacy_per_call" not in inspect.getsource(
+        __import__("backend.api.dependencies", fromlist=["*"])
+    )
+
+
+def test_legacy_mode_uses_generated_paths_before_testclient_lifespan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import path_manager
+
+    dataset = build_benchmark_dataset(tmp_path / "dataset", MICRO, seed=126)
+    sentinel = object()
+
+    class ForbiddenDefaultPaths:
+        def __init__(self) -> None:
+            raise AssertionError("repository path configuration must not be constructed")
+
+    monkeypatch.setattr(path_manager, "_instance", sentinel)
+    monkeypatch.setattr(path_manager, "PathManager", ForbiddenDefaultPaths)
+
+    result = run_scale(
+        dataset,
+        warmups=1,
+        samples=1,
+        repetitions=2,
+        scenario_names=("training.diagnosis", "training.plan.preview"),
+        connection_mode="legacy_per_call",
+    )
+
+    assert result.repeatability == "passed"
+    assert all(
+        summary.status_code == 200
+        for repetition in result.repetitions
+        for summary in repetition.scenarios
+    )
+    assert path_manager._instance is sentinel
+
+
+def test_report_uses_same_dataset_legacy_measurements_not_p1_26_numbers(
+    tmp_path: Path,
+) -> None:
+    baseline_payload = _baseline_payload(scales=("medium",))
+    for repetition in baseline_payload["scales"][0]["repetitions"]:
+        for scenario in repetition["scenarios"]:
+            scenario["latency_ms"]["p50"] = 1.0
+            scenario["db_statements"] = _metric(1.0)
+    baseline = load_baseline_report(
+        _write_baseline(tmp_path, baseline_payload),
+        scales=("medium",),
+        scenarios=SCENARIO_NAMES,
+    )
+    optimized = _result("medium")
+    legacy_scenarios = tuple(
+        replace(
+            summary,
+            latency_ms=TimingSummary(90.0, 100.0, 110.0, 120.0),
+            db_statements=NumericSummary(
+                11.0 if summary.name == CONTROL_SCENARIO else 100.0,
+                11.0 if summary.name == CONTROL_SCENARIO else 100.0,
+                11.0 if summary.name == CONTROL_SCENARIO else 100.0,
+            ),
+        )
+        for summary in optimized.repetitions[0].scenarios
+    )
+    legacy = replace(
+        optimized,
+        repetitions=(
+            RepetitionBenchmarkResult(1, legacy_scenarios),
+            RepetitionBenchmarkResult(2, legacy_scenarios),
+        ),
+    )
+
+    report = build_comparison_report(
+        baseline,
+        (legacy,),
+        (optimized,),
+        code_sha="b" * 40,
+        generated_at_utc="2026-07-14T04:00:00Z",
+        runtime=RuntimeSummary("Windows-11", "3.12.1", "3.43.1", 8),
+        data_scale_factor=0.1,
+        warmups=3,
+        samples=20,
+        repetitions=2,
+        limitations=("Reduced statistical confidence and capacity coverage.",),
+    )
+
+    ensure_report_passes(report)
+    payload = json.loads(render_json(report))
+    target = next(
+        item
+        for item in payload["comparisons"]
+        if item["repetition"] == 1 and item["scenario"] == "training.plan.preview"
+    )
+    assert target["latency_p50_ms"]["before"] == 100.0
+    assert target["db_statements"]["before"] == 100.0
+    assert payload["p1_26_provenance_code_sha"] == "a" * 40
+    assert payload["before_mode"] == "legacy_per_call"
+    assert payload["after_mode"] == "request_scoped"
+    assert payload["data_scale_factor"] == 0.1
+
+
+def test_report_rejects_legacy_and_optimized_dataset_mismatch(tmp_path: Path) -> None:
+    baseline = load_baseline_report(
+        _write_baseline(tmp_path, _baseline_payload(scales=("medium",))),
+        scales=("medium",),
+        scenarios=SCENARIO_NAMES,
+    )
+    legacy = _legacy_result("medium")
+    optimized = _result("medium")
+    optimized = replace(
+        optimized,
+        manifest=replace(
+            optimized.manifest,
+            table_counts=(("students", 3),),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="comparison:dataset_mismatch"):
+        build_comparison_report(
+            baseline,
+            (legacy,),
+            (optimized,),
+            code_sha="b" * 40,
+            generated_at_utc="2026-07-14T04:00:00Z",
+            runtime=RuntimeSummary("Windows-11", "3.12.1", "3.43.1", 8),
+            data_scale_factor=0.1,
+            warmups=3,
+            samples=20,
+            repetitions=2,
+            limitations=("Reduced statistical confidence and capacity coverage.",),
+        )
 
 
 def test_cli_supports_direct_script_execution() -> None:
@@ -313,13 +524,16 @@ def test_report_compares_aggregates_and_emits_explicit_passing_gates(tmp_path: P
     _assert_safe_keys(payload)
     assert set(payload) == {
         "package",
-        "baseline_code_sha",
+        "p1_26_provenance_code_sha",
         "code_sha",
         "generated_at_utc",
         "runtime",
         "seed",
         "scales",
         "scenarios",
+        "before_mode",
+        "after_mode",
+        "data_scale_factor",
         "warmup_count",
         "sample_count",
         "repetition_count",
@@ -373,10 +587,12 @@ def test_small_only_micro_has_no_medium_latency_requirement(tmp_path: Path) -> N
     )
     report = build_comparison_report(
         baseline,
+        (_legacy_result("small"),),
         (_result("small"),),
         code_sha="b" * 40,
         generated_at_utc="2026-07-14T04:00:00Z",
         runtime=RuntimeSummary("Windows-11", "3.12.1", "3.43.1", 8),
+        data_scale_factor=0.1,
         warmups=1,
         samples=20,
         repetitions=2,
@@ -412,7 +628,12 @@ def test_required_statement_latency_status_and_record_gates_block_publication(
         ),
     )
     with pytest.raises(ComparisonGateError, match="target_statement_reduction"):
-        ensure_report_passes(_report(tmp_path, results=(_result("small"), statement_failure)))
+        ensure_report_passes(
+            _report(
+                tmp_path,
+                optimized_results=(_result("small"), statement_failure),
+            )
+        )
 
     scenarios = list(passing.repetitions[0].scenarios)
     graph_index = SCENARIO_NAMES.index("graph.rows")
@@ -428,7 +649,12 @@ def test_required_statement_latency_status_and_record_gates_block_publication(
         ),
     )
     with pytest.raises(ComparisonGateError, match="medium_p50_improvement"):
-        ensure_report_passes(_report(tmp_path, results=(_result("small"), latency_failure)))
+        ensure_report_passes(
+            _report(
+                tmp_path,
+                optimized_results=(_result("small"), latency_failure),
+            )
+        )
 
     scenarios = list(passing.repetitions[0].scenarios)
     scenarios[0] = replace(scenarios[0], status_code=503)
@@ -440,7 +666,12 @@ def test_required_statement_latency_status_and_record_gates_block_publication(
         ),
     )
     with pytest.raises(ComparisonGateError, match="status_equality"):
-        ensure_report_passes(_report(tmp_path, results=(_result("small"), status_failure)))
+        ensure_report_passes(
+            _report(
+                tmp_path,
+                optimized_results=(_result("small"), status_failure),
+            )
+        )
 
     scenarios = list(passing.repetitions[0].scenarios)
     scenarios[0] = replace(
@@ -455,7 +686,12 @@ def test_required_statement_latency_status_and_record_gates_block_publication(
         ),
     )
     with pytest.raises(ComparisonGateError, match="response_record_equality"):
-        ensure_report_passes(_report(tmp_path, results=(_result("small"), record_failure)))
+        ensure_report_passes(
+            _report(
+                tmp_path,
+                optimized_results=(_result("small"), record_failure),
+            )
+        )
 
 
 def test_publish_report_reuses_p1_26_recovery_primitives_and_contract() -> None:
