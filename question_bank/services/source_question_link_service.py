@@ -15,8 +15,14 @@ SUGGESTION_THRESHOLD = 0.82
 
 
 class SourceQuestionLinkService:
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(
+        self,
+        db_path: str | Path,
+        *,
+        external_connection: sqlite3.Connection | None = None,
+    ) -> None:
         self.db_path = Path(db_path)
+        self.external_connection = external_connection
 
     def initialize_database(self) -> None:
         initialize_database(self.db_path)
@@ -93,8 +99,12 @@ class SourceQuestionLinkService:
             )
 
     def confirmed_bank_question_ids(self, grading_session_id: str | int) -> set[int]:
-        self.initialize_database()
-        with connect(self.db_path) as conn:
+        if self.external_connection is None:
+            self.initialize_database()
+        with connect(
+            self.db_path,
+            external_connection=self.external_connection,
+        ) as conn:
             rows = conn.execute(
                 """
                 SELECT bank_question_id
@@ -115,14 +125,18 @@ class SourceQuestionLinkService:
         return ""
 
     def list_links(self, grading_session_id: str | int | None = None) -> list[dict[str, Any]]:
-        self.initialize_database()
+        if self.external_connection is None:
+            self.initialize_database()
         sql = "SELECT * FROM grading_question_links"
         params: list[Any] = []
         if grading_session_id is not None:
             sql += " WHERE grading_session_id = ?"
             params.append(_required_text(grading_session_id, "grading_session_id"))
         sql += " ORDER BY grading_session_id, source_question_id, id"
-        with connect(self.db_path) as conn:
+        with connect(
+            self.db_path,
+            external_connection=self.external_connection,
+        ) as conn:
             return [_link_from_row(row) for row in conn.execute(sql, params).fetchall()]
 
     def link_questions_for_session(

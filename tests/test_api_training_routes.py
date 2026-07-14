@@ -4,6 +4,8 @@ import json
 import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from types import SimpleNamespace
 from uuid import UUID
 import warnings
 from pathlib import Path
@@ -175,6 +177,8 @@ def training_client(training_services) -> TestClient:
     from backend.api.dependencies import (
         get_diagnosis_profile_service,
         get_practice_plan_service,
+        get_request_diagnosis_profile_service,
+        get_request_practice_plan_service,
         get_training_task_service,
     )
 
@@ -182,8 +186,141 @@ def training_client(training_services) -> TestClient:
     app = create_app()
     app.dependency_overrides[get_diagnosis_profile_service] = lambda: diagnosis
     app.dependency_overrides[get_practice_plan_service] = lambda: practice
+    app.dependency_overrides[get_request_diagnosis_profile_service] = (
+        lambda: diagnosis
+    )
+    app.dependency_overrides[get_request_practice_plan_service] = lambda: practice
     app.dependency_overrides[get_training_task_service] = lambda: tasks
     return TestClient(app)
+
+
+def test_training_preview_resolves_services_from_one_cached_request_context(
+    training_services,
+) -> None:
+    from backend.api.app import create_app
+    from backend.api.dependencies import (
+        get_diagnosis_profile_service,
+        get_practice_plan_service,
+        get_request_read_context,
+    )
+
+    diagnosis, practice, _tasks = training_services
+    calls = 0
+
+    def provide_context():
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(
+            diagnosis_service=diagnosis,
+            practice_service=practice,
+        )
+
+    app = create_app()
+    app.dependency_overrides[get_request_read_context] = provide_context
+    app.dependency_overrides[get_diagnosis_profile_service] = lambda: diagnosis
+    app.dependency_overrides[get_practice_plan_service] = lambda: practice
+
+    response = TestClient(app).post(
+        "/api/training/plans/preview",
+        json=_preview_request(),
+    )
+
+    assert response.status_code == 200
+    assert calls == 1
+
+
+def test_training_task_confirmation_keeps_legacy_services_and_writes_temp_db(
+    training_client: TestClient,
+) -> None:
+    from backend.api.dependencies import get_request_read_context
+
+    preview = training_client.post(
+        "/api/training/plans/preview",
+        json=_preview_request(),
+    ).json()
+
+    def reject_read_context():
+        pytest.fail("training task writes must not create the readonly context")
+
+    training_client.app.dependency_overrides[get_request_read_context] = (
+        reject_read_context
+    )
+    response = training_client.post(
+        "/api/training/tasks",
+        json=_confirmation_request(preview),
+    )
+
+    assert response.status_code == 201
+    assert training_client.get("/api/training/tasks").json()["total"] == 1
+
+
+def test_training_second_snapshot_failure_is_sanitized_and_cleans_first(
+    training_services,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import backend.api.read_connections as read_connections
+    from backend.api.app import create_app
+    from path_manager import get_path_manager
+    from question_bank.services.question_read_service import (
+        QuestionBankSnapshotUnavailable,
+    )
+
+    diagnosis, _practice, _tasks = training_services
+    paths = SimpleNamespace(
+        db_path=diagnosis.db.db_path,
+        qb_db_path=diagnosis.question_bank_db_path,
+    )
+    real_capture = read_connections.captured_sqlite_read_connection
+    first_connection: sqlite3.Connection | None = None
+    first_candidate: Path | None = None
+
+    @contextmanager
+    def fail_second_capture(db_path: Path, **kwargs):
+        nonlocal first_connection, first_candidate
+        if Path(db_path) == paths.qb_db_path:
+            raise QuestionBankSnapshotUnavailable(
+                "C:/private/question_bank.db changed"
+            )
+        with real_capture(db_path, **kwargs) as connection:
+            first_connection = connection
+            first_candidate = Path(
+                next(
+                    row[2]
+                    for row in connection.execute("PRAGMA database_list").fetchall()
+                    if str(row[1]) == "main"
+                )
+            )
+            yield connection
+
+    monkeypatch.setattr(
+        read_connections,
+        "captured_sqlite_read_connection",
+        fail_second_capture,
+    )
+    app = create_app()
+    app.dependency_overrides[get_path_manager] = lambda: paths
+    response = TestClient(app).post(
+        "/api/training/diagnosis",
+        headers={"x-request-id": "rid-training-snapshot"},
+        json={
+            "scope": {"mode": "student", "student_ids": ["12"]},
+            "exam_scope": {"mode": "current", "session_ids": [14]},
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"] == {
+        "code": "training_database_unavailable",
+        "message": "Training data is temporarily unavailable",
+        "details": {},
+        "request_id": "rid-training-snapshot",
+    }
+    assert "C:/private" not in response.text
+    assert first_connection is not None
+    assert first_candidate is not None
+    assert not first_candidate.exists()
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        first_connection.execute("SELECT 1")
 
 
 def test_training_diagnosis_uses_question_tag_identity(
