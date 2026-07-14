@@ -1,32 +1,14 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 
-import AppNavigation from '../components/shell/AppNavigation.vue'
 import AppTopbar from '../components/shell/AppTopbar.vue'
-import SessionInspector from '../components/shell/SessionInspector.vue'
-import ReviewScoringInspector from '../components/review/ReviewScoringInspector.vue'
 import { useReviewDraftStore } from '../stores/review-drafts'
 import { useSessionStore } from '../stores/session'
 
 const route = useRoute()
 const sessionStore = useSessionStore()
 const draftStore = useReviewDraftStore()
-const navigationOpen = ref(true)
-const inspectorOpen = ref(true)
-let compactMediaQuery: MediaQueryList | null = null
-
-function applyDesktopMode(): void {
-  navigationOpen.value = !(compactMediaQuery?.matches ?? false)
-}
-
-function toggleNavigation(): void {
-  navigationOpen.value = !navigationOpen.value
-}
-
-function toggleInspector(): void {
-  inspectorOpen.value = !inspectorOpen.value
-}
 
 function onBeforeUnload(event: BeforeUnloadEvent): void {
   if (!draftStore.hasDirtyDrafts) return
@@ -43,37 +25,20 @@ watch(
 )
 
 onMounted(() => {
-  compactMediaQuery = window.matchMedia('(max-width: 1279px)')
-  applyDesktopMode()
-  compactMediaQuery.addEventListener('change', applyDesktopMode)
   window.addEventListener('beforeunload', onBeforeUnload)
   void sessionStore.initialize()
 })
 
 onBeforeUnmount(() => {
-  compactMediaQuery?.removeEventListener('change', applyDesktopMode)
   window.removeEventListener('beforeunload', onBeforeUnload)
 })
 </script>
 
 <template>
-  <div
-    class="app-shell"
-    data-testid="app-shell"
-    :data-navigation-open="navigationOpen ? 'true' : 'false'"
-    :data-inspector-open="inspectorOpen ? 'true' : 'false'"
-  >
-    <AppTopbar
-      :navigation-open="navigationOpen"
-      :inspector-open="inspectorOpen"
-      @toggle-navigation="toggleNavigation"
-      @toggle-inspector="toggleInspector"
-    />
-    <AppNavigation :collapsed="!navigationOpen" />
+  <div class="app-shell" data-testid="app-shell">
+    <AppTopbar />
     <main id="main-workspace" class="main-workspace" tabindex="-1">
       <RouterView />
     </main>
-    <ReviewScoringInspector v-if="route.name === 'grading'" />
-    <SessionInspector v-else @retry="sessionStore.initialize" />
   </div>
 </template>
