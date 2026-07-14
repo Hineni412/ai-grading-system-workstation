@@ -29,6 +29,12 @@ def test_bootstrap_loads_staged_only_module_without_repository_paths(
     staged_tools = workspace / "tools"
     staged_tools.mkdir(parents=True)
     shutil.copy2(Path(acceptance.__file__), staged_tools / "p1_29_acceptance.py")
+    config = workspace / "config" / "app_config.yaml"
+    config.parent.mkdir()
+    config.write_text(
+        "DATA_DIR: synthetic_data\nLOGS_DIR: acceptance_logs\n",
+        encoding="utf-8",
+    )
     (workspace / "staged_only_marker.py").write_text(
         "MARKER = 'staged-only'\n",
         encoding="utf-8",
@@ -68,6 +74,91 @@ def test_bootstrap_loads_staged_only_module_without_repository_paths(
     resolved_paths = {Path(value).resolve() for value in payload["sys_path"]}
     assert runtime_repository not in resolved_paths
     assert launcher_root not in resolved_paths
+
+
+def test_dotted_origin_probe_does_not_import_parent_package(tmp_path: Path) -> None:
+    workspace = tmp_path / "staged"
+    staged_tools = workspace / "tools"
+    staged_tools.mkdir(parents=True)
+    shutil.copy2(Path(acceptance.__file__), staged_tools / "p1_29_acceptance.py")
+    config = workspace / "config" / "app_config.yaml"
+    config.parent.mkdir()
+    config.write_text(
+        "DATA_DIR: synthetic_data\nLOGS_DIR: acceptance_logs\n",
+        encoding="utf-8",
+    )
+    package = workspace / "sentinel_pkg"
+    package.mkdir()
+    package.joinpath("__init__.py").write_text(
+        "from pathlib import Path\n"
+        "Path(__file__).with_name('imported.txt').write_text('imported')\n",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(staged_tools / "p1_29_acceptance.py"),
+            "_bootstrap",
+            "--workspace",
+            str(workspace),
+            "--target",
+            "probe",
+            "--probe-module",
+            "sentinel_pkg.missing",
+            "--forbid-root",
+            str(Path(acceptance.__file__).resolve().parents[1]),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert not (package / "imported.txt").exists()
+
+
+def test_bootstrap_validates_config_before_module_discovery(tmp_path: Path) -> None:
+    workspace = tmp_path / "staged"
+    staged_tools = workspace / "tools"
+    staged_tools.mkdir(parents=True)
+    shutil.copy2(Path(acceptance.__file__), staged_tools / "p1_29_acceptance.py")
+    config = workspace / "config" / "app_config.yaml"
+    config.parent.mkdir()
+    config.write_text("DATA_DIR: unsafe\nLOGS_DIR: logs\n", encoding="utf-8")
+    package = workspace / "config_sentinel"
+    package.mkdir()
+    package.joinpath("__init__.py").write_text(
+        "from pathlib import Path\n"
+        "Path(__file__).with_name('imported.txt').write_text('imported')\n",
+        encoding="utf-8",
+    )
+    package.joinpath("child.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(staged_tools / "p1_29_acceptance.py"),
+            "_bootstrap",
+            "--workspace",
+            str(workspace),
+            "--target",
+            "probe",
+            "--probe-module",
+            "config_sentinel.child",
+            "--forbid-root",
+            str(Path(acceptance.__file__).resolve().parents[1]),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "config" in completed.stderr
+    assert not (package / "imported.txt").exists()
 
 
 def test_workspace_must_be_strictly_below_system_temp_root() -> None:
