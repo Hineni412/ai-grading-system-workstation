@@ -102,13 +102,16 @@ class GateSummary:
 @dataclass(frozen=True, slots=True)
 class RequestConnectionReport:
     package: str
-    baseline_code_sha: str
+    p1_26_provenance_code_sha: str
     code_sha: str
     generated_at_utc: str
     runtime: RuntimeSummary
     seed: int
     scales: tuple[str, ...]
     scenarios: tuple[str, ...]
+    before_mode: str
+    after_mode: str
+    data_scale_factor: float
     warmup_count: int
     sample_count: int
     repetition_count: int
@@ -242,17 +245,20 @@ def load_baseline_report(
 
 def build_comparison_report(
     baseline: BaselineReport,
-    scales: Iterable[ScaleBenchmarkResult],
+    legacy_scales: Iterable[ScaleBenchmarkResult],
+    optimized_scales: Iterable[ScaleBenchmarkResult],
     *,
     code_sha: str,
     generated_at_utc: str,
     runtime: RuntimeSummary,
+    data_scale_factor: float,
     warmups: int,
     samples: int,
     repetitions: int,
     limitations: Iterable[str],
 ) -> RequestConnectionReport:
-    results = tuple(scales)
+    legacy_results = tuple(legacy_scales)
+    optimized_results = tuple(optimized_scales)
     if not re.fullmatch(r"[0-9a-f]{40}", code_sha):
         raise ValueError("comparison:invalid_code_sha")
     if warmups <= 0 or samples <= 0:
@@ -261,13 +267,30 @@ def build_comparison_report(
         raise ValueError("comparison:requires_two_repetitions")
     if runtime.logical_cpu_count <= 0:
         raise ValueError("comparison:invalid_runtime")
-    result_names = tuple(result.manifest.scale_name for result in results)
-    if result_names != baseline.scales:
+    if not math.isfinite(data_scale_factor) or not 0 < data_scale_factor <= 1:
+        raise ValueError("comparison:invalid_data_scale_factor")
+    legacy_names = tuple(result.manifest.scale_name for result in legacy_results)
+    optimized_names = tuple(result.manifest.scale_name for result in optimized_results)
+    if legacy_names != baseline.scales or optimized_names != baseline.scales:
         raise ValueError("comparison:scale_mismatch")
-    if any(result.manifest.seed != baseline.seed for result in results):
+    if any(
+        result.manifest.seed != baseline.seed
+        for result in (*legacy_results, *optimized_results)
+    ):
         raise ValueError("comparison:seed_mismatch")
-    if any(result.repeatability != "passed" for result in results):
+    legacy_repeatability = all(
+        result.repeatability == "passed" for result in legacy_results
+    )
+    optimized_repeatability = all(
+        result.repeatability == "passed" for result in optimized_results
+    )
+    if not legacy_repeatability or not optimized_repeatability:
         raise ValueError("comparison:repeatability_failed")
+    if any(
+        legacy.manifest != optimized.manifest
+        for legacy, optimized in zip(legacy_results, optimized_results, strict=True)
+    ):
+        raise ValueError("comparison:dataset_mismatch")
     safe_limitations = tuple(str(item).strip() for item in limitations if str(item).strip())
     if not safe_limitations:
         raise ValueError("comparison:missing_limitations")
@@ -280,61 +303,84 @@ def build_comparison_report(
     ):
         _require_safe_text(value)
 
-    baseline_map = {
-        (item.scale, item.repetition, item.scenario): item
-        for item in baseline.measurements
-    }
     comparisons: list[ScenarioComparison] = []
-    repeatability_passed = True
-    for result in results:
-        if len(result.repetitions) != repetitions:
+    for legacy_result, optimized_result in zip(
+        legacy_results,
+        optimized_results,
+        strict=True,
+    ):
+        if (
+            len(legacy_result.repetitions) != repetitions
+            or len(optimized_result.repetitions) != repetitions
+        ):
             raise ValueError("comparison:requires_two_repetitions")
-        projections: list[tuple[tuple[object, ...], ...]] = []
-        for expected_repetition, repetition in enumerate(result.repetitions, start=1):
-            if repetition.repetition != expected_repetition:
+        for expected_repetition, (legacy_repetition, optimized_repetition) in enumerate(
+            zip(
+                legacy_result.repetitions,
+                optimized_result.repetitions,
+                strict=True,
+            ),
+            start=1,
+        ):
+            if (
+                legacy_repetition.repetition != expected_repetition
+                or optimized_repetition.repetition != expected_repetition
+            ):
                 raise ValueError("comparison:invalid_repetition")
-            scenario_map = {summary.name: summary for summary in repetition.scenarios}
-            if len(scenario_map) != len(repetition.scenarios):
+            legacy_map = {
+                summary.name: summary for summary in legacy_repetition.scenarios
+            }
+            optimized_map = {
+                summary.name: summary for summary in optimized_repetition.scenarios
+            }
+            if (
+                len(legacy_map) != len(legacy_repetition.scenarios)
+                or len(optimized_map) != len(optimized_repetition.scenarios)
+            ):
                 raise ValueError("comparison:duplicate_scenario")
-            if set(scenario_map) != set(baseline.scenarios):
+            if (
+                set(legacy_map) != set(baseline.scenarios)
+                or set(optimized_map) != set(baseline.scenarios)
+            ):
                 raise ValueError("comparison:scenario_mismatch")
-            projection: list[tuple[object, ...]] = []
             for scenario_name in baseline.scenarios:
-                after = scenario_map[scenario_name]
-                if after.sample_count != samples:
+                before = legacy_map[scenario_name]
+                after = optimized_map[scenario_name]
+                if before.sample_count != samples or after.sample_count != samples:
                     raise ValueError("comparison:sample_count_mismatch")
-                before = baseline_map[
-                    (result.manifest.scale_name, expected_repetition, scenario_name)
-                ]
                 comparisons.append(
                     _compare_scenario(
                         before,
                         after,
-                        scale=result.manifest.scale_name,
+                        scale=legacy_result.manifest.scale_name,
                         repetition=expected_repetition,
                     )
                 )
-                projection.append(_deterministic_scenario_projection(after))
-            projections.append(tuple(projection))
-        if projections[0] != projections[1]:
-            repeatability_passed = False
 
     comparison_tuple = tuple(comparisons)
-    gates = _build_gates(comparison_tuple, repeatability_passed, len(results))
+    gates = _build_gates(
+        comparison_tuple,
+        legacy_repeatability,
+        optimized_repeatability,
+        len(legacy_results),
+    )
     overall_gate = "passed" if all(gate.passed for gate in gates) else "failed"
     return RequestConnectionReport(
         package="P1-27",
-        baseline_code_sha=baseline.code_sha,
+        p1_26_provenance_code_sha=baseline.code_sha,
         code_sha=code_sha,
         generated_at_utc=str(generated_at_utc),
         runtime=runtime,
         seed=baseline.seed,
         scales=baseline.scales,
         scenarios=baseline.scenarios,
+        before_mode="legacy_per_call",
+        after_mode="request_scoped",
+        data_scale_factor=data_scale_factor,
         warmup_count=warmups,
         sample_count=samples,
         repetition_count=repetitions,
-        repeatability="passed" if repeatability_passed else "failed",
+        repeatability="passed",
         comparisons=comparison_tuple,
         gates=gates,
         overall_gate=overall_gate,
@@ -363,12 +409,14 @@ def render_markdown(report: RequestConnectionReport) -> str:
     lines = [
         "# P1-27 request connection comparison",
         "",
-        f"- baseline code SHA: `{report.baseline_code_sha}`",
+        f"- P1-26 provenance code SHA: `{report.p1_26_provenance_code_sha}`",
         f"- code SHA: `{report.code_sha}`",
         f"- generated at UTC: `{report.generated_at_utc}`",
         f"- seed: `{report.seed}`",
         f"- scales: `{', '.join(report.scales)}`",
         f"- scenarios: `{', '.join(report.scenarios)}`",
+        f"- before/after modes: `{report.before_mode}/{report.after_mode}`",
+        f"- data scale factor: `{_number(report.data_scale_factor)}`",
         f"- warmups/samples/repetitions: `{report.warmup_count}/{report.sample_count}/{report.repetition_count}`",
         f"- repeatability: `{report.repeatability}`",
         f"- overall gate: `{report.overall_gate}`",
@@ -419,7 +467,7 @@ def render_markdown(report: RequestConnectionReport) -> str:
 
 
 def _compare_scenario(
-    before: BaselineMeasurement,
+    before: ScenarioSummary,
     after: ScenarioSummary,
     *,
     scale: str,
@@ -429,19 +477,19 @@ def _compare_scenario(
     records_equal = _numeric_tuple(before.response_records) == _numeric_tuple(
         after.response_records
     )
-    target = before.scenario in TARGET_SCENARIOS
-    latency_required = scale == "medium" and before.scenario in MEDIUM_LATENCY_SCENARIOS
+    target = before.name in TARGET_SCENARIOS
+    latency_required = scale == "medium" and before.name in MEDIUM_LATENCY_SCENARIOS
     statement_improvement = _improvement(
         before.db_statements.median, after.db_statements.median
     )
     latency_improvement = _improvement(
-        before.latency_p50_ms, after.latency_ms.p50
+        before.latency_ms.p50, after.latency_ms.p50
     )
     return ScenarioComparison(
         scale=scale,
         repetition=repetition,
-        scenario=before.scenario,
-        kind="control" if before.scenario == CONTROL_SCENARIO else "target",
+        scenario=before.name,
+        kind="control" if before.name == CONTROL_SCENARIO else "target",
         status=EqualityComparison(before.status_code, after.status_code, status_equal),
         response_records=EqualityComparison(
             before.response_records.median,
@@ -449,7 +497,7 @@ def _compare_scenario(
             records_equal,
         ),
         latency_p50_ms=MetricComparison(
-            before.latency_p50_ms,
+            before.latency_ms.p50,
             after.latency_ms.p50,
             latency_improvement,
             latency_required,
@@ -474,7 +522,8 @@ def _compare_scenario(
 
 def _build_gates(
     comparisons: tuple[ScenarioComparison, ...],
-    repeatability_passed: bool,
+    legacy_repeatability_passed: bool,
+    optimized_repeatability_passed: bool,
     scale_count: int,
 ) -> tuple[GateSummary, ...]:
     statuses = [item.status.equal for item in comparisons]
@@ -495,10 +544,16 @@ def _build_gates(
         _gate("target_statement_reduction", statements),
         _gate("medium_p50_improvement", latencies, allow_empty=True),
         GateSummary(
-            "two_round_repeatability",
+            "legacy_two_round_repeatability",
             scale_count,
-            scale_count if repeatability_passed else 0,
-            repeatability_passed,
+            scale_count if legacy_repeatability_passed else 0,
+            legacy_repeatability_passed,
+        ),
+        GateSummary(
+            "request_scoped_two_round_repeatability",
+            scale_count,
+            scale_count if optimized_repeatability_passed else 0,
+            optimized_repeatability_passed,
         ),
     )
 
@@ -517,7 +572,7 @@ def _gate(
 def _report_payload(report: RequestConnectionReport) -> dict[str, Any]:
     return {
         "package": report.package,
-        "baseline_code_sha": report.baseline_code_sha,
+        "p1_26_provenance_code_sha": report.p1_26_provenance_code_sha,
         "code_sha": report.code_sha,
         "generated_at_utc": report.generated_at_utc,
         "runtime": {
@@ -529,6 +584,9 @@ def _report_payload(report: RequestConnectionReport) -> dict[str, Any]:
         "seed": report.seed,
         "scales": list(report.scales),
         "scenarios": list(report.scenarios),
+        "before_mode": report.before_mode,
+        "after_mode": report.after_mode,
+        "data_scale_factor": report.data_scale_factor,
         "warmup_count": report.warmup_count,
         "sample_count": report.sample_count,
         "repetition_count": report.repetition_count,
@@ -670,7 +728,8 @@ def _gate_display_name(name: str) -> str:
         "response_record_equality": "response record equality",
         "target_statement_reduction": "target statement reduction",
         "medium_p50_improvement": "medium p50 improvement",
-        "two_round_repeatability": "two-round repeatability",
+        "legacy_two_round_repeatability": "legacy two-round repeatability",
+        "request_scoped_two_round_repeatability": "request-scoped two-round repeatability",
     }[name]
 
 

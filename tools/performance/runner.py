@@ -15,6 +15,8 @@ from backend.api.dependencies import (
     get_diagnosis_profile_service,
     get_practice_plan_service,
     get_question_bank_read_service,
+    get_request_diagnosis_profile_service,
+    get_request_practice_plan_service,
     get_training_task_service,
 )
 from backend.performance.metrics import (
@@ -35,6 +37,9 @@ _EXPLICIT_PATHS: ContextVar[BenchmarkPaths | None] = ContextVar(
     "benchmark_explicit_paths",
     default=None,
 )
+REQUEST_SCOPED_MODE = "request_scoped"
+LEGACY_PER_CALL_MODE = "legacy_per_call"
+CONNECTION_MODES = (REQUEST_SCOPED_MODE, LEGACY_PER_CALL_MODE)
 
 
 class BenchmarkRunError(RuntimeError):
@@ -106,12 +111,15 @@ def run_scale(
     samples: int = 20,
     repetitions: int = 2,
     scenario_names: Iterable[str] | None = None,
+    connection_mode: str = REQUEST_SCOPED_MODE,
 ) -> ScaleBenchmarkResult:
     if warmups <= 0 or samples <= 0 or repetitions <= 0:
         raise ValueError("benchmark counts must be positive")
     scenarios = _select_scenarios(build_scenarios(dataset), scenario_names)
+    if connection_mode not in CONNECTION_MODES:
+        raise BenchmarkRunError("connection_mode:unknown")
     sink = InMemoryPerformanceSink()
-    app = _build_app(dataset, sink)
+    app = _build_app(dataset, sink, connection_mode=connection_mode)
     used_request_ids: set[str] = set()
     completed: list[RepetitionBenchmarkResult] = []
 
@@ -197,7 +205,14 @@ def _select_scenarios(
     )
 
 
-def _build_app(dataset: BenchmarkDataset, sink: InMemoryPerformanceSink):
+def _build_app(
+    dataset: BenchmarkDataset,
+    sink: InMemoryPerformanceSink,
+    *,
+    connection_mode: str = REQUEST_SCOPED_MODE,
+):
+    if connection_mode not in CONNECTION_MODES:
+        raise BenchmarkRunError("connection_mode:unknown")
     app = create_app(performance_sink=sink, path_manager=dataset.paths)
     app.dependency_overrides[get_path_manager] = lambda: dataset.paths
     app.dependency_overrides[get_question_bank_read_service] = lambda: (
@@ -218,6 +233,13 @@ def _build_app(dataset: BenchmarkDataset, sink: InMemoryPerformanceSink):
     app.dependency_overrides[get_training_task_service] = lambda: TrainingTaskService(
         dataset.paths.qb_db_path
     )
+    if connection_mode == LEGACY_PER_CALL_MODE:
+        app.dependency_overrides[
+            get_request_diagnosis_profile_service
+        ] = app.dependency_overrides[get_diagnosis_profile_service]
+        app.dependency_overrides[
+            get_request_practice_plan_service
+        ] = app.dependency_overrides[get_practice_plan_service]
     return app
 
 
@@ -432,11 +454,14 @@ def _repetition_projection(
 
 __all__ = [
     "BenchmarkRunError",
+    "CONNECTION_MODES",
+    "LEGACY_PER_CALL_MODE",
     "NumericSummary",
     "RepetitionBenchmarkResult",
     "ScaleBenchmarkResult",
     "ScenarioSummary",
     "TimingSummary",
+    "REQUEST_SCOPED_MODE",
     "deterministic_projection",
     "run_scale",
 ]
