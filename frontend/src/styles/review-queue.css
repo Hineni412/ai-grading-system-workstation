@@ -110,6 +110,7 @@
   padding: var(--space-3) var(--space-4);
   border: 0;
   border-inline-end: var(--border-width) solid var(--color-border-subtle);
+  border-block-end: var(--border-selected-width) solid transparent;
   background: transparent;
   color: var(--color-text-primary);
   text-align: start;
@@ -121,7 +122,7 @@
 }
 
 .review-question-strip button[aria-current="true"] {
-  box-shadow: var(--shadow-selected-inset);
+  border-block-end-color: var(--color-accent);
   background: var(--color-bg-selected);
 }
 
