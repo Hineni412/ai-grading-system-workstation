@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import importlib
+import importlib.util
 import json
 import os
 import re
+import runpy
 import shutil
 import signal
 import subprocess
@@ -41,6 +44,34 @@ class AcceptanceError(RuntimeError):
     """Raised when an acceptance workspace fails a safety requirement."""
 
 
+_BOOTSTRAP_MODULES = {
+    "seed": (
+        "ai_grader",
+        "backend.api.app",
+        "db_manager",
+        "question_bank.database.schema",
+        "report",
+        "scanner",
+        "tests.api_e2e.harness",
+    ),
+    "uvicorn": (
+        "backend.api.app",
+        "backend.api.dependencies",
+        "db_manager",
+        "path_manager",
+    ),
+    "streamlit": (
+        "backend.llm.policy",
+        "db_manager",
+        "path_manager",
+        "question_bank.database.paths",
+        "report",
+        "scanner",
+        "web_app",
+    ),
+}
+
+
 def _is_relative_to(path: Path, parent: Path) -> bool:
     try:
         path.relative_to(parent)
@@ -65,6 +96,86 @@ def validate_workspace(
     if require_empty and candidate.exists() and next(candidate.iterdir(), None) is not None:
         raise AcceptanceError("workspace must be empty")
     return candidate
+
+
+def _resolved_path_entry(value: str) -> Path:
+    return Path(value or os.getcwd()).resolve()
+
+
+def _runtime_repository_root() -> Path:
+    executable = Path(sys.executable).resolve()
+    try:
+        return executable.parents[2]
+    except IndexError as exc:
+        raise AcceptanceError("runtime repository root could not be identified") from exc
+
+
+def _configure_staged_imports(
+    workspace: Path,
+    *,
+    forbidden_roots: Iterable[Path],
+) -> Path:
+    target = validate_workspace(workspace, require_empty=False)
+    staged_launcher_root = Path(__file__).resolve().parents[1]
+    if staged_launcher_root != target:
+        raise AcceptanceError("bootstrap launcher must come from the staged workspace")
+    runtime_library_root = Path(sys.executable).resolve().parent
+    forbidden = {
+        _runtime_repository_root(),
+        *(Path(root).resolve() for root in forbidden_roots),
+    }
+    forbidden.discard(target)
+    retained: list[str] = []
+    for entry in sys.path:
+        resolved = _resolved_path_entry(entry)
+        if resolved == target or resolved in forbidden:
+            continue
+        if _is_relative_to(resolved, runtime_library_root):
+            retained.append(str(resolved))
+    sys.path[:] = [str(target), *retained]
+    importlib.invalidate_caches()
+    resolved_paths = {_resolved_path_entry(entry) for entry in sys.path}
+    if sys.path[0] != str(target) or resolved_paths.intersection(forbidden):
+        raise AcceptanceError("bootstrap retained a forbidden repository import path")
+    return target
+
+
+def _module_origin_in_workspace(module_name: str, workspace: Path) -> Path:
+    try:
+        spec = importlib.util.find_spec(module_name)
+    except (ImportError, AttributeError, ValueError) as exc:
+        raise AcceptanceError(
+            f"staged module {module_name!r} could not be resolved"
+        ) from exc
+    if spec is None:
+        raise AcceptanceError(f"staged module {module_name!r} could not be resolved")
+    candidates: list[Path] = []
+    if spec.origin and spec.origin not in {"built-in", "frozen"}:
+        candidates.append(Path(spec.origin).resolve())
+    if spec.submodule_search_locations is not None:
+        candidates.extend(
+            Path(location).resolve() for location in spec.submodule_search_locations
+        )
+    if not candidates or any(
+        not _is_relative_to(candidate, workspace) for candidate in candidates
+    ):
+        raise AcceptanceError(f"staged module {module_name!r} resolved outside workspace")
+    return candidates[0]
+
+
+def _verify_bootstrap_modules(target: str, workspace: Path) -> None:
+    for module_name in _BOOTSTRAP_MODULES[target]:
+        _module_origin_in_workspace(module_name, workspace)
+
+
+def _verify_loaded_project_modules(module_names: Iterable[str], workspace: Path) -> None:
+    for module_name in module_names:
+        module = sys.modules.get(module_name)
+        origin = getattr(module, "__file__", None) if module is not None else None
+        if not origin or not _is_relative_to(Path(origin).resolve(), workspace):
+            raise AcceptanceError(
+                f"loaded project module {module_name!r} is outside workspace"
+            )
 
 
 def resolve_source_sha(source_ref: str, *, repo_root: Path) -> str:
@@ -285,6 +396,18 @@ def seed_workspace(workspace: Path, source_sha: str) -> dict[str, Any]:
     )
 
     workspace = validate_workspace(workspace, require_empty=False)
+    _verify_loaded_project_modules(
+        (
+            "ai_grader",
+            "backend.api.app",
+            "db_manager",
+            "question_bank.database.schema",
+            "report",
+            "scanner",
+            "tests.api_e2e.harness",
+        ),
+        workspace,
+    )
     _validate_staged_config(workspace)
     if not _SHA_RE.fullmatch(source_sha):
         raise AcceptanceError("internal seed source SHA is invalid")
@@ -394,19 +517,96 @@ def seed_workspace(workspace: Path, source_sha: str) -> dict[str, Any]:
     return load_prepared_metadata(workspace)
 
 
+def _bootstrap_command(
+    workspace: Path,
+    target: str,
+    *target_arguments: str,
+) -> list[str]:
+    return [
+        sys.executable,
+        str((workspace / "tools" / "p1_29_acceptance.py").resolve()),
+        "_bootstrap",
+        "--workspace",
+        str(workspace.resolve()),
+        "--target",
+        target,
+        "--forbid-root",
+        str(Path(__file__).resolve().parents[1]),
+        *target_arguments,
+    ]
+
+
+def _run_bootstrap(args: argparse.Namespace) -> int:
+    workspace = _configure_staged_imports(
+        args.workspace,
+        forbidden_roots=[Path(root) for root in args.forbid_root],
+    )
+    if args.target == "probe":
+        if not args.probe_module:
+            raise AcceptanceError("bootstrap probe module is required")
+        origin = _module_origin_in_workspace(args.probe_module, workspace)
+        importlib.import_module(args.probe_module)
+        _verify_loaded_project_modules((args.probe_module,), workspace)
+        print(
+            json.dumps(
+                {
+                    "module": args.probe_module,
+                    "origin": str(origin),
+                    "sys_path": list(sys.path),
+                },
+                ensure_ascii=True,
+                separators=(",", ":"),
+            )
+        )
+        return 0
+    _verify_bootstrap_modules(args.target, workspace)
+    if args.target == "seed":
+        if not args.source_sha:
+            raise AcceptanceError("bootstrap seed source SHA is required")
+        result = seed_workspace(workspace, args.source_sha)
+        print(json.dumps(result, ensure_ascii=True, separators=(",", ":")))
+        return 0
+    if args.api_port is None:
+        raise AcceptanceError("bootstrap service port is required")
+    if args.target == "uvicorn":
+        sys.argv = [
+            "uvicorn",
+            "backend.api.app:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(args.api_port),
+        ]
+        runpy.run_module("uvicorn", run_name="__main__", alter_sys=True)
+        return 0
+    web_app = (workspace / "web_app.py").resolve()
+    if not _is_relative_to(web_app, workspace) or not web_app.is_file():
+        raise AcceptanceError("staged Streamlit script is unavailable")
+    sys.argv = [
+        "streamlit",
+        "run",
+        str(web_app),
+        "--server.address",
+        "127.0.0.1",
+        "--server.port",
+        str(args.api_port),
+        "--server.headless",
+        "true",
+    ]
+    runpy.run_module("streamlit", run_name="__main__", alter_sys=True)
+    return 0
+
+
 def _run_internal_seed(workspace: Path, source_sha: str) -> None:
     logs_dir = workspace / "acceptance_logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     completed = subprocess.run(
-        [
-            sys.executable,
-            str(workspace / "tools" / "p1_29_acceptance.py"),
-            "_seed",
-            "--workspace",
-            str(workspace),
+        _bootstrap_command(
+            workspace,
+            "seed",
             "--source-sha",
             source_sha,
-        ],
+        ),
         cwd=workspace,
         capture_output=True,
         text=True,
@@ -489,29 +689,13 @@ def run_servers(
     logs_dir = target / "acceptance_logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     commands = [
-        [
-            sys.executable,
-            "-m",
-            "uvicorn",
-            "backend.api.app:app",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(api_port),
-        ],
-        [
-            sys.executable,
-            "-m",
+        _bootstrap_command(target, "uvicorn", "--api-port", str(api_port)),
+        _bootstrap_command(
+            target,
             "streamlit",
-            "run",
-            "web_app.py",
-            "--server.address",
-            "127.0.0.1",
-            "--server.port",
+            "--api-port",
             str(streamlit_port),
-            "--server.headless",
-            "true",
-        ],
+        ),
     ]
     processes: list[subprocess.Popen[Any]] = []
     log_handles: list[BinaryIO] = []
@@ -570,9 +754,17 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--workspace", type=Path, required=True)
         command.add_argument("--api-port", type=int, required=True)
         command.add_argument("--streamlit-port", type=int, required=True)
-    seed = subparsers.add_parser("_seed", help=argparse.SUPPRESS)
-    seed.add_argument("--workspace", type=Path, required=True)
-    seed.add_argument("--source-sha", required=True)
+    bootstrap = subparsers.add_parser("_bootstrap", help=argparse.SUPPRESS)
+    bootstrap.add_argument("--workspace", type=Path, required=True)
+    bootstrap.add_argument(
+        "--target",
+        choices=("probe", "seed", "uvicorn", "streamlit"),
+        required=True,
+    )
+    bootstrap.add_argument("--forbid-root", action="append", default=[])
+    bootstrap.add_argument("--probe-module")
+    bootstrap.add_argument("--source-sha")
+    bootstrap.add_argument("--api-port", type=int)
     return parser
 
 
@@ -580,6 +772,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     repo_root = Path(__file__).resolve().parents[1]
     try:
+        if args.command == "_bootstrap":
+            return _run_bootstrap(args)
         if args.command == "prepare":
             result = prepare_workspace(args.source_ref, args.workspace, repo_root=repo_root)
         elif args.command == "smoke":
@@ -598,7 +792,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
         else:
-            result = seed_workspace(args.workspace, args.source_sha)
+            raise AcceptanceError("unsupported acceptance command")
         print(json.dumps(result, ensure_ascii=True, separators=(",", ":")))
         return 0
     except KeyboardInterrupt:
