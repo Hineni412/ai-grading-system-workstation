@@ -38,6 +38,26 @@ _EXPECTED_FILE_KEYS = {
     "question_bank_database",
     "report",
 }
+_ANONYMOUS_PROFILE_RELATIVE_PATH = Path(
+    "acceptance_config/api_profiles.json"
+)
+_ANONYMOUS_OPS_RELATIVE_PATH = Path("acceptance_ops")
+_ANONYMOUS_PROFILE_KEYS = {
+    "name",
+    "api_key",
+    "config_api_key",
+    "objective_api_key",
+    "tagging_api_key",
+    "tagging_review_api_key",
+}
+_SENSITIVE_API_ENV_NAMES = (
+    "LLM_API_KEY",
+    "LLM_CONFIG_API_KEY",
+    "LLM_OBJECTIVE_API_KEY",
+    "OPENAI_API_KEY",
+    "QUESTION_BANK_TAGGING_API_KEY",
+    "QUESTION_BANK_TAGGING_REVIEW_API_KEY",
+)
 
 
 class AcceptanceError(RuntimeError):
@@ -187,6 +207,76 @@ def _verify_loaded_project_modules(module_names: Iterable[str], workspace: Path)
             raise AcceptanceError(
                 f"loaded project module {module_name!r} is outside workspace"
             )
+
+
+def _anonymous_runtime_paths(workspace: Path) -> tuple[Path, Path, Path]:
+    target = workspace.resolve()
+    profile_path = (target / _ANONYMOUS_PROFILE_RELATIVE_PATH).resolve()
+    marker_path = profile_path.with_name(f"{profile_path.name}.migration-v1").resolve()
+    ops_state_dir = (target / _ANONYMOUS_OPS_RELATIVE_PATH).resolve()
+    if any(
+        not _is_relative_to(path, target)
+        for path in (profile_path, marker_path, ops_state_dir)
+    ):
+        raise AcceptanceError("anonymous runtime state escaped the workspace")
+    return profile_path, marker_path, ops_state_dir
+
+
+def _validate_anonymous_runtime_state(workspace: Path) -> tuple[Path, Path]:
+    profile_path, marker_path, ops_state_dir = _anonymous_runtime_paths(workspace)
+    try:
+        profiles = json.loads(profile_path.read_text(encoding="utf-8"))
+        marker = marker_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise AcceptanceError("anonymous API profile is unavailable") from exc
+    if (
+        not isinstance(profiles, list)
+        or len(profiles) != 1
+        or not isinstance(profiles[0], dict)
+        or set(profiles[0]) != _ANONYMOUS_PROFILE_KEYS
+        or profiles[0].get("name") != "P1-29 Anonymous"
+        or any(
+            profiles[0].get(key) != ""
+            for key in _ANONYMOUS_PROFILE_KEYS
+            if "key" in key.casefold()
+        )
+        or marker != "migration-v1-complete\n"
+        or not ops_state_dir.is_dir()
+    ):
+        raise AcceptanceError("anonymous runtime state is invalid")
+    return profile_path, ops_state_dir
+
+
+def write_anonymous_runtime_state(workspace: Path) -> None:
+    target = validate_workspace(workspace, require_empty=False)
+    profile_path, marker_path, ops_state_dir = _anonymous_runtime_paths(target)
+    if profile_path.parent.exists() or ops_state_dir.exists():
+        raise AcceptanceError("anonymous runtime state already exists")
+    profile_path.parent.mkdir(parents=True)
+    profile = {
+        "name": "P1-29 Anonymous",
+        "api_key": "",
+        "config_api_key": "",
+        "objective_api_key": "",
+        "tagging_api_key": "",
+        "tagging_review_api_key": "",
+    }
+    profile_path.write_text(
+        json.dumps([profile], ensure_ascii=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    marker_path.write_text("migration-v1-complete\n", encoding="utf-8")
+    ops_state_dir.mkdir()
+    _validate_anonymous_runtime_state(target)
+
+
+def _configure_anonymous_runtime_environment(workspace: Path) -> None:
+    profile_path, _marker_path, ops_state_dir = _anonymous_runtime_paths(workspace)
+    os.environ["AI_GRADING_API_PROFILES_PATH"] = str(profile_path)
+    os.environ["AI_GRADING_OPS_STATE_DIR"] = str(ops_state_dir)
+    for name in _SENSITIVE_API_ENV_NAMES:
+        os.environ[name] = ""
+    _validate_anonymous_runtime_state(workspace)
 
 
 def resolve_source_sha(source_ref: str, *, repo_root: Path) -> str:
@@ -552,6 +642,7 @@ def _run_bootstrap(args: argparse.Namespace) -> int:
         args.workspace,
         forbidden_roots=[Path(root) for root in args.forbid_root],
     )
+    _configure_anonymous_runtime_environment(workspace)
     _validate_staged_config(workspace)
     if args.target == "probe":
         if not args.probe_module:
@@ -638,6 +729,7 @@ def prepare_workspace(source_ref: str, workspace: Path, *, repo_root: Path) -> d
     target.mkdir(parents=True, exist_ok=True)
     _archive_commit(source_sha, repo_root=repo_root, workspace=target)
     rewrite_staged_config(target)
+    write_anonymous_runtime_state(target)
     _run_internal_seed(target, source_sha)
     return load_prepared_metadata(target)
 
