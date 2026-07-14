@@ -17,8 +17,10 @@
     "typecheck": "vue-tsc --build",
     "test": "vitest run",
     "demo:p2-08": "node demo/p2-08-server.mjs",
+    "demo:phase2-recalibration": "node demo/p2-08-server.mjs",
     "demo:test": "node --test demo/p2-08-server.test.mjs",
     "e2e:p2-08": "npm run build && playwright test --config playwright.p2-08.config.ts",
+    "e2e:phase2-recalibration": "npm run build && playwright test --config playwright.p2-08.config.ts",
     "e2e:install": "playwright install chromium",
     "e2e": "playwright test"
   },

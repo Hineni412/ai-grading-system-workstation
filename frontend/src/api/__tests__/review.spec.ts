@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apiClient } from '../client'
 import {
   confirmReviewItem,
+  confirmReviewItems,
   extractReviewRubricSection,
   fetchReviewItems,
   fetchReviewQuestions,
@@ -37,14 +38,17 @@ describe('review API contract', () => {
     expect(isReviewQuestionListResponse(payload) || isReviewItemListResponse(payload)).toBe(false)
   })
 
-  it('uses the shared client, encodes the question, and requests all items', async () => {
+  it('uses the shared client, encodes the question, and defaults to pending items', async () => {
     const request = vi.spyOn(apiClient, 'request')
+      .mockResolvedValueOnce({ items: [], total: 0 })
       .mockResolvedValueOnce({ items: [], total: 0 })
       .mockResolvedValueOnce({ items: [], total: 0 })
     await fetchReviewQuestions(7)
     await fetchReviewItems(7, 'Q 1/甲')
+    await fetchReviewItems(7, 'Q 1/甲', { needsReviewOnly: false })
     expect(request.mock.calls[0]?.[0]).toBe('/api/sessions/7/review/questions')
-    expect(request.mock.calls[1]?.[0]).toBe('/api/sessions/7/review/questions/Q%201%2F%E7%94%B2/items?needs_review_only=false')
+    expect(request.mock.calls[1]?.[0]).toBe('/api/sessions/7/review/questions/Q%201%2F%E7%94%B2/items?needs_review_only=true')
+    expect(request.mock.calls[2]?.[0]).toBe('/api/sessions/7/review/questions/Q%201%2F%E7%94%B2/items?needs_review_only=false')
   })
 
   it('extracts the current question and part rubric without inventing fields', () => {
@@ -78,18 +82,21 @@ describe('review API contract', () => {
     expect(extractReviewRubricSection({ questions: 'not-an-array' }, 'Q1')).toBeNull()
   })
 
-  it('uses the config GET and existing single-item confirm POST', async () => {
+  it('uses the config GET and supports one atomic multi-item confirm POST', async () => {
     const request = vi.spyOn(apiClient, 'request')
       .mockResolvedValueOnce({ questions: [] })
-      .mockResolvedValueOnce({ updated_details: 1, updated_results: 1, annotation_outcomes: [] })
+      .mockResolvedValueOnce({ updated_details: 2, updated_results: 2, annotation_outcomes: [] })
 
     await fetchReviewRubric(7, 'Q 1/甲')
-    await confirmReviewItem(7, 'Q 1/甲', {
-      result_id: 11,
-      detail_id: 21,
-      score_awarded: 8.5,
-      deduction_reason: '步骤二符号错误',
-    })
+    await confirmReviewItems(7, 'Q 1/甲', [
+      {
+        result_id: 11,
+        detail_id: 21,
+        score_awarded: 8.5,
+        deduction_reason: '步骤二符号错误',
+      },
+      { result_id: 12, detail_id: 22, score_awarded: 7 },
+    ])
 
     expect(request.mock.calls[0]?.[0]).toBe('/api/sessions/7/config')
     expect(request.mock.calls[1]?.[0]).toBe('/api/sessions/7/review/questions/Q%201%2F%E7%94%B2/confirm')
@@ -101,11 +108,28 @@ describe('review API contract', () => {
           detail_id: 21,
           score_awarded: 8.5,
           deduction_reason: '步骤二符号错误',
+        }, {
+          result_id: 12,
+          detail_id: 22,
+          score_awarded: 7,
         }],
       },
     })
     expect(request.mock.calls[1]?.[1]?.body).not.toHaveProperty('items.0.error_category')
     expect(request.mock.calls[1]?.[1]?.body).not.toHaveProperty('items.0.error_summary')
+  })
+
+  it('keeps the single-item wrapper and rejects an empty batch before requesting', async () => {
+    const request = vi.spyOn(apiClient, 'request')
+      .mockResolvedValueOnce({ updated_details: 1, updated_results: 1, annotation_outcomes: [] })
+
+    await confirmReviewItem(7, 'Q1', { result_id: 11, detail_id: 21, score_awarded: 3 })
+    await expect(confirmReviewItems(7, 'Q1', [])).rejects.toThrow('review confirmation items are required')
+
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(request.mock.calls[0]?.[1]?.body).toEqual({
+      items: [{ result_id: 11, detail_id: 21, score_awarded: 3 }],
+    })
   })
 
   it.each([

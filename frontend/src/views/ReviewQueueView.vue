@@ -2,25 +2,41 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import {
+  confirmReviewItems,
+  type ReviewConfirmInput,
+  type ReviewItem,
+} from '../api/review'
 import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
 import StatePanel from '../components/design-system/StatePanel.vue'
-import ReviewEvidenceViewer from '../components/review/ReviewEvidenceViewer.vue'
-import ReviewQueuePanel from '../components/review/ReviewQueuePanel.vue'
-import ReviewSelectionSummary from '../components/review/ReviewSelectionSummary.vue'
+import ReviewBatchWorkspace from '../components/review/ReviewBatchWorkspace.vue'
+import ReviewDeepWorkspace from '../components/review/ReviewDeepWorkspace.vue'
+import ReviewFeedbackToast from '../components/review/ReviewFeedbackToast.vue'
 import ReviewShortcutGuide from '../components/review/ReviewShortcutGuide.vue'
-import { reviewShortcutBus, type ReviewShortcutCommand } from '../composables/review-shortcuts'
+import { useReviewDraftStore } from '../stores/review-drafts'
 import { useReviewQueueStore, type ReviewScope, type ReviewSort } from '../stores/review-queue'
 import { useSessionStore } from '../stores/session'
+
+interface AnnotationRetryEntry {
+  input: ReviewConfirmInput
+  item: ReviewItem
+}
 
 const route = useRoute()
 const router = useRouter()
 const sessionStore = useSessionStore()
 const reviewStore = useReviewQueueStore()
+const draftStore = useReviewDraftStore()
 const reviewPage = ref<HTMLElement | null>(null)
+const batchSubmitting = ref(false)
+const feedback = ref('')
+const feedbackTone = ref<'success' | 'warning' | 'error'>('success')
+const annotationRetryEntries = ref<AnnotationRetryEntry[]>([])
+const mode = ref<'batch' | 'deep'>('batch')
+const batchScrollTop = ref(0)
 
 let contextGeneration = 0
 let itemGeneration = 0
-let scrollGeneration = 0
 let unmounting = false
 let querySync = Promise.resolve()
 
@@ -35,9 +51,6 @@ const hasRetainedContentError = computed(() =>
 )
 const initialLoading = computed(() =>
   reviewStore.questionLoadState === 'loading' && reviewStore.questions.length === 0,
-)
-const initialItemLoading = computed(() =>
-  reviewStore.itemLoadState === 'loading' && reviewStore.items.length === 0,
 )
 const firstLoadError = computed(() =>
   Boolean(
@@ -58,19 +71,33 @@ const hasValidatedQuestion = computed(() =>
     (question) => question.question_id === reviewStore.selectedQuestionId,
   ),
 )
-const currentPosition = computed(() =>
-  reviewStore.currentIndex >= 0 ? reviewStore.currentIndex + 1 : 0,
+const selectedQuestionIdForView = computed(() => reviewStore.selectedQuestionId ?? '')
+const deepItem = computed(() => mode.value === 'deep' ? reviewStore.currentItem : null)
+const deepItemIndex = computed(() => {
+  if (!deepItem.value) return -1
+  return reviewStore.filteredItems.findIndex((entry) => entry.detail_id === deepItem.value?.detail_id)
+})
+const previousDeepItem = computed(() =>
+  deepItemIndex.value > 0 ? reviewStore.filteredItems[deepItemIndex.value - 1] ?? null : null,
 )
-const previousItem = computed(() =>
-  reviewStore.currentIndex > 0
-    ? reviewStore.filteredItems[reviewStore.currentIndex - 1] ?? null
-    : null,
+const nextDeepItem = computed(() =>
+  deepItemIndex.value >= 0 ? reviewStore.filteredItems[deepItemIndex.value + 1] ?? null : null,
 )
-const nextItem = computed(() =>
-  reviewStore.currentIndex >= 0
-    ? reviewStore.filteredItems[reviewStore.currentIndex + 1] ?? null
-    : null,
+const annotationRetryTitle = computed(() =>
+  `分数已保存，${annotationRetryEntries.value.length} 份标注图需要重试`,
 )
+
+function annotationRetryKey(entry: AnnotationRetryEntry): string {
+  return `${entry.item.session_id}:${entry.item.question_id}:${entry.item.result_id}:${entry.item.detail_id}`
+}
+
+function mergeAnnotationRetryEntries(entries: AnnotationRetryEntry[]): void {
+  const merged = new Map(
+    annotationRetryEntries.value.map((entry) => [annotationRetryKey(entry), entry]),
+  )
+  for (const entry of entries) merged.set(annotationRetryKey(entry), entry)
+  annotationRetryEntries.value = [...merged.values()]
+}
 
 function stringQuery(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
@@ -82,55 +109,31 @@ function detailQuery(value: unknown): number | null {
   return Number.isSafeInteger(detailId) && detailId > 0 ? detailId : null
 }
 
-function sameQuery(query: Record<string, string>): boolean {
-  const keys = Object.keys(route.query)
-  const expectedKeys = Object.keys(query)
-  return keys.length === expectedKeys.length && expectedKeys.every(
-    (key) => route.query[key] === query[key],
-  )
-}
-
 function syncValidatedQuery(): void {
+  const query: Record<string, string> = {}
+  const questionId = reviewStore.selectedQuestionId
+  const detailId = reviewStore.selectedDetailId
+  const questionIsValid = questionId !== null && reviewStore.questions.some(
+    (question) => question.question_id === questionId,
+  )
+
+  if (questionIsValid && questionId !== null) query.question = questionId
+  if (
+    mode.value === 'deep' &&
+    questionIsValid &&
+    detailId !== null &&
+    reviewStore.items.some(
+      (item) => item.question_id === questionId && item.detail_id === detailId,
+    )
+  ) {
+    query.detail = String(detailId)
+  }
   querySync = querySync
     .then(async () => {
       if (unmounting) return
-      const query: Record<string, string> = {}
-      const questionId = reviewStore.selectedQuestionId
-      const detailId = reviewStore.selectedDetailId
-      const questionIsValid = questionId !== null && reviewStore.questions.some(
-        (question) => question.question_id === questionId,
-      )
-
-      if (questionIsValid && questionId !== null) query.question = questionId
-      if (
-        questionIsValid &&
-        detailId !== null &&
-        reviewStore.items.some(
-          (item) => item.question_id === questionId && item.detail_id === detailId,
-        )
-      ) {
-        query.detail = String(detailId)
-      }
-
-      if (!sameQuery(query)) await router.replace({ query })
+      await router.replace({ query })
     })
     .catch(() => undefined)
-}
-
-async function scrollSelectedRowIntoView(): Promise<void> {
-  const detailId = reviewStore.selectedDetailId
-  const generation = ++scrollGeneration
-  if (detailId === null) return
-
-  await nextTick()
-  if (
-    unmounting ||
-    generation !== scrollGeneration ||
-    reviewStore.selectedDetailId !== detailId
-  ) return
-  reviewPage.value
-    ?.querySelector<HTMLElement>('.review-queue-row[aria-current="true"]')
-    ?.scrollIntoView({ block: 'nearest' })
 }
 
 async function loadQuestion(
@@ -157,6 +160,9 @@ async function loadQuestion(
     reviewStore.items.some((entry) => entry.detail_id === preferredDetailId)
   ) {
     reviewStore.selectDetail(preferredDetailId)
+    mode.value = 'deep'
+  } else if (preferredDetailId !== null) {
+    mode.value = 'batch'
   }
   syncValidatedQuery()
 }
@@ -167,6 +173,7 @@ async function loadSession(sessionId: number | null): Promise<void> {
   const generation = ++contextGeneration
   itemGeneration += 1
   reviewStore.reset()
+  mode.value = preferredDetailId === null ? 'batch' : 'deep'
 
   if (sessionId === null || sessionId <= 0) {
     syncValidatedQuery()
@@ -201,7 +208,26 @@ async function selectQuestion(questionId: string): Promise<void> {
     questionId === reviewStore.selectedQuestionId ||
     !reviewStore.questions.some((question) => question.question_id === questionId)
   ) return
+  mode.value = 'batch'
   await loadQuestion(sessionId, questionId, null, true, contextGeneration)
+}
+
+async function updateScope(scope: ReviewScope): Promise<void> {
+  if (scope === reviewStore.scope) return
+  const previousScope = reviewStore.scope
+  reviewStore.setScope(scope)
+  const sessionId = sessionStore.selectedSessionId
+  const questionId = reviewStore.selectedQuestionId
+  if (sessionId === null || questionId === null) return
+  await loadQuestion(sessionId, questionId, null, false, contextGeneration)
+  if (
+    reviewStore.scope === scope &&
+    reviewStore.itemLoadState === 'error' &&
+    sessionStore.selectedSessionId === sessionId &&
+    reviewStore.selectedQuestionId === questionId
+  ) {
+    reviewStore.setScope(previousScope)
+  }
 }
 
 async function retry(): Promise<void> {
@@ -244,15 +270,188 @@ async function retry(): Promise<void> {
   }
 }
 
-function moveSelection(delta: number): void {
-  reviewStore.moveSelection(delta)
+function nextPendingQuestion(questionId: string): string | null {
+  const currentIndex = reviewStore.questions.findIndex(
+    (question) => question.question_id === questionId,
+  )
+  const ordered = [
+    ...reviewStore.questions.slice(currentIndex + 1),
+    ...reviewStore.questions.slice(0, Math.max(0, currentIndex)),
+  ]
+  return ordered.find((question) => question.needs_review_count > 0)?.question_id ?? null
+}
+
+async function confirmBatch(
+  inputs: ReviewConfirmInput[],
+  draftKeys: string[],
+  submittedItems: ReviewItem[],
+): Promise<void> {
+  if (batchSubmitting.value || inputs.length === 0 || submittedItems.length !== inputs.length) return
+  const sessionId = submittedItems[0]?.session_id
+  const questionId = submittedItems[0]?.question_id
+  if (!sessionId || !questionId) return
+  const submittedContextGeneration = contextGeneration
+
+  batchSubmitting.value = true
+  feedback.value = ''
+  try {
+    const response = await confirmReviewItems(sessionId, questionId, inputs)
+    const retryResultIds = new Set(
+      response.annotation_outcomes
+        .filter((outcome) => outcome.status === 'retry_required')
+        .map((outcome) => outcome.result_id),
+    )
+    const nextRetryEntries = inputs.flatMap((input, index) => {
+      const item = submittedItems[index]
+      return item && retryResultIds.has(item.result_id) ? [{ input, item }] : []
+    })
+    draftStore.markConfirmedMany(draftKeys)
+
+    const stillOnSubmittedContext =
+      !unmounting &&
+      contextGeneration === submittedContextGeneration &&
+      sessionStore.selectedSessionId === sessionId &&
+      reviewStore.selectedQuestionId === questionId
+    if (!stillOnSubmittedContext) {
+      mergeAnnotationRetryEntries(nextRetryEntries)
+      feedbackTone.value = nextRetryEntries.length > 0 ? 'warning' : 'success'
+      feedback.value = nextRetryEntries.length > 0
+        ? '先前考试的本批分数已保存；部分标注图需要显式重试。当前考试未被旧响应更改。'
+        : '先前考试的本批分数已确认；当前考试未被旧响应更改。'
+      return
+    }
+
+    reviewStore.markItemsConfirmed(inputs.map((input, index) => ({
+      identity: submittedItems[index]!,
+      scoreAwarded: input.score_awarded,
+      deductionReason: input.deduction_reason?.trim() || '人工复核已确认',
+    })))
+    reviewStore.adjustQuestionPendingCount(questionId, -inputs.length)
+    reviewStore.reconcileAfterConfirmation()
+    mergeAnnotationRetryEntries(nextRetryEntries)
+
+    const currentQuestion = reviewStore.questions.find(
+      (question) => question.question_id === questionId,
+    )
+    if (currentQuestion?.needs_review_count === 0) {
+      const nextQuestionId = nextPendingQuestion(questionId)
+      if (nextQuestionId !== null) {
+        await loadQuestion(sessionId, nextQuestionId, null, true, contextGeneration)
+      }
+    }
+
+    feedbackTone.value = annotationRetryEntries.value.length > 0 ? 'warning' : 'success'
+    feedback.value = annotationRetryEntries.value.length > 0
+      ? '本批分数已保存；部分标注图需要单独重试。'
+      : `本批 ${inputs.length} 份评分已确认。`
+  } catch {
+    feedbackTone.value = 'error'
+    feedback.value = '确认失败，整批草稿已保留。请检查网络后重试。'
+  } finally {
+    batchSubmitting.value = false
+  }
+}
+
+async function retryAnnotations(): Promise<void> {
+  if (batchSubmitting.value || annotationRetryEntries.value.length === 0) return
+  const entries = [...annotationRetryEntries.value]
+  const snapshotByKey = new Map(entries.map((entry) => [annotationRetryKey(entry), entry]))
+  batchSubmitting.value = true
+  let hadRequestFailure = false
+  const remainingKeys = new Set<string>()
+  try {
+    const groups = new Map<string, AnnotationRetryEntry[]>()
+    for (const entry of entries) {
+      const key = `${entry.item.session_id}:${entry.item.question_id}`
+      groups.set(key, [...(groups.get(key) ?? []), entry])
+    }
+    for (const group of groups.values()) {
+      const first = group[0]!
+      try {
+        const response = await confirmReviewItems(
+          first.item.session_id,
+          first.item.question_id,
+          group.map((entry) => entry.input),
+        )
+        const retryResultIds = new Set(
+          response.annotation_outcomes
+            .filter((outcome) => outcome.status === 'retry_required')
+            .map((outcome) => outcome.result_id),
+        )
+        for (const entry of group) {
+          if (retryResultIds.has(entry.item.result_id)) {
+            remainingKeys.add(annotationRetryKey(entry))
+          }
+        }
+      } catch {
+        hadRequestFailure = true
+        for (const entry of group) remainingKeys.add(annotationRetryKey(entry))
+      }
+    }
+    annotationRetryEntries.value = annotationRetryEntries.value.filter((entry) => {
+      const key = annotationRetryKey(entry)
+      const snapshotEntry = snapshotByKey.get(key)
+      return snapshotEntry !== entry || remainingKeys.has(key)
+    })
+    const remainingCount = annotationRetryEntries.value.length
+    feedbackTone.value = hadRequestFailure ? 'error' : remainingCount > 0 ? 'warning' : 'success'
+    feedback.value = hadRequestFailure
+      ? '部分标注图重试失败；分数仍已保存，可以稍后再次重试。'
+      : remainingCount > 0
+        ? '分数保持已保存；仍有标注图需要再次重试。'
+        : '标注图已重新生成。'
+  } finally {
+    batchSubmitting.value = false
+  }
+}
+
+async function openDetail(detailId: number): Promise<void> {
+  const scrollingElement = reviewPage.value?.parentElement
+  batchScrollTop.value = scrollingElement?.scrollTop ?? 0
+  reviewStore.selectDetail(detailId)
+  mode.value = 'deep'
+  const questionId = reviewStore.selectedQuestionId
+  if (questionId !== null) {
+    querySync = querySync.then(async () => {
+      await router.replace({ query: { question: questionId, detail: String(detailId) } })
+    })
+  }
+  await querySync
+}
+
+async function closeDeepReview(): Promise<void> {
+  mode.value = 'batch'
+  const questionId = reviewStore.selectedQuestionId
+  querySync = querySync.then(async () => {
+    await router.replace({ query: questionId === null ? {} : { question: questionId } })
+  })
+  await querySync
+  await nextTick()
+  const scrollingElement = reviewPage.value?.parentElement
+  if (scrollingElement) scrollingElement.scrollTop = batchScrollTop.value
+}
+
+function handleDeepConfirmed(payload: {
+  detailId: number
+  annotationRetry: boolean
+}): void {
+  feedbackTone.value = payload.annotationRetry ? 'warning' : 'success'
+  feedback.value = payload.annotationRetry
+    ? '此份分数已保存；标注图需要显式重试。'
+    : '此份评分已确认。'
+  void closeDeepReview()
+}
+
+function handleDeepAnnotationRetry(entry: AnnotationRetryEntry): void {
+  mergeAnnotationRetryEntries([entry])
+  feedbackTone.value = 'warning'
+  feedback.value = '分数已保存；标注图需要显式重试。'
 }
 
 function isShortcutProtectedTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false
   if (target.closest('input, textarea, select, button')) return true
   if (target instanceof HTMLElement && target.isContentEditable) return true
-
   const editableRoot = target.closest<HTMLElement>('[contenteditable]')
   if (editableRoot === null) return false
   return editableRoot.getAttribute('contenteditable')?.trim().toLocaleLowerCase() !== 'false'
@@ -260,35 +459,36 @@ function isShortcutProtectedTarget(target: EventTarget | null): boolean {
 
 function onKeydown(event: KeyboardEvent): void {
   if (
+    !event.defaultPrevented &&
+    !event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.shiftKey &&
+    !isShortcutProtectedTarget(event.target) &&
+    (event.key.toLocaleLowerCase() === 'j' || event.key.toLocaleLowerCase() === 'k')
+  ) {
+    reviewStore.moveSelection(event.key.toLocaleLowerCase() === 'j' ? 1 : -1)
+    event.preventDefault()
+    if (mode.value === 'batch') {
+      void nextTick(() => reviewPage.value
+        ?.querySelector<HTMLInputElement>(
+          `[data-detail-id="${reviewStore.selectedDetailId}"] input:not(:disabled)`,
+        )
+        ?.focus())
+    }
+    return
+  }
+  if (
     event.defaultPrevented ||
     event.altKey ||
     event.ctrlKey ||
     event.metaKey ||
+    event.shiftKey ||
+    event.key !== '/' ||
+    mode.value !== 'batch' ||
     isShortcutProtectedTarget(event.target)
   ) return
-
-  const key = event.key.toLocaleLowerCase()
-  const delta = key === 'j' ? 1 : key === 'k' ? -1 : 0
-  if (delta !== 0) {
-    if (event.shiftKey) return
-    const previousDetailId = reviewStore.selectedDetailId
-    reviewStore.moveSelection(delta)
-    if (reviewStore.selectedDetailId !== previousDetailId) event.preventDefault()
-    return
-  }
-
-  if (event.repeat && key === 'enter') return
-  if (event.shiftKey && key !== '+') return
-
-  let command: ReviewShortcutCommand | null = null
-  if (key === '/') command = 'focus-search'
-  else if (key === 'z') command = 'fit-width'
-  else if (key === '+' || key === '=') command = 'zoom-in'
-  else if (key === '-') command = 'zoom-out'
-  else if (key === 'enter') command = 'confirm-next'
-  if (command === null) return
-
-  reviewShortcutBus.dispatch(command)
+  reviewPage.value?.querySelector<HTMLInputElement>('#review-search')?.focus()
   event.preventDefault()
 }
 
@@ -308,13 +508,9 @@ const stopSelectionWatch = watch(
   [
     () => reviewStore.selectedQuestionId,
     () => reviewStore.selectedDetailId,
+    () => mode.value,
   ],
   syncValidatedQuery,
-)
-
-const stopScrollWatch = watch(
-  () => reviewStore.selectedDetailId,
-  () => void scrollSelectedRowIntoView(),
 )
 
 onMounted(() => {
@@ -325,10 +521,8 @@ onBeforeUnmount(() => {
   unmounting = true
   contextGeneration += 1
   itemGeneration += 1
-  scrollGeneration += 1
   stopSessionWatch()
   stopSelectionWatch()
-  stopScrollWatch()
   window.removeEventListener('keydown', onKeydown)
   reviewStore.reset()
 })
@@ -337,11 +531,11 @@ onBeforeUnmount(() => {
 <template>
   <section ref="reviewPage" class="review-page" aria-labelledby="review-page-title">
     <header class="review-page__header">
-      <h1 id="review-page-title" tabindex="-1">复核队列</h1>
-      <p>查看单题复核记录，核对答卷证据并连续确认教师最终分。</p>
+      <h1 id="review-page-title" tabindex="-1">评分复核</h1>
+      <p>按题号批量比较答卷；遇到疑难记录时再进入单份深查。</p>
     </header>
 
-    <ReviewShortcutGuide />
+    <ReviewShortcutGuide v-if="mode === 'batch'" />
 
     <FeedbackBanner
       v-if="hasRetainedContentError"
@@ -352,22 +546,31 @@ onBeforeUnmount(() => {
       @action="retry"
     />
 
+    <FeedbackBanner
+      v-if="annotationRetryEntries.length > 0"
+      tone="warning"
+      :title="annotationRetryTitle"
+      description="评分结果已经保存；这里只重试受影响答卷的标注图。"
+      action-label="重试标注图"
+      @action="retryAnnotations"
+    />
+
     <StatePanel
       v-if="sessionStore.selectedSessionId === null"
       kind="empty"
       title="请先选择考试"
-      description="从顶部考试选择器选择一个考试后，可以查看复核队列。"
+      description="从顶部考试选择器选择一个考试后，可以按题号批量复核。"
     />
     <StatePanel
       v-else-if="initialLoading"
       kind="loading"
-      title="正在读取复核队列"
-      description="正在校验题目和当前记录。"
+      title="正在读取复核题目"
+      description="正在校验题号和待复核数量。"
     />
     <StatePanel
       v-else-if="firstLoadError"
       kind="error"
-      title="复核队列加载失败"
+      title="复核内容加载失败"
       :description="reviewStore.errorMessage"
       retry-label="重新加载"
       @retry="retry"
@@ -379,64 +582,42 @@ onBeforeUnmount(() => {
       description="该考试暂时没有可浏览的复核记录。"
     />
 
-    <div v-else-if="hasValidatedQuestion" class="review-workspace">
-      <ReviewQueuePanel
-        :questions="reviewStore.questions"
-        :selected-question-id="reviewStore.selectedQuestionId"
-        :page-items="reviewStore.pageItems"
-        :selected-detail-id="reviewStore.selectedDetailId"
-        :search="reviewStore.search"
-        :scope="reviewStore.scope"
-        :sort="reviewStore.sort"
-        :page="reviewStore.page"
-        :total-pages="reviewStore.totalPages"
-        :filtered-total="reviewStore.filteredItems.length"
-        :loading="reviewStore.itemLoadState === 'loading'"
-        @select-question="selectQuestion"
-        @select-detail="reviewStore.selectDetail"
-        @update-search="reviewStore.setSearch"
-        @update-scope="(value: ReviewScope) => reviewStore.setScope(value)"
-        @update-sort="(value: ReviewSort) => reviewStore.setSort(value)"
-        @update-page="reviewStore.setPage"
-      />
+    <ReviewDeepWorkspace
+      v-else-if="hasValidatedQuestion && deepItem"
+      :item="deepItem"
+      :previous-item="previousDeepItem"
+      :next-item="nextDeepItem"
+      :register-annotation-retry="handleDeepAnnotationRetry"
+      @back="closeDeepReview"
+      @confirmed="handleDeepConfirmed"
+    />
 
-      <section class="review-detail" aria-label="当前复核记录">
-        <nav class="review-record-navigation" aria-label="连续浏览复核记录">
-          <button
-            type="button"
-            :disabled="!reviewStore.canMovePrevious"
-            @click="moveSelection(-1)"
-          >
-            上一条
-          </button>
-          <span>当前位置 {{ currentPosition }} / {{ reviewStore.filteredItems.length }}</span>
-          <button
-            type="button"
-            :disabled="!reviewStore.canMoveNext"
-            @click="moveSelection(1)"
-          >
-            下一条
-          </button>
-        </nav>
-        <StatePanel
-          v-if="initialItemLoading"
-          kind="loading"
-          title="正在读取复核记录"
-          description="可以继续切换题目，当前请求会安全取消。"
-        />
-        <div v-else class="review-evidence-layout">
-          <ReviewSelectionSummary
-            :item="reviewStore.currentItem"
-            :question-id="reviewStore.selectedQuestionId"
-          />
-          <ReviewEvidenceViewer
-            v-if="reviewStore.currentItem"
-            :item="reviewStore.currentItem"
-            :previous-item="previousItem"
-            :next-item="nextItem"
-          />
-        </div>
-      </section>
-    </div>
+    <ReviewBatchWorkspace
+      v-else-if="hasValidatedQuestion"
+      :questions="reviewStore.questions"
+      :selected-question-id="selectedQuestionIdForView"
+      :items="reviewStore.pageItems"
+      :search="reviewStore.search"
+      :scope="reviewStore.scope"
+      :sort="reviewStore.sort"
+      :page="reviewStore.page"
+      :total-pages="reviewStore.totalPages"
+      :filtered-total="reviewStore.filteredItems.length"
+      :loading="reviewStore.itemLoadState === 'loading'"
+      :submitting="batchSubmitting"
+      @select-question="selectQuestion"
+      @update-search="reviewStore.setSearch"
+      @update-scope="updateScope"
+      @update-sort="(value: ReviewSort) => reviewStore.setSort(value)"
+      @update-page="reviewStore.setPage"
+      @open-detail="openDetail"
+      @confirm-batch="confirmBatch"
+    />
+
+    <ReviewFeedbackToast
+      :message="feedback"
+      :tone="feedbackTone"
+      @dismiss="feedback = ''"
+    />
   </section>
 </template>
