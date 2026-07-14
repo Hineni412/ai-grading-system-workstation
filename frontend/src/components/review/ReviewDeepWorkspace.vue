@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ReviewItem } from '../../api/review'
+import type { ReviewConfirmInput, ReviewItem } from '../../api/review'
 import ReviewEvidenceViewer from './ReviewEvidenceViewer.vue'
 import ReviewScoringInspector from './ReviewScoringInspector.vue'
 
@@ -11,7 +11,10 @@ defineProps<{
 
 const emit = defineEmits<{
   back: []
-  confirmed: [detailId: number]
+  confirmed: [payload: {
+    detailId: number
+    retryEntry: { input: ReviewConfirmInput; item: ReviewItem } | null
+  }]
 }>()
 </script>
 

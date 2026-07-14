@@ -4,7 +4,10 @@ import { createMemoryHistory, type Router } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  confirmReviewItem,
   confirmReviewItems,
+  fetchReviewItems,
+  fetchReviewRubric,
   type FetchReviewItemsOptions,
   type ReviewItem,
   type ReviewQuestionSummary,
@@ -17,7 +20,10 @@ import ReviewQueueView from '../views/ReviewQueueView.vue'
 
 vi.mock('../api/review', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/review')>(),
+  confirmReviewItem: vi.fn(),
   confirmReviewItems: vi.fn(),
+  fetchReviewItems: vi.fn(),
+  fetchReviewRubric: vi.fn(),
 }))
 
 const media = {
@@ -209,6 +215,13 @@ beforeEach(() => {
     updated_results: 2,
     annotation_outcomes: [],
   })
+  vi.mocked(confirmReviewItem).mockResolvedValue({
+    updated_details: 1,
+    updated_results: 1,
+    annotation_outcomes: [],
+  })
+  vi.mocked(fetchReviewItems).mockResolvedValue([])
+  vi.mocked(fetchReviewRubric).mockResolvedValue(null)
   document.body.innerHTML = ''
   localStorage.clear()
 })
@@ -251,6 +264,9 @@ describe('source-recalibrated review view', () => {
     inputValue(firstScore, '4')
     await nextTick()
 
+    await vi.waitFor(() => expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="confirm-batch"]')?.disabled,
+    ).toBe(false))
     host.querySelector<HTMLButtonElement>('[data-testid="confirm-batch"]')!.click()
 
     await vi.waitFor(() => expect(
@@ -289,6 +305,85 @@ describe('source-recalibrated review view', () => {
       .find((button) => button.textContent === '重试标注图')!
     retry.click()
     await vi.waitFor(() => expect(confirmReviewItems).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(host.textContent).not.toContain('标注图需要重试'))
+  })
+
+  it('does not let a completed batch from a previous session mutate the new session view', async () => {
+    const pendingConfirmation = deferred<Awaited<ReturnType<typeof confirmReviewItems>>>()
+    vi.mocked(confirmReviewItems).mockReturnValue(pendingConfirmation.promise)
+    const { host, reviewStore, sessionStore } = await mountView({
+      itemLoader: async (sessionId, questionId) => (itemsByQuestion[questionId] ?? []).map(
+        (entry) => ({ ...entry, session_id: sessionId, result_id: sessionId * 100 + entry.detail_id }),
+      ),
+    })
+
+    await vi.waitFor(() => expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="confirm-batch"]')?.disabled,
+    ).toBe(false))
+    host.querySelector<HTMLButtonElement>('[data-testid="confirm-batch"]')!.click()
+    await vi.waitFor(() => expect(confirmReviewItems).toHaveBeenCalledTimes(1))
+    sessionStore.$patch({
+      sessions: [{
+        id: 8,
+        name: '另一场考试',
+        status: 'grading',
+        is_deleted: false,
+        deleted_at: null,
+        created_at: null,
+        updated_at: null,
+      }],
+      selectedSessionId: 8,
+      loadState: 'ready',
+    })
+    await vi.waitFor(() => expect(reviewStore.items[0]?.session_id).toBe(8))
+
+    pendingConfirmation.resolve({
+      updated_details: 2,
+      updated_results: 2,
+      annotation_outcomes: [],
+    })
+    await settleUi()
+
+    expect(reviewStore.items.every((entry) => entry.session_id === 8 && entry.needs_review)).toBe(true)
+    expect(reviewStore.questions[0]?.needs_review_count).toBe(2)
+    expect(reviewStore.selectedQuestionId).toBe('Q1')
+  })
+
+  it('keeps single-review annotation retry available after returning to the batch', async () => {
+    vi.mocked(confirmReviewItem).mockResolvedValue({
+      updated_details: 1,
+      updated_results: 1,
+      annotation_outcomes: [{ result_id: 11, status: 'retry_required' }],
+    })
+    vi.mocked(fetchReviewItems).mockResolvedValue([itemsByQuestion.Q1![1]!])
+    vi.mocked(confirmReviewItems).mockResolvedValue({
+      updated_details: 1,
+      updated_results: 1,
+      annotation_outcomes: [{ result_id: 11, status: 'succeeded' }],
+    })
+    const { host, reviewStore } = await mountView()
+    const firstCard = host.querySelector<HTMLElement>('[data-detail-id="11"]')!
+    firstCard.querySelector<HTMLButtonElement>('.review-answer-sheet__deep')!.click()
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="review-deep-workspace"]')).not.toBeNull())
+    await vi.waitFor(() => expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')?.disabled,
+    ).toBe(false))
+    host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')!.click()
+
+    await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(reviewStore.questions[0]?.needs_review_count).toBe(1))
+    await vi.waitFor(() => expect(host.textContent).toContain('分数已保存，1 份标注图需要重试'))
+    expect(host.querySelector('[data-testid="review-batch-workspace"]')).not.toBeNull()
+    expect(reviewStore.questions[0]?.needs_review_count).toBe(1)
+
+    const retry = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === '重试标注图')!
+    retry.click()
+    await vi.waitFor(() => expect(confirmReviewItems).toHaveBeenCalledWith(7, 'Q1', [{
+      result_id: 11,
+      detail_id: 11,
+      score_awarded: 3,
+    }]))
     await vi.waitFor(() => expect(host.textContent).not.toContain('标注图需要重试'))
   })
 
@@ -369,6 +464,24 @@ describe('source-recalibrated review view', () => {
 
     await vi.waitFor(() => expect(itemRequests[itemRequests.length - 1]?.needsReviewOnly).toBe(false))
     await vi.waitFor(() => expect(host.textContent).toContain('学生乙'))
+  })
+
+  it('rolls the scope label back when loading the requested scope fails', async () => {
+    let failAll = false
+    const { host, reviewStore } = await mountView({
+      itemLoader: async (_sessionId, questionId) => {
+        if (failAll) throw new Error('scope load failed')
+        return itemsByQuestion[questionId] ?? []
+      },
+    })
+    await vi.waitFor(() => expect(reviewStore.items).toHaveLength(2))
+    failAll = true
+    inputValue(host.querySelector<HTMLSelectElement>('#review-scope')!, 'all')
+
+    await vi.waitFor(() => expect(host.textContent).toContain('复核内容刷新失败'))
+    expect(reviewStore.scope).toBe('needs_review')
+    expect(host.querySelector<HTMLSelectElement>('#review-scope')?.value).toBe('needs_review')
+    expect(reviewStore.items.map((entry) => entry.detail_id)).toEqual([11, 12])
   })
 
   it('searches identity fields and slash focuses search outside protected controls', async () => {

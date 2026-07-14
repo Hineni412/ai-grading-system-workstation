@@ -19,7 +19,7 @@
 - Do not read, write, copy, stage, commit, or stash real `user_data/`.
 - Write requests are never automatically replayed; failures retain teacher drafts and context.
 - A saved score remains successful when annotation rendering returns `retry_required`; retry is a separate explicit action.
-- Support 1024×768, 1280×720, 1366×768, 1440×900, and 1920×1080.
+- Support 1024×768, 1280×800, 1366×768, 1440×900, and 1920×1080.
 - Follow `docs/ui/STYLE.md`; no gradient, decorative hero, permanent three-column shell, card ocean, or hidden unsafe confirmation shortcut.
 - The non-package gate remains blocked until the versioned checklist records the reviewed SHA, no Blocker/Major findings, and explicit user `passed`.
 
