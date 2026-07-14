@@ -70,6 +70,20 @@ class EqualityComparison:
 
 
 @dataclass(frozen=True, slots=True)
+class ResponseRecordSummary:
+    minimum: float | None
+    median: float
+    maximum: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class ResponseRecordComparison:
+    before: ResponseRecordSummary
+    after: ResponseRecordSummary
+    equal: bool
+
+
+@dataclass(frozen=True, slots=True)
 class MetricComparison:
     before: float
     after: float
@@ -85,7 +99,7 @@ class ScenarioComparison:
     scenario: str
     kind: str
     status: EqualityComparison
-    response_records: EqualityComparison
+    response_records: ResponseRecordComparison
     latency_p50_ms: MetricComparison
     db_statements: MetricComparison
     db_selects: MetricComparison
@@ -95,8 +109,8 @@ class ScenarioComparison:
 class GateSummary:
     name: str
     required_count: int
-    passed_count: int
-    passed: bool
+    passed_count: int | None
+    passed: bool | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -432,14 +446,15 @@ def render_markdown(report: RequestConnectionReport) -> str:
         "",
         "## Aggregate comparisons",
         "",
-        "| scale | repetition | scenario | kind | status before/after | response records before/after | before p50 ms | after p50 ms | p50 improvement | DB statements before/after | statement reduction | DB selects before/after | statement gate | medium p50 gate |",
-        "|---|---:|---|---|---|---|---:|---:|---:|---|---:|---|---|---|",
+        "| scale | repetition | scenario | kind | status before/after | response records before min/median/max | response records after min/median/max | before p50 ms | after p50 ms | p50 improvement | DB statements before/after | statement reduction | DB selects before/after | statement gate | medium p50 gate |",
+        "|---|---:|---|---|---|---|---|---:|---:|---:|---|---:|---|---|---|",
     ]
     for item in report.comparisons:
         lines.append(
             f"| {item.scale} | {item.repetition} | {item.scenario} | {item.kind} | "
             f"{_number(item.status.before)}/{_number(item.status.after)} | "
-            f"{_number(item.response_records.before)}/{_number(item.response_records.after)} | "
+            f"{_response_record_display(item.response_records.before)} | "
+            f"{_response_record_display(item.response_records.after)} | "
             f"{_number(item.latency_p50_ms.before)} | {_number(item.latency_p50_ms.after)} | "
             f"{_number(item.latency_p50_ms.improvement_percent)}% | "
             f"{_number(item.db_statements.before)}/{_number(item.db_statements.after)} | "
@@ -458,8 +473,9 @@ def render_markdown(report: RequestConnectionReport) -> str:
     )
     for gate in report.gates:
         lines.append(
-            f"| {_gate_display_name(gate.name)} | {gate.required_count} | {gate.passed_count} | "
-            f"{'passed' if gate.passed else 'failed'} |"
+            f"| {_gate_display_name(gate.name)} | {gate.required_count} | "
+            f"{'unavailable' if gate.passed_count is None else gate.passed_count} | "
+            f"{_gate_result(gate)} |"
         )
     lines.extend(["", "## limitations", ""])
     lines.extend(f"- {item}" for item in report.limitations)
@@ -491,10 +507,18 @@ def _compare_scenario(
         scenario=before.name,
         kind="control" if before.name == CONTROL_SCENARIO else "target",
         status=EqualityComparison(before.status_code, after.status_code, status_equal),
-        response_records=EqualityComparison(
-            before.response_records.median,
-            after.response_records.median,
-            records_equal,
+        response_records=ResponseRecordComparison(
+            before=ResponseRecordSummary(
+                before.response_records.minimum,
+                before.response_records.median,
+                before.response_records.maximum,
+            ),
+            after=ResponseRecordSummary(
+                after.response_records.minimum,
+                after.response_records.median,
+                after.response_records.maximum,
+            ),
+            equal=records_equal,
         ),
         latency_p50_ms=MetricComparison(
             before.latency_ms.p50,
@@ -529,7 +553,10 @@ def _build_gates(
     statuses = [item.status.equal for item in comparisons]
     records = [item.response_records.equal for item in comparisons]
     nonzero_records = [
-        item.response_records.before > 0 and item.response_records.after > 0
+        item.response_records.before.minimum is not None
+        and item.response_records.before.minimum > 0
+        and item.response_records.after.minimum is not None
+        and item.response_records.after.minimum > 0
         for item in comparisons
     ]
     statements = [
@@ -603,6 +630,7 @@ def _report_payload(report: RequestConnectionReport) -> dict[str, Any]:
                 "required_count": gate.required_count,
                 "passed_count": gate.passed_count,
                 "passed": gate.passed,
+                "result": _gate_result(gate),
             }
             for gate in report.gates
         ],
@@ -618,7 +646,7 @@ def _comparison_payload(item: ScenarioComparison) -> dict[str, Any]:
         "scenario": item.scenario,
         "kind": item.kind,
         "status": _equality_payload(item.status),
-        "response_records": _equality_payload(item.response_records),
+        "response_records": _response_record_payload(item.response_records),
         "latency_p50_ms": _metric_payload(item.latency_p50_ms),
         "db_statements": _metric_payload(item.db_statements),
         "db_selects": _metric_payload(item.db_selects),
@@ -627,6 +655,24 @@ def _comparison_payload(item: ScenarioComparison) -> dict[str, Any]:
 
 def _equality_payload(item: EqualityComparison) -> dict[str, int | float | bool]:
     return {"before": item.before, "after": item.after, "equal": item.equal}
+
+
+def _response_record_payload(item: ResponseRecordComparison) -> dict[str, Any]:
+    return {
+        "before": _response_record_summary_payload(item.before),
+        "after": _response_record_summary_payload(item.after),
+        "equal": item.equal,
+    }
+
+
+def _response_record_summary_payload(
+    item: ResponseRecordSummary,
+) -> dict[str, float | None]:
+    return {
+        "minimum": item.minimum,
+        "median": item.median,
+        "maximum": item.maximum,
+    }
 
 
 def _metric_payload(item: MetricComparison) -> dict[str, float | bool]:
@@ -746,6 +792,21 @@ def _number(value: int | float) -> str:
     return f"{number:.6f}".rstrip("0").rstrip(".")
 
 
+def _gate_result(gate: GateSummary) -> str:
+    if gate.passed is None:
+        return "not_evaluated"
+    return "passed" if gate.passed else "failed"
+
+
+def _response_record_display(item: ResponseRecordSummary) -> str:
+    values = (
+        "unknown" if item.minimum is None else _number(item.minimum),
+        _number(item.median),
+        "unknown" if item.maximum is None else _number(item.maximum),
+    )
+    return "/".join(values)
+
+
 __all__ = [
     "CONTROL_SCENARIO",
     "MEDIUM_LATENCY_SCENARIOS",
@@ -754,7 +815,10 @@ __all__ = [
     "BaselineMeasurement",
     "BaselineReport",
     "ComparisonGateError",
+    "GateSummary",
     "RequestConnectionReport",
+    "ResponseRecordComparison",
+    "ResponseRecordSummary",
     "build_comparison_report",
     "ensure_report_passes",
     "load_baseline_report",
