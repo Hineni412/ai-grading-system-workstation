@@ -66,6 +66,7 @@
   --radius-panel: 8px;
   --radius-overlay: 12px;
   --border-width: 1px;
+  --border-selected-width: 4px;
 
   --control-height-small: 32px;
   --control-height-default: 36px;
@@ -81,7 +82,6 @@
   --shell-skip-link-z-index: 33;
 
   --shadow-overlay: 0 8px 24px rgba(32, 36, 42, 0.14);
-  --shadow-selected-inset: inset 0 -4px 0 var(--color-accent);
   --focus-ring: 0 0 0 3px var(--color-accent-subtle);
   --focus-offset: 2px;
   --opacity-disabled: 0.54;
