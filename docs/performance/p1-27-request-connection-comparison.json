@@ -1351,6 +1351,12 @@
       "required_count": 36
     },
     {
+      "name": "nonzero_response_records",
+      "passed": true,
+      "passed_count": 36,
+      "required_count": 36
+    },
+    {
       "name": "target_statement_reduction",
       "passed": true,
       "passed_count": 30,
@@ -1384,7 +1390,7 @@
     "Latency is machine-specific and is not a service-level objective.",
     "Each file is atomic, but sudden termination can leave a mixed old/new pair.",
     "With only two measured samples per repetition, p50 is sensitive to timing variance and has reduced statistical confidence.",
-    "The first medium legacy plan-preview repetition recorded a p50 of 1323239.7073 ms (about 22.05 minutes), while repetition two recorded 2779.3096 ms; this cold-path outlier shows that the report is not capacity or service-level evidence."
+    "The first medium legacy plan-preview repetition recorded a p50 of 1323239.7073 ms (about 22.05 minutes), while repetition two recorded 2779.3096 ms; this observed timing outlier shows that the report is not capacity or service-level evidence."
   ],
   "overall_gate": "passed",
   "p1_26_provenance_code_sha": "6bb53c338d23e530ed2890afbdecce0ae6ac9fb9",

@@ -528,6 +528,10 @@ def _build_gates(
 ) -> tuple[GateSummary, ...]:
     statuses = [item.status.equal for item in comparisons]
     records = [item.response_records.equal for item in comparisons]
+    nonzero_records = [
+        item.response_records.before > 0 and item.response_records.after > 0
+        for item in comparisons
+    ]
     statements = [
         item.db_statements.gate_passed
         for item in comparisons
@@ -541,6 +545,7 @@ def _build_gates(
     return (
         _gate("status_equality", statuses),
         _gate("response_record_equality", records),
+        _gate("nonzero_response_records", nonzero_records),
         _gate("target_statement_reduction", statements),
         _gate("medium_p50_improvement", latencies, allow_empty=True),
         GateSummary(
@@ -726,6 +731,7 @@ def _gate_display_name(name: str) -> str:
     return {
         "status_equality": "status equality",
         "response_record_equality": "response record equality",
+        "nonzero_response_records": "non-zero response records",
         "target_statement_reduction": "target statement reduction",
         "medium_p50_improvement": "medium p50 improvement",
         "legacy_two_round_repeatability": "legacy two-round repeatability",

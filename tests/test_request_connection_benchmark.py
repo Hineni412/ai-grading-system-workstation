@@ -694,6 +694,61 @@ def test_required_statement_latency_status_and_record_gates_block_publication(
         )
 
 
+def test_equal_zero_response_records_block_publication_with_explicit_gate(
+    tmp_path: Path,
+) -> None:
+    baseline = load_baseline_report(
+        _write_baseline(tmp_path, _baseline_payload(scales=("small",))),
+        scales=("small",),
+        scenarios=SCENARIO_NAMES,
+    )
+
+    def with_zero_records(result: ScaleBenchmarkResult) -> ScaleBenchmarkResult:
+        return replace(
+            result,
+            repetitions=tuple(
+                replace(
+                    repetition,
+                    scenarios=tuple(
+                        replace(
+                            scenario,
+                            response_records=NumericSummary(0.0, 0.0, 0.0),
+                        )
+                        for scenario in repetition.scenarios
+                    ),
+                )
+                for repetition in result.repetitions
+            ),
+        )
+
+    report = build_comparison_report(
+        baseline,
+        (with_zero_records(_legacy_result("small")),),
+        (with_zero_records(_result("small")),),
+        code_sha="b" * 40,
+        generated_at_utc="2026-07-14T04:00:00Z",
+        runtime=RuntimeSummary("Windows-11", "3.12.1", "3.43.1", 8),
+        data_scale_factor=0.1,
+        warmups=3,
+        samples=20,
+        repetitions=2,
+        limitations=("Reduced statistical confidence and capacity coverage.",),
+    )
+
+    equality_gate = next(
+        gate for gate in report.gates if gate.name == "response_record_equality"
+    )
+    assert equality_gate.required_count == equality_gate.passed_count == 12
+    with pytest.raises(ComparisonGateError, match="nonzero_response_records"):
+        ensure_report_passes(report)
+    nonzero_gate = next(
+        gate for gate in report.gates if gate.name == "nonzero_response_records"
+    )
+    assert nonzero_gate.required_count == 12
+    assert nonzero_gate.passed_count == 0
+    assert nonzero_gate.passed is False
+
+
 def test_publish_report_reuses_p1_26_recovery_primitives_and_contract() -> None:
     import tools.benchmark_request_connections as cli_module
 

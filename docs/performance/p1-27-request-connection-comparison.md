@@ -65,6 +65,7 @@
 |---|---:|---:|---|
 | status equality | 36 | 36 | passed |
 | response record equality | 36 | 36 | passed |
+| non-zero response records | 36 | 36 | passed |
 | target statement reduction | 30 | 30 | passed |
 | medium p50 improvement | 8 | 8 | passed |
 | legacy two-round repeatability | 3 | 3 | passed |
@@ -79,4 +80,4 @@
 - Latency is machine-specific and is not a service-level objective.
 - Each file is atomic, but sudden termination can leave a mixed old/new pair.
 - With only two measured samples per repetition, p50 is sensitive to timing variance and has reduced statistical confidence.
-- The first medium legacy plan-preview repetition recorded a p50 of 1323239.7073 ms (about 22.05 minutes), while repetition two recorded 2779.3096 ms; this cold-path outlier shows that the report is not capacity or service-level evidence.
+- The first medium legacy plan-preview repetition recorded a p50 of 1323239.7073 ms (about 22.05 minutes), while repetition two recorded 2779.3096 ms; this observed timing outlier shows that the report is not capacity or service-level evidence.
