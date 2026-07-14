@@ -56,6 +56,16 @@ def test_colors_and_design_values_do_not_escape_the_token_file() -> None:
     assert offenders == []
 
 
+def test_question_selection_uses_a_border_token_not_a_document_flow_shadow() -> None:
+    tokens = TOKENS.read_text(encoding="utf-8")
+    queue_css = (SRC / "styles" / "review-queue.css").read_text(encoding="utf-8")
+
+    assert "--border-selected-width: 4px" in tokens
+    assert "border-block-end: var(--border-selected-width) solid" in queue_css
+    assert "--shadow-selected" not in tokens
+    assert "box-shadow: var(--shadow-selected" not in queue_css
+
+
 @pytest.mark.parametrize(
     "declaration",
     (

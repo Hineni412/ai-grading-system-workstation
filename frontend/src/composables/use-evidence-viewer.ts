@@ -1,6 +1,11 @@
 import { computed, ref } from 'vue'
 
-export type EvidenceSource = 'crop' | 'original_front' | 'original_back'
+export type EvidenceSource =
+  | 'crop'
+  | 'original_front'
+  | 'original_back'
+  | 'annotated_front'
+  | 'annotated_back'
 export type ViewerMode = 'fit-width' | 'manual'
 export type ViewerLoadState = 'idle' | 'loading' | 'ready' | 'error'
 export interface ViewerPoint { x: number; y: number }

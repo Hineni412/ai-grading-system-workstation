@@ -39,6 +39,11 @@ export interface ReviewItem {
 export interface ReviewQuestionListResponse { items: ReviewQuestionSummary[]; total: number }
 export interface ReviewItemListResponse { items: ReviewItem[]; total: number }
 
+export interface FetchReviewItemsOptions {
+  needsReviewOnly?: boolean
+  signal?: AbortSignal
+}
+
 export interface ReviewRubricLine {
   label: string
   score: number | null
@@ -219,9 +224,14 @@ export async function fetchReviewQuestions(sessionId: number, signal?: AbortSign
   return payload.items
 }
 
-export async function fetchReviewItems(sessionId: number, questionId: string, signal?: AbortSignal): Promise<ReviewItem[]> {
+export async function fetchReviewItems(
+  sessionId: number,
+  questionId: string,
+  options: FetchReviewItemsOptions = {},
+): Promise<ReviewItem[]> {
   const encodedQuestion = encodeURIComponent(questionId)
-  const payload = await apiClient.request(`/api/sessions/${sessionId}/review/questions/${encodedQuestion}/items?needs_review_only=false`, { signal, decode: (value) => { if (!isReviewItemListResponse(value)) throw new Error('invalid review items'); return value } })
+  const needsReviewOnly = options.needsReviewOnly ?? true
+  const payload = await apiClient.request(`/api/sessions/${sessionId}/review/questions/${encodedQuestion}/items?needs_review_only=${String(needsReviewOnly)}`, { signal: options.signal, decode: (value) => { if (!isReviewItemListResponse(value)) throw new Error('invalid review items'); return value } })
   return payload.items
 }
 
@@ -243,20 +253,21 @@ export async function fetchReviewRubric(
   })
 }
 
-export async function confirmReviewItem(
+export async function confirmReviewItems(
   sessionId: number,
   questionId: string,
-  input: ReviewConfirmInput,
+  inputs: readonly ReviewConfirmInput[],
   signal?: AbortSignal,
 ): Promise<ReviewConfirmResponse> {
   const requested = questionId.trim()
   if (!requested) throw new Error('question id is required')
+  if (inputs.length === 0) throw new Error('review confirmation items are required')
   const encodedQuestion = encodeURIComponent(requested)
   return apiClient.request(
     `/api/sessions/${sessionId}/review/questions/${encodedQuestion}/confirm`,
     {
       method: 'POST',
-      body: { items: [input] },
+      body: { items: [...inputs] },
       signal,
       decode: (value) => {
         if (!isReviewConfirmResponse(value)) throw new Error('invalid review confirmation')
@@ -264,4 +275,13 @@ export async function confirmReviewItem(
       },
     },
   )
+}
+
+export async function confirmReviewItem(
+  sessionId: number,
+  questionId: string,
+  input: ReviewConfirmInput,
+  signal?: AbortSignal,
+): Promise<ReviewConfirmResponse> {
+  return confirmReviewItems(sessionId, questionId, [input], signal)
 }

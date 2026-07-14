@@ -68,7 +68,7 @@ describe('App', () => {
     expect(evidenceStyles).not.toMatch(/#[\da-f]{3,8}\b|(?:rgb|hsl)a?\s*\(/i)
   })
 
-  it('uses the scoring inspector only on the grading route', async () => {
+  it('does not mount a permanent scoring or session inspector', async () => {
     const pinia = createPinia()
     const router = createAppRouter(createMemoryHistory())
     await router.push('/grading')
@@ -80,20 +80,16 @@ describe('App', () => {
     app.mount(host)
     await settleUi()
 
-    expect(host.querySelector('[data-testid="review-scoring-inspector"]')).not.toBeNull()
-    expect(host.querySelector('[data-testid="session-inspector"]')).toBeNull()
-
-    await router.push('/workbench')
-    await settleUi()
-    expect(host.querySelector('[data-testid="session-inspector"]')).not.toBeNull()
     expect(host.querySelector('[data-testid="review-scoring-inspector"]')).toBeNull()
+    expect(host.querySelector('[data-testid="session-inspector"]')).toBeNull()
+    expect(host.querySelector('[data-testid="app-navigation"]')).toBeNull()
     app.unmount()
   })
 
   it('keeps the dirty-draft unload warning active outside the grading route', async () => {
     const pinia = createPinia()
     const router = createAppRouter(createMemoryHistory())
-    await router.push('/workbench')
+    await router.push('/design-system')
     await router.isReady()
     const host = document.createElement('div')
     const app = createApp(App)
@@ -155,7 +151,7 @@ describe('App', () => {
       },
       meta: { title: '懒加载故障', description: '故障测试', breadcrumb: '懒加载故障' },
     })
-    await router.push('/workbench')
+    await router.push('/grading')
     await router.isReady()
     const host = document.createElement('div')
     const app = createApp(App)
@@ -185,7 +181,7 @@ describe('App', () => {
     app.unmount()
   })
 
-  it('returns to the workbench after a rejected lazy route', async () => {
+  it('returns to grading after a rejected lazy route', async () => {
     const pinia = createPinia()
     const router = createAppRouter(createMemoryHistory())
     router.addRoute({
@@ -196,7 +192,7 @@ describe('App', () => {
       },
       meta: { title: '懒加载故障', description: '故障测试', breadcrumb: '懒加载故障' },
     })
-    await router.push('/workbench')
+    await router.push('/grading')
     await router.isReady()
     const host = document.createElement('div')
     const app = createApp(App)
@@ -211,13 +207,13 @@ describe('App', () => {
     )
     await settleUi()
     const returnButton = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
-      (button) => button.textContent === '返回工作台',
+      (button) => button.textContent === '返回评分复核',
     )!
     returnButton.click()
-    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/workbench'))
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/grading'))
     await settleUi()
 
-    expect(host.querySelector('#main-workspace h1')?.textContent).toBe('工作台')
+    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('评分复核')
     expect(host.textContent).not.toContain('private route factory detail')
     app.unmount()
   })
@@ -262,7 +258,7 @@ describe('App', () => {
     app.unmount()
   })
 
-  it('returns from a sanitized routed render failure to the workbench', async () => {
+  it('returns from a sanitized routed render failure to grading', async () => {
     const brokenRoute = defineComponent(() => () => {
       throw new Error('private render detail')
     })
@@ -285,20 +281,20 @@ describe('App', () => {
     await settleUi()
 
     const returnButton = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
-      (button) => button.textContent === '返回工作台',
+      (button) => button.textContent === '返回评分复核',
     )!
     returnButton.click()
-    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/workbench'))
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/grading'))
     await settleUi()
 
-    expect(host.querySelector('#main-workspace h1')?.textContent).toBe('工作台')
+    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('评分复核')
     app.unmount()
   })
 
   it('mounts the P2-03 application shell with memory routing and Pinia', async () => {
     const pinia = createPinia()
     const router = createAppRouter(createMemoryHistory())
-    await router.push('/workbench')
+    await router.push('/grading')
     await router.isReady()
     const host = document.createElement('div')
     const app = createApp(App)
@@ -309,9 +305,9 @@ describe('App', () => {
 
     expect(host.querySelector('[data-testid="app-shell"]')).not.toBeNull()
     expect(host.querySelector('[data-testid="app-topbar"]')).not.toBeNull()
-    expect(host.querySelector('[data-testid="app-navigation"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="app-navigation"]')).toBeNull()
     expect(host.querySelector('main#main-workspace')).not.toBeNull()
-    expect(host.querySelector('[data-testid="session-inspector"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="session-inspector"]')).toBeNull()
     const sessionStore = useSessionStore(pinia)
     expect(fetchSessions).toHaveBeenCalledTimes(1)
     expect(sessionStore.loadState).toBe('ready')

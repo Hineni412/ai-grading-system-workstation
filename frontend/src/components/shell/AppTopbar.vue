@@ -4,43 +4,26 @@ import { useRoute } from 'vue-router'
 
 import { useSessionStore } from '../../stores/session'
 
-defineProps<{
-  navigationOpen: boolean
-  inspectorOpen: boolean
-}>()
-
-defineEmits<{
-  toggleNavigation: []
-  toggleInspector: []
-}>()
-
 const route = useRoute()
 const sessionStore = useSessionStore()
-const breadcrumb = computed(() => String(route.meta.breadcrumb ?? route.meta.title ?? ''))
 const pageTitle = computed(() => String(route.meta.title ?? ''))
 
 function selectSession(event: Event): void {
   const value = (event.currentTarget as HTMLSelectElement).value
   sessionStore.selectSession(value === '' ? null : Number(value))
 }
+
+function retrySessions(): void {
+  void sessionStore.initialize()
+}
 </script>
 
 <template>
   <header class="app-topbar" data-testid="app-topbar">
     <a class="app-topbar__skip-link" href="#main-workspace">跳到主要工作区</a>
-    <button
-      type="button"
-      data-testid="navigation-toggle"
-      aria-controls="app-navigation"
-      :aria-expanded="navigationOpen"
-      aria-label="切换应用导航"
-      @click="$emit('toggleNavigation')"
-    >
-      <span aria-hidden="true">导</span>
-    </button>
 
-    <div class="app-topbar__route">
-      <span>{{ breadcrumb }}</span>
+    <div class="app-topbar__identity">
+      <span>AI 阅卷系统</span>
       <strong>{{ pageTitle }}</strong>
     </div>
 
@@ -49,7 +32,7 @@ function selectSession(event: Event): void {
       <select
         id="current-session"
         :value="sessionStore.selectedSessionId ?? ''"
-        :disabled="sessionStore.loadState === 'loading'"
+        :disabled="sessionStore.loadState === 'loading' || sessionStore.loadState === 'error'"
         @change="selectSession"
       >
         <option value="">未选择</option>
@@ -59,15 +42,12 @@ function selectSession(event: Event): void {
       </select>
     </div>
 
-    <button
-      type="button"
-      data-testid="inspector-toggle"
-      aria-controls="session-inspector"
-      :aria-expanded="inspectorOpen"
-      aria-label="切换考试检查器"
-      @click="$emit('toggleInspector')"
-    >
-      <span aria-hidden="true">考</span>
-    </button>
+    <div v-if="sessionStore.loadState === 'loading'" class="app-topbar__status" role="status">
+      正在读取考试列表
+    </div>
+    <div v-else-if="sessionStore.loadState === 'error'" class="app-topbar__status" role="alert">
+      <span>考试列表加载失败。</span>
+      <button type="button" @click="retrySessions">重新加载考试列表</button>
+    </div>
   </header>
 </template>
