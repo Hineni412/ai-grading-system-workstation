@@ -241,6 +241,8 @@ def test_question_tag_plan_reuses_borrowed_connection_for_all_reads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from question_bank.recommendation import practice_plan_service as practice_plan_module
+    from question_bank.services import question_frequency_service as frequency_module
+    from question_bank.services import source_question_link_service as source_link_module
 
     legacy_service, _diagnosis_profile = practice_system
     borrowed = sqlite3.connect(legacy_service.db_path)
@@ -281,6 +283,16 @@ def test_question_tag_plan_reuses_borrowed_connection_for_all_reads(
             practice_plan_module,
             "initialize_database",
             lambda _path: pytest.fail("borrowed question-tag plan must not initialize the database"),
+        )
+        monkeypatch.setattr(
+            frequency_module,
+            "initialize_database",
+            lambda _path: pytest.fail("borrowed question-tag frequency must not initialize the database"),
+        )
+        monkeypatch.setattr(
+            source_link_module,
+            "initialize_database",
+            lambda _path: pytest.fail("borrowed question-tag exclusions must not initialize the database"),
         )
         service = PracticePlanService(
             legacy_service.db_path,

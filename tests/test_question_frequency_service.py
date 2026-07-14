@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from question_bank.database.schema import connect
 from question_bank.services.question_frequency_service import (
     QuestionFrequencyService,
@@ -306,7 +308,12 @@ def test_shenzhen_zhongkao_question_does_not_get_external_fit_score(tmp_path: Pa
     assert not metrics.shenzhen_fit_available
 
 
-def test_frequency_batch_read_uses_borrowed_readonly_connection(tmp_path: Path) -> None:
+def test_frequency_batch_read_uses_borrowed_readonly_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from question_bank.services import question_frequency_service as frequency_module
+
     db_path = tmp_path / "question_bank.db"
     legacy_service = QuestionFrequencyService(db_path)
     legacy_service.initialize_database()
@@ -316,6 +323,11 @@ def test_frequency_batch_read_uses_borrowed_readonly_connection(tmp_path: Path) 
     borrowed.row_factory = sqlite3.Row
     borrowed.execute("PRAGMA query_only = ON")
     try:
+        monkeypatch.setattr(
+            frequency_module,
+            "initialize_database",
+            lambda _path: pytest.fail("borrowed frequency read must not initialize the database"),
+        )
         metrics = QuestionFrequencyService(
             db_path,
             external_connection=borrowed,
@@ -325,3 +337,29 @@ def test_frequency_batch_read_uses_borrowed_readonly_connection(tmp_path: Path) 
         assert borrowed.execute("SELECT 1").fetchone()[0] == 1
     finally:
         borrowed.close()
+
+
+def test_frequency_batch_legacy_path_still_initializes_database(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from question_bank.services import question_frequency_service as frequency_module
+
+    db_path = tmp_path / "question_bank.db"
+    service = QuestionFrequencyService(db_path)
+    service.initialize_database()
+    paper_id = _insert_paper(db_path, title="legacy 期末", exam_type="期末")
+    question_id = _insert_question(db_path, paper_id, number="1", method="列举法")
+    initialize_calls: list[Path] = []
+    original_initialize = frequency_module.initialize_database
+
+    def tracking_initialize(path: Path) -> None:
+        initialize_calls.append(path)
+        original_initialize(path)
+
+    monkeypatch.setattr(frequency_module, "initialize_database", tracking_initialize)
+
+    metrics = service.metrics_for_questions([question_id])
+
+    assert metrics[question_id].available
+    assert initialize_calls == [db_path]
