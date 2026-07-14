@@ -141,19 +141,28 @@ def get_request_read_context(
 
 
 def get_request_diagnosis_profile_service(
-    context: RequestReadContext = Depends(get_request_read_context),
+    context: RequestReadContext = Depends(
+        get_request_read_context,
+        scope="function",
+    ),
 ) -> DiagnosisProfileService:
     return context.diagnosis_service
 
 
 def get_request_practice_plan_service(
-    context: RequestReadContext = Depends(get_request_read_context),
+    context: RequestReadContext = Depends(
+        get_request_read_context,
+        scope="function",
+    ),
 ) -> PracticePlanService:
     return context.practice_service
 
 
 def get_graph_diagnosis_profile_service(
-    context: RequestReadContext = Depends(get_request_read_context),
+    context: RequestReadContext = Depends(
+        get_request_read_context,
+        scope="function",
+    ),
 ) -> DiagnosisProfileService:
     """Compatibility dependency retained for existing benchmark callers."""
     return context.diagnosis_service
