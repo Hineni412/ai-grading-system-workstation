@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from pathlib import Path
+import sqlite3
 from typing import Any
 
 from question_bank.database.schema import connect, initialize_database
@@ -33,8 +34,14 @@ RELATED_FILL_POLICIES = {"ask", "exact_only", "allow_neighbors"}
 
 
 class PracticePlanService:
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(
+        self,
+        db_path: str | Path,
+        *,
+        external_connection: sqlite3.Connection | None = None,
+    ) -> None:
         self.db_path = Path(db_path)
+        self.external_connection = external_connection
 
     def generate(
         self,
@@ -304,7 +311,8 @@ class PracticePlanService:
         similarity_threshold: float,
         related_fill_policy: str,
     ) -> dict[str, Any]:
-        initialize_database(self.db_path)
+        if self.external_connection is None:
+            initialize_database(self.db_path)
         targets = _question_tag_targets(diagnosis_profile)
         generation_config = {
             "question_count": count,
@@ -340,6 +348,7 @@ class PracticePlanService:
         resolved_exclusions, source_link_warnings = self._resolved_exclusions(
             diagnosis_profile,
             exclude_question_ids,
+            external_connection=self.external_connection,
         )
         candidates = self._load_question_tag_candidates()
         eligible: list[dict[str, Any]] = []
@@ -395,7 +404,10 @@ class PracticePlanService:
             similarity_threshold=similarity_threshold,
             use_fingerprint=False,
         )
-        frequency_by_id = QuestionFrequencyService(self.db_path).metrics_for_questions(
+        frequency_by_id = QuestionFrequencyService(
+            self.db_path,
+            external_connection=self.external_connection,
+        ).metrics_for_questions(
             [int(item["id"]) for item in deduped]
         )
         selected: list[dict[str, Any]] = []
@@ -445,7 +457,10 @@ class PracticePlanService:
         }
 
     def _load_question_tag_candidates(self) -> list[dict[str, Any]]:
-        with connect(self.db_path) as conn:
+        with connect(
+            self.db_path,
+            external_connection=self.external_connection,
+        ) as conn:
             rows = conn.execute(
                 """
                 SELECT
@@ -829,13 +844,18 @@ class PracticePlanService:
         self,
         diagnosis_profile: Mapping[str, Any],
         explicit_question_ids: Iterable[int] | None,
+        *,
+        external_connection: sqlite3.Connection | None = None,
     ) -> tuple[set[int], list[str]]:
         if explicit_question_ids is not None:
             return {int(value) for value in explicit_question_ids}, []
         exam_scope = diagnosis_profile.get("exam_scope")
         if not isinstance(exam_scope, Mapping):
             return set(), []
-        link_service = SourceQuestionLinkService(self.db_path)
+        link_service = SourceQuestionLinkService(
+            self.db_path,
+            external_connection=external_connection,
+        )
         exclusions: set[int] = set()
         warnings: list[str] = []
         for session_id in exam_scope.get("session_ids", []):

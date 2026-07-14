@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from pathlib import Path
+import sqlite3
 from typing import Any, Iterable, Mapping
 
 from db_manager import DBManager
@@ -31,9 +32,11 @@ class DiagnosisProfileService:
         question_bank_db_path: str | Path,
         *,
         grading_db: DBManager | None = None,
+        question_bank_connection: sqlite3.Connection | None = None,
     ) -> None:
         self.db = grading_db or DBManager(Path(grading_db_path))
         self.question_bank_db_path = Path(question_bank_db_path)
+        self.question_bank_connection = question_bank_connection
         self.alignment = ConceptAlignmentService(self.question_bank_db_path)
         self.skill_links = SkillLinkService(self.question_bank_db_path)
 
@@ -278,7 +281,10 @@ class DiagnosisProfileService:
         self,
         session_ids: Iterable[int],
     ) -> dict[int, QuestionTagProjection]:
-        service = QuestionTagProjectionService(self.question_bank_db_path)
+        service = QuestionTagProjectionService(
+            self.question_bank_db_path,
+            external_connection=self.question_bank_connection,
+        )
         projections: dict[int, QuestionTagProjection] = {}
         for session_id in session_ids:
             rubric = self.db._load_session_rubric(int(session_id))
