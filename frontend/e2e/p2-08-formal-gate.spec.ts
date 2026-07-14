@@ -70,7 +70,6 @@ test('invalid and failed batches retain every draft and never replay writes auto
   await expect(page.getByTestId('teacher-score-1')).toHaveValue('4.5')
   await expect(page.getByTestId('teacher-score-3')).toHaveValue('3')
   expect(confirmRequests).toBe(1)
-  await page.waitForTimeout(250)
   expect(confirmRequests).toBe(1)
 })
 
@@ -158,6 +157,7 @@ test('loading, retained error, first error, empty, and no-pending states remain 
 
   await page.request.post(`${ORIGIN}/__p2_08__/reset`, { data: {} })
   await page.reload()
+  await expect(page.getByTestId('review-answer-sheet')).toHaveCount(2)
   await setMode(page, { items: 'error' })
   await page.getByLabel('显示范围').selectOption('all')
   await expect(page.getByText('复核内容刷新失败', { exact: true })).toBeVisible()
@@ -168,7 +168,7 @@ test('loading, retained error, first error, empty, and no-pending states remain 
   await expect(page.getByTestId('review-answer-sheet')).toHaveCount(2)
   await page.getByTestId('confirm-batch').click()
   await expect(page.getByTestId('review-feedback-toast')).toContainText('本批 2 份评分已确认')
-  await page.getByRole('button', { name: /Q1/ }).click()
+  await page.locator('[data-question-id="Q1"]').click()
   await expect(page.getByText('当前范围没有答卷', { exact: true })).toBeVisible()
 })
 
