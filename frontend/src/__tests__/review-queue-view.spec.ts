@@ -387,6 +387,90 @@ describe('source-recalibrated review view', () => {
     await vi.waitFor(() => expect(host.textContent).not.toContain('标注图需要重试'))
   })
 
+  it('keeps single-review annotation retry when selection changes during submission', async () => {
+    const pendingSingle = deferred<Awaited<ReturnType<typeof confirmReviewItem>>>()
+    vi.mocked(confirmReviewItem).mockReturnValue(pendingSingle.promise)
+    const { host, reviewStore } = await mountView()
+    host.querySelector<HTMLElement>('[data-detail-id="11"]')
+      ?.querySelector<HTMLButtonElement>('.review-answer-sheet__deep')
+      ?.click()
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="review-deep-workspace"]')).not.toBeNull())
+    host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')!.click()
+    await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
+
+    dispatchKey(window, 'j')
+    expect(reviewStore.selectedDetailId).toBe(12)
+    pendingSingle.resolve({
+      updated_details: 1,
+      updated_results: 1,
+      annotation_outcomes: [{ result_id: 11, status: 'retry_required' }],
+    })
+
+    await vi.waitFor(() => expect(host.textContent).toContain('分数已保存，1 份标注图需要重试'))
+    expect(reviewStore.selectedDetailId).toBe(12)
+    expect(host.querySelector('[data-testid="review-deep-workspace"]')).not.toBeNull()
+    const retry = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === '重试标注图')!
+    retry.click()
+    await vi.waitFor(() => expect(confirmReviewItems).toHaveBeenCalledWith(7, 'Q1', [{
+      result_id: 11,
+      detail_id: 11,
+      score_awarded: 3,
+    }]))
+  })
+
+  it('merges retry entries across questions and retries each ownership group explicitly', async () => {
+    vi.mocked(confirmReviewItems)
+      .mockResolvedValueOnce({
+        updated_details: 2,
+        updated_results: 2,
+        annotation_outcomes: [
+          { result_id: 11, status: 'retry_required' },
+          { result_id: 12, status: 'retry_required' },
+        ],
+      })
+      .mockResolvedValueOnce({
+        updated_details: 1,
+        updated_results: 1,
+        annotation_outcomes: [{ result_id: 22, status: 'retry_required' }],
+      })
+      .mockResolvedValueOnce({
+        updated_details: 2,
+        updated_results: 2,
+        annotation_outcomes: [
+          { result_id: 11, status: 'succeeded' },
+          { result_id: 12, status: 'succeeded' },
+        ],
+      })
+      .mockResolvedValueOnce({
+        updated_details: 1,
+        updated_results: 1,
+        annotation_outcomes: [{ result_id: 22, status: 'succeeded' }],
+      })
+    const { host } = await mountView()
+
+    host.querySelector<HTMLButtonElement>('[data-testid="confirm-batch"]')!.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('分数已保存，2 份标注图需要重试'))
+    await vi.waitFor(() => expect(
+      host.querySelector<HTMLButtonElement>('[data-question-id="Q2"]')?.getAttribute('aria-current'),
+    ).toBe('true'))
+    host.querySelector<HTMLButtonElement>('[data-testid="confirm-batch"]')!.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('分数已保存，3 份标注图需要重试'))
+
+    const retry = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === '重试标注图')!
+    retry.click()
+    await vi.waitFor(() => expect(confirmReviewItems).toHaveBeenCalledTimes(4))
+    expect(confirmReviewItems).toHaveBeenNthCalledWith(3, 7, 'Q1', [
+      { result_id: 11, detail_id: 11, score_awarded: 3 },
+      { result_id: 12, detail_id: 12, score_awarded: 3 },
+    ])
+    expect(confirmReviewItems).toHaveBeenNthCalledWith(4, 7, 'Q2', [
+      { result_id: 22, detail_id: 22, score_awarded: 3 },
+    ])
+    await vi.waitFor(() => expect(host.textContent).not.toContain('标注图需要重试'))
+  })
+
   it('shows the no-session state without requesting review data', async () => {
     const { host, loadQuestionsSpy, loadItemsSpy } = await mountView({ sessionId: null })
 
