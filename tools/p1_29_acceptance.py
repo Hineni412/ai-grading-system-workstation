@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
-import importlib.util
+import importlib.machinery
 import json
 import os
 import re
@@ -141,25 +141,36 @@ def _configure_staged_imports(
 
 
 def _module_origin_in_workspace(module_name: str, workspace: Path) -> Path:
-    try:
-        spec = importlib.util.find_spec(module_name)
-    except (ImportError, AttributeError, ValueError) as exc:
-        raise AcceptanceError(
-            f"staged module {module_name!r} could not be resolved"
-        ) from exc
-    if spec is None:
-        raise AcceptanceError(f"staged module {module_name!r} could not be resolved")
+    search_locations = [str(workspace)]
     candidates: list[Path] = []
-    if spec.origin and spec.origin not in {"built-in", "frozen"}:
-        candidates.append(Path(spec.origin).resolve())
-    if spec.submodule_search_locations is not None:
-        candidates.extend(
-            Path(location).resolve() for location in spec.submodule_search_locations
+    parts = module_name.split(".")
+    for index in range(len(parts)):
+        qualified_name = ".".join(parts[: index + 1])
+        spec = importlib.machinery.PathFinder.find_spec(
+            qualified_name,
+            search_locations,
         )
-    if not candidates or any(
-        not _is_relative_to(candidate, workspace) for candidate in candidates
-    ):
-        raise AcceptanceError(f"staged module {module_name!r} resolved outside workspace")
+        if spec is None:
+            raise AcceptanceError(
+                f"staged module {module_name!r} could not be resolved"
+            )
+        candidates = []
+        if spec.origin and spec.origin not in {"built-in", "frozen"}:
+            candidates.append(Path(spec.origin).resolve())
+        package_locations = list(spec.submodule_search_locations or ())
+        candidates.extend(Path(location).resolve() for location in package_locations)
+        if not candidates or any(
+            not _is_relative_to(candidate, workspace) for candidate in candidates
+        ):
+            raise AcceptanceError(
+                f"staged module {qualified_name!r} resolved outside workspace"
+            )
+        if index < len(parts) - 1:
+            if not package_locations:
+                raise AcceptanceError(
+                    f"staged module {module_name!r} could not be resolved"
+                )
+            search_locations = package_locations
     return candidates[0]
 
 
@@ -541,6 +552,7 @@ def _run_bootstrap(args: argparse.Namespace) -> int:
         args.workspace,
         forbidden_roots=[Path(root) for root in args.forbid_root],
     )
+    _validate_staged_config(workspace)
     if args.target == "probe":
         if not args.probe_module:
             raise AcceptanceError("bootstrap probe module is required")
