@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **执行包：** P1-29
-**规划状态：** ready_for_execution
+**规划状态：** in_progress
 **规划模型：** S-XH
 **允许夜间执行：** no
 **计划基线：** f5d5a06e8d804d285d34372a1c17cc233697727d
@@ -34,9 +34,9 @@
 ## 昼夜交接
 
 **执行包：** P1-29
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** pending
 **真实数据指纹：** unchanged
@@ -51,6 +51,17 @@
 - 领取时两库只读三元组：阅卷库 `2863104 / 2026-07-10T07:10:41.1221109Z / 93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`；题库 `3461120 / 2026-07-08T11:58:06.3320883Z / E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`。
 - 起点组合选择覆盖 P1-26 核心、P1-27 连接、P1-28 E2E、OpenAPI、双入口脚本和 Schema/迁移，结果为 `145 passed, 0 failed, 0 skipped, 1 dependency warning`；前后真实两库三元组完全一致。
 - 当前 OpenAPI 为 56 paths / 66 operations / 0 duplicate operation IDs；第一方生产 Python `timeout=None` 搜索为零。
+
+## Automatic closeout evidence
+
+- P1-26 聚焦回归 `76 passed`，版本化报告保持三个命名工作负载、每档 16 场景/2 次重复并通过重复性门槛；当前 small micro 只写系统临时输出并通过，未覆盖正式基线。
+- P1-27 聚焦回归 `123 passed`，版本化 quick diagnostic 的 36 个比较、六项可支持门槛保持通过，`nonzero_response_records` 仍为 `not_evaluated`；当前 small micro 的 12 个比较只作健康检查。
+- P1-28 与受影响 API/Job 回归 `70 passed`；其余 Phase 1 契约、启动、迁移、Schema 和 smoke 工具门槛 `299 passed`。
+- P1-29 验收入口最终聚焦测试 `32 passed`；精确 SHA 临时副本的 API/Streamlit 双入口实际就绪，关闭后监听端口为零，页面三类 API Key 为空、异常数为零，只显示两名合成学生与 90/70 结果。
+- 最终功能分支完整 smoke：`1613 passed, 2 skipped, 1 dependency warning`；文档治理、433 个第一方 Python 文件静态编译、全量测试及两库副本初始化幂等/完整性全部通过。
+- 四轮实现复审依次发现并修复：便携 Python 从根仓库加载模块、dotted module 来源检查先执行父包、机器级 API profile/敏感环境变量泄露；每项都先建立 RED，再最小修复、重跑并复审。最终 Task 2 findings 为 none、verdict 为 PASS。
+- 内置浏览器控制组件发生初始化兼容冲突；产品双入口和 Streamlit 健康正常。可见控件预检改用 Streamlit 官方页面测试运行器，并保留实际浏览器正式用户验收作为最终黑盒门槛。
+- 开工至最终 smoke 后，根工作区两库三元组、功能 worktree `user_data` 空状态和两个 stash SHA 均保持不变。
 
 ---
 
@@ -71,7 +82,7 @@ Run `git status --short`, `git status --short -- user_data`, compare `HEAD` with
 
 Run the 145-test selection named in the claim evidence, query current OpenAPI counts, search first-party production Python for `timeout=None`, and compare root database fingerprints. Expected: 145 pass, 56/66/0 OpenAPI summary, zero timeout matches, no worktree `user_data` status and unchanged root fingerprints.
 
-- [ ] **Step 3: Commit only the claim plan and validate it**
+- [x] **Step 3: Commit only the claim plan and validate it**
 
 ```powershell
 git add docs/superpowers/plans/2026-07-14-p1-29-phase1-closeout-implementation.md
@@ -95,7 +106,7 @@ Expected: staged/committed path is only this plan; validator returns `ok=true`, 
 - Consumes: an exact local Git SHA, the repository runtime, P1-28 `tests.api_e2e.harness`, an empty target below the system temporary directory, and unused loopback ports.
 - Produces: `prepare`, `smoke`, and `serve` CLI commands; a staged source tree with `DATA_DIR: synthetic_data`, seeded anonymous databases/assets/report, readiness JSON, and deterministic child-process shutdown.
 
-- [ ] **Step 1: Write RED tests for target, archive and data safety**
+- [x] **Step 1: Write RED tests for target, archive and data safety**
 
 Cover these exact failures before implementation: target outside `tempfile.gettempdir()`; target equal to or containing a `user_data` segment; existing non-empty target; invalid/full SHA not resolvable by `git rev-parse`; archive member absolute path, `..`, symlink or hardlink; staged config missing exactly one `DATA_DIR`/`LOGS_DIR`; any source checkout `user_data` entry; requested port outside 1024–65535 or duplicate ports.
 
@@ -107,21 +118,21 @@ Run:
 
 Expected: RED because `tools.p1_29_acceptance` does not exist.
 
-- [ ] **Step 2: Implement the minimal safe extraction and exact-SHA preparation**
+- [x] **Step 2: Implement the minimal safe extraction and exact-SHA preparation**
 
 `prepare --source-ref <40-sha> --workspace <empty-temp-dir>` must resolve the SHA, stream `git archive --format=tar`, reject unsafe members before extraction, require no `user_data` member, rewrite only the staged `config/app_config.yaml` to `DATA_DIR: synthetic_data` and `LOGS_DIR: acceptance_logs`, then invoke an internal seed command from the staged tree using `sys.executable`.
 
 The internal seed command must reuse `build_paths`, `E2EControls`, `build_job_manager`, `install_dependency_overrides` and `ApiE2EHarness`; initialize both temporary databases, add only `SYN-001/SYN-002`, execute config/template/region, scan, partial grading, failed-only recovery, Q1 teacher confirmation and real XLSX export/download, assert final synthetic scores `90/70`, and write an allowlisted metadata JSON containing only package, source SHA, session ID, synthetic record counts and logical filenames.
 
-- [ ] **Step 3: Implement loopback-only smoke/serve and deterministic cleanup**
+- [x] **Step 3: Implement loopback-only smoke/serve and deterministic cleanup**
 
 `smoke` and `serve` must start `uvicorn backend.api.app:app` and `streamlit run web_app.py` from the staged source via `sys.executable`, force both addresses to `127.0.0.1`, poll `/healthz` and `/_stcore/health`, fail if either process exits, and always terminate both process trees. `smoke` exits after readiness; `serve` waits until interrupted. Logs stay in the temporary workspace and errors exposed to the caller contain no API key or real path content beyond the caller-owned temporary workspace.
 
-- [ ] **Step 4: Prove GREEN including a real dual-entry smoke**
+- [x] **Step 4: Prove GREEN including a real dual-entry smoke**
 
 Run the new test file, then prepare a unique temp workspace from current `HEAD` and run `smoke` on two free high ports. Assert both health endpoints, the staged source SHA, synthetic session/result/report contents, absence of staged `user_data`, empty feature `user_data` status and unchanged root database fingerprints.
 
-- [ ] **Step 5: Commit only launcher and tests**
+- [x] **Step 5: Commit only launcher and tests**
 
 ```powershell
 git add tools/p1_29_acceptance.py tests/test_p1_29_acceptance.py
@@ -141,23 +152,23 @@ git commit -m "test: add P1-29 anonymous acceptance launcher"
 - Consumes: committed P1-26/P1-27 reports, current benchmark tools, P1-28 E2E suite and Phase 1 package definition.
 - Produces: a versioned stage report that separates deterministic/current evidence from machine-specific historical evidence and lists unresolved Phase 1 risks without changing policy.
 
-- [ ] **Step 1: Validate P1-26 report structure and run current micro smoke**
+- [x] **Step 1: Validate P1-26 report structure and run current micro smoke**
 
 Run the five P1-26 focused test files. Parse the committed JSON and require package `P1-26`, seed 126, `repeatability=passed`, exactly `small/medium/large_5pct`, two repetitions per scale, 16 scenarios per repetition, status 200 and 20 samples per summary. Run `benchmark_api_db.py` only with `--scales small --warmups 1 --samples 2 --repetitions 2` and outputs under `$env:TEMP`; do not touch versioned reports.
 
-- [ ] **Step 2: Validate P1-27 report truthfulness and run current micro comparison**
+- [x] **Step 2: Validate P1-27 report truthfulness and run current micro comparison**
 
 Run the P1-27 focused connection/service/API/performance suite. Require the committed report to remain `quick_diagnostic`, 36 comparisons, six named scenarios, status/record equality 36/36, statement reduction 30/30, medium p50 8/8, both repeatability gates 3/3, and `nonzero_response_records=not_evaluated`. Run `benchmark_request_connections.py --scales small --data-scale-factor 0.01 --warmups 1 --samples 2 --repetitions 2` to temp outputs only; report its actual gates without weakening publication rules.
 
-- [ ] **Step 3: Re-run P1-28 real-boundary E2E and affected API/Job regressions**
+- [x] **Step 3: Re-run P1-28 real-boundary E2E and affected API/Job regressions**
 
 Run `tests/api_e2e` plus config/template/scan/grading/review/report/file/job route tests. Expected: success, scan failure recovery, partial grading recovery, review score persistence, real report download and restart recovery all pass with no skipped tests.
 
-- [ ] **Step 4: Run Phase 1 contract, startup, timeout and database gates**
+- [x] **Step 4: Run Phase 1 contract, startup, timeout and database gates**
 
 Run OpenAPI contract, `运行.bat` dual-entry contract, LLM Gateway/caller migration tests, migration tooling, migration rehearsal, schema baseline and smoke-tool tests. Re-query OpenAPI and production `timeout=None`. Require 56 paths, 66 operations, zero duplicate IDs, zero production timeout matches, database rehearsal/integrity green, and no P1 package-level Critical/Important review debt in the committed handoff evidence.
 
-- [ ] **Step 5: Write the stage report without overstating performance**
+- [x] **Step 5: Write the stage report without overstating performance**
 
 Record exact commands/totals and: P1-26 remains the pre-optimization machine-specific baseline; P1-27 shows request-level statement/latency improvement only under the recorded quick diagnostic and not an SLA; P1-28 covers generated data and fake external models, not production model health. List still-open Architecture P0/P1 risks as known debt, distinguish them from unresolved defects introduced by Phase 1, and do not declare the stage passed before full smoke, review and user acceptance.
 
@@ -174,7 +185,7 @@ Record exact commands/totals and: P1-26 remains the pre-optimization machine-spe
 - Consumes: Tasks 2–3, full repository smoke, actual loopback dual-entry browser preflight and the user-testing template.
 - Produces: current Phase 1 closeout fact, exact pending formal checklist and `waiting_review` functional commit.
 
-- [ ] **Step 1: Run all affected regressions and one complete feature smoke**
+- [x] **Step 1: Run all affected regressions and one complete feature smoke**
 
 Run the union of P1-26/P1-27/P1-28 affected selections, `git diff --check`, empty feature `user_data`, then:
 
@@ -184,19 +195,19 @@ Run the union of P1-26/P1-27/P1-28 affected selections, `git diff --check`, empt
 
 Expected: documentation governance, static compilation, full pytest, copied-database idempotency and integrity all pass. Capture exact totals and warning/skips; any failure enters root-cause workflow and invalidates prior completion claims.
 
-- [ ] **Step 2: Run an actual candidate dual-entry preflight and inspect it in a browser**
+- [x] **Step 2: Run an actual candidate dual-entry preflight and inspect it in a browser**
 
 Prepare a fresh temporary workspace from current candidate SHA, run `serve` on unused loopback ports, verify API health and Streamlit health, then use the in-app browser to inspect the actual Streamlit pages and synthetic session. Confirm no real names/data appear, both channels remain responsive together, expected reviewed score/report state is visible where the current UI exposes it, refresh is safe, and shutdown removes both listeners. Record only logical evidence, never temporary absolute paths.
 
-- [ ] **Step 3: Generate the pending 20–30 minute formal checklist from observed behavior**
+- [x] **Step 3: Generate the pending 20–30 minute formal checklist from observed behavior**
 
 The checklist must name the exact anonymous data source, reviewed-SHA staging method, loopback URLs, visible markers, 20–30 minute numbered actions, reset/restart owned by Codex, expected results, stop conditions, shutdown and machine result block. It must not ask the user to run commands, inspect logs, input a key, invoke a model or use real `user_data`.
 
-- [ ] **Step 4: Update architecture evidence and recheck safety**
+- [x] **Step 4: Update architecture evidence and recheck safety**
 
 Add one P1-29 fact: composite P1-26/27/28 gate, preserved performance interpretation, exact-SHA anonymous dual-entry acceptance boundary, no Schema/API/business-rule/real-data change, and remaining known risks. Recompute both root database three-tuples and require exact equality with claim; scan the complete branch history/diff/stashes for `user_data`, secrets, temp paths and generated artifacts.
 
-- [ ] **Step 5: Commit the complete functional candidate as `waiting_review`**
+- [x] **Step 5: Commit the complete functional candidate as `waiting_review`**
 
 Set handoff to `waiting_review`, `branch_head`, automated `passed`, independent review `pending`, user acceptance `pending`, real-data `unchanged`, nightly `report_only`. Commit only intended source/test/report/checklist/architecture/plan files, then validate the clean worktree.
 
