@@ -30,6 +30,7 @@
 - **P1-24 增量边界：** `backend/llm/` 增加统一模型请求策略核心、安全 API profile 覆盖、Chat Completions/Responses 协议适配、有限重试分类、按配置与请求类型共享的节流、逻辑请求 ID 和统一脱敏用量事件；根目录 `LLMClient` 兼容入口保留，SDK 自动重试关闭，参数兼容与 JSON 修复次数不扩张。本包只使用假客户端验证，未调用真实模型。选择、填空、批量客观题和题库 AI 打标四条直连调用链，以及批量客观题的 `timeout=None`，仍保留给 P1-25 迁移和清零
 - **P1-25 增量边界：** 选择、填空、批量客观题与题库 AI 打标的第一方 SDK 直连均已迁入 `LLMGateway`；Chat Completions 识别请求使用有限 recognition 策略，Responses 打标请求使用有限 tagging 策略，SDK 自动重试固定关闭，第一方 Python 已无 `timeout=None`。原 prompt、请求参数、解析、评分、fallback、批次大小、worker 与业务 RPM 规则保持不变；客观题批量及其 root `LLMClient` 备用路径把原三次外层尝试转交 Gateway，其他兼容调用方仍默认单次委托，避免重试倍增。验证只使用假客户端、临时文件和数据库副本，真实两库文件指纹未变，未执行真实 API 健康检查
 - **P1-26 增量边界：** FastAPI 与五类目标 SQLite 连接边界增加可选请求测量；生产默认关闭，关闭时不安装 trace callback，也不改变响应或 OpenAPI 契约。版本化基线使用固定生成数据运行 `small`、`medium`、`large_5pct` 三个命名工作负载的 16 个只读场景，汇总语句总数、SELECT 语句数、返回记录数、响应字节和机器相关延迟；三个名称不表示单调规模序列，`large_5pct` 是用户把原大型档各计数按 5% 向上取整后的覆盖。聚合 JSON/Markdown 位于 `docs/performance/p1-26-api-db-baseline.*`；每个文件通过同目录临时文件和 `os.replace()` 单独原子替换，捕获到 `BaseException` 时尝试恢复旧成对版本并清理临时/恢复文件，但突然终止或掉电可能在两次替换之间留下新旧混合，下次使用前应重新生成或人工核对。本包不实现跨文件事务，也未实施优化、缓存、索引、连接池或 Schema/SQL/业务语义变更，未读取或写入真实业务数据，也未调用模型。
+- **P1-27 增量边界：** `POST /api/training/diagnosis`、`POST /api/training/plans/preview` 与 `POST /api/graph/{profiles,rows,evidence}` 每个请求分别捕获阅卷库和题库临时候选，并由请求上下文各自拥有一条 `mode=ro`、`query_only`、显式稳定读事务连接；服务只借用连接，请求结束统一关闭连接并清理候选。Streamlit、旧构造方式、`POST /api/training/tasks` 和其他写事务保持原行为，不引入跨请求连接池或缓存。生成数据聚合对比位于 `docs/performance/p1-27-request-connection-comparison.*`；验证只在临时/生成数据库执行写入，真实根与功能工作区两库仅做只读指纹核对且保持不变。
 
 ### 主要证据
 

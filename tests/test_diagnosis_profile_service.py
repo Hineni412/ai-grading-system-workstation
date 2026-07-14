@@ -325,6 +325,54 @@ def test_active_assessment_evidence_returns_detail_level_scores(
     assert q1["full_score"] == 10
 
 
+def test_tag_diagnosis_reuses_borrowed_grading_and_question_bank_connections(
+    service: DiagnosisProfileService,
+) -> None:
+    grading_conn = sqlite3.connect(service.db.db_path)
+    grading_conn.row_factory = sqlite3.Row
+    question_bank_conn = sqlite3.connect(service.question_bank_db_path)
+    question_bank_conn.row_factory = sqlite3.Row
+    try:
+        question_bank_conn.execute(
+            "INSERT INTO questions (id, question_number, question_text) VALUES (901, '1', '借用连接题目')"
+        )
+        question_bank_conn.execute(
+            "INSERT INTO question_tags (question_id, tag_type, tag_value) "
+            "VALUES (901, 'knowledge_point', '借用连接知识点')"
+        )
+        question_bank_conn.execute(
+            """
+            INSERT INTO grading_question_links (
+                grading_session_id, source_question_id, bank_question_id,
+                link_method, confidence, status, evidence_json
+            ) VALUES ('14', 'Q1', 901, 'manual', 1.0, 'confirmed', '{}')
+            """
+        )
+        borrowed_grading_db = DBManager(
+            service.db.db_path,
+            external_connection=grading_conn,
+        )
+        borrowed_service = DiagnosisProfileService(
+            service.db.db_path,
+            service.question_bank_db_path,
+            grading_db=borrowed_grading_db,
+            question_bank_connection=question_bank_conn,
+        )
+
+        profile = borrowed_service.build_tag_profiles(
+            scope={"mode": "student", "student_ids": ["12"]},
+            exam_scope={"mode": "current", "session_ids": [14]},
+        )
+
+        assert profile["students"][0]["weak_points"][0]["knowledge_point"] == "借用连接知识点"
+        assert grading_conn.execute("SELECT 1").fetchone()[0] == 1
+        assert question_bank_conn.execute("SELECT 1").fetchone()[0] == 1
+    finally:
+        question_bank_conn.rollback()
+        question_bank_conn.close()
+        grading_conn.close()
+
+
 def _write_rubric(path: Path, questions: list[tuple[str, float, str, str]]) -> Path:
     path.write_text(
         json.dumps(

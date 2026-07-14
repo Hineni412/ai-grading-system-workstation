@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -114,8 +115,19 @@ def practice_system(tmp_path: Path) -> tuple[PracticePlanService, dict]:
 
 def test_default_ten_question_plan_uses_agreed_stage_mix(
     practice_system: tuple[PracticePlanService, dict],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from question_bank.recommendation import practice_plan_service as practice_plan_module
+
     service, diagnosis_profile = practice_system
+    initialize_calls: list[Path] = []
+    original_initialize = practice_plan_module.initialize_database
+
+    def tracking_initialize(path: Path) -> None:
+        initialize_calls.append(path)
+        original_initialize(path)
+
+    monkeypatch.setattr(practice_plan_module, "initialize_database", tracking_initialize)
 
     plan = service.generate_variant(diagnosis_profile, question_count=10)
 
@@ -123,6 +135,7 @@ def test_default_ten_question_plan_uses_agreed_stage_mix(
     assert counts == {"direct": 6, "prerequisite": 3, "transfer": 1}
     assert 201 not in {item["question_id"] for item in plan["items"]}
     assert 202 not in {item["question_id"] for item in plan["items"]}
+    assert initialize_calls == [service.db_path]
 
 
 def test_default_stage_mix_is_teacher_friendly_sixty_thirty_ten() -> None:
@@ -221,6 +234,93 @@ def test_broad_only_candidate_requires_explicit_advanced_fallback(
         item for item in fallback["items"] if item["question_id"] == 450
     )
     assert "仅按标准知识点大类补足" in fallback_item["warnings"]
+
+
+def test_question_tag_plan_reuses_borrowed_connection_for_all_reads(
+    practice_system: tuple[PracticePlanService, dict],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from question_bank.recommendation import practice_plan_service as practice_plan_module
+    from question_bank.services import question_frequency_service as frequency_module
+    from question_bank.services import source_question_link_service as source_link_module
+
+    legacy_service, _diagnosis_profile = practice_system
+    borrowed = sqlite3.connect(legacy_service.db_path)
+    borrowed.row_factory = sqlite3.Row
+    try:
+        borrowed.execute(
+            """
+            INSERT INTO papers (
+                id, title, source_file, exam_type, grade, semester, import_status
+            ) VALUES (999, '借用连接期末', 'borrowed.docx', '期末', '九年级', '下学期', 'ready')
+            """
+        )
+        borrowed.execute(
+            """
+            INSERT INTO questions (
+                id, paper_id, question_number, question_type, question_text, difficulty
+            ) VALUES (999, 999, '1', '解答题', '未提交的二次函数题', '5')
+            """
+        )
+        borrowed.executemany(
+            "INSERT INTO question_tags (question_id, tag_type, tag_value) VALUES (?, ?, ?)",
+            [
+                (999, "knowledge_point", "二次函数"),
+                (999, "method", "直接方法1"),
+            ],
+        )
+        borrowed.execute(
+            """
+            INSERT INTO grading_question_links (
+                grading_session_id, source_question_id, bank_question_id,
+                link_method, confidence, status, evidence_json
+            ) VALUES ('14', 'Q2', 210, 'manual', 1.0, 'confirmed', '{}')
+            """
+        )
+        borrowed.execute("UPDATE questions SET is_deleted = 1 WHERE id NOT IN (210, 999)")
+        borrowed.execute("PRAGMA query_only = ON")
+        monkeypatch.setattr(
+            practice_plan_module,
+            "initialize_database",
+            lambda _path: pytest.fail("borrowed question-tag plan must not initialize the database"),
+        )
+        monkeypatch.setattr(
+            frequency_module,
+            "initialize_database",
+            lambda _path: pytest.fail("borrowed question-tag frequency must not initialize the database"),
+        )
+        monkeypatch.setattr(
+            source_link_module,
+            "initialize_database",
+            lambda _path: pytest.fail("borrowed question-tag exclusions must not initialize the database"),
+        )
+        service = PracticePlanService(
+            legacy_service.db_path,
+            external_connection=borrowed,
+        )
+        profile = {
+            "diagnosis_identity": "question_tag",
+            "student_id": "12",
+            "exam_scope": {"mode": "current", "session_ids": [14]},
+            "weak_points": [
+                {
+                    "knowledge_point": "二次函数",
+                    "mastery": 0.4,
+                    "tag_context": {"method": ["直接方法1"]},
+                }
+            ],
+        }
+
+        plan = service.generate_variant(profile, question_count=8)
+
+        selected_ids = {item["question_id"] for item in plan["items"]}
+        assert 210 not in selected_ids
+        assert selected_ids == {999}
+        assert plan["items"][0]["frequency"]["available"] is True
+        assert borrowed.execute("SELECT 1").fetchone()[0] == 1
+    finally:
+        borrowed.rollback()
+        borrowed.close()
 
 
 def _insert_question(
