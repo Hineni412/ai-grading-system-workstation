@@ -3,7 +3,6 @@ export type ReviewShortcutCommand =
   | 'fit-width'
   | 'zoom-in'
   | 'zoom-out'
-  | 'confirm-next'
 
 type ReviewShortcutHandler = (command: ReviewShortcutCommand) => void
 
