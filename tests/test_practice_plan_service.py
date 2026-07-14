@@ -115,8 +115,19 @@ def practice_system(tmp_path: Path) -> tuple[PracticePlanService, dict]:
 
 def test_default_ten_question_plan_uses_agreed_stage_mix(
     practice_system: tuple[PracticePlanService, dict],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from question_bank.recommendation import practice_plan_service as practice_plan_module
+
     service, diagnosis_profile = practice_system
+    initialize_calls: list[Path] = []
+    original_initialize = practice_plan_module.initialize_database
+
+    def tracking_initialize(path: Path) -> None:
+        initialize_calls.append(path)
+        original_initialize(path)
+
+    monkeypatch.setattr(practice_plan_module, "initialize_database", tracking_initialize)
 
     plan = service.generate_variant(diagnosis_profile, question_count=10)
 
@@ -124,6 +135,7 @@ def test_default_ten_question_plan_uses_agreed_stage_mix(
     assert counts == {"direct": 6, "prerequisite": 3, "transfer": 1}
     assert 201 not in {item["question_id"] for item in plan["items"]}
     assert 202 not in {item["question_id"] for item in plan["items"]}
+    assert initialize_calls == [service.db_path]
 
 
 def test_default_stage_mix_is_teacher_friendly_sixty_thirty_ten() -> None:
@@ -226,7 +238,10 @@ def test_broad_only_candidate_requires_explicit_advanced_fallback(
 
 def test_question_tag_plan_reuses_borrowed_connection_for_all_reads(
     practice_system: tuple[PracticePlanService, dict],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from question_bank.recommendation import practice_plan_service as practice_plan_module
+
     legacy_service, _diagnosis_profile = practice_system
     borrowed = sqlite3.connect(legacy_service.db_path)
     borrowed.row_factory = sqlite3.Row
@@ -262,6 +277,11 @@ def test_question_tag_plan_reuses_borrowed_connection_for_all_reads(
         )
         borrowed.execute("UPDATE questions SET is_deleted = 1 WHERE id NOT IN (210, 999)")
         borrowed.execute("PRAGMA query_only = ON")
+        monkeypatch.setattr(
+            practice_plan_module,
+            "initialize_database",
+            lambda _path: pytest.fail("borrowed question-tag plan must not initialize the database"),
+        )
         service = PracticePlanService(
             legacy_service.db_path,
             external_connection=borrowed,

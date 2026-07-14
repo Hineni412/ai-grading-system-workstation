@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from question_bank.database.schema import connect, initialize_database
 from question_bank.services.source_question_link_service import SourceQuestionLinkService
 
@@ -47,8 +49,13 @@ def test_parent_aware_iterator_preserves_existing_effective_item_ids() -> None:
     ]
 
 
-def test_projection_inherits_parent_link_and_reads_all_current_tags(tmp_path: Path) -> None:
-    from integration.question_tag_projection_service import QuestionTagProjectionService
+def test_projection_inherits_parent_link_and_reads_all_current_tags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from integration import question_tag_projection_service as projection_module
+
+    QuestionTagProjectionService = projection_module.QuestionTagProjectionService
 
     db_path = tmp_path / "question_bank.db"
     initialize_database(db_path)
@@ -89,6 +96,14 @@ def test_projection_inherits_parent_link_and_reads_all_current_tags(tmp_path: Pa
             {"question_id": "Q4"},
         ]
     }
+    initialize_calls: list[Path] = []
+    original_initialize = projection_module.initialize_database
+
+    def tracking_initialize(path: Path) -> None:
+        initialize_calls.append(path)
+        original_initialize(path)
+
+    monkeypatch.setattr(projection_module, "initialize_database", tracking_initialize)
 
     projection = QuestionTagProjectionService(db_path).project_session(
         grading_session_id=7,
@@ -120,12 +135,16 @@ def test_projection_inherits_parent_link_and_reads_all_current_tags(tmp_path: Pa
         rubric=rubric,
     )
     assert refreshed.context_by_item()["Q2(1)"]["knowledge_point"] == ["轴对称"]
+    assert initialize_calls == [db_path, db_path]
 
 
 def test_projection_reuses_borrowed_connection_for_links_questions_and_tags(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from integration.question_tag_projection_service import QuestionTagProjectionService
+    from integration import question_tag_projection_service as projection_module
+
+    QuestionTagProjectionService = projection_module.QuestionTagProjectionService
 
     db_path = tmp_path / "question_bank.db"
     initialize_database(db_path)
@@ -146,6 +165,11 @@ def test_projection_reuses_borrowed_connection_for_links_questions_and_tags(
                 link_method, confidence, status, evidence_json
             ) VALUES ('9', 'Q3', 301, 'manual', 1.0, 'confirmed', '{}')
             """
+        )
+        monkeypatch.setattr(
+            projection_module,
+            "initialize_database",
+            lambda _path: pytest.fail("borrowed projection must not initialize the database"),
         )
 
         projection = QuestionTagProjectionService(
