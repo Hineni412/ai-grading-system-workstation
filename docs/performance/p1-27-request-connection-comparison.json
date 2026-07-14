@@ -1,0 +1,1416 @@
+{
+  "after_mode": "request_scoped",
+  "before_mode": "legacy_per_call",
+  "code_sha": "65fde607a2e4fef3874a970b03e4fcb2bcd43d69",
+  "comparisons": [
+    {
+      "db_selects": {
+        "after": 6.0,
+        "before": 6.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 0.0
+      },
+      "db_statements": {
+        "after": 11.0,
+        "before": 11.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 0.0
+      },
+      "kind": "control",
+      "latency_p50_ms": {
+        "after": 20.166400005109608,
+        "before": 20.998399995733052,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 3.962206600467224
+      },
+      "repetition": 1,
+      "response_records": {
+        "after": 20.0,
+        "before": 20.0,
+        "equal": true
+      },
+      "scale": "small",
+      "scenario": "question_bank.questions.default",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 49.434700020356104,
+        "before": 98.21389999706298,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 49.66628957628766
+      },
+      "repetition": 1,
+      "response_records": {
+        "after": 3.0,
+        "before": 3.0,
+        "equal": true
+      },
+      "scale": "small",
+      "scenario": "training.diagnosis",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 33.0,
+        "before": 59.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 44.06779661016949
+      },
+      "db_statements": {
+        "after": 45.0,
+        "before": 7136.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 99.36939461883408
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 73.20590000017546,
+        "before": 470.0349000049755,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 84.42543309030872
+      },
+      "repetition": 1,
+      "response_records": {
+        "after": 3.0,
+        "before": 3.0,
+        "equal": true
+      },
+      "scale": "small",
+      "scenario": "training.plan.preview",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 48.43330002040602,
+        "before": 89.49469999060966,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 45.88137618709494
+      },
+      "repetition": 1,
+      "response_records": {
+        "after": 3.0,
+        "before": 3.0,
+        "equal": true
+      },
+      "scale": "small",
+      "scenario": "graph.profiles",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 49.92680001305416,
+        "before": 90.30099998926744,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 44.710689783072034
+      },
+      "repetition": 1,
+      "response_records": {
+        "after": 3.0,
+        "before": 3.0,
+        "equal": true
+      },
+      "scale": "small",
+      "scenario": "graph.rows",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 49.699800001690164,
+        "before": 93.55720001622103,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 46.87763208703
+      },
+      "repetition": 1,
+      "response_records": {
+        "after": 3.0,
+        "before": 3.0,
+        "equal": true
+      },
+      "scale": "small",
+      "scenario": "graph.evidence",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 6.0,
+        "before": 6.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 0.0
+      },
+      "db_statements": {
+        "after": 11.0,
+        "before": 11.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 0.0
+      },
+      "kind": "control",
+      "latency_p50_ms": {
+        "after": 22.336199996061623,
+        "before": 20.232500013662502,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": -10.397627485375237
+      },
+      "repetition": 2,
+      "response_records": {
+        "after": 20.0,
+        "before": 20.0,
+        "equal": true
+      },
+      "scale": "small",
+      "scenario": "question_bank.questions.default",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 51.261099986732006,
+        "before": 93.25820000958629,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 45.03314455837371
+      },
+      "repetition": 2,
+      "response_records": {
+        "after": 3.0,
+        "before": 3.0,
+        "equal": true
+      },
+      "scale": "small",
+      "scenario": "training.diagnosis",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 33.0,
+        "before": 59.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 44.06779661016949
+      },
+      "db_statements": {
+        "after": 45.0,
+        "before": 7136.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 99.36939461883408
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 71.59320000209846,
+        "before": 475.47400000621565,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 84.94277289585497
+      },
+      "repetition": 2,
+      "response_records": {
+        "after": 3.0,
+        "before": 3.0,
+        "equal": true
+      },
+      "scale": "small",
+      "scenario": "training.plan.preview",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 47.3280000151135,
+        "before": 91.51699999347329,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 48.28501806386924
+      },
+      "repetition": 2,
+      "response_records": {
+        "after": 3.0,
+        "before": 3.0,
+        "equal": true
+      },
+      "scale": "small",
+      "scenario": "graph.profiles",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 46.44429998006672,
+        "before": 89.58279999205843,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 48.15489135840358
+      },
+      "repetition": 2,
+      "response_records": {
+        "after": 3.0,
+        "before": 3.0,
+        "equal": true
+      },
+      "scale": "small",
+      "scenario": "graph.rows",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 46.99460000847466,
+        "before": 88.20769999874756,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 46.72279176405016
+      },
+      "repetition": 2,
+      "response_records": {
+        "after": 3.0,
+        "before": 3.0,
+        "equal": true
+      },
+      "scale": "small",
+      "scenario": "graph.evidence",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 6.0,
+        "before": 6.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 0.0
+      },
+      "db_statements": {
+        "after": 11.0,
+        "before": 11.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 0.0
+      },
+      "kind": "control",
+      "latency_p50_ms": {
+        "after": 17.262699984712526,
+        "before": 24.02109999093227,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 28.135264449883536
+      },
+      "repetition": 1,
+      "response_records": {
+        "after": 20.0,
+        "before": 20.0,
+        "equal": true
+      },
+      "scale": "medium",
+      "scenario": "question_bank.questions.default",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 103.22319998522289,
+        "before": 210.50640000612475,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 50.96434123512654
+      },
+      "repetition": 1,
+      "response_records": {
+        "after": 20.0,
+        "before": 20.0,
+        "equal": true
+      },
+      "scale": "medium",
+      "scenario": "training.diagnosis",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 152.0,
+        "before": 314.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 51.59235668789809
+      },
+      "db_statements": {
+        "after": 164.0,
+        "before": 41663.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 99.6063653601517
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 959.4182000146247,
+        "before": 1323239.707300003,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 99.92749475437279
+      },
+      "repetition": 1,
+      "response_records": {
+        "after": 20.0,
+        "before": 20.0,
+        "equal": true
+      },
+      "scale": "medium",
+      "scenario": "training.plan.preview",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 116.08249999699183,
+        "before": 203.2852999982424,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 42.89675643148055
+      },
+      "repetition": 1,
+      "response_records": {
+        "after": 20.0,
+        "before": 20.0,
+        "equal": true
+      },
+      "scale": "medium",
+      "scenario": "graph.profiles",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 110.79209999297746,
+        "before": 263.93230000394396,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 58.022530781067005
+      },
+      "repetition": 1,
+      "response_records": {
+        "after": 40.0,
+        "before": 40.0,
+        "equal": true
+      },
+      "scale": "medium",
+      "scenario": "graph.rows",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 103.44380000606179,
+        "before": 269.93350000702776,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 61.678042924139234
+      },
+      "repetition": 1,
+      "response_records": {
+        "after": 20.0,
+        "before": 20.0,
+        "equal": true
+      },
+      "scale": "medium",
+      "scenario": "graph.evidence",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 6.0,
+        "before": 6.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 0.0
+      },
+      "db_statements": {
+        "after": 11.0,
+        "before": 11.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 0.0
+      },
+      "kind": "control",
+      "latency_p50_ms": {
+        "after": 16.417300008470193,
+        "before": 26.240400009555742,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 37.4350238468482
+      },
+      "repetition": 2,
+      "response_records": {
+        "after": 20.0,
+        "before": 20.0,
+        "equal": true
+      },
+      "scale": "medium",
+      "scenario": "question_bank.questions.default",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 101.35419998550788,
+        "before": 265.12599998386577,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 61.77130873936325
+      },
+      "repetition": 2,
+      "response_records": {
+        "after": 20.0,
+        "before": 20.0,
+        "equal": true
+      },
+      "scale": "medium",
+      "scenario": "training.diagnosis",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 152.0,
+        "before": 314.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 51.59235668789809
+      },
+      "db_statements": {
+        "after": 164.0,
+        "before": 41663.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 99.6063653601517
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 878.7385000032373,
+        "before": 2779.309600009583,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 68.38284946735666
+      },
+      "repetition": 2,
+      "response_records": {
+        "after": 20.0,
+        "before": 20.0,
+        "equal": true
+      },
+      "scale": "medium",
+      "scenario": "training.plan.preview",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 89.38320001470856,
+        "before": 122.58779999683611,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 27.086382154655304
+      },
+      "repetition": 2,
+      "response_records": {
+        "after": 20.0,
+        "before": 20.0,
+        "equal": true
+      },
+      "scale": "medium",
+      "scenario": "graph.profiles",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 97.06120000919327,
+        "before": 137.504699989222,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 29.41244916224594
+      },
+      "repetition": 2,
+      "response_records": {
+        "after": 40.0,
+        "before": 40.0,
+        "equal": true
+      },
+      "scale": "medium",
+      "scenario": "graph.rows",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 101.74450001795776,
+        "before": 133.40160000370815,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 23.730674883112663
+      },
+      "repetition": 2,
+      "response_records": {
+        "after": 20.0,
+        "before": 20.0,
+        "equal": true
+      },
+      "scale": "medium",
+      "scenario": "graph.evidence",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 6.0,
+        "before": 6.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 0.0
+      },
+      "db_statements": {
+        "after": 11.0,
+        "before": 11.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 0.0
+      },
+      "kind": "control",
+      "latency_p50_ms": {
+        "after": 14.237000024877489,
+        "before": 14.853900007437915,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 4.153117916853625
+      },
+      "repetition": 1,
+      "response_records": {
+        "after": 20.0,
+        "before": 20.0,
+        "equal": true
+      },
+      "scale": "large_5pct",
+      "scenario": "question_bank.questions.default",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 60.43479999061674,
+        "before": 87.86120000877418,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 31.21559916711646
+      },
+      "repetition": 1,
+      "response_records": {
+        "after": 2.0,
+        "before": 2.0,
+        "equal": true
+      },
+      "scale": "large_5pct",
+      "scenario": "training.diagnosis",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 26.0,
+        "before": 44.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 40.909090909090914
+      },
+      "db_statements": {
+        "after": 38.0,
+        "before": 5105.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 99.25563173359451
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 79.61080002132803,
+        "before": 276.7227999866009,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 71.23084905718544
+      },
+      "repetition": 1,
+      "response_records": {
+        "after": 2.0,
+        "before": 2.0,
+        "equal": true
+      },
+      "scale": "large_5pct",
+      "scenario": "training.plan.preview",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 61.72050000168383,
+        "before": 83.87900001253001,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 26.4172200521419
+      },
+      "repetition": 1,
+      "response_records": {
+        "after": 2.0,
+        "before": 2.0,
+        "equal": true
+      },
+      "scale": "large_5pct",
+      "scenario": "graph.profiles",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 54.476199991768226,
+        "before": 83.81030001328327,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 35.000590639653865
+      },
+      "repetition": 1,
+      "response_records": {
+        "after": 2.0,
+        "before": 2.0,
+        "equal": true
+      },
+      "scale": "large_5pct",
+      "scenario": "graph.rows",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 56.28049999359064,
+        "before": 84.66459999908693,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 33.52534590112326
+      },
+      "repetition": 1,
+      "response_records": {
+        "after": 2.0,
+        "before": 2.0,
+        "equal": true
+      },
+      "scale": "large_5pct",
+      "scenario": "graph.evidence",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 6.0,
+        "before": 6.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 0.0
+      },
+      "db_statements": {
+        "after": 11.0,
+        "before": 11.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 0.0
+      },
+      "kind": "control",
+      "latency_p50_ms": {
+        "after": 15.356600022641942,
+        "before": 14.985299989348277,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": -2.477761763578899
+      },
+      "repetition": 2,
+      "response_records": {
+        "after": 20.0,
+        "before": 20.0,
+        "equal": true
+      },
+      "scale": "large_5pct",
+      "scenario": "question_bank.questions.default",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 58.733199984999374,
+        "before": 80.05910000065342,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 26.637696421118882
+      },
+      "repetition": 2,
+      "response_records": {
+        "after": 2.0,
+        "before": 2.0,
+        "equal": true
+      },
+      "scale": "large_5pct",
+      "scenario": "training.diagnosis",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 26.0,
+        "before": 44.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 40.909090909090914
+      },
+      "db_statements": {
+        "after": 38.0,
+        "before": 5105.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 99.25563173359451
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 80.26699998299591,
+        "before": 271.13889998872764,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 70.39635405088205
+      },
+      "repetition": 2,
+      "response_records": {
+        "after": 2.0,
+        "before": 2.0,
+        "equal": true
+      },
+      "scale": "large_5pct",
+      "scenario": "training.plan.preview",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 56.35549998260103,
+        "before": 89.88880002289079,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 37.30531504675808
+      },
+      "repetition": 2,
+      "response_records": {
+        "after": 2.0,
+        "before": 2.0,
+        "equal": true
+      },
+      "scale": "large_5pct",
+      "scenario": "graph.profiles",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 54.95770002016798,
+        "before": 90.44110000832006,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 39.23371120529031
+      },
+      "repetition": 2,
+      "response_records": {
+        "after": 2.0,
+        "before": 2.0,
+        "equal": true
+      },
+      "scale": "large_5pct",
+      "scenario": "graph.rows",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    },
+    {
+      "db_selects": {
+        "after": 12.0,
+        "before": 14.0,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 14.285714285714285
+      },
+      "db_statements": {
+        "after": 24.0,
+        "before": 1043.0,
+        "gate_passed": true,
+        "gate_required": true,
+        "improvement_percent": 97.69894534995206
+      },
+      "kind": "target",
+      "latency_p50_ms": {
+        "after": 54.05299999983981,
+        "before": 86.42139998846687,
+        "gate_passed": true,
+        "gate_required": false,
+        "improvement_percent": 37.454149079911566
+      },
+      "repetition": 2,
+      "response_records": {
+        "after": 2.0,
+        "before": 2.0,
+        "equal": true
+      },
+      "scale": "large_5pct",
+      "scenario": "graph.evidence",
+      "status": {
+        "after": 200,
+        "before": 200,
+        "equal": true
+      }
+    }
+  ],
+  "data_scale_factor": 0.1,
+  "gates": [
+    {
+      "name": "status_equality",
+      "passed": true,
+      "passed_count": 36,
+      "required_count": 36
+    },
+    {
+      "name": "response_record_equality",
+      "passed": true,
+      "passed_count": 36,
+      "required_count": 36
+    },
+    {
+      "name": "target_statement_reduction",
+      "passed": true,
+      "passed_count": 30,
+      "required_count": 30
+    },
+    {
+      "name": "medium_p50_improvement",
+      "passed": true,
+      "passed_count": 8,
+      "required_count": 8
+    },
+    {
+      "name": "legacy_two_round_repeatability",
+      "passed": true,
+      "passed_count": 3,
+      "required_count": 3
+    },
+    {
+      "name": "request_scoped_two_round_repeatability",
+      "passed": true,
+      "passed_count": 3,
+      "required_count": 3
+    }
+  ],
+  "generated_at_utc": "2026-07-14T04:21:59.897665Z",
+  "limitations": [
+    "Only aggregate measurements from generated benchmark data are included.",
+    "Before and after measurements use identical generated datasets.",
+    "The committed P1-26 report is provenance only, not numeric performance evidence.",
+    "The reduced workload has lower statistical confidence and capacity coverage.",
+    "Latency is machine-specific and is not a service-level objective.",
+    "Each file is atomic, but sudden termination can leave a mixed old/new pair.",
+    "With only two measured samples per repetition, p50 is sensitive to timing variance and has reduced statistical confidence.",
+    "The first medium legacy plan-preview repetition recorded a p50 of 1323239.7073 ms (about 22.05 minutes), while repetition two recorded 2779.3096 ms; this cold-path outlier shows that the report is not capacity or service-level evidence."
+  ],
+  "overall_gate": "passed",
+  "p1_26_provenance_code_sha": "6bb53c338d23e530ed2890afbdecce0ae6ac9fb9",
+  "package": "P1-27",
+  "repeatability": "passed",
+  "repetition_count": 2,
+  "runtime": {
+    "logical_cpu_count": 16,
+    "python_version": "3.12.1",
+    "sqlite_version": "3.43.1",
+    "windows_version": "Windows-11-10.0.26200"
+  },
+  "sample_count": 2,
+  "scales": [
+    "small",
+    "medium",
+    "large_5pct"
+  ],
+  "scenarios": [
+    "question_bank.questions.default",
+    "training.diagnosis",
+    "training.plan.preview",
+    "graph.profiles",
+    "graph.rows",
+    "graph.evidence"
+  ],
+  "seed": 126,
+  "warmup_count": 3
+}
