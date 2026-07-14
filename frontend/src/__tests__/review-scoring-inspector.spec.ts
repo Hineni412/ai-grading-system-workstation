@@ -325,15 +325,12 @@ describe('review scoring inspector', () => {
     await nextTick()
     host.querySelector<HTMLButtonElement>('[data-testid="confirm-next"]')!.click()
 
+    await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
     await vi.waitFor(() => expect(
       document.body.querySelector('[data-testid="review-feedback-toast"]')?.textContent,
     ).toContain('分数已确认，队列刷新失败'))
-    expect(confirmReviewItem).toHaveBeenCalledTimes(1)
-    expect(useReviewDraftStore(pinia).drafts['7:Q1:21']).toMatchObject({
-      scoreText: '4',
-      dirty: false,
-    })
-    expect(host.querySelector<HTMLButtonElement>('[data-testid="confirm-next"]')!.disabled).toBe(true)
+    expect(useReviewDraftStore(pinia).drafts['7:Q1:21']).toBeUndefined()
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="confirm-next"]')).toBeNull()
     expect(useReviewQueueStore(pinia).items[0]).toMatchObject({
       detail_id: 21,
       score_awarded: 4,

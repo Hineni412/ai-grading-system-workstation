@@ -228,6 +228,11 @@ onBeforeUnmount(() => {
     data-testid="review-scoring-inspector"
     aria-label="评分与复核检查器"
   >
+    <ReviewFeedbackToast
+      :message="feedback"
+      :tone="feedbackTone"
+      @dismiss="feedback = ''"
+    />
     <StatePanel
       v-if="!item || !currentDraft"
       kind="empty"
@@ -236,11 +241,6 @@ onBeforeUnmount(() => {
     />
 
     <template v-else>
-      <ReviewFeedbackToast
-        :message="feedback"
-        :tone="feedbackTone"
-        @dismiss="feedback = ''"
-      />
       <div class="review-scoring-inspector__scroll" data-testid="scoring-scroll-region">
         <header class="review-scoring-inspector__header">
           <p>{{ item.question_id }} · 满分 {{ formatScore(item.max_score) }}</p>

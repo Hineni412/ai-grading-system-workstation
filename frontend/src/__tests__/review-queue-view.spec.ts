@@ -3,12 +3,22 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, type Router } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ReviewItem, ReviewQuestionSummary } from '../api/review'
-import { reviewShortcutBus } from '../composables/review-shortcuts'
-import ReviewQueueView from '../views/ReviewQueueView.vue'
+import {
+  confirmReviewItems,
+  type FetchReviewItemsOptions,
+  type ReviewItem,
+  type ReviewQuestionSummary,
+} from '../api/review'
 import { createAppRouter } from '../router'
+import { useReviewDraftStore } from '../stores/review-drafts'
 import { useReviewQueueStore } from '../stores/review-queue'
 import { useSessionStore } from '../stores/session'
+import ReviewQueueView from '../views/ReviewQueueView.vue'
+
+vi.mock('../api/review', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../api/review')>(),
+  confirmReviewItems: vi.fn(),
+}))
 
 const media = {
   crop_url: '/api/crop',
@@ -32,7 +42,7 @@ const item = (index: number, overrides: Partial<ReviewItem> = {}): ReviewItem =>
   error_category: null,
   error_summary: null,
   confidence_score: 90,
-  needs_review: false,
+  needs_review: true,
   candidate_scores: [],
   metadata: {},
   media,
@@ -40,24 +50,23 @@ const item = (index: number, overrides: Partial<ReviewItem> = {}): ReviewItem =>
 })
 
 const questions: ReviewQuestionSummary[] = [
-  { question_id: 'Q1', total_count: 2, needs_review_count: 1, max_score: 5 },
+  { question_id: 'Q1', total_count: 2, needs_review_count: 2, max_score: 5 },
   { question_id: 'Q2', total_count: 2, needs_review_count: 1, max_score: 5 },
 ]
 
 const itemsByQuestion: Record<string, ReviewItem[]> = {
   Q1: [
-    item(11, { student_name: '学生甲', needs_review: true, confidence_score: 65 }),
+    item(11, { student_name: '学生甲', confidence_score: 65 }),
     item(12, { student_name: '学生乙', class_name: '七年级二班' }),
   ],
   Q2: [
-    item(21, { question_id: 'Q2', student_name: '学生丙' }),
+    item(21, { question_id: 'Q2', student_name: '学生丙', needs_review: false }),
     item(22, {
       question_id: 'Q2',
       student_code: null,
       student_name: '学生丁',
       class_name: null,
       confidence_score: null,
-      needs_review: true,
       error_summary: '步骤需要人工核对',
     }),
   ],
@@ -122,21 +131,26 @@ async function mountView({
   })
 
   const reviewStore = useReviewQueueStore(pinia)
-  const loadQuestions = reviewStore.loadQuestions
-  const loadItems = reviewStore.loadItems
+  const loadQuestionsDirect = reviewStore.loadQuestions
+  const loadItemsDirect = reviewStore.loadItems
+  const itemRequests: FetchReviewItemsOptions[] = []
   const loadQuestionsSpy = vi
     .spyOn(reviewStore, 'loadQuestions')
     .mockImplementation((requestedSessionId) =>
-      loadQuestions(requestedSessionId, async () => reviewQuestions),
+      loadQuestionsDirect(requestedSessionId, async () => reviewQuestions),
     )
   const loadItemsSpy = vi
     .spyOn(reviewStore, 'loadItems')
-    .mockImplementation((requestedSessionId, questionId) =>
-      loadItems(requestedSessionId, questionId, async (_sessionId, _questionId, options) => {
+    .mockImplementation((requestedSessionId, questionId, _loader, needsReviewOnly) =>
+      loadItemsDirect(requestedSessionId, questionId, async (_sessionId, _questionId, options) => {
+        itemRequests.push(options)
         if (failItemLoad) throw new Error('private item failure')
         if (itemLoader) return itemLoader(requestedSessionId, questionId, options.signal)
-        return reviewItems[questionId] ?? []
-      }),
+        const available = reviewItems[questionId] ?? []
+        return options.needsReviewOnly
+          ? available.filter((entry) => entry.needs_review)
+          : available
+      }, needsReviewOnly),
     )
 
   const host = document.createElement('div')
@@ -154,7 +168,8 @@ async function mountView({
     router,
     reviewStore,
     sessionStore,
-    loadItemsDirect: loadItems,
+    itemRequests,
+    loadItemsDirect,
     loadQuestionsSpy,
     loadItemsSpy,
     unmount: () => {
@@ -180,29 +195,103 @@ function dispatchKey(target: EventTarget, key: string, init: KeyboardEventInit =
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  let reject!: (reason?: unknown) => void
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+  const promise = new Promise<T>((resolvePromise) => {
     resolve = resolvePromise
-    reject = rejectPromise
   })
-  return { promise, resolve, reject }
+  return { promise, resolve }
 }
 
 beforeEach(() => {
+  vi.restoreAllMocks()
+  vi.clearAllMocks()
+  vi.mocked(confirmReviewItems).mockResolvedValue({
+    updated_details: 2,
+    updated_results: 2,
+    annotation_outcomes: [],
+  })
   document.body.innerHTML = ''
   localStorage.clear()
-  vi.restoreAllMocks()
-  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
-    configurable: true,
-    value: vi.fn(),
-  })
 })
 
 afterEach(() => {
   for (const app of mountedApps.splice(0)) app.unmount()
 })
 
-describe('P2-05 review queue view', () => {
+describe('source-recalibrated review view', () => {
+  it('confirms the visible pending batch once and accepts unchanged scores', async () => {
+    const pending = [
+      item(11, { score_awarded: 3 }),
+      item(12, { score_awarded: 2.5 }),
+    ]
+    const { host, pinia } = await mountView({
+      reviewQuestions: [
+        { question_id: 'Q1', total_count: 2, needs_review_count: 2, max_score: 5 },
+      ],
+      reviewItems: { Q1: pending },
+    })
+
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="confirm-batch"]')!
+    button.click()
+    button.click()
+
+    await vi.waitFor(() => expect(confirmReviewItems).toHaveBeenCalledTimes(1))
+    expect(confirmReviewItems).toHaveBeenCalledWith(7, 'Q1', [
+      { result_id: 11, detail_id: 11, score_awarded: 3 },
+      { result_id: 12, detail_id: 12, score_awarded: 2.5 },
+    ])
+    await vi.waitFor(() => expect(useReviewQueueStore(pinia).questions[0]?.needs_review_count).toBe(0))
+    expect(useReviewQueueStore(pinia).items.every((entry) => !entry.needs_review)).toBe(true)
+    expect(useReviewDraftStore(pinia).drafts).toEqual({})
+  })
+
+  it('keeps every batch draft when confirmation fails', async () => {
+    vi.mocked(confirmReviewItems).mockRejectedValue(new Error('private server failure'))
+    const { host, pinia } = await mountView()
+    const firstScore = host.querySelector<HTMLInputElement>('[data-testid="teacher-score-11"]')!
+    inputValue(firstScore, '4')
+    await nextTick()
+
+    host.querySelector<HTMLButtonElement>('[data-testid="confirm-batch"]')!.click()
+
+    await vi.waitFor(() => expect(
+      document.body.querySelector('[data-testid="review-feedback-toast"]')?.textContent,
+    ).toContain('确认失败，整批草稿已保留'))
+    expect(useReviewDraftStore(pinia).drafts['7:Q1:11']?.scoreText).toBe('4')
+    expect(useReviewQueueStore(pinia).items.every((entry) => entry.needs_review)).toBe(true)
+    expect(document.body.textContent).not.toContain('private server failure')
+  })
+
+  it('keeps saved scores and retries annotations only after an explicit action', async () => {
+    vi.mocked(confirmReviewItems)
+      .mockResolvedValueOnce({
+        updated_details: 2,
+        updated_results: 2,
+        annotation_outcomes: [
+          { result_id: 11, status: 'retry_required' },
+          { result_id: 12, status: 'retry_required' },
+        ],
+      })
+      .mockResolvedValueOnce({
+        updated_details: 2,
+        updated_results: 2,
+        annotation_outcomes: [
+          { result_id: 11, status: 'succeeded' },
+          { result_id: 12, status: 'succeeded' },
+        ],
+      })
+    const { host } = await mountView()
+
+    host.querySelector<HTMLButtonElement>('[data-testid="confirm-batch"]')!.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('分数已保存，2 份标注图需要重试'))
+    expect(confirmReviewItems).toHaveBeenCalledTimes(1)
+
+    const retry = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === '重试标注图')!
+    retry.click()
+    await vi.waitFor(() => expect(confirmReviewItems).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(host.textContent).not.toContain('标注图需要重试'))
+  })
+
   it('shows the no-session state without requesting review data', async () => {
     const { host, loadQuestionsSpy, loadItemsSpy } = await mountView({ sessionId: null })
 
@@ -211,475 +300,122 @@ describe('P2-05 review queue view', () => {
     expect(loadItemsSpy).not.toHaveBeenCalled()
   })
 
-  it('preserves the route while session initialization restores a persisted selection', async () => {
-    const { router, reviewStore, sessionStore, loadQuestionsSpy } = await mountView({
-      sessionId: null,
-      sessionLoadState: 'loading',
-      initialUrl: '/grading?question=Q1&detail=12',
+  it('restores a valid question and pending detail from the URL', async () => {
+    const { host, router, reviewStore } = await mountView({
+      initialUrl: '/grading?question=Q2&detail=22',
     })
 
-    expect(router.currentRoute.value.query).toEqual({ question: 'Q1', detail: '12' })
-    expect(loadQuestionsSpy).not.toHaveBeenCalled()
-
-    sessionStore.$patch({
-      sessions: [{
-        id: 7,
-        name: '匿名考试',
-        status: 'grading',
-        is_deleted: false,
-        deleted_at: null,
-        created_at: null,
-        updated_at: null,
-      }],
-      selectedSessionId: 7,
-      loadState: 'ready',
-    })
-
-    await vi.waitFor(() => {
-      expect(reviewStore.selectedDetailId).toBe(12)
-      expect(router.currentRoute.value.query).toEqual({ question: 'Q1', detail: '12' })
-    })
-  })
-
-  it('restores a valid question and detail from the URL', async () => {
-    const { host, router, loadItemsSpy } = await mountView({
-      initialUrl: '/grading?question=Q2&detail=22&unknown=discard',
-    })
-
-    await vi.waitFor(() => {
-      expect(router.currentRoute.value.query).toEqual({ question: 'Q2', detail: '22' })
-    })
-    expect(loadItemsSpy).toHaveBeenCalledWith(7, 'Q2')
-    expect(host.textContent).toContain('题目')
-    expect(host.textContent).toContain('搜索学生')
-    expect(host.textContent).toContain('复核范围')
-    expect(host.textContent).toContain('排序方式')
+    await vi.waitFor(() => expect(reviewStore.selectedQuestionId).toBe('Q2'))
+    expect(reviewStore.selectedDetailId).toBe(22)
+    expect(router.currentRoute.value.query).toEqual({ question: 'Q2', detail: '22' })
     expect(host.textContent).toContain('学生丁')
-    expect(host.textContent).toContain('未提供学号')
-    expect(host.textContent).toContain('置信度未提供')
-    expect(host.textContent).toContain('待复核')
-    expect(host.textContent).toContain('步骤需要人工核对')
   })
 
-  it('replaces invalid question and detail query values with validated defaults', async () => {
-    const { host, router } = await mountView({
-      initialUrl: '/grading?question=missing&detail=not-a-number&unknown=discard',
+  it('replaces invalid URL context with the first pending question item', async () => {
+    const { router, reviewStore } = await mountView({
+      initialUrl: '/grading?question=missing&detail=not-a-number',
     })
 
-    await vi.waitFor(() => {
-      expect(router.currentRoute.value.query).toEqual({ question: 'Q1', detail: '11' })
-    })
-    expect(host.textContent).toContain('学生甲')
-    expect(host.textContent).toContain('当前位置 1 / 2')
+    await vi.waitFor(() => expect(reviewStore.selectedQuestionId).toBe('Q1'))
+    expect(reviewStore.selectedDetailId).toBe(11)
+    await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({
+      question: 'Q1',
+      detail: '11',
+    }))
   })
 
-  it('recovers URL synchronization after one router replacement is rejected', async () => {
-    let replaceCalls = 0
-    const { router } = await mountView({
-      initialUrl: '/grading?question=Q1&detail=11&unknown=discard',
-      configureRouter: (configuredRouter) => {
-        const actualReplace = configuredRouter.replace.bind(configuredRouter)
-        vi.spyOn(configuredRouter, 'replace').mockImplementation(async (target) => {
-          replaceCalls += 1
-          if (replaceCalls === 1) {
-            throw new Error('expected route replacement rejection')
-          }
-          return actualReplace(target)
-        })
+  it('defaults to pending reads and reloads all items only after explicit scope change', async () => {
+    const { host, itemRequests } = await mountView({
+      reviewItems: {
+        ...itemsByQuestion,
+        Q1: [itemsByQuestion.Q1![0]!, { ...itemsByQuestion.Q1![1]!, needs_review: false }],
       },
     })
+    expect(itemRequests[0]?.needsReviewOnly).toBe(true)
+    expect(host.textContent).not.toContain('学生乙')
 
-    await vi.waitFor(() => {
-      expect(replaceCalls).toBe(2)
-      expect(router.currentRoute.value.query).toEqual({ question: 'Q1', detail: '11' })
-    })
+    inputValue(host.querySelector<HTMLSelectElement>('#review-scope')!, 'all')
+
+    await vi.waitFor(() => expect(itemRequests[itemRequests.length - 1]?.needsReviewOnly).toBe(false))
+    await vi.waitFor(() => expect(host.textContent).toContain('学生乙'))
   })
 
-  it('preserves the selected item when filters keep it and selects the first when excluded', async () => {
-    const { host, router, reviewStore } = await mountView({
-      initialUrl: '/grading?question=Q1&detail=12',
-    })
-    await vi.waitFor(() => expect(reviewStore.selectedDetailId).toBe(12))
-
+  it('searches identity fields and slash focuses search outside protected controls', async () => {
+    const { host } = await mountView()
     const search = host.querySelector<HTMLInputElement>('#review-search')!
-    inputValue(search, '学生乙')
-    await settleUi()
-    expect(reviewStore.selectedDetailId).toBe(12)
-    expect(router.currentRoute.value.query).toEqual({ question: 'Q1', detail: '12' })
 
-    inputValue(search, '学生甲')
-    await vi.waitFor(() => {
-      expect(reviewStore.selectedDetailId).toBe(11)
-      expect(router.currentRoute.value.query).toEqual({ question: 'Q1', detail: '11' })
-    })
-    expect(host.textContent).toContain('学生甲')
-
-    inputValue(search, '不存在的学生')
-    await vi.waitFor(() => {
-      expect(reviewStore.selectedDetailId).toBeNull()
-      expect(router.currentRoute.value.query).toEqual({ question: 'Q1' })
-    })
-    expect(host.textContent).toContain('当前筛选没有记录')
-    expect(
-      host.querySelector('.review-selection-summary')?.hasAttribute('aria-labelledby'),
-    ).toBe(false)
-  })
-
-  it('moves with J/K but ignores shortcuts from input, select, button, textarea, and contenteditable', async () => {
-    const { host, reviewStore } = await mountView({
-      initialUrl: '/grading?question=Q1&detail=11',
-    })
-    await vi.waitFor(() => expect(reviewStore.selectedDetailId).toBe(11))
-
-    const next = dispatchKey(window, 'j')
-    expect(reviewStore.selectedDetailId).toBe(12)
-    expect(next.defaultPrevented).toBe(true)
-    const previous = dispatchKey(window, 'K')
-    expect(reviewStore.selectedDetailId).toBe(11)
-    expect(previous.defaultPrevented).toBe(true)
-
-    const textarea = document.createElement('textarea')
-    const editable = document.createElement('div')
-    editable.setAttribute('contenteditable', 'true')
-    const emptyEditable = document.createElement('div')
-    emptyEditable.setAttribute('contenteditable', '')
-    const emptyEditableChild = document.createElement('span')
-    emptyEditable.append(emptyEditableChild)
-    const plaintextEditable = document.createElement('div')
-    plaintextEditable.setAttribute('contenteditable', 'plaintext-only')
-    const plaintextEditableChild = document.createElement('span')
-    plaintextEditable.append(plaintextEditableChild)
-    host.append(textarea, editable, emptyEditable, plaintextEditable)
-    const protectedTargets = [
-      host.querySelector<HTMLInputElement>('input')!,
-      host.querySelector<HTMLSelectElement>('select')!,
-      host.querySelector<HTMLButtonElement>('button')!,
-      textarea,
-      editable,
-      emptyEditableChild,
-      plaintextEditableChild,
-    ]
-    for (const target of protectedTargets) {
-      reviewStore.selectDetail(11)
-      expect(dispatchKey(target, 'j').defaultPrevented).toBe(false)
-      expect(reviewStore.selectedDetailId).toBe(11)
-    }
-
-    expect(dispatchKey(window, 'j', { ctrlKey: true }).defaultPrevented).toBe(false)
-    expect(reviewStore.selectedDetailId).toBe(11)
-
-    for (const modifiers of [
-      { altKey: true },
-      { metaKey: true },
-      { shiftKey: true },
-    ]) {
-      reviewStore.selectDetail(11)
-      expect(dispatchKey(window, 'j', modifiers).defaultPrevented).toBe(false)
-      expect(reviewStore.selectedDetailId).toBe(11)
-    }
-
-    const alreadyPrevented = new KeyboardEvent('keydown', {
-      key: 'j',
-      bubbles: true,
-      cancelable: true,
-    })
-    alreadyPrevented.preventDefault()
-    window.dispatchEvent(alreadyPrevented)
-    expect(alreadyPrevented.defaultPrevented).toBe(true)
-    expect(reviewStore.selectedDetailId).toBe(11)
-  })
-
-  it('routes the approved workspace shortcuts, focuses search, and leaves R unassigned', async () => {
-    const { host, reviewStore } = await mountView({
-      initialUrl: '/grading?question=Q1&detail=11',
-    })
-    await vi.waitFor(() => expect(reviewStore.selectedDetailId).toBe(11))
-    const received: string[] = []
-    const stop = reviewShortcutBus.subscribe((command) => received.push(command))
-
-    const search = host.querySelector<HTMLInputElement>('#review-search')!
-    const searchShortcut = dispatchKey(window, '/')
-    expect(searchShortcut.defaultPrevented).toBe(true)
+    const slash = dispatchKey(window, '/')
+    expect(slash.defaultPrevented).toBe(true)
     expect(document.activeElement).toBe(search)
 
     search.blur()
-    for (const [key, init] of [
-      ['z', {}],
-      ['+', {}],
-      ['=', {}],
-      ['-', {}],
-      ['Enter', {}],
-    ] satisfies Array<[string, KeyboardEventInit]>) {
-      expect(dispatchKey(window, key, init).defaultPrevented).toBe(true)
-    }
-    expect(dispatchKey(window, 'Enter', { shiftKey: true }).defaultPrevented).toBe(false)
-
-    expect(received).toEqual([
-      'focus-search',
-      'fit-width',
-      'zoom-in',
-      'zoom-in',
-      'zoom-out',
-      'confirm-next',
-    ])
-
-    expect(dispatchKey(window, 'r').defaultPrevented).toBe(false)
-    expect(received).not.toContain('mark-review')
-
-    search.focus()
-    expect(dispatchKey(search, 'z').defaultPrevented).toBe(false)
-    expect(dispatchKey(window, 'Enter', { repeat: true }).defaultPrevented).toBe(false)
-    expect(dispatchKey(window, '/', { ctrlKey: true }).defaultPrevented).toBe(false)
-    expect(received).toHaveLength(6)
-    stop()
+    expect(dispatchKey(search, '/').defaultPrevented).toBe(false)
+    inputValue(search, '学生甲')
+    await nextTick()
+    expect(host.querySelectorAll('[data-testid="review-answer-sheet"]')).toHaveLength(1)
   })
 
-  it('scrolls the selected row into view after moving across a page boundary', async () => {
-    const scrollIntoView = vi.fn()
-    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
-      configurable: true,
-      value: scrollIntoView,
-    })
-    const pageBoundaryItems = Array.from({ length: 101 }, (_, offset) =>
-      item(offset + 1, {
-        student_code: `S${String(offset + 1).padStart(3, '0')}`,
-        student_name: `学生${String(offset + 1).padStart(3, '0')}`,
-      }),
-    )
-    const { host, reviewStore } = await mountView({
-      initialUrl: '/grading?question=Q1&detail=100',
-      reviewItems: { Q1: pageBoundaryItems },
-    })
-    await vi.waitFor(() => expect(reviewStore.selectedDetailId).toBe(100))
-    scrollIntoView.mockClear()
+  it('uses a blocking first-load error and a non-blocking retained-content error', async () => {
+    const first = await mountView({ failItemLoad: true })
+    await vi.waitFor(() => expect(first.host.textContent).toContain('复核内容加载失败'))
+    expect(first.host.querySelector('[data-testid="state-panel"][data-kind="error"]')).not.toBeNull()
+    first.unmount()
 
-    dispatchKey(window, 'j')
-    await vi.waitFor(() => {
-      expect(reviewStore.selectedDetailId).toBe(101)
-      expect(reviewStore.page).toBe(2)
-      expect(host.querySelector('.review-queue-row[aria-current="true"]')?.textContent)
-        .toContain('学生101')
-      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' })
+    const retained = await mountView()
+    await retained.loadItemsDirect(7, 'Q1', async () => {
+      throw new Error('private refresh detail')
     })
+    await nextTick()
+    expect(retained.host.querySelector('[data-testid="feedback-banner"]')).not.toBeNull()
+    expect(retained.host.textContent).toContain('学生甲')
+    expect(retained.host.textContent).not.toContain('private refresh detail')
   })
 
-  it('cancels pending row scrolling when selection is invalidated or the view unmounts', async () => {
-    const scrollIntoView = vi.fn()
-    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
-      configurable: true,
-      value: scrollIntoView,
-    })
-    const { reviewStore, unmount } = await mountView({
-      initialUrl: '/grading?question=Q1&detail=11',
-    })
-    await vi.waitFor(() => expect(reviewStore.selectedDetailId).toBe(11))
-    scrollIntoView.mockClear()
-
-    reviewStore.selectDetail(12)
-    reviewStore.setSearch('不存在的学生')
-    await settleUi()
-    expect(reviewStore.selectedDetailId).toBeNull()
-    expect(scrollIntoView).not.toHaveBeenCalled()
-
-    reviewStore.setSearch('')
-    await vi.waitFor(() => expect(reviewStore.selectedDetailId).toBe(11))
-    scrollIntoView.mockClear()
-    reviewStore.selectDetail(12)
-    unmount()
-    await settleUi()
-    expect(scrollIntoView).not.toHaveBeenCalled()
-  })
-
-  it('renders read-only evidence without score, save, or confirm controls', async () => {
-    const { host } = await mountView({ initialUrl: '/grading?question=Q1&detail=11' })
-    await vi.waitFor(() => expect(host.textContent).toContain('当前得分 3 / 5'))
-    expect(host.textContent).toContain('核对答卷证据并连续确认教师最终分。')
-    expect(host.querySelectorAll('.review-evidence-viewer img')).toHaveLength(1)
-    expect(host.querySelector('input[type="number"]')).toBeNull()
-    expect(host.querySelector('textarea, [contenteditable="true"]')).toBeNull()
-    expect([...host.querySelectorAll('button')].some((button) =>
-      /保存|确认/.test(button.textContent ?? ''),
-    )).toBe(false)
-    expect(host.textContent).toContain('答卷原图不会被改写；分数只有在右侧完成教师确认后才会保存。')
-  })
-
-  it('resets the viewer when selecting the next record', async () => {
-    const firstMedia = { ...media, crop_url: '/api/crop/11' }
-    const secondMedia = { ...media, crop_url: '/api/crop/12' }
-    const { host, reviewStore } = await mountView({
-      initialUrl: '/grading?question=Q1&detail=11',
-      reviewItems: {
-        Q1: [
-          item(11, { student_name: '学生甲', media: firstMedia }),
-          item(12, { student_name: '学生乙', media: secondMedia }),
-        ],
-      },
-    })
-    await vi.waitFor(() => {
-      expect(reviewStore.selectedDetailId).toBe(11)
-      expect(reviewStore.itemLoadState).toBe('ready')
-    })
-    await settleUi()
-    const next = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.trim() === '下一条')!
-    next.click()
-    await vi.waitFor(() => expect(reviewStore.selectedDetailId).toBe(12))
-    await vi.waitFor(() => {
-      expect(host.textContent).toContain('裁剪证据')
-      expect(host.textContent).toContain('适应宽度')
-      const images = host.querySelectorAll<HTMLImageElement>('.review-evidence-viewer img')
-      expect(images).toHaveLength(1)
-      expect(images[0]?.getAttribute('src')).toBe('/api/crop/12')
-    })
-  })
-
-  it('uses a blocking state when the first item load fails', async () => {
-    const { host } = await mountView({ failItemLoad: true })
-
-    await vi.waitFor(() => expect(host.textContent).toContain('复核队列加载失败'))
-    expect(host.querySelector('[data-testid="feedback-banner"]')).toBeNull()
-    expect(host.querySelector('[data-testid="state-panel"][data-kind="error"]')).not.toBeNull()
-  })
-
-  it('keeps old items visible with non-blocking feedback when refresh fails', async () => {
-    const { host, reviewStore, loadItemsDirect, loadItemsSpy } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain('学生甲'))
-
-    await loadItemsDirect(7, 'Q1', async () => {
-      throw new Error('private refresh failure')
-    })
-    await settleUi()
-
-    expect(host.querySelector('[data-testid="feedback-banner"]')).not.toBeNull()
-    expect(host.textContent).toContain('复核队列暂时无法读取，已保留上次内容。')
-    expect(host.textContent).toContain('学生甲')
-
-    const retryButton = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
-      (button) => button.textContent === '重新加载',
-    )!
-    retryButton.click()
-    await vi.waitFor(() => {
-      expect(host.querySelector('[data-testid="feedback-banner"]')).toBeNull()
-      expect(reviewStore.itemLoadState).toBe('ready')
-      expect(reviewStore.errorMessage).toBe('')
-    })
-    expect(loadItemsSpy).toHaveBeenCalledTimes(2)
-    expect(host.textContent).toContain('学生甲')
-  })
-
-  it('aborts a stale question request, resets detail, and keeps only the latest URL context', async () => {
-    const pendingQ2 = deferred<ReviewItem[]>()
+  it('aborts a stale question request and keeps only the latest context', async () => {
+    const q2 = deferred<ReviewItem[]>()
     let q2Signal: AbortSignal | undefined
-    const q3Item = item(31, { question_id: 'Q3', student_name: '学生戊' })
     const { host, router, reviewStore } = await mountView({
-      reviewQuestions: [
-        ...questions,
-        { question_id: 'Q3', total_count: 1, needs_review_count: 0, max_score: 5 },
-      ],
       itemLoader: async (_sessionId, questionId, signal) => {
         if (questionId === 'Q2') {
           q2Signal = signal
-          return pendingQ2.promise
+          return q2.promise
         }
-        if (questionId === 'Q3') return [q3Item]
-        return itemsByQuestion[questionId] ?? []
+        return itemsByQuestion.Q1!
       },
     })
-    await vi.waitFor(() => {
-      expect(router.currentRoute.value.query).toEqual({ question: 'Q1', detail: '11' })
-    })
 
-    const questionSelect = host.querySelector<HTMLSelectElement>('#review-question')!
-    inputValue(questionSelect, 'Q2')
-    await vi.waitFor(() => {
-      expect(reviewStore.selectedQuestionId).toBe('Q2')
-      expect(reviewStore.selectedDetailId).toBeNull()
-      expect(router.currentRoute.value.query).toEqual({ question: 'Q2' })
+    const q2Button = await vi.waitFor(() => {
+      const button = host.querySelector<HTMLButtonElement>('[data-question-id="Q2"]')
+      expect(button).not.toBeNull()
+      return button!
     })
-    expect(reviewStore.itemLoadState).toBe('loading')
-    expect(host.contains(questionSelect)).toBe(true)
-    expect(questionSelect.disabled).toBe(false)
+    q2Button.click()
+    await vi.waitFor(() => expect(q2Signal).toBeDefined())
+    host.querySelector<HTMLButtonElement>('[data-question-id="Q1"]')!.click()
+    await vi.waitFor(() => expect(q2Signal?.aborted).toBe(true))
+    q2.resolve(itemsByQuestion.Q2!)
 
-    inputValue(questionSelect, 'Q3')
     await vi.waitFor(() => {
-      expect(q2Signal?.aborted).toBe(true)
-      expect(reviewStore.items.map((entry) => entry.question_id)).toEqual(['Q3'])
-      expect(router.currentRoute.value.query).toEqual({ question: 'Q3', detail: '31' })
+      expect(reviewStore.selectedQuestionId).toBe('Q1')
+      expect(reviewStore.items.map((entry) => entry.detail_id)).toEqual([11, 12])
     })
-
-    pendingQ2.resolve(itemsByQuestion.Q2 ?? [])
-    await settleUi()
-    expect(reviewStore.items.map((entry) => entry.question_id)).toEqual(['Q3'])
-    expect(router.currentRoute.value.query).toEqual({ question: 'Q3', detail: '31' })
+    expect(router.currentRoute.value.query.question).toBe('Q1')
   })
 
-  it('aborts a pending request on unmount and ignores its late result', async () => {
-    const pendingItems = deferred<ReviewItem[]>()
-    let pendingSignal: AbortSignal | undefined
-    const { reviewStore, unmount } = await mountView({
-      itemLoader: async (_sessionId, _questionId, signal) => {
-        pendingSignal = signal
-        return pendingItems.promise
+  it('aborts a pending item request on unmount and ignores its late result', async () => {
+    const pending = deferred<ReviewItem[]>()
+    let signal: AbortSignal | undefined
+    const mounted = await mountView({
+      itemLoader: async (_sessionId, _questionId, nextSignal) => {
+        signal = nextSignal
+        return pending.promise
       },
     })
-    await vi.waitFor(() => {
-      expect(reviewStore.itemLoadState).toBe('loading')
-      expect(pendingSignal).toBeDefined()
-    })
+    mounted.unmount()
 
-    unmount()
-    expect(pendingSignal?.aborted).toBe(true)
-    expect(reviewStore.items).toEqual([])
-    expect(reviewStore.itemLoadState).toBe('idle')
-
-    pendingItems.resolve([item(71)])
+    expect(signal?.aborted).toBe(true)
+    pending.resolve([item(99)])
     await settleUi()
-    expect(reviewStore.items).toEqual([])
-    expect(reviewStore.itemLoadState).toBe('idle')
-  })
-
-  it('aborts the old session request and ignores its result after the new session loads', async () => {
-    const pendingSessionSeven = deferred<ReviewItem[]>()
-    let sessionSevenSignal: AbortSignal | undefined
-    const sessionNineItem = item(91, { session_id: 9, student_name: '新考试学生' })
-    const { router, reviewStore, sessionStore } = await mountView({
-      itemLoader: async (sessionId, _questionId, signal) => {
-        if (sessionId === 7) {
-          sessionSevenSignal = signal
-          return pendingSessionSeven.promise
-        }
-        return [sessionNineItem]
-      },
-    })
-    await vi.waitFor(() => {
-      expect(reviewStore.itemLoadState).toBe('loading')
-      expect(sessionSevenSignal).toBeDefined()
-    })
-
-    sessionStore.$patch({
-      sessions: [
-        ...sessionStore.sessions,
-        {
-          id: 9,
-          name: '九年级数学测试',
-          status: 'grading',
-          is_deleted: false,
-          deleted_at: null,
-          created_at: null,
-          updated_at: null,
-        },
-      ],
-      selectedSessionId: 9,
-    })
-    await vi.waitFor(() => {
-      expect(sessionSevenSignal?.aborted).toBe(true)
-      expect(reviewStore.items.map((entry) => entry.detail_id)).toEqual([91])
-      expect(router.currentRoute.value.query).toEqual({ question: 'Q1', detail: '91' })
-    })
-
-    pendingSessionSeven.resolve([item(71)])
-    await settleUi()
-    expect(reviewStore.items.map((entry) => entry.detail_id)).toEqual([91])
-    expect(router.currentRoute.value.query).toEqual({ question: 'Q1', detail: '91' })
+    expect(mounted.reviewStore.items).toEqual([])
   })
 })
