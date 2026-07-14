@@ -306,23 +306,23 @@ The original formal process exceeded one hour and was stopped without publishing
 
 ### Step 1: Write RED report-contract tests
 
-- [ ] Load the committed P1-26 report by allowlisted fields only as provenance/context, never as the numeric before side.
-- [ ] Run the same seed/scales for six allowlisted scenarios: five targets plus Question Bank default control.
-- [ ] Require two repetitions, status 200, deterministic status/query/record summaries and no raw samples.
-- [ ] Compare same-dataset `legacy_per_call`/`request_scoped` p50, total statements, SELECTs and response records.
-- [ ] Require exact response record/status equality.
-- [ ] Require target total-statement reduction and at least 20% p50 improvement for medium plan preview and all medium Graph scenarios.
-- [ ] Control scenario is measured but has no improvement requirement.
-- [ ] JSON/Markdown allowlists reject paths, SQL, request IDs, bodies and generated content.
-- [ ] Publication uses the P1-26 per-file atomic/catchable-recovery helper and documents the same sudden-termination mixed-pair limit.
+- [x] Load the committed P1-26 report by allowlisted fields only as provenance/context, never as the numeric before side.
+- [x] Run the same seed/scales for six allowlisted scenarios: five targets plus Question Bank default control.
+- [x] Require two repetitions, status 200, deterministic status/query/record summaries and no raw samples.
+- [x] Compare same-dataset `legacy_per_call`/`request_scoped` p50, total statements, SELECTs and response records.
+- [x] Require exact response record/status equality.
+- [x] Require target total-statement reduction and at least 20% p50 improvement for medium plan preview and all medium Graph scenarios.
+- [x] Control scenario is measured but has no improvement requirement.
+- [x] JSON/Markdown allowlists reject paths, SQL, request IDs, bodies and generated content.
+- [x] Publication uses the P1-26 per-file atomic/catchable-recovery helper and documents the same sudden-termination mixed-pair limit.
 
 ### Step 2: Implement the focused comparison runner
 
-- [ ] Reuse P1-26 dataset/scenario/runner primitives; add an allowlisted scenario filter without changing default P1-26 behavior.
-- [ ] Default seed and tier names match P1-26; generate at exactly 10% and use 3 warmups, 2 samples and 2 repetitions under the approved amendment above.
-- [ ] Add legacy behavior only in benchmark dependency wiring and reuse the exact same generated dataset object for the optimized run.
-- [ ] Record the code SHA, environment, scenario set and sample counts.
-- [ ] Render only aggregates and explicit pass/fail gates.
+- [x] Reuse P1-26 dataset/scenario/runner primitives; add an allowlisted scenario filter without changing default P1-26 behavior.
+- [x] Default seed and tier names match P1-26; generate at exactly 10% and use 3 warmups, 2 samples and 2 repetitions under the approved amendment above.
+- [x] Add legacy behavior only in benchmark dependency wiring and reuse the exact same generated dataset object for the optimized run.
+- [x] Record the code SHA, environment, scenario set and sample counts.
+- [x] Render only aggregates and explicit pass/fail gates.
 
 ### Step 3: Run micro smoke and focused tests
 
@@ -342,23 +342,36 @@ git commit -m "perf: reduce P1-27 comparison workload"
 
 ### Step 5: Run the formal comparison
 
-- [ ] Capture root and feature grading/question-bank database size, UTC mtime and SHA-256 read-only before the run.
-- [ ] Run `runtime\python\python.exe tools\benchmark_request_connections.py` in a foreground/controlled process and preserve OS exit code/runtime.
-- [ ] Require all gates pass before reports publish.
-- [ ] Validate safety, exact scenario/sample counts, two-round repeatability and non-zero expected records.
-- [ ] Compare all root and feature fingerprints again; any difference blocks publication, commit and integration.
+- [x] Capture root and feature grading/question-bank database size, UTC mtime and SHA-256 read-only before the run.
+- [x] Preserve the completed exact-workload diagnostic as formal evidence without rerunning scenarios; validate its code SHA/configuration/coverage/metrics/gates and canonical JSON/Markdown pair before publication.
+- [x] Require all gates pass before reports publish.
+- [x] Validate safety, exact scenario/sample counts, two-round repeatability and non-zero expected records.
+- [x] Compare all root and feature fingerprints again; any difference blocks publication, commit and integration.
 
 ### Step 6: Commit the versioned comparison as `waiting_review`
 
-- [ ] Update the plan with exact before/after outcomes, runtime, limitations and current functional SHA.
-- [ ] Set handoff to `waiting_review`, implementation `branch_head`, automated `passed`, independent review `pending`, user acceptance `not_required`, real-data `unchanged`, nightly `report_only`.
-- [ ] Run focused suite, affected regressions, `smoke_check.py --skip-tests`, `git diff --check`, empty feature `user_data`, and handoff validator.
-- [ ] Commit reports and plan with no source changes:
+- [x] Update the plan with exact before/after outcomes, runtime, limitations and current functional SHA.
+- [x] Set handoff to `waiting_review`, implementation `branch_head`, automated `passed`, independent review `pending`, user acceptance `not_required`, real-data `unchanged`, nightly `report_only`.
+- [x] Run focused suite, affected regressions, `smoke_check.py --skip-tests`, `git diff --check`, empty feature `user_data`, and handoff validator.
+- [x] Commit reports and plan with no source changes:
 
 ```powershell
 git add docs/performance/p1-27-request-connection-comparison.json docs/performance/p1-27-request-connection-comparison.md docs/superpowers/plans/2026-07-14-p1-27-request-scoped-read-connections-implementation.md
 git commit -m "docs: record P1-27 connection comparison"
 ```
+
+### Task 5 formal evidence
+
+- Tooling SHA: `65fde607a2e4fef3874a970b03e4fcb2bcd43d69` (`perf: reduce P1-27 comparison workload`).
+- Formal evidence source: the preserved successful exact-workload diagnostic generated at `2026-07-14T04:21:59.897665Z`; source JSON SHA-256 `2c24dd68bfebe0064f5f65a163dae99b28d876fff66a106a977b685f1796257e`, source Markdown SHA-256 `63e98824c8bd96ea1d80eb162aca76bc33724f3cb1af03a977209262b22783ec`.
+- Workload: original tier names `small`, `medium`, `large_5pct`; seed `126`; `data_scale_factor=0.1`; six allowlisted scenarios; `warmups=3`, `samples=2`, `repetitions=2`; same generated dataset per tier for `legacy_per_call` and `request_scoped`.
+- Coverage: 36 scale/repetition/scenario comparisons; status equality `36/36`; response-record equality `36/36`; target statement reduction `30/30`; medium p50 improvement `8/8`; legacy and request-scoped repeatability `3/3` each; all expected response-record counts were non-zero.
+- Medium latency evidence: plan preview improved `1323239.7073→959.4182 ms` and `2779.3096→878.7385 ms`; Graph profiles `203.2853→116.0825 ms` and `122.5878→89.3832 ms`; Graph rows `263.9323→110.7921 ms` and `137.5047→97.0612 ms`; Graph evidence `269.9335→103.4438 ms` and `133.4016→101.7445 ms`.
+- Statement evidence: medium plan preview `41663→164`; every medium Graph comparison `1043→24`. The Question Bank default control was measured without an improvement requirement.
+- Runtime evidence: the first fail-closed formal attempt ended after `72.977s` without publication because its medium p50 group failed, but that CLI did not preserve per-comparison failure values. The successful preserved diagnostic's controlling process ran for approximately 70 minutes and exposed a first-repetition legacy plan-preview p50 of about 22.05 minutes.
+- Limitations: only two measured samples per repetition make p50 sensitive to timing variance; the 10% dataset reduces statistical confidence and capacity coverage; the 22-minute legacy cold-path outlier demonstrates that these results are focused comparison evidence, not full-capacity or service-level evidence.
+- Publication: the preserved canonical pair was reconstructed without rerunning scenarios, validated against the exact allowlists/configuration/gates, augmented only with the two explicit limitations above, and published through the existing atomic/catchable-recovery helper. Published JSON SHA-256 `bed298982953ba09dd06dab591683dd57bfb55013b7df4af7760f04c8caef0b6`; Markdown SHA-256 `62878f4c3c9f4c8ccc45e951b4be0c29794276ee088112206dd05ece51e22f95`.
+- Safety: root and feature grading/question-bank size, UTC mtime and SHA-256 were identical before and after the attempt, diagnostic preservation and atomic publication; feature `user_data/` stayed clean and no real database was opened through SQLite.
 
 ## Task 6: Architecture, independent review and integration handoff
 
@@ -426,9 +439,9 @@ git commit -m "docs: verify P1-27 integration handoff"
 ## 昼夜交接
 
 **执行包：** P1-27
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
 **真实数据指纹：** unchanged
