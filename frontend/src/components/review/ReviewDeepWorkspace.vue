@@ -7,6 +7,7 @@ defineProps<{
   item: ReviewItem
   previousItem: ReviewItem | null
   nextItem: ReviewItem | null
+  registerAnnotationRetry: (entry: { input: ReviewConfirmInput; item: ReviewItem }) => void
 }>()
 
 const emit = defineEmits<{
@@ -15,7 +16,6 @@ const emit = defineEmits<{
     detailId: number
     annotationRetry: boolean
   }]
-  annotationRetry: [entry: { input: ReviewConfirmInput; item: ReviewItem }]
 }>()
 </script>
 
@@ -46,8 +46,8 @@ const emit = defineEmits<{
       </div>
       <div class="review-deep-workspace__scoring">
         <ReviewScoringInspector
+          :register-annotation-retry="registerAnnotationRetry"
           @confirmed="emit('confirmed', $event)"
-          @annotation-retry="emit('annotationRetry', $event)"
         />
       </div>
     </div>

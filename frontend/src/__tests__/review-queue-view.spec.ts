@@ -391,9 +391,10 @@ describe('source-recalibrated review view', () => {
     const pendingSingle = deferred<Awaited<ReturnType<typeof confirmReviewItem>>>()
     vi.mocked(confirmReviewItem).mockReturnValue(pendingSingle.promise)
     const { host, reviewStore } = await mountView()
-    host.querySelector<HTMLElement>('[data-detail-id="11"]')
-      ?.querySelector<HTMLButtonElement>('.review-answer-sheet__deep')
-      ?.click()
+    await vi.waitFor(() => expect(host.querySelector('[data-detail-id="11"]')).not.toBeNull())
+    host.querySelector<HTMLElement>('[data-detail-id="11"]')!
+      .querySelector<HTMLButtonElement>('.review-answer-sheet__deep')!
+      .click()
     await vi.waitFor(() => expect(host.querySelector('[data-testid="review-deep-workspace"]')).not.toBeNull())
     host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')!.click()
     await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
@@ -417,6 +418,81 @@ describe('source-recalibrated review view', () => {
       detail_id: 11,
       score_awarded: 3,
     }]))
+  })
+
+  it('keeps an old-session single-review retry after the deep workspace is unmounted', async () => {
+    const pendingSingle = deferred<Awaited<ReturnType<typeof confirmReviewItem>>>()
+    vi.mocked(confirmReviewItem).mockReturnValue(pendingSingle.promise)
+    const { host, reviewStore, sessionStore } = await mountView({
+      itemLoader: async (sessionId, questionId) => (itemsByQuestion[questionId] ?? []).map(
+        (entry) => ({ ...entry, session_id: sessionId, result_id: sessionId * 100 + entry.detail_id }),
+      ),
+    })
+    await vi.waitFor(() => expect(host.querySelector('[data-detail-id="11"]')).not.toBeNull())
+    host.querySelector<HTMLElement>('[data-detail-id="11"]')!
+      .querySelector<HTMLButtonElement>('.review-answer-sheet__deep')!
+      .click()
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="review-deep-workspace"]')).not.toBeNull())
+    host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')!.click()
+    await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
+
+    sessionStore.$patch({
+      sessions: [{
+        id: 8,
+        name: '另一场考试',
+        status: 'grading',
+        is_deleted: false,
+        deleted_at: null,
+        created_at: null,
+        updated_at: null,
+      }],
+      selectedSessionId: 8,
+      loadState: 'ready',
+    })
+    await vi.waitFor(() => expect(reviewStore.items[0]?.session_id).toBe(8))
+
+    pendingSingle.resolve({
+      updated_details: 1,
+      updated_results: 1,
+      annotation_outcomes: [{ result_id: 711, status: 'retry_required' }],
+    })
+
+    await vi.waitFor(() => expect(host.textContent).toContain('分数已保存，1 份标注图需要重试'))
+    vi.mocked(confirmReviewItems)
+      .mockResolvedValueOnce({
+        updated_details: 2,
+        updated_results: 2,
+        annotation_outcomes: [
+          { result_id: 811, status: 'retry_required' },
+          { result_id: 812, status: 'retry_required' },
+        ],
+      })
+      .mockResolvedValue({
+        updated_details: 2,
+        updated_results: 2,
+        annotation_outcomes: [],
+      })
+    host.querySelector<HTMLButtonElement>('[data-testid="back-to-batch"]')!.click()
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="review-batch-workspace"]')).not.toBeNull())
+    await vi.waitFor(() => expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="confirm-batch"]')?.disabled,
+    ).toBe(false))
+    host.querySelector<HTMLButtonElement>('[data-testid="confirm-batch"]')!.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('分数已保存，3 份标注图需要重试'))
+
+    const retry = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === '重试标注图')!
+    retry.click()
+    await vi.waitFor(() => expect(confirmReviewItems).toHaveBeenCalledTimes(3))
+    expect(confirmReviewItems).toHaveBeenNthCalledWith(2, 7, 'Q1', [{
+      result_id: 711,
+      detail_id: 11,
+      score_awarded: 3,
+    }])
+    expect(confirmReviewItems).toHaveBeenNthCalledWith(3, 8, 'Q1', [
+      { result_id: 811, detail_id: 11, score_awarded: 3 },
+      { result_id: 812, detail_id: 12, score_awarded: 3 },
+    ])
   })
 
   it('merges retry entries across questions and retries each ownership group explicitly', async () => {
@@ -469,6 +545,72 @@ describe('source-recalibrated review view', () => {
       { result_id: 22, detail_id: 22, score_awarded: 3 },
     ])
     await vi.waitFor(() => expect(host.textContent).not.toContain('标注图需要重试'))
+  })
+
+  it('keeps retries added while an earlier annotation retry request is still pending', async () => {
+    const pendingRetry = deferred<Awaited<ReturnType<typeof confirmReviewItems>>>()
+    vi.mocked(confirmReviewItems)
+      .mockResolvedValueOnce({
+        updated_details: 2,
+        updated_results: 2,
+        annotation_outcomes: [
+          { result_id: 11, status: 'retry_required' },
+          { result_id: 12, status: 'retry_required' },
+        ],
+      })
+      .mockReturnValueOnce(pendingRetry.promise)
+      .mockResolvedValue({
+        updated_details: 1,
+        updated_results: 1,
+        annotation_outcomes: [{ result_id: 22, status: 'succeeded' }],
+      })
+    vi.mocked(confirmReviewItem).mockResolvedValue({
+      updated_details: 1,
+      updated_results: 1,
+      annotation_outcomes: [{ result_id: 22, status: 'retry_required' }],
+    })
+    const { host } = await mountView()
+
+    host.querySelector<HTMLButtonElement>('[data-testid="confirm-batch"]')!.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('分数已保存，2 份标注图需要重试'))
+    await vi.waitFor(() => expect(
+      host.querySelector<HTMLButtonElement>('[data-question-id="Q2"]')?.getAttribute('aria-current'),
+    ).toBe('true'))
+
+    const retry = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === '重试标注图')!
+    retry.click()
+    await vi.waitFor(() => expect(confirmReviewItems).toHaveBeenCalledTimes(2))
+
+    host.querySelector<HTMLElement>('[data-detail-id="22"]')
+      ?.querySelector<HTMLButtonElement>('.review-answer-sheet__deep')
+      ?.click()
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="review-deep-workspace"]')).not.toBeNull())
+    await vi.waitFor(() => expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')?.disabled,
+    ).toBe(false))
+    host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')!.click()
+    await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(host.textContent).toContain('分数已保存，3 份标注图需要重试'))
+
+    pendingRetry.resolve({
+      updated_details: 2,
+      updated_results: 2,
+      annotation_outcomes: [
+        { result_id: 11, status: 'succeeded' },
+        { result_id: 12, status: 'succeeded' },
+      ],
+    })
+    await vi.waitFor(() => expect(host.textContent).toContain('分数已保存，1 份标注图需要重试'))
+
+    const finalRetry = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === '重试标注图')!
+    finalRetry.click()
+    await vi.waitFor(() => expect(confirmReviewItems).toHaveBeenNthCalledWith(3, 7, 'Q2', [{
+      result_id: 22,
+      detail_id: 22,
+      score_awarded: 3,
+    }]))
   })
 
   it('shows the no-session state without requesting review data', async () => {
