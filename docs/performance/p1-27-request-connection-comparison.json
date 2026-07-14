@@ -28,8 +28,16 @@
       },
       "repetition": 1,
       "response_records": {
-        "after": 20.0,
-        "before": 20.0,
+        "after": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "small",
@@ -65,8 +73,16 @@
       },
       "repetition": 1,
       "response_records": {
-        "after": 3.0,
-        "before": 3.0,
+        "after": {
+          "maximum": null,
+          "median": 3.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 3.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "small",
@@ -102,8 +118,16 @@
       },
       "repetition": 1,
       "response_records": {
-        "after": 3.0,
-        "before": 3.0,
+        "after": {
+          "maximum": null,
+          "median": 3.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 3.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "small",
@@ -139,8 +163,16 @@
       },
       "repetition": 1,
       "response_records": {
-        "after": 3.0,
-        "before": 3.0,
+        "after": {
+          "maximum": null,
+          "median": 3.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 3.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "small",
@@ -176,8 +208,16 @@
       },
       "repetition": 1,
       "response_records": {
-        "after": 3.0,
-        "before": 3.0,
+        "after": {
+          "maximum": null,
+          "median": 3.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 3.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "small",
@@ -213,8 +253,16 @@
       },
       "repetition": 1,
       "response_records": {
-        "after": 3.0,
-        "before": 3.0,
+        "after": {
+          "maximum": null,
+          "median": 3.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 3.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "small",
@@ -250,8 +298,16 @@
       },
       "repetition": 2,
       "response_records": {
-        "after": 20.0,
-        "before": 20.0,
+        "after": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "small",
@@ -287,8 +343,16 @@
       },
       "repetition": 2,
       "response_records": {
-        "after": 3.0,
-        "before": 3.0,
+        "after": {
+          "maximum": null,
+          "median": 3.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 3.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "small",
@@ -324,8 +388,16 @@
       },
       "repetition": 2,
       "response_records": {
-        "after": 3.0,
-        "before": 3.0,
+        "after": {
+          "maximum": null,
+          "median": 3.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 3.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "small",
@@ -361,8 +433,16 @@
       },
       "repetition": 2,
       "response_records": {
-        "after": 3.0,
-        "before": 3.0,
+        "after": {
+          "maximum": null,
+          "median": 3.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 3.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "small",
@@ -398,8 +478,16 @@
       },
       "repetition": 2,
       "response_records": {
-        "after": 3.0,
-        "before": 3.0,
+        "after": {
+          "maximum": null,
+          "median": 3.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 3.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "small",
@@ -435,8 +523,16 @@
       },
       "repetition": 2,
       "response_records": {
-        "after": 3.0,
-        "before": 3.0,
+        "after": {
+          "maximum": null,
+          "median": 3.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 3.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "small",
@@ -472,8 +568,16 @@
       },
       "repetition": 1,
       "response_records": {
-        "after": 20.0,
-        "before": 20.0,
+        "after": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "medium",
@@ -509,8 +613,16 @@
       },
       "repetition": 1,
       "response_records": {
-        "after": 20.0,
-        "before": 20.0,
+        "after": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "medium",
@@ -546,8 +658,16 @@
       },
       "repetition": 1,
       "response_records": {
-        "after": 20.0,
-        "before": 20.0,
+        "after": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "medium",
@@ -583,8 +703,16 @@
       },
       "repetition": 1,
       "response_records": {
-        "after": 20.0,
-        "before": 20.0,
+        "after": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "medium",
@@ -620,8 +748,16 @@
       },
       "repetition": 1,
       "response_records": {
-        "after": 40.0,
-        "before": 40.0,
+        "after": {
+          "maximum": null,
+          "median": 40.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 40.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "medium",
@@ -657,8 +793,16 @@
       },
       "repetition": 1,
       "response_records": {
-        "after": 20.0,
-        "before": 20.0,
+        "after": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "medium",
@@ -694,8 +838,16 @@
       },
       "repetition": 2,
       "response_records": {
-        "after": 20.0,
-        "before": 20.0,
+        "after": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "medium",
@@ -731,8 +883,16 @@
       },
       "repetition": 2,
       "response_records": {
-        "after": 20.0,
-        "before": 20.0,
+        "after": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "medium",
@@ -768,8 +928,16 @@
       },
       "repetition": 2,
       "response_records": {
-        "after": 20.0,
-        "before": 20.0,
+        "after": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "medium",
@@ -805,8 +973,16 @@
       },
       "repetition": 2,
       "response_records": {
-        "after": 20.0,
-        "before": 20.0,
+        "after": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "medium",
@@ -842,8 +1018,16 @@
       },
       "repetition": 2,
       "response_records": {
-        "after": 40.0,
-        "before": 40.0,
+        "after": {
+          "maximum": null,
+          "median": 40.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 40.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "medium",
@@ -879,8 +1063,16 @@
       },
       "repetition": 2,
       "response_records": {
-        "after": 20.0,
-        "before": 20.0,
+        "after": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "medium",
@@ -916,8 +1108,16 @@
       },
       "repetition": 1,
       "response_records": {
-        "after": 20.0,
-        "before": 20.0,
+        "after": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "large_5pct",
@@ -953,8 +1153,16 @@
       },
       "repetition": 1,
       "response_records": {
-        "after": 2.0,
-        "before": 2.0,
+        "after": {
+          "maximum": null,
+          "median": 2.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 2.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "large_5pct",
@@ -990,8 +1198,16 @@
       },
       "repetition": 1,
       "response_records": {
-        "after": 2.0,
-        "before": 2.0,
+        "after": {
+          "maximum": null,
+          "median": 2.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 2.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "large_5pct",
@@ -1027,8 +1243,16 @@
       },
       "repetition": 1,
       "response_records": {
-        "after": 2.0,
-        "before": 2.0,
+        "after": {
+          "maximum": null,
+          "median": 2.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 2.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "large_5pct",
@@ -1064,8 +1288,16 @@
       },
       "repetition": 1,
       "response_records": {
-        "after": 2.0,
-        "before": 2.0,
+        "after": {
+          "maximum": null,
+          "median": 2.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 2.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "large_5pct",
@@ -1101,8 +1333,16 @@
       },
       "repetition": 1,
       "response_records": {
-        "after": 2.0,
-        "before": 2.0,
+        "after": {
+          "maximum": null,
+          "median": 2.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 2.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "large_5pct",
@@ -1138,8 +1378,16 @@
       },
       "repetition": 2,
       "response_records": {
-        "after": 20.0,
-        "before": 20.0,
+        "after": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 20.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "large_5pct",
@@ -1175,8 +1423,16 @@
       },
       "repetition": 2,
       "response_records": {
-        "after": 2.0,
-        "before": 2.0,
+        "after": {
+          "maximum": null,
+          "median": 2.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 2.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "large_5pct",
@@ -1212,8 +1468,16 @@
       },
       "repetition": 2,
       "response_records": {
-        "after": 2.0,
-        "before": 2.0,
+        "after": {
+          "maximum": null,
+          "median": 2.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 2.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "large_5pct",
@@ -1249,8 +1513,16 @@
       },
       "repetition": 2,
       "response_records": {
-        "after": 2.0,
-        "before": 2.0,
+        "after": {
+          "maximum": null,
+          "median": 2.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 2.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "large_5pct",
@@ -1286,8 +1558,16 @@
       },
       "repetition": 2,
       "response_records": {
-        "after": 2.0,
-        "before": 2.0,
+        "after": {
+          "maximum": null,
+          "median": 2.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 2.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "large_5pct",
@@ -1323,8 +1603,16 @@
       },
       "repetition": 2,
       "response_records": {
-        "after": 2.0,
-        "before": 2.0,
+        "after": {
+          "maximum": null,
+          "median": 2.0,
+          "minimum": null
+        },
+        "before": {
+          "maximum": null,
+          "median": 2.0,
+          "minimum": null
+        },
         "equal": true
       },
       "scale": "large_5pct",
@@ -1342,43 +1630,50 @@
       "name": "status_equality",
       "passed": true,
       "passed_count": 36,
-      "required_count": 36
+      "required_count": 36,
+      "result": "passed"
     },
     {
       "name": "response_record_equality",
       "passed": true,
       "passed_count": 36,
-      "required_count": 36
+      "required_count": 36,
+      "result": "passed"
     },
     {
       "name": "nonzero_response_records",
-      "passed": true,
-      "passed_count": 36,
-      "required_count": 36
+      "passed": null,
+      "passed_count": null,
+      "required_count": 36,
+      "result": "not_evaluated"
     },
     {
       "name": "target_statement_reduction",
       "passed": true,
       "passed_count": 30,
-      "required_count": 30
+      "required_count": 30,
+      "result": "passed"
     },
     {
       "name": "medium_p50_improvement",
       "passed": true,
       "passed_count": 8,
-      "required_count": 8
+      "required_count": 8,
+      "result": "passed"
     },
     {
       "name": "legacy_two_round_repeatability",
       "passed": true,
       "passed_count": 3,
-      "required_count": 3
+      "required_count": 3,
+      "result": "passed"
     },
     {
       "name": "request_scoped_two_round_repeatability",
       "passed": true,
       "passed_count": 3,
-      "required_count": 3
+      "required_count": 3,
+      "result": "passed"
     }
   ],
   "generated_at_utc": "2026-07-14T04:21:59.897665Z",
@@ -1390,9 +1685,13 @@
     "Latency is machine-specific and is not a service-level objective.",
     "Each file is atomic, but sudden termination can leave a mixed old/new pair.",
     "With only two measured samples per repetition, p50 is sensitive to timing variance and has reduced statistical confidence.",
-    "The first medium legacy plan-preview repetition recorded a p50 of 1323239.7073 ms (about 22.05 minutes), while repetition two recorded 2779.3096 ms; this observed timing outlier shows that the report is not capacity or service-level evidence."
+    "The first medium legacy plan-preview repetition recorded a p50 of 1323239.7073 ms (about 22.05 minutes), while repetition two recorded 2779.3096 ms; this observed timing outlier shows that the report is not capacity or service-level evidence.",
+    "This 0.1/3/2/2 artifact is a quick performance diagnostic.",
+    "Retained evidence proves all 36 legacy and request-scoped response-record medians are positive, but response-record minima and maxima were not retained, so this artifact cannot prove every underlying measured sample was positive.",
+    "Functional correctness and non-empty response behavior are covered by the API and service test suites, not by this latency artifact.",
+    "Because response-record minima are unavailable, the per-sample non-zero gate is marked not_evaluated and is not counted as passed."
   ],
-  "overall_gate": "passed",
+  "overall_gate": "quick_diagnostic",
   "p1_26_provenance_code_sha": "6bb53c338d23e530ed2890afbdecce0ae6ac9fb9",
   "package": "P1-27",
   "repeatability": "passed",

@@ -26,6 +26,7 @@ from tools.performance.request_connection_report import (
     SCENARIO_NAMES,
     TARGET_SCENARIOS,
     ComparisonGateError,
+    GateSummary,
     build_comparison_report,
     ensure_report_passes,
     load_baseline_report,
@@ -747,6 +748,91 @@ def test_equal_zero_response_records_block_publication_with_explicit_gate(
     assert nonzero_gate.required_count == 12
     assert nonzero_gate.passed_count == 0
     assert nonzero_gate.passed is False
+
+
+def test_zero_minimum_response_sample_is_preserved_and_blocks_publication(
+    tmp_path: Path,
+) -> None:
+    baseline = load_baseline_report(
+        _write_baseline(tmp_path, _baseline_payload(scales=("small",))),
+        scales=("small",),
+        scenarios=SCENARIO_NAMES,
+    )
+
+    def with_mixed_records(result: ScaleBenchmarkResult) -> ScaleBenchmarkResult:
+        return replace(
+            result,
+            repetitions=tuple(
+                replace(
+                    repetition,
+                    scenarios=tuple(
+                        replace(
+                            scenario,
+                            response_records=NumericSummary(0.0, 1.0, 1.0),
+                        )
+                        for scenario in repetition.scenarios
+                    ),
+                )
+                for repetition in result.repetitions
+            ),
+        )
+
+    report = build_comparison_report(
+        baseline,
+        (with_mixed_records(_legacy_result("small")),),
+        (with_mixed_records(_result("small")),),
+        code_sha="b" * 40,
+        generated_at_utc="2026-07-14T04:00:00Z",
+        runtime=RuntimeSummary("Windows-11", "3.12.1", "3.43.1", 8),
+        data_scale_factor=0.1,
+        warmups=3,
+        samples=20,
+        repetitions=2,
+        limitations=("Reduced statistical confidence and capacity coverage.",),
+    )
+
+    with pytest.raises(ComparisonGateError, match="nonzero_response_records"):
+        ensure_report_passes(report)
+    nonzero_gate = next(
+        gate for gate in report.gates if gate.name == "nonzero_response_records"
+    )
+    assert (nonzero_gate.required_count, nonzero_gate.passed_count) == (12, 0)
+    payload = json.loads(render_json(report))
+    assert payload["comparisons"][0]["response_records"] == {
+        "before": {"minimum": 0.0, "median": 1.0, "maximum": 1.0},
+        "after": {"minimum": 0.0, "median": 1.0, "maximum": 1.0},
+        "equal": True,
+    }
+
+
+def test_unavailable_nonzero_sample_gate_is_not_reported_as_passed(
+    tmp_path: Path,
+) -> None:
+    report = _report(tmp_path)
+    gates = tuple(
+        GateSummary(gate.name, gate.required_count, None, None)
+        if gate.name == "nonzero_response_records"
+        else gate
+        for gate in report.gates
+    )
+    diagnostic = replace(report, gates=gates, overall_gate="quick_diagnostic")
+
+    with pytest.raises(ComparisonGateError, match="nonzero_response_records"):
+        ensure_report_passes(diagnostic)
+    payload = json.loads(render_json(diagnostic))
+    unavailable_gate = next(
+        gate for gate in payload["gates"] if gate["name"] == "nonzero_response_records"
+    )
+    assert unavailable_gate == {
+        "name": "nonzero_response_records",
+        "required_count": 24,
+        "passed_count": None,
+        "passed": None,
+        "result": "not_evaluated",
+    }
+    markdown = render_markdown(diagnostic)
+    assert "| non-zero response records | 24 | unavailable | not_evaluated |" in markdown
+    assert "overall gate: `quick_diagnostic`" in markdown
 
 
 def test_publish_report_reuses_p1_26_recovery_primitives_and_contract() -> None:
