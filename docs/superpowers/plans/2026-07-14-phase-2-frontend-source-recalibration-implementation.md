@@ -8,7 +8,7 @@
 
 **Tech Stack:** Vue 3.5, TypeScript 6, Pinia 3, Vue Router 5, Element Plus 2, Vitest 4, Playwright 1.61, Node 22/24, existing FastAPI review contracts.
 
-**Current checkpoint (2026-07-14):** Tasks 1～5 and Task 6 Steps 1～8 are complete at reviewed functional SHA `080562504c19eb6ba8eee5146c2b9b663ac86b1e`. Automated verification, manual browser validation, real-data fingerprint comparison, and independent review (0 Blocker / 0 Major / 0 Minor) are complete. Task 6 Step 9 is waiting for explicit user acceptance; Task 7 and P2-09～P2-22 remain blocked.
+**Current checkpoint (2026-07-14):** Tasks 1～6 are complete at reviewed functional SHA `080562504c19eb6ba8eee5146c2b9b663ac86b1e`. Automated verification, manual browser validation, real-data fingerprint comparison, independent review (0 Blocker / 0 Major / 0 Minor), and explicit user acceptance of both business equivalence and UX improvement are complete. Task 7 integration and PR are in progress; P2-09 retains its separate Phase 1 dependency and P2-10～P2-22 retain their formal package dependencies.
 
 ## Global Constraints
 
@@ -684,7 +684,7 @@ git add -- docs/superpowers/packages/EXECUTION_INDEX.md docs/user-testing/checkp
 git commit -m "docs: prepare Phase 2 recalibration acceptance"
 ```
 
-- [ ] **Step 9: Stop for user acceptance**
+- [x] **Step 9: Stop for user acceptance**
 
 Present the numbered checklist in plain language. Do not merge, push the final gate result, or unblock later packages until the user explicitly returns `passed`. If the user reports Blocker/Major, preserve the worktree and demo evidence, diagnose systematically, fix with TDD, repeat independent review and fresh verification, and issue an updated checklist SHA.
 
@@ -698,11 +698,11 @@ Present the numbered checklist in plain language. Do not merge, push the final g
 - Consumes: explicit user `passed`, reviewed feature SHA, current `origin/main`.
 - Produces: accepted checklist result, integration verification, GitHub PR merge, and synchronized `origin/main`/local main/worktrees.
 
-- [ ] **Step 1: Record only the user’s actual acceptance result**
+- [x] **Step 1: Record only the user’s actual acceptance result**
 
 Update the checklist with user feedback, business equivalence, UX improvement, final `passed`, post-test database fingerprints, and the non-package acceptance block. Update the index gate result to passed and remove only the source-recalibration blocker; preserve P2-09’s separate Phase 1 dependency.
 
-- [ ] **Step 2: Commit the acceptance record on the feature branch**
+- [x] **Step 2: Commit the acceptance record on the feature branch**
 
 ```powershell
 git add -- docs/user-testing/checkpoints/phase-2-frontend-source-recalibration-2026-07-14.md docs/superpowers/packages/EXECUTION_INDEX.md
