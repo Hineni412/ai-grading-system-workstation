@@ -50,9 +50,43 @@ class ReviewAdjustmentOwnershipError(ValueError):
         )
 
 
+class _BorrowedSQLiteConnection:
+    __slots__ = ("_connection",)
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        object.__setattr__(self, "_connection", connection)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._connection, name, value)
+
+    def __enter__(self) -> _BorrowedSQLiteConnection:
+        return self
+
+    def __exit__(self, *_exc_info: object) -> bool:
+        return False
+
+    def commit(self) -> None:
+        return None
+
+    def rollback(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
 class DBManager:
-    def __init__(self, db_path: Path) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        external_connection: sqlite3.Connection | None = None,
+    ) -> None:
         self.db_path = db_path
+        self._external_connection = external_connection
         try:
             from path_manager import get_path_manager
             pm = get_path_manager()
@@ -63,7 +97,9 @@ class DBManager:
         except Exception:
             self.backup_dir = self.db_path.parent / "backups"
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self) -> sqlite3.Connection | _BorrowedSQLiteConnection:
+        if self._external_connection is not None:
+            return _BorrowedSQLiteConnection(self._external_connection)
         conn = instrument_sqlite_connection(sqlite3.connect(self.db_path))
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
