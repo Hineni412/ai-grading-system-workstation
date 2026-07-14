@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 from collections.abc import Iterator
-from contextlib import contextmanager
 
 from fastapi import Depends, Request
 
 from db_manager import DBManager
+from backend.api.read_connections import (
+    RequestReadContext,
+    RequestReadContextCleanupError,
+    request_read_context,
+)
 from backend.files.service import JobFileService
 from backend.jobs.default_handlers import register_default_job_handlers
 from backend.jobs.manager import JobManager
@@ -24,7 +28,6 @@ from question_bank.recommendation.practice_plan_service import PracticePlanServi
 from question_bank.services.question_read_service import QuestionBankReadService
 from question_bank.services.question_read_service import (
     QuestionBankSnapshotError,
-    captured_sqlite_snapshot_path,
 )
 from question_bank.services.training_task_service import TrainingTaskService
 from question_bank.services.question_write_service import QuestionBankWriteService
@@ -114,57 +117,55 @@ def get_diagnosis_profile_service() -> DiagnosisProfileService:
     return DiagnosisProfileService(paths.db_path, paths.qb_db_path)
 
 
-def get_graph_diagnosis_profile_service(
+def get_request_read_context(
+    request: Request,
     paths: PathManager = Depends(get_path_manager),
-) -> Iterator[DiagnosisProfileService]:
-    grading_tables = frozenset(
-        {
-            "exam_papers",
-            "grading_sessions",
-            "session_details",
-            "session_results",
-            "students",
-        }
-    )
-    question_bank_tables = frozenset(
-        {
-            "grading_question_links",
-            "question_tags",
-            "questions",
-        }
-    )
+) -> Iterator[RequestReadContext]:
     try:
-        with captured_sqlite_snapshot_path(
-            paths.db_path,
-            required_tables=grading_tables,
-        ) as grading_snapshot:
-            with captured_sqlite_snapshot_path(
-                paths.qb_db_path,
-                required_tables=question_bank_tables,
-            ) as question_bank_snapshot:
-                yield DiagnosisProfileService(
-                    grading_snapshot,
-                    question_bank_snapshot,
-                    grading_db=_ClosingDBManager(grading_snapshot),
-                )
-    except QuestionBankSnapshotError as exc:
+        with request_read_context(paths) as context:
+            yield context
+    except (QuestionBankSnapshotError, RequestReadContextCleanupError) as exc:
         from backend.api.app import ApiError
 
+        if request.url.path.startswith("/api/graph/"):
+            raise ApiError(
+                503,
+                "graph_database_unavailable",
+                "Graph data is temporarily unavailable",
+            ) from exc
         raise ApiError(
             503,
-            "graph_database_unavailable",
-            "Graph data is temporarily unavailable",
+            "training_database_unavailable",
+            "Training data is temporarily unavailable",
         ) from exc
 
 
-class _ClosingDBManager(DBManager):
-    @contextmanager
-    def _connect(self):
-        conn = super()._connect()
-        try:
-            yield conn
-        finally:
-            conn.close()
+def get_request_diagnosis_profile_service(
+    context: RequestReadContext = Depends(
+        get_request_read_context,
+        scope="function",
+    ),
+) -> DiagnosisProfileService:
+    return context.diagnosis_service
+
+
+def get_request_practice_plan_service(
+    context: RequestReadContext = Depends(
+        get_request_read_context,
+        scope="function",
+    ),
+) -> PracticePlanService:
+    return context.practice_service
+
+
+def get_graph_diagnosis_profile_service(
+    context: RequestReadContext = Depends(
+        get_request_read_context,
+        scope="function",
+    ),
+) -> DiagnosisProfileService:
+    """Compatibility dependency retained for existing benchmark callers."""
+    return context.diagnosis_service
 
 
 def get_practice_plan_service() -> PracticePlanService:
