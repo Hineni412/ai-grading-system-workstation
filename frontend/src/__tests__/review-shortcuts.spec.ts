@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 import {
   ReviewShortcutBus,
@@ -6,6 +8,13 @@ import {
 } from '../composables/review-shortcuts'
 
 describe('review workspace shortcut bus', () => {
+  it('contains no confirmation command', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'src/composables/review-shortcuts.ts'),
+      'utf8',
+    )
+    expect(source).not.toContain('confirm-next')
+  })
   it('dispatches synchronously in subscription order and stops after unsubscribe', () => {
     const bus = new ReviewShortcutBus()
     const received: string[] = []

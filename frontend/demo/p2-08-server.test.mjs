@@ -82,6 +82,50 @@ test('confirmation changes only runtime state and reset restores the fixed datas
   assert.deepEqual(reset, before)
 })
 
+test('filters pending items and confirms multiple valid items atomically', async () => {
+  const origin = await startDemo()
+  const baseUrl = `${origin}/api/sessions/7/review/questions/Q1/items`
+  const pending = await (await fetch(`${baseUrl}?needs_review_only=true`)).json()
+  const all = await (await fetch(`${baseUrl}?needs_review_only=false`)).json()
+  assert.deepEqual(pending.items.map((item) => item.detail_id), [1, 3])
+  assert.deepEqual(all.items.map((item) => item.detail_id), [1, 2, 3, 4])
+
+  const confirmed = await postJson(
+    origin,
+    '/api/sessions/7/review/questions/Q1/confirm',
+    { items: [
+      { result_id: 101, detail_id: 1, score_awarded: 4.5 },
+      { result_id: 103, detail_id: 3, score_awarded: 3 },
+    ] },
+  )
+  assert.equal(confirmed.status, 200)
+  const body = await confirmed.json()
+  assert.equal(body.updated_details, 2)
+  assert.equal(body.updated_results, 2)
+  assert.equal(body.annotation_outcomes.length, 2)
+})
+
+test('rejects an invalid or duplicate batch before mutating any item', async () => {
+  const origin = await startDemo()
+  const itemsUrl = `${origin}/api/sessions/7/review/questions/Q1/items?needs_review_only=false`
+  const before = await (await fetch(itemsUrl)).json()
+  const confirmUrl = '/api/sessions/7/review/questions/Q1/confirm'
+
+  const invalid = await postJson(origin, confirmUrl, { items: [
+    { result_id: 101, detail_id: 1, score_awarded: 4.5 },
+    { result_id: 103, detail_id: 3, score_awarded: 8 },
+  ] })
+  assert.equal(invalid.status, 422)
+  assert.deepEqual(await (await fetch(itemsUrl)).json(), before)
+
+  const duplicate = await postJson(origin, confirmUrl, { items: [
+    { result_id: 101, detail_id: 1, score_awarded: 4 },
+    { result_id: 101, detail_id: 1, score_awarded: 4.5 },
+  ] })
+  assert.equal(duplicate.status, 422)
+  assert.deepEqual(await (await fetch(itemsUrl)).json(), before)
+})
+
 test('exposes explicit failure, retry, empty, error and slow acceptance modes', async () => {
   const origin = await startDemo()
   const confirmUrl = '/api/sessions/7/review/questions/Q1/confirm'
@@ -127,15 +171,6 @@ test('rejects unknown controls, media shapes and invalid confirmation context', 
     { items: [{ result_id: 101, detail_id: 1, score_awarded: 6 }] },
   )
   assert.equal(outOfRange.status, 422)
-  const multiple = await postJson(
-    origin,
-    '/api/sessions/7/review/questions/Q1/confirm',
-    { items: [
-      { result_id: 101, detail_id: 1, score_awarded: 4 },
-      { result_id: 102, detail_id: 2, score_awarded: 4 },
-    ] },
-  )
-  assert.equal(multiple.status, 422)
 })
 
 test('rejects traversal and the server source contains no production data-tree reference', async () => {

@@ -7,8 +7,8 @@
         <dd>搜索学生</dd>
       </div>
       <div>
-        <dt><kbd>Enter</kbd></dt>
-        <dd>在分数框内移到下一份</dd>
+        <dt><kbd>J / K</kbd></dt>
+        <dd>下一份 / 上一份</dd>
       </div>
     </dl>
   </aside>

@@ -12,11 +12,12 @@ describe('ReviewShortcutGuide', () => {
 
     expect(guide).not.toBeNull()
     expect(guide?.querySelectorAll('dt')).toHaveLength(2)
-    expect(guide?.textContent).toContain('Enter')
-    expect(guide?.textContent).toContain('在分数框内移到下一份')
     expect(guide?.textContent).toContain('/')
     expect(guide?.textContent).toContain('搜索学生')
-    expect(guide?.textContent).not.toContain('确认并下一份')
+    expect(guide?.textContent).toContain('J / K')
+    expect(guide?.textContent).toContain('下一份 / 上一份')
+    expect(guide?.textContent).not.toContain('Enter')
+    expect(guide?.textContent).not.toContain('确认')
 
     app.unmount()
   })

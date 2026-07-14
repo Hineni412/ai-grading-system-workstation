@@ -388,12 +388,33 @@ function isShortcutProtectedTarget(target: EventTarget | null): boolean {
 
 function onKeydown(event: KeyboardEvent): void {
   if (
+    !event.defaultPrevented &&
+    !event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.shiftKey &&
+    !isShortcutProtectedTarget(event.target) &&
+    (event.key.toLocaleLowerCase() === 'j' || event.key.toLocaleLowerCase() === 'k')
+  ) {
+    reviewStore.moveSelection(event.key.toLocaleLowerCase() === 'j' ? 1 : -1)
+    event.preventDefault()
+    if (mode.value === 'batch') {
+      void nextTick(() => reviewPage.value
+        ?.querySelector<HTMLInputElement>(
+          `[data-detail-id="${reviewStore.selectedDetailId}"] input:not(:disabled)`,
+        )
+        ?.focus())
+    }
+    return
+  }
+  if (
     event.defaultPrevented ||
     event.altKey ||
     event.ctrlKey ||
     event.metaKey ||
     event.shiftKey ||
     event.key !== '/' ||
+    mode.value !== 'batch' ||
     isShortcutProtectedTarget(event.target)
   ) return
   reviewPage.value?.querySelector<HTMLInputElement>('#review-search')?.focus()
