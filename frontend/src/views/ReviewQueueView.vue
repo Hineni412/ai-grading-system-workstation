@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import {
@@ -10,6 +10,7 @@ import {
 import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
 import StatePanel from '../components/design-system/StatePanel.vue'
 import ReviewBatchWorkspace from '../components/review/ReviewBatchWorkspace.vue'
+import ReviewDeepWorkspace from '../components/review/ReviewDeepWorkspace.vue'
 import ReviewFeedbackToast from '../components/review/ReviewFeedbackToast.vue'
 import ReviewShortcutGuide from '../components/review/ReviewShortcutGuide.vue'
 import { useReviewDraftStore } from '../stores/review-drafts'
@@ -31,6 +32,8 @@ const batchSubmitting = ref(false)
 const feedback = ref('')
 const feedbackTone = ref<'success' | 'warning' | 'error'>('success')
 const annotationRetryEntries = ref<AnnotationRetryEntry[]>([])
+const mode = ref<'batch' | 'deep'>('batch')
+const batchScrollTop = ref(0)
 
 let contextGeneration = 0
 let itemGeneration = 0
@@ -69,6 +72,17 @@ const hasValidatedQuestion = computed(() =>
   ),
 )
 const selectedQuestionIdForView = computed(() => reviewStore.selectedQuestionId ?? '')
+const deepItem = computed(() => mode.value === 'deep' ? reviewStore.currentItem : null)
+const deepItemIndex = computed(() => {
+  if (!deepItem.value) return -1
+  return reviewStore.filteredItems.findIndex((entry) => entry.detail_id === deepItem.value?.detail_id)
+})
+const previousDeepItem = computed(() =>
+  deepItemIndex.value > 0 ? reviewStore.filteredItems[deepItemIndex.value - 1] ?? null : null,
+)
+const nextDeepItem = computed(() =>
+  deepItemIndex.value >= 0 ? reviewStore.filteredItems[deepItemIndex.value + 1] ?? null : null,
+)
 const annotationRetryTitle = computed(() =>
   `分数已保存，${annotationRetryEntries.value.length} 份标注图需要重试`,
 )
@@ -83,37 +97,29 @@ function detailQuery(value: unknown): number | null {
   return Number.isSafeInteger(detailId) && detailId > 0 ? detailId : null
 }
 
-function sameQuery(query: Record<string, string>): boolean {
-  const keys = Object.keys(route.query)
-  const expectedKeys = Object.keys(query)
-  return keys.length === expectedKeys.length && expectedKeys.every(
-    (key) => route.query[key] === query[key],
-  )
-}
-
 function syncValidatedQuery(): void {
+  const query: Record<string, string> = {}
+  const questionId = reviewStore.selectedQuestionId
+  const detailId = reviewStore.selectedDetailId
+  const questionIsValid = questionId !== null && reviewStore.questions.some(
+    (question) => question.question_id === questionId,
+  )
+
+  if (questionIsValid && questionId !== null) query.question = questionId
+  if (
+    mode.value === 'deep' &&
+    questionIsValid &&
+    detailId !== null &&
+    reviewStore.items.some(
+      (item) => item.question_id === questionId && item.detail_id === detailId,
+    )
+  ) {
+    query.detail = String(detailId)
+  }
   querySync = querySync
     .then(async () => {
       if (unmounting) return
-      const query: Record<string, string> = {}
-      const questionId = reviewStore.selectedQuestionId
-      const detailId = reviewStore.selectedDetailId
-      const questionIsValid = questionId !== null && reviewStore.questions.some(
-        (question) => question.question_id === questionId,
-      )
-
-      if (questionIsValid && questionId !== null) query.question = questionId
-      if (
-        questionIsValid &&
-        detailId !== null &&
-        reviewStore.items.some(
-          (item) => item.question_id === questionId && item.detail_id === detailId,
-        )
-      ) {
-        query.detail = String(detailId)
-      }
-
-      if (!sameQuery(query)) await router.replace({ query })
+      await router.replace({ query })
     })
     .catch(() => undefined)
 }
@@ -142,6 +148,9 @@ async function loadQuestion(
     reviewStore.items.some((entry) => entry.detail_id === preferredDetailId)
   ) {
     reviewStore.selectDetail(preferredDetailId)
+    mode.value = 'deep'
+  } else if (preferredDetailId !== null) {
+    mode.value = 'batch'
   }
   syncValidatedQuery()
 }
@@ -152,6 +161,7 @@ async function loadSession(sessionId: number | null): Promise<void> {
   const generation = ++contextGeneration
   itemGeneration += 1
   reviewStore.reset()
+  mode.value = preferredDetailId === null ? 'batch' : 'deep'
   annotationRetryEntries.value = []
 
   if (sessionId === null || sessionId <= 0) {
@@ -187,6 +197,7 @@ async function selectQuestion(questionId: string): Promise<void> {
     questionId === reviewStore.selectedQuestionId ||
     !reviewStore.questions.some((question) => question.question_id === questionId)
   ) return
+  mode.value = 'batch'
   await loadQuestion(sessionId, questionId, null, true, contextGeneration)
 }
 
@@ -334,8 +345,36 @@ async function retryAnnotations(): Promise<void> {
   }
 }
 
-function openDetail(detailId: number): void {
+async function openDetail(detailId: number): Promise<void> {
+  const scrollingElement = reviewPage.value?.parentElement
+  batchScrollTop.value = scrollingElement?.scrollTop ?? 0
   reviewStore.selectDetail(detailId)
+  mode.value = 'deep'
+  const questionId = reviewStore.selectedQuestionId
+  if (questionId !== null) {
+    querySync = querySync.then(async () => {
+      await router.replace({ query: { question: questionId, detail: String(detailId) } })
+    })
+  }
+  await querySync
+}
+
+async function closeDeepReview(): Promise<void> {
+  mode.value = 'batch'
+  const questionId = reviewStore.selectedQuestionId
+  querySync = querySync.then(async () => {
+    await router.replace({ query: questionId === null ? {} : { question: questionId } })
+  })
+  await querySync
+  await nextTick()
+  const scrollingElement = reviewPage.value?.parentElement
+  if (scrollingElement) scrollingElement.scrollTop = batchScrollTop.value
+}
+
+function handleDeepConfirmed(): void {
+  feedbackTone.value = 'success'
+  feedback.value = '此份评分已确认。'
+  void closeDeepReview()
 }
 
 function isShortcutProtectedTarget(target: EventTarget | null): boolean {
@@ -377,6 +416,7 @@ const stopSelectionWatch = watch(
   [
     () => reviewStore.selectedQuestionId,
     () => reviewStore.selectedDetailId,
+    () => mode.value,
   ],
   syncValidatedQuery,
 )
@@ -403,7 +443,7 @@ onBeforeUnmount(() => {
       <p>按题号批量比较答卷；遇到疑难记录时再进入单份深查。</p>
     </header>
 
-    <ReviewShortcutGuide />
+    <ReviewShortcutGuide v-if="mode === 'batch'" />
 
     <FeedbackBanner
       v-if="hasRetainedContentError"
@@ -448,6 +488,15 @@ onBeforeUnmount(() => {
       kind="empty"
       title="当前考试没有复核题目"
       description="该考试暂时没有可浏览的复核记录。"
+    />
+
+    <ReviewDeepWorkspace
+      v-else-if="hasValidatedQuestion && deepItem"
+      :item="deepItem"
+      :previous-item="previousDeepItem"
+      :next-item="nextDeepItem"
+      @back="closeDeepReview"
+      @confirmed="handleDeepConfirmed"
     />
 
     <ReviewBatchWorkspace
