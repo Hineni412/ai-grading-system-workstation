@@ -9,7 +9,14 @@ from backend.performance.metrics import instrument_sqlite_connection
 
 
 @contextmanager
-def connect(db_path: Path) -> Iterator[sqlite3.Connection]:
+def connect(
+    db_path: Path,
+    *,
+    external_connection: sqlite3.Connection | None = None,
+) -> Iterator[sqlite3.Connection]:
+    if external_connection is not None:
+        yield external_connection
+        return
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = instrument_sqlite_connection(sqlite3.connect(db_path))
     conn.row_factory = sqlite3.Row
