@@ -5,7 +5,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReviewConfirmResponse, ReviewItem } from '../api/review'
 import { confirmReviewItem, fetchReviewItems, fetchReviewRubric } from '../api/review'
 import ReviewScoringInspector from '../components/review/ReviewScoringInspector.vue'
-import { reviewShortcutBus } from '../composables/review-shortcuts'
 import { useReviewDraftStore } from '../stores/review-drafts'
 import { useReviewQueueStore } from '../stores/review-queue'
 
@@ -51,12 +50,13 @@ async function mountInspector(items: ReviewItem[] = [item]) {
   queue.selectQuestion('Q1')
   queue.replaceItems(items, items[0]?.detail_id)
   const host = document.createElement('div')
-  const app = createApp(ReviewScoringInspector)
+  const confirmed = vi.fn()
+  const app = createApp(ReviewScoringInspector, { onConfirmed: confirmed })
   app.use(pinia)
   app.mount(host)
   await vi.waitFor(() => expect(fetchReviewRubric).toHaveBeenCalledWith(7, 'Q1', expect.any(AbortSignal)))
   await nextTick()
-  return { app, host, pinia }
+  return { app, host, pinia, confirmed }
 }
 
 describe('review scoring inspector', () => {
@@ -79,7 +79,7 @@ describe('review scoring inspector', () => {
     })
   })
 
-  it('keeps teacher decision above AI advice and exposes an honest activity placeholder', async () => {
+  it('keeps teacher decision above AI advice without inventing an activity history', async () => {
     const { app, host } = await mountInspector()
     const inspector = host.querySelector('[data-testid="review-scoring-inspector"]')!
     expect(inspector.getAttribute('aria-label')).toBe('评分与复核检查器')
@@ -87,19 +87,19 @@ describe('review scoring inspector', () => {
     expect(inspector.textContent).toContain('AI 初评')
     expect(inspector.textContent).toContain('教师最终分')
     expect(inspector.textContent).toContain('一次函数')
-    expect(inspector.textContent).toContain('当前接口暂未提供历史活动列表')
+    expect(inspector.textContent).not.toContain('活动记录')
     expect(inspector.textContent).not.toContain('AI 最终分')
     expect(host.querySelector('[data-testid="scoring-scroll-region"]')).not.toBeNull()
     expect(host.querySelector('[data-testid="scoring-footer"]')).not.toBeNull()
     app.unmount()
   })
 
-  it('shows score boundaries next to the field and enables only a valid changed draft', async () => {
+  it('allows the unchanged valid score to be explicitly confirmed and blocks invalid scores', async () => {
     const { app, host, pinia } = await mountInspector()
     const input = host.querySelector<HTMLInputElement>('[data-testid="teacher-score"]')!
-    const button = host.querySelector<HTMLButtonElement>('[data-testid="confirm-next"]')!
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')!
     expect(input.getAttribute('aria-describedby')).toContain('teacher-score-help')
-    expect(button.disabled).toBe(true)
+    expect(button.disabled).toBe(false)
 
     input.value = '6'
     input.dispatchEvent(new Event('input', { bubbles: true }))
@@ -122,7 +122,7 @@ describe('review scoring inspector', () => {
     input.value = '4'
     input.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
-    host.querySelector<HTMLButtonElement>('[data-testid="confirm-next"]')!.click()
+    host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')!.click()
 
     const toast = await vi.waitFor(() => {
       const found = document.body.querySelector<HTMLElement>('[data-testid="review-feedback-toast"]')
@@ -143,7 +143,7 @@ describe('review scoring inspector', () => {
     app.unmount()
   })
 
-  it('submits once, clears the draft and moves to the pre-submit next record', async () => {
+  it('submits once, clears the draft and reports the confirmed record without advancing', async () => {
     const second = { ...item, result_id: 12, detail_id: 22, student_code: 'S002', student_name: '学生乙' }
     vi.mocked(fetchReviewItems).mockResolvedValue([
       { ...item, score_awarded: 4, needs_review: false, deduction_reason: '教师调整' },
@@ -154,17 +154,17 @@ describe('review scoring inspector', () => {
       updated_results: 1,
       annotation_outcomes: [{ result_id: 11, status: 'retry_required' }],
     })
-    const { app, host, pinia } = await mountInspector([item, second])
+    const { app, host, pinia, confirmed } = await mountInspector([item, second])
     const input = host.querySelector<HTMLInputElement>('[data-testid="teacher-score"]')!
     input.value = '4'
     input.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
-    const button = host.querySelector<HTMLButtonElement>('[data-testid="confirm-next"]')!
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')!
     button.click()
     button.click()
 
     await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
-    await vi.waitFor(() => expect(useReviewQueueStore(pinia).selectedDetailId).toBe(22))
+    await vi.waitFor(() => expect(confirmed).toHaveBeenCalledWith(21))
     await vi.waitFor(() => expect(
       document.body.querySelector('[data-testid="review-feedback-toast"]')?.textContent,
     ).toContain('分数已确认，标注图需要稍后刷新'))
@@ -183,7 +183,7 @@ describe('review scoring inspector', () => {
     app.unmount()
   })
 
-  it('uses score-field Enter to confirm next while Shift+Enter and note Enter remain inactive', async () => {
+  it('never confirms from score-field or note Enter', async () => {
     const second = {
       ...item,
       result_id: 12,
@@ -195,8 +195,7 @@ describe('review scoring inspector', () => {
       { ...item, score_awarded: 4, needs_review: false, deduction_reason: '教师调整' },
       second,
     ])
-    const { app, host, pinia } = await mountInspector([item, second])
-    const queue = useReviewQueueStore(pinia)
+    const { app, host } = await mountInspector([item, second])
     const input = host.querySelector<HTMLInputElement>('[data-testid="teacher-score"]')!
 
     input.value = '4'
@@ -208,26 +207,14 @@ describe('review scoring inspector', () => {
       cancelable: true,
     })
     input.dispatchEvent(enter)
-    expect(enter.defaultPrevented).toBe(true)
-    await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
-    await vi.waitFor(() => expect(queue.selectedDetailId).toBe(22))
-    expect(useReviewDraftStore(pinia).drafts['7:Q1:21']).toBeUndefined()
-
-    app.unmount()
-    vi.mocked(confirmReviewItem).mockClear()
-
-    const nextMount = await mountInspector([item, second])
-    const nextInput = nextMount.host.querySelector<HTMLInputElement>('[data-testid="teacher-score"]')!
-    nextInput.value = '4.5'
-    nextInput.dispatchEvent(new Event('input', { bubbles: true }))
-    await nextTick()
-    nextInput.dispatchEvent(new KeyboardEvent('keydown', {
+    expect(enter.defaultPrevented).toBe(false)
+    input.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'Enter',
       shiftKey: true,
       bubbles: true,
       cancelable: true,
     }))
-    const note = nextMount.host.querySelector<HTMLTextAreaElement>('#teacher-note')!
+    const note = host.querySelector<HTMLTextAreaElement>('#teacher-note')!
     note.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'Enter',
       bubbles: true,
@@ -236,9 +223,7 @@ describe('review scoring inspector', () => {
     await nextTick()
     expect(confirmReviewItem).not.toHaveBeenCalled()
 
-    nextMount.app.unmount()
-    reviewShortcutBus.dispatch('confirm-next')
-    expect(confirmReviewItem).not.toHaveBeenCalled()
+    app.unmount()
   })
 
   it('does not override a teacher selection changed while confirmation is pending', async () => {
@@ -253,7 +238,7 @@ describe('review scoring inspector', () => {
     input.value = '4'
     input.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
-    host.querySelector<HTMLButtonElement>('[data-testid="confirm-next"]')!.click()
+    host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')!.click()
     await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
 
     queue.selectDetail(22)
@@ -285,7 +270,7 @@ describe('review scoring inspector', () => {
     input.value = '4'
     input.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
-    host.querySelector<HTMLButtonElement>('[data-testid="confirm-next"]')!.click()
+    host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')!.click()
     await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
 
     const reusedDetail = {
@@ -323,14 +308,14 @@ describe('review scoring inspector', () => {
     input.value = '4'
     input.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
-    host.querySelector<HTMLButtonElement>('[data-testid="confirm-next"]')!.click()
+    host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')!.click()
 
     await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
     await vi.waitFor(() => expect(
       document.body.querySelector('[data-testid="review-feedback-toast"]')?.textContent,
     ).toContain('分数已确认，队列刷新失败'))
     expect(useReviewDraftStore(pinia).drafts['7:Q1:21']).toBeUndefined()
-    expect(host.querySelector<HTMLButtonElement>('[data-testid="confirm-next"]')).toBeNull()
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')).toBeNull()
     expect(useReviewQueueStore(pinia).items[0]).toMatchObject({
       detail_id: 21,
       score_awarded: 4,

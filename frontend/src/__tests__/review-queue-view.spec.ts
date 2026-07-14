@@ -309,6 +309,8 @@ describe('source-recalibrated review view', () => {
     expect(reviewStore.selectedDetailId).toBe(22)
     expect(router.currentRoute.value.query).toEqual({ question: 'Q2', detail: '22' })
     expect(host.textContent).toContain('学生丁')
+    expect(host.querySelector('[data-testid="review-deep-workspace"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="review-batch-workspace"]')).toBeNull()
   })
 
   it('replaces invalid URL context with the first pending question item', async () => {
@@ -320,8 +322,37 @@ describe('source-recalibrated review view', () => {
     expect(reviewStore.selectedDetailId).toBe(11)
     await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({
       question: 'Q1',
+    }))
+  })
+
+  it('replaces the batch workspace during deep review and restores filters and drafts on return', async () => {
+    const { host, router, reviewStore } = await mountView()
+    const search = host.querySelector<HTMLInputElement>('#review-search')!
+    inputValue(search, '学生甲')
+    const score = host.querySelector<HTMLInputElement>('[data-testid="teacher-score-11"]')!
+    inputValue(score, '4')
+
+    const deepButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '深查此份答卷')!
+    deepButton.click()
+    await nextTick()
+    expect(host.querySelector('[data-testid="review-deep-workspace"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="review-batch-workspace"]')).toBeNull()
+    expect(reviewStore.selectedQuestionId).toBe('Q1')
+    expect(reviewStore.selectedDetailId).toBe(11)
+    expect(reviewStore.items.some((entry) => entry.detail_id === 11)).toBe(true)
+    await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({
+      question: 'Q1',
       detail: '11',
     }))
+
+    host.querySelector<HTMLButtonElement>('[data-testid="back-to-batch"]')!.click()
+    await nextTick()
+    expect(host.querySelector('[data-testid="review-batch-workspace"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="review-deep-workspace"]')).toBeNull()
+    expect(host.querySelector<HTMLInputElement>('#review-search')?.value).toBe('学生甲')
+    expect(host.querySelector<HTMLInputElement>('[data-testid="teacher-score-11"]')?.value).toBe('4')
+    await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({ question: 'Q1' }))
   })
 
   it('defaults to pending reads and reloads all items only after explicit scope change', async () => {
