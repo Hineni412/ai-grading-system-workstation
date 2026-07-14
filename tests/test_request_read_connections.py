@@ -112,16 +112,17 @@ def test_snapshot_connection_allows_cross_worker_teardown_but_rejects_writes(
         check_same_thread=False,
     )
     connection = context.__enter__()
-    manager = DBManager(db_path, external_connection=connection)
-    assert connection.in_transaction is True
-    assert manager._connect().execute(
-        "SELECT value FROM items"
-    ).fetchone()["value"] == "snapshot"
-    with pytest.raises(sqlite3.OperationalError, match="readonly"):
-        manager._connect().execute("INSERT INTO items(value) VALUES ('blocked')")
-
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        executor.submit(context.__exit__, None, None, None).result()
+    try:
+        manager = DBManager(db_path, external_connection=connection)
+        assert connection.in_transaction is True
+        assert manager._connect().execute(
+            "SELECT value FROM items"
+        ).fetchone()["value"] == "snapshot"
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            manager._connect().execute("INSERT INTO items(value) VALUES ('blocked')")
+    finally:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            executor.submit(context.__exit__, None, None, None).result()
 
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
         connection.execute("SELECT 1")
@@ -175,6 +176,151 @@ def _main_candidate_path(connection: sqlite3.Connection) -> Path:
         if str(row[1]) == "main"
     )
     return Path(str(row[2]))
+
+
+def _seed_request_boundary_tables(paths: SimpleNamespace) -> None:
+    for db_path, value in (
+        (paths.db_path, "grading-original"),
+        (paths.qb_db_path, "question-bank-original"),
+    ):
+        with sqlite3.connect(db_path) as connection:
+            connection.execute("CREATE TABLE request_boundary(value TEXT NOT NULL)")
+            connection.execute(
+                "INSERT INTO request_boundary(value) VALUES (?)",
+                (value,),
+            )
+
+
+def _sqlite_file_state(db_path: Path) -> dict[str, tuple[bool, bytes | None, int | None]]:
+    state: dict[str, tuple[bool, bytes | None, int | None]] = {}
+    for suffix in ("", "-wal", "-shm"):
+        path = Path(f"{db_path}{suffix}")
+        if path.exists():
+            state[suffix or "main"] = (True, path.read_bytes(), path.stat().st_mtime_ns)
+        else:
+            state[suffix or "main"] = (False, None, None)
+    return state
+
+
+def test_request_snapshot_stays_stable_while_later_request_sees_legacy_commit(
+    tmp_path: Path,
+) -> None:
+    import backend.api.read_connections as read_connections
+
+    paths = _request_paths(tmp_path)
+    _seed_request_boundary_tables(paths)
+
+    with read_connections.request_read_context(paths) as current:
+        assert current.grading_connection.execute(
+            "SELECT value FROM request_boundary"
+        ).fetchone()["value"] == "grading-original"
+
+        writer = DBManager(paths.db_path)._connect()
+        try:
+            writer.execute(
+                "UPDATE request_boundary SET value = ?",
+                ("grading-committed",),
+            )
+            writer.commit()
+        finally:
+            writer.close()
+
+        assert current.grading_connection.execute(
+            "SELECT value FROM request_boundary"
+        ).fetchone()["value"] == "grading-original"
+
+    with read_connections.request_read_context(paths) as later:
+        assert later.grading_connection.execute(
+            "SELECT value FROM request_boundary"
+        ).fetchone()["value"] == "grading-committed"
+
+
+@pytest.mark.parametrize(
+    "connection_name, table_value",
+    [
+        ("grading_connection", "grading-original"),
+        ("question_bank_connection", "question-bank-original"),
+    ],
+)
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "INSERT INTO request_boundary(value) VALUES ('blocked')",
+        "UPDATE request_boundary SET value = 'blocked'",
+        "CREATE TABLE blocked_ddl(value TEXT)",
+    ],
+    ids=["insert", "update", "ddl"],
+)
+def test_request_connections_reject_writes_without_changing_source_or_candidate(
+    tmp_path: Path,
+    connection_name: str,
+    table_value: str,
+    statement: str,
+) -> None:
+    import backend.api.read_connections as read_connections
+
+    paths = _request_paths(tmp_path)
+    _seed_request_boundary_tables(paths)
+
+    with read_connections.request_read_context(paths) as context:
+        connection = getattr(context, connection_name)
+        candidate = _main_candidate_path(connection)
+        source = paths.db_path if connection_name == "grading_connection" else paths.qb_db_path
+        source_before = _sqlite_file_state(source)
+        candidate_before = _sqlite_file_state(candidate)
+
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            connection.execute(statement)
+
+        assert connection.execute(
+            "SELECT value FROM request_boundary"
+        ).fetchone()["value"] == table_value
+        assert _sqlite_file_state(source) == source_before
+        assert _sqlite_file_state(candidate) == candidate_before
+
+
+def test_concurrent_request_cursors_keep_results_and_connections_isolated(
+    tmp_path: Path,
+) -> None:
+    import backend.api.read_connections as read_connections
+
+    paths = _request_paths(tmp_path)
+    _seed_request_boundary_tables(paths)
+    request_count = 4
+    barrier = Barrier(request_count)
+
+    def capture_result(index: int) -> tuple[int, int, tuple[str, str], tuple[str, str]]:
+        with read_connections.request_read_context(paths) as context:
+            grading_cursor = context.grading_connection.execute(
+                "SELECT ? AS marker, value FROM request_boundary",
+                (f"grading-{index}",),
+            )
+            question_bank_cursor = context.question_bank_connection.execute(
+                "SELECT ? AS marker, value FROM request_boundary",
+                (f"question-bank-{index}",),
+            )
+            identities = (
+                id(context.grading_connection),
+                id(context.question_bank_connection),
+            )
+            barrier.wait(timeout=10)
+            return (
+                *identities,
+                tuple(grading_cursor.fetchone()),
+                tuple(question_bank_cursor.fetchone()),
+            )
+
+    with ThreadPoolExecutor(max_workers=request_count) as executor:
+        results = list(executor.map(capture_result, range(request_count)))
+
+    assert len({result[0] for result in results}) == request_count
+    assert len({result[1] for result in results}) == request_count
+    for index, result in enumerate(results):
+        assert result[2] == (f"grading-{index}", "grading-original")
+        assert result[3] == (
+            f"question-bank-{index}",
+            "question-bank-original",
+        )
 
 
 def test_request_read_context_opens_each_database_once_and_cleans_success(
@@ -321,8 +467,14 @@ def test_request_read_context_can_teardown_on_another_worker_thread(
 
     manager = read_connections.request_read_context(_request_paths(tmp_path))
     context = manager.__enter__()
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        executor.submit(manager.__exit__, None, None, None).result(timeout=10)
+    exited = False
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            executor.submit(manager.__exit__, None, None, None).result(timeout=10)
+        exited = True
+    finally:
+        if not exited:
+            manager.__exit__(None, None, None)
 
     assert not context.grading_candidate.exists()
     assert not context.question_bank_candidate.exists()
@@ -361,7 +513,7 @@ def test_route_validation_error_cleans_request_read_context(
         "captured_sqlite_read_connection",
         tracked_capture,
     )
-    app = create_app()
+    app = create_app(path_manager=paths)
     app.dependency_overrides[get_path_manager] = lambda: paths
 
     response = TestClient(app).post(
