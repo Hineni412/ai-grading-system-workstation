@@ -57,9 +57,10 @@
 - P1-26 聚焦回归 `76 passed`，版本化报告保持三个命名工作负载、每档 16 场景/2 次重复并通过重复性门槛；当前 small micro 只写系统临时输出并通过，未覆盖正式基线。
 - P1-27 聚焦回归 `123 passed`，版本化 quick diagnostic 的 36 个比较、六项可支持门槛保持通过，`nonzero_response_records` 仍为 `not_evaluated`；当前 small micro 的 12 个比较只作健康检查。
 - P1-28 与受影响 API/Job 回归 `70 passed`；其余 Phase 1 契约、启动、迁移、Schema 和 smoke 工具门槛 `299 passed`。
-- P1-29 验收入口最终聚焦测试 `32 passed`；精确 SHA 临时副本的 API/Streamlit 双入口实际就绪，关闭后监听端口为零，页面三类 API Key 为空、异常数为零，只显示两名合成学生与 90/70 结果。
-- 最终功能分支完整 smoke：`1613 passed, 2 skipped, 1 dependency warning`；文档治理、433 个第一方 Python 文件静态编译、全量测试及两库副本初始化幂等/完整性全部通过。
+- P1-29 验收入口最终聚焦测试 `35 passed`；精确 SHA 临时副本的 API/Streamlit 双入口实际就绪，关闭后监听端口为零，页面三类 API Key 为空、异常数为零，只显示两名合成学生与 90/70 结果；第二个服务启动失败会清理第一个进程并脱敏已有日志。
+- 最终功能分支完整 smoke：`1616 passed, 2 skipped, 1 dependency warning`；文档治理、433 个第一方 Python 文件静态编译、全量测试及两库副本初始化幂等/完整性全部通过。
 - 四轮实现复审依次发现并修复：便携 Python 从根仓库加载模块、dotted module 来源检查先执行父包、机器级 API profile/敏感环境变量泄露；每项都先建立 RED，再最小修复、重跑并复审。最终 Task 2 findings 为 none、verdict 为 PASS。
+- 整包复审发现并修正三项 Important：正式清单第 6 步页面区域、验收日志绝对路径、ARCHITECTURE 动态复审状态；日志修复使用 RED→GREEN 并补第二服务启动失败清理回归，修复复审 verdict 为 PASS。
 - 内置浏览器控制组件发生初始化兼容冲突；产品双入口和 Streamlit 健康正常。可见控件预检改用 Streamlit 官方页面测试运行器，并保留实际浏览器正式用户验收作为最终黑盒门槛。
 - 开工至最终 smoke 后，根工作区两库三元组、功能 worktree `user_data` 空状态和两个 stash SHA 均保持不变。
 
@@ -222,15 +223,15 @@ Set handoff to `waiting_review`, `branch_head`, automated `passed`, independent 
 - Consumes: exact package base/head range, package/map/plan, all code, reports and test evidence.
 - Produces: Critical=0, Important=0 review and a plan-only `waiting_user` anchor whose parent is the reviewed functional SHA.
 
-- [ ] **Step 1: Dispatch an independent reviewer over the exact Git range**
+- [x] **Step 1: Dispatch an independent reviewer over the exact Git range**
 
 Use `superpowers:requesting-code-review`. Review must inspect package alignment, report arithmetic/claims, no P1-26 overwrite, P1-27 limitations, P1-28 real/fake boundaries, archive extraction/path traversal, temp-root and no-`user_data` guards, process teardown, loopback binding, log/privacy behavior, formal checklist accuracy and handoff history.
 
-- [ ] **Step 2: Resolve all Critical/Important findings**
+- [x] **Step 2: Resolve all Critical/Important findings**
 
 For code/tool failures reproduce RED, apply one minimal root-cause fix, rerun affected tests and request re-review. For evidence errors correct the source report/checklist/architecture claim and rerun its validating commands. Critical/Important must be zero before continuing.
 
-- [ ] **Step 3: Re-run verification required by review changes**
+- [x] **Step 3: Re-run verification required by review changes**
 
 Rerun the changed slice plus affected regression, dual-entry smoke, quick/full smoke according to actual code impact, `git diff --check`, handoff validator and root fingerprint comparison. If production/shared code changed, rerun full smoke; pure plan-only anchor does not.
 
