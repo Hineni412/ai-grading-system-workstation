@@ -8,6 +8,8 @@
 
 **Tech Stack:** Vue 3.5, TypeScript 6, Pinia 3, Vue Router 5, Element Plus 2, Vitest 4, Playwright 1.61, Node 22/24, existing FastAPI review contracts.
 
+**Current checkpoint (2026-07-14):** Tasks 1～5 and Task 6 Steps 1～8 are complete at reviewed functional SHA `080562504c19eb6ba8eee5146c2b9b663ac86b1e`. Automated verification, manual browser validation, real-data fingerprint comparison, and independent review (0 Blocker / 0 Major / 0 Minor) are complete. Task 6 Step 9 is waiting for explicit user acceptance; Task 7 and P2-09～P2-22 remain blocked.
+
 ## Global Constraints
 
 - Follow `docs/superpowers/specs/2026-07-14-phase-2-frontend-source-recalibration-ux-design.md` exactly.
@@ -602,7 +604,7 @@ git commit -m "test(frontend): verify recalibrated review workflow"
 - Consumes: final reviewed feature SHA, verified demo start/stop method, root real-database read-only fingerprints.
 - Produces: verified feature branch, independent-review findings/fixes, and a `pending` versioned user checklist bound to the exact SHA.
 
-- [ ] **Step 1: Run static and complete frontend verification**
+- [x] **Step 1: Run static and complete frontend verification**
 
 ```powershell
 npm.cmd run lint
@@ -615,7 +617,7 @@ npm.cmd run e2e:phase2-recalibration
 
 Expected: every command exits 0; Vitest reports no failed files/tests; production build completes; demo and Playwright gates pass.
 
-- [ ] **Step 2: Run repository-level affected regression and quick smoke**
+- [x] **Step 2: Run repository-level affected regression and quick smoke**
 
 ```powershell
 runtime\python\python.exe -m pytest tests\test_review_application_service.py tests\test_manual_review_atomic.py tests\test_api_review_routes.py tests\test_review_media_service.py tests\api_e2e\test_five_flow.py -q
@@ -624,11 +626,11 @@ runtime\python\python.exe tools\smoke_check.py --skip-tests
 
 Expected: all focused backend tests PASS and quick smoke exits 0. These checks must operate on test fixtures or isolated temporary databases only.
 
-- [ ] **Step 3: Perform manual in-app browser verification**
+- [x] **Step 3: Perform manual in-app browser verification**
 
 Start the fixed anonymous demo on loopback, inspect all five required viewports, exercise batch confirmation, invalid input, network/service failure, annotation retry, deep review, back-context restoration, media failure/retry, keyboard focus, and reduced-motion behavior. Capture only anonymous evidence. Stop the demo and verify its port is released.
 
-- [ ] **Step 4: Request independent review**
+- [x] **Step 4: Request independent review**
 
 Provide the reviewer with the approved design path, implementation-plan path, base SHA `f5d5a06`, final feature SHA, and diff. Require separate checks for:
 
@@ -642,11 +644,11 @@ Provide the reviewer with the approved design path, implementation-plan path, ba
 
 Verify each reported finding against the code before changing it. Fix valid findings with a failing test first, rerun affected tests, and commit fixes separately.
 
-- [ ] **Step 5: Re-run fresh verification after review fixes**
+- [x] **Step 5: Re-run fresh verification after review fixes**
 
 Repeat Steps 1 and 2, plus every browser scenario affected by a fix. Do not reuse earlier results if the code SHA changed.
 
-- [ ] **Step 6: Verify real data stayed untouched**
+- [x] **Step 6: Verify real data stayed untouched**
 
 From the root working copy, recompute size, UTC modification time, and SHA-256 for both real databases and compare with the recorded pre-work values:
 
@@ -657,7 +659,7 @@ question_bank.db   3461120 bytes  2026-07-08T11:58:06.3320883Z  E1E5123AD54C9E8A
 
 Expected: all three fields match for both files and `git status --short -- user_data` is empty in the feature worktree.
 
-- [ ] **Step 7: Generate the versioned user checklist only now**
+- [x] **Step 7: Generate the versioned user checklist only now**
 
 Copy the dedicated template to `docs/user-testing/checkpoints/phase-2-frontend-source-recalibration-2026-07-14.md`. Fill it with the exact 40-character reviewed SHA from `git rev-parse HEAD`, the verified loopback start command/address, visible anonymous marker, stop command, browser/window sizes, reset action, database pre/post fingerprints, and numbered actions matching the implemented UI.
 
@@ -673,7 +675,7 @@ UX 改善结论：pending
 
 Do not mark any acceptance field passed before the user performs the list and explicitly confirms both business equivalence and UX improvement.
 
-- [ ] **Step 8: Update the execution index and commit the reviewed handoff**
+- [x] **Step 8: Update the execution index and commit the reviewed handoff**
 
 While user acceptance is pending, set the non-package gate wording to “业务溯源、前端修正、自动验证和独立复审已完成；等待版本化用户验收”. Keep all P2-09～P2-22 blockers and package counts unchanged.
 
