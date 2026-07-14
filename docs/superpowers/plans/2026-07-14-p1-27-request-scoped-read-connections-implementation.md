@@ -383,8 +383,8 @@ git commit -m "docs: record P1-27 connection comparison"
 
 ### Step 1: Record the implemented boundary
 
-- [ ] Add one P1-27 architecture fact: target routes, request candidate/connection ownership, readonly mode, legacy/write compatibility, no cross-request pool/cache, performance report location and real-data safety.
-- [ ] Do not copy machine paths or raw fingerprints.
+- [x] Add one P1-27 architecture fact: target routes, request candidate/connection ownership, readonly mode, legacy/write compatibility, no cross-request pool/cache, performance report location and real-data safety.
+- [x] Do not copy machine paths or raw fingerprints.
 
 ### Step 2: Run final feature verification
 
@@ -400,23 +400,31 @@ Expected: zero failures; root real-database fingerprints unchanged.
 
 ### Step 3: Request task and whole-package independent review
 
-- [ ] Use review packages bound to exact base/head SHAs.
-- [ ] Review connection ownership, readonly enforcement, partial setup/teardown, concurrency isolation, source-sidecar safety, write-path exclusion, Streamlit compatibility, performance math and report privacy.
-- [ ] Reproduce every Critical/Important with RED, make one minimal fix pass, rerun affected tests and request re-review.
-- [ ] Require Critical=0 and Important=0. Minor findings are recorded.
+- [x] Use review packages bound to exact base/head SHAs.
+- [x] Review connection ownership, readonly enforcement, partial setup/teardown, concurrency isolation, source-sidecar safety, write-path exclusion, Streamlit compatibility, performance math and report privacy.
+- [x] Reproduce every Critical/Important with RED, make one minimal fix pass, rerun affected tests and request re-review.
+- [x] Require Critical=0 and Important=0. Minor findings are recorded.
 
 ### Step 4: Create the final plan-only handoff commit
 
-- [ ] Modify only this plan.
-- [ ] Set status `verified_pending_integration`.
-- [ ] Record the direct parent full reviewed functional SHA.
-- [ ] Set automated/independent review `passed`, user acceptance `not_required`, real-data `unchanged`, nightly `report_only` because P1-27 is never night-eligible.
-- [ ] Run handoff validator on the clean committed worktree.
+- [x] Modify only this plan.
+- [x] Set status `verified_pending_integration`.
+- [x] Record the direct parent full reviewed functional SHA.
+- [x] Set automated/independent review `passed`, user acceptance `not_required`, real-data `unchanged`, nightly action `independent_candidate_allowed` as required by the generic handoff protocol. `NIGHTLY_ELIGIBILITY_MATRIX.md` remains authoritative for execution eligibility and continues to classify P1-27 as `daytime_only`, so this protocol field does not make the package night-eligible.
+- [x] Run handoff validator on the clean committed worktree.
 
 ```powershell
 git add docs/superpowers/plans/2026-07-14-p1-27-request-scoped-read-connections-implementation.md
 git commit -m "docs: verify P1-27 integration handoff"
 ```
+
+### Task 6 final evidence
+
+- Reviewed functional SHA: `576d84988a5d5a41b5e4e3061adf28e121d4c6a8`, which is the direct parent of the final plan-only handoff commit. Independent whole-branch review covered `0564d60697d1e6e643491679099ed3e796be32ca..576d84988a5d5a41b5e4e3061adf28e121d4c6a8` and concluded `0 Critical / 0 Important / 0 Minor`, merge-ready for independent-review purposes subject to normal integration gates.
+- Automated feature verification: the Task 6 focused suite passed `121` tests; the affected API/database regression suite passed `111` tests; `tools/smoke_check.py --skip-tests` passed document governance, static compilation of `431` first-party Python files, and idempotency/integrity checks on temporary copies of both databases. The review-fix focused pure/temp suite on the reviewed SHA passed `5` tests with `16` deselected.
+- Performance evidence boundary: the versioned artifact remains a `quick_diagnostic` based on the preserved `0.1/3/2/2` workload. Its six supportable gates retain their recorded passing counts, while `nonzero_response_records` is explicitly `not_evaluated` because historical sample minima/maxima were not retained. Functional correctness and non-empty response behavior are established by the API/service suites, not by this latency artifact; no long benchmark rerun was performed for the review fix or final handoff.
+- Safety: root and feature grading/question-bank size, UTC mtime and SHA-256 stayed unchanged across feature verification and focused review; the feature `user_data/` status stayed empty, and no real business database was opened through SQLite.
+- Handoff protocol: the final commit changes only this plan and records its direct parent reviewed SHA. `independent_candidate_allowed` satisfies the generic final-state field combination; P1-27 remains `daytime_only` in the eligibility matrix and therefore cannot be selected for night implementation.
 
 ## Integration and release gate
 
@@ -440,12 +448,12 @@ git commit -m "docs: verify P1-27 integration handoff"
 ## 昼夜交接
 
 **执行包：** P1-27
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** 576d84988a5d5a41b5e4e3061adf28e121d4c6a8
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
