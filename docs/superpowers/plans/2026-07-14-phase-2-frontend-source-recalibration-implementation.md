@@ -709,11 +709,11 @@ git add -- docs/user-testing/checkpoints/phase-2-frontend-source-recalibration-2
 git commit -m "docs: record Phase 2 recalibration acceptance"
 ```
 
-- [ ] **Step 3: Integrate from the latest remote baseline**
+- [x] **Step 3: Integrate from the latest remote baseline**
 
 Fetch `origin`, create or update the authorized integration branch from current `origin/main`, merge the complete feature branch one package/gate at a time, resolve shared documentation conflicts by preserving newer mainline facts, and verify no real `user_data/` path is staged.
 
-- [ ] **Step 4: Run integration verification**
+- [x] **Step 4: Run integration verification**
 
 Run the affected backend regression, complete frontend verification, recalibration Playwright gate, and full `runtime\python\python.exe tools\smoke_check.py` because the final integrated SHA differs from the feature verification SHA. Recompute both real database fingerprints after the run.
 
