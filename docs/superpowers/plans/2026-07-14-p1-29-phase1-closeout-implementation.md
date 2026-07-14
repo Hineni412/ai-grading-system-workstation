@@ -34,10 +34,10 @@
 ## 昼夜交接
 
 **执行包：** P1-29
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** waiting_user
+**功能提交：** ebbdb28218e5d076138b1a76a0923905a7635db0
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** pending
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
@@ -235,7 +235,7 @@ For code/tool failures reproduce RED, apply one minimal root-cause fix, rerun af
 
 Rerun the changed slice plus affected regression, dual-entry smoke, quick/full smoke according to actual code impact, `git diff --check`, handoff validator and root fingerprint comparison. If production/shared code changed, rerun full smoke; pure plan-only anchor does not.
 
-- [ ] **Step 4: Create the plan-only reviewed `waiting_user` anchor**
+- [x] **Step 4: Create the plan-only reviewed `waiting_user` anchor**
 
 Set `waiting_user`; record the direct parent full reviewed SHA; automated/independent review `passed`; user acceptance `pending`; fingerprint `unchanged`; nightly `report_only`. Commit only this plan and validate.
 
