@@ -33,7 +33,7 @@
 - **P1-26 增量边界：** FastAPI 与五类目标 SQLite 连接边界增加可选请求测量；生产默认关闭，关闭时不安装 trace callback，也不改变响应或 OpenAPI 契约。版本化基线使用固定生成数据运行 `small`、`medium`、`large_5pct` 三个命名工作负载的 16 个只读场景，汇总语句总数、SELECT 语句数、返回记录数、响应字节和机器相关延迟；三个名称不表示单调规模序列，`large_5pct` 是用户把原大型档各计数按 5% 向上取整后的覆盖。聚合 JSON/Markdown 位于 `docs/performance/p1-26-api-db-baseline.*`；每个文件通过同目录临时文件和 `os.replace()` 单独原子替换，捕获到 `BaseException` 时尝试恢复旧成对版本并清理临时/恢复文件，但突然终止或掉电可能在两次替换之间留下新旧混合，下次使用前应重新生成或人工核对。本包不实现跨文件事务，也未实施优化、缓存、索引、连接池或 Schema/SQL/业务语义变更，未读取或写入真实业务数据，也未调用模型。
 - **P1-27 增量边界：** `POST /api/training/diagnosis`、`POST /api/training/plans/preview` 与 `POST /api/graph/{profiles,rows,evidence}` 每个请求分别捕获阅卷库和题库临时候选，并由请求上下文各自拥有一条 `mode=ro`、`query_only`、显式稳定读事务连接；服务只借用连接，请求结束统一关闭连接并清理候选。Streamlit、旧构造方式、`POST /api/training/tasks` 和其他写事务保持原行为，不引入跨请求连接池或缓存。生成数据聚合对比位于 `docs/performance/p1-27-request-connection-comparison.*`；验证只在临时/生成数据库执行写入，真实根与功能工作区两库仅做只读指纹核对且保持不变。
 - **P1-28 增量边界：** `tests/api_e2e/` 使用临时双库、合成图片和假外部模型串联配置与评分依据、模板/答题区域、扫描匹配、部分批改失败与 failed-only 恢复、教师复核、真实 XLSX 导出/下载和 Job 重启恢复；FastAPI、现有服务、JobManager 与数据库编排仍在真实调用链内。E2E 不调用真实模型、不读取或写入真实业务数据，也不改变业务规则、API 契约或 Schema。
-- **P1-29 收口边界：** Phase 1 组合门槛复核 P1-26 优化前基线、P1-27 请求级只读连接与 P1-28 五流程 E2E，并通过受影响回归、OpenAPI/`timeout=None` 门槛和完整 smoke。`tools/p1_29_acceptance.py` 只从完整 Git SHA 在系统临时目录生成匿名源码/数据副本，排除并二次拒绝 `user_data`，把项目模块、API profile、Ops state、日志和双库全部限制在副本内，清空继承的敏感 Key，再以 loopback 启动真实 Uvicorn 与 Streamlit；两名合成学生的最终结果固定为 90/70。该工具只服务正式验收，不改变生产启动入口、API、评分规则或 Schema；自动门槛和独立复审已通过，阶段状态及用户正式验收结论仍以执行 Index 和版本化清单为准。
+- **P1-29 收口边界：** Phase 1 组合门槛复核 P1-26 优化前基线、P1-27 请求级只读连接与 P1-28 五流程 E2E，并通过受影响回归、OpenAPI/`timeout=None` 门槛和完整 smoke。`tools/p1_29_acceptance.py` 只从完整 Git SHA 在系统临时目录生成匿名源码/数据副本，排除并二次拒绝 `user_data`，把项目模块、API profile、Ops state、日志和双库全部限制在副本内，清空继承的敏感 Key，在交接前把日志中的临时工作区、功能仓库和运行时仓库绝对根替换为逻辑占位符，再以 loopback 启动真实 Uvicorn 与 Streamlit；两名合成学生的最终结果固定为 90/70。该工具只服务正式验收，不改变生产启动入口、API、评分规则或 Schema；自动门槛、独立复审、用户验收和阶段状态只在即时计划、版本化清单与执行 Index 中维护。
 
 ### 主要证据
 
@@ -48,7 +48,7 @@
 | 外部集成 | `backend/llm/`、`llm_client.py`、`api_profiles.py`、客观题识别链、题库 AI 打标服务 | 模型协议、策略、密钥来源、超时、节流、用量与降级 | 已核验代码和假客户端；未调用真实 API |
 | 本地运行时 | `runtime/python` | Python 3.12.1、SQLite 3.43.1、Streamlit 1.58.0、OpenAI SDK 2.43.0 等实际版本 | 已核验 |
 | 自动化测试 | `tests/` 与 `tools/smoke_check.py` | 业务回归、静态编译、迁移与数据库副本完整性 | 以最新共同基线的测试结果为准 |
-| Phase 1 收口 | `docs/performance/p1-29-phase1-closeout.md`、`docs/user-testing/checkpoints/P1-29-v1.5.0-phase1-formal.md` | P1-26/27/28 组合门槛、匿名双入口、已知限制和正式用户结论 | 自动门槛与独立复审已核验；用户正式验收待结论 |
+| Phase 1 收口 | `docs/performance/p1-29-phase1-closeout.md`、`docs/user-testing/checkpoints/P1-29-v1.5.0-phase1-formal.md` | P1-26/27/28 组合门槛、匿名双入口、已知限制和正式用户结论 | 稳定证据入口；动态复审和验收状态见即时计划与执行 Index |
 | 浏览器验证 | Streamlit 本机页面、现有工作区数据 | 部分覆盖提示、标签诊断空态、学生选择交互、1366×768/1440×900/1920×1080 | 已核验；无横向溢出，浏览器控制台无应用错误 |
 | 数据库副本 | `grading_system.db`、`question_bank.db` 的临时副本 | 新字段、新索引和重复初始化幂等性 | 已核验；副本验证前后主工作区两库哈希均未变化 |
 | 运维文档 | `README_*.md`、`docs/maintenance/*.md`、发布清单 | 便携发布、备份、存储策略 | 已核验；存在版本漂移 |
