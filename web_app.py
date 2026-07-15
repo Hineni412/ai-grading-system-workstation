@@ -6090,7 +6090,7 @@ def _render_manual_scoring_unit_tools(payload: dict[str, Any], llm_settings: LLM
             selected_qid = st.selectbox("选择要拆分的题目", qid_options, key="manual_split_question_id")
         with cols[1]:
             split_count = int(
-                st.number_input("拆成几个评分单元", min_value=2, max_value=30, value=4, step=1, key="manual_split_count")
+                st.number_input("拆成几个评分单元", min_value=2, max_value=20, value=4, step=1, key="manual_split_count")
             )
         with cols[2]:
             part_style = st.selectbox(
