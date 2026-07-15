@@ -359,7 +359,13 @@ describe('workbench view', () => {
   it('shows the approved analysis-first structure without decorative metric cards', async () => {
     const { host } = await mountView()
 
-    expect(host.querySelector('h1')?.textContent).toBe('工作台')
+    const view = host.querySelector('.workbench-view')
+    const heading = host.querySelector('h1')
+    expect(view?.tagName).toBe('SECTION')
+    expect(view?.getAttribute('aria-labelledby')).toBe('workbench-title')
+    expect(heading?.textContent).toBe('工作台')
+    expect(heading?.id).toBe('workbench-title')
+    expect(heading?.getAttribute('tabindex')).toBe('-1')
     expect(host.querySelector('[data-testid="progress-action-rail"]')).not.toBeNull()
     expect(host.textContent).toContain('本题基于 12 份已批改作答')
     expect(host.textContent).toContain('班级题目分析')

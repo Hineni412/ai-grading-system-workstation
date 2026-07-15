@@ -167,11 +167,11 @@ function retryGraph(): void {
 </script>
 
 <template>
-  <main class="workbench-view">
+  <section class="workbench-view" aria-labelledby="workbench-title">
     <header class="workbench-hero">
       <div>
         <p class="workbench-eyebrow">当前考试只读总览</p>
-        <h1>工作台</h1>
+        <h1 id="workbench-title" tabindex="-1">工作台</h1>
         <p class="workbench-hero__session">
           {{ workbenchStore.overview?.current_session?.name ?? sessionStore.currentSession?.name ?? '尚未选择考试' }}
         </p>
@@ -313,5 +313,5 @@ function retryGraph(): void {
         </ul>
       </section>
     </div>
-  </main>
+  </section>
 </template>
