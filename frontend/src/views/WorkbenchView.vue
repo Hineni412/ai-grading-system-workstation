@@ -279,7 +279,9 @@ function retryGraph(): void {
             <button type="button" class="workbench-link-button" @click="openAnomalies">重新加载异常记录</button>
           </div>
           <p v-if="workbenchStore.anomalies.length === 0" class="workbench-empty-copy">
-            {{ workbenchStore.anomaliesState === 'stale-error' ? '上次成功读取时没有异常记录' : '当前没有异常记录' }}
+            {{ workbenchStore.anomaliesUpdatedAt !== null && (workbenchStore.anomaliesState === 'loading' || workbenchStore.anomaliesState === 'stale-error')
+              ? '上次检查未发现异常'
+              : '当前没有异常记录' }}
           </p>
           <ul v-else class="workbench-readonly-list">
             <li v-for="item in workbenchStore.anomalies" :key="item.anomaly_id">

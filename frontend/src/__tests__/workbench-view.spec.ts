@@ -166,7 +166,9 @@ interface MountOptions {
   overviewValue?: WorkbenchOverview | null
   questionValue?: QuestionAnalysisResponse
   studentValue?: StudentAnalysisResponse
-  graphValue?: GraphRowsResponse
+  graphValue?: GraphRowsResponse | null
+  questionUpdatedAt?: string | null
+  graphUpdatedAt?: string | null
 }
 
 const mountedApps: App[] = []
@@ -188,6 +190,8 @@ async function mountView({
   questionValue = questions,
   studentValue = students,
   graphValue = graph,
+  questionUpdatedAt = '2026-07-15T09:36:00Z',
+  graphUpdatedAt = '2026-07-15T09:38:00Z',
 }: MountOptions = {}) {
   const pinia = createPinia()
   setActivePinia(pinia)
@@ -231,7 +235,7 @@ async function mountView({
       questionsError: questionState === 'error' || questionState === 'stale-error'
         ? '题目分析暂时无法更新'
         : '',
-      questionsUpdatedAt: '2026-07-15T09:36:00Z',
+      questionsUpdatedAt: questionUpdatedAt,
     })
   })
   const loadStudents = vi.spyOn(analysisStore, 'loadStudents').mockImplementation(async (id, questionId, className) => {
@@ -249,12 +253,14 @@ async function mountView({
   const loadGraph = vi.spyOn(analysisStore, 'loadGraph').mockImplementation(async (id, className) => {
     analysisStore.$patch({
       sessionId: id,
-      graph: { ...graphValue, scope: { ...graphValue.scope, class_id: className } },
+      graph: graphValue === null
+        ? null
+        : { ...graphValue, scope: { ...graphValue.scope, class_id: className } },
       graphState,
       graphError: graphState === 'error' || graphState === 'stale-error'
         ? '标签覆盖暂时无法更新'
         : '',
-      graphUpdatedAt: '2026-07-15T09:38:00Z',
+      graphUpdatedAt,
     })
   })
 
@@ -485,6 +491,32 @@ describe('workbench view', () => {
     expect(analysisError.loadQuestions).toHaveBeenCalledTimes(2)
   })
 
+  it('distinguishes first-load, fresh-empty, refreshing-empty and stale-empty question analysis', async () => {
+    const emptyQuestions = { ...questions, items: [], total: 0, total_pages: 0 }
+    const firstLoad = await mountView({
+      questionState: 'loading',
+      questionValue: emptyQuestions,
+      questionUpdatedAt: null,
+    })
+    expect(firstLoad.host.textContent).toContain('正在读取题目分析')
+    expect(firstLoad.host.textContent).not.toContain('上次成功读取时没有已批改题目')
+
+    const freshEmpty = await mountView({ questionState: 'empty', questionValue: emptyQuestions })
+    expect(freshEmpty.host.textContent).toContain('当前考试还没有已批改题目')
+
+    const refreshingEmpty = await mountView({ questionState: 'loading', questionValue: emptyQuestions })
+    expect(refreshingEmpty.host.textContent).toContain('正在更新题目分析')
+    expect(refreshingEmpty.host.textContent).toContain('上次成功读取时没有已批改题目')
+    expect(refreshingEmpty.host.textContent).not.toContain('正在读取题目分析')
+    expect(refreshingEmpty.host.textContent).not.toContain('当前考试还没有已批改题目')
+
+    const staleEmpty = await mountView({ questionState: 'stale-error', questionValue: emptyQuestions })
+    expect(staleEmpty.host.textContent).toContain('题目分析更新失败 · 上次更新')
+    expect(staleEmpty.host.textContent).toContain('上次成功读取时没有已批改题目')
+    expect(staleEmpty.host.textContent).toContain('重新加载分析')
+    expect(staleEmpty.host.textContent).not.toContain('当前考试还没有已批改题目')
+  })
+
   it('keeps question analysis usable when graph fails', async () => {
     const graphError = await mountView({ graphState: 'error' })
     selectValue(graphError.host.querySelector<HTMLSelectElement>('#analysis-class')!, '七年级一班')
@@ -502,18 +534,41 @@ describe('workbench view', () => {
       coverage: { covered_items: 0, total_items: 0, missing_items: {} },
       warnings: [],
     }
-    const staleEmpty = await mountView({ graphState: 'stale-error', graphValue: emptyGraph })
-    selectValue(staleEmpty.host.querySelector<HTMLSelectElement>('#analysis-class')!, '七年级一班')
+    const mounted = await mountView({ graphState: 'empty', graphValue: emptyGraph })
+    selectValue(mounted.host.querySelector<HTMLSelectElement>('#analysis-class')!, '七年级一班')
     await settleUi()
-    expect(staleEmpty.host.textContent).toContain('标签覆盖可能不是最新 · 上次更新')
-    expect(staleEmpty.host.textContent).toContain('上次成功读取时没有知识标签记录')
-    expect(staleEmpty.host.textContent).not.toContain('当前班级没有知识标签记录')
+    expect(mounted.host.textContent).toContain('当前班级没有知识标签记录')
+
+    mounted.analysisStore.$patch({ graphState: 'loading' })
+    await settleUi()
+    expect(mounted.host.textContent).toContain('正在更新标签覆盖')
+    expect(mounted.host.textContent).toContain('上次成功读取时没有知识标签记录')
+    expect(mounted.host.textContent).not.toContain('正在读取标签覆盖')
+    expect(mounted.host.textContent).not.toContain('当前班级没有知识标签记录')
+
+    mounted.analysisStore.$patch({ graphState: 'stale-error' })
+    await settleUi()
+    expect(mounted.host.textContent).toContain('标签覆盖可能不是最新 · 上次更新')
+    expect(mounted.host.textContent).toContain('上次成功读取时没有知识标签记录')
+    expect(mounted.host.textContent).toContain('重新加载标签覆盖')
+    expect(mounted.host.textContent).not.toContain('当前班级没有知识标签记录')
+
+    mounted.analysisStore.$patch({
+      graphState: 'loading',
+      graph: null,
+      graphUpdatedAt: null,
+    })
+    await settleUi()
+    expect(mounted.host.textContent).toContain('正在读取标签覆盖')
+    expect(mounted.host.textContent).not.toContain('上次成功读取时没有知识标签记录')
   })
 
   it('keeps anomaly list and empty snapshots visible while updating or stale', async () => {
     const mounted = await mountView()
     clickButton(mounted.host, '查看异常')
     await settleUi()
+    expect(mounted.host.textContent).toContain('正在读取异常记录')
+    expect(mounted.host.textContent).not.toContain('当前没有异常记录')
     const anomaly = {
       anomaly_id: 'failed:17',
       anomaly_type: 'grading_failed' as const,
@@ -524,6 +579,20 @@ describe('workbench view', () => {
       detail: '评分结果未生成',
       created_at: '2026-07-15T09:20:00Z',
     }
+
+    mounted.workbenchStore.$patch({
+      anomalies: [],
+      anomaliesState: 'empty',
+      anomaliesUpdatedAt: '2026-07-15T09:30:00Z',
+    })
+    await settleUi()
+    expect(mounted.host.textContent).toContain('当前没有异常记录')
+
+    mounted.workbenchStore.$patch({ anomaliesState: 'loading' })
+    await settleUi()
+    expect(mounted.host.textContent).toContain('正在更新异常记录')
+    expect(mounted.host.textContent).toContain('上次检查未发现异常')
+    expect(mounted.host.textContent).not.toContain('当前没有异常记录')
 
     mounted.workbenchStore.$patch({
       anomalies: [anomaly],
@@ -541,7 +610,7 @@ describe('workbench view', () => {
 
     mounted.workbenchStore.$patch({ anomalies: [] })
     await settleUi()
-    expect(mounted.host.textContent).toContain('上次成功读取时没有异常记录')
+    expect(mounted.host.textContent).toContain('上次检查未发现异常')
     expect(mounted.host.textContent).not.toContain('当前没有异常记录')
   })
 

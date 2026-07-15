@@ -97,11 +97,11 @@ function displayTime(value: string | null): string {
     </header>
     <p v-if="className === null" class="workbench-empty-copy">选择班级后查看知识标签覆盖</p>
     <p
-      v-else-if="state === 'loading' && (graph === null || graph.nodes.length === 0)"
+      v-else-if="state === 'idle' || (state === 'loading' && updatedAt === null)"
       class="workbench-state-copy"
       role="status"
     >
-      正在读取标签覆盖…
+      {{ state === 'idle' ? '正在准备标签覆盖…' : '正在读取标签覆盖…' }}
     </p>
     <div v-else-if="state === 'error'" class="workbench-inline-error" role="alert">
       <p>标签覆盖暂时无法读取</p>
@@ -123,7 +123,9 @@ function displayTime(value: string | null): string {
         <li v-for="warning in graph.warnings" :key="warning">{{ warning }}</li>
       </ul>
       <p v-if="graph.nodes.length === 0" class="workbench-empty-copy">
-        {{ state === 'stale-error' ? '上次成功读取时没有知识标签记录' : '当前班级没有知识标签记录' }}
+        {{ updatedAt !== null && (state === 'loading' || state === 'stale-error')
+          ? '上次成功读取时没有知识标签记录'
+          : '当前班级没有知识标签记录' }}
       </p>
       <ul v-else class="tag-node-list">
         <li v-for="node in graph.nodes" :key="node.knowledge_key">
