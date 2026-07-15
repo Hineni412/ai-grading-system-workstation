@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 import pandas as pd
 
 import web_app
@@ -62,6 +64,7 @@ def test_unified_rows_show_readable_labels_and_preserve_hidden_ids() -> None:
     assert rows[0]["_question_id"] == "Q12"
     assert rows[0]["_part_id"] == "P1"
     assert rows[0]["_step_id"] == "S1"
+    assert rows[0]["_row_id"] == hashlib.sha256(b"Q12\0P1\0S1").hexdigest()[:24]
     assert rows[0]["知识点"] == "使用AAS判定三角形全等并推出对应边相等"
 
 

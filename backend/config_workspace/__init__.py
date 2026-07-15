@@ -1,4 +1,19 @@
 from backend.config_workspace.drafts import create_session_draft
+from backend.config_workspace.editor import (
+    ConfigEditorCommand,
+    ConfigEditorEdit,
+    ConfigEditorIssue,
+    ConfigEditorRow,
+    ConfigEditorValidationError,
+    ManualPartInput,
+    ReplaceScoringUnitsCommand,
+    SplitScoringUnitCommand,
+    apply_config_editor_changes,
+    collect_config_editor_issues,
+    editor_part_ids,
+    project_config_editor,
+    validate_config_editor_candidate,
+)
 from backend.config_workspace.locks import session_config_lock
 from backend.config_workspace.sources import (
     ConfigAssetNotFoundError,
@@ -17,6 +32,11 @@ from backend.config_workspace.sources import (
 
 __all__ = [
     "ConfigAssetNotFoundError",
+    "ConfigEditorCommand",
+    "ConfigEditorEdit",
+    "ConfigEditorIssue",
+    "ConfigEditorRow",
+    "ConfigEditorValidationError",
     "ConfigQuestionPreview",
     "ConfigSourceChangedError",
     "ConfigSourceInvalidError",
@@ -25,8 +45,16 @@ __all__ = [
     "ConfigSourceService",
     "ConfigSourceTooLargeError",
     "ConfigSourceTypeUnsupportedError",
+    "ManualPartInput",
     "PreparedGenerationInput",
     "QuestionDecision",
+    "ReplaceScoringUnitsCommand",
+    "SplitScoringUnitCommand",
+    "apply_config_editor_changes",
+    "collect_config_editor_issues",
     "create_session_draft",
+    "editor_part_ids",
+    "project_config_editor",
     "session_config_lock",
+    "validate_config_editor_candidate",
 ]
