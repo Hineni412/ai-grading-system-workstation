@@ -99,6 +99,7 @@ interface MockState {
   mappingStatus: NonNullable<MockOptions['mappingStatus']>
   authoritativeAnswer: string
   pendingEditorRoute: Route | null
+  lastSave: { edits?: Array<Record<string, unknown>>; commands?: unknown[] } | null
 }
 
 function job(id: number, mode: Mode) {
@@ -138,6 +139,7 @@ async function installConfigWorkspaceMockApi(page: Page, options: MockOptions = 
     editorGets: 0, saveFailure: options.saveFailure ?? null,
     mappingStatus: options.mappingStatus ?? 'refreshed', authoritativeAnswer: 'x = 4',
     pendingEditorRoute: null,
+    lastSave: null,
   }
 
   await page.route(/^https?:\/\/[^/]+\/api\//, async (route) => {
@@ -199,6 +201,7 @@ async function installConfigWorkspaceMockApi(page: Page, options: MockOptions = 
       if (options.holdConflictReload && state.editorGets > 1) state.pendingEditorRoute = route
       else await route.fulfill({ json: editor(state.editorReady, initialRevision, state.authoritativeAnswer) })
     } else if (path === '/api/sessions/7/config/editor' && method === 'PUT') {
+      state.lastSave = request.postDataJSON() as MockState['lastSave']
       if (state.saveFailure === '422') {
         state.saveFailure = null
         await route.fulfill({ status: 422, ...errorBody(route, 'invalid_config_editor', '合成校验失败', {
@@ -210,12 +213,13 @@ async function installConfigWorkspaceMockApi(page: Page, options: MockOptions = 
         state.authoritativeAnswer = '服务器较新答案'
         await route.fulfill({ status: 409, ...errorBody(route, 'config_revision_conflict', '服务器已有较新版本') })
       } else {
-        const body = request.postDataJSON() as { edits?: Array<{ row_id: string; score?: number; standard_answer?: string }> }
+        const body = request.postDataJSON() as { edits?: Array<Record<string, unknown> & { row_id: string }> }
         const saved = editor(true, savedRevision, state.authoritativeAnswer)
         for (const edit of body.edits ?? []) {
           const row = saved.rows.find((candidate) => candidate.row_id === edit.row_id)
-          if (row && edit.score !== undefined) row.score = edit.score
-          if (row && edit.standard_answer !== undefined) row.standard_answer = edit.standard_answer
+          if (row) Object.assign(row, Object.fromEntries(
+            Object.entries(edit).filter(([key]) => key !== 'row_id'),
+          ))
         }
         saved.total_score = saved.rows.reduce((total, row) => total + row.score, 0)
         await route.fulfill({ json: { ...saved, save_result: {
@@ -302,6 +306,28 @@ test('draft to saved rubric survives partial generation and refresh', async ({ p
   await page.getByRole('button', { name: '保存评分依据' }).click()
   await expect(page.getByText('评分依据已保存，样卷映射已刷新')).toBeVisible()
   expect(state.generationRequests).toBe(2)
+})
+
+test('expanded rubric policy fields submit exact row-id edits', async ({ page }) => {
+  const state = await installConfigWorkspaceMockApi(page, { initialSessions: true })
+  state.editorReady = true
+  await openSeededWorkspace(page, state)
+  await expect(page.getByRole('heading', { name: '编辑评分依据' })).toBeVisible()
+
+  await page.getByLabel('Q1 P1 S1 分值').fill('20')
+  await page.getByLabel('Q1 P1 S1 证据要求/关键步骤').fill('列式\n关键结论')
+  await page.getByLabel('Q1 P1 S1 扣分规则').fill('漏写过程扣 1 分')
+  await page.getByLabel('Q1 要求最终答案').uncheck()
+  await page.getByLabel('Q1 仅答案最高分').fill('3')
+  await page.getByLabel('Q1 最终答案规则').fill('单位必须完整')
+  await page.getByRole('button', { name: '保存评分依据' }).click()
+
+  await expect.poll(() => state.lastSave).not.toBeNull()
+  expect(state.lastSave?.edits).toContainEqual(expect.objectContaining({
+    row_id: 'row-q1-p1-s1', required_elements: ['列式', '关键结论'],
+    deduction_rules: ['漏写过程扣 1 分'], require_final_answer: false,
+    answer_only_max_score: 3, final_answer_rule: '单位必须完整',
+  }))
 })
 
 test('whole-document failure waits for an explicit manual retry', async ({ page }) => {

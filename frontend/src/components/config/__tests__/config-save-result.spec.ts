@@ -8,6 +8,7 @@ import type {
   ConfigEditorSaveRequest,
   ConfigEditorSaveResponse,
 } from '../../../api/config-workspace'
+import type { JobResponse } from '../../../api/jobs'
 import { useConfigWorkspaceStore } from '../../../stores/config-workspace'
 import { useSessionStore } from '../../../stores/session'
 import SessionConfigView from '../../../views/SessionConfigView.vue'
@@ -47,6 +48,7 @@ async function settle(): Promise<void> {
 async function mountView(options: {
   saver: (sessionId: number, request: ConfigEditorSaveRequest) => Promise<ConfigEditorSaveResponse>
   loader?: (sessionId: number) => Promise<ConfigEditorResponse>
+  refiner?: (sessionId: number, request: { revision: string; commands: unknown[] }) => Promise<JobResponse>
 }) {
   const pinia = createPinia()
   setActivePinia(pinia)
@@ -58,10 +60,16 @@ async function mountView(options: {
   })
   const workspace = useConfigWorkspaceStore(pinia)
   workspace.selectSession(7)
+  workspace.setSource({ session_id: 7, source_id: 'e'.repeat(32), source_revision: 'f'.repeat(64),
+    safe_filename: '数学卷.pdf', suffix: '.pdf', size_bytes: 12, sha256_prefix: 'c'.repeat(12),
+    parse_state: 'ready', questions: [{ question_id: 'Q12', question_type: 'proof',
+      question_preview: '证明题', answer_preview: '', answer_present: false, needs_review: false,
+      local_answer_trusted: false, has_question_asset: false, has_answer_asset: false }] })
   workspace.setEditor(editor())
   const host = document.createElement('div')
   document.body.append(host)
-  const app = createApp(SessionConfigView, { editorSaver: options.saver, editorLoader: options.loader })
+  const app = createApp(SessionConfigView, { editorSaver: options.saver, editorLoader: options.loader,
+    editorRefiner: options.refiner })
   app.use(pinia)
   app.mount(host)
   await nextTick()
@@ -178,6 +186,24 @@ describe('ConfigSaveResult', () => {
     expect(mounted.host.textContent).not.toContain('private')
   })
 
+  it('reconciles a lost save response against the authoritative editor before retry', async () => {
+    const timeout = new ApiError({ kind: 'timeout', status: null, code: 'request_timeout',
+      message: 'timeout', details: {}, requestId: 'safe', retryable: false })
+    const loader = vi.fn(async () => editor('本地答案', 'b'))
+    const mounted = await mountView({ saver: vi.fn(async () => { throw timeout }), loader })
+    const answer = mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 标准答案"]')!
+    answer.value = '本地答案'
+    answer.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="保存评分依据"]')!.click()
+    await settle()
+
+    expect(loader).toHaveBeenCalledExactlyOnceWith(7)
+    expect(mounted.workspace.hasDirtyEditor).toBe(false)
+    expect(mounted.workspace.saveStatus).toBe('success')
+    expect(mounted.host.textContent).not.toContain('本次修改未保存')
+  })
+
   it('does not let an old save replace edits made after that request started', async () => {
     const pending = deferred<ConfigEditorSaveResponse>()
     const mounted = await mountView({ saver: vi.fn(() => pending.promise) })
@@ -195,6 +221,22 @@ describe('ConfigSaveResult', () => {
       { row_id: 'row-q12-p1-s1', standard_answer: 'newer draft' },
     ])
     expect(mounted.workspace.editor?.rows[0]?.standard_answer).toBe('旧答案')
+  })
+
+  it('disables rubric edits after a delayed refine request becomes a running Job', async () => {
+    const pending = deferred<JobResponse>()
+    const refiner = vi.fn(() => pending.promise)
+    const mounted = await mountView({ saver: vi.fn(), refiner })
+    mounted.host.querySelector<HTMLButtonElement>('button[name="AI 完善评分单元"]')!.click()
+    await nextTick()
+    pending.resolve({ id: 55, job_type: 'config_generation', payload: { session_id: 7, mode: 'refine' },
+      result: {}, status: 'running', progress: 0.2, stage: 'refining', detail: '', error: null,
+      cancel_requested: false, created_at: '2026-07-15T00:00:00Z', started_at: null,
+      updated_at: '2026-07-15T00:00:01Z', finished_at: null })
+    await settle()
+
+    expect(refiner).toHaveBeenCalledOnce()
+    expect(mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 标准答案"]')?.disabled).toBe(true)
   })
 
   it('does not let an old conflict reload clear edits made while it was loading', async () => {

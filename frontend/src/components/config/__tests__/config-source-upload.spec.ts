@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ConfigSource } from '../../../api/config-workspace'
+import { ApiError } from '../../../api/errors'
 import { useConfigWorkspaceStore } from '../../../stores/config-workspace'
 import ConfigSourceUpload from '../ConfigSourceUpload.vue'
 
@@ -45,6 +46,7 @@ async function mountUpload(options: {
   uploader?: (sessionId: number, file: File) => Promise<ConfigSource>
   onUploaded?: (value: ConfigSource) => void
   beforeUpload?: () => boolean
+  sourceLoader?: (sessionId: number, sourceId: string) => Promise<ConfigSource>
 } = {}) {
   const host = document.createElement('div')
   document.body.append(host)
@@ -55,6 +57,7 @@ async function mountUpload(options: {
     source: options.accepted ?? null,
     uploader,
     beforeUpload: options.beforeUpload,
+    sourceLoader: options.sourceLoader,
     onUploaded,
   })
   app.mount(host)
@@ -86,6 +89,21 @@ describe('ConfigSourceUpload', () => {
     expect(mounted.host.textContent).toContain('七年级数学.pdf')
     expect(mounted.host.querySelector('[role="alert"]')?.textContent).toContain('新文件未接收成功')
     expect(mounted.host.textContent).not.toContain('D:/private')
+  })
+
+  it('reconciles an ambiguous replacement before offering another upload', async () => {
+    const timeout = new ApiError({ kind: 'timeout', status: null, code: 'request_timeout',
+      message: 'timeout', details: {}, requestId: 'safe', retryable: false })
+    const sourceLoader = vi.fn(async () => source())
+    const mounted = await mountUpload({ accepted: source(),
+      uploader: vi.fn(async () => { throw timeout }), sourceLoader })
+    await choose(mounted.host, new File(['%PDF'], 'replacement.pdf'))
+    mounted.host.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
+    await settle()
+
+    expect(sourceLoader).toHaveBeenCalledExactlyOnceWith(7, 'a'.repeat(32))
+    expect(mounted.host.textContent).toContain('核对')
+    expect(mounted.host.textContent).not.toContain('新文件未接收成功')
   })
 
   it.each([

@@ -47,6 +47,11 @@ export class ApiError extends Error implements ApiErrorInit {
   }
 }
 
+export function isAmbiguousWriteError(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.status === null
+    && (error.kind === 'network' || error.kind === 'timeout' || error.kind === 'cancelled')
+}
+
 function contractError(status: number, requestId: string): ApiError {
   return new ApiError({
     kind: 'contract',

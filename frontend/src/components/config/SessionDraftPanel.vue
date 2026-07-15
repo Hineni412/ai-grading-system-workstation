@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 
-import { useSessionStore } from '../../stores/session'
+import { SessionDraftOutcomeUnknownError, useSessionStore } from '../../stores/session'
 
 const sessionStore = useSessionStore()
 const name = ref('')
@@ -20,8 +20,10 @@ async function createDraft(): Promise<void> {
   try {
     await sessionStore.createDraft(name.value)
     message.value = '考试草稿已创建。'
-  } catch {
-    message.value = '考试草稿未创建，请检查名称后重试。'
+  } catch (error) {
+    message.value = error instanceof SessionDraftOutcomeUnknownError
+      ? '创建结果未知，暂时无法核对考试列表。为避免重复创建，请恢复连接后刷新页面确认。'
+      : '服务器未创建考试草稿，请检查名称后重试。'
   } finally {
     busy.value = false
   }
