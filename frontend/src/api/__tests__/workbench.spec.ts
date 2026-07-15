@@ -81,6 +81,15 @@ describe('workbench API contract', () => {
     expect(JSON.stringify(overview)).not.toMatch(/(?:rubric|answer_key|payload|result|path)/)
   })
 
+  it('accepts empty and out-of-range anomaly pages', () => {
+    expect(decodeSessionAnomalyResponse({
+      items: [], total: 0, page: 1, page_size: 20, total_pages: 0,
+    }).items).toEqual([])
+    expect(decodeSessionAnomalyResponse({
+      items: [], total: 1, page: 2, page_size: 20, total_pages: 1,
+    }).items).toEqual([])
+  })
+
   it.each([
     { ...overview, recent_jobs: [{ ...job, status: 'cancelling' }] },
     { ...overview, progress: { ...progress, progress_percent: Number.NaN } },
@@ -96,6 +105,19 @@ describe('workbench API contract', () => {
     { ...anomalies, items: [{ ...anomalies.items[0], anomaly_type: 'private' }] },
   ])('rejects malformed anomaly data', (payload) => {
     expect(() => decodeSessionAnomalyResponse(payload)).toThrow('Invalid session anomalies')
+  })
+
+  it('rejects extra private workbench fields', () => {
+    expect(() => decodeWorkbenchOverview({ ...overview, private_path: 'C:/private' })).toThrow()
+    expect(() => decodeWorkbenchOverview({
+      ...overview, progress: { ...progress, raw: { source: 'private' } },
+    })).toThrow()
+    expect(() => decodeWorkbenchOverview({
+      ...overview, recent_jobs: [{ ...job, payload: { secret: true } }],
+    })).toThrow()
+    expect(() => decodeSessionAnomalyResponse({
+      ...anomalies, items: [{ ...anomalies.items[0], private_path: 'C:/private' }],
+    })).toThrow()
   })
 
   it('uses known query values and safe session paths', async () => {

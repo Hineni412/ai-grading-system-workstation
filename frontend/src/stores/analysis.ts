@@ -4,6 +4,7 @@ import { defineStore } from 'pinia'
 import {
   fetchQuestionAnalysis,
   fetchStudentAnalysis,
+  type AnalysisScope,
   type QuestionAnalysisItem,
   type QuestionAnalysisResponse,
   type StudentAnalysisItem,
@@ -43,6 +44,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
   const classes = ref<string[]>([])
   const students = ref<StudentAnalysisItem[]>([])
   const graph = ref<GraphRowsResponse | null>(null)
+  const questionsScope = ref<AnalysisScope | null>(null)
+  const studentsScope = ref<AnalysisScope | null>(null)
   const questionsState = ref<ResourceState>('idle')
   const studentsState = ref<ResourceState>('idle')
   const graphState = ref<ResourceState>('idle')
@@ -59,6 +62,40 @@ export const useAnalysisStore = defineStore('analysis', () => {
   let questionsGeneration = 0
   let studentsGeneration = 0
   let graphGeneration = 0
+  let questionsRequestKey: string | null = null
+  let studentsRequestKey: string | null = null
+  let graphRequestKey: string | null = null
+
+  function classScope(className: string | null): string | null {
+    return className === null ? null : className.trim()
+  }
+
+  function matchesAnalysisScope(
+    scope: AnalysisScope,
+    expectedSessionId: number,
+    expectedClassName: string | null,
+    expectedQuestionId: string | null,
+  ): boolean {
+    return (
+      scope.session_id === expectedSessionId &&
+      scope.class_name === expectedClassName &&
+      scope.question_id === expectedQuestionId
+    )
+  }
+
+  function matchesGraphScope(
+    response: GraphRowsResponse,
+    expectedSessionId: number,
+    expectedClassName: string,
+  ): boolean {
+    return (
+      response.scope.mode === 'class' &&
+      response.scope.class_id === expectedClassName &&
+      response.exam_scope.mode === 'current' &&
+      response.exam_scope.session_ids.length === 1 &&
+      response.exam_scope.session_ids[0] === expectedSessionId
+    )
+  }
 
   function resetForSession(nextSessionId: number | null): void {
     if (sessionId.value === nextSessionId) return
@@ -71,11 +108,16 @@ export const useAnalysisStore = defineStore('analysis', () => {
     questionsGeneration += 1
     studentsGeneration += 1
     graphGeneration += 1
+    questionsRequestKey = null
+    studentsRequestKey = null
+    graphRequestKey = null
     sessionId.value = nextSessionId
     questions.value = []
     classes.value = []
     students.value = []
     graph.value = null
+    questionsScope.value = null
+    studentsScope.value = null
     questionsState.value = 'idle'
     studentsState.value = 'idle'
     graphState.value = 'idle'
@@ -94,6 +136,16 @@ export const useAnalysisStore = defineStore('analysis', () => {
   ): Promise<void> {
     resetForSession(nextSessionId)
     questionsController?.abort()
+    const requestKey = JSON.stringify([nextSessionId, className, 1, 100])
+    if (questionsRequestKey !== requestKey) {
+      questions.value = []
+      classes.value = []
+      questionsScope.value = null
+      questionsState.value = 'idle'
+      questionsError.value = ''
+      questionsUpdatedAt.value = null
+    }
+    questionsRequestKey = requestKey
     const controller = new AbortController()
     questionsController = controller
     const generation = ++questionsGeneration
@@ -102,8 +154,12 @@ export const useAnalysisStore = defineStore('analysis', () => {
     try {
       const loaded = await loader(nextSessionId, className, controller.signal)
       if (generation !== questionsGeneration || sessionId.value !== nextSessionId) return
+      if (!matchesAnalysisScope(loaded.scope, nextSessionId, classScope(className), null)) {
+        throw new Error('Question analysis scope mismatch')
+      }
       questions.value = [...loaded.items]
       classes.value = [...loaded.classes]
+      questionsScope.value = { ...loaded.scope }
       questionsState.value = loaded.items.length === 0 ? 'empty' : 'ready'
       questionsUpdatedAt.value = new Date().toISOString()
     } catch (error) {
@@ -127,6 +183,15 @@ export const useAnalysisStore = defineStore('analysis', () => {
   ): Promise<void> {
     resetForSession(nextSessionId)
     studentsController?.abort()
+    const requestKey = JSON.stringify([nextSessionId, questionId, className, 1, 100])
+    if (studentsRequestKey !== requestKey) {
+      students.value = []
+      studentsScope.value = null
+      studentsState.value = 'idle'
+      studentsError.value = ''
+      studentsUpdatedAt.value = null
+    }
+    studentsRequestKey = requestKey
     const controller = new AbortController()
     studentsController = controller
     const generation = ++studentsGeneration
@@ -135,7 +200,16 @@ export const useAnalysisStore = defineStore('analysis', () => {
     try {
       const loaded = await loader(nextSessionId, questionId, className, controller.signal)
       if (generation !== studentsGeneration || sessionId.value !== nextSessionId) return
+      if (!matchesAnalysisScope(
+        loaded.scope,
+        nextSessionId,
+        classScope(className),
+        questionId.trim(),
+      )) {
+        throw new Error('Student analysis scope mismatch')
+      }
       students.value = [...loaded.items]
+      studentsScope.value = { ...loaded.scope }
       studentsState.value = loaded.items.length === 0 ? 'empty' : 'ready'
       studentsUpdatedAt.value = new Date().toISOString()
     } catch (error) {
@@ -161,6 +235,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
       graphController?.abort()
       graphController = null
       graphGeneration += 1
+      graphRequestKey = null
       graph.value = null
       graphState.value = 'idle'
       graphError.value = ''
@@ -168,6 +243,15 @@ export const useAnalysisStore = defineStore('analysis', () => {
       return
     }
     graphController?.abort()
+    const normalizedClassName = className.trim()
+    const requestKey = JSON.stringify([nextSessionId, normalizedClassName])
+    if (graphRequestKey !== requestKey) {
+      graph.value = null
+      graphState.value = 'idle'
+      graphError.value = ''
+      graphUpdatedAt.value = null
+    }
+    graphRequestKey = requestKey
     const controller = new AbortController()
     graphController = controller
     const generation = ++graphGeneration
@@ -176,6 +260,9 @@ export const useAnalysisStore = defineStore('analysis', () => {
     try {
       const loaded = await loader(nextSessionId, className, controller.signal)
       if (generation !== graphGeneration || sessionId.value !== nextSessionId) return
+      if (!matchesGraphScope(loaded, nextSessionId, normalizedClassName)) {
+        throw new Error('Graph scope mismatch')
+      }
       graph.value = loaded
       graphState.value = loaded.nodes.length === 0 ? 'empty' : 'ready'
       graphUpdatedAt.value = new Date().toISOString()
@@ -198,6 +285,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
     classes,
     students,
     graph,
+    questionsScope,
+    studentsScope,
     questionsState,
     studentsState,
     graphState,

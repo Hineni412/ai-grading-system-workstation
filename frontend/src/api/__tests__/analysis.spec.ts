@@ -21,7 +21,7 @@ const questionResponse = {
       class_name: '七年级一班',
       question_id: 'Q2(1)',
       max_score: 10,
-      score_rate: 0.8,
+      score_rate: 80,
       average_score: 8,
       deduction_count: 1,
       attempt_count: 2,
@@ -123,8 +123,23 @@ describe('analysis API contract', () => {
     expect(decodeStudentAnalysisResponse(studentResponse)).toEqual(studentResponse)
   })
 
+  it('accepts percentage score rates and legal empty pages', () => {
+    expect(decodeQuestionAnalysisResponse(questionResponse).items[0]?.score_rate).toBe(80)
+    expect(decodeQuestionAnalysisResponse({
+      ...questionResponse, items: [], total: 0, total_pages: 0,
+    }).items).toEqual([])
+    expect(decodeStudentAnalysisResponse({
+      ...studentResponse, items: [], total: 0, total_pages: 0,
+    }).items).toEqual([])
+    expect(decodeQuestionAnalysisResponse({
+      ...questionResponse, items: [], page: 2, total: 1, total_pages: 1,
+    }).items).toEqual([])
+  })
+
   it.each([
     { ...questionResponse, items: [{ ...questionResponse.items[0], score_rate: Number.POSITIVE_INFINITY }] },
+    { ...questionResponse, items: [{ ...questionResponse.items[0], score_rate: -0.1 }] },
+    { ...questionResponse, items: [{ ...questionResponse.items[0], score_rate: 100.1 }] },
     { ...questionResponse, items: [{ ...questionResponse.items[0], attempt_count: -1 }] },
     { ...questionResponse, total: 0 },
   ])('rejects malformed question analysis', (payload) => {
@@ -137,6 +152,19 @@ describe('analysis API contract', () => {
     { ...studentResponse, total: 0 },
   ])('rejects malformed student analysis', (payload) => {
     expect(() => decodeStudentAnalysisResponse(payload)).toThrow('Invalid student analysis')
+  })
+
+  it('rejects extra private analysis fields', () => {
+    expect(() => decodeQuestionAnalysisResponse({ ...questionResponse, private_path: 'C:/private' })).toThrow()
+    expect(() => decodeQuestionAnalysisResponse({
+      ...questionResponse, scope: { ...questionResponse.scope, raw: true },
+    })).toThrow()
+    expect(() => decodeQuestionAnalysisResponse({
+      ...questionResponse, items: [{ ...questionResponse.items[0], payload: {} }],
+    })).toThrow()
+    expect(() => decodeStudentAnalysisResponse({
+      ...studentResponse, items: [{ ...studentResponse.items[0], private_path: 'C:/private' }],
+    })).toThrow()
   })
 
   it('builds query strings and encodes the question path segment', async () => {
@@ -165,6 +193,43 @@ describe('graph API contract', () => {
     { ...graphRows, coverage: { ...coverage, covered_items: -1 } },
   ])('rejects malformed graph rows', (payload) => {
     expect(() => decodeGraphRowsResponse(payload)).toThrow('Invalid graph rows')
+  })
+
+  it('accepts percentage Graph row rates and rejects unsafe extras', () => {
+    const row = {
+      student_id: 13,
+      student_code: 'S-13',
+      student_name: '学生甲',
+      knowledge_key: node.knowledge_key,
+      knowledge_label: node.knowledge_label,
+      weighted_score_rate: 62.5,
+      deduction_count: 1,
+      item_count: 1,
+      sample_reasons: '',
+      source_question_refs: [],
+      tag_context: {},
+      error_counts: {},
+    }
+    expect(decodeGraphRowsResponse({ ...graphRows, rows: [row] }).rows[0]?.weighted_score_rate).toBe(62.5)
+    expect(() => decodeGraphRowsResponse({
+      ...graphRows, rows: [{ ...row, weighted_score_rate: -0.1 }],
+    })).toThrow('Invalid graph rows')
+    expect(() => decodeGraphRowsResponse({
+      ...graphRows, rows: [{ ...row, weighted_score_rate: 100.1 }],
+    })).toThrow('Invalid graph rows')
+    expect(() => decodeGraphRowsResponse({
+      ...graphRows, rows: [{ ...row, weighted_score_rate: Number.NaN }],
+    })).toThrow('Invalid graph rows')
+    expect(() => decodeGraphRowsResponse({
+      ...graphRows, rows: [{ ...row, weighted_score_rate: Number.POSITIVE_INFINITY }],
+    })).toThrow('Invalid graph rows')
+    expect(() => decodeGraphRowsResponse({ ...graphRows, private_path: 'C:/private' })).toThrow('Invalid graph rows')
+    expect(() => decodeGraphRowsResponse({
+      ...graphRows, nodes: [{ ...node, payload: {} }],
+    })).toThrow('Invalid graph rows')
+    expect(() => decodeGraphEvidenceResponse({
+      ...graphEvidence, raw: { private_path: 'C:/private' },
+    })).toThrow('Invalid graph evidence')
   })
 
   it('posts only the selected class and current exam', async () => {

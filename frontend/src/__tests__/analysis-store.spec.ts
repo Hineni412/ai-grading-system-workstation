@@ -6,7 +6,7 @@ import type { GraphRowsResponse } from '../api/graph'
 import { useAnalysisStore } from '../stores/analysis'
 
 const questionItem = {
-  class_name: '一班', question_id: 'Q1', max_score: 10, score_rate: 0.8,
+  class_name: '一班', question_id: 'Q1', max_score: 10, score_rate: 80,
   average_score: 8, deduction_count: 1, attempt_count: 2, metric_status: 'ready' as const,
 }
 const session7Questions: QuestionAnalysisResponse = {
@@ -20,7 +20,7 @@ const session8Questions: QuestionAnalysisResponse = {
 }
 const students: StudentAnalysisResponse = {
   scope: { session_id: 7, class_name: '一班', question_id: 'Q1' },
-  items: [], total: 0, page: 1, page_size: 100, total_pages: 1,
+  items: [], total: 0, page: 1, page_size: 100, total_pages: 0,
 }
 const graph: GraphRowsResponse = {
   scope: { mode: 'class', student_ids: [], class_id: '一班' },
@@ -79,6 +79,81 @@ describe('analysis store', () => {
     expect(store.questionsState).toBe('stale-error')
     expect(store.questionsError).toBe('题目分析暂时无法更新')
     expect(store.questionsUpdatedAt).toBe(updatedAt)
+    expect(store.questionsScope).toEqual(session7Questions.scope)
+  })
+
+  it('clears class A content and ignores its late response after selecting class B', async () => {
+    const store = useAnalysisStore()
+    const classA = {
+      ...session7Questions,
+      scope: { ...session7Questions.scope, class_name: '一班' },
+    }
+    await store.loadQuestions(7, '一班', async () => classA)
+    const old = deferred<QuestionAnalysisResponse>()
+    let oldSignal: AbortSignal | undefined
+    const oldLoad = store.loadQuestions(7, '一班', (_sessionId, _className, signal) => {
+      oldSignal = signal
+      return old.promise
+    })
+    await store.loadQuestions(7, '二班', async () => { throw new Error('private failure') })
+
+    expect(oldSignal?.aborted).toBe(true)
+    expect(store.questions).toEqual([])
+    expect(store.questionsScope).toBeNull()
+    expect(store.questionsState).toBe('error')
+    old.resolve(classA)
+    await oldLoad
+    expect(store.questions).toEqual([])
+    expect(store.questionsScope).toBeNull()
+  })
+
+  it('clears Q1 students before a failed Q2 request', async () => {
+    const store = useAnalysisStore()
+    const q1 = {
+      ...students,
+      items: [{
+        result_id: 1,
+        detail_id: 2,
+        student_id: 3,
+        student_code: 'S3',
+        student_name: '学生甲',
+        class_name: '一班',
+        question_id: 'Q1',
+        score_awarded: 8,
+        max_score: 10,
+        deduction_amount: 2,
+        deduction_reason: null,
+        needs_review: false,
+        evidence_url: '/api/evidence/2',
+      }],
+      total: 1,
+      total_pages: 1,
+    }
+    await store.loadStudents(7, 'Q1', '一班', async () => q1)
+    expect(store.studentsScope).toEqual(q1.scope)
+    await store.loadStudents(7, 'Q2', '一班', async () => { throw new Error('private failure') })
+    expect(store.students).toEqual([])
+    expect(store.studentsScope).toBeNull()
+    expect(store.studentsState).toBe('error')
+  })
+
+  it('clears graph content when the class changes even if the new request aborts', async () => {
+    const store = useAnalysisStore()
+    await store.loadGraph(7, '一班', async () => graph)
+    await store.loadGraph(7, '二班', async () => { throw new DOMException('aborted', 'AbortError') })
+    expect(store.graph).toBeNull()
+    expect(store.graphState).toBe('idle')
+  })
+
+  it('rejects a successful response for a different backend scope', async () => {
+    const store = useAnalysisStore()
+    await store.loadQuestions(7, '二班', async () => ({
+      ...session7Questions,
+      scope: { ...session7Questions.scope, class_name: '一班' },
+    }))
+    expect(store.questions).toEqual([])
+    expect(store.questionsScope).toBeNull()
+    expect(store.questionsState).toBe('error')
   })
 
   it('does not request graph data until a class is selected', async () => {
