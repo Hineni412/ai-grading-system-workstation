@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from pathlib import Path
+from typing import Callable
 
 from docx import Document
 from docx.oxml.ns import qn
@@ -19,15 +20,26 @@ _IMAGE_MARKER = re.compile(r"\[\[IMAGE:.+?\]\]")
 _NUMBERED_PARAGRAPH = re.compile(r"^[ \t]*(?:\d{1,3}[ \t]*[.．、]|[（(][ \t]*\d{1,3}[ \t]*[）)])")
 
 
-def import_docx(source_file: str | Path) -> ExtractedDocument:
+def import_docx(
+    source_file: str | Path,
+    *,
+    asset_root: str | Path | None = None,
+    register_created_file: Callable[[Path], None] | None = None,
+) -> ExtractedDocument:
     path = Path(source_file)
     document = Document(path)
-    image_dir = _image_output_dir(path)
+    image_dir = _image_output_dir(path, asset_root=asset_root)
     saved_images: dict[str, str] = {}
     state = {"auto_num": 1}
     rich_paragraphs = [
         record
-        for record in _iter_document_records(document, image_dir, saved_images, state)
+        for record in _iter_document_records(
+            document,
+            image_dir,
+            saved_images,
+            state,
+            register_created_file=register_created_file,
+        )
         if record["text"]
     ]
     rich_paragraphs = _move_floating_image_paragraphs_to_following_question(rich_paragraphs)
@@ -48,7 +60,15 @@ def import_docx(source_file: str | Path) -> ExtractedDocument:
     )
 
 
-def _paragraph_record(paragraph, document, image_dir: Path, saved_images: dict[str, str], state: dict[str, int] | None = None) -> dict[str, object]:
+def _paragraph_record(
+    paragraph,
+    document,
+    image_dir: Path,
+    saved_images: dict[str, str],
+    state: dict[str, int] | None = None,
+    *,
+    register_created_file: Callable[[Path], None] | None = None,
+) -> dict[str, object]:
     parts: list[str] = []
     try:
         text = _get_paragraph_rich_text(paragraph).strip()
@@ -67,7 +87,13 @@ def _paragraph_record(paragraph, document, image_dir: Path, saved_images: dict[s
         parts.append(text)
     image_relationships: dict[str, str] = {}
     for relationship_id in _paragraph_image_relationship_ids(paragraph):
-        image_path = _save_related_image(document, relationship_id, image_dir, saved_images)
+        image_path = _save_related_image(
+            document,
+            relationship_id,
+            image_dir,
+            saved_images,
+            register_created_file=register_created_file,
+        )
         if image_path:
             image_relationships[relationship_id] = image_path
             parts.append(f"[[IMAGE:{image_path}]]")
@@ -78,7 +104,15 @@ def _paragraph_record(paragraph, document, image_dir: Path, saved_images: dict[s
     }
 
 
-def _table_record(table: Table, document, image_dir: Path, saved_images: dict[str, str], state: dict[str, int] | None = None) -> dict[str, object]:
+def _table_record(
+    table: Table,
+    document,
+    image_dir: Path,
+    saved_images: dict[str, str],
+    state: dict[str, int] | None = None,
+    *,
+    register_created_file: Callable[[Path], None] | None = None,
+) -> dict[str, object]:
     rows_html: list[str] = []
     image_relationships: dict[str, str] = {}
     for row in table.rows:
@@ -87,9 +121,23 @@ def _table_record(table: Table, document, image_dir: Path, saved_images: dict[st
             cell_parts: list[str] = []
             for child in cell._tc.iterchildren():  # noqa: SLF001 - needed for document-order table traversal.
                 if child.tag == qn("w:p"):
-                    record = _paragraph_record(Paragraph(child, cell), document, image_dir, saved_images, state)
+                    record = _paragraph_record(
+                        Paragraph(child, cell),
+                        document,
+                        image_dir,
+                        saved_images,
+                        state,
+                        register_created_file=register_created_file,
+                    )
                 elif child.tag == qn("w:tbl"):
-                    record = _table_record(Table(child, cell), document, image_dir, saved_images, state)
+                    record = _table_record(
+                        Table(child, cell),
+                        document,
+                        image_dir,
+                        saved_images,
+                        state,
+                        register_created_file=register_created_file,
+                    )
                 else:
                     continue
                 text = str(record.get("text") or "").strip()
@@ -222,12 +270,33 @@ def _iter_table_paragraphs(table: Table):
                     yield from _iter_table_paragraphs(Table(child, cell))
 
 
-def _iter_document_records(document, image_dir: Path, saved_images: dict[str, str], state: dict[str, int] | None = None):
+def _iter_document_records(
+    document,
+    image_dir: Path,
+    saved_images: dict[str, str],
+    state: dict[str, int] | None = None,
+    *,
+    register_created_file: Callable[[Path], None] | None = None,
+):
     for child in document.element.body.iterchildren():
         if child.tag == qn("w:p"):
-            yield _paragraph_record(Paragraph(child, document), document, image_dir, saved_images, state)
+            yield _paragraph_record(
+                Paragraph(child, document),
+                document,
+                image_dir,
+                saved_images,
+                state,
+                register_created_file=register_created_file,
+            )
         elif child.tag == qn("w:tbl"):
-            yield _table_record(Table(child, document), document, image_dir, saved_images, state)
+            yield _table_record(
+                Table(child, document),
+                document,
+                image_dir,
+                saved_images,
+                state,
+                register_created_file=register_created_file,
+            )
 
 
 def _paragraph_image_relationship_ids(paragraph) -> list[str]:
@@ -273,7 +342,14 @@ def _is_floating_image_only_record(record: dict[str, object]) -> bool:
     return bool(text) and not _IMAGE_MARKER.sub("", text).strip() and "<wp:anchor" in xml
 
 
-def _save_related_image(document, relationship_id: str, image_dir: Path, saved_images: dict[str, str]) -> str | None:
+def _save_related_image(
+    document,
+    relationship_id: str,
+    image_dir: Path,
+    saved_images: dict[str, str],
+    *,
+    register_created_file: Callable[[Path], None] | None = None,
+) -> str | None:
     if relationship_id in saved_images:
         return saved_images[relationship_id]
     related_part = document.part.related_parts.get(relationship_id)
@@ -285,11 +361,22 @@ def _save_related_image(document, relationship_id: str, image_dir: Path, saved_i
     digest = hashlib.sha1(blob).hexdigest()[:12]
     output_path = image_dir / f"{relationship_id}_{digest}{suffix}"
     if not output_path.exists():
+        if register_created_file is not None:
+            register_created_file(output_path)
         output_path.write_bytes(blob)
     saved_images[relationship_id] = str(output_path)
     return saved_images[relationship_id]
 
 
-def _image_output_dir(source_file: Path) -> Path:
+def _image_output_dir(
+    source_file: Path,
+    *,
+    asset_root: str | Path | None = None,
+) -> Path:
     digest = hashlib.sha1(str(source_file.resolve()).encode("utf-8")).hexdigest()[:10]
-    return project_data_root() / "question_bank" / "extracted_images" / f"{source_file.stem}_{digest}"
+    root = (
+        Path(asset_root)
+        if asset_root is not None
+        else project_data_root() / "question_bank" / "extracted_images"
+    )
+    return root / f"{source_file.stem}_{digest}"

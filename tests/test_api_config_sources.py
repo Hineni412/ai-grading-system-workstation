@@ -92,6 +92,36 @@ def test_upload_and_restart_get_return_only_bounded_public_projection(tmp_path: 
     assert reloaded.json() == body
 
 
+def test_public_get_does_not_read_or_encode_private_images(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import backend.config_workspace.sources as sources_module
+
+    client, db, _upload_root = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    uploaded = _upload(client, session_id).json()
+    original_read_bytes = Path.read_bytes
+
+    def reject_private_image_read(path: Path) -> bytes:
+        if path.name.startswith(("asset-", "whole-page-")):
+            raise AssertionError("public metadata load read a private image")
+        return original_read_bytes(path)
+
+    def reject_encoding(_content: bytes) -> bytes:
+        raise AssertionError("public metadata load encoded a private image")
+
+    monkeypatch.setattr(Path, "read_bytes", reject_private_image_read)
+    monkeypatch.setattr(sources_module.base64, "b64encode", reject_encoding)
+
+    response = client.get(
+        f"/api/sessions/{session_id}/config/sources/{uploaded['source_id']}"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == uploaded
+
+
 def test_upload_rejects_missing_session_without_creating_source(tmp_path: Path) -> None:
     client, _db, upload_root = _client(tmp_path)
 

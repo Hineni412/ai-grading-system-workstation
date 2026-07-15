@@ -133,10 +133,10 @@ def get_config_source(
 ) -> dict[str, Any]:
     _require_session(db, session_id)
     try:
-        return source_service.load(
+        return source_service.load_public(
             session_id=session_id,
             source_id=source_id,
-        ).public_snapshot()
+        )
     except ConfigSourceError as exc:
         raise _source_api_error(exc) from None
 

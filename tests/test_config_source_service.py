@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import io
 import json
+import os
 import re
+import subprocess
+import threading
 import zipfile
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -107,6 +111,26 @@ def test_stream_overflow_removes_only_new_source_files(tmp_path: Path) -> None:
     assert list((tmp_path / "config_sources").rglob("manifest.json")) == []
 
 
+def test_cancelled_upload_propagates_and_removes_owned_temporary_file(
+    tmp_path: Path,
+) -> None:
+    async def cancelled_chunks() -> AsyncIterator[bytes]:
+        yield b"%PDF-1.7"
+        raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            service(tmp_path).stage_and_parse(
+                session_id=7,
+                filename="cancelled.pdf",
+                chunks=cancelled_chunks(),
+            )
+        )
+
+    source_root = tmp_path / "config_sources" / "session-7"
+    assert [path for path in source_root.rglob("*") if path.is_file()] == []
+
+
 def test_docx_rich_text_and_image_are_kept_in_controlled_source_dir(tmp_path: Path) -> None:
     record = asyncio.run(
         service(tmp_path).stage_and_parse(
@@ -132,6 +156,81 @@ def test_docx_rich_text_and_image_are_kept_in_controlled_source_dir(tmp_path: Pa
     )
     assert content == _png_bytes()
     assert media_type == "image/png"
+
+
+def test_concurrent_docx_parse_does_not_redirect_an_unrelated_caller(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import session_manager
+    from question_bank.importers import docx_importer
+
+    independent_temporary_root = tmp_path / "independent-temporary"
+    independent_asset_root = tmp_path / "independent-assets"
+    monkeypatch.setattr(
+        session_manager,
+        "_resolve_upload_config_dir",
+        lambda: str(independent_temporary_root),
+    )
+    monkeypatch.setattr(
+        docx_importer,
+        "project_data_root",
+        lambda: independent_asset_root,
+    )
+    original_import = docx_importer.import_docx
+    roles = threading.local()
+    service_ready = threading.Event()
+    independent_ready = threading.Event()
+    independent_finished = threading.Event()
+
+    def synchronized_import(source_file: str | Path, **kwargs: object):
+        if getattr(roles, "value", "") == "independent":
+            independent_ready.set()
+            assert service_ready.wait(timeout=10)
+            try:
+                return original_import(source_file, **kwargs)
+            finally:
+                independent_finished.set()
+        service_ready.set()
+        assert independent_ready.wait(timeout=10)
+        assert independent_finished.wait(timeout=10)
+        return original_import(source_file, **kwargs)
+
+    monkeypatch.setattr(docx_importer, "import_docx", synchronized_import)
+    payload = _docx_bytes(with_image=True)
+
+    def parse_service_source():
+        roles.value = "service"
+        return asyncio.run(
+            service(tmp_path / "service-root").stage_and_parse(
+                session_id=7,
+                filename="service.docx",
+                chunks=chunks(payload),
+            )
+        )
+
+    def parse_independent_source():
+        roles.value = "independent"
+        return session_manager.preview_question_blocks_from_docx_bytes(
+            payload,
+            fallback_doc_text="1. fallback",
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        service_future = executor.submit(parse_service_source)
+        independent_future = executor.submit(parse_independent_source)
+        record = service_future.result(timeout=20)
+        independent_blocks = independent_future.result(timeout=20)
+
+    independent_paths = [
+        Path(path)
+        for block in independent_blocks
+        for path in block.get("image_paths", [])
+    ]
+    expected_root = independent_asset_root / "question_bank" / "extracted_images"
+    assert independent_paths
+    assert all(path.is_relative_to(expected_root) for path in independent_paths)
+    assert record.questions[0].has_question_asset is True
 
 
 def test_pdf_text_crops_and_whole_pages_reload_from_manifest(tmp_path: Path) -> None:
@@ -359,6 +458,8 @@ def test_parser_failure_after_asset_write_removes_all_new_owned_files(
     import rubric_auto_cropper
     import session_manager
 
+    import backend.config_workspace.sources as sources_module
+
     monkeypatch.setattr(rubric_auto_cropper, "extract_pdf_text", lambda _payload: "text")
     monkeypatch.setattr(
         session_manager,
@@ -381,6 +482,17 @@ def test_parser_failure_after_asset_write_removes_all_new_owned_files(
         "extract_pdf_images",
         lambda _payload: [_png_bytes()],
     )
+    original_write = sources_module._write_bytes_atomic
+    sentinel_path: Path | None = None
+
+    def write_with_unowned_sentinel(path: Path, content: bytes, *args: object, **kwargs: object) -> None:
+        nonlocal sentinel_path
+        original_write(path, content, *args, **kwargs)
+        if sentinel_path is None:
+            sentinel_path = path.parent / "not-owned.txt"
+            sentinel_path.write_text("keep", encoding="utf-8")
+
+    monkeypatch.setattr(sources_module, "_write_bytes_atomic", write_with_unowned_sentinel)
 
     with pytest.raises(ConfigSourceInvalidError):
         asyncio.run(
@@ -392,7 +504,111 @@ def test_parser_failure_after_asset_write_removes_all_new_owned_files(
         )
 
     source_root = tmp_path / "config_sources" / "session-7"
-    assert [path for path in source_root.rglob("*") if path.is_file()] == []
+    assert sentinel_path is not None
+    assert sentinel_path.read_text(encoding="utf-8") == "keep"
+    assert [
+        path
+        for path in source_root.rglob("*")
+        if path.is_file() and path != sentinel_path
+    ] == []
+
+
+@pytest.mark.parametrize("active_state", ["missing", "corrupt"])
+def test_cleanup_fails_closed_when_active_pointer_is_unavailable(
+    tmp_path: Path,
+    active_state: str,
+) -> None:
+    source_service = service(tmp_path)
+    first = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="first.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+    second = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="second.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+    active_path = tmp_path / "config_sources" / "session-7" / "active.json"
+    if active_state == "missing":
+        active_path.unlink()
+    else:
+        active_path.write_text("not-json", encoding="utf-8")
+
+    assert source_service.cleanup_inactive(
+        session_id=7,
+        referenced_source_ids=set(),
+    ) == ()
+    assert first.manifest_path.exists()
+    assert second.manifest_path.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
+def test_load_rejects_session_ancestor_junction(tmp_path: Path) -> None:
+    source_service = service(tmp_path)
+    record = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="paper.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+    session_dir = tmp_path / "config_sources" / "session-7"
+    moved_session_dir = tmp_path / "junction-target"
+    session_dir.rename(moved_session_dir)
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(session_dir), str(moved_session_dir)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        moved_session_dir.rename(session_dir)
+        pytest.skip("junction creation is unavailable")
+    try:
+        with pytest.raises(ConfigSourceInvalidError):
+            source_service.load(session_id=7, source_id=record.source_id)
+    finally:
+        os.rmdir(session_dir)
+
+
+def test_single_asset_read_reads_only_the_requested_asset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_service = service(tmp_path)
+    record = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="paper.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+    manifest = json.loads(record.manifest_path.read_text(encoding="utf-8"))
+    target_name = manifest["asset_files"]["Q1"]["question"]
+    original_read_bytes = Path.read_bytes
+    reads: list[str] = []
+
+    def tracked_read_bytes(path: Path) -> bytes:
+        reads.append(path.name)
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", tracked_read_bytes)
+
+    content, media_type = source_service.read_asset(
+        session_id=7,
+        source_id=record.source_id,
+        question_id="Q1",
+        asset_kind="question",
+    )
+
+    assert content
+    assert media_type.startswith("image/")
+    assert reads == [target_name]
 
 
 def test_cleanup_retains_referenced_old_source_and_removes_exact_owned_files_only(
