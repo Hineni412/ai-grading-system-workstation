@@ -52,8 +52,12 @@ function displayTime(value: string | null): string {
       </label>
     </header>
 
-    <p v-if="state === 'loading' && items.length === 0" class="workbench-state-copy" role="status">
-      正在读取题目分析…
+    <p
+      v-if="state === 'idle' || (state === 'loading' && updatedAt === null)"
+      class="workbench-state-copy"
+      role="status"
+    >
+      {{ state === 'idle' ? '正在准备题目分析…' : '正在读取题目分析…' }}
     </p>
     <div v-else-if="state === 'error'" class="workbench-inline-error" role="alert">
       <p>分析数据暂时无法读取；工作台其他内容仍可使用</p>
@@ -64,12 +68,16 @@ function displayTime(value: string | null): string {
     <template v-else>
       <p v-if="state === 'loading'" class="workbench-state-copy" role="status">正在更新题目分析…</p>
       <div v-if="state === 'stale-error'" class="workbench-stale" role="alert">
-        <span>数据可能不是最新 · 上次更新 {{ displayTime(updatedAt) }}</span>
+        <span>题目分析更新失败 · 上次更新 {{ displayTime(updatedAt) }}</span>
         <button type="button" class="workbench-link-button" @click="$emit('retry')">
           重新加载分析
         </button>
       </div>
-      <p v-if="items.length === 0" class="workbench-empty-copy">当前考试还没有已批改题目</p>
+      <p v-if="items.length === 0" class="workbench-empty-copy">
+        {{ updatedAt !== null && (state === 'loading' || state === 'stale-error')
+          ? '上次成功读取时没有已批改题目'
+          : '当前考试还没有已批改题目' }}
+      </p>
       <template v-else>
         <p class="analysis-summary">
           当前共 {{ items.length }} 个题目汇总；选择题目可查看学生得分与扣分证据。
