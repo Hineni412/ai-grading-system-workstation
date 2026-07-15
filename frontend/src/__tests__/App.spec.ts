@@ -82,7 +82,7 @@ describe('App', () => {
 
     expect(host.querySelector('[data-testid="review-scoring-inspector"]')).toBeNull()
     expect(host.querySelector('[data-testid="session-inspector"]')).toBeNull()
-    expect(host.querySelector('[data-testid="app-navigation"]')).toBeNull()
+    expect(host.querySelector('[data-testid="app-navigation"]')).not.toBeNull()
     app.unmount()
   })
 
@@ -181,7 +181,7 @@ describe('App', () => {
     app.unmount()
   })
 
-  it('returns to grading after a rejected lazy route', async () => {
+  it('returns to the workbench after a rejected lazy route', async () => {
     const pinia = createPinia()
     const router = createAppRouter(createMemoryHistory())
     router.addRoute({
@@ -207,13 +207,13 @@ describe('App', () => {
     )
     await settleUi()
     const returnButton = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
-      (button) => button.textContent === '返回评分复核',
+      (button) => button.textContent === '返回工作台',
     )!
     returnButton.click()
-    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/grading'))
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/workbench'))
     await settleUi()
 
-    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('评分复核')
+    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('工作台')
     expect(host.textContent).not.toContain('private route factory detail')
     app.unmount()
   })
@@ -258,7 +258,7 @@ describe('App', () => {
     app.unmount()
   })
 
-  it('returns from a sanitized routed render failure to grading', async () => {
+  it('returns from a sanitized routed render failure to the workbench', async () => {
     const brokenRoute = defineComponent(() => () => {
       throw new Error('private render detail')
     })
@@ -281,13 +281,35 @@ describe('App', () => {
     await settleUi()
 
     const returnButton = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
-      (button) => button.textContent === '返回评分复核',
+      (button) => button.textContent === '返回工作台',
     )!
     returnButton.click()
-    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/grading'))
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/workbench'))
     await settleUi()
 
-    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('评分复核')
+    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('工作台')
+    app.unmount()
+  })
+
+  it('returns from an unknown route to the workbench', async () => {
+    const pinia = createPinia()
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/missing/deep/path')
+    await router.isReady()
+    const host = document.createElement('div')
+    const app = createApp(App)
+    app.use(pinia)
+    app.use(router)
+    app.mount(host)
+    await settleUi()
+
+    const returnButton = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent === '返回工作台',
+    )!
+    returnButton.click()
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/workbench'))
+
+    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('工作台')
     app.unmount()
   })
 
@@ -305,7 +327,7 @@ describe('App', () => {
 
     expect(host.querySelector('[data-testid="app-shell"]')).not.toBeNull()
     expect(host.querySelector('[data-testid="app-topbar"]')).not.toBeNull()
-    expect(host.querySelector('[data-testid="app-navigation"]')).toBeNull()
+    expect(host.querySelector('[data-testid="app-navigation"]')).not.toBeNull()
     expect(host.querySelector('main#main-workspace')).not.toBeNull()
     expect(host.querySelector('[data-testid="session-inspector"]')).toBeNull()
     const sessionStore = useSessionStore(pinia)

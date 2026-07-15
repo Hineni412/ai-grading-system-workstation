@@ -24,3 +24,24 @@ class JobResponse(BaseModel):
     started_at: str | None = None
     updated_at: str
     finished_at: str | None = None
+
+
+class JobSummaryResponse(BaseModel):
+    id: int
+    job_type: str
+    status: str
+    progress: float
+    stage: str
+    detail: str
+    created_at: str
+    started_at: str | None = None
+    updated_at: str
+    finished_at: str | None = None
+
+
+class JobSummaryListResponse(BaseModel):
+    items: list[JobSummaryResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int

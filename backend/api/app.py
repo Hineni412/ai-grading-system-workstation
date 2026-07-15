@@ -208,6 +208,7 @@ def create_app(
         return HealthResponse(version=app_version)
 
     from backend.api.routers import (
+        analytics_router,
         config_router,
         files_router,
         grading_router,
@@ -223,8 +224,10 @@ def create_app(
         students_router,
         templates_router,
         training_router,
+        workbench_router,
     )
 
+    api.include_router(analytics_router)
     api.include_router(config_router)
     api.include_router(files_router)
     api.include_router(grading_router)
@@ -240,6 +243,7 @@ def create_app(
     api.include_router(students_router)
     api.include_router(templates_router)
     api.include_router(training_router)
+    api.include_router(workbench_router)
 
     return api
 

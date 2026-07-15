@@ -24,6 +24,43 @@ def test_job_store_creates_and_reads_job_records(tmp_path) -> None:
     assert loaded.stage == "queued"
 
 
+def test_job_store_session_filter_only_accepts_json_positive_integer(tmp_path) -> None:
+    from backend.jobs.store import JobStore
+
+    db_path = tmp_path / "jobs.db"
+    store = JobStore(db_path)
+    rejected_payloads = (
+        '{"session_id":',
+        '{"session_id": true}',
+        '{"session_id": 7.0}',
+        '{"session_id": 0}',
+        '{"session_id": -7}',
+        '{"session_id": "7garbage"}',
+        '{"session_id": " 7 "}',
+        '{"session_id": 7e0}',
+        '{"session_id": "7e0"}',
+        '{"session_id": "7"}',
+    )
+    with sqlite3.connect(db_path) as conn:
+        for payload_json in rejected_payloads:
+            conn.execute(
+                "INSERT INTO jobs (job_type, payload_json, status) "
+                "VALUES ('grading_run', ?, 'queued')",
+                (payload_json,),
+            )
+        cursor = conn.execute(
+            "INSERT INTO jobs (job_type, payload_json, status) "
+            "VALUES ('grading_run', ?, 'queued')",
+            ('{"session_id": 7}',),
+        )
+        accepted_id = int(cursor.lastrowid)
+
+    jobs, total = store.list_jobs(session_id=7, limit=20, offset=0)
+
+    assert total == 1
+    assert [job.id for job in jobs] == [accepted_id]
+
+
 def test_job_store_updates_progress_and_finishes(tmp_path) -> None:
     from backend.jobs.store import JobStore
 
