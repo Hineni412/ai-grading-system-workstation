@@ -12,15 +12,18 @@ const props = withDefaults(defineProps<{
   sessionId: number
   source?: ConfigSource | null
   uploader?: (sessionId: number, file: File) => Promise<ConfigSource>
+  beforeUpload?: () => boolean
 }>(), {
   source: null,
   uploader: uploadConfigSource,
+  beforeUpload: () => true,
 })
 
 const emit = defineEmits<{
   uploaded: [source: ConfigSource]
 }>()
 
+const fileInput = ref<HTMLInputElement | null>(null)
 const selectedFile = ref<File | null>(null)
 const uploading = ref(false)
 const errorMessage = ref('')
@@ -46,12 +49,14 @@ async function submit(): Promise<void> {
     errorMessage.value = validation
     return
   }
+  if (!props.beforeUpload()) return
   uploading.value = true
   errorMessage.value = ''
   try {
     const accepted = await props.uploader(props.sessionId, file)
     emit('uploaded', accepted)
     selectedFile.value = null
+    if (fileInput.value) fileInput.value.value = ''
   } catch {
     errorMessage.value = props.source === null
       ? '文件未接收成功。请选择文件后重新上传。'
@@ -81,6 +86,7 @@ function formatBytes(bytes: number): string {
       <label class="config-source__picker">
         <span>选择 DOCX 或 PDF</span>
         <input
+          ref="fileInput"
           type="file"
           accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
           :disabled="uploading"

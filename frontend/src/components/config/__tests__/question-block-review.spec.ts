@@ -75,6 +75,24 @@ describe('QuestionBlockReview', () => {
     ])
   })
 
+  it('emits an explicit known correction when the parsed question type is unknown', async () => {
+    const onUpdate = vi.fn()
+    const unknown = source({
+      questions: [{
+        ...source().questions[1]!,
+        question_id: 'Q-unknown',
+        question_type: 'essay-from-parser',
+      }],
+    })
+    const mounted = await mountReview({ value: unknown, onUpdate })
+
+    expect(mounted.host.querySelector<HTMLSelectElement>('[aria-label="Q-unknown 题型"]')?.value)
+      .toBe('comprehensive')
+    expect(onUpdate).toHaveBeenLastCalledWith([{
+      question_id: 'Q-unknown', question_type: 'comprehensive', excluded: false,
+    }])
+  })
+
   it('shows answer facts and builds assets only from semantic identifiers', async () => {
     const mounted = await mountReview()
     expect(mounted.host.textContent).toContain('已识别答案')

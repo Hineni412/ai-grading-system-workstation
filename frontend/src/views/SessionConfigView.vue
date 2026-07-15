@@ -8,6 +8,11 @@ import { useSessionStore } from '../stores/session'
 
 const sessionStore = useSessionStore()
 const configStore = useConfigWorkspaceStore()
+
+function confirmSourceUpload(): boolean {
+  if (!configStore.hasDirtyEditor) return true
+  return window.confirm('替换试卷会在新文件接收成功后清除尚未保存的评分依据修改。是否继续？')
+}
 </script>
 
 <template>
@@ -45,6 +50,7 @@ const configStore = useConfigWorkspaceStore()
         <ConfigSourceUpload
           :session-id="sessionStore.currentSession.id"
           :source="configStore.source"
+          :before-upload="confirmSourceUpload"
           @uploaded="configStore.acceptUploadedSource"
         />
         <QuestionBlockReview

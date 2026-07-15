@@ -246,4 +246,17 @@ describe('configuration workspace Store', () => {
     expect(store.sourceId).toBeNull()
     expect(store.source).toBeNull()
   })
+
+  it('rejects an accepted upload from an old session without changing current context', () => {
+    const store = useConfigWorkspaceStore()
+    store.selectSession(7)
+    store.setSource(source('d'.repeat(32)))
+
+    expect(() => store.acceptUploadedSource({
+      ...source('e'.repeat(32)), session_id: 8, source_revision: 'f'.repeat(64),
+    })).toThrow('Source session does not match')
+    expect(store.sessionId).toBe(7)
+    expect(store.sourceId).toBe('d'.repeat(32))
+    expect(store.sourceRevision).toBe('b'.repeat(64))
+  })
 })

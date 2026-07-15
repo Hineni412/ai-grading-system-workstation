@@ -52,7 +52,8 @@ function currentDecisions(): QuestionDecision[] {
   return props.source.questions.flatMap((question) => {
     const questionType = selectedTypes[question.question_id] ?? defaultType(question)
     const excluded = exclusions[question.question_id] ?? false
-    if (questionType === defaultType(question) && !excluded) return []
+    if (knownType(question.question_type)
+      && questionType === question.question_type && !excluded) return []
     return [{ question_id: question.question_id, question_type: questionType, excluded }]
   })
 }
@@ -84,7 +85,8 @@ function assetUrl(questionId: string, assetKind: 'question' | 'answer'): string 
 
 watch(() => props.source.source_revision, (_revision, previous) => {
   resetReview()
-  if (previous !== undefined) emit('update:decisions', [])
+  const normalized = currentDecisions()
+  if (previous !== undefined || normalized.length > 0) emit('update:decisions', normalized)
 }, { immediate: true })
 </script>
 
