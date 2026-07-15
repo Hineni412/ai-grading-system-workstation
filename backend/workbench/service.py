@@ -60,10 +60,14 @@ class WorkbenchService:
                         question.needs_review_count for question in review_questions
                     ),
                 }
+                anomaly_rows = self.list_anomalies(int(session_id))
                 anomalies = {
                     "unmatched_papers": progress["unmatched_papers"],
                     "scan_issue_students": progress["scan_issue_students"],
-                    "failed_papers": progress["failed_papers"],
+                    "failed_papers": sum(
+                        row["anomaly_type"] == "grading_failed"
+                        for row in anomaly_rows
+                    ),
                 }
                 jobs, _total = self.job_manager.list(
                     session_id=int(session_id),

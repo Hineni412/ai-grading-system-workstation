@@ -15,7 +15,11 @@ from backend.api.schemas.jobs import (
 )
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from backend.jobs.store import JobRecord
-from backend.public_data import contains_sensitive_key, sanitize_public_mapping
+from backend.public_data import (
+    contains_sensitive_key,
+    sanitize_public_diagnostic_text,
+    sanitize_public_mapping,
+)
 
 
 router = APIRouter(prefix="/api", tags=["jobs"])
@@ -40,7 +44,7 @@ def _job_response(job: JobRecord) -> JobResponse:
 
 
 def _job_summary_response(job: JobRecord) -> JobSummaryResponse:
-    detail = sanitize_public_mapping({"detail": job.detail}).get("detail", "")
+    detail = sanitize_public_diagnostic_text(job.detail) or ""
     return JobSummaryResponse(
         id=job.id,
         job_type=job.job_type,
