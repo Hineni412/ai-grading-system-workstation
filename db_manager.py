@@ -1790,6 +1790,7 @@ class DBManager:
                 """
                 SELECT
                     sr.id AS result_id,
+                    sr.student_id,
                     s.student_code,
                     s.name AS student_name,
                     s.class_name,
