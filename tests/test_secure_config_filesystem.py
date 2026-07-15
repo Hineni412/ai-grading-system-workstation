@@ -6,8 +6,10 @@ from pathlib import Path
 
 import pytest
 
+import backend.config_workspace.secure_fs as secure_fs_module
 from backend.config_workspace.secure_fs import (
     SecureFilesystemError,
+    SecureFilesystemUnsupportedError,
     SecureRootFilesystem,
 )
 
@@ -110,3 +112,67 @@ def test_secure_filesystem_rejects_in_root_junction_for_read_and_write(
     finally:
         os.rmdir(junction)
     assert target_file.read_bytes() == b"keep"
+
+
+def test_secure_filesystem_fails_closed_without_windows_before_any_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "must-not-be-created"
+    monkeypatch.setattr(secure_fs_module, "_WINDOWS_PLATFORM", False)
+
+    with pytest.raises(
+        SecureFilesystemUnsupportedError,
+        match="secure filesystem is unsupported on this platform",
+    ):
+        SecureRootFilesystem(root)
+
+    assert not root.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle compensation regression")
+def test_atomic_write_closes_handle_and_preserves_primary_failure_when_delete_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class PrimaryFailure(RuntimeError):
+        pass
+
+    class CleanupFailure(RuntimeError):
+        pass
+
+    root = tmp_path / "root"
+    root.mkdir()
+    filesystem = SecureRootFilesystem(root)
+    temporary_handle: int | None = None
+    closed: list[int] = []
+    original_create = secure_fs_module._win_create_file
+    original_close = secure_fs_module._CloseHandle
+
+    def tracked_create(path: Path, access: int, sharing: int, creation: int, flags: int) -> int:
+        nonlocal temporary_handle
+        handle = original_create(path, access, sharing, creation, flags)
+        if creation == secure_fs_module._CREATE_NEW:
+            temporary_handle = handle
+        return handle
+
+    def fail_primary(_handle: int, _content: bytes) -> None:
+        raise PrimaryFailure("primary write failed")
+
+    def fail_cleanup(_handle: int) -> None:
+        raise CleanupFailure("temporary delete failed")
+
+    def tracked_close(handle: int) -> object:
+        closed.append(handle)
+        return original_close(handle)
+
+    monkeypatch.setattr(secure_fs_module, "_win_create_file", tracked_create)
+    monkeypatch.setattr(secure_fs_module, "_win_write_all", fail_primary)
+    monkeypatch.setattr(secure_fs_module, "_win_delete_handle", fail_cleanup)
+    monkeypatch.setattr(secure_fs_module, "_CloseHandle", tracked_close)
+
+    with pytest.raises(PrimaryFailure, match="primary write failed"):
+        filesystem.atomic_write_bytes(root / "value.bin", b"content")
+
+    assert temporary_handle is not None
+    assert temporary_handle in closed

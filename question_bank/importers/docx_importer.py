@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from pathlib import Path
-from typing import Callable
+from typing import BinaryIO, Callable
 
 from docx import Document
 from docx.oxml.ns import qn
@@ -21,14 +21,26 @@ _NUMBERED_PARAGRAPH = re.compile(r"^[ \t]*(?:\d{1,3}[ \t]*[.．、]|[（(][ \t]*
 
 
 def import_docx(
-    source_file: str | Path,
+    source_file: str | Path | BinaryIO,
     *,
+    source_name: str | Path | None = None,
     asset_root: str | Path | None = None,
+    asset_root_is_output_dir: bool = False,
     register_created_file: Callable[[Path], None] | None = None,
+    write_created_file: Callable[[Path, bytes], None] | None = None,
 ) -> ExtractedDocument:
-    path = Path(source_file)
-    document = Document(path)
-    image_dir = _image_output_dir(path, asset_root=asset_root)
+    if isinstance(source_file, (str, Path)):
+        document_source: str | Path | BinaryIO = source_file
+        path = Path(source_name) if source_name is not None else Path(source_file)
+    else:
+        document_source = source_file
+        path = Path(source_name or "document.docx")
+    document = Document(document_source)
+    image_dir = (
+        Path(asset_root)
+        if asset_root_is_output_dir and asset_root is not None
+        else _image_output_dir(path, asset_root=asset_root)
+    )
     saved_images: dict[str, str] = {}
     state = {"auto_num": 1}
     rich_paragraphs = [
@@ -39,6 +51,7 @@ def import_docx(
             saved_images,
             state,
             register_created_file=register_created_file,
+            write_created_file=write_created_file,
         )
         if record["text"]
     ]
@@ -68,6 +81,7 @@ def _paragraph_record(
     state: dict[str, int] | None = None,
     *,
     register_created_file: Callable[[Path], None] | None = None,
+    write_created_file: Callable[[Path, bytes], None] | None = None,
 ) -> dict[str, object]:
     parts: list[str] = []
     try:
@@ -93,6 +107,7 @@ def _paragraph_record(
             image_dir,
             saved_images,
             register_created_file=register_created_file,
+            write_created_file=write_created_file,
         )
         if image_path:
             image_relationships[relationship_id] = image_path
@@ -112,6 +127,7 @@ def _table_record(
     state: dict[str, int] | None = None,
     *,
     register_created_file: Callable[[Path], None] | None = None,
+    write_created_file: Callable[[Path, bytes], None] | None = None,
 ) -> dict[str, object]:
     rows_html: list[str] = []
     image_relationships: dict[str, str] = {}
@@ -128,6 +144,7 @@ def _table_record(
                         saved_images,
                         state,
                         register_created_file=register_created_file,
+                        write_created_file=write_created_file,
                     )
                 elif child.tag == qn("w:tbl"):
                     record = _table_record(
@@ -137,6 +154,7 @@ def _table_record(
                         saved_images,
                         state,
                         register_created_file=register_created_file,
+                        write_created_file=write_created_file,
                     )
                 else:
                     continue
@@ -277,6 +295,7 @@ def _iter_document_records(
     state: dict[str, int] | None = None,
     *,
     register_created_file: Callable[[Path], None] | None = None,
+    write_created_file: Callable[[Path, bytes], None] | None = None,
 ):
     for child in document.element.body.iterchildren():
         if child.tag == qn("w:p"):
@@ -287,6 +306,7 @@ def _iter_document_records(
                 saved_images,
                 state,
                 register_created_file=register_created_file,
+                write_created_file=write_created_file,
             )
         elif child.tag == qn("w:tbl"):
             yield _table_record(
@@ -296,6 +316,7 @@ def _iter_document_records(
                 saved_images,
                 state,
                 register_created_file=register_created_file,
+                write_created_file=write_created_file,
             )
 
 
@@ -349,6 +370,7 @@ def _save_related_image(
     saved_images: dict[str, str],
     *,
     register_created_file: Callable[[Path], None] | None = None,
+    write_created_file: Callable[[Path, bytes], None] | None = None,
 ) -> str | None:
     if relationship_id in saved_images:
         return saved_images[relationship_id]
@@ -356,14 +378,17 @@ def _save_related_image(
     blob = getattr(related_part, "blob", None)
     if not blob:
         return None
-    image_dir.mkdir(parents=True, exist_ok=True)
     suffix = Path(str(getattr(related_part, "partname", ""))).suffix or ".png"
     digest = hashlib.sha1(blob).hexdigest()[:12]
     output_path = image_dir / f"{relationship_id}_{digest}{suffix}"
-    if not output_path.exists():
-        if register_created_file is not None:
-            register_created_file(output_path)
-        output_path.write_bytes(blob)
+    if write_created_file is not None:
+        write_created_file(output_path, bytes(blob))
+    else:
+        image_dir.mkdir(parents=True, exist_ok=True)
+        if not output_path.exists():
+            if register_created_file is not None:
+                register_created_file(output_path)
+            output_path.write_bytes(blob)
     saved_images[relationship_id] = str(output_path)
     return saved_images[relationship_id]
 
