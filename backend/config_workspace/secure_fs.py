@@ -10,9 +10,21 @@ from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
+_WINDOWS_PLATFORM = os.name == "nt"
+
 
 class SecureFilesystemError(RuntimeError):
     pass
+
+
+class SecureFilesystemUnsupportedError(SecureFilesystemError):
+    def __init__(self) -> None:
+        super().__init__("secure filesystem is unsupported on this platform")
+
+
+def _require_windows() -> None:
+    if not _WINDOWS_PLATFORM:
+        raise SecureFilesystemUnsupportedError()
 
 
 def _is_reparse(path: Path) -> bool:
@@ -49,6 +61,7 @@ class SecureRootFilesystem:
     """Handle-anchored file operations below one trusted, physical root."""
 
     def __init__(self, root: Path) -> None:
+        _require_windows()
         self.root = Path(root).resolve(strict=False)
         self.root.mkdir(parents=True, exist_ok=True)
         if _is_reparse(self.root) or not self.root.is_dir():
@@ -58,6 +71,7 @@ class SecureRootFilesystem:
         """Internal checkpoint used by race regression tests."""
 
     def ensure_directory(self, path: Path) -> None:
+        _require_windows()
         clean = self._clean_path(path)
         relative = self._relative(clean)
         current = self.root
@@ -67,99 +81,69 @@ class SecureRootFilesystem:
                 self._validate_static_component(child, directory=True)
                 current = child
                 continue
-            if os.name == "nt":
-                snapshot = self._snapshot(current, include_leaf=True)
-                self._before_handle_use("mkdir", child)
-                with self._windows_parent_guards(child, snapshot):
-                    if not _CreateDirectoryW(str(child), None):
-                        error = ctypes.get_last_error()
-                        if error != _ERROR_ALREADY_EXISTS:
-                            raise SecureFilesystemError("secure directory creation failed")
-            else:
-                snapshot = self._snapshot(current, include_leaf=True)
-                self._before_handle_use("mkdir", child)
-                with self._posix_parent_fd(child, snapshot) as parent_fd:
-                    try:
-                        os.mkdir(child.name, dir_fd=parent_fd)
-                    except FileExistsError:
-                        pass
+            snapshot = self._snapshot(current, include_leaf=True)
+            self._before_handle_use("mkdir", child)
+            with self._windows_parent_guards(child, snapshot):
+                if not _CreateDirectoryW(str(child), None):
+                    error = ctypes.get_last_error()
+                    if error != _ERROR_ALREADY_EXISTS:
+                        raise SecureFilesystemError("secure directory creation failed")
             self._validate_static_component(child, directory=True)
             current = child
 
     @contextlib.contextmanager
     def create_exclusive(self, path: Path) -> Iterator[Any]:
+        _require_windows()
         clean = self._clean_path(path)
         snapshot = self._snapshot(clean, include_leaf=False)
         self._before_handle_use("create", clean)
-        if os.name == "nt":
-            with self._windows_parent_guards(clean, snapshot) as guards:
-                handle = _win_create_file(
+        with self._windows_parent_guards(clean, snapshot) as guards:
+            handle = _win_create_file(
+                clean,
+                _GENERIC_WRITE | _FILE_READ_ATTRIBUTES,
+                _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+                _CREATE_NEW,
+                _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT,
+            )
+            try:
+                self._validate_windows_handle(
+                    handle,
                     clean,
-                    _GENERIC_WRITE | _FILE_READ_ATTRIBUTES,
-                    _FILE_SHARE_READ | _FILE_SHARE_WRITE,
-                    _CREATE_NEW,
-                    _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT,
+                    guards.root_final,
+                    expected_identity=None,
+                    directory=False,
                 )
-                try:
-                    self._validate_windows_handle(
-                        handle,
-                        clean,
-                        guards.root_final,
-                        expected_identity=None,
-                        directory=False,
-                    )
-                    writer = _WindowsWriter(handle)
-                    yield writer
-                    writer.flush()
-                finally:
-                    _CloseHandle(handle)
-            return
-        with self._posix_parent_fd(clean, snapshot) as parent_fd:
-            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-            fd = os.open(clean.name, flags, 0o600, dir_fd=parent_fd)
-            with os.fdopen(fd, "wb", closefd=True) as stream:
-                yield stream
-                stream.flush()
-                os.fsync(stream.fileno())
+                writer = _WindowsWriter(handle)
+                yield writer
+                writer.flush()
+            finally:
+                _CloseHandle(handle)
 
     def read_bytes(self, path: Path) -> bytes:
+        _require_windows()
         clean = self._clean_path(path)
         snapshot = self._snapshot(clean, include_leaf=True)
         self._before_handle_use("read", clean)
-        if os.name == "nt":
-            with self._windows_parent_guards(clean, snapshot) as guards:
-                expected = snapshot.get(self._key(clean))
-                handle = _win_create_file(
-                    clean,
-                    _GENERIC_READ | _FILE_READ_ATTRIBUTES,
-                    _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE,
-                    _OPEN_EXISTING,
-                    _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT,
-                )
-                try:
-                    self._validate_windows_handle(
-                        handle,
-                        clean,
-                        guards.root_final,
-                        expected_identity=expected,
-                        directory=False,
-                    )
-                    return _win_read_all(handle)
-                finally:
-                    _CloseHandle(handle)
-        with self._posix_parent_fd(clean, snapshot) as parent_fd:
-            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-            fd = os.open(clean.name, flags, dir_fd=parent_fd)
+        with self._windows_parent_guards(clean, snapshot) as guards:
+            expected = snapshot.get(self._key(clean))
+            handle = _win_create_file(
+                clean,
+                _GENERIC_READ | _FILE_READ_ATTRIBUTES,
+                _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE,
+                _OPEN_EXISTING,
+                _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT,
+            )
             try:
-                expected = snapshot.get(self._key(clean))
-                if expected is None or int(os.fstat(fd).st_ino) != expected:
-                    raise SecureFilesystemError("file identity changed")
-                chunks: list[bytes] = []
-                while chunk := os.read(fd, 1024 * 1024):
-                    chunks.append(chunk)
-                return b"".join(chunks)
+                self._validate_windows_handle(
+                    handle,
+                    clean,
+                    guards.root_final,
+                    expected_identity=expected,
+                    directory=False,
+                )
+                return _win_read_all(handle)
             finally:
-                os.close(fd)
+                _CloseHandle(handle)
 
     def read_text(self, path: Path, *, encoding: str = "utf-8") -> str:
         try:
@@ -168,67 +152,59 @@ class SecureRootFilesystem:
             raise SecureFilesystemError("secure text decode failed") from None
 
     def atomic_write_bytes(self, path: Path, content: bytes) -> None:
+        _require_windows()
         clean = self._clean_path(path)
         snapshot = self._snapshot(clean, include_leaf=True, allow_missing_leaf=True)
         self._before_handle_use("atomic_write", clean)
-        if os.name == "nt":
-            with self._windows_parent_guards(clean, snapshot) as guards:
-                self._reject_windows_reparse_leaf(clean, guards.root_final)
-                temporary = clean.parent / f".{clean.name}.{uuid.uuid4().hex}.tmp"
-                handle = _win_create_file(
-                    temporary,
-                    _GENERIC_WRITE | _DELETE | _FILE_READ_ATTRIBUTES,
-                    _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE,
-                    _CREATE_NEW,
-                    _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT,
-                )
-                renamed = False
-                try:
-                    self._validate_windows_handle(
-                        handle,
-                        temporary,
-                        guards.root_final,
-                        expected_identity=None,
-                        directory=False,
-                    )
-                    _win_write_all(handle, bytes(content))
-                    if not _FlushFileBuffers(handle):
-                        _raise_last_windows_error()
-                    _win_rename_handle(handle, clean)
-                    renamed = True
-                finally:
-                    if not renamed:
-                        _win_delete_handle(handle)
-                    _CloseHandle(handle)
-            return
-        with self._posix_parent_fd(clean, snapshot) as parent_fd:
-            temporary_name = f".{clean.name}.{uuid.uuid4().hex}.tmp"
-            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-            fd = os.open(temporary_name, flags, 0o600, dir_fd=parent_fd)
+        with self._windows_parent_guards(clean, snapshot) as guards:
+            self._reject_windows_reparse_leaf(clean, guards.root_final)
+            temporary = clean.parent / f".{clean.name}.{uuid.uuid4().hex}.tmp"
+            handle = _win_create_file(
+                temporary,
+                _GENERIC_WRITE | _DELETE | _FILE_READ_ATTRIBUTES,
+                _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE,
+                _CREATE_NEW,
+                _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT,
+            )
+            renamed = False
+            primary_error: BaseException | None = None
             try:
-                payload = memoryview(bytes(content))
-                while payload:
-                    written = os.write(fd, payload)
-                    payload = payload[written:]
-                os.fsync(fd)
-                os.replace(
-                    temporary_name,
-                    clean.name,
-                    src_dir_fd=parent_fd,
-                    dst_dir_fd=parent_fd,
+                self._validate_windows_handle(
+                    handle,
+                    temporary,
+                    guards.root_final,
+                    expected_identity=None,
+                    directory=False,
                 )
+                _win_write_all(handle, bytes(content))
+                if not _FlushFileBuffers(handle):
+                    _raise_last_windows_error()
+                _win_rename_handle(handle, clean)
+                renamed = True
+            except BaseException as error:
+                primary_error = error
+                raise
             finally:
-                os.close(fd)
+                cleanup_error: BaseException | None = None
+                if not renamed:
+                    try:
+                        _win_delete_handle(handle)
+                    except BaseException as error:
+                        cleanup_error = error
                 try:
-                    os.unlink(temporary_name, dir_fd=parent_fd)
-                except FileNotFoundError:
-                    pass
+                    _CloseHandle(handle)
+                except BaseException as error:
+                    if cleanup_error is None:
+                        cleanup_error = error
+                if primary_error is None and cleanup_error is not None:
+                    raise cleanup_error
 
     def write_json_atomic(self, path: Path, payload: Mapping[str, Any]) -> None:
         serialized = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
         self.atomic_write_bytes(path, serialized.encode("utf-8"))
 
     def replace(self, source: Path, destination: Path) -> None:
+        _require_windows()
         clean_source = self._clean_path(source)
         clean_destination = self._clean_path(destination)
         source_snapshot = self._snapshot(clean_source, include_leaf=True)
@@ -238,54 +214,40 @@ class SecureRootFilesystem:
             allow_missing_leaf=True,
         )
         self._before_handle_use("replace", clean_source)
-        if os.name == "nt":
-            with contextlib.ExitStack() as stack:
-                source_guards = stack.enter_context(
-                    self._windows_parent_guards(clean_source, source_snapshot)
-                )
-                destination_guards = stack.enter_context(
-                    self._windows_parent_guards(clean_destination, destination_snapshot)
-                )
-                if source_guards.root_final != destination_guards.root_final:
-                    raise SecureFilesystemError("replace roots differ")
-                self._reject_windows_reparse_leaf(
-                    clean_destination,
-                    destination_guards.root_final,
-                )
-                handle = _win_create_file(
-                    clean_source,
-                    _DELETE | _FILE_READ_ATTRIBUTES,
-                    _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE,
-                    _OPEN_EXISTING,
-                    _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT,
-                )
-                try:
-                    self._validate_windows_handle(
-                        handle,
-                        clean_source,
-                        source_guards.root_final,
-                        expected_identity=source_snapshot.get(self._key(clean_source)),
-                        directory=False,
-                    )
-                    _win_rename_handle(handle, clean_destination)
-                finally:
-                    _CloseHandle(handle)
-            return
         with contextlib.ExitStack() as stack:
-            source_fd = stack.enter_context(
-                self._posix_parent_fd(clean_source, source_snapshot)
+            source_guards = stack.enter_context(
+                self._windows_parent_guards(clean_source, source_snapshot)
             )
-            destination_fd = stack.enter_context(
-                self._posix_parent_fd(clean_destination, destination_snapshot)
+            destination_guards = stack.enter_context(
+                self._windows_parent_guards(clean_destination, destination_snapshot)
             )
-            os.replace(
-                clean_source.name,
-                clean_destination.name,
-                src_dir_fd=source_fd,
-                dst_dir_fd=destination_fd,
+            if source_guards.root_final != destination_guards.root_final:
+                raise SecureFilesystemError("replace roots differ")
+            self._reject_windows_reparse_leaf(
+                clean_destination,
+                destination_guards.root_final,
             )
+            handle = _win_create_file(
+                clean_source,
+                _DELETE | _FILE_READ_ATTRIBUTES,
+                _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE,
+                _OPEN_EXISTING,
+                _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT,
+            )
+            try:
+                self._validate_windows_handle(
+                    handle,
+                    clean_source,
+                    source_guards.root_final,
+                    expected_identity=source_snapshot.get(self._key(clean_source)),
+                    directory=False,
+                )
+                _win_rename_handle(handle, clean_destination)
+            finally:
+                _CloseHandle(handle)
 
     def unlink_many(self, paths: Iterable[Path]) -> None:
+        _require_windows()
         clean_paths = tuple(dict.fromkeys(self._clean_path(path) for path in paths))
         if not clean_paths:
             return
@@ -294,60 +256,38 @@ class SecureRootFilesystem:
             for path in clean_paths
         }
         self._before_handle_use("unlink_many", clean_paths[0])
-        if os.name == "nt":
-            opened: list[int] = []
-            with contextlib.ExitStack() as stack:
-                root_final: str | None = None
-                try:
-                    for path in clean_paths:
-                        guards = stack.enter_context(
-                            self._windows_parent_guards(path, snapshots[path])
-                        )
-                        if root_final is None:
-                            root_final = guards.root_final
-                        elif guards.root_final != root_final:
-                            raise SecureFilesystemError("unlink roots differ")
-                        handle = _win_try_open_delete(path)
-                        if handle is None:
-                            continue
-                        try:
-                            self._validate_windows_handle(
-                                handle,
-                                path,
-                                guards.root_final,
-                                expected_identity=snapshots[path].get(self._key(path)),
-                                directory=False,
-                            )
-                        except Exception:
-                            _CloseHandle(handle)
-                            raise
-                        opened.append(handle)
-                    for handle in opened:
-                        _win_delete_handle(handle)
-                finally:
-                    for handle in opened:
-                        _CloseHandle(handle)
-            return
+        opened: list[int] = []
         with contextlib.ExitStack() as stack:
-            opened: list[tuple[int, str, int | None]] = []
-            for path in clean_paths:
-                parent_fd = stack.enter_context(
-                    self._posix_parent_fd(path, snapshots[path])
-                )
-                try:
-                    metadata = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
-                except FileNotFoundError:
-                    continue
-                if stat.S_ISLNK(metadata.st_mode):
-                    raise SecureFilesystemError("refusing to unlink a link")
-                opened.append(
-                    (parent_fd, path.name, snapshots[path].get(self._key(path)))
-                )
-            for parent_fd, name, expected in opened:
-                current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-                if expected is not None and int(current.st_ino) != expected:
-                    raise SecureFilesystemError("file identity changed")
-                os.unlink(name, dir_fd=parent_fd)
+            root_final: str | None = None
+            try:
+                for path in clean_paths:
+                    guards = stack.enter_context(
+                        self._windows_parent_guards(path, snapshots[path])
+                    )
+                    if root_final is None:
+                        root_final = guards.root_final
+                    elif guards.root_final != root_final:
+                        raise SecureFilesystemError("unlink roots differ")
+                    handle = _win_try_open_delete(path)
+                    if handle is None:
+                        continue
+                    try:
+                        self._validate_windows_handle(
+                            handle,
+                            path,
+                            guards.root_final,
+                            expected_identity=snapshots[path].get(self._key(path)),
+                            directory=False,
+                        )
+                    except Exception:
+                        _CloseHandle(handle)
+                        raise
+                    opened.append(handle)
+                for handle in opened:
+                    _win_delete_handle(handle)
+            finally:
+                for handle in opened:
+                    _CloseHandle(handle)
 
     def _clean_path(self, path: Path) -> Path:
         raw = str(path)
@@ -478,34 +418,6 @@ class SecureRootFilesystem:
             )
         finally:
             _CloseHandle(handle)
-
-    @contextlib.contextmanager
-    def _posix_parent_fd(
-        self,
-        path: Path,
-        snapshot: dict[str, int],
-    ) -> Iterator[int]:
-        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        fds: list[int] = []
-        try:
-            current_fd = os.open(self.root, flags)
-            fds.append(current_fd)
-            if int(os.fstat(current_fd).st_ino) != snapshot.get(self._key(self.root)):
-                raise SecureFilesystemError("root identity changed")
-            current = self.root
-            for part in self._relative(path).parts[:-1]:
-                current = current / part
-                next_fd = os.open(part, flags, dir_fd=current_fd)
-                fds.append(next_fd)
-                current_fd = next_fd
-                expected = snapshot.get(self._key(current))
-                if expected is None or int(os.fstat(current_fd).st_ino) != expected:
-                    raise SecureFilesystemError("directory identity changed")
-            yield current_fd
-        finally:
-            for fd in reversed(fds):
-                os.close(fd)
-
 
 class _WindowsGuards:
     def __init__(self, *, handles: list[int], root_final: str) -> None:

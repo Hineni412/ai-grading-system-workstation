@@ -46,6 +46,12 @@ def _png_bytes() -> bytes:
     return output.getvalue()
 
 
+def _alternate_png_bytes() -> bytes:
+    output = io.BytesIO()
+    Image.new("RGB", (24, 18), "crimson").save(output, format="PNG")
+    return output.getvalue()
+
+
 def _docx_bytes(*, question: str = "1. Solve x squared.", with_image: bool = False) -> bytes:
     document = Document()
     paragraph = document.add_paragraph()
@@ -160,6 +166,54 @@ def test_docx_rich_text_and_image_are_kept_in_controlled_source_dir(tmp_path: Pa
     assert media_type == "image/png"
 
 
+def test_controlled_docx_parser_does_not_use_path_scratch_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_mkdir = Path.mkdir
+    original_write_bytes = Path.write_bytes
+    original_unlink = Path.unlink
+    violations: list[tuple[str, Path]] = []
+
+    def is_parser_scratch(path: Path) -> bool:
+        return path.name.startswith("_rich_split_") or (
+            path.name == "assets" and path.parent.name == "p"
+        )
+
+    def guarded_mkdir(path: Path, *args: object, **kwargs: object) -> None:
+        if is_parser_scratch(path):
+            violations.append(("mkdir", path))
+            raise AssertionError("ordinary parser mkdir is forbidden")
+        original_mkdir(path, *args, **kwargs)
+
+    def guarded_write_bytes(path: Path, data: bytes) -> int:
+        if is_parser_scratch(path) or path.name.startswith("rId"):
+            violations.append(("write_bytes", path))
+            raise AssertionError("ordinary parser write is forbidden")
+        return original_write_bytes(path, data)
+
+    def guarded_unlink(path: Path, *args: object, **kwargs: object) -> None:
+        if is_parser_scratch(path):
+            violations.append(("unlink", path))
+            raise AssertionError("ordinary parser unlink is forbidden")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", guarded_mkdir)
+    monkeypatch.setattr(Path, "write_bytes", guarded_write_bytes)
+    monkeypatch.setattr(Path, "unlink", guarded_unlink)
+
+    record = asyncio.run(
+        service(tmp_path).stage_and_parse(
+            session_id=7,
+            filename="memory.docx",
+            chunks=chunks(_docx_bytes(with_image=True)),
+        )
+    )
+
+    assert record.questions[0].has_question_asset is True
+    assert violations == []
+
+
 def test_concurrent_docx_parse_does_not_redirect_an_unrelated_caller(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -233,6 +287,72 @@ def test_concurrent_docx_parse_does_not_redirect_an_unrelated_caller(
     assert independent_paths
     assert all(path.is_relative_to(expected_root) for path in independent_paths)
     assert record.questions[0].has_question_asset is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows DOCX junction race regression")
+def test_docx_parser_junction_swap_cannot_write_outside_controlled_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_service = service(tmp_path)
+    outside = tmp_path.parent / f"{tmp_path.name}-docx-outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    parked: Path | None = None
+    junction: Path | None = None
+    swapped = False
+    original_checkpoint = source_service._files._before_handle_use
+
+    def swap_parser_root(operation: str, path: Path) -> None:
+        nonlocal parked, junction, swapped
+        original_checkpoint(operation, path)
+        if swapped or operation != "mkdir" or path.name != "assets":
+            return
+        junction = path.parent
+        parked = junction.with_name("p-parked")
+        junction.rename(parked)
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            parked.rename(junction)
+            pytest.skip("junction creation is unavailable")
+        swapped = True
+
+    monkeypatch.setattr(source_service._files, "_before_handle_use", swap_parser_root)
+    record = None
+    failed_safely = False
+    try:
+        try:
+            record = asyncio.run(
+                source_service.stage_and_parse(
+                    session_id=7,
+                    filename="race.docx",
+                    chunks=chunks(_docx_bytes(with_image=True)),
+                )
+            )
+        except ConfigSourceInvalidError:
+            failed_safely = True
+    finally:
+        if swapped and junction is not None and parked is not None:
+            os.rmdir(junction)
+            parked.rename(junction)
+        outside_files = sorted(path.name for path in outside.iterdir())
+        outside_content = sentinel.read_text(encoding="utf-8")
+        for path in outside.iterdir():
+            path.unlink()
+        outside.rmdir()
+
+    assert swapped is True
+    assert failed_safely or (
+        record is not None and record.questions[0].has_question_asset is True
+    )
+    assert outside_files == ["sentinel.txt"]
+    assert outside_content == "keep"
 
 
 def test_pdf_text_crops_and_whole_pages_reload_from_manifest(tmp_path: Path) -> None:
@@ -453,6 +573,103 @@ def test_active_pointer_swaps_only_after_new_manifest_record_validates(
     )
 
 
+@pytest.mark.parametrize("tamper_target", ["source", "asset"])
+def test_active_pointer_final_integrity_check_rejects_post_parse_tampering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tamper_target: str,
+) -> None:
+    current_service = service(tmp_path)
+    current = asyncio.run(
+        current_service.stage_and_parse(
+            session_id=7,
+            filename="current.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+    replacement_service = service(tmp_path)
+    original_record = replacement_service._record_from_manifest
+
+    def record_then_tamper(manifest_path: Path, manifest: dict[str, object]):
+        record = original_record(manifest_path, manifest)
+        if tamper_target == "source":
+            record.private_source_path.write_bytes(
+                record.private_source_path.read_bytes() + b"tampered"
+            )
+        else:
+            raw_assets = manifest["asset_files"]
+            assert isinstance(raw_assets, dict)
+            question_assets = raw_assets["Q1"]
+            assert isinstance(question_assets, dict)
+            asset_name = question_assets["question"]
+            assert isinstance(asset_name, str)
+            (manifest_path.parent / asset_name).write_bytes(_alternate_png_bytes())
+        return record
+
+    monkeypatch.setattr(
+        replacement_service,
+        "_record_from_manifest",
+        record_then_tamper,
+    )
+
+    with pytest.raises(ConfigSourceInvalidError):
+        asyncio.run(
+            replacement_service.stage_and_parse(
+                session_id=7,
+                filename="replacement.pdf",
+                chunks=chunks(_pdf_bytes()),
+            )
+        )
+
+    assert current_service.load(
+        session_id=7,
+        source_id=current.source_id,
+    ).source_id == current.source_id
+    manifests = list((tmp_path / "config_sources" / "session-7").rglob("manifest.json"))
+    assert manifests == [current.manifest_path]
+
+
+def test_targeted_asset_read_rejects_valid_bytes_outside_pinned_inventory(
+    tmp_path: Path,
+) -> None:
+    source_service = service(tmp_path)
+    record = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="paper.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+    manifest = json.loads(record.manifest_path.read_text(encoding="utf-8"))
+    filename = manifest["asset_files"]["Q1"]["question"]
+    (record.manifest_path.parent / filename).write_bytes(_alternate_png_bytes())
+
+    with pytest.raises(ConfigAssetNotFoundError):
+        source_service.read_asset(
+            session_id=7,
+            source_id=record.source_id,
+            question_id="Q1",
+            asset_kind="question",
+        )
+
+
+def test_private_record_load_rejects_source_bytes_outside_pinned_inventory(
+    tmp_path: Path,
+) -> None:
+    source_service = service(tmp_path)
+    record = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="paper.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+    record.private_source_path.write_bytes(record.private_source_path.read_bytes() + b"x")
+
+    with pytest.raises(ConfigSourceInvalidError):
+        source_service.load(session_id=7, source_id=record.source_id)
+
+
 def test_parser_failure_after_asset_write_removes_all_new_owned_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -574,6 +791,123 @@ def test_cleanup_fails_closed_when_active_image_is_corrupt(tmp_path: Path) -> No
         referenced_source_ids=set(),
     ) == ()
     assert first.manifest_path.exists()
+    assert active.manifest_path.exists()
+
+
+@pytest.mark.parametrize(
+    "tamper_kind",
+    [
+        "missing_inventory",
+        "valid_image_replacement",
+        "private_block",
+        "asset_map",
+        "whole_page",
+        "orphan_owned",
+    ],
+)
+def test_cleanup_fails_closed_when_active_complete_identity_is_inconsistent(
+    tmp_path: Path,
+    tamper_kind: str,
+) -> None:
+    source_service = service(tmp_path)
+    first = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="first.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+    active = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="active.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+    manifest = json.loads(active.manifest_path.read_text(encoding="utf-8"))
+    inventory = manifest.get("file_inventory")
+    assert isinstance(inventory, dict), "controlled manifest needs complete inventory"
+    question_asset = manifest["asset_files"]["Q1"]["question"]
+    assert isinstance(question_asset, str)
+
+    if tamper_kind == "missing_inventory":
+        inventory.pop(question_asset)
+    elif tamper_kind == "valid_image_replacement":
+        (active.manifest_path.parent / question_asset).write_bytes(
+            _alternate_png_bytes()
+        )
+    elif tamper_kind == "private_block":
+        manifest["private_blocks"][0]["question_html"] = "tampered semantics"
+    elif tamper_kind == "asset_map":
+        manifest["asset_files"]["Q1"]["question"] = manifest["asset_files"]["Q1"][
+            "answer"
+        ]
+    elif tamper_kind == "whole_page":
+        manifest["whole_page_files"] = []
+    else:
+        orphan_name = "orphan.png"
+        orphan_content = _alternate_png_bytes()
+        (active.manifest_path.parent / orphan_name).write_bytes(orphan_content)
+        manifest["owned_files"].append(orphan_name)
+        inventory[orphan_name] = {
+            "role": "whole_page",
+            "size_bytes": len(orphan_content),
+            "sha256": hashlib.sha256(orphan_content).hexdigest(),
+        }
+
+    if tamper_kind != "valid_image_replacement":
+        active.manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    assert source_service.cleanup_inactive(
+        session_id=7,
+        referenced_source_ids=set(),
+    ) == ()
+    assert first.manifest_path.exists()
+    assert active.manifest_path.exists()
+
+
+def test_cleanup_does_not_trust_inactive_owned_files_without_complete_identity(
+    tmp_path: Path,
+) -> None:
+    source_service = service(tmp_path)
+    inactive = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="inactive.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+    active = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="active.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+    manifest = json.loads(inactive.manifest_path.read_text(encoding="utf-8"))
+    orphan = inactive.manifest_path.parent / "not-semantically-owned.png"
+    orphan.write_bytes(_png_bytes())
+    manifest["owned_files"].append(orphan.name)
+    manifest["file_inventory"][orphan.name] = {
+        "role": "whole_page",
+        "page_index": 999,
+        "size_bytes": orphan.stat().st_size,
+        "sha256": hashlib.sha256(orphan.read_bytes()).hexdigest(),
+    }
+    inactive.manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    assert source_service.cleanup_inactive(
+        session_id=7,
+        referenced_source_ids=set(),
+    ) == ()
+    assert inactive.manifest_path.exists()
+    assert orphan.exists()
     assert active.manifest_path.exists()
 
 

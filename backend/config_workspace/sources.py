@@ -144,6 +144,7 @@ class _ConfigSourceMetadata:
     manifest_path: Path
     source_path: Path
     owned_names: frozenset[str]
+    file_inventory: dict[str, dict[str, Any]]
     private_blocks: tuple[dict[str, Any], ...]
     private_document_text: str
     asset_files: dict[str, dict[str, str | None]]
@@ -294,19 +295,48 @@ class ConfigSourceService:
                 )
             questions = _question_previews(blocks, asset_files)
             source_sha256 = digest.hexdigest()
-            source_revision = hashlib.sha256(
-                f"{clean_session_id}:{source_id}:{source_sha256}".encode("ascii")
-            ).hexdigest()
             manifest_path = source_dir / "manifest.json"
             registry.register(manifest_path, manifest_owned=True)
-            owned_names = [path.name for path in registry.owned_paths]
-            if len(owned_names) != len(set(owned_names)):
+            expected_roles = _expected_inventory_roles(
+                source_dir=source_dir,
+                source_file=source_path.name,
+                private_blocks=blocks,
+                asset_files=asset_files,
+                whole_page_files=whole_page_files,
+            )
+            registered_names = [
+                path.name
+                for path in registry.owned_paths
+                if path.name != "manifest.json"
+            ]
+            if (
+                len(registered_names) != len(set(registered_names))
+                or set(registered_names) != set(expected_roles)
+            ):
                 raise ConfigSourceInvalidError()
+            file_inventory: dict[str, dict[str, Any]] = {}
+            for owned_name in sorted(expected_roles):
+                content = self._files.read_bytes(
+                    self._owned_path(source_dir, owned_name)
+                )
+                file_inventory[owned_name] = {
+                    **expected_roles[owned_name],
+                    "size_bytes": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                }
+            source_inventory = file_inventory.get(source_path.name)
+            if source_inventory != {
+                "role": "source",
+                "size_bytes": size_bytes,
+                "sha256": source_sha256,
+            }:
+                raise ConfigSourceInvalidError()
+            owned_names = sorted({*expected_roles, "manifest.json"})
             manifest = {
-                "version": 1,
+                "version": 2,
                 "session_id": clean_session_id,
                 "source_id": source_id,
-                "source_revision": source_revision,
+                "source_revision": "",
                 "safe_filename": safe_filename,
                 "suffix": suffix,
                 "size_bytes": size_bytes,
@@ -314,12 +344,15 @@ class ConfigSourceService:
                 "parse_state": "ready",
                 "source_file": source_path.name,
                 "owned_files": owned_names,
+                "file_inventory": file_inventory,
                 "questions": [asdict(question) for question in questions],
                 "private_blocks": blocks,
                 "private_document_text": document_text,
                 "asset_files": asset_files,
                 "whole_page_files": whole_page_files,
             }
+            source_revision = _canonical_source_revision(manifest)
+            manifest["source_revision"] = source_revision
             json.dumps(manifest, ensure_ascii=False)
             with session_config_lock(self.upload_config_dir, clean_session_id):
                 self._assert_controlled_directory(source_dir)
@@ -328,6 +361,12 @@ class ConfigSourceService:
                 self._assert_controlled_path(active_path)
                 self._files.write_json_atomic(manifest_path, manifest)
                 record = self._record_from_manifest(manifest_path, manifest)
+                final_manifest = self._read_json_object(manifest_path)
+                final_metadata = self._metadata_from_manifest(
+                    manifest_path,
+                    final_manifest,
+                )
+                self._validate_generation_integrity(final_metadata)
                 self._files.write_json_atomic(
                     active_path,
                     {
@@ -434,6 +473,7 @@ class ConfigSourceService:
         try:
             path = self._owned_path(metadata.manifest_path.parent, filename)
             content = self._files.read_bytes(path)
+            self._validate_inventory_content(metadata, filename, content)
             _suffix, media_type = _image_type(content)
         except Exception:
             raise ConfigAssetNotFoundError() from None
@@ -526,12 +566,14 @@ class ConfigSourceService:
                 try:
                     self._assert_controlled_path(manifest_path)
                     manifest = self._read_json_object(manifest_path)
-                    if manifest.get("source_id") != source_id:
+                    metadata = self._metadata_from_manifest(manifest_path, manifest)
+                    if metadata.source_id != source_id:
                         continue
-                    owned_names = manifest.get("owned_files")
-                    if not isinstance(owned_names, list):
-                        continue
-                    owned_paths = [self._owned_path(source_dir, name) for name in owned_names]
+                    self._validate_generation_integrity(metadata)
+                    owned_paths = [
+                        self._owned_path(source_dir, name)
+                        for name in sorted(metadata.owned_names)
+                    ]
                 except Exception:
                     continue
                 pending_paths.extend(
@@ -549,37 +591,35 @@ class ConfigSourceService:
         self,
         metadata: _ConfigSourceMetadata,
     ) -> None:
-        digest = hashlib.sha256()
         try:
-            source_content = self._files.read_bytes(metadata.source_path)
-            size_bytes = len(source_content)
-            digest.update(source_content)
-            source_sha256 = digest.hexdigest()
-            expected_revision = hashlib.sha256(
-                (
-                    f"{metadata.session_id}:{metadata.source_id}:"
-                    f"{source_sha256}"
-                ).encode("ascii")
-            ).hexdigest()
-            if (
-                size_bytes != metadata.size_bytes
-                or source_sha256 != metadata.sha256
-                or expected_revision != metadata.source_revision
-            ):
+            manifest = _metadata_manifest(metadata)
+            if _canonical_source_revision(manifest) != metadata.source_revision:
                 raise ConfigSourceInvalidError()
-            for filename in sorted(
-                metadata.owned_names - {metadata.source_path.name, "manifest.json"}
-            ):
-                content = self._owned_path(
-                    metadata.manifest_path.parent,
-                    filename,
-                )
-                content = self._files.read_bytes(content)
-                _image_type(content)
+            for filename, inventory_entry in sorted(metadata.file_inventory.items()):
+                path = self._owned_path(metadata.manifest_path.parent, filename)
+                content = self._files.read_bytes(path)
+                self._validate_inventory_content(metadata, filename, content)
+                if inventory_entry["role"] != "source":
+                    _image_type(content)
         except ConfigSourceError:
             raise
         except Exception:
             raise ConfigSourceInvalidError() from None
+
+    def _validate_inventory_content(
+        self,
+        metadata: _ConfigSourceMetadata,
+        filename: str,
+        content: bytes,
+    ) -> None:
+        inventory_entry = metadata.file_inventory.get(filename)
+        if (
+            not isinstance(inventory_entry, dict)
+            or len(content) != inventory_entry.get("size_bytes")
+            or hashlib.sha256(content).hexdigest()
+            != inventory_entry.get("sha256")
+        ):
+            raise ConfigSourceInvalidError()
 
     def _parse_docx(
         self,
@@ -602,6 +642,12 @@ class ConfigSourceService:
         self._files.ensure_directory(parser_root)
         parser_io_root = _extended_length_path(parser_root)
         parser_registry = _OwnedFileRegistry(self._files)
+
+        def write_parser_asset(path: Path, content: bytes) -> None:
+            parser_registry.register(path)
+            self._files.ensure_directory(path.parent)
+            self._files.atomic_write_bytes(path, content)
+
         try:
             import session_manager
 
@@ -612,6 +658,7 @@ class ConfigSourceService:
                 temporary_root=parser_io_root,
                 asset_root=parser_io_root / "assets",
                 register_created_file=parser_registry.register,
+                write_created_file=write_parser_asset,
             )
             private_blocks, asset_files = _copy_docx_assets(
                 blocks,
@@ -713,6 +760,27 @@ class ConfigSourceService:
         manifest: dict[str, Any],
     ) -> _ConfigSourceMetadata:
         self._assert_controlled_path(manifest_path)
+        expected_manifest_keys = {
+            "version",
+            "session_id",
+            "source_id",
+            "source_revision",
+            "safe_filename",
+            "suffix",
+            "size_bytes",
+            "sha256",
+            "parse_state",
+            "source_file",
+            "owned_files",
+            "file_inventory",
+            "questions",
+            "private_blocks",
+            "private_document_text",
+            "asset_files",
+            "whole_page_files",
+        }
+        if set(manifest) != expected_manifest_keys:
+            raise ConfigSourceInvalidError()
         session_id = int(manifest.get("session_id"))
         source_id = str(manifest.get("source_id") or "")
         source_revision = str(manifest.get("source_revision") or "")
@@ -721,7 +789,7 @@ class ConfigSourceService:
         sha256 = str(manifest.get("sha256") or "")
         size_bytes = int(manifest.get("size_bytes"))
         if (
-            manifest.get("version") != 1
+            manifest.get("version") != 2
             or manifest.get("parse_state") != "ready"
             or session_id <= 0
             or not _SOURCE_ID.fullmatch(source_id)
@@ -739,13 +807,14 @@ class ConfigSourceService:
             not isinstance(owned_names, list)
             or "manifest.json" not in owned_names
             or len(owned_names) != len(set(owned_names))
+            or owned_names != sorted(owned_names)
         ):
             raise ConfigSourceInvalidError()
         owned = frozenset(
             self._owned_path(manifest_path.parent, name).name for name in owned_names
         )
         source_file = str(manifest.get("source_file") or "")
-        if source_file not in owned:
+        if source_file not in owned or source_file == "manifest.json":
             raise ConfigSourceInvalidError()
         source_path = self._owned_path(manifest_path.parent, source_file)
         if not source_path.is_file():
@@ -769,7 +838,11 @@ class ConfigSourceService:
             raise ConfigSourceInvalidError()
         normalized_assets: dict[str, dict[str, str | None]] = {}
         for question_id, raw_entry in asset_files.items():
-            if not _QUESTION_ID.fullmatch(str(question_id)) or not isinstance(raw_entry, dict):
+            if (
+                not _QUESTION_ID.fullmatch(str(question_id))
+                or not isinstance(raw_entry, dict)
+                or set(raw_entry) != {"question", "answer"}
+            ):
                 raise ConfigSourceInvalidError()
             normalized: dict[str, str | None] = {"question": None, "answer": None}
             for kind in ("question", "answer"):
@@ -789,6 +862,7 @@ class ConfigSourceService:
         if (
             not isinstance(whole_page_files, list)
             or len(whole_page_files) > self.max_pdf_pages
+            or len(whole_page_files) != len(set(whole_page_files))
         ):
             raise ConfigSourceInvalidError()
         normalized_whole_pages: list[str] = []
@@ -799,6 +873,78 @@ class ConfigSourceService:
             if not page_path.is_file():
                 raise ConfigSourceInvalidError()
             normalized_whole_pages.append(filename)
+        block_question_ids = {
+            str(block.get("question_id") or "").strip() for block in private_blocks
+        }
+        if not set(normalized_assets).issubset(block_question_ids):
+            raise ConfigSourceInvalidError()
+        normalized_questions = _question_previews(private_blocks, normalized_assets)
+        if normalized_questions != questions:
+            raise ConfigSourceInvalidError()
+
+        expected_roles = _expected_inventory_roles(
+            source_dir=manifest_path.parent,
+            source_file=source_file,
+            private_blocks=private_blocks,
+            asset_files=normalized_assets,
+            whole_page_files=normalized_whole_pages,
+        )
+        if owned != frozenset({*expected_roles, "manifest.json"}):
+            raise ConfigSourceInvalidError()
+        raw_inventory = manifest.get("file_inventory")
+        if not isinstance(raw_inventory, dict) or set(raw_inventory) != set(expected_roles):
+            raise ConfigSourceInvalidError()
+        file_inventory: dict[str, dict[str, Any]] = {}
+        for filename, expected_role in expected_roles.items():
+            raw_entry = raw_inventory.get(filename)
+            expected_keys = {*expected_role, "size_bytes", "sha256"}
+            if not isinstance(raw_entry, dict) or set(raw_entry) != expected_keys:
+                raise ConfigSourceInvalidError()
+            size = raw_entry.get("size_bytes")
+            file_sha256 = raw_entry.get("sha256")
+            if (
+                any(raw_entry.get(key) != value for key, value in expected_role.items())
+                or not isinstance(size, int)
+                or isinstance(size, bool)
+                or size <= 0
+                or not isinstance(file_sha256, str)
+                or not _SHA256.fullmatch(file_sha256)
+            ):
+                raise ConfigSourceInvalidError()
+            file_inventory[filename] = {
+                **expected_role,
+                "size_bytes": size,
+                "sha256": file_sha256,
+            }
+        source_inventory = file_inventory.get(source_file)
+        if source_inventory != {
+            "role": "source",
+            "size_bytes": size_bytes,
+            "sha256": sha256,
+        }:
+            raise ConfigSourceInvalidError()
+
+        normalized_manifest = {
+            "version": 2,
+            "session_id": session_id,
+            "source_id": source_id,
+            "source_revision": source_revision,
+            "safe_filename": safe_filename,
+            "suffix": suffix,
+            "size_bytes": size_bytes,
+            "sha256": sha256,
+            "parse_state": "ready",
+            "source_file": source_file,
+            "owned_files": list(owned_names),
+            "file_inventory": file_inventory,
+            "questions": [asdict(question) for question in questions],
+            "private_blocks": private_blocks,
+            "private_document_text": document_text,
+            "asset_files": normalized_assets,
+            "whole_page_files": normalized_whole_pages,
+        }
+        if _canonical_source_revision(normalized_manifest) != source_revision:
+            raise ConfigSourceInvalidError()
         return _ConfigSourceMetadata(
             session_id=session_id,
             source_id=source_id,
@@ -811,6 +957,7 @@ class ConfigSourceService:
             manifest_path=manifest_path,
             source_path=source_path,
             owned_names=owned,
+            file_inventory=file_inventory,
             private_blocks=tuple(copy.deepcopy(private_blocks)),
             private_document_text=document_text,
             asset_files=normalized_assets,
@@ -821,6 +968,12 @@ class ConfigSourceService:
         self,
         metadata: _ConfigSourceMetadata,
     ) -> ConfigSourceRecord:
+        source_content = self._files.read_bytes(metadata.source_path)
+        self._validate_inventory_content(
+            metadata,
+            metadata.source_path.name,
+            source_content,
+        )
         private_images: dict[str, dict[str, str | None]] = {}
         for question_id, entry in metadata.asset_files.items():
             encoded: dict[str, str | None] = {"question": None, "answer": None}
@@ -833,6 +986,7 @@ class ConfigSourceService:
                     filename,
                 )
                 content = self._files.read_bytes(content)
+                self._validate_inventory_content(metadata, filename, content)
                 _image_type(content)
                 encoded[kind] = base64.b64encode(content).decode("ascii")
             private_images[question_id] = encoded
@@ -843,6 +997,7 @@ class ConfigSourceService:
                 filename,
             )
             content = self._files.read_bytes(content)
+            self._validate_inventory_content(metadata, filename, content)
             _image_type(content)
             whole_pages.append(content)
         return ConfigSourceRecord(
@@ -1005,6 +1160,132 @@ def _validate_docx_archive(
         raise
     except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile):
         raise ConfigSourceInvalidError() from None
+
+
+def _canonical_source_revision(manifest: dict[str, Any]) -> str:
+    payload = {
+        key: manifest[key]
+        for key in (
+            "version",
+            "session_id",
+            "source_id",
+            "safe_filename",
+            "suffix",
+            "size_bytes",
+            "sha256",
+            "parse_state",
+            "source_file",
+            "owned_files",
+            "file_inventory",
+            "questions",
+            "private_blocks",
+            "private_document_text",
+            "asset_files",
+            "whole_page_files",
+        )
+    }
+    try:
+        canonical = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (KeyError, TypeError, ValueError):
+        raise ConfigSourceInvalidError() from None
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _metadata_manifest(metadata: _ConfigSourceMetadata) -> dict[str, Any]:
+    return {
+        "version": 2,
+        "session_id": metadata.session_id,
+        "source_id": metadata.source_id,
+        "source_revision": metadata.source_revision,
+        "safe_filename": metadata.safe_filename,
+        "suffix": metadata.suffix,
+        "size_bytes": metadata.size_bytes,
+        "sha256": metadata.sha256,
+        "parse_state": "ready",
+        "source_file": metadata.source_path.name,
+        "owned_files": sorted(metadata.owned_names),
+        "file_inventory": copy.deepcopy(metadata.file_inventory),
+        "questions": [asdict(question) for question in metadata.questions],
+        "private_blocks": copy.deepcopy(list(metadata.private_blocks)),
+        "private_document_text": metadata.private_document_text,
+        "asset_files": copy.deepcopy(metadata.asset_files),
+        "whole_page_files": list(metadata.whole_page_files),
+    }
+
+
+def _expected_inventory_roles(
+    *,
+    source_dir: Path,
+    source_file: str,
+    private_blocks: Sequence[dict[str, Any]],
+    asset_files: dict[str, dict[str, str | None]],
+    whole_page_files: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    roles: dict[str, dict[str, Any]] = {}
+
+    def register(filename: str, role: dict[str, Any]) -> None:
+        if (
+            not isinstance(filename, str)
+            or not filename
+            or Path(filename).name != filename
+            or filename == "manifest.json"
+        ):
+            raise ConfigSourceInvalidError()
+        existing = roles.get(filename)
+        if existing is not None and existing != role:
+            raise ConfigSourceInvalidError()
+        roles[filename] = role
+
+    register(source_file, {"role": "source"})
+    for block in private_blocks:
+        question_id = str(block.get("question_id") or "").strip()
+        if not _QUESTION_ID.fullmatch(question_id):
+            raise ConfigSourceInvalidError()
+        for kind in ("question", "answer"):
+            role = {
+                "role": "question_asset",
+                "question_id": question_id,
+                "asset_kind": kind,
+            }
+            for raw_path in _block_image_paths(block, kind):
+                register(_semantic_owned_name(raw_path, source_dir), role)
+    for question_id, entry in asset_files.items():
+        if not _QUESTION_ID.fullmatch(str(question_id)):
+            raise ConfigSourceInvalidError()
+        for kind in ("question", "answer"):
+            filename = entry.get(kind)
+            if filename is not None:
+                register(
+                    filename,
+                    {
+                        "role": "question_asset",
+                        "question_id": str(question_id),
+                        "asset_kind": kind,
+                    },
+                )
+    for page_index, filename in enumerate(whole_page_files, start=1):
+        register(
+            filename,
+            {"role": "whole_page", "page_index": page_index},
+        )
+    return roles
+
+
+def _semantic_owned_name(raw_path: str, source_dir: Path) -> str:
+    try:
+        clean = Path(os.path.abspath(str(raw_path)))
+        clean_root = Path(os.path.abspath(str(source_dir)))
+    except (OSError, TypeError, ValueError):
+        raise ConfigSourceInvalidError() from None
+    if os.path.normcase(str(clean.parent)) != os.path.normcase(str(clean_root)):
+        raise ConfigSourceInvalidError()
+    return clean.name
 
 
 def _copy_docx_assets(
