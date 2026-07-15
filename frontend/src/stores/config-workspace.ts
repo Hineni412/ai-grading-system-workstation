@@ -26,6 +26,13 @@ export interface PersistedConfigWorkspace {
   sourceRevision: string | null
   jobId: number | null
   decisions: QuestionDecision[]
+  generationSummary?: ConfigGenerationSummary
+}
+
+export interface ConfigGenerationSummary {
+  totalQuestions: number
+  succeededQuestions: number
+  failedQuestions: number
 }
 
 export type ConfigSourceLoader = (
@@ -64,19 +71,33 @@ function validDecision(value: unknown): value is QuestionDecision {
     && typeof item.excluded === 'boolean'
 }
 
+function validGenerationSummary(value: unknown): value is ConfigGenerationSummary {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const item = value as Record<string, unknown>
+  if (Object.keys(item).sort().join(',') !== 'failedQuestions,succeededQuestions,totalQuestions') {
+    return false
+  }
+  return [item.totalQuestions, item.succeededQuestions, item.failedQuestions]
+    .every((count) => Number.isSafeInteger(count) && Number(count) >= 0)
+    && Number(item.succeededQuestions) + Number(item.failedQuestions) <= Number(item.totalQuestions)
+}
+
 function parsePersisted(raw: string | null): PersistedConfigWorkspace | null {
   if (!raw) return null
   try {
     const value: unknown = JSON.parse(raw)
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
     const item = value as Record<string, unknown>
-    if (Object.keys(item).sort().join(',') !== 'decisions,jobId,phase,sessionId,sourceId,sourceRevision') return null
+    const keys = Object.keys(item).sort().join(',')
+    if (keys !== 'decisions,jobId,phase,sessionId,sourceId,sourceRevision'
+      && keys !== 'decisions,generationSummary,jobId,phase,sessionId,sourceId,sourceRevision') return null
     if (!positiveInteger(item.sessionId) || typeof item.phase !== 'string'
       || !phases.has(item.phase as ConfigPhase)
       || (item.sourceId !== null && !validSourceId(item.sourceId))
       || (item.sourceRevision !== null && !validRevision(item.sourceRevision))
       || (item.jobId !== null && !positiveInteger(item.jobId))
-      || !Array.isArray(item.decisions) || !item.decisions.every(validDecision)) return null
+      || !Array.isArray(item.decisions) || !item.decisions.every(validDecision)
+      || ('generationSummary' in item && !validGenerationSummary(item.generationSummary))) return null
     if ((item.sourceId === null) !== (item.sourceRevision === null)) return null
     return item as unknown as PersistedConfigWorkspace
   } catch {
@@ -107,6 +128,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   const editorEdits = ref<ConfigEditorEdit[]>([])
   const editorCommands = ref<ConfigEditorCommand[]>([])
   const editorDirty = ref(false)
+  const generationSummary = ref<ConfigGenerationSummary | null>(null)
   const sourceLoading = ref(false)
   const sourceError = ref('')
   let sourceLoadGeneration = 0
@@ -132,7 +154,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
 
   function safeSnapshot(): PersistedConfigWorkspace | null {
     if (sessionId.value === null) return null
-    return {
+    const snapshot: PersistedConfigWorkspace = {
       sessionId: sessionId.value,
       phase: derivePhase(),
       sourceId: sourceId.value,
@@ -140,6 +162,10 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       jobId: jobId.value,
       decisions: decisions.value.map((item) => ({ ...item })),
     }
+    if (generationSummary.value !== null) {
+      snapshot.generationSummary = { ...generationSummary.value }
+    }
+    return snapshot
   }
 
   function persistSafeIndex(): void {
@@ -151,6 +177,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   function resetMemory(): void {
     generationContext += 1
     source.value = null
+    generationSummary.value = null
     editor.value = null
     editorEdits.value = []
     editorCommands.value = []
@@ -207,6 +234,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     sourceId.value = null
     sourceRevision.value = null
     source.value = null
+    generationSummary.value = null
     jobId.value = null
     editor.value = null
     editorEdits.value = []
@@ -227,11 +255,13 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     if (sessionId.value !== value.session_id) throw new Error('Source session does not match')
     if (sourceId.value !== value.source_id || sourceRevision.value !== value.source_revision) {
       generationContext += 1
+      generationSummary.value = null
     }
     requestedSourceId = null
     sourceId.value = value.source_id
     sourceRevision.value = value.source_revision
     source.value = value
+    generationSummary.value = null
     phase.value = derivePhase()
     sourceError.value = ''
     persistSafeIndex()
@@ -315,10 +345,18 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     return generationContext
   }
 
-  function attachJob(id: number, context: number): boolean {
+  function attachJob(
+    id: number,
+    context: number,
+    retainedSummary?: ConfigGenerationSummary,
+  ): boolean {
     if (!positiveInteger(id)) throw new Error('Invalid Job id')
     if (context !== generationContext || sessionId.value === null || sourceId.value === null) return false
+    if (retainedSummary !== undefined && !validGenerationSummary(retainedSummary)) {
+      throw new Error('Invalid generation summary')
+    }
     jobId.value = id
+    generationSummary.value = retainedSummary === undefined ? null : { ...retainedSummary }
     phase.value = derivePhase()
     persistSafeIndex()
     return true
@@ -418,6 +456,9 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       if (jobBelongsTo(jobResult.value, candidate.sessionId, candidate)) {
         useJobStore().track(jobResult.value)
         jobId.value = jobResult.value.id
+        generationSummary.value = candidate.generationSummary
+          ? { ...candidate.generationSummary }
+          : null
       } else {
         sanitized.jobId = null
         candidateChanged = true
@@ -456,7 +497,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
 
   return {
     sessionId, phase, sourceId, sourceRevision, jobId, decisions,
-    source, editor, editorEdits, editorCommands, sourceLoading, sourceError,
+    source, editor, editorEdits, editorCommands, generationSummary, sourceLoading, sourceError,
     hasDirtyEditor, canGenerate, hydrateSafeIndex, persistSafeIndex, clearWorkspace,
     selectSession, selectSource, discardEditorDraft, setSource, acceptUploadedSource,
     updateDecisions, loadSource,
