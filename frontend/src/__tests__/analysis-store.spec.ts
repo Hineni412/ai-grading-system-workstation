@@ -137,6 +137,47 @@ describe('analysis store', () => {
     expect(store.studentsState).toBe('error')
   })
 
+  it('cancels and clears an in-flight student request when the view changes class scope', async () => {
+    const store = useAnalysisStore()
+    const old = deferred<StudentAnalysisResponse>()
+    let oldSignal: AbortSignal | undefined
+    const oldLoad = store.loadStudents(7, 'Q1', '一班', (_sessionId, _questionId, _className, signal) => {
+      oldSignal = signal
+      return old.promise
+    })
+
+    store.resetStudents()
+
+    expect(oldSignal?.aborted).toBe(true)
+    expect(store.students).toEqual([])
+    expect(store.studentsScope).toBeNull()
+    expect(store.studentsState).toBe('idle')
+
+    old.resolve({
+      ...students,
+      items: [{
+        result_id: 1,
+        detail_id: 2,
+        student_id: 3,
+        student_code: 'S3',
+        student_name: '旧班级学生',
+        class_name: '一班',
+        question_id: 'Q1',
+        score_awarded: 8,
+        max_score: 10,
+        deduction_amount: 2,
+        deduction_reason: null,
+        needs_review: false,
+        evidence_url: '/api/evidence/2',
+      }],
+      total: 1,
+      total_pages: 1,
+    })
+    await oldLoad
+    expect(store.students).toEqual([])
+    expect(store.studentsState).toBe('idle')
+  })
+
   it('clears graph content when the class changes even if the new request aborts', async () => {
     const store = useAnalysisStore()
     await store.loadGraph(7, '一班', async () => graph)

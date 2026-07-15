@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
 import { createApp, nextTick, type App } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory } from 'vue-router'
@@ -45,7 +48,7 @@ const overview: WorkbenchOverview = {
     id: 41,
     job_type: 'grading',
     status: 'running',
-    progress: 58,
+    progress: 0.58,
     stage: '评分中',
     detail: '正在读取已匹配答卷',
     created_at: '2026-07-15T09:00:00Z',
@@ -162,6 +165,8 @@ interface MountOptions {
   studentState?: ResourceState
   overviewValue?: WorkbenchOverview | null
   questionValue?: QuestionAnalysisResponse
+  studentValue?: StudentAnalysisResponse
+  graphValue?: GraphRowsResponse
 }
 
 const mountedApps: App[] = []
@@ -181,6 +186,8 @@ async function mountView({
   studentState = 'ready',
   overviewValue = overview,
   questionValue = questions,
+  studentValue = students,
+  graphValue = graph,
 }: MountOptions = {}) {
   const pinia = createPinia()
   setActivePinia(pinia)
@@ -210,10 +217,14 @@ async function mountView({
   const loadAnomalies = vi.spyOn(workbenchStore, 'loadAnomalies').mockResolvedValue()
 
   const analysisStore = useAnalysisStore(pinia)
+  const resetStudents = vi.spyOn(analysisStore, 'resetStudents')
   const loadQuestions = vi.spyOn(analysisStore, 'loadQuestions').mockImplementation(async (id, className) => {
     analysisStore.$patch({
       sessionId: id,
-      questions: questionValue.items,
+      questions: questionValue.items.map((item) => ({
+        ...item,
+        class_name: className ?? item.class_name,
+      })),
       classes: questionValue.classes,
       questionsScope: { ...questionValue.scope, class_name: className },
       questionsState: questionState,
@@ -226,7 +237,7 @@ async function mountView({
   const loadStudents = vi.spyOn(analysisStore, 'loadStudents').mockImplementation(async (id, questionId, className) => {
     analysisStore.$patch({
       sessionId: id,
-      students: students.items.map((item) => ({ ...item, question_id: questionId })),
+      students: studentValue.items.map((item) => ({ ...item, question_id: questionId })),
       studentsScope: { session_id: id, question_id: questionId, class_name: className },
       studentsState: studentState,
       studentsError: studentState === 'error' || studentState === 'stale-error'
@@ -238,7 +249,7 @@ async function mountView({
   const loadGraph = vi.spyOn(analysisStore, 'loadGraph').mockImplementation(async (id, className) => {
     analysisStore.$patch({
       sessionId: id,
-      graph: { ...graph, scope: { ...graph.scope, class_id: className } },
+      graph: { ...graphValue, scope: { ...graphValue.scope, class_id: className } },
       graphState,
       graphError: graphState === 'error' || graphState === 'stale-error'
         ? '标签覆盖暂时无法更新'
@@ -267,6 +278,7 @@ async function mountView({
     loadQuestions,
     loadStudents,
     loadGraph,
+    resetStudents,
   }
 }
 
@@ -324,6 +336,20 @@ afterEach(() => {
 })
 
 describe('workbench view', () => {
+  it('uses one continuous column for the progress rail and content grids at 1024px', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/styles/workbench.css'), 'utf-8')
+    const tabletStart = css.indexOf('@media (max-width: 1100px)')
+    const compactStart = css.indexOf('@media (max-width: 900px)')
+    expect(tabletStart).toBeGreaterThanOrEqual(0)
+    expect(compactStart).toBeGreaterThan(tabletStart)
+    const tabletRules = css.slice(tabletStart, compactStart)
+    expect(tabletRules).toContain('.workbench-progress-rail')
+    expect(tabletRules).toContain('.workbench-primary-grid')
+    expect(tabletRules).toContain('.workbench-secondary-grid')
+    expect(tabletRules.match(/grid-template-columns:\s*(?:minmax\(0,\s*)?1fr\)?;/g)?.length ?? 0)
+      .toBeGreaterThanOrEqual(2)
+  })
+
   it('shows the approved analysis-first structure without decorative metric cards', async () => {
     const { host } = await mountView()
 
@@ -336,6 +362,10 @@ describe('workbench view', () => {
     expect(host.querySelectorAll('[data-metric-card]')).toHaveLength(0)
     expect(host.querySelector('[data-testid="progress-action-rail"]')?.tagName).toBe('OL')
     expect(host.querySelectorAll('.workbench-progress-rail > li')).toHaveLength(4)
+    expect(host.querySelector('[data-testid="progress-action-rail"]')?.textContent).toContain('58%')
+    expect(host.querySelector('[data-testid="progress-action-rail"]')?.textContent).not.toContain('0.58%')
+    expect(host.querySelectorAll('.workbench-progress-rail > li')[3]?.querySelector('strong')?.getAttribute('aria-label'))
+      .toBe('最近任务：58%')
   })
 
   it('keeps all actions read-only and routes only to the existing grading page', async () => {
@@ -392,6 +422,25 @@ describe('workbench view', () => {
 
   })
 
+  it('loads the first question detail and invalidates the old student scope before a class change', async () => {
+    const { host, loadStudents, resetStudents } = await mountView()
+    await vi.waitFor(() => expect(loadStudents).toHaveBeenCalledWith(7, 'Q1', null))
+    expect(host.textContent).toContain('一位名字较长的学生用于验证布局')
+
+    selectValue(host.querySelector<HTMLSelectElement>('#analysis-class')!, '七年级一班')
+    await vi.waitFor(() => expect(loadStudents).toHaveBeenCalledWith(7, 'Q1', '七年级一班'))
+    expect(resetStudents).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not present an idle student resource as a confirmed empty result', async () => {
+    const { host } = await mountView({
+      studentState: 'idle',
+      studentValue: { ...students, items: [], total: 0, total_pages: 0 },
+    })
+    expect(host.textContent).toContain('正在准备学生明细')
+    expect(host.textContent).not.toContain('当前题目没有学生明细')
+  })
+
   it('distinguishes no session, no grading, no review, no anomalies and unknown values', async () => {
     const noSession = await mountView({ sessionId: null, overviewValue: null, overviewState: 'empty' })
     expect(noSession.host.textContent).toContain('请选择考试后查看工作台')
@@ -446,12 +495,62 @@ describe('workbench view', () => {
     expect(graphError.loadGraph).toHaveBeenCalledTimes(2)
   })
 
+  it('preserves the meaning of an empty successful tag snapshot when its refresh fails', async () => {
+    const emptyGraph: GraphRowsResponse = {
+      ...graph,
+      nodes: [],
+      coverage: { covered_items: 0, total_items: 0, missing_items: {} },
+      warnings: [],
+    }
+    const staleEmpty = await mountView({ graphState: 'stale-error', graphValue: emptyGraph })
+    selectValue(staleEmpty.host.querySelector<HTMLSelectElement>('#analysis-class')!, '七年级一班')
+    await settleUi()
+    expect(staleEmpty.host.textContent).toContain('标签覆盖可能不是最新 · 上次更新')
+    expect(staleEmpty.host.textContent).toContain('上次成功读取时没有知识标签记录')
+    expect(staleEmpty.host.textContent).not.toContain('当前班级没有知识标签记录')
+  })
+
+  it('keeps anomaly list and empty snapshots visible while updating or stale', async () => {
+    const mounted = await mountView()
+    clickButton(mounted.host, '查看异常')
+    await settleUi()
+    const anomaly = {
+      anomaly_id: 'failed:17',
+      anomaly_type: 'grading_failed' as const,
+      display_name: '学生甲',
+      student_code: 'S017',
+      class_name: '七年级一班',
+      status: 'failed',
+      detail: '评分结果未生成',
+      created_at: '2026-07-15T09:20:00Z',
+    }
+
+    mounted.workbenchStore.$patch({
+      anomalies: [anomaly],
+      anomaliesState: 'loading',
+      anomaliesUpdatedAt: '2026-07-15T09:30:00Z',
+    })
+    await settleUi()
+    expect(mounted.host.textContent).toContain('正在更新异常记录')
+    expect(mounted.host.textContent).toContain('学生甲')
+
+    mounted.workbenchStore.$patch({ anomaliesState: 'stale-error' })
+    await settleUi()
+    expect(mounted.host.textContent).toContain('异常记录可能不是最新 · 上次更新')
+    expect(mounted.host.textContent).toContain('学生甲')
+
+    mounted.workbenchStore.$patch({ anomalies: [] })
+    await settleUi()
+    expect(mounted.host.textContent).toContain('上次成功读取时没有异常记录')
+    expect(mounted.host.textContent).not.toContain('当前没有异常记录')
+  })
+
   it('retains same-session graph and student content when refreshes fail', async () => {
     const retained = await mountView({ graphState: 'stale-error', studentState: 'stale-error' })
     selectValue(retained.host.querySelector<HTMLSelectElement>('#analysis-class')!, '七年级一班')
     await settleUi()
     expect(retained.host.textContent).toContain('分数运算')
-    expect(retained.host.textContent).toContain('数据可能不是最新 · 上次更新')
+    expect(retained.host.textContent).toContain('标签覆盖可能不是最新 · 上次更新')
 
     clickButton(retained.host, 'Q1')
     await settleUi()
@@ -459,8 +558,14 @@ describe('workbench view', () => {
     expect(retained.host.textContent).toContain('学生明细可能不是最新')
   })
 
-  it('keeps same-session graph and student content visible while refreshing', async () => {
-    const refreshing = await mountView({ graphState: 'loading', studentState: 'loading' })
+  it('keeps same-session analysis, graph and student content visible while refreshing', async () => {
+    const refreshing = await mountView({
+      questionState: 'loading',
+      graphState: 'loading',
+      studentState: 'loading',
+    })
+    expect(refreshing.host.textContent).toContain('正在更新题目分析')
+    expect(refreshing.host.textContent).toContain('Q1')
     selectValue(refreshing.host.querySelector<HTMLSelectElement>('#analysis-class')!, '七年级一班')
     await settleUi()
     expect(refreshing.host.textContent).toContain('分数运算')

@@ -45,6 +45,7 @@ function displayTime(value: string | null): string {
     </header>
 
     <p v-if="questionId === null" class="workbench-empty-copy">请选择题目查看学生明细</p>
+    <p v-else-if="state === 'idle'" class="workbench-state-copy" role="status">正在准备学生明细…</p>
     <p v-else-if="state === 'loading' && items.length === 0" class="workbench-state-copy" role="status">
       正在读取学生明细…
     </p>

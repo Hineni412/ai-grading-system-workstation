@@ -97,6 +97,18 @@ export const useAnalysisStore = defineStore('analysis', () => {
     )
   }
 
+  function resetStudents(): void {
+    studentsController?.abort()
+    studentsController = null
+    studentsGeneration += 1
+    studentsRequestKey = null
+    students.value = []
+    studentsScope.value = null
+    studentsState.value = 'idle'
+    studentsError.value = ''
+    studentsUpdatedAt.value = null
+  }
+
   function resetForSession(nextSessionId: number | null): void {
     if (sessionId.value === nextSessionId) return
     questionsController?.abort()
@@ -299,6 +311,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
     loadQuestions,
     loadStudents,
     loadGraph,
+    resetStudents,
     resetForSession,
   }
 })

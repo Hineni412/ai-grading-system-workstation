@@ -471,17 +471,17 @@
   .workbench-progress-rail .workbench-link-button {
     margin: 0;
   }
-}
-
-@media (max-width: 900px) {
-  .workbench-view {
-    padding: var(--space-4);
-  }
 
   .workbench-primary-grid,
   .workbench-secondary-grid {
     grid-template-columns: minmax(0, 1fr);
     gap: var(--space-5);
+  }
+}
+
+@media (max-width: 900px) {
+  .workbench-view {
+    padding: var(--space-4);
   }
 
   .workbench-hero,

@@ -58,7 +58,7 @@ const anomalyStatus = computed(() => {
 })
 
 const recentJob = computed(() => workbenchStore.overview?.recent_jobs[0] ?? null)
-const jobValue = computed(() => recentJob.value ? `${recentJob.value.progress}%` : null)
+const jobValue = computed(() => recentJob.value ? formatJobProgress(recentJob.value.progress) : null)
 const jobStatus = computed(() => recentJob.value
   ? `${recentJob.value.stage} · ${recentJob.value.status}`
   : '暂无最近任务')
@@ -82,15 +82,23 @@ watch(
 watch(
   () => analysisStore.questions,
   (items) => {
-    if (selectedQuestionId.value === null || !items.some((item) => item.question_id === selectedQuestionId.value)) {
-      selectedQuestionId.value = items[0]?.question_id ?? null
+    if (selectedQuestionId.value !== null && items.some((item) => item.question_id === selectedQuestionId.value)) return
+    const nextQuestionId = items[0]?.question_id ?? null
+    selectedQuestionId.value = nextQuestionId
+    const sessionId = sessionStore.selectedSessionId
+    if (sessionId !== null && nextQuestionId !== null) {
+      void analysisStore.loadStudents(sessionId, nextQuestionId, selectedClass.value)
     }
   },
-  { deep: true },
+  { deep: true, immediate: true },
 )
 
 function formatTime(value: string | null): string {
   return value?.replace('T', ' ').replace('Z', '') ?? '时间暂不可用'
+}
+
+function formatJobProgress(value: number): string {
+  return `${Math.round(value * 1000) / 10}%`
 }
 
 function openGrading(questionId?: string): void {
@@ -120,8 +128,7 @@ async function selectClass(className: string | null): Promise<void> {
   if (sessionId === null) return
   selectedClass.value = className
   selectedQuestionId.value = null
-  analysisStore.students = []
-  analysisStore.studentsState = 'idle'
+  analysisStore.resetStudents()
   const loads: Promise<void>[] = [analysisStore.loadQuestions(sessionId, className)]
   if (className !== null) loads.push(analysisStore.loadGraph(sessionId, className))
   else await analysisStore.loadGraph(sessionId, '')
@@ -252,19 +259,36 @@ function retryGraph(): void {
         <header class="workbench-section__heading">
           <h2 id="anomaly-list-title">异常记录</h2>
         </header>
-        <p v-if="workbenchStore.anomaliesState === 'loading'" class="workbench-state-copy">正在读取异常记录…</p>
-        <div v-else-if="workbenchStore.anomaliesState === 'error' || workbenchStore.anomaliesState === 'stale-error'" class="workbench-inline-error" role="alert">
+        <p
+          v-if="workbenchStore.anomaliesState === 'idle' || (workbenchStore.anomaliesState === 'loading' && workbenchStore.anomaliesUpdatedAt === null)"
+          class="workbench-state-copy"
+          role="status"
+        >
+          正在读取异常记录…
+        </p>
+        <div v-else-if="workbenchStore.anomaliesState === 'error'" class="workbench-inline-error" role="alert">
           <p>异常清单暂时无法读取</p>
           <button type="button" class="workbench-secondary-button" @click="openAnomalies">重新加载异常记录</button>
         </div>
-        <p v-else-if="workbenchStore.anomalies.length === 0" class="workbench-empty-copy">当前没有异常记录</p>
-        <ul v-else class="workbench-readonly-list">
-          <li v-for="item in workbenchStore.anomalies" :key="item.anomaly_id">
-            <strong>{{ item.display_name }}</strong>
-            <span>{{ item.class_name ?? '班级暂不可用' }} · {{ item.status }}</span>
-            <span>{{ item.detail ?? '暂无补充说明' }}</span>
-          </li>
-        </ul>
+        <template v-else>
+          <p v-if="workbenchStore.anomaliesState === 'loading'" class="workbench-state-copy" role="status">
+            正在更新异常记录…
+          </p>
+          <div v-if="workbenchStore.anomaliesState === 'stale-error'" class="workbench-stale" role="alert">
+            <span>异常记录可能不是最新 · 上次更新 {{ formatTime(workbenchStore.anomaliesUpdatedAt) }}</span>
+            <button type="button" class="workbench-link-button" @click="openAnomalies">重新加载异常记录</button>
+          </div>
+          <p v-if="workbenchStore.anomalies.length === 0" class="workbench-empty-copy">
+            {{ workbenchStore.anomaliesState === 'stale-error' ? '上次成功读取时没有异常记录' : '当前没有异常记录' }}
+          </p>
+          <ul v-else class="workbench-readonly-list">
+            <li v-for="item in workbenchStore.anomalies" :key="item.anomaly_id">
+              <strong>{{ item.display_name }}</strong>
+              <span>{{ item.class_name ?? '班级暂不可用' }} · {{ item.status }}</span>
+              <span>{{ item.detail ?? '暂无补充说明' }}</span>
+            </li>
+          </ul>
+        </template>
       </section>
 
       <section
@@ -278,7 +302,9 @@ function retryGraph(): void {
         <p v-if="!workbenchStore.overview?.recent_jobs.length" class="workbench-empty-copy">暂无最近任务</p>
         <ul v-else class="workbench-readonly-list">
           <li v-for="job in workbenchStore.overview.recent_jobs" :key="job.id">
-            <strong>{{ job.stage }} · {{ job.progress }}%</strong>
+            <strong :aria-label="`任务进度：${formatJobProgress(job.progress)}`">
+              {{ job.stage }} · {{ formatJobProgress(job.progress) }}
+            </strong>
             <span>{{ job.status }} · {{ job.job_type }}</span>
             <span>{{ job.detail }}</span>
           </li>

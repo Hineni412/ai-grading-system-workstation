@@ -109,11 +109,11 @@ function displayTime(value: string | null): string {
         重新加载标签覆盖
       </button>
     </div>
-    <p v-else-if="graph === null || graph.nodes.length === 0" class="workbench-empty-copy">当前班级没有知识标签记录</p>
+    <p v-else-if="graph === null" class="workbench-empty-copy">当前班级没有知识标签记录</p>
     <template v-else>
       <p v-if="state === 'loading'" class="workbench-state-copy" role="status">正在更新标签覆盖…</p>
       <div v-if="state === 'stale-error'" class="workbench-stale" role="alert">
-        <span>数据可能不是最新 · 上次更新 {{ displayTime(updatedAt) }}</span>
+        <span>标签覆盖可能不是最新 · 上次更新 {{ displayTime(updatedAt) }}</span>
         <button type="button" class="workbench-link-button" @click="$emit('retry')">重新加载标签覆盖</button>
       </div>
       <p class="tag-coverage__summary">
@@ -122,7 +122,10 @@ function displayTime(value: string | null): string {
       <ul v-if="graph.warnings.length" class="tag-coverage__warnings" aria-label="标签覆盖说明">
         <li v-for="warning in graph.warnings" :key="warning">{{ warning }}</li>
       </ul>
-      <ul class="tag-node-list">
+      <p v-if="graph.nodes.length === 0" class="workbench-empty-copy">
+        {{ state === 'stale-error' ? '上次成功读取时没有知识标签记录' : '当前班级没有知识标签记录' }}
+      </p>
+      <ul v-else class="tag-node-list">
         <li v-for="node in graph.nodes" :key="node.knowledge_key">
           <button
             type="button"

@@ -51,7 +51,12 @@ const nodes = computed(() => [{
     <li v-for="node in nodes" :key="node.label" class="workbench-progress-rail__node">
       <span class="workbench-progress-rail__marker" aria-hidden="true" />
       <span class="workbench-progress-rail__label">{{ node.label }}</span>
-      <strong class="workbench-progress-rail__value">{{ node.value ?? '暂不可用' }}</strong>
+      <strong
+        class="workbench-progress-rail__value"
+        :aria-label="`${node.label}：${node.value ?? '暂不可用'}`"
+      >
+        {{ node.value ?? '暂不可用' }}
+      </strong>
       <span class="workbench-progress-rail__status">{{ node.status }}</span>
       <button type="button" class="workbench-link-button" @click="node.open">
         {{ node.action }}
