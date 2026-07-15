@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from backend.jobs.manager import JobManager
-from backend.public_data import sanitize_public_mapping
+from backend.public_data import sanitize_public_diagnostic_text
 from backend.review.service import ReviewApplicationService
 from db_manager import DBManager
 
@@ -86,10 +86,7 @@ class WorkbenchService:
         items: list[dict[str, Any]] = []
         for row in self.db.list_session_anomalies(int(session_id)):
             item = dict(row)
-            detail = sanitize_public_mapping({"detail": item.get("detail")}).get(
-                "detail"
-            )
-            item["detail"] = str(detail) if detail is not None else None
+            item["detail"] = sanitize_public_diagnostic_text(item.get("detail"))
             items.append(item)
         return items
 
@@ -107,7 +104,7 @@ def _session_summary(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _job_summary(job: Any) -> dict[str, Any]:
-    detail = sanitize_public_mapping({"detail": job.detail}).get("detail", "")
+    detail = sanitize_public_diagnostic_text(job.detail) or ""
     return {
         "id": int(job.id),
         "job_type": str(job.job_type),
