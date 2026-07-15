@@ -1,16 +1,26 @@
 import { createRouter, createWebHistory, type RouteRecordRaw, type RouterHistory } from 'vue-router'
 
 import ComponentShowcase from '../components/design-system/ComponentShowcase.vue'
-import { reviewRouteDefinition } from '../navigation'
+import { reviewRouteDefinition, workbenchRouteDefinition } from '../navigation'
 
 const routes: RouteRecordRaw[] = [
   {
     path: '/',
-    redirect: reviewRouteDefinition.path,
+    redirect: workbenchRouteDefinition.path,
     meta: {
-      title: reviewRouteDefinition.title,
-      description: reviewRouteDefinition.description,
-      breadcrumb: reviewRouteDefinition.breadcrumb,
+      title: workbenchRouteDefinition.title,
+      description: workbenchRouteDefinition.description,
+      breadcrumb: workbenchRouteDefinition.breadcrumb,
+    },
+  },
+  {
+    path: workbenchRouteDefinition.path,
+    name: workbenchRouteDefinition.id,
+    component: () => import('../views/WorkbenchView.vue'),
+    meta: {
+      title: workbenchRouteDefinition.title,
+      description: workbenchRouteDefinition.description,
+      breadcrumb: workbenchRouteDefinition.breadcrumb,
     },
   },
   {

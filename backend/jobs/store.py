@@ -162,6 +162,68 @@ class JobStore:
             row = conn.execute("SELECT * FROM jobs WHERE id = ?", (int(job_id),)).fetchone()
         return _job_record(row) if row is not None else None
 
+    def list_jobs(
+        self,
+        *,
+        session_id: int | None = None,
+        job_types: tuple[str, ...] = (),
+        statuses: tuple[str, ...] = (),
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[JobRecord], int]:
+        """Filter valid JSON payload session_id and return id-desc pagination."""
+        clean_job_types = tuple(
+            dict.fromkeys(
+                str(item).strip() for item in job_types if str(item).strip()
+            )
+        )
+        clean_statuses = tuple(
+            dict.fromkeys(
+                str(item).strip() for item in statuses if str(item).strip()
+            )
+        )
+        invalid_statuses = tuple(
+            status for status in clean_statuses if status not in JOB_STATUSES
+        )
+        if invalid_statuses:
+            raise ValueError("unsupported job status filter")
+
+        conditions: list[str] = []
+        values: list[object] = []
+        if session_id is not None:
+            conditions.append(
+                "CASE "
+                "WHEN json_valid(payload_json) = 0 THEN 0 "
+                "WHEN COALESCE(json_type(payload_json, '$.session_id'), '') "
+                "!= 'integer' THEN 0 "
+                "ELSE json_extract(payload_json, '$.session_id') > 0 "
+                "AND json_extract(payload_json, '$.session_id') = ? "
+                "END"
+            )
+            values.append(int(session_id))
+        if clean_job_types:
+            placeholders = ",".join("?" for _ in clean_job_types)
+            conditions.append(f"job_type IN ({placeholders})")
+            values.extend(clean_job_types)
+        if clean_statuses:
+            placeholders = ",".join("?" for _ in clean_statuses)
+            conditions.append(f"status IN ({placeholders})")
+            values.extend(clean_statuses)
+
+        where_sql = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._connect() as conn:
+            total = int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM jobs{where_sql}",
+                    values,
+                ).fetchone()[0]
+            )
+            rows = conn.execute(
+                f"SELECT * FROM jobs{where_sql} ORDER BY id DESC LIMIT ? OFFSET ?",
+                [*values, int(limit), int(offset)],
+            ).fetchall()
+        return [_job_record(row) for row in rows], total
+
     def mark_running(self, job_id: int) -> bool:
         with self._connect() as conn:
             cursor = conn.execute(

@@ -111,6 +111,23 @@ class JobManager:
     def get(self, job_id: int) -> JobRecord | None:
         return self.store.get_job(int(job_id))
 
+    def list(
+        self,
+        *,
+        session_id: int | None = None,
+        job_types: tuple[str, ...] = (),
+        statuses: tuple[str, ...] = (),
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[JobRecord], int]:
+        return self.store.list_jobs(
+            session_id=session_id,
+            job_types=job_types,
+            statuses=statuses,
+            limit=limit,
+            offset=offset,
+        )
+
     def cancel(self, job_id: int) -> bool:
         return self.store.request_cancel(int(job_id))
 

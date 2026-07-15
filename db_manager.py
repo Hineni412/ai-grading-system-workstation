@@ -1569,6 +1569,59 @@ class DBManager:
             "progress_percent": progress_percent,
         }
 
+    def list_session_anomalies(self, session_id: int) -> list[dict[str, Any]]:
+        """Return unmatched papers, scan issues, and failed papers without paths."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    'unmatched_paper:' || printf('%020d', ep.id) AS anomaly_id,
+                    'unmatched_paper' AS anomaly_type,
+                    '未匹配试卷 #' || ep.id AS display_name,
+                    NULL AS student_code,
+                    NULL AS class_name,
+                    ep.match_status AS status,
+                    NULL AS detail,
+                    ep.created_at AS created_at
+                FROM exam_papers ep
+                WHERE ep.session_id = ? AND ep.match_status <> 'matched'
+
+                UNION ALL
+
+                SELECT
+                    'scan_issue:' || printf('%020d', sa.id) AS anomaly_id,
+                    'scan_issue' AS anomaly_type,
+                    '扫描异常记录 #' || sa.id AS display_name,
+                    s.student_code AS student_code,
+                    s.class_name AS class_name,
+                    sa.attendance_status AS status,
+                    sa.source_reason AS detail,
+                    sa.created_at AS created_at
+                FROM session_attendance sa
+                JOIN students s ON s.id = sa.student_id
+                WHERE sa.session_id = ? AND sa.attendance_status = 'scan_issue'
+
+                ORDER BY anomaly_type, anomaly_id
+                """,
+                (int(session_id), int(session_id)),
+            ).fetchall()
+        items = [dict(row) for row in rows]
+        for row in self.list_failed_papers(int(session_id)):
+            paper_id = int(row["paper_id"])
+            items.append(
+                {
+                    "anomaly_id": f"grading_failed:{paper_id:020d}",
+                    "anomaly_type": "grading_failed",
+                    "display_name": f"批改失败试卷 #{paper_id}",
+                    "student_code": row.get("student_code"),
+                    "class_name": row.get("class_name"),
+                    "status": str(row.get("processing_status") or "failed"),
+                    "detail": row.get("error_message"),
+                    "created_at": row.get("created_at"),
+                }
+            )
+        return sorted(items, key=lambda item: (item["anomaly_type"], item["anomaly_id"]))
+
     def list_failed_papers(self, session_id: int) -> list[dict[str, Any]]:
         """返回本场次中批改失败（processing_status='failed'、'grading'（非运行状态下）或含有局部失败降级）的所有试卷，含学生姓名与错误信息。"""
         with self._connect() as conn:
@@ -1580,6 +1633,7 @@ class DBManager:
                     COALESCE(s.name, ep.ocr_name, '未知') AS student_name,
                     s.student_code,
                     s.class_name,
+                    ep.processing_status,
                     CASE 
                         WHEN ep.processing_status = 'failed' THEN ep.error_message 
                         WHEN ep.processing_status = 'grading' THEN '批改任务异常中断，需重新批改'
@@ -1588,7 +1642,6 @@ class DBManager:
                     ep.created_at
                 FROM exam_papers ep
                 LEFT JOIN students s ON s.id = ep.student_id
-                LEFT JOIN session_results sr ON sr.paper_id = ep.id
                 LEFT JOIN grading_sessions gs ON gs.id = ep.session_id
                 WHERE ep.session_id = ?
                   AND (
@@ -1599,12 +1652,17 @@ class DBManager:
                     )
                     OR (
                       ep.processing_status = 'graded'
-                      AND (
-                        sr.raw_json LIKE '%"hybrid_batch_fallback"%'
-                        OR CASE
-                          WHEN json_valid(sr.raw_json)
-                          THEN json_extract(sr.raw_json, '$.grading_completeness.status')
-                        END IN ('incomplete', 'invalid')
+                      AND EXISTS (
+                        SELECT 1
+                        FROM session_results sr
+                        WHERE sr.paper_id = ep.id
+                          AND (
+                            sr.raw_json LIKE '%"hybrid_batch_fallback"%'
+                            OR CASE
+                              WHEN json_valid(sr.raw_json)
+                              THEN json_extract(sr.raw_json, '$.grading_completeness.status')
+                            END IN ('incomplete', 'invalid')
+                          )
                       )
                     )
                   )
@@ -1627,12 +1685,13 @@ class DBManager:
                     "student_name": row.get("student_name"),
                     "student_code": row.get("student_code"),
                     "class_name": row.get("class_name"),
+                    "processing_status": row.get("processing_status"),
                     "error_message": "批改结果不完整，需补跑受影响大题",
                     "created_at": None,
                 }
             )
             existing_paper_ids.add(paper_id)
-        return items
+        return sorted(items, key=lambda item: int(item["paper_id"]))
 
     def list_failed_papers_detailed(self, session_id: int) -> list[dict[str, Any]]:
         """返回本场次中批改失败（processing_status='failed'、'grading'（非运行状态下）或含有局部失败降级）的所有试卷的详细信息，用于增量重试。"""
@@ -1647,7 +1706,6 @@ class DBManager:
                     ep.student_id,
                     ep.match_status
                 FROM exam_papers ep
-                LEFT JOIN session_results sr ON sr.paper_id = ep.id
                 LEFT JOIN grading_sessions gs ON gs.id = ep.session_id
                 WHERE ep.session_id = ?
                   AND (
@@ -1658,12 +1716,17 @@ class DBManager:
                     )
                     OR (
                       ep.processing_status = 'graded'
-                      AND (
-                        sr.raw_json LIKE '%"hybrid_batch_fallback"%'
-                        OR CASE
-                          WHEN json_valid(sr.raw_json)
-                          THEN json_extract(sr.raw_json, '$.grading_completeness.status')
-                        END IN ('incomplete', 'invalid')
+                      AND EXISTS (
+                        SELECT 1
+                        FROM session_results sr
+                        WHERE sr.paper_id = ep.id
+                          AND (
+                            sr.raw_json LIKE '%"hybrid_batch_fallback"%'
+                            OR CASE
+                              WHEN json_valid(sr.raw_json)
+                              THEN json_extract(sr.raw_json, '$.grading_completeness.status')
+                            END IN ('incomplete', 'invalid')
+                          )
                       )
                     )
                   )
@@ -1790,6 +1853,7 @@ class DBManager:
                 """
                 SELECT
                     sr.id AS result_id,
+                    sr.student_id,
                     s.student_code,
                     s.name AS student_name,
                     s.class_name,
