@@ -39,12 +39,12 @@
 ## 昼夜交接
 
 **执行包：** P2-09
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** pending
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
@@ -1224,7 +1224,7 @@ git commit -m "feat: add rubric ledger and safe save workflow"
 - Produces repeatable mock-browser evidence for the complete flow and five viewports.
 - Produces a `waiting_review` feature head only after automatic gates pass; user quick test remains pending until independent review anchors an exact SHA.
 
-- [ ] **Step 1: Write failing Playwright workflow and layout checks**
+- [x] **Step 1: Write failing Playwright workflow and layout checks**
 
 ```ts
 test('draft to saved rubric survives partial generation and refresh', async ({ page }) => {
@@ -1247,7 +1247,7 @@ test('draft to saved rubric survives partial generation and refresh', async ({ p
 
 Add whole-mode manual retry, upload/parse failure, save 422, revision 409 with retained draft, mapping partial success, cancel race, stale response isolation, long questions/multiple parts, keyboard focus, no console/page errors, and `scrollWidth <= clientWidth` at all five viewports.
 
-- [ ] **Step 2: Run Playwright tests and verify RED**
+- [x] **Step 2: Run Playwright tests and verify RED**
 
 ```powershell
 Set-Location frontend
@@ -1256,11 +1256,11 @@ npx playwright test e2e/session-config.spec.ts --project=chromium
 
 Expected: FAIL until the mock routes, stable selectors and all workspace states are complete.
 
-- [ ] **Step 3: Complete browser fixtures and perform visual critique**
+- [x] **Step 3: Complete browser fixtures and perform visual critique**
 
 Use only synthetic Chinese exam text and generated placeholder media. Capture screenshots for the upload review, partial failure and rubric ledger at 1024×768 and 1440×900. Inspect them for page overflow, clipped controls, sticky-column overlap, focus visibility, overly dominant decoration and error proximity. Remove any redundant panel border or badge that competes with the blue stage margin; do not add decorative elements to fill whitespace.
 
-- [ ] **Step 4: Run focused backend and complete frontend gates**
+- [x] **Step 4: Run focused backend and complete frontend gates**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_config_workspace_drafts.py tests/test_api_session_drafts.py tests/test_config_source_service.py tests/test_api_config_sources.py tests/test_config_generation_job.py tests/test_api_config_generation_jobs.py tests/test_config_editor_service.py tests/test_api_config_editor.py tests/test_api_config_routes.py tests/test_unified_rubric_rows.py tests/test_grading_config_generation_policy.py tests/test_api_openapi_contract.py -q
@@ -1274,7 +1274,7 @@ npx playwright test e2e/session-config.spec.ts --project=chromium
 
 Expected: all tests PASS and all quality commands exit 0.
 
-- [ ] **Step 5: Run affected regression, diff and quick smoke**
+- [x] **Step 5: Run affected regression, diff and quick smoke**
 
 ```powershell
 ..\..\runtime\python\python.exe -m pytest tests/test_api_app.py tests/test_api_read_routes.py tests/test_api_write_routes.py tests/test_api_jobs.py tests/test_api_job_lifecycle.py tests/test_answer_region_commit_service.py tests/test_source_paper_archive_service.py -q
@@ -1284,11 +1284,11 @@ git diff --check
 
 Expected: all selected regression tests PASS; diff check and quick smoke exit 0. Full pytest is not run on the feature branch unless a risk trigger from `AGENTS.md` occurs.
 
-- [ ] **Step 6: Update implemented architecture facts and generate the real quick checklist**
+- [x] **Step 6: Update implemented architecture facts and generate the real quick checklist**
 
 After the page runs and browser selectors are verified, record only implemented facts in `ARCHITECTURE.md`. Create the 5–10 minute checklist with actual start command, loopback URL, visible build/session marker, synthetic dataset, exact six user actions, expected outcomes, stop command and feedback severity fields. Do not claim user acceptance or include production paths/data.
 
-- [ ] **Step 7: Recheck scope, Git history, stash and real-data fingerprints**
+- [x] **Step 7: Recheck scope, Git history, stash and real-data fingerprints**
 
 ```powershell
 git status --short
@@ -1299,7 +1299,7 @@ git stash list --format='%H'
 
 Confirm the first first-parent commit changes only this plan; no package commit or new stash contains `user_data/`; real grading/question-bank database length, UTC timestamp and SHA-256 match the recorded领取 baseline.
 
-- [ ] **Step 8: Create functional checkpoint and `waiting_review` handoff**
+- [x] **Step 8: Create functional checkpoint and `waiting_review` handoff**
 
 Update Implementation Evidence with exact RED/GREEN and gate counts. Change the handoff block to `waiting_review`, `功能提交: branch_head`, `自动验证: passed`, `独立复审: pending`, `用户验收: pending`, `真实数据指纹: unchanged`, `夜间动作: report_only`. Commit P2-09 code, tests, implemented architecture facts, checklist and plan; do not push or integrate before independent review.
 
@@ -1337,7 +1337,10 @@ Update Implementation Evidence with exact RED/GREEN and gate counts. Change the 
 - Planning baseline: `origin/main` at `c4b5732f4ce33f33defe43626b7ac80d1d71e305`; formal worktree clean; real `user_data/` untouched; stash baseline recorded in the handoff block.
 - Design: 2026-07-15 user approved recoverable pre-generation drafts, continuous workspace option A, all three design sections, and written specification commit `ba926973f2ebe5cfcd1703f154c963426531f5b5`.
 - Baseline tests: before any source change, config API/Job baseline `19 passed`; complete frontend Vitest baseline `25 files / 196 tests passed`.
-- RED/GREEN: Tasks 1–10 each declare the exact initial failing test command, expected failure reason, minimal implementation boundary and green/regression command; execution evidence will append exact observed counts without replacing these requirements.
+- RED/GREEN: Task 10 Chromium RED ran 1 test and failed at the absent “考试名称” control because the initial sessions mock was intentionally incomplete; after the fixture was completed and its API matcher was constrained to real `/api/` requests, the full browser suite passed 14/14. The final suite covers draft/upload/review, partial/reload/retry, whole-mode manual retry, upload failure, 422 focus, 409 retention and confirmed reload, mapping partial success, cancellation race, stale isolation, long/multipart content, keyboard focus, console/page-error guards and all five desktop viewports.
+- Browser evidence: six mock-only screenshots were generated under ignored `frontend/test-results/` for upload review, partial recovery and the Rubric ledger at 1024×768 and 1440×900. Visual inspection found no document overflow, clipped controls, sticky-column overlap or competing decoration; keyboard focus remained visible. The versioned quick checklist uses the same verified mock fixture in a headed Chromium session and was launch-tested at `127.0.0.1:5173` without real data or model calls.
+- Automatic gates: focused backend `228 passed`; frontend lint `0 errors / 0 warnings`, typecheck exit `0`, Vitest `34 files / 296 tests passed`, build `1675 modules` and exit `0`, P2-09 Chromium E2E `14 passed`; affected backend `70 passed`; `git diff --check` exit `0`; `tools/smoke_check.py --skip-tests` passed document governance, 449-file static compile and isolated-copy dual-database idempotence. Full pytest was not run because no `AGENTS.md` risk trigger occurred.
+- Real data: feature-worktree `user_data/` status is empty. Root grading database remained `2863104` bytes / `2026-07-10T07:10:41.1221109Z` / SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`; root question-bank database remained `3461120` bytes / `2026-07-08T11:58:06.3320883Z` / SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`. Only file metadata and hashes were read.
 - Independent review: pending.
-- User quick test: pending; checklist content will be generated only after the page and synthetic environment are verified.
-- Real data: not touched; final fingerprint comparison pending.
+- User quick test: pending; the versioned checklist and headed synthetic loopback mode were generated and launch-verified, but no user acceptance result is claimed before independent review anchors an exact SHA.
+- Real data: unchanged; final file-level size, UTC mtime and SHA-256 comparison exactly matched the recorded baseline for both root databases.
