@@ -76,19 +76,26 @@ class SecureRootFilesystem:
         elif raw.startswith("\\\\?\\"):
             raw = raw[4:]
         self.root = Path(os.path.abspath(raw))
-        self._inspect_root_components()
+        initial_state = self._inspect_root_components()
         self._before_handle_use("root_initialize", self.root)
-        self._initialize_trusted_root()
+        self._initialize_trusted_root(initial_state)
 
     def _before_handle_use(self, operation: str, path: Path) -> None:
         """Internal checkpoint used by race regression tests."""
 
-    def _inspect_root_components(self) -> None:
+    def _inspect_root_components(self) -> dict[Path, int | None]:
+        state: dict[Path, int | None] = {}
+        missing_started = False
         for component in _root_components(self.root):
+            if missing_started:
+                state[component] = None
+                continue
             try:
                 metadata = os.lstat(component)
             except FileNotFoundError:
-                break
+                missing_started = True
+                state[component] = None
+                continue
             except OSError:
                 raise SecureFilesystemError("trusted root inspection failed") from None
             if stat.S_ISLNK(metadata.st_mode) or _is_reparse(component):
@@ -99,29 +106,27 @@ class SecureRootFilesystem:
                 raise SecureFilesystemError(
                     "trusted root component is not a directory"
                 )
+            state[component] = int(metadata.st_ino)
+        return state
 
-    def _initialize_trusted_root(self) -> None:
+    def _initialize_trusted_root(
+        self,
+        initial_state: Mapping[Path, int | None],
+    ) -> None:
         components = _root_components(self.root)
         handles: list[int] = []
         final_path = ""
         final_identity = 0
-        missing_started = False
         try:
             for component in components:
-                try:
-                    metadata = os.lstat(component)
-                except FileNotFoundError:
-                    missing_started = True
-                    metadata = None
-                except OSError:
-                    raise SecureFilesystemError(
-                        "trusted root inspection failed"
-                    ) from None
-                if metadata is not None:
-                    if missing_started:
+                first_identity = initial_state.get(component)
+                if first_identity is not None:
+                    try:
+                        metadata = os.lstat(component)
+                    except OSError:
                         raise SecureFilesystemError(
                             "trusted root ancestry changed"
-                        )
+                        ) from None
                     if stat.S_ISLNK(metadata.st_mode) or _is_reparse(component):
                         raise SecureFilesystemError(
                             "trusted root contains a reparse point"
@@ -130,9 +135,37 @@ class SecureRootFilesystem:
                         raise SecureFilesystemError(
                             "trusted root component is not a directory"
                         )
-                    expected_identity = int(metadata.st_ino)
+                    expected_identity = first_identity
+                    if int(metadata.st_ino) != expected_identity:
+                        raise SecureFilesystemError(
+                            "trusted root component identity changed"
+                        )
                 else:
+                    try:
+                        os.lstat(component)
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        raise SecureFilesystemError(
+                            "trusted root inspection failed"
+                        ) from None
+                    else:
+                        raise SecureFilesystemError(
+                            "trusted root component appeared before secure creation"
+                        )
                     self._before_handle_use("root_mkdir", component)
+                    try:
+                        os.lstat(component)
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        raise SecureFilesystemError(
+                            "trusted root inspection failed"
+                        ) from None
+                    else:
+                        raise SecureFilesystemError(
+                            "trusted root component appeared before secure creation"
+                        )
                     if not _CreateDirectoryW(str(component), None):
                         raise SecureFilesystemError(
                             "secure trusted root creation failed"

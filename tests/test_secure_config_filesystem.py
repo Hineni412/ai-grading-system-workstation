@@ -297,6 +297,80 @@ def test_missing_root_creation_rejects_parent_swapped_to_junction(
     assert sorted(path.name for path in outside.iterdir()) == ["sentinel.txt"]
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows trusted-root race regression")
+@pytest.mark.parametrize("competitor_kind", ["directory", "junction"])
+def test_missing_root_rejects_competitor_entry_created_after_first_inspection(
+    tmp_path: Path,
+    competitor_kind: str,
+) -> None:
+    parent = tmp_path / "parent"
+    outside = tmp_path / "outside"
+    requested_root = parent / "new-root"
+    parent.mkdir()
+    outside.mkdir()
+    competitor_created = False
+
+    class RacingFilesystem(SecureRootFilesystem):
+        def _before_handle_use(self, operation: str, path: Path) -> None:
+            nonlocal competitor_created
+            if competitor_created or operation != "root_initialize":
+                return
+            if competitor_kind == "directory":
+                requested_root.mkdir()
+            else:
+                result = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(requested_root), str(outside)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if result.returncode != 0:
+                    pytest.skip("junction creation is unavailable")
+            competitor_created = True
+
+    try:
+        with pytest.raises(SecureFilesystemError):
+            RacingFilesystem(requested_root)
+    finally:
+        if requested_root.exists() or secure_fs_module._is_reparse(requested_root):
+            os.rmdir(requested_root)
+
+    assert competitor_created is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows trusted-root race regression")
+def test_existing_root_rejects_ordinary_parent_identity_replacement(
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "parent"
+    parked = tmp_path / "parent-parked"
+    replacement = tmp_path / "replacement"
+    requested_root = parent / "root"
+    replacement_root = replacement / "root"
+    requested_root.mkdir(parents=True)
+    replacement_root.mkdir(parents=True)
+    swapped = False
+
+    class RacingFilesystem(SecureRootFilesystem):
+        def _before_handle_use(self, operation: str, path: Path) -> None:
+            nonlocal swapped
+            if swapped or operation != "root_initialize":
+                return
+            parent.rename(parked)
+            replacement.rename(parent)
+            swapped = True
+
+    try:
+        with pytest.raises(SecureFilesystemError):
+            RacingFilesystem(requested_root)
+    finally:
+        if swapped:
+            parent.rename(replacement)
+            parked.rename(parent)
+
+    assert swapped is True
+
+
 def test_secure_filesystem_fails_closed_without_windows_before_any_change(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
