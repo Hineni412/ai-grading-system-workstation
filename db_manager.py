@@ -1569,6 +1569,62 @@ class DBManager:
             "progress_percent": progress_percent,
         }
 
+    def list_session_anomalies(self, session_id: int) -> list[dict[str, Any]]:
+        """Return unmatched papers, scan issues, and failed papers without paths."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    'unmatched_paper:' || printf('%020d', ep.id) AS anomaly_id,
+                    'unmatched_paper' AS anomaly_type,
+                    COALESCE(NULLIF(ep.ocr_name, ''), '未匹配试卷') AS display_name,
+                    NULL AS student_code,
+                    NULL AS class_name,
+                    ep.match_status AS status,
+                    NULL AS detail,
+                    ep.created_at AS created_at
+                FROM exam_papers ep
+                WHERE ep.session_id = ? AND ep.match_status <> 'matched'
+
+                UNION ALL
+
+                SELECT
+                    'scan_issue:' || printf('%020d', sa.id) AS anomaly_id,
+                    'scan_issue' AS anomaly_type,
+                    COALESCE(NULLIF(s.name, ''), NULLIF(s.student_code, ''), '扫描异常学生')
+                        AS display_name,
+                    s.student_code AS student_code,
+                    s.class_name AS class_name,
+                    sa.attendance_status AS status,
+                    sa.source_reason AS detail,
+                    sa.created_at AS created_at
+                FROM session_attendance sa
+                JOIN students s ON s.id = sa.student_id
+                WHERE sa.session_id = ? AND sa.attendance_status = 'scan_issue'
+
+                UNION ALL
+
+                SELECT
+                    'grading_failed:' || printf('%020d', ep.id) AS anomaly_id,
+                    'grading_failed' AS anomaly_type,
+                    COALESCE(
+                        NULLIF(s.name, ''), NULLIF(ep.ocr_name, ''), '批改失败试卷'
+                    ) AS display_name,
+                    s.student_code AS student_code,
+                    s.class_name AS class_name,
+                    ep.processing_status AS status,
+                    ep.error_message AS detail,
+                    ep.created_at AS created_at
+                FROM exam_papers ep
+                LEFT JOIN students s ON s.id = ep.student_id
+                WHERE ep.session_id = ? AND ep.processing_status = 'failed'
+
+                ORDER BY anomaly_type, anomaly_id
+                """,
+                (int(session_id), int(session_id), int(session_id)),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def list_failed_papers(self, session_id: int) -> list[dict[str, Any]]:
         """返回本场次中批改失败（processing_status='failed'、'grading'（非运行状态下）或含有局部失败降级）的所有试卷，含学生姓名与错误信息。"""
         with self._connect() as conn:
