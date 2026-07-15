@@ -218,6 +218,33 @@ def test_projection_reports_missing_and_duplicate_ids_without_internal_details()
         project_config_editor(payload)
 
 
+def test_answer_question_and_part_identity_issues_are_stable() -> None:
+    payload = _payload()
+    payload["answer_key"]["questions"][0]["parts"].append(
+        copy.deepcopy(payload["answer_key"]["questions"][0]["parts"][0])
+    )
+    payload["answer_key"]["questions"].append(copy.deepcopy(payload["answer_key"]["questions"][0]))
+    payload["answer_key"]["questions"][1]["parts"][0]["part_id"] = "OTHER"
+
+    issues = collect_config_editor_issues(payload, validate_publish=False)
+
+    assert {issue["code"] for issue in issues} >= {
+        "duplicate_answer_question_id",
+        "duplicate_answer_part_id",
+        "missing_answer_part_id",
+    }
+
+
+def test_missing_answer_question_is_a_stable_projection_issue() -> None:
+    payload = _payload()
+    payload["answer_key"]["questions"] = payload["answer_key"]["questions"][:1]
+
+    with pytest.raises(ConfigEditorValidationError) as exc:
+        project_config_editor(payload)
+
+    assert exc.value.issues[0]["code"] == "missing_answer_question_id"
+
+
 def test_unknown_or_duplicate_edit_row_id_is_rejected() -> None:
     row_id = project_config_editor(_payload())[0].row_id
     with pytest.raises(ConfigEditorValidationError) as unknown:
@@ -276,10 +303,7 @@ def test_replace_parts_requires_unique_ids_preserves_ids_and_does_not_mutate_sou
 
     assert payload == original
     assert editor_part_ids(updated)[0] == ("Q12", ("老师-甲", "老师-乙"))
-    assert [part["answer"] for part in updated["answer_key"]["questions"][0]["parts"]] == [
-        "证明略",
-        "",
-    ]
+    assert [part["answer"] for part in updated["answer_key"]["questions"][0]["parts"]] == ["", ""]
 
     duplicate = ReplaceScoringUnitsCommand(
         kind="replace_parts",
@@ -292,3 +316,65 @@ def test_replace_parts_requires_unique_ids_preserves_ids_and_does_not_mutate_sou
     with pytest.raises(ConfigEditorValidationError) as exc:
         apply_config_editor_changes(payload, edits=(), commands=(duplicate,))
     assert exc.value.issues[0]["code"] == "duplicate_part_id"
+
+
+def test_whole_solution_edit_restores_legacy_policy_semantics() -> None:
+    payload = {
+        "rubric": {
+            "questions": [
+                {
+                    "question_id": "Q1",
+                    "question_type": "proof",
+                    "max_score": 6,
+                    "knowledge_id": "K1",
+                    "parts": [],
+                }
+            ]
+        },
+        "answer_key": {
+            "questions": [
+                {
+                    "question_id": "Q1",
+                    "canonical_answer": "证明略",
+                    "accepted_forms": [],
+                    "method_variants": [],
+                    "parts": [],
+                }
+            ]
+        },
+        "meta": {"warnings": []},
+    }
+    row = project_config_editor(payload)[0]
+
+    updated = apply_config_editor_changes(
+        payload,
+        edits=(
+            ConfigEditorEdit(
+                row_id=row.row_id,
+                require_final_answer=True,
+                answer_only_max_score=2,
+                final_answer_rule="必须写出结论",
+            ),
+        ),
+        commands=(),
+    )
+
+    question = updated["rubric"]["questions"][0]
+    assert question["_manual_solution_rules"] is True
+    assert question["answer_presentation_policy"] == {
+        "require_final_answer": True,
+        "answer_only_max_score": 2.0,
+        "note": "教师在界面中手动确认的过程/写答规则。",
+    }
+    policies = {policy["policy_id"]: policy for policy in question["deduction_policy"]}
+    assert policies["answer_only_process_missing"]["max_deduction"] == 4.0
+    assert policies["core_process_missing"]["max_deduction"] == 6.0
+
+
+def test_solution_projection_restores_default_final_answer_rule() -> None:
+    payload = _payload()
+    payload["rubric"]["questions"][0]["parts"][0]["presentation_rules"] = []
+
+    row = project_config_editor(payload)[0]
+
+    assert row.final_answer_rule == "一般解答题需要写出最终答或明确结论；未写答/结论不完整，酌情扣1分"

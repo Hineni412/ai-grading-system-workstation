@@ -16,6 +16,7 @@ _OBJECTIVE_TYPES = {"choice", "fill_blank", "judgement", "true_false", "direct_a
 _SOLUTION_TYPES = {"proof", "calculation", "comprehensive"}
 _WHOLE_ID = "整题"
 _UNSPLIT_ID = "未拆评分点"
+_DEFAULT_FINAL_ANSWER_RULE = "一般解答题需要写出最终答或明确结论；未写答/结论不完整，酌情扣1分"
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,7 +101,6 @@ def project_config_editor(payload: dict[str, Any]) -> list[ConfigEditorRow]:
         question_type = str(question.get("question_type") or "")
         answer_question = answer_map.get(question_id, {})
         parts = _dict_list(question.get("parts"))
-        answer_parts = _dict_list(answer_question.get("parts"))
         knowledge = _knowledge_label(question)
         require_final = question.get("require_final_answer")
         if require_final is None:
@@ -109,7 +109,9 @@ def project_config_editor(payload: dict[str, Any]) -> list[ConfigEditorRow]:
         answer_only = _number_or_none(question.get("answer_only_max_score"))
         if answer_only is None:
             answer_only = float(max(1, round(max_score * 0.25))) if max_score > 0 else 1.0
-        final_rule = _final_answer_rule(question)
+        final_rule = _final_answer_rule(question) or (
+            _DEFAULT_FINAL_ANSWER_RULE if question_type in _SOLUTION_TYPES else ""
+        )
 
         if not parts:
             rows.append(
@@ -135,7 +137,7 @@ def project_config_editor(payload: dict[str, Any]) -> list[ConfigEditorRow]:
 
         for part_index, part in enumerate(parts):
             part_id = str(part["part_id"])
-            answer_part = _answer_part(answer_parts, part_id, part_index)
+            answer_part = _answer_part(answer_question, part_id, len(parts))
             first_answer = answer_part or (answer_question if len(parts) == 1 else {})
             part_label = _part_label(question_id, part_id, part_index + 1, len(parts))
             part_score = _number(_first_value(part, "part_score", "max_score"), 0.0)
@@ -216,6 +218,11 @@ def apply_config_editor_changes(
     rows = project_config_editor(candidate)
     row_map = {row.row_id: row for row in rows}
     seen: set[str] = set()
+    policy_question_ids = {
+        str(question.get("question_id"))
+        for question in _questions(candidate, "rubric")
+        if bool(question.get("_manual_solution_rules"))
+    }
     for edit in edits:
         if edit.row_id in seen:
             raise ConfigEditorValidationError(
@@ -227,9 +234,22 @@ def apply_config_editor_changes(
             raise ConfigEditorValidationError(
                 (_issue("unknown_row_id", "edits.row_id", "The editor row no longer exists.", row_id=edit.row_id),)
             )
+        if row.question_type in _SOLUTION_TYPES and any(
+            value is not None
+            for value in (
+                edit.require_final_answer,
+                edit.answer_only_max_score,
+                edit.final_answer_rule,
+            )
+        ):
+            policy_question_ids.add(row.question_id)
         _apply_edit(candidate, row, edit)
 
     _aggregate_scores(candidate)
+    for question_id in policy_question_ids:
+        question = _question_by_id(candidate, "rubric", question_id)
+        if question is not None:
+            _sync_solution_policy(question)
     _enforce_objective_semantics(candidate)
     refresh_generated_config_quality_warnings(candidate)
     return candidate
@@ -296,7 +316,6 @@ def streamlit_dataframe_to_editor_edits(
     payload: dict[str, Any], records: Sequence[dict[str, Any]]
 ) -> tuple[ConfigEditorEdit, ...]:
     projected = project_config_editor(payload)
-    by_id = {row.row_id: row for row in projected}
     first_rows: set[str] = set()
     seen_units: set[tuple[str, str]] = set()
     for row in projected:
@@ -306,6 +325,18 @@ def streamlit_dataframe_to_editor_edits(
             seen_units.add(unit)
 
     edits: list[ConfigEditorEdit] = []
+    positional_fallback = any(
+        not str(record.get("_row_id") or "").strip()
+        and not all(
+            str(record.get(key) or "").strip()
+            for key in ("_question_id", "_part_id", "_step_id")
+        )
+        for record in records
+    )
+    if positional_fallback and len(records) != len(projected):
+        raise ConfigEditorValidationError(
+            (_issue("visible_row_identity_mismatch", "rows", "Visible editor rows no longer match the projection."),)
+        )
     for index, record in enumerate(records):
         row_id = str(record.get("_row_id") or "").strip()
         if not row_id:
@@ -315,11 +346,18 @@ def streamlit_dataframe_to_editor_edits(
             if question_id and part_id and step_id:
                 row_id = _row_id(question_id, part_id, step_id)
             elif index < len(projected):
-                # Streamlit may omit hidden columns from returned records. Its
-                # editor does not reorder rows, so the original projection order
-                # remains the only identity input; visible labels are never used.
+                if not _visible_identity_matches(record, projected[index]):
+                    raise ConfigEditorValidationError(
+                        (
+                            _issue(
+                                "visible_row_identity_mismatch",
+                                "rows",
+                                "Visible editor rows no longer match the projection.",
+                                row_id=projected[index].row_id,
+                            ),
+                        )
+                    )
                 row_id = projected[index].row_id
-        original = by_id.get(row_id)
         is_first = row_id in first_rows
         edits.append(
             ConfigEditorEdit(
@@ -334,8 +372,6 @@ def streamlit_dataframe_to_editor_edits(
                 final_answer_rule=str(record.get("未写答扣分说明") or "").strip() if is_first else None,
             )
         )
-        if original is None:
-            continue
     return tuple(edits)
 
 
@@ -353,7 +389,7 @@ def _apply_edit(payload: dict[str, Any], row: ConfigEditorRow, edit: ConfigEdito
         if part_index < 0:
             raise ConfigEditorValidationError((_issue("unknown_part_id", "part_id", "The scoring unit no longer exists."),))
         part = parts[part_index]
-        answer_part = _answer_part(_dict_list(answer_question.get("parts")), row.part_id, part_index)
+        answer_part = _answer_part(answer_question, row.part_id, len(parts))
         if answer_part is None:
             answer_part = _new_answer_part(row.part_id)
             answer_question.setdefault("parts", []).append(answer_part)
@@ -482,14 +518,16 @@ def _apply_replace_parts(payload: dict[str, Any], command: ReplaceScoringUnitsCo
         )
     answer = _ensure_answer_question(payload, command.question_id)
     old_parts = _dict_list(question.get("parts"))
-    old_answers = _dict_list(answer.get("parts"))
     old_part_map = {str(item.get("part_id")): item for item in old_parts}
-    old_answer_map = {str(item.get("part_id")): item for item in old_answers}
+    old_answer_map = {
+        str(item.get("part_id")): item
+        for item in _dict_list(answer.get("parts"))
+    }
     new_parts: list[dict[str, Any]] = []
     new_answers: list[dict[str, Any]] = []
     for index, (item, part_id, score) in enumerate(zip(command.parts, part_ids, scores)):
         old_part = old_part_map.get(part_id) or (old_parts[index] if index < len(old_parts) else {})
-        old_answer = old_answer_map.get(part_id) or (old_answers[index] if index < len(old_answers) else {})
+        old_answer = old_answer_map.get(part_id) or {}
         steps = copy.deepcopy(_dict_list(old_part.get("steps")))
         if steps:
             steps[0]["core_goal"] = str(item.core_goal).strip() or f"完成 {command.question_id} 第 {index + 1} 个评分单元"
@@ -580,16 +618,14 @@ def _aggregate_scores(payload: dict[str, Any]) -> None:
         answer = answer_map.get(str(question.get("question_id")))
         if answer is not None:
             answer["max_score"] = question.get("max_score", 0.0)
-            rubric_part_map = {str(part.get("part_id")): part for part in parts}
-            for index, answer_part in enumerate(_dict_list(answer.get("parts"))):
-                rubric_part = rubric_part_map.get(str(answer_part.get("part_id")))
-                if rubric_part is None and index < len(parts):
-                    rubric_part = parts[index]
-                if rubric_part is not None:
-                    score = rubric_part.get("part_score", 0.0)
-                    answer_part["part_score"] = score
-                    if "max_score" in answer_part:
-                        answer_part["max_score"] = score
+            for rubric_part in parts:
+                answer_part = _answer_part(answer, str(rubric_part.get("part_id")), len(parts))
+                if answer_part is None:
+                    continue
+                score = rubric_part.get("part_score", 0.0)
+                answer_part["part_score"] = score
+                if "max_score" in answer_part:
+                    answer_part["max_score"] = score
     payload.setdefault("rubric", {})["total_score"] = total
 
 
@@ -602,9 +638,9 @@ def _enforce_objective_semantics(payload: dict[str, Any]) -> None:
         question["require_final_answer"] = False
         question["answer_only_max_score"] = _number(question.get("max_score"), 0.0)
         answer = answer_map.get(str(question.get("question_id")))
-        answer_parts = _dict_list(answer.get("parts")) if answer is not None else []
         all_exact = True
-        for index, part in enumerate(_dict_list(question.get("parts"))):
+        parts = _dict_list(question.get("parts"))
+        for part in parts:
             mode = str(part.get("response_mode") or "exact_objective")
             if mode not in {"exact_objective", "short_answer_points"}:
                 mode = "exact_objective"
@@ -614,8 +650,10 @@ def _enforce_objective_semantics(payload: dict[str, Any]) -> None:
             part["presentation_rules"] = []
             if mode != "exact_objective":
                 all_exact = False
-            if index < len(answer_parts) and mode == "exact_objective":
-                answer_parts[index]["partial_credit"] = False
+            if answer is not None and mode == "exact_objective":
+                answer_part = _answer_part(answer, str(part.get("part_id")), len(parts))
+                if answer_part is not None:
+                    answer_part["partial_credit"] = False
         if answer is not None and (all_exact or str(answer.get("match_mode")) == "complete_set"):
             answer["partial_credit"] = False
 
@@ -686,6 +724,124 @@ def _identity_issues(payload: Any) -> list[ConfigEditorIssue]:
                 if identity in row_ids:
                     issues.append(_issue("duplicate_row_id", "row_id", "Editor row identities must be unique.", row_id=identity))
                 row_ids.add(identity)
+    issues.extend(_answer_identity_issues(payload, raw_questions))
+    return issues
+
+
+def _answer_identity_issues(
+    payload: dict[str, Any],
+    rubric_questions: list[Any],
+) -> list[ConfigEditorIssue]:
+    answer_key = payload.get("answer_key")
+    if not isinstance(answer_key, dict):
+        return [_issue("invalid_answer_key", "answer_key", "Answer key must be an object.")]
+    raw_answers = answer_key.get("questions")
+    if not isinstance(raw_answers, list):
+        return [_issue("invalid_answer_questions", "answer_key.questions", "Answer questions must be a list.")]
+
+    issues: list[ConfigEditorIssue] = []
+    answers_by_id: dict[str, list[dict[str, Any]]] = {}
+    for answer in raw_answers:
+        if not isinstance(answer, dict):
+            issues.append(_issue("invalid_answer_question", "answer_key.questions", "Each answer question must be an object."))
+            continue
+        question_id = str(answer.get("question_id") or "").strip()
+        if not question_id:
+            issues.append(
+                _issue(
+                    "missing_answer_question_id",
+                    "answer_key.questions.question_id",
+                    "Answer question IDs cannot be empty.",
+                )
+            )
+            continue
+        matches = answers_by_id.setdefault(question_id, [])
+        if matches:
+            issues.append(
+                _issue(
+                    "duplicate_answer_question_id",
+                    "answer_key.questions.question_id",
+                    "Answer question IDs must be unique.",
+                )
+            )
+        matches.append(answer)
+        part_ids: set[str] = set()
+        raw_parts = answer.get("parts")
+        if raw_parts is None:
+            raw_parts = []
+        if not isinstance(raw_parts, list):
+            issues.append(_issue("invalid_answer_parts", "answer_key.questions.parts", "Answer parts must be a list."))
+            continue
+        for part in raw_parts:
+            if not isinstance(part, dict):
+                issues.append(_issue("invalid_answer_part", "answer_key.questions.parts", "Each answer part must be an object."))
+                continue
+            part_id = str(part.get("part_id") or "").strip()
+            if not part_id:
+                issues.append(
+                    _issue(
+                        "missing_answer_part_id",
+                        "answer_key.questions.parts.part_id",
+                        "Answer part IDs cannot be empty.",
+                    )
+                )
+                continue
+            if part_id in part_ids:
+                issues.append(
+                    _issue(
+                        "duplicate_answer_part_id",
+                        "answer_key.questions.parts.part_id",
+                        "Answer part IDs must be unique.",
+                    )
+                )
+            part_ids.add(part_id)
+
+    for rubric_question in rubric_questions:
+        if not isinstance(rubric_question, dict):
+            continue
+        question_id = str(rubric_question.get("question_id") or "").strip()
+        if not question_id:
+            continue
+        matches = answers_by_id.get(question_id, [])
+        if not matches:
+            issues.append(
+                _issue(
+                    "missing_answer_question_id",
+                    "answer_key.questions.question_id",
+                    "Each rubric question needs one matching answer question.",
+                )
+            )
+            continue
+        if len(matches) != 1:
+            continue
+        rubric_parts = _dict_list(rubric_question.get("parts"))
+        if not rubric_parts:
+            continue
+        answer_question = matches[0]
+        answer_parts = _dict_list(answer_question.get("parts"))
+        legacy_whole = len(rubric_parts) == 1 and (
+            not answer_parts
+            or (
+                len(answer_parts) == 1
+                and str(answer_parts[0].get("part_id") or "") == question_id
+            )
+        )
+        for rubric_part in rubric_parts:
+            part_id = str(rubric_part.get("part_id") or "").strip()
+            if not part_id:
+                continue
+            if any(str(answer_part.get("part_id") or "") == part_id for answer_part in answer_parts):
+                continue
+            if legacy_whole:
+                continue
+            issues.append(
+                _issue(
+                    "missing_answer_part_id",
+                    "answer_key.questions.parts.part_id",
+                    "Each rubric part needs one matching answer part.",
+                    row_id=_row_id(question_id, part_id, _UNSPLIT_ID),
+                )
+            )
     return issues
 
 
@@ -752,11 +908,31 @@ def _new_answer_part(part_id: str) -> dict[str, Any]:
     return {"part_id": part_id, "answer": "", "analysis": "", "step_milestones": []}
 
 
-def _answer_part(parts: list[dict[str, Any]], part_id: str, index: int) -> dict[str, Any] | None:
+def _answer_part(
+    answer_question: dict[str, Any],
+    part_id: str,
+    rubric_part_count: int,
+) -> dict[str, Any] | None:
+    parts = _dict_list(answer_question.get("parts"))
     exact = next((item for item in parts if str(item.get("part_id")) == part_id), None)
     if exact is not None:
         return exact
-    return parts[index] if index < len(parts) else None
+    question_id = str(answer_question.get("question_id") or "")
+    if rubric_part_count == 1 and not parts:
+        return answer_question
+    if rubric_part_count == 1 and len(parts) == 1 and str(parts[0].get("part_id") or "") == question_id:
+        return parts[0]
+    return None
+
+
+def _visible_identity_matches(record: dict[str, Any], row: ConfigEditorRow) -> bool:
+    projected = editor_row_to_streamlit_dict(row)
+    for key in ("题号", "评分单元", "评分点", "题型", "作答匹配规则", "知识点"):
+        if key not in record:
+            return False
+        if str(record.get(key) or "").strip() != str(projected.get(key) or "").strip():
+            return False
+    return True
 
 
 def _row_id(question_id: str, part_id: str, step_id: str) -> str:
@@ -900,10 +1076,59 @@ def _set_final_answer_rule(node: dict[str, Any], text: str) -> None:
             {
                 "rule_id": "final_answer_required",
                 "rule": str(text).strip()
-                or "一般解答题需要写出最终答或明确结论；未写答/结论不完整，酌情扣1分",
+                or _DEFAULT_FINAL_ANSWER_RULE,
                 "max_deduction": 1,
             }
         )
+
+
+def _sync_solution_policy(question: dict[str, Any]) -> None:
+    max_score = _number(question.get("max_score"), 0.0)
+    answer_only = min(
+        max_score,
+        max(0.0, _number(question.get("answer_only_max_score"), 0.0)),
+    )
+    require_final = bool(question.get("require_final_answer"))
+    question["require_final_answer"] = require_final
+    question["answer_only_max_score"] = answer_only
+    question["_manual_solution_rules"] = True
+    question["answer_presentation_policy"] = {
+        "require_final_answer": require_final,
+        "answer_only_max_score": answer_only,
+        "note": "教师在界面中手动确认的过程/写答规则。",
+    }
+    policies = question.setdefault("deduction_policy", [])
+    if not isinstance(policies, list):
+        policies = []
+        question["deduction_policy"] = policies
+    answer_only_text = str(int(answer_only)) if answer_only.is_integer() else str(answer_only)
+    _upsert_policy(
+        policies,
+        {
+            "policy_id": "answer_only_process_missing",
+            "issue": f"只写最终答案但没有有效过程，最多给 {answer_only_text} 分，主要过程分不得给分",
+            "max_deduction": max(0.0, max_score - answer_only),
+            "severity": "major",
+        },
+    )
+    _upsert_policy(
+        policies,
+        {
+            "policy_id": "core_process_missing",
+            "issue": "关键过程、证明义务或推理链缺失，应扣除对应过程分",
+            "max_deduction": max_score,
+            "severity": "fatal",
+        },
+    )
+
+
+def _upsert_policy(policies: list[Any], policy: dict[str, Any]) -> None:
+    policy_id = str(policy["policy_id"])
+    for index, existing in enumerate(policies):
+        if isinstance(existing, dict) and str(existing.get("policy_id") or "") == policy_id:
+            policies[index] = policy
+            return
+    policies.append(policy)
 
 
 def _append_warning(payload: dict[str, Any], warning: str) -> None:
