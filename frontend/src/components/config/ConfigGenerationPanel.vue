@@ -10,7 +10,10 @@ import {
   type GenerationMode,
 } from '../../api/config-workspace'
 import type { JobResponse } from '../../api/jobs'
-import { useConfigWorkspaceStore } from '../../stores/config-workspace'
+import {
+  useConfigWorkspaceStore,
+  type ConfigGenerationSummary,
+} from '../../stores/config-workspace'
 import { useJobStore } from '../../stores/jobs'
 
 const props = withDefaults(defineProps<{
@@ -47,6 +50,8 @@ const generatedCount = computed(() => safeCount(job.value?.result.generated_ques
 const failedCount = computed(() => safeCount(job.value?.result.failed_count))
 const active = computed(() => job.value !== null
   && !['succeeded', 'failed', 'cancelled'].includes(job.value.status))
+const waitingForCancel = computed(() => job.value?.cancel_requested === true
+  && (job.value.status === 'queued' || job.value.status === 'running'))
 const safeDetail = computed(() => {
   const detail = job.value?.detail.trim() ?? ''
   if (!detail || detail.length > 240 || /(?:[a-z]:[\\/]|\\\\|\/[^ ]+\/)/i.test(detail)) return ''
@@ -58,7 +63,7 @@ function safeCount(value: unknown): number {
 }
 
 function statusCopy(value: JobResponse): string {
-  if (value.cancel_requested && !['succeeded', 'failed', 'cancelled'].includes(value.status)) {
+  if (value.cancel_requested && (value.status === 'queued' || value.status === 'running')) {
     return '已请求取消'
   }
   if (value.status === 'queued') return '等待开始'
@@ -92,12 +97,17 @@ async function retrySelected(): Promise<void> {
   const ids = selectedFailed.value.filter((item) => allowed.has(item))
   if (ids.length === 0) return
   const context = configStore.captureGenerationContext()
+  const retainedSummary: ConfigGenerationSummary = {
+    totalQuestions: safeCount(current.result.total_questions),
+    succeededQuestions: safeCount(current.result.generated_questions),
+    failedQuestions: safeCount(current.result.failed_count),
+  }
   submitting.value = true
   requestError.value = ''
   try {
     const next = await props.retryer(configStore.sessionId, current.id, ids)
     jobStore.track(next)
-    configStore.attachJob(next.id, context)
+    configStore.attachJob(next.id, context, retainedSummary)
   } catch {
     requestError.value = '重试请求未提交成功，已有成功结果和失败题选择均已保留。'
   } finally {
@@ -162,10 +172,16 @@ watch(job, (current, previous) => {
         <span>{{ Math.round(progress * 100) }}%</span>
       </div>
       <progress :value="progress" max="1" aria-label="评分依据生成进度" />
-      <p v-if="job.cancel_requested && job.status !== 'cancelled'">
+      <p v-if="waitingForCancel">
         已收到取消请求，正在等待当前模型请求返回；服务器确认前任务仍未取消。
       </p>
       <p v-else-if="safeDetail">{{ safeDetail }}</p>
+
+      <p v-if="configStore.generationSummary" class="config-generation__retained">
+        <strong>上一轮已成功 {{ configStore.generationSummary.succeededQuestions }} 题</strong>
+        / 共 {{ configStore.generationSummary.totalQuestions }} 题；
+        当前恢复任务：{{ statusCopy(job) }}。
+      </p>
 
       <div v-if="job.status === 'succeeded' && outcome === 'partial'" class="config-generation__partial">
         <p><strong>已成功 {{ generatedCount }} 题</strong>，失败 {{ failedCount }} 题。成功结果保持不变。</p>
@@ -235,6 +251,7 @@ button:disabled { cursor: not-allowed; opacity: var(--opacity-disabled); }
 .config-generation__status-line { display: flex; justify-content: space-between; gap: var(--space-3); }
 .config-generation__job progress { width: 100%; margin-block: var(--space-3); accent-color: var(--color-accent); }
 .config-generation__job p { margin: 0 0 var(--space-3); color: var(--color-text-secondary); }
+.config-generation__job .config-generation__retained { padding: var(--space-3); background: var(--color-success-subtle); color: var(--color-text-primary); }
 .config-generation__partial { padding-block: var(--space-3); border-block-start: var(--border-width) solid var(--color-border-subtle); }
 .config-generation__partial fieldset { display: flex; flex-wrap: wrap; gap: var(--space-3); margin: 0 0 var(--space-3); padding: var(--space-3); border: var(--border-width) solid var(--color-border-subtle); }
 .config-generation__partial label { display: inline-flex; align-items: center; gap: var(--space-2); }

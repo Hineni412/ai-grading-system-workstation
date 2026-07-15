@@ -136,6 +136,8 @@ describe('ConfigGenerationPanel', () => {
 
     expect(retryer).toHaveBeenCalledExactlyOnceWith(7, 31, ['Q5'])
     expect(configStore.jobId).toBe(32)
+    expect(mounted.host.textContent).toContain('已成功 3 题')
+    expect(mounted.host.textContent).toContain('当前恢复任务')
   })
 
   it('uses a fresh whole-document generation after whole mode failure', async () => {
@@ -167,6 +169,28 @@ describe('ConfigGenerationPanel', () => {
 
     expect(mounted.host.textContent).toContain('正在等待当前模型请求返回')
     expect(mounted.host.textContent).not.toContain('已取消')
+  })
+
+  it.each([
+    ['failed', {}, '生成失败'],
+    ['succeeded', { outcome: 'complete' }, '生成完成'],
+    ['succeeded', {
+      outcome: 'partial', total_questions: 5, generated_questions: 3,
+      failed_count: 2, failed_question_ids: ['Q2', 'Q5'], retryable: true,
+    }, '部分完成'],
+  ] as const)('uses terminal %s status even when cancel_requested remains true', async (
+    status, result, expected,
+  ) => {
+    const configStore = useConfigWorkspaceStore()
+    useJobStore().track(job({
+      status, result, cancel_requested: true, progress: 1,
+      finished_at: '2026-07-15T00:01:00Z',
+    }))
+    configStore.attachJob(31, configStore.captureGenerationContext())
+    const mounted = await mountPanel({ editorLoader: vi.fn(async () => editor()) })
+
+    expect(mounted.host.textContent).toContain(expected)
+    expect(mounted.host.textContent).not.toContain('正在等待当前模型请求返回')
   })
 
   it('keeps the last Job visible on sync error and offers explicit refresh', async () => {
