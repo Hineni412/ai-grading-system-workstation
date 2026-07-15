@@ -79,9 +79,31 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
 }
 
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value)
+  return actual.length === keys.length && keys.every(
+    (key) => Object.prototype.hasOwnProperty.call(value, key),
+  )
+}
+
+function isStrictSessionSummary(value: unknown): value is SessionSummary {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      'id', 'name', 'status', 'is_deleted', 'deleted_at', 'created_at', 'updated_at',
+    ]) &&
+    isSessionSummary(value)
+  )
+}
+
 function isSessionProgress(value: unknown): value is SessionProgress {
   if (!isRecord(value)) return false
   return (
+    hasExactKeys(value, [
+      'total_papers', 'matched_papers', 'unmatched_papers', 'graded_papers',
+      'failed_papers', 'grading_papers', 'needs_human_review', 'absent_students',
+      'scan_issue_students', 'progress_percent',
+    ]) &&
     isNonNegativeInteger(value.total_papers) &&
     isNonNegativeInteger(value.matched_papers) &&
     isNonNegativeInteger(value.unmatched_papers) &&
@@ -100,6 +122,10 @@ function isSessionProgress(value: unknown): value is SessionProgress {
 function isJobSummary(value: unknown): value is JobSummary {
   if (!isRecord(value)) return false
   return (
+    hasExactKeys(value, [
+      'id', 'job_type', 'status', 'progress', 'stage', 'detail', 'created_at',
+      'started_at', 'updated_at', 'finished_at',
+    ]) &&
     isPositiveInteger(value.id) &&
     typeof value.job_type === 'string' &&
     value.job_type.trim().length > 0 &&
@@ -120,13 +146,19 @@ function isJobSummary(value: unknown): value is JobSummary {
 }
 
 function isRecentSessionSummary(value: unknown): value is RecentSessionSummary {
-  return isRecord(value) && isSessionSummary(value.session) && isSessionProgress(value.progress)
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['session', 'progress']) &&
+    isStrictSessionSummary(value.session) &&
+    isSessionProgress(value.progress)
+  )
 }
 
 function isNullableSummary(value: unknown, keys: string[]): boolean {
   if (value === null) return true
   return (
     isRecord(value) &&
+    hasExactKeys(value, keys) &&
     keys.every((key) => isNonNegativeInteger(value[key]))
   )
 }
@@ -134,7 +166,11 @@ function isNullableSummary(value: unknown, keys: string[]): boolean {
 export function decodeWorkbenchOverview(value: unknown): WorkbenchOverview {
   if (
     !isRecord(value) ||
-    !(value.current_session === null || isSessionSummary(value.current_session)) ||
+    !hasExactKeys(value, [
+      'current_session', 'progress', 'review', 'anomalies', 'recent_jobs',
+      'recent_sessions', 'updated_at',
+    ]) ||
+    !(value.current_session === null || isStrictSessionSummary(value.current_session)) ||
     !(value.progress === null || isSessionProgress(value.progress)) ||
     !isNullableSummary(value.review, ['question_count', 'item_count']) ||
     !isNullableSummary(value.anomalies, [
@@ -157,6 +193,10 @@ export function decodeWorkbenchOverview(value: unknown): WorkbenchOverview {
 function isSessionAnomaly(value: unknown): value is SessionAnomaly {
   if (!isRecord(value)) return false
   return (
+    hasExactKeys(value, [
+      'anomaly_id', 'anomaly_type', 'display_name', 'student_code', 'class_name',
+      'status', 'detail', 'created_at',
+    ]) &&
     typeof value.anomaly_id === 'string' &&
     value.anomaly_id.length > 0 &&
     (value.anomaly_type === 'unmatched_paper' ||
@@ -172,9 +212,9 @@ function isSessionAnomaly(value: unknown): value is SessionAnomaly {
 }
 
 function isValidPage(itemsLength: number, total: unknown, page: unknown, pageSize: unknown, totalPages: unknown): boolean {
-  if (!isNonNegativeInteger(total) || !isPositiveInteger(page) || !isPositiveInteger(pageSize) || !isPositiveInteger(totalPages)) return false
-  const expectedPages = Math.max(1, Math.ceil(total / pageSize))
-  if (totalPages !== expectedPages || page > totalPages || itemsLength > pageSize) return false
+  if (!isNonNegativeInteger(total) || !isPositiveInteger(page) || !isPositiveInteger(pageSize) || !isNonNegativeInteger(totalPages)) return false
+  const expectedPages = Math.ceil(total / pageSize)
+  if (totalPages !== expectedPages || itemsLength > pageSize) return false
   const expectedItems = Math.max(0, Math.min(pageSize, total - (page - 1) * pageSize))
   return itemsLength === expectedItems
 }
@@ -182,6 +222,7 @@ function isValidPage(itemsLength: number, total: unknown, page: unknown, pageSiz
 export function decodeSessionAnomalyResponse(value: unknown): SessionAnomalyResponse {
   if (
     !isRecord(value) ||
+    !hasExactKeys(value, ['items', 'total', 'page', 'page_size', 'total_pages']) ||
     !Array.isArray(value.items) ||
     !value.items.every(isSessionAnomaly) ||
     !isValidPage(value.items.length, value.total, value.page, value.page_size, value.total_pages)

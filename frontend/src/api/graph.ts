@@ -119,6 +119,17 @@ function isRate(value: unknown): value is number {
   return isNumber(value) && value >= 0 && value <= 1
 }
 
+function isPercentage(value: unknown): value is number {
+  return isNumber(value) && value >= 0 && value <= 100
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value)
+  return actual.length === keys.length && keys.every(
+    (key) => Object.prototype.hasOwnProperty.call(value, key),
+  )
+}
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
 }
@@ -143,6 +154,7 @@ function isCountMap(value: unknown): value is Record<string, Record<string, numb
 function isScope(value: unknown): value is GraphScope {
   return (
     isRecord(value) &&
+    hasExactKeys(value, ['mode', 'student_ids', 'class_id']) &&
     (value.mode === 'student' || value.mode === 'selected' || value.mode === 'class') &&
     isStringArray(value.student_ids) &&
     (value.class_id === null || typeof value.class_id === 'string')
@@ -152,6 +164,7 @@ function isScope(value: unknown): value is GraphScope {
 function isExamScope(value: unknown): value is GraphExamScope {
   return (
     isRecord(value) &&
+    hasExactKeys(value, ['mode', 'session_ids', 'sessions']) &&
     (value.mode === 'current' || value.mode === 'manual' || value.mode === 'cross_exam') &&
     Array.isArray(value.session_ids) &&
     value.session_ids.every((id) => isInteger(id, true)) &&
@@ -159,6 +172,7 @@ function isExamScope(value: unknown): value is GraphExamScope {
     value.sessions.every(
       (session) =>
         isRecord(session) &&
+        hasExactKeys(session, ['session_id', 'session_name']) &&
         isInteger(session.session_id, true) &&
         typeof session.session_name === 'string',
     )
@@ -168,6 +182,7 @@ function isExamScope(value: unknown): value is GraphExamScope {
 function isCoverage(value: unknown): value is GraphCoverage {
   return (
     isRecord(value) &&
+    hasExactKeys(value, ['covered_items', 'total_items', 'missing_items']) &&
     isInteger(value.covered_items) &&
     isInteger(value.total_items) &&
     value.covered_items <= value.total_items &&
@@ -178,6 +193,10 @@ function isCoverage(value: unknown): value is GraphCoverage {
 function isSourceReference(value: unknown): value is GraphSourceQuestionReference {
   return (
     isRecord(value) &&
+    hasExactKeys(value, [
+      'session_id', 'session_name', 'question_id', 'bank_question_id',
+      'score_awarded', 'full_score', 'score_rate',
+    ]) &&
     isInteger(value.session_id, true) &&
     typeof value.session_name === 'string' &&
     typeof value.question_id === 'string' &&
@@ -191,13 +210,18 @@ function isSourceReference(value: unknown): value is GraphSourceQuestionReferenc
 function isGraphRow(value: unknown): value is GraphRow {
   return (
     isRecord(value) &&
+    hasExactKeys(value, [
+      'student_id', 'student_code', 'student_name', 'knowledge_key',
+      'knowledge_label', 'weighted_score_rate', 'deduction_count', 'item_count',
+      'sample_reasons', 'source_question_refs', 'tag_context', 'error_counts',
+    ]) &&
     isInteger(value.student_id, true) &&
     typeof value.student_code === 'string' &&
     typeof value.student_name === 'string' &&
     typeof value.knowledge_key === 'string' &&
     value.knowledge_key.startsWith('knowledge_point:') &&
     typeof value.knowledge_label === 'string' &&
-    isRate(value.weighted_score_rate) &&
+    isPercentage(value.weighted_score_rate) &&
     isInteger(value.deduction_count) &&
     isInteger(value.item_count) &&
     typeof value.sample_reasons === 'string' &&
@@ -211,6 +235,10 @@ function isGraphRow(value: unknown): value is GraphRow {
 function isGraphNode(value: unknown): value is GraphNode {
   return (
     isRecord(value) &&
+    hasExactKeys(value, [
+      'knowledge_key', 'knowledge_label', 'student_count', 'item_count',
+      'deduction_count', 'average_mastery', 'tag_context', 'error_counts',
+    ]) &&
     typeof value.knowledge_key === 'string' &&
     value.knowledge_key.startsWith('knowledge_point:') &&
     typeof value.knowledge_label === 'string' &&
@@ -226,6 +254,7 @@ function isGraphNode(value: unknown): value is GraphNode {
 function isGraphEdge(value: unknown): value is GraphEdge {
   return (
     isRecord(value) &&
+    hasExactKeys(value, ['source_key', 'target_key', 'relation_type', 'weight']) &&
     typeof value.source_key === 'string' &&
     typeof value.target_key === 'string' &&
     (value.relation_type === 'prerequisite' ||
@@ -238,6 +267,12 @@ function isGraphEdge(value: unknown): value is GraphEdge {
 function isGraphEvidenceItem(value: unknown): value is GraphEvidenceItem {
   return (
     isRecord(value) &&
+    hasExactKeys(value, [
+      'student_id', 'student_code', 'student_name', 'class_id', 'knowledge_key',
+      'knowledge_label', 'session_id', 'session_name', 'question_id',
+      'bank_question_id', 'score_awarded', 'full_score', 'score_rate',
+      'tag_context', 'actionable_reasons', 'error_counts',
+    ]) &&
     isInteger(value.student_id, true) &&
     typeof value.student_code === 'string' &&
     typeof value.student_name === 'string' &&
@@ -271,6 +306,10 @@ function hasSharedContext(value: Record<string, unknown>): boolean {
 export function decodeGraphRowsResponse(value: unknown): GraphRowsResponse {
   if (
     !isRecord(value) ||
+    !hasExactKeys(value, [
+      'scope', 'exam_scope', 'rows', 'nodes', 'edges', 'coverage', 'warnings',
+      'diagnosis_identity',
+    ]) ||
     !hasSharedContext(value) ||
     !Array.isArray(value.rows) ||
     !value.rows.every(isGraphRow) ||
@@ -287,6 +326,11 @@ export function decodeGraphRowsResponse(value: unknown): GraphRowsResponse {
 export function decodeGraphEvidenceResponse(value: unknown): GraphEvidenceResponse {
   if (
     !isRecord(value) ||
+    !hasExactKeys(value, [
+      'scope', 'exam_scope', 'knowledge_key', 'knowledge_label', 'items', 'total',
+      'page', 'page_size', 'total_pages', 'coverage', 'warnings',
+      'diagnosis_identity',
+    ]) ||
     !hasSharedContext(value) ||
     typeof value.knowledge_key !== 'string' ||
     !value.knowledge_key.startsWith('knowledge_point:') ||
@@ -298,7 +342,6 @@ export function decodeGraphEvidenceResponse(value: unknown): GraphEvidenceRespon
     !isInteger(value.page_size, true) ||
     !isInteger(value.total_pages, true) ||
     value.total_pages !== Math.max(1, Math.ceil(value.total / value.page_size)) ||
-    value.page > value.total_pages ||
     value.items.length !==
       Math.max(0, Math.min(value.page_size, value.total - (value.page - 1) * value.page_size))
   ) {
