@@ -42,11 +42,17 @@ const jobStore = useJobStore()
 const selectedScoringQuestion = ref('')
 const refining = ref(false)
 const refineError = ref('')
+const rubricInputValid = ref(true)
 
 const saving = computed(() => configStore.saveStatus === 'saving')
-const blockingIssues = computed(() => configStore.editor?.issues
-  .some((issue) => issue.severity === 'error') ?? false)
-const saveBlocked = computed(() => configStore.effectiveTotalScore !== 100 || blockingIssues.value)
+const editorIssues = computed(() => [
+  ...(configStore.editor?.issues ?? []),
+  ...configStore.serverIssues,
+])
+const blockingIssues = computed(() => editorIssues.value
+  .some((issue) => issue.severity === 'error'))
+const saveBlocked = computed(() => configStore.effectiveTotalScore !== 100
+  || blockingIssues.value || !rubricInputValid.value)
 const scoringQuestions = computed(() => [...new Set(
   configStore.effectiveEditorRows.map((row) => row.question_id),
 )])
@@ -77,15 +83,18 @@ async function saveEditor(): Promise<void> {
     || !configStore.beginSave()) return
   const sessionId = configStore.sessionId
   const request = configStore.buildSaveRequest()
+  const context = configStore.captureEditorContext()
   try {
     const response = await props.editorSaver(sessionId, request)
-    if (configStore.sessionId !== sessionId) return
+    if (!configStore.isEditorContextCurrent(context)) return
     configStore.replaceWithAuthoritativeEditor(response)
   } catch (error) {
-    if (configStore.sessionId !== sessionId) return
+    if (!configStore.isEditorContextCurrent(context)) return
     if (error instanceof ApiError
       && (error.code === 'config_revision_conflict' || error.status === 409)) {
       configStore.markConflict()
+    } else if (configStore.recordServerIssues(error)) {
+      configStore.noteSaveFailed()
     } else {
       configStore.noteSaveFailed()
     }
@@ -95,11 +104,12 @@ async function saveEditor(): Promise<void> {
 async function reloadLatestEditor(): Promise<void> {
   const sessionId = configStore.sessionId
   if (sessionId === null) return
+  const context = configStore.captureEditorContext()
   try {
     const response = await props.editorLoader(sessionId)
-    if (configStore.sessionId === sessionId) configStore.setEditor(response)
+    if (configStore.isEditorContextCurrent(context)) configStore.setEditor(response)
   } catch {
-    configStore.noteSaveFailed()
+    if (configStore.isEditorContextCurrent(context)) configStore.noteSaveFailed()
   }
 }
 
@@ -178,9 +188,10 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
           <RubricEditorTable
             :rows="configStore.effectiveEditorRows"
             :total-score="configStore.effectiveTotalScore"
-            :issues="configStore.editor.issues"
+            :issues="editorIssues"
             :disabled="saving"
             @edit="configStore.updateEditor"
+            @validity="rubricInputValid = $event"
           />
 
           <details v-if="scoringQuestions.length" class="config-editor__units">

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import type { ConfigEditorCommand, ManualPartInput } from '../../api/config-workspace'
 
@@ -21,6 +21,17 @@ const splitCount = ref(2)
 const splitStyle = ref<'subquestion' | 'blank'>('subquestion')
 const localParts = ref<ManualPartInput[]>([])
 const validationError = ref('')
+const manualValidationError = computed(() => {
+  const ids = localParts.value.map((part) => part.part_id.trim())
+  if (localParts.value.length === 0 || ids.some((id) => !id)) return '评分单元 ID 不能为空。'
+  if (new Set(ids).size !== ids.length) return '同一题的评分单元 ID 不能重复。'
+  if (localParts.value.some((part) => !Number.isFinite(part.score)
+    || part.score <= 0 || part.score > 100)) {
+    return '每个评分单元的分值必须大于 0 且不超过 100。'
+  }
+  if (localParts.value.some((part) => !part.core_goal.trim())) return '每个评分单元都必须填写评分目标。'
+  return ''
+})
 
 function resetParts(): void {
   localParts.value = props.parts.length > 0
@@ -34,15 +45,18 @@ function updatePart(index: number, field: keyof ManualPartInput, event: Event): 
   if (!part) return
   const raw = (event.currentTarget as HTMLInputElement).value
   localParts.value[index] = { ...part, [field]: field === 'score' ? Number(raw) : raw }
+  validationError.value = ''
 }
 
 function addPart(): void {
   localParts.value.push({ part_id: `P${localParts.value.length + 1}`, score: 0, core_goal: '' })
+  validationError.value = ''
 }
 
 function removePart(index: number): void {
   if (localParts.value.length <= 1) return
   localParts.value.splice(index, 1)
+  validationError.value = ''
 }
 
 function splitCommand(): ConfigEditorCommand | null {
@@ -58,17 +72,8 @@ function replaceCommand(): ConfigEditorCommand | null {
   const parts = localParts.value.map((part) => ({
     part_id: part.part_id.trim(), score: part.score, core_goal: part.core_goal.trim(),
   }))
-  const ids = parts.map((part) => part.part_id)
-  if (parts.length === 0 || ids.some((id) => !id)) {
-    validationError.value = '评分单元 ID 不能为空。'
-    return null
-  }
-  if (new Set(ids).size !== ids.length) {
-    validationError.value = '同一题的评分单元 ID 不能重复。'
-    return null
-  }
-  if (parts.some((part) => !Number.isFinite(part.score) || part.score < 0)) {
-    validationError.value = '每个评分单元的分值必须是大于或等于 0 的有限数字。'
+  if (manualValidationError.value) {
+    validationError.value = manualValidationError.value
     return null
   }
   validationError.value = ''
@@ -122,7 +127,7 @@ watch(() => [props.questionId, props.parts] as const, resetParts, { immediate: t
         </label>
         <label>
           <span>分值</span>
-          <input type="number" min="0" step="0.5" :value="part.score" :aria-label="`${questionId} ${part.part_id || index + 1} 分值`" :disabled="disabled" @input="updatePart(index, 'score', $event)">
+          <input type="number" min="0.01" max="100" step="0.5" :value="part.score" :aria-label="`${questionId} ${part.part_id || index + 1} 分值`" :disabled="disabled" @input="updatePart(index, 'score', $event)">
         </label>
         <label>
           <span>评分目标</span>
@@ -130,10 +135,12 @@ watch(() => [props.questionId, props.parts] as const, resetParts, { immediate: t
         </label>
         <button type="button" :aria-label="`删除 ${questionId} ${part.part_id || index + 1}`" :disabled="disabled || localParts.length <= 1" @click="removePart(index)">删除</button>
       </div>
-      <p v-if="validationError" role="alert">{{ validationError }}</p>
+      <p v-if="validationError || manualValidationError" role="alert">
+        {{ validationError || manualValidationError }}
+      </p>
       <div class="scoring-unit-editor__actions">
-        <button type="button" name="替换评分单元" :disabled="disabled" @click="applyReplace(false)">替换评分单元</button>
-        <button type="button" name="AI 完善评分单元" :disabled="disabled" @click="applyReplace(true)">AI 完善评分单元</button>
+        <button type="button" name="替换评分单元" :disabled="disabled || Boolean(manualValidationError)" @click="applyReplace(false)">替换评分单元</button>
+        <button type="button" name="AI 完善评分单元" :disabled="disabled || Boolean(manualValidationError)" @click="applyReplace(true)">AI 完善评分单元</button>
       </div>
     </div>
   </section>

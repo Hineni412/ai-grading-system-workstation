@@ -13,8 +13,12 @@ const props = withDefaults(defineProps<{
   disabled: false,
 })
 
-const emit = defineEmits<{ edit: [edit: ConfigEditorEdit] }>()
+const emit = defineEmits<{
+  edit: [edit: ConfigEditorEdit]
+  validity: [valid: boolean]
+}>()
 const root = ref<HTMLElement | null>(null)
+const scoreErrors = ref<Record<string, string>>({})
 const blockingIssues = computed(() => props.issues.filter((issue) => issue.severity === 'error'))
 const warningIssues = computed(() => props.issues.filter((issue) => issue.severity !== 'error'))
 const totalBlocked = computed(() => props.totalScore !== 100)
@@ -23,9 +27,22 @@ function identity(row: ConfigEditorRow): string {
   return `${row.question_id} ${row.part_id} ${row.step_id}`
 }
 
+function validateScore(row: ConfigEditorRow, event: Event): number | null {
+  const raw = (event.currentTarget as HTMLInputElement).value.trim()
+  const value = Number(raw)
+  if (!raw || !Number.isFinite(value) || value < 0 || value > 100) {
+    scoreErrors.value[row.row_id] = '分值必须是 0 至 100 之间的有效数字。'
+    emit('validity', false)
+    return null
+  }
+  delete scoreErrors.value[row.row_id]
+  emit('validity', Object.keys(scoreErrors.value).length === 0)
+  return value
+}
+
 function numberEdit(row: ConfigEditorRow, event: Event): void {
-  const value = Number((event.currentTarget as HTMLInputElement).value)
-  if (!Number.isFinite(value)) return
+  const value = validateScore(row, event)
+  if (value === null) return
   emit('edit', { row_id: row.row_id, score: value })
 }
 
@@ -118,13 +135,19 @@ function focusIssue(issue: ConfigEditorIssue): void {
               <input
                 type="number"
                 min="0"
+                max="100"
                 step="0.5"
                 data-edit-field="score"
                 :aria-label="`${identity(row)} 分值`"
                 :value="row.score"
+                :aria-invalid="scoreErrors[row.row_id] ? 'true' : 'false'"
                 :disabled="disabled"
+                @input="validateScore(row, $event)"
                 @change="numberEdit(row, $event)"
               >
+              <small v-if="scoreErrors[row.row_id]" class="rubric-ledger__field-error" role="alert">
+                {{ scoreErrors[row.row_id] }}
+              </small>
             </td>
             <td>
               <textarea

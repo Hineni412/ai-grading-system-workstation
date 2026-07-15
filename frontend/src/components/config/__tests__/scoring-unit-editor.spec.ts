@@ -48,6 +48,7 @@ describe('ScoringUnitEditor', () => {
     const ids = mounted.host.querySelectorAll<HTMLInputElement>('[aria-label$="评分单元 ID"]')
     ids[1]!.value = 'P2'
     ids[1]!.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
     mounted.host.querySelector<HTMLButtonElement>('button[name="AI 完善评分单元"]')!.click()
     await nextTick()
     expect(mounted.refinements).toEqual([{
@@ -57,5 +58,22 @@ describe('ScoringUnitEditor', () => {
         { part_id: 'P2', score: 60, core_goal: '第二问' },
       ],
     }])
+  })
+
+  it('disables invalid default parts and enforces positive bounded scores and nonblank goals', async () => {
+    const mounted = await mountEditor()
+    const replace = mounted.host.querySelector<HTMLButtonElement>('button[name="替换评分单元"]')!
+    const refine = mounted.host.querySelector<HTMLButtonElement>('button[name="AI 完善评分单元"]')!
+    expect(replace.disabled).toBe(true)
+    expect(refine.disabled).toBe(true)
+    expect(mounted.host.querySelector('[role="alert"]')?.textContent).toContain('大于 0 且不超过 100')
+
+    const mountedInvalid = await mountEditor([
+      { part_id: 'P1', score: 101, core_goal: '有效目标' },
+      { part_id: 'P2', score: 1, core_goal: '   ' },
+    ])
+    expect(mountedInvalid.host.querySelector<HTMLButtonElement>('button[name="替换评分单元"]')!.disabled).toBe(true)
+    expect(mountedInvalid.host.querySelector('[role="alert"]')?.textContent).toContain('大于 0 且不超过 100')
+    expect(mountedInvalid.commands).toEqual([])
   })
 })

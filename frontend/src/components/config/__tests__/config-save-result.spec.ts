@@ -177,6 +177,99 @@ describe('ConfigSaveResult', () => {
     expect(mounted.host.textContent).toContain('本地修改已保留')
     expect(mounted.host.textContent).not.toContain('private')
   })
+
+  it('does not let an old save replace edits made after that request started', async () => {
+    const pending = deferred<ConfigEditorSaveResponse>()
+    const mounted = await mountView({ saver: vi.fn(() => pending.promise) })
+    mounted.workspace.updateEditor({ row_id: 'row-q12-p1-s1', standard_answer: 'first draft' })
+    await nextTick()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="保存评分依据"]')!.click()
+    await nextTick()
+
+    mounted.workspace.updateEditor({ row_id: 'row-q12-p1-s1', standard_answer: 'newer draft' })
+    pending.resolve(saved('stale server answer'))
+    await settle()
+
+    expect(mounted.workspace.hasDirtyEditor).toBe(true)
+    expect(mounted.workspace.editorEdits).toEqual([
+      { row_id: 'row-q12-p1-s1', standard_answer: 'newer draft' },
+    ])
+    expect(mounted.workspace.editor?.rows[0]?.standard_answer).toBe('旧答案')
+  })
+
+  it('does not let an old conflict reload clear edits made while it was loading', async () => {
+    const conflict = new ApiError({
+      kind: 'conflict', status: 409, code: 'config_revision_conflict', message: 'conflict',
+      details: {}, requestId: 'safe', retryable: false,
+    })
+    const pending = deferred<ConfigEditorResponse>()
+    const mounted = await mountView({
+      saver: vi.fn(async () => { throw conflict }),
+      loader: vi.fn(() => pending.promise),
+    })
+    mounted.workspace.updateEditor({ row_id: 'row-q12-p1-s1', standard_answer: 'first draft' })
+    await nextTick()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="保存评分依据"]')!.click()
+    await settle()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="重新加载最新版本"]')!.click()
+    await nextTick()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="确认丢弃并重新加载"]')!.click()
+    await nextTick()
+
+    mounted.workspace.updateEditor({ row_id: 'row-q12-p1-s1', standard_answer: 'newer draft' })
+    pending.resolve(editor('stale reload answer', 'c'))
+    await settle()
+
+    expect(mounted.workspace.hasDirtyEditor).toBe(true)
+    expect(mounted.workspace.editorEdits).toEqual([
+      { row_id: 'row-q12-p1-s1', standard_answer: 'newer draft' },
+    ])
+    expect(mounted.workspace.editor?.rows[0]?.standard_answer).toBe('旧答案')
+  })
+
+  it('shows only allowlisted stable 422 issues and clears the related issue on edit', async () => {
+    const invalid = new ApiError({
+      kind: 'validation', status: 422, code: 'invalid_config_editor', message: 'invalid',
+      details: { issues: [{
+        code: 'invalid_score', severity: 'error', row_id: 'row-q12-p1-s1',
+        field: 'score', message: '分值必须在 0 至 100 之间',
+      }] }, requestId: 'safe', retryable: false,
+    })
+    const mounted = await mountView({ saver: vi.fn(async () => { throw invalid }) })
+    mounted.workspace.updateEditor({ row_id: 'row-q12-p1-s1', standard_answer: 'dirty' })
+    await nextTick()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="保存评分依据"]')!.click()
+    await settle()
+
+    expect(mounted.workspace.serverIssues).toEqual(invalid.details.issues)
+    expect(mounted.host.textContent).toContain('分值必须在 0 至 100 之间')
+    mounted.host.querySelector<HTMLButtonElement>('[data-issue-row-id="row-q12-p1-s1"]')!.click()
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Q12 P1 S1 分值')
+
+    mounted.workspace.updateEditor({ row_id: 'row-q12-p1-s1', score: 100 })
+    await nextTick()
+    expect(mounted.workspace.serverIssues).toHaveLength(0)
+  })
+
+  it.each([
+    { code: 'invalid_score', severity: 'error', row_id: 'row-q12-p1-s1', field: 'score', message: 'safe', raw: 'private' },
+    { code: 'invalid_score', severity: 'error', row_id: 'row-q12-p1-s1', field: 'score', message: 'safe', path: 'D:/private' },
+    { code: 'invalid_score', severity: 'unknown', row_id: 'row-q12-p1-s1', field: 'score', message: 'unsafe' },
+  ])('rejects unsafe or unknown 422 issue details', async (issue) => {
+    const invalid = new ApiError({
+      kind: 'validation', status: 422, code: 'invalid_config_editor', message: 'invalid',
+      details: { issues: [issue] }, requestId: 'safe', retryable: false,
+    })
+    const mounted = await mountView({ saver: vi.fn(async () => { throw invalid }) })
+    mounted.workspace.updateEditor({ row_id: 'row-q12-p1-s1', standard_answer: 'dirty' })
+    await nextTick()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="保存评分依据"]')!.click()
+    await settle()
+
+    expect(mounted.workspace.serverIssues).toEqual([])
+    expect(mounted.host.textContent).not.toContain('D:/private')
+    expect(mounted.workspace.saveStatus).toBe('failure')
+  })
 })
 
 beforeEach(() => {
