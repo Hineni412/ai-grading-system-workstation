@@ -88,6 +88,30 @@ def test_openapi_covers_current_phase1_routes_with_unique_operation_ids() -> Non
     assert not [key for key, count in Counter(operation_ids).items() if count > 1]
 
 
+def test_workbench_analysis_gets_publish_stable_response_models() -> None:
+    from backend.api.app import create_app
+
+    schema = create_app().openapi()
+    expected_gets = {
+        "/api/jobs": "JobSummaryListResponse",
+        "/api/workbench/overview": "WorkbenchOverviewResponse",
+        "/api/sessions/{session_id}/anomalies": "SessionAnomalyListResponse",
+        "/api/sessions/{session_id}/analysis/questions": (
+            "QuestionAnalysisListResponse"
+        ),
+        "/api/sessions/{session_id}/analysis/questions/{question_id}/students": (
+            "StudentAnalysisListResponse"
+        ),
+    }
+
+    for path, response_model in expected_gets.items():
+        assert schema["paths"][path]["get"]["responses"]["200"]["content"][
+            "application/json"
+        ]["schema"] == {
+            "$ref": f"#/components/schemas/{response_model}"
+        }
+
+
 def test_openapi_422_responses_match_unified_runtime_error_shape() -> None:
     from backend.api.app import create_app
 

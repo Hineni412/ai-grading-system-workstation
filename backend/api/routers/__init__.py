@@ -1,3 +1,4 @@
+from .analytics import router as analytics_router
 from .config import router as config_router
 from .files import router as files_router
 from .grading import router as grading_router
@@ -13,8 +14,10 @@ from .sessions import router as sessions_router
 from .students import router as students_router
 from .templates import router as templates_router
 from .training import router as training_router
+from .workbench import router as workbench_router
 
 __all__ = [
+    "analytics_router",
     "config_router",
     "files_router",
     "grading_router",
@@ -30,4 +33,5 @@ __all__ = [
     "students_router",
     "templates_router",
     "training_router",
+    "workbench_router",
 ]

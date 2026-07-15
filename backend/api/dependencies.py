@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from fastapi import Depends, Request
 
 from db_manager import DBManager
+from backend.analytics import SessionAnalysisService
 from backend.api.read_connections import (
     RequestReadContext,
     RequestReadContextCleanupError,
@@ -36,6 +37,12 @@ from question_bank.services.question_write_service import QuestionBankWriteServi
 
 def get_grading_db() -> DBManager:
     return DBManager(get_path_manager().db_path)
+
+
+def get_session_analysis_service(
+    db: DBManager = Depends(get_grading_db),
+) -> SessionAnalysisService:
+    return SessionAnalysisService(db)
 
 
 def get_ops_self_check_service(
