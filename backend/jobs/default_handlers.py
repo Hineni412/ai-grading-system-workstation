@@ -90,6 +90,7 @@ def register_default_job_handlers(
         "config_generation",
         _build_config_generation_handler(
             db_path=Path(db_path),
+            data_root=base_data_root,
             upload_config_dir=(
                 Path(upload_config_dir)
                 if upload_config_dir is not None
@@ -184,6 +185,7 @@ def _build_tagging_sync_handler(
 def _build_config_generation_handler(
     *,
     db_path: Path,
+    data_root: Path,
     upload_config_dir: Path,
     config_generation_runner: Callable[..., dict[str, object]],
     llm_client_factory: Callable[[], Any],
@@ -192,6 +194,7 @@ def _build_config_generation_handler(
         return config_generation_runner(
             context=context,
             db=DBManager(db_path),
+            data_root=data_root,
             upload_config_dir=upload_config_dir,
             llm_client_factory=llm_client_factory,
         )

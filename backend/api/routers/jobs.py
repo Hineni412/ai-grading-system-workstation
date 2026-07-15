@@ -160,12 +160,9 @@ def public_job_payload(job: JobRecord) -> dict[str, Any]:
             {key: job.payload[key] for key in allowed if key in job.payload}
         )
     if job.job_type == "config_generation":
-        allowed = (
-            "session_id",
-            "mode",
-            "source_job_id",
-            "retry_question_ids",
-        )
+        allowed = ("session_id", "mode")
+        if str(job.payload.get("source_id") or "").strip():
+            allowed += ("generation_mode", "source_id", "source_revision")
         return sanitize_public_mapping(
             {key: job.payload[key] for key in allowed if key in job.payload}
         )

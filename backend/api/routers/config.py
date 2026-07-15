@@ -19,6 +19,7 @@ from backend.api.routers.sessions import _require_session
 from backend.api.schemas.config import (
     ConfigGenerationRequest,
     ConfigGenerationRetryRequest,
+    ConfigSourceGenerationRequest,
     ConfigSourceResponse,
     SessionConfigRequest,
     SessionConfigResponse,
@@ -32,6 +33,7 @@ from backend.config_workspace.sources import (
     ConfigSourceService,
     ConfigSourceTooLargeError,
     ConfigSourceTypeUnsupportedError,
+    QuestionDecision,
     decode_upload_filename,
 )
 from backend.api.schemas.jobs import JobResponse
@@ -40,7 +42,7 @@ from backend.jobs.config_generation import (
     stage_config_generation_input,
 )
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
-from backend.jobs.store import ConfigRetryAlreadySubmittedError
+from backend.jobs.store import ConfigRetryAlreadySubmittedError, JobStore
 from backend.public_data import (
     contains_filesystem_reference,
     contains_path_key,
@@ -103,6 +105,12 @@ async def upload_config_source(
     source_service: ConfigSourceService = Depends(get_config_source_service),
 ) -> dict[str, Any]:
     _require_session(db, session_id)
+    source_service.cleanup_inactive(
+        session_id=session_id,
+        referenced_source_ids=JobStore(db.db_path).referenced_config_source_ids(
+            session_id
+        ),
+    )
     try:
         raw_length = request.headers.get("content-length")
         if raw_length is not None and int(raw_length) > source_service.max_upload_bytes:
@@ -345,7 +353,79 @@ def generate_session_config(
             {
                 "session_id": int(session_id),
                 "mode": "generate",
+                "generation_mode": "per_question",
                 "input_id": input_id,
+            },
+        )
+    except Exception:
+        discard_config_generation_input(upload_config_dir, input_id)
+        raise
+
+
+@router.post(
+    "/sessions/{session_id}/config/generate-from-source",
+    response_model=JobResponse,
+    status_code=202,
+    responses={**CONFIG_GENERATION_ERROR_RESPONSES, **CONFIG_SOURCE_ERROR_RESPONSES},
+)
+def generate_session_config_from_source(
+    session_id: int,
+    request: ConfigSourceGenerationRequest,
+    db: DBManager = Depends(get_grading_db),
+    manager: JobManager = Depends(get_job_manager),
+    upload_config_dir: Path = Depends(get_upload_config_dir),
+    source_service: ConfigSourceService = Depends(get_config_source_service),
+) -> JobResponse:
+    session = _require_active_session(db, session_id)
+    try:
+        record = source_service.load_for_generation(
+            session_id=session_id,
+            source_id=request.source_id,
+            source_revision=request.source_revision,
+        )
+        decisions = [
+            QuestionDecision(**decision.model_dump())
+            for decision in request.decisions
+        ]
+        prepared = source_service.prepare_generation_input(
+            record,
+            decisions,
+            request.generation_mode,
+        )
+    except ConfigSourceError as exc:
+        raise _source_api_error(exc) from None
+    except (TypeError, ValueError):
+        raise ApiError(
+            422,
+            "invalid_config_generation_request",
+            "Config generation request is invalid",
+        ) from None
+
+    input_id = stage_config_generation_input(
+        upload_config_dir,
+        session_id=int(session_id),
+        expected_rubric_path=str(session.get("rubric_path") or ""),
+        expected_answer_key_path=str(session.get("answer_key_path") or ""),
+        generation_mode=request.generation_mode,
+        source_id=record.source_id,
+        source_revision=record.source_revision,
+        source_suffix=record.suffix,
+        source_safe_filename=record.safe_filename,
+        confirmed_blocks=list(prepared.confirmed_blocks),
+        document_text=prepared.document_text,
+        question_images=prepared.question_images,
+        whole_page_images=list(prepared.whole_page_images),
+    )
+    try:
+        return _submit_config_generation(
+            manager,
+            {
+                "session_id": int(session_id),
+                "mode": "generate",
+                "generation_mode": request.generation_mode,
+                "input_id": input_id,
+                "source_id": record.source_id,
+                "source_revision": record.source_revision,
             },
         )
     except Exception:
@@ -379,6 +459,8 @@ def retry_session_config_generation(
         or source.status != "succeeded"
         or source.result.get("outcome") != "partial"
         or int(source.payload.get("session_id") or 0) != int(session_id)
+        or str(source.payload.get("generation_mode") or "per_question")
+        != "per_question"
     ):
         raise ApiError(
             409,
@@ -399,9 +481,15 @@ def retry_session_config_generation(
     payload: dict[str, object] = {
         "session_id": int(session_id),
         "mode": "retry",
+        "generation_mode": "per_question",
         "source_job_id": int(request.source_job_id),
         "input_id": str(source.payload.get("input_id") or ""),
     }
+    source_id = str(source.payload.get("source_id") or "").strip()
+    source_revision = str(source.payload.get("source_revision") or "").strip()
+    if source_id and source_revision:
+        payload["source_id"] = source_id
+        payload["source_revision"] = source_revision
     if request.retry_question_ids is not None:
         payload["retry_question_ids"] = request.retry_question_ids
     try:

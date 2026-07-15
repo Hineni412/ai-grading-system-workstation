@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -11,6 +12,8 @@ from typing import Any
 
 JOB_STATUSES = ("queued", "running", "paused", "succeeded", "failed", "cancelled")
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
+_SOURCE_ID = re.compile(r"^[0-9a-f]{32}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ConfigRetryAlreadySubmittedError(RuntimeError):
@@ -295,6 +298,59 @@ class JobStore:
             )
             return int(cursor.rowcount)
 
+    def referenced_config_source_ids(self, session_id: int) -> set[str]:
+        clean_session_id = int(session_id)
+        references: set[str] = set()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT payload_json FROM jobs WHERE job_type = 'config_generation'"
+            ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"] or "{}"))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            try:
+                payload_session_id = int(payload.get("session_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            source_id = str(payload.get("source_id") or "").strip()
+            if payload_session_id == clean_session_id and _SOURCE_ID.fullmatch(source_id):
+                references.add(source_id)
+        return references
+
+    def referenced_config_paths(self, paths: set[str]) -> set[str]:
+        candidates = {str(path) for path in paths if str(path)}
+        if not candidates:
+            return set()
+        referenced: set[str] = set()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT rubric_path, answer_key_path FROM grading_sessions"
+            ).fetchall()
+        for row in rows:
+            for column in ("rubric_path", "answer_key_path"):
+                value = str(row[column] or "")
+                if value in candidates:
+                    referenced.add(value)
+        return referenced
+
+    def referenced_source_paper_paths(self, paths: set[str]) -> set[str]:
+        candidates = {str(path) for path in paths if str(path)}
+        if not candidates:
+            return set()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT source_paper_path FROM grading_sessions"
+            ).fetchall()
+        return {
+            str(row["source_paper_path"])
+            for row in rows
+            if str(row["source_paper_path"] or "") in candidates
+        }
+
     def finish_config_generation_and_bind(
         self,
         job_id: int,
@@ -304,8 +360,24 @@ class JobStore:
         expected_answer_key_path: str,
         rubric_path: str,
         answer_key_path: str,
+        source_paper_path: str | None = None,
+        source_paper_sha256: str | None = None,
         result: dict[str, Any],
     ) -> bool:
+        clean_source_path = (
+            str(source_paper_path).strip() if source_paper_path is not None else None
+        )
+        clean_source_sha256 = (
+            str(source_paper_sha256).strip().lower()
+            if source_paper_sha256 is not None
+            else None
+        )
+        if (clean_source_path is None) != (clean_source_sha256 is None):
+            raise ValueError("source paper path and sha256 must be provided together")
+        if clean_source_path is not None and (
+            not clean_source_path or not _SHA256.fullmatch(clean_source_sha256 or "")
+        ):
+            raise ValueError("source paper binding is invalid")
         result_json = json.dumps(dict(result), ensure_ascii=False, sort_keys=True)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -321,22 +393,59 @@ class JobStore:
                 ):
                     conn.rollback()
                     return False
-                session_update = conn.execute(
-                    """
-                    UPDATE grading_sessions
-                    SET rubric_path = ?, answer_key_path = ?,
-                        updated_at = datetime('now','localtime')
-                    WHERE id = ? AND is_deleted = 0
-                      AND rubric_path = ? AND answer_key_path = ?
-                    """,
-                    (
-                        str(rubric_path),
-                        str(answer_key_path),
-                        int(session_id),
-                        str(expected_rubric_path),
-                        str(expected_answer_key_path),
-                    ),
-                )
+                if clean_source_path is None:
+                    session_update = conn.execute(
+                        """
+                        UPDATE grading_sessions
+                        SET rubric_path = ?, answer_key_path = ?,
+                            updated_at = datetime('now','localtime')
+                        WHERE id = ? AND is_deleted = 0
+                          AND rubric_path = ? AND answer_key_path = ?
+                        """,
+                        (
+                            str(rubric_path),
+                            str(answer_key_path),
+                            int(session_id),
+                            str(expected_rubric_path),
+                            str(expected_answer_key_path),
+                        ),
+                    )
+                else:
+                    session_update = conn.execute(
+                        """
+                        UPDATE grading_sessions
+                        SET rubric_path = ?, answer_key_path = ?,
+                            source_paper_path = ?, source_paper_sha256 = ?,
+                            question_bank_sync_state = CASE
+                                WHEN COALESCE(source_paper_sha256, '') <> ?
+                                THEN 'not_started' ELSE question_bank_sync_state END,
+                            question_bank_sync_details_json = CASE
+                                WHEN COALESCE(source_paper_sha256, '') <> ?
+                                THEN '{}' ELSE question_bank_sync_details_json END,
+                            question_bank_sync_error = CASE
+                                WHEN COALESCE(source_paper_sha256, '') <> ?
+                                THEN NULL ELSE question_bank_sync_error END,
+                            question_bank_sync_updated_at = CASE
+                                WHEN COALESCE(source_paper_sha256, '') <> ?
+                                THEN NULL ELSE question_bank_sync_updated_at END,
+                            updated_at = datetime('now','localtime')
+                        WHERE id = ? AND is_deleted = 0
+                          AND rubric_path = ? AND answer_key_path = ?
+                        """,
+                        (
+                            str(rubric_path),
+                            str(answer_key_path),
+                            clean_source_path,
+                            clean_source_sha256,
+                            clean_source_sha256,
+                            clean_source_sha256,
+                            clean_source_sha256,
+                            clean_source_sha256,
+                            int(session_id),
+                            str(expected_rubric_path),
+                            str(expected_answer_key_path),
+                        ),
+                    )
                 if session_update.rowcount != 1:
                     conn.rollback()
                     return False

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import io
 import warnings
 import sqlite3
 import pytest
@@ -11,9 +13,17 @@ warnings.filterwarnings(
 )
 
 from fastapi.testclient import TestClient
+from docx import Document
 
 from backend.api.app import create_app
-from backend.api.dependencies import get_grading_db, get_job_manager, get_upload_config_dir
+from backend.api.dependencies import (
+    get_config_source_service,
+    get_grading_db,
+    get_job_manager,
+    get_upload_config_dir,
+)
+from backend.config_workspace.sources import ConfigSourceRecord, ConfigSourceService
+from backend.jobs.config_generation import load_config_generation_input
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
 from db_manager import DBManager
@@ -39,7 +49,49 @@ def _client(tmp_path: Path) -> tuple[TestClient, DBManager, JobManager]:
     app.dependency_overrides[get_grading_db] = lambda: db
     app.dependency_overrides[get_job_manager] = lambda: manager
     app.dependency_overrides[get_upload_config_dir] = lambda: tmp_path / "uploaded"
+    app.dependency_overrides[get_config_source_service] = lambda: ConfigSourceService(
+        tmp_path / "uploaded"
+    )
     return TestClient(app), db, manager
+
+
+async def _chunks(content: bytes):
+    yield content
+
+
+def _docx_bytes(question: str = "1. Prove that one equals one.\nAnswer: proven") -> bytes:
+    document = Document()
+    document.add_paragraph(question)
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+def _source(tmp_path: Path, session_id: int, *, question: str = "1. Prove x = x.") -> ConfigSourceRecord:
+    return asyncio.run(
+        ConfigSourceService(tmp_path / "uploaded").stage_and_parse(
+            session_id=session_id,
+            filename="controlled.docx",
+            chunks=_chunks(_docx_bytes(question)),
+        )
+    )
+
+
+def _source_request(source: ConfigSourceRecord, **overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "source_id": source.source_id,
+        "source_revision": source.source_revision,
+        "generation_mode": "per_question",
+        "decisions": [
+            {
+                "question_id": source.questions[0].question_id,
+                "question_type": "proof",
+                "excluded": False,
+            }
+        ],
+    }
+    payload.update(overrides)
+    return payload
 
 
 def _session(db: DBManager, tmp_path: Path) -> int:
@@ -83,6 +135,199 @@ def test_config_generation_route_submits_safe_queryable_job(tmp_path: Path) -> N
     queried = client.get(f"/api/jobs/{body['id']}")
     assert queried.status_code == 200
     assert queried.json()["result"]["failed_question_ids"] == ["Q1"]
+
+
+def test_generate_from_source_stages_private_input_and_public_job_is_safe(
+    tmp_path: Path,
+) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = _source(tmp_path, session_id)
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate-from-source",
+        json=_source_request(source),
+    )
+
+    assert response.status_code == 202
+    assert response.json()["payload"] == {
+        "session_id": session_id,
+        "mode": "generate",
+        "generation_mode": "per_question",
+        "source_id": source.source_id,
+        "source_revision": source.source_revision,
+    }
+    assert source.private_document_text not in response.text
+    assert "input_id" not in response.text
+    stored = manager.get(response.json()["id"])
+    assert stored is not None
+    assert stored.payload["input_id"]
+    private_input = load_config_generation_input(
+        tmp_path / "uploaded",
+        str(stored.payload["input_id"]),
+    )
+    assert private_input["document_text"] == source.private_document_text
+    assert private_input["source_id"] == source.source_id
+
+
+@pytest.mark.parametrize(
+    ("mutator", "expected_status"),
+    [
+        (lambda payload, source: payload.update({"extra": True}), 422),
+        (
+            lambda payload, source: payload["decisions"][0].update({"extra": True}),
+            422,
+        ),
+        (
+            lambda payload, source: payload.update(
+                {
+                    "decisions": [
+                        payload["decisions"][0],
+                        dict(payload["decisions"][0]),
+                    ]
+                }
+            ),
+            422,
+        ),
+        (
+            lambda payload, source: payload.update(
+                {
+                    "decisions": [
+                        {
+                            "question_id": "UNKNOWN",
+                            "question_type": "proof",
+                            "excluded": False,
+                        }
+                    ]
+                }
+            ),
+            422,
+        ),
+        (
+            lambda payload, source: payload["decisions"][0].update(
+                {"question_type": "essay"}
+            ),
+            422,
+        ),
+        (
+            lambda payload, source: payload["decisions"][0].update(
+                {"excluded": True}
+            ),
+            422,
+        ),
+    ],
+)
+def test_generate_from_source_rejects_extra_unknown_duplicate_or_empty_selection(
+    tmp_path: Path,
+    mutator,
+    expected_status: int,
+) -> None:
+    client, db, _manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = _source(tmp_path, session_id)
+    payload = _source_request(source)
+    mutator(payload, source)
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate-from-source",
+        json=payload,
+    )
+
+    assert response.status_code == expected_status
+    assert source.private_document_text not in response.text
+
+
+def test_generate_from_source_rejects_stale_revision_and_replaced_active_source(
+    tmp_path: Path,
+) -> None:
+    client, db, _manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    first = _source(tmp_path, session_id, question="1. Prove x = x.")
+
+    stale = client.post(
+        f"/api/sessions/{session_id}/config/generate-from-source",
+        json=_source_request(first, source_revision="0" * 64),
+    )
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "config_source_changed"
+
+    _source(tmp_path, session_id, question="1. Prove y = y.")
+    replaced = client.post(
+        f"/api/sessions/{session_id}/config/generate-from-source",
+        json=_source_request(first),
+    )
+    assert replaced.status_code == 409
+    assert replaced.json()["error"]["code"] == "config_source_changed"
+
+
+def test_upload_cleanup_uses_private_job_payload_references_and_is_exact(
+    tmp_path: Path,
+) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    unreferenced = _source(tmp_path, session_id, question="1. Prove a = a.")
+    referenced = _source(tmp_path, session_id, question="1. Prove b = b.")
+    sentinel = unreferenced.manifest_path.parent / "not-owned.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    manager.store.create_job(
+        "config_generation",
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "per_question",
+            "source_id": referenced.source_id,
+            "source_revision": referenced.source_revision,
+            "input_id": "a" * 32,
+        },
+    )
+
+    uploaded = client.post(
+        f"/api/sessions/{session_id}/config/sources",
+        content=_docx_bytes("1. Prove c = c."),
+        headers={"x-upload-filename": "new.docx"},
+    )
+
+    assert uploaded.status_code == 201
+    assert referenced.manifest_path.is_file()
+    assert not unreferenced.manifest_path.is_file()
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+def test_whole_document_source_job_is_not_available_for_selected_retry(
+    tmp_path: Path,
+) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = _source(tmp_path, session_id)
+    source_job = manager.store.create_job(
+        "config_generation",
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "whole_document",
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+            "input_id": "a" * 32,
+        },
+    )
+    manager.store.finish(
+        source_job.id,
+        "succeeded",
+        result={
+            "session_id": session_id,
+            "outcome": "partial",
+            "failed_question_ids": ["Q1"],
+            "retryable": True,
+        },
+    )
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate/retry",
+        json={"source_job_id": source_job.id, "retry_question_ids": ["Q1"]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "config_generation_retry_not_available"
 
 
 def test_config_generation_route_rejects_missing_session(tmp_path: Path) -> None:
@@ -227,7 +472,14 @@ def test_config_generation_retry_route_accepts_partial_source_job(tmp_path: Path
     session_id = _session(db, tmp_path)
     source = manager.store.create_job(
         "config_generation",
-        {"session_id": session_id, "mode": "generate", "input_id": "a" * 32},
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "per_question",
+            "source_id": "b" * 32,
+            "source_revision": "c" * 64,
+            "input_id": "a" * 32,
+        },
     )
     manager.store.finish(
         source.id,
@@ -249,8 +501,9 @@ def test_config_generation_retry_route_accepts_partial_source_job(tmp_path: Path
     assert response.json()["payload"] == {
         "session_id": session_id,
         "mode": "retry",
-        "source_job_id": source.id,
-        "retry_question_ids": ["Q2"],
+        "generation_mode": "per_question",
+        "source_id": "b" * 32,
+        "source_revision": "c" * 64,
     }
     stored = manager.get(response.json()["id"])
     assert stored is not None
@@ -280,7 +533,14 @@ def test_config_generation_retry_source_cannot_be_replayed(
     session_id = _session(db, tmp_path)
     source = manager.store.create_job(
         "config_generation",
-        {"session_id": session_id, "mode": "generate", "input_id": "a" * 32},
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "per_question",
+            "source_id": "b" * 32,
+            "source_revision": "c" * 64,
+            "input_id": "a" * 32,
+        },
     )
     manager.store.finish(
         source.id,

@@ -1251,6 +1251,38 @@ def test_pdf_whole_generation_is_one_visual_request_without_extracted_text(
     assert result["meta"]["score_allocation_mode"] == "single_request_local_normalization"
 
 
+@pytest.mark.parametrize("kind", ["text", "images"])
+def test_whole_generation_failure_is_never_automatically_retried(kind: str) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def json_from_text_once(self, *_args, **_kwargs):
+            self.calls += 1
+            raise RuntimeError("single text failure")
+
+        def json_from_images_once(self, *_args, **_kwargs):
+            self.calls += 1
+            raise RuntimeError("single visual failure")
+
+        def json_from_text(self, *_args, **_kwargs):
+            raise AssertionError("whole mode must not fall back to retrying text")
+
+    client = FakeClient()
+
+    with pytest.raises(RuntimeError, match="single"):
+        if kind == "text":
+            session_manager.generate_grading_config_from_text("paper", client)
+        else:
+            session_manager.generate_grading_config_from_images(
+                [b"page"],
+                "ignored",
+                client,
+            )
+
+    assert client.calls == 1
+
+
 def test_word_split_and_pdf_split_share_retry_and_normalization_pipeline() -> None:
     source = Path(session_manager.__file__).read_text(encoding="utf-8")
 
