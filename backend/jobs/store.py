@@ -192,7 +192,13 @@ class JobStore:
         values: list[object] = []
         if session_id is not None:
             conditions.append(
-                "CAST(json_extract(payload_json, '$.session_id') AS INTEGER) = ?"
+                "CASE "
+                "WHEN json_valid(payload_json) = 0 THEN 0 "
+                "WHEN COALESCE(json_type(payload_json, '$.session_id'), '') "
+                "!= 'integer' THEN 0 "
+                "ELSE json_extract(payload_json, '$.session_id') > 0 "
+                "AND json_extract(payload_json, '$.session_id') = ? "
+                "END"
             )
             values.append(int(session_id))
         if clean_job_types:
