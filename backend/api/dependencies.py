@@ -11,6 +11,7 @@ from backend.api.read_connections import (
     RequestReadContextCleanupError,
     request_read_context,
 )
+from backend.config_workspace.sources import ConfigSourceService
 from backend.files.service import JobFileService
 from backend.jobs.default_handlers import register_default_job_handlers
 from backend.jobs.manager import JobManager
@@ -69,6 +70,12 @@ def get_ops_write_service(request: Request) -> OpsWriteService:
 
 def get_upload_config_dir() -> Path:
     return get_path_manager().upload_config_dir
+
+
+def get_config_source_service(
+    upload_config_dir: Path = Depends(get_upload_config_dir),
+) -> ConfigSourceService:
+    return ConfigSourceService(upload_config_dir)
 
 
 def get_templates_dir() -> Path:

@@ -1,6 +1,8 @@
 from .config import (
     ConfigGenerationRequest,
     ConfigGenerationRetryRequest,
+    ConfigQuestionPreviewResponse,
+    ConfigSourceResponse,
     SessionConfigRequest,
     SessionConfigResponse,
 )
@@ -107,6 +109,8 @@ __all__ = [
     "CreateSessionRequest",
     "ConfigGenerationRequest",
     "ConfigGenerationRetryRequest",
+    "ConfigQuestionPreviewResponse",
+    "ConfigSourceResponse",
     "GradingRunRequest",
     "GraphEdge",
     "GraphEvidenceItem",

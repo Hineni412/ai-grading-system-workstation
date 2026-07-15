@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -22,6 +22,34 @@ class SessionConfigResponse(BaseModel):
     source_paper_sha256: str | None = None
     rubric: dict[str, Any]
     answer_key: dict[str, Any]
+
+
+class ConfigQuestionPreviewResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,100}$")
+    question_type: str = Field(min_length=1, max_length=100)
+    question_preview: str = Field(max_length=500)
+    answer_preview: str = Field(max_length=500)
+    answer_present: bool
+    needs_review: bool
+    local_answer_trusted: bool
+    has_question_asset: bool
+    has_answer_asset: bool
+
+
+class ConfigSourceResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: int = Field(gt=0)
+    source_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    source_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    safe_filename: str = Field(min_length=1, max_length=255)
+    suffix: Literal[".docx", ".pdf"]
+    size_bytes: int = Field(gt=0, le=200 * 1024 * 1024)
+    sha256_prefix: str = Field(pattern=r"^[0-9a-f]{12}$")
+    parse_state: Literal["ready"]
+    questions: list[ConfigQuestionPreviewResponse] = Field(max_length=500)
 
 
 class ConfigGenerationQuestionImages(BaseModel):
