@@ -35,9 +35,9 @@ async function retryCurrentPage(): Promise<void> {
   await nextTick()
 }
 
-async function returnToReview(): Promise<void> {
+async function returnToWorkbench(): Promise<void> {
   try {
-    await router.replace('/grading')
+    await router.push('/workbench')
   } catch {
     return
   }
@@ -59,7 +59,7 @@ async function returnToReview(): Promise<void> {
     <p>当前页面的操作已中断；当前考试选择和业务数据不会改变。</p>
     <div class="application-error__actions">
       <button type="button" @click="retryCurrentPage">重新加载当前页面</button>
-      <button type="button" @click="returnToReview">返回评分复核</button>
+      <button type="button" @click="returnToWorkbench">返回工作台</button>
     </div>
   </section>
   <div v-else :key="contentKey" class="application-boundary__content">

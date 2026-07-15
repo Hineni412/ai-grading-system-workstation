@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 
+import { navigationItems } from '../../navigation'
 import { useSessionStore } from '../../stores/session'
 
 const route = useRoute()
@@ -26,6 +27,17 @@ function retrySessions(): void {
       <span>AI 阅卷系统</span>
       <strong>{{ pageTitle }}</strong>
     </div>
+
+    <nav class="app-topbar__navigation" data-testid="app-navigation" aria-label="主要导航">
+      <RouterLink
+        v-for="item in navigationItems"
+        :key="item.id"
+        :to="item.path"
+        :aria-current="route.name === item.id ? 'page' : undefined"
+      >
+        {{ item.label }}
+      </RouterLink>
+    </nav>
 
     <div class="app-topbar__session">
       <label for="current-session">当前考试</label>

@@ -1,31 +1,36 @@
 import { createMemoryHistory } from 'vue-router'
 import { describe, expect, it } from 'vitest'
 
-import { navigationItems, reviewRouteDefinition } from '../navigation'
+import { navigationItems, reviewRouteDefinition, workbenchRouteDefinition } from '../navigation'
 import { createAppRouter } from '../router'
 
 describe('source-recalibrated navigation', () => {
-  it('exposes only the truthful review destination', () => {
-    expect(navigationItems).toEqual([reviewRouteDefinition])
+  it('exposes only the truthful workbench and review destinations', () => {
+    expect(navigationItems).toEqual([workbenchRouteDefinition, reviewRouteDefinition])
     expect(navigationItems.map(({ id, label, path }) => [id, label, path])).toEqual([
+      ['workbench', '工作台', '/workbench'],
       ['grading', '评分复核', '/grading'],
     ])
   })
 
-  it('resolves the review route from the shared metadata', () => {
-    const router = createAppRouter(createMemoryHistory())
-    const resolved = router.resolve(reviewRouteDefinition.path)
+  it.each([workbenchRouteDefinition, reviewRouteDefinition])(
+    'resolves $id from the shared metadata',
+    (definition) => {
+      const router = createAppRouter(createMemoryHistory())
+      const resolved = router.resolve(definition.path)
 
-    expect(resolved.name).toBe(reviewRouteDefinition.id)
-    expect(resolved.meta).toMatchObject({
-      title: reviewRouteDefinition.title,
-      description: reviewRouteDefinition.description,
-      breadcrumb: reviewRouteDefinition.breadcrumb,
-    })
-  })
+      expect(resolved.name).toBe(definition.id)
+      expect(resolved.meta).toMatchObject({
+        title: definition.title,
+        description: definition.description,
+        breadcrumb: definition.breadcrumb,
+      })
+    },
+  )
 
   it.each([
-    ['/', '/grading'],
+    ['/', '/workbench'],
+    ['/workbench', '/workbench'],
     ['/grading', '/grading'],
     ['/design-system', '/design-system'],
     ['/missing/deep/path', '/missing/deep/path'],
@@ -39,7 +44,7 @@ describe('source-recalibrated navigation', () => {
     expect(router.currentRoute.value.meta.breadcrumb).toBeTruthy()
   })
 
-  it.each(['/workbench', '/settings', '/students', '/analytics', '/question-bank'])(
+  it.each(['/settings', '/students', '/analytics', '/question-bank'])(
     'does not present the former placeholder route %s as a business page',
     async (target) => {
       const router = createAppRouter(createMemoryHistory())
@@ -58,5 +63,15 @@ describe('source-recalibrated navigation', () => {
     const matched = router.currentRoute.value.matched
     const component = matched[matched.length - 1]?.components?.default
     expect((component as { __name?: string } | undefined)?.__name).toBe('ReviewQueueView')
+  })
+
+  it('loads the workbench view for the workbench route', async () => {
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/workbench')
+    await router.isReady()
+
+    const matched = router.currentRoute.value.matched
+    const component = matched[matched.length - 1]?.components?.default
+    expect((component as { __name?: string } | undefined)?.__name).toBe('WorkbenchView')
   })
 })
