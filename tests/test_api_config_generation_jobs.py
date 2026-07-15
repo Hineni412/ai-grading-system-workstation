@@ -171,6 +171,95 @@ def test_generate_from_source_stages_private_input_and_public_job_is_safe(
 
 
 @pytest.mark.parametrize(
+    ("mode", "stage", "private_detail", "expected_public_detail"),
+    [
+        (
+            "generate",
+            "Split paper",
+            "Parsed C:/private/exams/paper.docx; qids=Q1; raw upstream body",
+            "Preparing source questions.",
+        ),
+        (
+            "generate",
+            "AI 赋分失败，使用本地均分兜底",
+            "RuntimeError from C:/private/models/provider.log: raw upstream body",
+            "Finalizing grading configuration.",
+        ),
+        (
+            "retry",
+            "unrecognized-stage",
+            "document_text=private exam; raw upstream body",
+            "",
+        ),
+    ],
+)
+def test_source_config_job_public_detail_is_fixed_and_path_free(
+    tmp_path: Path,
+    mode: str,
+    stage: str,
+    private_detail: str,
+    expected_public_detail: str,
+) -> None:
+    client, _db, manager = _client(tmp_path)
+    job = manager.store.create_job(
+        "config_generation",
+        {
+            "session_id": 7,
+            "mode": mode,
+            "generation_mode": "per_question",
+            "source_id": "b" * 32,
+            "source_revision": "c" * 64,
+            "input_id": "a" * 32,
+        },
+    )
+    assert manager.store.mark_running(job.id)
+    manager.store.update_progress(
+        job.id,
+        progress=0.9,
+        stage=stage,
+        detail=private_detail,
+    )
+    manager.store.finish(
+        job.id,
+        "failed",
+        error="final source/archive/publish failure at C:/private/output.json",
+    )
+
+    response = client.get(f"/api/jobs/{job.id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["detail"] == expected_public_detail
+    assert private_detail not in response.text
+    assert "C:/private" not in response.text
+    stored = manager.store.get_job(job.id)
+    assert stored is not None
+    assert stored.detail == private_detail
+
+
+def test_legacy_config_job_keeps_existing_public_detail_contract(
+    tmp_path: Path,
+) -> None:
+    client, _db, manager = _client(tmp_path)
+    job = manager.store.create_job(
+        "config_generation",
+        {"session_id": 7, "mode": "generate", "input_id": "a" * 32},
+    )
+    assert manager.store.mark_running(job.id)
+    manager.store.update_progress(
+        job.id,
+        progress=0.5,
+        stage="legacy generation",
+        detail="legacy detail remains visible",
+    )
+
+    response = client.get(f"/api/jobs/{job.id}")
+
+    assert response.status_code == 200
+    assert response.json()["detail"] == "legacy detail remains visible"
+
+
+@pytest.mark.parametrize(
     ("mutator", "expected_status"),
     [
         (lambda payload, source: payload.update({"extra": True}), 422),
@@ -265,11 +354,13 @@ def test_upload_cleanup_uses_private_job_payload_references_and_is_exact(
 ) -> None:
     client, db, manager = _client(tmp_path)
     session_id = _session(db, tmp_path)
-    unreferenced = _source(tmp_path, session_id, question="1. Prove a = a.")
-    referenced = _source(tmp_path, session_id, question="1. Prove b = b.")
+    referenced = _source(tmp_path, session_id, question="1. Prove a = a.")
+    unreferenced = _source(tmp_path, session_id, question="1. Prove b = b.")
+    active = _source(tmp_path, session_id, question="1. Prove c = c.")
     sentinel = unreferenced.manifest_path.parent / "not-owned.txt"
     sentinel.write_text("keep", encoding="utf-8")
-    manager.store.create_job(
+    route_job_store = JobStore(db.db_path)
+    route_job_store.create_job(
         "config_generation",
         {
             "session_id": session_id,
@@ -280,16 +371,21 @@ def test_upload_cleanup_uses_private_job_payload_references_and_is_exact(
             "input_id": "a" * 32,
         },
     )
+    assert manager.store.referenced_config_source_ids(session_id) == set()
+    assert route_job_store.referenced_config_source_ids(session_id) == {
+        referenced.source_id
+    }
 
     uploaded = client.post(
         f"/api/sessions/{session_id}/config/sources",
-        content=_docx_bytes("1. Prove c = c."),
+        content=_docx_bytes("1. Prove d = d."),
         headers={"x-upload-filename": "new.docx"},
     )
 
     assert uploaded.status_code == 201
     assert referenced.manifest_path.is_file()
     assert not unreferenced.manifest_path.is_file()
+    assert active.manifest_path.is_file()
     assert sentinel.read_text(encoding="utf-8") == "keep"
 
 

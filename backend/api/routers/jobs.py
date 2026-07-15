@@ -15,6 +15,23 @@ from backend.public_data import contains_sensitive_key, sanitize_public_mapping
 
 router = APIRouter(prefix="/api", tags=["jobs"])
 
+_SOURCE_CONFIG_PUBLIC_DETAILS = {
+    "queued": "Waiting to generate grading configuration.",
+    "running": "Generating grading configuration.",
+    "config_generation": "Generating grading configuration.",
+    "Split paper": "Preparing source questions.",
+    "Submit per-question requests": "Generating grading configuration.",
+    "Parse question": "Generating grading configuration.",
+    "Assemble rubric": "Finalizing grading configuration.",
+    "AI 赋分": "Finalizing grading configuration.",
+    "AI 赋分完成": "Finalizing grading configuration.",
+    "AI 赋分失败，使用本地均分兜底": "Finalizing grading configuration.",
+    "Word 整卷单次请求": "Generating grading configuration.",
+    "旧版整卷生成": "Generating grading configuration.",
+    "旧版整卷修复": "Generating grading configuration.",
+    "PDF 整卷视觉单次请求": "Generating grading configuration.",
+}
+
 def _job_response(job: JobRecord) -> JobResponse:
     return JobResponse(
         id=job.id,
@@ -24,7 +41,7 @@ def _job_response(job: JobRecord) -> JobResponse:
         status=job.status,
         progress=job.progress,
         stage=job.stage,
-        detail=job.detail,
+        detail=public_job_detail(job),
         error=public_job_error(job),
         cancel_requested=job.cancel_requested,
         created_at=job.created_at,
@@ -32,6 +49,17 @@ def _job_response(job: JobRecord) -> JobResponse:
         updated_at=job.updated_at,
         finished_at=job.finished_at,
     )
+
+
+def public_job_detail(job: JobRecord) -> str:
+    if (
+        job.job_type == "config_generation"
+        and str(job.payload.get("source_id") or "").strip()
+    ):
+        if job.status == "succeeded":
+            return "Grading configuration generated."
+        return _SOURCE_CONFIG_PUBLIC_DETAILS.get(job.stage, "")
+    return job.detail
 
 
 def public_job_result(job: JobRecord) -> dict[str, Any]:
