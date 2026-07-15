@@ -1315,10 +1315,10 @@ Expected: 验证器在干净 worktree 输出 `ok=true`；状态停在 `waiting_r
 ## 昼夜交接
 
 **执行包：** P2-14
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** waiting_user
+**功能提交：** 38dcf5dae3cc711d6e778c90d1edb7486367c4c4
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** pending
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
