@@ -54,7 +54,7 @@ describe('AppShell', () => {
 
       expect(host.querySelectorAll('main')).toHaveLength(1)
       expect(host.querySelector('main#main-workspace')).not.toBeNull()
-      expect(host.querySelector('[data-testid="app-navigation"]')).toBeNull()
+      expect(host.querySelector('[data-testid="app-navigation"]')).not.toBeNull()
       expect(host.querySelector('[data-testid="session-inspector"]')).toBeNull()
       expect(host.querySelector('[data-testid="review-scoring-inspector"]')).toBeNull()
 
@@ -69,10 +69,48 @@ describe('AppShell', () => {
     expect(host.querySelector('[data-testid="app-shell"]')).not.toBeNull()
     expect(host.querySelector('[data-testid="app-topbar"]')?.textContent).toContain('AI 阅卷系统')
     expect(host.querySelector('[data-testid="app-topbar"]')?.textContent).toContain('评分复核')
+    expect(
+      [...host.querySelectorAll<HTMLAnchorElement>('[data-testid="app-navigation"] a')].map(
+        (link) => [link.textContent, link.getAttribute('href')],
+      ),
+    ).toEqual([
+      ['工作台', '/workbench'],
+      ['评分复核', '/grading'],
+    ])
+    expect(
+      host.querySelector('[data-testid="app-navigation"] a[href="/grading"]')?.getAttribute(
+        'aria-current',
+      ),
+    ).toBe('page')
+    expect(
+      host.querySelector('[data-testid="app-navigation"] a[href="/workbench"]')?.hasAttribute(
+        'aria-current',
+      ),
+    ).toBe(false)
     expect(host.querySelector('label[for="current-session"]')?.textContent).toBe('当前考试')
     expect(host.querySelector('#current-session')).not.toBeNull()
     expect(host.querySelector('[data-testid="navigation-toggle"]')).toBeNull()
     expect(host.querySelector('[data-testid="inspector-toggle"]')).toBeNull()
+
+    app.unmount()
+  })
+
+  it('navigates between the two truthful destinations and updates the current page', async () => {
+    const { app, host, router } = await mountShell()
+    const workbenchLink = host.querySelector<HTMLAnchorElement>(
+      '[data-testid="app-navigation"] a[href="/workbench"]',
+    )!
+
+    workbenchLink.click()
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/workbench'))
+    await settleUi()
+
+    expect(workbenchLink.getAttribute('aria-current')).toBe('page')
+    expect(
+      host.querySelector('[data-testid="app-navigation"] a[href="/grading"]')?.hasAttribute(
+        'aria-current',
+      ),
+    ).toBe(false)
 
     app.unmount()
   })
