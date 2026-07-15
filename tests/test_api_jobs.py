@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import threading
 import time
 import warnings
@@ -75,6 +76,46 @@ def test_jobs_list_filters_session_and_returns_safe_summaries(
     assert "error" not in response.text
     assert "C:/private" not in response.text
     assert [item["id"] for item in response.json()["items"]] == [first.id]
+
+
+def test_jobs_list_ignores_unsafe_session_payloads_without_server_error(
+    client_with_manager,
+) -> None:
+    client, manager = client_with_manager
+    rejected_payloads = (
+        '{"session_id":',
+        '{"session_id": true}',
+        '{"session_id": 7.0}',
+        '{"session_id": 0}',
+        '{"session_id": -7}',
+        '{"session_id": "7garbage"}',
+        '{"session_id": " 7 "}',
+        '{"session_id": 7e0}',
+        '{"session_id": "7e0"}',
+        '{"session_id": "7"}',
+    )
+    with sqlite3.connect(manager.store.db_path) as conn:
+        for payload_json in rejected_payloads:
+            conn.execute(
+                "INSERT INTO jobs (job_type, payload_json, status) "
+                "VALUES ('grading_run', ?, 'queued')",
+                (payload_json,),
+            )
+        cursor = conn.execute(
+            "INSERT INTO jobs (job_type, payload_json, status) "
+            "VALUES ('grading_run', ?, 'queued')",
+            ('{"session_id": 7}',),
+        )
+        accepted_id = int(cursor.lastrowid)
+
+    response = client.get(
+        "/api/jobs",
+        params={"session_id": 7, "page": 1, "page_size": 20},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert [item["id"] for item in response.json()["items"]] == [accepted_id]
 
 
 def test_jobs_list_sanitizes_legacy_detail_values(client_with_manager) -> None:
