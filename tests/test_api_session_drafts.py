@@ -77,3 +77,20 @@ def test_create_session_draft_route_rejects_client_path_fields(tmp_path) -> None
     assert response.json()["error"]["code"] == "validation_error"
     assert db.list_grading_sessions(include_deleted=True) == []
     assert not upload_config_dir.exists()
+
+
+def test_renaming_session_draft_keeps_editor_unconfigured(tmp_path) -> None:
+    client, _db, _upload_config_dir = _client_with_db(tmp_path)
+    created = client.post("/api/sessions/drafts", json={"name": "Original"})
+    assert created.status_code == 201
+    session_id = created.json()["id"]
+
+    renamed = client.patch(
+        f"/api/sessions/{session_id}",
+        json={"name": "Renamed after creation"},
+    )
+    assert renamed.status_code == 200
+
+    editor = client.get(f"/api/sessions/{session_id}/config/editor")
+    assert editor.status_code == 200
+    assert editor.json()["configured"] is False

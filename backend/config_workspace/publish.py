@@ -12,7 +12,11 @@ from backend.config_workspace.secure_fs import (
     SecureFilesystemError,
     SecureRootFilesystem,
 )
-from backend.config_workspace.drafts import EMPTY_ANSWER_KEY, EMPTY_RUBRIC
+from backend.config_workspace.drafts import (
+    DRAFT_MARKER_KEY,
+    EMPTY_ANSWER_KEY,
+    EMPTY_RUBRIC,
+)
 from backend.config_workspace.editor import (
     ConfigEditorCommand,
     ConfigEditorEdit,
@@ -236,17 +240,17 @@ def refresh_template_mapping_from_session(
     *,
     output_root: Path,
     after_refresh: Callable[[dict[str, Any]], None] | None = None,
-) -> bool:
+) -> Literal["not_present", "refreshed", "reconfirm_required"]:
     session = db.get_grading_session(int(session_id))
     template = db.get_session_template(int(session_id))
     if not session or not template:
-        return False
+        return "not_present"
     db_path = Path(db.db_path)
     data_root = db_path.parent.parent if db_path.parent.name == "databases" else None
     front = resolve_stored_file_path(template.get("front_template_path"), data_root=data_root)
     back = resolve_stored_file_path(template.get("back_template_path"), data_root=data_root)
     if not front.exists() or not back.exists():
-        return False
+        return "reconfirm_required"
     from template_analyzer import create_template_mapping_package
 
     package = create_template_mapping_package(
@@ -264,26 +268,34 @@ def refresh_template_mapping_from_session(
     )
     if after_refresh is not None:
         after_refresh(package)
-    return True
+    return "refreshed"
 
 
 def refresh_mapping_after_config_save(
-    refresher: Callable[[], bool],
+    refresher: Callable[[], Literal["not_present", "refreshed", "reconfirm_required"]],
 ) -> ConfigSaveResult:
     try:
-        refreshed = bool(refresher())
+        status = refresher()
     except Exception:
         return ConfigSaveResult(
             config_saved=True,
             mapping_status="reconfirm_required",
             mapping_message="评分依据已保存；样卷映射需要回旧入口重新确认",
         )
-    if refreshed:
+    if status == "refreshed":
         return ConfigSaveResult(
             config_saved=True,
             mapping_status="refreshed",
             mapping_message="评分依据已保存，样卷映射已刷新",
         )
+    if status == "reconfirm_required":
+        return ConfigSaveResult(
+            config_saved=True,
+            mapping_status="reconfirm_required",
+            mapping_message="评分依据已保存；样卷映射需要回到旧入口重新确认。",
+        )
+    if status != "not_present":
+        raise ValueError("mapping refresh returned an invalid status")
     return ConfigSaveResult(
         config_saved=True,
         mapping_status="not_present",
@@ -307,10 +319,17 @@ def _read_json_object(path_value: object, *, data_root: Path | None = None) -> d
 def _is_exact_draft(
     session: dict[str, Any], rubric: dict[str, Any], answer_key: dict[str, Any]
 ) -> bool:
-    return rubric == {
-        **EMPTY_RUBRIC,
-        "exam_title": str(session.get("session_name") or ""),
-    } and answer_key == EMPTY_ANSWER_KEY
+    marker = str(rubric.get(DRAFT_MARKER_KEY) or "").strip().casefold()
+    return (
+        len(marker) == 32
+        and all(char in "0123456789abcdef" for char in marker)
+        and rubric == {
+            **EMPTY_RUBRIC,
+            "exam_title": str(rubric.get("exam_title") or ""),
+            DRAFT_MARKER_KEY: marker,
+        }
+        and answer_key == {**EMPTY_ANSWER_KEY, DRAFT_MARKER_KEY: marker}
+    )
 
 
 def _safe_source(session: dict[str, Any]) -> dict[str, str] | None:

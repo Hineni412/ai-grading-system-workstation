@@ -105,10 +105,10 @@ def test_public_get_does_not_read_or_encode_private_images(
     uploaded = _upload(client, session_id).json()
     original_read_bytes = source_service._files.read_bytes
 
-    def reject_private_image_read(path: Path) -> bytes:
+    def reject_private_image_read(path: Path, **kwargs: object) -> bytes:
         if path.name.startswith(("asset-", "whole-page-")):
             raise AssertionError("public metadata load read a private image")
-        return original_read_bytes(path)
+        return original_read_bytes(path, **kwargs)
 
     def reject_encoding(_content: bytes) -> bytes:
         raise AssertionError("public metadata load encoded a private image")

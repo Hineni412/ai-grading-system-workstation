@@ -289,6 +289,36 @@ def editor_part_ids(payload: dict[str, Any]) -> tuple[tuple[str, tuple[str, ...]
     return tuple(result)
 
 
+def editor_identity_signature(payload: dict[str, Any]) -> tuple[Any, ...]:
+    rubric_identity = tuple(
+        (
+            str(question.get("question_id") or ""),
+            tuple(
+                (
+                    str(part.get("part_id") or ""),
+                    tuple(
+                        str(step.get("step_id") or "")
+                        for step in _dict_list(part.get("steps"))
+                    ),
+                )
+                for part in _dict_list(question.get("parts"))
+            ),
+        )
+        for question in _questions(payload, "rubric")
+    )
+    answer_identity = tuple(
+        (
+            str(question.get("question_id") or ""),
+            tuple(
+                str(part.get("part_id") or "")
+                for part in _dict_list(question.get("parts"))
+            ),
+        )
+        for question in _questions(payload, "answer_key")
+    )
+    return rubric_identity, answer_identity
+
+
 def editor_row_to_streamlit_dict(row: ConfigEditorRow) -> dict[str, Any]:
     return {
         "_row_id": row.row_id,
@@ -1155,6 +1185,7 @@ __all__ = [
     "apply_config_editor_changes",
     "collect_config_editor_issues",
     "editor_part_ids",
+    "editor_identity_signature",
     "editor_row_to_streamlit_dict",
     "project_config_editor",
     "streamlit_dataframe_to_editor_edits",

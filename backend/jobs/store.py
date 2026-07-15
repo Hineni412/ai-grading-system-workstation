@@ -303,7 +303,9 @@ class JobStore:
         references: set[str] = set()
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT payload_json FROM jobs WHERE job_type = 'config_generation'"
+                "SELECT status, payload_json, result_json FROM jobs "
+                "WHERE job_type = 'config_generation' "
+                "AND status IN ('queued','running','paused','succeeded')"
             ).fetchall()
         for row in rows:
             try:
@@ -312,6 +314,13 @@ class JobStore:
                 continue
             if not isinstance(payload, dict):
                 continue
+            if str(row["status"]) == "succeeded":
+                try:
+                    result = json.loads(str(row["result_json"] or "{}"))
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(result, dict) or result.get("outcome") != "partial":
+                    continue
             try:
                 payload_session_id = int(payload.get("session_id") or 0)
             except (TypeError, ValueError):

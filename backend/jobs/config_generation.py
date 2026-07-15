@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-import os
 import re
 import uuid
 from contextlib import nullcontext
@@ -17,6 +16,7 @@ from backend.config_workspace.editor import (
     ReplaceScoringUnitsCommand,
     SplitScoringUnitCommand,
     apply_config_editor_changes,
+    editor_identity_signature,
     editor_part_ids,
 )
 from backend.config_workspace.publish import (
@@ -25,7 +25,15 @@ from backend.config_workspace.publish import (
     publish_generated_config,
     remove_published_config,
 )
-from backend.config_workspace.sources import ConfigSourceRecord, ConfigSourceService
+from backend.config_workspace.sources import (
+    ConfigSourceRecord,
+    ConfigSourceService,
+    QuestionDecision,
+)
+from backend.config_workspace.secure_fs import (
+    SecureFilesystemError,
+    SecureRootFilesystem,
+)
 from question_bank.services.source_paper_archive_service import (
     ArchivedSourcePaper,
     archive_source_bytes,
@@ -40,10 +48,11 @@ from session_manager import (
     refine_grading_config_from_manual_structure,
 )
 
-from .manager import JobContext
+from .manager import JobCancellationRequested, JobContext
 
 
 _INPUT_ID = re.compile(r"^[0-9a-f]{32}$")
+MAX_CONFIG_GENERATION_INPUT_BYTES = 96 * 1024 * 1024
 
 
 def _input_path(upload_config_dir: Path, input_id: str) -> Path:
@@ -54,19 +63,10 @@ def _input_path(upload_config_dir: Path, input_id: str) -> Path:
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
-    try:
-        with temporary.open("w", encoding="utf-8") as stream:
-            json.dump(payload, stream, ensure_ascii=False, sort_keys=True)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    finally:
-        try:
-            temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
+    if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > MAX_CONFIG_GENERATION_INPUT_BYTES:
+        raise ValueError("config generation input exceeds size limit")
+    filesystem = SecureRootFilesystem(path.parent)
+    filesystem.write_json_atomic(path, payload)
 
 
 def stage_config_generation_input(
@@ -140,12 +140,45 @@ def stage_config_refine_input(
     return input_id
 
 
+def stage_config_source_generation_input(
+    upload_config_dir: Path,
+    *,
+    session_id: int,
+    expected_rubric_path: str,
+    expected_answer_key_path: str,
+    generation_mode: str,
+    source_id: str,
+    source_revision: str,
+    decisions: list[dict[str, Any]],
+) -> str:
+    input_id = uuid.uuid4().hex
+    _write_json_atomic(
+        _input_path(upload_config_dir, input_id),
+        {
+            "session_id": int(session_id),
+            "expected_rubric_path": str(expected_rubric_path),
+            "expected_answer_key_path": str(expected_answer_key_path),
+            "generation_mode": str(generation_mode),
+            "source_id": str(source_id),
+            "source_revision": str(source_revision),
+            "decisions": list(decisions),
+        },
+    )
+    return input_id
+
+
 def load_config_generation_input(
     upload_config_dir: Path,
     input_id: str,
 ) -> dict[str, Any]:
     path = _input_path(upload_config_dir, input_id)
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(
+        SecureRootFilesystem(Path(upload_config_dir)).read_text(
+            path,
+            encoding="utf-8",
+            max_bytes=MAX_CONFIG_GENERATION_INPUT_BYTES,
+        )
+    )
     if not isinstance(payload, dict):
         raise ValueError("config generation input must contain a JSON object")
     return payload
@@ -154,12 +187,39 @@ def load_config_generation_input(
 def discard_config_generation_input(upload_config_dir: Path, input_id: str) -> None:
     path = _input_path(upload_config_dir, input_id)
     try:
-        path.unlink(missing_ok=True)
-    except OSError:
+        SecureRootFilesystem(Path(upload_config_dir)).unlink_many((path,))
+    except SecureFilesystemError:
         pass
 
 
 def run_config_generation_job(
+    *,
+    context: JobContext,
+    db: DBManager,
+    upload_config_dir: Path,
+    llm_client_factory: Callable[[], Any],
+    data_root: Path | None = None,
+) -> dict[str, object]:
+    input_id = str(context.payload.get("input_id") or "")
+    mode = str(context.payload.get("mode") or "").strip()
+    try:
+        result = _run_config_generation_job_impl(
+            context=context,
+            db=db,
+            upload_config_dir=upload_config_dir,
+            llm_client_factory=llm_client_factory,
+            data_root=data_root,
+        )
+    except BaseException as exc:
+        if input_id and (isinstance(exc, JobCancellationRequested) or mode != "retry"):
+            discard_config_generation_input(upload_config_dir, input_id)
+        raise
+    if input_id and result.get("outcome") != "partial":
+        discard_config_generation_input(upload_config_dir, input_id)
+    return result
+
+
+def _run_config_generation_job_impl(
     *,
     context: JobContext,
     db: DBManager,
@@ -248,22 +308,40 @@ def run_config_generation_job(
             source_id=source_id,
             source_revision=source_revision,
         )
-        if (
-            source_record.suffix != str(inputs.get("source_suffix") or "")
-            or source_record.safe_filename
-            != str(inputs.get("source_safe_filename") or "")
-        ):
-            raise ValueError("config source metadata changed")
-
-    confirmed_blocks = inputs.get("confirmed_blocks")
-    question_images = inputs.get("question_images")
+        raw_decisions = inputs.get("decisions")
+        if not isinstance(raw_decisions, list):
+            raise ValueError("config source decisions are invalid")
+        decisions: list[QuestionDecision] = []
+        for item in raw_decisions:
+            if not isinstance(item, dict):
+                raise ValueError("config source decisions are invalid")
+            decisions.append(
+                QuestionDecision(
+                    question_id=str(item.get("question_id") or ""),
+                    question_type=str(item.get("question_type") or ""),
+                    excluded=bool(item.get("excluded")),
+                )
+            )
+        prepared = source_service.prepare_generation_input(
+            source_record, decisions, generation_mode
+        )
+        confirmed_blocks = list(prepared.confirmed_blocks)
+        question_images = prepared.question_images
+        document_text = prepared.document_text
+        whole_page_images = list(prepared.whole_page_images)
+        source_suffix = source_record.suffix
+    else:
+        confirmed_blocks = inputs.get("confirmed_blocks")
+        question_images = inputs.get("question_images")
+        document_text = str(inputs.get("document_text") or "")
+        whole_page_images = _decode_whole_page_images(inputs.get("whole_page_images"))
+        source_suffix = str(inputs.get("source_suffix") or "")
     if not isinstance(confirmed_blocks, list) or (
         generation_mode == "per_question" and not confirmed_blocks
     ):
         raise ValueError("confirmed_blocks must be a non-empty list")
     if question_images is not None and not isinstance(question_images, dict):
         raise ValueError("question_images must be an object")
-    whole_page_images = _decode_whole_page_images(inputs.get("whole_page_images"))
 
     context.raise_if_cancelled()
     context.report(0.05, "config_generation", "starting")
@@ -283,7 +361,7 @@ def run_config_generation_job(
         payload = retry_failed_grading_config_questions(
             existing_payload,
             confirmed_blocks,
-            str(inputs.get("document_text") or ""),
+            document_text,
             llm_client=client,
             model_name=_config_model(client),
             report=report,
@@ -293,15 +371,15 @@ def run_config_generation_job(
     elif generation_mode == "per_question":
         payload = generate_grading_config_from_confirmed_blocks(
             confirmed_blocks,
-            str(inputs.get("document_text") or ""),
+            document_text,
             llm_client=client,
             model_name=_config_model(client),
             report=report,
             q_images=question_images or None,
         )
-    elif str(inputs.get("source_suffix") or "") == ".docx":
+    elif source_suffix == ".docx":
         payload = generate_grading_config_from_text(
-            str(inputs.get("document_text") or ""),
+            document_text,
             llm_client=client,
             model_name=_config_model(client),
             report=report,
@@ -447,6 +525,7 @@ def _run_refine_config_job(
         commands=_decode_refine_commands(commands),
     )
     expected_ids = editor_part_ids(candidate)
+    expected_identity = editor_identity_signature(candidate)
     context.raise_if_cancelled()
     context.report(0.25, "config_generation", "refining")
     client = llm_client_factory()
@@ -455,7 +534,8 @@ def _run_refine_config_job(
         llm_client=client,
         model_name=_config_model(client),
     )
-    if editor_part_ids(payload) != expected_ids:
+    context.raise_if_cancelled()
+    if editor_identity_signature(payload) != expected_identity:
         raise ValueError("refined config changed teacher scoring-unit identities")
     summary: dict[str, object] = {
         "session_id": session_id,
@@ -472,6 +552,7 @@ def _run_refine_config_job(
         if latest.revision != expected_revision:
             raise ValueError("session config changed while refinement was running")
         try:
+            context.raise_if_cancelled()
             publication = publish_generated_config(
                 upload_config_dir, payload, job_id=context.job_id
             )
@@ -485,6 +566,7 @@ def _run_refine_config_job(
                 result=summary,
             )
             if not bound:
+                context.raise_if_cancelled()
                 raise ValueError("session config changed while refinement was running")
         except BaseException:
             if publication is not None:
@@ -557,7 +639,13 @@ def _draft_path(upload_config_dir: Path, job_id: int) -> Path:
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(
+        SecureRootFilesystem(path.parent).read_text(
+            path,
+            encoding="utf-8",
+            max_bytes=MAX_CONFIG_GENERATION_INPUT_BYTES,
+        )
+    )
     if not isinstance(payload, dict):
         raise ValueError("config generation draft must contain a JSON object")
     return payload

@@ -532,6 +532,68 @@ def test_pdf_page_limit_is_checked_before_render(tmp_path: Path) -> None:
         )
 
 
+def test_source_parse_runs_off_event_loop(tmp_path: Path, monkeypatch) -> None:
+    source_service = service(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+    original = source_service._parse_pdf
+
+    def blocking_parse(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(source_service, "_parse_pdf", blocking_parse)
+
+    async def exercise() -> None:
+        task = asyncio.create_task(
+            source_service.stage_and_parse(
+                session_id=7,
+                filename="paper.pdf",
+                chunks=chunks(_pdf_bytes()),
+            )
+        )
+        assert await asyncio.to_thread(entered.wait, 5)
+        await asyncio.sleep(0)
+        release.set()
+        await task
+
+    asyncio.run(exercise())
+
+
+def test_derived_asset_budget_fails_closed_and_cleans_owned_files(
+    tmp_path: Path,
+) -> None:
+    source_service = service(tmp_path, max_image_bytes=8)
+
+    with pytest.raises(ConfigSourceInvalidError):
+        asyncio.run(
+            source_service.stage_and_parse(
+                session_id=7,
+                filename="paper.pdf",
+                chunks=chunks(_pdf_bytes()),
+            )
+        )
+
+    assert list(tmp_path.rglob("manifest.json")) == []
+    assert [path for path in tmp_path.rglob("*") if path.is_file()] == []
+
+
+def test_manifest_load_enforces_serialized_size_limit(tmp_path: Path) -> None:
+    record = asyncio.run(
+        service(tmp_path).stage_and_parse(
+            session_id=7,
+            filename="paper.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+    with pytest.raises(ConfigSourceInvalidError):
+        service(tmp_path, max_manifest_bytes=8).load(
+            session_id=7,
+            source_id=record.source_id,
+        )
+
+
 def test_source_session_mismatch_and_replaced_active_source_fail_closed(tmp_path: Path) -> None:
     first = asyncio.run(
         service(tmp_path).stage_and_parse(
@@ -1238,10 +1300,10 @@ def test_single_asset_read_reads_only_the_requested_asset(
     original_read_bytes = source_service._files.read_bytes
     reads: list[str] = []
 
-    def tracked_read_bytes(path: Path) -> bytes:
+    def tracked_read_bytes(path: Path, **kwargs: object) -> bytes:
         if path.name.startswith(("asset-", "whole-page-")):
             reads.append(path.name)
-        return original_read_bytes(path)
+        return original_read_bytes(path, **kwargs)
 
     monkeypatch.setattr(source_service._files, "read_bytes", tracked_read_bytes)
 
