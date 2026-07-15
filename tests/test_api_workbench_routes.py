@@ -308,6 +308,12 @@ def test_anomalies_are_stable_paginated_filterable_and_sanitized(
         ('{"payload":{"result":"private-result","error":"boom"}}', "private-result"),
         ("diagnostic payload=private-payload", "private-payload"),
         ("Traceback (most recent call last): ValueError: private-stack", "private-stack"),
+        ("Bearer eyJ...private-signature", "private-signature"),
+        ('diagnostic: {"debug":"private-marker"}', "private-marker"),
+        (
+            "java.lang.IllegalStateException: private-java at app.Worker.java:12",
+            "private-java",
+        ),
     ],
 )
 def test_anomaly_detail_rejects_opaque_diagnostic_text(
@@ -343,6 +349,12 @@ def test_anomaly_detail_rejects_opaque_diagnostic_text(
         ('{"payload":{"result":"private-result","error":"boom"}}', "private-result"),
         ("diagnostic error=private-error", "private-error"),
         ("Traceback (most recent call last): ValueError: private-stack", "private-stack"),
+        ("Bearer eyJ...private-signature", "private-signature"),
+        ('diagnostic: {"debug":"private-marker"}', "private-marker"),
+        (
+            "java.lang.IllegalStateException: private-java at app.Worker.java:12",
+            "private-java",
+        ),
     ],
 )
 def test_recent_job_detail_rejects_opaque_diagnostic_text(
