@@ -5,8 +5,8 @@ import StatePanel from '../components/design-system/StatePanel.vue'
 
 const router = useRouter()
 
-function returnToReview(): void {
-  void router.push('/grading')
+function returnToWorkbench(): void {
+  void router.push('/workbench')
 }
 </script>
 
@@ -17,8 +17,8 @@ function returnToReview(): void {
       kind="error"
       title="无法打开这个页面"
       description="请求的地址不存在；当前考试选择和业务数据都没有改变。"
-      retry-label="返回评分复核"
-      @retry="returnToReview"
+      retry-label="返回工作台"
+      @retry="returnToWorkbench"
     />
   </section>
 </template>

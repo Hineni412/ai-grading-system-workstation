@@ -3,14 +3,23 @@ from __future__ import annotations
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from backend.api.app import ApiError
 from backend.api.dependencies import get_job_manager
-from backend.api.schemas.jobs import JobResponse, JobSubmitRequest
+from backend.api.schemas.jobs import (
+    JobResponse,
+    JobSubmitRequest,
+    JobSummaryListResponse,
+    JobSummaryResponse,
+)
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from backend.jobs.store import JobRecord
-from backend.public_data import contains_sensitive_key, sanitize_public_mapping
+from backend.public_data import (
+    contains_sensitive_key,
+    sanitize_public_diagnostic_text,
+    sanitize_public_mapping,
+)
 
 
 router = APIRouter(prefix="/api", tags=["jobs"])
@@ -27,6 +36,22 @@ def _job_response(job: JobRecord) -> JobResponse:
         detail=job.detail,
         error=public_job_error(job),
         cancel_requested=job.cancel_requested,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        updated_at=job.updated_at,
+        finished_at=job.finished_at,
+    )
+
+
+def _job_summary_response(job: JobRecord) -> JobSummaryResponse:
+    detail = sanitize_public_diagnostic_text(job.detail) or ""
+    return JobSummaryResponse(
+        id=job.id,
+        job_type=job.job_type,
+        status=job.status,
+        progress=job.progress,
+        stage=job.stage,
+        detail=str(detail),
         created_at=job.created_at,
         started_at=job.started_at,
         updated_at=job.updated_at,
@@ -191,6 +216,39 @@ def _require_job(manager: JobManager, job_id: int) -> JobRecord:
             {"job_id": int(job_id)},
         )
     return job
+
+
+@router.get("/jobs", response_model=JobSummaryListResponse)
+def list_jobs(
+    session_id: int | None = Query(None, gt=0),
+    job_type: list[str] = Query(default=[]),
+    status: list[str] = Query(default=[]),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    manager: JobManager = Depends(get_job_manager),
+) -> JobSummaryListResponse:
+    try:
+        jobs, total = manager.list(
+            session_id=session_id,
+            job_types=tuple(job_type),
+            statuses=tuple(status),
+            limit=page_size,
+            offset=(page - 1) * page_size,
+        )
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "invalid_job_filter",
+            "Job filter is invalid",
+            {},
+        ) from exc
+    return JobSummaryListResponse(
+        items=[_job_summary_response(job) for job in jobs],
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=(total + page_size - 1) // page_size,
+    )
 
 
 @router.post("/jobs/{job_type}", response_model=JobResponse, status_code=202)
