@@ -1310,3 +1310,17 @@ Expected: 验证器在干净 worktree 输出 `ok=true`；状态停在 `waiting_r
 - 类型一致：后端 `QuestionAnalysisItem` / `StudentAnalysisItem` 与前端同名字段一致；Store 方法、组件数据和 E2E mock 使用同一 snake_case API 契约。
 - 依赖一致：Task 1 先提供公式服务，Task 2 提供 Job list，Task 3 聚合概览，Task 4 注册接口，Task 5 建立客户端状态，Task 6 组件，Task 7 共享接线，Task 8 验证交接。
 - 范围一致：零迁移、零写动作、零新 KPI、零新依赖；P2-15/P2-11/P2-09 能力没有提前实现。
+
+<!-- HANDOFF_STATUS_START -->
+## 昼夜交接
+
+**执行包：** P2-14
+**交接状态：** in_progress
+**功能提交：** none
+**自动验证：** pending
+**独立复审：** pending
+**用户验收：** pending
+**真实数据指纹：** not_touched
+**Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
+**夜间动作：** report_only
+<!-- HANDOFF_STATUS_END -->
