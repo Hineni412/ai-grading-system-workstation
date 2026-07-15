@@ -14,6 +14,7 @@ export interface SessionListResponse {
 }
 
 export type SessionLoader = () => Promise<SessionSummary[]>
+export type SessionDraftCreator = (name: string) => Promise<SessionSummary>
 
 export class SessionReadError extends Error {
   constructor() {
@@ -25,6 +26,10 @@ export class SessionReadError extends Error {
 export function isSessionSummary(value: unknown): value is SessionSummary {
   if (!isRecord(value)) return false
 
+  if (!hasExactKeys(value, [
+    'id', 'name', 'status', 'is_deleted', 'deleted_at', 'created_at', 'updated_at',
+  ])) return false
+
   return (
     Number.isSafeInteger(value.id) &&
     Number(value.id) > 0 &&
@@ -35,6 +40,11 @@ export function isSessionSummary(value: unknown): value is SessionSummary {
     isNullableString(value.created_at) &&
     isNullableString(value.updated_at)
   )
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort()
+  return actual.length === keys.length && actual.every((key, index) => key === [...keys].sort()[index])
 }
 
 function isSessionListResponse(value: unknown): value is SessionListResponse {
@@ -60,6 +70,40 @@ export async function fetchSessions(): Promise<SessionSummary[]> {
   } catch {
     throw new SessionReadError()
   }
+}
+
+function requireSessionId(id: number): number {
+  if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Invalid session id')
+  return id
+}
+
+function requireSessionName(name: string): string {
+  const normalized = name.trim()
+  if (!normalized) throw new Error('考试名称不能为空')
+  return normalized
+}
+
+export async function createSessionDraft(name: string): Promise<SessionSummary> {
+  return apiClient.request('/api/sessions/drafts', {
+    method: 'POST',
+    body: { name: requireSessionName(name) },
+    decode: (value) => {
+      if (!isSessionSummary(value)) throw new Error('invalid session draft response')
+      return value
+    },
+  })
+}
+
+export async function renameSession(id: number, name: string): Promise<SessionSummary> {
+  const sessionId = requireSessionId(id)
+  return apiClient.request(`/api/sessions/${sessionId}`, {
+    method: 'PATCH',
+    body: { name: requireSessionName(name) },
+    decode: (value) => {
+      if (!isSessionSummary(value)) throw new Error('invalid session rename response')
+      return value
+    },
+  })
 }
 import { apiClient } from './client'
 import { isNullableString, isRecord } from './validation'

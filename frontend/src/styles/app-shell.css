@@ -61,12 +61,38 @@
   display: grid;
   min-width: 0;
   min-height: var(--shell-topbar-height);
-  grid-template-columns: minmax(220px, 1fr) minmax(320px, auto);
+  grid-template-columns: minmax(220px, 1fr) auto minmax(320px, auto);
   align-items: center;
   gap: var(--space-3) var(--space-6);
   padding: var(--space-2) var(--space-5);
   border-block-end: var(--border-width) solid var(--color-border-default);
   background: var(--color-bg-surface);
+}
+
+.app-topbar__navigation {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.app-topbar__navigation a {
+  min-height: var(--control-height-default);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-dense);
+  font-weight: var(--font-weight-medium);
+  text-decoration: none;
+}
+
+.app-topbar__navigation a:hover {
+  background: var(--color-bg-subtle);
+  color: var(--color-text-primary);
+}
+
+.app-topbar__navigation a.router-link-active {
+  background: var(--color-accent-subtle);
+  color: var(--color-accent-active);
 }
 
 .app-topbar__skip-link {
@@ -176,7 +202,7 @@
 
 @media (max-width: 1100px) {
   .app-topbar {
-    grid-template-columns: minmax(190px, .8fr) minmax(300px, 1.2fr);
+    grid-template-columns: minmax(190px, .8fr) auto minmax(260px, 1fr);
     gap: var(--space-3);
     padding-inline: var(--space-4);
   }

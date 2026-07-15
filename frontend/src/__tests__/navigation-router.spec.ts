@@ -1,13 +1,14 @@
 import { createMemoryHistory } from 'vue-router'
 import { describe, expect, it } from 'vitest'
 
-import { navigationItems, reviewRouteDefinition } from '../navigation'
+import { navigationItems, reviewRouteDefinition, sessionRouteDefinition } from '../navigation'
 import { createAppRouter } from '../router'
 
 describe('source-recalibrated navigation', () => {
-  it('exposes only the truthful review destination', () => {
-    expect(navigationItems).toEqual([reviewRouteDefinition])
+  it('exposes only the truthful configuration and review destinations', () => {
+    expect(navigationItems).toEqual([sessionRouteDefinition, reviewRouteDefinition])
     expect(navigationItems.map(({ id, label, path }) => [id, label, path])).toEqual([
+      ['sessions', '考试配置', '/sessions'],
       ['grading', '评分复核', '/grading'],
     ])
   })
@@ -25,7 +26,8 @@ describe('source-recalibrated navigation', () => {
   })
 
   it.each([
-    ['/', '/grading'],
+    ['/', '/sessions'],
+    ['/sessions', '/sessions'],
     ['/grading', '/grading'],
     ['/design-system', '/design-system'],
     ['/missing/deep/path', '/missing/deep/path'],
@@ -58,5 +60,14 @@ describe('source-recalibrated navigation', () => {
     const matched = router.currentRoute.value.matched
     const component = matched[matched.length - 1]?.components?.default
     expect((component as { __name?: string } | undefined)?.__name).toBe('ReviewQueueView')
+  })
+
+  it('loads the configuration workspace for sessions', async () => {
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/sessions')
+    await router.isReady()
+    const matched = router.currentRoute.value.matched
+    const component = matched[matched.length - 1]?.components?.default
+    expect((component as { __name?: string } | undefined)?.__name).toBe('SessionConfigView')
   })
 })
