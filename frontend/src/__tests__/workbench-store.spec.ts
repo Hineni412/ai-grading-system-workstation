@@ -58,22 +58,31 @@ describe('workbench store', () => {
       anomaly_id: `failed:${index + 1}`,
     }))
     const loader = vi.fn(async (_sessionId, _signal, page = 1): Promise<SessionAnomalyResponse> => ({
-      items: page === 1 ? first : [{ ...anomalyResponse.items[0]!, anomaly_id: 'failed:101' }],
-      total: 101,
+      items: page === 1 ? first : [
+        { ...anomalyResponse.items[0]!, anomaly_id: 'failed:100' },
+        { ...anomalyResponse.items[0]!, anomaly_id: 'failed:101' },
+      ],
+      total: 102,
       page,
       page_size: 100,
       total_pages: 2,
     }))
 
     await store.loadAnomalies(7, loader)
-    expect(store.anomaliesTotal).toBe(101)
+    expect(store.anomaliesTotal).toBe(102)
     expect(store.anomaliesPage).toBe(1)
     expect(store.anomaliesTotalPages).toBe(2)
 
     await store.loadMoreAnomalies(loader)
     expect(loader).toHaveBeenLastCalledWith(7, expect.any(AbortSignal), 2)
     expect(store.anomalies).toHaveLength(101)
+    expect(store.anomalies[0]?.anomaly_id).toBe('failed:1')
+    expect(store.anomalies[99]?.anomaly_id).toBe('failed:100')
     expect(store.anomalies[100]?.anomaly_id).toBe('failed:101')
+    expect(store.anomaliesTotal).toBe(102)
+    expect(store.anomaliesPage).toBe(2)
+    expect(store.anomaliesPageSize).toBe(100)
+    expect(store.anomaliesTotalPages).toBe(2)
   })
 
   it('keeps the last successful overview when refresh fails', async () => {
