@@ -7,11 +7,15 @@ defineProps<{
   items: StudentAnalysisItem[]
   state: ResourceState
   updatedAt: string | null
+  total: number
+  page: number
+  totalPages: number
 }>()
 
 defineEmits<{
   retry: []
   openReview: [questionId: string]
+  loadMore: []
 }>()
 
 function score(value: number | null): string {
@@ -60,7 +64,9 @@ function displayTime(value: string | null): string {
         <button type="button" class="workbench-link-button" @click="$emit('retry')">重新加载学生明细</button>
       </div>
       <p v-if="items.length === 0" class="workbench-empty-copy">当前题目没有学生明细</p>
-      <div v-else class="workbench-table-wrap">
+      <template v-else>
+      <p class="analysis-summary">当前显示 {{ items.length }} / {{ total }} 名学生</p>
+      <div class="workbench-table-wrap">
       <table class="analysis-table student-table">
         <caption class="sr-only">当前题目学生得分、扣分与证据入口</caption>
         <thead>
@@ -96,6 +102,16 @@ function displayTime(value: string | null): string {
         </tbody>
       </table>
       </div>
+      <button
+        v-if="page < totalPages"
+        type="button"
+        class="workbench-secondary-button"
+        :disabled="state === 'loading'"
+        @click="$emit('loadMore')"
+      >
+        {{ state === 'loading' ? '正在加载更多学生…' : '加载更多学生' }}
+      </button>
+      </template>
     </template>
   </section>
 </template>

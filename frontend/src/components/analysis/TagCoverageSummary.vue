@@ -42,8 +42,12 @@ watch(
 onBeforeUnmount(() => controller?.abort())
 
 async function selectNode(node: GraphNode): Promise<void> {
+  await loadEvidence(node, 1, false)
+}
+
+async function loadEvidence(node: GraphNode, page: number, append: boolean): Promise<void> {
   if (props.sessionId === null || props.className === null) return
-  const keepPrevious = selectedNodeKey.value === node.knowledge_key && evidence.value !== null
+  const keepPrevious = (append || selectedNodeKey.value === node.knowledge_key) && evidence.value !== null
   controller?.abort()
   const requestController = new AbortController()
   controller = requestController
@@ -52,12 +56,20 @@ async function selectNode(node: GraphNode): Promise<void> {
   if (!keepPrevious) evidence.value = null
   evidenceState.value = 'loading'
   try {
-    const loaded = await fetchGraphEvidence(
-      props.sessionId,
-      props.className,
-      node.knowledge_key,
-      requestController.signal,
-    )
+    const loaded = page === 1
+      ? await fetchGraphEvidence(
+          props.sessionId,
+          props.className,
+          node.knowledge_key,
+          requestController.signal,
+        )
+      : await fetchGraphEvidence(
+          props.sessionId,
+          props.className,
+          node.knowledge_key,
+          requestController.signal,
+          page,
+        )
     if (requestGeneration !== generation) return
     if (
       loaded.knowledge_key !== node.knowledge_key ||
@@ -67,13 +79,31 @@ async function selectNode(node: GraphNode): Promise<void> {
       loaded.exam_scope.session_ids.length !== 1 ||
       loaded.exam_scope.session_ids[0] !== props.sessionId
     ) throw new Error('Graph evidence scope mismatch')
-    evidence.value = loaded
-    evidenceState.value = loaded.items.length === 0 ? 'empty' : 'ready'
+    if (append && evidence.value !== null) {
+      const seen = new Set(evidence.value.items.map((item) => `${item.session_id}\u0000${item.student_id}\u0000${item.question_id}\u0000${item.bank_question_id ?? ''}`))
+      const items = loaded.items.filter((item) => {
+        const key = `${item.session_id}\u0000${item.student_id}\u0000${item.question_id}\u0000${item.bank_question_id ?? ''}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      evidence.value = { ...loaded, items: [...evidence.value.items, ...items] }
+    } else {
+      evidence.value = loaded
+    }
+    evidenceState.value = evidence.value.items.length === 0 ? 'empty' : 'ready'
   } catch {
     if (requestGeneration !== generation || requestController.signal.aborted) return
     evidenceState.value = keepPrevious ? 'stale-error' : 'error'
   } finally {
     if (controller === requestController) controller = null
+  }
+}
+
+function loadMoreEvidence(): void {
+  const node = props.graph?.nodes.find((item) => item.knowledge_key === selectedNodeKey.value)
+  if (node && evidence.value && evidence.value.page < evidence.value.total_pages) {
+    void loadEvidence(node, evidence.value.page + 1, true)
   }
 }
 
@@ -159,6 +189,18 @@ function displayTime(value: string | null): string {
           <span>{{ item.actionable_reasons.join('；') || '未记录扣分原因' }}</span>
         </li>
       </ol>
+      <p v-if="evidence && evidence.items.length > 0" class="analysis-summary">
+        当前显示 {{ evidence.items.length }} / {{ evidence.total }} 条证据
+      </p>
+      <button
+        v-if="evidence && evidence.page < evidence.total_pages"
+        type="button"
+        class="workbench-secondary-button"
+        :disabled="evidenceState === 'loading'"
+        @click="loadMoreEvidence"
+      >
+        {{ evidenceState === 'loading' ? '正在加载更多证据…' : '加载更多证据' }}
+      </button>
     </template>
   </section>
 </template>

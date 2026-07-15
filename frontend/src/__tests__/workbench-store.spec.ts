@@ -51,6 +51,31 @@ beforeEach(() => {
 })
 
 describe('workbench store', () => {
+  it('retains anomaly pagination and loads records beyond the first 100', async () => {
+    const store = useWorkbenchStore()
+    const first = Array.from({ length: 100 }, (_, index) => ({
+      ...anomalyResponse.items[0]!,
+      anomaly_id: `failed:${index + 1}`,
+    }))
+    const loader = vi.fn(async (_sessionId, _signal, page = 1): Promise<SessionAnomalyResponse> => ({
+      items: page === 1 ? first : [{ ...anomalyResponse.items[0]!, anomaly_id: 'failed:101' }],
+      total: 101,
+      page,
+      page_size: 100,
+      total_pages: 2,
+    }))
+
+    await store.loadAnomalies(7, loader)
+    expect(store.anomaliesTotal).toBe(101)
+    expect(store.anomaliesPage).toBe(1)
+    expect(store.anomaliesTotalPages).toBe(2)
+
+    await store.loadMoreAnomalies(loader)
+    expect(loader).toHaveBeenLastCalledWith(7, expect.any(AbortSignal), 2)
+    expect(store.anomalies).toHaveLength(101)
+    expect(store.anomalies[100]?.anomaly_id).toBe('failed:101')
+  })
+
   it('keeps the last successful overview when refresh fails', async () => {
     const store = useWorkbenchStore()
     await store.loadOverview(7, async () => overview7)

@@ -274,6 +274,10 @@ async function mountView({
         ? '题目分析暂时无法更新'
         : '',
       questionsUpdatedAt: questionUpdatedAt,
+      questionsTotal: questionValue.total,
+      questionsPage: questionValue.page,
+      questionsPageSize: questionValue.page_size,
+      questionsTotalPages: questionValue.total_pages,
     })
   })
   const loadStudents = vi.spyOn(analysisStore, 'loadStudents').mockImplementation(async (id, questionId, className) => {
@@ -286,6 +290,10 @@ async function mountView({
         ? '学生明细暂时无法更新'
         : '',
       studentsUpdatedAt: '2026-07-15T09:37:00Z',
+      studentsTotal: studentValue.total,
+      studentsPage: studentValue.page,
+      studentsPageSize: studentValue.page_size,
+      studentsTotalPages: studentValue.total_pages,
     })
   })
   const loadGraph = vi.spyOn(analysisStore, 'loadGraph').mockImplementation(async (id, className) => {
@@ -301,6 +309,9 @@ async function mountView({
       graphUpdatedAt,
     })
   })
+  const loadMoreQuestions = vi.spyOn(analysisStore, 'loadMoreQuestions').mockResolvedValue()
+  const loadMoreStudents = vi.spyOn(analysisStore, 'loadMoreStudents').mockResolvedValue()
+  const loadMoreAnomalies = vi.spyOn(workbenchStore, 'loadMoreAnomalies').mockResolvedValue()
 
   const host = document.createElement('div')
   document.body.append(host)
@@ -322,6 +333,9 @@ async function mountView({
     loadQuestions,
     loadStudents,
     loadGraph,
+    loadMoreQuestions,
+    loadMoreStudents,
+    loadMoreAnomalies,
     resetStudents,
   }
 }
@@ -350,6 +364,63 @@ afterEach(() => {
 })
 
 describe('workbench view', () => {
+  it('labels partial question and student pages and exposes load-more actions', async () => {
+    const mounted = await mountView({
+      questionValue: { ...questions, total: 102, total_pages: 2 },
+      studentValue: { ...students, total: 101, total_pages: 2 },
+    })
+
+    expect(mounted.host.textContent).toContain('当前显示 2 / 102 道题目')
+    expect(mounted.host.textContent).toContain('当前显示 1 / 101 名学生')
+    clickButton(mounted.host, '加载更多题目')
+    clickButton(mounted.host, '加载更多学生')
+    expect(mounted.loadMoreQuestions).toHaveBeenCalledTimes(1)
+    expect(mounted.loadMoreStudents).toHaveBeenCalledTimes(1)
+  })
+
+  it('labels a partial anomaly page and exposes its remaining records', async () => {
+    const mounted = await mountView()
+    clickButton(mounted.host, '查看异常')
+    mounted.workbenchStore.$patch({
+      anomalies: [{
+        anomaly_id: 'failed:1', anomaly_type: 'grading_failed', display_name: 'first anomaly',
+        student_code: null, class_name: null, status: 'failed', detail: null, created_at: null,
+      }],
+      anomaliesState: 'ready', anomaliesUpdatedAt: '2026-07-15T09:30:00Z',
+      anomaliesTotal: 101, anomaliesPage: 1, anomaliesPageSize: 100, anomaliesTotalPages: 2,
+    })
+    await settleUi()
+
+    expect(mounted.host.textContent).toContain('当前显示 1 / 101 条异常')
+    clickButton(mounted.host, '加载更多异常')
+    expect(mounted.loadMoreAnomalies).toHaveBeenCalledTimes(1)
+  })
+
+  it('loads tag evidence beyond the first 20 items and keeps the total visible', async () => {
+    const first = graphEvidenceResponse()
+    first.total = 21
+    first.total_pages = 2
+    const second = {
+      ...first,
+      items: [{ ...first.items[0]!, student_id: 18, student_name: 'later evidence' }],
+      page: 2,
+    }
+    vi.mocked(fetchGraphEvidence).mockResolvedValueOnce(first).mockResolvedValueOnce(second)
+    const mounted = await mountView()
+    selectValue(mounted.host.querySelector<HTMLSelectElement>('#analysis-class')!, '七年级一班')
+    await settleUi()
+    mounted.host.querySelector<HTMLButtonElement>('.tag-node')!.click()
+    await settleUi()
+
+    expect(mounted.host.textContent).toContain('当前显示 1 / 21 条证据')
+    clickButton(mounted.host, '加载更多证据')
+    await settleUi()
+    expect(fetchGraphEvidence).toHaveBeenLastCalledWith(
+      7, '七年级一班', 'knowledge_point:fraction', expect.any(AbortSignal), 2,
+    )
+    expect(mounted.host.textContent).toContain('later evidence')
+  })
+
   it('uses one continuous column for the progress rail and content grids at 1024px', () => {
     const css = readFileSync(resolve(process.cwd(), 'src/styles/workbench.css'), 'utf-8')
     const tabletStart = css.indexOf('@media (max-width: 1100px)')

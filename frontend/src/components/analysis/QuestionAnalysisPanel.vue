@@ -13,12 +13,16 @@ const props = defineProps<{
   updatedAt: string | null
   selectedClass: string | null
   selectedQuestionId: string | null
+  total: number
+  page: number
+  totalPages: number
 }>()
 
 defineEmits<{
   selectClass: [className: string | null]
   selectQuestion: [questionId: string]
   retry: []
+  loadMore: []
 }>()
 
 const selectedItem = computed(() =>
@@ -80,7 +84,7 @@ function displayTime(value: string | null): string {
       </p>
       <template v-else>
         <p class="analysis-summary">
-          当前共 {{ items.length }} 个题目汇总；选择题目可查看学生得分与扣分证据。
+          当前显示 {{ items.length }} / {{ total }} 道题目；选择题目可查看学生得分与扣分证据。
         </p>
         <p v-if="selectedItem" class="analysis-sample-copy">
           本题基于 {{ selectedItem.attempt_count }} 份已批改作答
@@ -93,6 +97,15 @@ function displayTime(value: string | null): string {
           :selected-question-id="selectedQuestionId"
           @select="$emit('selectQuestion', $event)"
         />
+        <button
+          v-if="page < totalPages"
+          type="button"
+          class="workbench-secondary-button"
+          :disabled="state === 'loading'"
+          @click="$emit('loadMore')"
+        >
+          {{ state === 'loading' ? '正在加载更多题目…' : '加载更多题目' }}
+        </button>
       </template>
     </template>
   </section>

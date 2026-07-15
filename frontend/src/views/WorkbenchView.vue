@@ -164,6 +164,18 @@ function retryGraph(): void {
     void analysisStore.loadGraph(sessionId, selectedClass.value)
   }
 }
+
+function loadMoreQuestions(): void {
+  void analysisStore.loadMoreQuestions()
+}
+
+function loadMoreStudents(): void {
+  void analysisStore.loadMoreStudents()
+}
+
+function loadMoreAnomalies(): void {
+  void workbenchStore.loadMoreAnomalies()
+}
 </script>
 
 <template>
@@ -219,9 +231,13 @@ function retryGraph(): void {
           :updated-at="analysisStore.questionsUpdatedAt"
           :selected-class="selectedClass"
           :selected-question-id="selectedQuestionId"
+          :total="analysisStore.questionsTotal"
+          :page="analysisStore.questionsPage"
+          :total-pages="analysisStore.questionsTotalPages"
           @select-class="selectClass"
           @select-question="selectQuestion"
           @retry="retryQuestions"
+          @load-more="loadMoreQuestions"
         />
         <RecentSessions
           :sessions="workbenchStore.overview?.recent_sessions ?? []"
@@ -236,8 +252,12 @@ function retryGraph(): void {
           :items="analysisStore.students"
           :state="analysisStore.studentsState"
           :updated-at="analysisStore.studentsUpdatedAt"
+          :total="analysisStore.studentsTotal"
+          :page="analysisStore.studentsPage"
+          :total-pages="analysisStore.studentsTotalPages"
           @retry="retryStudents"
           @open-review="openGrading"
+          @load-more="loadMoreStudents"
         />
         <TagCoverageSummary
           :session-id="sessionStore.selectedSessionId"
@@ -290,6 +310,18 @@ function retryGraph(): void {
               <span>{{ item.detail ?? '暂无补充说明' }}</span>
             </li>
           </ul>
+          <p v-if="workbenchStore.anomalies.length > 0" class="analysis-summary">
+            当前显示 {{ workbenchStore.anomalies.length }} / {{ workbenchStore.anomaliesTotal }} 条异常
+          </p>
+          <button
+            v-if="workbenchStore.anomaliesPage < workbenchStore.anomaliesTotalPages"
+            type="button"
+            class="workbench-secondary-button"
+            :disabled="workbenchStore.anomaliesState === 'loading'"
+            @click="loadMoreAnomalies"
+          >
+            {{ workbenchStore.anomaliesState === 'loading' ? '正在加载更多异常…' : '加载更多异常' }}
+          </button>
         </template>
       </section>
 

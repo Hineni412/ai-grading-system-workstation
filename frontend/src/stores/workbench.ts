@@ -18,6 +18,7 @@ export type OverviewLoader = (
 export type AnomalyLoader = (
   sessionId: number,
   signal: AbortSignal,
+  page?: number,
 ) => Promise<SessionAnomalyResponse>
 
 function isCancelled(error: unknown): boolean {
@@ -37,6 +38,10 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   const anomaliesError = ref('')
   const overviewUpdatedAt = ref<string | null>(null)
   const anomaliesUpdatedAt = ref<string | null>(null)
+  const anomaliesTotal = ref(0)
+  const anomaliesPage = ref(1)
+  const anomaliesPageSize = ref(100)
+  const anomaliesTotalPages = ref(0)
 
   let overviewController: AbortController | null = null
   let anomaliesController: AbortController | null = null
@@ -60,6 +65,10 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     anomaliesError.value = ''
     overviewUpdatedAt.value = null
     anomaliesUpdatedAt.value = null
+    anomaliesTotal.value = 0
+    anomaliesPage.value = 1
+    anomaliesPageSize.value = 100
+    anomaliesTotalPages.value = 0
   }
 
   async function loadOverview(
@@ -104,6 +113,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   async function loadAnomalies(
     nextSessionId: number,
     loader: AnomalyLoader = fetchSessionAnomalies,
+    page = 1,
+    append = false,
   ): Promise<void> {
     resetForSession(nextSessionId)
     anomaliesController?.abort()
@@ -114,10 +125,21 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     anomaliesError.value = ''
 
     try {
-      const loaded = await loader(nextSessionId, controller.signal)
+      const loaded = await loader(nextSessionId, controller.signal, page)
       if (generation !== anomaliesGeneration || sessionId.value !== nextSessionId) return
-      anomalies.value = [...loaded.items]
-      anomaliesState.value = loaded.items.length === 0 ? 'empty' : 'ready'
+      const seen = new Set(anomalies.value.map((item) => item.anomaly_id))
+      anomalies.value = append
+        ? [...anomalies.value, ...loaded.items.filter((item) => {
+            if (seen.has(item.anomaly_id)) return false
+            seen.add(item.anomaly_id)
+            return true
+          })]
+        : [...loaded.items]
+      anomaliesTotal.value = loaded.total
+      anomaliesPage.value = loaded.page
+      anomaliesPageSize.value = loaded.page_size
+      anomaliesTotalPages.value = loaded.total_pages
+      anomaliesState.value = anomalies.value.length === 0 ? 'empty' : 'ready'
       anomaliesUpdatedAt.value = new Date().toISOString()
     } catch (error) {
       if (generation !== anomaliesGeneration || sessionId.value !== nextSessionId) return
@@ -134,6 +156,11 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     }
   }
 
+  async function loadMoreAnomalies(loader: AnomalyLoader = fetchSessionAnomalies): Promise<void> {
+    if (sessionId.value === null || anomaliesPage.value >= anomaliesTotalPages.value) return
+    await loadAnomalies(sessionId.value, loader, anomaliesPage.value + 1, true)
+  }
+
   return {
     sessionId,
     overview,
@@ -144,8 +171,13 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     anomaliesError,
     overviewUpdatedAt,
     anomaliesUpdatedAt,
+    anomaliesTotal,
+    anomaliesPage,
+    anomaliesPageSize,
+    anomaliesTotalPages,
     loadOverview,
     loadAnomalies,
+    loadMoreAnomalies,
     resetForSession,
   }
 })

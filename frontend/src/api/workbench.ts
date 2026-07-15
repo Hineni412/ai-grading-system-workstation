@@ -253,10 +253,18 @@ export function fetchWorkbenchOverview(
 export function fetchSessionAnomalies(
   sessionId: number,
   signal?: AbortSignal,
+  page = 1,
 ): Promise<SessionAnomalyResponse> {
-  const query = new URLSearchParams({ page: '1', page_size: '100' })
+  const query = new URLSearchParams({ page: String(isPositiveInteger(page) ? page : 1), page_size: '100' })
   return apiClient.request(
     `/api/sessions/${requireSessionId(sessionId)}/anomalies?${query.toString()}`,
-    { decode: decodeSessionAnomalyResponse, signal },
+    {
+      decode: (value) => {
+        const response = decodeSessionAnomalyResponse(value)
+        if (response.page !== page) throw new Error('Invalid session anomalies')
+        return response
+      },
+      signal,
+    },
   )
 }

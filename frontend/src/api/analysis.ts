@@ -213,14 +213,22 @@ export function fetchQuestionAnalysis(
   sessionId: number,
   className: string | null,
   signal?: AbortSignal,
+  page = 1,
 ): Promise<QuestionAnalysisResponse> {
   const query = new URLSearchParams()
   if (className !== null) query.set('class_name', className)
-  query.set('page', '1')
+  query.set('page', String(isInteger(page, true) ? page : 1))
   query.set('page_size', '100')
   return apiClient.request(
     `/api/sessions/${requireSessionId(sessionId)}/analysis/questions?${query.toString()}`,
-    { decode: decodeQuestionAnalysisResponse, signal },
+    {
+      decode: (value) => {
+        const response = decodeQuestionAnalysisResponse(value)
+        if (response.page !== page) throw new Error('Invalid question analysis')
+        return response
+      },
+      signal,
+    },
   )
 }
 
@@ -229,22 +237,27 @@ export function fetchStudentAnalysis(
   questionId: string,
   className: string | null,
   signal?: AbortSignal,
+  page = 1,
 ): Promise<StudentAnalysisResponse> {
   const normalizedQuestionId = questionId.trim()
   if (!normalizedQuestionId) throw new Error('Invalid question id')
   const normalizedClassName = className === null ? null : className.trim()
   const query = new URLSearchParams()
   if (className !== null) query.set('class_name', className)
-  query.set('page', '1')
+  query.set('page', String(isInteger(page, true) ? page : 1))
   query.set('page_size', '100')
   return apiClient.request(
     `/api/sessions/${requireSessionId(sessionId)}/analysis/questions/${encodeURIComponent(questionId)}/students?${query.toString()}`,
     {
-      decode: (value) => decodeStudentAnalysisResponse(value, {
-        sessionId,
-        questionId: normalizedQuestionId,
-        className: normalizedClassName,
-      }),
+      decode: (value) => {
+        const response = decodeStudentAnalysisResponse(value, {
+          sessionId,
+          questionId: normalizedQuestionId,
+          className: normalizedClassName,
+        })
+        if (response.page !== page) throw new Error('Invalid student analysis')
+        return response
+      },
       signal,
     },
   )
