@@ -44,6 +44,7 @@ async function mountUpload(options: {
   accepted?: ConfigSource | null
   uploader?: (sessionId: number, file: File) => Promise<ConfigSource>
   onUploaded?: (value: ConfigSource) => void
+  beforeUpload?: () => boolean
 } = {}) {
   const host = document.createElement('div')
   document.body.append(host)
@@ -53,6 +54,7 @@ async function mountUpload(options: {
     sessionId: 7,
     source: options.accepted ?? null,
     uploader,
+    beforeUpload: options.beforeUpload,
     onUploaded,
   })
   app.mount(host)
@@ -112,6 +114,35 @@ describe('ConfigSourceUpload', () => {
     pending.resolve(source())
     await settle()
     expect(mounted.onUploaded).toHaveBeenCalledWith(source())
+  })
+
+  it('does not start an upload when the request-time guard is cancelled', async () => {
+    const beforeUpload = vi.fn(() => false)
+    const mounted = await mountUpload({ beforeUpload })
+    await choose(mounted.host, new File(['%PDF'], '试卷.pdf'))
+    mounted.host.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
+    await settle()
+
+    expect(beforeUpload).toHaveBeenCalledOnce()
+    expect(mounted.uploader).not.toHaveBeenCalled()
+  })
+
+  it('clears the native file input after success so the same file can be selected again', async () => {
+    const uploader = vi.fn(async () => source())
+    const mounted = await mountUpload({ uploader })
+    const file = new File(['%PDF'], '同一份试卷.pdf')
+    const input = mounted.host.querySelector<HTMLInputElement>('input[type="file"]')!
+    Object.defineProperty(input, 'value', { configurable: true, writable: true, value: 'selected.pdf' })
+    await choose(mounted.host, file)
+    mounted.host.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
+    await settle()
+    expect(input.value).toBe('')
+
+    Object.defineProperty(input, 'value', { configurable: true, writable: true, value: 'selected.pdf' })
+    await choose(mounted.host, file)
+    mounted.host.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
+    await settle()
+    expect(uploader).toHaveBeenCalledTimes(2)
   })
 
   it('shows a parse-safe empty result without inventing questions or paths', async () => {
