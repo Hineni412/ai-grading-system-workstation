@@ -301,6 +301,104 @@ def test_anomalies_are_stable_paginated_filterable_and_sanitized(
     assert filtered.json()["items"][0]["anomaly_type"] == "scan_issue"
 
 
+@pytest.mark.parametrize(
+    "unsafe_text, marker",
+    [
+        ("token=plain-secret", "plain-secret"),
+        ('{"payload":{"result":"private-result","error":"boom"}}', "private-result"),
+        ("diagnostic payload=private-payload", "private-payload"),
+        ("Traceback (most recent call last): ValueError: private-stack", "private-stack"),
+    ],
+)
+def test_anomaly_detail_rejects_opaque_diagnostic_text(
+    workbench_client,
+    unsafe_text: str,
+    marker: str,
+) -> None:
+    client, session_id, db_path, _latest_job_id = workbench_client
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE exam_papers SET error_message = ?
+            WHERE session_id = ? AND processing_status = 'failed'
+            """,
+            (unsafe_text, session_id),
+        )
+        conn.commit()
+
+    response = client.get(
+        f"/api/sessions/{session_id}/anomalies",
+        params={"anomaly_type": "grading_failed"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["detail"] is None
+    assert marker not in response.text
+
+
+@pytest.mark.parametrize(
+    "unsafe_text, marker",
+    [
+        ("secret=plain-secret", "plain-secret"),
+        ('{"payload":{"result":"private-result","error":"boom"}}', "private-result"),
+        ("diagnostic error=private-error", "private-error"),
+        ("Traceback (most recent call last): ValueError: private-stack", "private-stack"),
+    ],
+)
+def test_recent_job_detail_rejects_opaque_diagnostic_text(
+    workbench_client,
+    unsafe_text: str,
+    marker: str,
+) -> None:
+    client, session_id, db_path, latest_job_id = workbench_client
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE jobs SET detail = ? WHERE id = ?",
+            (unsafe_text, latest_job_id),
+        )
+        conn.commit()
+
+    response = client.get(
+        "/api/workbench/overview",
+        params={"session_id": session_id},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["recent_jobs"][0]["detail"] == ""
+    assert marker not in response.text
+
+
+def test_workbench_preserves_short_non_sensitive_diagnostic_text(
+    workbench_client,
+) -> None:
+    client, session_id, db_path, latest_job_id = workbench_client
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE exam_papers SET error_message = 'OCR 识别失败，请重试'
+            WHERE session_id = ? AND processing_status = 'failed'
+            """,
+            (session_id,),
+        )
+        conn.execute(
+            "UPDATE jobs SET detail = 'processing batch 2 of 5' WHERE id = ?",
+            (latest_job_id,),
+        )
+        conn.commit()
+
+    anomalies = client.get(
+        f"/api/sessions/{session_id}/anomalies",
+        params={"anomaly_type": "grading_failed"},
+    ).json()
+    overview = client.get(
+        "/api/workbench/overview",
+        params={"session_id": session_id},
+    ).json()
+
+    assert anomalies["items"][0]["detail"] == "OCR 识别失败，请重试"
+    assert overview["recent_jobs"][0]["detail"] == "processing batch 2 of 5"
+
+
 @pytest.mark.parametrize("page_size", [0, 101])
 def test_anomalies_reject_invalid_page_size(workbench_client, page_size: int) -> None:
     client, session_id, _db_path, _latest_job_id = workbench_client

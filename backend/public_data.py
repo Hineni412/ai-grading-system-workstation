@@ -46,6 +46,21 @@ _GENERIC_POSIX_ROOT_TOKEN_PATTERN = re.compile(
 _PUBLIC_API_PATH_PATTERN = re.compile(
     r"^/api(?:/[A-Za-z0-9._~!$&'()*+,;=@%\-]+)*/?$"
 )
+_PUBLIC_DIAGNOSTIC_MAX_LENGTH = 240
+_PUBLIC_DIAGNOSTIC_SECRET_PATTERN = re.compile(
+    r"\b(?:api[\s_-]*key|access[\s_-]*token|refresh[\s_-]*token|"
+    r"token|secret|password|authorization)\b",
+    re.IGNORECASE,
+)
+_PUBLIC_DIAGNOSTIC_INTERNAL_FIELD_PATTERN = re.compile(
+    r"(?:^|[\s,{;])[\"']?(?:payload|result|error)[\"']?\s*[:=]",
+    re.IGNORECASE,
+)
+_PUBLIC_DIAGNOSTIC_STACK_PATTERN = re.compile(
+    r"\b(?:traceback|stack\s*trace|exception)\b|"
+    r"\bfile\s+[\"'][^\"']+[\"']\s*,\s*line\s+\d+",
+    re.IGNORECASE,
+)
 _LATEX_COMMAND_PATTERN = re.compile(r"\\([A-Za-z]+)")
 _LATEX_COMMAND_SEQUENCE_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_])(?:\\[A-Za-z]+){2,}(?![A-Za-z0-9._-])"
@@ -132,6 +147,25 @@ def contains_filesystem_reference(value: Any) -> bool:
 def sanitize_public_mapping(value: dict[Any, Any]) -> dict[str, Any]:
     sanitized = _sanitize_public_value(value)
     return sanitized if isinstance(sanitized, dict) else {}
+
+
+def sanitize_public_diagnostic_text(value: object) -> str | None:
+    """Keep only short, single-line diagnostics without opaque internals."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if (
+        not text
+        or len(text) > _PUBLIC_DIAGNOSTIC_MAX_LENGTH
+        or any(ord(character) < 32 for character in text)
+        or _contains_filesystem_token(text)
+        or _PUBLIC_DIAGNOSTIC_SECRET_PATTERN.search(text)
+        or _PUBLIC_DIAGNOSTIC_INTERNAL_FIELD_PATTERN.search(text)
+        or _PUBLIC_DIAGNOSTIC_STACK_PATTERN.search(text)
+        or (text[0] in "[{" and text[-1] in "]}")
+    ):
+        return None
+    return text
 
 
 def _sanitize_public_value(value: Any) -> Any:
