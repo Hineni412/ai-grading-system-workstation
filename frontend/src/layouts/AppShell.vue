@@ -4,14 +4,16 @@ import { RouterView, useRoute } from 'vue-router'
 
 import AppTopbar from '../components/shell/AppTopbar.vue'
 import { useReviewDraftStore } from '../stores/review-drafts'
+import { useConfigWorkspaceStore } from '../stores/config-workspace'
 import { useSessionStore } from '../stores/session'
 
 const route = useRoute()
 const sessionStore = useSessionStore()
 const draftStore = useReviewDraftStore()
+const configStore = useConfigWorkspaceStore()
 
 function onBeforeUnload(event: BeforeUnloadEvent): void {
-  if (!draftStore.hasDirtyDrafts) return
+  if (!draftStore.hasDirtyDrafts && !configStore.hasDirtyEditor) return
   event.preventDefault()
   event.returnValue = ''
 }
@@ -26,8 +28,18 @@ watch(
 
 onMounted(() => {
   window.addEventListener('beforeunload', onBeforeUnload)
-  void sessionStore.initialize()
+  void sessionStore.initialize().then(() => {
+    configStore.restoreSafeIndex(sessionStore.sessions.map(({ id }) => id))
+    if (configStore.sessionId !== sessionStore.selectedSessionId) {
+      configStore.selectSession(sessionStore.selectedSessionId)
+    }
+  })
 })
+
+watch(
+  () => sessionStore.selectedSessionId,
+  (sessionId) => configStore.selectSession(sessionId),
+)
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', onBeforeUnload)

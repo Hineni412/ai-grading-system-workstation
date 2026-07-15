@@ -6,6 +6,8 @@ export type ResponseDecoder<T> = (payload: unknown) => T
 export interface ApiRequestOptions<T> {
   method?: ApiMethod
   body?: unknown
+  rawBody?: BodyInit
+  headers?: Readonly<Record<string, string>>
   decode: ResponseDecoder<T>
   signal?: AbortSignal
   timeoutMs?: number
@@ -113,6 +115,9 @@ export function createApiClient(
       }
 
       const method = options.method ?? 'GET'
+      if (options.body !== undefined && options.rawBody !== undefined) {
+        throw contractError('ambiguous_request_body', requestId, null)
+      }
       const controller = new AbortController()
       let timedOut = false
       const timeoutMs = options.timeoutMs ?? 15_000
@@ -128,7 +133,15 @@ export function createApiClient(
         accept: 'application/json',
         'x-request-id': requestId,
       }
+      for (const [name, value] of Object.entries(options.headers ?? {})) {
+        const normalizedName = name.trim().toLowerCase()
+        if (!normalizedName || normalizedName === 'accept' || normalizedName === 'x-request-id') continue
+        headers[normalizedName] = value
+      }
       if (options.body !== undefined) headers['content-type'] = 'application/json'
+      const body = options.rawBody ?? (
+        options.body === undefined ? undefined : JSON.stringify(options.body)
+      )
 
       try {
         const attempts = method === 'GET' ? 3 : 1
@@ -146,7 +159,7 @@ export function createApiClient(
             const response = await dependencies.fetch(path, {
               method,
               headers,
-              body: options.body === undefined ? undefined : JSON.stringify(options.body),
+              body,
               signal: controller.signal,
             })
             const responseRequestId = response.headers.get('x-request-id')?.trim() || requestId

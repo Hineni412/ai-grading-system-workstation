@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import AppShell from '../../../layouts/AppShell.vue'
 import { createAppRouter } from '../../../router'
 import { useSessionStore } from '../../../stores/session'
+import { useConfigWorkspaceStore } from '../../../stores/config-workspace'
+import { useReviewDraftStore } from '../../../stores/review-drafts'
 
 async function settleUi(): Promise<void> {
   await Promise.resolve()
@@ -71,9 +73,32 @@ describe('AppShell', () => {
     expect(host.querySelector('[data-testid="app-topbar"]')?.textContent).toContain('评分复核')
     expect(host.querySelector('label[for="current-session"]')?.textContent).toBe('当前考试')
     expect(host.querySelector('#current-session')).not.toBeNull()
+    expect([...host.querySelectorAll('nav a')].map((link) => link.textContent)).toEqual([
+      '考试配置',
+      '评分复核',
+    ])
     expect(host.querySelector('[data-testid="navigation-toggle"]')).toBeNull()
     expect(host.querySelector('[data-testid="inspector-toggle"]')).toBeNull()
 
+    app.unmount()
+  })
+
+  it.each(['review', 'config'] as const)('warns before leaving with dirty %s work', async (kind) => {
+    const { app } = await mountShell()
+    if (kind === 'review') {
+      const store = useReviewDraftStore()
+      store.drafts['7:Q1:1'] = {
+        key: '7:Q1:1', sessionId: 7, questionId: 'Q1', detailId: 1,
+        scoreText: '4', note: '', baseScoreText: '3', baseNote: '',
+        dirty: true, updatedAt: Date.now(),
+      }
+    } else {
+      const store = useConfigWorkspaceStore()
+      store.updateEditor({ row_id: 'row-1', standard_answer: '草稿答案' })
+    }
+    const event = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
     app.unmount()
   })
 
