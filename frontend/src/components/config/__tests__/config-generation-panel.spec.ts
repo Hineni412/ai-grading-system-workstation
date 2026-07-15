@@ -93,7 +93,11 @@ beforeEach(async () => {
 describe('ConfigGenerationPanel', () => {
   it('explains both modes and submits a write only once while disabled', async () => {
     const pending = deferred<JobResponse>()
-    const submitter = vi.fn((_sessionId: number, _request: ConfigGenerationRequest) => pending.promise)
+    const submitter = vi.fn((_sessionId: number, _request: ConfigGenerationRequest) => {
+      void _sessionId
+      void _request
+      return pending.promise
+    })
     const mounted = await mountPanel({ submitter })
 
     expect(mounted.host.textContent).toContain('逐题生成')
@@ -141,8 +145,11 @@ describe('ConfigGenerationPanel', () => {
   })
 
   it('uses a fresh whole-document generation after whole mode failure', async () => {
-    const submitter = vi.fn(async (_sessionId: number, _request: ConfigGenerationRequest) =>
-      job({ id: 32, status: 'queued', progress: 0 }))
+    const submitter = vi.fn(async (_sessionId: number, _request: ConfigGenerationRequest) => {
+      void _sessionId
+      void _request
+      return job({ id: 32, status: 'queued', progress: 0 })
+    })
     const retryer = vi.fn()
     const configStore = useConfigWorkspaceStore()
     useJobStore().track(job({
@@ -250,7 +257,11 @@ describe('ConfigGenerationPanel', () => {
 
   it('keeps an old submitted Job tracked without attaching it to a new session', async () => {
     const pending = deferred<JobResponse>()
-    const submitter = vi.fn((_sessionId: number, _request: ConfigGenerationRequest) => pending.promise)
+    const submitter = vi.fn((_sessionId: number, _request: ConfigGenerationRequest) => {
+      void _sessionId
+      void _request
+      return pending.promise
+    })
     const configStore = useConfigWorkspaceStore()
     const mounted = await mountPanel({ submitter })
     mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!.click()

@@ -1,0 +1,185 @@
+import { createApp, nextTick } from 'vue'
+import { createPinia, setActivePinia } from 'pinia'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { ApiError } from '../../../api/errors'
+import type {
+  ConfigEditorResponse,
+  ConfigEditorSaveRequest,
+  ConfigEditorSaveResponse,
+} from '../../../api/config-workspace'
+import { useConfigWorkspaceStore } from '../../../stores/config-workspace'
+import { useSessionStore } from '../../../stores/session'
+import SessionConfigView from '../../../views/SessionConfigView.vue'
+import ConfigSaveResult from '../ConfigSaveResult.vue'
+
+function editor(answer = '旧答案', revision = 'a'): ConfigEditorResponse {
+  return {
+    session_id: 7, configured: true, revision: revision.repeat(64), total_score: 100,
+    source: null, issues: [], rows: [{
+      row_id: 'row-q12-p1-s1', question_id: 'Q12', part_id: 'P1', step_id: 'S1',
+      part_label: '第 1 问', question_type: 'proof', core_goal: '证明', score: 100,
+      standard_answer: answer, accepted_answers: [], match_rule: '按要素', knowledge: '',
+      answer_only_max_score: null, require_final_answer: true, required_elements: [],
+      deduction_rules: [], final_answer_rule: '',
+    }],
+  }
+}
+
+function saved(answer = '服务器权威答案', mappingStatus: ConfigEditorSaveResponse['save_result']['mapping_status'] = 'refreshed'): ConfigEditorSaveResponse {
+  return {
+    ...editor(answer, 'b'),
+    save_result: { config_saved: true, mapping_status: mappingStatus, mapping_message: 'ignored' },
+  }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail })
+  return { promise, resolve, reject }
+}
+
+async function settle(): Promise<void> {
+  await Promise.resolve(); await nextTick(); await Promise.resolve(); await nextTick()
+}
+
+async function mountView(options: {
+  saver: (sessionId: number, request: ConfigEditorSaveRequest) => Promise<ConfigEditorSaveResponse>
+  loader?: (sessionId: number) => Promise<ConfigEditorResponse>
+}) {
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const sessions = useSessionStore(pinia)
+  sessions.$patch({
+    sessions: [{ id: 7, name: '七年级数学', status: 'created', is_deleted: false,
+      deleted_at: null, created_at: null, updated_at: null }],
+    selectedSessionId: 7, loadState: 'ready',
+  })
+  const workspace = useConfigWorkspaceStore(pinia)
+  workspace.selectSession(7)
+  workspace.setEditor(editor())
+  const host = document.createElement('div')
+  document.body.append(host)
+  const app = createApp(SessionConfigView, { editorSaver: options.saver, editorLoader: options.loader })
+  app.use(pinia)
+  app.mount(host)
+  await nextTick()
+  return { host, workspace, unmount: () => app.unmount() }
+}
+
+async function mountResult(props: Record<string, unknown>) {
+  const host = document.createElement('div')
+  document.body.append(host)
+  let reloads = 0
+  const app = createApp(ConfigSaveResult, { ...props, onReload: () => { reloads += 1 } })
+  app.mount(host)
+  await nextTick()
+  return { host, reloads: () => reloads }
+}
+
+describe('ConfigSaveResult', () => {
+  it.each([
+    ['refreshed', '评分依据已保存，样卷映射已刷新'],
+    ['reconfirm_required', '评分依据已保存；样卷映射需要回旧入口重新确认'],
+    ['not_present', '评分依据已保存'],
+  ] as const)('uses authoritative %s mapping copy', async (mappingStatus, copy) => {
+    const mounted = await mountResult({ status: 'success', mappingStatus })
+    expect(mounted.host.textContent).toContain(copy)
+    expect(mounted.host.querySelector('[role="status"]')).not.toBeNull()
+  })
+
+  it('requires two explicit clicks before discarding local edits on conflict', async () => {
+    const mounted = await mountResult({ status: 'conflict' })
+    expect(mounted.host.querySelector('[role="alert"]')?.textContent).toContain('服务器已有较新版本')
+    const first = mounted.host.querySelector<HTMLButtonElement>('button[name="重新加载最新版本"]')!
+    first.click()
+    await nextTick()
+    expect(mounted.reloads()).toBe(0)
+    expect(mounted.host.textContent).toContain('本地修改将被丢弃')
+    mounted.host.querySelector<HTMLButtonElement>('button[name="确认丢弃并重新加载"]')!.click()
+    expect(mounted.reloads()).toBe(1)
+  })
+
+  it('states that a failed save retained the teacher edits', async () => {
+    const mounted = await mountResult({ status: 'failure' })
+    expect(mounted.host.querySelector('[role="alert"]')?.textContent).toContain('未保存')
+    expect(mounted.host.textContent).toContain('本地修改已保留')
+  })
+
+  it('sends one PUT with the loaded revision and disables a double submit', async () => {
+    const pending = deferred<ConfigEditorSaveResponse>()
+    const saver = vi.fn((_sessionId: number, _request: ConfigEditorSaveRequest) => {
+      void _sessionId
+      void _request
+      return pending.promise
+    })
+    const mounted = await mountView({ saver })
+    const answer = mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 标准答案"]')!
+    answer.value = '本地答案'
+    answer.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    const save = mounted.host.querySelector<HTMLButtonElement>('button[name="保存评分依据"]')!
+    save.click(); save.click()
+    await nextTick()
+
+    expect(saver).toHaveBeenCalledExactlyOnceWith(7, {
+      revision: 'a'.repeat(64),
+      edits: [{ row_id: 'row-q12-p1-s1', standard_answer: '本地答案' }],
+      commands: [],
+    })
+    expect(save.disabled).toBe(true)
+    pending.resolve(saved())
+    await settle()
+    expect(mounted.workspace.hasDirtyEditor).toBe(false)
+    expect(mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 标准答案"]')?.value).toBe('服务器权威答案')
+    expect(mounted.host.textContent).toContain('样卷映射已刷新')
+  })
+
+  it('retains local edits after a 409 and reloads only after the second confirmation', async () => {
+    const conflict = new ApiError({
+      kind: 'conflict', status: 409, code: 'config_revision_conflict', message: 'conflict',
+      details: {}, requestId: 'safe', retryable: false,
+    })
+    const loader = vi.fn(async () => editor('最新服务器答案', 'c'))
+    const mounted = await mountView({ saver: vi.fn(async () => { throw conflict }), loader })
+    const answer = mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 标准答案"]')!
+    answer.value = '本地未保存答案'
+    answer.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="保存评分依据"]')!.click()
+    await settle()
+
+    expect(mounted.workspace.saveStatus).toBe('conflict')
+    expect(mounted.host.querySelector('[role="alert"]')?.textContent).toContain('服务器已有较新版本')
+    expect(mounted.workspace.hasDirtyEditor).toBe(true)
+    expect(mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 标准答案"]')?.value).toBe('本地未保存答案')
+    mounted.host.querySelector<HTMLButtonElement>('button[name="重新加载最新版本"]')!.click()
+    await nextTick()
+    expect(loader).not.toHaveBeenCalled()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="确认丢弃并重新加载"]')!.click()
+    await settle()
+    expect(loader).toHaveBeenCalledExactlyOnceWith(7)
+    expect(mounted.workspace.hasDirtyEditor).toBe(false)
+    expect(mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 标准答案"]')?.value).toBe('最新服务器答案')
+  })
+
+  it('keeps edits and shows retained-work copy after an ordinary save failure', async () => {
+    const mounted = await mountView({ saver: vi.fn(async () => { throw new Error('private') }) })
+    const answer = mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 标准答案"]')!
+    answer.value = '不丢失'
+    answer.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="保存评分依据"]')!.click()
+    await settle()
+    expect(mounted.workspace.hasDirtyEditor).toBe(true)
+    expect(mounted.workspace.saveStatus).toBe('failure')
+    expect(mounted.host.textContent).toContain('本地修改已保留')
+    expect(mounted.host.textContent).not.toContain('private')
+  })
+})
+
+beforeEach(() => {
+  document.body.innerHTML = ''
+  localStorage.clear()
+})

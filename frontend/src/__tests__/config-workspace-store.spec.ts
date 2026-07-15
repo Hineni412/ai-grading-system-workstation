@@ -279,6 +279,22 @@ describe('configuration workspace Store', () => {
     expect(store.hasDirtyEditor).toBe(false)
   })
 
+  it('builds a single save request from the loaded revision and returns effective rows', () => {
+    const store = useConfigWorkspaceStore()
+    store.selectSession(7)
+    store.setEditor(editor('42'))
+    store.updateEditor({ row_id: 'row-1', score: 100, standard_answer: '43' })
+    store.addEditorCommand({ kind: 'split', question_id: 'Q1', count: 2, style: 'blank' })
+
+    expect(store.effectiveEditorRows[0]).toMatchObject({ score: 100, standard_answer: '43' })
+    expect(store.effectiveTotalScore).toBe(100)
+    expect(store.buildSaveRequest()).toEqual({
+      revision: 'a'.repeat(64),
+      edits: [{ row_id: 'row-1', score: 100, standard_answer: '43' }],
+      commands: [{ kind: 'split', question_id: 'Q1', count: 2, style: 'blank' }],
+    })
+  })
+
   it('refuses destructive session/source clearing until discard is explicit', () => {
     const store = useConfigWorkspaceStore()
     store.selectSession(7)
