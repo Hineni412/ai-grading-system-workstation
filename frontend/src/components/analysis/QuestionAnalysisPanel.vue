@@ -62,6 +62,7 @@ function displayTime(value: string | null): string {
       </button>
     </div>
     <template v-else>
+      <p v-if="state === 'loading'" class="workbench-state-copy" role="status">正在更新题目分析…</p>
       <div v-if="state === 'stale-error'" class="workbench-stale" role="alert">
         <span>数据可能不是最新 · 上次更新 {{ displayTime(updatedAt) }}</span>
         <button type="button" class="workbench-link-button" @click="$emit('retry')">
