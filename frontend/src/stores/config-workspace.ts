@@ -221,6 +221,34 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     persistSafeIndex()
   }
 
+  function acceptUploadedSource(value: ConfigSource): void {
+    if (sessionId.value !== value.session_id) throw new Error('Source session does not match')
+    hydrationRequest += 1
+    sourceRequest += 1
+    requestedSourceId = null
+    sourceId.value = value.source_id
+    sourceRevision.value = value.source_revision
+    source.value = value
+    jobId.value = null
+    decisions.value = []
+    editor.value = null
+    editorEdits.value = []
+    editorCommands.value = []
+    editorDirty.value = false
+    sourceLoading.value = false
+    sourceError.value = ''
+    phase.value = 'source'
+    persistSafeIndex()
+  }
+
+  function updateDecisions(value: QuestionDecision[]): void {
+    if (source.value === null) return
+    const knownIds = new Set(source.value.questions.map((question) => question.question_id))
+    decisions.value = value.filter((decision) => knownIds.has(decision.question_id)
+      && validDecision(decision)).map((decision) => ({ ...decision }))
+    persistSafeIndex()
+  }
+
   async function loadSource(
     expectedSessionId: number,
     expectedSourceId: string,
@@ -375,7 +403,8 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     sessionId, phase, sourceId, sourceRevision, jobId, decisions,
     source, editor, editorEdits, editorCommands, sourceLoading, sourceError,
     hasDirtyEditor, hydrateSafeIndex, persistSafeIndex, clearWorkspace,
-    selectSession, selectSource, discardEditorDraft, setSource, loadSource,
+    selectSession, selectSource, discardEditorDraft, setSource, acceptUploadedSource,
+    updateDecisions, loadSource,
     setEditor, updateEditor, addEditorCommand, noteSaveFailed,
   }
 })
