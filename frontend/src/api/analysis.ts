@@ -55,6 +55,12 @@ export interface StudentAnalysisResponse {
   total_pages: number
 }
 
+interface StudentAnalysisExpectation {
+  sessionId: number
+  questionId: string
+  className: string | null
+}
+
 function isInteger(value: unknown, positive = false): value is number {
   return Number.isSafeInteger(value) && Number(value) >= (positive ? 1 : 0)
 }
@@ -158,7 +164,29 @@ export function decodeQuestionAnalysisResponse(value: unknown): QuestionAnalysis
   return value as unknown as QuestionAnalysisResponse
 }
 
-export function decodeStudentAnalysisResponse(value: unknown): StudentAnalysisResponse {
+function hasMatchingStudentScope(
+  response: StudentAnalysisResponse,
+  expected?: StudentAnalysisExpectation,
+): boolean {
+  const { scope } = response
+  if (scope.question_id === null) return false
+  if (expected && (
+    scope.session_id !== expected.sessionId ||
+    scope.question_id !== expected.questionId ||
+    scope.class_name !== expected.className
+  )) return false
+  return response.items.every((item) => (
+    item.question_id === scope.question_id &&
+    (scope.class_name === null || item.class_name === scope.class_name) &&
+    item.evidence_url ===
+      `/api/sessions/${scope.session_id}/results/${item.result_id}/details/${item.detail_id}/crop`
+  ))
+}
+
+export function decodeStudentAnalysisResponse(
+  value: unknown,
+  expected?: StudentAnalysisExpectation,
+): StudentAnalysisResponse {
   if (
     !isRecord(value) ||
     !hasExactKeys(value, ['scope', 'items', 'total', 'page', 'page_size', 'total_pages']) ||
@@ -169,7 +197,11 @@ export function decodeStudentAnalysisResponse(value: unknown): StudentAnalysisRe
   ) {
     throw new Error('Invalid student analysis')
   }
-  return value as unknown as StudentAnalysisResponse
+  const response = value as unknown as StudentAnalysisResponse
+  if (!hasMatchingStudentScope(response, expected)) {
+    throw new Error('Invalid student analysis')
+  }
+  return response
 }
 
 function requireSessionId(sessionId: number): number {
@@ -198,13 +230,22 @@ export function fetchStudentAnalysis(
   className: string | null,
   signal?: AbortSignal,
 ): Promise<StudentAnalysisResponse> {
-  if (!questionId.trim()) throw new Error('Invalid question id')
+  const normalizedQuestionId = questionId.trim()
+  if (!normalizedQuestionId) throw new Error('Invalid question id')
+  const normalizedClassName = className === null ? null : className.trim()
   const query = new URLSearchParams()
   if (className !== null) query.set('class_name', className)
   query.set('page', '1')
   query.set('page_size', '100')
   return apiClient.request(
     `/api/sessions/${requireSessionId(sessionId)}/analysis/questions/${encodeURIComponent(questionId)}/students?${query.toString()}`,
-    { decode: decodeStudentAnalysisResponse, signal },
+    {
+      decode: (value) => decodeStudentAnalysisResponse(value, {
+        sessionId,
+        questionId: normalizedQuestionId,
+        className: normalizedClassName,
+      }),
+      signal,
+    },
   )
 }

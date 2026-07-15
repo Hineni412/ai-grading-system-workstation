@@ -7,7 +7,11 @@ import { createMemoryHistory } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { QuestionAnalysisResponse, StudentAnalysisResponse } from '../api/analysis'
-import { fetchGraphEvidence, type GraphRowsResponse } from '../api/graph'
+import {
+  fetchGraphEvidence,
+  type GraphEvidenceResponse,
+  type GraphRowsResponse,
+} from '../api/graph'
 import type { WorkbenchOverview } from '../api/workbench'
 import { createAppRouter } from '../router'
 import { useAnalysisStore } from '../stores/analysis'
@@ -157,6 +161,40 @@ const graph: GraphRowsResponse = {
   diagnosis_identity: 'question_tag',
 }
 
+function graphEvidenceResponse(): GraphEvidenceResponse {
+  return {
+    scope: graph.scope,
+    exam_scope: graph.exam_scope,
+    knowledge_key: 'knowledge_point:fraction',
+    knowledge_label: '分数运算',
+    items: [{
+      student_id: 17,
+      student_code: 'S017',
+      student_name: '学生甲',
+      class_id: '七年级一班',
+      knowledge_key: 'knowledge_point:fraction',
+      knowledge_label: '分数运算',
+      session_id: 7,
+      session_name: '七年级数学期末质量监测',
+      question_id: 'Q1',
+      bank_question_id: 101,
+      score_awarded: 8,
+      full_score: 10,
+      score_rate: 0.8,
+      tag_context: { 章节: ['数与代数'] },
+      actionable_reasons: ['计算过程漏写单位'],
+      error_counts: {},
+    }],
+    total: 1,
+    page: 1,
+    page_size: 20,
+    total_pages: 1,
+    coverage: graph.coverage,
+    warnings: graph.warnings,
+    diagnosis_identity: 'question_tag',
+  }
+}
+
 interface MountOptions {
   sessionId?: number | null
   overviewState?: ResourceState
@@ -303,37 +341,7 @@ function selectValue(select: HTMLSelectElement, value: string): void {
 beforeEach(() => {
   vi.restoreAllMocks()
   vi.clearAllMocks()
-  vi.mocked(fetchGraphEvidence).mockResolvedValue({
-    scope: graph.scope,
-    exam_scope: graph.exam_scope,
-    knowledge_key: 'knowledge_point:fraction',
-    knowledge_label: '分数运算',
-    items: [{
-      student_id: 17,
-      student_code: 'S017',
-      student_name: '学生甲',
-      class_id: '七年级一班',
-      knowledge_key: 'knowledge_point:fraction',
-      knowledge_label: '分数运算',
-      session_id: 7,
-      session_name: '七年级数学期末质量监测',
-      question_id: 'Q1',
-      bank_question_id: 101,
-      score_awarded: 8,
-      full_score: 10,
-      score_rate: 0.8,
-      tag_context: { 章节: ['数与代数'] },
-      actionable_reasons: ['计算过程漏写单位'],
-      error_counts: {},
-    }],
-    total: 1,
-    page: 1,
-    page_size: 20,
-    total_pages: 1,
-    coverage: graph.coverage,
-    warnings: graph.warnings,
-    diagnosis_identity: 'question_tag',
-  })
+  vi.mocked(fetchGraphEvidence).mockResolvedValue(graphEvidenceResponse())
 })
 
 afterEach(() => {
@@ -667,6 +675,35 @@ describe('workbench view', () => {
     expect(retained.host.textContent).toContain('计算过程漏写单位')
     expect(retained.loadGraph).toHaveBeenCalledTimes(1)
   })
+
+  it.each(['knowledge', 'class', 'session'] as const)(
+    'shows a retryable error instead of leaving %s-mismatched tag evidence loading',
+    async (mismatch) => {
+      const response = graphEvidenceResponse()
+      if (mismatch === 'knowledge') response.knowledge_key = 'knowledge_point:other'
+      if (mismatch === 'class') response.scope = { ...response.scope, class_id: 'other-class' }
+      if (mismatch === 'session') {
+        response.exam_scope = {
+          ...response.exam_scope,
+          session_ids: [8],
+          sessions: [{ session_id: 8, session_name: 'other exam' }],
+        }
+      }
+      vi.mocked(fetchGraphEvidence).mockResolvedValueOnce(response)
+      const mounted = await mountView()
+      selectValue(mounted.host.querySelector<HTMLSelectElement>('#analysis-class')!, '七年级一班')
+      await settleUi()
+
+      mounted.host.querySelector<HTMLButtonElement>('.tag-node')!.click()
+      await settleUi()
+
+      expect(mounted.host.querySelector('.tag-coverage .workbench-inline-error')).not.toBeNull()
+      expect(mounted.host.querySelector('.tag-coverage .workbench-inline-error')?.textContent)
+        .toContain('标签证据暂时无法读取')
+      expect(mounted.host.querySelector('.tag-coverage .workbench-state-copy')?.textContent ?? '')
+        .not.toContain('正在读取标签证据')
+    },
+  )
 
   it('warns that a single graded answer is not representative', async () => {
     const single = {

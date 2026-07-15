@@ -77,6 +77,12 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     try {
       const loaded = await loader(nextSessionId, controller.signal)
       if (generation !== overviewGeneration || sessionId.value !== nextSessionId) return
+      if (
+        (nextSessionId === null && loaded.current_session !== null) ||
+        (nextSessionId !== null && loaded.current_session?.id !== nextSessionId)
+      ) {
+        throw new Error('Workbench overview scope mismatch')
+      }
       overview.value = loaded
       overviewState.value = loaded.current_session === null ? 'empty' : 'ready'
       overviewUpdatedAt.value = new Date().toISOString()

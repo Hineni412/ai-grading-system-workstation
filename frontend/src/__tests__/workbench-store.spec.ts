@@ -62,6 +62,27 @@ describe('workbench store', () => {
     expect(store.overviewUpdatedAt).toBe(updatedAt)
   })
 
+  it('rejects overview data from a different session without replacing same-scope data', async () => {
+    const store = useWorkbenchStore()
+    await store.loadOverview(7, async () => overview7)
+    const updatedAt = store.overviewUpdatedAt
+
+    await store.loadOverview(7, async () => ({
+      ...overview7,
+      current_session: { ...overview7.current_session!, id: 8 },
+    }))
+
+    expect(store.overview).toEqual(overview7)
+    expect(store.overviewState).toBe('stale-error')
+    expect(store.overviewUpdatedAt).toBe(updatedAt)
+
+    const unscoped = useWorkbenchStore()
+    unscoped.resetForSession(null)
+    await unscoped.loadOverview(null, async () => overview7)
+    expect(unscoped.overview).toBeNull()
+    expect(unscoped.overviewState).toBe('error')
+  })
+
   it('loads anomalies independently and permits a later retry', async () => {
     const store = useWorkbenchStore()
     await store.loadOverview(7, async () => overview7)
