@@ -78,4 +78,19 @@ describe('RubricEditorTable', () => {
     expect(mounted.host.querySelectorAll('.rubric-ledger__sticky').length).toBeGreaterThanOrEqual(4)
     expect(mounted.host.textContent).toContain('完整证明'.repeat(40))
   })
+
+  it.each(['', 'NaN', 'Infinity', '-1', '100.1'])(
+    'rejects an out-of-contract rubric score %s without emitting it',
+    async (raw) => {
+      const mounted = await mountTable()
+      const score = mounted.host.querySelector<HTMLInputElement>('[aria-label="Q12 P1 S1 分值"]')!
+      score.value = raw
+      score.dispatchEvent(new Event('input', { bubbles: true }))
+      score.dispatchEvent(new Event('change', { bubbles: true }))
+      await nextTick()
+      expect(mounted.emitted).toEqual([])
+      expect(score.getAttribute('aria-invalid')).toBe('true')
+      expect(mounted.host.querySelector('[role="alert"]')?.textContent).toContain('0 至 100')
+    },
+  )
 })

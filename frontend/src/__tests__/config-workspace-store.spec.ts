@@ -279,6 +279,30 @@ describe('configuration workspace Store', () => {
     expect(store.hasDirtyEditor).toBe(false)
   })
 
+  it('invalidates one editor context token after every draft or authority change', () => {
+    const store = useConfigWorkspaceStore()
+    store.selectSession(7)
+    store.setSource(source('d'.repeat(32)))
+    store.setEditor(editor('42'))
+
+    let token = store.captureEditorContext()
+    expect(store.isEditorContextCurrent(token)).toBe(true)
+    store.updateEditor({ row_id: 'row-1', standard_answer: '43' })
+    expect(store.isEditorContextCurrent(token)).toBe(false)
+
+    token = store.captureEditorContext()
+    store.addEditorCommand({ kind: 'split', question_id: 'Q1', count: 2, style: 'blank' })
+    expect(store.isEditorContextCurrent(token)).toBe(false)
+
+    token = store.captureEditorContext()
+    store.setEditor({ ...editor('server reload'), revision: 'c'.repeat(64) })
+    expect(store.isEditorContextCurrent(token)).toBe(false)
+
+    token = store.captureEditorContext()
+    store.acceptUploadedSource({ ...source('e'.repeat(32)), source_revision: 'f'.repeat(64) })
+    expect(store.isEditorContextCurrent(token)).toBe(false)
+  })
+
   it('builds a single save request from the loaded revision and returns effective rows', () => {
     const store = useConfigWorkspaceStore()
     store.selectSession(7)

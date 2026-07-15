@@ -9,6 +9,7 @@ import {
   type GenerationMode,
   type ConfigEditorCommand,
   type ConfigEditorEdit,
+  type ConfigEditorIssue,
   type ConfigEditorResponse,
   type ConfigEditorSaveRequest,
   type ConfigEditorSaveResponse,
@@ -38,6 +39,13 @@ export interface ConfigGenerationSummary {
 }
 
 export type ConfigSaveStatus = 'idle' | 'saving' | 'success' | 'conflict' | 'failure'
+
+export interface ConfigEditorContextToken {
+  sessionId: number | null
+  sourceRevision: string | null
+  editorRevision: string | null
+  generation: number
+}
 
 export type ConfigSourceLoader = (
   sessionId: number,
@@ -113,6 +121,23 @@ function isNotFound(error: unknown): boolean {
   return error instanceof ApiError && error.kind === 'not_found'
 }
 
+function safeServerIssue(value: unknown): value is ConfigEditorIssue {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const issue = value as Record<string, unknown>
+  if (Object.keys(issue).sort().join(',') !== 'code,field,message,row_id,severity') return false
+  if (typeof issue.code !== 'string' || !/^[a-z][a-z0-9_]{0,99}$/.test(issue.code)
+    || (issue.severity !== 'error' && issue.severity !== 'warning')
+    || (issue.row_id !== null && (typeof issue.row_id !== 'string'
+      || issue.row_id.length < 1 || issue.row_id.length > 256 || /[\\/\u0000-\u001f]/.test(issue.row_id)))
+    || typeof issue.field !== 'string' || !/^[a-z_][a-z0-9_.]{0,199}$/.test(issue.field)
+    || typeof issue.message !== 'string' || issue.message.length < 1 || issue.message.length > 2_000
+    || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(issue.message)
+    || /(?:[a-z]:[\\/]|\\\\|file:\/\/|\/(?:home|users|tmp|var)\/|traceback)/i.test(issue.message)) {
+    return false
+  }
+  return true
+}
+
 function jobBelongsTo(job: JobResponse, sessionId: number, candidate: PersistedConfigWorkspace): boolean {
   if (job.job_type !== 'config_generation' || job.payload.session_id !== sessionId) return false
   if ('source_id' in job.payload && job.payload.source_id !== candidate.sourceId) return false
@@ -131,6 +156,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   const editor = ref<ConfigEditorResponse | null>(null)
   const editorEdits = ref<ConfigEditorEdit[]>([])
   const editorCommands = ref<ConfigEditorCommand[]>([])
+  const serverIssues = ref<ConfigEditorIssue[]>([])
   const editorDirty = ref(false)
   const saveStatus = ref<ConfigSaveStatus>('idle')
   const mappingStatus = ref<ConfigEditorSaveResponse['save_result']['mapping_status'] | null>(null)
@@ -140,6 +166,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   let sourceLoadGeneration = 0
   let hydrationRequest = 0
   let generationContext = 0
+  let editorContextGeneration = 0
   let requestedSourceId: string | null = null
 
   const hasDirtyEditor = computed(() => editorDirty.value)
@@ -193,11 +220,13 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
 
   function resetMemory(): void {
     generationContext += 1
+    editorContextGeneration += 1
     source.value = null
     generationSummary.value = null
     editor.value = null
     editorEdits.value = []
     editorCommands.value = []
+    serverIssues.value = []
     saveStatus.value = 'idle'
     mappingStatus.value = null
     sourceLoading.value = false
@@ -265,8 +294,10 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   }
 
   function discardEditorDraft(): void {
+    editorContextGeneration += 1
     editorEdits.value = []
     editorCommands.value = []
+    serverIssues.value = []
     editorDirty.value = false
     saveStatus.value = 'idle'
     mappingStatus.value = null
@@ -278,6 +309,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       generationContext += 1
       generationSummary.value = null
     }
+    editorContextGeneration += 1
     requestedSourceId = null
     sourceId.value = value.source_id
     sourceRevision.value = value.source_revision
@@ -292,6 +324,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     if (sessionId.value !== value.session_id) throw new Error('Source session does not match')
     hydrationRequest += 1
     generationContext += 1
+    editorContextGeneration += 1
     sourceLoadGeneration += 1
     requestedSourceId = null
     sourceId.value = value.source_id
@@ -302,6 +335,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     editor.value = null
     editorEdits.value = []
     editorCommands.value = []
+    serverIssues.value = []
     editorDirty.value = false
     sourceLoading.value = false
     sourceError.value = ''
@@ -504,12 +538,48 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     const index = editorEdits.value.findIndex((item) => item.row_id === edit.row_id)
     if (index < 0) editorEdits.value.push({ ...edit })
     else editorEdits.value[index] = { ...editorEdits.value[index], ...edit }
+    editorContextGeneration += 1
+    const changedFields = new Set(Object.keys(edit).filter((key) => key !== 'row_id'))
+    serverIssues.value = serverIssues.value.filter((issue) => issue.row_id !== null
+      && (issue.row_id !== edit.row_id || !changedFields.has(issue.field)))
+    if (saveStatus.value === 'saving' || saveStatus.value === 'failure') saveStatus.value = 'idle'
     editorDirty.value = true
   }
 
   function addEditorCommand(command: ConfigEditorCommand): void {
     editorCommands.value.push(command)
+    editorContextGeneration += 1
+    serverIssues.value = []
+    if (saveStatus.value === 'saving' || saveStatus.value === 'failure') saveStatus.value = 'idle'
     editorDirty.value = true
+  }
+
+  function captureEditorContext(): ConfigEditorContextToken {
+    return {
+      sessionId: sessionId.value,
+      sourceRevision: sourceRevision.value,
+      editorRevision: editor.value?.revision ?? null,
+      generation: editorContextGeneration,
+    }
+  }
+
+  function isEditorContextCurrent(token: ConfigEditorContextToken): boolean {
+    return token.sessionId === sessionId.value
+      && token.sourceRevision === sourceRevision.value
+      && token.editorRevision === (editor.value?.revision ?? null)
+      && token.generation === editorContextGeneration
+  }
+
+  function recordServerIssues(error: unknown): boolean {
+    if (!(error instanceof ApiError) || error.status !== 422
+      || error.code !== 'invalid_config_editor' || !Array.isArray(error.details.issues)
+      || error.details.issues.length < 1 || error.details.issues.length > 1_000
+      || !error.details.issues.every(safeServerIssue)) {
+      serverIssues.value = []
+      return false
+    }
+    serverIssues.value = error.details.issues.map((issue) => ({ ...(issue as ConfigEditorIssue) }))
+    return true
   }
 
   function noteSaveFailed(): void {
@@ -532,6 +602,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     if (saveStatus.value === 'saving' || editor.value === null) return false
     saveStatus.value = 'saving'
     mappingStatus.value = null
+    serverIssues.value = []
     return true
   }
 
@@ -547,13 +618,14 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
 
   return {
     sessionId, phase, sourceId, sourceRevision, jobId, decisions,
-    source, editor, editorEdits, editorCommands, generationSummary, sourceLoading, sourceError,
+    source, editor, editorEdits, editorCommands, serverIssues, generationSummary, sourceLoading, sourceError,
     saveStatus, mappingStatus, hasDirtyEditor, effectiveEditorRows, effectiveTotalScore,
     canGenerate, hydrateSafeIndex, persistSafeIndex, clearWorkspace,
     selectSession, selectSource, discardEditorDraft, setSource, acceptUploadedSource,
     updateDecisions, loadSource,
     setEditor, captureGenerationContext, attachJob, sourceRequest,
-    reloadEditorForGeneration, updateEditor, addEditorCommand, noteSaveFailed,
+    reloadEditorForGeneration, updateEditor, addEditorCommand, captureEditorContext,
+    isEditorContextCurrent, recordServerIssues, noteSaveFailed,
     buildSaveRequest, beginSave, markConflict, replaceWithAuthoritativeEditor,
   }
 })
