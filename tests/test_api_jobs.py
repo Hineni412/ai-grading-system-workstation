@@ -30,6 +30,143 @@ def client_with_manager(tmp_path):
             manager.shutdown()
 
 
+def test_jobs_list_filters_session_and_returns_safe_summaries(
+    client_with_manager,
+) -> None:
+    client, manager = client_with_manager
+    first = manager.store.create_job(
+        "grading_run",
+        {"session_id": 7, "path": "C:/private/a"},
+    )
+    manager.store.create_job(
+        "report_export",
+        {"session_id": 8, "token": "secret"},
+    )
+    manager.store.update_progress(
+        first.id,
+        progress=0.4,
+        stage="grading",
+        detail="processing",
+    )
+
+    response = client.get(
+        "/api/jobs",
+        params={"session_id": 7, "page": 1, "page_size": 20},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert response.json()["items"][0]["id"] == first.id
+    assert response.json()["items"][0]["detail"] == "processing"
+    assert set(response.json()["items"][0]) == {
+        "id",
+        "job_type",
+        "status",
+        "progress",
+        "stage",
+        "detail",
+        "created_at",
+        "started_at",
+        "updated_at",
+        "finished_at",
+    }
+    assert "payload" not in response.text
+    assert "result" not in response.text
+    assert "error" not in response.text
+    assert "C:/private" not in response.text
+    assert [item["id"] for item in response.json()["items"]] == [first.id]
+
+
+def test_jobs_list_sanitizes_legacy_detail_values(client_with_manager) -> None:
+    client, manager = client_with_manager
+    job = manager.store.create_job("grading_run", {"session_id": 7})
+    manager.store.update_progress(
+        job.id,
+        progress=0.4,
+        stage="grading",
+        detail="Cannot inspect C:/private/student.png",
+    )
+
+    response = client.get("/api/jobs", params={"session_id": 7})
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["detail"] == ""
+    assert "C:/private" not in response.text
+
+
+def test_jobs_list_accepts_repeated_job_type_and_status_filters(
+    client_with_manager,
+) -> None:
+    client, manager = client_with_manager
+    queued = manager.store.create_job("grading_run", {"session_id": 7})
+    succeeded = manager.store.create_job("report_export", {"session_id": 7})
+    ignored = manager.store.create_job("scan_analysis", {"session_id": 7})
+    assert manager.store.mark_running(succeeded.id) is True
+    manager.store.finish(succeeded.id, "succeeded")
+
+    response = client.get(
+        "/api/jobs",
+        params=[
+            ("job_type", "grading_run"),
+            ("job_type", "report_export"),
+            ("status", "queued"),
+            ("status", "succeeded"),
+        ],
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 2
+    assert [item["id"] for item in response.json()["items"]] == [
+        succeeded.id,
+        queued.id,
+    ]
+    assert ignored.id not in {item["id"] for item in response.json()["items"]}
+
+
+def test_jobs_list_rejects_invalid_status(client_with_manager) -> None:
+    client, _manager = client_with_manager
+
+    response = client.get("/api/jobs", params={"status": "complete"})
+
+    assert response.status_code == 422
+
+
+def test_jobs_list_uses_id_desc_stable_pagination(client_with_manager) -> None:
+    client, manager = client_with_manager
+    jobs = [
+        manager.store.create_job("grading_run", {"session_id": 7})
+        for _ in range(4)
+    ]
+
+    first_page = client.get("/api/jobs", params={"page": 1, "page_size": 2})
+    second_page = client.get("/api/jobs", params={"page": 2, "page_size": 2})
+
+    assert first_page.status_code == 200
+    assert second_page.status_code == 200
+    assert first_page.json()["total"] == 4
+    assert first_page.json()["total_pages"] == 2
+    assert [item["id"] for item in first_page.json()["items"]] == [
+        jobs[3].id,
+        jobs[2].id,
+    ]
+    assert [item["id"] for item in second_page.json()["items"]] == [
+        jobs[1].id,
+        jobs[0].id,
+    ]
+
+
+@pytest.mark.parametrize("page_size", [0, 101])
+def test_jobs_list_rejects_page_size_outside_bounds(
+    client_with_manager,
+    page_size: int,
+) -> None:
+    client, _manager = client_with_manager
+
+    response = client.get("/api/jobs", params={"page_size": page_size})
+
+    assert response.status_code == 422
+
+
 def test_jobs_api_submits_and_reads_registered_job(client_with_manager) -> None:
     from backend.jobs.manager import JobContext
 
