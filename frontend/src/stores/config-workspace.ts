@@ -10,6 +10,8 @@ import {
   type ConfigEditorCommand,
   type ConfigEditorEdit,
   type ConfigEditorResponse,
+  type ConfigEditorSaveRequest,
+  type ConfigEditorSaveResponse,
   type ConfigSource,
   type QuestionDecision,
 } from '../api/config-workspace'
@@ -34,6 +36,8 @@ export interface ConfigGenerationSummary {
   succeededQuestions: number
   failedQuestions: number
 }
+
+export type ConfigSaveStatus = 'idle' | 'saving' | 'success' | 'conflict' | 'failure'
 
 export type ConfigSourceLoader = (
   sessionId: number,
@@ -128,6 +132,8 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   const editorEdits = ref<ConfigEditorEdit[]>([])
   const editorCommands = ref<ConfigEditorCommand[]>([])
   const editorDirty = ref(false)
+  const saveStatus = ref<ConfigSaveStatus>('idle')
+  const mappingStatus = ref<ConfigEditorSaveResponse['save_result']['mapping_status'] | null>(null)
   const generationSummary = ref<ConfigGenerationSummary | null>(null)
   const sourceLoading = ref(false)
   const sourceError = ref('')
@@ -137,6 +143,17 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   let requestedSourceId: string | null = null
 
   const hasDirtyEditor = computed(() => editorDirty.value)
+  const effectiveEditorRows = computed(() => {
+    const edits = new Map(editorEdits.value.map((edit) => [edit.row_id, edit]))
+    return (editor.value?.rows ?? []).map((row) => {
+      const edit = edits.get(row.row_id)
+      return edit ? { ...row, ...Object.fromEntries(
+        Object.entries(edit).filter(([key, value]) => key !== 'row_id' && value !== null),
+      ) } : row
+    })
+  })
+  const effectiveTotalScore = computed(() => effectiveEditorRows.value
+    .reduce((total, row) => total + row.score, 0))
   const canGenerate = computed(() => {
     if (sessionId.value === null || source.value === null || sourceId.value === null
       || sourceRevision.value === null || source.value.questions.length === 0) return false
@@ -181,6 +198,8 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     editor.value = null
     editorEdits.value = []
     editorCommands.value = []
+    saveStatus.value = 'idle'
+    mappingStatus.value = null
     sourceLoading.value = false
     sourceError.value = ''
     requestedSourceId = null
@@ -249,6 +268,8 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     editorEdits.value = []
     editorCommands.value = []
     editorDirty.value = false
+    saveStatus.value = 'idle'
+    mappingStatus.value = null
   }
 
   function setSource(value: ConfigSource): void {
@@ -493,15 +514,46 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
 
   function noteSaveFailed(): void {
     // A failed write must not clear teacher work.
+    saveStatus.value = 'failure'
+  }
+
+  function buildSaveRequest(): ConfigEditorSaveRequest {
+    if (editor.value === null) throw new Error('Config editor is not loaded')
+    return {
+      revision: editor.value.revision,
+      edits: editorEdits.value.map((edit) => ({ ...edit })),
+      commands: editorCommands.value.map((command) => command.kind === 'replace_parts'
+        ? { ...command, parts: command.parts.map((part) => ({ ...part })) }
+        : { ...command }),
+    }
+  }
+
+  function beginSave(): boolean {
+    if (saveStatus.value === 'saving' || editor.value === null) return false
+    saveStatus.value = 'saving'
+    mappingStatus.value = null
+    return true
+  }
+
+  function markConflict(): void {
+    saveStatus.value = 'conflict'
+  }
+
+  function replaceWithAuthoritativeEditor(value: ConfigEditorSaveResponse): void {
+    setEditor(value)
+    saveStatus.value = 'success'
+    mappingStatus.value = value.save_result.mapping_status
   }
 
   return {
     sessionId, phase, sourceId, sourceRevision, jobId, decisions,
     source, editor, editorEdits, editorCommands, generationSummary, sourceLoading, sourceError,
-    hasDirtyEditor, canGenerate, hydrateSafeIndex, persistSafeIndex, clearWorkspace,
+    saveStatus, mappingStatus, hasDirtyEditor, effectiveEditorRows, effectiveTotalScore,
+    canGenerate, hydrateSafeIndex, persistSafeIndex, clearWorkspace,
     selectSession, selectSource, discardEditorDraft, setSource, acceptUploadedSource,
     updateDecisions, loadSource,
     setEditor, captureGenerationContext, attachJob, sourceRequest,
     reloadEditorForGeneration, updateEditor, addEditorCommand, noteSaveFailed,
+    buildSaveRequest, beginSave, markConflict, replaceWithAuthoritativeEditor,
   }
 })

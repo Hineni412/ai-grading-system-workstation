@@ -1,0 +1,81 @@
+import { createApp, nextTick } from 'vue'
+import { describe, expect, it } from 'vitest'
+
+import type { ConfigEditorIssue, ConfigEditorRow } from '../../../api/config-workspace'
+import RubricEditorTable from '../RubricEditorTable.vue'
+
+function row(overrides: Partial<ConfigEditorRow> = {}): ConfigEditorRow {
+  return {
+    row_id: 'row-q12-p1-s1', question_id: 'Q12', part_id: 'P1', step_id: 'S1',
+    part_label: '第 1 问', question_type: 'proof', core_goal: '完整证明'.repeat(40), score: 3,
+    standard_answer: '标准答案'.repeat(80), accepted_answers: ['等价答案 A'], match_rule: '按关键要素匹配',
+    knowledge: '', answer_only_max_score: null, require_final_answer: true,
+    required_elements: [], deduction_rules: [], final_answer_rule: '', ...overrides,
+  }
+}
+
+async function mountTable(options: {
+  rows?: ConfigEditorRow[]
+  totalScore?: number
+  issues?: ConfigEditorIssue[]
+} = {}) {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const emitted: unknown[] = []
+  const app = createApp(RubricEditorTable, {
+    rows: options.rows ?? [row(), row({ row_id: 'row-q12-p1-s2', step_id: 'S2', score: 97 })],
+    totalScore: options.totalScore ?? 100,
+    issues: options.issues ?? [],
+    onEdit: (edit: unknown) => emitted.push(edit),
+  })
+  app.mount(host)
+  await nextTick()
+  return { host, emitted, unmount: () => app.unmount() }
+}
+
+describe('RubricEditorTable', () => {
+  it('addresses score, standard answer and accepted answers by hidden row id', async () => {
+    const mounted = await mountTable()
+    const score = mounted.host.querySelector<HTMLInputElement>('[aria-label="Q12 P1 S1 分值"]')!
+    score.value = '4'
+    score.dispatchEvent(new Event('change', { bubbles: true }))
+    const answer = mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 标准答案"]')!
+    answer.value = '新的完整证明'
+    answer.dispatchEvent(new Event('change', { bubbles: true }))
+    const accepted = mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 等价答案"]')!
+    accepted.value = '答案 A\n\n答案 B'
+    accepted.dispatchEvent(new Event('change', { bubbles: true }))
+
+    expect(mounted.emitted).toEqual([
+      { row_id: 'row-q12-p1-s1', score: 4 },
+      { row_id: 'row-q12-p1-s1', standard_answer: '新的完整证明' },
+      { row_id: 'row-q12-p1-s1', accepted_answers: ['答案 A', '答案 B'] },
+    ])
+    expect(mounted.host.textContent).toContain('按关键要素匹配')
+    expect(mounted.host.querySelector('[data-row-id="row-q12-p1-s1"]')).not.toBeNull()
+  })
+
+  it('shows blocking total and normal warnings, then focuses the issue field', async () => {
+    const mounted = await mountTable({
+      totalScore: 99,
+      issues: [
+        { code: 'total', severity: 'error', row_id: null, field: 'score', message: '总分必须为 100' },
+        { code: 'answer', severity: 'warning', row_id: 'row-q12-p1-s1', field: 'standard_answer', message: '请核对标准答案' },
+      ],
+    })
+    expect(mounted.host.querySelector('[data-save-blocked="true"]')?.textContent).toContain('99')
+    expect(mounted.host.querySelector('[role="alert"]')?.textContent).toContain('总分必须为 100')
+    mounted.host.querySelector<HTMLButtonElement>('[data-issue-row-id="row-q12-p1-s1"]')!.click()
+    await nextTick()
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Q12 P1 S1 标准答案')
+  })
+
+  it('keeps long content in a labelled internal horizontal viewport with sticky identity columns', async () => {
+    const mounted = await mountTable()
+    const viewport = mounted.host.querySelector<HTMLElement>('.rubric-ledger__viewport')!
+    expect(viewport.getAttribute('aria-label')).toBe('评分依据编辑表')
+    expect(viewport.getAttribute('tabindex')).toBe('0')
+    expect(mounted.host.querySelectorAll('.rubric-ledger__sticky').length).toBeGreaterThanOrEqual(4)
+    expect(mounted.host.textContent).toContain('完整证明'.repeat(40))
+  })
+})

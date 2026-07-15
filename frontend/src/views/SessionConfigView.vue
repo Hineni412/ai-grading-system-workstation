@@ -1,18 +1,131 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue'
+
 import ConfigStageRail from '../components/config/ConfigStageRail.vue'
 import ConfigSourceUpload from '../components/config/ConfigSourceUpload.vue'
 import ConfigGenerationPanel from '../components/config/ConfigGenerationPanel.vue'
+import ConfigSaveResult from '../components/config/ConfigSaveResult.vue'
 import QuestionBlockReview from '../components/config/QuestionBlockReview.vue'
+import RubricEditorTable from '../components/config/RubricEditorTable.vue'
+import ScoringUnitEditor from '../components/config/ScoringUnitEditor.vue'
 import SessionDraftPanel from '../components/config/SessionDraftPanel.vue'
+import { ApiError } from '../api/errors'
+import {
+  fetchConfigEditor,
+  refineConfigEditor,
+  saveConfigEditor,
+  type ConfigEditorCommand,
+  type ConfigEditorRefineRequest,
+  type ConfigEditorResponse,
+  type ConfigEditorSaveRequest,
+  type ConfigEditorSaveResponse,
+  type ManualPartInput,
+} from '../api/config-workspace'
+import type { JobResponse } from '../api/jobs'
 import { useConfigWorkspaceStore } from '../stores/config-workspace'
+import { useJobStore } from '../stores/jobs'
 import { useSessionStore } from '../stores/session'
+
+const props = withDefaults(defineProps<{
+  editorSaver?: (sessionId: number, request: ConfigEditorSaveRequest) => Promise<ConfigEditorSaveResponse>
+  editorLoader?: (sessionId: number) => Promise<ConfigEditorResponse>
+  editorRefiner?: (sessionId: number, request: ConfigEditorRefineRequest) => Promise<JobResponse>
+}>(), {
+  editorSaver: saveConfigEditor,
+  editorLoader: fetchConfigEditor,
+  editorRefiner: refineConfigEditor,
+})
 
 const sessionStore = useSessionStore()
 const configStore = useConfigWorkspaceStore()
+const jobStore = useJobStore()
+const selectedScoringQuestion = ref('')
+const refining = ref(false)
+const refineError = ref('')
+
+const saving = computed(() => configStore.saveStatus === 'saving')
+const blockingIssues = computed(() => configStore.editor?.issues
+  .some((issue) => issue.severity === 'error') ?? false)
+const saveBlocked = computed(() => configStore.effectiveTotalScore !== 100 || blockingIssues.value)
+const scoringQuestions = computed(() => [...new Set(
+  configStore.effectiveEditorRows.map((row) => row.question_id),
+)])
+const activeScoringQuestion = computed(() => {
+  if (scoringQuestions.value.includes(selectedScoringQuestion.value)) return selectedScoringQuestion.value
+  return scoringQuestions.value[0] ?? ''
+})
+const activeParts = computed<ManualPartInput[]>(() => {
+  const byPart = new Map<string, ManualPartInput>()
+  for (const row of configStore.effectiveEditorRows) {
+    if (row.question_id !== activeScoringQuestion.value) continue
+    const current = byPart.get(row.part_id)
+    if (current) current.score += row.score
+    else byPart.set(row.part_id, {
+      part_id: row.part_id, score: row.score, core_goal: row.core_goal,
+    })
+  }
+  return [...byPart.values()]
+})
 
 function confirmSourceUpload(): boolean {
   if (!configStore.hasDirtyEditor) return true
   return window.confirm('替换试卷会在新文件接收成功后清除尚未保存的评分依据修改。是否继续？')
+}
+
+async function saveEditor(): Promise<void> {
+  if (configStore.sessionId === null || !configStore.hasDirtyEditor || saveBlocked.value
+    || !configStore.beginSave()) return
+  const sessionId = configStore.sessionId
+  const request = configStore.buildSaveRequest()
+  try {
+    const response = await props.editorSaver(sessionId, request)
+    if (configStore.sessionId !== sessionId) return
+    configStore.replaceWithAuthoritativeEditor(response)
+  } catch (error) {
+    if (configStore.sessionId !== sessionId) return
+    if (error instanceof ApiError
+      && (error.code === 'config_revision_conflict' || error.status === 409)) {
+      configStore.markConflict()
+    } else {
+      configStore.noteSaveFailed()
+    }
+  }
+}
+
+async function reloadLatestEditor(): Promise<void> {
+  const sessionId = configStore.sessionId
+  if (sessionId === null) return
+  try {
+    const response = await props.editorLoader(sessionId)
+    if (configStore.sessionId === sessionId) configStore.setEditor(response)
+  } catch {
+    configStore.noteSaveFailed()
+  }
+}
+
+function queueCommand(command: ConfigEditorCommand): void {
+  configStore.addEditorCommand(command)
+}
+
+async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
+  if (configStore.sessionId === null || configStore.editor === null
+    || configStore.hasDirtyEditor || refining.value) return
+  const sessionId = configStore.sessionId
+  const context = configStore.captureGenerationContext()
+  refining.value = true
+  refineError.value = ''
+  try {
+    const job = await props.editorRefiner(sessionId, {
+      revision: configStore.editor.revision,
+      commands: [command],
+    })
+    jobStore.track(job)
+    configStore.attachJob(job.id, context)
+  } catch {
+    refineError.value = 'AI 完善任务未提交，当前评分依据没有改变。'
+  } finally {
+    refining.value = false
+  }
 }
 </script>
 
@@ -61,6 +174,59 @@ function confirmSourceUpload(): boolean {
           @update:decisions="configStore.updateDecisions"
         />
         <ConfigGenerationPanel v-if="configStore.source" />
+        <section v-if="configStore.editor?.configured" class="config-editor" aria-label="评分依据工作区">
+          <RubricEditorTable
+            :rows="configStore.effectiveEditorRows"
+            :total-score="configStore.effectiveTotalScore"
+            :issues="configStore.editor.issues"
+            :disabled="saving"
+            @edit="configStore.updateEditor"
+          />
+
+          <details v-if="scoringQuestions.length" class="config-editor__units">
+            <summary>调整评分单元</summary>
+            <label class="config-editor__question-picker">
+              <span>选择题号</span>
+              <select v-model="selectedScoringQuestion" aria-label="评分单元题号">
+                <option v-for="questionId in scoringQuestions" :key="questionId" :value="questionId">
+                  {{ questionId }}
+                </option>
+              </select>
+            </label>
+            <ScoringUnitEditor
+              v-if="activeScoringQuestion"
+              :question-id="activeScoringQuestion"
+              :parts="activeParts"
+              :disabled="saving || refining"
+              @command="queueCommand"
+              @refine="refineScoringUnits"
+            />
+            <p v-if="configStore.hasDirtyEditor" class="config-editor__refine-note">
+              如需 AI 完善，请先保存当前本地修改。
+            </p>
+            <p v-if="refineError" class="config-editor__refine-error" role="alert">{{ refineError }}</p>
+          </details>
+
+          <div class="config-editor__save-bar">
+            <div>
+              <strong>{{ configStore.hasDirtyEditor ? '有未保存修改' : '已与服务器版本同步' }}</strong>
+              <span v-if="saveBlocked">需处理阻断问题并使总分为 100 后保存。</span>
+              <span v-else>保存时会一次提交全部行修改与评分单元命令。</span>
+            </div>
+            <button
+              type="button"
+              name="保存评分依据"
+              class="config-editor__save-primary"
+              :disabled="!configStore.hasDirtyEditor || saveBlocked || saving"
+              @click="saveEditor"
+            >{{ saving ? '正在保存…' : '保存评分依据' }}</button>
+          </div>
+          <ConfigSaveResult
+            :status="configStore.saveStatus === 'saving' ? 'idle' : configStore.saveStatus"
+            :mapping-status="configStore.mappingStatus"
+            @reload="reloadLatestEditor"
+          />
+        </section>
       </template>
     </template>
   </article>
