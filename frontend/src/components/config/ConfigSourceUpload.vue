@@ -2,9 +2,11 @@
 import { ref } from 'vue'
 
 import {
+  fetchConfigSource,
   uploadConfigSource,
   type ConfigSource,
 } from '../../api/config-workspace'
+import { isAmbiguousWriteError } from '../../api/errors'
 
 const MAX_SOURCE_BYTES = 200 * 1024 * 1024
 
@@ -13,10 +15,12 @@ const props = withDefaults(defineProps<{
   source?: ConfigSource | null
   uploader?: (sessionId: number, file: File) => Promise<ConfigSource>
   beforeUpload?: () => boolean
+  sourceLoader?: (sessionId: number, sourceId: string) => Promise<ConfigSource>
 }>(), {
   source: null,
   uploader: uploadConfigSource,
   beforeUpload: () => true,
+  sourceLoader: fetchConfigSource,
 })
 
 const emit = defineEmits<{
@@ -57,10 +61,33 @@ async function submit(): Promise<void> {
     emit('uploaded', accepted)
     selectedFile.value = null
     if (fileInput.value) fileInput.value.value = ''
-  } catch {
-    errorMessage.value = props.source === null
-      ? '文件未接收成功。请选择文件后重新上传。'
-      : '新文件未接收成功，当前试卷来源已保留。'
+  } catch (error) {
+    if (isAmbiguousWriteError(error)) {
+      errorMessage.value = '上传结果未知，正在核对服务器中的当前来源…'
+      const previous = props.source
+      if (previous !== null) {
+        try {
+          const authoritative = await props.sourceLoader(props.sessionId, previous.source_id)
+          if (authoritative.source_id !== previous.source_id
+            || authoritative.source_revision !== previous.source_revision) {
+            emit('uploaded', authoritative)
+            selectedFile.value = null
+            if (fileInput.value) fileInput.value.value = ''
+            errorMessage.value = ''
+          } else {
+            errorMessage.value = '核对完成：服务器仍保留原试卷来源；没有重复提交上传。'
+          }
+        } catch {
+          errorMessage.value = '上传结果未知，暂时无法核对当前来源。为避免重复接收，请稍后刷新页面再确认。'
+        }
+      } else {
+        errorMessage.value = '上传结果未知，暂时无法核对当前来源。为避免重复接收，请稍后刷新页面再确认。'
+      }
+    } else {
+      errorMessage.value = props.source === null
+        ? '文件未接收成功。请选择文件后重新上传。'
+        : '新文件未接收成功，当前试卷来源已保留。'
+    }
   } finally {
     uploading.value = false
   }

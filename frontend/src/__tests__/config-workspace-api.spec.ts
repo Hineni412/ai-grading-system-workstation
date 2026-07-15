@@ -134,6 +134,23 @@ describe('configuration workspace API', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
+  it('uses a dedicated ten-minute timeout for upload and parsing', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((_path, init) =>
+        new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () =>
+          reject(new DOMException('aborted', 'AbortError')), { once: true })))
+      const request = uploadConfigSource(7, new File(['x'], 'a.pdf'))
+      const outcome = request.catch((error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(15_001)
+      expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(false)
+      await vi.advanceTimersByTimeAsync(585_000)
+      await expect(outcome).resolves.toMatchObject({ kind: 'timeout' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('strictly decodes every public workspace response and sends bounded DTOs', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(response(session, 201))

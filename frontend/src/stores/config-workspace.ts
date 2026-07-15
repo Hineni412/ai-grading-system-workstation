@@ -38,7 +38,7 @@ export interface ConfigGenerationSummary {
   failedQuestions: number
 }
 
-export type ConfigSaveStatus = 'idle' | 'saving' | 'success' | 'conflict' | 'failure'
+export type ConfigSaveStatus = 'idle' | 'saving' | 'success' | 'conflict' | 'failure' | 'unknown'
 
 export interface ConfigEditorContextToken {
   sessionId: number | null
@@ -140,7 +140,7 @@ function safeServerIssue(value: unknown): value is ConfigEditorIssue {
     || (issue.severity !== 'error' && issue.severity !== 'warning')
     || (issue.row_id !== null && (typeof issue.row_id !== 'string'
       || issue.row_id.length < 1 || issue.row_id.length > 256 || /[\\/\u0000-\u001f]/.test(issue.row_id)))
-    || typeof issue.field !== 'string' || !editableIssueFields.has(issue.field)
+    || typeof issue.field !== 'string' || !/^[a-z][a-z0-9_]{0,99}$/.test(issue.field)
     || typeof issue.message !== 'string' || issue.message.length < 1 || issue.message.length > 2_000
     || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(issue.message)
     || /(?:[a-z]:[\\/]|\\\\|file:\/\/|\/(?:home|users|tmp|var)\/|traceback)/i.test(issue.message)) {
@@ -428,6 +428,14 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     return true
   }
 
+  function detachJob(id?: number): void {
+    if (id !== undefined && jobId.value !== id) return
+    jobId.value = null
+    generationSummary.value = null
+    phase.value = derivePhase()
+    persistSafeIndex()
+  }
+
   function sourceRequest(mode: GenerationMode): ConfigGenerationRequest {
     if (!canGenerate.value || sourceId.value === null || sourceRevision.value === null) {
       throw new Error('Config source is not ready')
@@ -551,8 +559,8 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     else editorEdits.value[index] = { ...editorEdits.value[index], ...edit }
     editorContextGeneration += 1
     const changedFields = new Set(Object.keys(edit).filter((key) => key !== 'row_id'))
-    serverIssues.value = serverIssues.value.filter((issue) => issue.row_id !== null
-      && (issue.row_id !== edit.row_id || !changedFields.has(issue.field)))
+    serverIssues.value = serverIssues.value.filter((issue) => issue.row_id === null
+      || issue.row_id !== edit.row_id || !changedFields.has(issue.field))
     if (saveStatus.value === 'saving' || saveStatus.value === 'failure') saveStatus.value = 'idle'
     editorDirty.value = true
   }
@@ -584,17 +592,21 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   function recordServerIssues(error: unknown): boolean {
     if (!(error instanceof ApiError) || error.status !== 422
       || error.code !== 'invalid_config_editor' || !Array.isArray(error.details.issues)
-      || error.details.issues.length < 1 || error.details.issues.length > 1_000
-      || !error.details.issues.every(safeServerIssue)) {
+      || error.details.issues.length < 1 || error.details.issues.length > 1_000) {
+      serverIssues.value = []
+      return false
+    }
+    const safeIssues = error.details.issues.filter(safeServerIssue)
+    if (safeIssues.length === 0) {
       serverIssues.value = []
       return false
     }
     const knownRowIds = new Set(effectiveEditorRows.value.map((row) => row.row_id))
-    serverIssues.value = error.details.issues.map((issue) => {
-      const safeIssue = issue as ConfigEditorIssue
+    serverIssues.value = safeIssues.map((safeIssue) => {
       return {
         ...safeIssue,
         row_id: safeIssue.row_id !== null && knownRowIds.has(safeIssue.row_id)
+          && editableIssueFields.has(safeIssue.field)
           ? safeIssue.row_id
           : null,
       }
@@ -605,6 +617,10 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   function noteSaveFailed(): void {
     // A failed write must not clear teacher work.
     saveStatus.value = 'failure'
+  }
+
+  function noteSaveUnknown(): void {
+    saveStatus.value = 'unknown'
   }
 
   function buildSaveRequest(): ConfigEditorSaveRequest {
@@ -619,7 +635,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   }
 
   function beginSave(): boolean {
-    if (saveStatus.value === 'saving' || editor.value === null) return false
+    if (saveStatus.value === 'saving' || saveStatus.value === 'unknown' || editor.value === null) return false
     saveStatus.value = 'saving'
     mappingStatus.value = null
     serverIssues.value = []
@@ -636,6 +652,12 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     mappingStatus.value = value.save_result.mapping_status
   }
 
+  function replaceWithReconciledEditor(value: ConfigEditorResponse): void {
+    setEditor(value)
+    saveStatus.value = 'success'
+    mappingStatus.value = null
+  }
+
   return {
     sessionId, phase, sourceId, sourceRevision, jobId, decisions,
     source, editor, editorEdits, editorCommands, serverIssues, generationSummary, sourceLoading, sourceError,
@@ -643,9 +665,10 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     canGenerate, hydrateSafeIndex, persistSafeIndex, clearWorkspace,
     selectSession, selectSource, discardEditorDraft, setSource, acceptUploadedSource,
     updateDecisions, loadSource,
-    setEditor, captureGenerationContext, attachJob, sourceRequest,
+    setEditor, captureGenerationContext, attachJob, detachJob, sourceRequest,
     reloadEditorForGeneration, updateEditor, addEditorCommand, captureEditorContext,
-    isEditorContextCurrent, recordServerIssues, noteSaveFailed,
+    isEditorContextCurrent, recordServerIssues, noteSaveFailed, noteSaveUnknown,
     buildSaveRequest, beginSave, markConflict, replaceWithAuthoritativeEditor,
+    replaceWithReconciledEditor,
   }
 })

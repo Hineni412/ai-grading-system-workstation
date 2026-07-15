@@ -9,9 +9,17 @@ import {
   type SessionLoader,
   type SessionSummary,
 } from '../api/sessions'
+import { isAmbiguousWriteError } from '../api/errors'
 
 export const SESSION_STORAGE_KEY = 'ai-grading:selected-session:v1'
 export type SessionLoadState = 'idle' | 'loading' | 'ready' | 'error'
+
+export class SessionDraftOutcomeUnknownError extends Error {
+  constructor() {
+    super('考试草稿创建结果未知')
+    this.name = 'SessionDraftOutcomeUnknownError'
+  }
+}
 
 function readPersistedId(): number | null {
   const raw = localStorage.getItem(SESSION_STORAGE_KEY)
@@ -72,7 +80,25 @@ export const useSessionStore = defineStore('session', () => {
   ): Promise<SessionSummary> {
     const normalized = name.trim()
     if (!normalized) throw new Error('考试名称不能为空')
-    const created = await creator(normalized)
+    const knownIds = new Set(sessions.value.map((session) => session.id))
+    let created: SessionSummary
+    try {
+      created = await creator(normalized)
+    } catch (error) {
+      if (!isAmbiguousWriteError(error)) throw error
+      let loaded: SessionSummary[]
+      try {
+        loaded = await loader()
+      } catch {
+        throw new SessionDraftOutcomeUnknownError()
+      }
+      const reconciled = loaded.find((session) => !knownIds.has(session.id)
+        && session.name.trim() === normalized && !session.is_deleted)
+      sessions.value = loaded
+      loadState.value = 'ready'
+      if (!reconciled) throw new Error('考试草稿创建请求已核对，服务器未出现新草稿')
+      created = reconciled
+    }
     persistedCandidateId = created.id
     localStorage.setItem(SESSION_STORAGE_KEY, String(created.id))
     await initialize(loader)

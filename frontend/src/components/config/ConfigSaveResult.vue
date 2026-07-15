@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 
-type SaveStatus = 'idle' | 'success' | 'conflict' | 'failure'
+type SaveStatus = 'idle' | 'success' | 'conflict' | 'failure' | 'unknown'
 type MappingStatus = 'not_present' | 'refreshed' | 'reconfirm_required'
 
 const props = withDefaults(defineProps<{
@@ -40,5 +40,9 @@ watch(() => props.status, () => { confirmingReload.value = false })
     <span v-else>重新加载后，本地修改将被丢弃，且不会自动合并。</span>
     <button v-if="!confirmingReload" type="button" name="重新加载最新版本" @click="confirmingReload = true">重新加载最新版本</button>
     <button v-else type="button" name="确认丢弃并重新加载" @click="emit('reload')">确认丢弃并重新加载</button>
+  </div>
+  <div v-else-if="status === 'unknown'" class="config-save-result config-save-result--conflict" role="alert">
+    <strong>保存结果未知，暂时无法完成核对。</strong>
+    <span>本地修改已保留。为避免重复提交，请恢复连接后刷新页面并确认服务器版本。</span>
   </div>
 </template>

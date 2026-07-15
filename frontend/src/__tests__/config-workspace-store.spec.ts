@@ -333,6 +333,28 @@ describe('configuration workspace Store', () => {
     expect(store.serverIssues).toEqual([])
   })
 
+  it('retains safe unknown 422 fields as global blockers without dropping known issues', () => {
+    const store = useConfigWorkspaceStore()
+    store.selectSession(7)
+    store.setEditor(editor('旧答案'))
+    const invalid = new ApiError({ kind: 'validation', status: 422,
+      code: 'invalid_config_editor', message: 'invalid', requestId: 'safe', retryable: false,
+      details: { issues: [
+        { code: 'invalid_score', severity: 'error', row_id: 'row-1', field: 'score', message: '核对分值' },
+        { code: 'future_policy', severity: 'error', row_id: 'row-1', field: 'future_policy', message: '核对新策略' },
+      ] } })
+
+    expect(store.recordServerIssues(invalid)).toBe(true)
+    expect(store.serverIssues).toEqual([
+      { code: 'invalid_score', severity: 'error', row_id: 'row-1', field: 'score', message: '核对分值' },
+      { code: 'future_policy', severity: 'error', row_id: null, field: 'future_policy', message: '核对新策略' },
+    ])
+    store.updateEditor({ row_id: 'row-1', score: 6 })
+    expect(store.serverIssues).toEqual([
+      { code: 'future_policy', severity: 'error', row_id: null, field: 'future_policy', message: '核对新策略' },
+    ])
+  })
+
   it('builds a single save request from the loaded revision and returns effective rows', () => {
     const store = useConfigWorkspaceStore()
     store.selectSession(7)

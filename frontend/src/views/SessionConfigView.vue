@@ -9,7 +9,7 @@ import QuestionBlockReview from '../components/config/QuestionBlockReview.vue'
 import RubricEditorTable from '../components/config/RubricEditorTable.vue'
 import ScoringUnitEditor from '../components/config/ScoringUnitEditor.vue'
 import SessionDraftPanel from '../components/config/SessionDraftPanel.vue'
-import { ApiError } from '../api/errors'
+import { ApiError, isAmbiguousWriteError } from '../api/errors'
 import {
   fetchConfigEditor,
   refineConfigEditor,
@@ -45,6 +45,12 @@ const refineError = ref('')
 const rubricInputValid = ref(true)
 
 const saving = computed(() => configStore.saveStatus === 'saving')
+const saveUnknown = computed(() => configStore.saveStatus === 'unknown')
+const refineActive = computed(() => {
+  const current = configStore.jobId === null ? null : jobStore.jobs[configStore.jobId]
+  return current?.payload.mode === 'refine'
+    && !['succeeded', 'failed', 'cancelled'].includes(current.status)
+})
 const editorIssues = computed(() => [
   ...(configStore.editor?.issues ?? []),
   ...configStore.serverIssues,
@@ -78,6 +84,24 @@ function confirmSourceUpload(): boolean {
   return window.confirm('替换试卷会在新文件接收成功后清除尚未保存的评分依据修改。是否继续？')
 }
 
+function sameValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function editorReflectsRequest(
+  response: ConfigEditorResponse,
+  request: ConfigEditorSaveRequest,
+): boolean {
+  if (response.revision === request.revision || request.commands.length > 0) return false
+  const rows = new Map(response.rows.map((row) => [row.row_id, row]))
+  return request.edits.every((edit) => {
+    const row = rows.get(edit.row_id)
+    if (!row) return false
+    return Object.entries(edit).every(([field, value]) => field === 'row_id'
+      || sameValue(row[field as keyof typeof row], value))
+  })
+}
+
 async function saveEditor(): Promise<void> {
   if (configStore.sessionId === null || !configStore.hasDirtyEditor || saveBlocked.value
     || !configStore.beginSave()) return
@@ -93,6 +117,20 @@ async function saveEditor(): Promise<void> {
     if (error instanceof ApiError
       && (error.code === 'config_revision_conflict' || error.status === 409)) {
       configStore.markConflict()
+    } else if (isAmbiguousWriteError(error)) {
+      try {
+        const authoritative = await props.editorLoader(sessionId)
+        if (!configStore.isEditorContextCurrent(context)) return
+        if (editorReflectsRequest(authoritative, request)) {
+          configStore.replaceWithReconciledEditor(authoritative)
+        } else if (authoritative.revision === request.revision) {
+          configStore.noteSaveFailed()
+        } else {
+          configStore.markConflict()
+        }
+      } catch {
+        if (configStore.isEditorContextCurrent(context)) configStore.noteSaveUnknown()
+      }
     } else if (configStore.recordServerIssues(error)) {
       configStore.noteSaveFailed()
     } else {
@@ -189,7 +227,7 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
             :rows="configStore.effectiveEditorRows"
             :total-score="configStore.effectiveTotalScore"
             :issues="editorIssues"
-            :disabled="saving"
+            :disabled="saving || refining || refineActive"
             @edit="configStore.updateEditor"
             @validity="rubricInputValid = $event"
           />
@@ -208,7 +246,7 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
               v-if="activeScoringQuestion"
               :question-id="activeScoringQuestion"
               :parts="activeParts"
-              :disabled="saving || refining"
+              :disabled="saving || refining || refineActive"
               @command="queueCommand"
               @refine="refineScoringUnits"
             />
@@ -228,7 +266,7 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
               type="button"
               name="保存评分依据"
               class="config-editor__save-primary"
-              :disabled="!configStore.hasDirtyEditor || saveBlocked || saving"
+              :disabled="!configStore.hasDirtyEditor || saveBlocked || saving || saveUnknown || refining || refineActive"
               @click="saveEditor"
             >{{ saving ? '正在保存…' : '保存评分依据' }}</button>
           </div>

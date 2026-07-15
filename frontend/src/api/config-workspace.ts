@@ -253,6 +253,7 @@ export async function uploadConfigSource(sessionId: number, file: File): Promise
       'content-type': 'application/octet-stream',
       'x-upload-filename': encodeURIComponent(file.name),
     },
+    timeoutMs: 10 * 60 * 1_000,
     decode: decodeConfigSource,
   })
 }

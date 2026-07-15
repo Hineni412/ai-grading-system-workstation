@@ -176,6 +176,23 @@
   line-height: var(--line-height-relaxed);
 }
 
+.rubric-ledger__policy {
+  display: grid;
+  width: 280px;
+  gap: var(--space-2);
+}
+
+.rubric-ledger__policy label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.rubric-ledger__policy input[type="checkbox"] {
+  width: auto;
+  min-height: auto;
+}
+
 .config-editor__units {
   margin-block-start: var(--space-4);
   border: var(--border-width) solid var(--color-border-default);

@@ -10,6 +10,7 @@ import {
   type GenerationMode,
 } from '../../api/config-workspace'
 import type { JobResponse } from '../../api/jobs'
+import { isAmbiguousWriteError } from '../../api/errors'
 import {
   useConfigWorkspaceStore,
   type ConfigGenerationSummary,
@@ -34,6 +35,7 @@ const requestError = ref('')
 const editorError = ref('')
 const selectedFailed = ref<string[]>([])
 const editorLoads = new Set<number>()
+const submissionUnknown = ref(false)
 
 const job = computed(() => configStore.jobId === null ? null : jobStore.jobs[configStore.jobId] ?? null)
 const syncError = computed(() => configStore.jobId === null
@@ -52,6 +54,7 @@ const active = computed(() => job.value !== null
   && !['succeeded', 'failed', 'cancelled'].includes(job.value.status))
 const waitingForCancel = computed(() => job.value?.cancel_requested === true
   && (job.value.status === 'queued' || job.value.status === 'running'))
+const refineJob = computed(() => job.value?.payload.mode === 'refine')
 const safeDetail = computed(() => {
   const detail = job.value?.detail.trim() ?? ''
   if (!detail || detail.length > 240 || /(?:[a-z]:[\\/]|\\\\|\/[^ ]+\/)/i.test(detail)) return ''
@@ -74,17 +77,57 @@ function statusCopy(value: JobResponse): string {
   return outcome.value === 'partial' ? '部分完成' : '生成完成'
 }
 
+function matchingGenerationJob(
+  sessionId: number,
+  request: ConfigGenerationRequest,
+  excludedIds: ReadonlySet<number>,
+): JobResponse | null {
+  return Object.values(jobStore.jobs).find((candidate) => !excludedIds.has(candidate.id)
+    && candidate.job_type === 'config_generation'
+    && candidate.payload.session_id === sessionId
+    && candidate.payload.mode === 'generate'
+    && candidate.payload.source_id === request.source_id
+    && candidate.payload.source_revision === request.source_revision
+    && candidate.payload.generation_mode === request.generation_mode) ?? null
+}
+
+function returnToEditor(): void {
+  const current = job.value
+  if (!current || !refineJob.value) return
+  configStore.detachJob(current.id)
+  jobStore.remove(current.id)
+  requestError.value = ''
+  document.querySelector<HTMLElement>('#rubric-ledger-title')?.focus()
+}
+
 async function startGeneration(requestedMode: GenerationMode = mode.value): Promise<void> {
   if (!configStore.canGenerate || submitting.value || active.value || configStore.sessionId === null) return
   const context = configStore.captureGenerationContext()
+  const sessionId = configStore.sessionId
+  const request = configStore.sourceRequest(requestedMode)
+  const knownJobIds = new Set(Object.keys(jobStore.jobs).map(Number))
   submitting.value = true
+  submissionUnknown.value = false
   requestError.value = ''
   try {
-    const next = await props.submitter(configStore.sessionId, configStore.sourceRequest(requestedMode))
+    const next = await props.submitter(sessionId, request)
     jobStore.track(next)
     configStore.attachJob(next.id, context)
-  } catch {
-    requestError.value = '生成请求未提交成功，当前试卷与核对结果已保留。请手动重试。'
+  } catch (error) {
+    if (isAmbiguousWriteError(error)) {
+      requestError.value = '生成请求结果未知，正在核对任务记录…'
+      const reconciled = matchingGenerationJob(sessionId, request, knownJobIds)
+      if (reconciled) {
+        jobStore.track(reconciled)
+        configStore.attachJob(reconciled.id, context)
+        requestError.value = ''
+      } else {
+        submissionUnknown.value = true
+        requestError.value = '生成请求结果未知，尚未找到可确认的任务。为避免重复生成，请稍后重新核对。'
+      }
+    } else {
+      requestError.value = '服务器已拒绝生成请求；当前试卷与核对结果已保留，可以修正后重试。'
+    }
   } finally {
     submitting.value = false
   }
@@ -162,7 +205,7 @@ watch(job, (current, previous) => {
       type="button"
       name="开始生成"
       class="config-generation__primary"
-      :disabled="!configStore.canGenerate || submitting"
+      :disabled="!configStore.canGenerate || submitting || submissionUnknown"
       @click="startGeneration()"
     >{{ submitting ? '正在提交…' : '开始生成' }}</button>
 
@@ -204,8 +247,16 @@ watch(job, (current, previous) => {
         class="config-generation__secondary"
         @click="jobStore.cancel(job.id)"
       >取消生成</button>
+      <div v-if="job.status === 'failed' && refineJob" class="config-generation__refine-actions">
+        <button type="button" name="重新细化" class="config-generation__primary" @click="returnToEditor">
+          重新细化
+        </button>
+        <button type="button" name="返回编辑器" class="config-generation__secondary" @click="returnToEditor">
+          返回编辑器
+        </button>
+      </div>
       <button
-        v-if="job.status === 'failed' && jobMode === 'whole_document'"
+        v-else-if="job.status === 'failed' && jobMode === 'whole_document'"
         type="button"
         name="重新整卷生成"
         class="config-generation__primary"
@@ -253,6 +304,7 @@ button:disabled { cursor: not-allowed; opacity: var(--opacity-disabled); }
 .config-generation__job p { margin: 0 0 var(--space-3); color: var(--color-text-secondary); }
 .config-generation__job .config-generation__retained { padding: var(--space-3); background: var(--color-success-subtle); color: var(--color-text-primary); }
 .config-generation__partial { padding-block: var(--space-3); border-block-start: var(--border-width) solid var(--color-border-subtle); }
+.config-generation__refine-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .config-generation__partial fieldset { display: flex; flex-wrap: wrap; gap: var(--space-3); margin: 0 0 var(--space-3); padding: var(--space-3); border: var(--border-width) solid var(--color-border-subtle); }
 .config-generation__partial label { display: inline-flex; align-items: center; gap: var(--space-2); }
 .config-generation__warning,

@@ -8,6 +8,7 @@ import type {
   ConfigSource,
 } from '../../../api/config-workspace'
 import type { JobResponse } from '../../../api/jobs'
+import { ApiError } from '../../../api/errors'
 import { useConfigWorkspaceStore } from '../../../stores/config-workspace'
 import { useJobStore } from '../../../stores/jobs'
 import ConfigGenerationPanel from '../ConfigGenerationPanel.vue'
@@ -117,6 +118,21 @@ describe('ConfigGenerationPanel', () => {
     expect(useConfigWorkspaceStore().jobId).toBe(31)
   })
 
+  it('reconciles a lost generation response with a newly tracked matching Job', async () => {
+    const timeout = new ApiError({ kind: 'network', status: null, code: 'network_error',
+      message: 'offline', details: {}, requestId: 'safe', retryable: true })
+    const submitter = vi.fn(async () => {
+      useJobStore().track(job({ id: 44, status: 'queued', progress: 0 }))
+      throw timeout
+    })
+    const mounted = await mountPanel({ submitter })
+    mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!.click()
+    await settle()
+
+    expect(useConfigWorkspaceStore().jobId).toBe(44)
+    expect(mounted.host.textContent).not.toContain('未提交成功')
+  })
+
   it('retries only checked failed questions and preserves successful counts', async () => {
     const retryer = vi.fn(async () => job({ id: 32, status: 'queued', progress: 0 }))
     const configStore = useConfigWorkspaceStore()
@@ -166,6 +182,23 @@ describe('ConfigGenerationPanel', () => {
     await settle()
     expect(submitter.mock.calls[0]?.[1]).toMatchObject({ generation_mode: 'whole_document' })
     expect(retryer).not.toHaveBeenCalled()
+  })
+
+  it('keeps refine failures in the editor workflow without offering generation retry', async () => {
+    const submitter = vi.fn()
+    const configStore = useConfigWorkspaceStore()
+    useJobStore().track(job({ status: 'failed', payload: { session_id: 7, mode: 'refine' },
+      finished_at: '2026-07-15T00:01:00Z' }))
+    configStore.attachJob(31, configStore.captureGenerationContext())
+    const mounted = await mountPanel({ submitter })
+
+    expect(mounted.host.textContent).toContain('重新细化')
+    expect(mounted.host.textContent).toContain('返回编辑器')
+    expect(mounted.host.textContent).not.toContain('重新逐题生成')
+    mounted.host.querySelector<HTMLButtonElement>('button[name="返回编辑器"]')!.click()
+    await settle()
+    expect(submitter).not.toHaveBeenCalled()
+    expect(configStore.jobId).toBeNull()
   })
 
   it('does not relabel cancel-requested as cancelled before the terminal state', async () => {
