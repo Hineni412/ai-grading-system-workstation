@@ -234,8 +234,8 @@ class ConfigSourceService:
         max_docx_expanded_bytes: int = MAX_DOCX_EXPANDED_BYTES,
         max_pdf_pages: int = MAX_PDF_PAGES,
     ) -> None:
-        self.upload_config_dir = Path(upload_config_dir).resolve(strict=False)
-        self._files = SecureRootFilesystem(self.upload_config_dir)
+        self._files = SecureRootFilesystem(Path(upload_config_dir))
+        self.upload_config_dir = self._files.root
         self.max_upload_bytes = int(max_upload_bytes)
         self.max_docx_member_bytes = int(max_docx_member_bytes)
         self.max_docx_expanded_bytes = int(max_docx_expanded_bytes)

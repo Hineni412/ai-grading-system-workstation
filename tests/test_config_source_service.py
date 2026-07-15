@@ -29,6 +29,10 @@ from backend.config_workspace.sources import (
     ConfigSourceTypeUnsupportedError,
     QuestionDecision,
 )
+from backend.config_workspace.secure_fs import (
+    SecureFilesystemError,
+    SecureRootFilesystem,
+)
 
 
 async def chunks(*parts: bytes) -> AsyncIterator[bytes]:
@@ -38,6 +42,47 @@ async def chunks(*parts: bytes) -> AsyncIterator[bytes]:
 
 def service(tmp_path: Path, **kwargs: object) -> ConfigSourceService:
     return ConfigSourceService(tmp_path, **kwargs)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows service root junction regression")
+@pytest.mark.parametrize("junction_location", ["root", "parent"])
+def test_service_and_api_dependency_do_not_resolve_away_root_junction(
+    tmp_path: Path,
+    junction_location: str,
+) -> None:
+    from backend.api.dependencies import get_config_source_service
+
+    target_parent = tmp_path / "target-parent"
+    target_parent.mkdir()
+    if junction_location == "root":
+        junction = tmp_path / "root-junction"
+        requested = junction
+        target = target_parent
+    else:
+        target = target_parent
+        (target / "upload-root").mkdir()
+        junction = tmp_path / "parent-junction"
+        requested = junction / "upload-root"
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.skip("junction creation is unavailable")
+    try:
+        with pytest.raises(SecureFilesystemError):
+            SecureRootFilesystem(requested)
+        with pytest.raises(SecureFilesystemError) as service_error:
+            ConfigSourceService(requested)
+        with pytest.raises(SecureFilesystemError) as dependency_error:
+            get_config_source_service(requested)
+    finally:
+        os.rmdir(junction)
+
+    assert str(requested) not in str(service_error.value)
+    assert str(requested) not in str(dependency_error.value)
 
 
 def _png_bytes() -> bytes:
