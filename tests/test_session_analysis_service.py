@@ -164,7 +164,7 @@ def seed_missing_max_score(tmp_path: Path) -> tuple[DBManager, int]:
             session_id=1,
             student_id=1,
             paper_id=1,
-            details=[(1, "QX", 0, None)],
+            details=[(1, "QX", 3, None)],
         )
         conn.commit()
     return db, 1
@@ -205,6 +205,8 @@ def seed_parent_parts(tmp_path: Path) -> tuple[DBManager, int]:
                 (1, "S-FULL", "满分生"),
                 (2, "S-PARTIAL", "失分生"),
                 (3, "S-DIRECT", "直接明细生"),
+                (4, "S-MERGED", "合并明细生"),
+                (5, "S-OVER", "超分明细生"),
             ],
         )
         _insert_result(
@@ -230,6 +232,22 @@ def seed_parent_parts(tmp_path: Path) -> tuple[DBManager, int]:
             student_id=3,
             paper_id=3,
             details=[(3, "Q2(1)", 3, "需复核")],
+        )
+        _insert_result(
+            conn,
+            result_id=4,
+            session_id=1,
+            student_id=4,
+            paper_id=4,
+            details=[(4, "Q2-1", 6, None), (5, "Q2-2", 6, None)],
+        )
+        _insert_result(
+            conn,
+            result_id=5,
+            session_id=1,
+            student_id=5,
+            paper_id=5,
+            details=[(6, "Q2(1)", 5, None)],
         )
         conn.commit()
     return db, 1
@@ -275,8 +293,10 @@ def test_service_uses_null_for_uncomputable_rate(seed_missing_max_score):
     row = SessionAnalysisService(db).list_questions(session_id)[0]
 
     assert row.score_rate is None
+    assert row.max_score is None
     assert row.metric_status == "missing_max_score"
     assert row.attempt_count == 1
+    assert row.average_score == 3
 
 
 def test_student_rows_return_direct_canonical_details_and_review_state(seed_parent_parts):
@@ -304,3 +324,27 @@ def test_student_rows_infer_child_full_score_only_from_full_parent(seed_parent_p
     assert inferred.max_score == 4
     assert inferred.deduction_amount == 0
     assert all(row.student_code != "S-PARTIAL" for row in rows)
+
+
+def test_student_rows_merge_raw_ids_that_share_one_canonical_question(seed_parent_parts):
+    db, session_id = seed_parent_parts
+
+    rows = SessionAnalysisService(db).list_students(session_id, "Q2")
+    merged = [row for row in rows if row.student_code == "S-MERGED"]
+
+    assert len(merged) == 1
+    assert merged[0].question_id == "Q2"
+    assert merged[0].score_awarded == 10
+    assert merged[0].max_score == 10
+    assert merged[0].deduction_amount == 0
+
+
+def test_student_rows_cap_direct_score_at_rubric_maximum(seed_parent_parts):
+    db, session_id = seed_parent_parts
+
+    rows = SessionAnalysisService(db).list_students(session_id, "Q2(1)")
+    over_max = next(row for row in rows if row.student_code == "S-OVER")
+
+    assert over_max.score_awarded == 4
+    assert over_max.max_score == 4
+    assert over_max.deduction_amount == 0

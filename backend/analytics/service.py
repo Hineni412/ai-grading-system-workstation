@@ -54,14 +54,28 @@ class SessionAnalysisService:
         class_name: str | None = None,
     ) -> list[QuestionAnalysisRow]:
         """Return legacy-equivalent class rows or merged all-class rows."""
-        analysis = self._build_legacy_question_analysis(session_id)
+        session = self.db.get_grading_session(int(session_id))
+        score_map, _type_map = load_session_score_type_maps(
+            session,
+            data_root=_data_root(self.db),
+        )
+        analysis = self._build_legacy_question_analysis(
+            session_id,
+            score_map=score_map,
+        )
         if class_name is None:
             source_rows = merge_question_analysis_rows(analysis["rows"])
         else:
             source_rows = [
                 row for row in analysis["rows"] if str(row.get("班级") or "") == class_name
             ]
-        return [_public_question_row(row) for row in source_rows]
+        return [
+            _public_question_row(
+                row,
+                rubric_max_score=score_map.get(str(row.get("题号") or "")),
+            )
+            for row in source_rows
+        ]
 
     def list_students(
         self,
@@ -96,19 +110,22 @@ class SessionAnalysisService:
                 continue
             result_id = int(result.get("result_id") or 0)
             details = self.db.get_result_details(result_id)
+            normalized_details = normalize_question_analysis_details(
+                details,
+                score_map,
+            )
             direct_details: list[dict[str, Any]] = []
-            for detail in details:
-                raw_question_id = str(detail.get("question_id") or "").strip()
-                canonical_question_id = canonical_question_id_for_score(
-                    raw_question_id,
-                    score_map,
-                )
+            for detail in normalized_details:
+                canonical_question_id = str(detail.get("question_id") or "").strip()
                 if canonical_question_id != requested_question_id:
                     continue
                 direct_details.append(detail)
-                max_score = score_map.get(raw_question_id)
-                if max_score is None:
-                    max_score = score_map.get(canonical_question_id)
+                max_score = score_map.get(canonical_question_id)
+                source_detail_ids = {
+                    int(detail_id)
+                    for detail_id in detail.get("_source_detail_ids", [])
+                    if int(detail_id) > 0
+                }
                 rows.append(
                     _student_row(
                         result=result,
@@ -116,9 +133,9 @@ class SessionAnalysisService:
                         class_name=result_class_name,
                         question_id=canonical_question_id,
                         max_score=max_score,
-                        needs_review=review_by_detail_id.get(
-                            int(detail.get("detail_id") or 0),
-                            False,
+                        needs_review=any(
+                            review_by_detail_id.get(detail_id, False)
+                            for detail_id in source_detail_ids
                         ),
                     )
                 )
@@ -165,12 +182,18 @@ class SessionAnalysisService:
             ),
         )
 
-    def _build_legacy_question_analysis(self, session_id: int) -> dict[str, Any]:
-        session = self.db.get_grading_session(int(session_id))
-        score_map, _type_map = load_session_score_type_maps(
-            session,
-            data_root=_data_root(self.db),
-        )
+    def _build_legacy_question_analysis(
+        self,
+        session_id: int,
+        *,
+        score_map: dict[str, float] | None = None,
+    ) -> dict[str, Any]:
+        if score_map is None:
+            session = self.db.get_grading_session(int(session_id))
+            score_map, _type_map = load_session_score_type_maps(
+                session,
+                data_root=_data_root(self.db),
+            )
         buckets: dict[tuple[str, str], dict[str, Any]] = {}
 
         for result in self.db.get_session_results(int(session_id)):
@@ -406,6 +429,7 @@ def normalize_question_analysis_details(
             item["question_id"] = question_id
             item["score_awarded"] = 0.0
             item["_source_question_ids"] = []
+            item["_source_detail_ids"] = []
             item["_deduction_reasons"] = []
             merged[question_id] = item
             order.append(question_id)
@@ -414,6 +438,7 @@ def normalize_question_analysis_details(
             detail.get("score_awarded") or 0
         )
         item["_source_question_ids"].append(raw_question_id)
+        item["_source_detail_ids"].append(int(detail.get("detail_id") or 0))
         reason = str(detail.get("deduction_reason") or "").strip()
         if reason:
             item["_deduction_reasons"].append(reason)
@@ -494,19 +519,27 @@ def _student_row(
     )
 
 
-def _public_question_row(row: dict[str, Any]) -> QuestionAnalysisRow:
+def _public_question_row(
+    row: dict[str, Any],
+    *,
+    rubric_max_score: float | None,
+) -> QuestionAnalysisRow:
     attempt_count = int(row.get("_attempt_count") or 0)
     full_sum = float(row.get("_full_sum") or 0)
     if attempt_count <= 0:
         metric_status: Literal["ready", "missing_max_score", "no_attempts"] = "no_attempts"
-    elif full_sum <= 0:
+    elif rubric_max_score is None or rubric_max_score <= 0 or full_sum <= 0:
         metric_status = "missing_max_score"
     else:
         metric_status = "ready"
     return QuestionAnalysisRow(
         class_name=str(row.get("班级") or ""),
         question_id=str(row.get("题号") or ""),
-        max_score=float(row.get("满分")) if full_sum > 0 else None,
+        max_score=(
+            float(rubric_max_score)
+            if rubric_max_score is not None and rubric_max_score > 0
+            else None
+        ),
         score_rate=float(row.get("班级得分率")) if metric_status == "ready" else None,
         average_score=float(row.get("平均得分")) if attempt_count > 0 else None,
         deduction_count=int(row.get("失分人数") or 0),
