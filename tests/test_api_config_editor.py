@@ -259,7 +259,11 @@ def test_database_failure_cleans_both_new_files_and_keeps_binding(editor_env, mo
 
 @pytest.mark.parametrize(
     ("mapping_result", "expected_status"),
-    [(False, "not_present"), (True, "refreshed"), (RuntimeError("private mapping path"), "reconfirm_required")],
+    [
+        ("not_present", "not_present"),
+        ("refreshed", "refreshed"),
+        (RuntimeError("private mapping path"), "reconfirm_required"),
+    ],
 )
 def test_mapping_result_is_truthful_and_post_save_failure_is_safe(editor_env, monkeypatch, mapping_result, expected_status) -> None:
     client, db, _manager, tmp_path = editor_env
@@ -280,6 +284,29 @@ def test_mapping_result_is_truthful_and_post_save_failure_is_safe(editor_env, mo
     assert response.status_code == 200
     assert response.json()["save_result"]["mapping_status"] == expected_status
     assert "private mapping path" not in response.text
+
+
+def test_existing_template_with_missing_files_requires_reconfirmation(editor_env) -> None:
+    client, db, _manager, tmp_path = editor_env
+    session_id = _write_config(tmp_path, db)
+    db.upsert_session_template(
+        session_id,
+        str(tmp_path / "missing-front.png"),
+        str(tmp_path / "missing-back.png"),
+    )
+    first = client.get(f"/api/sessions/{session_id}/config/editor").json()
+    response = client.put(
+        f"/api/sessions/{session_id}/config/editor",
+        json={
+            "revision": first["revision"],
+            "edits": [
+                {"row_id": first["rows"][0]["row_id"], "standard_answer": "changed"}
+            ],
+            "commands": [],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["save_result"]["mapping_status"] == "reconfirm_required"
 
 
 def test_refine_accepts_only_revision_and_server_commands_and_rejects_old_revision(editor_env) -> None:

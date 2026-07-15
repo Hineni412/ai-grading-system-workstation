@@ -166,8 +166,16 @@ def test_generate_from_source_stages_private_input_and_public_job_is_safe(
         tmp_path / "uploaded",
         str(stored.payload["input_id"]),
     )
-    assert private_input["document_text"] == source.private_document_text
+    assert "document_text" not in private_input
+    assert "confirmed_blocks" not in private_input
+    assert "question_images" not in private_input
+    assert "whole_page_images" not in private_input
     assert private_input["source_id"] == source.source_id
+    assert private_input["source_revision"] == source.source_revision
+    assert private_input["generation_mode"] == "per_question"
+    assert private_input["decisions"] == [
+        {"excluded": False, "question_id": "Q1", "question_type": "proof"}
+    ]
 
 
 @pytest.mark.parametrize(

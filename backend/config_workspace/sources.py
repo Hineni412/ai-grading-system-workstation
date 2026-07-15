@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import copy
 import hashlib
@@ -9,6 +10,7 @@ import json
 import os
 import re
 import stat
+import threading
 import uuid
 import zipfile
 from collections.abc import AsyncIterator, Collection, Sequence
@@ -30,6 +32,11 @@ MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 MAX_DOCX_MEMBER_BYTES = 256 * 1024 * 1024
 MAX_DOCX_EXPANDED_BYTES = 1024 * 1024 * 1024
 MAX_PDF_PAGES = 500
+MAX_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_IMAGE_PIXELS = 40_000_000
+MAX_TOTAL_IMAGE_BYTES = 64 * 1024 * 1024
+MAX_TOTAL_IMAGE_PIXELS = 160_000_000
+MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 PUBLIC_PREVIEW_CHARACTERS = 500
 
 _SOURCE_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -53,6 +60,8 @@ _IMAGE_FORMATS = {
     "WEBP": (".webp", "image/webp"),
     "BMP": (".bmp", "image/bmp"),
 }
+_PARSE_LOCKS_GUARD = threading.Lock()
+_PARSE_LOCKS: dict[tuple[str, int], threading.Lock] = {}
 class ConfigSourceError(RuntimeError):
     pass
 
@@ -234,6 +243,11 @@ class ConfigSourceService:
         max_docx_member_bytes: int = MAX_DOCX_MEMBER_BYTES,
         max_docx_expanded_bytes: int = MAX_DOCX_EXPANDED_BYTES,
         max_pdf_pages: int = MAX_PDF_PAGES,
+        max_image_bytes: int = MAX_IMAGE_BYTES,
+        max_image_pixels: int = MAX_IMAGE_PIXELS,
+        max_total_image_bytes: int = MAX_TOTAL_IMAGE_BYTES,
+        max_total_image_pixels: int = MAX_TOTAL_IMAGE_PIXELS,
+        max_manifest_bytes: int = MAX_MANIFEST_BYTES,
     ) -> None:
         self._files = SecureRootFilesystem(Path(upload_config_dir))
         self.upload_config_dir = self._files.root
@@ -241,11 +255,21 @@ class ConfigSourceService:
         self.max_docx_member_bytes = int(max_docx_member_bytes)
         self.max_docx_expanded_bytes = int(max_docx_expanded_bytes)
         self.max_pdf_pages = int(max_pdf_pages)
+        self.max_image_bytes = int(max_image_bytes)
+        self.max_image_pixels = int(max_image_pixels)
+        self.max_total_image_bytes = int(max_total_image_bytes)
+        self.max_total_image_pixels = int(max_total_image_pixels)
+        self.max_manifest_bytes = int(max_manifest_bytes)
         if min(
             self.max_upload_bytes,
             self.max_docx_member_bytes,
             self.max_docx_expanded_bytes,
             self.max_pdf_pages,
+            self.max_image_bytes,
+            self.max_image_pixels,
+            self.max_total_image_bytes,
+            self.max_total_image_pixels,
+            self.max_manifest_bytes,
         ) <= 0:
             raise ValueError("config source limits must be positive")
 
@@ -286,14 +310,22 @@ class ConfigSourceService:
             registry.register(source_path, manifest_owned=True)
             self._files.replace(temporary_path, source_path)
 
-            if suffix == ".docx":
-                blocks, document_text, asset_files, whole_page_files = (
-                    self._parse_docx(source_path, source_dir, registry)
+            parse_task = asyncio.create_task(
+                asyncio.to_thread(
+                    self._parse_staged_source,
+                    clean_session_id,
+                    suffix,
+                    source_path,
+                    source_dir,
+                    registry,
                 )
-            else:
-                blocks, document_text, asset_files, whole_page_files = (
-                    self._parse_pdf(source_path, source_dir, registry)
-                )
+            )
+            try:
+                blocks, document_text, asset_files, whole_page_files = await asyncio.shield(parse_task)
+            except asyncio.CancelledError:
+                await parse_task
+                raise
+            self._enforce_asset_budget(source_dir, asset_files, whole_page_files)
             questions = _question_previews(blocks, asset_files)
             source_sha256 = digest.hexdigest()
             manifest_path = source_dir / "manifest.json"
@@ -354,7 +386,8 @@ class ConfigSourceService:
             }
             source_revision = _canonical_source_revision(manifest)
             manifest["source_revision"] = source_revision
-            json.dumps(manifest, ensure_ascii=False)
+            if len(json.dumps(manifest, ensure_ascii=False).encode("utf-8")) > self.max_manifest_bytes:
+                raise ConfigSourceInvalidError()
             with session_config_lock(self.upload_config_dir, clean_session_id):
                 self._assert_controlled_directory(source_dir)
                 self._assert_controlled_path(manifest_path)
@@ -384,6 +417,47 @@ class ConfigSourceService:
         finally:
             if not completed:
                 registry.cleanup()
+
+    def _parse_staged_source(
+        self,
+        session_id: int,
+        suffix: str,
+        source_path: Path,
+        source_dir: Path,
+        registry: _OwnedFileRegistry,
+    ) -> tuple[list[dict[str, Any]], str, dict[str, dict[str, str | None]], list[str]]:
+        key = (os.path.normcase(str(self.upload_config_dir)), int(session_id))
+        with _PARSE_LOCKS_GUARD:
+            parse_lock = _PARSE_LOCKS.setdefault(key, threading.Lock())
+        with parse_lock:
+            if suffix == ".docx":
+                return self._parse_docx(source_path, source_dir, registry)
+            return self._parse_pdf(source_path, source_dir, registry)
+
+    def _enforce_asset_budget(
+        self,
+        source_dir: Path,
+        asset_files: dict[str, dict[str, str | None]],
+        whole_page_files: Sequence[str],
+    ) -> None:
+        names = [
+            filename
+            for entry in asset_files.values()
+            for filename in entry.values()
+            if isinstance(filename, str) and filename
+        ] + list(whole_page_files)
+        total_bytes = 0
+        total_pixels = 0
+        for name in dict.fromkeys(names):
+            content = self._files.read_bytes(self._owned_path(source_dir, name))
+            width, height = _image_dimensions(content)
+            image_pixels = width * height
+            if len(content) > self.max_image_bytes or image_pixels > self.max_image_pixels:
+                raise ConfigSourceInvalidError()
+            total_bytes += len(content)
+            total_pixels += image_pixels
+            if total_bytes > self.max_total_image_bytes or total_pixels > self.max_total_image_pixels:
+                raise ConfigSourceInvalidError()
 
     def load(
         self,
@@ -1124,7 +1198,13 @@ class ConfigSourceService:
 
     def _read_json_object(self, path: Path) -> dict[str, Any]:
         try:
-            payload = json.loads(self._files.read_text(path, encoding="utf-8"))
+            payload = json.loads(
+                self._files.read_text(
+                    path,
+                    encoding="utf-8",
+                    max_bytes=self.max_manifest_bytes,
+                )
+            )
         except (SecureFilesystemError, json.JSONDecodeError, UnicodeError):
             raise ConfigSourceInvalidError() from None
         if not isinstance(payload, dict):
@@ -1517,6 +1597,18 @@ def _image_type(content: bytes) -> tuple[str, str]:
     if result is None:
         raise ConfigSourceInvalidError()
     return result
+
+
+def _image_dimensions(content: bytes) -> tuple[int, int]:
+    try:
+        with Image.open(io.BytesIO(content)) as image:
+            width, height = image.size
+            image.verify()
+    except Exception:
+        raise ConfigSourceInvalidError() from None
+    if width <= 0 or height <= 0:
+        raise ConfigSourceInvalidError()
+    return int(width), int(height)
 
 
 def _is_reparse(path: Path) -> bool:

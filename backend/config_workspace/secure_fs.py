@@ -279,7 +279,7 @@ class SecureRootFilesystem:
             finally:
                 _CloseHandle(handle)
 
-    def read_bytes(self, path: Path) -> bytes:
+    def read_bytes(self, path: Path, *, max_bytes: int | None = None) -> bytes:
         _require_windows()
         clean = self._clean_path(path)
         snapshot = self._snapshot(clean, include_leaf=True)
@@ -301,13 +301,29 @@ class SecureRootFilesystem:
                     expected_identity=expected,
                     directory=False,
                 )
+                if max_bytes is not None:
+                    clean_limit = int(max_bytes)
+                    if clean_limit <= 0:
+                        raise ValueError("max_bytes must be positive")
+                    information = _win_information(handle)
+                    file_size = (
+                        int(information.nFileSizeHigh) << 32
+                    ) | int(information.nFileSizeLow)
+                    if file_size > clean_limit:
+                        raise SecureFilesystemError("secure file exceeds size limit")
                 return _win_read_all(handle)
             finally:
                 _CloseHandle(handle)
 
-    def read_text(self, path: Path, *, encoding: str = "utf-8") -> str:
+    def read_text(
+        self,
+        path: Path,
+        *,
+        encoding: str = "utf-8",
+        max_bytes: int | None = None,
+    ) -> str:
         try:
-            return self.read_bytes(path).decode(encoding)
+            return self.read_bytes(path, max_bytes=max_bytes).decode(encoding)
         except UnicodeError:
             raise SecureFilesystemError("secure text decode failed") from None
 

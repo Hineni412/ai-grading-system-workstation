@@ -19,10 +19,12 @@ from backend.config_workspace.sources import (
     QuestionDecision,
 )
 from backend.jobs.config_generation import (
+    discard_config_generation_input,
     load_config_generation_input,
     run_config_generation_job,
     stage_config_generation_input,
     stage_config_refine_input,
+    stage_config_source_generation_input,
 )
 from backend.config_workspace.editor import (
     ManualPartInput,
@@ -164,18 +166,7 @@ def _stage_controlled_input(
     *,
     generation_mode: str,
 ) -> str:
-    prepared = source_service.prepare_generation_input(
-        source,
-        [
-            QuestionDecision(
-                question_id=source.questions[0].question_id,
-                question_type="proof",
-                excluded=False,
-            )
-        ],
-        generation_mode,
-    )
-    return stage_config_generation_input(
+    return stage_config_source_generation_input(
         tmp_path / "uploaded",
         session_id=source.session_id,
         expected_rubric_path=expected_paths[0],
@@ -183,12 +174,13 @@ def _stage_controlled_input(
         generation_mode=generation_mode,
         source_id=source.source_id,
         source_revision=source.source_revision,
-        source_suffix=source.suffix,
-        source_safe_filename=source.safe_filename,
-        confirmed_blocks=list(prepared.confirmed_blocks),
-        document_text=prepared.document_text,
-        question_images=prepared.question_images,
-        whole_page_images=list(prepared.whole_page_images),
+        decisions=[
+            {
+                "question_id": source.questions[0].question_id,
+                "question_type": "proof",
+                "excluded": False,
+            }
+        ],
     )
 
 
@@ -291,14 +283,80 @@ def test_load_config_generation_input_rejects_path_traversal(tmp_path: Path) -> 
         load_config_generation_input(tmp_path, "../outside")
 
 
+def test_load_config_generation_input_enforces_serialized_size_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import backend.jobs.config_generation as generation_module
+
+    input_id = stage_config_generation_input(
+        tmp_path,
+        session_id=7,
+        expected_rubric_path="server-rubric.json",
+        expected_answer_key_path="server-answer.json",
+        **_minimal_input(),
+    )
+    monkeypatch.setattr(generation_module, "MAX_CONFIG_GENERATION_INPUT_BYTES", 8)
+    with pytest.raises(Exception, match="secure file exceeds size limit"):
+        load_config_generation_input(tmp_path, input_id)
+
+
+def test_generation_input_io_uses_secure_root_filesystem(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.config_workspace.secure_fs import SecureRootFilesystem
+
+    writes: list[Path] = []
+    reads: list[Path] = []
+    deletes: list[tuple[Path, ...]] = []
+    real_write = SecureRootFilesystem.write_json_atomic
+    real_read = SecureRootFilesystem.read_text
+    real_unlink = SecureRootFilesystem.unlink_many
+
+    def tracked_write(self, path, payload):
+        writes.append(Path(path))
+        return real_write(self, path, payload)
+
+    def tracked_read(self, path, *, encoding="utf-8", max_bytes=None):
+        reads.append(Path(path))
+        return real_read(self, path, encoding=encoding, max_bytes=max_bytes)
+
+    def tracked_unlink(self, paths):
+        owned = tuple(Path(path) for path in paths)
+        deletes.append(owned)
+        return real_unlink(self, owned)
+
+    monkeypatch.setattr(SecureRootFilesystem, "write_json_atomic", tracked_write)
+    monkeypatch.setattr(SecureRootFilesystem, "read_text", tracked_read)
+    monkeypatch.setattr(SecureRootFilesystem, "unlink_many", tracked_unlink)
+
+    input_id = stage_config_generation_input(
+        tmp_path,
+        session_id=7,
+        expected_rubric_path="server-rubric.json",
+        expected_answer_key_path="server-answer.json",
+        **_minimal_input(),
+    )
+    load_config_generation_input(tmp_path, input_id)
+    discard_config_generation_input(tmp_path, input_id)
+
+    expected = tmp_path / f"config_generation_input_{input_id}.json"
+    assert writes == [expected]
+    assert reads == [expected]
+    assert deletes == [(expected,)]
+
+
 def test_stage_config_generation_input_cleans_temp_file_when_publish_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fail_replace(_source: object, _target: object) -> None:
+    from backend.config_workspace.secure_fs import SecureRootFilesystem
+
+    def fail_write(_self: object, _path: object, _payload: object) -> None:
         raise OSError("publish failed")
 
-    monkeypatch.setattr("backend.jobs.config_generation.os.replace", fail_replace)
+    monkeypatch.setattr(SecureRootFilesystem, "write_json_atomic", fail_write)
 
     with pytest.raises(OSError, match="publish failed"):
         stage_config_generation_input(
@@ -1390,6 +1448,24 @@ def test_config_source_references_are_derived_from_private_job_payloads(
     tmp_path: Path,
 ) -> None:
     store = JobStore(tmp_path / "jobs.db")
+    complete = store.create_job(
+        "config_generation",
+        {
+            "session_id": 7,
+            "source_id": "9" * 32,
+            "source_revision": "8" * 64,
+        },
+    )
+    store.finish(complete.id, "succeeded", result={"outcome": "complete"})
+    partial = store.create_job(
+        "config_generation",
+        {
+            "session_id": 7,
+            "source_id": "7" * 32,
+            "source_revision": "6" * 64,
+        },
+    )
+    store.finish(partial.id, "succeeded", result={"outcome": "partial"})
     store.create_job(
         "config_generation",
         {
@@ -1414,7 +1490,7 @@ def test_config_source_references_are_derived_from_private_job_payloads(
         {"session_id": 7, "source_id": "f" * 32},
     )
 
-    assert store.referenced_config_source_ids(7) == {"a" * 32}
+    assert store.referenced_config_source_ids(7) == {"a" * 32, "7" * 32}
 
 
 def _refine_context(tmp_path: Path):
@@ -1524,6 +1600,68 @@ def test_refine_job_rejects_changed_teacher_part_ids_and_preserves_old_binding(
     current = db.get_grading_session(session_id)
     assert (current["rubric_path"], current["answer_key_path"]) == old_paths
     assert not list((tmp_path / "uploaded").glob("rubric_job-*.json"))
+
+
+def test_refine_job_rejects_changed_teacher_step_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, _session_id, _old_paths, _candidate, context, _store = _refine_context(tmp_path)
+
+    def changed(payload, **_kwargs):
+        result = json.loads(json.dumps(payload))
+        steps = result["rubric"]["questions"][0]["parts"][0].setdefault("steps", [])
+        if steps:
+            steps[0]["step_id"] = "model-replaced-step"
+        else:
+            steps.append(
+                {
+                    "step_id": "model-added-step",
+                    "step_score": 8,
+                    "core_goal": "changed",
+                    "required_elements": [],
+                    "allow_alternative_methods": True,
+                }
+            )
+        return result
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.refine_grading_config_from_manual_structure",
+        changed,
+    )
+    with pytest.raises(ValueError, match="changed teacher scoring-unit identities"):
+        run_config_generation_job(
+            context=context,
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            llm_client_factory=lambda: object(),
+        )
+
+
+def test_refine_cancel_after_model_is_cancelled_before_publish_and_deletes_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, _session_id, _old_paths, _candidate, context, store = _refine_context(tmp_path)
+    input_id = str(context.payload["input_id"])
+
+    def cancel_then_return(payload, **_kwargs):
+        assert store.request_cancel(context.job_id)
+        return json.loads(json.dumps(payload))
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.refine_grading_config_from_manual_structure",
+        cancel_then_return,
+    )
+    with pytest.raises(JobCancellationRequested):
+        run_config_generation_job(
+            context=context,
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            llm_client_factory=lambda: object(),
+        )
+    assert not (tmp_path / "uploaded" / f"config_generation_input_{input_id}.json").exists()
+    assert list((tmp_path / "uploaded").glob("rubric_job-*.json")) == []
 
 
 def test_refine_job_rejects_same_path_old_revision_before_model_call(tmp_path: Path) -> None:

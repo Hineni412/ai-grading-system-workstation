@@ -47,8 +47,14 @@ def test_create_session_draft_creates_recoverable_created_session(tmp_path) -> N
         "total_score": 0,
         "questions": [],
         "exam_title": "七年级期末",
+        "_config_draft_id": rubric["_config_draft_id"],
     }
-    assert answer_key == {"draft": True, "questions": []}
+    assert answer_key == {
+        "draft": True,
+        "questions": [],
+        "_config_draft_id": rubric["_config_draft_id"],
+    }
+    assert len(rubric["_config_draft_id"]) == 32
 
 
 def test_create_session_draft_compensates_files_when_database_insert_fails(

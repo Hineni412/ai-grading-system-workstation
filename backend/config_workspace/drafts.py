@@ -9,6 +9,7 @@ from db_manager import DBManager
 
 EMPTY_RUBRIC = {"draft": True, "total_score": 0, "questions": []}
 EMPTY_ANSWER_KEY = {"draft": True, "questions": []}
+DRAFT_MARKER_KEY = "_config_draft_id"
 
 
 def create_session_draft(
@@ -29,10 +30,17 @@ def create_session_draft(
     try:
         write_json_atomic(
             rubric_path,
-            {**EMPTY_RUBRIC, "exam_title": clean_name},
+            {
+                **EMPTY_RUBRIC,
+                "exam_title": clean_name,
+                DRAFT_MARKER_KEY: token,
+            },
         )
         created.append(rubric_path)
-        write_json_atomic(answer_path, EMPTY_ANSWER_KEY)
+        write_json_atomic(
+            answer_path,
+            {**EMPTY_ANSWER_KEY, DRAFT_MARKER_KEY: token},
+        )
         created.append(answer_path)
         return db.create_grading_session(
             clean_name,

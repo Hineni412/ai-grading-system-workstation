@@ -46,6 +46,7 @@ from backend.jobs.config_generation import (
     discard_config_generation_input,
     stage_config_generation_input,
     stage_config_refine_input,
+    stage_config_source_generation_input,
 )
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from backend.jobs.store import ConfigRetryAlreadySubmittedError, JobStore
@@ -573,11 +574,7 @@ def generate_session_config_from_source(
             QuestionDecision(**decision.model_dump())
             for decision in request.decisions
         ]
-        prepared = source_service.prepare_generation_input(
-            record,
-            decisions,
-            request.generation_mode,
-        )
+        source_service.prepare_generation_input(record, decisions, request.generation_mode)
     except ConfigSourceError as exc:
         raise _source_api_error(exc) from None
     except (TypeError, ValueError):
@@ -587,7 +584,7 @@ def generate_session_config_from_source(
             "Config generation request is invalid",
         ) from None
 
-    input_id = stage_config_generation_input(
+    input_id = stage_config_source_generation_input(
         upload_config_dir,
         session_id=int(session_id),
         expected_rubric_path=str(session.get("rubric_path") or ""),
@@ -595,12 +592,7 @@ def generate_session_config_from_source(
         generation_mode=request.generation_mode,
         source_id=record.source_id,
         source_revision=record.source_revision,
-        source_suffix=record.suffix,
-        source_safe_filename=record.safe_filename,
-        confirmed_blocks=list(prepared.confirmed_blocks),
-        document_text=prepared.document_text,
-        question_images=prepared.question_images,
-        whole_page_images=list(prepared.whole_page_images),
+        decisions=[decision.model_dump() for decision in request.decisions],
     )
     try:
         return _submit_config_generation(
