@@ -25,6 +25,15 @@ from answer_region_focus_page import render_answer_region_focus_page
 from answer_region_session_lock import get_answer_region_session_lock
 from api_profiles import get_api_profile_store, normalize_question_allowlist
 from backend.llm.policy import policy_overrides_from_profile
+from backend.analytics.service import (
+    build_legacy_question_analysis,
+    canonical_question_id_for_score,
+    load_session_score_type_maps,
+    merge_question_analysis_rows,
+    normalize_question_analysis_details,
+    question_parent_id,
+    question_sort_key,
+)
 from data_transfer_service import (
     EXPORT_SIZE_WARNING_MB,
     build_export_manifest,
@@ -4072,33 +4081,7 @@ def _render_question_review_crop_grid(db: DBManager, rows: list[dict[str, Any]],
 
 
 def _load_session_score_type_maps(session: dict | None) -> tuple[dict[str, float], dict[str, str]]:
-    if not session:
-        return {}, {}
-    rubric_path = _resolve_session_file_path(session.get("rubric_path"))
-    rubric = _read_json_safely(rubric_path) if rubric_path.exists() else {}
-    score_map: dict[str, float] = {}
-    type_map: dict[str, str] = {}
-    questions = rubric.get("questions") if isinstance(rubric, dict) else []
-    if not isinstance(questions, list):
-        return score_map, type_map
-    for question in questions:
-        if not isinstance(question, dict):
-            continue
-        qid = str(question.get("question_id") or "").strip()
-        qtype = str(question.get("question_type") or "").strip()
-        if qid:
-            score_map[qid] = _to_float(question.get("max_score"), 0.0)
-            type_map[qid] = qtype
-        parts = question.get("parts")
-        if isinstance(parts, list):
-            for part in parts:
-                if not isinstance(part, dict):
-                    continue
-                pid = str(part.get("part_id") or "").strip()
-                if pid:
-                    score_map[pid] = _to_float(part.get("part_score"), 0.0)
-                    type_map[pid] = qtype
-    return score_map, type_map
+    return load_session_score_type_maps(session, data_root=APP_DATA_DIR)
 
 
 def _load_session_knowledge_label_map(session: dict | None) -> dict[str, str]:
@@ -5399,228 +5382,22 @@ def _render_selectable_question_matrix(display_df: pd.DataFrame, session_id: int
 
 
 def _merge_question_analysis_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    merged: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        qid = str(row.get("题号") or "").strip()
-        if not qid:
-            continue
-        bucket = merged.setdefault(
-            qid,
-            {
-                "班级": "全部班级",
-                "题号": qid,
-                "满分": float(row.get("满分") or 0),
-                "_score_sum": 0.0,
-                "_full_sum": 0.0,
-                "_attempt_count": 0,
-                "_wrong_items": [],
-                "_correct_items": [],
-            },
-        )
-        bucket["满分"] = max(float(bucket.get("满分") or 0), float(row.get("满分") or 0))
-        bucket["_score_sum"] += float(row.get("_score_sum") or 0)
-        bucket["_full_sum"] += float(row.get("_full_sum") or 0)
-        bucket["_attempt_count"] += int(row.get("_attempt_count") or 0)
-        bucket["_wrong_items"].extend(row.get("_wrong_items") or [])
-        bucket["_correct_items"].extend(row.get("_correct_items") or [])
-
-    merged_rows: list[dict[str, Any]] = []
-    for bucket in merged.values():
-        wrong_items = sorted(
-            bucket["_wrong_items"],
-            key=lambda item: (
-                str(item.get("class_name") or ""),
-                -float(item.get("deduction_amount") or 0),
-                str(item.get("student_name") or ""),
-            ),
-        )
-        wrong_text = "、".join(
-            f"{item.get('student_name')}(-{float(item.get('deduction_amount') or 0):g})"
-            for item in wrong_items
-        )
-        full_sum = float(bucket.get("_full_sum") or 0)
-        score_sum = float(bucket.get("_score_sum") or 0)
-        attempt_count = max(1, int(bucket.get("_attempt_count") or 0))
-        correct_items = sorted(
-            bucket.get("_correct_items", []),
-            key=lambda item: (
-                str(item.get("class_name") or ""),
-                str(item.get("student_name") or ""),
-            ),
-        )
-        merged_rows.append(
-            {
-                "班级": "全部班级",
-                "题号": bucket["题号"],
-                "满分": float(bucket["满分"]),
-                "班级得分率": round(score_sum / full_sum * 100, 2) if full_sum > 0 else 0.0,
-                "平均得分": round(score_sum / attempt_count, 2),
-                "失分人数": len(wrong_items),
-                "失分学生与扣分": wrong_text or "无",
-                "_wrong_items": wrong_items,
-                "_correct_items": correct_items,
-                "_score_sum": score_sum,
-                "_full_sum": full_sum,
-                "_attempt_count": attempt_count,
-            }
-        )
-    return sorted(
-        merged_rows,
-        key=lambda item: (float(item.get("班级得分率") or 0), _question_sort_key(str(item.get("题号") or ""))),
-    )
+    return merge_question_analysis_rows(rows)
 
 
 def _build_session_question_analysis(db: DBManager, session_id: int) -> dict[str, Any]:
-    session = db.get_grading_session(session_id)
-    score_map, _type_map = _load_session_score_type_maps(session)
-    results = db.get_session_results(session_id)
-    buckets: dict[tuple[str, str], dict[str, Any]] = {}
-
-    for result in results:
-        class_name = str(result.get("class_name") or "未分班")
-        result_id = int(result.get("result_id") or 0)
-        details = db.get_result_details(result_id)
-        for detail in _normalize_question_analysis_details(details, score_map):
-            qid = str(detail.get("question_id") or "").strip()
-            if not qid:
-                continue
-            max_score = float(score_map.get(qid) or 0)
-            awarded = float(detail.get("score_awarded") or 0)
-            if max_score <= 0:
-                max_score = max(awarded, 0.0)
-            elif awarded > max_score:
-                awarded = max_score
-            key = (class_name, qid)
-            bucket = buckets.setdefault(
-                key,
-                {
-                    "班级": class_name,
-                    "题号": qid,
-                    "满分": max_score,
-                    "score_sum": 0.0,
-                    "full_sum": 0.0,
-                    "attempt_count": 0,
-                    "wrong_items": [],
-                    "correct_items": [],
-                },
-            )
-            bucket["score_sum"] += awarded
-            bucket["full_sum"] += max_score
-            bucket["attempt_count"] += 1
-            bucket["满分"] = max(bucket["满分"], max_score)
-            deduction = max_score - awarded
-            reason = str(detail.get("deduction_reason") or "").strip()
-            if deduction > 0.01:
-                bucket["wrong_items"].append(
-                    {
-                        **result,
-                        **detail,
-                        "session_id": session_id,
-                        "max_score": max_score,
-                        "deduction_amount": round(deduction, 2),
-                        "deduction_reason": reason,
-                    }
-                )
-            else:
-                bucket["correct_items"].append(
-                    {
-                        **result,
-                        **detail,
-                        "session_id": session_id,
-                        "max_score": max_score,
-                    }
-                )
-
-    rows: list[dict[str, Any]] = []
-    for bucket in buckets.values():
-        full_sum = float(bucket.get("full_sum") or 0)
-        score_sum = float(bucket.get("score_sum") or 0)
-        wrong_items = sorted(
-            bucket["wrong_items"],
-            key=lambda item: (-float(item.get("deduction_amount") or 0), str(item.get("student_name") or "")),
-        )
-        wrong_text = "；".join(
-            f"{item.get('student_name')}(-{float(item.get('deduction_amount') or 0):g})"
-            for item in wrong_items
-        )
-        correct_items = sorted(
-            bucket.get("correct_items", []),
-            key=lambda item: str(item.get("student_name") or "")
-        )
-        rows.append(
-            {
-                "班级": bucket["班级"],
-                "题号": bucket["题号"],
-                "满分": float(bucket["满分"]),
-                "班级得分率": round(score_sum / full_sum * 100, 2) if full_sum > 0 else 0.0,
-                "平均得分": round(score_sum / max(1, int(bucket.get("attempt_count") or 0)), 2),
-                "失分人数": len(wrong_items),
-                "失分学生与扣分": wrong_text or "无",
-                "_wrong_items": wrong_items,
-                "_correct_items": correct_items,
-                "_score_sum": score_sum,
-                "_full_sum": full_sum,
-                "_attempt_count": int(bucket.get("attempt_count") or 0),
-            }
-        )
-    rows.sort(key=lambda item: (str(item["班级"]), _question_sort_key(str(item["题号"]))))
-    classes = sorted({str(row["班级"]) for row in rows})
-    return {"rows": rows, "classes": classes}
+    return build_legacy_question_analysis(db, session_id)
 
 
 def _normalize_question_analysis_details(
     details: list[dict[str, Any]],
     score_map: dict[str, float],
 ) -> list[dict[str, Any]]:
-    merged: dict[str, dict[str, Any]] = {}
-    order: list[str] = []
-    for detail in details:
-        raw_qid = str(detail.get("question_id") or "").strip()
-        if not raw_qid:
-            continue
-        qid = _canonical_question_id_for_score(raw_qid, score_map)
-        if qid not in merged:
-            item = dict(detail)
-            item["question_id"] = qid
-            item["score_awarded"] = 0.0
-            item["_source_question_ids"] = []
-            item["_deduction_reasons"] = []
-            merged[qid] = item
-            order.append(qid)
-
-        item = merged[qid]
-        item["score_awarded"] = float(item.get("score_awarded") or 0) + float(detail.get("score_awarded") or 0)
-        item["_source_question_ids"].append(raw_qid)
-        reason = str(detail.get("deduction_reason") or "").strip()
-        if reason:
-            item["_deduction_reasons"].append(reason)
-
-    normalized: list[dict[str, Any]] = []
-    for qid in order:
-        item = merged[qid]
-        full_score = float(score_map.get(qid) or 0)
-        if full_score > 0 and float(item.get("score_awarded") or 0) > full_score:
-            item["score_awarded"] = full_score
-        reasons = []
-        seen: set[str] = set()
-        for reason in item.pop("_deduction_reasons", []):
-            if reason not in seen:
-                seen.add(reason)
-                reasons.append(reason)
-        if reasons:
-            item["deduction_reason"] = "；".join(reasons)
-        normalized.append(item)
-    return normalized
+    return normalize_question_analysis_details(details, score_map)
 
 
 def _canonical_question_id_for_score(question_id: str, score_map: dict[str, float]) -> str:
-    qid = question_id.strip()
-    if qid in score_map:
-        return qid
-    parent_id = _question_parent_id(qid)
-    if parent_id and parent_id in score_map:
-        return parent_id
-    return qid
+    return canonical_question_id_for_score(question_id, score_map)
 
 
 def _filter_parent_rows_when_parts_present(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -5639,17 +5416,11 @@ def _filter_parent_rows_when_parts_present(rows: list[dict[str, Any]]) -> list[d
 
 
 def _question_parent_id(question_id: str) -> str | None:
-    import re
-
-    match = re.match(r"^(Q\d+)(?:\(|（|-)", question_id.strip())
-    return match.group(1) if match else None
+    return question_parent_id(question_id)
 
 
 def _question_sort_key(question_id: str) -> tuple[int, str]:
-    import re
-
-    match = re.search(r"\d+", question_id)
-    return (int(match.group()) if match else 9999, question_id)
+    return question_sort_key(question_id)
 
 
 def _build_answer_region_crop_preview(db: DBManager, item: dict[str, Any]) -> Image.Image | None:
