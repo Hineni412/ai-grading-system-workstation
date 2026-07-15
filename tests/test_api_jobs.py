@@ -94,6 +94,68 @@ def test_jobs_list_sanitizes_legacy_detail_values(client_with_manager) -> None:
     assert "C:/private" not in response.text
 
 
+@pytest.mark.parametrize(
+    "unsafe_detail, marker",
+    [
+        ("token=plain-secret", "plain-secret"),
+        ('{"payload":{"result":"private-result"}}', "private-result"),
+        ("diagnostic payload=private-payload", "private-payload"),
+        (
+            "Traceback (most recent call last): ValueError: private-stack",
+            "private-stack",
+        ),
+        ("Student wrote a private free-text answer", "private free-text"),
+    ],
+)
+def test_jobs_list_rejects_unrecognized_legacy_detail_text(
+    client_with_manager,
+    unsafe_detail: str,
+    marker: str,
+) -> None:
+    client, manager = client_with_manager
+    job = manager.store.create_job("grading_run", {"session_id": 7})
+    manager.store.update_progress(
+        job.id,
+        progress=0.4,
+        stage="grading",
+        detail=unsafe_detail,
+    )
+
+    response = client.get("/api/jobs", params={"session_id": 7})
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["detail"] == ""
+    assert marker not in response.text
+
+
+@pytest.mark.parametrize(
+    "safe_detail",
+    [
+        "processing",
+        "graded=3 failed=1",
+        "matched=2 issues=1 pages=4",
+        "processing batch 2 of 5",
+    ],
+)
+def test_jobs_list_keeps_whitelisted_stage_and_count_details(
+    client_with_manager,
+    safe_detail: str,
+) -> None:
+    client, manager = client_with_manager
+    job = manager.store.create_job("grading_run", {"session_id": 7})
+    manager.store.update_progress(
+        job.id,
+        progress=0.4,
+        stage="grading",
+        detail=safe_detail,
+    )
+
+    response = client.get("/api/jobs", params={"session_id": 7})
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["detail"] == safe_detail
+
+
 def test_jobs_list_accepts_repeated_job_type_and_status_filters(
     client_with_manager,
 ) -> None:

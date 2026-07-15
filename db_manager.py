@@ -1577,7 +1577,7 @@ class DBManager:
                 SELECT
                     'unmatched_paper:' || printf('%020d', ep.id) AS anomaly_id,
                     'unmatched_paper' AS anomaly_type,
-                    COALESCE(NULLIF(ep.ocr_name, ''), '未匹配试卷') AS display_name,
+                    '未匹配试卷 #' || ep.id AS display_name,
                     NULL AS student_code,
                     NULL AS class_name,
                     ep.match_status AS status,
@@ -1591,8 +1591,7 @@ class DBManager:
                 SELECT
                     'scan_issue:' || printf('%020d', sa.id) AS anomaly_id,
                     'scan_issue' AS anomaly_type,
-                    COALESCE(NULLIF(s.name, ''), NULLIF(s.student_code, ''), '扫描异常学生')
-                        AS display_name,
+                    '扫描异常记录 #' || sa.id AS display_name,
                     s.student_code AS student_code,
                     s.class_name AS class_name,
                     sa.attendance_status AS status,
@@ -1602,28 +1601,26 @@ class DBManager:
                 JOIN students s ON s.id = sa.student_id
                 WHERE sa.session_id = ? AND sa.attendance_status = 'scan_issue'
 
-                UNION ALL
-
-                SELECT
-                    'grading_failed:' || printf('%020d', ep.id) AS anomaly_id,
-                    'grading_failed' AS anomaly_type,
-                    COALESCE(
-                        NULLIF(s.name, ''), NULLIF(ep.ocr_name, ''), '批改失败试卷'
-                    ) AS display_name,
-                    s.student_code AS student_code,
-                    s.class_name AS class_name,
-                    ep.processing_status AS status,
-                    ep.error_message AS detail,
-                    ep.created_at AS created_at
-                FROM exam_papers ep
-                LEFT JOIN students s ON s.id = ep.student_id
-                WHERE ep.session_id = ? AND ep.processing_status = 'failed'
-
                 ORDER BY anomaly_type, anomaly_id
                 """,
-                (int(session_id), int(session_id), int(session_id)),
+                (int(session_id), int(session_id)),
             ).fetchall()
-        return [dict(row) for row in rows]
+        items = [dict(row) for row in rows]
+        for row in self.list_failed_papers(int(session_id)):
+            paper_id = int(row["paper_id"])
+            items.append(
+                {
+                    "anomaly_id": f"grading_failed:{paper_id:020d}",
+                    "anomaly_type": "grading_failed",
+                    "display_name": f"批改失败试卷 #{paper_id}",
+                    "student_code": row.get("student_code"),
+                    "class_name": row.get("class_name"),
+                    "status": str(row.get("processing_status") or "failed"),
+                    "detail": row.get("error_message"),
+                    "created_at": row.get("created_at"),
+                }
+            )
+        return sorted(items, key=lambda item: (item["anomaly_type"], item["anomaly_id"]))
 
     def list_failed_papers(self, session_id: int) -> list[dict[str, Any]]:
         """返回本场次中批改失败（processing_status='failed'、'grading'（非运行状态下）或含有局部失败降级）的所有试卷，含学生姓名与错误信息。"""
@@ -1636,6 +1633,7 @@ class DBManager:
                     COALESCE(s.name, ep.ocr_name, '未知') AS student_name,
                     s.student_code,
                     s.class_name,
+                    ep.processing_status,
                     CASE 
                         WHEN ep.processing_status = 'failed' THEN ep.error_message 
                         WHEN ep.processing_status = 'grading' THEN '批改任务异常中断，需重新批改'
@@ -1683,12 +1681,13 @@ class DBManager:
                     "student_name": row.get("student_name"),
                     "student_code": row.get("student_code"),
                     "class_name": row.get("class_name"),
+                    "processing_status": row.get("processing_status"),
                     "error_message": "批改结果不完整，需补跑受影响大题",
                     "created_at": None,
                 }
             )
             existing_paper_ids.add(paper_id)
-        return items
+        return sorted(items, key=lambda item: int(item["paper_id"]))
 
     def list_failed_papers_detailed(self, session_id: int) -> list[dict[str, Any]]:
         """返回本场次中批改失败（processing_status='failed'、'grading'（非运行状态下）或含有局部失败降级）的所有试卷的详细信息，用于增量重试。"""

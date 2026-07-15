@@ -339,6 +339,178 @@ def test_anomalies_are_stable_paginated_filterable_and_sanitized(
 
 
 @pytest.mark.parametrize(
+    "ocr_name, marker",
+    [
+        ("C:/private/student.png", "C:/private"),
+        ("file:///C:/private/student.png", "file:///"),
+        ("token=private-token", "private-token"),
+        ("opaque-student-marker-7f31", "opaque-student-marker"),
+        ("普通匿名标签", "普通匿名标签"),
+    ],
+)
+def test_anomaly_display_names_never_publish_ocr_text(
+    workbench_client,
+    ocr_name: str,
+    marker: str,
+) -> None:
+    client, session_id, db_path, _latest_job_id = workbench_client
+    with sqlite3.connect(db_path) as conn:
+        unmatched_id = int(
+            conn.execute(
+                "SELECT id FROM exam_papers WHERE session_id = ? AND match_status <> 'matched'",
+                (session_id,),
+            ).fetchone()[0]
+        )
+        failed_id = int(
+            conn.execute(
+                "SELECT id FROM exam_papers WHERE session_id = ? AND processing_status = 'failed'",
+                (session_id,),
+            ).fetchone()[0]
+        )
+        conn.execute(
+            "UPDATE exam_papers SET ocr_name = ? WHERE id = ?",
+            (ocr_name, unmatched_id),
+        )
+        conn.execute(
+            "UPDATE exam_papers SET ocr_name = ?, student_id = NULL WHERE id = ?",
+            (ocr_name, failed_id),
+        )
+        conn.commit()
+
+    payload = client.get(f"/api/sessions/{session_id}/anomalies").json()
+    by_id = {item["anomaly_id"]: item for item in payload["items"]}
+
+    assert by_id[f"unmatched_paper:{unmatched_id:020d}"]["display_name"] == (
+        f"未匹配试卷 #{unmatched_id}"
+    )
+    assert by_id[f"grading_failed:{failed_id:020d}"]["display_name"] == (
+        f"批改失败试卷 #{failed_id}"
+    )
+    assert marker not in str(by_id)
+
+
+def test_anomaly_display_name_uses_controlled_labels_for_known_students(
+    workbench_client,
+) -> None:
+    client, session_id, _db_path, _latest_job_id = workbench_client
+
+    payload = client.get(
+        f"/api/sessions/{session_id}/anomalies",
+        params={"anomaly_type": "grading_failed"},
+    ).json()
+
+    failed_item = payload["items"][0]
+    paper_id = int(failed_item["anomaly_id"].split(":", 1)[1])
+    assert failed_item["display_name"] == f"批改失败试卷 #{paper_id}"
+
+    scan_payload = client.get(
+        f"/api/sessions/{session_id}/anomalies",
+        params={"anomaly_type": "scan_issue"},
+    ).json()
+    scan_item = scan_payload["items"][0]
+    attendance_id = int(scan_item["anomaly_id"].split(":", 1)[1])
+    assert scan_item["display_name"] == f"扫描异常记录 #{attendance_id}"
+
+
+def test_grading_failure_anomalies_match_legacy_retry_eligibility(
+    workbench_client,
+) -> None:
+    from db_manager import DBManager
+
+    client, session_id, db_path, _latest_job_id = workbench_client
+    with sqlite3.connect(db_path) as conn:
+        stale_grading_id = int(
+            conn.execute(
+                """
+                INSERT INTO exam_papers (
+                    session_id, front_image, back_image, ocr_name,
+                    match_status, processing_status
+                ) VALUES (?, 'stale-front.jpg', 'stale-back.jpg', ?, 'matched', 'grading')
+                """,
+                (session_id, "token=stale-private-token"),
+            ).lastrowid
+        )
+        degraded_ids: list[int] = []
+        degraded_payloads = [
+            {"hybrid_batch_fallback": [{"error": "private-fallback"}]},
+            {"grading_completeness": {"status": "incomplete"}},
+            {"grading_completeness": {"status": "invalid"}},
+        ]
+        for index, raw_payload in enumerate(degraded_payloads, start=1):
+            student_id = int(
+                conn.execute(
+                    "INSERT INTO students (student_code, name) VALUES (?, ?)",
+                    (f"D{index:03d}", f"Known Student {index}"),
+                ).lastrowid
+            )
+            paper_id = int(
+                conn.execute(
+                    """
+                    INSERT INTO exam_papers (
+                        session_id, front_image, back_image, ocr_name, student_id,
+                        match_status, processing_status
+                    ) VALUES (?, ?, ?, ?, ?, 'matched', 'graded')
+                    """,
+                    (
+                        session_id,
+                        f"degraded-{index}-front.jpg",
+                        f"degraded-{index}-back.jpg",
+                        f"opaque-ocr-marker-{index}",
+                        student_id,
+                    ),
+                ).lastrowid
+            )
+            conn.execute(
+                """
+                INSERT INTO session_results (
+                    session_id, student_id, paper_id, total_score,
+                    student_score, needs_human_review, raw_json
+                ) VALUES (?, ?, ?, 10, 0, 1, ?)
+                """,
+                (session_id, student_id, paper_id, json.dumps(raw_payload)),
+            )
+            degraded_ids.append(paper_id)
+        conn.commit()
+
+    legacy_failed_ids = [
+        int(row["paper_id"])
+        for row in DBManager(db_path).list_failed_papers(session_id)
+    ]
+    response = client.get(
+        f"/api/sessions/{session_id}/anomalies",
+        params={"anomaly_type": "grading_failed", "page_size": 100},
+    )
+    overview = client.get(
+        "/api/workbench/overview",
+        params={"session_id": session_id},
+    ).json()
+
+    assert response.status_code == 200
+    payload = response.json()
+    anomaly_ids = [
+        int(item["anomaly_id"].split(":", 1)[1])
+        for item in payload["items"]
+    ]
+    assert anomaly_ids == sorted(legacy_failed_ids)
+    assert stale_grading_id in anomaly_ids
+    assert set(degraded_ids).issubset(anomaly_ids)
+    assert payload["total"] == len(legacy_failed_ids)
+    assert overview["anomalies"]["failed_papers"] == payload["total"]
+    assert overview["progress"]["failed_papers"] == 1
+    assert payload["items"] == sorted(
+        payload["items"], key=lambda item: item["anomaly_id"]
+    )
+    assert "stale-private-token" not in response.text
+    assert "opaque-ocr-marker" not in response.text
+    stale_item = next(
+        item
+        for item in payload["items"]
+        if item["anomaly_id"] == f"grading_failed:{stale_grading_id:020d}"
+    )
+    assert stale_item["display_name"] == f"批改失败试卷 #{stale_grading_id}"
+
+
+@pytest.mark.parametrize(
     "unsafe_text, marker",
     [
         ("token=plain-secret", "plain-secret"),
