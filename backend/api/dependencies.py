@@ -82,6 +82,12 @@ def get_templates_dir() -> Path:
     return get_path_manager().templates_dir
 
 
+def get_config_mapping_output_dir(
+    templates_dir: Path = Depends(get_templates_dir),
+) -> Path:
+    return templates_dir
+
+
 def get_annotated_dir() -> Path:
     return get_path_manager().annotated_dir
 

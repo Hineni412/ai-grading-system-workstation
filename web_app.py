@@ -34,6 +34,9 @@ from backend.config_workspace.editor import (
     project_config_editor,
     streamlit_dataframe_to_editor_edits,
 )
+from backend.config_workspace.publish import (
+    refresh_template_mapping_from_session as _refresh_template_mapping_service,
+)
 from backend.llm.policy import policy_overrides_from_profile
 from data_transfer_service import (
     EXPORT_SIZE_WARNING_MB,
@@ -7049,37 +7052,21 @@ def _render_pdf_page_to_image(doc: Any, page_index: int, output_path: Path) -> N
 
 
 def _refresh_template_mapping_from_session(db: DBManager, session_id: int) -> bool:
-    session = db.get_grading_session(session_id)
-    template = db.get_session_template(session_id)
-    if not session or not template:
-        return False
+    def after_refresh(package: dict[str, Any]) -> None:
+        _write_regions_snapshot(db, session_id)
+        _write_session_workflow_state(
+            db,
+            session_id,
+            "template_mapping_refreshed",
+            {"package_paths": package["paths"]},
+        )
 
-    front_path = Path(str(template.get("front_template_path") or ""))
-    back_path = Path(str(template.get("back_template_path") or ""))
-    if not front_path.exists() or not back_path.exists():
-        return False
-
-    rubric = _read_json_safely(_resolve_session_file_path(session.get("rubric_path")))
-    answer_key = _read_json_safely(_resolve_session_file_path(session.get("answer_key_path")))
-    if not rubric or not answer_key:
-        return False
-
-    package = create_template_mapping_package(
-        front_path,
-        back_path,
-        rubric=rubric,
-        answer_key=answer_key,
-        output_dir=TEMPLATE_DIR / f"session_{session_id}",
-    )
-    db.update_session_template_analysis(
+    return _refresh_template_mapping_service(
+        db,
         session_id,
-        ai_analysis_path=package["paths"]["raw_path"],
-        template_config_path=package["paths"]["config_path"],
-        regions_path=package["paths"]["regions_path"],
+        output_root=TEMPLATE_DIR,
+        after_refresh=after_refresh,
     )
-    _write_regions_snapshot(db, session_id)
-    _write_session_workflow_state(db, session_id, "template_mapping_refreshed", {"package_paths": package["paths"]})
-    return True
 
 
 def _template_mapping_differs_from_session_rubric(db: DBManager, session_id: int, config: dict[str, Any]) -> bool:

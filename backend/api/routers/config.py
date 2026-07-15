@@ -13,6 +13,7 @@ from backend.api.dependencies import (
     get_grading_db,
     get_job_manager,
     get_upload_config_dir,
+    get_config_mapping_output_dir,
 )
 from backend.api.routers.jobs import _job_response
 from backend.api.routers.sessions import _require_session
@@ -21,6 +22,10 @@ from backend.api.schemas.config import (
     ConfigGenerationRetryRequest,
     ConfigSourceGenerationRequest,
     ConfigSourceResponse,
+    ConfigEditorRefineRequest,
+    ConfigEditorResponse,
+    ConfigEditorSaveRequest,
+    ConfigEditorSaveResponse,
     SessionConfigRequest,
     SessionConfigResponse,
 )
@@ -40,6 +45,7 @@ from backend.api.schemas.jobs import JobResponse
 from backend.jobs.config_generation import (
     discard_config_generation_input,
     stage_config_generation_input,
+    stage_config_refine_input,
 )
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from backend.jobs.store import ConfigRetryAlreadySubmittedError, JobStore
@@ -51,6 +57,22 @@ from backend.public_data import (
 from db_manager import DBManager
 from path_manager import resolve_stored_file_path
 from session_manager import save_generated_config
+from backend.config_workspace.editor import (
+    ConfigEditorEdit,
+    ConfigEditorValidationError,
+    ManualPartInput,
+    ReplaceScoringUnitsCommand,
+    SplitScoringUnitCommand,
+    apply_config_editor_changes,
+)
+from backend.config_workspace.publish import (
+    ConfigRevisionConflict,
+    editor_response,
+    load_editor_config,
+    refresh_mapping_after_config_save,
+    refresh_template_mapping_from_session,
+    save_editor_config,
+)
 
 
 router = APIRouter(prefix="/api", tags=["config"])
@@ -63,6 +85,12 @@ CONFIG_GENERATION_ERROR_RESPONSES = {
 CONFIG_GENERATION_RETRY_ERROR_RESPONSES = {
     **CONFIG_GENERATION_ERROR_RESPONSES,
     409: {"model": ErrorResponse, "description": "Config generation retry conflict"},
+}
+
+CONFIG_EDITOR_ERROR_RESPONSES = {
+    404: {"model": ErrorResponse, "description": "Session not found"},
+    409: {"model": ErrorResponse, "description": "Configuration revision conflict"},
+    422: {"model": ErrorResponse, "description": "Invalid editor change"},
 }
 
 CONFIG_SOURCE_ERROR_RESPONSES = {
@@ -266,6 +294,164 @@ def save_session_config(
         answer_key_path=str(answer_key_path),
     )
     return _config_response(_require_session(db, session_id))
+
+
+def _editor_commands(values: list[Any]) -> tuple[Any, ...]:
+    commands: list[Any] = []
+    for value in values:
+        if value.kind == "split":
+            commands.append(SplitScoringUnitCommand(**value.model_dump()))
+        else:
+            commands.append(
+                ReplaceScoringUnitsCommand(
+                    kind="replace_parts",
+                    question_id=value.question_id,
+                    parts=tuple(ManualPartInput(**part.model_dump()) for part in value.parts),
+                )
+            )
+    return tuple(commands)
+
+
+def _editor_edits(values: list[Any]) -> tuple[ConfigEditorEdit, ...]:
+    return tuple(
+        ConfigEditorEdit(
+            **{
+                key: (tuple(value) if key in {"accepted_answers", "required_elements", "deduction_rules"} and value is not None else value)
+                for key, value in item.model_dump().items()
+            }
+        )
+        for item in values
+    )
+
+
+def _editor_api_error(exc: Exception) -> ApiError:
+    if isinstance(exc, ConfigRevisionConflict):
+        return ApiError(409, "config_revision_conflict", "Configuration has changed")
+    if isinstance(exc, ConfigEditorValidationError):
+        return ApiError(
+            422,
+            "invalid_config_editor",
+            "Configuration editor changes are invalid",
+            {"issues": [dict(issue) for issue in exc.issues]},
+        )
+    raise exc
+
+
+@router.get(
+    "/sessions/{session_id}/config/editor",
+    response_model=ConfigEditorResponse,
+    responses=CONFIG_EDITOR_ERROR_RESPONSES,
+)
+def get_config_editor(
+    session_id: int,
+    db: DBManager = Depends(get_grading_db),
+) -> dict[str, Any]:
+    _require_active_session(db, session_id)
+    try:
+        return editor_response(load_editor_config(db, session_id))
+    except (OSError, ValueError, json.JSONDecodeError):
+        raise ApiError(
+            500,
+            "stored_config_invalid",
+            "Stored configuration is invalid",
+        ) from None
+
+
+@router.put(
+    "/sessions/{session_id}/config/editor",
+    response_model=ConfigEditorSaveResponse,
+    responses=CONFIG_EDITOR_ERROR_RESPONSES,
+)
+def save_config_editor(
+    session_id: int,
+    request: ConfigEditorSaveRequest,
+    db: DBManager = Depends(get_grading_db),
+    upload_config_dir: Path = Depends(get_upload_config_dir),
+    templates_dir: Path = Depends(get_config_mapping_output_dir),
+) -> dict[str, Any]:
+    _require_active_session(db, session_id)
+    try:
+        current, saved = save_editor_config(
+            db,
+            upload_config_dir,
+            session_id=session_id,
+            expected_revision=request.revision,
+            edits=_editor_edits(request.edits),
+            commands=_editor_commands(request.commands),
+        )
+    except (ConfigRevisionConflict, ConfigEditorValidationError) as exc:
+        raise _editor_api_error(exc) from None
+    except Exception:
+        raise ApiError(
+            500,
+            "config_save_failed",
+            "Configuration could not be saved",
+        ) from None
+    body = editor_response(current)
+    mapping_status = "not_present"
+    mapping_message = "评分依据未变化。"
+    if saved:
+        mapping_result = refresh_mapping_after_config_save(
+            lambda: refresh_template_mapping_from_session(
+                db, session_id, output_root=templates_dir
+            )
+        )
+        mapping_status = mapping_result.mapping_status
+        mapping_message = mapping_result.mapping_message
+    body["save_result"] = {
+        "config_saved": saved,
+        "mapping_status": mapping_status,
+        "mapping_message": mapping_message,
+    }
+    return body
+
+
+@router.post(
+    "/sessions/{session_id}/config/editor/refine",
+    response_model=JobResponse,
+    status_code=202,
+    responses={**CONFIG_EDITOR_ERROR_RESPONSES, 503: {"model": ErrorResponse}},
+)
+def refine_config_editor(
+    session_id: int,
+    request: ConfigEditorRefineRequest,
+    db: DBManager = Depends(get_grading_db),
+    manager: JobManager = Depends(get_job_manager),
+    upload_config_dir: Path = Depends(get_upload_config_dir),
+) -> JobResponse:
+    _require_active_session(db, session_id)
+    try:
+        current = load_editor_config(db, session_id)
+    except (OSError, ValueError, json.JSONDecodeError):
+        raise ApiError(
+            500,
+            "stored_config_invalid",
+            "Stored configuration is invalid",
+        ) from None
+    if request.revision != current.revision:
+        raise _editor_api_error(ConfigRevisionConflict("stale revision"))
+    try:
+        commands = _editor_commands(request.commands)
+        candidate = apply_config_editor_changes(current.payload, edits=(), commands=commands)
+    except ConfigEditorValidationError as exc:
+        raise _editor_api_error(exc) from None
+    input_id = stage_config_refine_input(
+        upload_config_dir,
+        session_id=session_id,
+        expected_rubric_path=str(current.session.get("rubric_path") or ""),
+        expected_answer_key_path=str(current.session.get("answer_key_path") or ""),
+        expected_revision=current.revision,
+        existing_payload=current.payload,
+        commands=[item.model_dump() for item in request.commands],
+    )
+    try:
+        return _submit_config_generation(
+            manager,
+            {"session_id": session_id, "mode": "refine", "input_id": input_id},
+        )
+    except Exception:
+        discard_config_generation_input(upload_config_dir, input_id)
+        raise
 
 
 def _require_active_session(db: DBManager, session_id: int) -> dict[str, Any]:

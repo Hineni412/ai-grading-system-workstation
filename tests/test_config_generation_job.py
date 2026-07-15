@@ -22,7 +22,15 @@ from backend.jobs.config_generation import (
     load_config_generation_input,
     run_config_generation_job,
     stage_config_generation_input,
+    stage_config_refine_input,
 )
+from backend.config_workspace.editor import (
+    ManualPartInput,
+    ReplaceScoringUnitsCommand,
+    apply_config_editor_changes,
+    editor_part_ids,
+)
+from backend.config_workspace.publish import load_editor_config
 from backend.jobs.manager import JobCancellationRequested, JobContext
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
@@ -1407,3 +1415,135 @@ def test_config_source_references_are_derived_from_private_job_payloads(
     )
 
     assert store.referenced_config_source_ids(7) == {"a" * 32}
+
+
+def _refine_context(tmp_path: Path):
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    db.bind_grading_session_source(
+        session_id,
+        source_paper_path="papers/original.docx",
+        source_paper_sha256="e" * 64,
+    )
+    current = load_editor_config(db, session_id)
+    candidate = apply_config_editor_changes(
+        current.payload,
+        edits=(),
+        commands=(
+            ReplaceScoringUnitsCommand(
+                kind="replace_parts",
+                question_id="Q1",
+                parts=(
+                    ManualPartInput(part_id="teacher-a", score=8, core_goal="first"),
+                    ManualPartInput(part_id="teacher-b", score=9, core_goal="second"),
+                ),
+            ),
+        ),
+    )
+    input_id = stage_config_refine_input(
+        tmp_path / "uploaded",
+        session_id=session_id,
+        expected_rubric_path=old_paths[0],
+        expected_answer_key_path=old_paths[1],
+        expected_revision=current.revision,
+        existing_payload=current.payload,
+        commands=[
+            {
+                "kind": "replace_parts",
+                "question_id": "Q1",
+                "parts": [
+                    {"part_id": "teacher-a", "score": 8, "core_goal": "first"},
+                    {"part_id": "teacher-b", "score": 9, "core_goal": "second"},
+                ],
+            }
+        ],
+    )
+    context, store = _job_context(
+        db.db_path,
+        {"session_id": session_id, "mode": "refine", "input_id": input_id},
+    )
+    return db, session_id, old_paths, candidate, context, store
+
+
+def test_refine_job_preserves_teacher_part_ids_and_calls_factory_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths, candidate, context, _store = _refine_context(tmp_path)
+    calls = 0
+    client = object()
+
+    def factory():
+        nonlocal calls
+        calls += 1
+        return client
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.refine_grading_config_from_manual_structure",
+        lambda payload, **_kwargs: json.loads(json.dumps(payload)),
+    )
+    result = run_config_generation_job(
+        context=context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        llm_client_factory=factory,
+    )
+
+    assert result["outcome"] == "complete"
+    assert calls == 1
+    current = db.get_grading_session(session_id)
+    assert (current["rubric_path"], current["answer_key_path"]) != old_paths
+    assert current["source_paper_path"] == "papers/original.docx"
+    assert current["source_paper_sha256"] == "e" * 64
+    published = load_editor_config(db, session_id)
+    assert editor_part_ids(published.payload) == editor_part_ids(candidate)
+
+
+def test_refine_job_rejects_changed_teacher_part_ids_and_preserves_old_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths, candidate, context, _store = _refine_context(tmp_path)
+
+    def changed(payload, **_kwargs):
+        result = json.loads(json.dumps(payload))
+        result["rubric"]["questions"][0]["parts"][0]["part_id"] = "changed-id"
+        result["answer_key"]["questions"][0]["parts"][0]["part_id"] = "changed-id"
+        return result
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.refine_grading_config_from_manual_structure",
+        changed,
+    )
+    with pytest.raises(ValueError, match="changed teacher scoring-unit identities"):
+        run_config_generation_job(
+            context=context,
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            llm_client_factory=lambda: object(),
+        )
+    current = db.get_grading_session(session_id)
+    assert (current["rubric_path"], current["answer_key_path"]) == old_paths
+    assert not list((tmp_path / "uploaded").glob("rubric_job-*.json"))
+
+
+def test_refine_job_rejects_same_path_old_revision_before_model_call(tmp_path: Path) -> None:
+    db, session_id, old_paths, _candidate, context, _store = _refine_context(tmp_path)
+    rubric_path = Path(old_paths[0])
+    rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+    rubric["exam_title"] = "Concurrent edit"
+    rubric_path.write_text(json.dumps(rubric), encoding="utf-8")
+    called = False
+
+    def factory():
+        nonlocal called
+        called = True
+        return object()
+
+    with pytest.raises(ValueError, match="changed before refinement started"):
+        run_config_generation_job(
+            context=context,
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            llm_client_factory=factory,
+        )
+    assert called is False

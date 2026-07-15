@@ -21,6 +21,9 @@ EXPECTED_OPERATIONS = {
     ("PUT", "/api/sessions/{session_id}/config"),
     ("POST", "/api/sessions/{session_id}/config/generate"),
     ("POST", "/api/sessions/{session_id}/config/generate/retry"),
+    ("GET", "/api/sessions/{session_id}/config/editor"),
+    ("PUT", "/api/sessions/{session_id}/config/editor"),
+    ("POST", "/api/sessions/{session_id}/config/editor/refine"),
     ("GET", "/api/sessions/{session_id}/template"),
     ("PUT", "/api/sessions/{session_id}/template"),
     ("GET", "/api/sessions/{session_id}/regions"),
@@ -232,6 +235,21 @@ def test_config_generation_openapi_declares_safe_requests_and_stable_errors() ->
         request_schema = schema["components"]["schemas"][request_ref.rsplit("/", 1)[-1]]
         assert request_schema["additionalProperties"] is False
         assert not (forbidden & set(request_schema.get("properties", {})))
+
+
+def test_config_editor_openapi_forbids_nested_unknown_request_fields() -> None:
+    from backend.api.app import create_app
+
+    schema = create_app().openapi()
+    for method, path in (
+        ("put", "/api/sessions/{session_id}/config/editor"),
+        ("post", "/api/sessions/{session_id}/config/editor/refine"),
+    ):
+        operation = schema["paths"][path][method]
+        request_ref = operation["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+        request_schema = schema["components"]["schemas"][request_ref.rsplit("/", 1)[-1]]
+        assert request_schema["additionalProperties"] is False
+        assert not ({"rubric", "answer_key", "config", "path"} & set(request_schema["properties"]))
 
 
 def test_training_export_openapi_declares_dedicated_safe_operations() -> None:
