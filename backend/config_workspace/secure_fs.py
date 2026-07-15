@@ -39,8 +39,16 @@ def _is_reparse(path: Path) -> bool:
     return bool(flag and attributes & flag)
 
 
-def _identity(path: Path) -> int:
-    return int(os.lstat(path).st_ino)
+def _root_components(path: Path) -> tuple[Path, ...]:
+    anchor = Path(path.anchor)
+    if not path.is_absolute() or not path.anchor:
+        raise SecureFilesystemError("trusted root must be absolute")
+    components = [anchor]
+    current = anchor
+    for part in path.parts[1:]:
+        current = current / part
+        components.append(current)
+    return tuple(components)
 
 
 class _WindowsWriter:
@@ -62,13 +70,132 @@ class SecureRootFilesystem:
 
     def __init__(self, root: Path) -> None:
         _require_windows()
-        self.root = Path(root).resolve(strict=False)
-        self.root.mkdir(parents=True, exist_ok=True)
-        if _is_reparse(self.root) or not self.root.is_dir():
-            raise SecureFilesystemError("trusted root must be a physical directory")
+        raw = str(root)
+        if raw.startswith("\\\\?\\UNC\\"):
+            raw = "\\\\" + raw[8:]
+        elif raw.startswith("\\\\?\\"):
+            raw = raw[4:]
+        self.root = Path(os.path.abspath(raw))
+        self._inspect_root_components()
+        self._before_handle_use("root_initialize", self.root)
+        self._initialize_trusted_root()
 
     def _before_handle_use(self, operation: str, path: Path) -> None:
         """Internal checkpoint used by race regression tests."""
+
+    def _inspect_root_components(self) -> None:
+        for component in _root_components(self.root):
+            try:
+                metadata = os.lstat(component)
+            except FileNotFoundError:
+                break
+            except OSError:
+                raise SecureFilesystemError("trusted root inspection failed") from None
+            if stat.S_ISLNK(metadata.st_mode) or _is_reparse(component):
+                raise SecureFilesystemError(
+                    "trusted root contains a reparse point"
+                )
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise SecureFilesystemError(
+                    "trusted root component is not a directory"
+                )
+
+    def _initialize_trusted_root(self) -> None:
+        components = _root_components(self.root)
+        handles: list[int] = []
+        final_path = ""
+        final_identity = 0
+        missing_started = False
+        try:
+            for component in components:
+                try:
+                    metadata = os.lstat(component)
+                except FileNotFoundError:
+                    missing_started = True
+                    metadata = None
+                except OSError:
+                    raise SecureFilesystemError(
+                        "trusted root inspection failed"
+                    ) from None
+                if metadata is not None:
+                    if missing_started:
+                        raise SecureFilesystemError(
+                            "trusted root ancestry changed"
+                        )
+                    if stat.S_ISLNK(metadata.st_mode) or _is_reparse(component):
+                        raise SecureFilesystemError(
+                            "trusted root contains a reparse point"
+                        )
+                    if not stat.S_ISDIR(metadata.st_mode):
+                        raise SecureFilesystemError(
+                            "trusted root component is not a directory"
+                        )
+                    expected_identity = int(metadata.st_ino)
+                else:
+                    self._before_handle_use("root_mkdir", component)
+                    if not _CreateDirectoryW(str(component), None):
+                        raise SecureFilesystemError(
+                            "secure trusted root creation failed"
+                        )
+                    try:
+                        created = os.lstat(component)
+                    except OSError:
+                        raise SecureFilesystemError(
+                            "trusted root creation could not be verified"
+                        ) from None
+                    if stat.S_ISLNK(created.st_mode) or _is_reparse(component):
+                        raise SecureFilesystemError(
+                            "trusted root creation produced a reparse point"
+                        )
+                    if not stat.S_ISDIR(created.st_mode):
+                        raise SecureFilesystemError(
+                            "trusted root creation produced a non-directory"
+                        )
+                    expected_identity = int(created.st_ino)
+                handle = _win_create_file(
+                    component,
+                    _FILE_READ_ATTRIBUTES,
+                    _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+                    _OPEN_EXISTING,
+                    _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
+                )
+                try:
+                    information = _win_information(handle)
+                    if information.dwFileAttributes & _FILE_ATTRIBUTE_REPARSE_POINT:
+                        raise SecureFilesystemError(
+                            "trusted root handle is a reparse point"
+                        )
+                    if not information.dwFileAttributes & _FILE_ATTRIBUTE_DIRECTORY:
+                        raise SecureFilesystemError(
+                            "trusted root handle is not a directory"
+                        )
+                    handle_identity = (
+                        int(information.nFileIndexHigh) << 32
+                    ) | int(information.nFileIndexLow)
+                    handle_final = _win_final_path(handle)
+                    expected_final = os.path.normcase(
+                        os.path.normpath(os.path.abspath(str(component)))
+                    )
+                    if (
+                        handle_identity != expected_identity
+                        or handle_final != expected_final
+                    ):
+                        raise SecureFilesystemError(
+                            "trusted root component identity changed"
+                        )
+                except Exception:
+                    _CloseHandle(handle)
+                    raise
+                handles.append(handle)
+                final_path = handle_final
+                final_identity = handle_identity
+            if not final_path or final_identity <= 0:
+                raise SecureFilesystemError("trusted root could not be established")
+            self._root_final = final_path
+            self._root_identity = final_identity
+        finally:
+            for handle in reversed(handles):
+                _CloseHandle(handle)
 
     def ensure_directory(self, path: Path) -> None:
         _require_windows()
@@ -318,7 +445,7 @@ class SecureRootFilesystem:
         relative = self._relative(path)
         parts = relative.parts if include_leaf else relative.parts[:-1]
         current = self.root
-        snapshot = {self._key(self.root): _identity(self.root)}
+        snapshot = {self._key(self.root): self._root_identity}
         for index, part in enumerate(parts):
             current = current / part
             try:
@@ -348,7 +475,7 @@ class SecureRootFilesystem:
         snapshot: dict[str, int],
     ) -> Iterator[_WindowsGuards]:
         handles: list[int] = []
-        root_final: str | None = None
+        root_final = self._root_final
         current = self.root
         directories = [self.root]
         for part in self._relative(path).parts[:-1]:
@@ -364,9 +491,6 @@ class SecureRootFilesystem:
                     _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
                 )
                 handles.append(handle)
-                final = _win_final_path(handle)
-                if root_final is None:
-                    root_final = final
                 self._validate_windows_handle(
                     handle,
                     directory,
@@ -374,7 +498,6 @@ class SecureRootFilesystem:
                     expected_identity=snapshot.get(self._key(directory)),
                     directory=True,
                 )
-            assert root_final is not None
             yield _WindowsGuards(handles=handles, root_final=root_final)
         finally:
             for handle in reversed(handles):
@@ -576,7 +699,7 @@ def _win_try_open_delete(path: Path) -> int | None:
     handle = _CreateFileW(
         str(path),
         _DELETE | _FILE_READ_ATTRIBUTES,
-        _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE,
+        _FILE_SHARE_READ | _FILE_SHARE_WRITE,
         None,
         _OPEN_EXISTING,
         _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT,
