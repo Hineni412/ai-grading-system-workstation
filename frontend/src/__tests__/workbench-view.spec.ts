@@ -398,11 +398,25 @@ describe('workbench view', () => {
 
   it('loads tag evidence beyond the first 20 items and keeps the total visible', async () => {
     const first = graphEvidenceResponse()
+    const evidenceItem = first.items[0]!
+    first.items = Array.from({ length: 20 }, (_, index) => ({
+      ...evidenceItem,
+      student_id: index + 1,
+      student_name: `evidence ${index + 1}`,
+      question_id: `Q${index + 1}`,
+      bank_question_id: index + 1,
+    }))
     first.total = 21
     first.total_pages = 2
     const second = {
       ...first,
-      items: [{ ...first.items[0]!, student_id: 18, student_name: 'later evidence' }],
+      items: [{
+        ...evidenceItem,
+        student_id: 21,
+        student_name: 'later evidence',
+        question_id: 'Q21',
+        bank_question_id: 21,
+      }],
       page: 2,
     }
     vi.mocked(fetchGraphEvidence).mockResolvedValueOnce(first).mockResolvedValueOnce(second)
@@ -412,13 +426,69 @@ describe('workbench view', () => {
     mounted.host.querySelector<HTMLButtonElement>('.tag-node')!.click()
     await settleUi()
 
-    expect(mounted.host.textContent).toContain('当前显示 1 / 21 条证据')
+    expect(mounted.host.textContent).toContain('当前显示 20 / 21 条证据')
+    expect(mounted.host.querySelectorAll('.tag-evidence-list > li')).toHaveLength(20)
     clickButton(mounted.host, '加载更多证据')
     await settleUi()
     expect(fetchGraphEvidence).toHaveBeenLastCalledWith(
       7, '七年级一班', 'knowledge_point:fraction', expect.any(AbortSignal), 2,
     )
+    const evidenceRows = mounted.host.querySelectorAll('.tag-evidence-list > li')
+    expect(evidenceRows).toHaveLength(21)
+    expect(evidenceRows[0]?.textContent).toContain('evidence 1')
+    expect(evidenceRows[19]?.textContent).toContain('evidence 20')
+    expect(evidenceRows[20]?.textContent).toContain('later evidence')
+    expect(mounted.host.textContent).toContain('当前显示 21 / 21 条证据')
+    expect([...mounted.host.querySelectorAll('button')].some(
+      (button) => button.textContent?.includes('加载更多证据'),
+    )).toBe(false)
     expect(mounted.host.textContent).toContain('later evidence')
+  })
+
+  it('deduplicates overlapping graph evidence pages without reordering the first page', async () => {
+    const first = graphEvidenceResponse()
+    const evidenceItem = first.items[0]!
+    first.items = Array.from({ length: 20 }, (_, index) => ({
+      ...evidenceItem,
+      student_id: index + 1,
+      student_name: `ordered evidence ${index + 1}`,
+      question_id: `Q${index + 1}`,
+      bank_question_id: index + 1,
+    }))
+    first.total = 22
+    first.total_pages = 2
+    const second = {
+      ...first,
+      items: [
+        { ...first.items[19]! },
+        {
+          ...evidenceItem,
+          student_id: 21,
+          student_name: 'new ordered evidence',
+          question_id: 'Q21',
+          bank_question_id: 21,
+        },
+      ],
+      page: 2,
+    }
+    vi.mocked(fetchGraphEvidence).mockResolvedValueOnce(first).mockResolvedValueOnce(second)
+    const mounted = await mountView()
+    selectValue(mounted.host.querySelector<HTMLSelectElement>('#analysis-class')!, '七年级一班')
+    await settleUi()
+    mounted.host.querySelector<HTMLButtonElement>('.tag-node')!.click()
+    await settleUi()
+    clickButton(mounted.host, '加载更多证据')
+    await settleUi()
+
+    const evidenceRows = mounted.host.querySelectorAll('.tag-evidence-list > li')
+    expect(evidenceRows).toHaveLength(21)
+    expect(evidenceRows[0]?.textContent).toContain('ordered evidence 1')
+    expect(evidenceRows[19]?.textContent).toContain('ordered evidence 20')
+    expect(evidenceRows[20]?.textContent).toContain('new ordered evidence')
+    expect(mounted.host.textContent).toContain('当前显示 21 / 22 条证据')
+    expect([...mounted.host.querySelectorAll('button')].some(
+      (button) => button.textContent?.includes('加载更多证据'),
+    )).toBe(false)
   })
 
   it('uses one continuous column for the progress rail and content grids at 1024px', () => {

@@ -50,12 +50,15 @@ describe('analysis store', () => {
         ...questionItem,
         question_id: `Q${index + 1}`,
       })),
-      total: 101,
+      total: 102,
       total_pages: 2,
     }, {
       ...session7Questions,
-      items: [{ ...questionItem, question_id: 'Q101' }],
-      total: 101,
+      items: [
+        { ...questionItem, question_id: 'Q100' },
+        { ...questionItem, question_id: 'Q101' },
+      ],
+      total: 102,
       page: 2,
       total_pages: 2,
     }]
@@ -63,15 +66,20 @@ describe('analysis store', () => {
 
     await store.loadQuestions(7, null, loader)
     expect(store.questions).toHaveLength(100)
-    expect(store.questionsTotal).toBe(101)
+    expect(store.questionsTotal).toBe(102)
     expect(store.questionsPage).toBe(1)
     expect(store.questionsTotalPages).toBe(2)
 
     await store.loadMoreQuestions(loader)
     expect(loader).toHaveBeenLastCalledWith(7, null, expect.any(AbortSignal), 2)
     expect(store.questions).toHaveLength(101)
+    expect(store.questions[0]?.question_id).toBe('Q1')
+    expect(store.questions[99]?.question_id).toBe('Q100')
     expect(store.questions[100]?.question_id).toBe('Q101')
+    expect(store.questionsTotal).toBe(102)
     expect(store.questionsPage).toBe(2)
+    expect(store.questionsPageSize).toBe(100)
+    expect(store.questionsTotalPages).toBe(2)
   })
 
   it('appends more than 100 students and clears pagination when the question scope changes', async () => {
@@ -93,17 +101,25 @@ describe('analysis store', () => {
             evidence_url: `/api/sessions/7/results/${index + 1}/details/${index + 1}/crop`,
           }))
         : [{
+            ...item, result_id: 100, detail_id: 100, student_id: 100,
+            evidence_url: '/api/sessions/7/results/100/details/100/crop',
+          }, {
             ...item, result_id: 101, detail_id: 101, student_id: 101,
             evidence_url: '/api/sessions/7/results/101/details/101/crop',
           }],
-      total: 101, page, page_size: 100, total_pages: 2,
+      total: 102, page, page_size: 100, total_pages: 2,
     } satisfies StudentAnalysisResponse))
 
     await store.loadStudents(7, 'Q1', 'class-a', loader)
     await store.loadMoreStudents(loader)
     expect(store.students).toHaveLength(101)
-    expect(store.studentsTotal).toBe(101)
+    expect(store.students[0]?.detail_id).toBe(1)
+    expect(store.students[99]?.detail_id).toBe(100)
+    expect(store.students[100]?.detail_id).toBe(101)
+    expect(store.studentsTotal).toBe(102)
     expect(store.studentsPage).toBe(2)
+    expect(store.studentsPageSize).toBe(100)
+    expect(store.studentsTotalPages).toBe(2)
 
     await store.loadStudents(7, 'Q2', 'class-a', async () => ({
       ...students,
