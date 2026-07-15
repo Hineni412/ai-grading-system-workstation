@@ -98,10 +98,12 @@ def test_public_get_does_not_read_or_encode_private_images(
 ) -> None:
     import backend.config_workspace.sources as sources_module
 
-    client, db, _upload_root = _client(tmp_path)
+    client, db, upload_root = _client(tmp_path)
     session_id = _session(db, tmp_path)
+    source_service = ConfigSourceService(upload_root)
+    client.app.dependency_overrides[get_config_source_service] = lambda: source_service
     uploaded = _upload(client, session_id).json()
-    original_read_bytes = Path.read_bytes
+    original_read_bytes = source_service._files.read_bytes
 
     def reject_private_image_read(path: Path) -> bytes:
         if path.name.startswith(("asset-", "whole-page-")):
@@ -111,7 +113,7 @@ def test_public_get_does_not_read_or_encode_private_images(
     def reject_encoding(_content: bytes) -> bytes:
         raise AssertionError("public metadata load encoded a private image")
 
-    monkeypatch.setattr(Path, "read_bytes", reject_private_image_read)
+    monkeypatch.setattr(source_service._files, "read_bytes", reject_private_image_read)
     monkeypatch.setattr(sources_module.base64, "b64encode", reject_encoding)
 
     response = client.get(

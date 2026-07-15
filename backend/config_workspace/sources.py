@@ -19,8 +19,11 @@ from urllib.parse import unquote
 
 from PIL import Image
 
-from backend.config_workspace.atomic import remove_exact_files, write_json_atomic
 from backend.config_workspace.locks import session_config_lock
+from backend.config_workspace.secure_fs import (
+    SecureFilesystemError,
+    SecureRootFilesystem,
+)
 
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
@@ -161,7 +164,8 @@ class _ConfigSourceMetadata:
 
 
 class _OwnedFileRegistry:
-    def __init__(self) -> None:
+    def __init__(self, filesystem: SecureRootFilesystem) -> None:
+        self._filesystem = filesystem
         self._cleanup_paths: list[Path] = []
         self._cleanup_keys: set[str] = set()
         self._owned_paths: list[Path] = []
@@ -182,7 +186,10 @@ class _OwnedFileRegistry:
         return tuple(self._owned_paths)
 
     def cleanup(self) -> None:
-        remove_exact_files(reversed(self._cleanup_paths))
+        try:
+            self._filesystem.unlink_many(reversed(self._cleanup_paths))
+        except SecureFilesystemError:
+            pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,6 +234,7 @@ class ConfigSourceService:
         max_pdf_pages: int = MAX_PDF_PAGES,
     ) -> None:
         self.upload_config_dir = Path(upload_config_dir).resolve(strict=False)
+        self._files = SecureRootFilesystem(self.upload_config_dir)
         self.max_upload_bytes = int(max_upload_bytes)
         self.max_docx_member_bytes = int(max_docx_member_bytes)
         self.max_docx_expanded_bytes = int(max_docx_expanded_bytes)
@@ -253,13 +261,13 @@ class ConfigSourceService:
         self._prepare_source_dir(source_dir)
         temporary_path = source_dir / f".source.{uuid.uuid4().hex}.tmp"
         source_path = source_dir / f"source{suffix}"
-        registry = _OwnedFileRegistry()
+        registry = _OwnedFileRegistry(self._files)
         digest = hashlib.sha256()
         size_bytes = 0
         completed = False
         try:
             registry.register(temporary_path)
-            with temporary_path.open("xb") as stream:
+            with self._files.create_exclusive(temporary_path) as stream:
                 async for raw_chunk in chunks:
                     chunk = bytes(raw_chunk or b"")
                     if not chunk:
@@ -270,12 +278,11 @@ class ConfigSourceService:
                     stream.write(chunk)
                     digest.update(chunk)
                 stream.flush()
-                os.fsync(stream.fileno())
             if size_bytes <= 0:
                 raise ConfigSourceInvalidError()
-            _validate_magic(temporary_path, suffix)
+            _validate_magic(self._files.read_bytes(temporary_path)[:1024], suffix)
             registry.register(source_path, manifest_owned=True)
-            os.replace(temporary_path, source_path)
+            self._files.replace(temporary_path, source_path)
 
             if suffix == ".docx":
                 blocks, document_text, asset_files, whole_page_files = (
@@ -319,9 +326,9 @@ class ConfigSourceService:
                 self._assert_controlled_path(manifest_path)
                 active_path = self._active_path(clean_session_id)
                 self._assert_controlled_path(active_path)
-                write_json_atomic(manifest_path, manifest)
+                self._files.write_json_atomic(manifest_path, manifest)
                 record = self._record_from_manifest(manifest_path, manifest)
-                write_json_atomic(
+                self._files.write_json_atomic(
                     active_path,
                     {
                         "source_id": source_id,
@@ -383,7 +390,7 @@ class ConfigSourceService:
             if not manifest_path.is_file():
                 raise ConfigSourceNotFoundError()
             self._assert_controlled_directory(source_dir)
-            manifest = _read_json_object(manifest_path)
+            manifest = self._read_json_object(manifest_path)
             metadata = self._metadata_from_manifest(manifest_path, manifest)
         except ConfigSourceError:
             raise
@@ -426,7 +433,7 @@ class ConfigSourceService:
             raise ConfigAssetNotFoundError()
         try:
             path = self._owned_path(metadata.manifest_path.parent, filename)
-            content = path.read_bytes()
+            content = self._files.read_bytes(path)
             _suffix, media_type = _image_type(content)
         except Exception:
             raise ConfigAssetNotFoundError() from None
@@ -485,7 +492,8 @@ class ConfigSourceService:
             for item in referenced_source_ids
             if _SOURCE_ID.fullmatch(str(item).strip())
         }
-        removed: list[str] = []
+        pending_source_ids: list[str] = []
+        pending_paths: list[Path] = []
         with session_config_lock(self.upload_config_dir, clean_session_id):
             try:
                 active_source_id, active_revision = self._read_active(clean_session_id)
@@ -496,6 +504,7 @@ class ConfigSourceService:
                 )
                 if active_metadata.source_revision != active_revision:
                     return ()
+                self._validate_generation_integrity(active_metadata)
             except ConfigSourceError:
                 return ()
             session_dir = self._session_dir(clean_session_id)
@@ -516,7 +525,7 @@ class ConfigSourceService:
                 manifest_path = source_dir / "manifest.json"
                 try:
                     self._assert_controlled_path(manifest_path)
-                    manifest = _read_json_object(manifest_path)
+                    manifest = self._read_json_object(manifest_path)
                     if manifest.get("source_id") != source_id:
                         continue
                     owned_names = manifest.get("owned_files")
@@ -525,11 +534,52 @@ class ConfigSourceService:
                     owned_paths = [self._owned_path(source_dir, name) for name in owned_names]
                 except Exception:
                     continue
-                ordered = [path for path in owned_paths if path != manifest_path]
-                ordered.append(manifest_path)
-                remove_exact_files(ordered)
-                removed.append(source_id)
-        return tuple(removed)
+                pending_paths.extend(
+                    path for path in owned_paths if path != manifest_path
+                )
+                pending_paths.append(manifest_path)
+                pending_source_ids.append(source_id)
+            try:
+                self._files.unlink_many(pending_paths)
+            except SecureFilesystemError:
+                return ()
+        return tuple(pending_source_ids)
+
+    def _validate_generation_integrity(
+        self,
+        metadata: _ConfigSourceMetadata,
+    ) -> None:
+        digest = hashlib.sha256()
+        try:
+            source_content = self._files.read_bytes(metadata.source_path)
+            size_bytes = len(source_content)
+            digest.update(source_content)
+            source_sha256 = digest.hexdigest()
+            expected_revision = hashlib.sha256(
+                (
+                    f"{metadata.session_id}:{metadata.source_id}:"
+                    f"{source_sha256}"
+                ).encode("ascii")
+            ).hexdigest()
+            if (
+                size_bytes != metadata.size_bytes
+                or source_sha256 != metadata.sha256
+                or expected_revision != metadata.source_revision
+            ):
+                raise ConfigSourceInvalidError()
+            for filename in sorted(
+                metadata.owned_names - {metadata.source_path.name, "manifest.json"}
+            ):
+                content = self._owned_path(
+                    metadata.manifest_path.parent,
+                    filename,
+                )
+                content = self._files.read_bytes(content)
+                _image_type(content)
+        except ConfigSourceError:
+            raise
+        except Exception:
+            raise ConfigSourceInvalidError() from None
 
     def _parse_docx(
         self,
@@ -542,16 +592,16 @@ class ConfigSourceService:
         dict[str, dict[str, str | None]],
         list[str],
     ]:
+        file_bytes = self._files.read_bytes(source_path)
         _validate_docx_archive(
-            source_path,
+            file_bytes,
             max_member_bytes=self.max_docx_member_bytes,
             max_expanded_bytes=self.max_docx_expanded_bytes,
         )
-        file_bytes = source_path.read_bytes()
         parser_root = source_dir / "p"
-        parser_root.mkdir(parents=True, exist_ok=True)
+        self._files.ensure_directory(parser_root)
         parser_io_root = _extended_length_path(parser_root)
-        parser_registry = _OwnedFileRegistry()
+        parser_registry = _OwnedFileRegistry(self._files)
         try:
             import session_manager
 
@@ -568,6 +618,7 @@ class ConfigSourceService:
                 source_dir=source_dir,
                 parser_root=parser_io_root,
                 registry=registry,
+                filesystem=self._files,
             )
             return private_blocks, document_text, asset_files, []
         finally:
@@ -587,7 +638,8 @@ class ConfigSourceService:
         try:
             import fitz
 
-            document = fitz.open(source_path)
+            file_bytes = self._files.read_bytes(source_path)
+            document = fitz.open(stream=file_bytes, filetype="pdf")
             try:
                 page_count = len(document)
             finally:
@@ -606,7 +658,6 @@ class ConfigSourceService:
         )
         from session_manager import preview_question_blocks_from_docx_text
 
-        file_bytes = source_path.read_bytes()
         document_text = extract_pdf_text(file_bytes)
         blocks = preview_question_blocks_from_docx_text(document_text)
         raw_assets = extract_pdf_question_images(file_bytes, blocks) if blocks else {}
@@ -623,7 +674,12 @@ class ConfigSourceService:
                     continue
                 suffix, _media_type = _image_type(content)
                 output = source_dir / f"asset-{question_id}-{kind}{suffix}"
-                _write_bytes_atomic(output, content, registry=registry)
+                _write_bytes_atomic(
+                    output,
+                    content,
+                    registry=registry,
+                    filesystem=self._files,
+                )
                 entry[kind] = output.name
             if entry["question"] or entry["answer"]:
                 asset_files[question_id] = entry
@@ -633,7 +689,12 @@ class ConfigSourceService:
                 raise ConfigSourceInvalidError()
             suffix, _media_type = _image_type(content)
             output = source_dir / f"whole-page-{index:04d}{suffix}"
-            _write_bytes_atomic(output, content, registry=registry)
+            _write_bytes_atomic(
+                output,
+                content,
+                registry=registry,
+                filesystem=self._files,
+            )
             whole_page_files.append(output.name)
         return blocks, document_text, asset_files, whole_page_files
 
@@ -770,7 +831,8 @@ class ConfigSourceService:
                 content = self._owned_path(
                     metadata.manifest_path.parent,
                     filename,
-                ).read_bytes()
+                )
+                content = self._files.read_bytes(content)
                 _image_type(content)
                 encoded[kind] = base64.b64encode(content).decode("ascii")
             private_images[question_id] = encoded
@@ -779,7 +841,8 @@ class ConfigSourceService:
             content = self._owned_path(
                 metadata.manifest_path.parent,
                 filename,
-            ).read_bytes()
+            )
+            content = self._files.read_bytes(content)
             _image_type(content)
             whole_pages.append(content)
         return ConfigSourceRecord(
@@ -800,12 +863,14 @@ class ConfigSourceService:
         )
 
     def _prepare_source_dir(self, source_dir: Path) -> None:
-        self.upload_config_dir.mkdir(parents=True, exist_ok=True)
         config_sources = source_dir.parent.parent
         session_dir = source_dir.parent
         for directory in (config_sources, session_dir, source_dir):
             self._assert_controlled_path(directory)
-            directory.mkdir(exist_ok=True)
+            try:
+                self._files.ensure_directory(directory)
+            except SecureFilesystemError:
+                raise ConfigSourceInvalidError() from None
             self._assert_controlled_directory(directory)
 
     def _assert_controlled_directory(self, directory: Path) -> None:
@@ -853,7 +918,7 @@ class ConfigSourceService:
         if not active_path.is_file():
             raise ConfigSourceChangedError()
         try:
-            active = _read_json_object(active_path)
+            active = self._read_json_object(active_path)
         except ConfigSourceError:
             raise
         except Exception:
@@ -866,6 +931,15 @@ class ConfigSourceService:
         ):
             raise ConfigSourceChangedError()
         return source_id, source_revision
+
+    def _read_json_object(self, path: Path) -> dict[str, Any]:
+        try:
+            payload = json.loads(self._files.read_text(path, encoding="utf-8"))
+        except (SecureFilesystemError, json.JSONDecodeError, UnicodeError):
+            raise ConfigSourceInvalidError() from None
+        if not isinstance(payload, dict):
+            raise ConfigSourceInvalidError()
+        return payload
 
     def _session_dir(self, session_id: int) -> Path:
         return self.upload_config_dir / "config_sources" / f"session-{int(session_id)}"
@@ -898,9 +972,7 @@ def _safe_filename(filename: str) -> tuple[str, Literal[".docx", ".pdf"]]:
     return safe, suffix
 
 
-def _validate_magic(path: Path, suffix: str) -> None:
-    with path.open("rb") as stream:
-        prefix = stream.read(1024)
+def _validate_magic(prefix: bytes, suffix: str) -> None:
     if suffix == ".docx" and not prefix.startswith(b"PK\x03\x04"):
         raise ConfigSourceTypeUnsupportedError()
     if suffix == ".pdf" and b"%PDF-" not in prefix:
@@ -908,13 +980,13 @@ def _validate_magic(path: Path, suffix: str) -> None:
 
 
 def _validate_docx_archive(
-    path: Path,
+    content: bytes,
     *,
     max_member_bytes: int,
     max_expanded_bytes: int,
 ) -> None:
     try:
-        with zipfile.ZipFile(path) as archive:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
             members = archive.infolist()
             names = {member.filename for member in members}
             if "[Content_Types].xml" not in names or "word/document.xml" not in names:
@@ -941,6 +1013,7 @@ def _copy_docx_assets(
     source_dir: Path,
     parser_root: Path,
     registry: _OwnedFileRegistry,
+    filesystem: SecureRootFilesystem,
 ) -> tuple[
     list[dict[str, Any]],
     dict[str, dict[str, str | None]],
@@ -966,14 +1039,19 @@ def _copy_docx_assets(
                     resolved = path.resolve(strict=True)
                     if not resolved.is_relative_to(parser_resolved) or _is_reparse(path):
                         continue
-                    content = path.read_bytes()
+                    content = filesystem.read_bytes(path)
                     suffix, _media_type = _image_type(content)
                 except Exception:
                     continue
                 output = source_dir / (
                     f"asset-{question_id}-{kind}-{copied_index + 1}{suffix}"
                 )
-                _write_bytes_atomic(output, content, registry=registry)
+                _write_bytes_atomic(
+                    output,
+                    content,
+                    registry=registry,
+                    filesystem=filesystem,
+                )
                 replacements[raw_path] = str(output)
                 copied_index += 1
                 if entry[kind] is None:
@@ -1105,20 +1183,11 @@ def _write_bytes_atomic(
     content: bytes,
     *,
     registry: _OwnedFileRegistry | None = None,
+    filesystem: SecureRootFilesystem,
 ) -> None:
-    temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
-    try:
-        if registry is not None:
-            registry.register(temporary)
-        with temporary.open("xb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        if registry is not None:
-            registry.register(path, manifest_owned=True)
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    if registry is not None:
+        registry.register(path, manifest_owned=True)
+    filesystem.atomic_write_bytes(path, content)
 
 
 def _image_type(content: bytes) -> tuple[str, str]:
@@ -1132,13 +1201,6 @@ def _image_type(content: bytes) -> tuple[str, str]:
     if result is None:
         raise ConfigSourceInvalidError()
     return result
-
-
-def _read_json_object(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ConfigSourceInvalidError()
-    return payload
 
 
 def _is_reparse(path: Path) -> bool:
