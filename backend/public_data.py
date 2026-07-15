@@ -46,6 +46,36 @@ _GENERIC_POSIX_ROOT_TOKEN_PATTERN = re.compile(
 _PUBLIC_API_PATH_PATTERN = re.compile(
     r"^/api(?:/[A-Za-z0-9._~!$&'()*+,;=@%\-]+)*/?$"
 )
+_PUBLIC_DIAGNOSTIC_EXACT_VALUES = frozenset(
+    {
+        "binding",
+        "cancelled",
+        "complete",
+        "completed",
+        "creating_safety_backup",
+        "failed",
+        "finished",
+        "importing",
+        "indexing",
+        "loading",
+        "partial",
+        "paused",
+        "preparing",
+        "processing",
+        "published",
+        "publishing",
+        "ready_to_publish",
+        "restart_required",
+        "starting",
+    }
+)
+_PUBLIC_DIAGNOSTIC_TEMPLATES = (
+    re.compile(r"graded=[0-9]{1,9} failed=[0-9]{1,9}"),
+    re.compile(r"matched=[0-9]{1,9} issues=[0-9]{1,9} pages=[0-9]{1,9}"),
+    re.compile(r"total=[0-9]{1,9}"),
+    re.compile(r"batch [1-9][0-9]{0,8}/[1-9][0-9]{0,8}"),
+    re.compile(r"processing batch [1-9][0-9]{0,8} of [1-9][0-9]{0,8}"),
+)
 _LATEX_COMMAND_PATTERN = re.compile(r"\\([A-Za-z]+)")
 _LATEX_COMMAND_SEQUENCE_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_])(?:\\[A-Za-z]+){2,}(?![A-Za-z0-9._-])"
@@ -132,6 +162,18 @@ def contains_filesystem_reference(value: Any) -> bool:
 def sanitize_public_mapping(value: dict[Any, Any]) -> dict[str, Any]:
     sanitized = _sanitize_public_value(value)
     return sanitized if isinstance(sanitized, dict) else {}
+
+
+def sanitize_public_diagnostic_text(value: object) -> str | None:
+    """Return only known public stage values and count templates."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text in _PUBLIC_DIAGNOSTIC_EXACT_VALUES:
+        return text
+    if any(pattern.fullmatch(text) for pattern in _PUBLIC_DIAGNOSTIC_TEMPLATES):
+        return text
+    return None
 
 
 def _sanitize_public_value(value: Any) -> Any:

@@ -1,0 +1,421 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import {
+  decodeQuestionAnalysisResponse,
+  decodeStudentAnalysisResponse,
+  fetchQuestionAnalysis,
+  fetchStudentAnalysis,
+} from '../analysis'
+import {
+  decodeGraphEvidenceResponse,
+  decodeGraphRowsResponse,
+  fetchGraphEvidence,
+  fetchGraphRows,
+} from '../graph'
+
+const questionResponse = {
+  scope: { session_id: 7, class_name: null, question_id: null },
+  classes: ['七年级一班'],
+  items: [
+    {
+      class_name: '七年级一班',
+      question_id: 'Q2(1)',
+      max_score: 10,
+      score_rate: 80,
+      average_score: 8,
+      deduction_count: 1,
+      attempt_count: 2,
+      metric_status: 'ready',
+    },
+  ],
+  total: 1,
+  page: 1,
+  page_size: 100,
+  total_pages: 1,
+} as const
+
+const studentResponse = {
+  scope: { session_id: 7, class_name: '七年级一班', question_id: 'Q2(1)' },
+  items: [
+    {
+      result_id: 11,
+      detail_id: 12,
+      student_id: 13,
+      student_code: 'S-13',
+      student_name: '学生甲',
+      class_name: '七年级一班',
+      question_id: 'Q2(1)',
+      score_awarded: 8,
+      max_score: 10,
+      deduction_amount: 2,
+      deduction_reason: '步骤不完整',
+      needs_review: false,
+      evidence_url: '/api/sessions/7/results/11/details/12/crop',
+    },
+  ],
+  total: 1,
+  page: 1,
+  page_size: 100,
+  total_pages: 1,
+} as const
+
+const scope = { mode: 'class', student_ids: ['13'], class_id: '七年级一班' } as const
+const examScope = {
+  mode: 'current',
+  session_ids: [7],
+  sessions: [{ session_id: 7, session_name: '期中考试' }],
+} as const
+const coverage = { covered_items: 1, total_items: 1, missing_items: {} }
+const node = {
+  knowledge_key: 'knowledge_point:三角形全等',
+  knowledge_label: '三角形全等',
+  student_count: 1,
+  item_count: 1,
+  deduction_count: 1,
+  average_mastery: 0.8,
+  tag_context: { method: ['构造辅助线'] },
+  error_counts: { primary: { '条件遗漏': 1 }, secondary: {} },
+} as const
+const graphRows = {
+  scope,
+  exam_scope: examScope,
+  rows: [],
+  nodes: [node],
+  edges: [],
+  coverage,
+  warnings: [],
+  diagnosis_identity: 'question_tag',
+} as const
+const graphEvidence = {
+  scope,
+  exam_scope: examScope,
+  knowledge_key: node.knowledge_key,
+  knowledge_label: node.knowledge_label,
+  items: [],
+  total: 0,
+  page: 1,
+  page_size: 20,
+  total_pages: 1,
+  coverage,
+  warnings: [],
+  diagnosis_identity: 'question_tag',
+} as const
+
+afterEach(() => vi.restoreAllMocks())
+
+describe('analysis API contract', () => {
+  it('accepts explicit unknown metrics without coercing them to zero', () => {
+    const payload = {
+      ...questionResponse,
+      items: [{
+        ...questionResponse.items[0],
+        max_score: null,
+        score_rate: null,
+        average_score: null,
+        metric_status: 'missing_max_score',
+      }],
+    }
+    expect(decodeQuestionAnalysisResponse(payload).items[0]).toMatchObject({
+      max_score: null,
+      score_rate: null,
+      average_score: null,
+    })
+    expect(decodeStudentAnalysisResponse(studentResponse)).toEqual(studentResponse)
+  })
+
+  it('accepts percentage score rates and legal empty pages', () => {
+    expect(decodeQuestionAnalysisResponse(questionResponse).items[0]?.score_rate).toBe(80)
+    expect(decodeQuestionAnalysisResponse({
+      ...questionResponse, items: [], total: 0, total_pages: 0,
+    }).items).toEqual([])
+    expect(decodeStudentAnalysisResponse({
+      ...studentResponse, items: [], total: 0, total_pages: 0,
+    }).items).toEqual([])
+    expect(decodeQuestionAnalysisResponse({
+      ...questionResponse, items: [], page: 2, total: 1, total_pages: 1,
+    }).items).toEqual([])
+  })
+
+  it.each([
+    { ...questionResponse, items: [{ ...questionResponse.items[0], score_rate: Number.POSITIVE_INFINITY }] },
+    { ...questionResponse, items: [{ ...questionResponse.items[0], score_rate: -0.1 }] },
+    { ...questionResponse, items: [{ ...questionResponse.items[0], score_rate: 100.1 }] },
+    { ...questionResponse, items: [{ ...questionResponse.items[0], attempt_count: -1 }] },
+    { ...questionResponse, total: 0 },
+  ])('rejects malformed question analysis', (payload) => {
+    expect(() => decodeQuestionAnalysisResponse(payload)).toThrow('Invalid question analysis')
+  })
+
+  it.each([
+    { ...studentResponse, items: [{ ...studentResponse.items[0], evidence_url: 'https://example.test/private' }] },
+    { ...studentResponse, items: [{ ...studentResponse.items[0], deduction_amount: Number.NaN }] },
+    { ...studentResponse, total: 0 },
+  ])('rejects malformed student analysis', (payload) => {
+    expect(() => decodeStudentAnalysisResponse(payload)).toThrow('Invalid student analysis')
+  })
+
+  it('rejects extra private analysis fields', () => {
+    expect(() => decodeQuestionAnalysisResponse({ ...questionResponse, private_path: 'C:/private' })).toThrow()
+    expect(() => decodeQuestionAnalysisResponse({
+      ...questionResponse, scope: { ...questionResponse.scope, raw: true },
+    })).toThrow()
+    expect(() => decodeQuestionAnalysisResponse({
+      ...questionResponse, items: [{ ...questionResponse.items[0], payload: {} }],
+    })).toThrow()
+    expect(() => decodeStudentAnalysisResponse({
+      ...studentResponse, items: [{ ...studentResponse.items[0], private_path: 'C:/private' }],
+    })).toThrow()
+  })
+
+  it.each([
+    {
+      ...studentResponse,
+      items: [{ ...studentResponse.items[0], question_id: 'Q9' }],
+    },
+    {
+      ...studentResponse,
+      items: [{ ...studentResponse.items[0], class_name: 'other-class' }],
+    },
+    {
+      ...studentResponse,
+      items: [{
+        ...studentResponse.items[0],
+        evidence_url: '/api/sessions/8/results/11/details/12/crop',
+      }],
+    },
+    {
+      ...studentResponse,
+      items: [{
+        ...studentResponse.items[0],
+        evidence_url: '/api/sessions/7/results/99/details/12/crop',
+      }],
+    },
+    {
+      ...studentResponse,
+      items: [{
+        ...studentResponse.items[0],
+        evidence_url: '/api/sessions/7/results/11/details/99/crop',
+      }],
+    },
+  ])('rejects cross-scope student items and evidence URLs', (payload) => {
+    expect(() => decodeStudentAnalysisResponse(payload)).toThrow('Invalid student analysis')
+  })
+
+  it('rejects a student response whose scope differs from the request', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      ...studentResponse,
+      scope: { ...studentResponse.scope, session_id: 8 },
+      items: [{
+        ...studentResponse.items[0],
+        evidence_url: '/api/sessions/8/results/11/details/12/crop',
+      }],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+
+    await expect(fetchStudentAnalysis(7, 'Q2(1)', '七年级一班')).rejects.toMatchObject({
+      code: 'invalid_success_contract',
+    })
+  })
+
+  it('builds query strings and encodes the question path segment', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (path) => {
+      const isStudent = String(path).includes('/students')
+      const response = isStudent ? studentResponse : questionResponse
+      return new Response(JSON.stringify(String(path).includes('page=2')
+        ? { ...response, items: [], page: 2 }
+        : response), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    await fetchQuestionAnalysis(7, '七年级一班')
+    await fetchStudentAnalysis(7, 'Q2(1)', '七年级一班')
+    await fetchQuestionAnalysis(7, '七年级一班', undefined, 2)
+    await fetchStudentAnalysis(7, 'Q2(1)', '七年级一班', undefined, 2)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/sessions/7/analysis/questions?class_name=%E4%B8%83%E5%B9%B4%E7%BA%A7%E4%B8%80%E7%8F%AD&page=1&page_size=100')
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/sessions/7/analysis/questions/Q2(1)/students?class_name=%E4%B8%83%E5%B9%B4%E7%BA%A7%E4%B8%80%E7%8F%AD&page=1&page_size=100')
+    expect(fetchMock.mock.calls[2]?.[0]).toContain('page=2&page_size=100')
+    expect(fetchMock.mock.calls[3]?.[0]).toContain('page=2&page_size=100')
+  })
+})
+
+describe('graph API contract', () => {
+  it('accepts question-tag rows and evidence', () => {
+    expect(decodeGraphRowsResponse(graphRows)).toEqual(graphRows)
+    expect(decodeGraphEvidenceResponse(graphEvidence)).toEqual(graphEvidence)
+  })
+
+  it.each([
+    { ...graphRows, diagnosis_identity: 'legacy_skill' },
+    { ...graphRows, nodes: [{ ...node, average_mastery: Number.NaN }] },
+    { ...graphRows, coverage: { ...coverage, covered_items: -1 } },
+  ])('rejects malformed graph rows', (payload) => {
+    expect(() => decodeGraphRowsResponse(payload)).toThrow('Invalid graph rows')
+  })
+
+  it('accepts percentage Graph row rates and rejects unsafe extras', () => {
+    const row = {
+      student_id: 13,
+      student_code: 'S-13',
+      student_name: '学生甲',
+      knowledge_key: node.knowledge_key,
+      knowledge_label: node.knowledge_label,
+      weighted_score_rate: 62.5,
+      deduction_count: 1,
+      item_count: 1,
+      sample_reasons: '',
+      source_question_refs: [],
+      tag_context: {},
+      error_counts: {},
+    }
+    expect(decodeGraphRowsResponse({ ...graphRows, rows: [row] }).rows[0]?.weighted_score_rate).toBe(62.5)
+    expect(() => decodeGraphRowsResponse({
+      ...graphRows, rows: [{ ...row, weighted_score_rate: -0.1 }],
+    })).toThrow('Invalid graph rows')
+    expect(() => decodeGraphRowsResponse({
+      ...graphRows, rows: [{ ...row, weighted_score_rate: 100.1 }],
+    })).toThrow('Invalid graph rows')
+    expect(() => decodeGraphRowsResponse({
+      ...graphRows, rows: [{ ...row, weighted_score_rate: Number.NaN }],
+    })).toThrow('Invalid graph rows')
+    expect(() => decodeGraphRowsResponse({
+      ...graphRows, rows: [{ ...row, weighted_score_rate: Number.POSITIVE_INFINITY }],
+    })).toThrow('Invalid graph rows')
+    expect(() => decodeGraphRowsResponse({ ...graphRows, private_path: 'C:/private' })).toThrow('Invalid graph rows')
+    expect(() => decodeGraphRowsResponse({
+      ...graphRows, nodes: [{ ...node, payload: {} }],
+    })).toThrow('Invalid graph rows')
+    expect(() => decodeGraphEvidenceResponse({
+      ...graphEvidence, raw: { private_path: 'C:/private' },
+    })).toThrow('Invalid graph evidence')
+  })
+
+  it.each([
+    {
+      ...graphEvidence,
+      items: [{
+        student_id: 13,
+        student_code: 'S-13',
+        student_name: 'student',
+        class_id: 'other-class',
+        knowledge_key: node.knowledge_key,
+        knowledge_label: node.knowledge_label,
+        session_id: 7,
+        session_name: 'exam',
+        question_id: 'Q1',
+        bank_question_id: 101,
+        score_awarded: 8,
+        full_score: 10,
+        score_rate: 0.8,
+        tag_context: {},
+        actionable_reasons: [],
+        error_counts: {},
+      }],
+      total: 1,
+    },
+    {
+      ...graphEvidence,
+      items: [{
+        student_id: 13,
+        student_code: 'S-13',
+        student_name: 'student',
+        class_id: graphEvidence.scope.class_id,
+        knowledge_key: 'knowledge_point:other',
+        knowledge_label: 'other',
+        session_id: 7,
+        session_name: 'exam',
+        question_id: 'Q1',
+        bank_question_id: 101,
+        score_awarded: 8,
+        full_score: 10,
+        score_rate: 0.8,
+        tag_context: {},
+        actionable_reasons: [],
+        error_counts: {},
+      }],
+      total: 1,
+    },
+    {
+      ...graphEvidence,
+      items: [{
+        student_id: 13,
+        student_code: 'S-13',
+        student_name: 'student',
+        class_id: graphEvidence.scope.class_id,
+        knowledge_key: node.knowledge_key,
+        knowledge_label: node.knowledge_label,
+        session_id: 8,
+        session_name: 'other exam',
+        question_id: 'Q1',
+        bank_question_id: 101,
+        score_awarded: 8,
+        full_score: 10,
+        score_rate: 0.8,
+        tag_context: {},
+        actionable_reasons: [],
+        error_counts: {},
+      }],
+      total: 1,
+    },
+  ])('rejects graph evidence items outside the response scope', (payload) => {
+    expect(() => decodeGraphEvidenceResponse(payload)).toThrow('Invalid graph evidence')
+  })
+
+  it('rejects graph evidence whose top-level scope differs from the request', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      ...graphEvidence,
+      exam_scope: {
+        ...graphEvidence.exam_scope,
+        session_ids: [8],
+        sessions: [{ session_id: 8, session_name: 'other exam' }],
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+
+    await expect(fetchGraphEvidence(7, '七年级一班', node.knowledge_key)).rejects.toMatchObject({
+      code: 'invalid_success_contract',
+    })
+  })
+
+  it('rejects graph evidence whose session metadata contradicts its session ids', () => {
+    expect(() => decodeGraphEvidenceResponse({
+      ...graphEvidence,
+      exam_scope: {
+        ...graphEvidence.exam_scope,
+        sessions: [{ session_id: 8, session_name: 'other exam' }],
+      },
+    })).toThrow('Invalid graph evidence')
+  })
+
+  it('posts only the selected class and current exam', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (path, init) => {
+      const body = init?.body ? JSON.parse(String(init.body)) as { page?: number } : null
+      const evidence = body?.page === 2 ? { ...graphEvidence, page: 2 } : graphEvidence
+      return new Response(JSON.stringify(String(path).endsWith('/evidence') ? evidence : graphRows), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    await fetchGraphRows(7, '七年级一班')
+    await fetchGraphEvidence(7, '七年级一班', node.knowledge_key)
+    await fetchGraphEvidence(7, '七年级一班', node.knowledge_key, undefined, 2)
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      scope: { mode: 'class', class_id: '七年级一班' },
+      exam_scope: { mode: 'current', session_ids: [7] },
+    })
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({
+      knowledge_key: node.knowledge_key,
+      page: 1,
+      page_size: 20,
+    })
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toMatchObject({
+      knowledge_key: node.knowledge_key,
+      page: 2,
+      page_size: 20,
+    })
+  })
+})

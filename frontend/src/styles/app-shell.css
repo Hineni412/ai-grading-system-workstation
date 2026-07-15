@@ -61,7 +61,10 @@
   display: grid;
   min-width: 0;
   min-height: var(--shell-topbar-height);
-  grid-template-columns: minmax(220px, 1fr) minmax(320px, auto);
+  grid-template-columns: minmax(220px, 1fr) auto minmax(280px, 360px);
+  grid-template-areas:
+    "identity navigation session"
+    "status status status";
   align-items: center;
   gap: var(--space-3) var(--space-6);
   padding: var(--space-2) var(--space-5);
@@ -88,10 +91,55 @@
 }
 
 .app-topbar__identity {
+  grid-area: identity;
   display: flex;
   min-width: 0;
   align-items: baseline;
   gap: var(--space-3);
+}
+
+.app-topbar__navigation {
+  display: flex;
+  grid-area: navigation;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+}
+
+.app-topbar__navigation a {
+  display: inline-flex;
+  min-height: var(--control-height-default);
+  align-items: center;
+  padding-inline: var(--space-3);
+  border: var(--border-width) solid transparent;
+  border-radius: var(--radius-control);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    background-color var(--duration-base),
+    border-color var(--duration-base),
+    color var(--duration-base);
+}
+
+.app-topbar__navigation a:hover {
+  border-color: var(--color-border-default);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-primary);
+}
+
+.app-topbar__navigation a[aria-current="page"] {
+  border-color: var(--color-accent);
+  background: var(--color-accent-subtle);
+  color: var(--color-accent-active);
+  font-weight: var(--font-weight-semibold);
+}
+
+.app-topbar__navigation a:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .app-topbar__identity span {
@@ -114,6 +162,7 @@
 
 .app-topbar__session {
   display: grid;
+  grid-area: session;
   min-width: 0;
   grid-template-columns: auto minmax(220px, 360px);
   align-items: center;
@@ -140,7 +189,7 @@
 
 .app-topbar__status {
   display: flex;
-  grid-column: 1 / -1;
+  grid-area: status;
   align-items: center;
   justify-content: flex-end;
   gap: var(--space-2);
@@ -176,12 +225,59 @@
 
 @media (max-width: 1100px) {
   .app-topbar {
-    grid-template-columns: minmax(190px, .8fr) minmax(300px, 1.2fr);
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 1fr);
+    grid-template-areas:
+      "identity session"
+      "navigation navigation"
+      "status status";
     gap: var(--space-3);
     padding-inline: var(--space-4);
   }
 
+  .app-topbar__navigation {
+    justify-content: flex-start;
+  }
+
   .app-topbar__session {
     grid-template-columns: auto minmax(180px, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .app-topbar {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "identity"
+      "navigation"
+      "session"
+      "status";
+    padding-inline: var(--space-3);
+  }
+
+  .app-topbar__identity {
+    flex-wrap: wrap;
+  }
+
+  .app-topbar__navigation {
+    width: 100%;
+  }
+
+  .app-topbar__navigation a {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+
+  .app-topbar__session {
+    grid-template-columns: minmax(0, 1fr);
+    justify-content: stretch;
+  }
+
+  .app-topbar__session select {
+    width: 100%;
+  }
+
+  .app-topbar__status {
+    align-items: flex-start;
+    justify-content: flex-start;
   }
 }

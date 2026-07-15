@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from fastapi import Depends, Request
 
 from db_manager import DBManager
+from backend.analytics import SessionAnalysisService
 from backend.api.read_connections import (
     RequestReadContext,
     RequestReadContextCleanupError,
@@ -21,6 +22,7 @@ from backend.ops.service import OpsSelfCheckService
 from backend.ops.plan_store import OpsPlanStore
 from backend.ops.write_service import OpsWriteService
 from backend.review.service import ReviewApplicationService
+from backend.workbench.service import WorkbenchService
 from manual_review_service import ManualReviewService
 from path_manager import PathManager, get_path_manager
 from integration.diagnosis_profile_service import DiagnosisProfileService
@@ -35,6 +37,12 @@ from question_bank.services.question_write_service import QuestionBankWriteServi
 
 def get_grading_db() -> DBManager:
     return DBManager(get_path_manager().db_path)
+
+
+def get_session_analysis_service(
+    db: DBManager = Depends(get_grading_db),
+) -> SessionAnalysisService:
+    return SessionAnalysisService(db)
 
 
 def get_ops_self_check_service(
@@ -259,3 +267,11 @@ def get_job_manager(request: Request) -> JobManager:
     if manager is None:
         raise RuntimeError("JobManager is unavailable outside application lifespan")
     return manager
+
+
+def get_workbench_service(
+    db: DBManager = Depends(get_grading_db),
+    review_service: ReviewApplicationService = Depends(get_review_application_service),
+    job_manager: JobManager = Depends(get_job_manager),
+) -> WorkbenchService:
+    return WorkbenchService(db, review_service, job_manager)
