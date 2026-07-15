@@ -303,6 +303,36 @@ describe('configuration workspace Store', () => {
     expect(store.isEditorContextCurrent(token)).toBe(false)
   })
 
+  it('keeps 422 issue rows inside the current editor and rejects non-editable fields', () => {
+    const store = useConfigWorkspaceStore()
+    store.selectSession(7)
+    store.setEditor(editor('42'))
+    const maliciousRow = 'row-1\"] [data-edit-field=\"standard_answer'
+    const rowIssue = new ApiError({
+      kind: 'validation', status: 422, code: 'invalid_config_editor', message: 'invalid',
+      details: { issues: [
+        { code: 'invalid_score', severity: 'error', row_id: 'row-1', field: 'score', message: 'known' },
+        { code: 'invalid_score', severity: 'error', row_id: maliciousRow, field: 'score', message: 'unknown row' },
+      ] }, requestId: 'safe', retryable: false,
+    })
+
+    expect(store.recordServerIssues(rowIssue)).toBe(true)
+    expect(store.serverIssues).toEqual([
+      { code: 'invalid_score', severity: 'error', row_id: 'row-1', field: 'score', message: 'known' },
+      { code: 'invalid_score', severity: 'error', row_id: null, field: 'score', message: 'unknown row' },
+    ])
+
+    const unknownField = new ApiError({
+      kind: 'validation', status: 422, code: 'invalid_config_editor', message: 'invalid',
+      details: { issues: [{
+        code: 'invalid_field', severity: 'error', row_id: 'row-1',
+        field: 'score\"] [data-edit-field="standard_answer', message: 'unknown field',
+      }] }, requestId: 'safe', retryable: false,
+    })
+    expect(store.recordServerIssues(unknownField)).toBe(false)
+    expect(store.serverIssues).toEqual([])
+  })
+
   it('builds a single save request from the loaded revision and returns effective rows', () => {
     const store = useConfigWorkspaceStore()
     store.selectSession(7)

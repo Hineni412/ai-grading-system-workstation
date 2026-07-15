@@ -79,6 +79,24 @@ describe('RubricEditorTable', () => {
     expect(mounted.host.textContent).toContain('完整证明'.repeat(40))
   })
 
+  it('never interpolates malformed issue rows or unknown fields into a focus selector', async () => {
+    const maliciousRow = 'bad\"]'
+    const mounted = await mountTable({
+      issues: [
+        { code: 'row', severity: 'warning', row_id: maliciousRow, field: 'score', message: '恶意行' },
+        { code: 'field', severity: 'warning', row_id: 'row-q12-p1-s1', field: 'unknown_field', message: '未知字段' },
+      ],
+    })
+    const score = mounted.host.querySelector<HTMLInputElement>('[aria-label="Q12 P1 S1 分值"]')!
+    score.focus()
+    const issueButtons = mounted.host.querySelectorAll<HTMLButtonElement>('[data-issue-row-id]')
+
+    expect(() => issueButtons[0]!.click()).not.toThrow()
+    expect(document.activeElement).toBe(score)
+    expect(() => issueButtons[1]!.click()).not.toThrow()
+    expect(document.activeElement).toBe(score)
+  })
+
   it.each(['', 'NaN', 'Infinity', '-1', '100.1'])(
     'rejects an out-of-contract rubric score %s without emitting it',
     async (raw) => {
