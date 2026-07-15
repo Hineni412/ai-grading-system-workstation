@@ -5,17 +5,34 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request, Response
 
 from backend.api.app import ApiError, ErrorResponse
-from backend.api.dependencies import get_grading_db, get_job_manager, get_upload_config_dir
+from backend.api.dependencies import (
+    get_config_source_service,
+    get_grading_db,
+    get_job_manager,
+    get_upload_config_dir,
+)
 from backend.api.routers.jobs import _job_response
 from backend.api.routers.sessions import _require_session
 from backend.api.schemas.config import (
     ConfigGenerationRequest,
     ConfigGenerationRetryRequest,
+    ConfigSourceResponse,
     SessionConfigRequest,
     SessionConfigResponse,
+)
+from backend.config_workspace.sources import (
+    ConfigAssetNotFoundError,
+    ConfigSourceChangedError,
+    ConfigSourceError,
+    ConfigSourceInvalidError,
+    ConfigSourceNotFoundError,
+    ConfigSourceService,
+    ConfigSourceTooLargeError,
+    ConfigSourceTypeUnsupportedError,
+    decode_upload_filename,
 )
 from backend.api.schemas.jobs import JobResponse
 from backend.jobs.config_generation import (
@@ -45,6 +62,114 @@ CONFIG_GENERATION_RETRY_ERROR_RESPONSES = {
     **CONFIG_GENERATION_ERROR_RESPONSES,
     409: {"model": ErrorResponse, "description": "Config generation retry conflict"},
 }
+
+CONFIG_SOURCE_ERROR_RESPONSES = {
+    404: {"model": ErrorResponse, "description": "Config source not found"},
+    409: {"model": ErrorResponse, "description": "Config source changed"},
+    413: {"model": ErrorResponse, "description": "Config source too large"},
+    415: {"model": ErrorResponse, "description": "Config source type unsupported"},
+    422: {"model": ErrorResponse, "description": "Config source invalid"},
+}
+
+
+def _source_api_error(exc: ConfigSourceError) -> ApiError:
+    if isinstance(exc, ConfigSourceTooLargeError):
+        return ApiError(413, "config_source_too_large", "Config source is too large")
+    if isinstance(exc, ConfigSourceTypeUnsupportedError):
+        return ApiError(
+            415,
+            "config_source_type_unsupported",
+            "Config source type is unsupported",
+        )
+    if isinstance(exc, ConfigSourceChangedError):
+        return ApiError(409, "config_source_changed", "Config source has changed")
+    if isinstance(exc, ConfigAssetNotFoundError):
+        return ApiError(404, "config_asset_not_found", "Config asset not found")
+    if isinstance(exc, ConfigSourceNotFoundError):
+        return ApiError(404, "config_source_not_found", "Config source not found")
+    return ApiError(422, "config_source_invalid", "Config source is invalid")
+
+
+@router.post(
+    "/sessions/{session_id}/config/sources",
+    response_model=ConfigSourceResponse,
+    status_code=201,
+    responses=CONFIG_SOURCE_ERROR_RESPONSES,
+)
+async def upload_config_source(
+    session_id: int,
+    request: Request,
+    db: DBManager = Depends(get_grading_db),
+    source_service: ConfigSourceService = Depends(get_config_source_service),
+) -> dict[str, Any]:
+    _require_session(db, session_id)
+    try:
+        raw_length = request.headers.get("content-length")
+        if raw_length is not None and int(raw_length) > source_service.max_upload_bytes:
+            raise ConfigSourceTooLargeError()
+        filename = decode_upload_filename(request.headers.get("x-upload-filename"))
+        record = await source_service.stage_and_parse(
+            session_id=session_id,
+            filename=filename,
+            chunks=request.stream(),
+        )
+    except (TypeError, ValueError):
+        raise _source_api_error(ConfigSourceInvalidError()) from None
+    except ConfigSourceError as exc:
+        raise _source_api_error(exc) from None
+    return record.public_snapshot()
+
+
+@router.get(
+    "/sessions/{session_id}/config/sources/{source_id}",
+    response_model=ConfigSourceResponse,
+    responses=CONFIG_SOURCE_ERROR_RESPONSES,
+)
+def get_config_source(
+    session_id: int,
+    source_id: str,
+    db: DBManager = Depends(get_grading_db),
+    source_service: ConfigSourceService = Depends(get_config_source_service),
+) -> dict[str, Any]:
+    _require_session(db, session_id)
+    try:
+        return source_service.load(
+            session_id=session_id,
+            source_id=source_id,
+        ).public_snapshot()
+    except ConfigSourceError as exc:
+        raise _source_api_error(exc) from None
+
+
+@router.get(
+    "/sessions/{session_id}/config/sources/{source_id}/questions/{question_id}/assets/{asset_kind}",
+    responses=CONFIG_SOURCE_ERROR_RESPONSES,
+)
+def get_config_source_asset(
+    session_id: int,
+    source_id: str,
+    question_id: str,
+    asset_kind: str,
+    db: DBManager = Depends(get_grading_db),
+    source_service: ConfigSourceService = Depends(get_config_source_service),
+) -> Response:
+    _require_session(db, session_id)
+    if asset_kind not in {"question", "answer"}:
+        raise ApiError(404, "config_asset_not_found", "Config asset not found")
+    try:
+        content, media_type = source_service.read_asset(
+            session_id=session_id,
+            source_id=source_id,
+            question_id=question_id,
+            asset_kind=asset_kind,
+        )
+    except ConfigSourceError as exc:
+        raise _source_api_error(exc) from None
+    return Response(
+        content,
+        media_type=media_type,
+        headers={"Cache-Control": "private, no-store"},
+    )
 
 
 def _read_json_config(path_value: Any, *, field_name: str) -> dict[str, Any]:
