@@ -121,6 +121,17 @@ function isNotFound(error: unknown): boolean {
   return error instanceof ApiError && error.kind === 'not_found'
 }
 
+const editableIssueFields = new Set([
+  'score',
+  'standard_answer',
+  'accepted_answers',
+  'answer_only_max_score',
+  'require_final_answer',
+  'required_elements',
+  'deduction_rules',
+  'final_answer_rule',
+])
+
 function safeServerIssue(value: unknown): value is ConfigEditorIssue {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const issue = value as Record<string, unknown>
@@ -129,7 +140,7 @@ function safeServerIssue(value: unknown): value is ConfigEditorIssue {
     || (issue.severity !== 'error' && issue.severity !== 'warning')
     || (issue.row_id !== null && (typeof issue.row_id !== 'string'
       || issue.row_id.length < 1 || issue.row_id.length > 256 || /[\\/\u0000-\u001f]/.test(issue.row_id)))
-    || typeof issue.field !== 'string' || !/^[a-z_][a-z0-9_.]{0,199}$/.test(issue.field)
+    || typeof issue.field !== 'string' || !editableIssueFields.has(issue.field)
     || typeof issue.message !== 'string' || issue.message.length < 1 || issue.message.length > 2_000
     || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(issue.message)
     || /(?:[a-z]:[\\/]|\\\\|file:\/\/|\/(?:home|users|tmp|var)\/|traceback)/i.test(issue.message)) {
@@ -578,7 +589,16 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       serverIssues.value = []
       return false
     }
-    serverIssues.value = error.details.issues.map((issue) => ({ ...(issue as ConfigEditorIssue) }))
+    const knownRowIds = new Set(effectiveEditorRows.value.map((row) => row.row_id))
+    serverIssues.value = error.details.issues.map((issue) => {
+      const safeIssue = issue as ConfigEditorIssue
+      return {
+        ...safeIssue,
+        row_id: safeIssue.row_id !== null && knownRowIds.has(safeIssue.row_id)
+          ? safeIssue.row_id
+          : null,
+      }
+    })
     return true
   }
 

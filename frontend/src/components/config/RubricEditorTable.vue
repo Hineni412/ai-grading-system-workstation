@@ -56,18 +56,23 @@ function acceptedEdit(row: ConfigEditorRow, event: Event): void {
   emit('edit', { row_id: row.row_id, accepted_answers })
 }
 
-function fieldForIssue(issue: ConfigEditorIssue): string {
+type RenderedEditField = 'score' | 'standard_answer' | 'accepted_answers'
+
+function fieldForIssue(issue: ConfigEditorIssue): RenderedEditField | null {
   if (issue.field === 'score') return 'score'
   if (issue.field === 'accepted_answers') return 'accepted_answers'
-  return 'standard_answer'
+  if (issue.field === 'standard_answer') return 'standard_answer'
+  return null
 }
 
 function focusIssue(issue: ConfigEditorIssue): void {
   if (issue.row_id === null) return
   const field = fieldForIssue(issue)
-  const target = root.value?.querySelector<HTMLElement>(
-    `[data-row-id="${issue.row_id}"] [data-edit-field="${field}"]`,
-  )
+  if (field === null) return
+  const row = [...(root.value?.querySelectorAll<HTMLElement>('[data-row-id]') ?? [])]
+    .find((candidate) => candidate.dataset.rowId === issue.row_id)
+  const target = [...(row?.querySelectorAll<HTMLElement>('[data-edit-field]') ?? [])]
+    .find((candidate) => candidate.dataset.editField === field)
   target?.focus()
   target?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
 }
