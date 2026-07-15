@@ -3,15 +3,30 @@ import { computed } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 
 import { navigationItems } from '../../navigation'
+import { useConfigWorkspaceStore } from '../../stores/config-workspace'
 import { useSessionStore } from '../../stores/session'
 
 const route = useRoute()
 const sessionStore = useSessionStore()
+const configStore = useConfigWorkspaceStore()
 const pageTitle = computed(() => String(route.meta.title ?? ''))
 
 function selectSession(event: Event): void {
-  const value = (event.currentTarget as HTMLSelectElement).value
-  sessionStore.selectSession(value === '' ? null : Number(value))
+  const selector = event.currentTarget as HTMLSelectElement
+  const nextSessionId = selector.value === '' ? null : Number(selector.value)
+  const changesSession = nextSessionId !== configStore.sessionId
+  if (changesSession && configStore.hasDirtyEditor) {
+    const discard = window.confirm('当前评分依据有未保存修改。切换考试会丢弃这些修改，是否继续？')
+    if (!discard) {
+      selector.value = sessionStore.selectedSessionId === null
+        ? ''
+        : String(sessionStore.selectedSessionId)
+      return
+    }
+    configStore.discardEditorDraft()
+  }
+  if (!configStore.selectSession(nextSessionId)) return
+  sessionStore.selectSession(nextSessionId)
 }
 
 function retrySessions(): void {

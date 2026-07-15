@@ -1,6 +1,6 @@
 import { apiClient } from './client'
 import { decodeJobResponse, type JobResponse } from './jobs'
-import { isNullableString, isRecord } from './validation'
+import { assertNoPathLikeKeys, isNullableString, isRecord } from './validation'
 
 export const QUESTION_TYPES = [
   'choice', 'fill_blank', 'calculation', 'proof', 'comprehensive',
@@ -155,13 +155,20 @@ function isQuestionPreview(value: unknown): value is ConfigQuestionPreview {
     && typeof value.has_question_asset === 'boolean' && typeof value.has_answer_asset === 'boolean'
 }
 
+function isSafeBasename(value: unknown): value is string {
+  if (typeof value !== 'string' || !value || value === '.' || value === '..') return false
+  if (/[\\/:]/.test(value) || /(^|[\\/])\.\.?([\\/]|$)/.test(value)) return false
+  return !/^[a-z]:/i.test(value) && !value.startsWith('\\\\')
+}
+
 function decodeConfigSource(value: unknown): ConfigSource {
+  assertNoPathLikeKeys(value)
   if (!isRecord(value) || !hasExactKeys(value, [
     'session_id', 'source_id', 'source_revision', 'safe_filename', 'suffix', 'size_bytes',
     'sha256_prefix', 'parse_state', 'questions',
   ]) || !isPositiveInteger(value.session_id) || typeof value.source_id !== 'string'
     || !/^[0-9a-f]{32}$/.test(value.source_id) || typeof value.source_revision !== 'string'
-    || !/^[0-9a-f]{64}$/.test(value.source_revision) || typeof value.safe_filename !== 'string'
+    || !/^[0-9a-f]{64}$/.test(value.source_revision) || !isSafeBasename(value.safe_filename)
     || (value.suffix !== '.docx' && value.suffix !== '.pdf') || !isPositiveInteger(value.size_bytes)
     || typeof value.sha256_prefix !== 'string' || !/^[0-9a-f]{12}$/.test(value.sha256_prefix)
     || value.parse_state !== 'ready' || !Array.isArray(value.questions)
@@ -195,11 +202,12 @@ function isEditorIssue(value: unknown): value is ConfigEditorIssue {
 
 function isEditorSource(value: unknown): value is ConfigEditorSource {
   return isRecord(value) && hasExactKeys(value, ['safe_filename', 'suffix', 'sha256_prefix'])
-    && typeof value.safe_filename === 'string' && (value.suffix === '.docx' || value.suffix === '.pdf')
+    && isSafeBasename(value.safe_filename) && (value.suffix === '.docx' || value.suffix === '.pdf')
     && typeof value.sha256_prefix === 'string' && /^[0-9a-f]{12}$/.test(value.sha256_prefix)
 }
 
 function decodeEditor(value: unknown): ConfigEditorResponse {
+  assertNoPathLikeKeys(value)
   if (!isRecord(value) || !hasExactKeys(value, [
     'session_id', 'configured', 'revision', 'rows', 'total_score', 'issues', 'source',
   ]) || !isPositiveInteger(value.session_id) || typeof value.configured !== 'boolean'
@@ -212,20 +220,8 @@ function decodeEditor(value: unknown): ConfigEditorResponse {
   return value as unknown as ConfigEditorResponse
 }
 
-function rejectPathLikeKeys(value: unknown): void {
-  if (Array.isArray(value)) {
-    value.forEach(rejectPathLikeKeys)
-    return
-  }
-  if (!isRecord(value)) return
-  for (const [key, child] of Object.entries(value)) {
-    if (/(^|_)(path|directory|dir|root)$/i.test(key)) throw new Error('Path-like response key')
-    rejectPathLikeKeys(child)
-  }
-}
-
 function decodeStrictJob(value: unknown): JobResponse {
-  rejectPathLikeKeys(value)
+  assertNoPathLikeKeys(value)
   if (!isRecord(value) || !hasExactKeys(value, [
     'id', 'job_type', 'payload', 'result', 'status', 'progress', 'stage', 'detail', 'error',
     'cancel_requested', 'created_at', 'started_at', 'updated_at', 'finished_at',

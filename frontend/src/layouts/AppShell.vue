@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 
 import AppTopbar from '../components/shell/AppTopbar.vue'
@@ -11,6 +11,7 @@ const route = useRoute()
 const sessionStore = useSessionStore()
 const draftStore = useReviewDraftStore()
 const configStore = useConfigWorkspaceStore()
+const hydratingWorkspace = ref(false)
 
 function onBeforeUnload(event: BeforeUnloadEvent): void {
   if (!draftStore.hasDirtyDrafts && !configStore.hasDirtyEditor) return
@@ -28,17 +29,30 @@ watch(
 
 onMounted(() => {
   window.addEventListener('beforeunload', onBeforeUnload)
-  void sessionStore.initialize().then(() => {
-    configStore.restoreSafeIndex(sessionStore.sessions.map(({ id }) => id))
-    if (configStore.sessionId !== sessionStore.selectedSessionId) {
+  hydratingWorkspace.value = true
+  void sessionStore.initialize().then(async () => {
+    if (sessionStore.loadState !== 'ready') return
+    await configStore.hydrateSafeIndex(
+      sessionStore.sessions.map(({ id }) => id),
+      sessionStore.selectedSessionId,
+    )
+    if (configStore.sessionId === null && sessionStore.selectedSessionId !== null) {
       configStore.selectSession(sessionStore.selectedSessionId)
     }
+  }).finally(() => {
+    hydratingWorkspace.value = false
   })
 })
 
 watch(
   () => sessionStore.selectedSessionId,
-  (sessionId) => configStore.selectSession(sessionId),
+  (sessionId) => {
+    if (hydratingWorkspace.value) return
+    const previous = configStore.sessionId
+    if (configStore.selectSession(sessionId)) return
+    if (previous === null) sessionStore.clearSelection()
+    else sessionStore.selectSession(previous)
+  },
 )
 
 onBeforeUnmount(() => {

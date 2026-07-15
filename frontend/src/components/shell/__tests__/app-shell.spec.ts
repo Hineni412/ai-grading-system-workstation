@@ -8,6 +8,8 @@ import { createAppRouter } from '../../../router'
 import { useSessionStore } from '../../../stores/session'
 import { useConfigWorkspaceStore } from '../../../stores/config-workspace'
 import { useReviewDraftStore } from '../../../stores/review-drafts'
+import type { SessionSummary } from '../../../api/sessions'
+import { CONFIG_WORKSPACE_STORAGE_KEY } from '../../../stores/config-workspace'
 
 async function settleUi(): Promise<void> {
   await Promise.resolve()
@@ -49,6 +51,21 @@ beforeEach(() => {
 })
 
 describe('AppShell', () => {
+  it('keeps an unverified workspace candidate after a transient session-list failure', async () => {
+    const candidate = {
+      sessionId: 7, phase: 'editor', sourceId: 'd'.repeat(32),
+      sourceRevision: 'b'.repeat(64), jobId: 31, decisions: [],
+    }
+    localStorage.setItem(CONFIG_WORKSPACE_STORAGE_KEY, JSON.stringify(candidate))
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('offline'))
+    const { app } = await mountShell({ prepareStore: false })
+    await settleUi()
+
+    expect(localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)).toBe(JSON.stringify(candidate))
+    expect(useConfigWorkspaceStore().sessionId).toBeNull()
+    app.unmount()
+  })
+
   it.each(['/grading', '/missing/deep/path'])(
     'renders one main landmark and no permanent side panels at %s',
     async (path) => {
@@ -99,6 +116,35 @@ describe('AppShell', () => {
     const event = new Event('beforeunload', { cancelable: true })
     window.dispatchEvent(event)
     expect(event.defaultPrevented).toBe(true)
+    app.unmount()
+  })
+
+  it('does not let the current-exam selector silently discard config edits', async () => {
+    const { app, host } = await mountShell()
+    const sessionStore = useSessionStore()
+    const configStore = useConfigWorkspaceStore()
+    const available: SessionSummary[] = [
+      { id: 7, name: '考试一', status: 'created', is_deleted: false, deleted_at: null, created_at: null, updated_at: null },
+      { id: 9, name: '考试二', status: 'created', is_deleted: false, deleted_at: null, created_at: null, updated_at: null },
+    ]
+    sessionStore.sessions = available
+    sessionStore.selectSession(7)
+    configStore.selectSession(7)
+    configStore.setEditor({
+      session_id: 7, configured: true, revision: 'a'.repeat(64), rows: [],
+      total_score: 0, issues: [], source: null,
+    })
+    configStore.updateEditor({ row_id: 'row-1', standard_answer: '未保存答案' })
+    vi.stubGlobal('confirm', vi.fn(() => false))
+
+    const selector = host.querySelector<HTMLSelectElement>('#current-session')!
+    selector.value = '9'
+    selector.dispatchEvent(new Event('change'))
+    await settleUi()
+
+    expect(sessionStore.selectedSessionId).toBe(7)
+    expect(configStore.sessionId).toBe(7)
+    expect(configStore.editorEdits[0]?.standard_answer).toBe('未保存答案')
     app.unmount()
   })
 
