@@ -111,6 +111,7 @@ interface GraphEvidenceExpectation {
   sessionId: number
   className: string
   knowledgeKey: string
+  page?: number
 }
 
 function isInteger(value: unknown, positive = false): value is number {
@@ -345,7 +346,8 @@ function hasMatchingGraphEvidenceScope(
     response.exam_scope.mode !== 'current' ||
     response.exam_scope.session_ids.length !== 1 ||
     response.exam_scope.session_ids[0] !== expected.sessionId ||
-    response.knowledge_key !== expected.knowledgeKey
+    response.knowledge_key !== expected.knowledgeKey ||
+    (expected.page !== undefined && response.page !== expected.page)
   )) return false
   return response.items.every((item) => (
     item.knowledge_key === response.knowledge_key &&
@@ -424,6 +426,7 @@ export function fetchGraphEvidence(
   className: string,
   knowledgeKey: string,
   signal?: AbortSignal,
+  page = 1,
 ): Promise<GraphEvidenceResponse> {
   if (!knowledgeKey.startsWith('knowledge_point:') || knowledgeKey.length <= 'knowledge_point:'.length) {
     throw new Error('Invalid knowledge key')
@@ -433,13 +436,14 @@ export function fetchGraphEvidence(
     body: {
       ...graphScope(sessionId, className),
       knowledge_key: knowledgeKey,
-      page: 1,
+      page: Number.isSafeInteger(page) && page > 0 ? page : 1,
       page_size: 20,
     },
     decode: (value) => decodeGraphEvidenceResponse(value, {
       sessionId,
       className: requireClassName(className),
       knowledgeKey,
+      page,
     }),
     signal,
   })

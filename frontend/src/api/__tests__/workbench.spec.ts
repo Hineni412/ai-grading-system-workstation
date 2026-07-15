@@ -122,7 +122,11 @@ describe('workbench API contract', () => {
 
   it('uses known query values and safe session paths', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (path) =>
-      new Response(JSON.stringify(String(path).includes('/anomalies') ? anomalies : overview), {
+      new Response(JSON.stringify(String(path).includes('/anomalies')
+        ? String(path).includes('page=2')
+          ? { ...anomalies, items: [], page: 2 }
+          : anomalies
+        : overview), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       }),
@@ -130,7 +134,11 @@ describe('workbench API contract', () => {
 
     await expect(fetchWorkbenchOverview(7)).resolves.toEqual(overview)
     await expect(fetchSessionAnomalies(7)).resolves.toEqual(anomalies)
+    await expect(fetchSessionAnomalies(7, undefined, 2)).resolves.toEqual({
+      ...anomalies, items: [], page: 2,
+    })
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/workbench/overview?session_id=7&recent_limit=5')
     expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/sessions/7/anomalies?page=1&page_size=100')
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('/api/sessions/7/anomalies?page=2&page_size=100')
   })
 })

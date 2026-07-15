@@ -220,16 +220,24 @@ describe('analysis API contract', () => {
   })
 
   it('builds query strings and encodes the question path segment', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (path) =>
-      new Response(JSON.stringify(String(path).includes('/students') ? studentResponse : questionResponse), {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (path) => {
+      const isStudent = String(path).includes('/students')
+      const response = isStudent ? studentResponse : questionResponse
+      return new Response(JSON.stringify(String(path).includes('page=2')
+        ? { ...response, items: [], page: 2 }
+        : response), {
         status: 200,
         headers: { 'content-type': 'application/json' },
-      }),
-    )
+      })
+    })
     await fetchQuestionAnalysis(7, '七年级一班')
     await fetchStudentAnalysis(7, 'Q2(1)', '七年级一班')
+    await fetchQuestionAnalysis(7, '七年级一班', undefined, 2)
+    await fetchStudentAnalysis(7, 'Q2(1)', '七年级一班', undefined, 2)
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/sessions/7/analysis/questions?class_name=%E4%B8%83%E5%B9%B4%E7%BA%A7%E4%B8%80%E7%8F%AD&page=1&page_size=100')
     expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/sessions/7/analysis/questions/Q2(1)/students?class_name=%E4%B8%83%E5%B9%B4%E7%BA%A7%E4%B8%80%E7%8F%AD&page=1&page_size=100')
+    expect(fetchMock.mock.calls[2]?.[0]).toContain('page=2&page_size=100')
+    expect(fetchMock.mock.calls[3]?.[0]).toContain('page=2&page_size=100')
   })
 })
 
@@ -384,14 +392,17 @@ describe('graph API contract', () => {
   })
 
   it('posts only the selected class and current exam', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (path) =>
-      new Response(JSON.stringify(String(path).endsWith('/evidence') ? graphEvidence : graphRows), {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (path, init) => {
+      const body = init?.body ? JSON.parse(String(init.body)) as { page?: number } : null
+      const evidence = body?.page === 2 ? { ...graphEvidence, page: 2 } : graphEvidence
+      return new Response(JSON.stringify(String(path).endsWith('/evidence') ? evidence : graphRows), {
         status: 200,
         headers: { 'content-type': 'application/json' },
-      }),
-    )
+      })
+    })
     await fetchGraphRows(7, '七年级一班')
     await fetchGraphEvidence(7, '七年级一班', node.knowledge_key)
+    await fetchGraphEvidence(7, '七年级一班', node.knowledge_key, undefined, 2)
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
       scope: { mode: 'class', class_id: '七年级一班' },
       exam_scope: { mode: 'current', session_ids: [7] },
@@ -399,6 +410,11 @@ describe('graph API contract', () => {
     expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({
       knowledge_key: node.knowledge_key,
       page: 1,
+      page_size: 20,
+    })
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toMatchObject({
+      knowledge_key: node.knowledge_key,
+      page: 2,
       page_size: 20,
     })
   })

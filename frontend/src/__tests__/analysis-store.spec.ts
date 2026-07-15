@@ -42,6 +42,78 @@ beforeEach(() => {
 })
 
 describe('analysis store', () => {
+  it('retains pagination metadata and appends later question pages without duplicates', async () => {
+    const store = useAnalysisStore()
+    const pages: QuestionAnalysisResponse[] = [{
+      ...session7Questions,
+      items: Array.from({ length: 100 }, (_, index) => ({
+        ...questionItem,
+        question_id: `Q${index + 1}`,
+      })),
+      total: 101,
+      total_pages: 2,
+    }, {
+      ...session7Questions,
+      items: [{ ...questionItem, question_id: 'Q101' }],
+      total: 101,
+      page: 2,
+      total_pages: 2,
+    }]
+    const loader = vi.fn(async (_sessionId, _className, _signal, page = 1) => pages[page - 1]!)
+
+    await store.loadQuestions(7, null, loader)
+    expect(store.questions).toHaveLength(100)
+    expect(store.questionsTotal).toBe(101)
+    expect(store.questionsPage).toBe(1)
+    expect(store.questionsTotalPages).toBe(2)
+
+    await store.loadMoreQuestions(loader)
+    expect(loader).toHaveBeenLastCalledWith(7, null, expect.any(AbortSignal), 2)
+    expect(store.questions).toHaveLength(101)
+    expect(store.questions[100]?.question_id).toBe('Q101')
+    expect(store.questionsPage).toBe(2)
+  })
+
+  it('appends more than 100 students and clears pagination when the question scope changes', async () => {
+    const store = useAnalysisStore()
+    const item = {
+      result_id: 1, detail_id: 1, student_id: 1, student_code: 'S1', student_name: 'student',
+      class_name: 'class-a', question_id: 'Q1', score_awarded: 8, max_score: 10,
+      deduction_amount: 2, deduction_reason: null, needs_review: false,
+      evidence_url: '/api/sessions/7/results/1/details/1/crop',
+    }
+    const loader = vi.fn(async (_sessionId, questionId, _className, _signal, page = 1) => ({
+      scope: { session_id: 7, class_name: 'class-a', question_id: questionId },
+      items: page === 1
+        ? Array.from({ length: 100 }, (_, index) => ({
+            ...item,
+            result_id: index + 1,
+            detail_id: index + 1,
+            student_id: index + 1,
+            evidence_url: `/api/sessions/7/results/${index + 1}/details/${index + 1}/crop`,
+          }))
+        : [{
+            ...item, result_id: 101, detail_id: 101, student_id: 101,
+            evidence_url: '/api/sessions/7/results/101/details/101/crop',
+          }],
+      total: 101, page, page_size: 100, total_pages: 2,
+    } satisfies StudentAnalysisResponse))
+
+    await store.loadStudents(7, 'Q1', 'class-a', loader)
+    await store.loadMoreStudents(loader)
+    expect(store.students).toHaveLength(101)
+    expect(store.studentsTotal).toBe(101)
+    expect(store.studentsPage).toBe(2)
+
+    await store.loadStudents(7, 'Q2', 'class-a', async () => ({
+      ...students,
+      scope: { session_id: 7, class_name: 'class-a', question_id: 'Q2' },
+    }))
+    expect(store.students).toEqual([])
+    expect(store.studentsTotal).toBe(0)
+    expect(store.studentsPage).toBe(1)
+  })
+
   it('ignores the old session response after switching exams', async () => {
     const store = useAnalysisStore()
     const old = deferred<QuestionAnalysisResponse>()

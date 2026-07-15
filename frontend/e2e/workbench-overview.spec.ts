@@ -35,6 +35,7 @@ interface MockOptions {
   analysisFailure?: boolean
   overviewFailureAfterSuccess?: boolean
   delaySession7?: boolean
+  paginated?: boolean
 }
 
 interface RequestLog {
@@ -149,6 +150,50 @@ function studentAnalysis(sessionId: number, questionId: string, className: strin
   }
 }
 
+function paginatedQuestionAnalysis(sessionId: number, className: string | null, page: number) {
+  const base = questionAnalysis(sessionId, className)
+  const start = page === 1 ? 1 : 101
+  const count = page === 1 ? 100 : 2
+  return {
+    ...base,
+    items: Array.from({ length: count }, (_, index) => ({
+      ...base.items[0]!,
+      question_id: `Q${start + index}`,
+    })),
+    total: 102,
+    page,
+    total_pages: 2,
+  }
+}
+
+function paginatedStudentAnalysis(
+  sessionId: number,
+  questionId: string,
+  className: string | null,
+  page: number,
+) {
+  const base = studentAnalysis(sessionId, questionId, className)
+  const start = page === 1 ? 1 : 101
+  const count = page === 1 ? 100 : 1
+  return {
+    ...base,
+    items: Array.from({ length: count }, (_, index) => {
+      const id = start + index
+      return {
+        ...base.items[0]!,
+        result_id: id,
+        detail_id: id,
+        student_id: id,
+        student_name: id === 101 ? '后续学生 101' : `学生 ${id}`,
+        evidence_url: `/api/sessions/${sessionId}/results/${id}/details/${id}/crop`,
+      }
+    }),
+    total: 101,
+    page,
+    total_pages: 2,
+  }
+}
+
 function graphRows(sessionId: number, className: string) {
   return {
     scope: { mode: 'class', student_ids: [], class_id: className },
@@ -207,6 +252,29 @@ function graphEvidence(sessionId: number, className: string) {
     coverage: common.coverage,
     warnings: [],
     diagnosis_identity: 'question_tag',
+  }
+}
+
+function paginatedGraphEvidence(sessionId: number, className: string, page: number) {
+  const base = graphEvidence(sessionId, className)
+  const start = page === 1 ? 1 : 21
+  const count = page === 1 ? 20 : 1
+  return {
+    ...base,
+    items: Array.from({ length: count }, (_, index) => {
+      const id = start + index
+      return {
+        ...base.items[0]!,
+        student_id: id,
+        student_code: `S-${id}`,
+        student_name: id === 21 ? '后续证据学生' : `证据学生 ${id}`,
+        question_id: `Q${id}`,
+        bank_question_id: id,
+      }
+    }),
+    total: 21,
+    page,
+    total_pages: 2,
   }
 }
 
@@ -280,17 +348,48 @@ async function installSyntheticApi(
       }
       const sessionId = sessionIdFrom(url)
       await delaySession7(sessionId)
-      await fulfillJson(route, questionAnalysis(sessionId, url.searchParams.get('class_name')))
+      const pageNumber = Number(url.searchParams.get('page') ?? 1)
+      await fulfillJson(route, options.paginated
+        ? paginatedQuestionAnalysis(sessionId, url.searchParams.get('class_name'), pageNumber)
+        : questionAnalysis(sessionId, url.searchParams.get('class_name')))
       return
     }
     if (/^\/api\/sessions\/\d+\/analysis\/questions\/[^/]+\/students$/.test(pathname)) {
       const sessionId = sessionIdFrom(url)
       const questionId = decodeURIComponent(pathname.split('/').at(-2) ?? 'Q1')
       await delaySession7(sessionId)
-      await fulfillJson(route, studentAnalysis(sessionId, questionId, url.searchParams.get('class_name')))
+      const pageNumber = Number(url.searchParams.get('page') ?? 1)
+      await fulfillJson(route, options.paginated
+        ? paginatedStudentAnalysis(sessionId, questionId, url.searchParams.get('class_name'), pageNumber)
+        : studentAnalysis(sessionId, questionId, url.searchParams.get('class_name')))
       return
     }
     if (/^\/api\/sessions\/\d+\/anomalies$/.test(pathname)) {
+      const pageNumber = Number(url.searchParams.get('page') ?? 1)
+      if (options.paginated) {
+        const start = pageNumber === 1 ? 1 : 101
+        const count = pageNumber === 1 ? 100 : 1
+        await fulfillJson(route, {
+          items: Array.from({ length: count }, (_, index) => {
+            const id = start + index
+            return {
+              anomaly_id: `unmatched:${id}`,
+              anomaly_type: 'unmatched_paper',
+              display_name: id === 101 ? '后续异常 101' : `异常 ${id}`,
+              student_code: null,
+              class_name: null,
+              status: 'unmatched',
+              detail: null,
+              created_at: '2026-07-15T08:00:00Z',
+            }
+          }),
+          total: 101,
+          page: pageNumber,
+          page_size: 100,
+          total_pages: 2,
+        })
+        return
+      }
       await fulfillJson(route, {
         items: [{
           anomaly_id: 'unmatched:10',
@@ -318,7 +417,10 @@ async function installSyntheticApi(
       return
     }
     if (pathname === '/api/graph/evidence') {
-      await fulfillJson(route, graphEvidence(sessionIdFromGraphRequest(request), classNameFrom(request)))
+      const body = request.postDataJSON() as { page?: number } | null
+      await fulfillJson(route, options.paginated
+        ? paginatedGraphEvidence(sessionIdFromGraphRequest(request), classNameFrom(request), body?.page ?? 1)
+        : graphEvidence(sessionIdFromGraphRequest(request), classNameFrom(request)))
       return
     }
     await route.fulfill({ status: 418, body: `unexpected synthetic API request: ${request.method()} ${pathname}` })
@@ -392,7 +494,7 @@ for (const viewport of viewports) {
     await expect(page.getByText('12 / 36 份', { exact: true })).toBeVisible()
     await expect(page.getByText('33.33% 已批改', { exact: true })).toBeVisible()
     await expect(page.getByText('2 道题需要核对', { exact: true })).toBeVisible()
-    await expect(page.getByText('当前共 2 个题目汇总；选择题目可查看学生得分与扣分证据。')).toBeVisible()
+    await expect(page.getByText('当前显示 2 / 2 道题目；选择题目可查看学生得分与扣分证据。')).toBeVisible()
     await expect(page.getByText('本题基于 12 份已批改作答')).toBeVisible()
     await expect(page.getByRole('button', { name: /^Q1/ })).toContainText('82.5%')
     await expect(page.getByRole('button', { name: /^Q2/ })).toContainText('无法计算')
@@ -493,6 +595,35 @@ test('loads Graph only after class selection and supports question, student, ano
   await expect(page.getByText('匿名答卷 10')).toBeVisible()
 
   expectReadOnlyRequests(requests)
+  expect(errors.pageErrors).toEqual([])
+  expect(errors.consoleErrors).toEqual([])
+})
+
+test('shows partial totals and reaches later question, student, anomaly and evidence pages', async ({ page }) => {
+  const errors = trackBrowserErrors(page)
+  const { requests } = await installSyntheticApi(page, { paginated: true })
+  await openWorkbench(page)
+
+  await expect(page.getByText('当前显示 100 / 102 道题目')).toBeVisible()
+  await page.getByRole('button', { name: '加载更多题目' }).click()
+  await expect(page.getByRole('button', { name: /^Q101/ })).toBeVisible()
+
+  await expect(page.getByText('当前显示 100 / 101 名学生')).toBeVisible()
+  await page.getByRole('button', { name: '加载更多学生' }).click()
+  await expect(page.getByText('后续学生 101')).toBeVisible()
+
+  await page.getByRole('button', { name: '查看异常' }).click()
+  await expect(page.getByText('当前显示 100 / 101 条异常')).toBeVisible()
+  await page.getByRole('button', { name: '加载更多异常' }).click()
+  await expect(page.getByText('后续异常 101')).toBeVisible()
+
+  await page.getByRole('combobox', { name: '班级' }).selectOption('七年级一班')
+  await page.getByRole('button', { name: /分数运算/ }).click()
+  await expect(page.getByText('当前显示 20 / 21 条证据')).toBeVisible()
+  await page.getByRole('button', { name: '加载更多证据' }).click()
+  await expect(page.getByText('后续证据学生')).toBeVisible()
+
+  expect(requests.filter((request) => request.pathname.includes('/analysis/questions')).length).toBeGreaterThan(2)
   expect(errors.pageErrors).toEqual([])
   expect(errors.consoleErrors).toEqual([])
 })

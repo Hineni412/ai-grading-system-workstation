@@ -18,12 +18,14 @@ export type QuestionLoader = (
   sessionId: number,
   className: string | null,
   signal: AbortSignal,
+  page?: number,
 ) => Promise<QuestionAnalysisResponse>
 export type StudentLoader = (
   sessionId: number,
   questionId: string,
   className: string | null,
   signal: AbortSignal,
+  page?: number,
 ) => Promise<StudentAnalysisResponse>
 export type GraphLoader = (
   sessionId: number,
@@ -55,6 +57,14 @@ export const useAnalysisStore = defineStore('analysis', () => {
   const questionsUpdatedAt = ref<string | null>(null)
   const studentsUpdatedAt = ref<string | null>(null)
   const graphUpdatedAt = ref<string | null>(null)
+  const questionsTotal = ref(0)
+  const questionsPage = ref(1)
+  const questionsPageSize = ref(100)
+  const questionsTotalPages = ref(0)
+  const studentsTotal = ref(0)
+  const studentsPage = ref(1)
+  const studentsPageSize = ref(100)
+  const studentsTotalPages = ref(0)
 
   let questionsController: AbortController | null = null
   let studentsController: AbortController | null = null
@@ -68,6 +78,17 @@ export const useAnalysisStore = defineStore('analysis', () => {
 
   function classScope(className: string | null): string | null {
     return className === null ? null : className.trim()
+  }
+
+  function appendUnique<T>(current: T[], incoming: T[], key: (item: T) => string): T[] {
+    const seen = new Set(current.map(key))
+    const appended = incoming.filter((item) => {
+      const value = key(item)
+      if (seen.has(value)) return false
+      seen.add(value)
+      return true
+    })
+    return [...current, ...appended]
   }
 
   function matchesAnalysisScope(
@@ -107,6 +128,10 @@ export const useAnalysisStore = defineStore('analysis', () => {
     studentsState.value = 'idle'
     studentsError.value = ''
     studentsUpdatedAt.value = null
+    studentsTotal.value = 0
+    studentsPage.value = 1
+    studentsPageSize.value = 100
+    studentsTotalPages.value = 0
   }
 
   function resetForSession(nextSessionId: number | null): void {
@@ -139,16 +164,26 @@ export const useAnalysisStore = defineStore('analysis', () => {
     questionsUpdatedAt.value = null
     studentsUpdatedAt.value = null
     graphUpdatedAt.value = null
+    questionsTotal.value = 0
+    questionsPage.value = 1
+    questionsPageSize.value = 100
+    questionsTotalPages.value = 0
+    studentsTotal.value = 0
+    studentsPage.value = 1
+    studentsPageSize.value = 100
+    studentsTotalPages.value = 0
   }
 
   async function loadQuestions(
     nextSessionId: number,
     className: string | null,
     loader: QuestionLoader = fetchQuestionAnalysis,
+    page = 1,
+    append = false,
   ): Promise<void> {
     resetForSession(nextSessionId)
     questionsController?.abort()
-    const requestKey = JSON.stringify([nextSessionId, className, 1, 100])
+    const requestKey = JSON.stringify([nextSessionId, classScope(className)])
     if (questionsRequestKey !== requestKey) {
       questions.value = []
       classes.value = []
@@ -156,6 +191,10 @@ export const useAnalysisStore = defineStore('analysis', () => {
       questionsState.value = 'idle'
       questionsError.value = ''
       questionsUpdatedAt.value = null
+      questionsTotal.value = 0
+      questionsPage.value = 1
+      questionsPageSize.value = 100
+      questionsTotalPages.value = 0
     }
     questionsRequestKey = requestKey
     const controller = new AbortController()
@@ -164,15 +203,21 @@ export const useAnalysisStore = defineStore('analysis', () => {
     questionsState.value = 'loading'
     questionsError.value = ''
     try {
-      const loaded = await loader(nextSessionId, className, controller.signal)
+      const loaded = await loader(nextSessionId, className, controller.signal, page)
       if (generation !== questionsGeneration || sessionId.value !== nextSessionId) return
       if (!matchesAnalysisScope(loaded.scope, nextSessionId, classScope(className), null)) {
         throw new Error('Question analysis scope mismatch')
       }
-      questions.value = [...loaded.items]
+      questions.value = append
+        ? appendUnique(questions.value, loaded.items, (item) => `${item.class_name}\u0000${item.question_id}`)
+        : [...loaded.items]
       classes.value = [...loaded.classes]
       questionsScope.value = { ...loaded.scope }
-      questionsState.value = loaded.items.length === 0 ? 'empty' : 'ready'
+      questionsTotal.value = loaded.total
+      questionsPage.value = loaded.page
+      questionsPageSize.value = loaded.page_size
+      questionsTotalPages.value = loaded.total_pages
+      questionsState.value = questions.value.length === 0 ? 'empty' : 'ready'
       questionsUpdatedAt.value = new Date().toISOString()
     } catch (error) {
       if (generation !== questionsGeneration || sessionId.value !== nextSessionId) return
@@ -187,21 +232,38 @@ export const useAnalysisStore = defineStore('analysis', () => {
     }
   }
 
+  async function loadMoreQuestions(loader: QuestionLoader = fetchQuestionAnalysis): Promise<void> {
+    if (sessionId.value === null || questionsScope.value === null || questionsPage.value >= questionsTotalPages.value) return
+    await loadQuestions(
+      sessionId.value,
+      questionsScope.value.class_name,
+      loader,
+      questionsPage.value + 1,
+      true,
+    )
+  }
+
   async function loadStudents(
     nextSessionId: number,
     questionId: string,
     className: string | null,
     loader: StudentLoader = fetchStudentAnalysis,
+    page = 1,
+    append = false,
   ): Promise<void> {
     resetForSession(nextSessionId)
     studentsController?.abort()
-    const requestKey = JSON.stringify([nextSessionId, questionId, className, 1, 100])
+    const requestKey = JSON.stringify([nextSessionId, questionId.trim(), classScope(className)])
     if (studentsRequestKey !== requestKey) {
       students.value = []
       studentsScope.value = null
       studentsState.value = 'idle'
       studentsError.value = ''
       studentsUpdatedAt.value = null
+      studentsTotal.value = 0
+      studentsPage.value = 1
+      studentsPageSize.value = 100
+      studentsTotalPages.value = 0
     }
     studentsRequestKey = requestKey
     const controller = new AbortController()
@@ -210,7 +272,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
     studentsState.value = 'loading'
     studentsError.value = ''
     try {
-      const loaded = await loader(nextSessionId, questionId, className, controller.signal)
+      const loaded = await loader(nextSessionId, questionId, className, controller.signal, page)
       if (generation !== studentsGeneration || sessionId.value !== nextSessionId) return
       if (!matchesAnalysisScope(
         loaded.scope,
@@ -220,9 +282,15 @@ export const useAnalysisStore = defineStore('analysis', () => {
       )) {
         throw new Error('Student analysis scope mismatch')
       }
-      students.value = [...loaded.items]
+      students.value = append
+        ? appendUnique(students.value, loaded.items, (item) => String(item.detail_id))
+        : [...loaded.items]
       studentsScope.value = { ...loaded.scope }
-      studentsState.value = loaded.items.length === 0 ? 'empty' : 'ready'
+      studentsTotal.value = loaded.total
+      studentsPage.value = loaded.page
+      studentsPageSize.value = loaded.page_size
+      studentsTotalPages.value = loaded.total_pages
+      studentsState.value = students.value.length === 0 ? 'empty' : 'ready'
       studentsUpdatedAt.value = new Date().toISOString()
     } catch (error) {
       if (generation !== studentsGeneration || sessionId.value !== nextSessionId) return
@@ -235,6 +303,19 @@ export const useAnalysisStore = defineStore('analysis', () => {
     } finally {
       if (studentsController === controller) studentsController = null
     }
+  }
+
+  async function loadMoreStudents(loader: StudentLoader = fetchStudentAnalysis): Promise<void> {
+    const scope = studentsScope.value
+    if (sessionId.value === null || scope?.question_id === null || scope === null || studentsPage.value >= studentsTotalPages.value) return
+    await loadStudents(
+      sessionId.value,
+      scope.question_id,
+      scope.class_name,
+      loader,
+      studentsPage.value + 1,
+      true,
+    )
   }
 
   async function loadGraph(
@@ -308,8 +389,18 @@ export const useAnalysisStore = defineStore('analysis', () => {
     questionsUpdatedAt,
     studentsUpdatedAt,
     graphUpdatedAt,
+    questionsTotal,
+    questionsPage,
+    questionsPageSize,
+    questionsTotalPages,
+    studentsTotal,
+    studentsPage,
+    studentsPageSize,
+    studentsTotalPages,
     loadQuestions,
+    loadMoreQuestions,
     loadStudents,
+    loadMoreStudents,
     loadGraph,
     resetStudents,
     resetForSession,
