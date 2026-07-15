@@ -1,7 +1,9 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
+import { ApiError } from '../api/errors'
 import {
+  fetchConfigEditor,
   fetchConfigSource,
   type ConfigEditorCommand,
   type ConfigEditorEdit,
@@ -9,6 +11,7 @@ import {
   type ConfigSource,
   type QuestionDecision,
 } from '../api/config-workspace'
+import { jobApi, type JobResponse } from '../api/jobs'
 
 export const CONFIG_WORKSPACE_STORAGE_KEY = 'ai-grading:config-workspace:v1'
 export type ConfigPhase = 'draft' | 'source' | 'generation' | 'editor'
@@ -28,26 +31,33 @@ export type ConfigSourceLoader = (
   signal?: AbortSignal,
 ) => Promise<ConfigSource>
 
+export interface ConfigWorkspaceHydrationDependencies {
+  loadSource: ConfigSourceLoader
+  loadJob: (jobId: number, signal?: AbortSignal) => Promise<JobResponse>
+  loadEditor: (sessionId: number, signal?: AbortSignal) => Promise<ConfigEditorResponse>
+}
+
 const phases = new Set<ConfigPhase>(['draft', 'source', 'generation', 'editor'])
 
 function positiveInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) > 0
 }
 
-function sourceId(value: unknown): value is string {
+function validSourceId(value: unknown): value is string {
   return typeof value === 'string' && /^[0-9a-f]{32}$/.test(value)
 }
 
-function revision(value: unknown): value is string {
+function validRevision(value: unknown): value is string {
   return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
 }
 
-function decision(value: unknown): value is QuestionDecision {
+function validDecision(value: unknown): value is QuestionDecision {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const item = value as Record<string, unknown>
   return Object.keys(item).sort().join(',') === 'excluded,question_id,question_type'
     && typeof item.question_id === 'string'
-    && ['choice', 'fill_blank', 'calculation', 'proof', 'comprehensive'].includes(String(item.question_type))
+    && ['choice', 'fill_blank', 'calculation', 'proof', 'comprehensive']
+      .includes(String(item.question_type))
     && typeof item.excluded === 'boolean'
 }
 
@@ -60,10 +70,10 @@ function parsePersisted(raw: string | null): PersistedConfigWorkspace | null {
     if (Object.keys(item).sort().join(',') !== 'decisions,jobId,phase,sessionId,sourceId,sourceRevision') return null
     if (!positiveInteger(item.sessionId) || typeof item.phase !== 'string'
       || !phases.has(item.phase as ConfigPhase)
-      || (item.sourceId !== null && !sourceId(item.sourceId))
-      || (item.sourceRevision !== null && !revision(item.sourceRevision))
+      || (item.sourceId !== null && !validSourceId(item.sourceId))
+      || (item.sourceRevision !== null && !validRevision(item.sourceRevision))
       || (item.jobId !== null && !positiveInteger(item.jobId))
-      || !Array.isArray(item.decisions) || !item.decisions.every(decision)) return null
+      || !Array.isArray(item.decisions) || !item.decisions.every(validDecision)) return null
     if ((item.sourceId === null) !== (item.sourceRevision === null)) return null
     return item as unknown as PersistedConfigWorkspace
   } catch {
@@ -71,14 +81,24 @@ function parsePersisted(raw: string | null): PersistedConfigWorkspace | null {
   }
 }
 
+function isNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.kind === 'not_found'
+}
+
+function jobBelongsTo(job: JobResponse, sessionId: number, candidate: PersistedConfigWorkspace): boolean {
+  if (job.job_type !== 'config_generation' || job.payload.session_id !== sessionId) return false
+  if ('source_id' in job.payload && job.payload.source_id !== candidate.sourceId) return false
+  if ('source_revision' in job.payload && job.payload.source_revision !== candidate.sourceRevision) return false
+  return true
+}
+
 export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   const sessionId = ref<number | null>(null)
   const phase = ref<ConfigPhase>('draft')
-  const sourceIdValue = ref<string | null>(null)
+  const sourceId = ref<string | null>(null)
   const sourceRevision = ref<string | null>(null)
   const jobId = ref<number | null>(null)
   const decisions = ref<QuestionDecision[]>([])
-
   const source = ref<ConfigSource | null>(null)
   const editor = ref<ConfigEditorResponse | null>(null)
   const editorEdits = ref<ConfigEditorEdit[]>([])
@@ -87,15 +107,24 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   const sourceLoading = ref(false)
   const sourceError = ref('')
   let sourceRequest = 0
+  let hydrationRequest = 0
+  let requestedSourceId: string | null = null
 
   const hasDirtyEditor = computed(() => editorDirty.value)
+
+  function derivePhase(): ConfigPhase {
+    if (editor.value?.configured) return 'editor'
+    if (jobId.value !== null) return 'generation'
+    if (sourceId.value !== null) return 'source'
+    return 'draft'
+  }
 
   function safeSnapshot(): PersistedConfigWorkspace | null {
     if (sessionId.value === null) return null
     return {
       sessionId: sessionId.value,
-      phase: phase.value,
-      sourceId: sourceIdValue.value,
+      phase: derivePhase(),
+      sourceId: sourceId.value,
       sourceRevision: sourceRevision.value,
       jobId: jobId.value,
       decisions: decisions.value.map((item) => ({ ...item })),
@@ -115,72 +144,79 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     editorCommands.value = []
     sourceLoading.value = false
     sourceError.value = ''
+    requestedSourceId = null
     sourceRequest += 1
   }
 
-  function clearWorkspace(): void {
+  function forceClearWorkspace(): void {
+    hydrationRequest += 1
     sessionId.value = null
-    phase.value = 'draft'
-    sourceIdValue.value = null
+    sourceId.value = null
     sourceRevision.value = null
     jobId.value = null
     decisions.value = []
+    phase.value = 'draft'
     resetMemory()
     localStorage.removeItem(CONFIG_WORKSPACE_STORAGE_KEY)
   }
 
-  function restoreSafeIndex(activeSessionIds: readonly number[]): void {
-    const saved = parsePersisted(localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY))
-    if (saved === null || !activeSessionIds.includes(saved.sessionId)) {
-      clearWorkspace()
-      return
-    }
-    sessionId.value = saved.sessionId
-    phase.value = saved.phase
-    sourceIdValue.value = saved.sourceId
-    sourceRevision.value = saved.sourceRevision
-    jobId.value = saved.jobId
-    decisions.value = saved.decisions.map((item) => ({ ...item }))
-    resetMemory()
+  function clearWorkspace(discardDirty = false): boolean {
+    if (editorDirty.value && !discardDirty) return false
+    forceClearWorkspace()
+    editorDirty.value = false
+    return true
   }
 
-  function selectSession(id: number | null): void {
-    if (id === null) {
-      clearWorkspace()
-      return
-    }
+  function selectSession(id: number | null, discardDirty = false): boolean {
+    if (id === null) return clearWorkspace(discardDirty)
     if (!positiveInteger(id)) throw new Error('Invalid session id')
-    if (sessionId.value !== id) {
-      sessionId.value = id
-      phase.value = 'draft'
-      sourceIdValue.value = null
-      sourceRevision.value = null
-      jobId.value = null
-      decisions.value = []
-      resetMemory()
-    }
+    if (sessionId.value === id) return true
+    if (editorDirty.value && !discardDirty) return false
+    hydrationRequest += 1
+    sessionId.value = id
+    sourceId.value = null
+    sourceRevision.value = null
+    jobId.value = null
+    decisions.value = []
+    phase.value = 'draft'
+    resetMemory()
+    editorDirty.value = false
     persistSafeIndex()
+    return true
   }
 
-  function selectSource(id: string | null): void {
-    if (id !== null && !sourceId(id)) throw new Error('Invalid source id')
+  function selectSource(id: string | null, discardDirty = false): boolean {
+    if (id !== null && !validSourceId(id)) throw new Error('Invalid source id')
+    if (editorDirty.value && !discardDirty) return false
+    hydrationRequest += 1
     sourceRequest += 1
-    sourceIdValue.value = id
+    requestedSourceId = id
+    sourceId.value = null
     sourceRevision.value = null
     source.value = null
+    jobId.value = null
     editor.value = null
     editorEdits.value = []
     editorCommands.value = []
-    if (id !== null) phase.value = 'source'
+    editorDirty.value = false
+    phase.value = 'draft'
     persistSafeIndex()
+    return true
+  }
+
+  function discardEditorDraft(): void {
+    editorEdits.value = []
+    editorCommands.value = []
+    editorDirty.value = false
   }
 
   function setSource(value: ConfigSource): void {
     if (sessionId.value !== value.session_id) throw new Error('Source session does not match')
-    sourceIdValue.value = value.source_id
+    requestedSourceId = null
+    sourceId.value = value.source_id
     sourceRevision.value = value.source_revision
     source.value = value
-    phase.value = 'source'
+    phase.value = derivePhase()
     sourceError.value = ''
     persistSafeIndex()
   }
@@ -191,17 +227,31 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     loader: ConfigSourceLoader = fetchConfigSource,
   ): Promise<void> {
     const request = ++sourceRequest
+    requestedSourceId = expectedSourceId
     sourceLoading.value = true
     sourceError.value = ''
     try {
       const loaded = await loader(expectedSessionId, expectedSourceId)
       if (request !== sourceRequest || sessionId.value !== expectedSessionId
-        || sourceIdValue.value !== expectedSourceId) return
+        || requestedSourceId !== expectedSourceId) return
+      if (loaded.session_id !== expectedSessionId || loaded.source_id !== expectedSourceId) {
+        requestedSourceId = null
+        persistSafeIndex()
+        return
+      }
       setSource(loaded)
-    } catch {
+    } catch (error) {
       if (request !== sourceRequest || sessionId.value !== expectedSessionId
-        || sourceIdValue.value !== expectedSourceId) return
-      sourceError.value = '试卷来源暂时无法读取，可以重新加载。'
+        || requestedSourceId !== expectedSourceId) return
+      if (isNotFound(error)) {
+        requestedSourceId = null
+        sourceId.value = null
+        sourceRevision.value = null
+        jobId.value = null
+        persistSafeIndex()
+      } else {
+        sourceError.value = '试卷来源暂时无法读取，可以重新加载。'
+      }
     } finally {
       if (request === sourceRequest) sourceLoading.value = false
     }
@@ -211,11 +261,98 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     if (sessionId.value !== null && value.session_id !== sessionId.value) return
     sessionId.value = value.session_id
     editor.value = value
-    editorEdits.value = []
-    editorCommands.value = []
-    editorDirty.value = false
-    if (value.configured) phase.value = 'editor'
+    discardEditorDraft()
+    phase.value = derivePhase()
     persistSafeIndex()
+  }
+
+  async function hydrateSafeIndex(
+    activeSessionIds: readonly number[],
+    selectedSessionId: number | null,
+    overrides: Partial<ConfigWorkspaceHydrationDependencies> = {},
+  ): Promise<void> {
+    const raw = localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)
+    const candidate = parsePersisted(raw)
+    if (candidate === null) {
+      if (raw !== null) localStorage.removeItem(CONFIG_WORKSPACE_STORAGE_KEY)
+      return
+    }
+    if (!activeSessionIds.includes(candidate.sessionId) || selectedSessionId !== candidate.sessionId) {
+      forceClearWorkspace()
+      return
+    }
+
+    const request = ++hydrationRequest
+    sessionId.value = candidate.sessionId
+    sourceId.value = null
+    sourceRevision.value = null
+    jobId.value = null
+    decisions.value = []
+    phase.value = 'draft'
+    resetMemory()
+    const dependencies: ConfigWorkspaceHydrationDependencies = {
+      loadSource: overrides.loadSource ?? fetchConfigSource,
+      loadJob: overrides.loadJob ?? jobApi.getJob,
+      loadEditor: overrides.loadEditor ?? fetchConfigEditor,
+    }
+    const [sourceResult, jobResult, editorResult] = await Promise.allSettled([
+      candidate.sourceId === null
+        ? Promise.resolve<ConfigSource | null>(null)
+        : dependencies.loadSource(candidate.sessionId, candidate.sourceId),
+      candidate.jobId === null
+        ? Promise.resolve<JobResponse | null>(null)
+        : dependencies.loadJob(candidate.jobId),
+      dependencies.loadEditor(candidate.sessionId),
+    ])
+    if (request !== hydrationRequest || sessionId.value !== candidate.sessionId) return
+
+    const sanitized: PersistedConfigWorkspace = {
+      ...candidate,
+      decisions: candidate.decisions.map((item) => ({ ...item })),
+    }
+    let candidateChanged = false
+    if (sourceResult.status === 'fulfilled' && sourceResult.value !== null) {
+      const loaded = sourceResult.value
+      if (loaded.session_id === candidate.sessionId && loaded.source_id === candidate.sourceId
+        && loaded.source_revision === candidate.sourceRevision) {
+        source.value = loaded
+        sourceId.value = loaded.source_id
+        sourceRevision.value = loaded.source_revision
+        decisions.value = candidate.decisions.map((item) => ({ ...item }))
+      } else {
+        sanitized.sourceId = null
+        sanitized.sourceRevision = null
+        sanitized.decisions = []
+        candidateChanged = true
+      }
+    } else if (sourceResult.status === 'rejected' && isNotFound(sourceResult.reason)) {
+      sanitized.sourceId = null
+      sanitized.sourceRevision = null
+      sanitized.decisions = []
+      candidateChanged = true
+    }
+
+    if (jobResult.status === 'fulfilled' && jobResult.value !== null) {
+      if (jobBelongsTo(jobResult.value, candidate.sessionId, candidate)) {
+        jobId.value = jobResult.value.id
+      } else {
+        sanitized.jobId = null
+        candidateChanged = true
+      }
+    } else if (jobResult.status === 'rejected' && isNotFound(jobResult.reason)) {
+      sanitized.jobId = null
+      candidateChanged = true
+    }
+
+    if (editorResult.status === 'fulfilled'
+      && editorResult.value.session_id === candidate.sessionId) {
+      editor.value = editorResult.value
+    }
+    phase.value = derivePhase()
+    if (candidateChanged) {
+      sanitized.phase = phase.value
+      localStorage.setItem(CONFIG_WORKSPACE_STORAGE_KEY, JSON.stringify(sanitized))
+    }
   }
 
   function updateEditor(edit: ConfigEditorEdit): void {
@@ -235,29 +372,10 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   }
 
   return {
-    sessionId,
-    phase,
-    sourceId: sourceIdValue,
-    sourceRevision,
-    jobId,
-    decisions,
-    source,
-    editor,
-    editorEdits,
-    editorCommands,
-    sourceLoading,
-    sourceError,
-    hasDirtyEditor,
-    restoreSafeIndex,
-    persistSafeIndex,
-    clearWorkspace,
-    selectSession,
-    selectSource,
-    setSource,
-    loadSource,
-    setEditor,
-    updateEditor,
-    addEditorCommand,
-    noteSaveFailed,
+    sessionId, phase, sourceId, sourceRevision, jobId, decisions,
+    source, editor, editorEdits, editorCommands, sourceLoading, sourceError,
+    hasDirtyEditor, hydrateSafeIndex, persistSafeIndex, clearWorkspace,
+    selectSession, selectSource, discardEditorDraft, setSource, loadSource,
+    setEditor, updateEditor, addEditorCommand, noteSaveFailed,
   }
 })

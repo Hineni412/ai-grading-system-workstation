@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import { isNullableString, isRecord } from './validation'
+import { assertNoPathLikeKeys, isNullableString, isRecord } from './validation'
 
 export const JOB_STATUSES = [
   'queued',
@@ -45,6 +45,7 @@ function isJobStatus(value: unknown): value is JobStatus {
 }
 
 export function decodeJobResponse(value: unknown): JobResponse {
+  assertNoPathLikeKeys(value)
   if (
     !isRecord(value) ||
     !Number.isSafeInteger(value.id) ||

@@ -9,6 +9,7 @@ import {
   uploadConfigSource,
 } from '../api/config-workspace'
 import { createSessionDraft, renameSession } from '../api/sessions'
+import { jobApi } from '../api/jobs'
 
 const session = {
   id: 7,
@@ -191,6 +192,50 @@ describe('configuration workspace API', () => {
       ? fetchConfigEditor(7)
       : fetchConfigSource(7, source.source_id)
     await expect(request).rejects.toMatchObject({
+      kind: 'contract',
+      code: 'invalid_success_contract',
+    })
+  })
+
+  it.each([
+    ['camel-case path key', { ...job, payload: { sourcePath: 'private' } }],
+    ['Pascal-case root key', { ...job, result: { StorageRoot: 'private' } }],
+    ['camel-case directory key', { ...job, payload: { cacheDirectory: 'private' } }],
+    ['short dir key', { ...job, result: { workDir: 'private' } }],
+    ['file key nested in an array', { ...job, result: { rows: [{ sourceFile: 'private' }] } }],
+  ])('rejects a %s anywhere in a Job response', async (_case, payload) => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(response(payload, 202))
+    await expect(submitConfigGeneration(7, {
+      source_id: source.source_id,
+      source_revision: source.source_revision,
+      generation_mode: 'per_question',
+      decisions: [],
+    })).rejects.toMatchObject({ kind: 'contract', code: 'invalid_success_contract' })
+  })
+
+  it('applies the same recursive privacy guard when reloading an existing Job', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(response({
+      ...job,
+      result: { nested: [{ workspacePath: 'private' }] },
+    }))
+    await expect(jobApi.getJob(31)).rejects.toMatchObject({
+      kind: 'contract', code: 'invalid_success_contract',
+    })
+  })
+
+  it.each([
+    '../数学卷.pdf',
+    '..',
+    'folder/数学卷.pdf',
+    'folder\\数学卷.pdf',
+    'C:\\数学卷.pdf',
+    '\\\\server\\share\\数学卷.pdf',
+  ])('rejects the non-basename safe_filename %s', async (safeFilename) => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(response({
+      ...source,
+      safe_filename: safeFilename,
+    }))
+    await expect(fetchConfigSource(7, source.source_id)).rejects.toMatchObject({
       kind: 'contract',
       code: 'invalid_success_contract',
     })
