@@ -137,3 +137,124 @@ class ConfigGenerationRetryRequest(BaseModel):
         if not normalized or any(not item or len(item) > 100 for item in normalized):
             raise ValueError("retry_question_ids must contain nonblank bounded ids")
         return normalized
+
+
+class ConfigEditorEditRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    row_id: str = Field(min_length=1, max_length=64)
+    score: float | None = Field(default=None, ge=0, le=100)
+    standard_answer: str | None = Field(default=None, max_length=20_000)
+    accepted_answers: list[str] | None = Field(default=None, max_length=200)
+    answer_only_max_score: float | None = Field(default=None, ge=0, le=100)
+    require_final_answer: bool | None = None
+    required_elements: list[str] | None = Field(default=None, max_length=200)
+    deduction_rules: list[str] | None = Field(default=None, max_length=200)
+    final_answer_rule: str | None = Field(default=None, max_length=20_000)
+
+
+class ManualPartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    part_id: str = Field(min_length=1, max_length=100)
+    score: float = Field(gt=0, le=100)
+    core_goal: str = Field(min_length=1, max_length=20_000)
+
+
+class SplitScoringUnitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["split"]
+    question_id: str = Field(min_length=1, max_length=100)
+    count: int = Field(ge=2, le=20)
+    style: Literal["subquestion", "blank"]
+
+
+class ReplaceScoringUnitsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["replace_parts"]
+    question_id: str = Field(min_length=1, max_length=100)
+    parts: list[ManualPartRequest] = Field(min_length=1, max_length=100)
+
+
+ConfigEditorCommandRequest = SplitScoringUnitRequest | ReplaceScoringUnitsRequest
+
+
+class ConfigEditorSaveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    edits: list[ConfigEditorEditRequest] = Field(default_factory=list, max_length=1000)
+    commands: list[ConfigEditorCommandRequest] = Field(default_factory=list, max_length=200)
+
+
+class ConfigEditorRefineRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    commands: list[ConfigEditorCommandRequest] = Field(default_factory=list, max_length=200)
+
+
+class ConfigEditorRowResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    row_id: str
+    question_id: str
+    part_id: str
+    step_id: str
+    part_label: str
+    question_type: str
+    core_goal: str
+    score: float
+    standard_answer: str
+    accepted_answers: list[str]
+    match_rule: str
+    knowledge: str
+    answer_only_max_score: float | None
+    require_final_answer: bool | None
+    required_elements: list[str]
+    deduction_rules: list[str]
+    final_answer_rule: str
+
+
+class ConfigEditorIssueResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    severity: str
+    row_id: str | None
+    field: str
+    message: str
+
+
+class ConfigEditorSourceResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    safe_filename: str
+    suffix: Literal[".docx", ".pdf"]
+    sha256_prefix: str = Field(pattern=r"^[0-9a-f]{12}$")
+
+
+class ConfigEditorResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: int
+    configured: bool
+    revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    rows: list[ConfigEditorRowResponse]
+    total_score: float
+    issues: list[ConfigEditorIssueResponse]
+    source: ConfigEditorSourceResponse | None
+
+
+class ConfigSaveResultResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    config_saved: bool
+    mapping_status: Literal["not_present", "refreshed", "reconfirm_required"]
+    mapping_message: str
+
+
+class ConfigEditorSaveResponse(ConfigEditorResponse):
+    save_result: ConfigSaveResultResponse

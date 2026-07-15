@@ -12,8 +12,16 @@ from typing import Any, Callable
 
 from db_manager import DBManager
 from backend.config_workspace.locks import session_config_lock
+from backend.config_workspace.editor import (
+    ManualPartInput,
+    ReplaceScoringUnitsCommand,
+    SplitScoringUnitCommand,
+    apply_config_editor_changes,
+    editor_part_ids,
+)
 from backend.config_workspace.publish import (
     PublishedConfig,
+    load_editor_config,
     publish_generated_config,
     remove_published_config,
 )
@@ -29,6 +37,7 @@ from session_manager import (
     generate_grading_config_from_images,
     generate_grading_config_from_text,
     retry_failed_grading_config_questions,
+    refine_grading_config_from_manual_structure,
 )
 
 from .manager import JobContext
@@ -106,6 +115,31 @@ def stage_config_generation_input(
     return input_id
 
 
+def stage_config_refine_input(
+    upload_config_dir: Path,
+    *,
+    session_id: int,
+    expected_rubric_path: str,
+    expected_answer_key_path: str,
+    expected_revision: str,
+    existing_payload: dict[str, Any],
+    commands: list[dict[str, Any]],
+) -> str:
+    input_id = uuid.uuid4().hex
+    _write_json_atomic(
+        _input_path(upload_config_dir, input_id),
+        {
+            "session_id": int(session_id),
+            "expected_rubric_path": str(expected_rubric_path),
+            "expected_answer_key_path": str(expected_answer_key_path),
+            "expected_revision": str(expected_revision),
+            "existing_payload": existing_payload,
+            "commands": commands,
+        },
+    )
+    return input_id
+
+
 def load_config_generation_input(
     upload_config_dir: Path,
     input_id: str,
@@ -138,11 +172,11 @@ def run_config_generation_job(
     if session is None or bool(int(session.get("is_deleted") or 0)):
         raise ValueError("grading session is unavailable")
     mode = str(context.payload.get("mode") or "").strip()
-    if mode not in {"generate", "retry"}:
+    if mode not in {"generate", "retry", "refine"}:
         raise ValueError("unsupported config generation mode")
 
     existing_payload: dict[str, Any] | None = None
-    if mode == "generate":
+    if mode in {"generate", "refine"}:
         input_id = str(context.payload.get("input_id") or "")
     else:
         source_job_id = _required_int(context.payload, "source_job_id")
@@ -170,6 +204,17 @@ def run_config_generation_job(
         or str(session.get("answer_key_path") or "") != expected_answer_key_path
     ):
         raise ValueError("session config changed before generation started")
+    if mode == "refine":
+        return _run_refine_config_job(
+            context=context,
+            db=db,
+            upload_config_dir=Path(upload_config_dir),
+            llm_client_factory=llm_client_factory,
+            inputs=inputs,
+            session_id=session_id,
+            expected_rubric_path=expected_rubric_path,
+            expected_answer_key_path=expected_answer_key_path,
+        )
     generation_mode = str(
         context.payload.get("generation_mode")
         or inputs.get("generation_mode")
@@ -375,6 +420,122 @@ def run_config_generation_job(
                             pass
                 raise
     return summary
+
+
+def _run_refine_config_job(
+    *,
+    context: JobContext,
+    db: DBManager,
+    upload_config_dir: Path,
+    llm_client_factory: Callable[[], Any],
+    inputs: dict[str, Any],
+    session_id: int,
+    expected_rubric_path: str,
+    expected_answer_key_path: str,
+) -> dict[str, object]:
+    expected_revision = str(inputs.get("expected_revision") or "")
+    current = load_editor_config(db, session_id)
+    if current.revision != expected_revision:
+        raise ValueError("session config changed before refinement started")
+    existing_payload = inputs.get("existing_payload")
+    commands = inputs.get("commands")
+    if not isinstance(existing_payload, dict) or not isinstance(commands, list):
+        raise ValueError("refine input is invalid")
+    candidate = apply_config_editor_changes(
+        existing_payload,
+        edits=(),
+        commands=_decode_refine_commands(commands),
+    )
+    expected_ids = editor_part_ids(candidate)
+    context.raise_if_cancelled()
+    context.report(0.25, "config_generation", "refining")
+    client = llm_client_factory()
+    payload = refine_grading_config_from_manual_structure(
+        candidate,
+        llm_client=client,
+        model_name=_config_model(client),
+    )
+    if editor_part_ids(payload) != expected_ids:
+        raise ValueError("refined config changed teacher scoring-unit identities")
+    summary: dict[str, object] = {
+        "session_id": session_id,
+        "outcome": "complete",
+        "total_questions": len(expected_ids),
+        "generated_questions": len(expected_ids),
+        "failed_count": 0,
+        "failed_question_ids": [],
+        "retryable": False,
+    }
+    publication: PublishedConfig | None = None
+    with session_config_lock(upload_config_dir, session_id):
+        latest = load_editor_config(db, session_id)
+        if latest.revision != expected_revision:
+            raise ValueError("session config changed while refinement was running")
+        try:
+            publication = publish_generated_config(
+                upload_config_dir, payload, job_id=context.job_id
+            )
+            bound = context.store.finish_config_generation_and_bind(
+                context.job_id,
+                session_id=session_id,
+                expected_rubric_path=expected_rubric_path,
+                expected_answer_key_path=expected_answer_key_path,
+                rubric_path=str(publication.rubric_path),
+                answer_key_path=str(publication.answer_key_path),
+                result=summary,
+            )
+            if not bound:
+                raise ValueError("session config changed while refinement was running")
+        except BaseException:
+            if publication is not None:
+                referenced = context.store.referenced_config_paths(
+                    {str(path) for path in publication.created_paths}
+                )
+                remove_published_config(
+                    upload_config_dir,
+                    tuple(path for path in publication.created_paths if str(path) not in referenced),
+                )
+            raise
+    return summary
+
+
+def _decode_refine_commands(values: list[Any]) -> tuple[Any, ...]:
+    result: list[Any] = []
+    for value in values:
+        if not isinstance(value, dict):
+            raise ValueError("refine command is invalid")
+        kind = str(value.get("kind") or "")
+        if kind == "split":
+            result.append(
+                SplitScoringUnitCommand(
+                    kind="split",
+                    question_id=str(value.get("question_id") or ""),
+                    count=int(value.get("count") or 0),
+                    style=str(value.get("style") or ""),
+                )
+            )
+        elif kind == "replace_parts":
+            parts = value.get("parts")
+            if not isinstance(parts, list):
+                raise ValueError("refine parts are invalid")
+            result.append(
+                ReplaceScoringUnitsCommand(
+                    kind="replace_parts",
+                    question_id=str(value.get("question_id") or ""),
+                    parts=tuple(
+                        ManualPartInput(
+                            part_id=str(part.get("part_id") or ""),
+                            score=float(part.get("score") or 0),
+                            core_goal=str(part.get("core_goal") or ""),
+                        )
+                        for part in parts
+                        if isinstance(part, dict)
+                    ),
+                )
+            )
+        else:
+            raise ValueError("refine command is unsupported")
+    return tuple(result)
 
 
 def _required_int(payload: dict[str, Any], field_name: str) -> int:

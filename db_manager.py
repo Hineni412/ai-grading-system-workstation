@@ -828,6 +828,45 @@ class DBManager:
             )
             conn.commit()
 
+    def publish_grading_session_config(
+        self,
+        session_id: int,
+        *,
+        rubric_path: str,
+        answer_key_path: str,
+        expected_rubric_path: str,
+        expected_answer_key_path: str,
+    ) -> bool:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = conn.execute(
+                    """
+                    UPDATE grading_sessions
+                    SET rubric_path = ?, answer_key_path = ?,
+                        updated_at = datetime('now','localtime')
+                    WHERE id = ? AND is_deleted = 0
+                      AND rubric_path = ? AND answer_key_path = ?
+                    """,
+                    (
+                        str(rubric_path),
+                        str(answer_key_path),
+                        int(session_id),
+                        str(expected_rubric_path),
+                        str(expected_answer_key_path),
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    conn.rollback()
+                    return False
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        if hasattr(self, "_rubric_map_cache"):
+            self._rubric_map_cache.pop(int(session_id), None)
+        return True
+
     def soft_delete_grading_session(self, session_id: int) -> None:
         with self._connect() as conn:
             conn.execute(
