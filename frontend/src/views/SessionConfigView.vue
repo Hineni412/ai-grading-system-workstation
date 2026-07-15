@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import ConfigStageRail from '../components/config/ConfigStageRail.vue'
 import ConfigSourceUpload from '../components/config/ConfigSourceUpload.vue'
+import ConfigGenerationPanel from '../components/config/ConfigGenerationPanel.vue'
 import QuestionBlockReview from '../components/config/QuestionBlockReview.vue'
 import SessionDraftPanel from '../components/config/SessionDraftPanel.vue'
 import { useConfigWorkspaceStore } from '../stores/config-workspace'
@@ -59,6 +60,7 @@ function confirmSourceUpload(): boolean {
           :decisions="configStore.decisions"
           @update:decisions="configStore.updateDecisions"
         />
+        <ConfigGenerationPanel v-if="configStore.source" />
       </template>
     </template>
   </article>
