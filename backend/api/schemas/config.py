@@ -52,6 +52,32 @@ class ConfigSourceResponse(BaseModel):
     questions: list[ConfigQuestionPreviewResponse] = Field(max_length=500)
 
 
+class ConfigSourceQuestionDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,100}$")
+    question_type: Literal[
+        "choice",
+        "fill_blank",
+        "calculation",
+        "proof",
+        "comprehensive",
+    ]
+    excluded: bool
+
+
+class ConfigSourceGenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    source_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    generation_mode: Literal["per_question", "whole_document"]
+    decisions: list[ConfigSourceQuestionDecisionRequest] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+
+
 class ConfigGenerationQuestionImages(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -112,6 +112,7 @@ class ConfigSourceRecord:
     questions: tuple[ConfigQuestionPreview, ...]
     manifest_path: Path
     private_source_path: Path
+    private_source_bytes: bytes
     private_blocks: tuple[dict[str, Any], ...]
     private_document_text: str
     private_question_images: dict[str, dict[str, str | None]]
@@ -398,6 +399,25 @@ class ConfigSourceService:
         )
         return self._record_from_metadata(metadata)
 
+    def load_for_generation(
+        self,
+        *,
+        session_id: int,
+        source_id: str,
+        source_revision: str,
+    ) -> ConfigSourceRecord:
+        clean_revision = str(source_revision or "").strip()
+        if not _SOURCE_REVISION.fullmatch(clean_revision):
+            raise ConfigSourceChangedError()
+        record = self.load(
+            session_id=session_id,
+            source_id=source_id,
+            require_active=True,
+        )
+        if record.source_revision != clean_revision:
+            raise ConfigSourceChangedError()
+        return record
+
     def load_public(
         self,
         *,
@@ -519,6 +539,20 @@ class ConfigSourceService:
             },
             whole_page_images=record.private_whole_page_images,
         )
+
+    def prepare_generation_input(
+        self,
+        record: ConfigSourceRecord,
+        decisions: Sequence[QuestionDecision],
+        generation_mode: str,
+    ) -> PreparedGenerationInput:
+        mode = str(generation_mode or "").strip()
+        if mode not in {"per_question", "whole_document"}:
+            raise ValueError("unsupported config generation mode")
+        prepared = self.apply_teacher_decisions(record, decisions)
+        if mode == "per_question" and not prepared.confirmed_blocks:
+            raise ValueError("at least one confirmed question is required")
+        return prepared
 
     def cleanup_inactive(
         self,
@@ -1011,6 +1045,7 @@ class ConfigSourceService:
             questions=metadata.questions,
             manifest_path=metadata.manifest_path,
             private_source_path=metadata.source_path,
+            private_source_bytes=source_content,
             private_blocks=tuple(copy.deepcopy(metadata.private_blocks)),
             private_document_text=metadata.private_document_text,
             private_question_images=private_images,
