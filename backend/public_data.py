@@ -46,20 +46,35 @@ _GENERIC_POSIX_ROOT_TOKEN_PATTERN = re.compile(
 _PUBLIC_API_PATH_PATTERN = re.compile(
     r"^/api(?:/[A-Za-z0-9._~!$&'()*+,;=@%\-]+)*/?$"
 )
-_PUBLIC_DIAGNOSTIC_MAX_LENGTH = 240
-_PUBLIC_DIAGNOSTIC_ALLOWED_PATTERN = re.compile(
-    r"^[\w .,/=%+\-，。！？、]+$",
-    re.UNICODE,
+_PUBLIC_DIAGNOSTIC_EXACT_VALUES = frozenset(
+    {
+        "binding",
+        "cancelled",
+        "complete",
+        "completed",
+        "creating_safety_backup",
+        "failed",
+        "finished",
+        "importing",
+        "indexing",
+        "loading",
+        "partial",
+        "paused",
+        "preparing",
+        "processing",
+        "published",
+        "publishing",
+        "ready_to_publish",
+        "restart_required",
+        "starting",
+    }
 )
-_PUBLIC_DIAGNOSTIC_ASSIGNMENT_PATTERN = re.compile(
-    r"\b([A-Za-z_][A-Za-z0-9_]*)\s*="
-)
-_PUBLIC_DIAGNOSTIC_ASSIGNMENT_KEYS = frozenset(
-    {"graded", "failed", "matched", "issues", "pages"}
-)
-_PUBLIC_DIAGNOSTIC_OPAQUE_ATOM_PATTERN = re.compile(r"^[A-Za-z0-9._~+/=\-]+$")
-_PUBLIC_DIAGNOSTIC_QUALIFIED_SYMBOL_PATTERN = re.compile(
-    r"\b[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*){2,}\b"
+_PUBLIC_DIAGNOSTIC_TEMPLATES = (
+    re.compile(r"graded=[0-9]{1,9} failed=[0-9]{1,9}"),
+    re.compile(r"matched=[0-9]{1,9} issues=[0-9]{1,9} pages=[0-9]{1,9}"),
+    re.compile(r"total=[0-9]{1,9}"),
+    re.compile(r"batch [1-9][0-9]{0,8}/[1-9][0-9]{0,8}"),
+    re.compile(r"processing batch [1-9][0-9]{0,8} of [1-9][0-9]{0,8}"),
 )
 _LATEX_COMMAND_PATTERN = re.compile(r"\\([A-Za-z]+)")
 _LATEX_COMMAND_SEQUENCE_PATTERN = re.compile(
@@ -150,48 +165,15 @@ def sanitize_public_mapping(value: dict[Any, Any]) -> dict[str, Any]:
 
 
 def sanitize_public_diagnostic_text(value: object) -> str | None:
-    """Allow only short, plain stage text suitable for public summaries."""
+    """Return only known public stage values and count templates."""
     if not isinstance(value, str):
         return None
     text = value.strip()
-    if (
-        not text
-        or len(text) > _PUBLIC_DIAGNOSTIC_MAX_LENGTH
-        or any(ord(character) < 32 for character in text)
-        or _contains_filesystem_token(text)
-        or not _PUBLIC_DIAGNOSTIC_ALLOWED_PATTERN.fullmatch(text)
-        or _PUBLIC_DIAGNOSTIC_QUALIFIED_SYMBOL_PATTERN.search(text)
-    ):
-        return None
-    assignment_keys = {
-        match.group(1).casefold()
-        for match in _PUBLIC_DIAGNOSTIC_ASSIGNMENT_PATTERN.finditer(text)
-    }
-    if not assignment_keys.issubset(_PUBLIC_DIAGNOSTIC_ASSIGNMENT_KEYS):
-        return None
-    for index, character in enumerate(text):
-        if character == "/" and not (
-            index > 0
-            and index + 1 < len(text)
-            and text[index - 1].isdigit()
-            and text[index + 1].isdigit()
-        ):
-            return None
-    atoms = [atom.strip(".,，。！？、") for atom in text.split()]
-    if (
-        len(atoms) == 2
-        and len(atoms[1]) >= 16
-        and _PUBLIC_DIAGNOSTIC_OPAQUE_ATOM_PATTERN.fullmatch(atoms[1])
-    ):
-        return None
-    for atom in atoms:
-        if not _PUBLIC_DIAGNOSTIC_OPAQUE_ATOM_PATTERN.fullmatch(atom):
-            continue
-        if len(atom) >= 40 or (
-            len(atom) >= 20 and any(marker in atom for marker in ".-+/=")
-        ):
-            return None
-    return text
+    if text in _PUBLIC_DIAGNOSTIC_EXACT_VALUES:
+        return text
+    if any(pattern.fullmatch(text) for pattern in _PUBLIC_DIAGNOSTIC_TEMPLATES):
+        return text
+    return None
 
 
 def _sanitize_public_value(value: Any) -> Any:

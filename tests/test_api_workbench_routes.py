@@ -16,6 +16,43 @@ warnings.filterwarnings(
 )
 
 
+@pytest.mark.parametrize(
+    "unsafe_text",
+    [
+        "Authorization Bearer abcdefghijklmnopqrstuvwxyz",
+        "diagnostic data eyJ0b2tlbiI6InNlY3JldCJ9",
+        "diagnostic %7B%22token%22%3A%22private%22%7D",
+        "Exception at Worker.run Worker.java 12",
+        "File worker.py line 12 in run",
+    ],
+)
+def test_public_diagnostic_whitelist_rejects_unrecognized_text(
+    unsafe_text: str,
+) -> None:
+    from backend.public_data import sanitize_public_diagnostic_text
+
+    assert sanitize_public_diagnostic_text(unsafe_text) is None
+
+
+@pytest.mark.parametrize(
+    "safe_text",
+    [
+        "starting",
+        "processing",
+        "graded=3 failed=1",
+        "matched=2 issues=1 pages=4",
+        "processing batch 2 of 5",
+        "batch 2/5",
+    ],
+)
+def test_public_diagnostic_whitelist_keeps_known_safe_templates(
+    safe_text: str,
+) -> None:
+    from backend.public_data import sanitize_public_diagnostic_text
+
+    assert sanitize_public_diagnostic_text(safe_text) == safe_text
+
+
 @pytest.fixture
 def workbench_client(tmp_path: Path):
     from backend.api.app import create_app
@@ -314,6 +351,17 @@ def test_anomalies_are_stable_paginated_filterable_and_sanitized(
             "java.lang.IllegalStateException: private-java at app.Worker.java:12",
             "private-java",
         ),
+        (
+            "Authorization Bearer abcdefghijklmnopqrstuvwxyz",
+            "abcdefghijklmnopqrstuvwxyz",
+        ),
+        ("diagnostic data eyJ0b2tlbiI6InNlY3JldCJ9", "eyJ0b2tlbiI6InNlY3JldCJ9"),
+        (
+            "diagnostic %7B%22token%22%3A%22private%22%7D",
+            "%7B%22token%22%3A%22private%22%7D",
+        ),
+        ("Exception at Worker.run Worker.java 12", "Worker.run"),
+        ("File worker.py line 12 in run", "worker.py"),
     ],
 )
 def test_anomaly_detail_rejects_opaque_diagnostic_text(
@@ -355,6 +403,17 @@ def test_anomaly_detail_rejects_opaque_diagnostic_text(
             "java.lang.IllegalStateException: private-java at app.Worker.java:12",
             "private-java",
         ),
+        (
+            "Authorization Bearer abcdefghijklmnopqrstuvwxyz",
+            "abcdefghijklmnopqrstuvwxyz",
+        ),
+        ("diagnostic data eyJ0b2tlbiI6InNlY3JldCJ9", "eyJ0b2tlbiI6InNlY3JldCJ9"),
+        (
+            "diagnostic %7B%22token%22%3A%22private%22%7D",
+            "%7B%22token%22%3A%22private%22%7D",
+        ),
+        ("Exception at Worker.run Worker.java 12", "Worker.run"),
+        ("File worker.py line 12 in run", "worker.py"),
     ],
 )
 def test_recent_job_detail_rejects_opaque_diagnostic_text(
@@ -387,7 +446,7 @@ def test_workbench_preserves_short_non_sensitive_diagnostic_text(
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             """
-            UPDATE exam_papers SET error_message = 'OCR 识别失败，请重试'
+            UPDATE exam_papers SET error_message = 'processing'
             WHERE session_id = ? AND processing_status = 'failed'
             """,
             (session_id,),
@@ -407,7 +466,7 @@ def test_workbench_preserves_short_non_sensitive_diagnostic_text(
         params={"session_id": session_id},
     ).json()
 
-    assert anomalies["items"][0]["detail"] == "OCR 识别失败，请重试"
+    assert anomalies["items"][0]["detail"] == "processing"
     assert overview["recent_jobs"][0]["detail"] == "processing batch 2 of 5"
 
 
