@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class CreateSessionRequest(BaseModel):
@@ -22,6 +22,12 @@ class CreateSessionRequest(BaseModel):
     @classmethod
     def _optional_text(cls, value: str) -> str:
         return str(value or "").strip()
+
+
+class CreateSessionDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
 
 
 class RenameSessionRequest(BaseModel):
