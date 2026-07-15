@@ -14,6 +14,7 @@ import './styles/app-shell.css'
 import './styles/review-queue.css'
 import './styles/review-evidence.css'
 import './styles/review-scoring.css'
+import './styles/session-config.css'
 
 const app = createApp(App)
 const pinia = createPinia()

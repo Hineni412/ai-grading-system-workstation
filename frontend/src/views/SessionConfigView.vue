@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import ConfigStageRail from '../components/config/ConfigStageRail.vue'
+import ConfigSourceUpload from '../components/config/ConfigSourceUpload.vue'
+import QuestionBlockReview from '../components/config/QuestionBlockReview.vue'
 import SessionDraftPanel from '../components/config/SessionDraftPanel.vue'
 import { useConfigWorkspaceStore } from '../stores/config-workspace'
 import { useSessionStore } from '../stores/session'
@@ -9,7 +11,7 @@ const configStore = useConfigWorkspaceStore()
 </script>
 
 <template>
-  <article class="session-config-view">
+  <article class="session-config-view config-workspace">
     <header class="session-config-view__header">
       <div>
         <h1 tabindex="-1">考试配置</h1>
@@ -39,12 +41,24 @@ const configStore = useConfigWorkspaceStore()
         还没有考试。创建草稿后，可以继续上传试卷并准备评分依据。
       </p>
       <SessionDraftPanel />
+      <template v-if="sessionStore.currentSession">
+        <ConfigSourceUpload
+          :session-id="sessionStore.currentSession.id"
+          :source="configStore.source"
+          @uploaded="configStore.acceptUploadedSource"
+        />
+        <QuestionBlockReview
+          v-if="configStore.source"
+          :source="configStore.source"
+          :decisions="configStore.decisions"
+          @update:decisions="configStore.updateDecisions"
+        />
+      </template>
     </template>
   </article>
 </template>
 
 <style scoped>
-.session-config-view { max-width: var(--content-max-width); margin-inline: auto; padding: var(--space-6) var(--space-7); }
 .session-config-view__header { display: flex; align-items: end; justify-content: space-between; gap: var(--space-5); margin-block-end: var(--space-5); }
 .session-config-view h1,
 .session-config-view p { margin: 0; }
@@ -55,5 +69,4 @@ const configStore = useConfigWorkspaceStore()
 .session-config-view__empty { padding: var(--space-5); border-block: var(--border-width) solid var(--color-border-default); background: var(--color-bg-subtle); color: var(--color-text-secondary); }
 .session-config-view__state button { min-height: var(--control-height-default); margin-block-start: var(--space-3); padding-inline: var(--space-3); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); }
 .session-config-view__empty { border-block-start: 0; }
-@media (max-width: 1100px) { .session-config-view { padding-inline: var(--space-5); } }
 </style>
