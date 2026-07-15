@@ -510,6 +510,70 @@ def test_grading_failure_anomalies_match_legacy_retry_eligibility(
     assert stale_item["display_name"] == f"批改失败试卷 #{stale_grading_id}"
 
 
+def test_failure_lists_keep_one_row_per_paper_with_historical_results(
+    workbench_client,
+) -> None:
+    from db_manager import DBManager
+
+    client, session_id, db_path, _latest_job_id = workbench_client
+    with sqlite3.connect(db_path) as conn:
+        failed_paper = conn.execute(
+            """
+            SELECT id, student_id FROM exam_papers
+            WHERE session_id = ? AND processing_status = 'failed'
+            """,
+            (session_id,),
+        ).fetchone()
+        assert failed_paper is not None
+        failed_paper_id = int(failed_paper[0])
+        student_id = int(failed_paper[1])
+        conn.executemany(
+            """
+            INSERT INTO session_results (
+                session_id, student_id, paper_id, total_score,
+                student_score, needs_human_review, raw_json
+            ) VALUES (?, ?, ?, 10, 0, 0, ?)
+            """,
+            [
+                (session_id, student_id, failed_paper_id, "{}"),
+                (
+                    session_id,
+                    student_id,
+                    failed_paper_id,
+                    json.dumps({"grading_completeness": {"status": "invalid"}}),
+                ),
+            ],
+        )
+        conn.commit()
+
+    db = DBManager(db_path)
+    legacy_ids = [
+        int(row["paper_id"]) for row in db.list_failed_papers(session_id)
+    ]
+    detailed_ids = [
+        int(row["paper_id"])
+        for row in db.list_failed_papers_detailed(session_id)
+    ]
+    first = client.get(
+        f"/api/sessions/{session_id}/anomalies",
+        params={"anomaly_type": "grading_failed", "page": 1, "page_size": 1},
+    ).json()
+    second = client.get(
+        f"/api/sessions/{session_id}/anomalies",
+        params={"anomaly_type": "grading_failed", "page": 1, "page_size": 1},
+    ).json()
+
+    assert legacy_ids == [failed_paper_id]
+    assert detailed_ids == [failed_paper_id]
+    assert first == second
+    assert first["total"] == 1
+    assert first["total_pages"] == 1
+    assert len(first["items"]) == 1
+    assert first["items"][0]["anomaly_id"] == (
+        f"grading_failed:{failed_paper_id:020d}"
+    )
+
+
 @pytest.mark.parametrize(
     "unsafe_text, marker",
     [

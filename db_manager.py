@@ -1642,7 +1642,6 @@ class DBManager:
                     ep.created_at
                 FROM exam_papers ep
                 LEFT JOIN students s ON s.id = ep.student_id
-                LEFT JOIN session_results sr ON sr.paper_id = ep.id
                 LEFT JOIN grading_sessions gs ON gs.id = ep.session_id
                 WHERE ep.session_id = ?
                   AND (
@@ -1653,12 +1652,17 @@ class DBManager:
                     )
                     OR (
                       ep.processing_status = 'graded'
-                      AND (
-                        sr.raw_json LIKE '%"hybrid_batch_fallback"%'
-                        OR CASE
-                          WHEN json_valid(sr.raw_json)
-                          THEN json_extract(sr.raw_json, '$.grading_completeness.status')
-                        END IN ('incomplete', 'invalid')
+                      AND EXISTS (
+                        SELECT 1
+                        FROM session_results sr
+                        WHERE sr.paper_id = ep.id
+                          AND (
+                            sr.raw_json LIKE '%"hybrid_batch_fallback"%'
+                            OR CASE
+                              WHEN json_valid(sr.raw_json)
+                              THEN json_extract(sr.raw_json, '$.grading_completeness.status')
+                            END IN ('incomplete', 'invalid')
+                          )
                       )
                     )
                   )
@@ -1702,7 +1706,6 @@ class DBManager:
                     ep.student_id,
                     ep.match_status
                 FROM exam_papers ep
-                LEFT JOIN session_results sr ON sr.paper_id = ep.id
                 LEFT JOIN grading_sessions gs ON gs.id = ep.session_id
                 WHERE ep.session_id = ?
                   AND (
@@ -1713,12 +1716,17 @@ class DBManager:
                     )
                     OR (
                       ep.processing_status = 'graded'
-                      AND (
-                        sr.raw_json LIKE '%"hybrid_batch_fallback"%'
-                        OR CASE
-                          WHEN json_valid(sr.raw_json)
-                          THEN json_extract(sr.raw_json, '$.grading_completeness.status')
-                        END IN ('incomplete', 'invalid')
+                      AND EXISTS (
+                        SELECT 1
+                        FROM session_results sr
+                        WHERE sr.paper_id = ep.id
+                          AND (
+                            sr.raw_json LIKE '%"hybrid_batch_fallback"%'
+                            OR CASE
+                              WHEN json_valid(sr.raw_json)
+                              THEN json_extract(sr.raw_json, '$.grading_completeness.status')
+                            END IN ('incomplete', 'invalid')
+                          )
                       )
                     )
                   )
