@@ -167,6 +167,58 @@ describe('analysis API contract', () => {
     })).toThrow()
   })
 
+  it.each([
+    {
+      ...studentResponse,
+      items: [{ ...studentResponse.items[0], question_id: 'Q9' }],
+    },
+    {
+      ...studentResponse,
+      items: [{ ...studentResponse.items[0], class_name: 'other-class' }],
+    },
+    {
+      ...studentResponse,
+      items: [{
+        ...studentResponse.items[0],
+        evidence_url: '/api/sessions/8/results/11/details/12/crop',
+      }],
+    },
+    {
+      ...studentResponse,
+      items: [{
+        ...studentResponse.items[0],
+        evidence_url: '/api/sessions/7/results/99/details/12/crop',
+      }],
+    },
+    {
+      ...studentResponse,
+      items: [{
+        ...studentResponse.items[0],
+        evidence_url: '/api/sessions/7/results/11/details/99/crop',
+      }],
+    },
+  ])('rejects cross-scope student items and evidence URLs', (payload) => {
+    expect(() => decodeStudentAnalysisResponse(payload)).toThrow('Invalid student analysis')
+  })
+
+  it('rejects a student response whose scope differs from the request', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      ...studentResponse,
+      scope: { ...studentResponse.scope, session_id: 8 },
+      items: [{
+        ...studentResponse.items[0],
+        evidence_url: '/api/sessions/8/results/11/details/12/crop',
+      }],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+
+    await expect(fetchStudentAnalysis(7, 'Q2(1)', '七年级一班')).rejects.toMatchObject({
+      code: 'invalid_success_contract',
+    })
+  })
+
   it('builds query strings and encodes the question path segment', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (path) =>
       new Response(JSON.stringify(String(path).includes('/students') ? studentResponse : questionResponse), {
@@ -229,6 +281,105 @@ describe('graph API contract', () => {
     })).toThrow('Invalid graph rows')
     expect(() => decodeGraphEvidenceResponse({
       ...graphEvidence, raw: { private_path: 'C:/private' },
+    })).toThrow('Invalid graph evidence')
+  })
+
+  it.each([
+    {
+      ...graphEvidence,
+      items: [{
+        student_id: 13,
+        student_code: 'S-13',
+        student_name: 'student',
+        class_id: 'other-class',
+        knowledge_key: node.knowledge_key,
+        knowledge_label: node.knowledge_label,
+        session_id: 7,
+        session_name: 'exam',
+        question_id: 'Q1',
+        bank_question_id: 101,
+        score_awarded: 8,
+        full_score: 10,
+        score_rate: 0.8,
+        tag_context: {},
+        actionable_reasons: [],
+        error_counts: {},
+      }],
+      total: 1,
+    },
+    {
+      ...graphEvidence,
+      items: [{
+        student_id: 13,
+        student_code: 'S-13',
+        student_name: 'student',
+        class_id: graphEvidence.scope.class_id,
+        knowledge_key: 'knowledge_point:other',
+        knowledge_label: 'other',
+        session_id: 7,
+        session_name: 'exam',
+        question_id: 'Q1',
+        bank_question_id: 101,
+        score_awarded: 8,
+        full_score: 10,
+        score_rate: 0.8,
+        tag_context: {},
+        actionable_reasons: [],
+        error_counts: {},
+      }],
+      total: 1,
+    },
+    {
+      ...graphEvidence,
+      items: [{
+        student_id: 13,
+        student_code: 'S-13',
+        student_name: 'student',
+        class_id: graphEvidence.scope.class_id,
+        knowledge_key: node.knowledge_key,
+        knowledge_label: node.knowledge_label,
+        session_id: 8,
+        session_name: 'other exam',
+        question_id: 'Q1',
+        bank_question_id: 101,
+        score_awarded: 8,
+        full_score: 10,
+        score_rate: 0.8,
+        tag_context: {},
+        actionable_reasons: [],
+        error_counts: {},
+      }],
+      total: 1,
+    },
+  ])('rejects graph evidence items outside the response scope', (payload) => {
+    expect(() => decodeGraphEvidenceResponse(payload)).toThrow('Invalid graph evidence')
+  })
+
+  it('rejects graph evidence whose top-level scope differs from the request', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      ...graphEvidence,
+      exam_scope: {
+        ...graphEvidence.exam_scope,
+        session_ids: [8],
+        sessions: [{ session_id: 8, session_name: 'other exam' }],
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+
+    await expect(fetchGraphEvidence(7, '七年级一班', node.knowledge_key)).rejects.toMatchObject({
+      code: 'invalid_success_contract',
+    })
+  })
+
+  it('rejects graph evidence whose session metadata contradicts its session ids', () => {
+    expect(() => decodeGraphEvidenceResponse({
+      ...graphEvidence,
+      exam_scope: {
+        ...graphEvidence.exam_scope,
+        sessions: [{ session_id: 8, session_name: 'other exam' }],
+      },
     })).toThrow('Invalid graph evidence')
   })
 

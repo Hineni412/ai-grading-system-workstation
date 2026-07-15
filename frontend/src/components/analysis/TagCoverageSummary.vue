@@ -58,15 +58,15 @@ async function selectNode(node: GraphNode): Promise<void> {
       node.knowledge_key,
       requestController.signal,
     )
+    if (requestGeneration !== generation) return
     if (
-      requestGeneration !== generation ||
       loaded.knowledge_key !== node.knowledge_key ||
       loaded.scope.mode !== 'class' ||
       loaded.scope.class_id !== props.className ||
       loaded.exam_scope.mode !== 'current' ||
       loaded.exam_scope.session_ids.length !== 1 ||
       loaded.exam_scope.session_ids[0] !== props.sessionId
-    ) return
+    ) throw new Error('Graph evidence scope mismatch')
     evidence.value = loaded
     evidenceState.value = loaded.items.length === 0 ? 'empty' : 'ready'
   } catch {

@@ -107,6 +107,12 @@ export interface GraphEvidenceResponse {
   diagnosis_identity: 'question_tag'
 }
 
+interface GraphEvidenceExpectation {
+  sessionId: number
+  className: string
+  knowledgeKey: string
+}
+
 function isInteger(value: unknown, positive = false): value is number {
   return Number.isSafeInteger(value) && Number(value) >= (positive ? 1 : 0)
 }
@@ -323,7 +329,35 @@ export function decodeGraphRowsResponse(value: unknown): GraphRowsResponse {
   return value as unknown as GraphRowsResponse
 }
 
-export function decodeGraphEvidenceResponse(value: unknown): GraphEvidenceResponse {
+function hasMatchingGraphEvidenceScope(
+  response: GraphEvidenceResponse,
+  expected?: GraphEvidenceExpectation,
+): boolean {
+  if (
+    response.exam_scope.sessions.length !== response.exam_scope.session_ids.length ||
+    !response.exam_scope.sessions.every(
+      (session, index) => session.session_id === response.exam_scope.session_ids[index],
+    )
+  ) return false
+  if (expected && (
+    response.scope.mode !== 'class' ||
+    response.scope.class_id !== expected.className ||
+    response.exam_scope.mode !== 'current' ||
+    response.exam_scope.session_ids.length !== 1 ||
+    response.exam_scope.session_ids[0] !== expected.sessionId ||
+    response.knowledge_key !== expected.knowledgeKey
+  )) return false
+  return response.items.every((item) => (
+    item.knowledge_key === response.knowledge_key &&
+    response.exam_scope.session_ids.includes(item.session_id) &&
+    (response.scope.mode !== 'class' || item.class_id === response.scope.class_id)
+  ))
+}
+
+export function decodeGraphEvidenceResponse(
+  value: unknown,
+  expected?: GraphEvidenceExpectation,
+): GraphEvidenceResponse {
   if (
     !isRecord(value) ||
     !hasExactKeys(value, [
@@ -347,7 +381,11 @@ export function decodeGraphEvidenceResponse(value: unknown): GraphEvidenceRespon
   ) {
     throw new Error('Invalid graph evidence')
   }
-  return value as unknown as GraphEvidenceResponse
+  const response = value as unknown as GraphEvidenceResponse
+  if (!hasMatchingGraphEvidenceScope(response, expected)) {
+    throw new Error('Invalid graph evidence')
+  }
+  return response
 }
 
 function requireSessionId(sessionId: number): number {
@@ -398,7 +436,11 @@ export function fetchGraphEvidence(
       page: 1,
       page_size: 20,
     },
-    decode: decodeGraphEvidenceResponse,
+    decode: (value) => decodeGraphEvidenceResponse(value, {
+      sessionId,
+      className: requireClassName(className),
+      knowledgeKey,
+    }),
     signal,
   })
 }
