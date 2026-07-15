@@ -47,19 +47,19 @@ _PUBLIC_API_PATH_PATTERN = re.compile(
     r"^/api(?:/[A-Za-z0-9._~!$&'()*+,;=@%\-]+)*/?$"
 )
 _PUBLIC_DIAGNOSTIC_MAX_LENGTH = 240
-_PUBLIC_DIAGNOSTIC_SECRET_PATTERN = re.compile(
-    r"\b(?:api[\s_-]*key|access[\s_-]*token|refresh[\s_-]*token|"
-    r"token|secret|password|authorization)\b",
-    re.IGNORECASE,
+_PUBLIC_DIAGNOSTIC_ALLOWED_PATTERN = re.compile(
+    r"^[\w .,/=%+\-，。！？、]+$",
+    re.UNICODE,
 )
-_PUBLIC_DIAGNOSTIC_INTERNAL_FIELD_PATTERN = re.compile(
-    r"(?:^|[\s,{;])[\"']?(?:payload|result|error)[\"']?\s*[:=]",
-    re.IGNORECASE,
+_PUBLIC_DIAGNOSTIC_ASSIGNMENT_PATTERN = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*)\s*="
 )
-_PUBLIC_DIAGNOSTIC_STACK_PATTERN = re.compile(
-    r"\b(?:traceback|stack\s*trace|exception)\b|"
-    r"\bfile\s+[\"'][^\"']+[\"']\s*,\s*line\s+\d+",
-    re.IGNORECASE,
+_PUBLIC_DIAGNOSTIC_ASSIGNMENT_KEYS = frozenset(
+    {"graded", "failed", "matched", "issues", "pages"}
+)
+_PUBLIC_DIAGNOSTIC_OPAQUE_ATOM_PATTERN = re.compile(r"^[A-Za-z0-9._~+/=\-]+$")
+_PUBLIC_DIAGNOSTIC_QUALIFIED_SYMBOL_PATTERN = re.compile(
+    r"\b[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*){2,}\b"
 )
 _LATEX_COMMAND_PATTERN = re.compile(r"\\([A-Za-z]+)")
 _LATEX_COMMAND_SEQUENCE_PATTERN = re.compile(
@@ -150,7 +150,7 @@ def sanitize_public_mapping(value: dict[Any, Any]) -> dict[str, Any]:
 
 
 def sanitize_public_diagnostic_text(value: object) -> str | None:
-    """Keep only short, single-line diagnostics without opaque internals."""
+    """Allow only short, plain stage text suitable for public summaries."""
     if not isinstance(value, str):
         return None
     text = value.strip()
@@ -159,12 +159,38 @@ def sanitize_public_diagnostic_text(value: object) -> str | None:
         or len(text) > _PUBLIC_DIAGNOSTIC_MAX_LENGTH
         or any(ord(character) < 32 for character in text)
         or _contains_filesystem_token(text)
-        or _PUBLIC_DIAGNOSTIC_SECRET_PATTERN.search(text)
-        or _PUBLIC_DIAGNOSTIC_INTERNAL_FIELD_PATTERN.search(text)
-        or _PUBLIC_DIAGNOSTIC_STACK_PATTERN.search(text)
-        or (text[0] in "[{" and text[-1] in "]}")
+        or not _PUBLIC_DIAGNOSTIC_ALLOWED_PATTERN.fullmatch(text)
+        or _PUBLIC_DIAGNOSTIC_QUALIFIED_SYMBOL_PATTERN.search(text)
     ):
         return None
+    assignment_keys = {
+        match.group(1).casefold()
+        for match in _PUBLIC_DIAGNOSTIC_ASSIGNMENT_PATTERN.finditer(text)
+    }
+    if not assignment_keys.issubset(_PUBLIC_DIAGNOSTIC_ASSIGNMENT_KEYS):
+        return None
+    for index, character in enumerate(text):
+        if character == "/" and not (
+            index > 0
+            and index + 1 < len(text)
+            and text[index - 1].isdigit()
+            and text[index + 1].isdigit()
+        ):
+            return None
+    atoms = [atom.strip(".,，。！？、") for atom in text.split()]
+    if (
+        len(atoms) == 2
+        and len(atoms[1]) >= 16
+        and _PUBLIC_DIAGNOSTIC_OPAQUE_ATOM_PATTERN.fullmatch(atoms[1])
+    ):
+        return None
+    for atom in atoms:
+        if not _PUBLIC_DIAGNOSTIC_OPAQUE_ATOM_PATTERN.fullmatch(atom):
+            continue
+        if len(atom) >= 40 or (
+            len(atom) >= 20 and any(marker in atom for marker in ".-+/=")
+        ):
+            return None
     return text
 
 
