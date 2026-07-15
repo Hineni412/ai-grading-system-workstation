@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import hashlib
 import io
 import json
 import os
@@ -19,6 +20,7 @@ from docx.shared import Inches
 from PIL import Image
 
 from backend.config_workspace.sources import (
+    ConfigAssetNotFoundError,
     ConfigSourceChangedError,
     ConfigSourceInvalidError,
     ConfigSourceNotFoundError,
@@ -547,6 +549,126 @@ def test_cleanup_fails_closed_when_active_pointer_is_unavailable(
     assert second.manifest_path.exists()
 
 
+def test_cleanup_fails_closed_when_active_image_is_corrupt(tmp_path: Path) -> None:
+    source_service = service(tmp_path)
+    first = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="first.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+    active = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="active.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+    manifest = json.loads(active.manifest_path.read_text(encoding="utf-8"))
+    active_asset = active.manifest_path.parent / manifest["asset_files"]["Q1"]["question"]
+    active_asset.write_bytes(b"truncated-image")
+
+    assert source_service.cleanup_inactive(
+        session_id=7,
+        referenced_source_ids=set(),
+    ) == ()
+    assert first.manifest_path.exists()
+    assert active.manifest_path.exists()
+
+
+@pytest.mark.parametrize("corruption", ["source_bytes", "sha256", "revision"])
+def test_cleanup_fails_closed_when_active_source_identity_is_inconsistent(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    source_service = service(tmp_path)
+    first = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="first.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+    active = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="active.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+    manifest = json.loads(active.manifest_path.read_text(encoding="utf-8"))
+    active_path = tmp_path / "config_sources" / "session-7" / "active.json"
+    if corruption == "source_bytes":
+        active.private_source_path.write_bytes(active.private_source_path.read_bytes() + b"x")
+    elif corruption == "sha256":
+        manifest["sha256"] = hashlib.sha256(b"different-source").hexdigest()
+        active.manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    else:
+        mismatched_revision = "f" * 64
+        if mismatched_revision == active.source_revision:
+            mismatched_revision = "e" * 64
+        manifest["source_revision"] = mismatched_revision
+        active.manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        active_path.write_text(
+            json.dumps(
+                {
+                    "source_id": active.source_id,
+                    "source_revision": mismatched_revision,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    assert source_service.cleanup_inactive(
+        session_id=7,
+        referenced_source_ids=set(),
+    ) == ()
+    assert first.manifest_path.exists()
+    assert active.manifest_path.exists()
+
+
+def test_cleanup_with_integral_active_source_removes_old_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import backend.config_workspace.sources as sources_module
+
+    source_service = service(tmp_path)
+    first = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="first.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+    active = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="active.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+
+    def reject_base64(_content: bytes) -> bytes:
+        raise AssertionError("cleanup integrity validation encoded an image")
+
+    monkeypatch.setattr(sources_module.base64, "b64encode", reject_base64)
+
+    assert source_service.cleanup_inactive(
+        session_id=7,
+        referenced_source_ids=set(),
+    ) == (first.source_id,)
+    assert not first.manifest_path.exists()
+    assert active.manifest_path.exists()
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
 def test_load_rejects_session_ancestor_junction(tmp_path: Path) -> None:
     source_service = service(tmp_path)
@@ -576,6 +698,150 @@ def test_load_rejects_session_ancestor_junction(tmp_path: Path) -> None:
         os.rmdir(session_dir)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction race regression")
+def test_asset_read_rejects_session_swapped_to_junction_after_static_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_service = service(tmp_path)
+    record = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="paper.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+    manifest = json.loads(record.manifest_path.read_text(encoding="utf-8"))
+    target_name = manifest["asset_files"]["Q1"]["question"]
+    session_dir = tmp_path / "config_sources" / "session-7"
+    parked_session = tmp_path / "parked-read-session"
+    outside_session = tmp_path.parent / f"{tmp_path.name}-outside-read-session"
+    outside_source = outside_session / record.source_id
+    outside_source.mkdir(parents=True)
+    (outside_source / target_name).write_bytes(_png_bytes())
+    sentinel = outside_source / "external-sentinel.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    original_load = source_service._load_metadata
+    original_owned_path = source_service._owned_path
+    state = {"armed": False, "swapped": False}
+
+    def load_then_arm(*args: object, **kwargs: object):
+        metadata = original_load(*args, **kwargs)
+        state["armed"] = True
+        return metadata
+
+    def owned_path_then_swap(source_dir: Path, name: object) -> Path:
+        path = original_owned_path(source_dir, name)
+        if state["armed"] and not state["swapped"] and name == target_name:
+            session_dir.rename(parked_session)
+            result = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(session_dir), str(outside_session)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                parked_session.rename(session_dir)
+                pytest.skip("junction creation is unavailable")
+            state["swapped"] = True
+        return path
+
+    monkeypatch.setattr(source_service, "_load_metadata", load_then_arm)
+    monkeypatch.setattr(source_service, "_owned_path", owned_path_then_swap)
+    sentinel_content: str | None = None
+    try:
+        with pytest.raises(ConfigAssetNotFoundError):
+            source_service.read_asset(
+                session_id=7,
+                source_id=record.source_id,
+                question_id="Q1",
+                asset_kind="question",
+            )
+    finally:
+        if state["swapped"]:
+            os.rmdir(session_dir)
+            parked_session.rename(session_dir)
+        if sentinel.exists():
+            sentinel_content = sentinel.read_text(encoding="utf-8")
+        for path in outside_source.iterdir():
+            path.unlink()
+        outside_source.rmdir()
+        outside_session.rmdir()
+    assert sentinel_content == "keep"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction race regression")
+def test_cleanup_rejects_session_swapped_to_junction_after_owned_path_checks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_service = service(tmp_path)
+    first = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="first.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+    asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="active.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+    first_manifest = json.loads(first.manifest_path.read_text(encoding="utf-8"))
+    session_dir = tmp_path / "config_sources" / "session-7"
+    parked_session = tmp_path / "parked-cleanup-session"
+    outside_session = tmp_path.parent / f"{tmp_path.name}-outside-cleanup-session"
+    outside_source = outside_session / first.source_id
+    outside_source.mkdir(parents=True)
+    for name in first_manifest["owned_files"]:
+        (outside_source / name).write_bytes(b"external")
+    sentinel = outside_source / "manifest.json"
+    original_owned_path = source_service._owned_path
+    state = {"swapped": False}
+
+    def owned_path_then_swap(source_dir: Path, name: object) -> Path:
+        path = original_owned_path(source_dir, name)
+        if (
+            not state["swapped"]
+            and source_dir.name == first.source_id
+            and name == "manifest.json"
+        ):
+            session_dir.rename(parked_session)
+            result = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(session_dir), str(outside_session)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                parked_session.rename(session_dir)
+                pytest.skip("junction creation is unavailable")
+            state["swapped"] = True
+        return path
+
+    monkeypatch.setattr(source_service, "_owned_path", owned_path_then_swap)
+    sentinel_content: bytes | None = None
+    try:
+        assert source_service.cleanup_inactive(
+            session_id=7,
+            referenced_source_ids=set(),
+        ) == ()
+    finally:
+        if state["swapped"]:
+            os.rmdir(session_dir)
+            parked_session.rename(session_dir)
+        if sentinel.exists():
+            sentinel_content = sentinel.read_bytes()
+        for path in outside_source.iterdir():
+            path.unlink()
+        outside_source.rmdir()
+        outside_session.rmdir()
+    assert sentinel_content == b"external"
+
+
 def test_single_asset_read_reads_only_the_requested_asset(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -590,14 +856,15 @@ def test_single_asset_read_reads_only_the_requested_asset(
     )
     manifest = json.loads(record.manifest_path.read_text(encoding="utf-8"))
     target_name = manifest["asset_files"]["Q1"]["question"]
-    original_read_bytes = Path.read_bytes
+    original_read_bytes = source_service._files.read_bytes
     reads: list[str] = []
 
     def tracked_read_bytes(path: Path) -> bytes:
-        reads.append(path.name)
+        if path.name.startswith(("asset-", "whole-page-")):
+            reads.append(path.name)
         return original_read_bytes(path)
 
-    monkeypatch.setattr(Path, "read_bytes", tracked_read_bytes)
+    monkeypatch.setattr(source_service._files, "read_bytes", tracked_read_bytes)
 
     content, media_type = source_service.read_asset(
         session_id=7,
