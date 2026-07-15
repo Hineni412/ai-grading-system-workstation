@@ -8,6 +8,7 @@ import {
   CONFIG_WORKSPACE_STORAGE_KEY,
   useConfigWorkspaceStore,
 } from '../stores/config-workspace'
+import { useJobStore } from '../stores/jobs'
 
 function editor(answer: string): ConfigEditorResponse {
   return {
@@ -67,6 +68,49 @@ beforeEach(() => {
 })
 
 describe('configuration workspace Store', () => {
+  it('builds generation requests from current source facts and invalidates old view updates', () => {
+    const store = useConfigWorkspaceStore()
+    store.selectSession(7)
+    store.setSource(source('d'.repeat(32)))
+    store.source!.questions = [
+      { question_id: 'Q1', question_type: 'calculation', question_preview: '', answer_preview: '',
+        answer_present: false, needs_review: false, local_answer_trusted: false,
+        has_question_asset: false, has_answer_asset: false },
+    ]
+    store.updateDecisions([{ question_id: 'Q1', question_type: 'proof', excluded: false }])
+    const generation = store.captureGenerationContext()
+
+    expect(store.canGenerate).toBe(true)
+    expect(store.sourceRequest('per_question')).toEqual({
+      source_id: 'd'.repeat(32), source_revision: 'b'.repeat(64),
+      generation_mode: 'per_question',
+      decisions: [{ question_id: 'Q1', question_type: 'proof', excluded: false }],
+    })
+    store.acceptUploadedSource({ ...source('e'.repeat(32)), source_revision: 'f'.repeat(64) })
+    expect(store.attachJob(31, generation)).toBe(false)
+    expect(store.jobId).toBeNull()
+  })
+
+  it('restores a stored Job into JobStore and keeps process-restart failure detail', async () => {
+    localStorage.setItem(CONFIG_WORKSPACE_STORAGE_KEY, JSON.stringify({
+      sessionId: 7, phase: 'generation', sourceId: 'd'.repeat(32),
+      sourceRevision: 'b'.repeat(64), jobId: 31, decisions: [],
+    }))
+    const recovered = job({
+      status: 'failed', detail: '应用重启后，本次生成已停止。',
+      finished_at: '2026-07-15T00:01:00Z',
+    })
+    const store = useConfigWorkspaceStore()
+    await store.hydrateSafeIndex([7], 7, {
+      loadSource: async () => source('d'.repeat(32)),
+      loadJob: async () => recovered,
+      loadEditor: async () => ({ ...editor(''), configured: false, rows: [] }),
+    })
+
+    expect(store.jobId).toBe(31)
+    expect(useJobStore().jobs[31]?.detail).toBe('应用重启后，本次生成已停止。')
+  })
+
   it('persists only the safe workspace index and never rubric rows or answer text', () => {
     const store = useConfigWorkspaceStore()
     store.selectSession(7)

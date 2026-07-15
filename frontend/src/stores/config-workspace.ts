@@ -5,6 +5,8 @@ import { ApiError } from '../api/errors'
 import {
   fetchConfigEditor,
   fetchConfigSource,
+  type ConfigGenerationRequest,
+  type GenerationMode,
   type ConfigEditorCommand,
   type ConfigEditorEdit,
   type ConfigEditorResponse,
@@ -12,6 +14,7 @@ import {
   type QuestionDecision,
 } from '../api/config-workspace'
 import { jobApi, type JobResponse } from '../api/jobs'
+import { useJobStore } from './jobs'
 
 export const CONFIG_WORKSPACE_STORAGE_KEY = 'ai-grading:config-workspace:v1'
 export type ConfigPhase = 'draft' | 'source' | 'generation' | 'editor'
@@ -106,11 +109,19 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   const editorDirty = ref(false)
   const sourceLoading = ref(false)
   const sourceError = ref('')
-  let sourceRequest = 0
+  let sourceLoadGeneration = 0
   let hydrationRequest = 0
+  let generationContext = 0
   let requestedSourceId: string | null = null
 
   const hasDirtyEditor = computed(() => editorDirty.value)
+  const canGenerate = computed(() => {
+    if (sessionId.value === null || source.value === null || sourceId.value === null
+      || sourceRevision.value === null || source.value.questions.length === 0) return false
+    const excluded = new Set(decisions.value.filter((item) => item.excluded)
+      .map((item) => item.question_id))
+    return source.value.questions.some((question) => !excluded.has(question.question_id))
+  })
 
   function derivePhase(): ConfigPhase {
     if (editor.value?.configured) return 'editor'
@@ -138,6 +149,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   }
 
   function resetMemory(): void {
+    generationContext += 1
     source.value = null
     editor.value = null
     editorEdits.value = []
@@ -145,7 +157,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     sourceLoading.value = false
     sourceError.value = ''
     requestedSourceId = null
-    sourceRequest += 1
+    sourceLoadGeneration += 1
   }
 
   function forceClearWorkspace(): void {
@@ -189,7 +201,8 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     if (id !== null && !validSourceId(id)) throw new Error('Invalid source id')
     if (editorDirty.value && !discardDirty) return false
     hydrationRequest += 1
-    sourceRequest += 1
+    generationContext += 1
+    sourceLoadGeneration += 1
     requestedSourceId = id
     sourceId.value = null
     sourceRevision.value = null
@@ -212,6 +225,9 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
 
   function setSource(value: ConfigSource): void {
     if (sessionId.value !== value.session_id) throw new Error('Source session does not match')
+    if (sourceId.value !== value.source_id || sourceRevision.value !== value.source_revision) {
+      generationContext += 1
+    }
     requestedSourceId = null
     sourceId.value = value.source_id
     sourceRevision.value = value.source_revision
@@ -224,7 +240,8 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   function acceptUploadedSource(value: ConfigSource): void {
     if (sessionId.value !== value.session_id) throw new Error('Source session does not match')
     hydrationRequest += 1
-    sourceRequest += 1
+    generationContext += 1
+    sourceLoadGeneration += 1
     requestedSourceId = null
     sourceId.value = value.source_id
     sourceRevision.value = value.source_revision
@@ -254,13 +271,13 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     expectedSourceId: string,
     loader: ConfigSourceLoader = fetchConfigSource,
   ): Promise<void> {
-    const request = ++sourceRequest
+    const request = ++sourceLoadGeneration
     requestedSourceId = expectedSourceId
     sourceLoading.value = true
     sourceError.value = ''
     try {
       const loaded = await loader(expectedSessionId, expectedSourceId)
-      if (request !== sourceRequest || sessionId.value !== expectedSessionId
+      if (request !== sourceLoadGeneration || sessionId.value !== expectedSessionId
         || requestedSourceId !== expectedSourceId) return
       if (loaded.session_id !== expectedSessionId || loaded.source_id !== expectedSourceId) {
         requestedSourceId = null
@@ -269,7 +286,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       }
       setSource(loaded)
     } catch (error) {
-      if (request !== sourceRequest || sessionId.value !== expectedSessionId
+      if (request !== sourceLoadGeneration || sessionId.value !== expectedSessionId
         || requestedSourceId !== expectedSourceId) return
       if (isNotFound(error)) {
         requestedSourceId = null
@@ -281,7 +298,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
         sourceError.value = '试卷来源暂时无法读取，可以重新加载。'
       }
     } finally {
-      if (request === sourceRequest) sourceLoading.value = false
+      if (request === sourceLoadGeneration) sourceLoading.value = false
     }
   }
 
@@ -292,6 +309,43 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     discardEditorDraft()
     phase.value = derivePhase()
     persistSafeIndex()
+  }
+
+  function captureGenerationContext(): number {
+    return generationContext
+  }
+
+  function attachJob(id: number, context: number): boolean {
+    if (!positiveInteger(id)) throw new Error('Invalid Job id')
+    if (context !== generationContext || sessionId.value === null || sourceId.value === null) return false
+    jobId.value = id
+    phase.value = derivePhase()
+    persistSafeIndex()
+    return true
+  }
+
+  function sourceRequest(mode: GenerationMode): ConfigGenerationRequest {
+    if (!canGenerate.value || sourceId.value === null || sourceRevision.value === null) {
+      throw new Error('Config source is not ready')
+    }
+    return {
+      source_id: sourceId.value,
+      source_revision: sourceRevision.value,
+      generation_mode: mode,
+      decisions: decisions.value.map((item) => ({ ...item })),
+    }
+  }
+
+  async function reloadEditorForGeneration(
+    context: number,
+    loader: (sessionId: number) => Promise<ConfigEditorResponse> = fetchConfigEditor,
+  ): Promise<boolean> {
+    const expectedSessionId = sessionId.value
+    if (expectedSessionId === null) return false
+    const loaded = await loader(expectedSessionId)
+    if (context !== generationContext || sessionId.value !== expectedSessionId) return false
+    setEditor(loaded)
+    return true
   }
 
   async function hydrateSafeIndex(
@@ -362,6 +416,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
 
     if (jobResult.status === 'fulfilled' && jobResult.value !== null) {
       if (jobBelongsTo(jobResult.value, candidate.sessionId, candidate)) {
+        useJobStore().track(jobResult.value)
         jobId.value = jobResult.value.id
       } else {
         sanitized.jobId = null
@@ -402,9 +457,10 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   return {
     sessionId, phase, sourceId, sourceRevision, jobId, decisions,
     source, editor, editorEdits, editorCommands, sourceLoading, sourceError,
-    hasDirtyEditor, hydrateSafeIndex, persistSafeIndex, clearWorkspace,
+    hasDirtyEditor, canGenerate, hydrateSafeIndex, persistSafeIndex, clearWorkspace,
     selectSession, selectSource, discardEditorDraft, setSource, acceptUploadedSource,
     updateDecisions, loadSource,
-    setEditor, updateEditor, addEditorCommand, noteSaveFailed,
+    setEditor, captureGenerationContext, attachJob, sourceRequest,
+    reloadEditorForGeneration, updateEditor, addEditorCommand, noteSaveFailed,
   }
 })
