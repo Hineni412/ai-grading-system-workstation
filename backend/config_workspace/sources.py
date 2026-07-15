@@ -9,14 +9,12 @@ import json
 import os
 import re
 import stat
-import threading
 import uuid
 import zipfile
 from collections.abc import AsyncIterator, Collection, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
-from unittest.mock import patch
 from urllib.parse import unquote
 
 from PIL import Image
@@ -52,9 +50,6 @@ _IMAGE_FORMATS = {
     "WEBP": (".webp", "image/webp"),
     "BMP": (".bmp", "image/bmp"),
 }
-_DOCX_PARSE_LOCK = threading.Lock()
-
-
 class ConfigSourceError(RuntimeError):
     pass
 
@@ -134,6 +129,63 @@ class ConfigSourceRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class _ConfigSourceMetadata:
+    session_id: int
+    source_id: str
+    source_revision: str
+    safe_filename: str
+    suffix: Literal[".docx", ".pdf"]
+    size_bytes: int
+    sha256: str
+    questions: tuple[ConfigQuestionPreview, ...]
+    manifest_path: Path
+    source_path: Path
+    owned_names: frozenset[str]
+    private_blocks: tuple[dict[str, Any], ...]
+    private_document_text: str
+    asset_files: dict[str, dict[str, str | None]]
+    whole_page_files: tuple[str, ...]
+
+    def public_snapshot(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "source_id": self.source_id,
+            "source_revision": self.source_revision,
+            "safe_filename": self.safe_filename,
+            "suffix": self.suffix,
+            "size_bytes": self.size_bytes,
+            "sha256_prefix": self.sha256[:12],
+            "parse_state": "ready",
+            "questions": [asdict(question) for question in self.questions],
+        }
+
+
+class _OwnedFileRegistry:
+    def __init__(self) -> None:
+        self._cleanup_paths: list[Path] = []
+        self._cleanup_keys: set[str] = set()
+        self._owned_paths: list[Path] = []
+        self._owned_keys: set[str] = set()
+
+    def register(self, path: Path, *, manifest_owned: bool = False) -> None:
+        clean_path = Path(path)
+        key = os.path.normcase(str(clean_path.resolve(strict=False)))
+        if key not in self._cleanup_keys:
+            self._cleanup_keys.add(key)
+            self._cleanup_paths.append(clean_path)
+        if manifest_owned and key not in self._owned_keys:
+            self._owned_keys.add(key)
+            self._owned_paths.append(clean_path)
+
+    @property
+    def owned_paths(self) -> tuple[Path, ...]:
+        return tuple(self._owned_paths)
+
+    def cleanup(self) -> None:
+        remove_exact_files(reversed(self._cleanup_paths))
+
+
+@dataclass(frozen=True, slots=True)
 class QuestionDecision:
     question_id: str
     question_type: Literal[
@@ -174,7 +226,7 @@ class ConfigSourceService:
         max_docx_expanded_bytes: int = MAX_DOCX_EXPANDED_BYTES,
         max_pdf_pages: int = MAX_PDF_PAGES,
     ) -> None:
-        self.upload_config_dir = Path(upload_config_dir)
+        self.upload_config_dir = Path(upload_config_dir).resolve(strict=False)
         self.max_upload_bytes = int(max_upload_bytes)
         self.max_docx_member_bytes = int(max_docx_member_bytes)
         self.max_docx_expanded_bytes = int(max_docx_expanded_bytes)
@@ -201,10 +253,12 @@ class ConfigSourceService:
         self._prepare_source_dir(source_dir)
         temporary_path = source_dir / f".source.{uuid.uuid4().hex}.tmp"
         source_path = source_dir / f"source{suffix}"
-        created_files: list[Path] = []
+        registry = _OwnedFileRegistry()
         digest = hashlib.sha256()
         size_bytes = 0
+        completed = False
         try:
+            registry.register(temporary_path)
             with temporary_path.open("xb") as stream:
                 async for raw_chunk in chunks:
                     chunk = bytes(raw_chunk or b"")
@@ -220,26 +274,25 @@ class ConfigSourceService:
             if size_bytes <= 0:
                 raise ConfigSourceInvalidError()
             _validate_magic(temporary_path, suffix)
+            registry.register(source_path, manifest_owned=True)
             os.replace(temporary_path, source_path)
-            created_files.append(source_path)
 
             if suffix == ".docx":
-                blocks, document_text, asset_files, whole_page_files, new_files = (
-                    self._parse_docx(source_path, source_dir)
+                blocks, document_text, asset_files, whole_page_files = (
+                    self._parse_docx(source_path, source_dir, registry)
                 )
             else:
-                blocks, document_text, asset_files, whole_page_files, new_files = (
-                    self._parse_pdf(source_path, source_dir)
+                blocks, document_text, asset_files, whole_page_files = (
+                    self._parse_pdf(source_path, source_dir, registry)
                 )
-            created_files.extend(new_files)
             questions = _question_previews(blocks, asset_files)
             source_sha256 = digest.hexdigest()
             source_revision = hashlib.sha256(
                 f"{clean_session_id}:{source_id}:{source_sha256}".encode("ascii")
             ).hexdigest()
             manifest_path = source_dir / "manifest.json"
-            owned_names = [path.name for path in created_files]
-            owned_names.append(manifest_path.name)
+            registry.register(manifest_path, manifest_owned=True)
+            owned_names = [path.name for path in registry.owned_paths]
             if len(owned_names) != len(set(owned_names)):
                 raise ConfigSourceInvalidError()
             manifest = {
@@ -262,35 +315,28 @@ class ConfigSourceService:
             }
             json.dumps(manifest, ensure_ascii=False)
             with session_config_lock(self.upload_config_dir, clean_session_id):
+                self._assert_controlled_directory(source_dir)
+                self._assert_controlled_path(manifest_path)
+                active_path = self._active_path(clean_session_id)
+                self._assert_controlled_path(active_path)
                 write_json_atomic(manifest_path, manifest)
-                if manifest_path.exists():
-                    created_files.append(manifest_path)
                 record = self._record_from_manifest(manifest_path, manifest)
                 write_json_atomic(
-                    self._active_path(clean_session_id),
+                    active_path,
                     {
                         "source_id": source_id,
                         "source_revision": source_revision,
                     },
                 )
+            completed = True
             return record
         except ConfigSourceError:
-            generated = (
-                [path for path in source_dir.rglob("*") if path.is_file()]
-                if source_dir.exists()
-                else []
-            )
-            remove_exact_files(
-                [temporary_path, *reversed(created_files), *generated]
-            )
             raise
         except Exception:
-            if source_dir.exists():
-                generated = [path for path in source_dir.rglob("*") if path.is_file()]
-            else:
-                generated = []
-            remove_exact_files([temporary_path, *reversed(created_files), *generated])
             raise ConfigSourceInvalidError() from None
+        finally:
+            if not completed:
+                registry.cleanup()
 
     def load(
         self,
@@ -299,33 +345,61 @@ class ConfigSourceService:
         source_id: str,
         require_active: bool = True,
     ) -> ConfigSourceRecord:
+        metadata = self._load_metadata(
+            session_id=session_id,
+            source_id=source_id,
+            require_active=require_active,
+        )
+        return self._record_from_metadata(metadata)
+
+    def load_public(
+        self,
+        *,
+        session_id: int,
+        source_id: str,
+        require_active: bool = True,
+    ) -> dict[str, Any]:
+        return self._load_metadata(
+            session_id=session_id,
+            source_id=source_id,
+            require_active=require_active,
+        ).public_snapshot()
+
+    def _load_metadata(
+        self,
+        *,
+        session_id: int,
+        source_id: str,
+        require_active: bool,
+    ) -> _ConfigSourceMetadata:
         clean_session_id = _positive_session_id(session_id)
         clean_source_id = str(source_id or "").strip()
         if not _SOURCE_ID.fullmatch(clean_source_id):
             raise ConfigSourceNotFoundError()
         source_dir = self._source_dir(clean_session_id, clean_source_id)
         manifest_path = source_dir / "manifest.json"
-        if not manifest_path.is_file() or _is_reparse(manifest_path):
-            raise ConfigSourceNotFoundError()
         try:
+            self._assert_controlled_path(manifest_path)
+            if not manifest_path.is_file():
+                raise ConfigSourceNotFoundError()
             self._assert_controlled_directory(source_dir)
             manifest = _read_json_object(manifest_path)
-            record = self._record_from_manifest(manifest_path, manifest)
+            metadata = self._metadata_from_manifest(manifest_path, manifest)
         except ConfigSourceError:
             raise
         except Exception:
             raise ConfigSourceInvalidError() from None
         if require_active:
             try:
-                active = _read_json_object(self._active_path(clean_session_id))
-            except Exception:
+                active_source_id, active_revision = self._read_active(clean_session_id)
+            except ConfigSourceError:
                 raise ConfigSourceChangedError() from None
             if (
-                active.get("source_id") != record.source_id
-                or active.get("source_revision") != record.source_revision
+                active_source_id != metadata.source_id
+                or active_revision != metadata.source_revision
             ):
                 raise ConfigSourceChangedError()
-        return record
+        return metadata
 
     def read_asset(
         self,
@@ -341,15 +415,17 @@ class ConfigSourceService:
             clean_question_id
         ):
             raise ConfigAssetNotFoundError()
-        record = self.load(session_id=session_id, source_id=source_id)
-        manifest = _read_json_object(record.manifest_path)
-        asset_files = manifest.get("asset_files")
-        entry = asset_files.get(clean_question_id) if isinstance(asset_files, dict) else None
+        metadata = self._load_metadata(
+            session_id=session_id,
+            source_id=source_id,
+            require_active=True,
+        )
+        entry = metadata.asset_files.get(clean_question_id)
         filename = entry.get(kind) if isinstance(entry, dict) else None
         if not isinstance(filename, str) or not filename:
             raise ConfigAssetNotFoundError()
         try:
-            path = _owned_path(record.manifest_path.parent, filename)
+            path = self._owned_path(metadata.manifest_path.parent, filename)
             content = path.read_bytes()
             _suffix, media_type = _image_type(content)
         except Exception:
@@ -412,12 +488,20 @@ class ConfigSourceService:
         removed: list[str] = []
         with session_config_lock(self.upload_config_dir, clean_session_id):
             try:
-                active = _read_json_object(self._active_path(clean_session_id))
-                active_source_id = str(active.get("source_id") or "")
-            except Exception:
-                active_source_id = ""
+                active_source_id, active_revision = self._read_active(clean_session_id)
+                active_metadata = self._load_metadata(
+                    session_id=clean_session_id,
+                    source_id=active_source_id,
+                    require_active=False,
+                )
+                if active_metadata.source_revision != active_revision:
+                    return ()
+            except ConfigSourceError:
+                return ()
             session_dir = self._session_dir(clean_session_id)
-            if not session_dir.is_dir() or _is_reparse(session_dir):
+            try:
+                self._assert_controlled_directory(session_dir)
+            except ConfigSourceError:
                 return ()
             for source_dir in sorted(session_dir.iterdir(), key=lambda item: item.name):
                 source_id = source_dir.name
@@ -431,13 +515,14 @@ class ConfigSourceService:
                     continue
                 manifest_path = source_dir / "manifest.json"
                 try:
+                    self._assert_controlled_path(manifest_path)
                     manifest = _read_json_object(manifest_path)
                     if manifest.get("source_id") != source_id:
                         continue
                     owned_names = manifest.get("owned_files")
                     if not isinstance(owned_names, list):
                         continue
-                    owned_paths = [_owned_path(source_dir, name) for name in owned_names]
+                    owned_paths = [self._owned_path(source_dir, name) for name in owned_names]
                 except Exception:
                     continue
                 ordered = [path for path in owned_paths if path != manifest_path]
@@ -450,12 +535,12 @@ class ConfigSourceService:
         self,
         source_path: Path,
         source_dir: Path,
+        registry: _OwnedFileRegistry,
     ) -> tuple[
         list[dict[str, Any]],
         str,
         dict[str, dict[str, str | None]],
         list[str],
-        list[Path],
     ]:
         _validate_docx_archive(
             source_path,
@@ -466,48 +551,38 @@ class ConfigSourceService:
         parser_root = source_dir / "p"
         parser_root.mkdir(parents=True, exist_ok=True)
         parser_io_root = _extended_length_path(parser_root)
-        parser_files: list[Path] = []
+        parser_registry = _OwnedFileRegistry()
         try:
             import session_manager
-            from question_bank.importers import docx_importer
 
-            with _DOCX_PARSE_LOCK:
-                with patch.object(
-                    session_manager,
-                    "_resolve_upload_config_dir",
-                    lambda: str(parser_io_root),
-                ), patch.object(
-                    docx_importer,
-                    "project_data_root",
-                    lambda: parser_io_root,
-                ):
-                    document_text = session_manager.extract_docx_text(file_bytes)
-                    blocks = session_manager.preview_question_blocks_from_docx_bytes(
-                        file_bytes,
-                        fallback_doc_text=document_text,
-                    )
-            parser_files = [path for path in parser_io_root.rglob("*") if path.is_file()]
-            private_blocks, asset_files, created_files = _copy_docx_assets(
+            document_text = session_manager.extract_docx_text(file_bytes)
+            blocks = session_manager.preview_question_blocks_from_docx_bytes(
+                file_bytes,
+                fallback_doc_text=document_text,
+                temporary_root=parser_io_root,
+                asset_root=parser_io_root / "assets",
+                register_created_file=parser_registry.register,
+            )
+            private_blocks, asset_files = _copy_docx_assets(
                 blocks,
                 source_dir=source_dir,
                 parser_root=parser_io_root,
+                registry=registry,
             )
-            return private_blocks, document_text, asset_files, [], created_files
+            return private_blocks, document_text, asset_files, []
         finally:
-            if parser_io_root.exists():
-                parser_files = [path for path in parser_io_root.rglob("*") if path.is_file()]
-            remove_exact_files(parser_files)
+            parser_registry.cleanup()
 
     def _parse_pdf(
         self,
         source_path: Path,
         source_dir: Path,
+        registry: _OwnedFileRegistry,
     ) -> tuple[
         list[dict[str, Any]],
         str,
         dict[str, dict[str, str | None]],
         list[str],
-        list[Path],
     ]:
         try:
             import fitz
@@ -536,7 +611,6 @@ class ConfigSourceService:
         blocks = preview_question_blocks_from_docx_text(document_text)
         raw_assets = extract_pdf_question_images(file_bytes, blocks) if blocks else {}
         raw_pages = extract_pdf_images(file_bytes)
-        created_files: list[Path] = []
         asset_files: dict[str, dict[str, str | None]] = {}
         known_ids = {str(block.get("question_id") or "") for block in blocks}
         for question_id, values in raw_assets.items():
@@ -549,8 +623,7 @@ class ConfigSourceService:
                     continue
                 suffix, _media_type = _image_type(content)
                 output = source_dir / f"asset-{question_id}-{kind}{suffix}"
-                _write_bytes_atomic(output, content)
-                created_files.append(output)
+                _write_bytes_atomic(output, content, registry=registry)
                 entry[kind] = output.name
             if entry["question"] or entry["answer"]:
                 asset_files[question_id] = entry
@@ -560,16 +633,25 @@ class ConfigSourceService:
                 raise ConfigSourceInvalidError()
             suffix, _media_type = _image_type(content)
             output = source_dir / f"whole-page-{index:04d}{suffix}"
-            _write_bytes_atomic(output, content)
-            created_files.append(output)
+            _write_bytes_atomic(output, content, registry=registry)
             whole_page_files.append(output.name)
-        return blocks, document_text, asset_files, whole_page_files, created_files
+        return blocks, document_text, asset_files, whole_page_files
 
     def _record_from_manifest(
         self,
         manifest_path: Path,
         manifest: dict[str, Any],
     ) -> ConfigSourceRecord:
+        return self._record_from_metadata(
+            self._metadata_from_manifest(manifest_path, manifest)
+        )
+
+    def _metadata_from_manifest(
+        self,
+        manifest_path: Path,
+        manifest: dict[str, Any],
+    ) -> _ConfigSourceMetadata:
+        self._assert_controlled_path(manifest_path)
         session_id = int(manifest.get("session_id"))
         source_id = str(manifest.get("source_id") or "")
         source_revision = str(manifest.get("source_revision") or "")
@@ -592,18 +674,24 @@ class ConfigSourceService:
         ):
             raise ConfigSourceInvalidError()
         owned_names = manifest.get("owned_files")
-        if not isinstance(owned_names, list) or "manifest.json" not in owned_names:
+        if (
+            not isinstance(owned_names, list)
+            or "manifest.json" not in owned_names
+            or len(owned_names) != len(set(owned_names))
+        ):
             raise ConfigSourceInvalidError()
-        owned = {_owned_path(manifest_path.parent, name).name for name in owned_names}
+        owned = frozenset(
+            self._owned_path(manifest_path.parent, name).name for name in owned_names
+        )
         source_file = str(manifest.get("source_file") or "")
         if source_file not in owned:
             raise ConfigSourceInvalidError()
-        source_path = _owned_path(manifest_path.parent, source_file)
+        source_path = self._owned_path(manifest_path.parent, source_file)
         if not source_path.is_file():
             raise ConfigSourceInvalidError()
 
         raw_questions = manifest.get("questions")
-        if not isinstance(raw_questions, list):
+        if not isinstance(raw_questions, list) or len(raw_questions) > MAX_PDF_PAGES:
             raise ConfigSourceInvalidError()
         questions = tuple(_question_from_dict(item) for item in raw_questions)
         private_blocks = manifest.get("private_blocks")
@@ -618,34 +706,39 @@ class ConfigSourceService:
         asset_files = manifest.get("asset_files")
         if not isinstance(asset_files, dict):
             raise ConfigSourceInvalidError()
-        private_images: dict[str, dict[str, str | None]] = {}
+        normalized_assets: dict[str, dict[str, str | None]] = {}
         for question_id, raw_entry in asset_files.items():
             if not _QUESTION_ID.fullmatch(str(question_id)) or not isinstance(raw_entry, dict):
                 raise ConfigSourceInvalidError()
-            encoded: dict[str, str | None] = {"question": None, "answer": None}
+            normalized: dict[str, str | None] = {"question": None, "answer": None}
             for kind in ("question", "answer"):
                 filename = raw_entry.get(kind)
                 if filename is None:
                     continue
                 if not isinstance(filename, str) or filename not in owned:
                     raise ConfigSourceInvalidError()
-                content = _owned_path(manifest_path.parent, filename).read_bytes()
-                _image_type(content)
-                encoded[kind] = base64.b64encode(content).decode("ascii")
-            if encoded["question"] or encoded["answer"]:
-                private_images[str(question_id)] = encoded
+                asset_path = self._owned_path(manifest_path.parent, filename)
+                if not asset_path.is_file():
+                    raise ConfigSourceInvalidError()
+                normalized[kind] = filename
+            if normalized["question"] or normalized["answer"]:
+                normalized_assets[str(question_id)] = normalized
 
         whole_page_files = manifest.get("whole_page_files")
-        if not isinstance(whole_page_files, list):
+        if (
+            not isinstance(whole_page_files, list)
+            or len(whole_page_files) > self.max_pdf_pages
+        ):
             raise ConfigSourceInvalidError()
-        whole_pages: list[bytes] = []
+        normalized_whole_pages: list[str] = []
         for filename in whole_page_files:
             if not isinstance(filename, str) or filename not in owned:
                 raise ConfigSourceInvalidError()
-            content = _owned_path(manifest_path.parent, filename).read_bytes()
-            _image_type(content)
-            whole_pages.append(content)
-        return ConfigSourceRecord(
+            page_path = self._owned_path(manifest_path.parent, filename)
+            if not page_path.is_file():
+                raise ConfigSourceInvalidError()
+            normalized_whole_pages.append(filename)
+        return _ConfigSourceMetadata(
             session_id=session_id,
             source_id=source_id,
             source_revision=source_revision,
@@ -655,25 +748,124 @@ class ConfigSourceService:
             sha256=sha256,
             questions=questions,
             manifest_path=manifest_path,
-            private_source_path=source_path,
+            source_path=source_path,
+            owned_names=owned,
             private_blocks=tuple(copy.deepcopy(private_blocks)),
             private_document_text=document_text,
+            asset_files=normalized_assets,
+            whole_page_files=tuple(normalized_whole_pages),
+        )
+
+    def _record_from_metadata(
+        self,
+        metadata: _ConfigSourceMetadata,
+    ) -> ConfigSourceRecord:
+        private_images: dict[str, dict[str, str | None]] = {}
+        for question_id, entry in metadata.asset_files.items():
+            encoded: dict[str, str | None] = {"question": None, "answer": None}
+            for kind in ("question", "answer"):
+                filename = entry.get(kind)
+                if filename is None:
+                    continue
+                content = self._owned_path(
+                    metadata.manifest_path.parent,
+                    filename,
+                ).read_bytes()
+                _image_type(content)
+                encoded[kind] = base64.b64encode(content).decode("ascii")
+            private_images[question_id] = encoded
+        whole_pages: list[bytes] = []
+        for filename in metadata.whole_page_files:
+            content = self._owned_path(
+                metadata.manifest_path.parent,
+                filename,
+            ).read_bytes()
+            _image_type(content)
+            whole_pages.append(content)
+        return ConfigSourceRecord(
+            session_id=metadata.session_id,
+            source_id=metadata.source_id,
+            source_revision=metadata.source_revision,
+            safe_filename=metadata.safe_filename,
+            suffix=metadata.suffix,
+            size_bytes=metadata.size_bytes,
+            sha256=metadata.sha256,
+            questions=metadata.questions,
+            manifest_path=metadata.manifest_path,
+            private_source_path=metadata.source_path,
+            private_blocks=tuple(copy.deepcopy(metadata.private_blocks)),
+            private_document_text=metadata.private_document_text,
             private_question_images=private_images,
             private_whole_page_images=tuple(whole_pages),
         )
 
     def _prepare_source_dir(self, source_dir: Path) -> None:
+        self.upload_config_dir.mkdir(parents=True, exist_ok=True)
         config_sources = source_dir.parent.parent
         session_dir = source_dir.parent
         for directory in (config_sources, session_dir, source_dir):
-            if directory.exists() and (_is_reparse(directory) or not directory.is_dir()):
-                raise ConfigSourceInvalidError()
-            directory.mkdir(parents=True, exist_ok=True)
+            self._assert_controlled_path(directory)
+            directory.mkdir(exist_ok=True)
             self._assert_controlled_directory(directory)
 
     def _assert_controlled_directory(self, directory: Path) -> None:
-        if _is_reparse(directory) or not directory.is_dir():
+        self._assert_controlled_path(directory)
+        if not directory.is_dir():
             raise ConfigSourceInvalidError()
+
+    def _assert_controlled_path(self, path: Path) -> None:
+        candidate = Path(path)
+        try:
+            relative = candidate.relative_to(self.upload_config_dir)
+        except ValueError:
+            raise ConfigSourceInvalidError() from None
+        trusted_root = self.upload_config_dir.resolve(strict=False)
+        current = self.upload_config_dir
+        for part in relative.parts:
+            current = current / part
+            if _is_reparse(current):
+                raise ConfigSourceInvalidError()
+            try:
+                resolved = current.resolve(strict=False)
+            except OSError:
+                raise ConfigSourceInvalidError() from None
+            if not resolved.is_relative_to(trusted_root):
+                raise ConfigSourceInvalidError()
+
+    def _owned_path(self, source_dir: Path, name: Any) -> Path:
+        if (
+            not isinstance(name, str)
+            or not name
+            or Path(name).name != name
+            or name in {".", ".."}
+        ):
+            raise ConfigSourceInvalidError()
+        self._assert_controlled_directory(source_dir)
+        path = source_dir / name
+        self._assert_controlled_path(path)
+        if path.resolve(strict=False).parent != source_dir.resolve(strict=False):
+            raise ConfigSourceInvalidError()
+        return path
+
+    def _read_active(self, session_id: int) -> tuple[str, str]:
+        active_path = self._active_path(session_id)
+        self._assert_controlled_path(active_path)
+        if not active_path.is_file():
+            raise ConfigSourceChangedError()
+        try:
+            active = _read_json_object(active_path)
+        except ConfigSourceError:
+            raise
+        except Exception:
+            raise ConfigSourceChangedError() from None
+        source_id = str(active.get("source_id") or "")
+        source_revision = str(active.get("source_revision") or "")
+        if (
+            not _SOURCE_ID.fullmatch(source_id)
+            or not _SOURCE_REVISION.fullmatch(source_revision)
+        ):
+            raise ConfigSourceChangedError()
+        return source_id, source_revision
 
     def _session_dir(self, session_id: int) -> Path:
         return self.upload_config_dir / "config_sources" / f"session-{int(session_id)}"
@@ -748,14 +940,13 @@ def _copy_docx_assets(
     *,
     source_dir: Path,
     parser_root: Path,
+    registry: _OwnedFileRegistry,
 ) -> tuple[
     list[dict[str, Any]],
     dict[str, dict[str, str | None]],
-    list[Path],
 ]:
     private_blocks = copy.deepcopy(list(blocks))
     asset_files: dict[str, dict[str, str | None]] = {}
-    created_files: list[Path] = []
     parser_resolved = parser_root.resolve(strict=False)
     for block_index, block in enumerate(private_blocks, start=1):
         question_id = str(block.get("question_id") or "").strip()
@@ -782,8 +973,7 @@ def _copy_docx_assets(
                 output = source_dir / (
                     f"asset-{question_id}-{kind}-{copied_index + 1}{suffix}"
                 )
-                _write_bytes_atomic(output, content)
-                created_files.append(output)
+                _write_bytes_atomic(output, content, registry=registry)
                 replacements[raw_path] = str(output)
                 copied_index += 1
                 if entry[kind] is None:
@@ -793,7 +983,7 @@ def _copy_docx_assets(
         if entry["question"] or entry["answer"]:
             asset_files[question_id] = entry
         _replace_block_paths(block, replacements)
-    return private_blocks, asset_files, created_files
+    return private_blocks, asset_files
 
 
 def _block_image_paths(block: dict[str, Any], kind: str) -> list[str]:
@@ -910,13 +1100,22 @@ def _question_from_dict(value: Any) -> ConfigQuestionPreview:
     return question
 
 
-def _write_bytes_atomic(path: Path, content: bytes) -> None:
+def _write_bytes_atomic(
+    path: Path,
+    content: bytes,
+    *,
+    registry: _OwnedFileRegistry | None = None,
+) -> None:
     temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
     try:
+        if registry is not None:
+            registry.register(temporary)
         with temporary.open("xb") as stream:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
+        if registry is not None:
+            registry.register(path, manifest_owned=True)
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -940,17 +1139,6 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ConfigSourceInvalidError()
     return payload
-
-
-def _owned_path(source_dir: Path, name: Any) -> Path:
-    if not isinstance(name, str) or not name or Path(name).name != name or name in {".", ".."}:
-        raise ConfigSourceInvalidError()
-    path = source_dir / name
-    if _is_reparse(path):
-        raise ConfigSourceInvalidError()
-    if path.resolve(strict=False).parent != source_dir.resolve(strict=False):
-        raise ConfigSourceInvalidError()
-    return path
 
 
 def _is_reparse(path: Path) -> bool:
