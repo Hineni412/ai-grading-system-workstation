@@ -6,6 +6,7 @@ import json
 import os
 import re
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Callable
 
@@ -20,6 +21,7 @@ from backend.config_workspace.sources import ConfigSourceRecord, ConfigSourceSer
 from question_bank.services.source_paper_archive_service import (
     ArchivedSourcePaper,
     archive_source_bytes,
+    source_archive_sha_lock,
 )
 from session_manager import (
     failed_grading_config_question_ids,
@@ -290,73 +292,88 @@ def run_config_generation_job(
         if data_root is not None
         else _infer_data_root(Path(db.db_path))
     )
-    try:
-        with session_config_lock(Path(upload_config_dir), session_id):
-            current_session = db.get_grading_session(session_id)
-            if (
-                current_session is None
-                or bool(int(current_session.get("is_deleted") or 0))
-                or str(current_session.get("rubric_path") or "")
-                != expected_rubric_path
-                or str(current_session.get("answer_key_path") or "")
-                != expected_answer_key_path
-            ):
-                raise ValueError("session config changed while generation was running")
-            final_source: ConfigSourceRecord | None = None
-            if source_service is not None:
-                final_source = source_service.load_for_generation(
-                    session_id=session_id,
-                    source_id=source_id,
-                    source_revision=source_revision,
-                )
-            context.raise_if_cancelled()
-            if final_source is not None:
-                archived = archive_source_bytes(
-                    filename=final_source.safe_filename,
-                    content=final_source.private_source_bytes,
-                    data_root=resolved_data_root,
-                )
-            context.raise_if_cancelled()
-            publication = publish_generated_config(
-                Path(upload_config_dir),
-                payload,
-                job_id=context.job_id,
-            )
-            context.raise_if_cancelled()
-            context.report(0.98, "config_generation", "binding")
-            context.raise_if_cancelled()
-            bound = context.store.finish_config_generation_and_bind(
-                context.job_id,
-                session_id=session_id,
-                expected_rubric_path=expected_rubric_path,
-                expected_answer_key_path=expected_answer_key_path,
-                rubric_path=str(publication.rubric_path),
-                answer_key_path=str(publication.answer_key_path),
-                source_paper_path=(archived.stored_path if archived else None),
-                source_paper_sha256=(archived.sha256 if archived else None),
-                result=summary,
-            )
-        if not bound:
-            context.raise_if_cancelled()
+    with session_config_lock(Path(upload_config_dir), session_id):
+        current_session = db.get_grading_session(session_id)
+        if (
+            current_session is None
+            or bool(int(current_session.get("is_deleted") or 0))
+            or str(current_session.get("rubric_path") or "")
+            != expected_rubric_path
+            or str(current_session.get("answer_key_path") or "")
+            != expected_answer_key_path
+        ):
             raise ValueError("session config changed while generation was running")
-    except BaseException:
-        if publication is not None:
-            created = {str(path): path for path in publication.created_paths}
-            referenced = context.store.referenced_config_paths(set(created))
-            remove_published_config(
-                Path(upload_config_dir),
-                tuple(path for value, path in created.items() if value not in referenced),
+        final_source: ConfigSourceRecord | None = None
+        if source_service is not None:
+            final_source = source_service.load_for_generation(
+                session_id=session_id,
+                source_id=source_id,
+                source_revision=source_revision,
             )
-        if archived is not None and not archived.reused:
-            referenced_archives = context.store.referenced_source_paper_paths(
-                {archived.stored_path}
+        context.raise_if_cancelled()
+        archive_guard = (
+            source_archive_sha_lock(
+                content=final_source.private_source_bytes,
+                data_root=resolved_data_root,
             )
-            if archived.stored_path not in referenced_archives:
-                try:
-                    archived.physical_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-        raise
+            if final_source is not None
+            else nullcontext()
+        )
+        with archive_guard:
+            try:
+                if final_source is not None:
+                    archived = archive_source_bytes(
+                        filename=final_source.safe_filename,
+                        content=final_source.private_source_bytes,
+                        data_root=resolved_data_root,
+                    )
+                context.raise_if_cancelled()
+                publication = publish_generated_config(
+                    Path(upload_config_dir),
+                    payload,
+                    job_id=context.job_id,
+                )
+                context.raise_if_cancelled()
+                context.report(0.98, "config_generation", "binding")
+                context.raise_if_cancelled()
+                bound = context.store.finish_config_generation_and_bind(
+                    context.job_id,
+                    session_id=session_id,
+                    expected_rubric_path=expected_rubric_path,
+                    expected_answer_key_path=expected_answer_key_path,
+                    rubric_path=str(publication.rubric_path),
+                    answer_key_path=str(publication.answer_key_path),
+                    source_paper_path=(archived.stored_path if archived else None),
+                    source_paper_sha256=(archived.sha256 if archived else None),
+                    result=summary,
+                )
+                if not bound:
+                    context.raise_if_cancelled()
+                    raise ValueError(
+                        "session config changed while generation was running"
+                    )
+            except BaseException:
+                if publication is not None:
+                    created = {str(path): path for path in publication.created_paths}
+                    referenced = context.store.referenced_config_paths(set(created))
+                    remove_published_config(
+                        Path(upload_config_dir),
+                        tuple(
+                            path
+                            for value, path in created.items()
+                            if value not in referenced
+                        ),
+                    )
+                if archived is not None and not archived.reused:
+                    referenced_archives = context.store.referenced_source_paper_paths(
+                        {archived.stored_path}
+                    )
+                    if archived.stored_path not in referenced_archives:
+                        try:
+                            archived.physical_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                raise
     return summary
 
 

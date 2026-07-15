@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -181,6 +182,77 @@ def _stage_controlled_input(
         question_images=prepared.question_images,
         whole_page_images=list(prepared.whole_page_images),
     )
+
+
+def _two_same_sha_source_jobs(
+    tmp_path: Path,
+) -> tuple[
+    DBManager,
+    list[tuple[int, tuple[str, str], ConfigSourceRecord, JobContext]],
+]:
+    db = DBManager(tmp_path / "grading.db")
+    db.initialize()
+    source_bytes = _docx_bytes("1. Prove shared equals shared.\nAnswer: proven")
+    jobs: list[tuple[int, tuple[str, str], ConfigSourceRecord, JobContext]] = []
+    source_service = ConfigSourceService(tmp_path / "uploaded")
+    for index in range(2):
+        rubric_path, answer_path = save_generated_config(
+            tmp_path / f"initial-{index}",
+            _valid_config_payload(),
+            f"initial-{index}",
+        )
+        old_paths = (str(rubric_path), str(answer_path))
+        session_id = db.create_grading_session(
+            f"Concurrent Config Job {index}",
+            old_paths[0],
+            old_paths[1],
+        )
+        source = asyncio.run(
+            source_service.stage_and_parse(
+                session_id=session_id,
+                filename="shared.docx",
+                chunks=_chunks(source_bytes),
+            )
+        )
+        input_id = _stage_controlled_input(
+            tmp_path,
+            source_service,
+            source,
+            old_paths,
+            generation_mode="per_question",
+        )
+        context, _store = _job_context(
+            db.db_path,
+            {
+                "session_id": session_id,
+                "mode": "generate",
+                "generation_mode": "per_question",
+                "input_id": input_id,
+                "source_id": source.source_id,
+                "source_revision": source.source_revision,
+            },
+        )
+        jobs.append((session_id, old_paths, source, context))
+    assert jobs[0][2].sha256 == jobs[1][2].sha256
+    return db, jobs
+
+
+def _force_concurrent_archive_reuse_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from question_bank.services import source_paper_archive_service as archive_module
+
+    real_reuse = archive_module._reuse_matching
+    barrier = threading.Barrier(2)
+
+    def synchronized_reuse(*args: object, **kwargs: object):
+        try:
+            barrier.wait(timeout=0.5)
+        except threading.BrokenBarrierError:
+            return real_reuse(*args, **kwargs)
+        return None
+
+    monkeypatch.setattr(archive_module, "_reuse_matching", synchronized_reuse)
 
 
 def test_stage_config_generation_input_round_trips_without_client_path(
@@ -639,6 +711,145 @@ def test_source_generation_reuses_existing_archive_without_deleting_it(
     assert session["source_paper_path"] == archived.stored_path
     assert archived.physical_path.is_file()
     assert len(list(archived.physical_path.parent.glob("*"))) == 1
+
+
+def test_concurrent_same_sha_source_jobs_share_one_linearized_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, jobs = _two_same_sha_source_jobs(tmp_path)
+    _force_concurrent_archive_reuse_checks(monkeypatch)
+    real_archive = archive_source_bytes
+    archive_results: list[tuple[str, bool]] = []
+    results_guard = threading.Lock()
+
+    def record_archive(**kwargs: object):
+        result = real_archive(**kwargs)
+        with results_guard:
+            archive_results.append((result.stored_path, result.reused))
+        return result
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.archive_source_bytes",
+        record_archive,
+    )
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        lambda *_args, **_kwargs: _valid_config_payload(),
+    )
+
+    def run(entry: tuple[int, tuple[str, str], ConfigSourceRecord, JobContext]):
+        return run_config_generation_job(
+            context=entry[3],
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            data_root=tmp_path,
+            llm_client_factory=lambda: object(),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(run, jobs))
+
+    assert [result["outcome"] for result in results] == ["complete", "complete"]
+    assert sorted(reused for _path, reused in archive_results) == [False, True]
+    assert len({path for path, _reused in archive_results}) == 1
+    sessions = [db.get_grading_session(entry[0]) for entry in jobs]
+    assert all(session is not None for session in sessions)
+    stored_paths = {str(session["source_paper_path"]) for session in sessions if session}
+    assert stored_paths == {archive_results[0][0]}
+    assert (tmp_path / archive_results[0][0]).is_file()
+
+
+def test_concurrent_same_sha_failed_job_cannot_delete_successful_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, jobs = _two_same_sha_source_jobs(tmp_path)
+    success_entry, failure_entry = jobs
+    _force_concurrent_archive_reuse_checks(monkeypatch)
+    real_archive = archive_source_bytes
+    real_finish = JobStore.finish_config_generation_and_bind
+    archive_results: list[tuple[int, str, bool]] = []
+    results_guard = threading.Lock()
+    both_archived = threading.Event()
+    failure_finished = threading.Event()
+
+    def record_archive(**kwargs: object):
+        result = real_archive(**kwargs)
+        with results_guard:
+            archive_results.append(
+                (threading.get_ident(), result.stored_path, result.reused)
+            )
+            if len(archive_results) == 2:
+                both_archived.set()
+        return result
+
+    def controlled_finish(store: JobStore, job_id: int, **kwargs: object) -> bool:
+        if int(job_id) == failure_entry[3].job_id:
+            both_archived.wait(timeout=0.5)
+            raise sqlite3.IntegrityError("injected concurrent bind failure")
+        if both_archived.wait(timeout=0.1):
+            assert failure_finished.wait(timeout=3)
+        return real_finish(store, job_id, **kwargs)
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.archive_source_bytes",
+        record_archive,
+    )
+    monkeypatch.setattr(
+        JobStore,
+        "finish_config_generation_and_bind",
+        controlled_finish,
+    )
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        lambda *_args, **_kwargs: _valid_config_payload(),
+    )
+
+    def run_success() -> dict[str, object]:
+        return run_config_generation_job(
+            context=success_entry[3],
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            data_root=tmp_path,
+            llm_client_factory=lambda: object(),
+        )
+
+    def run_failure() -> None:
+        try:
+            with pytest.raises(
+                sqlite3.IntegrityError,
+                match="injected concurrent bind failure",
+            ):
+                run_config_generation_job(
+                    context=failure_entry[3],
+                    db=db,
+                    upload_config_dir=tmp_path / "uploaded",
+                    data_root=tmp_path,
+                    llm_client_factory=lambda: object(),
+                )
+        finally:
+            failure_finished.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        success_future = executor.submit(run_success)
+        failure_future = executor.submit(run_failure)
+        success_result = success_future.result(timeout=10)
+        failure_future.result(timeout=10)
+
+    assert success_result["outcome"] == "complete"
+    success_session = db.get_grading_session(success_entry[0])
+    failed_session = db.get_grading_session(failure_entry[0])
+    assert success_session is not None
+    assert failed_session is not None
+    assert success_session["source_paper_path"]
+    assert (tmp_path / str(success_session["source_paper_path"])).is_file()
+    assert (
+        failed_session["rubric_path"],
+        failed_session["answer_key_path"],
+    ) == failure_entry[1]
+    assert not failed_session["source_paper_path"]
+    assert len({path for _thread_id, path, _reused in archive_results}) == 1
 
 
 def test_source_generation_bind_failure_rolls_back_and_removes_only_new_outputs(
