@@ -59,7 +59,7 @@ function scoreRateLabel(value: number | null): string {
       <section class="knowledge-graph-inspector__facts" aria-labelledby="knowledge-node-facts-title">
         <h3 id="knowledge-node-facts-title">{{ node.knowledge_label }}</h3>
         <dl>
-          <div><dt>得分率</dt><dd>{{ masteryLabel }}</dd></div>
+          <div><dt>得分率</dt><dd>{{ masteryLabel }}（按当前标签证据加权）</dd></div>
           <div><dt>文字等级</dt><dd>{{ bandLabel }}</dd></div>
           <div><dt>证据数量</dt><dd>{{ node.item_count }} 条证据</dd></div>
           <div><dt>涉及学生</dt><dd>{{ node.student_count }} 名</dd></div>

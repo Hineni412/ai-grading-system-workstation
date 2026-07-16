@@ -21,6 +21,14 @@ const viewports = [
 
 interface RequestLog { method: string; pathname: string }
 
+const PERFORMANCE_LIMITS_MS = {
+  firstRender: 15_000,
+  modeSwitch: 5_000,
+  zoom: 5_000,
+  drag: 5_000,
+  selection: 5_000,
+} as const
+
 function trackBrowserErrors(page: Page) {
   const pageErrors: Error[] = []
   const consoleErrors: string[] = []
@@ -70,10 +78,13 @@ function graphRows(request: Request, nodeCount: number) {
       error_counts: { primary: index === 0 ? { 步骤不完整: 2 } : {}, secondary: {} },
     }
   })
-  const rows = nodes.slice(0, 30).flatMap((node, index) => [12, 15].map((studentId) => ({
+  const rows = nodes.slice(0, 30).flatMap((node, index) => context.scope.student_ids.map((rawStudentId) => {
+    const studentId = Number(rawStudentId)
+    const student = students.find((candidate) => candidate.id === studentId)
+    return {
     student_id: studentId,
-    student_code: `S0${studentId}`,
-    student_name: studentId === 12 ? '匿名学生甲' : '匿名学生乙',
+    student_code: student?.student_code ?? `S0${studentId}`,
+    student_name: student?.name ?? `匿名学生 ${studentId}`,
     knowledge_key: node.knowledge_key,
     knowledge_label: node.knowledge_label,
     weighted_score_rate: Math.round(node.average_mastery * 1000) / 10,
@@ -83,7 +94,8 @@ function graphRows(request: Request, nodeCount: number) {
     source_question_refs: [],
     tag_context: {},
     error_counts: node.error_counts,
-  })))
+    }
+  }))
   return {
     ...context,
     rows,
@@ -109,23 +121,26 @@ function graphEvidence(request: Request) {
     knowledge_key: body.knowledge_key,
     knowledge_label: label,
     items: Array.from({ length: count }, (_, index) => {
-      const id = start + index
+      const itemOrdinal = start + index
+      const rawStudentId = context.scope.student_ids[index % context.scope.student_ids.length]!
+      const studentId = Number(rawStudentId)
+      const student = students.find((candidate) => candidate.id === studentId)
       return {
-        student_id: id,
-        student_code: `S${String(id).padStart(3, '0')}`,
-        student_name: id === 21 ? '后续页匿名学生' : `证据学生 ${id}`,
+        student_id: studentId,
+        student_code: student?.student_code ?? `S${String(studentId).padStart(3, '0')}`,
+        student_name: itemOrdinal === 21 ? '后续页匿名学生' : student?.name ?? `证据学生 ${studentId}`,
         class_id: context.scope.class_id ?? '七年级一班',
         knowledge_key: body.knowledge_key,
         knowledge_label: label,
         session_id: context.exam_scope.session_ids[0]!,
         session_name: context.exam_scope.sessions[0]!.session_name,
-        question_id: `Q${id}`,
-        bank_question_id: 1000 + id,
+        question_id: `Q${itemOrdinal}`,
+        bank_question_id: 1000 + itemOrdinal,
         score_awarded: 3,
         full_score: 5,
         score_rate: 0.6,
         tag_context: {},
-        actionable_reasons: id === 1 ? ['步骤不完整'] : [],
+        actionable_reasons: itemOrdinal === 1 ? ['步骤不完整'] : [],
         error_counts: { primary: {}, secondary: {} },
       }
     }),
@@ -185,6 +200,33 @@ async function nonBackgroundPixelCount(page: Page): Promise<number> {
   })
 }
 
+async function dragCanvas(page: Page): Promise<void> {
+  const canvas = page.locator('.knowledge-graph-canvas canvas').first()
+  const box = await canvas.boundingBox()
+  if (!box) throw new Error('Knowledge graph canvas is not visible')
+  const startX = box.x + box.width * 0.55
+  const startY = box.y + box.height * 0.55
+  await page.mouse.move(startX, startY)
+  await page.mouse.down()
+  await page.mouse.move(startX + Math.min(120, box.width * 0.18), startY + 40, { steps: 6 })
+  await page.mouse.up()
+}
+
+async function clickCanvasNode(page: Page, requests: RequestLog[]): Promise<void> {
+  const canvas = page.locator('.knowledge-graph-canvas canvas').first()
+  const box = await canvas.boundingBox()
+  if (!box) throw new Error('Knowledge graph canvas is not visible')
+  const before = requests.filter((request) => request.pathname === '/api/graph/evidence').length
+  for (let y = 24; y < box.height - 12; y += 32) {
+    for (let x = 24; x < box.width - 12; x += 32) {
+      await page.mouse.click(box.x + x, box.y + y)
+      const after = requests.filter((request) => request.pathname === '/api/graph/evidence').length
+      if (after > before) return
+    }
+  }
+  throw new Error('No selectable knowledge node was found on the canvas')
+}
+
 async function expectNoHorizontalOverflow(page: Page): Promise<void> {
   expect(await page.evaluate(() => ({
     document: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
@@ -237,6 +279,13 @@ test('supports zoom, grouping explanation, keyboard selection and paged evidence
   await page.mouse.wheel(0, -500)
   await expect.poll(async () => (await canvas.screenshot()).equals(beforeZoom)).toBe(false)
   await page.getByRole('button', { name: '恢复视图' }).click()
+  const beforeDrag = await canvas.screenshot()
+  await dragCanvas(page)
+  await expect.poll(async () => (await canvas.screenshot()).equals(beforeDrag)).toBe(false)
+  await page.getByRole('button', { name: '恢复视图' }).click()
+
+  await clickCanvasNode(page, requests)
+  await expect(page.locator('.knowledge-graph-inspector__facts')).toBeVisible()
 
   await page.getByRole('button', { name: '学生分组树' }).click()
   await expect(page.getByText(/虚线仅表示筛选范围、学生与知识标签的分组归属/)).toBeVisible()
@@ -244,15 +293,16 @@ test('supports zoom, grouping explanation, keyboard selection and paged evidence
   await page.getByRole('button', { name: '掌握度分区' }).click()
 
   const search = page.getByRole('searchbox', { name: '搜索知识标签' })
-  await search.fill('匿名知识点 0')
-  const directoryItem = page.getByTestId('graph-directory-item').first()
-  await directoryItem.focus()
+  await search.fill('匿名知识点')
+  const directoryItems = page.getByTestId('graph-directory-item')
+  await directoryItems.first().focus()
+  await page.keyboard.press('ArrowDown')
   await page.keyboard.press('Enter')
-  await expect(page.getByRole('heading', { name: /匿名知识点 0/ })).toBeVisible()
-  await expect(page.getByText('步骤不完整', { exact: true }).first()).toBeVisible()
+  await expect(directoryItems.nth(1)).toHaveAttribute('aria-current', 'true')
   await page.getByRole('button', { name: '加载更多证据' }).click()
   await expect(page.getByText('后续页匿名学生')).toBeVisible()
-  expect(requests.filter((request) => request.pathname === '/api/graph/evidence')).toHaveLength(2)
+  expect(requests.filter((request) => request.pathname === '/api/graph/evidence').length)
+    .toBeGreaterThanOrEqual(3)
   expectReadOnly(requests)
   expect(errors.pageErrors).toEqual([])
   expect(errors.consoleErrors).toEqual([])
@@ -260,28 +310,53 @@ test('supports zoom, grouping explanation, keyboard selection and paged evidence
 
 test('renders and operates on a reproducible 1000-node anonymous graph', async ({ page }, testInfo: TestInfo) => {
   const errors = trackBrowserErrors(page)
-  const startedAt = Date.now()
+  const startedAt = performance.now()
   const requests = await openGraph(page, 1000)
-  const firstRenderMs = Date.now() - startedAt
-  expect(Number.isFinite(firstRenderMs)).toBe(true)
+  const firstRenderMs = performance.now() - startedAt
+  expect(firstRenderMs).toBeLessThan(PERFORMANCE_LIMITS_MS.firstRender)
   expect(await nonBackgroundPixelCount(page)).toBeGreaterThan(100)
 
-  const modeStartedAt = Date.now()
+  const modeStartedAt = performance.now()
   await page.getByRole('button', { name: '学生分组树' }).click()
   await expect(page.getByText(/不是知识点父子、先修或相关关系/)).toBeVisible()
-  const modeSwitchMs = Date.now() - modeStartedAt
+  const modeSwitchMs = performance.now() - modeStartedAt
+  expect(modeSwitchMs).toBeLessThan(PERFORMANCE_LIMITS_MS.modeSwitch)
   await page.getByRole('button', { name: '掌握度分区' }).click()
 
+  const canvas = page.locator('.knowledge-graph-canvas canvas').first()
+  const beforeZoom = await canvas.screenshot()
+  const zoomStartedAt = performance.now()
+  await canvas.hover()
+  await page.mouse.wheel(0, -500)
+  await expect.poll(async () => (await canvas.screenshot()).equals(beforeZoom)).toBe(false)
+  const zoomMs = performance.now() - zoomStartedAt
+  expect(zoomMs).toBeLessThan(PERFORMANCE_LIMITS_MS.zoom)
+
+  const beforeDrag = await canvas.screenshot()
+  const dragStartedAt = performance.now()
+  await dragCanvas(page)
+  await expect.poll(async () => (await canvas.screenshot()).equals(beforeDrag)).toBe(false)
+  const dragMs = performance.now() - dragStartedAt
+  expect(dragMs).toBeLessThan(PERFORMANCE_LIMITS_MS.drag)
+  await page.getByRole('button', { name: '恢复视图' }).click()
+
+  const selectionStartedAt = performance.now()
   await page.getByRole('searchbox', { name: '搜索知识标签' }).fill('匿名知识点 999')
   await expect(page.getByTestId('graph-directory-item')).toHaveCount(1)
   await page.getByTestId('graph-directory-item').click()
   await expect(page.getByRole('heading', { name: /匿名知识点 999/ })).toBeVisible()
+  const selectionMs = performance.now() - selectionStartedAt
+  expect(selectionMs).toBeLessThan(PERFORMANCE_LIMITS_MS.selection)
 
   await testInfo.attach('knowledge-graph-1000-node-baseline.json', {
     body: Buffer.from(JSON.stringify({
       nodeCount: 1000,
       firstRenderMs,
       modeSwitchMs,
+      zoomMs,
+      dragMs,
+      selectionMs,
+      thresholdsMs: PERFORMANCE_LIMITS_MS,
       browser: testInfo.project.name,
       viewport: page.viewportSize(),
     }, null, 2)),

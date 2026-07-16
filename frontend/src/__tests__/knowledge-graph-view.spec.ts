@@ -153,7 +153,7 @@ describe('knowledge graph view', () => {
   it('rejects an invalid routed class instead of silently choosing the first class', async () => {
     const { host, router } = await mountView('/knowledge-graph?session=7&class=不存在的班级')
     expect(fetchScopedGraphRows).not.toHaveBeenCalled()
-    expect(host.textContent).toContain('工作台传入的考试或班级已不可用')
+    expect(host.textContent).toContain('地址中的考试、班级或学生范围已不可用')
     await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({}))
   })
 
@@ -167,7 +167,7 @@ describe('knowledge graph view', () => {
   })
 
   it('applies an exact manual-exam selected-student scope and switches modes locally', async () => {
-    const { host } = await mountView('/knowledge-graph')
+    const { host, router } = await mountView('/knowledge-graph')
     selectValue(host.querySelector<HTMLSelectElement>('#graph-exam-mode')!, 'manual')
     await nextTick()
     const examIds = host.querySelector<HTMLSelectElement>('#graph-manual-sessions')!
@@ -185,6 +185,9 @@ describe('knowledge graph view', () => {
       scope: { mode: 'selected', student_ids: ['12', '15'] },
       exam_scope: { mode: 'manual', session_ids: [7, 8] },
     }, expect.any(AbortSignal)))
+    expect(router.currentRoute.value.query).toEqual({
+      exam: 'manual', sessions: '7,8', scope: 'selected', students: '12,15',
+    })
     const calls = vi.mocked(fetchScopedGraphRows).mock.calls.length
     const treeButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent?.trim() === '学生分组树')!
@@ -192,5 +195,18 @@ describe('knowledge graph view', () => {
     await nextTick()
     expect(fetchScopedGraphRows).toHaveBeenCalledTimes(calls)
     expect(host.textContent).toContain('不是知识点父子、先修或相关关系')
+  })
+
+  it('restores a controlled manual and selected-student scope after refresh', async () => {
+    const { router } = await mountView(
+      '/knowledge-graph?exam=manual&sessions=7,8&scope=selected&students=12,15',
+    )
+    await vi.waitFor(() => expect(fetchScopedGraphRows).toHaveBeenCalledWith({
+      scope: { mode: 'selected', student_ids: ['12', '15'] },
+      exam_scope: { mode: 'manual', session_ids: [7, 8] },
+    }, expect.any(AbortSignal)))
+    expect(router.currentRoute.value.query).toEqual({
+      exam: 'manual', sessions: '7,8', scope: 'selected', students: '12,15',
+    })
   })
 })

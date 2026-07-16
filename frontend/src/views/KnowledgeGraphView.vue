@@ -11,6 +11,10 @@ import KnowledgeGraphCanvas, {
   type GraphDisplayMode,
 } from '../components/knowledge-graph/KnowledgeGraphCanvas.vue'
 import { summarizeGraph } from '../features/knowledge-graph/model'
+import {
+  parseGraphRouteScope,
+  serializeGraphRouteScope,
+} from '../features/knowledge-graph/route'
 import { useKnowledgeGraphStore } from '../stores/knowledge-graph'
 import { useSessionStore } from '../stores/session'
 
@@ -39,35 +43,32 @@ const scopeLabel = computed(() => {
   return `${exams} · ${graph.scope.student_ids.length} 名学生`
 })
 
-function routeText(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() ? value.trim() : null
-}
-
 async function initializeFromRoute(): Promise<void> {
   if (routeInitialized || sessionStore.loadState !== 'ready' || studentsState.value === 'loading') return
   routeInitialized = true
-  const sessionText = routeText(route.query.session)
-  const className = routeText(route.query.class)
-  if (sessionText === null && className === null) {
-    routeNotice.value = '请选择班级并应用范围'
+  const parsed = parseGraphRouteScope(route.query, sessionStore.sessions, students.value)
+  if (parsed.query === null) {
+    routeNotice.value = parsed.notice || '请选择班级并应用范围'
+    if (Object.keys(route.query).length > 0) {
+      await router.replace({ name: 'knowledge-graph', query: parsed.canonical })
+    }
     return
   }
-  const sessionId = sessionText && /^\d+$/.test(sessionText) ? Number(sessionText) : null
-  const validSession = sessionId !== null && sessionStore.sessions.some((session) => session.id === sessionId)
-  const validClass = className !== null && students.value.some((student) => student.class_name === className)
-  if (!validSession || !validClass || studentsState.value === 'error') {
-    routeNotice.value = '工作台传入的考试或班级已不可用，请重新选择范围'
+  if (studentsState.value === 'error') {
+    routeNotice.value = '班级和学生列表暂时不可用，请重新加载后选择范围'
     await router.replace({ name: 'knowledge-graph', query: {} })
     return
   }
-  if (sessionStore.selectedSessionId !== sessionId) sessionStore.selectSession(sessionId)
-  const query: GraphQueryInput = {
-    scope: { mode: 'class', class_id: className },
-    exam_scope: { mode: 'current', session_ids: [sessionId] },
+  if (
+    parsed.query.exam_scope.mode === 'current' &&
+    sessionStore.selectedSessionId !== parsed.query.exam_scope.session_ids[0]
+  ) {
+    sessionStore.selectSession(parsed.query.exam_scope.session_ids[0])
   }
-  activeQuery.value = query
-  routeNotice.value = ''
-  await graphStore.loadGraph(query)
+  activeQuery.value = parsed.query
+  routeNotice.value = parsed.notice
+  await router.replace({ name: 'knowledge-graph', query: parsed.canonical })
+  await graphStore.loadGraph(parsed.query)
 }
 
 async function loadStudentOptions(): Promise<void> {
@@ -92,14 +93,7 @@ async function applyQuery(query: GraphQueryInput): Promise<void> {
   activeQuery.value = query
   routeNotice.value = ''
   mode.value = 'graph'
-  if (query.scope.mode === 'class' && query.exam_scope.mode === 'current') {
-    await router.replace({
-      name: 'knowledge-graph',
-      query: { session: query.exam_scope.session_ids[0], class: query.scope.class_id },
-    })
-  } else {
-    await router.replace({ name: 'knowledge-graph', query: {} })
-  }
+  await router.replace({ name: 'knowledge-graph', query: serializeGraphRouteScope(query) })
   await graphStore.loadGraph(query)
 }
 
@@ -174,7 +168,7 @@ onBeforeUnmount(() => {
       @apply="applyQuery"
     />
 
-    <p v-if="routeNotice && graphStore.graph === null" class="knowledge-graph-scope-notice" role="status">
+    <p v-if="routeNotice" class="knowledge-graph-scope-notice" role="status">
       {{ routeNotice }}
     </p>
     <p
@@ -212,6 +206,7 @@ onBeforeUnmount(() => {
             :mode="mode"
             :selected-key="graphStore.selectedNodeKey"
             :scope-label="scopeLabel"
+            :coverage="graphStore.graph.coverage"
             @change-mode="mode = $event"
             @select-node="selectNode"
           />

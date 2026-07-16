@@ -157,6 +157,7 @@ describe('knowledge graph canvas', () => {
       mode: 'graph' as const,
       selectedKey: null as string | null,
       scopeLabel: '匿名考试 · 七年级一班',
+      coverage: graph.coverage,
       chartFactory,
     })
     const Root = defineComponent({
@@ -168,6 +169,8 @@ describe('knowledge graph canvas', () => {
     const { app } = await mount(Root, {})
 
     expect(chartFactory).toHaveBeenCalledTimes(1)
+    expect(document.body.textContent).toContain('共 2 个知识标签')
+    expect(document.body.textContent).toContain('覆盖 4 / 5 份作答')
     expect(chart.setOption).toHaveBeenCalledWith(expect.objectContaining({
       series: [expect.objectContaining({ type: 'graph', links: [] })],
     }), true)
@@ -191,13 +194,15 @@ describe('knowledge graph canvas', () => {
     }
     const { host } = await mount(KnowledgeGraphCanvas, {
       nodes, rows, mode: 'tree', selectedKey: null,
-      scopeLabel: '匿名考试 · 七年级一班', chartFactory: () => chart,
+      scopeLabel: '匿名考试 · 七年级一班', coverage: graph.coverage,
+      chartFactory: () => chart,
     })
     expect(host.textContent).toContain('虚线仅表示筛选范围、学生与知识标签的分组归属')
     expect(host.textContent).toContain('不是知识点父子、先修或相关关系')
     expect(chart.setOption).toHaveBeenCalledWith(expect.objectContaining({
       series: [expect.objectContaining({
         type: 'tree',
+        expandAndCollapse: true,
         lineStyle: expect.objectContaining({ type: 'dotted' }),
       })],
     }), true)
@@ -232,6 +237,7 @@ describe('knowledge graph node inspector', () => {
       onLoadMoreEvidence: loadedMore,
     })
     expect(host.textContent).toContain('需要讲评')
+    expect(host.textContent).toContain('按当前标签证据加权')
     expect(host.textContent).toContain('4 条证据')
     expect(host.textContent).toContain('支持标签')
     expect(host.textContent).toContain('角的关系')

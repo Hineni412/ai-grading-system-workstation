@@ -345,7 +345,11 @@ export function decodeGraphRowsResponse(
     throw new Error('Invalid graph rows')
   }
   const response = value as unknown as GraphRowsResponse
-  if (!hasAlignedExamScope(response.exam_scope) || (expected && !matchesGraphQuery(response, expected))) {
+  if (
+    !hasAlignedExamScope(response.exam_scope) ||
+    response.rows.some((row) => !response.scope.student_ids.includes(String(row.student_id))) ||
+    (expected && !matchesGraphQuery(response, expected))
+  ) {
     throw new Error('Invalid graph rows')
   }
   return response
@@ -390,7 +394,7 @@ function matchesGraphQuery(response: GraphRowsResponse | GraphEvidenceResponse, 
   return true
 }
 
-function hasMatchingGraphEvidenceScope(
+export function hasMatchingGraphEvidenceScope(
   response: GraphEvidenceResponse,
   expected?: GraphEvidenceExpectation,
 ): boolean {
@@ -402,6 +406,7 @@ function hasMatchingGraphEvidenceScope(
   )) return false
   return response.items.every((item) => (
     item.knowledge_key === response.knowledge_key &&
+    response.scope.student_ids.includes(String(item.student_id)) &&
     response.exam_scope.session_ids.includes(item.session_id) &&
     (response.scope.mode !== 'class' || item.class_id === response.scope.class_id)
   ))

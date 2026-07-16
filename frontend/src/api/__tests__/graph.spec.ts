@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { decodeGraphRowsResponse } from '../graph'
+import {
+  decodeGraphEvidenceResponse,
+  decodeGraphRowsResponse,
+  normalizeGraphQuery,
+  type GraphQueryInput,
+} from '../graph'
 
 const query = {
   scope: { mode: 'selected' as const, student_ids: ['12', '15'] },
@@ -69,6 +74,25 @@ const evidence = {
 afterEach(() => vi.restoreAllMocks())
 
 describe('P2-15 graph API contract', () => {
+  const scopes: GraphQueryInput['scope'][] = [
+    { mode: 'class', class_id: '七年级一班' },
+    { mode: 'student', student_ids: ['12'] },
+    { mode: 'selected', student_ids: ['12', '15'] },
+  ]
+  const examScopes: GraphQueryInput['exam_scope'][] = [
+    { mode: 'current', session_ids: [7] },
+    { mode: 'manual', session_ids: [7, 8] },
+    { mode: 'cross_exam' },
+  ]
+
+  it.each(scopes.flatMap((scope) => examScopes.map((examScope) => ({ scope, examScope }))))(
+    'normalizes the $scope.mode and $examScope.mode request combination',
+    ({ scope, examScope }) => {
+      const input: GraphQueryInput = { scope, exam_scope: examScope }
+      expect(normalizeGraphQuery(input)).toEqual(input)
+    },
+  )
+
   it('rejects relationship edges even when their shape is valid', () => {
     expect(() => decodeGraphRowsResponse({
       ...rows,
@@ -121,5 +145,37 @@ describe('P2-15 graph API contract', () => {
       page: 1,
       page_size: 20,
     })
+  })
+
+  it('rejects evidence rows whose student is outside the returned scope', () => {
+    expect(() => decodeGraphEvidenceResponse({
+      ...evidence,
+      items: [{ ...evidence.items[0], student_id: 21 }],
+    }, {
+      query,
+      knowledgeKey: evidence.knowledge_key,
+      page: 1,
+    })).toThrow('Invalid graph evidence')
+  })
+
+  it('rejects graph rows whose student is outside the returned scope', () => {
+    expect(() => decodeGraphRowsResponse({
+      ...rows,
+      scope: { ...rows.scope, student_ids: ['12'] },
+      rows: [{
+        student_id: 99,
+        student_code: 'S099',
+        student_name: '范围外学生',
+        knowledge_key: 'knowledge_point:三角形全等',
+        knowledge_label: '三角形全等',
+        weighted_score_rate: 72,
+        deduction_count: 1,
+        item_count: 3,
+        sample_reasons: '条件遗漏',
+        source_question_refs: [],
+        tag_context: {},
+        error_counts: { primary: {}, secondary: {} },
+      }],
+    })).toThrow('Invalid graph rows')
   })
 })
