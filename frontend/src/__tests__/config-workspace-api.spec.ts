@@ -218,6 +218,30 @@ describe('configuration workspace API', () => {
     ])
   })
 
+  it('keeps an explicit answer-only policy clear in the JSON save request', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(response({
+      ...editor,
+      save_result: {
+        config_saved: true,
+        mapping_status: 'not_present',
+        mapping_message: '没有样卷映射。',
+      },
+    }))
+
+    await saveConfigEditor(7, {
+      revision: editor.revision,
+      edits: [{ row_id: 'row-1', answer_only_max_score: null }],
+      commands: [],
+    })
+
+    const request = fetchMock.mock.calls[0]?.[1]
+    expect(JSON.parse(String(request?.body))).toEqual({
+      revision: editor.revision,
+      edits: [{ row_id: 'row-1', answer_only_max_score: null }],
+      commands: [],
+    })
+  })
+
   it.each([
     ['path-like response keys', { ...source, source_path: 'D:/private/source.pdf' }],
     ['malformed nested rows', { ...editor, rows: [{ ...editor.rows[0], score: '5' }] }],

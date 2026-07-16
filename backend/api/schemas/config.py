@@ -4,7 +4,7 @@ import base64
 import binascii
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 
 class SessionConfigRequest(BaseModel):
@@ -166,6 +166,11 @@ class ConfigEditorEditRequest(BaseModel):
     required_elements: list[str] | None = Field(default=None, max_length=200)
     deduction_rules: list[str] | None = Field(default=None, max_length=200)
     final_answer_rule: str | None = Field(default=None, max_length=20_000)
+
+    @computed_field(return_type=bool)
+    @property
+    def answer_only_max_score_provided(self) -> bool:
+        return "answer_only_max_score" in self.model_fields_set
 
 
 class ManualPartRequest(BaseModel):
