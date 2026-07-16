@@ -11,11 +11,12 @@ COLOR_LITERAL = re.compile(r"#[0-9a-fA-F]{3,8}\b|\b(?:rgb|hsl)a?\(")
 
 def test_recalibrated_shell_keeps_one_truthful_navigation_source_and_general_client() -> None:
     navigation = (SRC / "navigation.ts").read_text(encoding="utf-8")
-    assert (
-        "export const navigationItems = [workbenchRouteDefinition, "
-        "reviewRouteDefinition] as const"
-    ) in navigation
+    assert "export const navigationItems = [" in navigation
+    assert "workbenchRouteDefinition," in navigation
+    assert "knowledgeGraphRouteDefinition," in navigation
+    assert "reviewRouteDefinition," in navigation
     assert "path: '/workbench'" in navigation
+    assert "path: '/knowledge-graph'" in navigation
     assert "path: '/grading'" in navigation
     assert "futureReason" not in navigation
     assert "智能体与自动化" not in navigation
@@ -55,6 +56,7 @@ def test_shell_uses_tokens_and_exposes_only_the_truthful_workspace() -> None:
     )
     router = (SRC / "router" / "index.ts").read_text(encoding="utf-8")
     assert "path: workbenchRouteDefinition.path" in router
+    assert "path: knowledgeGraphRouteDefinition.path" in router
     assert "path: reviewRouteDefinition.path" in router
     assert "'/design-system'" in router
     assert "ComponentShowcase" in router

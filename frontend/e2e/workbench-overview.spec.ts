@@ -557,6 +557,10 @@ test('isolates delayed session 7 responses after quickly switching to session 8'
   await page.goto('/workbench')
   const sessionSelector = page.getByRole('combobox', { name: '当前考试' })
   await expect(sessionSelector).toHaveValue('7')
+  await expect.poll(() => requests.filter((request) => (
+    request.pathname === '/api/workbench/overview' ||
+    request.pathname === '/api/sessions/7/analysis/questions'
+  )).length).toBe(2)
 
   await sessionSelector.selectOption('8')
   await expect(page.locator('.workbench-hero__session')).toHaveText('八年级物理单元检测（匿名合成数据）')
