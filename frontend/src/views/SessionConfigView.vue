@@ -348,6 +348,13 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
             </div>
             <a :href="`/sessions/${sessionStore.currentSession.id}/regions`">{{ templateAction }}</a>
           </div>
+          <div class="config-template-entry">
+            <div>
+              <strong>批改执行</strong>
+              <span>{{ templateReady ? '样卷题框已确认，可以上传整班答卷并开始扫描预检。' : '完成样卷题框确认后即可开始整班批改。' }}</span>
+            </div>
+            <a v-if="templateReady" :href="`/sessions/${sessionStore.currentSession.id}/grading-run`">进入批改执行</a>
+          </div>
         </section>
       </template>
     </template>

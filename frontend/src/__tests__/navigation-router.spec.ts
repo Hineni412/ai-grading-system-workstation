@@ -6,6 +6,7 @@ import {
   reviewRouteDefinition,
   sessionRouteDefinition,
   templateRegionRouteDefinition,
+  gradingRunRouteDefinition,
   knowledgeGraphRouteDefinition,
   workbenchRouteDefinition,
 } from '../navigation'
@@ -52,6 +53,7 @@ describe('source-recalibrated navigation', () => {
     ['/workbench', '/workbench'],
     ['/sessions', '/sessions'],
     ['/sessions/7/regions', '/sessions/7/regions'],
+    ['/sessions/7/grading-run', '/sessions/7/grading-run'],
     ['/knowledge-graph?session=7&class=七年级一班', '/knowledge-graph?session=7&class=七年级一班'],
     ['/grading', '/grading'],
     ['/design-system', '/design-system'],
@@ -117,6 +119,18 @@ describe('source-recalibrated navigation', () => {
     const matched = router.currentRoute.value.matched
     const component = matched[matched.length - 1]?.components?.default
     expect((component as { __name?: string } | undefined)?.__name).toBe('TemplateRegionView')
+  })
+
+  it('loads the dedicated grading run workspace without replacing scoring review', async () => {
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/sessions/7/grading-run')
+    await router.isReady()
+
+    expect(router.currentRoute.value.name).toBe(gradingRunRouteDefinition.id)
+    expect(navigationItems.map((item) => String(item.path))).not.toContain('/sessions/7/grading-run')
+    const matched = router.currentRoute.value.matched
+    const component = matched[matched.length - 1]?.components?.default
+    expect((component as { __name?: string } | undefined)?.__name).toBe('ScanGradingView')
   })
 
   it('loads the knowledge graph view for its route', async () => {
