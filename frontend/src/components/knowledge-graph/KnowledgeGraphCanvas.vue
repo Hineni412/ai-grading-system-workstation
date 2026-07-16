@@ -67,7 +67,6 @@ function graphOption(): Record<string, unknown> {
   return {
     animation: !prefersReducedMotion(),
     aria: { enabled: true, description: '按四档得分率排列的知识标签图，知识标签之间没有关系连线。' },
-    tooltip: { show: false },
     series: [{
       type: 'graph',
       layout: 'none',
@@ -123,7 +122,6 @@ function treeOption(): Record<string, unknown> {
       enabled: true,
       description: '筛选范围、学生与知识标签的临时分组树，不表示知识点父子、先修或相关关系。',
     },
-    tooltip: { show: false },
     series: [{
       type: 'tree',
       data: [treeData(buildGroupingTree(props.rows, props.scopeLabel))],
