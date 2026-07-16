@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import warnings
@@ -72,6 +73,28 @@ def _two_page_template_pdf() -> bytes:
         document.close()
 
 
+def _same_size_template_pdf(label: str) -> bytes:
+    import fitz
+
+    document = fitz.open()
+    try:
+        first = document.new_page(width=300, height=500)
+        first.insert_text((36, 48), label)
+        document.new_page(width=400, height=600)
+        return document.tobytes()
+    finally:
+        document.close()
+
+
+def _upload_headers(pdf_bytes: bytes, request_token: str, filename: str) -> dict[str, str]:
+    return {
+        "content-type": "application/pdf",
+        "x-upload-filename": filename,
+        "x-client-request-token": request_token,
+        "x-content-sha256": hashlib.sha256(pdf_bytes).hexdigest(),
+    }
+
+
 def _region(region_uuid: str = "r1", *, mapped_question_id: str | None = "Q1") -> dict:
     return {
         "region_uuid": region_uuid,
@@ -128,16 +151,13 @@ def test_template_route_binds_existing_template_paths(tmp_path) -> None:
 def test_template_upload_selects_page_roles_and_returns_only_safe_media_urls(tmp_path) -> None:
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)
+    pdf_bytes = _two_page_template_pdf()
 
     response = client.post(
         f"/api/sessions/{session_id}/template",
         params={"first_page_role": "back"},
-        content=_two_page_template_pdf(),
-        headers={
-            "content-type": "application/pdf",
-            "x-upload-filename": "anonymous-sample.pdf",
-            "x-client-request-token": "1" * 32,
-        },
+        content=pdf_bytes,
+        headers=_upload_headers(pdf_bytes, "1" * 32, "anonymous-sample.pdf"),
     )
 
     assert response.status_code == 201
@@ -215,6 +235,7 @@ def test_template_upload_request_token_is_queryable_and_cannot_be_replayed(tmp_p
         "content-type": "application/pdf",
         "x-upload-filename": "anonymous-sample.pdf",
         "x-client-request-token": request_token,
+        "x-content-sha256": hashlib.sha256(pdf_bytes).hexdigest(),
     }
 
     first = client.post(
@@ -240,6 +261,87 @@ def test_template_upload_request_token_is_queryable_and_cannot_be_replayed(tmp_p
     assert replay.json()["error"]["code"] == "template_upload_already_submitted"
 
 
+def test_template_upload_token_rejects_different_pdf_with_identical_metadata(tmp_path) -> None:
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+    token = "d" * 32
+    first_pdf = _same_size_template_pdf("ORIGINAL")
+    different_pdf = _same_size_template_pdf("CHANGED!")
+    assert len(first_pdf) == len(different_pdf)
+    common_headers = {
+        "content-type": "application/pdf",
+        "x-upload-filename": "same-name.pdf",
+        "x-client-request-token": token,
+    }
+
+    first = client.post(
+        f"/api/sessions/{session_id}/template",
+        params={"first_page_role": "front"},
+        content=first_pdf,
+        headers={**common_headers, "x-content-sha256": hashlib.sha256(first_pdf).hexdigest()},
+    )
+    conflicting = client.post(
+        f"/api/sessions/{session_id}/template",
+        params={"first_page_role": "front"},
+        content=different_pdf,
+        headers={
+            **common_headers,
+            "x-content-sha256": hashlib.sha256(different_pdf).hexdigest(),
+        },
+    )
+
+    assert first.status_code == 201
+    assert conflicting.status_code == 409
+    assert conflicting.json()["error"]["code"] == "template_upload_token_conflict"
+    lookup = client.get(
+        f"/api/sessions/{session_id}/template/submissions/{token}"
+    )
+    assert lookup.json() == {"status": "succeeded", "template": first.json()}
+
+
+def test_template_upload_rejects_a_declared_digest_that_does_not_match_the_pdf(tmp_path) -> None:
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+    pdf_bytes = _same_size_template_pdf("ORIGINAL")
+    different_pdf = _same_size_template_pdf("CHANGED!")
+
+    response = client.post(
+        f"/api/sessions/{session_id}/template",
+        params={"first_page_role": "front"},
+        content=pdf_bytes,
+        headers={
+            "content-type": "application/pdf",
+            "x-upload-filename": "same-name.pdf",
+            "x-client-request-token": "e" * 32,
+            "x-content-sha256": hashlib.sha256(different_pdf).hexdigest(),
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "template_upload_invalid"
+    readiness = client.get(f"/api/sessions/{session_id}/regions/readiness").json()
+    assert readiness["template_present"] is False
+
+
+def test_template_upload_requires_a_content_digest(tmp_path) -> None:
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+
+    response = client.post(
+        f"/api/sessions/{session_id}/template",
+        params={"first_page_role": "front"},
+        content=_two_page_template_pdf(),
+        headers={
+            "content-type": "application/pdf",
+            "x-upload-filename": "anonymous-sample.pdf",
+            "x-client-request-token": "f" * 32,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "template_upload_invalid"
+
+
 def test_activated_template_recovers_success_when_receipt_write_fails(
     tmp_path, monkeypatch
 ) -> None:
@@ -248,6 +350,7 @@ def test_activated_template_recovers_success_when_receipt_write_fails(
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)
     request_token = "7" * 32
+    pdf_bytes = _two_page_template_pdf()
     original_write = upload_module._write_json_atomic
 
     def fail_success_receipt(path, payload):
@@ -259,12 +362,8 @@ def test_activated_template_recovers_success_when_receipt_write_fails(
     uploaded = client.post(
         f"/api/sessions/{session_id}/template",
         params={"first_page_role": "front"},
-        content=_two_page_template_pdf(),
-        headers={
-            "content-type": "application/pdf",
-            "x-upload-filename": "anonymous-sample.pdf",
-            "x-client-request-token": request_token,
-        },
+        content=pdf_bytes,
+        headers=_upload_headers(pdf_bytes, request_token, "anonymous-sample.pdf"),
     )
     lookup = client.get(
         f"/api/sessions/{session_id}/template/submissions/{request_token}"
@@ -282,15 +381,12 @@ def test_activated_template_recovers_success_when_receipt_write_fails(
     assert lookup.json() == {"status": "succeeded", "template": uploaded.json()}
     assert abandoned.status_code == 409
     assert second_lookup.json() == lookup.json()
+    replacement_pdf = _two_page_template_pdf()
     replacement = client.post(
         f"/api/sessions/{session_id}/template",
         params={"first_page_role": "back"},
-        content=_two_page_template_pdf(),
-        headers={
-            "content-type": "application/pdf",
-            "x-upload-filename": "replacement.pdf",
-            "x-client-request-token": "a" * 32,
-        },
+        content=replacement_pdf,
+        headers=_upload_headers(replacement_pdf, "a" * 32, "replacement.pdf"),
     )
     replaced_lookup = client.get(
         f"/api/sessions/{session_id}/template/submissions/{request_token}"
@@ -308,6 +404,7 @@ def test_replacement_waits_when_activation_history_cannot_be_persisted(
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)
     request_token = "b" * 32
+    pdf_bytes = _two_page_template_pdf()
     original_write = upload_module._write_json_atomic
 
     def fail_activation_receipt(*args, **kwargs):
@@ -323,25 +420,18 @@ def test_replacement_waits_when_activation_history_cannot_be_persisted(
     uploaded = client.post(
         f"/api/sessions/{session_id}/template",
         params={"first_page_role": "front"},
-        content=_two_page_template_pdf(),
-        headers={
-            "content-type": "application/pdf",
-            "x-upload-filename": "anonymous-sample.pdf",
-            "x-client-request-token": request_token,
-        },
+        content=pdf_bytes,
+        headers=_upload_headers(pdf_bytes, request_token, "anonymous-sample.pdf"),
     )
     lookup = client.get(
         f"/api/sessions/{session_id}/template/submissions/{request_token}"
     )
+    replacement_pdf = _two_page_template_pdf()
     replacement = client.post(
         f"/api/sessions/{session_id}/template",
         params={"first_page_role": "back"},
-        content=_two_page_template_pdf(),
-        headers={
-            "content-type": "application/pdf",
-            "x-upload-filename": "replacement.pdf",
-            "x-client-request-token": "c" * 32,
-        },
+        content=replacement_pdf,
+        headers=_upload_headers(replacement_pdf, "c" * 32, "replacement.pdf"),
     )
 
     assert uploaded.status_code == 201
@@ -356,11 +446,10 @@ def test_replaced_upload_token_no_longer_points_at_current_template(tmp_path) ->
     session_id = _session(db)
 
     def upload(token: str, role: str):
+        pdf_bytes = _two_page_template_pdf()
         return client.post(f"/api/sessions/{session_id}/template",
-            params={"first_page_role": role}, content=_two_page_template_pdf(), headers={
-                "content-type": "application/pdf", "x-upload-filename": "sample.pdf",
-                "x-client-request-token": token,
-            })
+            params={"first_page_role": role}, content=pdf_bytes,
+            headers=_upload_headers(pdf_bytes, token, "sample.pdf"))
 
     first = upload("8" * 32, "front")
     second = upload("9" * 32, "back")
@@ -377,6 +466,7 @@ def test_abandoned_template_upload_token_blocks_a_late_request(tmp_path) -> None
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)
     request_token = "3" * 32
+    pdf_bytes = _two_page_template_pdf()
 
     missing = client.get(
         f"/api/sessions/{session_id}/template/submissions/{request_token}"
@@ -387,12 +477,8 @@ def test_abandoned_template_upload_token_blocks_a_late_request(tmp_path) -> None
     late = client.post(
         f"/api/sessions/{session_id}/template",
         params={"first_page_role": "front"},
-        content=_two_page_template_pdf(),
-        headers={
-            "content-type": "application/pdf",
-            "x-upload-filename": "anonymous-sample.pdf",
-            "x-client-request-token": request_token,
-        },
+        content=pdf_bytes,
+        headers=_upload_headers(pdf_bytes, request_token, "anonymous-sample.pdf"),
     )
 
     assert missing.status_code == 404
@@ -406,15 +492,12 @@ def test_abandoned_template_upload_token_blocks_a_late_request(tmp_path) -> None
 def test_region_workspace_returns_template_draft_questions_and_ready_state_without_paths(tmp_path) -> None:
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)
+    pdf_bytes = _two_page_template_pdf()
     upload = client.post(
         f"/api/sessions/{session_id}/template",
         params={"first_page_role": "front"},
-        content=_two_page_template_pdf(),
-        headers={
-            "content-type": "application/pdf",
-            "x-upload-filename": "anonymous-sample.pdf",
-            "x-client-request-token": "4" * 32,
-        },
+        content=pdf_bytes,
+        headers=_upload_headers(pdf_bytes, "4" * 32, "anonymous-sample.pdf"),
     )
     assert upload.status_code == 201
 
@@ -442,15 +525,12 @@ def test_region_workspace_returns_template_draft_questions_and_ready_state_witho
 def test_draft_save_rejects_a_stale_revision_and_returns_no_internal_paths(tmp_path) -> None:
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)
+    pdf_bytes = _two_page_template_pdf()
     upload = client.post(
         f"/api/sessions/{session_id}/template",
         params={"first_page_role": "front"},
-        content=_two_page_template_pdf(),
-        headers={
-            "content-type": "application/pdf",
-            "x-upload-filename": "anonymous-sample.pdf",
-            "x-client-request-token": "5" * 32,
-        },
+        content=pdf_bytes,
+        headers=_upload_headers(pdf_bytes, "5" * 32, "anonymous-sample.pdf"),
     ).json()
     first_request = {
         "expected_template_fingerprint": upload["template_fingerprint"],

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -162,6 +164,9 @@ async def upload_session_template(
     if content_length is not None and content_length > service.max_upload_bytes:
         raise ApiError(413, "template_upload_too_large", "Template upload is too large")
     request_token = str(request.headers.get("x-client-request-token") or "").strip()
+    content_sha256 = str(request.headers.get("x-content-sha256") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", content_sha256):
+        raise ApiError(422, "template_upload_invalid", "Template upload is invalid")
     try:
         submission_state = service.begin_submission(
             session_id=session_id,
@@ -169,6 +174,7 @@ async def upload_session_template(
             filename=filename,
             content_length=content_length,
             first_page_role=first_page_role,
+            content_sha256=content_sha256,
             db=db,
         )
     except TemplateUploadInProgressError:
@@ -206,10 +212,13 @@ async def upload_session_template(
             if size > service.max_upload_bytes:
                 raise TemplateUploadTooLargeError("template upload is too large")
             chunks.append(chunk)
+        pdf_bytes = b"".join(chunks)
+        if hashlib.sha256(pdf_bytes).hexdigest() != content_sha256:
+            raise TemplateUploadError("template upload content digest does not match")
         result = service.upload(
             db=db,
             session_id=session_id,
-            pdf_bytes=b"".join(chunks),
+            pdf_bytes=pdf_bytes,
             first_page_role=first_page_role,
             request_token=request_token,
         )
