@@ -277,6 +277,27 @@ def get_config_source_submission(
         raise _source_api_error(exc) from None
 
 
+@router.post(
+    "/sessions/{session_id}/config/sources/submissions/{request_token}/abandon",
+    responses={409: {"model": ErrorResponse, "description": "Submission already exists"}},
+)
+def abandon_config_source_submission(
+    session_id: int,
+    request_token: str,
+    db: DBManager = Depends(get_grading_db),
+    source_service: ConfigSourceService = Depends(get_config_source_service),
+) -> dict[str, str]:
+    _require_active_session(db, session_id)
+    try:
+        source_service.abandon_submission(
+            session_id=session_id,
+            request_token=request_token,
+        )
+    except ConfigSourceError as exc:
+        raise _source_api_error(exc) from None
+    return {"status": "abandoned"}
+
+
 @router.get(
     "/sessions/{session_id}/config/sources/active",
     response_model=ConfigSourceResponse,
@@ -785,13 +806,40 @@ def get_config_generation_job_by_request_token(
         )
     except ValueError:
         job = None
-    if job is None:
+    if job is None or job.payload.get("abandoned") is True:
         raise ApiError(
             404,
             "config_generation_job_not_found",
             "Config generation job not found",
         )
     return _job_response(job)
+
+
+@router.post(
+    "/sessions/{session_id}/config/generation-jobs/requests/{request_token}/abandon",
+    responses={409: {"model": ErrorResponse, "description": "Request already exists"}},
+)
+def abandon_config_generation_request(
+    session_id: int,
+    request_token: str,
+    db: DBManager = Depends(get_grading_db),
+    manager: JobManager = Depends(get_job_manager),
+    upload_config_dir: Path = Depends(get_upload_config_dir),
+) -> dict[str, str]:
+    _require_active_session(db, session_id)
+    try:
+        with session_config_lock(upload_config_dir, session_id):
+            manager.store.abandon_config_request(
+                session_id=session_id,
+                request_token=request_token,
+            )
+    except ConfigRequestTokenConflictError as exc:
+        raise ApiError(
+            409,
+            "config_request_token_conflict",
+            "Config request token already has a job",
+        ) from exc
+    return {"status": "abandoned"}
 
 
 @router.post(

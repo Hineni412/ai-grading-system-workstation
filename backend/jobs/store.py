@@ -162,6 +162,10 @@ class JobStore:
                 )
                 if existing is not None:
                     record = _job_record(existing)
+                    if record.payload.get("abandoned") is True:
+                        raise ConfigRequestTokenConflictError(
+                            "config request token was abandoned"
+                        )
                     if (
                         record.payload.get("mode") != mode
                         or record.payload.get("client_request_fingerprint") != fingerprint
@@ -192,6 +196,45 @@ class JobStore:
         if loaded is None:
             raise RuntimeError(f"created job {job_id} could not be loaded")
         return loaded, True
+
+    def abandon_config_request(self, *, session_id: int, request_token: str) -> None:
+        """Atomically tombstone an unseen request token.
+
+        The cancelled row is deliberately inert and is never submitted to an executor.
+        """
+        clean_session_id = _positive_int(session_id)
+        clean_token = _clean_request_token(request_token)
+        payload = {
+            "session_id": clean_session_id,
+            "mode": "abandoned",
+            "client_request_token": clean_token,
+            "abandoned": True,
+        }
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = self._find_config_request_row(
+                    conn, session_id=clean_session_id, token=clean_token
+                )
+                if existing is not None:
+                    record = _job_record(existing)
+                    if record.payload.get("abandoned") is True:
+                        conn.commit()
+                        return
+                    raise ConfigRequestTokenConflictError(
+                        "config request token already has a job"
+                    )
+                conn.execute(
+                    "INSERT INTO jobs "
+                    "(job_type, payload_json, status, stage, detail, finished_at) "
+                    "VALUES ('config_generation', ?, 'cancelled', 'cancelled', '', "
+                    "datetime('now','localtime'))",
+                    (json.dumps(payload, ensure_ascii=False, sort_keys=True),),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def find_config_job_by_request_token(
         self,
@@ -308,6 +351,10 @@ class JobStore:
                 )
                 if existing_request is not None:
                     record = _job_record(existing_request)
+                    if record.payload.get("abandoned") is True:
+                        raise ConfigRequestTokenConflictError(
+                            "config request token was abandoned"
+                        )
                     if (
                         record.payload.get("mode") != "retry"
                         or record.payload.get("client_request_fingerprint") != fingerprint

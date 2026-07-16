@@ -302,6 +302,23 @@ export async function fetchConfigSourceSubmission(
   )
 }
 
+function decodeAbandoned(value: unknown): void {
+  assertNoPathLikeKeys(value)
+  if (!isRecord(value) || !hasExactKeys(value, ['status']) || value.status !== 'abandoned') {
+    throw new Error('Invalid abandoned submission response')
+  }
+}
+
+export async function abandonConfigSourceSubmission(
+  sessionId: number, requestToken: string,
+): Promise<void> {
+  const id = requireSessionId(sessionId)
+  await apiClient.request(
+    `/api/sessions/${id}/config/sources/submissions/${requireRequestToken(requestToken)}/abandon`,
+    { method: 'POST', decode: decodeAbandoned },
+  )
+}
+
 export async function fetchConfigSource(
   sessionId: number, sourceId: string, signal?: AbortSignal,
 ): Promise<ConfigSource> {
@@ -345,6 +362,16 @@ export async function fetchConfigGenerationJobByToken(
   return apiClient.request(
     `/api/sessions/${id}/config/generation-jobs/requests/${requireRequestToken(requestToken)}`,
     { decode: decodeStrictJob },
+  )
+}
+
+export async function abandonConfigGenerationRequest(
+  sessionId: number, requestToken: string,
+): Promise<void> {
+  const id = requireSessionId(sessionId)
+  await apiClient.request(
+    `/api/sessions/${id}/config/generation-jobs/requests/${requireRequestToken(requestToken)}/abandon`,
+    { method: 'POST', decode: decodeAbandoned },
   )
 }
 

@@ -82,3 +82,24 @@ def test_explicit_null_clears_part_policy_while_omission_preserves_it() -> None:
     assert part["answer_only_max_score"] is None
     refreshed = json.loads(json.dumps(cleared))
     assert project_config_editor(refreshed)[0].answer_only_max_score is None
+
+
+def test_explicit_null_survives_projection_for_a_question_without_parts() -> None:
+    payload = _payload()
+    question = payload["rubric"]["questions"][0]
+    question["answer_only_max_score"] = None
+    question["steps"] = question["parts"][0]["steps"]
+    question.pop("parts")
+    payload["answer_key"]["questions"][0].pop("parts")
+
+    row = project_config_editor(payload)[0]
+    updated = apply_config_editor_changes(
+        payload,
+        edits=_editor_edits([
+            ConfigEditorEditRequest(row_id=row.row_id, standard_answer="Updated proof")
+        ]),
+        commands=(),
+    )
+
+    assert updated["rubric"]["questions"][0]["answer_only_max_score"] is None
+    assert project_config_editor(updated)[0].answer_only_max_score is None

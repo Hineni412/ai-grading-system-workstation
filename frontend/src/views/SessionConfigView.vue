@@ -11,6 +11,7 @@ import ScoringUnitEditor from '../components/config/ScoringUnitEditor.vue'
 import SessionDraftPanel from '../components/config/SessionDraftPanel.vue'
 import { ApiError, isAmbiguousWriteError, isAuthoritativeNotFoundError } from '../api/errors'
 import {
+  abandonConfigGenerationRequest,
   createClientRequestToken,
   fetchConfigEditor,
   fetchConfigGenerationJobByToken,
@@ -33,11 +34,13 @@ const props = withDefaults(defineProps<{
   editorLoader?: (sessionId: number) => Promise<ConfigEditorResponse>
   editorRefiner?: (sessionId: number, request: ConfigEditorRefineRequest) => Promise<JobResponse>
   generationLoader?: (sessionId: number, requestToken: string) => Promise<JobResponse>
+  requestAbandoner?: (sessionId: number, requestToken: string) => Promise<void>
 }>(), {
   editorSaver: saveConfigEditor,
   editorLoader: fetchConfigEditor,
   editorRefiner: refineConfigEditor,
   generationLoader: fetchConfigGenerationJobByToken,
+  requestAbandoner: abandonConfigGenerationRequest,
 })
 
 const sessionStore = useSessionStore()
@@ -189,8 +192,13 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
         refineError.value = ''
       } catch (reconciliationError) {
         if (isAuthoritativeNotFoundError(reconciliationError, 'config_generation_job_not_found')) {
-          configStore.clearGenerationSubmissionPending()
-          refineError.value = '服务器确认未收到这次 AI 完善请求，可以重新提交。'
+          try {
+            await props.requestAbandoner(sessionId, requestToken)
+            configStore.clearGenerationSubmissionPending()
+            refineError.value = '服务器确认未收到这次 AI 完善请求，可以重新提交。'
+          } catch {
+            refineError.value = '原 AI 完善请求可能仍在到达服务器，当前继续锁定。请稍后再次核对。'
+          }
         } else {
           refineError.value = 'AI 完善任务结果仍无法确认。为避免重复生成，请在生成区重新核对。'
         }

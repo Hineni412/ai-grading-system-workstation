@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 
 import {
+  abandonConfigGenerationRequest,
   createClientRequestToken,
   fetchConfigEditor,
   fetchConfigGenerationJobByToken,
@@ -24,11 +25,13 @@ const props = withDefaults(defineProps<{
   retryer?: (sessionId: number, jobId: number, questionIds: string[], requestToken: string) => Promise<JobResponse>
   editorLoader?: (sessionId: number) => Promise<ConfigEditorResponse>
   generationLoader?: (sessionId: number, requestToken: string) => Promise<JobResponse>
+  requestAbandoner?: (sessionId: number, requestToken: string) => Promise<void>
 }>(), {
   submitter: submitConfigGeneration,
   retryer: retryConfigGeneration,
   editorLoader: fetchConfigEditor,
   generationLoader: fetchConfigGenerationJobByToken,
+  requestAbandoner: abandonConfigGenerationRequest,
 })
 
 const configStore = useConfigWorkspaceStore()
@@ -104,6 +107,20 @@ function returnToEditor(): void {
   document.querySelector<HTMLElement>('#rubric-ledger-title')?.focus()
 }
 
+async function abandonMissingRequest(
+  sessionId: number,
+  requestToken: string,
+  confirmedMessage: string,
+): Promise<void> {
+  try {
+    await props.requestAbandoner(sessionId, requestToken)
+    configStore.clearGenerationSubmissionPending()
+    requestError.value = confirmedMessage
+  } catch {
+    requestError.value = '原请求可能仍在到达服务器，当前继续锁定。请稍后再次核对。'
+  }
+}
+
 async function startGeneration(requestedMode: GenerationMode = mode.value): Promise<void> {
   if (!configStore.canGenerate || submitting.value || active.value || workspacePending.value
     || configStore.sessionId === null) return
@@ -131,8 +148,9 @@ async function startGeneration(requestedMode: GenerationMode = mode.value): Prom
         requestError.value = ''
       } catch (reconciliationError) {
         if (isAuthoritativeNotFoundError(reconciliationError, 'config_generation_job_not_found')) {
-          configStore.clearGenerationSubmissionPending()
-          requestError.value = '服务器确认未收到这次请求，可以重新提交。'
+          await abandonMissingRequest(
+            sessionId, requestToken, '服务器确认未收到这次请求，可以重新提交。',
+          )
         } else {
           requestError.value = '生成请求结果未知，尚未找到可确认的任务。为避免重复生成，请稍后重新核对。'
         }
@@ -160,8 +178,9 @@ async function reconcileUnknownSubmission(): Promise<void> {
     requestError.value = ''
   } catch (error) {
     if (isAuthoritativeNotFoundError(error, 'config_generation_job_not_found')) {
-      configStore.clearGenerationSubmissionPending()
-      requestError.value = '服务器确认未收到这次请求，可以重新提交。'
+      await abandonMissingRequest(
+        sessionId, requestToken, '服务器确认未收到这次请求，可以重新提交。',
+      )
     } else {
       requestError.value = '仍未找到可确认的任务。为避免重复生成，当前保持锁定，请稍后再次核对。'
     }
@@ -201,8 +220,10 @@ async function retrySelected(): Promise<void> {
         requestError.value = ''
       } catch (reconciliationError) {
         if (isAuthoritativeNotFoundError(reconciliationError, 'config_generation_job_not_found')) {
-          configStore.clearGenerationSubmissionPending()
-          requestError.value = '服务器确认未收到这次请求，可以重新提交。'
+          await abandonMissingRequest(
+            configStore.sessionId, requestToken,
+            '服务器确认未收到这次请求，可以重新提交。',
+          )
         } else {
           requestError.value = '重试请求结果仍无法确认。为避免重复生成，请稍后重新核对。'
         }

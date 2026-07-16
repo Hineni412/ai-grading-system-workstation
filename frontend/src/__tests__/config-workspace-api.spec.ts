@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  abandonConfigGenerationRequest,
+  abandonConfigSourceSubmission,
   fetchConfigEditor,
   fetchConfigGenerationJobByToken,
   fetchConfigSource,
@@ -142,6 +144,20 @@ describe('configuration workspace API', () => {
     expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
       `/api/sessions/7/config/sources/submissions/${token}`,
       `/api/sessions/7/config/generation-jobs/requests/${token}`,
+    ])
+  })
+
+  it('atomically abandons missing upload and generation tokens before unlocking', async () => {
+    const token = '9'.repeat(32)
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(response({ status: 'abandoned' }))
+      .mockResolvedValueOnce(response({ status: 'abandoned' }))
+
+    await expect(abandonConfigSourceSubmission(7, token)).resolves.toBeUndefined()
+    await expect(abandonConfigGenerationRequest(7, token)).resolves.toBeUndefined()
+    expect(fetchMock.mock.calls.map(([path, init]) => [path, init?.method])).toEqual([
+      [`/api/sessions/7/config/sources/submissions/${token}/abandon`, 'POST'],
+      [`/api/sessions/7/config/generation-jobs/requests/${token}/abandon`, 'POST'],
     ])
   })
 

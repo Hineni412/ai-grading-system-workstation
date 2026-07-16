@@ -60,6 +60,7 @@ async function mountUpload(options: {
   onUploaded?: (value: ConfigSource) => void
   beforeUpload?: () => boolean
   submissionLoader?: (sessionId: number, requestToken: string) => Promise<ConfigSourceSubmission>
+  submissionAbandoner?: (sessionId: number, requestToken: string) => Promise<void>
   activeSourceLoader?: (sessionId: number) => Promise<ConfigSource>
 } = {}) {
   const host = document.createElement('div')
@@ -72,6 +73,7 @@ async function mountUpload(options: {
     uploader,
     beforeUpload: options.beforeUpload,
     submissionLoader: options.submissionLoader,
+    submissionAbandoner: options.submissionAbandoner,
     activeSourceLoader: options.activeSourceLoader,
     onUploaded,
   })
@@ -127,18 +129,44 @@ describe('ConfigSourceUpload', () => {
     const notFound = new ApiError({ kind: 'not_found', status: 404,
       code: 'config_source_not_found', message: 'missing', details: {},
       requestId: 'safe-404', retryable: false })
+    const submissionAbandoner = vi.fn(async () => undefined)
     const mounted = await mountUpload({
       uploader: vi.fn(async () => { throw timeout }),
       submissionLoader: vi.fn(async () => { throw notFound }),
+      submissionAbandoner,
     })
     await choose(mounted.host, new File(['%PDF'], 'retry.pdf'))
 
     mounted.host.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
     await settle()
 
+    expect(submissionAbandoner).toHaveBeenCalledWith(7, expect.stringMatching(/^[0-9a-f]{32}$/))
     expect(useConfigWorkspaceStore().pendingUploadRequestToken).toBeNull()
     expect(mounted.host.textContent).toContain('服务器确认未收到这次上传')
     expect(mounted.host.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false)
+  })
+
+  it('keeps upload locked when the missing token cannot be atomically abandoned', async () => {
+    const timeout = new ApiError({ kind: 'timeout', status: null, code: 'request_timeout',
+      message: 'timeout', details: {}, requestId: 'safe', retryable: false })
+    const notFound = new ApiError({ kind: 'not_found', status: 404,
+      code: 'config_source_not_found', message: 'missing', details: {},
+      requestId: 'safe-404', retryable: false })
+    const conflict = new ApiError({ kind: 'conflict', status: 409,
+      code: 'config_source_submission_conflict', message: 'late request', details: {},
+      requestId: 'safe-409', retryable: false })
+    const mounted = await mountUpload({
+      uploader: vi.fn(async () => { throw timeout }),
+      submissionLoader: vi.fn(async () => { throw notFound }),
+      submissionAbandoner: vi.fn(async () => { throw conflict }),
+    })
+    await choose(mounted.host, new File(['%PDF'], 'retry.pdf'))
+
+    mounted.host.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
+    await settle()
+
+    expect(useConfigWorkspaceStore().pendingUploadRequestToken).not.toBeNull()
+    expect(mounted.host.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true)
   })
 
   it('discovers a newly active source after the first upload response is lost', async () => {
