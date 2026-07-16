@@ -1,4 +1,4 @@
-export type WorkspaceRouteId = 'workbench' | 'grading'
+export type WorkspaceRouteId = 'workbench' | 'knowledge-graph' | 'grading'
 
 export interface WorkspaceRouteDefinition {
   id: WorkspaceRouteId
@@ -27,4 +27,17 @@ export const reviewRouteDefinition: WorkspaceRouteDefinition = {
   breadcrumb: '评分复核',
 }
 
-export const navigationItems = [workbenchRouteDefinition, reviewRouteDefinition] as const
+export const knowledgeGraphRouteDefinition = {
+  id: 'knowledge-graph',
+  label: '知识图谱',
+  path: '/knowledge-graph',
+  title: '知识图谱',
+  description: '按考试、班级和学生查看知识标签证据',
+  breadcrumb: '知识图谱',
+} as const satisfies WorkspaceRouteDefinition
+
+export const navigationItems = [
+  workbenchRouteDefinition,
+  knowledgeGraphRouteDefinition,
+  reviewRouteDefinition,
+] as const

@@ -15,6 +15,7 @@ import './styles/review-queue.css'
 import './styles/review-evidence.css'
 import './styles/review-scoring.css'
 import './styles/workbench.css'
+import './styles/knowledge-graph.css'
 
 const app = createApp(App)
 const pinia = createPinia()
