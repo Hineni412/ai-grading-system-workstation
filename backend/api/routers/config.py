@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,7 @@ from backend.api.schemas.config import (
 from backend.config_workspace.sources import (
     ConfigAssetNotFoundError,
     ConfigSourceChangedError,
+    ConfigSourceActivationBusyError,
     ConfigSourceError,
     ConfigSourceInvalidError,
     ConfigSourceNotFoundError,
@@ -80,8 +82,10 @@ from backend.config_workspace.publish import (
     load_editor_config,
     refresh_mapping_after_config_save,
     refresh_template_mapping_from_session,
+    remove_published_config,
     save_editor_config,
 )
+from backend.config_workspace.locks import session_config_lock
 
 
 router = APIRouter(prefix="/api", tags=["config"])
@@ -146,8 +150,13 @@ async def upload_config_source(
     request: Request,
     db: DBManager = Depends(get_grading_db),
     source_service: ConfigSourceService = Depends(get_config_source_service),
+    manager: JobManager = Depends(get_job_manager),
 ) -> dict[str, Any]:
     _require_active_session(db, session_id)
+    try:
+        manager.store.assert_config_session_idle(session_id)
+    except ConfigSessionBusyError as exc:
+        raise _config_busy_error(session_id) from exc
     try:
         raw_length = request.headers.get("content-length")
         content_length = int(raw_length) if raw_length is not None else None
@@ -211,6 +220,7 @@ async def upload_config_source(
             filename=filename,
             chunks=request.stream(),
             source_id=request_token or None,
+            activation_guard=lambda: _source_activation_guard(manager, session_id),
         )
         if request_token:
             try:
@@ -240,6 +250,8 @@ async def upload_config_source(
                 pass
         if isinstance(exc, (TypeError, ValueError)):
             raise _source_api_error(ConfigSourceInvalidError()) from None
+        if isinstance(exc, ConfigSourceActivationBusyError):
+            raise _config_busy_error(session_id) from exc
         if isinstance(exc, ConfigSourceError):
             raise _source_api_error(exc) from None
         raise
@@ -397,17 +409,40 @@ def save_session_config(
     session_id: int,
     request: SessionConfigRequest,
     db: DBManager = Depends(get_grading_db),
+    manager: JobManager = Depends(get_job_manager),
     upload_config_dir: Path = Depends(get_upload_config_dir),
 ) -> SessionConfigResponse:
-    _require_session(db, session_id)
+    _require_active_session(db, session_id)
     payload = request.model_dump()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     try:
-        rubric_path, answer_key_path = save_generated_config(
-            upload_config_dir,
-            payload,
-            timestamp,
-        )
+        manager.store.assert_config_session_idle(session_id)
+        with session_config_lock(upload_config_dir, session_id):
+            rubric_path, answer_key_path = save_generated_config(
+                upload_config_dir,
+                payload,
+                timestamp,
+            )
+            try:
+                updated = manager.store.update_session_config_if_idle(
+                    session_id,
+                    rubric_path=str(rubric_path),
+                    answer_key_path=str(answer_key_path),
+                )
+            except BaseException:
+                remove_published_config(
+                    upload_config_dir,
+                    (Path(rubric_path), Path(answer_key_path)),
+                )
+                raise
+            if not updated:
+                remove_published_config(
+                    upload_config_dir,
+                    (Path(rubric_path), Path(answer_key_path)),
+                )
+                raise ApiError(404, "session_not_found", "Session not found")
+    except ConfigSessionBusyError as exc:
+        raise _config_busy_error(session_id) from exc
     except ValueError as exc:
         raise ApiError(
             422,
@@ -415,11 +450,6 @@ def save_session_config(
             "Config payload is invalid",
             {"session_id": int(session_id)},
         ) from exc
-    db.update_grading_session_config(
-        int(session_id),
-        rubric_path=str(rubric_path),
-        answer_key_path=str(answer_key_path),
-    )
     return _config_response(_require_session(db, session_id))
 
 
@@ -493,11 +523,13 @@ def save_config_editor(
     session_id: int,
     request: ConfigEditorSaveRequest,
     db: DBManager = Depends(get_grading_db),
+    manager: JobManager = Depends(get_job_manager),
     upload_config_dir: Path = Depends(get_upload_config_dir),
     templates_dir: Path = Depends(get_config_mapping_output_dir),
 ) -> dict[str, Any]:
     _require_active_session(db, session_id)
     try:
+        manager.store.assert_config_session_idle(session_id)
         current, saved = save_editor_config(
             db,
             upload_config_dir,
@@ -505,7 +537,10 @@ def save_config_editor(
             expected_revision=request.revision,
             edits=_editor_edits(request.edits),
             commands=_editor_commands(request.commands),
+            job_store=manager.store,
         )
+    except ConfigSessionBusyError as exc:
+        raise _config_busy_error(session_id) from exc
     except (ConfigRevisionConflict, ConfigEditorValidationError) as exc:
         raise _editor_api_error(exc) from None
     except Exception:
@@ -602,6 +637,24 @@ def _require_active_session(db: DBManager, session_id: int) -> dict[str, Any]:
             {"session_id": int(session_id)},
         )
     return session
+
+
+def _config_busy_error(session_id: int) -> ApiError:
+    return ApiError(
+        409,
+        "config_generation_in_progress",
+        "Configuration work is already active for this session",
+        {"session_id": int(session_id)},
+    )
+
+
+@contextmanager
+def _source_activation_guard(manager: JobManager, session_id: int):
+    try:
+        with manager.store.config_session_mutation_guard(session_id):
+            yield
+    except ConfigSessionBusyError as exc:
+        raise ConfigSourceActivationBusyError() from exc
 
 
 def _contains_embedded_image_reference(value: Any) -> bool:

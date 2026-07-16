@@ -530,6 +530,18 @@ class JobStore:
 
     def fail_interrupted_jobs(self) -> int:
         with self._connect() as conn:
+            recovered = conn.execute(
+                """
+                UPDATE jobs
+                SET status = 'succeeded', progress = 1.0,
+                    stage = 'config_generation', detail = 'complete', error = NULL,
+                    updated_at = datetime('now','localtime'),
+                    finished_at = COALESCE(finished_at, datetime('now','localtime'))
+                WHERE job_type = 'config_generation'
+                  AND status = 'running'
+                  AND stage = 'config_mapping'
+                """
+            )
             cursor = conn.execute(
                 """
                 UPDATE jobs
@@ -540,7 +552,97 @@ class JobStore:
                 WHERE status IN ('queued','running')
                 """
             )
-            return int(cursor.rowcount)
+            return int(recovered.rowcount) + int(cursor.rowcount)
+
+    def assert_config_session_idle(self, session_id: int) -> None:
+        clean_session_id = _positive_int(session_id)
+        with self._connect() as conn:
+            if self._find_active_config_session_row(
+                conn,
+                session_id=clean_session_id,
+            ) is not None:
+                raise ConfigSessionBusyError(
+                    f"configuration work is already active for session {clean_session_id}"
+                )
+
+    @contextmanager
+    def config_session_mutation_guard(self, session_id: int) -> Iterator[None]:
+        clean_session_id = _positive_int(session_id)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if self._find_active_config_session_row(
+                    conn,
+                    session_id=clean_session_id,
+                ) is not None:
+                    raise ConfigSessionBusyError(
+                        f"configuration work is already active for session {clean_session_id}"
+                    )
+                yield
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+
+    def update_session_config_if_idle(
+        self,
+        session_id: int,
+        *,
+        rubric_path: str,
+        answer_key_path: str,
+        expected_rubric_path: str | None = None,
+        expected_answer_key_path: str | None = None,
+        template_config_path: str | None = None,
+    ) -> bool:
+        clean_session_id = _positive_int(session_id)
+        if (expected_rubric_path is None) != (expected_answer_key_path is None):
+            raise ValueError("expected config paths must be provided together")
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if self._find_active_config_session_row(
+                    conn,
+                    session_id=clean_session_id,
+                ) is not None:
+                    raise ConfigSessionBusyError(
+                        f"configuration work is already active for session {clean_session_id}"
+                    )
+                if expected_rubric_path is None:
+                    cursor = conn.execute(
+                        """
+                        UPDATE grading_sessions
+                        SET rubric_path = ?, answer_key_path = ?,
+                            template_config_path = COALESCE(?, template_config_path),
+                            updated_at = datetime('now','localtime')
+                        WHERE id = ? AND is_deleted = 0
+                        """,
+                        (
+                            str(rubric_path), str(answer_key_path),
+                            template_config_path, clean_session_id,
+                        ),
+                    )
+                else:
+                    cursor = conn.execute(
+                        """
+                        UPDATE grading_sessions
+                        SET rubric_path = ?, answer_key_path = ?,
+                            updated_at = datetime('now','localtime')
+                        WHERE id = ? AND is_deleted = 0
+                          AND rubric_path = ? AND answer_key_path = ?
+                        """,
+                        (
+                            str(rubric_path), str(answer_key_path), clean_session_id,
+                            str(expected_rubric_path), str(expected_answer_key_path),
+                        ),
+                    )
+                if cursor.rowcount != 1:
+                    conn.rollback()
+                    return False
+                conn.commit()
+                return True
+            except BaseException:
+                conn.rollback()
+                raise
 
     def interrupted_owned_config_input_ids(self) -> set[str]:
         input_ids: set[str] = set()
@@ -738,11 +840,10 @@ class JobStore:
                 job_update = conn.execute(
                     """
                     UPDATE jobs
-                    SET status = 'succeeded', progress = 1.0,
-                        stage = 'config_generation', detail = 'complete',
+                    SET progress = 0.99,
+                        stage = 'config_mapping', detail = 'mapping',
                         result_json = ?, error = NULL,
-                        updated_at = datetime('now','localtime'),
-                        finished_at = COALESCE(finished_at, datetime('now','localtime'))
+                        updated_at = datetime('now','localtime')
                     WHERE id = ? AND status = 'running' AND cancel_requested = 0
                     """,
                     (result_json, int(job_id)),
@@ -755,6 +856,27 @@ class JobStore:
             except Exception:
                 conn.rollback()
                 raise
+
+    def finalize_bound_config_generation(
+        self,
+        job_id: int,
+        result: dict[str, Any],
+    ) -> bool:
+        result_json = json.dumps(dict(result), ensure_ascii=False, sort_keys=True)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE jobs
+                SET status = 'succeeded', progress = 1.0,
+                    stage = 'config_generation', detail = 'complete',
+                    result_json = ?, error = NULL,
+                    updated_at = datetime('now','localtime'),
+                    finished_at = COALESCE(finished_at, datetime('now','localtime'))
+                WHERE id = ? AND status = 'running' AND stage = 'config_mapping'
+                """,
+                (result_json, int(job_id)),
+            )
+        return cursor.rowcount == 1
 
 
 def _job_record(row: sqlite3.Row) -> JobRecord:

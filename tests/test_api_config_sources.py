@@ -21,9 +21,12 @@ from backend.api.app import create_app
 from backend.api.dependencies import (
     get_config_source_service,
     get_grading_db,
+    get_job_manager,
     get_upload_config_dir,
 )
 from backend.config_workspace.sources import ConfigSourceService
+from backend.jobs.manager import JobManager
+from backend.jobs.store import JobStore
 from backend.api.routers.config import upload_config_source
 from db_manager import DBManager
 
@@ -46,7 +49,9 @@ def _client(tmp_path: Path) -> tuple[TestClient, DBManager, Path]:
     db.initialize()
     upload_root = tmp_path / "uploaded"
     app = create_app()
+    manager = JobManager(JobStore(db.db_path), max_workers=1)
     app.dependency_overrides[get_grading_db] = lambda: db
+    app.dependency_overrides[get_job_manager] = lambda: manager
     app.dependency_overrides[get_upload_config_dir] = lambda: upload_root
     return TestClient(app), db, upload_root
 
@@ -108,6 +113,25 @@ def test_active_source_endpoint_returns_replacement_without_old_source_id(
     assert active.status_code == 200
     assert active.json() == second
     assert active.json()["source_id"] != first["source_id"]
+
+
+def test_active_config_job_rejects_source_replacement(tmp_path: Path) -> None:
+    client, db, _upload_root = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    first = _upload(client, session_id, filename="first.pdf").json()
+    manager = client.app.dependency_overrides[get_job_manager]()
+    job = manager.store.create_claimed_config_job(
+        {"session_id": session_id, "mode": "generate"}
+    )
+
+    response = _upload(client, session_id, filename="replacement.pdf")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "config_generation_in_progress"
+    active = client.get(f"/api/sessions/{session_id}/config/sources/active")
+    assert active.status_code == 200
+    assert active.json() == first
+    manager.store.finish(job.id, "failed", error="test cleanup")
 
 
 def test_upload_submission_token_is_queryable_and_repeated_post_is_rejected(
@@ -247,7 +271,7 @@ def test_upload_submission_reports_replaced_instead_of_returning_stale_source(
 
 
 def test_cancelled_upload_marks_exact_submission_failed(tmp_path: Path) -> None:
-    _client_value, db, upload_root = _client(tmp_path)
+    client, db, upload_root = _client(tmp_path)
     session_id = _session(db, tmp_path)
     token = "d" * 32
 
@@ -266,8 +290,9 @@ def test_cancelled_upload_marks_exact_submission_failed(tmp_path: Path) -> None:
             yield b"%PDF"
 
     service = CancelledService(upload_root)
+    manager = client.app.dependency_overrides[get_job_manager]()
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(upload_config_source(session_id, FakeRequest(), db, service))
+        asyncio.run(upload_config_source(session_id, FakeRequest(), db, service, manager))
 
     assert service.submission_public(
         session_id=session_id,

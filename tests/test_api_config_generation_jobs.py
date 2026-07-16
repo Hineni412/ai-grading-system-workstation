@@ -138,6 +138,27 @@ def test_config_generation_route_submits_safe_queryable_job(tmp_path: Path) -> N
     assert queried.json()["result"]["failed_question_ids"] == ["Q1"]
 
 
+def test_active_config_job_rejects_legacy_config_replacement(tmp_path: Path) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    old_paths = db.get_grading_session(session_id)
+    job = manager.store.create_claimed_config_job(
+        {"session_id": session_id, "mode": "generate"}
+    )
+
+    response = client.put(
+        f"/api/sessions/{session_id}/config",
+        json={"rubric": {}, "answer_key": {}, "meta": {"warnings": []}},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "config_generation_in_progress"
+    current = db.get_grading_session(session_id)
+    assert current["rubric_path"] == old_paths["rubric_path"]
+    assert current["answer_key_path"] == old_paths["answer_key_path"]
+    manager.store.finish(job.id, "failed", error="test cleanup")
+
+
 def test_generate_from_source_stages_private_input_and_public_job_is_safe(
     tmp_path: Path,
 ) -> None:
