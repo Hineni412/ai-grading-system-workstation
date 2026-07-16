@@ -107,6 +107,40 @@ def test_active_source_endpoint_returns_replacement_without_old_source_id(
     assert active.json()["source_id"] != first["source_id"]
 
 
+def test_upload_submission_token_is_exactly_queryable_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    client, db, _upload_root = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    token = "a" * 32
+    headers = {
+        "content-type": "application/octet-stream",
+        "x-upload-filename": quote("token-paper.pdf"),
+        "x-client-request-token": token,
+    }
+
+    first = client.post(
+        f"/api/sessions/{session_id}/config/sources",
+        content=_pdf_bytes(),
+        headers=headers,
+    )
+    replay = client.post(
+        f"/api/sessions/{session_id}/config/sources",
+        content=_pdf_bytes(),
+        headers=headers,
+    )
+    queried = client.get(
+        f"/api/sessions/{session_id}/config/sources/submissions/{token}"
+    )
+
+    assert first.status_code == 201
+    assert replay.status_code == 201
+    assert replay.json() == first.json()
+    assert first.json()["source_id"] == token
+    assert queried.status_code == 200
+    assert queried.json() == {"status": "succeeded", "source": first.json()}
+
+
 def test_public_get_does_not_read_or_encode_private_images(
     tmp_path: Path,
     monkeypatch,

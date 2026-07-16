@@ -139,6 +139,42 @@ describe('configuration workspace Store', () => {
     })
   })
 
+  it('restores exact pending upload and job request tokens after a refresh', async () => {
+    const uploadToken = '1'.repeat(32)
+    const jobToken = '2'.repeat(32)
+    const store = useConfigWorkspaceStore()
+    store.selectSession(7)
+    store.setSource(source('d'.repeat(32)))
+    store.attachJob(31, store.captureGenerationContext())
+    store.markUploadSubmissionPending(uploadToken)
+    store.markJobSubmissionPending(jobToken, 'retry', null, {
+      totalQuestions: 5, succeededQuestions: 3, failedQuestions: 2,
+    })
+
+    const saved = localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)!
+    expect(JSON.parse(saved)).toMatchObject({
+      pendingUploadRequestToken: uploadToken,
+      pendingJobRequestToken: jobToken,
+      pendingJobRequestKind: 'retry',
+    })
+
+    setActivePinia(createPinia())
+    localStorage.setItem(CONFIG_WORKSPACE_STORAGE_KEY, saved)
+    const restored = useConfigWorkspaceStore()
+    await restored.hydrateSafeIndex([7], 7, {
+      loadSource: async () => source('d'.repeat(32)),
+      loadJob: async () => job(),
+      loadEditor: async () => ({ ...editor(''), configured: false, rows: [] }),
+    })
+
+    expect(restored.pendingUploadRequestToken).toBe(uploadToken)
+    expect(restored.pendingJobRequestToken).toBe(jobToken)
+    expect(restored.pendingJobRequestKind).toBe('retry')
+    expect(restored.generationSummary).toEqual({
+      totalQuestions: 5, succeededQuestions: 3, failedQuestions: 2,
+    })
+  })
+
   it('persists only the safe workspace index and never rubric rows or answer text', () => {
     const store = useConfigWorkspaceStore()
     store.selectSession(7)

@@ -11,7 +11,9 @@ import ScoringUnitEditor from '../components/config/ScoringUnitEditor.vue'
 import SessionDraftPanel from '../components/config/SessionDraftPanel.vue'
 import { ApiError, isAmbiguousWriteError } from '../api/errors'
 import {
+  createClientRequestToken,
   fetchConfigEditor,
+  fetchConfigGenerationJobByToken,
   refineConfigEditor,
   saveConfigEditor,
   type ConfigEditorCommand,
@@ -30,10 +32,12 @@ const props = withDefaults(defineProps<{
   editorSaver?: (sessionId: number, request: ConfigEditorSaveRequest) => Promise<ConfigEditorSaveResponse>
   editorLoader?: (sessionId: number) => Promise<ConfigEditorResponse>
   editorRefiner?: (sessionId: number, request: ConfigEditorRefineRequest) => Promise<JobResponse>
+  generationLoader?: (sessionId: number, requestToken: string) => Promise<JobResponse>
 }>(), {
   editorSaver: saveConfigEditor,
   editorLoader: fetchConfigEditor,
   editorRefiner: refineConfigEditor,
+  generationLoader: fetchConfigGenerationJobByToken,
 })
 
 const sessionStore = useSessionStore()
@@ -160,17 +164,33 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
     || configStore.hasDirtyEditor || refining.value) return
   const sessionId = configStore.sessionId
   const context = configStore.captureGenerationContext()
+  const requestToken = createClientRequestToken()
   refining.value = true
+  configStore.markJobSubmissionPending(requestToken, 'refine')
   refineError.value = ''
   try {
     const job = await props.editorRefiner(sessionId, {
       revision: configStore.editor.revision,
       commands: [command],
+      client_request_token: requestToken,
     })
     jobStore.track(job)
     configStore.attachJob(job.id, context)
-  } catch {
-    refineError.value = 'AI 完善任务未提交，当前评分依据没有改变。'
+  } catch (error) {
+    if (isAmbiguousWriteError(error)) {
+      refineError.value = 'AI 完善任务结果未知，正在核对这一次任务…'
+      try {
+        const reconciled = await props.generationLoader(sessionId, requestToken)
+        jobStore.track(reconciled)
+        configStore.attachJob(reconciled.id, context)
+        refineError.value = ''
+      } catch {
+        refineError.value = 'AI 完善任务结果仍无法确认。为避免重复生成，请在生成区重新核对。'
+      }
+    } else {
+      configStore.clearGenerationSubmissionPending()
+      refineError.value = 'AI 完善任务未提交，当前评分依据没有改变。'
+    }
   } finally {
     refining.value = false
   }

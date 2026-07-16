@@ -31,6 +31,9 @@ export interface PersistedConfigWorkspace {
   decisions: QuestionDecision[]
   generationSummary?: ConfigGenerationSummary
   pendingGenerationMode?: GenerationMode
+  pendingJobRequestToken?: string
+  pendingJobRequestKind?: 'generate' | 'retry' | 'refine'
+  pendingUploadRequestToken?: string
 }
 
 export interface ConfigGenerationSummary {
@@ -101,13 +104,13 @@ function parsePersisted(raw: string | null): PersistedConfigWorkspace | null {
     const value: unknown = JSON.parse(raw)
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
     const item = value as Record<string, unknown>
-    const keys = Object.keys(item).sort().join(',')
-    if (![
-      'decisions,jobId,phase,sessionId,sourceId,sourceRevision',
-      'decisions,generationSummary,jobId,phase,sessionId,sourceId,sourceRevision',
-      'decisions,jobId,pendingGenerationMode,phase,sessionId,sourceId,sourceRevision',
-      'decisions,generationSummary,jobId,pendingGenerationMode,phase,sessionId,sourceId,sourceRevision',
-    ].includes(keys)) return null
+    const requiredKeys = ['sessionId', 'phase', 'sourceId', 'sourceRevision', 'jobId', 'decisions']
+    const allowedKeys = new Set([
+      ...requiredKeys, 'generationSummary', 'pendingGenerationMode',
+      'pendingJobRequestToken', 'pendingJobRequestKind', 'pendingUploadRequestToken',
+    ])
+    if (!requiredKeys.every((key) => key in item)
+      || Object.keys(item).some((key) => !allowedKeys.has(key))) return null
     if (!positiveInteger(item.sessionId) || typeof item.phase !== 'string'
       || !phases.has(item.phase as ConfigPhase)
       || (item.sourceId !== null && !validSourceId(item.sourceId))
@@ -116,7 +119,14 @@ function parsePersisted(raw: string | null): PersistedConfigWorkspace | null {
       || !Array.isArray(item.decisions) || !item.decisions.every(validDecision)
       || ('pendingGenerationMode' in item
         && !['per_question', 'whole_document'].includes(String(item.pendingGenerationMode)))
+      || ('pendingJobRequestToken' in item
+        && !/^[0-9a-f]{32}$/.test(String(item.pendingJobRequestToken)))
+      || ('pendingJobRequestKind' in item
+        && !['generate', 'retry', 'refine'].includes(String(item.pendingJobRequestKind)))
+      || ('pendingUploadRequestToken' in item
+        && !/^[0-9a-f]{32}$/.test(String(item.pendingUploadRequestToken)))
       || ('generationSummary' in item && !validGenerationSummary(item.generationSummary))) return null
+    if (('pendingJobRequestToken' in item) !== ('pendingJobRequestKind' in item)) return null
     if ((item.sourceId === null) !== (item.sourceRevision === null)) return null
     return item as unknown as PersistedConfigWorkspace
   } catch {
@@ -180,6 +190,9 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   const mappingStatus = ref<ConfigEditorSaveResponse['save_result']['mapping_status'] | null>(null)
   const generationSummary = ref<ConfigGenerationSummary | null>(null)
   const pendingGenerationMode = ref<GenerationMode | null>(null)
+  const pendingJobRequestToken = ref<string | null>(null)
+  const pendingJobRequestKind = ref<'generate' | 'retry' | 'refine' | null>(null)
+  const pendingUploadRequestToken = ref<string | null>(null)
   const sourceLoading = ref(false)
   const sourceError = ref('')
   let sourceLoadGeneration = 0
@@ -231,6 +244,13 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     if (pendingGenerationMode.value !== null) {
       snapshot.pendingGenerationMode = pendingGenerationMode.value
     }
+    if (pendingJobRequestToken.value !== null && pendingJobRequestKind.value !== null) {
+      snapshot.pendingJobRequestToken = pendingJobRequestToken.value
+      snapshot.pendingJobRequestKind = pendingJobRequestKind.value
+    }
+    if (pendingUploadRequestToken.value !== null) {
+      snapshot.pendingUploadRequestToken = pendingUploadRequestToken.value
+    }
     return snapshot
   }
 
@@ -264,6 +284,9 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     sourceRevision.value = null
     jobId.value = null
     pendingGenerationMode.value = null
+    pendingJobRequestToken.value = null
+    pendingJobRequestKind.value = null
+    pendingUploadRequestToken.value = null
     decisions.value = []
     phase.value = 'draft'
     resetMemory()
@@ -288,6 +311,9 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     sourceRevision.value = null
     jobId.value = null
     pendingGenerationMode.value = null
+    pendingJobRequestToken.value = null
+    pendingJobRequestKind.value = null
+    pendingUploadRequestToken.value = null
     decisions.value = []
     phase.value = 'draft'
     resetMemory()
@@ -309,6 +335,9 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     generationSummary.value = null
     jobId.value = null
     pendingGenerationMode.value = null
+    pendingJobRequestToken.value = null
+    pendingJobRequestKind.value = null
+    pendingUploadRequestToken.value = null
     editor.value = null
     editorEdits.value = []
     editorCommands.value = []
@@ -357,6 +386,9 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     source.value = value
     jobId.value = null
     pendingGenerationMode.value = null
+    pendingJobRequestToken.value = null
+    pendingJobRequestKind.value = null
+    pendingUploadRequestToken.value = null
     decisions.value = []
     editor.value = null
     editorEdits.value = []
@@ -438,6 +470,8 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     }
     jobId.value = id
     pendingGenerationMode.value = null
+    pendingJobRequestToken.value = null
+    pendingJobRequestKind.value = null
     generationSummary.value = retainedSummary === undefined ? null : { ...retainedSummary }
     phase.value = derivePhase()
     persistSafeIndex()
@@ -452,16 +486,39 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     persistSafeIndex()
   }
 
-  function markGenerationSubmissionPending(mode: GenerationMode): void {
-    if (!['per_question', 'whole_document'].includes(mode)) {
-      throw new Error('Invalid generation mode')
+  function markJobSubmissionPending(
+    token: string,
+    kind: 'generate' | 'retry' | 'refine',
+    mode: GenerationMode | null = null,
+    retainedSummary?: ConfigGenerationSummary,
+  ): void {
+    if (!/^[0-9a-f]{32}$/.test(token)) throw new Error('Invalid client request token')
+    if (kind === 'generate' && mode === null) throw new Error('Generation mode is required')
+    if (retainedSummary !== undefined && !validGenerationSummary(retainedSummary)) {
+      throw new Error('Invalid generation summary')
     }
+    pendingJobRequestToken.value = token
+    pendingJobRequestKind.value = kind
     pendingGenerationMode.value = mode
+    if (retainedSummary !== undefined) generationSummary.value = { ...retainedSummary }
     persistSafeIndex()
   }
 
   function clearGenerationSubmissionPending(): void {
     pendingGenerationMode.value = null
+    pendingJobRequestToken.value = null
+    pendingJobRequestKind.value = null
+    persistSafeIndex()
+  }
+
+  function markUploadSubmissionPending(token: string): void {
+    if (!/^[0-9a-f]{32}$/.test(token)) throw new Error('Invalid client request token')
+    pendingUploadRequestToken.value = token
+    persistSafeIndex()
+  }
+
+  function clearUploadSubmissionPending(): void {
+    pendingUploadRequestToken.value = null
     persistSafeIndex()
   }
 
@@ -514,6 +571,9 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     phase.value = 'draft'
     resetMemory()
     pendingGenerationMode.value = candidate.pendingGenerationMode ?? null
+    pendingJobRequestToken.value = candidate.pendingJobRequestToken ?? null
+    pendingJobRequestKind.value = candidate.pendingJobRequestKind ?? null
+    pendingUploadRequestToken.value = candidate.pendingUploadRequestToken ?? null
     const dependencies: ConfigWorkspaceHydrationDependencies = {
       loadSource: overrides.loadSource ?? fetchConfigSource,
       loadJob: overrides.loadJob ?? jobApi.getJob,
@@ -691,13 +751,15 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   return {
     sessionId, phase, sourceId, sourceRevision, jobId, decisions,
     source, editor, editorEdits, editorCommands, serverIssues, generationSummary,
-    pendingGenerationMode, sourceLoading, sourceError,
+    pendingGenerationMode, pendingJobRequestToken, pendingJobRequestKind,
+    pendingUploadRequestToken, sourceLoading, sourceError,
     saveStatus, mappingStatus, hasDirtyEditor, effectiveEditorRows, effectiveTotalScore,
     canGenerate, hydrateSafeIndex, persistSafeIndex, clearWorkspace,
     selectSession, selectSource, discardEditorDraft, setSource, acceptUploadedSource,
     updateDecisions, loadSource,
     setEditor, captureGenerationContext, attachJob, detachJob, sourceRequest,
-    markGenerationSubmissionPending, clearGenerationSubmissionPending,
+    markJobSubmissionPending, clearGenerationSubmissionPending,
+    markUploadSubmissionPending, clearUploadSubmissionPending,
     reloadEditorForGeneration, updateEditor, addEditorCommand, captureEditorContext,
     isEditorContextCurrent, recordServerIssues, noteSaveFailed, noteSaveUnknown,
     buildSaveRequest, beginSave, markConflict, replaceWithAuthoritativeEditor,

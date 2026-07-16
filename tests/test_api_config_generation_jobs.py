@@ -224,6 +224,64 @@ def test_latest_generation_job_endpoint_does_not_return_a_different_request(
     assert missing.json()["error"]["code"] == "config_generation_job_not_found"
 
 
+def test_generation_request_token_reuses_only_the_exact_job(tmp_path: Path) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = _source(tmp_path, session_id)
+    old_token = "1" * 32
+    token = "2" * 32
+    old = client.post(
+        f"/api/sessions/{session_id}/config/generate-from-source",
+        json=_source_request(source, client_request_token=old_token),
+    )
+    first = client.post(
+        f"/api/sessions/{session_id}/config/generate-from-source",
+        json=_source_request(source, client_request_token=token),
+    )
+    replay = client.post(
+        f"/api/sessions/{session_id}/config/generate-from-source",
+        json=_source_request(source, client_request_token=token),
+    )
+    queried = client.get(
+        f"/api/sessions/{session_id}/config/generation-jobs/requests/{token}"
+    )
+
+    assert old.status_code == 202
+    assert first.status_code == 202
+    assert replay.status_code == 202
+    assert first.json()["id"] != old.json()["id"]
+    assert replay.json()["id"] == first.json()["id"]
+    assert queried.status_code == 200
+    assert queried.json()["id"] == first.json()["id"]
+    assert manager.store.find_config_job_by_request_token(
+        session_id=session_id, request_token=token
+    ).id == first.json()["id"]
+
+
+def test_generation_request_token_rejects_a_different_request(tmp_path: Path) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = _source(tmp_path, session_id)
+    token = "3" * 32
+    first = client.post(
+        f"/api/sessions/{session_id}/config/generate-from-source",
+        json=_source_request(source, client_request_token=token),
+    )
+    conflict = client.post(
+        f"/api/sessions/{session_id}/config/generate-from-source",
+        json=_source_request(
+            source,
+            generation_mode="whole_document",
+            client_request_token=token,
+        ),
+    )
+
+    assert first.status_code == 202
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "config_request_token_conflict"
+    manager.wait(first.json()["id"], timeout=5)
+
+
 @pytest.mark.parametrize(
     ("mode", "stage", "private_detail", "expected_public_detail"),
     [
@@ -642,12 +700,23 @@ def test_config_generation_retry_route_accepts_partial_source_job(tmp_path: Path
         },
     )
 
+    request = {
+        "source_job_id": source.id,
+        "retry_question_ids": ["Q2"],
+        "client_request_token": "d" * 32,
+    }
     response = client.post(
         f"/api/sessions/{session_id}/config/generate/retry",
-        json={"source_job_id": source.id, "retry_question_ids": ["Q2"]},
+        json=request,
+    )
+    replay = client.post(
+        f"/api/sessions/{session_id}/config/generate/retry",
+        json=request,
     )
 
     assert response.status_code == 202
+    assert replay.status_code == 202
+    assert replay.json()["id"] == response.json()["id"]
     assert response.json()["payload"] == {
         "session_id": session_id,
         "mode": "retry",

@@ -90,6 +90,29 @@ class JobManager:
         )
         return job
 
+    def submit_idempotent_config(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[JobRecord, bool]:
+        handler = self._handlers.get("config_generation")
+        if handler is None:
+            raise UnsupportedJobTypeError("unsupported job type: config_generation")
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("JobManager has shut down")
+            job, created = self.store.create_idempotent_config_job(dict(payload))
+            if not created:
+                return job, False
+            future = self._executor.submit(self._run_job, job.id, handler)
+            self._futures[job.id] = future
+        future.add_done_callback(
+            lambda completed, job_id=job.id: self._discard_completed_future(
+                job_id,
+                completed,
+            )
+        )
+        return job, True
+
     def submit_config_retry(self, payload: dict[str, Any]) -> JobRecord:
         handler = self._handlers.get("config_generation")
         if handler is None:
@@ -107,6 +130,29 @@ class JobManager:
             )
         )
         return job
+
+    def submit_idempotent_config_retry(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[JobRecord, bool]:
+        handler = self._handlers.get("config_generation")
+        if handler is None:
+            raise UnsupportedJobTypeError("unsupported job type: config_generation")
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("JobManager has shut down")
+            job, created = self.store.create_idempotent_config_retry_job(dict(payload))
+            if not created:
+                return job, False
+            future = self._executor.submit(self._run_job, job.id, handler)
+            self._futures[job.id] = future
+        future.add_done_callback(
+            lambda completed, job_id=job.id: self._discard_completed_future(
+                job_id,
+                completed,
+            )
+        )
+        return job, True
 
     def get(self, job_id: int) -> JobRecord | None:
         return self.store.get_job(int(job_id))

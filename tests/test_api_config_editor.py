@@ -321,15 +321,29 @@ def test_refine_accepts_only_revision_and_server_commands_and_rejects_old_revisi
     )
     assert nested.status_code == 422
 
+    refine_request = {
+        "revision": first["revision"],
+        "commands": [command],
+        "client_request_token": "e" * 32,
+    }
     submitted = client.post(
         f"/api/sessions/{session_id}/config/editor/refine",
-        json={"revision": first["revision"], "commands": [command]},
+        json=refine_request,
+    )
+    replay = client.post(
+        f"/api/sessions/{session_id}/config/editor/refine",
+        json=refine_request,
     )
     assert submitted.status_code == 202
+    assert replay.status_code == 202
+    assert replay.json()["id"] == submitted.json()["id"]
     assert submitted.json()["payload"] == {"session_id": session_id, "mode": "refine"}
     stored = manager.get(submitted.json()["id"])
     assert stored is not None
-    assert set(stored.payload) == {"session_id", "mode", "input_id"}
+    assert set(stored.payload) == {
+        "session_id", "mode", "input_id",
+        "client_request_token", "client_request_fingerprint",
+    }
 
     saved = client.put(
         f"/api/sessions/{session_id}/config/editor",
