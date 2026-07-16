@@ -148,6 +148,25 @@ describe('knowledge graph store', () => {
     expect(store.graphError).toBe('知识图谱暂时无法更新')
   })
 
+  it('clears completed evidence when a same-scope graph refresh succeeds', async () => {
+    const store = useKnowledgeGraphStore()
+    const firstGraph = graph(queryA, '三角形全等')
+    await store.loadGraph(queryA, async () => firstGraph)
+    await store.selectNode(
+      firstGraph.nodes[0]!,
+      async () => evidence(firstGraph, firstGraph.nodes[0]!.knowledge_key),
+    )
+
+    const refreshedGraph = graph(queryA, '三角形全等')
+    refreshedGraph.nodes[0]!.item_count = 2
+    await store.loadGraph(queryA, async () => refreshedGraph)
+
+    expect(store.graph).toEqual(refreshedGraph)
+    expect(store.selectedNodeKey).toBeNull()
+    expect(store.evidence).toBeNull()
+    expect(store.evidenceState).toBe('idle')
+  })
+
   it('does not let old evidence replace a newly selected node', async () => {
     const store = useKnowledgeGraphStore()
     const source = graph(queryA, '三角形全等')

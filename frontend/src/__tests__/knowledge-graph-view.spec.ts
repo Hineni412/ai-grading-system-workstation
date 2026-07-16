@@ -119,6 +119,12 @@ function selectValue(element: HTMLSelectElement, value: string): void {
   element.dispatchEvent(new Event('change', { bubbles: true }))
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise })
+  return { promise, resolve }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   vi.stubGlobal('ResizeObserver', ResizeObserverStub)
@@ -142,6 +148,24 @@ describe('knowledge graph view', () => {
     expect(host.textContent).toContain('已覆盖 4 / 5 份作答')
     expect(host.textContent).toContain('部分题目没有知识标签')
     expect(host.textContent).toContain('三角形全等')
+  })
+
+  it('keeps the canvas and inspector skeleton visible during the first graph load', async () => {
+    const pending = deferred<GraphRowsResponse>()
+    vi.mocked(fetchScopedGraphRows).mockImplementationOnce(async () => pending.promise)
+    const { host } = await mountView('/knowledge-graph?session=7&class=七年级一班')
+
+    await vi.waitFor(() => (
+      expect(host.querySelector('.knowledge-graph-loading-skeleton')).not.toBeNull()
+    ))
+    expect(host.textContent).toContain('知识标签分布')
+    expect(host.textContent).toContain('知识点详情')
+
+    pending.resolve(responseFor({
+      scope: { mode: 'class', class_id: '七年级一班' },
+      exam_scope: { mode: 'current', session_ids: [7] },
+    }))
+    await vi.waitFor(() => expect(host.querySelector('.knowledge-graph-loading-skeleton')).toBeNull())
   })
 
   it('does not request a graph when no valid class was supplied', async () => {
@@ -208,5 +232,21 @@ describe('knowledge graph view', () => {
     expect(router.currentRoute.value.query).toEqual({
       exam: 'manual', sessions: '7,8', scope: 'selected', students: '12,15',
     })
+  })
+
+  it('keeps a deep link recoverable when student options fail once', async () => {
+    vi.mocked(fetchStudents)
+      .mockRejectedValueOnce(new Error('temporary'))
+      .mockResolvedValueOnce(students)
+    const { host, router } = await mountView('/knowledge-graph?session=7&class=七年级一班')
+    expect(host.textContent).toContain('班级和学生列表暂时无法读取')
+    expect(router.currentRoute.value.query).toEqual({ session: '7', class: '七年级一班' })
+    expect(fetchScopedGraphRows).not.toHaveBeenCalled()
+
+    host.querySelector<HTMLButtonElement>('.knowledge-graph-inline-error button')!.click()
+    await vi.waitFor(() => expect(fetchScopedGraphRows).toHaveBeenCalledWith({
+      scope: { mode: 'class', class_id: '七年级一班' },
+      exam_scope: { mode: 'current', session_ids: [7] },
+    }, expect.any(AbortSignal)))
   })
 })

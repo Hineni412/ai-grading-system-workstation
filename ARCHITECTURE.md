@@ -282,8 +282,8 @@ AI阅卷系统_工作机版_v1.5.0/
 16. P2-06 的答卷证据查看器直接把既有受控媒体 URL 交给单个活动 `<img>`，不通过 Fetch/Blob/Object URL/Canvas 复制像素；相邻预加载仅保留至多两张裁剪图。缩放、旋转和拖拽状态只存在当前组件内，记录或媒体来源变化立即释放指针捕获并回到适应宽度；generation 和当前 URL 双重校验阻止大图延迟响应污染新记录。查看器局部快捷键不劫持输入框和重试按钮；评分写入仍留给 P2-07。
 17. P2-07 的评分检查器在 `/grading` 右栏按当前 `session_id/question_id/detail_id` 建立内存草稿；配置读取只投影当前题或当前 part 的已有评分字段，AI 候选和证据仅作建议。确认调用既有单条 Review confirm POST 且不自动重试；成功后先以教师结果局部更新，再按提交前队列目标导航并刷新，旧响应不得抢走教师后来选择的记录。刷新失败保留成功事实与干净草稿，未确认草稿只在关闭/刷新浏览器前触发标准提醒；活动记录在 API 提供历史前保持明确占位。
 18. P2-08 的页面级快捷键总线只在 `/grading` 生效，并跳过输入、按钮和可编辑区域；普通 Enter 在页面非输入区域执行单条确认并按提交前队列前进，最终得分框由局部处理器复用同一动作，Shift+Enter 不提交。固定匿名验收服务只服务构建产物、精确模拟 API、受控 SVG 媒体和两个测试控制端点，静态路径被限制在 `dist`；所有写入只修改内存副本，关闭或重置即恢复固定数据。
-19. P2-15 的 `/knowledge-graph` Vue 路由只读取 sessions、students 和既有 Graph POST。筛选草稿必须经“应用范围”才发出请求；URL 只保留验证后的当前考试与班级，不保存证据。Graph store 用 AbortController、请求世代和规范化范围阻止旧 rows/evidence 回写；同范围刷新失败保留上次成功内容。ECharts 只用 Canvas 渲染 tag-only 证据带或临时学生分组树，图模式无 links，树线不持久化且不表示知识关系；真实 DOM 文字目录提供搜索、分页和键盘选择。
-18. Streamlit 页面与业务服务仍运行在同一 Python 进程中；FastAPI 目前是增量本机 API 外壳，JobManager 仍为进程内线程池而非独立 Worker。测试通过 dependency override 注入的 manager 由测试自身关闭，不归应用 lifespan 所有。
+19. P2-15 的 `/knowledge-graph` Vue 路由只读取 sessions、students 和既有 Graph POST。筛选草稿必须经“应用范围”才发出请求；受控 URL 只保存经活动列表验证的当前/指定/跨考试范围、班级/单名/已选学生范围及其服务器 ID 或班级显示值，不保存节点或证据。Graph store 用 AbortController、请求世代和规范化范围阻止旧 rows/evidence 回写；同范围刷新失败保留上次成功内容，刷新成功后清除旧节点证据。ECharts 只用 Canvas 渲染 tag-only 证据带或临时学生分组树，图模式无 links，树线不持久化且不表示知识关系；真实 DOM 文字目录提供搜索、分页和键盘选择。
+20. Streamlit 页面与业务服务仍运行在同一 Python 进程中；FastAPI 目前是增量本机 API 外壳，JobManager 仍为进程内线程池而非独立 Worker。测试通过 dependency override 注入的 manager 由测试自身关闭，不归应用 lifespan 所有。
 
 ### 5.2 考试配置与批改
 

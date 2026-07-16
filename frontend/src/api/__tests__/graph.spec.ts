@@ -178,4 +178,32 @@ describe('P2-15 graph API contract', () => {
       }],
     })).toThrow('Invalid graph rows')
   })
+
+  it('rejects graph question references from outside the returned exam scope', () => {
+    expect(() => decodeGraphRowsResponse({
+      ...rows,
+      rows: [{
+        student_id: 12,
+        student_code: 'S012',
+        student_name: '匿名学生甲',
+        knowledge_key: 'knowledge_point:三角形全等',
+        knowledge_label: '三角形全等',
+        weighted_score_rate: 72,
+        deduction_count: 1,
+        item_count: 1,
+        sample_reasons: '条件遗漏',
+        source_question_refs: [{
+          session_id: 999,
+          session_name: '范围外考试',
+          question_id: 'Q1',
+          bank_question_id: 101,
+          score_awarded: 3,
+          full_score: 5,
+          score_rate: 0.6,
+        }],
+        tag_context: {},
+        error_counts: { primary: {}, secondary: {} },
+      }],
+    })).toThrow('Invalid graph rows')
+  })
 })

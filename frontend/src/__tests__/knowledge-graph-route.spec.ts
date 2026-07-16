@@ -58,6 +58,17 @@ describe('knowledge graph controlled route scope', () => {
     })
   })
 
+  it('reports extra controlled parameters mixed into a legacy workbench context', () => {
+    const parsed = parseGraphRouteScope({
+      session: '7', class: '七年级一班', students: '12,15',
+    }, sessions, students)
+    expect(parsed.query).toEqual({
+      scope: { mode: 'class', class_id: '七年级一班' },
+      exam_scope: { mode: 'current', session_ids: [7] },
+    })
+    expect(parsed.notice).toContain('已忽略无效地址参数')
+  })
+
   it('drops unknown parameters while keeping a valid scope and showing a notice', () => {
     const parsed = parseGraphRouteScope({
       exam: 'manual', sessions: '7,8', scope: 'selected', students: '12,15', debug: '1',
@@ -67,6 +78,18 @@ describe('knowledge graph controlled route scope', () => {
       exam_scope: { mode: 'manual', session_ids: [7, 8] },
     })
     expect(parsed.canonical).not.toHaveProperty('debug')
+    expect(parsed.notice).toContain('已忽略无效地址参数')
+  })
+
+  it('reports ignored legacy parameters mixed into a valid controlled scope', () => {
+    const parsed = parseGraphRouteScope({
+      exam: 'current', sessions: '7', scope: 'class', class: '七年级一班', session: '8',
+    }, sessions, students)
+    expect(parsed.query).toEqual({
+      scope: { mode: 'class', class_id: '七年级一班' },
+      exam_scope: { mode: 'current', session_ids: [7] },
+    })
+    expect(parsed.canonical).not.toHaveProperty('session')
     expect(parsed.notice).toContain('已忽略无效地址参数')
   })
 

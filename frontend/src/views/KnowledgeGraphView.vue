@@ -44,7 +44,7 @@ const scopeLabel = computed(() => {
 })
 
 async function initializeFromRoute(): Promise<void> {
-  if (routeInitialized || sessionStore.loadState !== 'ready' || studentsState.value === 'loading') return
+  if (routeInitialized || sessionStore.loadState !== 'ready' || studentsState.value !== 'ready') return
   routeInitialized = true
   const parsed = parseGraphRouteScope(route.query, sessionStore.sessions, students.value)
   if (parsed.query === null) {
@@ -52,11 +52,6 @@ async function initializeFromRoute(): Promise<void> {
     if (Object.keys(route.query).length > 0) {
       await router.replace({ name: 'knowledge-graph', query: parsed.canonical })
     }
-    return
-  }
-  if (studentsState.value === 'error') {
-    routeNotice.value = '班级和学生列表暂时不可用，请重新加载后选择范围'
-    await router.replace({ name: 'knowledge-graph', query: {} })
     return
   }
   if (
@@ -171,13 +166,30 @@ onBeforeUnmount(() => {
     <p v-if="routeNotice" class="knowledge-graph-scope-notice" role="status">
       {{ routeNotice }}
     </p>
-    <p
+    <div
       v-if="graphStore.graphState === 'loading' && graphStore.graph === null"
-      class="knowledge-graph-state-copy"
+      class="knowledge-graph-workspace knowledge-graph-loading-skeleton"
       role="status"
+      aria-busy="true"
+      aria-label="正在读取知识图谱"
     >
-      正在读取知识图谱…
-    </p>
+      <section class="knowledge-graph-canvas-panel">
+        <header class="knowledge-graph-canvas-toolbar">
+          <div>
+            <h2>知识标签分布</h2>
+            <p>正在准备当前范围的图表…</p>
+          </div>
+        </header>
+        <div class="knowledge-graph-canvas" aria-hidden="true" />
+      </section>
+      <aside class="knowledge-graph-inspector">
+        <header>
+          <p class="knowledge-graph-inspector__eyebrow">只读事实与证据</p>
+          <h2>知识点详情</h2>
+        </header>
+        <p class="knowledge-graph-state-copy">正在准备节点事实和题目证据…</p>
+      </aside>
+    </div>
     <div v-else-if="graphStore.graphState === 'error'" class="knowledge-graph-inline-error" role="alert">
       <p>{{ graphStore.graphError }}</p>
       <button type="button" @click="retryGraph">重新加载知识图谱</button>
