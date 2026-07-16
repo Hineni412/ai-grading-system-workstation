@@ -51,7 +51,7 @@ runtime\python\python.exe tools\handoff_status.py --plan $resolvedPlanPath --rep
 依次读取 AGENTS.md、ARCHITECTURE.md、docs/superpowers/packages/README.md、docs/superpowers/packages/EXECUTION_INDEX.md、docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md、docs/superpowers/packages/PARALLEL_WORKTREE_EXECUTION.md、docs/superpowers/packages/NIGHTLY_AUTOMATION.md、对应 Phase 地图和相关源码级即时计划。默认只把最新 origin/main 视为已集成依赖；唯一例外是已在 Index 声明的活动里程碑：后续包即时计划必须写入与 Index 当前已验证 SHA 完全一致的不可变交接基线，验证器确认其为当前分支祖先后，才可满足同一里程碑内的直接前置依赖。该例外不等于 merged，不得跨里程碑复用；不依赖其他对话的隐含摘要，不把普通本地 verified 当作依赖。
 
 二、核对已经领取的任务和通道
-如果任务工具可用，列出并读取本项目近期任务，用任务状态、执行包、分支、worktree 和即时计划建立唯一映射。对每个已经领取、运行中、停止、等待、完成未合并、脏或用途不明的通道，从主项目根目录运行验证器：先把唯一即时计划和匹配 worktree 解析成绝对路径 $resolvedPlanPath 与 $resolvedWorktreePath，再执行 `runtime\python\python.exe tools\handoff_status.py --plan $resolvedPlanPath --repo $resolvedWorktreePath`，并只接受退出码 0、单行合法 JSON、ok=true 且 issues 为空的结果。
+如果任务工具可用，列出并读取本项目近期任务，用任务状态、执行包、分支、worktree 和即时计划建立唯一映射。对每个已经领取、运行中、停止、等待、完成未合并、脏或用途不明的通道，从主项目根目录运行验证器：先把唯一即时计划和匹配 worktree 解析成绝对路径 $resolvedPlanPath 与 $resolvedWorktreePath。普通包执行 `runtime\python\python.exe tools\handoff_status.py --plan $resolvedPlanPath --repo $resolvedWorktreePath`；若计划声明交接基线，必须先从 integration 现场的 Index 独立读取当前已验证 SHA 为 $expectedHandoffBase，再追加 `--expected-handoff-base $expectedHandoffBase`，不得从计划自身复制该值充当可信输入。只接受退出码 0、单行合法 JSON、ok=true 且 issues 为空的结果。
 
 退出码 2、ok=false、工具缺失、非 JSON、多份计划、任一 issue 或现场证据冲突，都使该包/通道降为 report_only；任务、分支、worktree、计划或包无法唯一对应时整次运行停止。状态行为固定为：in_progress 只占用；resumable 才可能唤醒原任务；waiting_review 与 waiting_user 冻结且不得推断复审或用户结论；verified_pending_integration 冻结当前分支。只有经白天 integration 逐包验证并由 Index 记录为 milestone_integrated 的提交，才能作为同一活动里程碑下一包的交接基线；其他提交在进入最新 origin/main 前不能满足依赖。
 
@@ -73,7 +73,7 @@ Phase 2 额外硬停机：考虑唤醒或新领 P2-09 至 P2-22 之前，必须�
 不得修改、删除、暂存、提交或 stash 任何 user_data，不得调用真实 LLM、使用真实密钥或执行计划未授权的网络/文件操作。接口、Schema、评分规则、标签或状态语义与计划不一致，计划漂移，需要升级 Sol，同一问题连续两次修复失败，范围跨包，测试需要真实数据，或真实两库指纹变化时立即停止。只有下一步明确且不等待用户时才把交接状态改为 resumable；等待用户时改为 waiting_user；崩溃或无法判断时保留 in_progress 并要求白天检查。
 
 六、完成门槛与本地提交
-运行即时计划规定的聚焦测试、受影响回归、git diff --check 和 tools/smoke_check.py --skip-tests；前端包还必须运行 lint、typecheck、unit 和 build。再次比较真实两库大小、UTC 修改时间和 SHA-256，必须完全不变。确认范围不含 user_data、缓存、临时数据库、真实导出、截图噪声或密钥。
+运行即时计划规定的聚焦测试、受影响回归、git diff --check 和 tools/smoke_check.py --skip-tests；前端包统一运行 `npm run verify`，已构建的同一 SHA 如需浏览器验证则运行对应 `*:prepared` 命令，不再单独重复 typecheck 或 build。再次比较真实两库大小、UTC 修改时间和 SHA-256，必须完全不变。确认范围不含 user_data、缓存、临时数据库、真实导出、截图噪声或密钥。
 
 全部通过后，把即时计划交接块写为 waiting_review、功能提交 branch_head、自动验证 passed、独立复审 pending、用户验收 pending 或 not_required、真实数据指纹 unchanged，原样保留 Stash 基线，夜间动作 report_only，并只在功能分支创建一个本地提交。夜间 Terra 不得自行标记独立复审 passed、用户验收 passed 或 verified_pending_integration。不得 push，不得创建或合并 PR，不得合入 integration/main，不得删除分支/worktree，也不得开始第二个包。
 

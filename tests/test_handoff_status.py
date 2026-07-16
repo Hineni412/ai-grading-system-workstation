@@ -577,7 +577,11 @@ def test_handoff_claim_can_start_from_declared_milestone_base(tmp_path: Path) ->
     )
     _commit_all(repo, "feat: second milestone package")
 
-    report = validate_handoff(plan, repo)
+    report = validate_handoff(
+        plan,
+        repo,
+        expected_handoff_base=milestone_base,
+    )
 
     assert report.ok, report.issues
 
@@ -596,7 +600,11 @@ def test_declared_milestone_base_must_be_an_ancestor(tmp_path: Path) -> None:
     plan = repo / "docs" / "2026-07-11-p1-16-current-plan.md"
     _commit_claim(repo, plan, handoff_base=unrelated_sha)
 
-    report = validate_handoff(plan, repo)
+    report = validate_handoff(
+        plan,
+        repo,
+        expected_handoff_base=unrelated_sha,
+    )
 
     assert report.ok is False
     assert "plan handoff_base must be an ancestor of HEAD" in report.issues
@@ -627,10 +635,52 @@ def test_declared_milestone_base_cannot_change_after_claim(tmp_path: Path) -> No
     )
     _commit_all(repo, "test: forge changed milestone base")
 
-    report = validate_handoff(plan, repo)
+    report = validate_handoff(
+        plan,
+        repo,
+        expected_handoff_base=milestone_base,
+    )
 
     assert report.ok is False
     assert "plan handoff_base must remain unchanged from claim" in report.issues
+
+
+def test_declared_milestone_base_requires_trusted_expected_sha(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _initialize_repo(repo)
+    (repo / "app.py").write_text("VALUE = 0\n", encoding="utf-8")
+    _record_origin_main(repo)
+    (repo / "first-package.py").write_text("READY = True\n", encoding="utf-8")
+    milestone_base = _commit_all(repo, "feat: first milestone package")
+    plan = repo / "docs" / "2026-07-11-p1-16-current-plan.md"
+    _commit_claim(repo, plan, handoff_base=milestone_base)
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert "plan handoff_base requires a trusted expected SHA" in report.issues
+
+
+def test_declared_milestone_base_must_match_trusted_expected_sha(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _initialize_repo(repo)
+    (repo / "app.py").write_text("VALUE = 0\n", encoding="utf-8")
+    origin_main = _record_origin_main(repo)
+    (repo / "first-package.py").write_text("READY = True\n", encoding="utf-8")
+    milestone_base = _commit_all(repo, "feat: first milestone package")
+    plan = repo / "docs" / "2026-07-11-p1-16-current-plan.md"
+    _commit_claim(repo, plan, handoff_base=milestone_base)
+
+    report = validate_handoff(
+        plan,
+        repo,
+        expected_handoff_base=origin_main,
+    )
+
+    assert report.ok is False
+    assert "plan handoff_base must match the trusted expected SHA" in report.issues
 
 
 def test_stash_baseline_rejects_missing_stash_commit(tmp_path: Path) -> None:

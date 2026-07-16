@@ -16,6 +16,19 @@ def _write(path: Path, text: str = "VALUE = 1\n") -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _recording_pytest_runner(calls: list[list[str]]):
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="1 passed in 0.01s\n",
+            stderr="",
+        )
+
+    return fake_run
+
+
 def _sqlite_schema_names(db_path: Path) -> set[str]:
     with sqlite3.connect(db_path) as conn:
         rows = conn.execute(
@@ -162,17 +175,11 @@ def test_parallel_pytest_runs_isolated_and_serial_lanes(monkeypatch, tmp_path: P
     serial_test = tmp_path / "tests" / "test_serial_boundary.py"
     _write(serial_test, "def test_serial_boundary(): pass\n")
     calls: list[list[str]] = []
-
-    def fake_run(command, **_kwargs):
-        calls.append(command)
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout="1 passed in 0.01s\n",
-            stderr="",
-        )
-
-    monkeypatch.setattr(smoke_check.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        smoke_check.subprocess,
+        "run",
+        _recording_pytest_runner(calls),
+    )
 
     result = smoke_check.run_pytest(
         tmp_path,
@@ -196,17 +203,11 @@ def test_default_pytest_remains_single_process(monkeypatch, tmp_path: Path) -> N
     from tools import smoke_check
 
     calls: list[list[str]] = []
-
-    def fake_run(command, **_kwargs):
-        calls.append(command)
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout="1 passed in 0.01s\n",
-            stderr="",
-        )
-
-    monkeypatch.setattr(smoke_check.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        smoke_check.subprocess,
+        "run",
+        _recording_pytest_runner(calls),
+    )
 
     result = smoke_check.run_pytest(tmp_path)
 
@@ -223,6 +224,11 @@ def test_default_serial_lane_manifest_only_contains_existing_tests() -> None:
         (smoke_check.PROJECT_ROOT / relative_path).is_file()
         for relative_path in smoke_check.DEFAULT_SERIAL_TEST_PATHS
     )
+    assert {
+        Path("tests/test_answer_region_commit_service.py"),
+        Path("tests/test_answer_region_draft_service.py"),
+        Path("tests/test_review_media_service.py"),
+    }.issubset(smoke_check.DEFAULT_SERIAL_TEST_PATHS)
 
 
 def test_cli_forwards_explicit_parallel_pilot_options(monkeypatch) -> None:

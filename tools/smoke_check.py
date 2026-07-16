@@ -34,6 +34,8 @@ DEFAULT_SERIAL_TEST_PATHS = (
     Path("tests/api_e2e/test_five_flow.py"),
     Path("tests/api_e2e/test_harness.py"),
     Path("tests/api_e2e/test_restart_recovery.py"),
+    Path("tests/test_answer_region_commit_service.py"),
+    Path("tests/test_answer_region_draft_service.py"),
     Path("tests/test_answer_region_session_lock.py"),
     Path("tests/test_config_source_service.py"),
     Path("tests/test_job_manager.py"),
@@ -42,6 +44,7 @@ DEFAULT_SERIAL_TEST_PATHS = (
     Path("tests/test_performance_benchmark.py"),
     Path("tests/test_question_bank_local_file_dialog.py"),
     Path("tests/test_request_connection_benchmark.py"),
+    Path("tests/test_review_media_service.py"),
     Path("tests/test_secure_config_filesystem.py"),
     Path("tests/test_storage_maintenance.py"),
 )

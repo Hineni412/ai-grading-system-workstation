@@ -574,6 +574,7 @@ def validate_handoff(
     repo_root: Path,
     *,
     base_ref: str = "origin/main",
+    expected_handoff_base: str | None = None,
 ) -> HandoffValidation:
     repo = repo_root.resolve()
     plan = plan_path.resolve()
@@ -603,6 +604,13 @@ def validate_handoff(
         plan_handoff_base = _plan_handoff_base(plan_text)
     except HandoffStatusError as exc:
         issues.append(str(exc))
+    if plan_handoff_base is not None:
+        if expected_handoff_base is None:
+            issues.append("plan handoff_base requires a trusted expected SHA")
+        elif not FULL_SHA.fullmatch(expected_handoff_base):
+            issues.append("invalid trusted expected handoff SHA")
+        elif plan_handoff_base != expected_handoff_base:
+            issues.append("plan handoff_base must match the trusted expected SHA")
     filename_packages = _filename_package_ids(plan)
     expected_filename_package = record.package_id.casefold()
     if filename_packages != (expected_filename_package,):
@@ -802,8 +810,19 @@ def main() -> int:
     )
     parser.add_argument("--plan", required=True, type=Path)
     parser.add_argument("--repo", required=True, type=Path)
+    parser.add_argument(
+        "--expected-handoff-base",
+        help=(
+            "Trusted exact SHA recorded by the milestone coordinator; required "
+            "when the plan declares 交接基线."
+        ),
+    )
     args = parser.parse_args()
-    report = validate_handoff(args.plan, args.repo)
+    report = validate_handoff(
+        args.plan,
+        args.repo,
+        expected_handoff_base=args.expected_handoff_base,
+    )
     print(json.dumps(report.to_dict(), ensure_ascii=False, sort_keys=True))
     return 0 if report.ok else 2
 
