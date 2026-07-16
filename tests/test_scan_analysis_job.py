@@ -71,11 +71,13 @@ def test_run_scan_analysis_persists_payload_and_summary(tmp_path, monkeypatch: p
         enhance_images=False,
         ocr_workers=3,
         front_page_parity="odd",
+        scan_batch_id="anonymous-batch-1",
     )
 
     output_path = Path(result["scan_analysis_path"])
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["enhance_images"] is False
+    assert payload["scan_batch_id"] == "anonymous-batch-1"
     assert payload["groups"][0]["student_name"] == "Alice"
     assert result["summary"] == {
         "auto_matched": 1,

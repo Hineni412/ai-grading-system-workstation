@@ -28,6 +28,7 @@ def run_scan_analysis(
     enhance_images: bool = True,
     ocr_workers: int | None = None,
     front_page_parity: str | None = "odd",
+    scan_batch_id: str | None = None,
     raise_if_cancelled: Callable[[], None] | None = None,
 ) -> dict[str, object]:
     session_id = int(session_id)
@@ -62,6 +63,8 @@ def run_scan_analysis(
     _check_cancelled(raise_if_cancelled)
     payload = analysis.to_dict() if isinstance(analysis, ScanAnalysis) else dict(analysis)
     payload["enhance_images"] = bool(enhance_images)
+    if scan_batch_id:
+        payload["scan_batch_id"] = str(scan_batch_id)
 
     session_work_dir = Path(session_work_dir)
     output_path = session_work_dir / "scan_analysis_latest.json"

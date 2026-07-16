@@ -241,6 +241,24 @@ class ScanGradingWorkspace:
             "source_run_id": run.id,
         }
 
+    def submit_resume(self, session_id: int, run_id: int) -> Any:
+        if self.job_manager is None:
+            raise ScanGradingWorkspaceError("grading job manager is unavailable")
+        with self._lock(session_id):
+            payload = self.prepare_resume(session_id, run_id)
+            manifest = self._load_or_create_manifest(session_id)
+            payload["scan_batch_id"] = str(manifest["batch_id"])
+            return self.job_manager.submit_unique_active("grading_run", payload)
+
+    def submit_failed_retry(self, session_id: int, run_id: int) -> Any:
+        if self.job_manager is None:
+            raise ScanGradingWorkspaceError("grading job manager is unavailable")
+        with self._lock(session_id):
+            payload = self.prepare_failed_retry(session_id, run_id)
+            manifest = self._load_or_create_manifest(session_id)
+            payload["scan_batch_id"] = str(manifest["batch_id"])
+            return self.job_manager.submit_unique_active("grading_run", payload)
+
     def prepare_start(
         self,
         session_id: int,
@@ -309,8 +327,47 @@ class ScanGradingWorkspace:
                 max_workers=max_workers,
                 requests_per_minute=requests_per_minute,
             )
+            manifest = self._load_or_create_manifest(session_id)
+            payload["scan_batch_id"] = str(manifest["batch_id"])
             payload["exams_dir"] = str(self.frozen_scan_dir(session_id))
+            return self._submit_grading_once(
+                session_id,
+                submission_key=f"start:{manifest['batch_id']}",
+                payload=payload,
+                manifest=manifest,
+            )
+
+    def _submit_grading_once(
+        self,
+        session_id: int,
+        *,
+        submission_key: str,
+        payload: dict[str, Any],
+        manifest: dict[str, Any],
+    ) -> Any:
+        if self.job_manager is None:
+            raise ScanGradingWorkspaceError("grading job manager is unavailable")
+        submissions = dict(manifest.get("grading_submissions") or {})
+        if submission_key in submissions:
+            raise ScanGradingWorkspaceError("grading submission was already accepted")
+        reservation_token = uuid4().hex
+        submissions[submission_key] = {
+            "token": reservation_token,
+            "reserved_at": self._now(),
+        }
+        manifest["grading_submissions"] = submissions
+        self._write_manifest(session_id, manifest)
+        try:
             return self.job_manager.submit_unique_active("grading_run", payload)
+        except Exception:
+            current = self._load_or_create_manifest(session_id)
+            current_submissions = dict(current.get("grading_submissions") or {})
+            reservation = current_submissions.get(submission_key)
+            if isinstance(reservation, dict) and reservation.get("token") == reservation_token:
+                current_submissions.pop(submission_key, None)
+                current["grading_submissions"] = current_submissions
+                self._write_manifest(session_id, current)
+            raise
 
     def start_new_upload_batch(self, session_id: int) -> dict[str, Any]:
         with self._lock(session_id):
@@ -343,9 +400,10 @@ class ScanGradingWorkspace:
                 "files": [],
                 "frozen_at": None,
                 "run_floor_id": run_floor_id,
+                "grading_submissions": {},
             }
-            self._write_manifest(session_id, manifest)
             history_dir = self._session_dir(session_id) / "scan_history" / str(previous_manifest["batch_id"])
+            archive_pairs = []
             for name in (
                 "scan_analysis_latest.json",
                 "scan_decisions_state.json",
@@ -353,8 +411,29 @@ class ScanGradingWorkspace:
             ):
                 source = self._session_dir(session_id) / name
                 if source.exists():
+                    archive_pairs.append((source, history_dir / name))
+            moved: list[tuple[Path, Path]] = []
+            try:
+                if archive_pairs:
                     history_dir.mkdir(parents=True, exist_ok=True)
-                    os.replace(source, history_dir / name)
+                for source, target in archive_pairs:
+                    os.replace(source, target)
+                    moved.append((source, target))
+                self._write_manifest(session_id, manifest)
+            except Exception as exc:
+                rollback_failed = False
+                for source, target in reversed(moved):
+                    try:
+                        if target.exists() and not source.exists():
+                            os.replace(target, source)
+                    except OSError:
+                        rollback_failed = True
+                message = (
+                    "scan batch archive rollback failed"
+                    if rollback_failed
+                    else "scan batch archive failed"
+                )
+                raise ScanGradingWorkspaceError(message) from exc
             return self._public_batch(manifest)
 
     def _require_run(self, session_id: int, run_id: int):
@@ -366,6 +445,14 @@ class ScanGradingWorkspace:
         run = store.get_run(int(run_id))
         if run is None or run.session_id != int(session_id):
             raise ScanGradingWorkspaceError("grading run was not found")
+        manifest = self._load_or_create_manifest(session_id)
+        latest = store.latest(int(session_id))
+        if (
+            run.id <= int(manifest.get("run_floor_id") or 0)
+            or latest is None
+            or latest.id != run.id
+        ):
+            raise ScanGradingWorkspaceError("grading run does not belong to the current batch")
         return run, store.counts(run.id)
 
     def upload_batch_exists(self, session_id: int) -> bool:
@@ -503,6 +590,16 @@ class ScanGradingWorkspace:
             if manifest.get("state") != "frozen":
                 raise ScanGradingWorkspaceError("scan upload batch is not frozen")
             return self._batch_dir(session_id, manifest["batch_id"]) / "files"
+
+    def frozen_scan_input(self, session_id: int) -> tuple[Path, str]:
+        with self._lock(session_id):
+            manifest = self._load_or_create_manifest(session_id)
+            if manifest.get("state") != "frozen":
+                raise ScanGradingWorkspaceError("scan upload batch is not frozen")
+            return (
+                self._batch_dir(session_id, manifest["batch_id"]) / "files",
+                str(manifest["batch_id"]),
+            )
 
     def get_preflight(self, session_id: int) -> dict[str, Any]:
         with self._lock(session_id):
@@ -691,6 +788,7 @@ class ScanGradingWorkspace:
             "files": [],
             "frozen_at": None,
             "run_floor_id": 0,
+            "grading_submissions": {},
         }
 
     def _write_manifest(self, session_id: int, manifest: dict[str, Any]) -> None:
@@ -760,6 +858,9 @@ class ScanGradingWorkspace:
         payload = json.loads(raw.decode("utf-8"))
         if not isinstance(payload, dict):
             raise ScanGradingWorkspaceError("scan preflight is invalid")
+        manifest = self._load_or_create_manifest(session_id)
+        if str(payload.get("scan_batch_id") or "") != str(manifest["batch_id"]):
+            raise ScanGradingWorkspaceError("scan preflight belongs to another batch")
         return payload, hashlib.sha256(raw).hexdigest()
 
     def _read_decision_state(self, session_id: int, identity: str) -> dict[str, Any]:

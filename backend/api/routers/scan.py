@@ -309,7 +309,9 @@ def analyze_session_scans(
         payload["ocr_workers"] = request.ocr_workers
     if workspace.upload_batch_exists(session_id):
         try:
-            payload["exams_dir"] = str(workspace.frozen_scan_dir(session_id))
+            scan_dir, scan_batch_id = workspace.frozen_scan_input(session_id)
+            payload["exams_dir"] = str(scan_dir)
+            payload["scan_batch_id"] = scan_batch_id
         except ScanGradingWorkspaceError as exc:
             raise ApiError(
                 409,

@@ -154,12 +154,13 @@ def test_preflight_projection_hides_paths_and_saves_revisioned_decisions(tmp_pat
             content_sha256=hashlib.sha256(content).hexdigest(),
             source=io.BytesIO(content),
         )
-    workspace.freeze_uploads(3, expected_revision=2)
+    frozen = workspace.freeze_uploads(3, expected_revision=2)
     scan_files = sorted((tmp_path / "exams").rglob("*.jpg"))
     analysis_path = tmp_path / "templates" / "session_3" / "scan_analysis_latest.json"
     analysis_path.write_text(
         json.dumps(
             {
+                "scan_batch_id": frozen["batch_id"],
                 "groups": [
                     {
                         "front_image": str(scan_files[1]),
@@ -264,3 +265,103 @@ def test_starting_a_new_batch_archives_the_previous_preflight(tmp_path) -> None:
     ):
         assert not (session_dir / name).exists()
         assert (session_dir / "scan_history" / old_batch["batch_id"] / name).exists()
+
+
+def test_new_batch_archive_failure_keeps_previous_batch_intact(tmp_path, monkeypatch) -> None:
+    import backend.scan_grading.workspace as workspace_module
+    from backend.scan_grading.workspace import (
+        ScanGradingWorkspace,
+        ScanGradingWorkspaceError,
+    )
+
+    workspace = ScanGradingWorkspace(
+        exams_root=tmp_path / "exams",
+        templates_root=tmp_path / "templates",
+    )
+    content = b"old scan"
+    workspace.add_upload(
+        5,
+        filename="old.jpg",
+        media_type="image/jpeg",
+        content_sha256=hashlib.sha256(content).hexdigest(),
+        source=io.BytesIO(content),
+    )
+    old_batch = workspace.freeze_uploads(5, expected_revision=1)
+    session_dir = tmp_path / "templates" / "session_5"
+    names = (
+        "scan_analysis_latest.json",
+        "scan_decisions_state.json",
+        "scan_manual_decisions_latest.json",
+    )
+    for name in names:
+        (session_dir / name).write_text("{}", encoding="utf-8")
+    original_replace = workspace_module.os.replace
+
+    failure_injected = False
+
+    def fail_second_archive(source, target):
+        nonlocal failure_injected
+        if (
+            not failure_injected
+            and "scan_history" in str(target)
+            and str(target).endswith("scan_decisions_state.json")
+        ):
+            failure_injected = True
+            raise OSError("injected archive failure")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(workspace_module.os, "replace", fail_second_archive)
+    with pytest.raises(ScanGradingWorkspaceError):
+        workspace.start_new_upload_batch(5)
+
+    loaded = workspace.get_workspace(5)
+    assert loaded["upload_batch"]["batch_id"] == old_batch["batch_id"]
+    assert all((session_dir / name).is_file() for name in names)
+
+
+def test_preflight_rejects_analysis_from_previous_batch(tmp_path) -> None:
+    from backend.scan_grading.workspace import (
+        ScanGradingWorkspace,
+        ScanGradingWorkspaceError,
+    )
+
+    workspace = ScanGradingWorkspace(
+        exams_root=tmp_path / "exams",
+        templates_root=tmp_path / "templates",
+    )
+    old_content = b"old scan"
+    workspace.add_upload(
+        6,
+        filename="old.jpg",
+        media_type="image/jpeg",
+        content_sha256=hashlib.sha256(old_content).hexdigest(),
+        source=io.BytesIO(old_content),
+    )
+    old_batch = workspace.freeze_uploads(6, expected_revision=1)
+    workspace.start_new_upload_batch(6)
+    new_content = b"new scan"
+    workspace.add_upload(
+        6,
+        filename="new.jpg",
+        media_type="image/jpeg",
+        content_sha256=hashlib.sha256(new_content).hexdigest(),
+        source=io.BytesIO(new_content),
+    )
+    workspace.freeze_uploads(6, expected_revision=1)
+    session_dir = tmp_path / "templates" / "session_6"
+    (session_dir / "scan_analysis_latest.json").write_text(
+        json.dumps(
+            {
+                "scan_batch_id": old_batch["batch_id"],
+                "groups": [],
+                "issues": [],
+                "absent_students": [],
+                "warnings": [],
+                "total_pages": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ScanGradingWorkspaceError):
+        workspace.get_preflight(6)
