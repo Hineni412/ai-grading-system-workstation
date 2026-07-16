@@ -19,6 +19,7 @@ from backend.config_workspace.sources import (
     QuestionDecision,
 )
 from backend.jobs.config_generation import (
+    cleanup_consumed_config_retry_artifacts,
     discard_config_generation_input,
     load_config_generation_input,
     run_config_generation_job,
@@ -1860,6 +1861,116 @@ def test_config_source_references_are_derived_from_private_job_payloads(
     )
 
     assert store.referenced_config_source_ids(7) == {"a" * 32, "7" * 32}
+
+
+def test_completed_retry_chain_releases_only_consumed_partial_source_references(
+    tmp_path: Path,
+) -> None:
+    store = JobStore(tmp_path / "jobs.db")
+    source_id = "7" * 32
+    input_id = "8" * 32
+    first = store.create_job(
+        "config_generation",
+        {
+            "session_id": 7,
+            "mode": "generate",
+            "generation_mode": "per_question",
+            "source_id": source_id,
+            "source_revision": "6" * 64,
+            "input_id": input_id,
+        },
+    )
+    store.finish(first.id, "succeeded", result={"outcome": "partial"})
+    second = store.create_job(
+        "config_generation",
+        {
+            "session_id": 7,
+            "mode": "retry",
+            "generation_mode": "per_question",
+            "source_job_id": first.id,
+            "source_id": source_id,
+            "source_revision": "6" * 64,
+            "input_id": input_id,
+        },
+    )
+    store.finish(second.id, "succeeded", result={"outcome": "partial"})
+
+    assert store.referenced_config_source_ids(7) == {source_id}
+
+    final = store.create_job(
+        "config_generation",
+        {
+            "session_id": 7,
+            "mode": "retry",
+            "generation_mode": "per_question",
+            "source_job_id": second.id,
+            "source_id": source_id,
+            "source_revision": "6" * 64,
+            "input_id": input_id,
+        },
+    )
+    store.finish(final.id, "succeeded", result={"outcome": "complete"})
+
+    assert store.consumed_config_retry_artifacts(7) == (
+        (7, first.id, input_id),
+        (7, second.id, input_id),
+    )
+    assert store.referenced_config_source_ids(7) == set()
+
+    active = store.create_job(
+        "config_generation",
+        {
+            "session_id": 7,
+            "mode": "generate",
+            "source_id": source_id,
+            "source_revision": "6" * 64,
+            "input_id": "9" * 32,
+        },
+    )
+    assert active.status == "queued"
+    assert store.referenced_config_source_ids(7) == {source_id}
+
+
+def test_completed_retry_cleanup_removes_only_consumed_artifacts(
+    tmp_path: Path,
+) -> None:
+    upload_dir = tmp_path / "uploaded"
+    upload_dir.mkdir()
+    store = JobStore(tmp_path / "jobs.db")
+    input_id = "8" * 32
+    source = store.create_job(
+        "config_generation",
+        {
+            "session_id": 7,
+            "mode": "generate",
+            "generation_mode": "per_question",
+            "input_id": input_id,
+        },
+    )
+    store.finish(source.id, "succeeded", result={"outcome": "partial"})
+    retry = store.create_job(
+        "config_generation",
+        {
+            "session_id": 7,
+            "mode": "retry",
+            "generation_mode": "per_question",
+            "source_job_id": source.id,
+            "input_id": input_id,
+        },
+    )
+    store.finish(retry.id, "succeeded", result={"outcome": "complete"})
+    draft = upload_dir / f"config_generation_draft_job_{source.id}.json"
+    staged_input = upload_dir / f"config_generation_input_{input_id}.json"
+    sentinel = upload_dir / "keep.json"
+    draft.write_text("{}", encoding="utf-8")
+    staged_input.write_text("{}", encoding="utf-8")
+    sentinel.write_text("keep", encoding="utf-8")
+
+    cleanup_consumed_config_retry_artifacts(upload_dir, store, session_id=7)
+
+    assert not draft.exists()
+    assert not staged_input.exists()
+    assert sentinel.read_text(encoding="utf-8") == "keep"
 
 
 def _refine_context(tmp_path: Path):

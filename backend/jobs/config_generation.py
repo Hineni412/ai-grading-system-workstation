@@ -7,7 +7,7 @@ import re
 import uuid
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from db_manager import DBManager
 from backend.config_workspace.locks import session_config_lock
@@ -51,6 +51,9 @@ from session_manager import (
 )
 
 from .manager import JobCancellationRequested, JobContext
+
+if TYPE_CHECKING:
+    from .store import JobStore
 
 
 _INPUT_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -194,6 +197,42 @@ def discard_config_generation_input(upload_config_dir: Path, input_id: str) -> N
         pass
 
 
+def cleanup_consumed_config_retry_artifacts(
+    upload_config_dir: Path,
+    store: "JobStore",
+    *,
+    session_id: int | None = None,
+) -> None:
+    root = Path(upload_config_dir)
+    artifacts = store.consumed_config_retry_artifacts(session_id)
+    if not artifacts:
+        return
+    filesystem = SecureRootFilesystem(root)
+    active_input_ids = store.active_config_input_ids()
+    draft_paths = tuple(
+        _draft_path(root, source_job_id)
+        for _artifact_session_id, source_job_id, _input_id in artifacts
+    )
+    try:
+        filesystem.unlink_many(draft_paths)
+    except SecureFilesystemError:
+        pass
+    for input_id in {
+        input_id
+        for _artifact_session_id, _source_job_id, input_id in artifacts
+        if input_id not in active_input_ids
+    }:
+        discard_config_generation_input(root, input_id)
+    service = ConfigSourceService(root)
+    for artifact_session_id in sorted({item[0] for item in artifacts}):
+        service.cleanup_inactive(
+            session_id=artifact_session_id,
+            referenced_source_ids=store.referenced_config_source_ids(
+                artifact_session_id
+            ),
+        )
+
+
 def run_config_generation_job(
     *,
     context: JobContext,
@@ -217,9 +256,23 @@ def run_config_generation_job(
     except BaseException as exc:
         if input_id and mode != "retry":
             discard_config_generation_input(upload_config_dir, input_id)
+        if mode == "retry":
+            completed = context.store.get_job(context.job_id)
+            if completed is not None and completed.status == "succeeded":
+                cleanup_consumed_config_retry_artifacts(
+                    upload_config_dir,
+                    context.store,
+                    session_id=int(context.payload.get("session_id") or 0),
+                )
         raise
     if input_id and result.get("outcome") != "partial":
         discard_config_generation_input(upload_config_dir, input_id)
+    if mode == "retry" and result.get("outcome") == "complete":
+        cleanup_consumed_config_retry_artifacts(
+            upload_config_dir,
+            context.store,
+            session_id=int(context.payload.get("session_id") or 0),
+        )
     return result
 
 

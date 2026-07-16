@@ -680,13 +680,21 @@ class JobStore:
     def referenced_config_source_ids(self, session_id: int) -> set[str]:
         clean_session_id = int(session_id)
         references: set[str] = set()
+        consumed_source_job_ids = {
+            source_job_id
+            for artifact_session_id, source_job_id, _input_id
+            in self.consumed_config_retry_artifacts(clean_session_id)
+            if artifact_session_id == clean_session_id
+        }
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT status, payload_json, result_json FROM jobs "
+                "SELECT id, status, payload_json, result_json FROM jobs "
                 "WHERE job_type = 'config_generation' "
                 "AND status IN ('queued','running','paused','succeeded')"
             ).fetchall()
         for row in rows:
+            if int(row["id"]) in consumed_source_job_ids:
+                continue
             try:
                 payload = json.loads(str(row["payload_json"] or "{}"))
             except json.JSONDecodeError:
@@ -708,6 +716,83 @@ class JobStore:
             if payload_session_id == clean_session_id and _SOURCE_ID.fullmatch(source_id):
                 references.add(source_id)
         return references
+
+    def consumed_config_retry_artifacts(
+        self,
+        session_id: int | None = None,
+    ) -> tuple[tuple[int, int, str], ...]:
+        """Return partial-job artifacts made obsolete by a completed retry chain."""
+        clean_session_id = int(session_id) if session_id is not None else None
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM jobs WHERE job_type = 'config_generation'"
+            ).fetchall()
+        records = {int(row["id"]): _job_record(row) for row in rows}
+        consumed: dict[int, tuple[int, int, str]] = {}
+        for record in records.values():
+            if (
+                record.status != "succeeded"
+                or record.payload.get("mode") != "retry"
+                or record.result.get("outcome") != "complete"
+            ):
+                continue
+            try:
+                retry_session_id = int(record.payload.get("session_id") or 0)
+                source_job_id = int(record.payload.get("source_job_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if retry_session_id <= 0 or (
+                clean_session_id is not None and retry_session_id != clean_session_id
+            ):
+                continue
+            visited: set[int] = set()
+            while source_job_id > 0 and source_job_id not in visited:
+                visited.add(source_job_id)
+                source = records.get(source_job_id)
+                if (
+                    source is None
+                    or source.status != "succeeded"
+                    or source.result.get("outcome") != "partial"
+                ):
+                    break
+                try:
+                    source_session_id = int(source.payload.get("session_id") or 0)
+                except (TypeError, ValueError):
+                    break
+                input_id = str(source.payload.get("input_id") or "").strip()
+                if source_session_id != retry_session_id or not _SOURCE_ID.fullmatch(input_id):
+                    break
+                consumed[source_job_id] = (
+                    retry_session_id,
+                    source_job_id,
+                    input_id,
+                )
+                if source.payload.get("mode") != "retry":
+                    break
+                try:
+                    source_job_id = int(source.payload.get("source_job_id") or 0)
+                except (TypeError, ValueError):
+                    break
+        return tuple(consumed[key] for key in sorted(consumed))
+
+    def active_config_input_ids(self) -> set[str]:
+        input_ids: set[str] = set()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT payload_json FROM jobs WHERE job_type = 'config_generation' "
+                "AND status IN ('queued','running','paused')"
+            ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"] or "{}"))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            input_id = str(payload.get("input_id") or "").strip()
+            if _SOURCE_ID.fullmatch(input_id):
+                input_ids.add(input_id)
+        return input_ids
 
     def referenced_config_paths(self, paths: set[str]) -> set[str]:
         candidates = {str(path) for path in paths if str(path)}
