@@ -11,6 +11,8 @@ export interface EvidenceLaneNode {
   bandLabel: string
   bandIndex: number
   orderInBand: number
+  x: number
+  y: number
   size: number
   studentCount: number
   itemCount: number
@@ -78,6 +80,18 @@ export function buildEvidenceLaneModel(nodes: GraphNode[]): EvidenceLaneNode[] {
       left.knowledge_key.localeCompare(right.knowledge_key)
     )
   })
+  const bandTotals = new Map<MasteryBand, number>()
+  for (const node of ordered) {
+    const band = masteryBand(node.average_mastery)
+    bandTotals.set(band, (bandTotals.get(band) ?? 0) + 1)
+  }
+  const bandStarts = new Map<MasteryBand, number>()
+  let nextBandStart = 64
+  for (const band of BAND_ORDER) {
+    bandStarts.set(band, nextBandStart)
+    const rows = Math.max(1, Math.ceil((bandTotals.get(band) ?? 0) / 10))
+    nextBandStart += rows * 88 + 60
+  }
   const bandCounts = new Map<MasteryBand, number>()
   return ordered.map((node) => {
     const band = masteryBand(node.average_mastery)
@@ -92,6 +106,8 @@ export function buildEvidenceLaneModel(nodes: GraphNode[]): EvidenceLaneNode[] {
       bandLabel: masteryBandLabel(band),
       bandIndex: BAND_ORDER.indexOf(band),
       orderInBand,
+      x: 72 + (orderInBand % 10) * 112,
+      y: (bandStarts.get(band) ?? 64) + Math.floor(orderInBand / 10) * 88,
       size: nodeEvidenceSize(node.item_count),
       studentCount: node.student_count,
       itemCount: node.item_count,

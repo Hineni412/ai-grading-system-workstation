@@ -3,12 +3,13 @@ import { GraphChart, TreeChart } from 'echarts/charts'
 import { AriaComponent } from 'echarts/components'
 import { init, use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-import type { GraphNode, GraphRow } from '../../api/graph'
+import type { GraphCoverage, GraphNode, GraphRow } from '../../api/graph'
 import {
   buildEvidenceLaneModel,
   buildGroupingTree,
+  summarizeGraph,
   type GroupingTreeNode,
   type MasteryBand,
 } from '../../features/knowledge-graph/model'
@@ -36,6 +37,7 @@ const props = withDefaults(defineProps<{
   mode: GraphDisplayMode
   selectedKey: string | null
   scopeLabel: string
+  coverage: GraphCoverage
   chartFactory?: (element: HTMLElement) => ChartLike
 }>(), {
   chartFactory: undefined,
@@ -51,11 +53,21 @@ let chart: ChartLike | null = null
 let observer: ResizeObserver | null = null
 let resizeFrame: number | null = null
 
-const bandColours: Record<MasteryBand, { fill: string; border: string }> = {
-  weak: { fill: '#faecec', border: '#b04444' },
-  review: { fill: '#fff4da', border: '#9a6718' },
-  slight: { fill: '#edf3f7', border: '#496579' },
-  stable: { fill: '#eaf5ef', border: '#2f7a55' },
+const bandColourTokens: Record<MasteryBand, { fill: string; border: string }> = {
+  weak: { fill: '--color-danger-subtle', border: '--color-danger' },
+  review: { fill: '--color-warning-subtle', border: '--color-warning' },
+  slight: { fill: '--color-info-subtle', border: '--color-info' },
+  stable: { fill: '--color-success-subtle', border: '--color-success' },
+}
+
+const graphSummary = computed(() => summarizeGraph(props.nodes))
+const selectedLabel = computed(() => props.nodes.find(
+  (node) => node.knowledge_key === props.selectedKey,
+)?.knowledge_label ?? '未选择')
+
+function themeColour(token: string): string {
+  const element = chartElement.value ?? document.documentElement
+  return getComputedStyle(element).getPropertyValue(token).trim()
 }
 
 function prefersReducedMotion(): boolean {
@@ -82,18 +94,20 @@ function graphOption(): Record<string, unknown> {
         name: node.label,
         knowledgeKey: node.knowledgeKey,
         value: node.mastery,
-        x: 72 + (node.orderInBand % 10) * 112,
-        y: 64 + node.bandIndex * 148 + Math.floor(node.orderInBand / 10) * 44,
+        x: node.x,
+        y: node.y,
         symbolSize: node.size,
         category: node.bandIndex,
         itemStyle: {
-          color: bandColours[node.band].fill,
-          borderColor: props.selectedKey === node.knowledgeKey ? '#2563eb' : bandColours[node.band].border,
+          color: themeColour(bandColourTokens[node.band].fill),
+          borderColor: props.selectedKey === node.knowledgeKey
+            ? themeColour('--color-accent')
+            : themeColour(bandColourTokens[node.band].border),
           borderWidth: props.selectedKey === node.knowledgeKey ? 3 : 1,
         },
         label: {
           show: props.nodes.length <= 120 || props.selectedKey === node.knowledgeKey,
-          color: '#20242a',
+          color: themeColour('--color-text-primary'),
           formatter: `${node.label}\n${node.percentLabel}`,
           fontSize: 12,
           lineHeight: 16,
@@ -110,7 +124,11 @@ function treeData(node: GroupingTreeNode): Record<string, unknown> {
     ...(node.knowledgeKey ? { knowledgeKey: node.knowledgeKey } : {}),
     children: node.children.map(treeData),
     ...(node.knowledgeKey === props.selectedKey
-      ? { itemStyle: { color: '#eff6ff', borderColor: '#2563eb', borderWidth: 3 } }
+      ? { itemStyle: {
+          color: themeColour('--color-accent-subtle'),
+          borderColor: themeColour('--color-accent'),
+          borderWidth: 3,
+        } }
       : {}),
   }
 }
@@ -133,11 +151,15 @@ function treeOption(): Record<string, unknown> {
       roam: true,
       symbol: 'circle',
       symbolSize: 12,
-      expandAndCollapse: false,
-      lineStyle: { color: '#b9c0c9', width: 1, type: 'dotted' },
-      itemStyle: { color: '#ffffff', borderColor: '#5c6470', borderWidth: 1 },
-      label: { color: '#20242a', fontSize: 12, position: 'left' },
-      leaves: { label: { position: 'right', color: '#20242a' } },
+      expandAndCollapse: true,
+      lineStyle: { color: themeColour('--color-border-strong'), width: 1, type: 'dotted' },
+      itemStyle: {
+        color: themeColour('--color-bg-surface'),
+        borderColor: themeColour('--color-text-secondary'),
+        borderWidth: 1,
+      },
+      label: { color: themeColour('--color-text-primary'), fontSize: 12, position: 'left' },
+      leaves: { label: { position: 'right', color: themeColour('--color-text-primary') } },
       emphasis: { focus: 'descendant' },
     }],
   }
@@ -168,7 +190,7 @@ function restoreView(): void {
 }
 
 watch(
-  () => [props.nodes, props.rows, props.mode, props.selectedKey, props.scopeLabel],
+  () => [props.nodes, props.rows, props.mode, props.selectedKey, props.scopeLabel, props.coverage],
   renderChart,
   { deep: true },
 )
@@ -232,6 +254,13 @@ onBeforeUnmount(() => {
     </ul>
     <p v-else class="knowledge-graph-grouping-note" role="note">
       虚线仅表示筛选范围、学生与知识标签的分组归属；不是知识点父子、先修或相关关系。
+    </p>
+
+    <p class="knowledge-graph-state-copy" role="status">
+      共 {{ graphSummary.total }} 个知识标签；重点薄弱 {{ graphSummary.weak }} 个，
+      需要讲评 {{ graphSummary.review }} 个，轻微欠缺 {{ graphSummary.slight }} 个，
+      稳定 {{ graphSummary.stable }} 个；覆盖 {{ coverage.covered_items }} / {{ coverage.total_items }} 份作答；
+      当前选择：{{ selectedLabel }}。
     </p>
 
     <div

@@ -6,6 +6,7 @@ import {
   decodeGraphRowsResponse,
   fetchScopedGraphEvidence,
   fetchScopedGraphRows,
+  hasMatchingGraphEvidenceScope,
   normalizeGraphQuery,
   type GraphEvidenceItem,
   type GraphEvidenceResponse,
@@ -59,10 +60,8 @@ function evidenceMatchesGraph(
   ) return false
 
   return loaded.items.every((item) => (
-    item.knowledge_key === knowledgeKey &&
-    loaded.exam_scope.session_ids.includes(item.session_id) &&
-    (loaded.scope.mode !== 'class' || item.class_id === loaded.scope.class_id)
-  ))
+    item.knowledge_key === knowledgeKey
+  )) && hasMatchingGraphEvidenceScope(loaded)
 }
 
 function evidenceIdentity(item: GraphEvidenceItem): string {

@@ -104,9 +104,31 @@ describe('knowledge graph view model', () => {
     const summary = summarizeGraph(nodes)
 
     expect(model).toHaveLength(1000)
-    expect(model.every((item) => Number.isFinite(item.size) && Number.isFinite(item.orderInBand)))
+    expect(model.every((item) => (
+      Number.isFinite(item.size) &&
+      Number.isFinite(item.orderInBand) &&
+      Number.isFinite(item.x) &&
+      Number.isFinite(item.y)
+    )))
       .toBe(true)
     expect(summary.total).toBe(1000)
     expect(summary.stable + summary.slight + summary.review + summary.weak).toBe(1000)
+  })
+
+  it('keeps every mastery band in a disjoint coordinate range', () => {
+    const nodes = [
+      ...Array.from({ length: 60 }, (_, index) => node(`薄弱-${index}`, 0.5)),
+      ...Array.from({ length: 60 }, (_, index) => node(`讲评-${index}`, 0.65)),
+      ...Array.from({ length: 60 }, (_, index) => node(`欠缺-${index}`, 0.8)),
+      ...Array.from({ length: 60 }, (_, index) => node(`稳定-${index}`, 0.95)),
+    ]
+    const model = buildEvidenceLaneModel(nodes)
+    const ranges = [0, 1, 2, 3].map((bandIndex) => {
+      const values = model.filter((item) => item.bandIndex === bandIndex).map((item) => item.y)
+      return { min: Math.min(...values), max: Math.max(...values) }
+    })
+    expect(ranges[0]!.max).toBeLessThan(ranges[1]!.min)
+    expect(ranges[1]!.max).toBeLessThan(ranges[2]!.min)
+    expect(ranges[2]!.max).toBeLessThan(ranges[3]!.min)
   })
 })

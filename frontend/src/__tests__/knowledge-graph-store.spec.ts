@@ -33,7 +33,7 @@ function graph(query: GraphQueryInput, label: string): GraphRowsResponse {
   return {
     scope: {
       mode: query.scope.mode,
-      student_ids: query.scope.mode === 'class' ? ['12'] : query.scope.student_ids,
+      student_ids: query.scope.mode === 'class' ? ['12', '15'] : query.scope.student_ids,
       class_id: query.scope.mode === 'class' ? query.scope.class_id : null,
     },
     exam_scope: {
@@ -179,5 +179,17 @@ describe('knowledge graph store', () => {
 
     expect(store.evidence?.items.map((item) => item.student_id)).toEqual([12, 15])
     expect(store.evidence?.page).toBe(2)
+  })
+
+  it('rejects injected evidence from a student outside the applied graph scope', async () => {
+    const store = useKnowledgeGraphStore()
+    const source = graph(queryA, '三角形全等')
+    const selected = source.nodes[0]!
+    await store.loadGraph(queryA, async () => source)
+    await store.selectNode(selected, async () => evidence(source, selected.knowledge_key, 1, 99))
+
+    expect(store.evidence).toBeNull()
+    expect(store.evidenceState).toBe('error')
+    expect(store.evidenceError).toBe('知识点证据暂时无法加载')
   })
 })
