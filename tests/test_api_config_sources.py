@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import warnings
@@ -14,6 +15,7 @@ warnings.filterwarnings(
 )
 
 from fastapi.testclient import TestClient
+import pytest
 
 from backend.api.app import create_app
 from backend.api.dependencies import (
@@ -22,6 +24,7 @@ from backend.api.dependencies import (
     get_upload_config_dir,
 )
 from backend.config_workspace.sources import ConfigSourceService
+from backend.api.routers.config import upload_config_source
 from db_manager import DBManager
 
 
@@ -139,6 +142,123 @@ def test_upload_submission_token_is_exactly_queryable_and_idempotent(
     assert first.json()["source_id"] == token
     assert queried.status_code == 200
     assert queried.json() == {"status": "succeeded", "source": first.json()}
+
+
+def test_upload_submission_token_rejects_different_request_metadata(
+    tmp_path: Path,
+) -> None:
+    client, db, _upload_root = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    token = "b" * 32
+    first = client.post(
+        f"/api/sessions/{session_id}/config/sources",
+        content=_pdf_bytes(),
+        headers={
+            "content-type": "application/octet-stream",
+            "x-upload-filename": quote("first.pdf"),
+            "x-client-request-token": token,
+        },
+    )
+
+    conflict = client.post(
+        f"/api/sessions/{session_id}/config/sources",
+        content=_pdf_bytes() + b"different-size",
+        headers={
+            "content-type": "application/octet-stream",
+            "x-upload-filename": quote("second.pdf"),
+            "x-client-request-token": token,
+        },
+    )
+
+    assert first.status_code == 201
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "config_source_submission_conflict"
+
+
+def test_upload_submission_reports_replaced_instead_of_returning_stale_source(
+    tmp_path: Path,
+) -> None:
+    client, db, _upload_root = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    token = "c" * 32
+    first = client.post(
+        f"/api/sessions/{session_id}/config/sources",
+        content=_pdf_bytes(),
+        headers={
+            "content-type": "application/octet-stream",
+            "x-upload-filename": quote("first.pdf"),
+            "x-client-request-token": token,
+        },
+    )
+    assert first.status_code == 201
+    assert _upload(client, session_id, filename="replacement.pdf").status_code == 201
+
+    queried = client.get(
+        f"/api/sessions/{session_id}/config/sources/submissions/{token}"
+    )
+
+    assert queried.status_code == 200
+    assert queried.json() == {"status": "replaced", "source": None}
+
+
+def test_cancelled_upload_marks_exact_submission_failed(tmp_path: Path) -> None:
+    _client_value, db, upload_root = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    token = "d" * 32
+
+    class CancelledService(ConfigSourceService):
+        async def stage_and_parse(self, **_kwargs):
+            raise asyncio.CancelledError()
+
+    class FakeRequest:
+        headers = {
+            "content-length": "4",
+            "x-upload-filename": quote("cancelled.pdf"),
+            "x-client-request-token": token,
+        }
+
+        async def stream(self):
+            yield b"%PDF"
+
+    service = CancelledService(upload_root)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(upload_config_source(session_id, FakeRequest(), db, service))
+
+    assert service.submission_public(
+        session_id=session_id,
+        request_token=token,
+    ) == {"status": "failed", "source": None}
+
+
+def test_submission_recovers_succeeded_from_active_source_before_success_marker(
+    tmp_path: Path,
+) -> None:
+    _client_value, db, upload_root = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    token = "e" * 32
+    payload = _pdf_bytes()
+    service = ConfigSourceService(upload_root)
+    assert service.begin_submission(
+        session_id=session_id,
+        request_token=token,
+        filename="crash-window.pdf",
+        content_length=len(payload),
+    ) == "started"
+
+    async def chunks():
+        yield payload
+
+    record = asyncio.run(service.stage_and_parse(
+        session_id=session_id,
+        filename="crash-window.pdf",
+        chunks=chunks(),
+        source_id=token,
+    ))
+
+    assert service.submission_public(
+        session_id=session_id,
+        request_token=token,
+    ) == {"status": "succeeded", "source": record.public_snapshot()}
 
 
 def test_public_get_does_not_read_or_encode_private_images(

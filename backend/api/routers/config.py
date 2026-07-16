@@ -38,6 +38,7 @@ from backend.config_workspace.sources import (
     ConfigSourceInvalidError,
     ConfigSourceNotFoundError,
     ConfigSourceService,
+    ConfigSourceSubmissionConflictError,
     ConfigSourceTooLargeError,
     ConfigSourceTypeUnsupportedError,
     QuestionDecision,
@@ -120,6 +121,12 @@ def _source_api_error(exc: ConfigSourceError) -> ApiError:
         )
     if isinstance(exc, ConfigSourceChangedError):
         return ApiError(409, "config_source_changed", "Config source has changed")
+    if isinstance(exc, ConfigSourceSubmissionConflictError):
+        return ApiError(
+            409,
+            "config_source_submission_conflict",
+            "Config source submission token was reused for a different upload",
+        )
     if isinstance(exc, ConfigAssetNotFoundError):
         return ApiError(404, "config_asset_not_found", "Config asset not found")
     if isinstance(exc, ConfigSourceNotFoundError):
@@ -140,12 +147,31 @@ async def upload_config_source(
     source_service: ConfigSourceService = Depends(get_config_source_service),
 ) -> dict[str, Any]:
     _require_session(db, session_id)
+    try:
+        raw_length = request.headers.get("content-length")
+        content_length = int(raw_length) if raw_length is not None else None
+        if content_length is not None and content_length < 0:
+            raise ValueError("negative content length")
+        if (
+            content_length is not None
+            and content_length > source_service.max_upload_bytes
+        ):
+            raise ConfigSourceTooLargeError()
+        filename = decode_upload_filename(request.headers.get("x-upload-filename"))
+    except (TypeError, ValueError):
+        raise _source_api_error(ConfigSourceInvalidError()) from None
+    except ConfigSourceError as exc:
+        raise _source_api_error(exc) from None
+
     request_token = str(request.headers.get("x-client-request-token") or "").strip()
+    submission_started = False
     if request_token:
         try:
             submission_state = source_service.begin_submission(
                 session_id=session_id,
                 request_token=request_token,
+                filename=filename,
+                content_length=content_length,
             )
             if submission_state == "succeeded":
                 result = source_service.submission_public(
@@ -153,6 +179,12 @@ async def upload_config_source(
                     request_token=request_token,
                 )
                 return dict(result["source"] or {})
+            if submission_state == "replaced":
+                raise ApiError(
+                    409,
+                    "config_source_upload_replaced",
+                    "Config source upload was replaced by a newer source",
+                )
             if submission_state in {"processing", "failed"}:
                 raise ApiError(
                     409,
@@ -165,54 +197,51 @@ async def upload_config_source(
                 )
         except ConfigSourceError as exc:
             raise _source_api_error(exc) from None
-    source_service.cleanup_inactive(
-        session_id=session_id,
-        referenced_source_ids=JobStore(db.db_path).referenced_config_source_ids(
-            session_id
-        ),
-    )
+        submission_started = submission_state == "started"
     try:
-        raw_length = request.headers.get("content-length")
-        if raw_length is not None and int(raw_length) > source_service.max_upload_bytes:
-            raise ConfigSourceTooLargeError()
-        filename = decode_upload_filename(request.headers.get("x-upload-filename"))
+        source_service.cleanup_inactive(
+            session_id=session_id,
+            referenced_source_ids=JobStore(db.db_path).referenced_config_source_ids(
+                session_id
+            ),
+        )
         record = await source_service.stage_and_parse(
             session_id=session_id,
             filename=filename,
             chunks=request.stream(),
             source_id=request_token or None,
         )
-    except (TypeError, ValueError):
         if request_token:
-            source_service.finish_submission(
-                session_id=session_id,
-                request_token=request_token,
-                succeeded=False,
-            )
-        raise _source_api_error(ConfigSourceInvalidError()) from None
-    except ConfigSourceError as exc:
-        if request_token:
-            source_service.finish_submission(
-                session_id=session_id,
-                request_token=request_token,
-                succeeded=False,
-            )
-        raise _source_api_error(exc) from None
-    except Exception:
-        if request_token:
-            source_service.finish_submission(
-                session_id=session_id,
-                request_token=request_token,
-                succeeded=False,
-            )
+            try:
+                source_service.finish_submission(
+                    session_id=session_id,
+                    request_token=request_token,
+                    succeeded=True,
+                )
+            except BaseException:
+                recovered = source_service.submission_public(
+                    session_id=session_id,
+                    request_token=request_token,
+                )
+                if recovered["status"] == "succeeded" and recovered["source"]:
+                    return dict(recovered["source"])
+                raise
+        return record.public_snapshot()
+    except BaseException as exc:
+        if request_token and submission_started:
+            try:
+                source_service.finish_submission(
+                    session_id=session_id,
+                    request_token=request_token,
+                    succeeded=False,
+                )
+            except BaseException:
+                pass
+        if isinstance(exc, (TypeError, ValueError)):
+            raise _source_api_error(ConfigSourceInvalidError()) from None
+        if isinstance(exc, ConfigSourceError):
+            raise _source_api_error(exc) from None
         raise
-    if request_token:
-        source_service.finish_submission(
-            session_id=session_id,
-            request_token=request_token,
-            succeeded=True,
-        )
-    return record.public_snapshot()
 
 
 @router.get(

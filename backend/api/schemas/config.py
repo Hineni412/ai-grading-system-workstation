@@ -55,7 +55,7 @@ class ConfigSourceResponse(BaseModel):
 class ConfigSourceSubmissionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    status: Literal["processing", "succeeded", "failed"]
+    status: Literal["processing", "succeeded", "failed", "replaced"]
     source: ConfigSourceResponse | None = None
 
 
