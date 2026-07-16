@@ -82,6 +82,37 @@ def test_streamlit_saved_config_survives_workflow_state_failure(
     assert "附属工作状态暂未更新，可稍后重建；已保存的评分依据不受影响" in source
 
 
+def test_streamlit_post_publish_state_failure_reports_saved_truth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_remember(*_args: object, **_kwargs: object) -> None:
+        raise OSError("synthetic remembered-state failure")
+
+    monkeypatch.setattr(web_app, "remember_saved_config_for_new_session", fail_remember)
+
+    remembered = web_app._remember_published_config_state(
+        {},
+        selected_session_id=17,
+        rubric_path="rubric.json",
+        answer_key_path="answer.json",
+        source_paper_path="papers/source.docx",
+        source_paper_sha256="a" * 64,
+        source_paper_name="source.docx",
+        settings_store=object(),
+    )
+    level, message = web_app._post_publish_config_save_notice(
+        "refreshed",
+        remembered_state_saved=remembered,
+        workflow_state_saved=True,
+    )
+
+    assert remembered is False
+    assert level == "warning"
+    assert "评分依据已保存" in message
+    assert "样卷映射表已按新评分标准刷新" in message
+    assert "附属工作状态暂未更新，可稍后重建" in message
+
+
 def test_legacy_publish_binds_config_and_source_atomically(tmp_path: Path) -> None:
     db = DBManager(tmp_path / "grading.db")
     db.initialize()
