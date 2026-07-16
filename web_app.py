@@ -2932,13 +2932,10 @@ def render_config_and_session_tab(
                         {
                             "rubric_path": str(rubric_path),
                             "answer_key_path": str(answer_path),
-                            "template_mapping_refreshed": refreshed,
+                            "template_mapping_refreshed": bool(refreshed),
                         },
                     )
-                    if refreshed:
-                        st.success("评分依据已保存，并已同步到当前考试批改；样卷映射表已按新评分标准刷新，请重新确认题框映射。")
-                    else:
-                        st.success("评分依据已保存，并已同步到当前考试批改。")
+                    st.success(_template_mapping_save_confirmation(refreshed))
                     st.rerun()
                 else:
                     st.success("评分依据已保存，可用于创建考试批改。")
@@ -7061,12 +7058,19 @@ def _refresh_template_mapping_from_session(db: DBManager, session_id: int) -> bo
             {"package_paths": package["paths"]},
         )
 
-    return _refresh_template_mapping_service(
+    status = _refresh_template_mapping_service(
         db,
         session_id,
         output_root=TEMPLATE_DIR,
         after_refresh=after_refresh,
     )
+    return status == "refreshed"
+
+
+def _template_mapping_save_confirmation(refreshed: bool) -> str:
+    if refreshed:
+        return "评分依据已保存，并已同步到当前考试批改；样卷映射表已按新评分标准刷新，请重新确认题框映射。"
+    return "评分依据已保存，并已同步到当前考试批改。"
 
 
 def _template_mapping_differs_from_session_rubric(db: DBManager, session_id: int, config: dict[str, Any]) -> bool:

@@ -178,7 +178,7 @@ function focusIssue(issue: ConfigEditorIssue): void {
             <th scope="col">标准答案</th>
             <th scope="col">证据要求/关键步骤</th>
             <th scope="col">扣分规则</th>
-            <th scope="col">整题策略</th>
+            <th scope="col">评分单元策略</th>
           </tr>
         </thead>
         <tbody>
