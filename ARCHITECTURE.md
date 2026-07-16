@@ -50,7 +50,7 @@
 | 题库与训练 | `question_bank/`、`integration/`、`pages/题库管理.py`、`pages/训练推荐.py`、`pages/组卷.py` | 题库标签、诊断投影、精确标签推荐和导出 | 已核验 |
 | 外部集成 | `backend/llm/`、`llm_client.py`、`api_profiles.py`、客观题识别链、题库 AI 打标服务 | 模型协议、策略、密钥来源、超时、节流、用量与降级 | 已核验代码和假客户端；未调用真实 API |
 | 本地运行时 | `runtime/python` | Python 3.12.1、SQLite 3.43.1、Streamlit 1.58.0、OpenAI SDK 2.43.0 等实际版本 | 已核验 |
-| 自动化测试 | `tests/` 与 `tools/smoke_check.py` | 业务回归、静态编译、迁移与数据库副本完整性 | 以最新共同基线的测试结果为准 |
+| 自动化测试 | `tests/`、`tools/smoke_check.py` 与 `requirements-test.txt` | 业务回归、静态编译、迁移与数据库副本完整性；完整 pytest 默认串行，显式试点可把隔离测试交给 2 个进程并将数据库/端口/进程类测试留在串行车道 | 以最新里程碑稳定候选或共同基线的测试结果为准 |
 | Phase 1 收口 | `docs/performance/p1-29-phase1-closeout.md`、`docs/user-testing/checkpoints/P1-29-v1.5.0-phase1-formal.md` | P1-26/27/28 组合门槛、匿名双入口、已知限制和正式用户结论 | 稳定证据入口；动态复审和验收状态见即时计划与执行 Index |
 | 浏览器验证 | Streamlit 本机页面、现有工作区数据 | 部分覆盖提示、标签诊断空态、学生选择交互、1366×768/1440×900/1920×1080 | 已核验；无横向溢出，浏览器控制台无应用错误 |
 | 数据库副本 | `grading_system.db`、`question_bank.db` 的临时副本 | 新字段、新索引和重复初始化幂等性 | 已核验；副本验证前后主工作区两库哈希均未变化 |
@@ -503,7 +503,7 @@ flowchart LR
 | 备份 | 启动日备份、手工/更新/迁移前备份 | `DBManager`、`update_tools` | 已核验实现；恢复演练待确认 |
 | 监控告警 | 页面进度、日志和系统自检；无外部监控 | 代码与页面 | 已核验 |
 
-Python 的 `requirements.txt` 只给下限，没有锁文件；因此“重新安装 Python 依赖”不能复现上述便携运行时版本。前端直接依赖、npm 版本和传递依赖已由 `frontend/package.json`、`.npmrc` 与 lockfile 固定。
+Python 的运行依赖 `requirements.txt` 只给下限，没有完整运行时锁文件；因此“重新安装 Python 运行依赖”不能复现上述便携运行时版本。测试专用的 pytest、pytest-xdist 与 execnet 由 `requirements-test.txt` 和 `constraints.txt` 固定，且不进入正式运行依赖。前端直接依赖、npm 版本和传递依赖已由 `frontend/package.json`、`.npmrc` 与 lockfile 固定。
 
 ## 10. 关键技术决策
 

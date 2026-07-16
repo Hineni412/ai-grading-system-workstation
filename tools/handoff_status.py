@@ -25,6 +25,10 @@ PLAN_CHECKLIST_FIELD: Final = re.compile(
     r"^\*\*自测清单：\*\*\s*`?([^`\s]+)`?\s*$",
     flags=re.MULTILINE,
 )
+PLAN_HANDOFF_BASE_FIELD: Final = re.compile(
+    r"^\*\*交接基线：\*\*\s*`?([^`\s]+)`?\s*$",
+    flags=re.MULTILINE,
+)
 CHECKPOINT_ROOT: Final = "docs/user-testing/checkpoints/"
 FILENAME_PACKAGE_ID: Final = re.compile(
     r"(?<![a-z0-9])p[1-9][0-9]*-[0-9]{2}(?![a-z0-9])"
@@ -264,6 +268,18 @@ def _plan_user_testing(text: str, package_id: str) -> PlanUserTesting:
     return PlanUserTesting(user_test=user_test, checklist=checklist)
 
 
+def _plan_handoff_base(text: str) -> str | None:
+    matches = PLAN_HANDOFF_BASE_FIELD.findall(_outside_handoff_block(text))
+    if len(matches) > 1:
+        raise HandoffStatusError("expected at most one plan handoff_base field")
+    if not matches:
+        return None
+    handoff_base = matches[0]
+    if not FULL_SHA.fullmatch(handoff_base):
+        raise HandoffStatusError("invalid plan handoff_base")
+    return handoff_base
+
+
 def _plan_user_acceptance_issues(
     record: HandoffRecord,
     plan_user_testing: PlanUserTesting,
@@ -342,6 +358,30 @@ def _git(repo_root: Path, *args: str) -> str:
         encoding="utf-8",
     )
     return completed.stdout.rstrip("\r\n")
+
+
+def _is_ancestor(repo_root: Path, ancestor: str, descendant: str) -> bool:
+    completed = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo_root),
+            "merge-base",
+            "--is-ancestor",
+            ancestor,
+            descendant,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if completed.returncode == 0:
+        return True
+    if completed.returncode == 1:
+        return False
+    detail = completed.stderr.strip() or completed.stdout.strip()
+    raise HandoffStatusError(detail or "unable to validate plan handoff_base")
 
 
 def _porcelain_paths(output: str) -> tuple[str, ...]:
@@ -439,6 +479,7 @@ def _claim_stash_baseline(
     base_ref: str,
     current_record: HandoffRecord,
     current_user_testing: PlanUserTesting | None,
+    current_handoff_base: str | None,
 ) -> tuple[frozenset[str], tuple[str, ...]]:
     issues: list[str] = []
     branch_base = _git(repo_root, "merge-base", base_ref, "HEAD")
@@ -478,6 +519,7 @@ def _claim_stash_baseline(
         claim_record = parse_handoff_status(claim_text)
         claim_package = _plan_package_id(claim_text)
         claim_user_testing = _plan_user_testing(claim_text, claim_record.package_id)
+        claim_handoff_base = _plan_handoff_base(claim_text)
     except (ValueError, HandoffStatusError) as exc:
         return frozenset(), (f"invalid handoff claim: {exc}",)
 
@@ -487,6 +529,8 @@ def _claim_stash_baseline(
         issues.append("handoff claim package must match current package")
     if _commit_paths(repo_root, claim_commit) != (plan_relative,):
         issues.append("handoff claim commit must only change the plan")
+    if claim_handoff_base != current_handoff_base:
+        issues.append("plan handoff_base must remain unchanged from claim")
     if (
         current_user_testing is not None
         and claim_user_testing.user_test != current_user_testing.user_test
@@ -506,6 +550,7 @@ def _claim_stash_baseline(
                 history_text,
                 history_record.package_id,
             )
+            history_handoff_base = _plan_handoff_base(history_text)
         except (ValueError, HandoffStatusError) as exc:
             issues.append(f"invalid handoff history at {commit[:12]}: {exc}")
             continue
@@ -518,6 +563,8 @@ def _claim_stash_baseline(
             issues.append("stash_baseline must remain unchanged from claim")
         if history_user_testing.user_test != claim_user_testing.user_test:
             issues.append("plan user_test must remain unchanged from claim")
+        if history_handoff_base != claim_handoff_base:
+            issues.append("plan handoff_base must remain unchanged from claim")
 
     return claim_baseline, tuple(dict.fromkeys(issues))
 
@@ -527,6 +574,7 @@ def validate_handoff(
     repo_root: Path,
     *,
     base_ref: str = "origin/main",
+    expected_handoff_base: str | None = None,
 ) -> HandoffValidation:
     repo = repo_root.resolve()
     plan = plan_path.resolve()
@@ -539,6 +587,7 @@ def validate_handoff(
         return HandoffValidation(False, None, None, (str(exc),))
 
     plan_user_testing: PlanUserTesting | None = None
+    plan_handoff_base: str | None = None
     try:
         declared_package = _plan_package_id(plan_text)
         if declared_package != record.package_id:
@@ -551,6 +600,17 @@ def validate_handoff(
         issues.append(str(exc))
     else:
         issues.extend(_plan_user_acceptance_issues(record, plan_user_testing))
+    try:
+        plan_handoff_base = _plan_handoff_base(plan_text)
+    except HandoffStatusError as exc:
+        issues.append(str(exc))
+    if plan_handoff_base is not None:
+        if expected_handoff_base is None:
+            issues.append("plan handoff_base requires a trusted expected SHA")
+        elif not FULL_SHA.fullmatch(expected_handoff_base):
+            issues.append("invalid trusted expected handoff SHA")
+        elif plan_handoff_base != expected_handoff_base:
+            issues.append("plan handoff_base must match the trusted expected SHA")
     filename_packages = _filename_package_ids(plan)
     expected_filename_package = record.package_id.casefold()
     if filename_packages != (expected_filename_package,):
@@ -563,7 +623,10 @@ def validate_handoff(
     dirty_paths: tuple[str, ...] = ()
     user_data_paths: tuple[str, ...] = ()
     try:
+        effective_base_ref = plan_handoff_base or base_ref
         head = _git(repo, "rev-parse", "HEAD")
+        if plan_handoff_base and not _is_ancestor(repo, plan_handoff_base, head):
+            issues.append("plan handoff_base must be an ancestor of HEAD")
         dirty = _git(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all")
         dirty_paths = _porcelain_paths(dirty)
         user_data_status = _git(
@@ -584,7 +647,7 @@ def validate_handoff(
                 "--format=",
                 "--name-only",
                 "-z",
-                f"{base_ref}..HEAD",
+                f"{effective_base_ref}..HEAD",
                 "--",
                 "user_data",
             )
@@ -599,9 +662,10 @@ def validate_handoff(
         claim_stash_baseline, claim_issues = _claim_stash_baseline(
             repo,
             plan_relative,
-            base_ref,
+            effective_base_ref,
             record,
             plan_user_testing,
+            plan_handoff_base,
         )
         issues.extend(claim_issues)
         if not claim_stash_baseline.issubset(current_stashes):
@@ -746,8 +810,19 @@ def main() -> int:
     )
     parser.add_argument("--plan", required=True, type=Path)
     parser.add_argument("--repo", required=True, type=Path)
+    parser.add_argument(
+        "--expected-handoff-base",
+        help=(
+            "Trusted exact SHA recorded by the milestone coordinator; required "
+            "when the plan declares 交接基线."
+        ),
+    )
     args = parser.parse_args()
-    report = validate_handoff(args.plan, args.repo)
+    report = validate_handoff(
+        args.plan,
+        args.repo,
+        expected_handoff_base=args.expected_handoff_base,
+    )
     print(json.dumps(report.to_dict(), ensure_ascii=False, sort_keys=True))
     return 0 if report.ok else 2
 

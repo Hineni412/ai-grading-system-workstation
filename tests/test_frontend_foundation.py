@@ -36,6 +36,23 @@ def test_frontend_manifest_locks_dependencies_and_quality_commands() -> None:
         )
 
 
+def test_frontend_full_gate_typechecks_once_and_reuses_prepared_build() -> None:
+    scripts = _package()["scripts"]
+
+    assert scripts["verify"] == "npm run lint && npm run test && npm run build"
+    assert scripts["build"] == "npm run typecheck && npm run build-only"
+    assert scripts["e2e:p2-08:prepared"] == (
+        "playwright test --config playwright.p2-08.config.ts"
+    )
+    assert scripts["e2e:p2-08"] == "npm run build && npm run e2e:p2-08:prepared"
+    assert scripts["e2e:phase2-recalibration:prepared"] == (
+        "npm run e2e:p2-08:prepared"
+    )
+    assert scripts["e2e:phase2-recalibration"] == (
+        "npm run build && npm run e2e:phase2-recalibration:prepared"
+    )
+
+
 def test_frontend_lockfile_and_generated_outputs_are_governed() -> None:
     lockfile = FRONTEND / "package-lock.json"
     assert lockfile.is_file()
