@@ -202,5 +202,8 @@ describe('SessionConfigView source replacement guard', () => {
 
     expect(mounted.host.querySelector<HTMLInputElement>('.config-source input[type="file"]')?.disabled).toBe(true)
     expect(mounted.host.querySelector<HTMLButtonElement>('button[name="保存评分依据"]')?.disabled).toBe(true)
+    expect(mounted.host.querySelector<HTMLAnchorElement>('a[href="/sessions/7/regions"]')?.textContent)
+      .toContain('进入样卷题框标定')
+    expect(mounted.host.textContent).toContain('样卷题框')
   })
 })

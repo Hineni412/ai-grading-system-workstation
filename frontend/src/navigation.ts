@@ -27,6 +27,14 @@ export const sessionRouteDefinition: WorkspaceRouteDefinition = {
   breadcrumb: '考试配置',
 }
 
+export const templateRegionRouteDefinition = {
+  id: 'template-regions',
+  path: '/sessions/:sessionId/regions',
+  title: '样卷题框标定',
+  description: '上传样卷并标定每道题的作答区域',
+  breadcrumb: '考试配置 / 样卷题框标定',
+} as const
+
 export const reviewRouteDefinition: WorkspaceRouteDefinition = {
   id: 'grading',
   label: '评分复核',

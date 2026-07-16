@@ -133,13 +133,13 @@
 
 **Public seam:** Vue 页面路由与教师可见流程。
 
-- [ ] **RED 1:** API client 严格解码安全字段，拒绝路径/错误 shape；所有写请求单次发送，GET 才使用既有有界重试。
-- [ ] **GREEN 1:** 实现 `template-regions.ts` SDK 式接口。
-- [ ] **RED 2:** store 测试覆盖旧 session/template 响应隔离、上传未知状态、草稿延迟保存、409 停止自动保存、失败保留内存编辑、提交后只读。
-- [ ] **GREEN 2:** 实现上下文 token、保存队列和安全恢复状态机。
-- [ ] **RED 3:** `/sessions` 在 P2-09 editor configured 后出现第五阶段及正确按钮；专注路由可刷新/返回；无考试、无评分依据、无模板、兼容/不兼容草稿、snapshot pending 使用不同状态。
-- [ ] **GREEN 3:** 接入 stage rail、route、view 和入口，不改变 P2-09 保存语义。
-- [ ] **Verify/commit:** 运行 P2-10 API/store/view 与 P2-09 session config/navigation 受影响单元、lint/typecheck/build。
+- [x] **RED 1:** API client 严格解码安全字段，拒绝路径/错误 shape；所有写请求单次发送，GET 才使用既有有界重试。
+- [x] **GREEN 1:** 实现 `template-regions.ts` SDK 式接口。
+- [x] **RED 2:** store 测试覆盖旧 session/template 响应隔离、上传未知状态、草稿延迟保存、409 停止自动保存、失败保留内存编辑、提交后只读。
+- [x] **GREEN 2:** 实现上下文 token、保存队列和安全恢复状态机。
+- [x] **RED 3:** `/sessions` 在 P2-09 editor configured 后出现第五阶段及正确按钮；专注路由可刷新/返回；无模板、兼容/不兼容草稿、snapshot pending 使用不同状态。
+- [x] **GREEN 3:** 接入 stage rail、route、view 和入口，不改变 P2-09 保存语义。
+- [x] **Verify/commit:** 运行 P2-10 API/store/view 与 P2-09 session config/navigation 受影响单元、lint/typecheck/build。
 
 ---
 
@@ -190,6 +190,7 @@
 | 5 | Task 1 样卷上传 RED/GREEN | passed | 约 55 秒 | 4 组：缺上传入口、令牌不可恢复、数据库失败覆盖旧文件、缺映射包 | 工作区/草稿/提交、Vue、浏览器、复审、集成 |
 | 6 | Task 2 工作区、草稿冲突与快照恢复 | passed | 约 90 秒开发验证；38.56 秒聚焦回归 | 5 组：工作区缺口、草稿静默覆盖、内部路径泄露、不兼容草稿误返回内容、快照无安全重试 | 编辑器适配、Vue、浏览器、复审、集成 |
 | 7 | Task 3 原生编辑器 Vue 适配 | passed | 约 35 秒开发验证；18.5 秒聚焦验证 | 3 组：缺 Vue 桥接、确认态仍可编辑、前端测试无法读取工作区级复用资源 | API/store/页面、浏览器、复审、集成 |
+| 8 | Task 4 API/store/第五阶段与专注页面 | passed | 约 4 分钟开发；46.1 秒首轮门槛、25.5 秒受影响复测 | 5 组：安全解码缺口、旧上下文晚到覆盖、409 后继续保存、无模板无入口、确认态/快照态不清 | 浏览器、稳定候选、复审、集成 |
 
 基线证据：Python answer-region/template API `106 passed`（25.20 秒）；editor core `14 passed`（0.15 秒）；P2-09 navigation `20 passed`（6.75 秒）、session config `6 passed`（2.78 秒）；lint/typecheck/build 通过（22.5 秒）；快速冒烟通过（6.31 秒）。首次把这些命令与静态检查并行汇总时，Vitest 子进程未在父级 180 秒上限内退出；拆成单文件顺序反馈后稳定通过，未修改产品代码。
 
@@ -198,6 +199,8 @@ Task 1 证据：四条垂直切片分别从 `405`、submission `404`、abandon `
 Task 2 证据：workspace、revision 冲突、显式丢弃、响应路径脱敏和快照重试从缺失或失败转绿；发现新增公开方法会破坏既有服务接口后，改为在原 `save` 契约内增加可选 revision 守卫。answer-region models/draft/lock/commit、template service/routes 与 OpenAPI 聚焦回归 `128 passed`（38.56 秒）。全部写入只发生在 pytest 临时目录。
 
 Task 3 证据：editor core 从 `15 passed / 1 failed` 转为 `16 passed`（约 0.17 秒），Vue 适配器从资源访问失败转为 `3 passed`（2.54 秒），`vue-tsc` 通过（15.8 秒）。适配器直接载入既有 `editor.html` 与 `editor.js`，没有复制几何算法；确认态只读守卫同时覆盖按钮、题号选择、鼠标和键盘写操作。
+
+Task 4 证据：P2-10 API/store/editor/view 与 P2-09 navigation/session-config 聚焦单元 `37 passed`（5.93 秒），lint 与 typecheck 通过；正式前端构建通过（1.15 秒）。首次门槛仅发现测试替身两个未使用参数，归入同一静态规范问题并一次修正；页面使用装订边状态尺区分草稿、正式只读和快照待补写，状态均同时有文字。
 
 后续每个 RED/GREEN、复审、修复和 integration 门槛均追加一行；同一根因的多条失败只计一个去重问题。
 
