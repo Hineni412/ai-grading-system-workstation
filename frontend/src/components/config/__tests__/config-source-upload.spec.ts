@@ -121,6 +121,26 @@ describe('ConfigSourceUpload', () => {
     expect(mounted.host.textContent).not.toContain('新文件未接收成功')
   })
 
+  it('unlocks upload when the authoritative token lookup confirms 404', async () => {
+    const timeout = new ApiError({ kind: 'timeout', status: null, code: 'request_timeout',
+      message: 'timeout', details: {}, requestId: 'safe', retryable: false })
+    const notFound = new ApiError({ kind: 'not_found', status: 404,
+      code: 'config_source_not_found', message: 'missing', details: {},
+      requestId: 'safe-404', retryable: false })
+    const mounted = await mountUpload({
+      uploader: vi.fn(async () => { throw timeout }),
+      submissionLoader: vi.fn(async () => { throw notFound }),
+    })
+    await choose(mounted.host, new File(['%PDF'], 'retry.pdf'))
+
+    mounted.host.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
+    await settle()
+
+    expect(useConfigWorkspaceStore().pendingUploadRequestToken).toBeNull()
+    expect(mounted.host.textContent).toContain('服务器确认未收到这次上传')
+    expect(mounted.host.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false)
+  })
+
   it('discovers a newly active source after the first upload response is lost', async () => {
     const timeout = new ApiError({ kind: 'timeout', status: null, code: 'request_timeout',
       message: 'timeout', details: {}, requestId: 'safe', retryable: false })

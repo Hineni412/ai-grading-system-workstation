@@ -151,6 +151,25 @@ describe('ConfigGenerationPanel', () => {
     expect(mounted.host.querySelector('button[name="重新核对生成任务"]')).not.toBeNull()
   })
 
+  it('unlocks generation when the authoritative token lookup confirms 404', async () => {
+    const timeout = new ApiError({ kind: 'network', status: null, code: 'network_error',
+      message: 'offline', details: {}, requestId: 'safe', retryable: true })
+    const notFound = new ApiError({ kind: 'not_found', status: 404,
+      code: 'config_generation_job_not_found', message: 'missing', details: {},
+      requestId: 'safe-404', retryable: false })
+    const mounted = await mountPanel({
+      submitter: vi.fn(async () => { throw timeout }),
+      generationLoader: vi.fn(async () => { throw notFound }),
+    })
+
+    mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!.click()
+    await settle()
+
+    expect(useConfigWorkspaceStore().pendingJobRequestToken).toBeNull()
+    expect(mounted.host.textContent).toContain('服务器确认未收到这次请求')
+    expect(mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')?.disabled).toBe(false)
+  })
+
   it('reconciles only the exact pending token restored after a refresh', async () => {
     const token = '3'.repeat(32)
     const configStore = useConfigWorkspaceStore()
@@ -193,6 +212,26 @@ describe('ConfigGenerationPanel', () => {
     expect(configStore.pendingJobRequestToken).toBeNull()
   })
 
+  it('unlocks a restored refine request after an authoritative 404', async () => {
+    const token = '6'.repeat(32)
+    const configStore = useConfigWorkspaceStore()
+    configStore.selectSource(null)
+    configStore.setEditor(editor())
+    configStore.markJobSubmissionPending(token, 'refine')
+    const notFound = new ApiError({ kind: 'not_found', status: 404,
+      code: 'config_generation_job_not_found', message: 'missing', details: {},
+      requestId: 'safe-404', retryable: false })
+    const mounted = await mountPanel({
+      generationLoader: vi.fn(async () => { throw notFound }),
+    })
+
+    mounted.host.querySelector<HTMLButtonElement>('button[name="重新核对生成任务"]')!.click()
+    await settle()
+
+    expect(configStore.pendingJobRequestToken).toBeNull()
+    expect(mounted.host.textContent).toContain('服务器确认未收到这次请求')
+  })
+
   it('retries only checked failed questions and preserves successful counts', async () => {
     const retryer = vi.fn(async () => job({ id: 32, status: 'queued', progress: 0 }))
     const configStore = useConfigWorkspaceStore()
@@ -220,6 +259,38 @@ describe('ConfigGenerationPanel', () => {
     expect(configStore.jobId).toBe(32)
     expect(mounted.host.textContent).toContain('已成功 3 题')
     expect(mounted.host.textContent).toContain('当前恢复任务')
+  })
+
+  it('unlocks an ambiguous retry when its exact lookup confirms 404', async () => {
+    const timeout = new ApiError({ kind: 'timeout', status: null, code: 'request_timeout',
+      message: 'timeout', details: {}, requestId: 'safe', retryable: false })
+    const notFound = new ApiError({ kind: 'not_found', status: 404,
+      code: 'config_generation_job_not_found', message: 'missing', details: {},
+      requestId: 'safe-404', retryable: false })
+    const configStore = useConfigWorkspaceStore()
+    useJobStore().track(job({
+      status: 'succeeded', progress: 1, result: {
+        outcome: 'partial', total_questions: 5, generated_questions: 3,
+        failed_count: 2, failed_question_ids: ['Q2', 'Q5'], retryable: true,
+      }, finished_at: '2026-07-15T00:01:00Z',
+    }))
+    configStore.attachJob(31, configStore.captureGenerationContext())
+    const mounted = await mountPanel({
+      retryer: vi.fn(async () => { throw timeout }),
+      generationLoader: vi.fn(async () => { throw notFound }),
+    })
+    const failedInputs = mounted.host.querySelectorAll<HTMLInputElement>(
+      '.config-generation__partial input[type="checkbox"]',
+    )
+    failedInputs[1]!.click()
+    await nextTick()
+
+    mounted.host.querySelector<HTMLButtonElement>('.config-generation__partial button')!.click()
+    await settle()
+
+    expect(configStore.pendingJobRequestToken).toBeNull()
+    expect(mounted.host.textContent).toContain('服务器确认未收到这次请求')
+    expect(mounted.host.querySelector<HTMLButtonElement>('.config-generation__partial button')?.disabled).toBe(false)
   })
 
   it('uses a fresh whole-document generation after whole mode failure', async () => {
