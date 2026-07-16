@@ -140,6 +140,11 @@ function isNotFound(error: unknown): boolean {
   return error instanceof ApiError && error.kind === 'not_found'
 }
 
+function isSourceChanged(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409
+    && error.code === 'config_source_changed'
+}
+
 const editableIssueFields = new Set([
   'score',
   'standard_answer',
@@ -630,7 +635,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       loadJob: overrides.loadJob ?? jobApi.getJob,
       loadEditor: overrides.loadEditor ?? fetchConfigEditor,
     }
-    const [sourceResult, jobResult, editorResult] = await Promise.allSettled([
+    const [initialSourceResult, jobResult, editorResult] = await Promise.allSettled([
       candidate.sourceId === null
         ? dependencies.loadActiveSource(candidate.sessionId)
         : dependencies.loadSource(candidate.sessionId, candidate.sourceId),
@@ -641,24 +646,47 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     ])
     if (request !== hydrationRequest || sessionId.value !== candidate.sessionId) return
 
+    let sourceResult = initialSourceResult
+    let sourceWasReplaced = false
+    if (candidate.sourceId !== null && sourceResult.status === 'rejected'
+      && isSourceChanged(sourceResult.reason)) {
+      sourceWasReplaced = true
+      const [activeSourceResult] = await Promise.allSettled([
+        dependencies.loadActiveSource(candidate.sessionId),
+      ])
+      sourceResult = activeSourceResult
+      if (request !== hydrationRequest || sessionId.value !== candidate.sessionId) return
+    }
+
     const sanitized: PersistedConfigWorkspace = {
       ...candidate,
       decisions: candidate.decisions.map((item) => ({ ...item })),
     }
     let candidateChanged = false
+    if (sourceWasReplaced) {
+      sanitized.sourceId = null
+      sanitized.sourceRevision = null
+      sanitized.jobId = null
+      sanitized.decisions = []
+      delete sanitized.generationSummary
+      candidateChanged = true
+    }
     if (sourceResult.status === 'fulfilled' && sourceResult.value !== null) {
       const loaded = sourceResult.value
-      const matchesCandidate = candidate.sourceId === null
+      const matchesCandidate = sourceWasReplaced || candidate.sourceId === null
         || (loaded.source_id === candidate.sourceId
           && loaded.source_revision === candidate.sourceRevision)
       if (loaded.session_id === candidate.sessionId && matchesCandidate) {
         source.value = loaded
         sourceId.value = loaded.source_id
         sourceRevision.value = loaded.source_revision
-        decisions.value = candidate.decisions.map((item) => ({ ...item }))
-        if (candidate.sourceId === null) {
+        decisions.value = sourceWasReplaced || candidate.sourceId === null
+          ? []
+          : candidate.decisions.map((item) => ({ ...item }))
+        if (candidate.sourceId === null || sourceWasReplaced) {
           sanitized.sourceId = loaded.source_id
           sanitized.sourceRevision = loaded.source_revision
+          sanitized.decisions = []
           candidateChanged = true
         }
       } else {
@@ -674,7 +702,10 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       candidateChanged = true
     }
 
-    if (jobResult.status === 'fulfilled' && jobResult.value !== null) {
+    if (sourceWasReplaced) {
+      sanitized.jobId = null
+      candidateChanged = true
+    } else if (jobResult.status === 'fulfilled' && jobResult.value !== null) {
       if (jobBelongsTo(jobResult.value, candidate.sessionId, candidate)) {
         useJobStore().track(jobResult.value)
         jobId.value = jobResult.value.id

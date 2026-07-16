@@ -1,5 +1,5 @@
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ConfigEditorResponse, ConfigSource } from '../api/config-workspace'
 import type { JobResponse } from '../api/jobs'
@@ -59,6 +59,13 @@ function notFound(): ApiError {
   return new ApiError({
     kind: 'not_found', status: 404, code: 'not_found', message: 'not found',
     details: {}, requestId: 'test', retryable: false,
+  })
+}
+
+function sourceChanged(): ApiError {
+  return new ApiError({
+    kind: 'conflict', status: 409, code: 'config_source_changed',
+    message: 'source changed', details: {}, requestId: 'test', retryable: false,
   })
 }
 
@@ -190,6 +197,82 @@ describe('configuration workspace Store', () => {
     expect(store.sourceId).toBe('d'.repeat(32))
     expect(store.editor?.rows[0]?.standard_answer).toBe('42')
     expect(store.phase).toBe('editor')
+  })
+
+  it('replaces a stale cached source after 409 without applying its decisions to the active source', async () => {
+    const oldSourceId = 'd'.repeat(32)
+    const activeSourceId = 'e'.repeat(32)
+    localStorage.setItem(CONFIG_WORKSPACE_STORAGE_KEY, JSON.stringify({
+      sessionId: 7, phase: 'generation', sourceId: oldSourceId,
+      sourceRevision: 'b'.repeat(64), jobId: 31,
+      decisions: [{ question_id: 'Q1', question_type: 'proof', excluded: true }],
+    }))
+    const loadSource = vi.fn(async () => { throw sourceChanged() })
+    const loadActiveSource = vi.fn(async () => ({
+      ...source(activeSourceId), source_revision: 'f'.repeat(64),
+      questions: [{
+        question_id: 'Q1', question_type: 'calculation', question_preview: '',
+        answer_preview: '', answer_present: false, needs_review: false,
+        local_answer_trusted: false, has_question_asset: false, has_answer_asset: false,
+      }],
+    }))
+    const store = useConfigWorkspaceStore()
+
+    await store.hydrateSafeIndex([7], 7, {
+      loadSource,
+      loadActiveSource,
+      loadJob: async () => job(),
+      loadEditor: async () => editor('current answer'),
+    })
+
+    expect(loadSource).toHaveBeenCalledExactlyOnceWith(7, oldSourceId)
+    expect(loadActiveSource).toHaveBeenCalledExactlyOnceWith(7)
+    expect(store.sourceId).toBe(activeSourceId)
+    expect(store.sourceRevision).toBe('f'.repeat(64))
+    expect(store.decisions).toEqual([])
+    expect(store.jobId).toBeNull()
+    expect(store.editor?.rows[0]?.standard_answer).toBe('current answer')
+    expect(JSON.parse(localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)!)).toMatchObject({
+      sessionId: 7,
+      sourceId: activeSourceId,
+      sourceRevision: 'f'.repeat(64),
+      jobId: null,
+      decisions: [],
+    })
+  })
+
+  it('does not retry a replaced cached source id when the active-source lookup is temporarily unavailable', async () => {
+    const oldSourceId = 'd'.repeat(32)
+    localStorage.setItem(CONFIG_WORKSPACE_STORAGE_KEY, JSON.stringify({
+      sessionId: 7, phase: 'source', sourceId: oldSourceId,
+      sourceRevision: 'b'.repeat(64), jobId: null,
+      decisions: [{ question_id: 'Q1', question_type: 'proof', excluded: true }],
+    }))
+    const firstStore = useConfigWorkspaceStore()
+    await firstStore.hydrateSafeIndex([7], 7, {
+      loadSource: async () => { throw sourceChanged() },
+      loadActiveSource: async () => { throw new Error('offline') },
+      loadEditor: async () => ({ ...editor(''), configured: false, rows: [] }),
+    })
+
+    expect(JSON.parse(localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)!)).toMatchObject({
+      sourceId: null, sourceRevision: null, decisions: [],
+    })
+
+    setActivePinia(createPinia())
+    const loadSource = vi.fn(async () => source(oldSourceId))
+    const active = { ...source('e'.repeat(32)), source_revision: 'f'.repeat(64) }
+    const loadActiveSource = vi.fn(async () => active)
+    const restored = useConfigWorkspaceStore()
+    await restored.hydrateSafeIndex([7], 7, {
+      loadSource,
+      loadActiveSource,
+      loadEditor: async () => ({ ...editor(''), configured: false, rows: [] }),
+    })
+
+    expect(loadSource).not.toHaveBeenCalled()
+    expect(loadActiveSource).toHaveBeenCalledExactlyOnceWith(7)
+    expect(restored.sourceId).toBe(active.source_id)
   })
 
   it('keeps an editor usable when the selected exam has no P2 source', async () => {
