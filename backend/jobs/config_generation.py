@@ -7,7 +7,7 @@ import re
 import uuid
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from db_manager import DBManager
 from backend.config_workspace.locks import session_config_lock
@@ -23,6 +23,8 @@ from backend.config_workspace.publish import (
     PublishedConfig,
     load_editor_config,
     publish_generated_config,
+    refresh_mapping_after_config_save,
+    refresh_template_mapping_from_session,
     remove_published_config,
 )
 from backend.config_workspace.sources import (
@@ -199,6 +201,7 @@ def run_config_generation_job(
     upload_config_dir: Path,
     llm_client_factory: Callable[[], Any],
     data_root: Path | None = None,
+    mapping_output_dir: Path | None = None,
 ) -> dict[str, object]:
     input_id = str(context.payload.get("input_id") or "")
     mode = str(context.payload.get("mode") or "").strip()
@@ -209,9 +212,10 @@ def run_config_generation_job(
             upload_config_dir=upload_config_dir,
             llm_client_factory=llm_client_factory,
             data_root=data_root,
+            mapping_output_dir=mapping_output_dir,
         )
     except BaseException as exc:
-        if input_id and (isinstance(exc, JobCancellationRequested) or mode != "retry"):
+        if input_id and mode != "retry":
             discard_config_generation_input(upload_config_dir, input_id)
         raise
     if input_id and result.get("outcome") != "partial":
@@ -226,6 +230,7 @@ def _run_config_generation_job_impl(
     upload_config_dir: Path,
     llm_client_factory: Callable[[], Any],
     data_root: Path | None = None,
+    mapping_output_dir: Path | None = None,
 ) -> dict[str, object]:
     session_id = _required_int(context.payload, "session_id")
     session = db.get_grading_session(session_id)
@@ -274,6 +279,7 @@ def _run_config_generation_job_impl(
             session_id=session_id,
             expected_rubric_path=expected_rubric_path,
             expected_answer_key_path=expected_answer_key_path,
+            mapping_output_dir=mapping_output_dir,
         )
     generation_mode = str(
         context.payload.get("generation_mode")
@@ -404,8 +410,25 @@ def _run_config_generation_job_impl(
     if failed_ids:
         if generation_mode != "per_question":
             raise ValueError("whole-document generation returned an incomplete result")
-        draft_path = _draft_path(upload_config_dir, context.job_id)
-        _write_json_atomic(draft_path, payload)
+        with session_config_lock(Path(upload_config_dir), session_id):
+            current_session = db.get_grading_session(session_id)
+            if (
+                current_session is None
+                or bool(int(current_session.get("is_deleted") or 0))
+                or str(current_session.get("rubric_path") or "") != expected_rubric_path
+                or str(current_session.get("answer_key_path") or "")
+                != expected_answer_key_path
+            ):
+                raise ValueError("session config changed while generation was running")
+            if source_service is not None:
+                source_service.load_for_generation(
+                    session_id=session_id,
+                    source_id=source_id,
+                    source_revision=source_revision,
+                )
+            context.raise_if_cancelled()
+            draft_path = _draft_path(upload_config_dir, context.job_id)
+            _write_json_atomic(draft_path, payload)
         return summary
 
     publication: PublishedConfig | None = None
@@ -415,6 +438,12 @@ def _run_config_generation_job_impl(
         if data_root is not None
         else _infer_data_root(Path(db.db_path))
     )
+    resolved_mapping_output_dir = (
+        Path(mapping_output_dir)
+        if mapping_output_dir is not None
+        else resolved_data_root / "templates"
+    )
+    _set_mapping_result(summary, "reconfirm_required")
     with session_config_lock(Path(upload_config_dir), session_id):
         current_session = db.get_grading_session(session_id)
         if (
@@ -475,6 +504,13 @@ def _run_config_generation_job_impl(
                     raise ValueError(
                         "session config changed while generation was running"
                     )
+                _refresh_and_persist_mapping_result(
+                    context=context,
+                    db=db,
+                    session_id=session_id,
+                    mapping_output_dir=resolved_mapping_output_dir,
+                    summary=summary,
+                )
             except BaseException:
                 if publication is not None:
                     created = {str(path): path for path in publication.created_paths}
@@ -510,6 +546,7 @@ def _run_refine_config_job(
     session_id: int,
     expected_rubric_path: str,
     expected_answer_key_path: str,
+    mapping_output_dir: Path | None,
 ) -> dict[str, object]:
     expected_revision = str(inputs.get("expected_revision") or "")
     current = load_editor_config(db, session_id)
@@ -547,6 +584,12 @@ def _run_refine_config_job(
         "retryable": False,
     }
     publication: PublishedConfig | None = None
+    resolved_mapping_output_dir = (
+        Path(mapping_output_dir)
+        if mapping_output_dir is not None
+        else _infer_data_root(Path(db.db_path)) / "templates"
+    )
+    _set_mapping_result(summary, "reconfirm_required")
     with session_config_lock(upload_config_dir, session_id):
         latest = load_editor_config(db, session_id)
         if latest.revision != expected_revision:
@@ -568,6 +611,13 @@ def _run_refine_config_job(
             if not bound:
                 context.raise_if_cancelled()
                 raise ValueError("session config changed while refinement was running")
+            _refresh_and_persist_mapping_result(
+                context=context,
+                db=db,
+                session_id=session_id,
+                mapping_output_dir=resolved_mapping_output_dir,
+                summary=summary,
+            )
         except BaseException:
             if publication is not None:
                 referenced = context.store.referenced_config_paths(
@@ -579,6 +629,41 @@ def _run_refine_config_job(
                 )
             raise
     return summary
+
+
+def _set_mapping_result(
+    summary: dict[str, object],
+    status: Literal["not_present", "refreshed", "reconfirm_required"],
+) -> None:
+    result = refresh_mapping_after_config_save(lambda: status)
+    summary["mapping_status"] = result.mapping_status
+    summary["mapping_message"] = result.mapping_message
+
+
+def _refresh_and_persist_mapping_result(
+    *,
+    context: JobContext,
+    db: DBManager,
+    session_id: int,
+    mapping_output_dir: Path,
+    summary: dict[str, object],
+) -> None:
+    result = refresh_mapping_after_config_save(
+        lambda: refresh_template_mapping_from_session(
+            db,
+            session_id,
+            output_root=mapping_output_dir,
+        )
+    )
+    summary["mapping_status"] = result.mapping_status
+    summary["mapping_message"] = result.mapping_message
+    try:
+        updated = context.store.update_succeeded_config_result(context.job_id, summary)
+    except Exception:
+        _set_mapping_result(summary, "reconfirm_required")
+    else:
+        if not updated:
+            _set_mapping_result(summary, "reconfirm_required")
 
 
 def _decode_refine_commands(values: list[Any]) -> tuple[Any, ...]:

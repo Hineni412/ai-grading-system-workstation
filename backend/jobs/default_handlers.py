@@ -91,6 +91,11 @@ def register_default_job_handlers(
         _build_config_generation_handler(
             db_path=Path(db_path),
             data_root=base_data_root,
+            mapping_output_dir=(
+                Path(templates_dir)
+                if templates_dir is not None
+                else base_data_root / "templates"
+            ),
             upload_config_dir=(
                 Path(upload_config_dir)
                 if upload_config_dir is not None
@@ -186,6 +191,7 @@ def _build_config_generation_handler(
     *,
     db_path: Path,
     data_root: Path,
+    mapping_output_dir: Path,
     upload_config_dir: Path,
     config_generation_runner: Callable[..., dict[str, object]],
     llm_client_factory: Callable[[], Any],
@@ -195,6 +201,7 @@ def _build_config_generation_handler(
             context=context,
             db=DBManager(db_path),
             data_root=data_root,
+            mapping_output_dir=mapping_output_dir,
             upload_config_dir=upload_config_dir,
             llm_client_factory=llm_client_factory,
         )

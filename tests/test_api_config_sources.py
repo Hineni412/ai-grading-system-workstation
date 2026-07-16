@@ -110,7 +110,7 @@ def test_active_source_endpoint_returns_replacement_without_old_source_id(
     assert active.json()["source_id"] != first["source_id"]
 
 
-def test_upload_submission_token_is_exactly_queryable_and_idempotent(
+def test_upload_submission_token_is_queryable_and_repeated_post_is_rejected(
     tmp_path: Path,
 ) -> None:
     client, db, _upload_root = _client(tmp_path)
@@ -137,11 +137,56 @@ def test_upload_submission_token_is_exactly_queryable_and_idempotent(
     )
 
     assert first.status_code == 201
-    assert replay.status_code == 201
-    assert replay.json() == first.json()
+    assert replay.status_code == 409
+    assert replay.json()["error"]["code"] == "config_source_upload_already_submitted"
     assert first.json()["source_id"] == token
     assert queried.status_code == 200
     assert queried.json() == {"status": "succeeded", "source": first.json()}
+
+
+def test_upload_submission_token_never_accepts_different_same_length_content(
+    tmp_path: Path,
+) -> None:
+    client, db, _upload_root = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    token = "9" * 32
+    content = _pdf_bytes()
+    headers = {
+        "content-type": "application/octet-stream",
+        "x-upload-filename": quote("same-metadata.pdf"),
+        "x-client-request-token": token,
+    }
+
+    first = client.post(
+        f"/api/sessions/{session_id}/config/sources",
+        content=content,
+        headers=headers,
+    )
+    changed = bytearray(content)
+    changed[-1] ^= 1
+    replay = client.post(
+        f"/api/sessions/{session_id}/config/sources",
+        content=bytes(changed),
+        headers=headers,
+    )
+
+    assert first.status_code == 201
+    assert replay.status_code == 409
+    assert replay.json()["error"]["code"] == "config_source_upload_already_submitted"
+
+
+def test_upload_rejects_a_deleted_session_without_creating_source_files(
+    tmp_path: Path,
+) -> None:
+    client, db, upload_root = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    db.soft_delete_grading_session(session_id)
+
+    response = _upload(client, session_id)
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "session_not_found"
+    assert not (upload_root / "config_sources" / f"session-{session_id}").exists()
 
 
 def test_upload_submission_token_rejects_different_request_metadata(

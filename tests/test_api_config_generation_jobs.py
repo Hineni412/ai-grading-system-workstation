@@ -4,6 +4,7 @@ import asyncio
 import io
 import warnings
 import sqlite3
+import threading
 import pytest
 from pathlib import Path
 
@@ -280,6 +281,49 @@ def test_generation_request_token_rejects_a_different_request(tmp_path: Path) ->
     assert conflict.status_code == 409
     assert conflict.json()["error"]["code"] == "config_request_token_conflict"
     manager.wait(first.json()["id"], timeout=5)
+
+
+def test_session_allows_exact_replay_but_rejects_another_active_config_job(
+    tmp_path: Path,
+) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = _source(tmp_path, session_id)
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked(context):
+        started.set()
+        assert release.wait(timeout=5)
+        return {
+            "session_id": int(context.payload["session_id"]),
+            "outcome": "partial",
+            "retryable": True,
+        }
+
+    manager.register("config_generation", blocked)
+    first_request = _source_request(source, client_request_token="4" * 32)
+    first = client.post(
+        f"/api/sessions/{session_id}/config/generate-from-source",
+        json=first_request,
+    )
+    assert first.status_code == 202
+    assert started.wait(timeout=5)
+    replay = client.post(
+        f"/api/sessions/{session_id}/config/generate-from-source",
+        json=first_request,
+    )
+    conflict = client.post(
+        f"/api/sessions/{session_id}/config/generate-from-source",
+        json=_source_request(source, client_request_token="5" * 32),
+    )
+    release.set()
+    manager.wait(first.json()["id"], timeout=5)
+
+    assert replay.status_code == 202
+    assert replay.json()["id"] == first.json()["id"]
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "config_generation_in_progress"
 
 
 @pytest.mark.parametrize(
