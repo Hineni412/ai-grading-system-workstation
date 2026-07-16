@@ -36,6 +36,7 @@ const uploading = ref(false)
 const errorMessage = ref('')
 const configStore = useConfigWorkspaceStore()
 const submissionUnknown = computed(() => configStore.pendingUploadRequestToken !== null)
+const workspaceLocked = computed(() => configStore.hasPendingSubmission)
 
 function acceptSource(source: ConfigSource): void {
   configStore.clearUploadSubmissionPending()
@@ -82,7 +83,7 @@ function onFileChange(event: Event): void {
 
 async function submit(): Promise<void> {
   const file = selectedFile.value
-  if (file === null || uploading.value) return
+  if (file === null || uploading.value || workspaceLocked.value) return
   const validation = validateFile(file)
   if (validation) {
     errorMessage.value = validation
@@ -90,8 +91,8 @@ async function submit(): Promise<void> {
   }
   if (!props.beforeUpload()) return
   const requestToken = createClientRequestToken()
+  if (!configStore.markUploadSubmissionPending(requestToken)) return
   uploading.value = true
-  configStore.markUploadSubmissionPending(requestToken)
   errorMessage.value = ''
   try {
     const accepted = await props.uploader(props.sessionId, file, requestToken)
@@ -134,11 +135,11 @@ function formatBytes(bytes: number): string {
           ref="fileInput"
           type="file"
           accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-          :disabled="uploading || submissionUnknown"
+          :disabled="uploading || workspaceLocked"
           @change="onFileChange"
         >
       </label>
-      <button type="submit" :disabled="uploading || submissionUnknown || selectedFile === null || errorMessage !== ''">
+      <button type="submit" :disabled="uploading || workspaceLocked || selectedFile === null || errorMessage !== ''">
         上传并拆题
       </button>
     </form>

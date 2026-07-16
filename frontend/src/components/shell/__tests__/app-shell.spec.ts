@@ -148,6 +148,35 @@ describe('AppShell', () => {
     app.unmount()
   })
 
+  it.each(['generation', 'upload'] as const)(
+    'blocks exam switching while an unknown %s result still needs reconciliation',
+    async (kind) => {
+      const { app, host } = await mountShell()
+      const sessionStore = useSessionStore()
+      const configStore = useConfigWorkspaceStore()
+      sessionStore.sessions = [
+        { id: 7, name: '考试一', status: 'created', is_deleted: false, deleted_at: null, created_at: null, updated_at: null },
+        { id: 9, name: '考试二', status: 'created', is_deleted: false, deleted_at: null, created_at: null, updated_at: null },
+      ]
+      sessionStore.selectSession(7)
+      configStore.selectSession(7)
+      if (kind === 'generation') configStore.markJobSubmissionPending('1'.repeat(32), 'refine')
+      else configStore.markUploadSubmissionPending('2'.repeat(32))
+      const alert = vi.spyOn(window, 'alert').mockImplementation(() => undefined)
+
+      const selector = host.querySelector<HTMLSelectElement>('#current-session')!
+      selector.value = '9'
+      selector.dispatchEvent(new Event('change'))
+      await settleUi()
+
+      expect(alert).toHaveBeenCalledWith(expect.stringContaining('核对'))
+      expect(selector.value).toBe('7')
+      expect(sessionStore.selectedSessionId).toBe(7)
+      expect(configStore.sessionId).toBe(7)
+      app.unmount()
+    },
+  )
+
   it('focuses the route heading after navigation', async () => {
     const { app, host, router } = await mountShell({ path: '/design-system' })
 

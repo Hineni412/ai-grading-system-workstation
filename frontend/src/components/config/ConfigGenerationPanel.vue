@@ -40,6 +40,7 @@ const editorError = ref('')
 const selectedFailed = ref<string[]>([])
 const editorLoads = new Set<number>()
 const submissionUnknown = computed(() => configStore.pendingJobRequestToken !== null)
+const workspacePending = computed(() => configStore.hasPendingSubmission)
 
 const job = computed(() => configStore.jobId === null ? null : jobStore.jobs[configStore.jobId] ?? null)
 const syncError = computed(() => configStore.jobId === null
@@ -91,7 +92,8 @@ function returnToEditor(): void {
 }
 
 async function startGeneration(requestedMode: GenerationMode = mode.value): Promise<void> {
-  if (!configStore.canGenerate || submitting.value || active.value || configStore.sessionId === null) return
+  if (!configStore.canGenerate || submitting.value || active.value || workspacePending.value
+    || configStore.sessionId === null) return
   const context = configStore.captureGenerationContext()
   const sessionId = configStore.sessionId
   const requestToken = createClientRequestToken()
@@ -99,8 +101,8 @@ async function startGeneration(requestedMode: GenerationMode = mode.value): Prom
     ...configStore.sourceRequest(requestedMode),
     client_request_token: requestToken,
   }
+  if (!configStore.markJobSubmissionPending(requestToken, 'generate', requestedMode)) return
   submitting.value = true
-  configStore.markJobSubmissionPending(requestToken, 'generate', requestedMode)
   requestError.value = ''
   try {
     const next = await props.submitter(sessionId, request)
@@ -129,7 +131,7 @@ async function startGeneration(requestedMode: GenerationMode = mode.value): Prom
 async function reconcileUnknownSubmission(): Promise<void> {
   const sessionId = configStore.sessionId
   const requestToken = configStore.pendingJobRequestToken
-  if (sessionId === null || requestToken === null || submitting.value || !configStore.canGenerate) return
+  if (sessionId === null || requestToken === null || submitting.value) return
   const context = configStore.captureGenerationContext()
   submitting.value = true
   requestError.value = '正在核对服务器任务记录…'
@@ -147,7 +149,8 @@ async function reconcileUnknownSubmission(): Promise<void> {
 
 async function retrySelected(): Promise<void> {
   const current = job.value
-  if (current === null || submitting.value || configStore.sessionId === null) return
+  if (current === null || submitting.value || workspacePending.value
+    || configStore.sessionId === null) return
   const allowed = new Set(failedIds.value)
   const ids = selectedFailed.value.filter((item) => allowed.has(item))
   if (ids.length === 0) return
@@ -158,8 +161,8 @@ async function retrySelected(): Promise<void> {
     failedQuestions: safeCount(current.result.failed_count),
   }
   const requestToken = createClientRequestToken()
+  if (!configStore.markJobSubmissionPending(requestToken, 'retry', null, retainedSummary)) return
   submitting.value = true
-  configStore.markJobSubmissionPending(requestToken, 'retry', null, retainedSummary)
   requestError.value = ''
   try {
     const next = await props.retryer(configStore.sessionId, current.id, ids, requestToken)
@@ -215,7 +218,7 @@ watch(job, (current, previous) => {
       </div>
     </header>
 
-    <fieldset class="config-generation__modes" :disabled="submitting || active">
+    <fieldset class="config-generation__modes" :disabled="submitting || active || workspacePending">
       <legend>生成方式</legend>
       <label>
         <input v-model="mode" type="radio" value="per_question" aria-label="逐题生成">
@@ -232,7 +235,7 @@ watch(job, (current, previous) => {
       type="button"
       name="开始生成"
       class="config-generation__primary"
-      :disabled="!configStore.canGenerate || submitting || submissionUnknown"
+      :disabled="!configStore.canGenerate || submitting || workspacePending"
       @click="startGeneration()"
     >{{ submitting ? '正在提交…' : '开始生成' }}</button>
 
@@ -262,7 +265,7 @@ watch(job, (current, previous) => {
             {{ questionId }}
           </label>
         </fieldset>
-        <button type="button" name="重试所选题" :disabled="submitting || submissionUnknown || selectedFailed.length === 0" @click="retrySelected">
+        <button type="button" name="重试所选题" :disabled="submitting || workspacePending || selectedFailed.length === 0" @click="retrySelected">
           重试所选题
         </button>
       </div>
@@ -272,13 +275,14 @@ watch(job, (current, previous) => {
         type="button"
         name="取消生成"
         class="config-generation__secondary"
+        :disabled="workspacePending"
         @click="jobStore.cancel(job.id)"
       >取消生成</button>
       <div v-if="job.status === 'failed' && refineJob" class="config-generation__refine-actions">
-        <button type="button" name="重新细化" class="config-generation__primary" @click="returnToEditor">
+        <button type="button" name="重新细化" class="config-generation__primary" :disabled="workspacePending" @click="returnToEditor">
           重新细化
         </button>
-        <button type="button" name="返回编辑器" class="config-generation__secondary" @click="returnToEditor">
+        <button type="button" name="返回编辑器" class="config-generation__secondary" :disabled="workspacePending" @click="returnToEditor">
           返回编辑器
         </button>
       </div>
@@ -287,7 +291,7 @@ watch(job, (current, previous) => {
         type="button"
         name="重新整卷生成"
         class="config-generation__primary"
-        :disabled="submitting || submissionUnknown"
+        :disabled="submitting || workspacePending"
         @click="startGeneration('whole_document')"
       >重新整卷生成</button>
       <button
@@ -295,7 +299,7 @@ watch(job, (current, previous) => {
         type="button"
         name="重新逐题生成"
         class="config-generation__primary"
-        :disabled="submitting || submissionUnknown"
+        :disabled="submitting || workspacePending"
         @click="startGeneration('per_question')"
       >重新逐题生成</button>
     </div>

@@ -68,6 +68,35 @@ beforeEach(() => {
 })
 
 describe('SessionConfigView source replacement guard', () => {
+  it('keeps refine reconciliation visible for a legacy editor without a P2 source', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const sessions = useSessionStore(pinia)
+    sessions.$patch({
+      sessions: [{ id: 7, name: '旧考试', status: 'created', is_deleted: false,
+        deleted_at: null, created_at: null, updated_at: null }],
+      selectedSessionId: 7,
+      loadState: 'ready',
+    })
+    const workspace = useConfigWorkspaceStore(pinia)
+    workspace.selectSession(7)
+    workspace.setEditor({
+      session_id: 7, configured: true, revision: 'd'.repeat(64), rows: [], total_score: 0,
+      issues: [], source: null,
+    })
+    workspace.markJobSubmissionPending('3'.repeat(32), 'refine')
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(SessionConfigView)
+    app.use(pinia)
+    app.mount(host)
+    await nextTick()
+
+    expect(host.querySelector('button[name="重新核对生成任务"]')).not.toBeNull()
+    expect(host.textContent).toContain('结果尚未确认')
+    app.unmount()
+  })
+
   it('cancels before the upload request and retains the dirty editor', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const mounted = await mountDirtyView()

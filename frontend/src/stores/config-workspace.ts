@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 
 import { ApiError } from '../api/errors'
 import {
+  fetchActiveConfigSource,
   fetchConfigEditor,
   fetchConfigSource,
   type ConfigGenerationRequest,
@@ -58,6 +59,7 @@ export type ConfigSourceLoader = (
 ) => Promise<ConfigSource>
 
 export interface ConfigWorkspaceHydrationDependencies {
+  loadActiveSource: (sessionId: number) => Promise<ConfigSource>
   loadSource: ConfigSourceLoader
   loadJob: (jobId: number, signal?: AbortSignal) => Promise<JobResponse>
   loadEditor: (sessionId: number, signal?: AbortSignal) => Promise<ConfigEditorResponse>
@@ -202,6 +204,8 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   let requestedSourceId: string | null = null
 
   const hasDirtyEditor = computed(() => editorDirty.value)
+  const hasPendingSubmission = computed(() => pendingJobRequestToken.value !== null
+    || pendingUploadRequestToken.value !== null)
   const effectiveEditorRows = computed(() => {
     const edits = new Map(editorEdits.value.map((edit) => [edit.row_id, edit]))
     return (editor.value?.rows ?? []).map((row) => {
@@ -294,6 +298,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   }
 
   function clearWorkspace(discardDirty = false): boolean {
+    if (hasPendingSubmission.value) return false
     if (editorDirty.value && !discardDirty) return false
     forceClearWorkspace()
     editorDirty.value = false
@@ -304,6 +309,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     if (id === null) return clearWorkspace(discardDirty)
     if (!positiveInteger(id)) throw new Error('Invalid session id')
     if (sessionId.value === id) return true
+    if (hasPendingSubmission.value) return false
     if (editorDirty.value && !discardDirty) return false
     hydrationRequest += 1
     sessionId.value = id
@@ -324,6 +330,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
 
   function selectSource(id: string | null, discardDirty = false): boolean {
     if (id !== null && !validSourceId(id)) throw new Error('Invalid source id')
+    if (hasPendingSubmission.value) return false
     if (editorDirty.value && !discardDirty) return false
     hydrationRequest += 1
     generationContext += 1
@@ -464,7 +471,9 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     retainedSummary?: ConfigGenerationSummary,
   ): boolean {
     if (!positiveInteger(id)) throw new Error('Invalid Job id')
-    if (context !== generationContext || sessionId.value === null || sourceId.value === null) return false
+    const attachesLegacyRefine = pendingJobRequestKind.value === 'refine'
+    if (context !== generationContext || sessionId.value === null
+      || (sourceId.value === null && !attachesLegacyRefine)) return false
     if (retainedSummary !== undefined && !validGenerationSummary(retainedSummary)) {
       throw new Error('Invalid generation summary')
     }
@@ -491,17 +500,19 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     kind: 'generate' | 'retry' | 'refine',
     mode: GenerationMode | null = null,
     retainedSummary?: ConfigGenerationSummary,
-  ): void {
+  ): boolean {
     if (!/^[0-9a-f]{32}$/.test(token)) throw new Error('Invalid client request token')
     if (kind === 'generate' && mode === null) throw new Error('Generation mode is required')
     if (retainedSummary !== undefined && !validGenerationSummary(retainedSummary)) {
       throw new Error('Invalid generation summary')
     }
+    if (hasPendingSubmission.value) return false
     pendingJobRequestToken.value = token
     pendingJobRequestKind.value = kind
     pendingGenerationMode.value = mode
     if (retainedSummary !== undefined) generationSummary.value = { ...retainedSummary }
     persistSafeIndex()
+    return true
   }
 
   function clearGenerationSubmissionPending(): void {
@@ -511,10 +522,12 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     persistSafeIndex()
   }
 
-  function markUploadSubmissionPending(token: string): void {
+  function markUploadSubmissionPending(token: string): boolean {
     if (!/^[0-9a-f]{32}$/.test(token)) throw new Error('Invalid client request token')
+    if (hasPendingSubmission.value) return false
     pendingUploadRequestToken.value = token
     persistSafeIndex()
+    return true
   }
 
   function clearUploadSubmissionPending(): void {
@@ -546,6 +559,38 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     return true
   }
 
+  async function loadSelectedSessionWorkspace(
+    expectedSessionId: number,
+    overrides: Partial<ConfigWorkspaceHydrationDependencies> = {},
+  ): Promise<void> {
+    if (!positiveInteger(expectedSessionId) || sessionId.value !== expectedSessionId) return
+    const request = ++hydrationRequest
+    const loadActiveSource = overrides.loadActiveSource ?? fetchActiveConfigSource
+    const loadEditor = overrides.loadEditor ?? fetchConfigEditor
+    const [sourceResult, editorResult] = await Promise.allSettled([
+      loadActiveSource(expectedSessionId),
+      loadEditor(expectedSessionId),
+    ])
+    if (request !== hydrationRequest || sessionId.value !== expectedSessionId) return
+
+    if (sourceResult.status === 'fulfilled'
+      && sourceResult.value.session_id === expectedSessionId) {
+      source.value = sourceResult.value
+      sourceId.value = sourceResult.value.source_id
+      sourceRevision.value = sourceResult.value.source_revision
+    } else if (sourceResult.status === 'rejected' && isNotFound(sourceResult.reason)) {
+      source.value = null
+      sourceId.value = null
+      sourceRevision.value = null
+    }
+    if (editorResult.status === 'fulfilled'
+      && editorResult.value.session_id === expectedSessionId) {
+      editor.value = editorResult.value
+    }
+    phase.value = derivePhase()
+    persistSafeIndex()
+  }
+
   async function hydrateSafeIndex(
     activeSessionIds: readonly number[],
     selectedSessionId: number | null,
@@ -555,6 +600,11 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     const candidate = parsePersisted(raw)
     if (candidate === null) {
       if (raw !== null) localStorage.removeItem(CONFIG_WORKSPACE_STORAGE_KEY)
+      if (selectedSessionId !== null && activeSessionIds.includes(selectedSessionId)) {
+        if (selectSession(selectedSessionId)) {
+          await loadSelectedSessionWorkspace(selectedSessionId, overrides)
+        }
+      }
       return
     }
     if (!activeSessionIds.includes(candidate.sessionId) || selectedSessionId !== candidate.sessionId) {
@@ -575,13 +625,14 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     pendingJobRequestKind.value = candidate.pendingJobRequestKind ?? null
     pendingUploadRequestToken.value = candidate.pendingUploadRequestToken ?? null
     const dependencies: ConfigWorkspaceHydrationDependencies = {
+      loadActiveSource: overrides.loadActiveSource ?? fetchActiveConfigSource,
       loadSource: overrides.loadSource ?? fetchConfigSource,
       loadJob: overrides.loadJob ?? jobApi.getJob,
       loadEditor: overrides.loadEditor ?? fetchConfigEditor,
     }
     const [sourceResult, jobResult, editorResult] = await Promise.allSettled([
       candidate.sourceId === null
-        ? Promise.resolve<ConfigSource | null>(null)
+        ? dependencies.loadActiveSource(candidate.sessionId)
         : dependencies.loadSource(candidate.sessionId, candidate.sourceId),
       candidate.jobId === null
         ? Promise.resolve<JobResponse | null>(null)
@@ -597,12 +648,19 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     let candidateChanged = false
     if (sourceResult.status === 'fulfilled' && sourceResult.value !== null) {
       const loaded = sourceResult.value
-      if (loaded.session_id === candidate.sessionId && loaded.source_id === candidate.sourceId
-        && loaded.source_revision === candidate.sourceRevision) {
+      const matchesCandidate = candidate.sourceId === null
+        || (loaded.source_id === candidate.sourceId
+          && loaded.source_revision === candidate.sourceRevision)
+      if (loaded.session_id === candidate.sessionId && matchesCandidate) {
         source.value = loaded
         sourceId.value = loaded.source_id
         sourceRevision.value = loaded.source_revision
         decisions.value = candidate.decisions.map((item) => ({ ...item }))
+        if (candidate.sourceId === null) {
+          sanitized.sourceId = loaded.source_id
+          sanitized.sourceRevision = loaded.source_revision
+          candidateChanged = true
+        }
       } else {
         sanitized.sourceId = null
         sanitized.sourceRevision = null
@@ -753,14 +811,16 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     source, editor, editorEdits, editorCommands, serverIssues, generationSummary,
     pendingGenerationMode, pendingJobRequestToken, pendingJobRequestKind,
     pendingUploadRequestToken, sourceLoading, sourceError,
-    saveStatus, mappingStatus, hasDirtyEditor, effectiveEditorRows, effectiveTotalScore,
+    saveStatus, mappingStatus, hasDirtyEditor, hasPendingSubmission,
+    effectiveEditorRows, effectiveTotalScore,
     canGenerate, hydrateSafeIndex, persistSafeIndex, clearWorkspace,
     selectSession, selectSource, discardEditorDraft, setSource, acceptUploadedSource,
     updateDecisions, loadSource,
     setEditor, captureGenerationContext, attachJob, detachJob, sourceRequest,
     markJobSubmissionPending, clearGenerationSubmissionPending,
     markUploadSubmissionPending, clearUploadSubmissionPending,
-    reloadEditorForGeneration, updateEditor, addEditorCommand, captureEditorContext,
+    reloadEditorForGeneration, loadSelectedSessionWorkspace,
+    updateEditor, addEditorCommand, captureEditorContext,
     isEditorContextCurrent, recordServerIssues, noteSaveFailed, noteSaveUnknown,
     buildSaveRequest, beginSave, markConflict, replaceWithAuthoritativeEditor,
     replaceWithReconciledEditor,

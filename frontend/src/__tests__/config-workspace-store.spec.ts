@@ -147,19 +147,22 @@ describe('configuration workspace Store', () => {
     store.setSource(source('d'.repeat(32)))
     store.attachJob(31, store.captureGenerationContext())
     store.markUploadSubmissionPending(uploadToken)
-    store.markJobSubmissionPending(jobToken, 'retry', null, {
-      totalQuestions: 5, succeededQuestions: 3, failedQuestions: 2,
+
+    const uploadSaved = localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)!
+    expect(JSON.parse(uploadSaved)).toMatchObject({
+      pendingUploadRequestToken: uploadToken,
     })
 
-    const saved = localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)!
-    expect(JSON.parse(saved)).toMatchObject({
-      pendingUploadRequestToken: uploadToken,
+    const jobSaved = {
+      ...JSON.parse(uploadSaved),
       pendingJobRequestToken: jobToken,
       pendingJobRequestKind: 'retry',
-    })
+      generationSummary: { totalQuestions: 5, succeededQuestions: 3, failedQuestions: 2 },
+    }
+    delete jobSaved.pendingUploadRequestToken
 
     setActivePinia(createPinia())
-    localStorage.setItem(CONFIG_WORKSPACE_STORAGE_KEY, saved)
+    localStorage.setItem(CONFIG_WORKSPACE_STORAGE_KEY, JSON.stringify(jobSaved))
     const restored = useConfigWorkspaceStore()
     await restored.hydrateSafeIndex([7], 7, {
       loadSource: async () => source('d'.repeat(32)),
@@ -167,12 +170,41 @@ describe('configuration workspace Store', () => {
       loadEditor: async () => ({ ...editor(''), configured: false, rows: [] }),
     })
 
-    expect(restored.pendingUploadRequestToken).toBe(uploadToken)
+    expect(restored.pendingUploadRequestToken).toBeNull()
     expect(restored.pendingJobRequestToken).toBe(jobToken)
     expect(restored.pendingJobRequestKind).toBe('retry')
     expect(restored.generationSummary).toEqual({
       totalQuestions: 5, succeededQuestions: 3, failedQuestions: 2,
     })
+  })
+
+  it('loads active source and editor for a selected exam when no workspace cache exists', async () => {
+    const store = useConfigWorkspaceStore()
+
+    await store.hydrateSafeIndex([7], 7, {
+      loadActiveSource: async () => source('d'.repeat(32)),
+      loadEditor: async () => editor('42'),
+    })
+
+    expect(store.sessionId).toBe(7)
+    expect(store.sourceId).toBe('d'.repeat(32))
+    expect(store.editor?.rows[0]?.standard_answer).toBe('42')
+    expect(store.phase).toBe('editor')
+  })
+
+  it('keeps an editor usable when the selected exam has no P2 source', async () => {
+    const store = useConfigWorkspaceStore()
+
+    await store.hydrateSafeIndex([7], 7, {
+      loadActiveSource: async () => { throw notFound() },
+      loadEditor: async () => editor('legacy answer'),
+    })
+    const context = store.captureGenerationContext()
+    expect(store.markJobSubmissionPending('3'.repeat(32), 'refine')).toBe(true)
+
+    expect(store.attachJob(45, context)).toBe(true)
+    expect(store.sourceId).toBeNull()
+    expect(store.jobId).toBe(45)
   })
 
   it('persists only the safe workspace index and never rubric rows or answer text', () => {
@@ -195,7 +227,7 @@ describe('configuration workspace Store', () => {
     expect(localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)).not.toContain('本地修改答案')
   })
 
-  it('restores only exact safe fields and clears a stale session id', async () => {
+  it('rejects unsafe cached fields and freshly loads the selected exam', async () => {
     localStorage.setItem(CONFIG_WORKSPACE_STORAGE_KEY, JSON.stringify({
       sessionId: 99,
       phase: 'editor',
@@ -207,14 +239,16 @@ describe('configuration workspace Store', () => {
     }))
     const store = useConfigWorkspaceStore()
     await store.hydrateSafeIndex([7, 9], 7, {
+      loadActiveSource: async () => { throw notFound() },
       loadSource: async () => source('d'.repeat(32)),
       loadJob: async () => job(),
       loadEditor: async () => editor('42'),
     })
 
-    expect(store.sessionId).toBeNull()
+    expect(store.sessionId).toBe(7)
     expect(store.sourceId).toBeNull()
-    expect(localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)).toBeNull()
+    expect(store.editor?.rows[0]?.standard_answer).toBe('42')
+    expect(localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)).not.toContain('must not restore')
   })
 
   it('keeps persisted source, job and phase as candidates until every fact is reloaded', async () => {
@@ -426,6 +460,30 @@ describe('configuration workspace Store', () => {
     expect(store.selectSession(9)).toBe(true)
     expect(store.sessionId).toBe(9)
     expect(store.hasDirtyEditor).toBe(false)
+  })
+
+  it('refuses session changes and token replacement while a write result is unknown', () => {
+    const store = useConfigWorkspaceStore()
+    store.selectSession(7)
+    expect(store.markJobSubmissionPending('1'.repeat(32), 'refine')).toBe(true)
+
+    expect(store.markJobSubmissionPending('2'.repeat(32), 'generate', 'per_question')).toBe(false)
+    expect(store.markUploadSubmissionPending('3'.repeat(32))).toBe(false)
+    expect(store.selectSession(9, true)).toBe(false)
+    expect(store.selectSource('f'.repeat(32), true)).toBe(false)
+    expect(store.clearWorkspace(true)).toBe(false)
+    expect(store.sessionId).toBe(7)
+    expect(store.pendingJobRequestToken).toBe('1'.repeat(32))
+  })
+
+  it('includes an unknown upload in the same session-switch protection', () => {
+    const store = useConfigWorkspaceStore()
+    store.selectSession(7)
+    expect(store.markUploadSubmissionPending('4'.repeat(32))).toBe(true)
+
+    expect(store.selectSession(9, true)).toBe(false)
+    expect(store.sessionId).toBe(7)
+    expect(store.pendingUploadRequestToken).toBe('4'.repeat(32))
   })
 
   it('ignores an old source response after the user selects another source', async () => {
