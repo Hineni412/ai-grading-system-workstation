@@ -35,6 +35,7 @@ from backend.config_workspace.editor import (
     streamlit_dataframe_to_editor_edits,
 )
 from backend.config_workspace.publish import (
+    refresh_mapping_after_config_save,
     refresh_template_mapping_from_session as _refresh_template_mapping_service,
 )
 from backend.llm.policy import policy_overrides_from_profile
@@ -2924,7 +2925,10 @@ def render_config_and_session_tab(
                         source_paper_path=source_archive.stored_path,
                         source_paper_sha256=source_archive.sha256,
                     )
-                    mapping_status = _refresh_template_mapping_from_session(db, selected_session_id)
+                    mapping_result = refresh_mapping_after_config_save(
+                        lambda: _refresh_template_mapping_from_session(db, selected_session_id)
+                    )
+                    mapping_status = mapping_result.mapping_status
                     _write_session_workflow_state(
                         db,
                         selected_session_id,
