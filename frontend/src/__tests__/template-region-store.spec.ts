@@ -186,4 +186,26 @@ describe('template region store', () => {
     expect(store.uploadState).toBe('idle')
     expect(store.pendingUploadToken).toBeNull()
   })
+
+  it('keeps waiting when the server says a processing upload is still active', async () => {
+    vi.mocked(api.fetchRegionReadiness).mockResolvedValue({ session_id: 7,
+      scoring_configured: true, template_present: false, template_ready: false })
+    vi.mocked(api.uploadTemplate).mockRejectedValue(new ApiError({ kind: 'server', status: 500,
+      code: 'template_upload_failed', message: 'failed', details: {},
+      requestId: 'rid-upload', retryable: true }))
+    vi.mocked(api.fetchTemplateSubmission).mockResolvedValue({ status: 'processing', template: null })
+    vi.mocked(api.abandonTemplateSubmission).mockRejectedValue(new ApiError({ kind: 'conflict',
+      status: 409, code: 'template_upload_already_submitted', message: 'active', details: {},
+      requestId: 'rid-active', retryable: false }))
+    const store = useTemplateRegionStore()
+    await store.load(7)
+    await store.upload(new File(['%PDF'], 'sample.pdf', { type: 'application/pdf' }), 'front')
+    const token = store.pendingUploadToken
+
+    await store.reconcileUpload()
+
+    expect(store.uploadState).toBe('unknown')
+    expect(store.pendingUploadToken).toBe(token)
+    expect(store.errorMessage).toContain('仍在处理中')
+  })
 })
