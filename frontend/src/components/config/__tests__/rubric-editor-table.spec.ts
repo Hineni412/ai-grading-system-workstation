@@ -34,6 +34,13 @@ async function mountTable(options: {
 }
 
 describe('RubricEditorTable', () => {
+  it('labels the policy column by scoring unit', async () => {
+    const mounted = await mountTable()
+
+    expect(mounted.host.querySelector('thead')?.textContent).toContain('评分单元策略')
+    expect(mounted.host.querySelector('thead')?.textContent).not.toContain('整题策略')
+  })
+
   it('addresses score, standard answer and accepted answers by hidden row id', async () => {
     const mounted = await mountTable()
     const score = mounted.host.querySelector<HTMLInputElement>('[aria-label="Q12 P1 S1 分值"]')!
