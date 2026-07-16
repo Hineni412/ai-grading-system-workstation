@@ -41,6 +41,7 @@ from db_manager import DBManager
 from path_manager import resolve_stored_file_path
 from template_upload_service import (
     TemplateUploadError,
+    TemplateUploadInProgressError,
     TemplateUploadService,
     TemplateUploadSubmissionConflictError,
     TemplateUploadTooLargeError,
@@ -169,6 +170,12 @@ async def upload_session_template(
             content_length=content_length,
             first_page_role=first_page_role,
         )
+    except TemplateUploadInProgressError:
+        raise ApiError(
+            409,
+            "template_upload_in_progress",
+            "Another template upload is already active for this session",
+        ) from None
     except TemplateUploadSubmissionConflictError:
         raise ApiError(
             409,

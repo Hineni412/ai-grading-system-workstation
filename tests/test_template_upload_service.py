@@ -9,6 +9,7 @@ import pytest
 from db_manager import DBManager
 from template_upload_service import (
     TemplateUploadService,
+    TemplateUploadInProgressError,
     TemplateUploadSubmissionConflictError,
 )
 
@@ -136,3 +137,19 @@ def test_only_an_inactive_processing_submission_can_be_abandoned(tmp_path) -> No
         "status": "abandoned",
         "template": None,
     }
+
+
+def test_one_service_allows_only_one_processing_token_per_session(tmp_path) -> None:
+    service = TemplateUploadService(tmp_path / "templates")
+    first = "1" * 32
+    second = "2" * 32
+    assert service.begin_submission(session_id=1, request_token=first,
+        filename="first.pdf", content_length=100, first_page_role="front") == "started"
+
+    with pytest.raises(TemplateUploadInProgressError):
+        service.begin_submission(session_id=1, request_token=second,
+            filename="second.pdf", content_length=100, first_page_role="front")
+
+    service.finish_submission(session_id=1, request_token=first, succeeded=False)
+    assert service.begin_submission(session_id=1, request_token=second,
+        filename="second.pdf", content_length=100, first_page_role="front") == "started"

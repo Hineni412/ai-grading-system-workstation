@@ -35,6 +35,10 @@ class TemplateUploadSubmissionConflictError(TemplateUploadError):
     pass
 
 
+class TemplateUploadInProgressError(TemplateUploadError):
+    pass
+
+
 @dataclass(frozen=True)
 class TemplatePage:
     path: Path
@@ -253,6 +257,12 @@ class TemplateUploadService:
                         "template upload token was reused for another request"
                     )
                 return str(marker.get("status") or "failed")
+            with self._active_guard:
+                if any(active_session == int(session_id)
+                       for active_session, _active_token in self._active_submissions):
+                    raise TemplateUploadInProgressError(
+                        "another template upload is active for this session"
+                    )
             session_dir.mkdir(parents=True, exist_ok=True)
             _write_json_atomic(
                 marker_path,
@@ -268,9 +278,11 @@ class TemplateUploadService:
         marker_path = _submission_path(session_dir, token)
         with get_answer_region_session_lock(session_dir):
             marker = _read_json(marker_path)
+            manifest = _read_json(session_dir / "template_upload_manifest.json") or {}
             with self._active_guard:
                 active = (int(session_id), token) in self._active_submissions
-            if active or (marker is not None and marker.get("status") != "processing"):
+            if (manifest.get("request_token") == token or active
+                    or (marker is not None and marker.get("status") != "processing")):
                 raise TemplateUploadSubmissionConflictError(
                     "template upload submission already exists"
                 )
@@ -321,18 +333,39 @@ class TemplateUploadService:
         token = _request_token(request_token)
         session_dir = self.templates_dir / f"session_{int(session_id)}"
         with get_answer_region_session_lock(session_dir):
-            marker = _read_json(_submission_path(session_dir, token))
+            marker_path = _submission_path(session_dir, token)
+            marker = _read_json(marker_path)
             manifest = _read_json(session_dir / "template_upload_manifest.json") or {}
-        if marker is None:
-            raise FileNotFoundError("template upload submission is missing")
-        status = str(marker.get("status") or "failed")
-        if status == "processing" and manifest.get("request_token") == token and db is not None:
-            current = self.load_current(db=db, session_id=session_id)
-            return {"status": "succeeded", "template": _submission_template(current)}
-        return {
-            "status": status,
-            "template": marker.get("template") if status == "succeeded" else None,
-        }
+            if marker is None:
+                raise FileNotFoundError("template upload submission is missing")
+            status = str(marker.get("status") or "failed")
+            manifest_token = str(manifest.get("request_token") or "")
+            if manifest_token == token and db is not None:
+                current = self.load_current(db=db, session_id=session_id)
+                template = _submission_template(current)
+                if status != "succeeded" or marker.get("template") != template:
+                    try:
+                        _write_json_atomic(marker_path, {
+                            "status": "succeeded",
+                            "request_fingerprint": marker.get("request_fingerprint"),
+                            "template": template,
+                        })
+                    except OSError:
+                        pass
+                return {"status": "succeeded", "template": template}
+            if status == "succeeded" and manifest_token and manifest_token != token:
+                try:
+                    _write_json_atomic(marker_path, {
+                        "status": "replaced",
+                        "request_fingerprint": marker.get("request_fingerprint"),
+                    })
+                except OSError:
+                    pass
+                return {"status": "replaced", "template": None}
+            return {
+                "status": status,
+                "template": marker.get("template") if status == "succeeded" else None,
+            }
 
     @staticmethod
     def _open_pdf(pdf_bytes: bytes) -> fitz.Document:

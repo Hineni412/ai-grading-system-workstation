@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from collections.abc import Iterator
+import threading
 
 from fastapi import Depends, Request
 
@@ -35,6 +36,9 @@ from question_bank.services.question_read_service import (
 )
 from question_bank.services.training_task_service import TrainingTaskService
 from question_bank.services.question_write_service import QuestionBankWriteService
+
+
+_TEMPLATE_UPLOAD_SERVICE_GUARD = threading.Lock()
 
 
 def get_grading_db() -> DBManager:
@@ -92,9 +96,15 @@ def get_templates_dir() -> Path:
 
 
 def get_template_upload_service(
+    request: Request,
     templates_dir: Path = Depends(get_templates_dir),
 ) -> TemplateUploadService:
-    return TemplateUploadService(templates_dir)
+    with _TEMPLATE_UPLOAD_SERVICE_GUARD:
+        service = getattr(request.app.state, "template_upload_service", None)
+        if service is None or service.templates_dir != Path(templates_dir):
+            service = TemplateUploadService(templates_dir)
+            request.app.state.template_upload_service = service
+        return service
 
 
 def get_config_mapping_output_dir(
