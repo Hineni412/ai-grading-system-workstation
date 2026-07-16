@@ -10,7 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote, unquote
 
 import pandas as pd
@@ -2924,7 +2924,7 @@ def render_config_and_session_tab(
                         source_paper_path=source_archive.stored_path,
                         source_paper_sha256=source_archive.sha256,
                     )
-                    refreshed = _refresh_template_mapping_from_session(db, selected_session_id)
+                    mapping_status = _refresh_template_mapping_from_session(db, selected_session_id)
                     _write_session_workflow_state(
                         db,
                         selected_session_id,
@@ -2932,10 +2932,11 @@ def render_config_and_session_tab(
                         {
                             "rubric_path": str(rubric_path),
                             "answer_key_path": str(answer_path),
-                            "template_mapping_refreshed": bool(refreshed),
+                            "template_mapping_refreshed": mapping_status == "refreshed",
+                            "template_mapping_status": mapping_status,
                         },
                     )
-                    st.success(_template_mapping_save_confirmation(refreshed))
+                    st.success(_template_mapping_save_confirmation(mapping_status))
                     st.rerun()
                 else:
                     st.success("评分依据已保存，可用于创建考试批改。")
@@ -6591,7 +6592,8 @@ def _render_template_config_editor(db: DBManager, session_id: int, template: dic
             st.warning("当前样卷映射表与考试批改绑定的 Word 评分标准不一致，建议先刷新映射表再标定题框。")
             if st.button("按当前 Word 评分标准刷新样卷映射表", key=f"refresh_template_mapping_{session_id}"):
                 try:
-                    if not _refresh_template_mapping_from_session(db, session_id):
+                    mapping_status = _refresh_template_mapping_from_session(db, session_id)
+                    if mapping_status != "refreshed":
                         raise ValueError("未找到可刷新的样卷图片或评分标准")
                     st.success("样卷映射表已刷新。")
                     st.rerun()
@@ -7048,7 +7050,10 @@ def _render_pdf_page_to_image(doc: Any, page_index: int, output_path: Path) -> N
     Image.frombytes("RGB", (pix.width, pix.height), pix.samples).save(output_path, format="JPEG", quality=90)
 
 
-def _refresh_template_mapping_from_session(db: DBManager, session_id: int) -> bool:
+def _refresh_template_mapping_from_session(
+    db: DBManager,
+    session_id: int,
+) -> Literal["not_present", "refreshed", "reconfirm_required"]:
     def after_refresh(package: dict[str, Any]) -> None:
         _write_regions_snapshot(db, session_id)
         _write_session_workflow_state(
@@ -7064,12 +7069,16 @@ def _refresh_template_mapping_from_session(db: DBManager, session_id: int) -> bo
         output_root=TEMPLATE_DIR,
         after_refresh=after_refresh,
     )
-    return status == "refreshed"
+    return status
 
 
-def _template_mapping_save_confirmation(refreshed: bool) -> str:
-    if refreshed:
+def _template_mapping_save_confirmation(
+    status: Literal["not_present", "refreshed", "reconfirm_required"],
+) -> str:
+    if status == "refreshed":
         return "评分依据已保存，并已同步到当前考试批改；样卷映射表已按新评分标准刷新，请重新确认题框映射。"
+    if status == "reconfirm_required":
+        return "评分依据已保存，并已同步到当前考试批改；已有样卷映射需要重新确认后才能继续批改。"
     return "评分依据已保存，并已同步到当前考试批改。"
 
 
