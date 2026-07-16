@@ -243,19 +243,19 @@ def test_template_upload_request_token_is_queryable_and_cannot_be_replayed(tmp_p
 def test_activated_template_recovers_success_when_receipt_write_fails(
     tmp_path, monkeypatch
 ) -> None:
-    from template_upload_service import TemplateUploadService
+    import template_upload_service as upload_module
 
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)
     request_token = "7" * 32
-    original_finish = TemplateUploadService.finish_submission
+    original_write = upload_module._write_json_atomic
 
-    def fail_success_receipt(self, *, succeeded, **kwargs):
-        if succeeded:
+    def fail_success_receipt(path, payload):
+        if path.name.startswith("template-submission-") and payload.get("status") == "succeeded":
             raise OSError("synthetic receipt failure")
-        return original_finish(self, succeeded=succeeded, **kwargs)
+        return original_write(path, payload)
 
-    monkeypatch.setattr(TemplateUploadService, "finish_submission", fail_success_receipt)
+    monkeypatch.setattr(upload_module, "_write_json_atomic", fail_success_receipt)
     uploaded = client.post(
         f"/api/sessions/{session_id}/template",
         params={"first_page_role": "front"},
@@ -269,12 +269,42 @@ def test_activated_template_recovers_success_when_receipt_write_fails(
     lookup = client.get(
         f"/api/sessions/{session_id}/template/submissions/{request_token}"
     )
+    abandoned = client.post(
+        f"/api/sessions/{session_id}/template/submissions/{request_token}/abandon"
+    )
+    second_lookup = client.get(
+        f"/api/sessions/{session_id}/template/submissions/{request_token}"
+    )
 
     assert uploaded.status_code == 201
     assert db.get_session_template(session_id) is not None
     assert lookup.status_code == 200
     assert lookup.json() == {"status": "succeeded", "template": uploaded.json()}
+    assert abandoned.status_code == 409
+    assert second_lookup.json() == lookup.json()
     assert "synthetic receipt failure" not in uploaded.text + lookup.text
+
+
+def test_replaced_upload_token_no_longer_points_at_current_template(tmp_path) -> None:
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+
+    def upload(token: str, role: str):
+        return client.post(f"/api/sessions/{session_id}/template",
+            params={"first_page_role": role}, content=_two_page_template_pdf(), headers={
+                "content-type": "application/pdf", "x-upload-filename": "sample.pdf",
+                "x-client-request-token": token,
+            })
+
+    first = upload("8" * 32, "front")
+    second = upload("9" * 32, "back")
+    first_lookup = client.get(
+        f"/api/sessions/{session_id}/template/submissions/{'8' * 32}"
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert first_lookup.json() == {"status": "replaced", "template": None}
 
 
 def test_abandoned_template_upload_token_blocks_a_late_request(tmp_path) -> None:

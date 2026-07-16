@@ -182,15 +182,26 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
         pendingUploadToken.value = null; uploadState.value = 'idle'; await load(id)
       } else if (submission.status === 'failed' || submission.status === 'replaced') {
         pendingUploadToken.value = null; uploadState.value = 'error'
+      } else if (submission.status === 'abandoned') {
+        pendingUploadToken.value = null; uploadState.value = 'idle'
+        errorMessage.value = '服务确认这次上传未生效，可以重新提交。'
+      } else if (submission.status === 'processing') {
+        await abandonInactiveUpload(id, token)
       }
     } catch (error) {
       if (!(error instanceof ApiError && error.status === 404)) return
-      try {
-        await abandonTemplateSubmission(id, token)
-        pendingUploadToken.value = null
-        uploadState.value = 'idle'
-        errorMessage.value = '服务确认未收到这次上传，可以重新提交。'
-      } catch { /* keep the guard when arrival is still uncertain */ }
+      await abandonInactiveUpload(id, token)
+    }
+  }
+
+  async function abandonInactiveUpload(id: number, token: string): Promise<void> {
+    try {
+      await abandonTemplateSubmission(id, token)
+      pendingUploadToken.value = null
+      uploadState.value = 'idle'
+      errorMessage.value = '服务确认未收到这次上传，可以重新提交。'
+    } catch {
+      errorMessage.value = '上传仍在处理中，请稍后再次核对。'
     }
   }
 

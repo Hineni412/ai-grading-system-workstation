@@ -200,6 +200,8 @@
 | 15 | 用户授权的新修复轮次与受影响复测 | passed | 约 20 分钟；受影响门槛约 102 秒 | 3 组 Important 全部修复；1 组 P2-09 浏览器测试桩缺新状态接口 | 重新冻结、独立复审、短测、集成 |
 | 16 | 授权轮次后的 Spec/Standards 复审 | stopped per policy | 约 8 分钟 | Standards Important 0；Spec 新发现 1 组 Important：模板已激活但成功回执失败时误报失败 | 等待用户决定 |
 | 17 | 用户再次授权的上传一致性修复 | passed | 约 12 分钟；受影响门槛约 83 秒 | 1 组 Important 已修复；1 个既有令牌测试复用了两次重新生成 PDF，改为复用同一请求体以消除非业务波动 | 重新冻结、独立复审、短测、集成 |
+| 18 | 上传一致性候选 Spec/Standards 复审 | stopped per policy | 约 9 分钟 | 2 组 Important：恢复成功仍可放弃；不同令牌并发上传没有单赢家；同根因含查询锁快照与 processing 解锁 | 等待用户决定 |
+| 19 | 用户授权继续完善并发上传协议 | passed | 约 15 分钟；受影响门槛约 102 秒 | 2 组 Important 及同根因恢复边界全部修复 | 重新冻结、独立复审、短测、集成 |
 
 基线证据：Python answer-region/template API `106 passed`（25.20 秒）；editor core `14 passed`（0.15 秒）；P2-09 navigation `20 passed`（6.75 秒）、session config `6 passed`（2.78 秒）；lint/typecheck/build 通过（22.5 秒）；快速冒烟通过（6.31 秒）。首次把这些命令与静态检查并行汇总时，Vitest 子进程未在父级 180 秒上限内退出；拆成单文件顺序反馈后稳定通过，未修改产品代码。
 
@@ -222,6 +224,8 @@ Task 5 证据：Chromium 匿名流程从“草稿已保存”超时暴露出 Vue
 最终复审停止与用户授权证据：最终 Standards 复审 Important 0；最终 Spec 复审仍发现锁超时未映射、配置页第五阶段未读取真实状态、提交前无数量/绑定/异常摘要共 3 组 Important，因此按规则停止。用户于 2026-07-16 明确确认开启一次新的人工授权修复轮次。新轮次增加 `answer_region_lock_timeout` 稳定 503/重试契约与页面安全提示；readiness 返回真实 `template_ready`，配置页区分“准备样卷/继续标定/查看已确认版本”；正式提交确认展示正反面、绑定、待处理和异常摘要，并补齐每面状态与选中态。受影响后端 `30 passed`（33.26 秒）；前端 `21 passed`、typecheck/lint/build 通过；P2-10 与 P2-09 浏览器首轮 `14 passed / 5 failed`，5 项失败同源于 P2-09 模拟环境缺新增 readiness 路由，补齐后只复测对应五视口 `5 passed`（7.1 秒）；P2-10 真实临时数据库 `1 passed`（9.8 秒）；快速冒烟 `--skip-tests` 通过（11.54 秒）。真实两库 SHA256 再次与开工基线一致。
 
 上传一致性复审与再次授权证据：重新冻结候选的 Standards 复审 Important 0，Spec 确认前述 3 组均关闭，但发现模板激活成功后若成功回执文件单独写入失败，路由会误写失败并让页面宣称旧模板未改变。用户再次明确授权修复。新实现把请求令牌写入与模板同步切换的 manifest；成功回执改为可恢复的尽力写入，失败时不再覆盖真实激活结果；令牌查询可从当前 manifest 与数据库恢复完整成功响应；前端对服务端写异常保留令牌并进入“先核对”状态。受影响后端 template service/routes/OpenAPI `34 passed`（23.56 秒）；前端 `22 passed`、typecheck/lint/build 通过；模拟 P2-10 Chromium `4 passed`（13.3 秒），真实临时数据库 `1 passed`（10.8 秒）。所有写入仍只发生在 pytest/Playwright 临时目录。
+
+并发上传协议复审与继续证据：上一候选复审确认单次回执恢复有效，但指出成功事实仍可被放弃、不同令牌可依次覆盖、查询与模板读取不在同一锁快照、停滞 processing 无法安全解除。用户明确要求继续。新实现让 FastAPI 应用内复用同一上传协调器；同考试存在处理中令牌时拒绝第二令牌；查询在同一会话锁内核对 manifest、数据库和文件并持久修复 `succeeded`；已激活令牌永远不能 abandon；新模板激活后旧成功令牌返回 `replaced`；前端对 `processing` 尝试安全放弃，活动请求被服务拒绝后继续等待，非活动停滞请求才解除。受影响后端 template service/routes/OpenAPI/API app `41 passed`（28.69 秒）；前端 `14 passed`、typecheck/lint/build 通过；模拟 P2-10 Chromium `4 passed`（12.2 秒），真实临时数据库 `1 passed`（12.3 秒）。
 
 后续每个 RED/GREEN、复审、修复和 integration 门槛均追加一行；同一根因的多条失败只计一个去重问题。
 

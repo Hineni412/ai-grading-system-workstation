@@ -33,7 +33,9 @@ export interface RegionCommitResponse {
   committed: boolean; snapshot_pending: boolean; error: string | null
   issues: RegionIssue[]; region_count: number
 }
-export interface TemplateSubmission { status: 'processing' | 'succeeded' | 'failed' | 'replaced'; template: TemplateSummary | null }
+export interface TemplateSubmission {
+  status: 'processing' | 'succeeded' | 'failed' | 'replaced' | 'abandoned'; template: TemplateSummary | null
+}
 export interface RegionReadiness {
   session_id: number; scoring_configured: boolean; template_present: boolean; template_ready: boolean
 }
@@ -148,7 +150,7 @@ export function fetchTemplateSubmission(id: number, requestToken: string): Promi
     decode(value) {
       assertNoPathLikeKeys(value)
       if (!isRecord(value) || !exact(value, ['status', 'template'])
-        || !['processing', 'succeeded', 'failed', 'replaced'].includes(String(value.status))) throw new Error('Invalid submission')
+        || !['processing', 'succeeded', 'failed', 'replaced', 'abandoned'].includes(String(value.status))) throw new Error('Invalid submission')
       return { status: value.status, template: value.template === null ? null : decodeTemplate(value.template) } as TemplateSubmission
     },
   })

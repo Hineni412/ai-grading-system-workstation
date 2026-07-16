@@ -44,7 +44,7 @@ class TemplateUploadResponse(BaseModel):
 
 
 class TemplateUploadSubmissionResponse(BaseModel):
-    status: Literal["processing", "succeeded", "failed", "replaced"]
+    status: Literal["processing", "succeeded", "failed", "replaced", "abandoned"]
     template: TemplateUploadResponse | None = None
 
 
