@@ -1,4 +1,6 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
 
 const fingerprint = 'a'.repeat(64)
 const session = { id: 7, name: '匿名数学考试', status: 'created', is_deleted: false,
@@ -76,6 +78,17 @@ test('uploads, draws, binds, confirms and restores a read-only region workspace'
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/sessions/7/regions')
 
+  // Keep the same verified anonymous fixture open for the versioned manual quick check.
+  // eslint-disable-next-line playwright/no-conditional-in-test
+  if (process.env.P2_10_QUICK === '1') {
+    test.setTimeout(0)
+    const quickFixtureDir = resolve('test-results', 'p2-10-quick')
+    await mkdir(quickFixtureDir, { recursive: true })
+    await writeFile(resolve(quickFixtureDir, 'anonymous-sample.pdf'), '%PDF-1.4 anonymous mock-only fixture')
+    await page.waitForEvent('close')
+    return
+  }
+
   await expect(page.getByRole('heading', { name: '上传双页样卷' })).toBeVisible()
   await page.getByLabel('样卷 PDF').setInputFiles({
     name: 'anonymous-sample.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 anonymous'),
@@ -87,10 +100,10 @@ test('uploads, draws, binds, confirms and restores a read-only region workspace'
   await page.getByRole('button', { name: '新增框' }).click()
   const canvas = page.locator('[data-role="canvas"]')
   const box = await canvas.boundingBox()
-  if (!box) throw new Error('canvas unavailable')
-  await page.mouse.move(box.x + 100, box.y + 120)
+  expect(box).not.toBeNull()
+  await page.mouse.move(box!.x + 100, box!.y + 120)
   await page.mouse.down()
-  await page.mouse.move(box.x + 320, box.y + 300)
+  await page.mouse.move(box!.x + 320, box!.y + 300)
   await page.mouse.up()
   await page.getByRole('button', { name: '题框列表' }).click()
   await page.locator('.mapping-select').selectOption('Q1')

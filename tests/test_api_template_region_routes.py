@@ -111,8 +111,16 @@ def test_template_route_binds_existing_template_paths(tmp_path) -> None:
     body = _bind_template(client, session_id, front, back)
 
     assert body["session_id"] == session_id
-    assert body["front_template_path"] == str(front)
-    assert body["back_template_path"] == str(back)
+    assert body["pages"] == {
+        "front": {"url": f"/api/sessions/{session_id}/template/pages/front"},
+        "back": {"url": f"/api/sessions/{session_id}/template/pages/back"},
+    }
+    assert "front_template_path" not in body
+    assert "back_template_path" not in body
+    assert "regions_snapshot_token" not in body
+    read_response = client.get(f"/api/sessions/{session_id}/template")
+    assert read_response.status_code == 200
+    assert str(tmp_path) not in read_response.text
     assert body["is_confirmed"] is False
     assert db.get_session_template(session_id)["template_config_path"] == "mapping.json"
 
