@@ -6,7 +6,7 @@ import uuid
 from dataclasses import asdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from backend.config_workspace.secure_fs import (
     SecureFilesystemError,
@@ -26,9 +26,11 @@ from backend.config_workspace.editor import (
     project_config_editor,
 )
 from backend.config_workspace.locks import session_config_lock
-from backend.jobs.store import JobStore
 from path_manager import resolve_stored_file_path
 from session_manager import validate_generated_config
+
+if TYPE_CHECKING:
+    from backend.jobs.store import JobStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,56 +195,157 @@ def save_editor_config(
     job_store: JobStore | None = None,
 ) -> tuple[LoadedEditorConfig, bool]:
     with session_config_lock(Path(upload_config_dir), int(session_id)):
-        current = load_editor_config(db, session_id)
-        _require_revision(expected_revision, current)
-        if not edits and not commands:
-            return current, False
-        if not current.configured:
-            raise ConfigEditorValidationError(({
-                "code": "draft_not_configured",
-                "severity": "error",
-                "row_id": None,
-                "field": "config",
-                "message": "The draft has no grading configuration to edit.",
-            },))
-        candidate = apply_config_editor_changes(current.payload, edits=edits, commands=commands)
-        publication: PublishedConfig | None = None
-        try:
-            publication = publish_generated_config(
-                Path(upload_config_dir), candidate, token=uuid.uuid4().hex
+        return _save_editor_config_locked(
+            db,
+            upload_config_dir,
+            session_id=session_id,
+            expected_revision=expected_revision,
+            edits=edits,
+            commands=commands,
+            job_store=job_store,
+        )
+
+
+def _save_editor_config_locked(
+    db: Any,
+    upload_config_dir: Path,
+    *,
+    session_id: int,
+    expected_revision: str,
+    edits: tuple[ConfigEditorEdit, ...],
+    commands: tuple[ConfigEditorCommand, ...],
+    job_store: JobStore | None,
+) -> tuple[LoadedEditorConfig, bool]:
+    current = load_editor_config(db, session_id)
+    _require_revision(expected_revision, current)
+    if not edits and not commands:
+        return current, False
+    if not current.configured:
+        raise ConfigEditorValidationError(({
+            "code": "draft_not_configured",
+            "severity": "error",
+            "row_id": None,
+            "field": "config",
+            "message": "The draft has no grading configuration to edit.",
+        },))
+    candidate = apply_config_editor_changes(current.payload, edits=edits, commands=commands)
+    publication: PublishedConfig | None = None
+    try:
+        publication = publish_generated_config(
+            Path(upload_config_dir), candidate, token=uuid.uuid4().hex
+        )
+        before_bind = load_editor_config(db, session_id)
+        _require_revision(expected_revision, before_bind)
+        if (
+            str(before_bind.session.get("rubric_path") or "")
+            != str(current.session.get("rubric_path") or "")
+            or str(before_bind.session.get("answer_key_path") or "")
+            != str(current.session.get("answer_key_path") or "")
+        ):
+            raise ConfigRevisionConflict("config paths changed")
+        if job_store is None:
+            bound = db.publish_grading_session_config(
+                int(session_id),
+                rubric_path=str(publication.rubric_path),
+                answer_key_path=str(publication.answer_key_path),
+                expected_rubric_path=str(current.session.get("rubric_path") or ""),
+                expected_answer_key_path=str(current.session.get("answer_key_path") or ""),
             )
-            before_bind = load_editor_config(db, session_id)
-            _require_revision(expected_revision, before_bind)
-            if (
-                str(before_bind.session.get("rubric_path") or "")
-                != str(current.session.get("rubric_path") or "")
-                or str(before_bind.session.get("answer_key_path") or "")
-                != str(current.session.get("answer_key_path") or "")
-            ):
-                raise ConfigRevisionConflict("config paths changed")
-            if job_store is None:
-                bound = db.publish_grading_session_config(
-                    int(session_id),
-                    rubric_path=str(publication.rubric_path),
-                    answer_key_path=str(publication.answer_key_path),
-                    expected_rubric_path=str(current.session.get("rubric_path") or ""),
-                    expected_answer_key_path=str(current.session.get("answer_key_path") or ""),
-                )
-            else:
-                bound = job_store.update_session_config_if_idle(
-                    int(session_id),
-                    rubric_path=str(publication.rubric_path),
-                    answer_key_path=str(publication.answer_key_path),
-                    expected_rubric_path=str(current.session.get("rubric_path") or ""),
-                    expected_answer_key_path=str(current.session.get("answer_key_path") or ""),
-                )
-            if not bound:
-                raise ConfigRevisionConflict("config binding changed")
-        except BaseException:
-            if publication is not None:
-                remove_published_config(Path(upload_config_dir), publication.created_paths)
-            raise
-        return load_editor_config(db, session_id), True
+        else:
+            bound = job_store.update_session_config_if_idle(
+                int(session_id),
+                rubric_path=str(publication.rubric_path),
+                answer_key_path=str(publication.answer_key_path),
+                expected_rubric_path=str(current.session.get("rubric_path") or ""),
+                expected_answer_key_path=str(current.session.get("answer_key_path") or ""),
+            )
+        if not bound:
+            raise ConfigRevisionConflict("config binding changed")
+    except BaseException:
+        if publication is not None:
+            remove_published_config(Path(upload_config_dir), publication.created_paths)
+        raise
+    return load_editor_config(db, session_id), True
+
+
+def save_editor_config_and_refresh_mapping(
+    db: Any,
+    upload_config_dir: Path,
+    *,
+    session_id: int,
+    expected_revision: str,
+    edits: tuple[ConfigEditorEdit, ...],
+    commands: tuple[ConfigEditorCommand, ...],
+    job_store: JobStore,
+    mapping_output_dir: Path,
+    mapping_refresher: Callable[[], Literal["not_present", "refreshed", "reconfirm_required"]] | None = None,
+) -> tuple[LoadedEditorConfig, bool, ConfigSaveResult]:
+    with session_config_lock(Path(upload_config_dir), int(session_id)):
+        job_store.assert_config_session_idle(session_id)
+        current, saved = _save_editor_config_locked(
+            db,
+            upload_config_dir,
+            session_id=session_id,
+            expected_revision=expected_revision,
+            edits=edits,
+            commands=commands,
+            job_store=job_store,
+        )
+        if not saved:
+            return current, False, ConfigSaveResult(False, "not_present", "评分依据未变化。")
+        refresher = mapping_refresher or (
+            lambda: refresh_template_mapping_from_session(
+                db,
+                session_id,
+                output_root=mapping_output_dir,
+            )
+        )
+        return current, True, refresh_mapping_after_config_save(refresher)
+
+
+def publish_legacy_config_and_refresh_mapping(
+    db: Any,
+    upload_config_dir: Path,
+    *,
+    session_id: int,
+    rubric_path: str,
+    answer_key_path: str,
+    source_paper_path: str,
+    source_paper_sha256: str,
+    mapping_output_dir: Path,
+    job_store: JobStore | None = None,
+    mapping_refresher: Callable[[], Literal["not_present", "refreshed", "reconfirm_required"]] | None = None,
+) -> ConfigSaveResult:
+    if job_store is None:
+        from backend.jobs.store import JobStore
+
+        store = JobStore(db.db_path)
+    else:
+        store = job_store
+    with session_config_lock(Path(upload_config_dir), int(session_id)):
+        store.assert_config_session_idle(session_id)
+        current = db.get_grading_session(int(session_id))
+        if current is None or bool(int(current.get("is_deleted") or 0)):
+            raise ConfigRevisionConflict("session is unavailable")
+        bound = db.publish_grading_session_config_with_source(
+            int(session_id),
+            rubric_path=str(rubric_path),
+            answer_key_path=str(answer_key_path),
+            source_paper_path=str(source_paper_path),
+            source_paper_sha256=str(source_paper_sha256),
+            expected_rubric_path=str(current.get("rubric_path") or ""),
+            expected_answer_key_path=str(current.get("answer_key_path") or ""),
+        )
+        if not bound:
+            raise ConfigRevisionConflict("config binding changed")
+        refresher = mapping_refresher or (
+            lambda: refresh_template_mapping_from_session(
+                db,
+                session_id,
+                output_root=mapping_output_dir,
+            )
+        )
+        return refresh_mapping_after_config_save(refresher)
 
 
 def refresh_template_mapping_from_session(
@@ -368,4 +471,6 @@ __all__ = [
     "refresh_template_mapping_from_session",
     "remove_published_config",
     "save_editor_config",
+    "save_editor_config_and_refresh_mapping",
+    "publish_legacy_config_and_refresh_mapping",
 ]

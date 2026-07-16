@@ -80,10 +80,9 @@ from backend.config_workspace.publish import (
     ConfigRevisionConflict,
     editor_response,
     load_editor_config,
-    refresh_mapping_after_config_save,
     refresh_template_mapping_from_session,
     remove_published_config,
-    save_editor_config,
+    save_editor_config_and_refresh_mapping,
 )
 from backend.config_workspace.locks import session_config_lock
 
@@ -529,8 +528,7 @@ def save_config_editor(
 ) -> dict[str, Any]:
     _require_active_session(db, session_id)
     try:
-        manager.store.assert_config_session_idle(session_id)
-        current, saved = save_editor_config(
+        current, saved, mapping_result = save_editor_config_and_refresh_mapping(
             db,
             upload_config_dir,
             session_id=session_id,
@@ -538,6 +536,10 @@ def save_config_editor(
             edits=_editor_edits(request.edits),
             commands=_editor_commands(request.commands),
             job_store=manager.store,
+            mapping_output_dir=templates_dir,
+            mapping_refresher=lambda: refresh_template_mapping_from_session(
+                db, session_id, output_root=templates_dir
+            ),
         )
     except ConfigSessionBusyError as exc:
         raise _config_busy_error(session_id) from exc
@@ -550,20 +552,10 @@ def save_config_editor(
             "Configuration could not be saved",
         ) from None
     body = editor_response(current)
-    mapping_status = "not_present"
-    mapping_message = "评分依据未变化。"
-    if saved:
-        mapping_result = refresh_mapping_after_config_save(
-            lambda: refresh_template_mapping_from_session(
-                db, session_id, output_root=templates_dir
-            )
-        )
-        mapping_status = mapping_result.mapping_status
-        mapping_message = mapping_result.mapping_message
     body["save_result"] = {
         "config_saved": saved,
-        "mapping_status": mapping_status,
-        "mapping_message": mapping_message,
+        "mapping_status": mapping_result.mapping_status,
+        "mapping_message": mapping_result.mapping_message,
     }
     return body
 

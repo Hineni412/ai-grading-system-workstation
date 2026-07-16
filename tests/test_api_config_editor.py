@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from pathlib import Path
 
 import pytest
@@ -72,7 +73,11 @@ def _write_config(tmp_path: Path, db: DBManager, payload: dict | None = None) ->
 def editor_env(tmp_path: Path):
     db = DBManager(tmp_path / "grading.db")
     db.initialize()
-    manager = JobManager(JobStore(tmp_path / "grading.db"), max_workers=1)
+    manager = JobManager(
+        JobStore(tmp_path / "grading.db"),
+        max_workers=1,
+        interrupted_input_root=tmp_path / "uploaded",
+    )
     manager.register("config_generation", lambda context: {"session_id": context.payload["session_id"], "outcome": "complete"})
     app = create_app()
     app.dependency_overrides[get_grading_db] = lambda: db
@@ -310,6 +315,66 @@ def test_mapping_result_is_truthful_and_post_save_failure_is_safe(editor_env, mo
     assert response.status_code == 200
     assert response.json()["save_result"]["mapping_status"] == expected_status
     assert "private mapping path" not in response.text
+
+
+def test_editor_mapping_keeps_config_job_submission_outside_the_session_claim(
+    editor_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, db, manager, tmp_path = editor_env
+    session_id = _write_config(tmp_path, db)
+    first = client.get(f"/api/sessions/{session_id}/config/editor").json()
+    mapping_started = threading.Event()
+    release_mapping = threading.Event()
+    submit_finished = threading.Event()
+    responses: list[object] = []
+
+    def blocked_mapping(*_args, **_kwargs):
+        mapping_started.set()
+        assert release_mapping.wait(timeout=5)
+        return "not_present"
+
+    monkeypatch.setattr(
+        "backend.api.routers.config.refresh_template_mapping_from_session",
+        blocked_mapping,
+    )
+
+    save_thread = threading.Thread(
+        target=lambda: responses.append(client.put(
+            f"/api/sessions/{session_id}/config/editor",
+            json={
+                "revision": first["revision"],
+                "edits": [{
+                    "row_id": first["rows"][0]["row_id"],
+                    "standard_answer": "serialized",
+                }],
+                "commands": [],
+            },
+        )),
+        daemon=True,
+    )
+    save_thread.start()
+    assert mapping_started.wait(timeout=5)
+
+    submitted: list[object] = []
+
+    def submit_job() -> None:
+        submitted.append(manager.submit(
+            "config_generation",
+            {"session_id": session_id, "mode": "generate"},
+        ))
+        submit_finished.set()
+
+    submit_thread = threading.Thread(target=submit_job, daemon=True)
+    submit_thread.start()
+    assert not submit_finished.wait(timeout=0.2)
+    manager.store.assert_config_session_idle(session_id)
+
+    release_mapping.set()
+    save_thread.join(timeout=5)
+    submit_thread.join(timeout=5)
+    assert responses and responses[0].status_code == 200
+    assert submitted and submit_finished.is_set()
 
 
 def test_existing_template_with_missing_files_requires_reconfirmation(editor_env) -> None:
