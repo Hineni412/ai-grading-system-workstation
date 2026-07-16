@@ -78,10 +78,17 @@ class JobManager:
             )
             self.store.fail_interrupted_jobs()
             if interrupted_input_root is not None:
-                from .config_generation import discard_config_generation_input
+                from .config_generation import (
+                    cleanup_consumed_config_retry_artifacts,
+                    discard_config_generation_input,
+                )
 
                 for input_id in owned_input_ids:
                     discard_config_generation_input(interrupted_input_root, input_id)
+                cleanup_consumed_config_retry_artifacts(
+                    interrupted_input_root,
+                    self.store,
+                )
 
     def register(self, job_type: str, handler: JobHandler) -> None:
         clean_type = str(job_type or "").strip()
@@ -270,9 +277,30 @@ class JobManager:
                 "succeeded",
                 result=result if isinstance(result, dict) else {},
             )
+            self._cleanup_completed_config_retry(job_id)
         except Exception:  # noqa: BLE001
             self.store.finish(
                 job_id,
                 "failed",
                 error="Job result could not be persisted.",
             )
+
+    def _cleanup_completed_config_retry(self, job_id: int) -> None:
+        if self._config_lock_root is None:
+            return
+        job = self.store.get_job(job_id)
+        if (
+            job is None
+            or job.status != "succeeded"
+            or job.job_type != "config_generation"
+            or job.payload.get("mode") != "retry"
+            or job.result.get("outcome") != "complete"
+        ):
+            return
+        from .config_generation import cleanup_consumed_config_retry_artifacts
+
+        cleanup_consumed_config_retry_artifacts(
+            self._config_lock_root,
+            self.store,
+            session_id=int(job.payload.get("session_id") or 0),
+        )
