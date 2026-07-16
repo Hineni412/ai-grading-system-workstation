@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from 'vue'
+import { RouterLink } from 'vue-router'
 
 import {
   fetchGraphEvidence,
@@ -124,6 +125,14 @@ function displayTime(value: string | null): string {
         <p class="workbench-eyebrow">已有题库标签证据</p>
         <h2 id="tag-coverage-title">知识标签覆盖</h2>
       </div>
+      <RouterLink
+        v-if="sessionId !== null && className !== null"
+        data-testid="open-knowledge-graph"
+        class="workbench-secondary-link"
+        :to="{ name: 'knowledge-graph', query: { session: sessionId, class: className } }"
+      >
+        打开完整知识图谱
+      </RouterLink>
     </header>
     <p v-if="className === null" class="workbench-empty-copy">选择班级后查看知识标签覆盖</p>
     <p
