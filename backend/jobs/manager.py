@@ -17,6 +17,10 @@ class UnsupportedJobTypeError(ValueError):
     pass
 
 
+class ActiveJobExistsError(RuntimeError):
+    pass
+
+
 class JobCancellationRequested(RuntimeError):
     pass
 
@@ -110,6 +114,45 @@ class JobManager:
                     job = self.store.create_claimed_config_job(clean_payload)
                 else:
                     job = self.store.create_job(clean_type, clean_payload)
+            future = self._executor.submit(self._run_job, job.id, handler)
+            self._futures[job.id] = future
+        future.add_done_callback(
+            lambda completed, job_id=job.id: self._discard_completed_future(
+                job_id,
+                completed,
+            )
+        )
+        return job
+
+    def submit_unique_active(
+        self,
+        job_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> JobRecord:
+        """Create one active job of this type per session as one locked operation."""
+        clean_type = str(job_type or "").strip()
+        handler = self._handlers.get(clean_type)
+        if handler is None:
+            raise UnsupportedJobTypeError(f"unsupported job type: {clean_type}")
+        clean_payload = dict(payload or {})
+        session_id = int(clean_payload.get("session_id") or 0)
+        if session_id <= 0:
+            raise ValueError("session_id must be positive")
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("JobManager has shut down")
+            active, _total = self.store.list_jobs(
+                session_id=session_id,
+                job_types=(clean_type,),
+                statuses=("queued", "running"),
+                limit=1,
+                offset=0,
+            )
+            if active:
+                raise ActiveJobExistsError(
+                    f"active {clean_type} job already exists for session {session_id}"
+                )
+            job = self.store.create_job(clean_type, clean_payload)
             future = self._executor.submit(self._run_job, job.id, handler)
             self._futures[job.id] = future
         future.add_done_callback(

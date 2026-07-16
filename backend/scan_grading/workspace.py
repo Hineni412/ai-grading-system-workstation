@@ -82,6 +82,9 @@ class ScanGradingWorkspace:
         run = store.latest(int(session_id))
         if run is None:
             return None
+        manifest = self._load_or_create_manifest(session_id)
+        if run.id <= int(manifest.get("run_floor_id") or 0):
+            return None
         raw = store.counts(run.id)
         counts = {
             "graded": int(raw.get("graded", 0)),
@@ -280,20 +283,66 @@ class ScanGradingWorkspace:
                 payload["requests_per_minute"] = int(requests_per_minute)
             return payload
 
+    def submit_start(
+        self,
+        session_id: int,
+        *,
+        grading_mode: str,
+        upload_revision: int,
+        decision_revision: int,
+        confirm_pending_issues: bool,
+        enhance_images: bool,
+        max_workers: int | None,
+        requests_per_minute: int | None,
+    ) -> Any:
+        """Validate the current batch and create its only active job atomically."""
+        if self.job_manager is None:
+            raise ScanGradingWorkspaceError("grading job manager is unavailable")
+        with self._lock(session_id):
+            payload = self.prepare_start(
+                session_id,
+                grading_mode=grading_mode,
+                upload_revision=upload_revision,
+                decision_revision=decision_revision,
+                confirm_pending_issues=confirm_pending_issues,
+                enhance_images=enhance_images,
+                max_workers=max_workers,
+                requests_per_minute=requests_per_minute,
+            )
+            payload["exams_dir"] = str(self.frozen_scan_dir(session_id))
+            return self.job_manager.submit_unique_active("grading_run", payload)
+
     def start_new_upload_batch(self, session_id: int) -> dict[str, Any]:
         with self._lock(session_id):
             current_run = self.get_grading_run(session_id)
-            if current_run is not None and current_run["state"] in {
-                "running", "pause_requested", "paused", "interrupted", "cancel_requested"
-            }:
+            active_job = self._active_grading_job(session_id)
+            if (
+                current_run is not None
+                and current_run["state"]
+                in {
+                    "running",
+                    "pause_requested",
+                    "paused",
+                    "interrupted",
+                    "cancel_requested",
+                }
+            ) or active_job is not None:
                 raise ScanGradingWorkspaceError("active grading run must be resolved first")
             previous_manifest = self._load_or_create_manifest(session_id)
+            run_floor_id = int(previous_manifest.get("run_floor_id") or 0)
+            if self.grading_db_path is not None:
+                from grading_run_store import GradingRunStore
+
+                latest_run = GradingRunStore(self.grading_db_path).latest(int(session_id))
+                if latest_run is not None:
+                    run_floor_id = max(run_floor_id, latest_run.id)
             manifest = {
                 "batch_id": uuid4().hex,
                 "revision": 0,
                 "state": "draft",
                 "files": [],
                 "frozen_at": None,
+                "run_floor_id": run_floor_id,
             }
             self._write_manifest(session_id, manifest)
             history_dir = self._session_dir(session_id) / "scan_history" / str(previous_manifest["batch_id"])
@@ -641,6 +690,7 @@ class ScanGradingWorkspace:
             "state": "draft",
             "files": [],
             "frozen_at": None,
+            "run_floor_id": 0,
         }
 
     def _write_manifest(self, session_id: int, manifest: dict[str, Any]) -> None:

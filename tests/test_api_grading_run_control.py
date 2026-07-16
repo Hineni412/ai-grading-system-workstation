@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi.testclient import TestClient
 
@@ -113,6 +115,7 @@ def test_cancelled_run_cannot_resume_and_failed_retry_keeps_original_mode(tmp_pa
         )
         assert mismatched.status_code == 409
         assert mismatched.json()["error"]["code"] == "grading_job_run_mismatch"
+        manager.cancel(wrong_job.id)
 
         cancelled = client.post(
             f"/api/sessions/{session_id}/grading/runs/{cancelled_run.id}/cancel",
@@ -130,6 +133,9 @@ def test_cancelled_run_cannot_resume_and_failed_retry_keeps_original_mode(tmp_pa
         new_batch = client.post(f"/api/sessions/{session_id}/scan-uploads/new-batch")
         assert new_batch.status_code == 200
         assert new_batch.json()["state"] == "draft"
+        refreshed = client.get(f"/api/sessions/{session_id}/grading-workspace")
+        assert refreshed.status_code == 200
+        assert refreshed.json()["grading_run"] is None
 
         failed_run = store.begin(session_id, "b" * 64, "full_paper")
         store.add_item(
@@ -151,6 +157,95 @@ def test_cancelled_run_cannot_resume_and_failed_retry_keeps_original_mode(tmp_pa
         assert retried.json()["payload"]["failed_only"] is True
         assert retried.json()["payload"]["source_run_id"] == failed_run.id
     finally:
+        manager.shutdown()
+
+
+def test_concurrent_start_requests_create_only_one_grading_job(tmp_path) -> None:
+    client, db, manager = _system(tmp_path)
+    session_id = db.create_grading_session("并发启动测试", "rubric.json", "answer.json")
+    content = b"front"
+    client.post(
+        f"/api/sessions/{session_id}/scan-uploads",
+        content=content,
+        headers={
+            "content-type": "image/jpeg",
+            "x-upload-filename": "front.jpg",
+            "x-content-sha256": hashlib.sha256(content).hexdigest(),
+        },
+    )
+    client.post(
+        f"/api/sessions/{session_id}/scan-uploads/freeze",
+        json={"expected_revision": 1},
+    )
+    scan_file = next((tmp_path / "exams").rglob("*.jpg"))
+    analysis_path = (
+        tmp_path
+        / "templates"
+        / f"session_{session_id}"
+        / "scan_analysis_latest.json"
+    )
+    analysis_path.write_text(
+        json.dumps(
+            {
+                "groups": [
+                    {
+                        "source_label": "001",
+                        "front_image": str(scan_file),
+                        "back_image": None,
+                        "student_id": 1,
+                    }
+                ],
+                "issues": [],
+                "absent_students": [],
+                "warnings": [],
+                "total_pages": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    barrier = threading.Barrier(2)
+    release_handler = threading.Event()
+
+    def wait_for_release(_context):
+        release_handler.wait(timeout=5)
+        return {"state": "completed"}
+
+    manager.register("grading_run", wait_for_release)
+    original_submit = manager.submit
+
+    def synchronized_submit(job_type, payload=None):
+        if job_type == "grading_run":
+            barrier.wait(timeout=2)
+        return original_submit(job_type, payload)
+
+    manager.submit = synchronized_submit
+    request = {
+        "grading_mode": "full_paper",
+        "upload_revision": 2,
+        "decision_revision": 0,
+        "confirm_pending_issues": False,
+    }
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            responses = list(
+                executor.map(
+                    lambda _index: client.post(
+                        f"/api/sessions/{session_id}/grading/run",
+                        json=request,
+                    ),
+                    range(2),
+                )
+            )
+        assert sorted(response.status_code for response in responses) == [202, 409]
+        jobs, total = manager.list(
+            session_id=session_id,
+            job_types=("grading_run",),
+            limit=10,
+        )
+        assert total == 1
+        assert len(jobs) == 1
+    finally:
+        release_handler.set()
         manager.shutdown()
 
 

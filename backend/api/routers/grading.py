@@ -19,7 +19,7 @@ from backend.scan_grading.workspace import (
     ScanGradingWorkspaceError,
     UploadBatchRevisionError,
 )
-from backend.jobs.manager import JobManager, UnsupportedJobTypeError
+from backend.jobs.manager import ActiveJobExistsError, JobManager, UnsupportedJobTypeError
 from db_manager import DBManager
 
 
@@ -53,7 +53,13 @@ def _submit_controlled_grading_job(
     if workspace.upload_batch_exists(session_id) and not bool(payload.get("failed_only")):
         payload["exams_dir"] = str(workspace.frozen_scan_dir(session_id))
     try:
-        job = manager.submit("grading_run", payload)
+        job = manager.submit_unique_active("grading_run", payload)
+    except ActiveJobExistsError as exc:
+        raise ApiError(
+            409,
+            "grading_job_already_active",
+            "A grading job is already active for this session",
+        ) from exc
     except UnsupportedJobTypeError as exc:
         raise ApiError(
             404,
@@ -177,7 +183,7 @@ def run_session_grading(
                 "Current upload and preflight revisions are required",
             )
         try:
-            payload = workspace.prepare_start(
+            job = workspace.submit_start(
                 session_id,
                 grading_mode=request.grading_mode,
                 upload_revision=request.upload_revision,
@@ -197,7 +203,20 @@ def run_session_grading(
             raise ApiError(409, "grading_input_changed", "Grading input changed") from exc
         except ScanGradingWorkspaceError as exc:
             raise ApiError(409, "grading_input_not_ready", "Grading input is not ready") from exc
-        return _submit_controlled_grading_job(payload, manager, workspace)
+        except ActiveJobExistsError as exc:
+            raise ApiError(
+                409,
+                "grading_job_already_active",
+                "A grading job is already active for this session",
+            ) from exc
+        except UnsupportedJobTypeError as exc:
+            raise ApiError(
+                404,
+                "job_type_not_supported",
+                "Job type is not supported",
+                {"job_type": "grading_run"},
+            ) from exc
+        return _job_response(job)
 
     payload: dict[str, object] = {
         "session_id": int(session_id),
