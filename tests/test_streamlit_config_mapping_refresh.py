@@ -45,3 +45,10 @@ def test_streamlit_mapping_refresh_audit_keeps_bool_and_status() -> None:
 
     assert '"template_mapping_refreshed": mapping_status == "refreshed"' in source
     assert '"template_mapping_status": mapping_status' in source
+
+
+def test_streamlit_save_uses_partial_success_wrapper() -> None:
+    source = web_app.Path("web_app.py").read_text(encoding="utf-8")
+
+    assert "mapping_result = refresh_mapping_after_config_save(" in source
+    assert "mapping_status = mapping_result.mapping_status" in source
