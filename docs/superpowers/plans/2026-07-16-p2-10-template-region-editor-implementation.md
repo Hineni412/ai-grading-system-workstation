@@ -171,7 +171,7 @@
 
   使用 `code-review` 技能并行进行 Spec 与 Standards 两路复审，固定比较点为计划基线。汇总全部 Critical/Important，按根因去重后一次性修复；只复测影响范围并进行一次最终复审。第二轮仍有 Critical/Important 时停止并向用户汇报。
 
-- [ ] **Step 4: 用户短测与最终功能交接**
+- [x] **Step 4: 用户短测与最终功能交接**
 
   复审通过后按 handoff 协议冻结已复审完整 SHA，等待用户只对该候选短测；通过后形成 `verified_pending_integration`。功能分支交接运行 `tools/smoke_check.py --skip-tests`、`git diff --check`、handoff validator，并确认不含 `user_data`、临时数据库、构建/浏览器噪声或真实导出。
 
@@ -208,6 +208,7 @@
 | 23 | 内容身份授权修复与复审 | stopped after review | 受影响门槛约 71 秒 | 内容身份 Important 已修复；复审余 1 个 OpenAPI 可发现性 Important | 等待用户决定 |
 | 24 | OpenAPI 最终授权收口 | passed | RED/GREEN 与受影响门槛 23.32 秒 | 1 组真实问题：上传必需请求头和 PDF 请求体未进入接口说明；“POST 缺失”为工作区导入路径误报 | 最终双路复审、短测、集成 |
 | 25 | 最终 Spec/Standards 并行复审 | passed | 约 3 分钟 | Critical 0 / Important 0；Standards Minor 2，Spec Minor 4，均不阻断 | 用户短测、集成 |
+| 26 | 用户短测与功能交接 | passed | 用户反馈轮次 | 0 | integration、PR 与主线同步 |
 
 基线证据：Python answer-region/template API `106 passed`（25.20 秒）；editor core `14 passed`（0.15 秒）；P2-09 navigation `20 passed`（6.75 秒）、session config `6 passed`（2.78 秒）；lint/typecheck/build 通过（22.5 秒）；快速冒烟通过（6.31 秒）。首次把这些命令与静态检查并行汇总时，Vitest 子进程未在父级 180 秒上限内退出；拆成单文件顺序反馈后稳定通过，未修改产品代码。
 
@@ -243,6 +244,8 @@ OpenAPI 最终授权收口（第 24 轮修复）：上一候选的 Standards 复
 
 最终双路复审证据：已复审功能提交固定为 `a075cb335736070e3db2d312c36eb5d938ba0bf6`。Standards 与 Spec 两路均从指定 P2-10 worktree 核验完整提交链，并显式把该 worktree 放入 Python 模块路径。两路结论均为通过，Critical 0 / Important 0；Standards 记录 2 个非阻断 Minor，Spec 记录 4 个非阻断 Minor，集中于大 PDF 内存峰值、长期文件保留、状态尺布局和少量提示完善，不改变本包验收结论。当前仅剩用户短测与 integration。
 
+用户短测证据：用户于 2026-07-16 对已复审功能提交 `a075cb335736070e3db2d312c36eb5d938ba0bf6` 明确回复“通过”；版本化清单已由独立证据提交记录为 passed。功能交接校验通过后进入 integration，不再修改该已复审功能提交。
+
 后续每个 RED/GREEN、复审、修复和 integration 门槛均追加一行；同一根因的多条失败只计一个去重问题。
 
 ## Rollback and Stop Conditions
@@ -258,12 +261,12 @@ OpenAPI 最终授权收口（第 24 轮修复）：上一候选的 Standards 复
 ## 昼夜交接
 
 **执行包：** P2-10
-**交接状态：** waiting_user
-**功能提交：** a075cb335736070e3db2d312c36eb5d938ba0bf6
+**交接状态：** verified_pending_integration
+**功能提交：** badeb514b9173410f0d025180bbfa6f628cdf3e6
 **自动验证：** passed
 **独立复审：** passed
-**用户验收：** pending
+**用户验收：** passed
 **真实数据指纹：** not_touched
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
