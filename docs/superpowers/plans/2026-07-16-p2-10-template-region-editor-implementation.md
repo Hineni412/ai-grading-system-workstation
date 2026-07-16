@@ -77,11 +77,11 @@
 
   首个 first-parent 提交只包含本计划，交接为 `in_progress / none / pending / pending / pending / not_touched / report_only`。运行 `git diff --cached --check` 和 `tools/handoff_status.py`，要求 `ok=true`。
 
-- [ ] **Step 2: 单独引入已确认设计**
+- [x] **Step 2: 单独引入已确认设计**
 
   cherry-pick 设计提交 `9861849`；确认只新增设计说明，不改变领取提交顺序。
 
-- [ ] **Step 3: 冻结代码前基线**
+- [x] **Step 3: 冻结代码前基线**
 
   运行既有 answer-region Python 聚焦测试、template API 测试、editor core Node 测试、P2-09 前端相关单元、lint/typecheck/build 和 `tools/smoke_check.py --skip-tests`。若基线失败先调查，不写 P2-10 代码规避。
 
@@ -91,13 +91,13 @@
 
 **Public seam:** `POST /api/sessions/{id}/template`、请求令牌查询/放弃、随后模板 GET。
 
-- [ ] **RED 1:** HTTP 测试证明浏览器可上传匿名双页 PDF并选择第一页角色；少于两页、超限、错误格式和不存在考试均不改变旧模板。
-- [ ] **GREEN 1:** 实现受控流式暂存、两页转换和最小安全响应。
-- [ ] **RED 2:** 服务测试证明同考试并发上传只允许一个激活；响应丢失可按令牌查询；重复/冲突令牌拒绝；失败激活不覆盖旧模板/区域 ready 状态。
-- [ ] **GREEN 2:** 复用 P2-09 提交标记模式与 `AnswerRegionSessionLock`，在临时目录生成映射包并成功后激活。
-- [ ] **RED 3:** 测试证明响应、日志和错误不包含上传路径、模板绝对路径或临时根。
-- [ ] **GREEN 3:** 收敛安全公开模型和错误映射。
-- [ ] **Verify/commit:** 仅运行 `test_template_upload_service.py`、template route 对应 `-k` 和 OpenAPI 受影响用例，记录耗时与去重问题后提交。
+- [x] **RED 1:** HTTP 测试证明浏览器可上传匿名双页 PDF并选择第一页角色；少于两页、超限、错误格式和不存在考试均不改变旧模板。
+- [x] **GREEN 1:** 实现受控流式暂存、两页转换和最小安全响应。
+- [x] **RED 2:** 服务测试证明同考试并发上传只允许一个激活；响应丢失可按令牌查询；重复/冲突令牌拒绝；失败激活不覆盖旧模板/区域 ready 状态。
+- [x] **GREEN 2:** 复用 P2-09 提交标记模式与 `AnswerRegionSessionLock`，在临时目录生成映射包并成功后激活。
+- [x] **RED 3:** 测试证明响应、日志和错误不包含上传路径、模板绝对路径或临时根。
+- [x] **GREEN 3:** 收敛安全公开模型和错误映射。
+- [x] **Verify/commit:** 仅运行 `test_template_upload_service.py`、template route 对应 `-k` 和 OpenAPI 受影响用例，记录耗时与去重问题后提交。
 
 ---
 
@@ -186,6 +186,12 @@
 | 1 | 调查与根因分组 | completed | 记录于会话 | 5 组 | 设计、计划、实现、验证、复审、集成 |
 | 2 | 溯源与 UX 设计 | completed | 记录于会话 | 0 新增 | 计划、实现、验证、复审、集成 |
 | 3 | 测试缝确认 | completed | 记录于会话 | 0 | 计划、实现、验证、复审、集成 |
+| 4 | 代码前聚焦基线 | passed | 约 77 秒有效检查；另有 184 秒并行编排超时 | 1 个执行编排问题，产品问题 0 | 实现、验证、复审、集成 |
+| 5 | Task 1 样卷上传 RED/GREEN | passed | 约 55 秒 | 4 组：缺上传入口、令牌不可恢复、数据库失败覆盖旧文件、缺映射包 | 工作区/草稿/提交、Vue、浏览器、复审、集成 |
+
+基线证据：Python answer-region/template API `106 passed`（25.20 秒）；editor core `14 passed`（0.15 秒）；P2-09 navigation `20 passed`（6.75 秒）、session config `6 passed`（2.78 秒）；lint/typecheck/build 通过（22.5 秒）；快速冒烟通过（6.31 秒）。首次把这些命令与静态检查并行汇总时，Vitest 子进程未在父级 180 秒上限内退出；拆成单文件顺序反馈后稳定通过，未修改产品代码。
+
+Task 1 证据：四条垂直切片分别从 `405`、submission `404`、abandon `404`、数据库失败覆盖旧图片和映射路径为空转绿；聚焦 service/API `11 passed`（7.03 秒），OpenAPI `15 passed`（14.61 秒），受影响 Python 编译与 `git diff --check` 通过。全部写入只发生在 pytest 临时目录。
 
 后续每个 RED/GREEN、复审、修复和 integration 门槛均追加一行；同一根因的多条失败只计一个去重问题。
 

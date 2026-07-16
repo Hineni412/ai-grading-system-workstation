@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -25,6 +25,27 @@ class TemplateUpdateRequest(BaseModel):
     def _optional_text(cls, value: str | None) -> str | None:
         clean = str(value or "").strip()
         return clean or None
+
+
+class TemplatePageResponse(BaseModel):
+    url: str
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+
+
+class TemplateUploadResponse(BaseModel):
+    session_id: int = Field(gt=0)
+    template_id: int = Field(gt=0)
+    template_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    first_page_role: Literal["front", "back"]
+    pages: dict[Literal["front", "back"], TemplatePageResponse]
+    is_confirmed: bool
+    regions_snapshot_pending: bool
+
+
+class TemplateUploadSubmissionResponse(BaseModel):
+    status: Literal["processing", "succeeded", "failed", "replaced"]
+    template: TemplateUploadResponse | None = None
 
 
 class RegionDraftRequest(BaseModel):

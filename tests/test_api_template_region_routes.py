@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import io
+import json
 import warnings
 from pathlib import Path
+
+from PIL import Image
 
 warnings.filterwarnings(
     "ignore",
@@ -30,7 +34,19 @@ def _client_with_db(tmp_path):
 
 
 def _session(db) -> int:
-    return db.create_grading_session("Template Exam", "rubric.json", "answer.json")
+    root = Path(db.db_path).parent
+    rubric = root / "rubric.json"
+    answer = root / "answer.json"
+    rubric.write_text(
+        json.dumps(
+            {"questions": [{"question_id": "Q1", "question_type": "subjective", "max_score": 10}]}
+        ),
+        encoding="utf-8",
+    )
+    answer.write_text(
+        json.dumps({"questions": [{"question_id": "Q1"}]}), encoding="utf-8"
+    )
+    return db.create_grading_session("Template Exam", str(rubric), str(answer))
 
 
 def _template_files(tmp_path: Path) -> tuple[Path, Path]:
@@ -39,6 +55,20 @@ def _template_files(tmp_path: Path) -> tuple[Path, Path]:
     front.write_bytes(b"front-template")
     back.write_bytes(b"back-template")
     return front, back
+
+
+def _two_page_template_pdf() -> bytes:
+    import fitz
+
+    document = fitz.open()
+    try:
+        first = document.new_page(width=300, height=500)
+        first.insert_text((36, 48), "ANONYMOUS BACK")
+        second = document.new_page(width=400, height=600)
+        second.insert_text((36, 48), "ANONYMOUS FRONT")
+        return document.tobytes()
+    finally:
+        document.close()
 
 
 def _region(region_uuid: str = "r1", *, mapped_question_id: str | None = "Q1") -> dict:
@@ -83,6 +113,120 @@ def test_template_route_binds_existing_template_paths(tmp_path) -> None:
     assert body["back_template_path"] == str(back)
     assert body["is_confirmed"] is False
     assert db.get_session_template(session_id)["template_config_path"] == "mapping.json"
+
+
+def test_template_upload_selects_page_roles_and_returns_only_safe_media_urls(tmp_path) -> None:
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+
+    response = client.post(
+        f"/api/sessions/{session_id}/template",
+        params={"first_page_role": "back"},
+        content=_two_page_template_pdf(),
+        headers={
+            "content-type": "application/pdf",
+            "x-upload-filename": "anonymous-sample.pdf",
+            "x-client-request-token": "1" * 32,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body == {
+        "session_id": session_id,
+        "template_id": body["template_id"],
+        "template_fingerprint": body["template_fingerprint"],
+        "first_page_role": "back",
+        "pages": {
+            "front": {
+                "url": f"/api/sessions/{session_id}/template/pages/front",
+                "width": 640,
+                "height": 960,
+            },
+            "back": {
+                "url": f"/api/sessions/{session_id}/template/pages/back",
+                "width": 480,
+                "height": 800,
+            },
+        },
+        "is_confirmed": False,
+        "regions_snapshot_pending": False,
+    }
+    assert len(body["template_fingerprint"]) == 64
+    assert str(tmp_path) not in response.text
+
+    front_response = client.get(body["pages"]["front"]["url"])
+    back_response = client.get(body["pages"]["back"]["url"])
+
+    assert front_response.status_code == 200
+    assert front_response.headers["content-type"] == "image/jpeg"
+    assert Image.open(io.BytesIO(front_response.content)).size == (640, 960)
+    assert back_response.status_code == 200
+    assert back_response.headers["content-type"] == "image/jpeg"
+    assert Image.open(io.BytesIO(back_response.content)).size == (480, 800)
+
+
+def test_template_upload_request_token_is_queryable_and_cannot_be_replayed(tmp_path) -> None:
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+    request_token = "2" * 32
+    headers = {
+        "content-type": "application/pdf",
+        "x-upload-filename": "anonymous-sample.pdf",
+        "x-client-request-token": request_token,
+    }
+
+    first = client.post(
+        f"/api/sessions/{session_id}/template",
+        params={"first_page_role": "front"},
+        content=_two_page_template_pdf(),
+        headers=headers,
+    )
+    lookup = client.get(
+        f"/api/sessions/{session_id}/template/submissions/{request_token}"
+    )
+    replay = client.post(
+        f"/api/sessions/{session_id}/template",
+        params={"first_page_role": "front"},
+        content=_two_page_template_pdf(),
+        headers=headers,
+    )
+
+    assert first.status_code == 201
+    assert lookup.status_code == 200
+    assert lookup.json() == {"status": "succeeded", "template": first.json()}
+    assert replay.status_code == 409
+    assert replay.json()["error"]["code"] == "template_upload_already_submitted"
+
+
+def test_abandoned_template_upload_token_blocks_a_late_request(tmp_path) -> None:
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+    request_token = "3" * 32
+
+    missing = client.get(
+        f"/api/sessions/{session_id}/template/submissions/{request_token}"
+    )
+    abandoned = client.post(
+        f"/api/sessions/{session_id}/template/submissions/{request_token}/abandon"
+    )
+    late = client.post(
+        f"/api/sessions/{session_id}/template",
+        params={"first_page_role": "front"},
+        content=_two_page_template_pdf(),
+        headers={
+            "content-type": "application/pdf",
+            "x-upload-filename": "anonymous-sample.pdf",
+            "x-client-request-token": request_token,
+        },
+    )
+
+    assert missing.status_code == 404
+    assert abandoned.status_code == 200
+    assert abandoned.json() == {"status": "abandoned"}
+    assert late.status_code == 409
+    assert late.json()["error"]["code"] == "template_upload_abandoned"
+    assert db.get_session_template(session_id) is None
 
 
 def test_answer_region_draft_route_saves_and_loads_compatible_draft(tmp_path) -> None:

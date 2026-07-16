@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import FileResponse
 
 from answer_region_commit_service import AnswerRegionCommitService, AnswerRegionCommitResult
 from answer_region_draft_service import AnswerRegionDraftService, DraftLoadResult
 from backend.api.app import ApiError
-from backend.api.dependencies import get_grading_db, get_templates_dir
+from backend.api.dependencies import (
+    get_grading_db,
+    get_template_upload_service,
+    get_templates_dir,
+)
 from backend.api.routers.sessions import _require_session, _template_response
 from backend.api.schemas.sessions import SessionTemplateResponse
 from backend.api.schemas.templates import (
@@ -18,12 +23,188 @@ from backend.api.schemas.templates import (
     RegionDraftResponse,
     RegionIssueResponse,
     TemplateUpdateRequest,
+    TemplateUploadSubmissionResponse,
+    TemplateUploadResponse,
 )
 from db_manager import DBManager
 from path_manager import resolve_stored_file_path
+from template_upload_service import (
+    TemplateUploadError,
+    TemplateUploadService,
+    TemplateUploadSubmissionConflictError,
+    TemplateUploadTooLargeError,
+)
 
 
 router = APIRouter(prefix="/api", tags=["templates"])
+
+
+def _upload_response(result: Any) -> TemplateUploadResponse:
+    return TemplateUploadResponse(
+        session_id=result.session_id,
+        template_id=result.template_id,
+        template_fingerprint=result.template_fingerprint,
+        first_page_role=result.first_page_role,
+        pages={
+            page: {
+                "url": f"/api/sessions/{result.session_id}/template/pages/{page}",
+                "width": getattr(result, page).width,
+                "height": getattr(result, page).height,
+            }
+            for page in ("front", "back")
+        },
+        is_confirmed=result.is_confirmed,
+        regions_snapshot_pending=result.regions_snapshot_pending,
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/template",
+    response_model=TemplateUploadResponse,
+    status_code=201,
+)
+async def upload_session_template(
+    session_id: int,
+    request: Request,
+    first_page_role: Literal["front", "back"],
+    db: DBManager = Depends(get_grading_db),
+    service: TemplateUploadService = Depends(get_template_upload_service),
+) -> TemplateUploadResponse:
+    _require_session(db, session_id)
+    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/pdf":
+        raise ApiError(415, "template_upload_type_invalid", "Template upload must be a PDF")
+    filename = str(request.headers.get("x-upload-filename") or "").strip().lower()
+    if not filename.endswith(".pdf"):
+        raise ApiError(422, "template_upload_invalid", "Template upload is invalid")
+    raw_length = request.headers.get("content-length")
+    try:
+        content_length = int(raw_length) if raw_length is not None else None
+    except ValueError:
+        raise ApiError(422, "template_upload_invalid", "Template upload is invalid") from None
+    if content_length is not None and content_length > service.max_upload_bytes:
+        raise ApiError(413, "template_upload_too_large", "Template upload is too large")
+    request_token = str(request.headers.get("x-client-request-token") or "").strip()
+    try:
+        submission_state = service.begin_submission(
+            session_id=session_id,
+            request_token=request_token,
+            filename=filename,
+            content_length=content_length,
+            first_page_role=first_page_role,
+        )
+    except TemplateUploadSubmissionConflictError:
+        raise ApiError(
+            409,
+            "template_upload_token_conflict",
+            "Template upload token was used for another request",
+        ) from None
+    except TemplateUploadError:
+        raise ApiError(422, "template_upload_invalid", "Template upload is invalid") from None
+    if submission_state != "started":
+        if submission_state == "abandoned":
+            raise ApiError(
+                409,
+                "template_upload_abandoned",
+                "Template upload request was abandoned",
+            )
+        raise ApiError(
+            409,
+            "template_upload_already_submitted",
+            "Template upload was already submitted; query its result",
+        )
+    try:
+        chunks: list[bytes] = []
+        size = 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > service.max_upload_bytes:
+                raise TemplateUploadTooLargeError("template upload is too large")
+            chunks.append(chunk)
+        result = service.upload(
+            db=db,
+            session_id=session_id,
+            pdf_bytes=b"".join(chunks),
+            first_page_role=first_page_role,
+        )
+        response = _upload_response(result)
+        service.finish_submission(
+            session_id=session_id,
+            request_token=request_token,
+            succeeded=True,
+            template=response.model_dump(mode="json"),
+        )
+    except TemplateUploadTooLargeError:
+        service.finish_submission(
+            session_id=session_id, request_token=request_token, succeeded=False
+        )
+        raise ApiError(413, "template_upload_too_large", "Template upload is too large") from None
+    except TemplateUploadError:
+        service.finish_submission(
+            session_id=session_id, request_token=request_token, succeeded=False
+        )
+        raise ApiError(422, "template_upload_invalid", "Template upload is invalid") from None
+    return response
+
+
+@router.get(
+    "/sessions/{session_id}/template/submissions/{request_token}",
+    response_model=TemplateUploadSubmissionResponse,
+)
+def get_template_upload_submission(
+    session_id: int,
+    request_token: str,
+    db: DBManager = Depends(get_grading_db),
+    service: TemplateUploadService = Depends(get_template_upload_service),
+) -> dict[str, object]:
+    _require_session(db, session_id)
+    try:
+        return service.submission_public(
+            session_id=session_id, request_token=request_token
+        )
+    except FileNotFoundError:
+        raise ApiError(
+            404, "template_upload_not_found", "Template upload submission not found"
+        ) from None
+    except TemplateUploadError:
+        raise ApiError(422, "template_upload_invalid", "Template upload is invalid") from None
+
+
+@router.post("/sessions/{session_id}/template/submissions/{request_token}/abandon")
+def abandon_template_upload_submission(
+    session_id: int,
+    request_token: str,
+    db: DBManager = Depends(get_grading_db),
+    service: TemplateUploadService = Depends(get_template_upload_service),
+) -> dict[str, str]:
+    _require_session(db, session_id)
+    try:
+        service.abandon_submission(
+            session_id=session_id, request_token=request_token
+        )
+    except TemplateUploadSubmissionConflictError:
+        raise ApiError(
+            409,
+            "template_upload_already_submitted",
+            "Template upload was already submitted",
+        ) from None
+    except TemplateUploadError:
+        raise ApiError(422, "template_upload_invalid", "Template upload is invalid") from None
+    return {"status": "abandoned"}
+
+
+@router.get("/sessions/{session_id}/template/pages/{page}")
+def get_session_template_page(
+    session_id: int,
+    page: Literal["front", "back"],
+    db: DBManager = Depends(get_grading_db),
+    templates_dir: Path = Depends(get_templates_dir),
+) -> FileResponse:
+    template = _require_template(db, session_id)
+    front_path, back_path = _template_paths(
+        template, _session_dir(templates_dir, session_id)
+    )
+    path = front_path if page == "front" else back_path
+    return FileResponse(path, media_type="image/jpeg", filename=f"template-{page}.jpg")
 
 
 def _session_dir(templates_dir: Path, session_id: int) -> Path:

@@ -24,6 +24,7 @@ from backend.ops.plan_store import OpsPlanStore
 from backend.ops.write_service import OpsWriteService
 from backend.review.service import ReviewApplicationService
 from backend.workbench.service import WorkbenchService
+from template_upload_service import TemplateUploadService
 from manual_review_service import ManualReviewService
 from path_manager import PathManager, get_path_manager
 from integration.diagnosis_profile_service import DiagnosisProfileService
@@ -88,6 +89,12 @@ def get_config_source_service(
 
 def get_templates_dir() -> Path:
     return get_path_manager().templates_dir
+
+
+def get_template_upload_service(
+    templates_dir: Path = Depends(get_templates_dir),
+) -> TemplateUploadService:
+    return TemplateUploadService(templates_dir)
 
 
 def get_config_mapping_output_dir(
