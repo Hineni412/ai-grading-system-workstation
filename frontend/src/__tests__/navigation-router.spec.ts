@@ -5,25 +5,33 @@ import {
   navigationItems,
   reviewRouteDefinition,
   sessionRouteDefinition,
+  knowledgeGraphRouteDefinition,
   workbenchRouteDefinition,
 } from '../navigation'
 import { createAppRouter } from '../router'
 
 describe('source-recalibrated navigation', () => {
-  it('exposes the truthful workbench, configuration and review destinations', () => {
+  it('exposes the truthful workbench, configuration, knowledge graph and review destinations', () => {
     expect(navigationItems).toEqual([
       workbenchRouteDefinition,
       sessionRouteDefinition,
+      knowledgeGraphRouteDefinition,
       reviewRouteDefinition,
     ])
     expect(navigationItems.map(({ id, label, path }) => [id, label, path])).toEqual([
       ['workbench', '工作台', '/workbench'],
       ['sessions', '考试配置', '/sessions'],
+      ['knowledge-graph', '知识图谱', '/knowledge-graph'],
       ['grading', '评分复核', '/grading'],
     ])
   })
 
-  it.each([workbenchRouteDefinition, sessionRouteDefinition, reviewRouteDefinition])(
+  it.each([
+    workbenchRouteDefinition,
+    sessionRouteDefinition,
+    knowledgeGraphRouteDefinition,
+    reviewRouteDefinition,
+  ])(
     'resolves $id from the shared metadata',
     (definition) => {
       const router = createAppRouter(createMemoryHistory())
@@ -42,6 +50,7 @@ describe('source-recalibrated navigation', () => {
     ['/', '/workbench'],
     ['/workbench', '/workbench'],
     ['/sessions', '/sessions'],
+    ['/knowledge-graph?session=7&class=七年级一班', '/knowledge-graph?session=7&class=七年级一班'],
     ['/grading', '/grading'],
     ['/design-system', '/design-system'],
     ['/missing/deep/path', '/missing/deep/path'],
@@ -94,5 +103,16 @@ describe('source-recalibrated navigation', () => {
     const matched = router.currentRoute.value.matched
     const component = matched[matched.length - 1]?.components?.default
     expect((component as { __name?: string } | undefined)?.__name).toBe('SessionConfigView')
+  })
+
+  it('loads the knowledge graph view for its route', async () => {
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/knowledge-graph?session=7&class=七年级一班')
+    await router.isReady()
+
+    expect(router.currentRoute.value.name).toBe('knowledge-graph')
+    const matched = router.currentRoute.value.matched
+    const component = matched[matched.length - 1]?.components?.default
+    expect((component as { __name?: string } | undefined)?.__name).toBe('KnowledgeGraphView')
   })
 })

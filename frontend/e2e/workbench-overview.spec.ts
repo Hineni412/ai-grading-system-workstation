@@ -196,7 +196,11 @@ function paginatedStudentAnalysis(
 
 function graphRows(sessionId: number, className: string) {
   return {
-    scope: { mode: 'class', student_ids: [], class_id: className },
+    scope: {
+      mode: 'class',
+      student_ids: Array.from({ length: 101 }, (_, index) => String(index + 1)),
+      class_id: className,
+    },
     exam_scope: {
       mode: 'current',
       session_ids: [sessionId],
@@ -286,6 +290,32 @@ function fulfillJson(route: Route, body: unknown): Promise<void> {
   })
 }
 
+function configSource(sessionId: number) {
+  return {
+    session_id: sessionId,
+    source_id: 'a'.repeat(32),
+    source_revision: 'b'.repeat(64),
+    safe_filename: 'synthetic-exam.pdf',
+    suffix: '.pdf',
+    size_bytes: 1,
+    sha256_prefix: 'c'.repeat(12),
+    parse_state: 'ready',
+    questions: [],
+  }
+}
+
+function configEditor(sessionId: number) {
+  return {
+    session_id: sessionId,
+    configured: false,
+    revision: 'd'.repeat(64),
+    rows: [],
+    total_score: 0,
+    issues: [],
+    source: null,
+  }
+}
+
 function sessionIdFrom(url: URL): number {
   const match = url.pathname.match(/\/sessions\/(\d+)/)
   return Number(match?.[1] ?? url.searchParams.get('session_id') ?? 7)
@@ -328,6 +358,16 @@ async function installSyntheticApi(
 
     if (pathname === '/api/sessions') {
       await fulfillJson(route, { items: sessions, total: sessions.length })
+      return
+    }
+    const activeSourceMatch = pathname.match(/^\/api\/sessions\/(\d+)\/config\/sources\/active$/)
+    if (request.method() === 'GET' && activeSourceMatch) {
+      await fulfillJson(route, configSource(Number(activeSourceMatch[1])))
+      return
+    }
+    const editorMatch = pathname.match(/^\/api\/sessions\/(\d+)\/config\/editor$/)
+    if (request.method() === 'GET' && editorMatch) {
+      await fulfillJson(route, configEditor(Number(editorMatch[1])))
       return
     }
     if (pathname === '/api/workbench/overview') {
@@ -557,6 +597,10 @@ test('isolates delayed session 7 responses after quickly switching to session 8'
   await page.goto('/workbench')
   const sessionSelector = page.getByRole('combobox', { name: '当前考试' })
   await expect(sessionSelector).toHaveValue('7')
+  await expect.poll(() => requests.filter((request) => (
+    request.pathname === '/api/workbench/overview' ||
+    request.pathname === '/api/sessions/7/analysis/questions'
+  )).length).toBe(2)
 
   await sessionSelector.selectOption('8')
   await expect(page.locator('.workbench-hero__session')).toHaveText('八年级物理单元检测（匿名合成数据）')
@@ -579,6 +623,10 @@ test('loads Graph only after class selection and supports question, student, ano
   await page.getByRole('combobox', { name: '班级' }).selectOption('七年级一班')
   await expect(page.getByText('已覆盖 18 / 20 份')).toBeVisible()
   expect(requests.filter((request) => request.pathname === '/api/graph/rows')).toHaveLength(1)
+  await expect(page.getByTestId('open-knowledge-graph')).toHaveAttribute(
+    'href',
+    `/knowledge-graph?session=7&class=${encodeURIComponent('七年级一班')}`,
+  )
 
   await page.getByRole('button', { name: /^Q2/ }).click()
   await expect(page.getByRole('cell', { name: /匿名学生乙/ })).toBeVisible()

@@ -13,6 +13,20 @@ export interface GraphExamScope {
   sessions: Array<{ session_id: number; session_name: string }>
 }
 
+export type GraphStudentScopeInput =
+  | { mode: 'class'; class_id: string; student_ids?: string[] }
+  | { mode: 'student' | 'selected'; student_ids: string[] }
+
+export type GraphExamScopeInput =
+  | { mode: 'current'; session_ids: [number] }
+  | { mode: 'manual'; session_ids: number[] }
+  | { mode: 'cross_exam'; session_ids?: never }
+
+export interface GraphQueryInput {
+  scope: GraphStudentScopeInput
+  exam_scope: GraphExamScopeInput
+}
+
 export interface GraphCoverage {
   covered_items: number
   total_items: number
@@ -108,8 +122,7 @@ export interface GraphEvidenceResponse {
 }
 
 interface GraphEvidenceExpectation {
-  sessionId: number
-  className: string
+  query: GraphQueryInput
   knowledgeKey: string
   page?: number
 }
@@ -310,7 +323,10 @@ function hasSharedContext(value: Record<string, unknown>): boolean {
   )
 }
 
-export function decodeGraphRowsResponse(value: unknown): GraphRowsResponse {
+export function decodeGraphRowsResponse(
+  value: unknown,
+  expected?: GraphQueryInput,
+): GraphRowsResponse {
   if (
     !isRecord(value) ||
     !hasExactKeys(value, [
@@ -323,34 +339,79 @@ export function decodeGraphRowsResponse(value: unknown): GraphRowsResponse {
     !Array.isArray(value.nodes) ||
     !value.nodes.every(isGraphNode) ||
     !Array.isArray(value.edges) ||
-    !value.edges.every(isGraphEdge)
+    !value.edges.every(isGraphEdge) ||
+    value.edges.length !== 0
   ) {
     throw new Error('Invalid graph rows')
   }
-  return value as unknown as GraphRowsResponse
+  const response = value as unknown as GraphRowsResponse
+  if (
+    !hasAlignedExamScope(response.exam_scope) ||
+    response.rows.some((row) => (
+      !response.scope.student_ids.includes(String(row.student_id)) ||
+      row.source_question_refs.some((reference) => (
+        !response.exam_scope.session_ids.includes(reference.session_id)
+      ))
+    )) ||
+    (expected && !matchesGraphQuery(response, expected))
+  ) {
+    throw new Error('Invalid graph rows')
+  }
+  return response
 }
 
-function hasMatchingGraphEvidenceScope(
+function hasAlignedExamScope(scope: GraphExamScope): boolean {
+  return (
+    scope.sessions.length === scope.session_ids.length &&
+    scope.sessions.every((session, index) => session.session_id === scope.session_ids[index])
+  )
+}
+
+function isOrderedSubset<T>(actual: T[], requested: T[]): boolean {
+  let position = 0
+  for (const value of actual) {
+    position = requested.indexOf(value, position)
+    if (position < 0) return false
+    position += 1
+  }
+  return true
+}
+
+function matchesGraphQuery(response: GraphRowsResponse | GraphEvidenceResponse, query: GraphQueryInput): boolean {
+  if (response.scope.mode !== query.scope.mode || response.exam_scope.mode !== query.exam_scope.mode) {
+    return false
+  }
+  if (query.scope.mode === 'class') {
+    if (response.scope.class_id !== query.scope.class_id) return false
+    if (query.scope.student_ids && !isOrderedSubset(response.scope.student_ids, query.scope.student_ids)) {
+      return false
+    }
+  } else if (!isOrderedSubset(response.scope.student_ids, query.scope.student_ids)) {
+    return false
+  }
+  if (query.exam_scope.mode === 'current') {
+    return response.exam_scope.session_ids.length === 1 &&
+      response.exam_scope.session_ids[0] === query.exam_scope.session_ids[0]
+  }
+  if (query.exam_scope.mode === 'manual') {
+    return isOrderedSubset(response.exam_scope.session_ids, query.exam_scope.session_ids)
+  }
+  return true
+}
+
+export function hasMatchingGraphEvidenceScope(
   response: GraphEvidenceResponse,
   expected?: GraphEvidenceExpectation,
 ): boolean {
-  if (
-    response.exam_scope.sessions.length !== response.exam_scope.session_ids.length ||
-    !response.exam_scope.sessions.every(
-      (session, index) => session.session_id === response.exam_scope.session_ids[index],
-    )
-  ) return false
+  if (!hasAlignedExamScope(response.exam_scope)) return false
   if (expected && (
-    response.scope.mode !== 'class' ||
-    response.scope.class_id !== expected.className ||
-    response.exam_scope.mode !== 'current' ||
-    response.exam_scope.session_ids.length !== 1 ||
-    response.exam_scope.session_ids[0] !== expected.sessionId ||
+    !matchesGraphQuery(response, expected.query) ||
     response.knowledge_key !== expected.knowledgeKey ||
     (expected.page !== undefined && response.page !== expected.page)
   )) return false
   return response.items.every((item) => (
     item.knowledge_key === response.knowledge_key &&
+    response.scope.student_ids.includes(String(item.student_id)) &&
     response.exam_scope.session_ids.includes(item.session_id) &&
     (response.scope.mode !== 'class' || item.class_id === response.scope.class_id)
   ))
@@ -402,10 +463,103 @@ function requireClassName(className: string): string {
 }
 
 function graphScope(sessionId: number, className: string) {
-  return {
+  return normalizeGraphQuery({
     scope: { mode: 'class' as const, class_id: requireClassName(className) },
     exam_scope: { mode: 'current' as const, session_ids: [requireSessionId(sessionId)] },
+  })
+}
+
+function normalizeStudentIds(values: string[]): string[] {
+  const result: string[] = []
+  for (const rawValue of values) {
+    const value = String(rawValue).trim()
+    if (!value) throw new Error('Invalid student id')
+    if (!result.includes(value)) result.push(value)
   }
+  return result
+}
+
+function normalizeSessionIds(values: number[]): number[] {
+  const result: number[] = []
+  for (const rawValue of values) {
+    const value = requireSessionId(rawValue)
+    if (!result.includes(value)) result.push(value)
+  }
+  return result
+}
+
+export function normalizeGraphQuery(query: GraphQueryInput): GraphQueryInput {
+  let scope: GraphStudentScopeInput
+  if (query.scope.mode === 'class') {
+    const studentIds = query.scope.student_ids
+      ? normalizeStudentIds(query.scope.student_ids)
+      : undefined
+    scope = {
+      mode: 'class',
+      class_id: requireClassName(query.scope.class_id),
+      ...(studentIds && studentIds.length > 0 ? { student_ids: studentIds } : {}),
+    }
+  } else {
+    const studentIds = normalizeStudentIds(query.scope.student_ids)
+    if (studentIds.length === 0) throw new Error('Invalid student scope')
+    scope = { mode: query.scope.mode, student_ids: studentIds }
+  }
+
+  let examScope: GraphExamScopeInput
+  if (query.exam_scope.mode === 'cross_exam') {
+    examScope = { mode: 'cross_exam' }
+  } else {
+    const sessionIds = normalizeSessionIds(query.exam_scope.session_ids)
+    if (query.exam_scope.mode === 'current') {
+      if (sessionIds.length !== 1) throw new Error('Invalid current exam scope')
+      examScope = { mode: 'current', session_ids: [sessionIds[0]!] }
+    } else {
+      if (sessionIds.length === 0) throw new Error('Invalid manual exam scope')
+      examScope = { mode: 'manual', session_ids: sessionIds }
+    }
+  }
+  return { scope, exam_scope: examScope }
+}
+
+export function fetchScopedGraphRows(
+  query: GraphQueryInput,
+  signal?: AbortSignal,
+): Promise<GraphRowsResponse> {
+  const normalized = normalizeGraphQuery(query)
+  return apiClient.request('/api/graph/rows', {
+    method: 'POST',
+    body: normalized,
+    decode: (value) => decodeGraphRowsResponse(value, normalized),
+    signal,
+  })
+}
+
+export function fetchScopedGraphEvidence(
+  query: GraphQueryInput,
+  knowledgeKey: string,
+  signal?: AbortSignal,
+  page = 1,
+): Promise<GraphEvidenceResponse> {
+  const normalized = normalizeGraphQuery(query)
+  if (!knowledgeKey.startsWith('knowledge_point:') || knowledgeKey.length <= 'knowledge_point:'.length) {
+    throw new Error('Invalid knowledge key')
+  }
+  const normalizedPage = Number.isSafeInteger(page) && page > 0 ? page : 1
+  return apiClient.request('/api/graph/evidence', {
+    method: 'POST',
+    body: {
+      ...normalized,
+      knowledge_key: knowledgeKey,
+      page: normalizedPage,
+      page_size: 20,
+    },
+    decode: (value) => decodeGraphEvidenceResponse(value, {
+      query: normalized,
+      knowledgeKey,
+      page: normalizedPage,
+    }),
+    signal,
+  })
 }
 
 export function fetchGraphRows(
@@ -413,12 +567,7 @@ export function fetchGraphRows(
   className: string,
   signal?: AbortSignal,
 ): Promise<GraphRowsResponse> {
-  return apiClient.request('/api/graph/rows', {
-    method: 'POST',
-    body: graphScope(sessionId, className),
-    decode: decodeGraphRowsResponse,
-    signal,
-  })
+  return fetchScopedGraphRows(graphScope(sessionId, className), signal)
 }
 
 export function fetchGraphEvidence(
@@ -428,23 +577,10 @@ export function fetchGraphEvidence(
   signal?: AbortSignal,
   page = 1,
 ): Promise<GraphEvidenceResponse> {
-  if (!knowledgeKey.startsWith('knowledge_point:') || knowledgeKey.length <= 'knowledge_point:'.length) {
-    throw new Error('Invalid knowledge key')
-  }
-  return apiClient.request('/api/graph/evidence', {
-    method: 'POST',
-    body: {
-      ...graphScope(sessionId, className),
-      knowledge_key: knowledgeKey,
-      page: Number.isSafeInteger(page) && page > 0 ? page : 1,
-      page_size: 20,
-    },
-    decode: (value) => decodeGraphEvidenceResponse(value, {
-      sessionId,
-      className: requireClassName(className),
-      knowledgeKey,
-      page,
-    }),
+  return fetchScopedGraphEvidence(
+    graphScope(sessionId, className),
+    knowledgeKey,
     signal,
-  })
+    page,
+  )
 }
