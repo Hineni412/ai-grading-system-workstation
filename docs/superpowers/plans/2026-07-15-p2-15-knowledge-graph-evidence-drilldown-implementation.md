@@ -710,6 +710,8 @@ Expected: validator `ok=true`，停在 `waiting_review`；不得自报独立复�
 - Git 授权后的最终定向修复：resize 重试先以 `1 failed / 7 passed` 复现只重绘不 resize；observe 重建以 `1 failed / 8 passed` 复现失效 observer 残留；异常 off 后 dispose 以 `1 failed / 9 passed` 复现清理短路，三条分别转绿到组件 `10 passed`。旧 workbench 地址混入额外受控参数先以 `1 failed / 13 passed` 复现，修复后 route `14 passed`。架构事实改为完整 3×3 受控 URL 与成功刷新清证据，并修正序号。冻结前受影响回归为 5 文件 `54 passed / 0 failed`（约 10 秒），typecheck 通过（约 16 秒），lint 通过（约 11 秒）；未运行大范围测试。
 - 用户于 2026-07-16 明确决定“定向修复，不再复审，然后合并”。本轮不再启动独立复审，按用户决定关闭最后 `1 Important / 2 Minor` 后直接进入 integration；该决定不扩大真实数据、直接 push main、force push 或破坏性操作权限。
 - 最后定向修复 RED/GREEN：节点选择先以组件 `1 failed / 9 passed` 复现整图 `setOption`，随后改为 ECharts highlight/downplay 局部选择并转为 `10 passed`；错误候选 SHA 先令 1000 节点基准按预期失败，再改为附件始终读取真实 `git rev-parse HEAD`，环境值只做一致性校验；四处相同图表降级赋值收敛为统一边界函数。受影响验证为组件 `10 passed`（约 7 秒）、typecheck（约 17 秒）、lint（约 11 秒）、知识图谱 Chromium `8 passed`（约 15 秒）。提交后的真实 HEAD 千节点附件仍须作为 integration 前最终证据重跑。
+- 集成记录：功能分支真实 HEAD `a4b1ceb25855a260bfb9ae6d606ce0dbda83fce6` 的 1000 节点基准通过，首次渲染约 1277ms、模式切换约 108ms、缩放约 252ms、拖动约 268ms、选择约 155ms，附件 SHA 与真实 HEAD 一致。P2-15 合入 P2-09 后的共同基线时，导航、路由、样式入口、架构说明和相关测试冲突均按两包能力并存解决；聚焦单元检查 `67 passed`、相关 Python `5 passed`、typecheck 通过。
+- 集成门槛：完整 Python 为 `1898 passed / 2 skipped`（约 10 分 11 秒）；前端 lint、typecheck、`46 files / 501 tests` 和生产 build 全部通过（约 78 秒）；快速冒烟的文档治理、462 个 Python 文件编译和隔离数据库检查通过（约 8 秒）。浏览器集成首次因 P2-09 的全局只读配置加载缺少模拟响应而 18 个场景失败，按同一根因补齐配置响应与学生范围后，最终知识图谱/工作台 `18 passed`（约 22 秒）。真实 `user_data` 未暂存、未提交，验证前后两库 SHA-256、大小和 UTC mtime 指纹一致。按用户决定未启动新的独立复审，也未把独立复审或用户短测记录为通过。
 
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
