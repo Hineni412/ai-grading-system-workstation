@@ -62,6 +62,9 @@ _IMAGE_FORMATS = {
 }
 _PARSE_LOCKS_GUARD = threading.Lock()
 _PARSE_LOCKS: dict[tuple[str, int], threading.Lock] = {}
+_PROCESS_TOKEN = uuid.uuid4().hex
+
+
 class ConfigSourceError(RuntimeError):
     pass
 
@@ -279,11 +282,14 @@ class ConfigSourceService:
         session_id: int,
         filename: str,
         chunks: AsyncIterator[bytes],
+        source_id: str | None = None,
     ) -> ConfigSourceRecord:
         clean_session_id = _positive_session_id(session_id)
         safe_filename, suffix = _safe_filename(filename)
-        source_id = uuid.uuid4().hex
-        source_dir = self._source_dir(clean_session_id, source_id)
+        clean_source_id = str(source_id or uuid.uuid4().hex).strip()
+        if not _SOURCE_ID.fullmatch(clean_source_id):
+            raise ConfigSourceInvalidError()
+        source_dir = self._source_dir(clean_session_id, clean_source_id)
         self._prepare_source_dir(source_dir)
         temporary_path = source_dir / f".source.{uuid.uuid4().hex}.tmp"
         source_path = source_dir / f"source{suffix}"
@@ -368,7 +374,7 @@ class ConfigSourceService:
             manifest = {
                 "version": 2,
                 "session_id": clean_session_id,
-                "source_id": source_id,
+                "source_id": clean_source_id,
                 "source_revision": "",
                 "safe_filename": safe_filename,
                 "suffix": suffix,
@@ -404,7 +410,7 @@ class ConfigSourceService:
                 self._files.write_json_atomic(
                     active_path,
                     {
-                        "source_id": source_id,
+                        "source_id": clean_source_id,
                         "source_revision": source_revision,
                     },
                 )
@@ -417,6 +423,85 @@ class ConfigSourceService:
         finally:
             if not completed:
                 registry.cleanup()
+
+    def begin_submission(self, *, session_id: int, request_token: str) -> str:
+        clean_session_id = _positive_session_id(session_id)
+        clean_token = _request_token(request_token)
+        marker_path = self._submission_path(clean_session_id, clean_token)
+        self._prepare_source_dir(self._source_dir(clean_session_id, clean_token))
+        with session_config_lock(self.upload_config_dir, clean_session_id):
+            if marker_path.is_file():
+                state = self._submission_state(marker_path)
+                if state == "processing":
+                    marker = self._read_json_object(marker_path)
+                    if str(marker.get("process_token") or "") != _PROCESS_TOKEN:
+                        self._files.write_json_atomic(
+                            marker_path,
+                            {"status": "failed", "source_id": clean_token},
+                        )
+                        return "failed"
+                return state
+            self._files.write_json_atomic(
+                marker_path,
+                {
+                    "status": "processing",
+                    "source_id": clean_token,
+                    "process_token": _PROCESS_TOKEN,
+                },
+            )
+        return "started"
+
+    def finish_submission(
+        self,
+        *,
+        session_id: int,
+        request_token: str,
+        succeeded: bool,
+    ) -> None:
+        clean_session_id = _positive_session_id(session_id)
+        clean_token = _request_token(request_token)
+        marker_path = self._submission_path(clean_session_id, clean_token)
+        with session_config_lock(self.upload_config_dir, clean_session_id):
+            self._files.write_json_atomic(
+                marker_path,
+                {
+                    "status": "succeeded" if succeeded else "failed",
+                    "source_id": clean_token,
+                },
+            )
+
+    def submission_public(self, *, session_id: int, request_token: str) -> dict[str, Any]:
+        clean_session_id = _positive_session_id(session_id)
+        clean_token = _request_token(request_token)
+        marker_path = self._submission_path(clean_session_id, clean_token)
+        if not marker_path.is_file():
+            raise ConfigSourceNotFoundError()
+        state = self._submission_state(marker_path)
+        if state == "processing":
+            marker = self._read_json_object(marker_path)
+            if str(marker.get("process_token") or "") != _PROCESS_TOKEN:
+                state = "failed"
+                self.finish_submission(
+                    session_id=clean_session_id,
+                    request_token=clean_token,
+                    succeeded=False,
+                )
+        source = None
+        if state == "succeeded":
+            source = self.load_public(
+                session_id=clean_session_id,
+                source_id=clean_token,
+                require_active=False,
+            )
+        return {"status": state, "source": source}
+
+    def _submission_state(self, marker_path: Path) -> str:
+        marker = self._read_json_object(marker_path)
+        state = str(marker.get("status") or "")
+        source_id = str(marker.get("source_id") or "")
+        if state not in {"processing", "succeeded", "failed"} or not _SOURCE_ID.fullmatch(source_id):
+            raise ConfigSourceInvalidError()
+        return state
 
     def _parse_staged_source(
         self,
@@ -1237,6 +1322,9 @@ class ConfigSourceService:
     def _active_path(self, session_id: int) -> Path:
         return self._session_dir(session_id) / "active.json"
 
+    def _submission_path(self, session_id: int, request_token: str) -> Path:
+        return self._session_dir(session_id) / f"submission-{request_token}.json"
+
 
 def _positive_session_id(value: int) -> int:
     try:
@@ -1244,6 +1332,13 @@ def _positive_session_id(value: int) -> int:
     except (TypeError, ValueError):
         raise ConfigSourceInvalidError() from None
     if clean <= 0:
+        raise ConfigSourceInvalidError()
+    return clean
+
+
+def _request_token(value: str) -> str:
+    clean = str(value or "").strip()
+    if not _SOURCE_ID.fullmatch(clean):
         raise ConfigSourceInvalidError()
     return clean
 

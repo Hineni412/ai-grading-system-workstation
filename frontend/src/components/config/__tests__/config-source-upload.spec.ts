@@ -2,7 +2,7 @@ import { createApp, nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ConfigSource } from '../../../api/config-workspace'
+import type { ConfigSource, ConfigSourceSubmission } from '../../../api/config-workspace'
 import { ApiError } from '../../../api/errors'
 import { useConfigWorkspaceStore } from '../../../stores/config-workspace'
 import ConfigSourceUpload from '../ConfigSourceUpload.vue'
@@ -43,10 +43,10 @@ async function settle(): Promise<void> {
 
 async function mountUpload(options: {
   accepted?: ConfigSource | null
-  uploader?: (sessionId: number, file: File) => Promise<ConfigSource>
+  uploader?: (sessionId: number, file: File, requestToken: string) => Promise<ConfigSource>
   onUploaded?: (value: ConfigSource) => void
   beforeUpload?: () => boolean
-  sourceLoader?: (sessionId: number) => Promise<ConfigSource>
+  submissionLoader?: (sessionId: number, requestToken: string) => Promise<ConfigSourceSubmission>
 } = {}) {
   const host = document.createElement('div')
   document.body.append(host)
@@ -57,7 +57,7 @@ async function mountUpload(options: {
     source: options.accepted ?? null,
     uploader,
     beforeUpload: options.beforeUpload,
-    sourceLoader: options.sourceLoader,
+    submissionLoader: options.submissionLoader,
     onUploaded,
   })
   app.mount(host)
@@ -94,14 +94,14 @@ describe('ConfigSourceUpload', () => {
   it('reconciles an ambiguous replacement before offering another upload', async () => {
     const timeout = new ApiError({ kind: 'timeout', status: null, code: 'request_timeout',
       message: 'timeout', details: {}, requestId: 'safe', retryable: false })
-    const sourceLoader = vi.fn(async () => source())
+    const submissionLoader = vi.fn(async () => ({ status: 'processing', source: null } as const))
     const mounted = await mountUpload({ accepted: source(),
-      uploader: vi.fn(async () => { throw timeout }), sourceLoader })
+      uploader: vi.fn(async () => { throw timeout }), submissionLoader })
     await choose(mounted.host, new File(['%PDF'], 'replacement.pdf'))
     mounted.host.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
     await settle()
 
-    expect(sourceLoader).toHaveBeenCalledExactlyOnceWith(7)
+    expect(submissionLoader).toHaveBeenCalledExactlyOnceWith(7, expect.stringMatching(/^[0-9a-f]{32}$/))
     expect(mounted.host.textContent).toContain('核对')
     expect(mounted.host.textContent).not.toContain('新文件未接收成功')
   })
@@ -110,16 +110,29 @@ describe('ConfigSourceUpload', () => {
     const timeout = new ApiError({ kind: 'timeout', status: null, code: 'request_timeout',
       message: 'timeout', details: {}, requestId: 'safe', retryable: false })
     const accepted = source({ source_id: 'e'.repeat(32), source_revision: 'f'.repeat(64) })
-    const sourceLoader = vi.fn(async () => accepted)
+    const submissionLoader = vi.fn(async () => ({ status: 'succeeded', source: accepted } as const))
     const mounted = await mountUpload({ uploader: vi.fn(async () => { throw timeout }),
-      sourceLoader })
+      submissionLoader })
     await choose(mounted.host, new File(['%PDF'], 'first.pdf'))
     mounted.host.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
     await settle()
 
-    expect(sourceLoader).toHaveBeenCalledExactlyOnceWith(7)
+    expect(submissionLoader).toHaveBeenCalledExactlyOnceWith(7, expect.stringMatching(/^[0-9a-f]{32}$/))
     expect(mounted.onUploaded).toHaveBeenCalledWith(accepted)
     expect(mounted.host.querySelector('[role="alert"]')).toBeNull()
+  })
+
+  it('offers exact upload reconciliation when a pending token was restored', async () => {
+    const token = '1'.repeat(32)
+    useConfigWorkspaceStore().markUploadSubmissionPending(token)
+    const submissionLoader = vi.fn(async () => ({ status: 'processing', source: null } as const))
+    const mounted = await mountUpload({ submissionLoader })
+
+    mounted.host.querySelector<HTMLButtonElement>('button:not([type="submit"])')!.click()
+    await settle()
+
+    expect(submissionLoader).toHaveBeenCalledExactlyOnceWith(7, token)
+    expect(mounted.host.textContent).toContain('重新核对上传结果')
   })
 
   it.each([

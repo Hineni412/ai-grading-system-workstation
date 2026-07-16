@@ -52,6 +52,13 @@ class ConfigSourceResponse(BaseModel):
     questions: list[ConfigQuestionPreviewResponse] = Field(max_length=500)
 
 
+class ConfigSourceSubmissionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["processing", "succeeded", "failed"]
+    source: ConfigSourceResponse | None = None
+
+
 class ConfigSourceQuestionDecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -75,6 +82,10 @@ class ConfigSourceGenerationRequest(BaseModel):
     decisions: list[ConfigSourceQuestionDecisionRequest] = Field(
         default_factory=list,
         max_length=500,
+    )
+    client_request_token: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{32}$",
     )
 
 
@@ -127,6 +138,10 @@ class ConfigGenerationRetryRequest(BaseModel):
 
     source_job_id: int = Field(gt=0)
     retry_question_ids: list[str] | None = Field(default=None, min_length=1, max_length=500)
+    client_request_token: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{32}$",
+    )
 
     @field_validator("retry_question_ids")
     @classmethod
@@ -194,6 +209,10 @@ class ConfigEditorRefineRequest(BaseModel):
 
     revision: str = Field(pattern=r"^[0-9a-f]{64}$")
     commands: list[ConfigEditorCommandRequest] = Field(default_factory=list, max_length=200)
+    client_request_token: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{32}$",
+    )
 
 
 class ConfigEditorRowResponse(BaseModel):

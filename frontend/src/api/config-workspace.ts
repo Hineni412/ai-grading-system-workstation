@@ -38,16 +38,23 @@ export interface ConfigSource {
   questions: ConfigQuestionPreview[]
 }
 
+export interface ConfigSourceSubmission {
+  status: 'processing' | 'succeeded' | 'failed'
+  source: ConfigSource | null
+}
+
 export interface ConfigGenerationRequest {
   source_id: string
   source_revision: string
   generation_mode: GenerationMode
   decisions: QuestionDecision[]
+  client_request_token?: string
 }
 
 export interface ConfigGenerationRetryRequest {
   source_job_id: number
   retry_question_ids: string[]
+  client_request_token?: string
 }
 
 export interface ConfigEditorRow {
@@ -120,6 +127,7 @@ export interface ConfigEditorSaveRequest {
 export interface ConfigEditorRefineRequest {
   revision: string
   commands: ConfigEditorCommand[]
+  client_request_token?: string
 }
 
 export interface ConfigEditorSaveResponse extends ConfigEditorResponse {
@@ -244,7 +252,20 @@ function requireSourceId(id: string): string {
   return id
 }
 
-export async function uploadConfigSource(sessionId: number, file: File): Promise<ConfigSource> {
+function requireRequestToken(token: string): string {
+  if (!/^[0-9a-f]{32}$/.test(token)) throw new Error('Invalid client request token')
+  return token
+}
+
+export function createClientRequestToken(): string {
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  return [...bytes].map((value) => value.toString(16).padStart(2, '0')).join('')
+}
+
+export async function uploadConfigSource(
+  sessionId: number, file: File, requestToken = createClientRequestToken(),
+): Promise<ConfigSource> {
   const id = requireSessionId(sessionId)
   if (!(file instanceof File) || !file.name.trim()) throw new Error('Invalid source file')
   return apiClient.request(`/api/sessions/${id}/config/sources`, {
@@ -252,10 +273,33 @@ export async function uploadConfigSource(sessionId: number, file: File): Promise
     headers: {
       'content-type': 'application/octet-stream',
       'x-upload-filename': encodeURIComponent(file.name),
+      'x-client-request-token': requireRequestToken(requestToken),
     },
     timeoutMs: 10 * 60 * 1_000,
     decode: decodeConfigSource,
   })
+}
+
+export async function fetchConfigSourceSubmission(
+  sessionId: number, requestToken: string,
+): Promise<ConfigSourceSubmission> {
+  const id = requireSessionId(sessionId)
+  return apiClient.request(
+    `/api/sessions/${id}/config/sources/submissions/${requireRequestToken(requestToken)}`,
+    {
+      decode: (value) => {
+        assertNoPathLikeKeys(value)
+        if (!isRecord(value) || !hasExactKeys(value, ['status', 'source'])
+          || !['processing', 'succeeded', 'failed'].includes(String(value.status))) {
+          throw new Error('Invalid source submission response')
+        }
+        if (value.source === null) {
+          return { status: value.status, source: null } as ConfigSourceSubmission
+        }
+        return { status: value.status, source: decodeConfigSource(value.source) } as ConfigSourceSubmission
+      },
+    },
+  )
 }
 
 export async function fetchConfigSource(
@@ -294,6 +338,16 @@ export async function fetchLatestConfigGenerationJob(
   })
 }
 
+export async function fetchConfigGenerationJobByToken(
+  sessionId: number, requestToken: string,
+): Promise<JobResponse> {
+  const id = requireSessionId(sessionId)
+  return apiClient.request(
+    `/api/sessions/${id}/config/generation-jobs/requests/${requireRequestToken(requestToken)}`,
+    { decode: decodeStrictJob },
+  )
+}
+
 export async function submitConfigGeneration(
   sessionId: number, request: ConfigGenerationRequest,
 ): Promise<JobResponse> {
@@ -307,6 +361,7 @@ export async function retryConfigGeneration(
   sessionId: number,
   sourceJobId: number,
   retryQuestionIds: string[],
+  requestToken?: string,
 ): Promise<JobResponse> {
   const id = requireSessionId(sessionId)
   if (!isPositiveInteger(sourceJobId)) throw new Error('Invalid source Job id')
@@ -318,6 +373,7 @@ export async function retryConfigGeneration(
     source_job_id: sourceJobId,
     retry_question_ids: questionIds,
   }
+  if (requestToken) request.client_request_token = requireRequestToken(requestToken)
   return apiClient.request(`/api/sessions/${id}/config/generate/retry`, {
     method: 'POST', body: request, decode: decodeStrictJob,
   })

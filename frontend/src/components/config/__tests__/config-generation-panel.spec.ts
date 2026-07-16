@@ -66,9 +66,9 @@ async function settle(): Promise<void> {
 
 async function mountPanel(options: {
   submitter?: (sessionId: number, request: ConfigGenerationRequest) => Promise<JobResponse>
-  retryer?: (sessionId: number, jobId: number, questionIds: string[]) => Promise<JobResponse>
+  retryer?: (sessionId: number, jobId: number, questionIds: string[], requestToken: string) => Promise<JobResponse>
   editorLoader?: (sessionId: number) => Promise<ConfigEditorResponse>
-  generationLoader?: (sessionId: number, request: ConfigGenerationRequest) => Promise<JobResponse>
+  generationLoader?: (sessionId: number, requestToken: string) => Promise<JobResponse>
 } = {}) {
   const host = document.createElement('div')
   document.body.append(host)
@@ -129,10 +129,7 @@ describe('ConfigGenerationPanel', () => {
     mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!.click()
     await settle()
 
-    expect(generationLoader).toHaveBeenCalledWith(7, expect.objectContaining({
-      source_id: 'a'.repeat(32), source_revision: 'b'.repeat(64),
-      generation_mode: 'per_question',
-    }))
+    expect(generationLoader).toHaveBeenCalledWith(7, expect.stringMatching(/^[0-9a-f]{32}$/))
     expect(useConfigWorkspaceStore().jobId).toBe(44)
     expect(useConfigWorkspaceStore().pendingGenerationMode).toBeNull()
     expect(mounted.host.textContent).not.toContain('未提交成功')
@@ -152,6 +149,21 @@ describe('ConfigGenerationPanel', () => {
     expect(localStorage.getItem('ai-grading:config-workspace:v1')).toContain('pendingGenerationMode')
     expect(mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')?.disabled).toBe(true)
     expect(mounted.host.querySelector('button[name="重新核对生成任务"]')).not.toBeNull()
+  })
+
+  it('reconciles only the exact pending token restored after a refresh', async () => {
+    const token = '3'.repeat(32)
+    const configStore = useConfigWorkspaceStore()
+    configStore.markJobSubmissionPending(token, 'refine')
+    const generationLoader = vi.fn(async () => job({ id: 45, status: 'queued', progress: 0 }))
+    const mounted = await mountPanel({ generationLoader })
+
+    mounted.host.querySelector<HTMLButtonElement>('button[name="重新核对生成任务"]')!.click()
+    await settle()
+
+    expect(generationLoader).toHaveBeenCalledExactlyOnceWith(7, token)
+    expect(configStore.jobId).toBe(45)
+    expect(configStore.pendingJobRequestToken).toBeNull()
   })
 
   it('retries only checked failed questions and preserves successful counts', async () => {
@@ -175,7 +187,9 @@ describe('ConfigGenerationPanel', () => {
     mounted.host.querySelector<HTMLButtonElement>('button[name="重试所选题"]')!.click()
     await settle()
 
-    expect(retryer).toHaveBeenCalledExactlyOnceWith(7, 31, ['Q5'])
+    expect(retryer).toHaveBeenCalledExactlyOnceWith(
+      7, 31, ['Q5'], expect.stringMatching(/^[0-9a-f]{32}$/),
+    )
     expect(configStore.jobId).toBe(32)
     expect(mounted.host.textContent).toContain('已成功 3 题')
     expect(mounted.host.textContent).toContain('当前恢复任务')

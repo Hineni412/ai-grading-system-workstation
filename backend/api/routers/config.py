@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ from backend.api.schemas.config import (
     ConfigGenerationRetryRequest,
     ConfigSourceGenerationRequest,
     ConfigSourceResponse,
+    ConfigSourceSubmissionResponse,
     ConfigEditorRefineRequest,
     ConfigEditorResponse,
     ConfigEditorSaveRequest,
@@ -49,7 +51,11 @@ from backend.jobs.config_generation import (
     stage_config_source_generation_input,
 )
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
-from backend.jobs.store import ConfigRetryAlreadySubmittedError, JobStore
+from backend.jobs.store import (
+    ConfigRequestTokenConflictError,
+    ConfigRetryAlreadySubmittedError,
+    JobStore,
+)
 from backend.public_data import (
     contains_filesystem_reference,
     contains_path_key,
@@ -134,6 +140,31 @@ async def upload_config_source(
     source_service: ConfigSourceService = Depends(get_config_source_service),
 ) -> dict[str, Any]:
     _require_session(db, session_id)
+    request_token = str(request.headers.get("x-client-request-token") or "").strip()
+    if request_token:
+        try:
+            submission_state = source_service.begin_submission(
+                session_id=session_id,
+                request_token=request_token,
+            )
+            if submission_state == "succeeded":
+                result = source_service.submission_public(
+                    session_id=session_id,
+                    request_token=request_token,
+                )
+                return dict(result["source"] or {})
+            if submission_state in {"processing", "failed"}:
+                raise ApiError(
+                    409,
+                    "config_source_upload_in_progress"
+                    if submission_state == "processing"
+                    else "config_source_upload_failed",
+                    "Config source upload is still processing"
+                    if submission_state == "processing"
+                    else "Config source upload failed",
+                )
+        except ConfigSourceError as exc:
+            raise _source_api_error(exc) from None
     source_service.cleanup_inactive(
         session_id=session_id,
         referenced_source_ids=JobStore(db.db_path).referenced_config_source_ids(
@@ -149,12 +180,60 @@ async def upload_config_source(
             session_id=session_id,
             filename=filename,
             chunks=request.stream(),
+            source_id=request_token or None,
         )
     except (TypeError, ValueError):
+        if request_token:
+            source_service.finish_submission(
+                session_id=session_id,
+                request_token=request_token,
+                succeeded=False,
+            )
         raise _source_api_error(ConfigSourceInvalidError()) from None
     except ConfigSourceError as exc:
+        if request_token:
+            source_service.finish_submission(
+                session_id=session_id,
+                request_token=request_token,
+                succeeded=False,
+            )
         raise _source_api_error(exc) from None
+    except Exception:
+        if request_token:
+            source_service.finish_submission(
+                session_id=session_id,
+                request_token=request_token,
+                succeeded=False,
+            )
+        raise
+    if request_token:
+        source_service.finish_submission(
+            session_id=session_id,
+            request_token=request_token,
+            succeeded=True,
+        )
     return record.public_snapshot()
+
+
+@router.get(
+    "/sessions/{session_id}/config/sources/submissions/{request_token}",
+    response_model=ConfigSourceSubmissionResponse,
+    responses=CONFIG_SOURCE_ERROR_RESPONSES,
+)
+def get_config_source_submission(
+    session_id: int,
+    request_token: str,
+    db: DBManager = Depends(get_grading_db),
+    source_service: ConfigSourceService = Depends(get_config_source_service),
+) -> dict[str, Any]:
+    _require_session(db, session_id)
+    try:
+        return source_service.submission_public(
+            session_id=session_id,
+            request_token=request_token,
+        )
+    except ConfigSourceError as exc:
+        raise _source_api_error(exc) from None
 
 
 @router.get(
@@ -438,6 +517,9 @@ def refine_config_editor(
     upload_config_dir: Path = Depends(get_upload_config_dir),
 ) -> JobResponse:
     _require_active_session(db, session_id)
+    replay = _replay_config_request(manager, session_id, request)
+    if replay is not None:
+        return replay
     try:
         current = load_editor_config(db, session_id)
     except (OSError, ValueError, json.JSONDecodeError):
@@ -463,10 +545,18 @@ def refine_config_editor(
         commands=[item.model_dump() for item in request.commands],
     )
     try:
-        return _submit_config_generation(
+        response, created = _submit_config_generation(
             manager,
-            {"session_id": session_id, "mode": "refine", "input_id": input_id},
+            {
+                "session_id": session_id,
+                "mode": "refine",
+                "input_id": input_id,
+                **_request_identity(request),
+            },
         )
+        if not created:
+            discard_config_generation_input(upload_config_dir, input_id)
+        return response
     except Exception:
         discard_config_generation_input(upload_config_dir, input_id)
         raise
@@ -501,9 +591,18 @@ def _contains_embedded_image_reference(value: Any) -> bool:
 def _submit_config_generation(
     manager: JobManager,
     payload: dict[str, object],
-) -> JobResponse:
+) -> tuple[JobResponse, bool]:
     try:
-        return _job_response(manager.submit("config_generation", payload))
+        if payload.get("client_request_token"):
+            job, created = manager.submit_idempotent_config(payload)
+            return _job_response(job), created
+        return _job_response(manager.submit("config_generation", payload)), True
+    except ConfigRequestTokenConflictError as exc:
+        raise ApiError(
+            409,
+            "config_request_token_conflict",
+            "Config request token was already used for another request",
+        ) from exc
     except UnsupportedJobTypeError as exc:
         raise ApiError(
             503,
@@ -511,6 +610,49 @@ def _submit_config_generation(
             "Config generation is temporarily unavailable",
             {"job_type": "config_generation"},
         ) from exc
+
+
+def _request_identity(request: Any) -> dict[str, str]:
+    token = str(getattr(request, "client_request_token", None) or "").strip()
+    if not token:
+        return {}
+    payload = request.model_dump(exclude={"client_request_token"})
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return {
+        "client_request_token": token,
+        "client_request_fingerprint": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    }
+
+
+def _replay_config_request(
+    manager: JobManager,
+    session_id: int,
+    request: Any,
+) -> JobResponse | None:
+    identity = _request_identity(request)
+    token = identity.get("client_request_token")
+    if token is None:
+        return None
+    existing = manager.store.find_config_job_by_request_token(
+        session_id=int(session_id),
+        request_token=token,
+    )
+    if existing is None:
+        return None
+    if existing.payload.get("client_request_fingerprint") != identity.get(
+        "client_request_fingerprint"
+    ):
+        raise ApiError(
+            409,
+            "config_request_token_conflict",
+            "Config request token was already used for another request",
+        )
+    return _job_response(existing)
 
 
 @router.get(
@@ -533,6 +675,34 @@ def get_latest_config_generation_job(
         source_revision=source_revision,
         generation_mode=generation_mode,
     )
+    if job is None:
+        raise ApiError(
+            404,
+            "config_generation_job_not_found",
+            "Config generation job not found",
+        )
+    return _job_response(job)
+
+
+@router.get(
+    "/sessions/{session_id}/config/generation-jobs/requests/{request_token}",
+    response_model=JobResponse,
+    responses={404: {"model": ErrorResponse, "description": "Job not found"}},
+)
+def get_config_generation_job_by_request_token(
+    session_id: int,
+    request_token: str,
+    db: DBManager = Depends(get_grading_db),
+    manager: JobManager = Depends(get_job_manager),
+) -> JobResponse:
+    _require_active_session(db, session_id)
+    try:
+        job = manager.store.find_config_job_by_request_token(
+            session_id=session_id,
+            request_token=request_token,
+        )
+    except ValueError:
+        job = None
     if job is None:
         raise ApiError(
             404,
@@ -581,7 +751,7 @@ def generate_session_config(
         **request_payload,
     )
     try:
-        return _submit_config_generation(
+        response, _created = _submit_config_generation(
             manager,
             {
                 "session_id": int(session_id),
@@ -590,6 +760,7 @@ def generate_session_config(
                 "input_id": input_id,
             },
         )
+        return response
     except Exception:
         discard_config_generation_input(upload_config_dir, input_id)
         raise
@@ -610,6 +781,9 @@ def generate_session_config_from_source(
     source_service: ConfigSourceService = Depends(get_config_source_service),
 ) -> JobResponse:
     session = _require_active_session(db, session_id)
+    replay = _replay_config_request(manager, session_id, request)
+    if replay is not None:
+        return replay
     try:
         record = source_service.load_for_generation(
             session_id=session_id,
@@ -641,7 +815,7 @@ def generate_session_config_from_source(
         decisions=[decision.model_dump() for decision in request.decisions],
     )
     try:
-        return _submit_config_generation(
+        response, created = _submit_config_generation(
             manager,
             {
                 "session_id": int(session_id),
@@ -650,8 +824,12 @@ def generate_session_config_from_source(
                 "input_id": input_id,
                 "source_id": record.source_id,
                 "source_revision": record.source_revision,
+                **_request_identity(request),
             },
         )
+        if not created:
+            discard_config_generation_input(upload_config_dir, input_id)
+        return response
     except Exception:
         discard_config_generation_input(upload_config_dir, input_id)
         raise
@@ -670,6 +848,9 @@ def retry_session_config_generation(
     manager: JobManager = Depends(get_job_manager),
 ) -> JobResponse:
     _require_active_session(db, session_id)
+    replay = _replay_config_request(manager, session_id, request)
+    if replay is not None:
+        return replay
     source = manager.get(request.source_job_id)
     if source is None:
         raise ApiError(
@@ -708,6 +889,7 @@ def retry_session_config_generation(
         "generation_mode": "per_question",
         "source_job_id": int(request.source_job_id),
         "input_id": str(source.payload.get("input_id") or ""),
+        **_request_identity(request),
     }
     source_id = str(source.payload.get("source_id") or "").strip()
     source_revision = str(source.payload.get("source_revision") or "").strip()
@@ -717,7 +899,16 @@ def retry_session_config_generation(
     if request.retry_question_ids is not None:
         payload["retry_question_ids"] = request.retry_question_ids
     try:
+        if request.client_request_token:
+            job, _created = manager.submit_idempotent_config_retry(payload)
+            return _job_response(job)
         return _job_response(manager.submit_config_retry(payload))
+    except ConfigRequestTokenConflictError as exc:
+        raise ApiError(
+            409,
+            "config_request_token_conflict",
+            "Config request token was already used for another request",
+        ) from exc
     except ConfigRetryAlreadySubmittedError as exc:
         raise ApiError(
             409,

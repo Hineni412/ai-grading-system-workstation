@@ -1,26 +1,29 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 
 import {
-  fetchActiveConfigSource,
+  createClientRequestToken,
+  fetchConfigSourceSubmission,
   uploadConfigSource,
   type ConfigSource,
+  type ConfigSourceSubmission,
 } from '../../api/config-workspace'
 import { isAmbiguousWriteError } from '../../api/errors'
+import { useConfigWorkspaceStore } from '../../stores/config-workspace'
 
 const MAX_SOURCE_BYTES = 200 * 1024 * 1024
 
 const props = withDefaults(defineProps<{
   sessionId: number
   source?: ConfigSource | null
-  uploader?: (sessionId: number, file: File) => Promise<ConfigSource>
+  uploader?: (sessionId: number, file: File, requestToken: string) => Promise<ConfigSource>
   beforeUpload?: () => boolean
-  sourceLoader?: (sessionId: number) => Promise<ConfigSource>
+  submissionLoader?: (sessionId: number, requestToken: string) => Promise<ConfigSourceSubmission>
 }>(), {
   source: null,
   uploader: uploadConfigSource,
   beforeUpload: () => true,
-  sourceLoader: fetchActiveConfigSource,
+  submissionLoader: fetchConfigSourceSubmission,
 })
 
 const emit = defineEmits<{
@@ -31,6 +34,38 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const selectedFile = ref<File | null>(null)
 const uploading = ref(false)
 const errorMessage = ref('')
+const configStore = useConfigWorkspaceStore()
+const submissionUnknown = computed(() => configStore.pendingUploadRequestToken !== null)
+
+function acceptSource(source: ConfigSource): void {
+  configStore.clearUploadSubmissionPending()
+  emit('uploaded', source)
+  selectedFile.value = null
+  if (fileInput.value) fileInput.value.value = ''
+  errorMessage.value = ''
+}
+
+async function reconcileUpload(): Promise<void> {
+  const token = configStore.pendingUploadRequestToken
+  if (token === null || uploading.value) return
+  uploading.value = true
+  errorMessage.value = '正在核对这次上传的结果…'
+  try {
+    const submission = await props.submissionLoader(props.sessionId, token)
+    if (submission.status === 'succeeded' && submission.source !== null) {
+      acceptSource(submission.source)
+    } else if (submission.status === 'failed') {
+      configStore.clearUploadSubmissionPending()
+      errorMessage.value = '这次上传没有成功，可以重新选择文件上传。'
+    } else {
+      errorMessage.value = '这次上传仍在处理中，请稍后再次核对。'
+    }
+  } catch {
+    errorMessage.value = '暂时无法核对这次上传。为避免重复接收，请稍后再次核对。'
+  } finally {
+    uploading.value = false
+  }
+}
 
 function validateFile(file: File): string {
   if (!/\.(docx|pdf)$/i.test(file.name)) return '只支持 DOCX 或 PDF 文件。'
@@ -54,32 +89,19 @@ async function submit(): Promise<void> {
     return
   }
   if (!props.beforeUpload()) return
+  const requestToken = createClientRequestToken()
   uploading.value = true
+  configStore.markUploadSubmissionPending(requestToken)
   errorMessage.value = ''
   try {
-    const accepted = await props.uploader(props.sessionId, file)
-    emit('uploaded', accepted)
-    selectedFile.value = null
-    if (fileInput.value) fileInput.value.value = ''
+    const accepted = await props.uploader(props.sessionId, file, requestToken)
+    acceptSource(accepted)
   } catch (error) {
     if (isAmbiguousWriteError(error)) {
-      errorMessage.value = '上传结果未知，正在核对服务器中的当前来源…'
-      const previous = props.source
-      try {
-        const authoritative = await props.sourceLoader(props.sessionId)
-        if (previous === null || authoritative.source_id !== previous.source_id
-          || authoritative.source_revision !== previous.source_revision) {
-          emit('uploaded', authoritative)
-          selectedFile.value = null
-          if (fileInput.value) fileInput.value.value = ''
-          errorMessage.value = ''
-        } else {
-          errorMessage.value = '核对完成：服务器仍保留原试卷来源；没有重复提交上传。'
-        }
-      } catch {
-        errorMessage.value = '上传结果未知，暂时无法核对当前来源。为避免重复接收，请稍后刷新页面再确认。'
-      }
+      uploading.value = false
+      await reconcileUpload()
     } else {
+      configStore.clearUploadSubmissionPending()
       errorMessage.value = props.source === null
         ? '文件未接收成功。请选择文件后重新上传。'
         : '新文件未接收成功，当前试卷来源已保留。'
@@ -112,11 +134,11 @@ function formatBytes(bytes: number): string {
           ref="fileInput"
           type="file"
           accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-          :disabled="uploading"
+          :disabled="uploading || submissionUnknown"
           @change="onFileChange"
         >
       </label>
-      <button type="submit" :disabled="uploading || selectedFile === null || errorMessage !== ''">
+      <button type="submit" :disabled="uploading || submissionUnknown || selectedFile === null || errorMessage !== ''">
         上传并拆题
       </button>
     </form>
@@ -126,6 +148,12 @@ function formatBytes(bytes: number): string {
       <span>正在上传并拆题，请保持页面打开…</span>
     </div>
     <p v-if="errorMessage" class="config-source__error" role="alert">{{ errorMessage }}</p>
+    <button
+      v-if="submissionUnknown"
+      type="button"
+      :disabled="uploading"
+      @click="reconcileUpload"
+    >重新核对上传结果</button>
 
     <dl v-if="source" class="config-source__summary" aria-label="当前试卷来源">
       <div><dt>文件</dt><dd>{{ source.safe_filename }}</dd></div>

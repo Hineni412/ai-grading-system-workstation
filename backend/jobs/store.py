@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import secrets
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -14,9 +16,14 @@ JOB_STATUSES = ("queued", "running", "paused", "succeeded", "failed", "cancelled
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 _SOURCE_ID = re.compile(r"^[0-9a-f]{32}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_REQUEST_TOKEN = re.compile(r"^[0-9a-f]{32}$")
 
 
 class ConfigRetryAlreadySubmittedError(RuntimeError):
+    pass
+
+
+class ConfigRequestTokenConflictError(RuntimeError):
     pass
 
 
@@ -100,6 +107,92 @@ class JobStore:
             raise RuntimeError(f"created job {job_id} could not be loaded")
         return loaded
 
+    def create_idempotent_config_job(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[JobRecord, bool]:
+        clean_payload = dict(payload)
+        token = _clean_request_token(clean_payload.get("client_request_token"))
+        fingerprint = _clean_request_fingerprint(
+            clean_payload.get("client_request_fingerprint")
+        )
+        session_id = _positive_int(clean_payload.get("session_id"))
+        mode = str(clean_payload.get("mode") or "").strip()
+        payload_json = json.dumps(clean_payload, ensure_ascii=False, sort_keys=True)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = self._find_config_request_row(
+                    conn,
+                    session_id=session_id,
+                    token=token,
+                )
+                if existing is not None:
+                    record = _job_record(existing)
+                    if (
+                        record.payload.get("mode") != mode
+                        or record.payload.get("client_request_fingerprint") != fingerprint
+                    ):
+                        raise ConfigRequestTokenConflictError(
+                            "config request token was reused for another request"
+                        )
+                    conn.commit()
+                    return record, False
+                cursor = conn.execute(
+                    "INSERT INTO jobs (job_type, payload_json, status) "
+                    "VALUES ('config_generation', ?, 'queued')",
+                    (payload_json,),
+                )
+                job_id = int(cursor.lastrowid)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        loaded = self.get_job(job_id)
+        if loaded is None:
+            raise RuntimeError(f"created job {job_id} could not be loaded")
+        return loaded, True
+
+    def find_config_job_by_request_token(
+        self,
+        *,
+        session_id: int,
+        request_token: str,
+    ) -> JobRecord | None:
+        clean_session_id = _positive_int(session_id)
+        clean_token = _clean_request_token(request_token)
+        with self._connect() as conn:
+            row = self._find_config_request_row(
+                conn,
+                session_id=clean_session_id,
+                token=clean_token,
+            )
+        return _job_record(row) if row is not None else None
+
+    @staticmethod
+    def _find_config_request_row(
+        conn: sqlite3.Connection,
+        *,
+        session_id: int,
+        token: str,
+    ) -> sqlite3.Row | None:
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE job_type = 'config_generation' ORDER BY id DESC"
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"] or "{}"))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if (
+                _positive_int_or_zero(payload.get("session_id")) == session_id
+                and payload.get("client_request_token") == token
+            ):
+                return row
+        return None
+
     def has_active_job_types(self, job_types: set[str]) -> bool:
         clean_types = sorted({str(item).strip() for item in job_types if str(item).strip()})
         if not clean_types:
@@ -114,13 +207,55 @@ class JobStore:
         return row is not None
 
     def create_config_retry_job(self, payload: dict[str, Any]) -> JobRecord:
+        clean_payload = dict(payload)
+        clean_payload.setdefault("client_request_token", secrets.token_hex(16))
+        clean_payload.setdefault(
+            "client_request_fingerprint",
+            hashlib.sha256(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+        )
+        job, _created = self.create_idempotent_config_retry_job(clean_payload)
+        return job
+
+    def create_idempotent_config_retry_job(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[JobRecord, bool]:
         source_job_id = int(payload.get("source_job_id") or 0)
         if source_job_id <= 0:
             raise ValueError("source_job_id must be a positive integer")
-        payload_json = json.dumps(dict(payload), ensure_ascii=False, sort_keys=True)
+        clean_payload = dict(payload)
+        token = _clean_request_token(clean_payload.get("client_request_token"))
+        fingerprint = _clean_request_fingerprint(
+            clean_payload.get("client_request_fingerprint")
+        )
+        session_id = _positive_int(clean_payload.get("session_id"))
+        payload_json = json.dumps(clean_payload, ensure_ascii=False, sort_keys=True)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                existing_request = self._find_config_request_row(
+                    conn,
+                    session_id=session_id,
+                    token=token,
+                )
+                if existing_request is not None:
+                    record = _job_record(existing_request)
+                    if (
+                        record.payload.get("mode") != "retry"
+                        or record.payload.get("client_request_fingerprint") != fingerprint
+                    ):
+                        raise ConfigRequestTokenConflictError(
+                            "config request token was reused for another request"
+                        )
+                    conn.commit()
+                    return record, False
                 rows = conn.execute(
                     "SELECT status, payload_json FROM jobs WHERE job_type = 'config_generation'"
                 ).fetchall()
@@ -158,7 +293,7 @@ class JobStore:
         loaded = self.get_job(job_id)
         if loaded is None:
             raise RuntimeError(f"created job {job_id} could not be loaded")
-        return loaded
+        return loaded, True
 
     def get_job(self, job_id: int) -> JobRecord | None:
         with self._connect() as conn:
@@ -550,3 +685,31 @@ def _job_record(row: sqlite3.Row) -> JobRecord:
         updated_at=str(row["updated_at"]),
         finished_at=row["finished_at"],
     )
+
+
+def _clean_request_token(value: object) -> str:
+    clean = str(value or "").strip()
+    if not _REQUEST_TOKEN.fullmatch(clean):
+        raise ValueError("client request token must be 32 lowercase hex characters")
+    return clean
+
+
+def _clean_request_fingerprint(value: object) -> str:
+    clean = str(value or "").strip()
+    if not _SHA256.fullmatch(clean):
+        raise ValueError("client request fingerprint must be sha256")
+    return clean
+
+
+def _positive_int(value: object) -> int:
+    clean = _positive_int_or_zero(value)
+    if clean <= 0:
+        raise ValueError("value must be a positive integer")
+    return clean
+
+
+def _positive_int_or_zero(value: object) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0

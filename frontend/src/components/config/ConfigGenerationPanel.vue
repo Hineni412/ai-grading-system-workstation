@@ -2,8 +2,9 @@
 import { computed, ref, watch } from 'vue'
 
 import {
+  createClientRequestToken,
   fetchConfigEditor,
-  fetchLatestConfigGenerationJob,
+  fetchConfigGenerationJobByToken,
   retryConfigGeneration,
   submitConfigGeneration,
   type ConfigEditorResponse,
@@ -20,14 +21,14 @@ import { useJobStore } from '../../stores/jobs'
 
 const props = withDefaults(defineProps<{
   submitter?: (sessionId: number, request: ConfigGenerationRequest) => Promise<JobResponse>
-  retryer?: (sessionId: number, jobId: number, questionIds: string[]) => Promise<JobResponse>
+  retryer?: (sessionId: number, jobId: number, questionIds: string[], requestToken: string) => Promise<JobResponse>
   editorLoader?: (sessionId: number) => Promise<ConfigEditorResponse>
-  generationLoader?: (sessionId: number, request: ConfigGenerationRequest) => Promise<JobResponse>
+  generationLoader?: (sessionId: number, requestToken: string) => Promise<JobResponse>
 }>(), {
   submitter: submitConfigGeneration,
   retryer: retryConfigGeneration,
   editorLoader: fetchConfigEditor,
-  generationLoader: fetchLatestConfigGenerationJob,
+  generationLoader: fetchConfigGenerationJobByToken,
 })
 
 const configStore = useConfigWorkspaceStore()
@@ -38,7 +39,7 @@ const requestError = ref('')
 const editorError = ref('')
 const selectedFailed = ref<string[]>([])
 const editorLoads = new Set<number>()
-const submissionUnknown = computed(() => configStore.pendingGenerationMode !== null)
+const submissionUnknown = computed(() => configStore.pendingJobRequestToken !== null)
 
 const job = computed(() => configStore.jobId === null ? null : jobStore.jobs[configStore.jobId] ?? null)
 const syncError = computed(() => configStore.jobId === null
@@ -93,9 +94,13 @@ async function startGeneration(requestedMode: GenerationMode = mode.value): Prom
   if (!configStore.canGenerate || submitting.value || active.value || configStore.sessionId === null) return
   const context = configStore.captureGenerationContext()
   const sessionId = configStore.sessionId
-  const request = configStore.sourceRequest(requestedMode)
+  const requestToken = createClientRequestToken()
+  const request = {
+    ...configStore.sourceRequest(requestedMode),
+    client_request_token: requestToken,
+  }
   submitting.value = true
-  configStore.markGenerationSubmissionPending(requestedMode)
+  configStore.markJobSubmissionPending(requestToken, 'generate', requestedMode)
   requestError.value = ''
   try {
     const next = await props.submitter(sessionId, request)
@@ -105,7 +110,7 @@ async function startGeneration(requestedMode: GenerationMode = mode.value): Prom
     if (isAmbiguousWriteError(error)) {
       requestError.value = '生成请求结果未知，正在核对任务记录…'
       try {
-        const reconciled = await props.generationLoader(sessionId, request)
+        const reconciled = await props.generationLoader(sessionId, requestToken)
         jobStore.track(reconciled)
         configStore.attachJob(reconciled.id, context)
         requestError.value = ''
@@ -123,16 +128,15 @@ async function startGeneration(requestedMode: GenerationMode = mode.value): Prom
 
 async function reconcileUnknownSubmission(): Promise<void> {
   const sessionId = configStore.sessionId
-  const pendingMode = configStore.pendingGenerationMode
-  if (sessionId === null || pendingMode === null || submitting.value || !configStore.canGenerate) return
+  const requestToken = configStore.pendingJobRequestToken
+  if (sessionId === null || requestToken === null || submitting.value || !configStore.canGenerate) return
   const context = configStore.captureGenerationContext()
-  const request = configStore.sourceRequest(pendingMode)
   submitting.value = true
   requestError.value = '正在核对服务器任务记录…'
   try {
-    const reconciled = await props.generationLoader(sessionId, request)
+    const reconciled = await props.generationLoader(sessionId, requestToken)
     jobStore.track(reconciled)
-    configStore.attachJob(reconciled.id, context)
+    configStore.attachJob(reconciled.id, context, configStore.generationSummary ?? undefined)
     requestError.value = ''
   } catch {
     requestError.value = '仍未找到可确认的任务。为避免重复生成，当前保持锁定，请稍后再次核对。'
@@ -153,14 +157,29 @@ async function retrySelected(): Promise<void> {
     succeededQuestions: safeCount(current.result.generated_questions),
     failedQuestions: safeCount(current.result.failed_count),
   }
+  const requestToken = createClientRequestToken()
   submitting.value = true
+  configStore.markJobSubmissionPending(requestToken, 'retry', null, retainedSummary)
   requestError.value = ''
   try {
-    const next = await props.retryer(configStore.sessionId, current.id, ids)
+    const next = await props.retryer(configStore.sessionId, current.id, ids, requestToken)
     jobStore.track(next)
     configStore.attachJob(next.id, context, retainedSummary)
-  } catch {
-    requestError.value = '重试请求未提交成功，已有成功结果和失败题选择均已保留。'
+  } catch (error) {
+    if (isAmbiguousWriteError(error)) {
+      requestError.value = '重试请求结果未知，正在核对这一次任务…'
+      try {
+        const reconciled = await props.generationLoader(configStore.sessionId, requestToken)
+        jobStore.track(reconciled)
+        configStore.attachJob(reconciled.id, context, retainedSummary)
+        requestError.value = ''
+      } catch {
+        requestError.value = '重试请求结果仍无法确认。为避免重复生成，请稍后重新核对。'
+      }
+    } else {
+      configStore.clearGenerationSubmissionPending()
+      requestError.value = '重试请求未提交成功，已有成功结果和失败题选择均已保留。'
+    }
   } finally {
     submitting.value = false
   }
@@ -243,7 +262,7 @@ watch(job, (current, previous) => {
             {{ questionId }}
           </label>
         </fieldset>
-        <button type="button" name="重试所选题" :disabled="submitting || selectedFailed.length === 0" @click="retrySelected">
+        <button type="button" name="重试所选题" :disabled="submitting || submissionUnknown || selectedFailed.length === 0" @click="retrySelected">
           重试所选题
         </button>
       </div>
@@ -268,7 +287,7 @@ watch(job, (current, previous) => {
         type="button"
         name="重新整卷生成"
         class="config-generation__primary"
-        :disabled="submitting"
+        :disabled="submitting || submissionUnknown"
         @click="startGeneration('whole_document')"
       >重新整卷生成</button>
       <button
@@ -276,7 +295,7 @@ watch(job, (current, previous) => {
         type="button"
         name="重新逐题生成"
         class="config-generation__primary"
-        :disabled="submitting"
+        :disabled="submitting || submissionUnknown"
         @click="startGeneration('per_question')"
       >重新逐题生成</button>
     </div>
@@ -289,8 +308,8 @@ watch(job, (current, previous) => {
       <span>{{ editorError }}</span>
       <button v-if="job" type="button" name="重新读取评分依据" @click="reloadEditor(job)">重新读取评分依据</button>
     </div>
-    <div v-if="requestError" class="config-generation__error" role="alert">
-      <span>{{ requestError }}</span>
+    <div v-if="requestError || submissionUnknown" class="config-generation__error" role="alert">
+      <span>{{ requestError || '有一次生成类请求的结果尚未确认。' }}</span>
       <button
         v-if="submissionUnknown"
         type="button"

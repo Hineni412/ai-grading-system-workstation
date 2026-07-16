@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   fetchConfigEditor,
+  fetchConfigGenerationJobByToken,
   fetchConfigSource,
+  fetchConfigSourceSubmission,
   refineConfigEditor,
   saveConfigEditor,
   submitConfigGeneration,
@@ -121,9 +123,26 @@ describe('configuration workspace API', () => {
           'content-type': 'application/octet-stream',
           'x-request-id': expect.any(String),
           'x-upload-filename': encodeURIComponent('数学卷.pdf'),
+          'x-client-request-token': expect.stringMatching(/^[0-9a-f]{32}$/),
         }),
       }),
     )
+  })
+
+  it('looks up ambiguous submissions by their exact client token', async () => {
+    const token = '1'.repeat(32)
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(response({ status: 'succeeded', source }))
+      .mockResolvedValueOnce(response(job))
+
+    await expect(fetchConfigSourceSubmission(7, token)).resolves.toEqual({
+      status: 'succeeded', source,
+    })
+    await expect(fetchConfigGenerationJobByToken(7, token)).resolves.toEqual(job)
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      `/api/sessions/7/config/sources/submissions/${token}`,
+      `/api/sessions/7/config/generation-jobs/requests/${token}`,
+    ])
   })
 
   it('never retries a raw upload write failure', async () => {
