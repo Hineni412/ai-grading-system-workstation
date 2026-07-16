@@ -24,6 +24,7 @@ from backend.ops.service import OpsSelfCheckService
 from backend.ops.plan_store import OpsPlanStore
 from backend.ops.write_service import OpsWriteService
 from backend.review.service import ReviewApplicationService
+from backend.scan_grading.workspace import ScanGradingWorkspace
 from backend.workbench.service import WorkbenchService
 from template_upload_service import TemplateUploadService
 from manual_review_service import ManualReviewService
@@ -301,6 +302,20 @@ def get_job_manager(request: Request) -> JobManager:
     if manager is None:
         raise RuntimeError("JobManager is unavailable outside application lifespan")
     return manager
+
+
+def get_scan_grading_workspace(
+    db: DBManager = Depends(get_grading_db),
+    manager: JobManager = Depends(get_job_manager),
+    exams_dir: Path = Depends(get_exams_dir),
+    templates_dir: Path = Depends(get_templates_dir),
+) -> ScanGradingWorkspace:
+    return ScanGradingWorkspace(
+        exams_root=exams_dir,
+        templates_root=templates_dir,
+        grading_db_path=db.db_path,
+        job_manager=manager,
+    )
 
 
 def get_workbench_service(

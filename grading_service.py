@@ -1221,17 +1221,36 @@ def _exam_identity_tokens(text: str) -> set[str]:
     return tokens
 
 
-def _apply_manual_decisions(
+def apply_scan_manual_decisions(
     analysis: ScanAnalysis,
     manual_decisions: list[dict],
     students: list[dict],
 ) -> list[ExamPaperGroup]:
     student_by_id = {int(student["id"]): student for student in students}
     issue_by_id = {issue.issue_id: issue for issue in analysis.issues}
+    group_by_source = {group.source_label: group for group in analysis.groups}
     decided_issue_ids: set[str] = set()
     result = list(analysis.groups)
 
     for decision in manual_decisions:
+        group_source_label = str(decision.get("group_source_label") or "")
+        if group_source_label:
+            group = group_by_source.get(group_source_label)
+            if group is None or str(decision.get("action") or "") != "match":
+                continue
+            try:
+                student_id = int(decision.get("student_id"))
+            except (TypeError, ValueError):
+                continue
+            student = student_by_id.get(student_id)
+            if student is None:
+                continue
+            group.student_id = student_id
+            group.student_name = str(student["name"])
+            group.match_method = "manual"
+            group.match_score = 1.0
+            continue
+
         issue_id = str(decision.get("issue_id") or "")
         action = str(decision.get("action") or "")
         issue = issue_by_id.get(issue_id)
@@ -1264,6 +1283,14 @@ def _apply_manual_decisions(
 
     analysis.issues = [issue for issue in analysis.issues if issue.issue_id not in decided_issue_ids]
     return result
+
+
+def _apply_manual_decisions(
+    analysis: ScanAnalysis,
+    manual_decisions: list[dict],
+    students: list[dict],
+) -> list[ExamPaperGroup]:
+    return apply_scan_manual_decisions(analysis, manual_decisions, students)
 
 
 def _attach_enhanced_paths(analysis: ScanAnalysis, output_dir: Path) -> None:

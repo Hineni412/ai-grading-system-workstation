@@ -1,0 +1,772 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import tempfile
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import BinaryIO, Any
+from uuid import uuid4
+
+
+class ScanGradingWorkspaceError(RuntimeError):
+    """扫描批改工作区拒绝当前操作。"""
+
+
+class FrozenUploadBatchError(ScanGradingWorkspaceError):
+    """上传批次已冻结，不能再修改。"""
+
+
+class UploadBatchRevisionError(ScanGradingWorkspaceError):
+    """上传批次已被其他页面更新。"""
+
+
+class InvalidScanUploadError(ScanGradingWorkspaceError):
+    """上传文件类型、名称或摘要不符合要求。"""
+
+
+class ScanUploadTooLargeError(ScanGradingWorkspaceError):
+    """单个扫描文件超过允许大小。"""
+
+
+class PendingScanIssuesError(ScanGradingWorkspaceError):
+    """仍有异常卷，启动前尚未得到明确确认。"""
+
+
+class ScanGradingWorkspace:
+    """隐藏上传文件、manifest 与后续扫描状态的会话级模块。"""
+
+    _locks_guard = threading.Lock()
+    _locks: dict[str, threading.RLock] = {}
+
+    _allowed_uploads = {
+        ".pdf": "application/pdf",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+    }
+
+    def __init__(
+        self,
+        *,
+        exams_root: Path,
+        templates_root: Path,
+        grading_db_path: Path | None = None,
+        job_manager: Any | None = None,
+        max_file_bytes: int = 100 * 1024 * 1024,
+    ) -> None:
+        self.exams_root = Path(exams_root)
+        self.templates_root = Path(templates_root)
+        self.grading_db_path = Path(grading_db_path) if grading_db_path is not None else None
+        self.job_manager = job_manager
+        self.max_file_bytes = int(max_file_bytes)
+
+    def get_workspace(self, session_id: int) -> dict[str, Any]:
+        with self._lock(session_id):
+            manifest = self._load_or_create_manifest(session_id)
+            return {
+                "session_id": int(session_id),
+                "upload_batch": self._public_batch(manifest),
+                "grading_run": self.get_grading_run(session_id),
+            }
+
+    def get_grading_run(self, session_id: int) -> dict[str, Any] | None:
+        if self.grading_db_path is None:
+            return None
+        from grading_run_store import GradingRunStore
+
+        store = GradingRunStore(self.grading_db_path)
+        run = store.latest(int(session_id))
+        if run is None:
+            return None
+        raw = store.counts(run.id)
+        counts = {
+            "graded": int(raw.get("graded", 0)),
+            "grading": int(raw.get("grading", 0)),
+            "pending": int(raw.get("pending", 0)),
+            "skipped": int(raw.get("skipped", 0)),
+            "failed": int(raw.get("failed", 0)),
+            "conflict": int(raw.get("conflict", 0)),
+        }
+        counts["total"] = sum(
+            int(raw.get(status, 0))
+            for status in (
+                "pending",
+                "grading",
+                "graded",
+                "failed",
+                "skipped_existing",
+                "skipped_duplicate",
+                "conflict",
+            )
+        )
+        actions = {
+            "running": ["pause", "cancel"],
+            "pause_requested": ["cancel"],
+            "paused": ["resume", "cancel"],
+        }.get(run.state, [])
+        if run.state in {"completed", "failed"} and counts["failed"] > 0:
+            actions.append("retry_failed")
+        projected_state = run.state
+        control = self._read_grading_control(session_id)
+        if int(control.get("run_id") or 0) == run.id and control.get("cancel_requested"):
+            projected_state = (
+                "cancelled"
+                if run.state == "paused" or control.get("cancel_confirmed")
+                else "cancel_requested"
+            )
+            actions = []
+        result: dict[str, Any] = {
+            "run_id": run.id,
+            "mode": run.grading_mode,
+            "state": projected_state,
+            "counts": counts,
+            "allowed_actions": actions,
+        }
+        if self.job_manager is not None:
+            jobs, _total = self.job_manager.list(
+                session_id=int(session_id),
+                job_types=("grading_run",),
+                statuses=("queued", "running"),
+                limit=1,
+            )
+            if jobs:
+                job = jobs[0]
+                result.update(
+                    {
+                        "job_id": job.id,
+                        "job_status": job.status,
+                        "progress": job.progress,
+                        "started_at": job.started_at,
+                        "updated_at": job.updated_at,
+                    }
+                )
+        return result
+
+    def pause_grading_run(self, session_id: int, run_id: int) -> dict[str, Any]:
+        if self.grading_db_path is None:
+            raise ScanGradingWorkspaceError("grading run store is unavailable")
+        from grading_run_store import GradingRunStore
+
+        store = GradingRunStore(self.grading_db_path)
+        run = store.get_run(int(run_id))
+        if run is None or run.session_id != int(session_id):
+            raise ScanGradingWorkspaceError("grading run was not found")
+        if run.state != "running" or not store.request_pause(int(session_id)):
+            raise ScanGradingWorkspaceError("grading run cannot be paused")
+        summary = self.get_grading_run(session_id)
+        if summary is None:
+            raise ScanGradingWorkspaceError("grading run was not found")
+        return summary
+
+    def record_cancel_request(
+        self,
+        session_id: int,
+        run_id: int,
+        job_id: int,
+        *,
+        confirmed: bool,
+    ) -> dict[str, Any]:
+        if self.grading_db_path is None:
+            raise ScanGradingWorkspaceError("grading run store is unavailable")
+        from grading_run_store import GradingRunStore
+
+        store = GradingRunStore(self.grading_db_path)
+        run = store.get_run(int(run_id))
+        if run is None or run.session_id != int(session_id):
+            raise ScanGradingWorkspaceError("grading run was not found")
+        if confirmed and run.state in {"running", "pause_requested"}:
+            store.finish(run.run_token, "paused")
+        self._atomic_write_json(
+            self._grading_control_path(session_id),
+            {
+                "run_id": int(run_id),
+                "job_id": int(job_id),
+                "cancel_requested": True,
+                "cancel_confirmed": bool(confirmed),
+                "updated_at": self._now(),
+            },
+        )
+        summary = self.get_grading_run(session_id)
+        if summary is None:
+            raise ScanGradingWorkspaceError("grading run was not found")
+        return summary
+
+    def prepare_resume(self, session_id: int, run_id: int) -> dict[str, Any]:
+        run, counts = self._require_run(session_id, run_id)
+        control = self._read_grading_control(session_id)
+        if int(control.get("run_id") or 0) == run.id and control.get("cancel_requested"):
+            raise ScanGradingWorkspaceError("cancelled grading run cannot resume")
+        if run.state != "paused" or counts.get("pending", 0) <= 0:
+            raise ScanGradingWorkspaceError("grading run cannot resume")
+        return {
+            "session_id": int(session_id),
+            "grading_mode": run.grading_mode,
+            "failed_only": False,
+            "enhance_images": True,
+            "resume_run_id": run.id,
+        }
+
+    def prepare_failed_retry(self, session_id: int, run_id: int) -> dict[str, Any]:
+        run, counts = self._require_run(session_id, run_id)
+        if counts.get("failed", 0) <= 0 or run.state not in {"completed", "failed"}:
+            raise ScanGradingWorkspaceError("grading run has no retryable failures")
+        return {
+            "session_id": int(session_id),
+            "grading_mode": run.grading_mode,
+            "failed_only": True,
+            "enhance_images": True,
+            "source_run_id": run.id,
+        }
+
+    def prepare_start(
+        self,
+        session_id: int,
+        *,
+        grading_mode: str,
+        upload_revision: int,
+        decision_revision: int,
+        confirm_pending_issues: bool,
+        enhance_images: bool,
+        max_workers: int | None,
+        requests_per_minute: int | None,
+    ) -> dict[str, Any]:
+        with self._lock(session_id):
+            manifest = self._load_or_create_manifest(session_id)
+            if manifest.get("state") != "frozen":
+                raise ScanGradingWorkspaceError("scan upload batch is not frozen")
+            if int(upload_revision) != int(manifest["revision"]):
+                raise UploadBatchRevisionError("scan upload batch revision changed")
+            preflight = self.get_preflight(session_id)
+            if int(decision_revision) != int(preflight["revision"]):
+                raise UploadBatchRevisionError("preflight decision revision changed")
+            if int(preflight["pending_issue_count"]) > 0 and not confirm_pending_issues:
+                raise PendingScanIssuesError("pending scan issues require confirmation")
+            payload: dict[str, Any] = {
+                "session_id": int(session_id),
+                "grading_mode": (
+                    "hybrid_batch" if grading_mode == "hybrid_batch" else "full_paper"
+                ),
+                "failed_only": False,
+                "enhance_images": bool(enhance_images),
+            }
+            if max_workers is not None:
+                payload["max_workers"] = int(max_workers)
+            if requests_per_minute is not None:
+                payload["requests_per_minute"] = int(requests_per_minute)
+            return payload
+
+    def _require_run(self, session_id: int, run_id: int):
+        if self.grading_db_path is None:
+            raise ScanGradingWorkspaceError("grading run store is unavailable")
+        from grading_run_store import GradingRunStore
+
+        store = GradingRunStore(self.grading_db_path)
+        run = store.get_run(int(run_id))
+        if run is None or run.session_id != int(session_id):
+            raise ScanGradingWorkspaceError("grading run was not found")
+        return run, store.counts(run.id)
+
+    def upload_batch_exists(self, session_id: int) -> bool:
+        return self._manifest_path(session_id).is_file()
+
+    def add_upload(
+        self,
+        session_id: int,
+        *,
+        filename: str,
+        media_type: str,
+        content_sha256: str,
+        source: BinaryIO,
+    ) -> dict[str, Any]:
+        with self._lock(session_id):
+            manifest = self._load_or_create_manifest(session_id)
+            self._require_draft(manifest)
+            digest = str(content_sha256 or "").strip().lower()
+            safe_name = Path(str(filename or "")).name
+            suffix = Path(safe_name).suffix.lower()
+            if (
+                not re.fullmatch(r"[0-9a-f]{64}", digest)
+                or self._allowed_uploads.get(suffix) != str(media_type or "").lower()
+            ):
+                raise InvalidScanUploadError("scan upload metadata is invalid")
+            for item in manifest["files"]:
+                if item["sha256"] == digest:
+                    return {"duplicate": True, "file": self._public_file(item)}
+
+            batch_dir = self._batch_dir(session_id, manifest["batch_id"])
+            files_dir = batch_dir / "files"
+            files_dir.mkdir(parents=True, exist_ok=True)
+            storage_name = f"{digest}{suffix}"
+            target = files_dir / storage_name
+            temporary_path: Path | None = None
+            calculated = hashlib.sha256()
+            size = 0
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    dir=files_dir,
+                    prefix=".upload-",
+                    suffix=".tmp",
+                    delete=False,
+                ) as temporary:
+                    temporary_path = Path(temporary.name)
+                    while True:
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        calculated.update(chunk)
+                        size += len(chunk)
+                        if size > self.max_file_bytes:
+                            raise ScanUploadTooLargeError("scan upload is too large")
+                        temporary.write(chunk)
+                    temporary.flush()
+                    os.fsync(temporary.fileno())
+                if calculated.hexdigest() != digest:
+                    raise ScanGradingWorkspaceError("uploaded content digest does not match")
+                os.replace(temporary_path, target)
+                temporary_path = None
+            finally:
+                if temporary_path is not None:
+                    temporary_path.unlink(missing_ok=True)
+
+            item = {
+                "id": uuid4().hex,
+                "name": safe_name,
+                "media_type": str(media_type or "application/octet-stream"),
+                "size_bytes": size,
+                "sha256": digest,
+                "storage_name": storage_name,
+                "added_at": self._now(),
+            }
+            manifest["files"].append(item)
+            manifest["revision"] += 1
+            self._write_manifest(session_id, manifest)
+            return {"duplicate": False, "file": self._public_file(item)}
+
+    def freeze_uploads(self, session_id: int, *, expected_revision: int) -> dict[str, Any]:
+        with self._lock(session_id):
+            manifest = self._load_or_create_manifest(session_id)
+            self._require_draft(manifest)
+            if int(expected_revision) != int(manifest["revision"]):
+                raise UploadBatchRevisionError("upload batch revision changed")
+            if not manifest["files"]:
+                raise ScanGradingWorkspaceError("upload batch is empty")
+            manifest["state"] = "frozen"
+            manifest["frozen_at"] = self._now()
+            manifest["revision"] += 1
+            self._write_manifest(session_id, manifest)
+            return self._public_batch(manifest)
+
+    def remove_upload(
+        self,
+        session_id: int,
+        upload_id: str,
+        *,
+        expected_revision: int,
+    ) -> dict[str, Any]:
+        with self._lock(session_id):
+            manifest = self._load_or_create_manifest(session_id)
+            self._require_draft(manifest)
+            self._require_revision(manifest, expected_revision)
+            removed = next(
+                (item for item in manifest["files"] if item["id"] == str(upload_id)),
+                None,
+            )
+            if removed is None:
+                raise ScanGradingWorkspaceError("upload file was not found")
+            manifest["files"] = [
+                item for item in manifest["files"] if item["id"] != str(upload_id)
+            ]
+            manifest["revision"] += 1
+            self._write_manifest(session_id, manifest)
+            self._stored_file(session_id, manifest, removed).unlink(missing_ok=True)
+            return self._public_batch(manifest)
+
+    def clear_uploads(self, session_id: int, *, expected_revision: int) -> dict[str, Any]:
+        with self._lock(session_id):
+            manifest = self._load_or_create_manifest(session_id)
+            self._require_draft(manifest)
+            self._require_revision(manifest, expected_revision)
+            removed = list(manifest["files"])
+            manifest["files"] = []
+            manifest["revision"] += 1
+            self._write_manifest(session_id, manifest)
+            for item in removed:
+                self._stored_file(session_id, manifest, item).unlink(missing_ok=True)
+            return self._public_batch(manifest)
+
+    def frozen_scan_dir(self, session_id: int) -> Path:
+        with self._lock(session_id):
+            manifest = self._load_or_create_manifest(session_id)
+            if manifest.get("state") != "frozen":
+                raise ScanGradingWorkspaceError("scan upload batch is not frozen")
+            return self._batch_dir(session_id, manifest["batch_id"]) / "files"
+
+    def get_preflight(self, session_id: int) -> dict[str, Any]:
+        with self._lock(session_id):
+            manifest = self._load_or_create_manifest(session_id)
+            if manifest.get("state") != "frozen":
+                raise ScanGradingWorkspaceError("scan upload batch is not frozen")
+            analysis, identity = self._read_analysis(session_id)
+            state = self._read_decision_state(session_id, identity)
+            groups = [
+                self._public_group(session_id, item)
+                for item in analysis.get("groups", [])
+                if isinstance(item, dict)
+            ]
+            issues = [
+                self._public_issue(session_id, item)
+                for item in analysis.get("issues", [])
+                if isinstance(item, dict)
+            ]
+            absent = [
+                {
+                    key: item.get(key)
+                    for key in ("id", "name", "student_code", "class_name")
+                    if item.get(key) is not None
+                }
+                for item in analysis.get("absent_students", [])
+                if isinstance(item, dict)
+            ]
+            return {
+                "revision": int(state["revision"]),
+                "summary": {
+                    "auto_matched": len(groups),
+                    "issues": len(issues),
+                    "absent_candidates": len(absent),
+                    "total_pages": int(analysis.get("total_pages") or 0),
+                },
+                "groups": groups,
+                "issues": issues,
+                "absent_students": absent,
+                "warnings": [
+                    "扫描预检有需要注意的信息"
+                    for _ in analysis.get("warnings", [])
+                ],
+                "decisions": list(state.get("public_decisions", [])),
+                "pending_issue_count": self._pending_issue_count(issues, state),
+            }
+
+    def save_decisions(
+        self,
+        session_id: int,
+        *,
+        expected_revision: int,
+        valid_student_ids: set[int],
+        decisions: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        with self._lock(session_id):
+            analysis, identity = self._read_analysis(session_id)
+            state = self._read_decision_state(session_id, identity)
+            if int(expected_revision) != int(state["revision"]):
+                raise UploadBatchRevisionError("preflight decision revision changed")
+            group_by_id = {
+                self._group_id(item): item
+                for item in analysis.get("groups", [])
+                if isinstance(item, dict)
+            }
+            issue_ids = {
+                str(item.get("issue_id") or "")
+                for item in analysis.get("issues", [])
+                if isinstance(item, dict)
+            }
+            public_decisions: list[dict[str, Any]] = []
+            internal_decisions: list[dict[str, Any]] = []
+            seen: set[tuple[str, str]] = set()
+            for raw in decisions:
+                target_type = str(raw.get("target_type") or "")
+                target_id = str(raw.get("target_id") or "")
+                action = str(raw.get("action") or "")
+                key = (target_type, target_id)
+                if key in seen:
+                    raise ScanGradingWorkspaceError("preflight decision target is duplicated")
+                seen.add(key)
+                student_id = raw.get("student_id")
+                if action == "match":
+                    try:
+                        student_id = int(student_id)
+                    except (TypeError, ValueError) as exc:
+                        raise ScanGradingWorkspaceError("matching decision requires a student") from exc
+                    if student_id not in valid_student_ids:
+                        raise ScanGradingWorkspaceError("matching student is not available")
+                elif student_id is not None:
+                    raise ScanGradingWorkspaceError("non-matching decision cannot include a student")
+
+                if target_type == "group" and target_id in group_by_id and action == "match":
+                    internal = {
+                        "group_source_label": str(group_by_id[target_id].get("source_label") or ""),
+                        "action": "match",
+                        "student_id": student_id,
+                    }
+                elif target_type == "issue" and target_id in issue_ids and action in {"pending", "invalid", "match"}:
+                    internal = {"issue_id": target_id, "action": action}
+                    if action == "match":
+                        internal["student_id"] = student_id
+                else:
+                    raise ScanGradingWorkspaceError("preflight decision target or action is invalid")
+                public = {
+                    "target_type": target_type,
+                    "target_id": target_id,
+                    "action": action,
+                }
+                if action == "match":
+                    public["student_id"] = student_id
+                public_decisions.append(public)
+                internal_decisions.append(internal)
+
+            next_state = {
+                "analysis_identity": identity,
+                "revision": int(state["revision"]) + 1,
+                "public_decisions": public_decisions,
+                "internal_decisions": internal_decisions,
+                "updated_at": self._now(),
+            }
+            self._atomic_write_json(self._decision_state_path(session_id), next_state)
+            self._atomic_write_json(
+                self._session_dir(session_id) / "scan_manual_decisions_latest.json",
+                internal_decisions,
+            )
+            issue_count = len(issue_ids)
+            decided_issue_ids = {
+                item["target_id"]
+                for item in public_decisions
+                if item["target_type"] == "issue" and item["action"] != "pending"
+            }
+            return {
+                "revision": next_state["revision"],
+                "decisions": public_decisions,
+                "pending_issue_count": issue_count - len(decided_issue_ids),
+            }
+
+    def resolve_preflight_media(self, session_id: int, media_ref: str) -> Path:
+        with self._lock(session_id):
+            parts = str(media_ref or "").split(":")
+            if len(parts) != 3 or parts[2] not in {"front", "back"}:
+                raise ScanGradingWorkspaceError("preflight media reference is invalid")
+            target_type, target_id, side = parts
+            analysis, _identity = self._read_analysis(session_id)
+            item: dict[str, Any] | None = None
+            if target_type == "group":
+                item = next(
+                    (
+                        candidate
+                        for candidate in analysis.get("groups", [])
+                        if isinstance(candidate, dict) and self._group_id(candidate) == target_id
+                    ),
+                    None,
+                )
+            elif target_type == "issue":
+                item = next(
+                    (
+                        candidate
+                        for candidate in analysis.get("issues", [])
+                        if isinstance(candidate, dict)
+                        and str(candidate.get("issue_id") or "") == target_id
+                    ),
+                    None,
+                )
+            if item is None:
+                raise ScanGradingWorkspaceError("preflight media was not found")
+            raw_path = item.get(f"enhanced_{side}_image") or item.get(f"{side}_image")
+            if not raw_path:
+                raise ScanGradingWorkspaceError("preflight media was not found")
+            path = Path(str(raw_path)).resolve()
+            allowed_root = self.frozen_scan_dir(session_id).parent.resolve()
+            if not path.is_file() or not path.is_relative_to(allowed_root):
+                raise ScanGradingWorkspaceError("preflight media is outside the frozen batch")
+            return path
+
+    def _load_or_create_manifest(self, session_id: int) -> dict[str, Any]:
+        path = self._manifest_path(session_id)
+        if path.exists():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                return payload
+        return {
+            "batch_id": uuid4().hex,
+            "revision": 0,
+            "state": "draft",
+            "files": [],
+            "frozen_at": None,
+        }
+
+    def _write_manifest(self, session_id: int, manifest: dict[str, Any]) -> None:
+        self._atomic_write_json(self._manifest_path(session_id), manifest)
+
+    def _atomic_write_json(self, path: Path, payload: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=".scan-upload-batch-",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                json.dump(payload, temporary, ensure_ascii=False, indent=2)
+                temporary.write("\n")
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            os.replace(temporary_path, path)
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+
+    def _manifest_path(self, session_id: int) -> Path:
+        return self._session_dir(session_id) / "scan_upload_batch.json"
+
+    def _session_dir(self, session_id: int) -> Path:
+        return self.templates_root / f"session_{int(session_id)}"
+
+    def _decision_state_path(self, session_id: int) -> Path:
+        return self._session_dir(session_id) / "scan_decisions_state.json"
+
+    def _grading_control_path(self, session_id: int) -> Path:
+        return self._session_dir(session_id) / "grading_control_state.json"
+
+    def _read_grading_control(self, session_id: int) -> dict[str, Any]:
+        path = self._grading_control_path(session_id)
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _batch_dir(self, session_id: int, batch_id: str) -> Path:
+        return self.exams_root / f"session_{int(session_id)}" / "scan_batches" / str(batch_id)
+
+    def _stored_file(
+        self,
+        session_id: int,
+        manifest: dict[str, Any],
+        item: dict[str, Any],
+    ) -> Path:
+        return self._batch_dir(session_id, manifest["batch_id"]) / "files" / item["storage_name"]
+
+    def _read_analysis(self, session_id: int) -> tuple[dict[str, Any], str]:
+        path = self._session_dir(session_id) / "scan_analysis_latest.json"
+        if not path.exists():
+            raise ScanGradingWorkspaceError("scan preflight is not available")
+        raw = path.read_bytes()
+        payload = json.loads(raw.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ScanGradingWorkspaceError("scan preflight is invalid")
+        return payload, hashlib.sha256(raw).hexdigest()
+
+    def _read_decision_state(self, session_id: int, identity: str) -> dict[str, Any]:
+        path = self._decision_state_path(session_id)
+        if path.exists():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict) and payload.get("analysis_identity") == identity:
+                    return payload
+            except (OSError, ValueError):
+                pass
+        return {
+            "analysis_identity": identity,
+            "revision": 0,
+            "public_decisions": [],
+            "internal_decisions": [],
+        }
+
+    @staticmethod
+    def _group_id(group: dict[str, Any]) -> str:
+        source = f"{group.get('source_label') or ''}\0{group.get('front_image') or ''}"
+        return f"group-{hashlib.sha256(source.encode('utf-8')).hexdigest()[:16]}"
+
+    def _public_group(self, session_id: int, group: dict[str, Any]) -> dict[str, Any]:
+        group_id = self._group_id(group)
+        return {
+            "id": group_id,
+            "source_label": str(group.get("source_label") or ""),
+            "detected_name": str(group.get("detected_name") or ""),
+            "student_id": group.get("student_id"),
+            "student_name": str(group.get("student_name") or ""),
+            "match_method": str(group.get("match_method") or ""),
+            "match_score": float(group.get("match_score") or 0),
+            "front_media_url": self._media_url(session_id, "group", group_id, "front"),
+            "back_media_url": self._media_url(session_id, "group", group_id, "back"),
+        }
+
+    def _public_issue(self, session_id: int, issue: dict[str, Any]) -> dict[str, Any]:
+        issue_id = str(issue.get("issue_id") or "")
+        result = {
+            "id": issue_id,
+            "issue_type": str(issue.get("issue_type") or "unknown"),
+            "message": "扫描文件需要人工处理",
+            "source_label": str(issue.get("source_label") or ""),
+            "detected_name": str(issue.get("detected_name") or ""),
+            "suggested_student_id": issue.get("suggested_student_id"),
+            "suggested_student_name": str(issue.get("suggested_student_name") or ""),
+            "suggested_match_score": issue.get("suggested_match_score"),
+            "front_media_url": self._media_url(session_id, "issue", issue_id, "front"),
+            "back_media_url": None,
+        }
+        if issue.get("back_image"):
+            result["back_media_url"] = self._media_url(session_id, "issue", issue_id, "back")
+        return result
+
+    @staticmethod
+    def _media_url(session_id: int, target_type: str, target_id: str, side: str) -> str:
+        return f"/api/sessions/{int(session_id)}/scan/preflight/media/{target_type}:{target_id}:{side}"
+
+    @staticmethod
+    def _pending_issue_count(issues: list[dict[str, Any]], state: dict[str, Any]) -> int:
+        decided = {
+            str(item.get("target_id") or "")
+            for item in state.get("public_decisions", [])
+            if item.get("target_type") == "issue" and item.get("action") != "pending"
+        }
+        return sum(1 for item in issues if item["id"] not in decided)
+
+    def _lock(self, session_id: int) -> threading.RLock:
+        key = f"{self.templates_root.resolve()}:{int(session_id)}"
+        with self._locks_guard:
+            return self._locks.setdefault(key, threading.RLock())
+
+    @staticmethod
+    def _require_draft(manifest: dict[str, Any]) -> None:
+        if manifest.get("state") != "draft":
+            raise FrozenUploadBatchError("upload batch is frozen")
+
+    @staticmethod
+    def _require_revision(manifest: dict[str, Any], expected_revision: int) -> None:
+        if int(expected_revision) != int(manifest["revision"]):
+            raise UploadBatchRevisionError("upload batch revision changed")
+
+    @staticmethod
+    def _public_file(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": item["id"],
+            "name": item["name"],
+            "media_type": item["media_type"],
+            "size_bytes": int(item["size_bytes"]),
+            "sha256_prefix": str(item["sha256"])[:12],
+            "added_at": item["added_at"],
+        }
+
+    def _public_batch(self, manifest: dict[str, Any]) -> dict[str, Any]:
+        files = [self._public_file(item) for item in manifest.get("files", [])]
+        return {
+            "batch_id": manifest["batch_id"],
+            "revision": int(manifest["revision"]),
+            "state": manifest["state"],
+            "files": files,
+            "file_count": len(files),
+            "total_bytes": sum(int(item["size_bytes"]) for item in files),
+            "frozen_at": manifest.get("frozen_at"),
+        }
+
+    @staticmethod
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="seconds")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -25,12 +26,21 @@ def test_run_grading_job_uses_saved_scan_payload_and_manual_decisions(tmp_path) 
     (tmp_path / "answer.json").write_text("{}", encoding="utf-8")
     work_dir = tmp_path / "templates" / f"session_{session_id}"
     work_dir.mkdir(parents=True)
-    (work_dir / "scan_analysis_latest.json").write_text(
+    analysis_path = work_dir / "scan_analysis_latest.json"
+    analysis_path.write_text(
         json.dumps({"groups": [{"student_name": "Alice"}], "issues": [], "total_pages": 2}),
         encoding="utf-8",
     )
     (work_dir / "scan_manual_decisions_latest.json").write_text(
-        json.dumps([{"issue_id": "issue-1", "action": "skip"}]),
+        json.dumps([{"issue_id": "stale", "action": "invalid"}]),
+        encoding="utf-8",
+    )
+    (work_dir / "scan_decisions_state.json").write_text(
+        json.dumps({
+            "analysis_identity": hashlib.sha256(analysis_path.read_bytes()).hexdigest(),
+            "revision": 2,
+            "internal_decisions": [{"issue_id": "issue-1", "action": "invalid"}],
+        }),
         encoding="utf-8",
     )
     captured: dict[str, Any] = {}
@@ -80,7 +90,7 @@ def test_run_grading_job_uses_saved_scan_payload_and_manual_decisions(tmp_path) 
     assert captured["rubric_path"] == tmp_path / "rubric.json"
     assert captured["answer_key_path"] == tmp_path / "answer.json"
     assert captured["scan_analysis"]["groups"][0]["student_name"] == "Alice"
-    assert captured["manual_decisions"] == [{"issue_id": "issue-1", "action": "skip"}]
+    assert captured["manual_decisions"] == [{"issue_id": "issue-1", "action": "invalid"}]
     assert captured["enhance_images"] is False
     assert captured["max_workers"] == 2
     assert captured["requests_per_minute"] == 120
