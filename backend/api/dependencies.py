@@ -234,7 +234,15 @@ def get_review_application_service(
 
 def create_job_manager(path_manager: PathManager | None = None) -> JobManager:
     paths = path_manager or get_path_manager()
-    manager = JobManager(JobStore(paths.db_path))
+    upload_config_dir = getattr(
+        paths,
+        "upload_config_dir",
+        Path(paths.data_root) / "config" / "uploaded",
+    )
+    manager = JobManager(
+        JobStore(paths.db_path),
+        interrupted_input_root=Path(upload_config_dir),
+    )
     try:
         register_default_job_handlers(
             manager,
@@ -248,11 +256,7 @@ def create_job_manager(path_manager: PathManager | None = None) -> JobManager:
                 "qb_db_path",
                 Path(paths.data_root) / "databases" / "question_bank.db",
             ),
-            upload_config_dir=getattr(
-                paths,
-                "upload_config_dir",
-                Path(paths.data_root) / "config" / "uploaded",
-            ),
+            upload_config_dir=upload_config_dir,
             training_output_root=getattr(
                 paths,
                 "outputs_dir",

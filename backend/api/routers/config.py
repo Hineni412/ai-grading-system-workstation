@@ -55,6 +55,7 @@ from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from backend.jobs.store import (
     ConfigRequestTokenConflictError,
     ConfigRetryAlreadySubmittedError,
+    ConfigSessionBusyError,
     JobStore,
 )
 from backend.public_data import (
@@ -146,7 +147,7 @@ async def upload_config_source(
     db: DBManager = Depends(get_grading_db),
     source_service: ConfigSourceService = Depends(get_config_source_service),
 ) -> dict[str, Any]:
-    _require_session(db, session_id)
+    _require_active_session(db, session_id)
     try:
         raw_length = request.headers.get("content-length")
         content_length = int(raw_length) if raw_length is not None else None
@@ -174,11 +175,11 @@ async def upload_config_source(
                 content_length=content_length,
             )
             if submission_state == "succeeded":
-                result = source_service.submission_public(
-                    session_id=session_id,
-                    request_token=request_token,
+                raise ApiError(
+                    409,
+                    "config_source_upload_already_submitted",
+                    "Config source upload was already submitted; query its result",
                 )
-                return dict(result["source"] or {})
             if submission_state == "replaced":
                 raise ApiError(
                     409,
@@ -632,6 +633,13 @@ def _submit_config_generation(
             "config_request_token_conflict",
             "Config request token was already used for another request",
         ) from exc
+    except ConfigSessionBusyError as exc:
+        raise ApiError(
+            409,
+            "config_generation_in_progress",
+            "Configuration work is already active for this session",
+            {"session_id": int(payload.get("session_id") or 0)},
+        ) from exc
     except UnsupportedJobTypeError as exc:
         raise ApiError(
             503,
@@ -937,6 +945,13 @@ def retry_session_config_generation(
             409,
             "config_request_token_conflict",
             "Config request token was already used for another request",
+        ) from exc
+    except ConfigSessionBusyError as exc:
+        raise ApiError(
+            409,
+            "config_generation_in_progress",
+            "Configuration work is already active for this session",
+            {"session_id": int(session_id)},
         ) from exc
     except ConfigRetryAlreadySubmittedError as exc:
         raise ApiError(

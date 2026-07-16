@@ -27,6 +27,10 @@ class ConfigRequestTokenConflictError(RuntimeError):
     pass
 
 
+class ConfigSessionBusyError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class JobRecord:
     id: int
@@ -107,6 +111,35 @@ class JobStore:
             raise RuntimeError(f"created job {job_id} could not be loaded")
         return loaded
 
+    def create_claimed_config_job(self, payload: dict[str, Any]) -> JobRecord:
+        clean_payload = dict(payload)
+        session_id = _positive_int(clean_payload.get("session_id"))
+        payload_json = json.dumps(clean_payload, ensure_ascii=False, sort_keys=True)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if self._find_active_config_session_row(
+                    conn,
+                    session_id=session_id,
+                ) is not None:
+                    raise ConfigSessionBusyError(
+                        f"configuration work is already active for session {session_id}"
+                    )
+                cursor = conn.execute(
+                    "INSERT INTO jobs (job_type, payload_json, status) "
+                    "VALUES ('config_generation', ?, 'queued')",
+                    (payload_json,),
+                )
+                job_id = int(cursor.lastrowid)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        loaded = self.get_job(job_id)
+        if loaded is None:
+            raise RuntimeError(f"created job {job_id} could not be loaded")
+        return loaded
+
     def create_idempotent_config_job(
         self,
         payload: dict[str, Any],
@@ -138,6 +171,13 @@ class JobStore:
                         )
                     conn.commit()
                     return record, False
+                if self._find_active_config_session_row(
+                    conn,
+                    session_id=session_id,
+                ) is not None:
+                    raise ConfigSessionBusyError(
+                        f"configuration work is already active for session {session_id}"
+                    )
                 cursor = conn.execute(
                     "INSERT INTO jobs (job_type, payload_json, status) "
                     "VALUES ('config_generation', ?, 'queued')",
@@ -190,6 +230,27 @@ class JobStore:
                 _positive_int_or_zero(payload.get("session_id")) == session_id
                 and payload.get("client_request_token") == token
             ):
+                return row
+        return None
+
+    @staticmethod
+    def _find_active_config_session_row(
+        conn: sqlite3.Connection,
+        *,
+        session_id: int,
+    ) -> sqlite3.Row | None:
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE job_type = 'config_generation' "
+            "AND status IN ('queued','running','paused') ORDER BY id DESC"
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"] or "{}"))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if _positive_int_or_zero(payload.get("session_id")) == session_id:
                 return row
         return None
 
@@ -278,6 +339,13 @@ class JobStore:
                         raise ConfigRetryAlreadySubmittedError(
                             f"retry already submitted for config generation job {source_job_id}"
                         )
+                if self._find_active_config_session_row(
+                    conn,
+                    session_id=session_id,
+                ) is not None:
+                    raise ConfigSessionBusyError(
+                        f"configuration work is already active for session {session_id}"
+                    )
                 cursor = conn.execute(
                     """
                     INSERT INTO jobs (job_type, payload_json, status)
@@ -473,6 +541,39 @@ class JobStore:
                 """
             )
             return int(cursor.rowcount)
+
+    def interrupted_owned_config_input_ids(self) -> set[str]:
+        input_ids: set[str] = set()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT payload_json FROM jobs WHERE job_type = 'config_generation' "
+                "AND status IN ('queued','running')"
+            ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"] or "{}"))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict) or payload.get("mode") == "retry":
+                continue
+            input_id = str(payload.get("input_id") or "").strip()
+            if _SOURCE_ID.fullmatch(input_id):
+                input_ids.add(input_id)
+        return input_ids
+
+    def update_succeeded_config_result(
+        self,
+        job_id: int,
+        result: dict[str, Any],
+    ) -> bool:
+        result_json = json.dumps(dict(result), ensure_ascii=False, sort_keys=True)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE jobs SET result_json = ?, updated_at = datetime('now','localtime') "
+                "WHERE id = ? AND job_type = 'config_generation' AND status = 'succeeded'",
+                (result_json, int(job_id)),
+            )
+        return cursor.rowcount == 1
 
     def referenced_config_source_ids(self, session_id: int) -> set[str]:
         clean_session_id = int(session_id)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 from .store import JobRecord, JobStore
@@ -55,6 +56,7 @@ class JobManager:
         *,
         max_workers: int = 2,
         cleanup_interrupted: bool = True,
+        interrupted_input_root: Path | None = None,
     ) -> None:
         self.store = store
         self._handlers: dict[str, JobHandler] = {}
@@ -63,7 +65,17 @@ class JobManager:
         self._lock = threading.Lock()
         self._shutdown = False
         if cleanup_interrupted:
+            owned_input_ids = (
+                self.store.interrupted_owned_config_input_ids()
+                if interrupted_input_root is not None
+                else set()
+            )
             self.store.fail_interrupted_jobs()
+            if interrupted_input_root is not None:
+                from .config_generation import discard_config_generation_input
+
+                for input_id in owned_input_ids:
+                    discard_config_generation_input(interrupted_input_root, input_id)
 
     def register(self, job_type: str, handler: JobHandler) -> None:
         clean_type = str(job_type or "").strip()
@@ -79,7 +91,10 @@ class JobManager:
         with self._lock:
             if self._shutdown:
                 raise RuntimeError("JobManager has shut down")
-            job = self.store.create_job(clean_type, dict(payload or {}))
+            if clean_type == "config_generation":
+                job = self.store.create_claimed_config_job(dict(payload or {}))
+            else:
+                job = self.store.create_job(clean_type, dict(payload or {}))
             future = self._executor.submit(self._run_job, job.id, handler)
             self._futures[job.id] = future
         future.add_done_callback(
@@ -213,7 +228,14 @@ class JobManager:
                 self.store.finish(job_id, "failed", error=str(exc))
             return
         except Exception as exc:  # noqa: BLE001
-            self.store.finish(job_id, "failed", error=str(exc))
+            self.store.finish(job_id, "failed", error=str(exc) or type(exc).__name__)
+            return
+        except BaseException as exc:  # noqa: BLE001
+            if self.store.is_cancel_requested(job_id):
+                if not self.store.confirm_cancelled(job_id):
+                    self.store.finish(job_id, "failed", error=type(exc).__name__)
+            else:
+                self.store.finish(job_id, "failed", error=str(exc) or type(exc).__name__)
             return
         try:
             self.store.finish(
