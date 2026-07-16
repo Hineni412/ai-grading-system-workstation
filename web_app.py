@@ -35,7 +35,7 @@ from backend.config_workspace.editor import (
     streamlit_dataframe_to_editor_edits,
 )
 from backend.config_workspace.publish import (
-    refresh_mapping_after_config_save,
+    publish_legacy_config_and_refresh_mapping,
     refresh_template_mapping_from_session as _refresh_template_mapping_service,
 )
 from backend.llm.policy import policy_overrides_from_profile
@@ -2904,29 +2904,29 @@ def render_config_and_session_tab(
                     data_root=APP_DATA_DIR,
                     raw_papers_dir=APP_DATA_DIR / "question_bank" / "raw_papers",
                 )
-                remember_saved_config_for_new_session(
-                    st.session_state,
-                    selected_session_id=selected_session_id,
-                    rubric_path=str(rubric_path),
-                    answer_key_path=str(answer_path),
-                    source_paper_path=source_archive.stored_path,
-                    source_paper_sha256=source_archive.sha256,
-                    source_paper_name=source_name,
-                    settings_store=db,
-                )
                 if selected_session_id is not None:
-                    db.update_grading_session_config(
-                        selected_session_id,
+                    mapping_result = publish_legacy_config_and_refresh_mapping(
+                        db,
+                        UPLOAD_CONFIG_DIR,
+                        session_id=selected_session_id,
                         rubric_path=str(rubric_path),
                         answer_key_path=str(answer_path),
-                    )
-                    db.bind_grading_session_source(
-                        selected_session_id,
                         source_paper_path=source_archive.stored_path,
                         source_paper_sha256=source_archive.sha256,
+                        mapping_output_dir=TEMPLATES_DIR,
+                        mapping_refresher=lambda: _refresh_template_mapping_from_session(
+                            db, selected_session_id
+                        ),
                     )
-                    mapping_result = refresh_mapping_after_config_save(
-                        lambda: _refresh_template_mapping_from_session(db, selected_session_id)
+                    remember_saved_config_for_new_session(
+                        st.session_state,
+                        selected_session_id=selected_session_id,
+                        rubric_path=str(rubric_path),
+                        answer_key_path=str(answer_path),
+                        source_paper_path=source_archive.stored_path,
+                        source_paper_sha256=source_archive.sha256,
+                        source_paper_name=source_name,
+                        settings_store=db,
                     )
                     mapping_status = mapping_result.mapping_status
                     workflow_state_saved = _record_config_save_workflow_state(
@@ -2946,6 +2946,16 @@ def render_config_and_session_tab(
                         )
                     st.rerun()
                 else:
+                    remember_saved_config_for_new_session(
+                        st.session_state,
+                        selected_session_id=selected_session_id,
+                        rubric_path=str(rubric_path),
+                        answer_key_path=str(answer_path),
+                        source_paper_path=source_archive.stored_path,
+                        source_paper_sha256=source_archive.sha256,
+                        source_paper_name=source_name,
+                        settings_store=db,
+                    )
                     st.success("评分依据已保存，可用于创建考试批改。")
             except Exception as exc:  # noqa: BLE001
                 st.error(f"保存失败：{exc}")

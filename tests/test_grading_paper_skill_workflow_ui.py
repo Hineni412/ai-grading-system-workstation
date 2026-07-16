@@ -57,7 +57,7 @@ def test_session_creation_and_update_bind_the_saved_source() -> None:
 
     assert "source_paper_path=st.session_state.get(\"latest_source_paper_path\", \"\")" in source
     assert "source_paper_sha256=st.session_state.get(\"latest_source_paper_sha256\", \"\")" in source
-    assert "db.bind_grading_session_source(" in source
+    assert "publish_legacy_config_and_refresh_mapping(" in source
     assert "clear_pending_config_for_new_session(st.session_state, settings_store=db)" in source
 
 
