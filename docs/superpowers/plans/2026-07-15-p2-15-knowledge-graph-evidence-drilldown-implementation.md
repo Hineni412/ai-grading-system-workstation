@@ -702,6 +702,12 @@ Expected: validator `ok=true`，停在 `waiting_review`；不得自报独立复�
 - RED 轮：5 个文件失败，`7 failed / 23 passed`，逐项复现上述缺口。GREEN 轮：受影响单元检查 `49 passed / 0 failed`（约 9 秒），typecheck 通过（约 16 秒），lint 通过（约 8 秒）。未重复整套前端或后端大测试。
 - 浏览器受影响复测：第一次 7 个知识图谱场景中 5 个通过，2 个验收脚本断言暴露“画布扫描可能连续命中”和“全景恢复后拖动截图可能不变”；调整为稳定的请求下限和缩放态拖动后，定向复测 `2 passed`（约 9 秒），合并证据为本轮 7 个场景全部通过。1000 节点附件现记录 `performance.now()` 的首次渲染、模式切换、缩放、拖动和选择耗时及固定上限。
 - 第一轮去重问题 6 组已全部关闭；剩余工作为一次最终双路独立复审、用户短测，以及通过后的 integration/PR/主线同步。若最终复审仍有 Important，按项目规则停止并汇报，不再自动进入第三轮修复。
+- 最终双路复审约 6 分钟，去重后仍有 `0 Critical / 4 Important / 4 Minor`，按项目规则停止并向用户汇报。4 组 Important 是：同范围刷新成功后旧 evidence 未清除、Graph row 的题目引用未校验考试范围、浏览器缺少无标签/部分失败及候选 SHA/测试机信息、ECharts 首次骨架与局部失败隔离不足。用户在 2026-07-16 明确要求“继续修复”，因此启动一轮新的、经用户决定授权的定向修复，不把它解释为自动无限循环。
+- 用户授权后的定向修复约 36 分钟：API RED 为 `1 failed / 14 passed`，复现范围外考试引用；store RED 为 `1 failed / 6 passed`，复现同范围成功刷新保留旧证据；route RED 为 `1 failed / 12 passed`，复现混合旧参数被静默忽略；view RED 分别复现深链接首次失败后无法重试恢复、首次加载无画布/inspector 骨架；component RED 复现 ECharts 初始化异常逃出组件边界。各垂直切片均在最小实现后转绿。
+- 修复后的受影响验证：5 个单元文件 `49 passed / 0 failed`（约 17 秒），随后补齐 setOption 局部失败证据，组件文件 `7 passed / 0 failed`（约 7 秒）；typecheck 通过（约 21 秒），lint 通过（约 14 秒）。知识图谱 Chromium 现为 `8 passed / 0 failed`（约 17 秒），新增无标签与局部失败恢复场景；1000 节点附件增加候选 SHA、操作系统/架构/CPU/内存、浏览器与视口，Canvas 点击网格缩小到 16px 以覆盖最小 28px 节点。未重复整套前端、后端或大范围 smoke。
+- 定向修复去重后的 4 组 Important 已全部关闭；3 个代码/测试 Minor 同批关闭。验收卡候选 SHA 与列表格式按交接协议留到独立复审通过后的用户验收证据提交统一更新，避免在已复审 SHA 形成前伪造验收锚点。剩余工作为冻结新候选、一次用户授权后的独立复审、用户短测和 integration/PR/主线同步。
+- 用户授权后的冻结差异双路复审确认上轮 4 组 Important 主路径均已关闭，但 Standards 报告 `0 Critical / 3 Important / 1 Minor`，Spec 报告 `0 Critical / 1 Important / 1 Minor`；去重为 3 组 Important：resize/ResizeObserver/teardown 的局部失败仍不完整、`ARCHITECTURE.md` 遗留旧 URL 事实和重复编号、未提交工作树不能把旧 HEAD 写成实际受测 SHA。Git 元数据当时由桌面环境设为只读，已停止并向用户说明；用户随后明确授权当前 P2-15 写 `.git`，同时继续禁止 `user_data`，文档治理任务继续运行。
+- Git 授权后的最终定向修复：resize 重试先以 `1 failed / 7 passed` 复现只重绘不 resize；observe 重建以 `1 failed / 8 passed` 复现失效 observer 残留；异常 off 后 dispose 以 `1 failed / 9 passed` 复现清理短路，三条分别转绿到组件 `10 passed`。旧 workbench 地址混入额外受控参数先以 `1 failed / 13 passed` 复现，修复后 route `14 passed`。架构事实改为完整 3×3 受控 URL 与成功刷新清证据，并修正序号。冻结前受影响回归为 5 文件 `54 passed / 0 failed`（约 10 秒），typecheck 通过（约 16 秒），lint 通过（约 11 秒）；未运行大范围测试。
 
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接

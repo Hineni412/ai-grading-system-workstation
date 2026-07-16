@@ -63,6 +63,7 @@ export function parseGraphRouteScope(
   const keys = Object.keys(routeQuery)
   const hasUnknownKeys = keys.some((key) => !CONTROLLED_KEYS.has(key))
   const hasLegacy = 'session' in routeQuery
+  const usesLegacyFormat = hasLegacy && !('exam' in routeQuery) && !('scope' in routeQuery)
   const hasControlledScope = keys.some((key) => CONTROLLED_KEYS.has(key))
   if (!hasControlledScope) {
     return {
@@ -73,7 +74,7 @@ export function parseGraphRouteScope(
   }
 
   let query: GraphQueryInput | null = null
-  if (hasLegacy && !('exam' in routeQuery) && !('scope' in routeQuery)) {
+  if (usesLegacyFormat) {
     const sessionId = parseIntegerList(routeQuery.session)
     const classId = singleText(routeQuery.class)
     if (sessionId?.length === 1 && classId !== null) {
@@ -143,9 +144,15 @@ export function parseGraphRouteScope(
     }
   }
 
+  const canonical = serializeGraphRouteScope(query)
+  const hasIgnoredControlledKeys = usesLegacyFormat
+    ? keys.some((key) => CONTROLLED_KEYS.has(key) && key !== 'session' && key !== 'class')
+    : keys.some((key) => (
+        CONTROLLED_KEYS.has(key) && !Object.prototype.hasOwnProperty.call(canonical, key)
+      ))
   return {
     query,
-    canonical: serializeGraphRouteScope(query),
-    notice: hasUnknownKeys ? '已忽略无效地址参数' : '',
+    canonical,
+    notice: hasUnknownKeys || hasIgnoredControlledKeys ? '已忽略无效地址参数' : '',
   }
 }

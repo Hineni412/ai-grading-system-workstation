@@ -207,6 +207,127 @@ describe('knowledge graph canvas', () => {
       })],
     }), true)
   })
+
+  it('contains chart initialization failures and can retry locally', async () => {
+    const chart = {
+      setOption: vi.fn(), on: vi.fn(), off: vi.fn(), resize: vi.fn(),
+      dispose: vi.fn(), dispatchAction: vi.fn(),
+    }
+    const chartFactory = vi.fn()
+      .mockImplementationOnce(() => { throw new Error('canvas unavailable') })
+      .mockReturnValue(chart)
+    const { host } = await mount(KnowledgeGraphCanvas, {
+      nodes, rows, mode: 'graph', selectedKey: null,
+      scopeLabel: '匿名考试 · 七年级一班', coverage: graph.coverage,
+      chartFactory,
+    })
+
+    expect(host.textContent).toContain('图表暂时无法显示')
+    host.querySelector<HTMLButtonElement>('[data-testid="retry-knowledge-chart"]')!.click()
+    await nextTick()
+
+    expect(chartFactory).toHaveBeenCalledTimes(2)
+    expect(chart.setOption).toHaveBeenCalled()
+    expect(host.textContent).not.toContain('图表暂时无法显示')
+  })
+
+  it('contains chart rendering failures and retries without recreating the chart', async () => {
+    const chart = {
+      setOption: vi.fn()
+        .mockImplementationOnce(() => { throw new Error('render unavailable') })
+        .mockImplementation(() => undefined),
+      on: vi.fn(), off: vi.fn(), resize: vi.fn(),
+      dispose: vi.fn(), dispatchAction: vi.fn(),
+    }
+    const chartFactory = vi.fn(() => chart)
+    const { host } = await mount(KnowledgeGraphCanvas, {
+      nodes, rows, mode: 'graph', selectedKey: null,
+      scopeLabel: '匿名考试 · 七年级一班', coverage: graph.coverage,
+      chartFactory,
+    })
+
+    expect(host.textContent).toContain('图表暂时无法显示')
+    host.querySelector<HTMLButtonElement>('[data-testid="retry-knowledge-chart"]')!.click()
+    await nextTick()
+
+    expect(chartFactory).toHaveBeenCalledTimes(1)
+    expect(chart.setOption).toHaveBeenCalledTimes(2)
+    expect(host.textContent).not.toContain('图表暂时无法显示')
+  })
+
+  it('retries a failed chart resize before clearing the local error', async () => {
+    const chart = {
+      setOption: vi.fn(), on: vi.fn(), off: vi.fn(),
+      resize: vi.fn()
+        .mockImplementationOnce(() => { throw new Error('resize unavailable') })
+        .mockImplementation(() => undefined),
+      dispose: vi.fn(), dispatchAction: vi.fn(),
+    }
+    const { host } = await mount(KnowledgeGraphCanvas, {
+      nodes, rows, mode: 'graph', selectedKey: null,
+      scopeLabel: '匿名考试 · 七年级一班', coverage: graph.coverage,
+      chartFactory: () => chart,
+    })
+
+    ResizeObserverStub.instances[0]!.emit()
+    await nextTick()
+    expect(host.textContent).toContain('图表暂时无法显示')
+    host.querySelector<HTMLButtonElement>('[data-testid="retry-knowledge-chart"]')!.click()
+    await nextTick()
+
+    expect(chart.resize).toHaveBeenCalledTimes(2)
+    expect(host.textContent).not.toContain('图表暂时无法显示')
+  })
+
+  it('recreates resize observation after observing fails', async () => {
+    let observeAttempts = 0
+    const disconnect = vi.fn()
+    class FlakyResizeObserver {
+      observe(): void {
+        observeAttempts += 1
+        if (observeAttempts === 1) throw new Error('observe unavailable')
+      }
+      disconnect(): void { disconnect() }
+    }
+    vi.stubGlobal('ResizeObserver', FlakyResizeObserver)
+    const chart = {
+      setOption: vi.fn(), on: vi.fn(), off: vi.fn(), resize: vi.fn(),
+      dispose: vi.fn(), dispatchAction: vi.fn(),
+    }
+    const chartFactory = vi.fn(() => chart)
+    const { host } = await mount(KnowledgeGraphCanvas, {
+      nodes, rows, mode: 'graph', selectedKey: null,
+      scopeLabel: '匿名考试 · 七年级一班', coverage: graph.coverage,
+      chartFactory,
+    })
+
+    expect(host.textContent).toContain('图表暂时无法显示')
+    host.querySelector<HTMLButtonElement>('[data-testid="retry-knowledge-chart"]')!.click()
+    await nextTick()
+
+    expect(observeAttempts).toBe(2)
+    expect(disconnect).toHaveBeenCalled()
+    expect(host.textContent).not.toContain('图表暂时无法显示')
+  })
+
+  it('disposes the chart even when removing its click listener fails', async () => {
+    const chart = {
+      setOption: vi.fn(), on: vi.fn(),
+      off: vi.fn(() => { throw new Error('listener cleanup unavailable') }),
+      resize: vi.fn(), dispose: vi.fn(), dispatchAction: vi.fn(),
+    }
+    const { app } = await mount(KnowledgeGraphCanvas, {
+      nodes, rows, mode: 'graph', selectedKey: null,
+      scopeLabel: '匿名考试 · 七年级一班', coverage: graph.coverage,
+      chartFactory: () => chart,
+    })
+
+    app.unmount()
+    mounted.splice(mounted.indexOf(app), 1)
+
+    expect(chart.off).toHaveBeenCalled()
+    expect(chart.dispose).toHaveBeenCalled()
+  })
 })
 
 describe('knowledge graph text directory', () => {

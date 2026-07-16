@@ -137,6 +137,7 @@ export const useKnowledgeGraphStore = defineStore('knowledge-graph', () => {
         normalized,
       )
       if (generation !== graphGeneration || queryKey(requestedQuery.value!) !== nextKey) return
+      clearSelection()
       appliedQuery.value = normalized
       graph.value = loaded
       graphState.value = loaded.nodes.length === 0 ? 'empty' : 'ready'

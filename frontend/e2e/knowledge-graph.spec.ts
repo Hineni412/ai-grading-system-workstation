@@ -1,4 +1,6 @@
 import { expect, test, type Page, type Request, type Route, type TestInfo } from '@playwright/test'
+import { execFileSync } from 'node:child_process'
+import { arch, cpus, platform, release, totalmem } from 'node:os'
 
 const STORAGE_KEY = 'ai-grading:selected-session:v1'
 const sessions = [
@@ -20,6 +22,7 @@ const viewports = [
 ]
 
 interface RequestLog { method: string; pathname: string }
+interface GraphApiState { rows: 'ready' | 'empty' | 'error' }
 
 const PERFORMANCE_LIMITS_MS = {
   firstRender: 15_000,
@@ -158,7 +161,11 @@ async function fulfillJson(route: Route, body: unknown): Promise<void> {
   await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
 }
 
-async function installGraphApi(page: Page, nodeCount: number): Promise<RequestLog[]> {
+async function installGraphApi(
+  page: Page,
+  nodeCount: number,
+  state: GraphApiState = { rows: 'ready' },
+): Promise<RequestLog[]> {
   const requests: RequestLog[] = []
   page.on('request', (request) => {
     const url = new URL(request.url())
@@ -169,7 +176,12 @@ async function installGraphApi(page: Page, nodeCount: number): Promise<RequestLo
     const pathname = new URL(request.url()).pathname
     if (pathname === '/api/sessions') return fulfillJson(route, { items: sessions, total: sessions.length })
     if (pathname === '/api/students') return fulfillJson(route, { items: students, total: students.length })
-    if (pathname === '/api/graph/rows') return fulfillJson(route, graphRows(request, nodeCount))
+    if (pathname === '/api/graph/rows') {
+      if (state.rows === 'error') {
+        return fulfillJson(route, { invalid: true })
+      }
+      return fulfillJson(route, graphRows(request, state.rows === 'empty' ? 0 : nodeCount))
+    }
     if (pathname === '/api/graph/evidence') return fulfillJson(route, graphEvidence(request))
     await route.fulfill({ status: 418, body: `unexpected anonymous request: ${request.method()} ${pathname}` })
   })
@@ -217,8 +229,8 @@ async function clickCanvasNode(page: Page, requests: RequestLog[]): Promise<void
   const box = await canvas.boundingBox()
   if (!box) throw new Error('Knowledge graph canvas is not visible')
   const before = requests.filter((request) => request.pathname === '/api/graph/evidence').length
-  for (let y = 24; y < box.height - 12; y += 32) {
-    for (let x = 24; x < box.width - 12; x += 32) {
+  for (let y = 8; y < box.height - 8; y += 16) {
+    for (let x = 8; x < box.width - 8; x += 16) {
       await page.mouse.click(box.x + x, box.y + y)
       const after = requests.filter((request) => request.pathname === '/api/graph/evidence').length
       if (after > before) return
@@ -308,6 +320,27 @@ test('supports zoom, grouping explanation, keyboard selection and paged evidence
   expect(errors.consoleErrors).toEqual([])
 })
 
+test('keeps no-tag and partial-failure states distinct and recoverable', async ({ page }) => {
+  const errors = trackBrowserErrors(page)
+  const state: GraphApiState = { rows: 'empty' }
+  const requests = await installGraphApi(page, 120, state)
+  await page.addInitScript(([key]) => localStorage.setItem(key, '7'), [STORAGE_KEY])
+  await page.goto('/knowledge-graph?session=7&class=七年级一班')
+
+  await expect(page.getByText('当前范围没有可显示的知识标签')).toBeVisible()
+  state.rows = 'ready'
+  await page.getByRole('button', { name: '应用范围' }).click()
+  await expect(page.locator('.knowledge-graph-canvas canvas').first()).toBeVisible()
+
+  state.rows = 'error'
+  await page.getByRole('button', { name: '应用范围' }).click()
+  await expect(page.getByText(/当前显示上次成功读取的知识图谱/)).toBeVisible()
+  await expect(page.locator('.knowledge-graph-canvas canvas').first()).toBeVisible()
+  expectReadOnly(requests)
+  expect(errors.pageErrors).toEqual([])
+  expect(errors.consoleErrors).toEqual([])
+})
+
 test('renders and operates on a reproducible 1000-node anonymous graph', async ({ page }, testInfo: TestInfo) => {
   const errors = trackBrowserErrors(page)
   const startedAt = performance.now()
@@ -350,6 +383,9 @@ test('renders and operates on a reproducible 1000-node anonymous graph', async (
 
   await testInfo.attach('knowledge-graph-1000-node-baseline.json', {
     body: Buffer.from(JSON.stringify({
+      candidateSha: process.env.P2_15_CANDIDATE_SHA ?? execFileSync(
+        'git', ['rev-parse', 'HEAD'], { encoding: 'utf8' },
+      ).trim(),
       nodeCount: 1000,
       firstRenderMs,
       modeSwitchMs,
@@ -359,6 +395,14 @@ test('renders and operates on a reproducible 1000-node anonymous graph', async (
       thresholdsMs: PERFORMANCE_LIMITS_MS,
       browser: testInfo.project.name,
       viewport: page.viewportSize(),
+      testMachine: {
+        platform: platform(),
+        release: release(),
+        architecture: arch(),
+        cpuModel: cpus()[0]?.model ?? 'unknown',
+        cpuCount: cpus().length,
+        totalMemoryMb: Math.round(totalmem() / 1024 / 1024),
+      },
     }, null, 2)),
     contentType: 'application/json',
   })

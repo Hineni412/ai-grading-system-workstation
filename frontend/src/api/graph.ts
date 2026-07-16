@@ -347,7 +347,12 @@ export function decodeGraphRowsResponse(
   const response = value as unknown as GraphRowsResponse
   if (
     !hasAlignedExamScope(response.exam_scope) ||
-    response.rows.some((row) => !response.scope.student_ids.includes(String(row.student_id))) ||
+    response.rows.some((row) => (
+      !response.scope.student_ids.includes(String(row.student_id)) ||
+      row.source_question_refs.some((reference) => (
+        !response.exam_scope.session_ids.includes(reference.session_id)
+      ))
+    )) ||
     (expected && !matchesGraphQuery(response, expected))
   ) {
     throw new Error('Invalid graph rows')

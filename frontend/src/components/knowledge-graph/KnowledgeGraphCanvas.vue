@@ -49,6 +49,7 @@ const emit = defineEmits<{
 }>()
 
 const chartElement = ref<HTMLElement | null>(null)
+const chartError = ref('')
 let chart: ChartLike | null = null
 let observer: ResizeObserver | null = null
 let resizeFrame: number | null = null
@@ -166,7 +167,13 @@ function treeOption(): Record<string, unknown> {
 }
 
 function renderChart(): void {
-  chart?.setOption(props.mode === 'graph' ? graphOption() : treeOption(), true)
+  if (!chart) return
+  try {
+    chart.setOption(props.mode === 'graph' ? graphOption() : treeOption(), true)
+    chartError.value = ''
+  } catch {
+    chartError.value = '图表暂时无法显示，文字目录和节点详情仍可使用。'
+  }
 }
 
 function handleChartClick(event: ChartClickEvent): void {
@@ -180,13 +187,65 @@ function queueResize(): void {
   if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
   resizeFrame = requestAnimationFrame(() => {
     resizeFrame = null
-    chart?.resize()
+    resizeChart()
   })
 }
 
+function resizeChart(): boolean {
+  try {
+    chart?.resize()
+    return true
+  } catch {
+    chartError.value = '图表暂时无法显示，文字目录和节点详情仍可使用。'
+    return false
+  }
+}
+
 function restoreView(): void {
-  chart?.dispatchAction({ type: 'restore' })
+  try {
+    chart?.dispatchAction({ type: 'restore' })
+  } catch {
+    chartError.value = '图表暂时无法显示，文字目录和节点详情仍可使用。'
+    return
+  }
   renderChart()
+}
+
+function initializeChart(): void {
+  const element = chartElement.value
+  if (!element) return
+  try {
+    chart = props.chartFactory
+      ? props.chartFactory(element)
+      : init(element, undefined, { renderer: 'canvas' }) as unknown as ChartLike
+    chart.on('click', handleChartClick)
+    renderChart()
+    if (observer === null) {
+      observer = new ResizeObserver(queueResize)
+      observer.observe(element)
+    }
+  } catch {
+    try {
+      observer?.disconnect()
+    } catch {
+      // Resize observation cleanup remains inside the chart boundary.
+    }
+    observer = null
+    try {
+      chart?.dispose()
+    } catch {
+      // A broken third-party chart must not escape this component boundary.
+    }
+    chart = null
+    chartError.value = '图表暂时无法显示，文字目录和节点详情仍可使用。'
+  }
+}
+
+function retryChart(): void {
+  if (chart) {
+    if (resizeChart()) renderChart()
+  }
+  else initializeChart()
 }
 
 watch(
@@ -196,24 +255,28 @@ watch(
 )
 
 onMounted(() => {
-  const element = chartElement.value
-  if (!element) return
-  chart = props.chartFactory
-    ? props.chartFactory(element)
-    : init(element, undefined, { renderer: 'canvas' }) as unknown as ChartLike
-  chart.on('click', handleChartClick)
-  renderChart()
-  observer = new ResizeObserver(queueResize)
-  observer.observe(element)
+  initializeChart()
 })
 
 onBeforeUnmount(() => {
-  observer?.disconnect()
+  try {
+    observer?.disconnect()
+  } catch {
+    // Resize cleanup must not prevent chart disposal.
+  }
   observer = null
   if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
   resizeFrame = null
-  chart?.off('click', handleChartClick)
-  chart?.dispose()
+  try {
+    chart?.off('click', handleChartClick)
+  } catch {
+    // Listener cleanup must not prevent chart disposal.
+  }
+  try {
+    chart?.dispose()
+  } catch {
+    // Component teardown remains isolated from third-party chart failures.
+  }
   chart = null
 })
 </script>
@@ -262,6 +325,11 @@ onBeforeUnmount(() => {
       稳定 {{ graphSummary.stable }} 个；覆盖 {{ coverage.covered_items }} / {{ coverage.total_items }} 份作答；
       当前选择：{{ selectedLabel }}。
     </p>
+
+    <div v-if="chartError" class="knowledge-graph-inline-error" role="alert">
+      <p>{{ chartError }}</p>
+      <button type="button" data-testid="retry-knowledge-chart" @click="retryChart">重新显示图表</button>
+    </div>
 
     <div
       ref="chartElement"
