@@ -185,11 +185,16 @@ def _plan_document(
     package_id: str = "P1-16",
     user_test: str = "none",
     checklist: str = "not_required",
+    handoff_base: str | None = None,
 ) -> str:
+    handoff_base_field = (
+        f"**交接基线：** {handoff_base}\n" if handoff_base is not None else ""
+    )
     return (
         f"**执行包：** {package_id}\n"
         f"**用户自测：** {user_test}\n"
         f"**自测清单：** {checklist}\n\n"
+        f"{handoff_base_field}"
         f"{block}"
     )
 
@@ -227,6 +232,7 @@ def _commit_claim(
     handoff_package_id: str = "P1-16",
     user_test: str = "none",
     checklist: str = "not_required",
+    handoff_base: str | None = None,
     extra_source: bool = False,
 ) -> str:
     plan.parent.mkdir(parents=True, exist_ok=True)
@@ -246,6 +252,7 @@ def _commit_claim(
             package_id=package_id,
             user_test=user_test,
             checklist=checklist,
+            handoff_base=handoff_base,
         ),
         encoding="utf-8",
     )
@@ -541,6 +548,89 @@ def test_handoff_claim_must_be_first_branch_commit(tmp_path: Path) -> None:
 
     assert report.ok is False
     assert "handoff claim must be the first branch commit" in report.issues
+
+
+def test_handoff_claim_can_start_from_declared_milestone_base(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _initialize_repo(repo)
+    (repo / "app.py").write_text("VALUE = 0\n", encoding="utf-8")
+    _record_origin_main(repo)
+
+    (repo / "first-package.py").write_text("READY = True\n", encoding="utf-8")
+    milestone_base = _commit_all(repo, "feat: first milestone package")
+    plan = repo / "docs" / "2026-07-11-p1-16-current-plan.md"
+    _commit_claim(repo, plan, handoff_base=milestone_base)
+
+    (repo / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    plan.write_text(
+        _plan_document(
+            _block(
+                handoff_status="waiting_review",
+                implementation_commit="branch_head",
+                automated_validation="passed",
+                independent_review="pending",
+                nightly_action="report_only",
+            ),
+            handoff_base=milestone_base,
+        ),
+        encoding="utf-8",
+    )
+    _commit_all(repo, "feat: second milestone package")
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok, report.issues
+
+
+def test_declared_milestone_base_must_be_an_ancestor(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _initialize_repo(repo)
+    (repo / "app.py").write_text("VALUE = 0\n", encoding="utf-8")
+    main_base = _record_origin_main(repo)
+
+    _git(repo, "checkout", "-b", "unrelated")
+    (repo / "unrelated.py").write_text("VALUE = 1\n", encoding="utf-8")
+    unrelated_sha = _commit_all(repo, "test: unrelated base")
+    _git(repo, "checkout", "-b", "feature", main_base)
+
+    plan = repo / "docs" / "2026-07-11-p1-16-current-plan.md"
+    _commit_claim(repo, plan, handoff_base=unrelated_sha)
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert "plan handoff_base must be an ancestor of HEAD" in report.issues
+
+
+def test_declared_milestone_base_cannot_change_after_claim(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _initialize_repo(repo)
+    (repo / "app.py").write_text("VALUE = 0\n", encoding="utf-8")
+    origin_main = _record_origin_main(repo)
+    (repo / "first-package.py").write_text("READY = True\n", encoding="utf-8")
+    milestone_base = _commit_all(repo, "feat: first milestone package")
+    plan = repo / "docs" / "2026-07-11-p1-16-current-plan.md"
+    _commit_claim(repo, plan, handoff_base=milestone_base)
+
+    plan.write_text(
+        _plan_document(
+            _block(
+                handoff_status="waiting_review",
+                implementation_commit="branch_head",
+                automated_validation="passed",
+                independent_review="pending",
+                nightly_action="report_only",
+            ),
+            handoff_base=origin_main,
+        ),
+        encoding="utf-8",
+    )
+    _commit_all(repo, "test: forge changed milestone base")
+
+    report = validate_handoff(plan, repo)
+
+    assert report.ok is False
+    assert "plan handoff_base must remain unchanged from claim" in report.issues
 
 
 def test_stash_baseline_rejects_missing_stash_commit(tmp_path: Path) -> None:
