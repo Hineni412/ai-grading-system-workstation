@@ -3,7 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '../api/errors'
 import * as api from '../api/template-regions'
-import { useTemplateRegionStore } from '../stores/template-regions'
+import {
+  TEMPLATE_REGION_UPLOAD_STORAGE_KEY,
+  useTemplateRegionStore,
+} from '../stores/template-regions'
 
 vi.mock('../api/template-regions', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/template-regions')>(),
@@ -30,6 +33,7 @@ function workspace(sessionId = 7): api.RegionWorkspace {
 beforeEach(() => {
   setActivePinia(createPinia())
   vi.clearAllMocks()
+  localStorage.clear()
   vi.mocked(api.fetchRegionReadiness).mockResolvedValue({
     session_id: 7, scoring_configured: true, template_present: true, template_ready: false,
   })
@@ -166,6 +170,27 @@ describe('template region store', () => {
     expect(store.uploadState).toBe('unknown')
     expect(store.pendingUploadToken).toMatch(/^[0-9a-f]{32}$/)
     expect(store.errorMessage).toContain('先核对本次上传')
+  })
+
+  it('restores an unknown upload token after the page store is recreated', async () => {
+    vi.mocked(api.fetchRegionReadiness).mockResolvedValue({ session_id: 7,
+      scoring_configured: true, template_present: false, template_ready: false })
+    vi.mocked(api.uploadTemplate).mockRejectedValue(new ApiError({ kind: 'server', status: 500,
+      code: 'template_upload_failed', message: 'failed', details: {},
+      requestId: 'rid-upload', retryable: true }))
+    const firstStore = useTemplateRegionStore()
+    await firstStore.load(7)
+    await firstStore.upload(new File(['%PDF'], 'sample.pdf', { type: 'application/pdf' }), 'front')
+    const token = firstStore.pendingUploadToken
+
+    setActivePinia(createPinia())
+    const restoredStore = useTemplateRegionStore()
+    await restoredStore.load(7)
+
+    expect(restoredStore.uploadState).toBe('unknown')
+    expect(restoredStore.pendingUploadToken).toBe(token)
+    expect(JSON.parse(localStorage.getItem(TEMPLATE_REGION_UPLOAD_STORAGE_KEY) ?? '{}'))
+      .toEqual({ sessionId: 7, requestToken: token })
   })
 
   it('abandons a stale processing upload only when the server says it is inactive', async () => {

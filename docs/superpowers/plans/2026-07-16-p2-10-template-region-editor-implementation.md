@@ -231,6 +231,8 @@ Task 5 证据：Chromium 匿名流程从“草稿已保存”超时暴露出 Vue
 
 磁盘级协议复审与继续证据：上一候选复审指出单赢家仍依赖单个 service 内存，且“激活成功但回执持续失败 → 后续替换”无法识别旧 token。用户明确要求继续。新实现于会话锁内扫描该考试全部磁盘 submission marker；任何没有激活凭证的 `processing` 都阻止其他 service/进程开始新令牌。每次成功激活同时生成独立、不可覆盖的 `template-activation-{token}.json`，与样卷目标文件进入同一切换/恢复清单；查询和 abandon 以该凭证判断 token 是否曾激活，因此不依赖成功 marker 是否写入，也不依赖替换前是否先查询。后续 manifest 指向新 token 时，任何带旧激活凭证的 token 都稳定返回 `replaced`。受影响后端 template service/routes/OpenAPI/API app `42 passed`（26.15 秒）；前端 `15 passed`、typecheck/lint/build 通过；模拟 P2-10 Chromium `4 passed`（11.1 秒），真实临时数据库 `1 passed`（9.7 秒）。
 
+上传中断协议根因收口证据（第 22 轮修复）：最终复审把刷新后丢令牌、无凭证 `processing` 永久阻塞和激活凭证早于数据库成功共 3 条意见去重为 1 组根因——磁盘状态不能可靠区分“仍活动、已中止、已启用”。用户明确要求一次性按根因修完。先建立公共边界 RED：后端进程退出接管与凭证顺序 `2 failed`，前端刷新恢复 `1 failed`；再统一改为操作系统跨进程上传锁、不可变版本目录整体发布、数据库启用后成功历史、遗留请求安全接管和浏览器安全令牌持久化。额外穷举并覆盖慢请求、进程退出、数据库启用失败、启用成功但两种成功记录持续失败、令牌冲突、页面刷新和后续替换。受影响后端 template service/routes/OpenAPI/API app `45 passed`（28.99 秒）；前端 `16 passed`，lint/typecheck/build 通过；模拟 P2-10 Chromium `4 passed`（10.7 秒），真实匿名 PDF + 临时数据库 `1 passed`（9.7 秒）；快速冒烟 `--skip-tests` 通过（5.76 秒）。一次并行浏览器启动失败去重为测试编排问题：两个 Playwright 进程会共同清空 `frontend/test-results`，改为顺序运行后两套均通过，未修改产品代码。真实两库 SHA256 与开工基线一致。当前剩余工作为冻结提交、最终双路复审、用户短测和 integration。
+
 后续每个 RED/GREEN、复审、修复和 integration 门槛均追加一行；同一根因的多条失败只计一个去重问题。
 
 ## Rollback and Stop Conditions
