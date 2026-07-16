@@ -158,6 +158,23 @@ async def upload_config_source(
 
 
 @router.get(
+    "/sessions/{session_id}/config/sources/active",
+    response_model=ConfigSourceResponse,
+    responses=CONFIG_SOURCE_ERROR_RESPONSES,
+)
+def get_active_config_source(
+    session_id: int,
+    db: DBManager = Depends(get_grading_db),
+    source_service: ConfigSourceService = Depends(get_config_source_service),
+) -> dict[str, Any]:
+    _require_session(db, session_id)
+    try:
+        return source_service.load_active_public(session_id=session_id)
+    except ConfigSourceError as exc:
+        raise _source_api_error(exc) from None
+
+
+@router.get(
     "/sessions/{session_id}/config/sources/{source_id}",
     response_model=ConfigSourceResponse,
     responses=CONFIG_SOURCE_ERROR_RESPONSES,
@@ -494,6 +511,35 @@ def _submit_config_generation(
             "Config generation is temporarily unavailable",
             {"job_type": "config_generation"},
         ) from exc
+
+
+@router.get(
+    "/sessions/{session_id}/config/generation-jobs/latest",
+    response_model=JobResponse,
+    responses={404: {"model": ErrorResponse, "description": "Job not found"}},
+)
+def get_latest_config_generation_job(
+    session_id: int,
+    source_id: str,
+    source_revision: str,
+    generation_mode: str,
+    db: DBManager = Depends(get_grading_db),
+    manager: JobManager = Depends(get_job_manager),
+) -> JobResponse:
+    _require_active_session(db, session_id)
+    job = manager.store.find_latest_config_generation_job(
+        session_id=session_id,
+        source_id=source_id,
+        source_revision=source_revision,
+        generation_mode=generation_mode,
+    )
+    if job is None:
+        raise ApiError(
+            404,
+            "config_generation_job_not_found",
+            "Config generation job not found",
+        )
+    return _job_response(job)
 
 
 @router.post(

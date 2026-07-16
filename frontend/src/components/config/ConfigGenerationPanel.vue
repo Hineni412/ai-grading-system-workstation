@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 
 import {
   fetchConfigEditor,
+  fetchLatestConfigGenerationJob,
   retryConfigGeneration,
   submitConfigGeneration,
   type ConfigEditorResponse,
@@ -21,10 +22,12 @@ const props = withDefaults(defineProps<{
   submitter?: (sessionId: number, request: ConfigGenerationRequest) => Promise<JobResponse>
   retryer?: (sessionId: number, jobId: number, questionIds: string[]) => Promise<JobResponse>
   editorLoader?: (sessionId: number) => Promise<ConfigEditorResponse>
+  generationLoader?: (sessionId: number, request: ConfigGenerationRequest) => Promise<JobResponse>
 }>(), {
   submitter: submitConfigGeneration,
   retryer: retryConfigGeneration,
   editorLoader: fetchConfigEditor,
+  generationLoader: fetchLatestConfigGenerationJob,
 })
 
 const configStore = useConfigWorkspaceStore()
@@ -35,7 +38,7 @@ const requestError = ref('')
 const editorError = ref('')
 const selectedFailed = ref<string[]>([])
 const editorLoads = new Set<number>()
-const submissionUnknown = ref(false)
+const submissionUnknown = computed(() => configStore.pendingGenerationMode !== null)
 
 const job = computed(() => configStore.jobId === null ? null : jobStore.jobs[configStore.jobId] ?? null)
 const syncError = computed(() => configStore.jobId === null
@@ -77,20 +80,6 @@ function statusCopy(value: JobResponse): string {
   return outcome.value === 'partial' ? '部分完成' : '生成完成'
 }
 
-function matchingGenerationJob(
-  sessionId: number,
-  request: ConfigGenerationRequest,
-  excludedIds: ReadonlySet<number>,
-): JobResponse | null {
-  return Object.values(jobStore.jobs).find((candidate) => !excludedIds.has(candidate.id)
-    && candidate.job_type === 'config_generation'
-    && candidate.payload.session_id === sessionId
-    && candidate.payload.mode === 'generate'
-    && candidate.payload.source_id === request.source_id
-    && candidate.payload.source_revision === request.source_revision
-    && candidate.payload.generation_mode === request.generation_mode) ?? null
-}
-
 function returnToEditor(): void {
   const current = job.value
   if (!current || !refineJob.value) return
@@ -105,9 +94,8 @@ async function startGeneration(requestedMode: GenerationMode = mode.value): Prom
   const context = configStore.captureGenerationContext()
   const sessionId = configStore.sessionId
   const request = configStore.sourceRequest(requestedMode)
-  const knownJobIds = new Set(Object.keys(jobStore.jobs).map(Number))
   submitting.value = true
-  submissionUnknown.value = false
+  configStore.markGenerationSubmissionPending(requestedMode)
   requestError.value = ''
   try {
     const next = await props.submitter(sessionId, request)
@@ -116,18 +104,38 @@ async function startGeneration(requestedMode: GenerationMode = mode.value): Prom
   } catch (error) {
     if (isAmbiguousWriteError(error)) {
       requestError.value = '生成请求结果未知，正在核对任务记录…'
-      const reconciled = matchingGenerationJob(sessionId, request, knownJobIds)
-      if (reconciled) {
+      try {
+        const reconciled = await props.generationLoader(sessionId, request)
         jobStore.track(reconciled)
         configStore.attachJob(reconciled.id, context)
         requestError.value = ''
-      } else {
-        submissionUnknown.value = true
+      } catch {
         requestError.value = '生成请求结果未知，尚未找到可确认的任务。为避免重复生成，请稍后重新核对。'
       }
     } else {
+      configStore.clearGenerationSubmissionPending()
       requestError.value = '服务器已拒绝生成请求；当前试卷与核对结果已保留，可以修正后重试。'
     }
+  } finally {
+    submitting.value = false
+  }
+}
+
+async function reconcileUnknownSubmission(): Promise<void> {
+  const sessionId = configStore.sessionId
+  const pendingMode = configStore.pendingGenerationMode
+  if (sessionId === null || pendingMode === null || submitting.value || !configStore.canGenerate) return
+  const context = configStore.captureGenerationContext()
+  const request = configStore.sourceRequest(pendingMode)
+  submitting.value = true
+  requestError.value = '正在核对服务器任务记录…'
+  try {
+    const reconciled = await props.generationLoader(sessionId, request)
+    jobStore.track(reconciled)
+    configStore.attachJob(reconciled.id, context)
+    requestError.value = ''
+  } catch {
+    requestError.value = '仍未找到可确认的任务。为避免重复生成，当前保持锁定，请稍后再次核对。'
   } finally {
     submitting.value = false
   }
@@ -281,7 +289,16 @@ watch(job, (current, previous) => {
       <span>{{ editorError }}</span>
       <button v-if="job" type="button" name="重新读取评分依据" @click="reloadEditor(job)">重新读取评分依据</button>
     </div>
-    <p v-if="requestError" class="config-generation__error" role="alert">{{ requestError }}</p>
+    <div v-if="requestError" class="config-generation__error" role="alert">
+      <span>{{ requestError }}</span>
+      <button
+        v-if="submissionUnknown"
+        type="button"
+        name="重新核对生成任务"
+        :disabled="submitting"
+        @click="reconcileUnknownSubmission"
+      >重新核对</button>
+    </div>
   </section>
 </template>
 

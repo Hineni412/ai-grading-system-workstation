@@ -505,6 +505,23 @@ class ConfigSourceService:
             require_active=require_active,
         ).public_snapshot()
 
+    def load_active_public(self, *, session_id: int) -> dict[str, Any]:
+        clean_session_id = _positive_session_id(session_id)
+        try:
+            source_id, source_revision = self._read_active(clean_session_id)
+            metadata = self._load_metadata(
+                session_id=clean_session_id,
+                source_id=source_id,
+                require_active=True,
+            )
+        except ConfigSourceError:
+            raise
+        except Exception:
+            raise ConfigSourceInvalidError() from None
+        if metadata.source_revision != source_revision:
+            raise ConfigSourceChangedError()
+        return metadata.public_snapshot()
+
     def _load_metadata(
         self,
         *,

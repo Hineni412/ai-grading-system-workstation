@@ -30,6 +30,7 @@ export interface PersistedConfigWorkspace {
   jobId: number | null
   decisions: QuestionDecision[]
   generationSummary?: ConfigGenerationSummary
+  pendingGenerationMode?: GenerationMode
 }
 
 export interface ConfigGenerationSummary {
@@ -101,14 +102,20 @@ function parsePersisted(raw: string | null): PersistedConfigWorkspace | null {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
     const item = value as Record<string, unknown>
     const keys = Object.keys(item).sort().join(',')
-    if (keys !== 'decisions,jobId,phase,sessionId,sourceId,sourceRevision'
-      && keys !== 'decisions,generationSummary,jobId,phase,sessionId,sourceId,sourceRevision') return null
+    if (![
+      'decisions,jobId,phase,sessionId,sourceId,sourceRevision',
+      'decisions,generationSummary,jobId,phase,sessionId,sourceId,sourceRevision',
+      'decisions,jobId,pendingGenerationMode,phase,sessionId,sourceId,sourceRevision',
+      'decisions,generationSummary,jobId,pendingGenerationMode,phase,sessionId,sourceId,sourceRevision',
+    ].includes(keys)) return null
     if (!positiveInteger(item.sessionId) || typeof item.phase !== 'string'
       || !phases.has(item.phase as ConfigPhase)
       || (item.sourceId !== null && !validSourceId(item.sourceId))
       || (item.sourceRevision !== null && !validRevision(item.sourceRevision))
       || (item.jobId !== null && !positiveInteger(item.jobId))
       || !Array.isArray(item.decisions) || !item.decisions.every(validDecision)
+      || ('pendingGenerationMode' in item
+        && !['per_question', 'whole_document'].includes(String(item.pendingGenerationMode)))
       || ('generationSummary' in item && !validGenerationSummary(item.generationSummary))) return null
     if ((item.sourceId === null) !== (item.sourceRevision === null)) return null
     return item as unknown as PersistedConfigWorkspace
@@ -172,6 +179,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   const saveStatus = ref<ConfigSaveStatus>('idle')
   const mappingStatus = ref<ConfigEditorSaveResponse['save_result']['mapping_status'] | null>(null)
   const generationSummary = ref<ConfigGenerationSummary | null>(null)
+  const pendingGenerationMode = ref<GenerationMode | null>(null)
   const sourceLoading = ref(false)
   const sourceError = ref('')
   let sourceLoadGeneration = 0
@@ -220,6 +228,9 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     if (generationSummary.value !== null) {
       snapshot.generationSummary = { ...generationSummary.value }
     }
+    if (pendingGenerationMode.value !== null) {
+      snapshot.pendingGenerationMode = pendingGenerationMode.value
+    }
     return snapshot
   }
 
@@ -252,6 +263,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     sourceId.value = null
     sourceRevision.value = null
     jobId.value = null
+    pendingGenerationMode.value = null
     decisions.value = []
     phase.value = 'draft'
     resetMemory()
@@ -275,6 +287,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     sourceId.value = null
     sourceRevision.value = null
     jobId.value = null
+    pendingGenerationMode.value = null
     decisions.value = []
     phase.value = 'draft'
     resetMemory()
@@ -295,6 +308,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     source.value = null
     generationSummary.value = null
     jobId.value = null
+    pendingGenerationMode.value = null
     editor.value = null
     editorEdits.value = []
     editorCommands.value = []
@@ -342,6 +356,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     sourceRevision.value = value.source_revision
     source.value = value
     jobId.value = null
+    pendingGenerationMode.value = null
     decisions.value = []
     editor.value = null
     editorEdits.value = []
@@ -422,6 +437,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       throw new Error('Invalid generation summary')
     }
     jobId.value = id
+    pendingGenerationMode.value = null
     generationSummary.value = retainedSummary === undefined ? null : { ...retainedSummary }
     phase.value = derivePhase()
     persistSafeIndex()
@@ -433,6 +449,19 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     jobId.value = null
     generationSummary.value = null
     phase.value = derivePhase()
+    persistSafeIndex()
+  }
+
+  function markGenerationSubmissionPending(mode: GenerationMode): void {
+    if (!['per_question', 'whole_document'].includes(mode)) {
+      throw new Error('Invalid generation mode')
+    }
+    pendingGenerationMode.value = mode
+    persistSafeIndex()
+  }
+
+  function clearGenerationSubmissionPending(): void {
+    pendingGenerationMode.value = null
     persistSafeIndex()
   }
 
@@ -484,6 +513,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     decisions.value = []
     phase.value = 'draft'
     resetMemory()
+    pendingGenerationMode.value = candidate.pendingGenerationMode ?? null
     const dependencies: ConfigWorkspaceHydrationDependencies = {
       loadSource: overrides.loadSource ?? fetchConfigSource,
       loadJob: overrides.loadJob ?? jobApi.getJob,
@@ -660,12 +690,14 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
 
   return {
     sessionId, phase, sourceId, sourceRevision, jobId, decisions,
-    source, editor, editorEdits, editorCommands, serverIssues, generationSummary, sourceLoading, sourceError,
+    source, editor, editorEdits, editorCommands, serverIssues, generationSummary,
+    pendingGenerationMode, sourceLoading, sourceError,
     saveStatus, mappingStatus, hasDirtyEditor, effectiveEditorRows, effectiveTotalScore,
     canGenerate, hydrateSafeIndex, persistSafeIndex, clearWorkspace,
     selectSession, selectSource, discardEditorDraft, setSource, acceptUploadedSource,
     updateDecisions, loadSource,
     setEditor, captureGenerationContext, attachJob, detachJob, sourceRequest,
+    markGenerationSubmissionPending, clearGenerationSubmissionPending,
     reloadEditorForGeneration, updateEditor, addEditorCommand, captureEditorContext,
     isEditorContextCurrent, recordServerIssues, noteSaveFailed, noteSaveUnknown,
     buildSaveRequest, beginSave, markConflict, replaceWithAuthoritativeEditor,
