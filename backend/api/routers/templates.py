@@ -169,6 +169,7 @@ async def upload_session_template(
             filename=filename,
             content_length=content_length,
             first_page_role=first_page_role,
+            db=db,
         )
     except TemplateUploadInProgressError:
         raise ApiError(
@@ -196,6 +197,7 @@ async def upload_session_template(
             "template_upload_already_submitted",
             "Template upload was already submitted; query its result",
         )
+    response: TemplateUploadResponse | None = None
     try:
         chunks: list[bytes] = []
         size = 0
@@ -213,27 +215,21 @@ async def upload_session_template(
         )
         response = _upload_response(result)
     except TemplateUploadTooLargeError:
-        _finish_template_submission_best_effort(
-            service, session_id=session_id, request_token=request_token, succeeded=False
-        )
         raise ApiError(413, "template_upload_too_large", "Template upload is too large") from None
     except TemplateUploadError:
-        _finish_template_submission_best_effort(
-            service, session_id=session_id, request_token=request_token, succeeded=False
-        )
         raise ApiError(422, "template_upload_invalid", "Template upload is invalid") from None
     except Exception:
-        _finish_template_submission_best_effort(
-            service, session_id=session_id, request_token=request_token, succeeded=False
-        )
         raise ApiError(500, "template_upload_failed", "Template upload failed") from None
-    _finish_template_submission_best_effort(
-        service,
-        session_id=session_id,
-        request_token=request_token,
-        succeeded=True,
-        template=response.model_dump(mode="json"),
-    )
+    finally:
+        _finish_template_submission_best_effort(
+            service,
+            session_id=session_id,
+            request_token=request_token,
+            succeeded=response is not None,
+            template=response.model_dump(mode="json") if response is not None else None,
+        )
+    if response is None:
+        raise RuntimeError("template upload response is missing")
     return response
 
 
@@ -287,7 +283,7 @@ def abandon_template_upload_submission(
     _require_session(db, session_id)
     try:
         service.abandon_submission(
-            session_id=session_id, request_token=request_token
+            session_id=session_id, request_token=request_token, db=db
         )
     except TemplateUploadSubmissionConflictError:
         raise ApiError(

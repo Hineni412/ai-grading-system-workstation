@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import os
 import sqlite3
+from pathlib import Path
 
 import fitz
 import pytest
@@ -12,6 +15,19 @@ from template_upload_service import (
     TemplateUploadInProgressError,
     TemplateUploadSubmissionConflictError,
 )
+
+
+def _begin_template_upload_then_exit(templates_dir: str, started) -> None:
+    service = TemplateUploadService(templates_dir)
+    service.begin_submission(
+        session_id=1,
+        request_token="5" * 32,
+        filename="interrupted.pdf",
+        content_length=100,
+        first_page_role="front",
+    )
+    started.set()
+    os._exit(0)
 
 
 def _two_page_pdf() -> bytes:
@@ -115,7 +131,7 @@ def test_upload_activates_a_mapping_package_from_the_saved_scoring_config(tmp_pa
     assert [item["question_id"] for item in config["questions"]] == ["Q1", "Q2"]
 
 
-def test_only_an_inactive_processing_submission_can_be_abandoned(tmp_path) -> None:
+def test_active_processing_submission_cannot_be_abandoned_by_another_service(tmp_path) -> None:
     templates_dir = tmp_path / "templates"
     active_service = TemplateUploadService(templates_dir)
     token = "a" * 32
@@ -131,12 +147,9 @@ def test_only_an_inactive_processing_submission_can_be_abandoned(tmp_path) -> No
         active_service.abandon_submission(session_id=1, request_token=token)
 
     restarted_service = TemplateUploadService(templates_dir)
-    restarted_service.abandon_submission(session_id=1, request_token=token)
-
-    assert restarted_service.submission_public(session_id=1, request_token=token) == {
-        "status": "abandoned",
-        "template": None,
-    }
+    with pytest.raises(TemplateUploadSubmissionConflictError):
+        restarted_service.abandon_submission(session_id=1, request_token=token)
+    active_service.finish_submission(session_id=1, request_token=token, succeeded=False)
 
 
 def test_one_service_allows_only_one_processing_token_per_session(tmp_path) -> None:
@@ -153,6 +166,7 @@ def test_one_service_allows_only_one_processing_token_per_session(tmp_path) -> N
     service.finish_submission(session_id=1, request_token=first, succeeded=False)
     assert service.begin_submission(session_id=1, request_token=second,
         filename="second.pdf", content_length=100, first_page_role="front") == "started"
+    service.finish_submission(session_id=1, request_token=second, succeeded=False)
 
 
 def test_two_service_instances_share_the_disk_single_winner(tmp_path) -> None:
@@ -165,3 +179,87 @@ def test_two_service_instances_share_the_disk_single_winner(tmp_path) -> None:
     with pytest.raises(TemplateUploadInProgressError):
         second_service.begin_submission(session_id=1, request_token="4" * 32,
             filename="second.pdf", content_length=100, first_page_role="front")
+    first_service.finish_submission(
+        session_id=1, request_token="3" * 32, succeeded=False
+    )
+
+
+def test_new_upload_reclaims_an_interrupted_process_submission(tmp_path) -> None:
+    templates_dir = tmp_path / "templates"
+    context = multiprocessing.get_context("spawn")
+    started = context.Event()
+    process = context.Process(
+        target=_begin_template_upload_then_exit,
+        args=(str(templates_dir), started),
+    )
+    process.start()
+    assert started.wait(10)
+    process.join(10)
+    assert process.exitcode == 0
+
+    restarted_service = TemplateUploadService(templates_dir)
+    with pytest.raises(TemplateUploadSubmissionConflictError):
+        restarted_service.begin_submission(
+            session_id=1,
+            request_token="5" * 32,
+            filename="different.pdf",
+            content_length=200,
+            first_page_role="back",
+        )
+    assert restarted_service.begin_submission(
+        session_id=1,
+        request_token="6" * 32,
+        filename="replacement.pdf",
+        content_length=100,
+        first_page_role="front",
+    ) == "started"
+    assert restarted_service.submission_public(
+        session_id=1, request_token="5" * 32
+    ) == {"status": "abandoned", "template": None}
+    restarted_service.finish_submission(
+        session_id=1, request_token="6" * 32, succeeded=False
+    )
+
+
+def test_activation_receipt_is_written_only_after_database_activation(
+    tmp_path, monkeypatch
+) -> None:
+    import template_upload_service as upload_module
+
+    pdf_bytes = _two_page_pdf()
+    db = DBManager(tmp_path / "grading.db")
+    db.initialize()
+    session_id = _create_session_with_config(db, tmp_path)
+    templates_dir = tmp_path / "templates"
+    service = TemplateUploadService(templates_dir)
+    token = "7" * 32
+    service.begin_submission(
+        session_id=session_id,
+        request_token=token,
+        filename="sample.pdf",
+        content_length=len(pdf_bytes),
+        first_page_role="front",
+    )
+    original = upload_module._write_activation_receipt
+
+    def assert_database_is_active(path, **kwargs) -> None:
+        template = db.get_session_template(session_id)
+        assert template is not None
+        assert Path(str(template["front_template_path"])).parent.name == token
+        original(path, **kwargs)
+
+    monkeypatch.setattr(upload_module, "_write_activation_receipt", assert_database_is_active)
+
+    service.upload(
+        db=db,
+        session_id=session_id,
+        pdf_bytes=pdf_bytes,
+        first_page_role="front",
+        request_token=token,
+    )
+
+    assert (templates_dir / f"session_{session_id}"
+            / f"template-activation-{token}.json").is_file()
+    service.finish_submission(
+        session_id=session_id, request_token=token, succeeded=True
+    )

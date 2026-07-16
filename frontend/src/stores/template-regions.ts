@@ -23,6 +23,40 @@ import type { EditorState } from '../components/template-regions/TemplateRegionE
 export type RegionLoadState = 'idle' | 'loading' | 'ready' | 'error'
 export type RegionSaveState = 'idle' | 'saving' | 'saved' | 'conflict' | 'error'
 export type TemplateUploadState = 'idle' | 'uploading' | 'unknown' | 'error'
+export const TEMPLATE_REGION_UPLOAD_STORAGE_KEY = 'ai-grading:template-upload:v1'
+
+interface PersistedTemplateUpload {
+  sessionId: number
+  requestToken: string
+}
+
+function readPersistedUpload(sessionId: number): string | null {
+  const raw = localStorage.getItem(TEMPLATE_REGION_UPLOAD_STORAGE_KEY)
+  if (raw === null) return null
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error()
+    const value = parsed as Record<string, unknown>
+    if (Object.keys(value).sort().join(',') !== 'requestToken,sessionId'
+      || !Number.isSafeInteger(value.sessionId) || Number(value.sessionId) < 1
+      || typeof value.requestToken !== 'string'
+      || !/^[0-9a-f]{32}$/.test(value.requestToken)) throw new Error()
+    return Number(value.sessionId) === sessionId ? value.requestToken : null
+  } catch {
+    localStorage.removeItem(TEMPLATE_REGION_UPLOAD_STORAGE_KEY)
+    return null
+  }
+}
+
+function persistUpload(value: PersistedTemplateUpload): void {
+  localStorage.setItem(TEMPLATE_REGION_UPLOAD_STORAGE_KEY, JSON.stringify(value))
+}
+
+function clearPersistedUpload(sessionId: number, requestToken: string): void {
+  if (readPersistedUpload(sessionId) === requestToken) {
+    localStorage.removeItem(TEMPLATE_REGION_UPLOAD_STORAGE_KEY)
+  }
+}
 
 export const useTemplateRegionStore = defineStore('template-regions', () => {
   const sessionId = ref<number | null>(null)
@@ -50,6 +84,7 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
     || (editorReady.value && !readOnly.value && editorState.value.revision > savedRevision))
 
   function resetForSession(id: number): number {
+    const restoredUploadToken = readPersistedUpload(id)
     clearTimeout(saveTimer)
     saveTimer = undefined
     generation += 1
@@ -58,9 +93,11 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
     editorState.value = { revision: 0, regions: [] }
     loadState.value = 'loading'
     saveState.value = 'idle'
-    uploadState.value = 'idle'
-    pendingUploadToken.value = null
-    errorMessage.value = ''
+    uploadState.value = restoredUploadToken === null ? 'idle' : 'unknown'
+    pendingUploadToken.value = restoredUploadToken
+    errorMessage.value = restoredUploadToken === null
+      ? ''
+      : '上传结果尚未确认，请先核对本次上传，避免重复提交。'
     scoringConfigured.value = false
     editorReady.value = false
     editingConfirmed.value = false
@@ -153,10 +190,12 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
       || uploadState.value === 'uploading' || uploadState.value === 'unknown') return
     const token = createClientRequestToken()
     pendingUploadToken.value = token
+    persistUpload({ sessionId: id, requestToken: token })
     uploadState.value = 'uploading'
     errorMessage.value = ''
     try {
       await uploadTemplate(id, file, firstPageRole, token)
+      clearPersistedUpload(id, token)
       pendingUploadToken.value = null
       uploadState.value = 'idle'
       await load(id)
@@ -165,6 +204,7 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
         uploadState.value = 'unknown'
         errorMessage.value = '上传结果尚未确认，请先核对本次上传，避免重复提交。'
       } else {
+        clearPersistedUpload(id, token)
         pendingUploadToken.value = null
         uploadState.value = 'error'
         errorMessage.value = '样卷没有上传成功，原有样卷没有改变。'
@@ -179,10 +219,13 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
     try {
       const submission = await fetchTemplateSubmission(id, token)
       if (submission.status === 'succeeded') {
+        clearPersistedUpload(id, token)
         pendingUploadToken.value = null; uploadState.value = 'idle'; await load(id)
       } else if (submission.status === 'failed' || submission.status === 'replaced') {
+        clearPersistedUpload(id, token)
         pendingUploadToken.value = null; uploadState.value = 'error'
       } else if (submission.status === 'abandoned') {
+        clearPersistedUpload(id, token)
         pendingUploadToken.value = null; uploadState.value = 'idle'
         errorMessage.value = '服务确认这次上传未生效，可以重新提交。'
       } else if (submission.status === 'processing') {
@@ -197,6 +240,7 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
   async function abandonInactiveUpload(id: number, token: string): Promise<void> {
     try {
       await abandonTemplateSubmission(id, token)
+      clearPersistedUpload(id, token)
       pendingUploadToken.value = null
       uploadState.value = 'idle'
       errorMessage.value = '服务确认未收到这次上传，可以重新提交。'

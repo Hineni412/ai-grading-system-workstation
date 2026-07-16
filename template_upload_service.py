@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Literal
+from typing import BinaryIO, Literal
+from uuid import uuid4
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 import fitz
 from PIL import Image
@@ -63,7 +70,7 @@ class TemplateUploadService:
         self.templates_dir = Path(templates_dir)
         self.max_upload_bytes = int(max_upload_bytes)
         self._active_guard = threading.Lock()
-        self._active_submissions: set[tuple[int, str]] = set()
+        self._active_leases: dict[tuple[int, str], BinaryIO] = {}
 
     def upload(
         self,
@@ -85,6 +92,8 @@ class TemplateUploadService:
         )
 
         session_dir = self.templates_dir / f"session_{int(session_id)}"
+        version_id = activated_request_token or f"legacy-{uuid4().hex}"
+        version_path = session_dir / "template-versions" / version_id
         session_dir.mkdir(parents=True, exist_ok=True)
         with get_answer_region_session_lock(session_dir):
             session = db.get_grading_session(int(session_id))
@@ -102,16 +111,20 @@ class TemplateUploadService:
                     search_roots=[session_dir, self.templates_dir, Path(db.db_path).parent],
                 )
             )
+            if version_path.exists():
+                if activated_request_token is not None and _current_activation_token(
+                    db, session_dir, int(session_id)
+                ) == activated_request_token:
+                    return self.load_current(db=db, session_id=session_id)
+                shutil.rmtree(version_path)
             with TemporaryDirectory(prefix="template-upload-", dir=session_dir) as raw_temp_dir:
                 temp_dir = Path(raw_temp_dir)
-                source_temp = temp_dir / "template_source_full_class.pdf"
-                front_temp = temp_dir / "template_front_from_pdf_page.jpg"
-                back_temp = temp_dir / "template_back_from_pdf_page.jpg"
-                manifest_temp = temp_dir / "template_upload_manifest.json"
-                activation_temp = (
-                    temp_dir / f"template-activation-{activated_request_token}.json"
-                    if activated_request_token is not None else None
-                )
+                package_dir = temp_dir / "package"
+                package_dir.mkdir()
+                source_temp = package_dir / "template_source_full_class.pdf"
+                front_temp = package_dir / "template_front_from_pdf_page.jpg"
+                back_temp = package_dir / "template_back_from_pdf_page.jpg"
+                manifest_temp = package_dir / "template_upload_manifest.json"
                 source_temp.write_bytes(pdf_bytes)
                 document = self._open_pdf(pdf_bytes)
                 try:
@@ -124,9 +137,6 @@ class TemplateUploadService:
                 finally:
                     document.close()
 
-                source_path = session_dir / "template_source_full_class.pdf"
-                front_path = session_dir / "template_front_from_pdf_page.jpg"
-                back_path = session_dir / "template_back_from_pdf_page.jpg"
                 fingerprint = AnswerRegionDraftService(session_dir).compute_template_fingerprint(
                     front_temp, back_temp
                 )
@@ -138,22 +148,13 @@ class TemplateUploadService:
                     back_size=back_size,
                     request_token=activated_request_token,
                 )
-                if activation_temp is not None:
-                    _write_activation_receipt(
-                        activation_temp,
-                        request_token=activated_request_token,
-                        first_page_role=first_page_role,
-                        template_fingerprint=fingerprint,
-                        front_size=front_size,
-                        back_size=back_size,
-                    )
                 try:
                     mapping_package = create_template_mapping_package(
                         front_temp,
                         back_temp,
                         rubric=rubric,
                         answer_key=answer_key,
-                        output_dir=temp_dir,
+                        output_dir=package_dir,
                     )
                 except (TypeError, ValueError) as exc:
                     raise TemplateUploadError("saved scoring config cannot build a template") from exc
@@ -162,42 +163,39 @@ class TemplateUploadService:
                     "template_config_path": Path(mapping_package["paths"]["config_path"]),
                     "regions_path": Path(mapping_package["paths"]["regions_path"]),
                 }
+                version_path.parent.mkdir(parents=True, exist_ok=True)
+                package_dir.replace(version_path)
+                source_path = version_path / source_temp.name
+                front_path = version_path / front_temp.name
+                back_path = version_path / back_temp.name
                 mapping_targets = {
-                    key: session_dir / path.name for key, path in mapping_sources.items()
+                    key: version_path / path.name for key, path in mapping_sources.items()
                 }
-                targets = [
-                    (source_temp, source_path),
-                    (front_temp, front_path),
-                    (back_temp, back_path),
-                    (manifest_temp, session_dir / "template_upload_manifest.json"),
-                    *[
-                        (mapping_sources[key], mapping_targets[key])
-                        for key in ("ai_analysis_path", "template_config_path", "regions_path")
-                    ],
-                ]
-                if activation_temp is not None:
-                    targets.append((
-                        activation_temp,
-                        _activation_path(session_dir, activated_request_token),
-                    ))
-                backups = _backup_targets(targets, temp_dir)
-                try:
-                    for staged, target in targets:
-                        staged.replace(target)
-                    template_id = db.activate_session_template(
-                        int(session_id),
-                        front_template_path=str(front_path),
-                        back_template_path=str(back_path),
-                        ai_analysis_path=str(mapping_targets["ai_analysis_path"]),
-                        template_config_path=str(mapping_targets["template_config_path"]),
-                        regions_path=str(mapping_targets["regions_path"]),
-                    )
-                    template = db.get_session_template(int(session_id))
-                    if template is None:
-                        raise RuntimeError("template activation failed")
-                except BaseException:
-                    _restore_targets(targets, backups)
-                    raise
+                template_id = db.activate_session_template(
+                    int(session_id),
+                    front_template_path=str(front_path),
+                    back_template_path=str(back_path),
+                    ai_analysis_path=str(mapping_targets["ai_analysis_path"]),
+                    template_config_path=str(mapping_targets["template_config_path"]),
+                    regions_path=str(mapping_targets["regions_path"]),
+                )
+                template = db.get_session_template(int(session_id))
+                if template is None:
+                    raise RuntimeError("template activation failed")
+                if activated_request_token is not None:
+                    try:
+                        _write_activation_receipt(
+                            _activation_path(session_dir, activated_request_token),
+                            request_token=activated_request_token,
+                            first_page_role=first_page_role,
+                            template_fingerprint=fingerprint,
+                            front_size=front_size,
+                            back_size=back_size,
+                        )
+                    except OSError:
+                        # The database points only at a fully published immutable package.
+                        # A later query or upload start can reconstruct this receipt.
+                        pass
             return TemplateUploadResult(
                 session_id=int(session_id),
                 template_id=template_id,
@@ -231,7 +229,11 @@ class TemplateUploadService:
             fingerprint = AnswerRegionDraftService(session_dir).compute_template_fingerprint(
                 paths["front"], paths["back"]
             )
-            manifest = _read_json(session_dir / "template_upload_manifest.json") or {}
+            manifest = (
+                _read_json(paths["front"].parent / "template_upload_manifest.json")
+                or _read_json(session_dir / "template_upload_manifest.json")
+                or {}
+            )
             manifest_fingerprint = str(manifest.get("template_fingerprint") or "")
             role = str(manifest.get("first_page_role") or "front")
             first_page_role: TemplatePageRole = (
@@ -256,6 +258,7 @@ class TemplateUploadService:
         filename: str,
         content_length: int | None,
         first_page_role: TemplatePageRole,
+        db: DBManager | None = None,
     ) -> str:
         token = _request_token(request_token)
         session_dir = self.templates_dir / f"session_{int(session_id)}"
@@ -265,65 +268,118 @@ class TemplateUploadService:
             first_page_role=first_page_role,
         )
         marker_path = _submission_path(session_dir, token)
-        with get_answer_region_session_lock(session_dir):
-            marker = _read_json(marker_path)
-            if marker is not None:
-                if marker.get("status") == "abandoned":
-                    return "abandoned"
-                if marker.get("request_fingerprint") != fingerprint:
+        lease = _try_acquire_upload_lease(session_dir)
+        if lease is None:
+            raise TemplateUploadInProgressError(
+                "another template upload is active for this session"
+            )
+        retain_lease = False
+        try:
+            with get_answer_region_session_lock(session_dir):
+                current_token = (
+                    _current_activation_token(db, session_dir, int(session_id))
+                    if db is not None else None
+                )
+                if current_token is not None:
+                    _recover_activated_submission(
+                        session_dir, current_token, db, int(session_id)
+                    )
+                    recovered_marker = _read_json(_submission_path(session_dir, current_token))
+                    if (current_token != token
+                            and not _has_reliable_activation_receipt(session_dir, current_token)
+                            and (recovered_marker is None
+                                 or recovered_marker.get("status") != "succeeded")):
+                        raise TemplateUploadInProgressError(
+                            "current template activation history is not yet durable"
+                        )
+                marker = _read_json(marker_path)
+                if (marker is not None
+                        and marker.get("request_fingerprint") not in {None, fingerprint}):
                     raise TemplateUploadSubmissionConflictError(
                         "template upload token was reused for another request"
                     )
-                return str(marker.get("status") or "failed")
-            for processing_path in session_dir.glob("template-submission-*.json"):
-                processing_marker = _read_json(processing_path)
-                processing_token = _submission_token_from_path(processing_path)
-                if (processing_marker is not None
-                        and processing_marker.get("status") == "processing"
-                        and processing_token is not None
-                        and not _activation_path(session_dir, processing_token).is_file()):
-                    raise TemplateUploadInProgressError(
-                        "another template upload is active for this session"
-                    )
-            with self._active_guard:
-                if any(active_session == int(session_id)
-                       for active_session, _active_token in self._active_submissions):
-                    raise TemplateUploadInProgressError(
-                        "another template upload is active for this session"
-                    )
-            session_dir.mkdir(parents=True, exist_ok=True)
-            _write_json_atomic(
-                marker_path,
-                {"status": "processing", "request_fingerprint": fingerprint},
-            )
-            with self._active_guard:
-                self._active_submissions.add((int(session_id), token))
-            return "started"
+                if marker is not None and marker.get("status") != "processing":
+                    if marker.get("status") == "abandoned":
+                        return "abandoned"
+                    return str(marker.get("status") or "failed")
+                for processing_path in session_dir.glob("template-submission-*.json"):
+                    processing_marker = _read_json(processing_path)
+                    processing_token = _submission_token_from_path(processing_path)
+                    if (processing_marker is None
+                            or processing_marker.get("status") != "processing"
+                            or processing_token is None):
+                        continue
+                    if processing_token == current_token:
+                        _recover_activated_submission(
+                            session_dir, processing_token, db, int(session_id)
+                        )
+                    elif _has_reliable_activation_receipt(session_dir, processing_token):
+                        _write_json_atomic(processing_path, {
+                            "status": "replaced",
+                            "request_fingerprint": processing_marker.get("request_fingerprint"),
+                        })
+                    elif processing_token != token:
+                        _write_json_atomic(processing_path, {
+                            "status": "abandoned",
+                            "request_fingerprint": processing_marker.get("request_fingerprint"),
+                        })
+                session_dir.mkdir(parents=True, exist_ok=True)
+                _write_json_atomic(
+                    marker_path,
+                    {"status": "processing", "request_fingerprint": fingerprint},
+                )
+                with self._active_guard:
+                    key = (int(session_id), token)
+                    self._active_leases[key] = lease
+                retain_lease = True
+                return "started"
+        finally:
+            if not retain_lease:
+                _release_upload_lease(lease)
 
-    def abandon_submission(self, *, session_id: int, request_token: str) -> None:
+    def abandon_submission(
+        self,
+        *,
+        session_id: int,
+        request_token: str,
+        db: DBManager | None = None,
+    ) -> None:
         token = _request_token(request_token)
         session_dir = self.templates_dir / f"session_{int(session_id)}"
         marker_path = _submission_path(session_dir, token)
-        with get_answer_region_session_lock(session_dir):
-            marker = _read_json(marker_path)
-            manifest = _read_json(session_dir / "template_upload_manifest.json") or {}
-            activated = _activation_path(session_dir, token).is_file()
-            with self._active_guard:
-                active = (int(session_id), token) in self._active_submissions
-            if (activated or manifest.get("request_token") == token or active
-                    or (marker is not None and marker.get("status") != "processing")):
-                raise TemplateUploadSubmissionConflictError(
-                    "template upload submission already exists"
-                )
-            _write_json_atomic(
-                marker_path,
-                {
-                    "status": "abandoned",
-                    "request_fingerprint": (
-                        marker.get("request_fingerprint") if marker is not None else None
-                    ),
-                },
+        lease = _try_acquire_upload_lease(session_dir)
+        if lease is None:
+            raise TemplateUploadSubmissionConflictError(
+                "template upload submission is still active"
             )
+        try:
+            with get_answer_region_session_lock(session_dir):
+                marker = _read_json(marker_path)
+                current_token = (
+                    _current_activation_token(db, session_dir, int(session_id))
+                    if db is not None else None
+                )
+                if current_token == token:
+                    _recover_activated_submission(
+                        session_dir, token, db, int(session_id)
+                    )
+                if (_has_reliable_activation_receipt(session_dir, token)
+                        or current_token == token
+                        or (marker is not None and marker.get("status") != "processing")):
+                    raise TemplateUploadSubmissionConflictError(
+                        "template upload submission already exists"
+                    )
+                _write_json_atomic(
+                    marker_path,
+                    {
+                        "status": "abandoned",
+                        "request_fingerprint": (
+                            marker.get("request_fingerprint") if marker is not None else None
+                        ),
+                    },
+                )
+        finally:
+            _release_upload_lease(lease)
 
     def finish_submission(
         self,
@@ -350,7 +406,10 @@ class TemplateUploadService:
                 _write_json_atomic(marker_path, next_marker)
         finally:
             with self._active_guard:
-                self._active_submissions.discard((int(session_id), token))
+                key = (int(session_id), token)
+                lease = self._active_leases.pop(key, None)
+            if lease is not None:
+                _release_upload_lease(lease)
 
     def submission_public(
         self,
@@ -364,13 +423,19 @@ class TemplateUploadService:
         with get_answer_region_session_lock(session_dir):
             marker_path = _submission_path(session_dir, token)
             marker = _read_json(marker_path)
-            manifest = _read_json(session_dir / "template_upload_manifest.json") or {}
-            activated = _activation_path(session_dir, token).is_file()
+            current_token = (
+                _current_activation_token(db, session_dir, int(session_id))
+                if db is not None else None
+            )
+            if current_token == token and db is not None:
+                return _recover_activated_submission(
+                    session_dir, token, db, int(session_id)
+                )
             if marker is None:
                 raise FileNotFoundError("template upload submission is missing")
             status = str(marker.get("status") or "failed")
-            manifest_token = str(manifest.get("request_token") or "")
-            if activated and manifest_token and manifest_token != token:
+            activated = _has_reliable_activation_receipt(session_dir, token)
+            if activated and current_token != token:
                 try:
                     _write_json_atomic(marker_path, {
                         "status": "replaced",
@@ -379,20 +444,7 @@ class TemplateUploadService:
                 except OSError:
                     pass
                 return {"status": "replaced", "template": None}
-            if manifest_token == token and db is not None:
-                current = self.load_current(db=db, session_id=session_id)
-                template = _submission_template(current)
-                if status != "succeeded" or marker.get("template") != template:
-                    try:
-                        _write_json_atomic(marker_path, {
-                            "status": "succeeded",
-                            "request_fingerprint": marker.get("request_fingerprint"),
-                            "template": template,
-                        })
-                    except OSError:
-                        pass
-                return {"status": "succeeded", "template": template}
-            if status == "succeeded" and manifest_token and manifest_token != token:
+            if status == "succeeded" and current_token is not None and current_token != token:
                 try:
                     _write_json_atomic(marker_path, {
                         "status": "replaced",
@@ -471,13 +523,13 @@ def _write_activation_receipt(
     front_size: tuple[int, int],
     back_size: tuple[int, int],
 ) -> None:
-    path.write_text(json.dumps({
-        "schema_version": 1,
+    _write_json_atomic(path, {
+        "schema_version": 2,
         "request_token": request_token,
         "first_page_role": first_page_role,
         "template_fingerprint": template_fingerprint,
         "image_sizes": {"front": list(front_size), "back": list(back_size)},
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    })
 
 
 _REQUEST_TOKEN = re.compile(r"^[0-9a-f]{32}$")
@@ -514,6 +566,110 @@ def _activation_path(session_dir: Path, request_token: str) -> Path:
     return session_dir / f"template-activation-{request_token}.json"
 
 
+def _has_reliable_activation_receipt(session_dir: Path, request_token: str) -> bool:
+    receipt = _read_json(_activation_path(session_dir, request_token))
+    return bool(
+        receipt is not None
+        and receipt.get("schema_version") == 2
+        and receipt.get("request_token") == request_token
+    )
+
+
+def _current_activation_token(
+    db: DBManager,
+    session_dir: Path,
+    session_id: int,
+) -> str | None:
+    template = db.get_session_template(int(session_id))
+    if template is None:
+        return None
+    try:
+        front = resolve_stored_file_path(
+            template.get("front_template_path"),
+            search_roots=[session_dir, session_dir.parent],
+        )
+        back = resolve_stored_file_path(
+            template.get("back_template_path"),
+            search_roots=[session_dir, session_dir.parent],
+        )
+    except (FileNotFoundError, TypeError, ValueError):
+        return None
+    if (front.parent != back.parent
+            or front.parent.parent.name != "template-versions"
+            or not front.is_file()
+            or not back.is_file()):
+        return None
+    token = front.parent.name
+    if _REQUEST_TOKEN.fullmatch(token) is None:
+        return None
+    return token
+
+
+def _recover_activated_submission(
+    session_dir: Path,
+    request_token: str,
+    db: DBManager,
+    session_id: int,
+) -> dict[str, object]:
+    current = TemplateUploadService(session_dir.parent).load_current(
+        db=db, session_id=int(session_id)
+    )
+    template = _submission_template(current)
+    marker_path = _submission_path(session_dir, request_token)
+    marker = _read_json(marker_path) or {}
+    try:
+        _write_activation_receipt(
+            _activation_path(session_dir, request_token),
+            request_token=request_token,
+            first_page_role=current.first_page_role,
+            template_fingerprint=current.template_fingerprint,
+            front_size=(current.front.width, current.front.height),
+            back_size=(current.back.width, current.back.height),
+        )
+    except OSError:
+        pass
+    try:
+        _write_json_atomic(marker_path, {
+            "status": "succeeded",
+            "request_fingerprint": marker.get("request_fingerprint"),
+            "template": template,
+        })
+    except OSError:
+        pass
+    return {"status": "succeeded", "template": template}
+
+
+def _try_acquire_upload_lease(session_dir: Path) -> BinaryIO | None:
+    session_dir.mkdir(parents=True, exist_ok=True)
+    lease = (session_dir / ".template_upload.lock").open("a+b")
+    try:
+        lease.seek(0, os.SEEK_END)
+        if lease.tell() == 0:
+            lease.write(b"\0")
+            lease.flush()
+            os.fsync(lease.fileno())
+        lease.seek(0)
+        if os.name == "nt":
+            msvcrt.locking(lease.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(lease.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lease
+    except OSError:
+        lease.close()
+        return None
+
+
+def _release_upload_lease(lease: BinaryIO) -> None:
+    try:
+        lease.seek(0)
+        if os.name == "nt":
+            msvcrt.locking(lease.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(lease.fileno(), fcntl.LOCK_UN)
+    finally:
+        lease.close()
+
+
 def _submission_token_from_path(path: Path) -> str | None:
     match = re.fullmatch(r"template-submission-([0-9a-f]{32})\.json", path.name)
     return match.group(1) if match is not None else None
@@ -542,28 +698,3 @@ def _load_json(path: Path) -> dict[str, object]:
     if not isinstance(value, dict):
         raise TemplateUploadError("saved scoring config is invalid")
     return value
-
-
-def _backup_targets(
-    targets: list[tuple[Path, Path]], temp_dir: Path
-) -> dict[Path, Path | None]:
-    backups: dict[Path, Path | None] = {}
-    for index, (_staged, target) in enumerate(targets):
-        if not target.is_file():
-            backups[target] = None
-            continue
-        backup = temp_dir / f"previous-{index}.bak"
-        shutil.copy2(target, backup)
-        backups[target] = backup
-    return backups
-
-
-def _restore_targets(
-    targets: list[tuple[Path, Path]], backups: dict[Path, Path | None]
-) -> None:
-    for _staged, target in targets:
-        backup = backups[target]
-        if backup is None:
-            target.unlink(missing_ok=True)
-        else:
-            backup.replace(target)

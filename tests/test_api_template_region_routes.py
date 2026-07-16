@@ -300,6 +300,57 @@ def test_activated_template_recovers_success_when_receipt_write_fails(
     assert "synthetic receipt failure" not in uploaded.text + lookup.text
 
 
+def test_replacement_waits_when_activation_history_cannot_be_persisted(
+    tmp_path, monkeypatch
+) -> None:
+    import template_upload_service as upload_module
+
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+    request_token = "b" * 32
+    original_write = upload_module._write_json_atomic
+
+    def fail_activation_receipt(*args, **kwargs):
+        raise OSError("synthetic activation receipt failure")
+
+    def fail_succeeded_marker(path, payload):
+        if path.name.startswith("template-submission-") and payload.get("status") == "succeeded":
+            raise OSError("synthetic succeeded marker failure")
+        return original_write(path, payload)
+
+    monkeypatch.setattr(upload_module, "_write_activation_receipt", fail_activation_receipt)
+    monkeypatch.setattr(upload_module, "_write_json_atomic", fail_succeeded_marker)
+    uploaded = client.post(
+        f"/api/sessions/{session_id}/template",
+        params={"first_page_role": "front"},
+        content=_two_page_template_pdf(),
+        headers={
+            "content-type": "application/pdf",
+            "x-upload-filename": "anonymous-sample.pdf",
+            "x-client-request-token": request_token,
+        },
+    )
+    lookup = client.get(
+        f"/api/sessions/{session_id}/template/submissions/{request_token}"
+    )
+    replacement = client.post(
+        f"/api/sessions/{session_id}/template",
+        params={"first_page_role": "back"},
+        content=_two_page_template_pdf(),
+        headers={
+            "content-type": "application/pdf",
+            "x-upload-filename": "replacement.pdf",
+            "x-client-request-token": "c" * 32,
+        },
+    )
+
+    assert uploaded.status_code == 201
+    assert lookup.status_code == 200
+    assert lookup.json()["status"] == "succeeded"
+    assert replacement.status_code == 409
+    assert replacement.json()["error"]["code"] == "template_upload_in_progress"
+
+
 def test_replaced_upload_token_no_longer_points_at_current_template(tmp_path) -> None:
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)
