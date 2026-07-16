@@ -5,6 +5,7 @@ import {
   navigationItems,
   reviewRouteDefinition,
   sessionRouteDefinition,
+  templateRegionRouteDefinition,
   knowledgeGraphRouteDefinition,
   workbenchRouteDefinition,
 } from '../navigation'
@@ -50,6 +51,7 @@ describe('source-recalibrated navigation', () => {
     ['/', '/workbench'],
     ['/workbench', '/workbench'],
     ['/sessions', '/sessions'],
+    ['/sessions/7/regions', '/sessions/7/regions'],
     ['/knowledge-graph?session=7&class=七年级一班', '/knowledge-graph?session=7&class=七年级一班'],
     ['/grading', '/grading'],
     ['/design-system', '/design-system'],
@@ -103,6 +105,18 @@ describe('source-recalibrated navigation', () => {
     const matched = router.currentRoute.value.matched
     const component = matched[matched.length - 1]?.components?.default
     expect((component as { __name?: string } | undefined)?.__name).toBe('SessionConfigView')
+  })
+
+  it('loads the dedicated template region workspace without adding a top-level destination', async () => {
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/sessions/7/regions')
+    await router.isReady()
+
+    expect(router.currentRoute.value.name).toBe(templateRegionRouteDefinition.id)
+    expect(navigationItems.map((item) => String(item.path))).not.toContain('/sessions/7/regions')
+    const matched = router.currentRoute.value.matched
+    const component = matched[matched.length - 1]?.components?.default
+    expect((component as { __name?: string } | undefined)?.__name).toBe('TemplateRegionView')
   })
 
   it('loads the knowledge graph view for its route', async () => {

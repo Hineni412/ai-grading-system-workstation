@@ -1256,6 +1256,68 @@ class DBManager:
             conn.commit()
             return template_id
 
+    def activate_session_template(
+        self,
+        session_id: int,
+        *,
+        front_template_path: str,
+        back_template_path: str,
+        ai_analysis_path: str,
+        template_config_path: str,
+        regions_path: str,
+    ) -> int:
+        """Atomically activate one generated template package for a session."""
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM session_templates WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if existing:
+                template_id = int(existing["id"])
+                conn.execute(
+                    """
+                    UPDATE session_templates
+                    SET front_template_path = ?,
+                        back_template_path = ?,
+                        ai_analysis_path = ?,
+                        template_config_path = ?,
+                        regions_path = ?,
+                        is_confirmed = 0,
+                        regions_snapshot_pending = 0,
+                        regions_snapshot_token = NULL,
+                        updated_at = datetime('now','localtime')
+                    WHERE id = ?
+                    """,
+                    (
+                        front_template_path,
+                        back_template_path,
+                        ai_analysis_path,
+                        template_config_path,
+                        regions_path,
+                        template_id,
+                    ),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO session_templates (
+                        session_id, front_template_path, back_template_path,
+                        ai_analysis_path, template_config_path, regions_path, is_confirmed
+                    ) VALUES (?, ?, ?, ?, ?, ?, 0)
+                    """,
+                    (
+                        session_id,
+                        front_template_path,
+                        back_template_path,
+                        ai_analysis_path,
+                        template_config_path,
+                        regions_path,
+                    ),
+                )
+                template_id = int(cursor.lastrowid)
+            conn.commit()
+            return template_id
+
     def get_session_template(self, session_id: int) -> dict[str, Any] | None:
         with self._connect() as conn:
             row = conn.execute(

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { uploadConfigSource, type ConfigSource } from '../api/config-workspace'
 import type { JobResponse } from '../api/jobs'
 import { ApiError } from '../api/errors'
+import type { RegionReadiness } from '../api/template-regions'
 import { useConfigWorkspaceStore } from '../stores/config-workspace'
 import { useJobStore } from '../stores/jobs'
 import { useSessionStore } from '../stores/session'
@@ -57,7 +58,12 @@ async function mountDirtyView() {
   workspace.updateEditor({ row_id: 'row-1', standard_answer: '教师草稿' })
   const host = document.createElement('div')
   document.body.append(host)
-  const app = createApp(SessionConfigView)
+  const app = createApp(SessionConfigView, {
+    templateReadinessLoader: vi.fn(async (): Promise<RegionReadiness> => ({
+      session_id: 7, scoring_configured: true, template_present: false,
+      template_ready: false,
+    })),
+  })
   app.use(pinia)
   app.mount(host)
   await nextTick()
@@ -82,6 +88,39 @@ beforeEach(() => {
 })
 
 describe('SessionConfigView source replacement guard', () => {
+  it.each([
+    [{ template_present: false, template_ready: false }, '准备样卷', '可开始'],
+    [{ template_present: true, template_ready: false }, '继续标定', '标定中'],
+    [{ template_present: true, template_ready: true }, '查看已确认版本', '已确认'],
+  ])('shows the real template stage state %#', async (state, action, fact) => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const sessions = useSessionStore(pinia)
+    sessions.$patch({
+      sessions: [{ id: 7, name: '七年级数学', status: 'created', is_deleted: false,
+        deleted_at: null, created_at: null, updated_at: null }],
+      selectedSessionId: 7, loadState: 'ready',
+    })
+    const workspace = useConfigWorkspaceStore(pinia)
+    workspace.selectSession(7)
+    workspace.setEditor({ session_id: 7, configured: true, revision: 'd'.repeat(64),
+      rows: [], total_score: 100, issues: [], source: null })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(SessionConfigView, {
+      templateReadinessLoader: vi.fn(async () => ({ session_id: 7,
+        scoring_configured: true, ...state })),
+    })
+    app.use(pinia)
+    app.mount(host)
+    await settle()
+
+    expect(host.querySelector<HTMLAnchorElement>('a[href="/sessions/7/regions"]')?.textContent)
+      .toContain(action)
+    expect(host.textContent).toContain(fact)
+    app.unmount()
+  })
+
   it('keeps refine reconciliation visible for a legacy editor without a P2 source', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -202,5 +241,8 @@ describe('SessionConfigView source replacement guard', () => {
 
     expect(mounted.host.querySelector<HTMLInputElement>('.config-source input[type="file"]')?.disabled).toBe(true)
     expect(mounted.host.querySelector<HTMLButtonElement>('button[name="保存评分依据"]')?.disabled).toBe(true)
+    expect(mounted.host.querySelector<HTMLAnchorElement>('a[href="/sessions/7/regions"]')?.textContent)
+      .toContain('准备样卷')
+    expect(mounted.host.textContent).toContain('样卷题框')
   })
 })
