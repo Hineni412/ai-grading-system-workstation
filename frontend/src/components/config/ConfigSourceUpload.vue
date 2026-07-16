@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 
 import {
   createClientRequestToken,
+  fetchActiveConfigSource,
   fetchConfigSourceSubmission,
   uploadConfigSource,
   type ConfigSource,
@@ -19,11 +20,13 @@ const props = withDefaults(defineProps<{
   uploader?: (sessionId: number, file: File, requestToken: string) => Promise<ConfigSource>
   beforeUpload?: () => boolean
   submissionLoader?: (sessionId: number, requestToken: string) => Promise<ConfigSourceSubmission>
+  activeSourceLoader?: (sessionId: number) => Promise<ConfigSource>
 }>(), {
   source: null,
   uploader: uploadConfigSource,
   beforeUpload: () => true,
   submissionLoader: fetchConfigSourceSubmission,
+  activeSourceLoader: fetchActiveConfigSource,
 })
 
 const emit = defineEmits<{
@@ -55,6 +58,9 @@ async function reconcileUpload(): Promise<void> {
     const submission = await props.submissionLoader(props.sessionId, token)
     if (submission.status === 'succeeded' && submission.source !== null) {
       acceptSource(submission.source)
+    } else if (submission.status === 'replaced') {
+      const activeSource = await props.activeSourceLoader(props.sessionId)
+      acceptSource(activeSource)
     } else if (submission.status === 'failed') {
       configStore.clearUploadSubmissionPending()
       errorMessage.value = '这次上传没有成功，可以重新选择文件上传。'
