@@ -65,6 +65,19 @@ const safeDetail = computed(() => {
   if (!detail || detail.length > 240 || /(?:[a-z]:[\\/]|\\\\|\/[^ ]+\/)/i.test(detail)) return ''
   return detail
 })
+const mappingNotice = computed(() => {
+  if (job.value?.status !== 'succeeded' || outcome.value !== 'complete') return ''
+  if (job.value.result.mapping_status === 'refreshed') {
+    return '评分依据已生成，样卷映射已刷新。'
+  }
+  if (job.value.result.mapping_status === 'reconfirm_required') {
+    return '评分依据已生成；样卷映射需要回到旧入口重新确认。'
+  }
+  if (job.value.result.mapping_status === 'not_present') {
+    return '评分依据已生成；当前考试没有样卷映射。'
+  }
+  return ''
+})
 
 function safeCount(value: unknown): number {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0
@@ -249,6 +262,7 @@ watch(job, (current, previous) => {
         已收到取消请求，正在等待当前模型请求返回；服务器确认前任务仍未取消。
       </p>
       <p v-else-if="safeDetail">{{ safeDetail }}</p>
+      <p v-if="mappingNotice" class="config-generation__mapping" role="status">{{ mappingNotice }}</p>
 
       <p v-if="configStore.generationSummary" class="config-generation__retained">
         <strong>上一轮已成功 {{ configStore.generationSummary.succeededQuestions }} 题</strong>
