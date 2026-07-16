@@ -48,6 +48,12 @@ class TemplateUploadSubmissionResponse(BaseModel):
     template: TemplateUploadResponse | None = None
 
 
+class RegionReadinessResponse(BaseModel):
+    session_id: int = Field(gt=0)
+    scoring_configured: bool
+    template_present: bool
+
+
 class RegionDraftStateResponse(BaseModel):
     status: Literal["missing", "compatible", "incompatible", "corrupt"]
     revision: int = Field(ge=0)

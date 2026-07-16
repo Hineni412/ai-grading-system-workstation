@@ -15,6 +15,7 @@ from answer_region_draft_service import (
 )
 from answer_region_models import load_question_binding_catalog, normalize_regions, validate_regions
 from backend.api.app import ApiError
+from backend.config_workspace.publish import load_editor_config
 from backend.api.dependencies import (
     get_grading_db,
     get_template_upload_service,
@@ -29,6 +30,7 @@ from backend.api.schemas.templates import (
     RegionDraftResponse,
     RegionWorkspaceResponse,
     RegionIssueResponse,
+    RegionReadinessResponse,
     RegionSnapshotRetryRequest,
     TemplateUpdateRequest,
     TemplateUploadSubmissionResponse,
@@ -45,6 +47,13 @@ from template_upload_service import (
 
 
 router = APIRouter(prefix="/api", tags=["templates"])
+
+
+def _scoring_configured(db: DBManager, session_id: int) -> bool:
+    try:
+        return bool(load_editor_config(db, int(session_id)).configured)
+    except (KeyError, OSError, ValueError):
+        return False
 
 
 def _upload_response(result: Any) -> TemplateUploadResponse:
@@ -96,6 +105,12 @@ async def upload_session_template(
     service: TemplateUploadService = Depends(get_template_upload_service),
 ) -> TemplateUploadResponse:
     _require_session(db, session_id)
+    if not _scoring_configured(db, session_id):
+        raise ApiError(
+            409,
+            "scoring_config_required",
+            "Scoring configuration must be saved before uploading a template",
+        )
     if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/pdf":
         raise ApiError(415, "template_upload_type_invalid", "Template upload must be a PDF")
     filename = str(request.headers.get("x-upload-filename") or "").strip().lower()
@@ -174,6 +189,22 @@ async def upload_session_template(
         )
         raise ApiError(500, "template_upload_failed", "Template upload failed") from None
     return response
+
+
+@router.get(
+    "/sessions/{session_id}/regions/readiness",
+    response_model=RegionReadinessResponse,
+)
+def get_region_readiness(
+    session_id: int,
+    db: DBManager = Depends(get_grading_db),
+) -> RegionReadinessResponse:
+    _require_session(db, session_id)
+    return RegionReadinessResponse(
+        session_id=int(session_id),
+        scoring_configured=_scoring_configured(db, session_id),
+        template_present=db.get_session_template(int(session_id)) is not None,
+    )
 
 
 @router.get(

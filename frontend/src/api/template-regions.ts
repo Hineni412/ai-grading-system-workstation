@@ -34,6 +34,7 @@ export interface RegionCommitResponse {
   issues: RegionIssue[]; region_count: number
 }
 export interface TemplateSubmission { status: 'processing' | 'succeeded' | 'failed' | 'replaced'; template: TemplateSummary | null }
+export interface RegionReadiness { session_id: number; scoring_configured: boolean; template_present: boolean }
 
 function exact(value: Record<string, unknown>, keys: string[]): boolean {
   return Object.keys(value).sort().join('|') === [...keys].sort().join('|')
@@ -118,6 +119,17 @@ function token(value: string): string { if (!/^[0-9a-f]{32}$/.test(value)) throw
 
 export function fetchRegionWorkspace(id: number, signal?: AbortSignal): Promise<RegionWorkspace> {
   return apiClient.request(`/api/sessions/${sessionId(id)}/regions/workspace`, { decode: decodeWorkspace, signal })
+}
+export function fetchRegionReadiness(id: number): Promise<RegionReadiness> {
+  return apiClient.request(`/api/sessions/${sessionId(id)}/regions/readiness`, {
+    decode(value) {
+      assertNoPathLikeKeys(value)
+      if (!isRecord(value) || !exact(value, ['session_id', 'scoring_configured', 'template_present'])
+        || !positive(value.session_id) || typeof value.scoring_configured !== 'boolean'
+        || typeof value.template_present !== 'boolean') throw new Error('Invalid region readiness')
+      return value as unknown as RegionReadiness
+    },
+  })
 }
 export function uploadTemplate(id: number, file: File, firstPageRole: PageRole,
   requestToken = createClientRequestToken()): Promise<TemplateSummary> {
