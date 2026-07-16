@@ -136,6 +136,36 @@ def _public_regions(regions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     "/sessions/{session_id}/template",
     response_model=TemplateUploadResponse,
     status_code=201,
+    openapi_extra={
+        "parameters": [
+            {
+                "name": "X-Client-Request-Token",
+                "in": "header",
+                "required": True,
+                "schema": {"type": "string", "pattern": "^[0-9a-fA-F]{32}$"},
+            },
+            {
+                "name": "X-Content-SHA256",
+                "in": "header",
+                "required": True,
+                "schema": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+            },
+            {
+                "name": "X-Upload-Filename",
+                "in": "header",
+                "required": True,
+                "schema": {"type": "string", "minLength": 5},
+            },
+        ],
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/pdf": {
+                    "schema": {"type": "string", "format": "binary"}
+                }
+            },
+        },
+    },
 )
 async def upload_session_template(
     session_id: int,

@@ -204,6 +204,7 @@
 | 19 | 用户授权继续完善并发上传协议 | passed | 约 15 分钟；受影响门槛约 102 秒 | 2 组 Important 及同根因恢复边界全部修复 | 重新冻结、独立复审、短测、集成 |
 | 20 | 并发协议候选 Spec/Standards 复审 | stopped per policy | 约 8 分钟 | 2 组 Important：单赢家仅在单实例内存成立；回执持续失败后替换无法识别旧激活 | 等待用户决定 |
 | 21 | 用户授权继续完善磁盘级协议 | passed | 约 12 分钟；受影响门槛约 93 秒 | 2 组 Important 全部修复 | 重新冻结、独立复审、短测、集成 |
+| 24 | OpenAPI 最终授权收口 | passed | RED/GREEN 与受影响门槛 23.32 秒 | 1 组真实问题：上传必需请求头和 PDF 请求体未进入接口说明；“POST 缺失”为工作区导入路径误报 | 最终双路复审、短测、集成 |
 
 基线证据：Python answer-region/template API `106 passed`（25.20 秒）；editor core `14 passed`（0.15 秒）；P2-09 navigation `20 passed`（6.75 秒）、session config `6 passed`（2.78 秒）；lint/typecheck/build 通过（22.5 秒）；快速冒烟通过（6.31 秒）。首次把这些命令与静态检查并行汇总时，Vitest 子进程未在父级 180 秒上限内退出；拆成单文件顺序反馈后稳定通过，未修改产品代码。
 
@@ -234,6 +235,8 @@ Task 5 证据：Chromium 匿名流程从“草稿已保存”超时暴露出 Vue
 上传中断协议根因收口证据（第 22 轮修复）：最终复审把刷新后丢令牌、无凭证 `processing` 永久阻塞和激活凭证早于数据库成功共 3 条意见去重为 1 组根因——磁盘状态不能可靠区分“仍活动、已中止、已启用”。用户明确要求一次性按根因修完。先建立公共边界 RED：后端进程退出接管与凭证顺序 `2 failed`，前端刷新恢复 `1 failed`；再统一改为操作系统跨进程上传锁、不可变版本目录整体发布、数据库启用后成功历史、遗留请求安全接管和浏览器安全令牌持久化。额外穷举并覆盖慢请求、进程退出、数据库启用失败、启用成功但两种成功记录持续失败、令牌冲突、页面刷新和后续替换。受影响后端 template service/routes/OpenAPI/API app `45 passed`（28.99 秒）；前端 `16 passed`，lint/typecheck/build 通过；模拟 P2-10 Chromium `4 passed`（10.7 秒），真实匿名 PDF + 临时数据库 `1 passed`（9.7 秒）；快速冒烟 `--skip-tests` 通过（5.76 秒）。一次并行浏览器启动失败去重为测试编排问题：两个 Playwright 进程会共同清空 `frontend/test-results`，改为顺序运行后两套均通过，未修改产品代码。真实两库 SHA256 与开工基线一致。当前剩余工作为冻结提交、最终双路复审、用户短测和 integration。
 
 内容身份最终授权轮次（第 23 轮修复）：第 22 轮 Standards 复审 Critical/Important 0，Spec 复审仅余 1 个 Important——令牌指纹只含文件名、长度和页面角色，同元数据不同 PDF 在极端恢复路径可能把旧模板误报为新上传成功；用户明确授权这是最后一次修复。按已确认 HTTP/API seam 依次建立 3 个 RED：同元数据不同内容错误返回 `already_submitted`、声明摘要与实际字节不一致仍返回 201、缺摘要仍返回 201；逐条 GREEN 后，浏览器自动计算 PDF SHA-256，服务器要求合法摘要并对收到的完整字节重新计算核验，服务端请求指纹纳入该内容摘要。受影响后端 template service/routes/OpenAPI/API app `48 passed`（28.52 秒）；前端 `16 passed`，lint/typecheck/build 通过；模拟 P2-10 Chromium `4 passed`（11.2 秒），真实匿名 PDF + 临时数据库 `1 passed`（9.7 秒）；快速冒烟 `--skip-tests` 通过（6.20 秒）。真实两库 SHA256 与开工基线一致。当前剩余工作仅为冻结提交与最后双路复审；若仍有 Critical/Important，按用户要求停止且不再开启修复轮次。
+
+OpenAPI 最终授权收口（第 24 轮修复）：上一候选的 Standards 复审报告“POST 操作及其必需输入未公开”。复核发现项目自带 Python 的默认模块路径指向主工作区，导致“POST 完全缺失”这一半结论检查了错误代码，是误报；在明确把功能 worktree 放入模块路径后，POST 与 201 响应本来已经存在。真实剩余问题是三个必需请求头与 `application/pdf` 二进制请求体没有写入 OpenAPI。用户明确授权最后一次收口。先增加精确契约 RED，再仅补充接口说明元数据，不改变上传运行行为、错误码或数据写入。受影响 OpenAPI 与模板路由 `37 passed`（23.32 秒），显式 worktree OpenAPI 核验、`git diff --check` 与快速冒烟 `--skip-tests`（6.02 秒）通过。真实两库 SHA256 与开工基线一致。当前剩余工作仅为冻结提交与唯一一次最终双路复审；复审命令必须显式使用功能 worktree，避免再次检查主工作区。
 
 后续每个 RED/GREEN、复审、修复和 integration 门槛均追加一行；同一根因的多条失败只计一个去重问题。
 
