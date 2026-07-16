@@ -26,6 +26,7 @@ from backend.config_workspace.editor import (
     project_config_editor,
 )
 from backend.config_workspace.locks import session_config_lock
+from backend.jobs.store import JobStore
 from path_manager import resolve_stored_file_path
 from session_manager import validate_generated_config
 
@@ -189,6 +190,7 @@ def save_editor_config(
     expected_revision: str,
     edits: tuple[ConfigEditorEdit, ...],
     commands: tuple[ConfigEditorCommand, ...],
+    job_store: JobStore | None = None,
 ) -> tuple[LoadedEditorConfig, bool]:
     with session_config_lock(Path(upload_config_dir), int(session_id)):
         current = load_editor_config(db, session_id)
@@ -218,13 +220,22 @@ def save_editor_config(
                 != str(current.session.get("answer_key_path") or "")
             ):
                 raise ConfigRevisionConflict("config paths changed")
-            bound = db.publish_grading_session_config(
-                int(session_id),
-                rubric_path=str(publication.rubric_path),
-                answer_key_path=str(publication.answer_key_path),
-                expected_rubric_path=str(current.session.get("rubric_path") or ""),
-                expected_answer_key_path=str(current.session.get("answer_key_path") or ""),
-            )
+            if job_store is None:
+                bound = db.publish_grading_session_config(
+                    int(session_id),
+                    rubric_path=str(publication.rubric_path),
+                    answer_key_path=str(publication.answer_key_path),
+                    expected_rubric_path=str(current.session.get("rubric_path") or ""),
+                    expected_answer_key_path=str(current.session.get("answer_key_path") or ""),
+                )
+            else:
+                bound = job_store.update_session_config_if_idle(
+                    int(session_id),
+                    rubric_path=str(publication.rubric_path),
+                    answer_key_path=str(publication.answer_key_path),
+                    expected_rubric_path=str(current.session.get("rubric_path") or ""),
+                    expected_answer_key_path=str(current.session.get("answer_key_path") or ""),
+                )
             if not bound:
                 raise ConfigRevisionConflict("config binding changed")
         except BaseException:

@@ -204,6 +204,32 @@ def test_put_saves_once_preserves_source_and_rejects_stale_revision(editor_env) 
     assert stale.json()["error"]["code"] == "config_revision_conflict"
 
 
+def test_active_config_job_rejects_editor_save(editor_env) -> None:
+    client, db, manager, tmp_path = editor_env
+    session_id = _write_config(tmp_path, db)
+    first = client.get(f"/api/sessions/{session_id}/config/editor").json()
+    old_paths = db.get_grading_session(session_id)
+    job = manager.store.create_claimed_config_job(
+        {"session_id": session_id, "mode": "generate"}
+    )
+
+    response = client.put(
+        f"/api/sessions/{session_id}/config/editor",
+        json={
+            "revision": first["revision"],
+            "edits": [{"row_id": first["rows"][0]["row_id"], "standard_answer": "changed"}],
+            "commands": [],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "config_generation_in_progress"
+    current = db.get_grading_session(session_id)
+    assert current["rubric_path"] == old_paths["rubric_path"]
+    assert current["answer_key_path"] == old_paths["answer_key_path"]
+    manager.store.finish(job.id, "failed", error="test cleanup")
+
+
 def test_manual_publish_failure_cleans_only_new_file_and_keeps_binding(editor_env, monkeypatch) -> None:
     client, db, _manager, tmp_path = editor_env
     session_id = _write_config(tmp_path, db)
@@ -237,7 +263,7 @@ def test_manual_publish_failure_cleans_only_new_file_and_keeps_binding(editor_en
 
 
 def test_database_failure_cleans_both_new_files_and_keeps_binding(editor_env, monkeypatch) -> None:
-    client, db, _manager, tmp_path = editor_env
+    client, db, manager, tmp_path = editor_env
     session_id = _write_config(tmp_path, db)
     first = client.get(f"/api/sessions/{session_id}/config/editor").json()
     old = db.get_grading_session(session_id)
@@ -245,7 +271,7 @@ def test_database_failure_cleans_both_new_files_and_keeps_binding(editor_env, mo
     def fail_db(*_args, **_kwargs):
         raise RuntimeError("private database failure")
 
-    monkeypatch.setattr(db, "publish_grading_session_config", fail_db, raising=False)
+    monkeypatch.setattr(manager.store, "update_session_config_if_idle", fail_db)
     response = client.put(
         f"/api/sessions/{session_id}/config/editor",
         json={"revision": first["revision"], "edits": [{"row_id": first["rows"][0]["row_id"], "standard_answer": "x"}], "commands": []},
@@ -345,6 +371,7 @@ def test_refine_accepts_only_revision_and_server_commands_and_rejects_old_revisi
         "client_request_token", "client_request_fingerprint",
     }
 
+    manager.wait(submitted.json()["id"], timeout=5)
     saved = client.put(
         f"/api/sessions/{session_id}/config/editor",
         json={"revision": first["revision"], "edits": [{"row_id": first["rows"][0]["row_id"], "standard_answer": "new"}], "commands": []},

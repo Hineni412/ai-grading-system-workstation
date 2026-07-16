@@ -532,6 +532,65 @@ def test_complete_generation_persists_mapping_reconfirmation_when_template_files
     assert str(tmp_path) not in json.dumps(stored.result, ensure_ascii=False)
 
 
+def test_mapping_refresh_keeps_job_running_and_session_claimed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    input_id = _stage_job_input(tmp_path, session_id, old_paths)
+    mapping_started = threading.Event()
+    release_mapping = threading.Event()
+
+    def blocked_mapping(*_args: object, **_kwargs: object) -> str:
+        mapping_started.set()
+        assert release_mapping.wait(timeout=5)
+        return "refreshed"
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        lambda *_args, **_kwargs: _valid_config_payload(),
+    )
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.refresh_template_mapping_from_session",
+        blocked_mapping,
+    )
+    manager = JobManager(JobStore(db.db_path), max_workers=1, cleanup_interrupted=False)
+    manager.register(
+        "config_generation",
+        lambda context: run_config_generation_job(
+            context=context,
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            mapping_output_dir=tmp_path / "mapping-output",
+            llm_client_factory=lambda: object(),
+        ),
+    )
+    try:
+        job = manager.submit(
+            "config_generation",
+            {"session_id": session_id, "mode": "generate", "input_id": input_id},
+        )
+        assert mapping_started.wait(timeout=5)
+        during_mapping = manager.get(job.id)
+        assert during_mapping is not None
+        assert during_mapping.status == "running"
+        assert during_mapping.stage == "config_mapping"
+        with pytest.raises(ConfigSessionBusyError):
+            manager.submit(
+                "config_generation",
+                {"session_id": session_id, "mode": "generate", "input_id": input_id},
+            )
+        release_mapping.set()
+        manager.wait(job.id, timeout=5)
+        completed = manager.get(job.id)
+        assert completed is not None
+        assert completed.status == "succeeded"
+        assert completed.result["mapping_status"] == "refreshed"
+    finally:
+        release_mapping.set()
+        manager.shutdown()
+
+
 def test_whole_docx_generation_calls_text_model_exactly_once_and_binds_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -959,7 +1018,7 @@ def test_concurrent_same_sha_failed_job_cannot_delete_successful_binding(
     assert len({path for _thread_id, path, _reused in archive_results}) == 1
 
 
-def test_source_generation_bind_failure_rolls_back_and_removes_only_new_outputs(
+def test_source_generation_finalization_failure_preserves_committed_truth(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1003,23 +1062,35 @@ def test_source_generation_bind_failure_rolls_back_and_removes_only_new_outputs(
         lambda *_args, **_kwargs: _valid_config_payload(),
     )
 
-    with pytest.raises(sqlite3.IntegrityError, match="injected source finish failure"):
-        run_config_generation_job(
-            context=context,
-            db=db,
-            upload_config_dir=tmp_path / "uploaded",
-            llm_client_factory=lambda: object(),
-        )
+    result = run_config_generation_job(
+        context=context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        llm_client_factory=lambda: object(),
+    )
 
     session = db.get_grading_session(session_id)
     assert session is not None
-    assert (session["rubric_path"], session["answer_key_path"]) == old_paths
-    assert not session["source_paper_path"]
-    assert not session["source_paper_sha256"]
+    assert result["outcome"] == "complete"
+    assert (session["rubric_path"], session["answer_key_path"]) != old_paths
+    assert Path(session["rubric_path"]).is_file()
+    assert Path(session["answer_key_path"]).is_file()
+    assert session["source_paper_path"]
+    assert session["source_paper_sha256"] == source.sha256
     assert sentinel.read_text(encoding="utf-8") == "keep"
-    assert list(raw_papers.iterdir()) == [sentinel]
-    assert not list((tmp_path / "uploaded").glob("rubric_job-*.json"))
-    assert not list((tmp_path / "uploaded").glob("answer_key_job-*.json"))
+    stored = context.store.get_job(context.job_id)
+    assert stored is not None
+    assert stored.status == "running"
+    assert stored.stage == "config_mapping"
+    assert stored.result["mapping_status"] == "reconfirm_required"
+
+    with sqlite3.connect(db.db_path) as connection:
+        connection.execute("DROP TRIGGER fail_source_config_finish")
+    assert context.store.fail_interrupted_jobs() == 1
+    recovered = context.store.get_job(context.job_id)
+    assert recovered is not None
+    assert recovered.status == "succeeded"
+    assert recovered.result["mapping_status"] == "reconfirm_required"
 
 
 @pytest.mark.parametrize("same_sha", [False, True])
@@ -1506,7 +1577,7 @@ def test_config_generation_job_does_not_overwrite_manual_config_change(
     assert not list((tmp_path / "uploaded").glob("answer_key_job-*.json"))
 
 
-def test_atomic_finish_rolls_back_session_bind_when_job_update_fails(
+def test_atomic_bind_rolls_back_session_when_committed_marker_fails(
     tmp_path: Path,
 ) -> None:
     db, session_id, old_paths = _db_with_session(tmp_path)
@@ -1516,9 +1587,9 @@ def test_atomic_finish_rolls_back_session_bind_when_job_update_fails(
     with sqlite3.connect(db.db_path) as connection:
         connection.execute(
             """
-            CREATE TRIGGER fail_config_job_finish
-            BEFORE UPDATE OF status ON jobs
-            WHEN NEW.id = ? AND NEW.status = 'succeeded'
+            CREATE TRIGGER fail_config_job_bind
+            BEFORE UPDATE OF stage ON jobs
+            WHEN NEW.id = ? AND NEW.stage = 'config_mapping'
             BEGIN
                 SELECT RAISE(ABORT, 'injected finish failure');
             END
@@ -1540,6 +1611,73 @@ def test_atomic_finish_rolls_back_session_bind_when_job_update_fails(
     assert session is not None
     assert (session["rubric_path"], session["answer_key_path"]) == old_paths
     assert store.get_job(job.id).status == "running"
+
+
+def test_bound_config_job_stays_running_until_final_mapping_result_is_persisted(
+    tmp_path: Path,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    store = JobStore(db.db_path)
+    job = store.create_job("config_generation", {"session_id": session_id})
+    assert store.mark_running(job.id)
+    provisional = {
+        "session_id": session_id,
+        "outcome": "complete",
+        "mapping_status": "reconfirm_required",
+        "mapping_message": "safe fallback",
+    }
+
+    assert store.finish_config_generation_and_bind(
+        job.id,
+        session_id=session_id,
+        expected_rubric_path=old_paths[0],
+        expected_answer_key_path=old_paths[1],
+        rubric_path="new-rubric.json",
+        answer_key_path="new-answer.json",
+        result=provisional,
+    )
+    bound = store.get_job(job.id)
+    assert bound is not None
+    assert bound.status == "running"
+    assert bound.stage == "config_mapping"
+    assert bound.result["mapping_status"] == "reconfirm_required"
+    with pytest.raises(ConfigSessionBusyError):
+        store.create_claimed_config_job({"session_id": session_id, "mode": "generate"})
+
+    final = {**provisional, "mapping_status": "refreshed", "mapping_message": "refreshed"}
+    assert store.finalize_bound_config_generation(job.id, final)
+    completed = store.get_job(job.id)
+    assert completed is not None
+    assert completed.status == "succeeded"
+    assert completed.result == final
+
+
+def test_restart_recovers_bound_config_as_conservative_success(tmp_path: Path) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    store = JobStore(db.db_path)
+    job = store.create_job("config_generation", {"session_id": session_id})
+    assert store.mark_running(job.id)
+    provisional = {
+        "session_id": session_id,
+        "outcome": "complete",
+        "mapping_status": "reconfirm_required",
+        "mapping_message": "safe fallback",
+    }
+    assert store.finish_config_generation_and_bind(
+        job.id,
+        session_id=session_id,
+        expected_rubric_path=old_paths[0],
+        expected_answer_key_path=old_paths[1],
+        rubric_path="new-rubric.json",
+        answer_key_path="new-answer.json",
+        result=provisional,
+    )
+
+    assert store.fail_interrupted_jobs() == 1
+    recovered = store.get_job(job.id)
+    assert recovered is not None
+    assert recovered.status == "succeeded"
+    assert recovered.result == provisional
 
 
 def test_config_generation_restart_fails_interrupted_and_preserves_terminal_result(

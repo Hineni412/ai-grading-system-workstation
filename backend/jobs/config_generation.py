@@ -504,7 +504,7 @@ def _run_config_generation_job_impl(
                     raise ValueError(
                         "session config changed while generation was running"
                     )
-                _refresh_and_persist_mapping_result(
+                _refresh_mapping_and_finalize_job(
                     context=context,
                     db=db,
                     session_id=session_id,
@@ -611,7 +611,7 @@ def _run_refine_config_job(
             if not bound:
                 context.raise_if_cancelled()
                 raise ValueError("session config changed while refinement was running")
-            _refresh_and_persist_mapping_result(
+            _refresh_mapping_and_finalize_job(
                 context=context,
                 db=db,
                 session_id=session_id,
@@ -640,7 +640,7 @@ def _set_mapping_result(
     summary["mapping_message"] = result.mapping_message
 
 
-def _refresh_and_persist_mapping_result(
+def _refresh_mapping_and_finalize_job(
     *,
     context: JobContext,
     db: DBManager,
@@ -648,22 +648,33 @@ def _refresh_and_persist_mapping_result(
     mapping_output_dir: Path,
     summary: dict[str, object],
 ) -> None:
-    result = refresh_mapping_after_config_save(
-        lambda: refresh_template_mapping_from_session(
-            db,
-            session_id,
-            output_root=mapping_output_dir,
-        )
-    )
-    summary["mapping_status"] = result.mapping_status
-    summary["mapping_message"] = result.mapping_message
+    escaped: BaseException | None = None
     try:
-        updated = context.store.update_succeeded_config_result(context.job_id, summary)
-    except Exception:
+        result = refresh_mapping_after_config_save(
+            lambda: refresh_template_mapping_from_session(
+                db,
+                session_id,
+                output_root=mapping_output_dir,
+            )
+        )
+        summary["mapping_status"] = result.mapping_status
+        summary["mapping_message"] = result.mapping_message
+    except BaseException as exc:
         _set_mapping_result(summary, "reconfirm_required")
-    else:
-        if not updated:
-            _set_mapping_result(summary, "reconfirm_required")
+        escaped = exc
+    try:
+        finalized = context.store.finalize_bound_config_generation(
+            context.job_id,
+            summary,
+        )
+    except BaseException:
+        # The generic JobManager success path is the fallback.  The provisional
+        # committed result remains recoverable after a process restart.
+        return
+    if not finalized:
+        return
+    if escaped is not None:
+        raise escaped
 
 
 def _decode_refine_commands(values: list[Any]) -> tuple[Any, ...]:

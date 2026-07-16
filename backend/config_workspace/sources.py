@@ -16,7 +16,7 @@ import zipfile
 from collections.abc import AsyncIterator, Collection, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, ContextManager, Literal
 from urllib.parse import unquote
 
 from PIL import Image
@@ -213,6 +213,10 @@ class _OwnedFileRegistry:
             pass
 
 
+class ConfigSourceActivationBusyError(ConfigSourceError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class QuestionDecision:
     question_id: str
@@ -290,6 +294,7 @@ class ConfigSourceService:
         filename: str,
         chunks: AsyncIterator[bytes],
         source_id: str | None = None,
+        activation_guard: Callable[[], ContextManager[None]] | None = None,
     ) -> ConfigSourceRecord:
         clean_session_id = _positive_session_id(session_id)
         safe_filename, suffix = _safe_filename(filename)
@@ -402,25 +407,18 @@ class ConfigSourceService:
             if len(json.dumps(manifest, ensure_ascii=False).encode("utf-8")) > self.max_manifest_bytes:
                 raise ConfigSourceInvalidError()
             with session_config_lock(self.upload_config_dir, clean_session_id):
-                self._assert_controlled_directory(source_dir)
-                self._assert_controlled_path(manifest_path)
-                active_path = self._active_path(clean_session_id)
-                self._assert_controlled_path(active_path)
-                self._files.write_json_atomic(manifest_path, manifest)
-                record = self._record_from_manifest(manifest_path, manifest)
-                final_manifest = self._read_json_object(manifest_path)
-                final_metadata = self._metadata_from_manifest(
-                    manifest_path,
-                    final_manifest,
-                )
-                self._validate_generation_integrity(final_metadata)
-                self._files.write_json_atomic(
-                    active_path,
-                    {
-                        "source_id": clean_source_id,
-                        "source_revision": source_revision,
-                    },
-                )
+                guard = activation_guard() if activation_guard is not None else None
+                if guard is None:
+                    record = self._activate_source_locked(
+                        clean_session_id, source_dir, manifest_path, manifest,
+                        clean_source_id, source_revision,
+                    )
+                else:
+                    with guard:
+                        record = self._activate_source_locked(
+                            clean_session_id, source_dir, manifest_path, manifest,
+                            clean_source_id, source_revision,
+                        )
             completed = True
             return record
         except ConfigSourceError:
@@ -430,6 +428,30 @@ class ConfigSourceService:
         finally:
             if not completed:
                 registry.cleanup()
+
+    def _activate_source_locked(
+        self,
+        session_id: int,
+        source_dir: Path,
+        manifest_path: Path,
+        manifest: dict[str, Any],
+        source_id: str,
+        source_revision: str,
+    ) -> ConfigSourceRecord:
+        self._assert_controlled_directory(source_dir)
+        self._assert_controlled_path(manifest_path)
+        active_path = self._active_path(session_id)
+        self._assert_controlled_path(active_path)
+        self._files.write_json_atomic(manifest_path, manifest)
+        record = self._record_from_manifest(manifest_path, manifest)
+        final_manifest = self._read_json_object(manifest_path)
+        final_metadata = self._metadata_from_manifest(manifest_path, final_manifest)
+        self._validate_generation_integrity(final_metadata)
+        self._files.write_json_atomic(
+            active_path,
+            {"source_id": source_id, "source_revision": source_revision},
+        )
+        return record
 
     def begin_submission(
         self,
