@@ -81,6 +81,7 @@ describe('AppShell', () => {
       ),
     ).toEqual([
       ['工作台', '/workbench'],
+      ['知识图谱', '/knowledge-graph'],
       ['评分复核', '/grading'],
     ])
     expect(

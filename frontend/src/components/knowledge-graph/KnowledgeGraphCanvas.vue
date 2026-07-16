@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { init } from 'echarts'
+import { GraphChart, TreeChart } from 'echarts/charts'
+import { AriaComponent } from 'echarts/components'
+import { init, use } from 'echarts/core'
+import { CanvasRenderer } from 'echarts/renderers'
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import type { GraphNode, GraphRow } from '../../api/graph'
@@ -9,6 +12,8 @@ import {
   type GroupingTreeNode,
   type MasteryBand,
 } from '../../features/knowledge-graph/model'
+
+use([GraphChart, TreeChart, AriaComponent, CanvasRenderer])
 
 export type GraphDisplayMode = 'graph' | 'tree'
 
