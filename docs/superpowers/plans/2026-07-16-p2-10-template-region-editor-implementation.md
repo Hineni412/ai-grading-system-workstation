@@ -167,7 +167,7 @@
 
   `ARCHITECTURE.md` 只记录已实现的安全上传、专注路由、核心复用、草稿冲突、confirmed snapshot 和无 Schema/评分语义变化。短测卡只在匿名运行环境和启动方式实际验证后生成。
 
-- [ ] **Step 3: 冻结候选并并行复审**
+- [x] **Step 3: 冻结候选并并行复审**
 
   使用 `code-review` 技能并行进行 Spec 与 Standards 两路复审，固定比较点为计划基线。汇总全部 Critical/Important，按根因去重后一次性修复；只复测影响范围并进行一次最终复审。第二轮仍有 Critical/Important 时停止并向用户汇报。
 
@@ -204,7 +204,10 @@
 | 19 | 用户授权继续完善并发上传协议 | passed | 约 15 分钟；受影响门槛约 102 秒 | 2 组 Important 及同根因恢复边界全部修复 | 重新冻结、独立复审、短测、集成 |
 | 20 | 并发协议候选 Spec/Standards 复审 | stopped per policy | 约 8 分钟 | 2 组 Important：单赢家仅在单实例内存成立；回执持续失败后替换无法识别旧激活 | 等待用户决定 |
 | 21 | 用户授权继续完善磁盘级协议 | passed | 约 12 分钟；受影响门槛约 93 秒 | 2 组 Important 全部修复 | 重新冻结、独立复审、短测、集成 |
+| 22 | 上传中断协议根因修复与复审 | stopped after review | 受影响门槛约 81 秒 | 3 条意见去重为 1 组根因并修复；复审余 1 个内容身份 Important | 等待用户决定 |
+| 23 | 内容身份授权修复与复审 | stopped after review | 受影响门槛约 71 秒 | 内容身份 Important 已修复；复审余 1 个 OpenAPI 可发现性 Important | 等待用户决定 |
 | 24 | OpenAPI 最终授权收口 | passed | RED/GREEN 与受影响门槛 23.32 秒 | 1 组真实问题：上传必需请求头和 PDF 请求体未进入接口说明；“POST 缺失”为工作区导入路径误报 | 最终双路复审、短测、集成 |
+| 25 | 最终 Spec/Standards 并行复审 | passed | 约 3 分钟 | Critical 0 / Important 0；Standards Minor 2，Spec Minor 4，均不阻断 | 用户短测、集成 |
 
 基线证据：Python answer-region/template API `106 passed`（25.20 秒）；editor core `14 passed`（0.15 秒）；P2-09 navigation `20 passed`（6.75 秒）、session config `6 passed`（2.78 秒）；lint/typecheck/build 通过（22.5 秒）；快速冒烟通过（6.31 秒）。首次把这些命令与静态检查并行汇总时，Vitest 子进程未在父级 180 秒上限内退出；拆成单文件顺序反馈后稳定通过，未修改产品代码。
 
@@ -238,6 +241,8 @@ Task 5 证据：Chromium 匿名流程从“草稿已保存”超时暴露出 Vue
 
 OpenAPI 最终授权收口（第 24 轮修复）：上一候选的 Standards 复审报告“POST 操作及其必需输入未公开”。复核发现项目自带 Python 的默认模块路径指向主工作区，导致“POST 完全缺失”这一半结论检查了错误代码，是误报；在明确把功能 worktree 放入模块路径后，POST 与 201 响应本来已经存在。真实剩余问题是三个必需请求头与 `application/pdf` 二进制请求体没有写入 OpenAPI。用户明确授权最后一次收口。先增加精确契约 RED，再仅补充接口说明元数据，不改变上传运行行为、错误码或数据写入。受影响 OpenAPI 与模板路由 `37 passed`（23.32 秒），显式 worktree OpenAPI 核验、`git diff --check` 与快速冒烟 `--skip-tests`（6.02 秒）通过。真实两库 SHA256 与开工基线一致。当前剩余工作仅为冻结提交与唯一一次最终双路复审；复审命令必须显式使用功能 worktree，避免再次检查主工作区。
 
+最终双路复审证据：已复审功能提交固定为 `a075cb335736070e3db2d312c36eb5d938ba0bf6`。Standards 与 Spec 两路均从指定 P2-10 worktree 核验完整提交链，并显式把该 worktree 放入 Python 模块路径。两路结论均为通过，Critical 0 / Important 0；Standards 记录 2 个非阻断 Minor，Spec 记录 4 个非阻断 Minor，集中于大 PDF 内存峰值、长期文件保留、状态尺布局和少量提示完善，不改变本包验收结论。当前仅剩用户短测与 integration。
+
 后续每个 RED/GREEN、复审、修复和 integration 门槛均追加一行；同一根因的多条失败只计一个去重问题。
 
 ## Rollback and Stop Conditions
@@ -253,10 +258,10 @@ OpenAPI 最终授权收口（第 24 轮修复）：上一候选的 Standards 复
 ## 昼夜交接
 
 **执行包：** P2-10
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** waiting_user
+**功能提交：** a075cb335736070e3db2d312c36eb5d938ba0bf6
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** pending
 **真实数据指纹：** not_touched
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
