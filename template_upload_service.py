@@ -108,6 +108,10 @@ class TemplateUploadService:
                 front_temp = temp_dir / "template_front_from_pdf_page.jpg"
                 back_temp = temp_dir / "template_back_from_pdf_page.jpg"
                 manifest_temp = temp_dir / "template_upload_manifest.json"
+                activation_temp = (
+                    temp_dir / f"template-activation-{activated_request_token}.json"
+                    if activated_request_token is not None else None
+                )
                 source_temp.write_bytes(pdf_bytes)
                 document = self._open_pdf(pdf_bytes)
                 try:
@@ -134,6 +138,15 @@ class TemplateUploadService:
                     back_size=back_size,
                     request_token=activated_request_token,
                 )
+                if activation_temp is not None:
+                    _write_activation_receipt(
+                        activation_temp,
+                        request_token=activated_request_token,
+                        first_page_role=first_page_role,
+                        template_fingerprint=fingerprint,
+                        front_size=front_size,
+                        back_size=back_size,
+                    )
                 try:
                     mapping_package = create_template_mapping_package(
                         front_temp,
@@ -162,6 +175,11 @@ class TemplateUploadService:
                         for key in ("ai_analysis_path", "template_config_path", "regions_path")
                     ],
                 ]
+                if activation_temp is not None:
+                    targets.append((
+                        activation_temp,
+                        _activation_path(session_dir, activated_request_token),
+                    ))
                 backups = _backup_targets(targets, temp_dir)
                 try:
                     for staged, target in targets:
@@ -257,6 +275,16 @@ class TemplateUploadService:
                         "template upload token was reused for another request"
                     )
                 return str(marker.get("status") or "failed")
+            for processing_path in session_dir.glob("template-submission-*.json"):
+                processing_marker = _read_json(processing_path)
+                processing_token = _submission_token_from_path(processing_path)
+                if (processing_marker is not None
+                        and processing_marker.get("status") == "processing"
+                        and processing_token is not None
+                        and not _activation_path(session_dir, processing_token).is_file()):
+                    raise TemplateUploadInProgressError(
+                        "another template upload is active for this session"
+                    )
             with self._active_guard:
                 if any(active_session == int(session_id)
                        for active_session, _active_token in self._active_submissions):
@@ -279,9 +307,10 @@ class TemplateUploadService:
         with get_answer_region_session_lock(session_dir):
             marker = _read_json(marker_path)
             manifest = _read_json(session_dir / "template_upload_manifest.json") or {}
+            activated = _activation_path(session_dir, token).is_file()
             with self._active_guard:
                 active = (int(session_id), token) in self._active_submissions
-            if (manifest.get("request_token") == token or active
+            if (activated or manifest.get("request_token") == token or active
                     or (marker is not None and marker.get("status") != "processing")):
                 raise TemplateUploadSubmissionConflictError(
                     "template upload submission already exists"
@@ -336,10 +365,20 @@ class TemplateUploadService:
             marker_path = _submission_path(session_dir, token)
             marker = _read_json(marker_path)
             manifest = _read_json(session_dir / "template_upload_manifest.json") or {}
+            activated = _activation_path(session_dir, token).is_file()
             if marker is None:
                 raise FileNotFoundError("template upload submission is missing")
             status = str(marker.get("status") or "failed")
             manifest_token = str(manifest.get("request_token") or "")
+            if activated and manifest_token and manifest_token != token:
+                try:
+                    _write_json_atomic(marker_path, {
+                        "status": "replaced",
+                        "request_fingerprint": marker.get("request_fingerprint"),
+                    })
+                except OSError:
+                    pass
+                return {"status": "replaced", "template": None}
             if manifest_token == token and db is not None:
                 current = self.load_current(db=db, session_id=session_id)
                 template = _submission_template(current)
@@ -423,6 +462,24 @@ def _write_manifest(
     temp_path.replace(path)
 
 
+def _write_activation_receipt(
+    path: Path,
+    *,
+    request_token: str,
+    first_page_role: TemplatePageRole,
+    template_fingerprint: str,
+    front_size: tuple[int, int],
+    back_size: tuple[int, int],
+) -> None:
+    path.write_text(json.dumps({
+        "schema_version": 1,
+        "request_token": request_token,
+        "first_page_role": first_page_role,
+        "template_fingerprint": template_fingerprint,
+        "image_sizes": {"front": list(front_size), "back": list(back_size)},
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 _REQUEST_TOKEN = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -451,6 +508,15 @@ def _request_fingerprint(
 
 def _submission_path(session_dir: Path, request_token: str) -> Path:
     return session_dir / f"template-submission-{request_token}.json"
+
+
+def _activation_path(session_dir: Path, request_token: str) -> Path:
+    return session_dir / f"template-activation-{request_token}.json"
+
+
+def _submission_token_from_path(path: Path) -> str | None:
+    match = re.fullmatch(r"template-submission-([0-9a-f]{32})\.json", path.name)
+    return match.group(1) if match is not None else None
 
 
 def _read_json(path: Path) -> dict[str, object] | None:

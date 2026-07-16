@@ -282,6 +282,21 @@ def test_activated_template_recovers_success_when_receipt_write_fails(
     assert lookup.json() == {"status": "succeeded", "template": uploaded.json()}
     assert abandoned.status_code == 409
     assert second_lookup.json() == lookup.json()
+    replacement = client.post(
+        f"/api/sessions/{session_id}/template",
+        params={"first_page_role": "back"},
+        content=_two_page_template_pdf(),
+        headers={
+            "content-type": "application/pdf",
+            "x-upload-filename": "replacement.pdf",
+            "x-client-request-token": "a" * 32,
+        },
+    )
+    replaced_lookup = client.get(
+        f"/api/sessions/{session_id}/template/submissions/{request_token}"
+    )
+    assert replacement.status_code == 201
+    assert replaced_lookup.json() == {"status": "replaced", "template": None}
     assert "synthetic receipt failure" not in uploaded.text + lookup.text
 
 

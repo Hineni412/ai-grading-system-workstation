@@ -153,3 +153,15 @@ def test_one_service_allows_only_one_processing_token_per_session(tmp_path) -> N
     service.finish_submission(session_id=1, request_token=first, succeeded=False)
     assert service.begin_submission(session_id=1, request_token=second,
         filename="second.pdf", content_length=100, first_page_role="front") == "started"
+
+
+def test_two_service_instances_share_the_disk_single_winner(tmp_path) -> None:
+    templates_dir = tmp_path / "templates"
+    first_service = TemplateUploadService(templates_dir)
+    second_service = TemplateUploadService(templates_dir)
+    assert first_service.begin_submission(session_id=1, request_token="3" * 32,
+        filename="first.pdf", content_length=100, first_page_role="front") == "started"
+
+    with pytest.raises(TemplateUploadInProgressError):
+        second_service.begin_submission(session_id=1, request_token="4" * 32,
+            filename="second.pdf", content_length=100, first_page_role="front")
