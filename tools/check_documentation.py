@@ -15,6 +15,19 @@ MATRIX_ROW_RE = re.compile(
     r"(eligible_after_plan|daytime_only|completed_not_applicable)`?\s*\|"
 )
 ANY_MATRIX_ID_RE = re.compile(r"^\|\s*(P\d+-\d{2})\s*\|")
+ACCEPTANCE_STATUS_RE = re.compile(
+    r"^\*\*状态：\*\*\s*(pending|passed|failed)\s*$", re.MULTILINE
+)
+ACCEPTANCE_RESULT_RE = re.compile(
+    r"^\*\*结果：\*\*\s*(pending|passed|failed)\s*$", re.MULTILINE
+)
+VOLATILE_AGENT_PACKAGE_STATUS_RE = re.compile(
+    r"当前\s+P\d+-\d{2}[^\n]*(?:已合并|未合并|ready|merged|pending|阻断)"
+)
+ARCHITECTURE_PACKAGE_BLOCK_RE = re.compile(r"阻断\s+P\d+-\d{2}")
+SUPERPOWERS_SKILL_RE = re.compile(
+    r"superpowers:[a-z0-9][a-z0-9-]*", re.IGNORECASE
+)
 
 PHASE_PATHS = tuple(
     f"docs/superpowers/packages/phase-{phase}-execution-packages.md"
@@ -57,7 +70,42 @@ GOVERNANCE_PLANNING_PATHS = frozenset(
         "docs/superpowers/plans/2026-07-11-document-governance-implementation.md",
     }
 )
-REMOVED_REFERENCE_NAMES = frozenset(
+RETIRED_COMPLETED_PLAN_NAMES = frozenset(
+    {
+        "2026-07-11-p1-16-question-bank-write-implementation.md",
+        "2026-07-11-user-communication-and-model-guidance-cleanup.md",
+        "2026-07-12-layered-test-gates-implementation.md",
+        "2026-07-12-p1-17-config-generation-job-implementation.md",
+        "2026-07-12-p1-18-question-import-tagging-implementation.md",
+        "2026-07-12-p1-19-training-api-implementation.md",
+        "2026-07-12-p1-20-training-export-job-implementation.md",
+        "2026-07-12-p1-21-graph-query-api-implementation.md",
+        "2026-07-12-p1-22-ops-readonly-self-check-api-implementation.md",
+        "2026-07-12-p1-23-ops-protected-writes-implementation.md",
+        "2026-07-12-p2-01-frontend-foundation-implementation.md",
+        "2026-07-12-p2-02-design-system-implementation.md",
+        "2026-07-12-p2-03-app-shell-implementation.md",
+        "2026-07-12-p2-04-api-client-job-store-implementation.md",
+        "2026-07-13-p1-24-llm-gateway-core-implementation.md",
+        "2026-07-13-p1-25-direct-call-migration-implementation.md",
+        "2026-07-13-p1-26-api-db-performance-baseline-implementation.md",
+        "2026-07-13-p2-05-review-queue-implementation.md",
+        "2026-07-13-p2-06-evidence-viewer-implementation.md",
+        "2026-07-13-p2-07-review-scoring-implementation.md",
+        "2026-07-13-p2-08-review-feedback-toast-implementation.md",
+        "2026-07-13-p2-08-sample-page-gate-implementation.md",
+        "2026-07-13-p2-08-teacher-score-entry-implementation.md",
+        "2026-07-14-p1-27-request-scoped-read-connections-implementation.md",
+        "2026-07-14-p1-28-five-flow-api-e2e-implementation.md",
+        "2026-07-14-p1-29-phase1-closeout-implementation.md",
+        "2026-07-14-phase-2-frontend-source-reset-documentation.md",
+        "2026-07-14-phase-2-frontend-source-recalibration-implementation.md",
+        "2026-07-14-phase-2-frontend-ux-authority-sync-implementation.md",
+        "2026-07-15-p2-09-session-config-rubric-implementation.md",
+        "2026-07-15-p2-14-workbench-analysis-overview-implementation.md",
+    }
+)
+REMOVED_REFERENCE_NAMES = RETIRED_COMPLETED_PLAN_NAMES | frozenset(
     {
         "PLAN_AUDIT_2026-07-10.md",
         "code-ownership-map.md",
@@ -264,6 +312,49 @@ def check_user_documents(project_root: Path) -> list[DocumentationIssue]:
     return sorted(issues)
 
 
+def check_skill_authority(project_root: Path) -> list[DocumentationIssue]:
+    root = Path(project_root).resolve()
+    issues: list[DocumentationIssue] = []
+    for path in _markdown_files(root):
+        text = path.read_text(encoding="utf-8")
+        for match in SUPERPOWERS_SKILL_RE.finditer(text):
+            issues.append(
+                DocumentationIssue(
+                    "DOC403",
+                    _relative(root, path),
+                    _line_number(text, match.start()),
+                    "Superpowers skill invocation is retired; use Matt Pocock skills.",
+                )
+            )
+    return sorted(issues)
+
+
+def check_acceptance_status_consistency(
+    project_root: Path,
+) -> list[DocumentationIssue]:
+    root = Path(project_root).resolve()
+    checkpoint_dir = root / "docs/user-testing/checkpoints"
+    if not checkpoint_dir.exists():
+        return []
+    issues: list[DocumentationIssue] = []
+    for path in sorted(checkpoint_dir.glob("*.md")):
+        text = path.read_text(encoding="utf-8")
+        statuses = list(ACCEPTANCE_STATUS_RE.finditer(text))
+        results = list(ACCEPTANCE_RESULT_RE.finditer(text))
+        if len(statuses) != 1 or len(results) != 1:
+            continue
+        if statuses[0].group(1) != results[0].group(1):
+            issues.append(
+                DocumentationIssue(
+                    "DOC106",
+                    _relative(root, path),
+                    _line_number(text, statuses[0].start()),
+                    "Visible acceptance status does not match the machine result.",
+                )
+            )
+    return sorted(issues)
+
+
 def check_status_ownership(project_root: Path) -> list[DocumentationIssue]:
     root = Path(project_root).resolve()
     issues: list[DocumentationIssue] = []
@@ -379,6 +470,30 @@ def check_status_ownership(project_root: Path) -> list[DocumentationIssue]:
             ),
         )
     )
+    agent_path = root / "AGENTS.md"
+    if agent_path.exists():
+        text = agent_path.read_text(encoding="utf-8")
+        for match in VOLATILE_AGENT_PACKAGE_STATUS_RE.finditer(text):
+            issues.append(
+                DocumentationIssue(
+                    "DOC211",
+                    "AGENTS.md",
+                    _line_number(text, match.start()),
+                    "AGENTS must point package status to the execution Index.",
+                )
+            )
+    architecture_path = root / "ARCHITECTURE.md"
+    if architecture_path.exists():
+        text = architecture_path.read_text(encoding="utf-8")
+        for match in ARCHITECTURE_PACKAGE_BLOCK_RE.finditer(text):
+            issues.append(
+                DocumentationIssue(
+                    "DOC212",
+                    "ARCHITECTURE.md",
+                    _line_number(text, match.start()),
+                    "Architecture must not copy a live package blocking action.",
+                )
+            )
     return sorted(issues)
 
 
@@ -387,6 +502,16 @@ def check_removed_references(project_root: Path) -> list[DocumentationIssue]:
     issues: list[DocumentationIssue] = []
     for path in _markdown_files(root):
         relative = _relative(root, path)
+        if path.name in REMOVED_REFERENCE_NAMES:
+            issues.append(
+                DocumentationIssue(
+                    "DOC402",
+                    relative,
+                    1,
+                    f"Removed document was restored: {path.name}",
+                )
+            )
+            continue
         if relative in GOVERNANCE_PLANNING_PATHS:
             continue
         text = path.read_text(encoding="utf-8")
@@ -555,6 +680,8 @@ def run_checks(project_root: Path) -> list[DocumentationIssue]:
         [
             *check_markdown_links(root),
             *check_user_documents(root),
+            *check_skill_authority(root),
+            *check_acceptance_status_consistency(root),
             *check_status_ownership(root),
             *check_package_registry(root),
             *check_removed_references(root),
