@@ -92,6 +92,21 @@ def test_upload_and_restart_get_return_only_bounded_public_projection(tmp_path: 
     assert reloaded.json() == body
 
 
+def test_active_source_endpoint_returns_replacement_without_old_source_id(
+    tmp_path: Path,
+) -> None:
+    client, db, _upload_root = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    first = _upload(client, session_id, filename="first.pdf").json()
+    second = _upload(client, session_id, filename="second.pdf").json()
+
+    active = client.get(f"/api/sessions/{session_id}/config/sources/active")
+
+    assert active.status_code == 200
+    assert active.json() == second
+    assert active.json()["source_id"] != first["source_id"]
+
+
 def test_public_get_does_not_read_or_encode_private_images(
     tmp_path: Path,
     monkeypatch,

@@ -178,6 +178,52 @@ def test_generate_from_source_stages_private_input_and_public_job_is_safe(
     ]
 
 
+def test_latest_generation_job_endpoint_authoritatively_finds_matching_job(
+    tmp_path: Path,
+) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = _source(tmp_path, session_id)
+    created = client.post(
+        f"/api/sessions/{session_id}/config/generate-from-source",
+        json=_source_request(source),
+    )
+    assert created.status_code == 202
+
+    found = client.get(
+        f"/api/sessions/{session_id}/config/generation-jobs/latest",
+        params={
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+            "generation_mode": "per_question",
+        },
+    )
+
+    assert found.status_code == 200
+    assert found.json()["id"] == created.json()["id"]
+    assert found.json()["payload"] == created.json()["payload"]
+    manager.wait(created.json()["id"], timeout=5)
+
+
+def test_latest_generation_job_endpoint_does_not_return_a_different_request(
+    tmp_path: Path,
+) -> None:
+    client, db, _manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+
+    missing = client.get(
+        f"/api/sessions/{session_id}/config/generation-jobs/latest",
+        params={
+            "source_id": "a" * 32,
+            "source_revision": "b" * 64,
+            "generation_mode": "whole_document",
+        },
+    )
+
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "config_generation_job_not_found"
+
+
 @pytest.mark.parametrize(
     ("mode", "stage", "private_detail", "expected_public_detail"),
     [

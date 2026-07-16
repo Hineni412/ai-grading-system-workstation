@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 
 import {
-  fetchConfigSource,
+  fetchActiveConfigSource,
   uploadConfigSource,
   type ConfigSource,
 } from '../../api/config-workspace'
@@ -15,12 +15,12 @@ const props = withDefaults(defineProps<{
   source?: ConfigSource | null
   uploader?: (sessionId: number, file: File) => Promise<ConfigSource>
   beforeUpload?: () => boolean
-  sourceLoader?: (sessionId: number, sourceId: string) => Promise<ConfigSource>
+  sourceLoader?: (sessionId: number) => Promise<ConfigSource>
 }>(), {
   source: null,
   uploader: uploadConfigSource,
   beforeUpload: () => true,
-  sourceLoader: fetchConfigSource,
+  sourceLoader: fetchActiveConfigSource,
 })
 
 const emit = defineEmits<{
@@ -65,22 +65,18 @@ async function submit(): Promise<void> {
     if (isAmbiguousWriteError(error)) {
       errorMessage.value = '上传结果未知，正在核对服务器中的当前来源…'
       const previous = props.source
-      if (previous !== null) {
-        try {
-          const authoritative = await props.sourceLoader(props.sessionId, previous.source_id)
-          if (authoritative.source_id !== previous.source_id
-            || authoritative.source_revision !== previous.source_revision) {
-            emit('uploaded', authoritative)
-            selectedFile.value = null
-            if (fileInput.value) fileInput.value.value = ''
-            errorMessage.value = ''
-          } else {
-            errorMessage.value = '核对完成：服务器仍保留原试卷来源；没有重复提交上传。'
-          }
-        } catch {
-          errorMessage.value = '上传结果未知，暂时无法核对当前来源。为避免重复接收，请稍后刷新页面再确认。'
+      try {
+        const authoritative = await props.sourceLoader(props.sessionId)
+        if (previous === null || authoritative.source_id !== previous.source_id
+          || authoritative.source_revision !== previous.source_revision) {
+          emit('uploaded', authoritative)
+          selectedFile.value = null
+          if (fileInput.value) fileInput.value.value = ''
+          errorMessage.value = ''
+        } else {
+          errorMessage.value = '核对完成：服务器仍保留原试卷来源；没有重复提交上传。'
         }
-      } else {
+      } catch {
         errorMessage.value = '上传结果未知，暂时无法核对当前来源。为避免重复接收，请稍后刷新页面再确认。'
       }
     } else {

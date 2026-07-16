@@ -46,7 +46,7 @@ async function mountUpload(options: {
   uploader?: (sessionId: number, file: File) => Promise<ConfigSource>
   onUploaded?: (value: ConfigSource) => void
   beforeUpload?: () => boolean
-  sourceLoader?: (sessionId: number, sourceId: string) => Promise<ConfigSource>
+  sourceLoader?: (sessionId: number) => Promise<ConfigSource>
 } = {}) {
   const host = document.createElement('div')
   document.body.append(host)
@@ -101,9 +101,25 @@ describe('ConfigSourceUpload', () => {
     mounted.host.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
     await settle()
 
-    expect(sourceLoader).toHaveBeenCalledExactlyOnceWith(7, 'a'.repeat(32))
+    expect(sourceLoader).toHaveBeenCalledExactlyOnceWith(7)
     expect(mounted.host.textContent).toContain('核对')
     expect(mounted.host.textContent).not.toContain('新文件未接收成功')
+  })
+
+  it('discovers a newly active source after the first upload response is lost', async () => {
+    const timeout = new ApiError({ kind: 'timeout', status: null, code: 'request_timeout',
+      message: 'timeout', details: {}, requestId: 'safe', retryable: false })
+    const accepted = source({ source_id: 'e'.repeat(32), source_revision: 'f'.repeat(64) })
+    const sourceLoader = vi.fn(async () => accepted)
+    const mounted = await mountUpload({ uploader: vi.fn(async () => { throw timeout }),
+      sourceLoader })
+    await choose(mounted.host, new File(['%PDF'], 'first.pdf'))
+    mounted.host.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
+    await settle()
+
+    expect(sourceLoader).toHaveBeenCalledExactlyOnceWith(7)
+    expect(mounted.onUploaded).toHaveBeenCalledWith(accepted)
+    expect(mounted.host.querySelector('[role="alert"]')).toBeNull()
   })
 
   it.each([

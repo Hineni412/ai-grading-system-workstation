@@ -165,6 +165,47 @@ class JobStore:
             row = conn.execute("SELECT * FROM jobs WHERE id = ?", (int(job_id),)).fetchone()
         return _job_record(row) if row is not None else None
 
+    def find_latest_config_generation_job(
+        self,
+        *,
+        session_id: int,
+        source_id: str,
+        source_revision: str,
+        generation_mode: str,
+    ) -> JobRecord | None:
+        clean_session_id = int(session_id)
+        clean_source_id = str(source_id or "").strip()
+        clean_revision = str(source_revision or "").strip()
+        clean_mode = str(generation_mode or "").strip()
+        if (
+            clean_session_id <= 0
+            or not _SOURCE_ID.fullmatch(clean_source_id)
+            or not _SHA256.fullmatch(clean_revision)
+            or clean_mode not in {"per_question", "whole_document"}
+        ):
+            return None
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM jobs WHERE job_type = 'config_generation' "
+                "ORDER BY id DESC"
+            ).fetchall()
+        for row in rows:
+            record = _job_record(row)
+            payload = record.payload
+            try:
+                payload_session_id = int(payload.get("session_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if (
+                payload_session_id == clean_session_id
+                and payload.get("mode") == "generate"
+                and payload.get("source_id") == clean_source_id
+                and payload.get("source_revision") == clean_revision
+                and payload.get("generation_mode") == clean_mode
+            ):
+                return record
+        return None
+
     def mark_running(self, job_id: int) -> bool:
         with self._connect() as conn:
             cursor = conn.execute(

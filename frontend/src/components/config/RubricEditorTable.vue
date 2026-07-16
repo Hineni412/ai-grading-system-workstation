@@ -26,8 +26,9 @@ const firstRowIds = computed(() => {
   const seen = new Set<string>()
   const first = new Set<string>()
   for (const row of props.rows) {
-    if (seen.has(row.question_id)) continue
-    seen.add(row.question_id)
+    const partKey = `${row.question_id}\u0000${row.part_id}`
+    if (seen.has(partKey)) continue
+    seen.add(partKey)
     first.add(row.row_id)
   }
   return first
@@ -253,7 +254,7 @@ function focusIssue(issue: ConfigEditorIssue): void {
                   <input
                     type="checkbox"
                     data-edit-field="require_final_answer"
-                    :aria-label="`${row.question_id} 要求最终答案`"
+                    :aria-label="`${row.question_id} ${row.part_id} 要求最终答案`"
                     :checked="row.require_final_answer === true"
                     :disabled="disabled"
                     @change="policyRequiredEdit(row, $event)"
@@ -268,7 +269,7 @@ function focusIssue(issue: ConfigEditorIssue): void {
                     max="100"
                     step="0.5"
                     data-edit-field="answer_only_max_score"
-                    :aria-label="`${row.question_id} 仅答案最高分`"
+                    :aria-label="`${row.question_id} ${row.part_id} 仅答案最高分`"
                     :value="row.answer_only_max_score ?? ''"
                     :disabled="disabled"
                     @change="policyNumberEdit(row, $event)"
@@ -277,13 +278,13 @@ function focusIssue(issue: ConfigEditorIssue): void {
                 <textarea
                   rows="3"
                   data-edit-field="final_answer_rule"
-                  :aria-label="`${row.question_id} 最终答案规则`"
+                  :aria-label="`${row.question_id} ${row.part_id} 最终答案规则`"
                   :value="row.final_answer_rule"
                   :disabled="disabled"
                   @change="policyRuleEdit(row, $event)"
                 />
               </div>
-              <small v-else>整题策略见首行</small>
+              <small v-else>本评分单元策略见首行</small>
             </td>
           </tr>
         </tbody>

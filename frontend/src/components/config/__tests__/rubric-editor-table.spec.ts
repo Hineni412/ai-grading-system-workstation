@@ -63,12 +63,12 @@ describe('RubricEditorTable', () => {
     const deductions = mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 扣分规则"]')!
     deductions.value = '漏写过程扣 1 分'
     deductions.dispatchEvent(new Event('change', { bubbles: true }))
-    const required = mounted.host.querySelector<HTMLInputElement>('[aria-label="Q12 要求最终答案"]')!
+    const required = mounted.host.querySelector<HTMLInputElement>('[aria-label="Q12 P1 要求最终答案"]')!
     required.click()
-    const answerOnly = mounted.host.querySelector<HTMLInputElement>('[aria-label="Q12 仅答案最高分"]')!
+    const answerOnly = mounted.host.querySelector<HTMLInputElement>('[aria-label="Q12 P1 仅答案最高分"]')!
     answerOnly.value = '2'
     answerOnly.dispatchEvent(new Event('change', { bubbles: true }))
-    const finalRule = mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 最终答案规则"]')!
+    const finalRule = mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 最终答案规则"]')!
     finalRule.value = '单位必须完整'
     finalRule.dispatchEvent(new Event('change', { bubbles: true }))
 
@@ -79,8 +79,27 @@ describe('RubricEditorTable', () => {
       { row_id: 'row-q12-p1-s1', answer_only_max_score: 2 },
       { row_id: 'row-q12-p1-s1', final_answer_rule: '单位必须完整' },
     ]))
-    expect(mounted.host.querySelectorAll('[aria-label="Q12 要求最终答案"]')).toHaveLength(1)
-    expect(mounted.host.textContent).toContain('整题策略见首行')
+    expect(mounted.host.querySelectorAll('[aria-label="Q12 P1 要求最终答案"]')).toHaveLength(1)
+    expect(mounted.host.textContent).toContain('本评分单元策略见首行')
+  })
+
+  it('renders and edits policy controls on the first row of every part', async () => {
+    const mounted = await mountTable({ rows: [
+      row(),
+      row({ row_id: 'row-q12-p1-s2', step_id: 'S2' }),
+      row({ row_id: 'row-q12-p2-s1', part_id: 'P2', part_label: '第 2 问', step_id: 'S1',
+        require_final_answer: false, answer_only_max_score: 1, final_answer_rule: '写明单位' }),
+    ] })
+
+    expect(mounted.host.querySelectorAll('[aria-label="Q12 P1 要求最终答案"]')).toHaveLength(1)
+    const secondPart = mounted.host.querySelector<HTMLInputElement>(
+      '[aria-label="Q12 P2 要求最终答案"]',
+    )!
+    expect(secondPart).not.toBeNull()
+    secondPart.click()
+    expect(mounted.emitted).toContainEqual({
+      row_id: 'row-q12-p2-s1', require_final_answer: true,
+    })
   })
 
   it('focuses the expanded issue field and keeps unlocatable issues global', async () => {

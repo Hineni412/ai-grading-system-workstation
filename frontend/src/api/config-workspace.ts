@@ -267,6 +267,33 @@ export async function fetchConfigSource(
   })
 }
 
+export async function fetchActiveConfigSource(sessionId: number): Promise<ConfigSource> {
+  const id = requireSessionId(sessionId)
+  return apiClient.request(`/api/sessions/${id}/config/sources/active`, {
+    decode: decodeConfigSource,
+  })
+}
+
+export async function fetchLatestConfigGenerationJob(
+  sessionId: number,
+  request: ConfigGenerationRequest,
+): Promise<JobResponse> {
+  const id = requireSessionId(sessionId)
+  const sourceId = requireSourceId(request.source_id)
+  if (!/^[0-9a-f]{64}$/.test(request.source_revision)
+    || !['per_question', 'whole_document'].includes(request.generation_mode)) {
+    throw new Error('Invalid generation lookup')
+  }
+  const query = new URLSearchParams({
+    source_id: sourceId,
+    source_revision: request.source_revision,
+    generation_mode: request.generation_mode,
+  })
+  return apiClient.request(`/api/sessions/${id}/config/generation-jobs/latest?${query}`, {
+    decode: decodeStrictJob,
+  })
+}
+
 export async function submitConfigGeneration(
   sessionId: number, request: ConfigGenerationRequest,
 ): Promise<JobResponse> {

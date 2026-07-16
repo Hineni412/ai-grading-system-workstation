@@ -68,6 +68,7 @@ async function mountPanel(options: {
   submitter?: (sessionId: number, request: ConfigGenerationRequest) => Promise<JobResponse>
   retryer?: (sessionId: number, jobId: number, questionIds: string[]) => Promise<JobResponse>
   editorLoader?: (sessionId: number) => Promise<ConfigEditorResponse>
+  generationLoader?: (sessionId: number, request: ConfigGenerationRequest) => Promise<JobResponse>
 } = {}) {
   const host = document.createElement('div')
   document.body.append(host)
@@ -118,19 +119,39 @@ describe('ConfigGenerationPanel', () => {
     expect(useConfigWorkspaceStore().jobId).toBe(31)
   })
 
-  it('reconciles a lost generation response with a newly tracked matching Job', async () => {
+  it('reconciles a lost generation response from the authoritative server record', async () => {
     const timeout = new ApiError({ kind: 'network', status: null, code: 'network_error',
       message: 'offline', details: {}, requestId: 'safe', retryable: true })
-    const submitter = vi.fn(async () => {
-      useJobStore().track(job({ id: 44, status: 'queued', progress: 0 }))
-      throw timeout
-    })
-    const mounted = await mountPanel({ submitter })
+    const submitter = vi.fn(async () => { throw timeout })
+    const recovered = job({ id: 44, status: 'queued', progress: 0 })
+    const generationLoader = vi.fn(async () => recovered)
+    const mounted = await mountPanel({ submitter, generationLoader })
     mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!.click()
     await settle()
 
+    expect(generationLoader).toHaveBeenCalledWith(7, expect.objectContaining({
+      source_id: 'a'.repeat(32), source_revision: 'b'.repeat(64),
+      generation_mode: 'per_question',
+    }))
     expect(useConfigWorkspaceStore().jobId).toBe(44)
+    expect(useConfigWorkspaceStore().pendingGenerationMode).toBeNull()
     expect(mounted.host.textContent).not.toContain('未提交成功')
+  })
+
+  it('persists an unknown generation outcome and blocks duplicate submission', async () => {
+    const timeout = new ApiError({ kind: 'network', status: null, code: 'network_error',
+      message: 'offline', details: {}, requestId: 'safe', retryable: true })
+    const mounted = await mountPanel({
+      submitter: vi.fn(async () => { throw timeout }),
+      generationLoader: vi.fn(async () => { throw timeout }),
+    })
+    mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!.click()
+    await settle()
+
+    expect(useConfigWorkspaceStore().pendingGenerationMode).toBe('per_question')
+    expect(localStorage.getItem('ai-grading:config-workspace:v1')).toContain('pendingGenerationMode')
+    expect(mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')?.disabled).toBe(true)
+    expect(mounted.host.querySelector('button[name="重新核对生成任务"]')).not.toBeNull()
   })
 
   it('retries only checked failed questions and preserves successful counts', async () => {
