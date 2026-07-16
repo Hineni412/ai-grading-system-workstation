@@ -2918,7 +2918,7 @@ def render_config_and_session_tab(
                             db, selected_session_id
                         ),
                     )
-                    remember_saved_config_for_new_session(
+                    remembered_state_saved = _remember_published_config_state(
                         st.session_state,
                         selected_session_id=selected_session_id,
                         rubric_path=str(rubric_path),
@@ -2936,14 +2936,15 @@ def render_config_and_session_tab(
                         answer_key_path=str(answer_path),
                         mapping_status=mapping_status,
                     )
-                    save_message = _template_mapping_save_confirmation(mapping_status)
-                    if workflow_state_saved:
+                    notice_level, save_message = _post_publish_config_save_notice(
+                        mapping_status,
+                        remembered_state_saved=remembered_state_saved,
+                        workflow_state_saved=workflow_state_saved,
+                    )
+                    if notice_level == "success":
                         st.success(save_message)
                     else:
-                        st.warning(
-                            save_message
-                            + " 附属工作状态暂未更新，可稍后重建；已保存的评分依据不受影响。"
-                        )
+                        st.warning(save_message)
                     st.rerun()
                 else:
                     remember_saved_config_for_new_session(
@@ -7097,6 +7098,49 @@ def _template_mapping_save_confirmation(
     if status == "reconfirm_required":
         return "评分依据已保存，并已同步到当前考试批改；已有样卷映射需要重新确认后才能继续批改。"
     return "评分依据已保存，并已同步到当前考试批改。"
+
+
+def _remember_published_config_state(
+    state: Any,
+    *,
+    selected_session_id: int,
+    rubric_path: str,
+    answer_key_path: str,
+    source_paper_path: str,
+    source_paper_sha256: str,
+    source_paper_name: str,
+    settings_store: Any,
+) -> bool:
+    try:
+        remember_saved_config_for_new_session(
+            state,
+            selected_session_id=selected_session_id,
+            rubric_path=rubric_path,
+            answer_key_path=answer_key_path,
+            source_paper_path=source_paper_path,
+            source_paper_sha256=source_paper_sha256,
+            source_paper_name=source_paper_name,
+            settings_store=settings_store,
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+def _post_publish_config_save_notice(
+    mapping_status: Literal["not_present", "refreshed", "reconfirm_required"],
+    *,
+    remembered_state_saved: bool,
+    workflow_state_saved: bool,
+) -> tuple[Literal["success", "warning"], str]:
+    save_message = _template_mapping_save_confirmation(mapping_status)
+    if remembered_state_saved and workflow_state_saved:
+        return "success", save_message
+    return (
+        "warning",
+        save_message
+        + " 附属工作状态暂未更新，可稍后重建；已保存的评分依据不受影响。",
+    )
 
 
 def _record_config_save_workflow_state(
