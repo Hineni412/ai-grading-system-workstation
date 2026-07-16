@@ -161,6 +161,32 @@ async function fulfillJson(route: Route, body: unknown): Promise<void> {
   await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
 }
 
+function configSource(sessionId: number) {
+  return {
+    session_id: sessionId,
+    source_id: 'a'.repeat(32),
+    source_revision: 'b'.repeat(64),
+    safe_filename: 'synthetic-exam.pdf',
+    suffix: '.pdf',
+    size_bytes: 1,
+    sha256_prefix: 'c'.repeat(12),
+    parse_state: 'ready',
+    questions: [],
+  }
+}
+
+function configEditor(sessionId: number) {
+  return {
+    session_id: sessionId,
+    configured: false,
+    revision: 'd'.repeat(64),
+    rows: [],
+    total_score: 0,
+    issues: [],
+    source: null,
+  }
+}
+
 async function installGraphApi(
   page: Page,
   nodeCount: number,
@@ -176,6 +202,14 @@ async function installGraphApi(
     const pathname = new URL(request.url()).pathname
     if (pathname === '/api/sessions') return fulfillJson(route, { items: sessions, total: sessions.length })
     if (pathname === '/api/students') return fulfillJson(route, { items: students, total: students.length })
+    const activeSourceMatch = pathname.match(/^\/api\/sessions\/(\d+)\/config\/sources\/active$/)
+    if (request.method() === 'GET' && activeSourceMatch) {
+      return fulfillJson(route, configSource(Number(activeSourceMatch[1])))
+    }
+    const editorMatch = pathname.match(/^\/api\/sessions\/(\d+)\/config\/editor$/)
+    if (request.method() === 'GET' && editorMatch) {
+      return fulfillJson(route, configEditor(Number(editorMatch[1])))
+    }
     if (pathname === '/api/graph/rows') {
       if (state.rows === 'error') {
         return fulfillJson(route, { invalid: true })
