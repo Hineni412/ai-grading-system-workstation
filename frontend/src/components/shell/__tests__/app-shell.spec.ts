@@ -9,6 +9,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import AppShell from '../../../layouts/AppShell.vue'
 import { createAppRouter } from '../../../router'
 import { useSessionStore } from '../../../stores/session'
+import { useConfigWorkspaceStore } from '../../../stores/config-workspace'
+import { useReviewDraftStore } from '../../../stores/review-drafts'
+import type { SessionSummary } from '../../../api/sessions'
+import { CONFIG_WORKSPACE_STORAGE_KEY } from '../../../stores/config-workspace'
 
 async function settleUi(): Promise<void> {
   await Promise.resolve()
@@ -50,7 +54,22 @@ beforeEach(() => {
 })
 
 describe('AppShell', () => {
-  it.each(['/workbench', '/grading', '/missing/deep/path'])(
+  it('keeps an unverified workspace candidate after a transient session-list failure', async () => {
+    const candidate = {
+      sessionId: 7, phase: 'editor', sourceId: 'd'.repeat(32),
+      sourceRevision: 'b'.repeat(64), jobId: 31, decisions: [],
+    }
+    localStorage.setItem(CONFIG_WORKSPACE_STORAGE_KEY, JSON.stringify(candidate))
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('offline'))
+    const { app } = await mountShell({ prepareStore: false })
+    await settleUi()
+
+    expect(localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)).toBe(JSON.stringify(candidate))
+    expect(useConfigWorkspaceStore().sessionId).toBeNull()
+    app.unmount()
+  })
+
+  it.each(['/workbench', '/sessions', '/grading', '/missing/deep/path'])(
     'renders one main landmark and no permanent side panels at %s',
     async (path) => {
       const { app, host } = await mountShell({ path })
@@ -81,6 +100,7 @@ describe('AppShell', () => {
       ),
     ).toEqual([
       ['工作台', '/workbench'],
+      ['考试配置', '/sessions'],
       ['评分复核', '/grading'],
     ])
     expect(
@@ -95,6 +115,11 @@ describe('AppShell', () => {
     ).toBe(false)
     expect(host.querySelector('label[for="current-session"]')?.textContent).toBe('当前考试')
     expect(host.querySelector('#current-session')).not.toBeNull()
+    expect([...host.querySelectorAll('nav a')].map((link) => link.textContent)).toEqual([
+      '工作台',
+      '考试配置',
+      '评分复核',
+    ])
     expect(host.querySelector('[data-testid="navigation-toggle"]')).toBeNull()
     expect(host.querySelector('[data-testid="inspector-toggle"]')).toBeNull()
 
@@ -156,6 +181,82 @@ describe('AppShell', () => {
     expect(compactRules).toContain('"status"')
   })
 
+  it.each(['review', 'config'] as const)('warns before leaving with dirty %s work', async (kind) => {
+    const { app } = await mountShell()
+    if (kind === 'review') {
+      const store = useReviewDraftStore()
+      store.drafts['7:Q1:1'] = {
+        key: '7:Q1:1', sessionId: 7, questionId: 'Q1', detailId: 1,
+        scoreText: '4', note: '', baseScoreText: '3', baseNote: '',
+        dirty: true, updatedAt: Date.now(),
+      }
+    } else {
+      const store = useConfigWorkspaceStore()
+      store.updateEditor({ row_id: 'row-1', standard_answer: '草稿答案' })
+    }
+    const event = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+    app.unmount()
+  })
+
+  it('does not let the current-exam selector silently discard config edits', async () => {
+    const { app, host } = await mountShell()
+    const sessionStore = useSessionStore()
+    const configStore = useConfigWorkspaceStore()
+    const available: SessionSummary[] = [
+      { id: 7, name: '考试一', status: 'created', is_deleted: false, deleted_at: null, created_at: null, updated_at: null },
+      { id: 9, name: '考试二', status: 'created', is_deleted: false, deleted_at: null, created_at: null, updated_at: null },
+    ]
+    sessionStore.sessions = available
+    sessionStore.selectSession(7)
+    configStore.selectSession(7)
+    configStore.setEditor({
+      session_id: 7, configured: true, revision: 'a'.repeat(64), rows: [],
+      total_score: 0, issues: [], source: null,
+    })
+    configStore.updateEditor({ row_id: 'row-1', standard_answer: '未保存答案' })
+    vi.stubGlobal('confirm', vi.fn(() => false))
+
+    const selector = host.querySelector<HTMLSelectElement>('#current-session')!
+    selector.value = '9'
+    selector.dispatchEvent(new Event('change'))
+    await settleUi()
+
+    expect(sessionStore.selectedSessionId).toBe(7)
+    expect(configStore.sessionId).toBe(7)
+    expect(configStore.editorEdits[0]?.standard_answer).toBe('未保存答案')
+    app.unmount()
+  })
+
+  it.each(['generation', 'upload'] as const)(
+    'blocks exam switching while an unknown %s result still needs reconciliation',
+    async (kind) => {
+      const { app, host } = await mountShell()
+      const sessionStore = useSessionStore()
+      const configStore = useConfigWorkspaceStore()
+      sessionStore.sessions = [
+        { id: 7, name: '考试一', status: 'created', is_deleted: false, deleted_at: null, created_at: null, updated_at: null },
+        { id: 9, name: '考试二', status: 'created', is_deleted: false, deleted_at: null, created_at: null, updated_at: null },
+      ]
+      sessionStore.selectSession(7)
+      configStore.selectSession(7)
+      if (kind === 'generation') configStore.markJobSubmissionPending('1'.repeat(32), 'refine')
+      else configStore.markUploadSubmissionPending('2'.repeat(32))
+      const alert = vi.spyOn(window, 'alert').mockImplementation(() => undefined)
+
+      const selector = host.querySelector<HTMLSelectElement>('#current-session')!
+      selector.value = '9'
+      selector.dispatchEvent(new Event('change'))
+      await settleUi()
+
+      expect(alert).toHaveBeenCalledWith(expect.stringContaining('核对'))
+      expect(selector.value).toBe('7')
+      expect(sessionStore.selectedSessionId).toBe(7)
+      expect(configStore.sessionId).toBe(7)
+      app.unmount()
+    },
+  )
   it('focuses the route heading after navigation', async () => {
     const { app, host, router } = await mountShell({ path: '/design-system' })
 

@@ -597,17 +597,33 @@ def preview_question_blocks_from_docx_text(doc_text: str) -> list[dict[str, Any]
 _INLINE_IMAGE_MARKER = re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]")
 
 
+class _ControlledDocxWriteError(RuntimeError):
+    pass
+
+
 def preview_question_blocks_from_docx_bytes(
     file_bytes: bytes,
     *,
     fallback_doc_text: str = "",
+    temporary_root: str | Path | None = None,
+    asset_root: str | Path | None = None,
+    register_created_file: Callable[[Path], None] | None = None,
+    write_created_file: Callable[[Path, bytes], None] | None = None,
 ) -> list[dict[str, Any]]:
     """富文本拆题预览（复用题库 import_docx），保留公式 HTML 与图片，不调用 AI。
 
     解析失败时回退到纯文本拆题（preview_question_blocks_from_docx_text）。
     """
     try:
-        rich_blocks = _extract_rich_question_blocks(file_bytes)
+        rich_blocks = _extract_rich_question_blocks(
+            file_bytes,
+            temporary_root=temporary_root,
+            asset_root=asset_root,
+            register_created_file=register_created_file,
+            write_created_file=write_created_file,
+        )
+    except _ControlledDocxWriteError:
+        raise
     except Exception:
         rich_blocks = None
     if rich_blocks:
@@ -615,26 +631,44 @@ def preview_question_blocks_from_docx_bytes(
     return preview_question_blocks_from_docx_text(fallback_doc_text or "")
 
 
-def _extract_rich_question_blocks(file_bytes: bytes) -> list[dict[str, Any]] | None:
+def _extract_rich_question_blocks(
+    file_bytes: bytes,
+    *,
+    temporary_root: str | Path | None = None,
+    asset_root: str | Path | None = None,
+    register_created_file: Callable[[Path], None] | None = None,
+    write_created_file: Callable[[Path, bytes], None] | None = None,
+) -> list[dict[str, Any]] | None:
     """用题库 import_docx + map_rich_content_by_number 提取每题富文本块。"""
     from question_bank.importers.docx_importer import import_docx
     from question_bank.importers.batch_importer import map_rich_content_by_number
 
-    tmp_dir = Path(_resolve_upload_config_dir())
-    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir = (
+        Path(temporary_root)
+        if temporary_root is not None
+        else Path(_resolve_upload_config_dir())
+    )
     ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     tmp_path = tmp_dir / f"_rich_split_{ts}.docx"
-    tmp_path.write_bytes(file_bytes)
-    try:
-        extracted = import_docx(tmp_path)
-        content = map_rich_content_by_number(
-            extracted.rich_paragraphs, source_file=str(tmp_path)
-        )
-    finally:
+
+    def controlled_writer(path: Path, content: bytes) -> None:
+        assert write_created_file is not None
         try:
-            tmp_path.unlink()
-        except Exception:
-            pass
+            write_created_file(path, content)
+        except Exception as error:
+            raise _ControlledDocxWriteError() from error
+
+    extracted = import_docx(
+        io.BytesIO(file_bytes),
+        source_name=tmp_path,
+        asset_root=asset_root,
+        asset_root_is_output_dir=write_created_file is not None,
+        register_created_file=register_created_file,
+        write_created_file=(controlled_writer if write_created_file is not None else None),
+    )
+    content = map_rich_content_by_number(
+        extracted.rich_paragraphs, source_file=str(tmp_path)
+    )
 
     question_map = content.get("question") if isinstance(content, dict) else {}
     answer_map = content.get("answer") if isinstance(content, dict) else {}
