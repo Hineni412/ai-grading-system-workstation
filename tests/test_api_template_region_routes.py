@@ -50,6 +50,7 @@ def _session(db) -> int:
 
 
 def _template_files(tmp_path: Path) -> tuple[Path, Path]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     front = tmp_path / "front.jpg"
     back = tmp_path / "back.jpg"
     front.write_bytes(b"front-template")
@@ -83,6 +84,7 @@ def _region(region_uuid: str = "r1", *, mapped_question_id: str | None = "Q1") -
         "mapped_question_id": mapped_question_id,
         "mapping_status": "manual" if mapped_question_id else "unbound",
         "is_confirmed": True,
+        "multi_region_confirmed": False,
     }
 
 
@@ -229,6 +231,83 @@ def test_abandoned_template_upload_token_blocks_a_late_request(tmp_path) -> None
     assert db.get_session_template(session_id) is None
 
 
+def test_region_workspace_returns_template_draft_questions_and_ready_state_without_paths(tmp_path) -> None:
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+    upload = client.post(
+        f"/api/sessions/{session_id}/template",
+        params={"first_page_role": "front"},
+        content=_two_page_template_pdf(),
+        headers={
+            "content-type": "application/pdf",
+            "x-upload-filename": "anonymous-sample.pdf",
+            "x-client-request-token": "4" * 32,
+        },
+    )
+    assert upload.status_code == 201
+
+    response = client.get(f"/api/sessions/{session_id}/regions/workspace")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "session_id": session_id,
+        "template": upload.json(),
+        "formal_regions": [],
+        "draft": {"status": "missing", "revision": 0, "regions": []},
+        "automatic_candidates": ["Q1"],
+        "manual_question_options": [
+            {"value": "", "label": ""},
+            {"value": "__student_name__", "label": "姓名识别区域"},
+            {"value": "Q1", "label": "Q1"},
+        ],
+        "issues": [],
+        "template_ready": False,
+    }
+    assert str(tmp_path) not in response.text
+
+
+def test_draft_save_rejects_a_stale_revision_and_returns_no_internal_paths(tmp_path) -> None:
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+    upload = client.post(
+        f"/api/sessions/{session_id}/template",
+        params={"first_page_role": "front"},
+        content=_two_page_template_pdf(),
+        headers={
+            "content-type": "application/pdf",
+            "x-upload-filename": "anonymous-sample.pdf",
+            "x-client-request-token": "5" * 32,
+        },
+    ).json()
+    first_request = {
+        "expected_template_fingerprint": upload["template_fingerprint"],
+        "expected_revision": 0,
+        "revision": 1,
+        "regions": [_region()],
+    }
+
+    first = client.put(
+        f"/api/sessions/{session_id}/regions/draft", json=first_request
+    )
+    stale = client.put(
+        f"/api/sessions/{session_id}/regions/draft",
+        json={**first_request, "revision": 2},
+    )
+
+    assert first.status_code == 200
+    assert first.json() == {
+        "status": "compatible",
+        "session_id": session_id,
+        "template_id": upload["template_id"],
+        "template_fingerprint": upload["template_fingerprint"],
+        "draft": {"revision": 1, "regions": [_region()]},
+    }
+    assert str(tmp_path) not in first.text
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "region_draft_revision_conflict"
+
+
 def test_answer_region_draft_route_saves_and_loads_compatible_draft(tmp_path) -> None:
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)
@@ -244,7 +323,9 @@ def test_answer_region_draft_route_saves_and_loads_compatible_draft(tmp_path) ->
     saved = save_response.json()
     assert saved["status"] == "compatible"
     assert saved["template_fingerprint"]
-    assert Path(saved["draft_path"]).exists()
+    assert "draft_path" not in saved
+    assert "quarantined_path" not in saved
+    assert str(tmp_path) not in save_response.text
 
     load_response = client.get(f"/api/sessions/{session_id}/regions/draft")
 
@@ -252,6 +333,32 @@ def test_answer_region_draft_route_saves_and_loads_compatible_draft(tmp_path) ->
     loaded = load_response.json()
     assert loaded["status"] == "compatible"
     assert loaded["draft"]["regions"][0]["region_uuid"] == "r1"
+
+
+def test_incompatible_draft_requires_an_explicit_safe_discard(tmp_path) -> None:
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+    first_front, first_back = _template_files(tmp_path / "first")
+    _bind_template(client, session_id, first_front, first_back)
+    client.put(
+        f"/api/sessions/{session_id}/regions/draft",
+        json={"revision": 1, "regions": [_region()]},
+    )
+    second_front, second_back = _template_files(tmp_path / "second")
+    second_front.write_bytes(b"different-front")
+    _bind_template(client, session_id, second_front, second_back)
+
+    incompatible = client.get(f"/api/sessions/{session_id}/regions/draft")
+    discarded = client.delete(f"/api/sessions/{session_id}/regions/draft")
+    after = client.get(f"/api/sessions/{session_id}/regions/draft")
+
+    assert incompatible.status_code == 200
+    assert incompatible.json()["status"] == "incompatible"
+    assert incompatible.json()["draft"] is None
+    assert discarded.status_code == 200
+    assert discarded.json() == {"status": "discarded"}
+    assert after.json()["status"] == "missing"
+    assert str(tmp_path) not in incompatible.text + discarded.text + after.text
 
 
 def test_answer_region_commit_route_commits_regions_and_snapshot(tmp_path) -> None:
@@ -278,12 +385,64 @@ def test_answer_region_commit_route_commits_regions_and_snapshot(tmp_path) -> No
     body = response.json()
     assert body["committed"] is True
     assert body["snapshot_pending"] is False
+    assert "snapshot_path" not in body
+    assert str(tmp_path) not in response.text
     assert body["issues"] == []
     assert body["region_count"] == 1
     assert db.is_template_ready(session_id) is True
     saved = db.list_answer_regions(session_id)
     assert saved[0]["region_uuid"] == "r1"
     assert saved[0]["is_confirmed"] == 1
+
+
+def test_pending_snapshot_can_be_retried_without_recommitting_regions(
+    tmp_path, monkeypatch
+) -> None:
+    import answer_region_commit_service as commit_module
+
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+    front, back = _template_files(tmp_path)
+    _bind_template(client, session_id, front, back)
+    draft = client.put(
+        f"/api/sessions/{session_id}/regions/draft",
+        json={"revision": 1, "regions": [_region()]},
+    ).json()
+    original_atomic_write = commit_module._atomic_write_json
+    failed_once = False
+
+    def fail_first_snapshot(path, data) -> None:
+        nonlocal failed_once
+        if not failed_once and path.name.startswith("regions_confirmed_"):
+            failed_once = True
+            raise OSError("synthetic snapshot failure")
+        original_atomic_write(path, data)
+
+    monkeypatch.setattr(commit_module, "_atomic_write_json", fail_first_snapshot)
+    committed = client.post(
+        f"/api/sessions/{session_id}/regions/commit",
+        json={
+            "regions": [_region()],
+            "image_sizes": {"front": [1000, 1000], "back": [1000, 1000]},
+            "expected_template_fingerprint": draft["template_fingerprint"],
+        },
+    )
+    monkeypatch.setattr(commit_module, "_atomic_write_json", original_atomic_write)
+    before_retry = db.list_answer_regions(session_id)
+
+    retried = client.post(
+        f"/api/sessions/{session_id}/regions/snapshot/retry",
+        json={"expected_template_fingerprint": draft["template_fingerprint"]},
+    )
+
+    assert committed.json()["committed"] is True
+    assert committed.json()["snapshot_pending"] is True
+    assert retried.status_code == 200
+    assert retried.json()["committed"] is True
+    assert retried.json()["snapshot_pending"] is False
+    assert db.list_answer_regions(session_id) == before_retry
+    assert db.get_session_template(session_id)["regions_snapshot_pending"] == 0
+    assert str(tmp_path) not in retried.text
 
 
 def test_answer_region_commit_route_returns_validation_issues_without_commit(tmp_path) -> None:
