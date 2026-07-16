@@ -52,3 +52,24 @@ def test_streamlit_save_uses_partial_success_wrapper() -> None:
 
     assert "mapping_result = refresh_mapping_after_config_save(" in source
     assert "mapping_status = mapping_result.mapping_status" in source
+
+
+def test_streamlit_saved_config_survives_workflow_state_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_workflow_state(*_args: object, **_kwargs: object) -> None:
+        raise OSError("synthetic workflow-state failure")
+
+    monkeypatch.setattr(web_app, "_write_session_workflow_state", fail_workflow_state)
+
+    saved = web_app._record_config_save_workflow_state(
+        object(),
+        17,
+        rubric_path="rubric.json",
+        answer_key_path="answer.json",
+        mapping_status="reconfirm_required",
+    )
+
+    assert saved is False
+    source = web_app.Path("web_app.py").read_text(encoding="utf-8")
+    assert "附属工作状态暂未更新，可稍后重建；已保存的评分依据不受影响" in source

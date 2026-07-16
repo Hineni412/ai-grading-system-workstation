@@ -11,6 +11,7 @@ import {
 } from '../../api/config-workspace'
 import { isAmbiguousWriteError } from '../../api/errors'
 import { useConfigWorkspaceStore } from '../../stores/config-workspace'
+import { useJobStore } from '../../stores/jobs'
 
 const MAX_SOURCE_BYTES = 200 * 1024 * 1024
 
@@ -38,8 +39,15 @@ const selectedFile = ref<File | null>(null)
 const uploading = ref(false)
 const errorMessage = ref('')
 const configStore = useConfigWorkspaceStore()
+const jobStore = useJobStore()
 const submissionUnknown = computed(() => configStore.pendingUploadRequestToken !== null)
-const workspaceLocked = computed(() => configStore.hasPendingSubmission)
+const activeGeneration = computed(() => {
+  const current = configStore.jobId === null ? null : jobStore.jobs[configStore.jobId]
+  return current?.job_type === 'config_generation'
+    && current.payload.session_id === props.sessionId
+    && !['succeeded', 'failed', 'cancelled'].includes(current.status)
+})
+const workspaceLocked = computed(() => configStore.hasPendingSubmission || activeGeneration.value)
 
 function acceptSource(source: ConfigSource): void {
   configStore.clearUploadSubmissionPending()
