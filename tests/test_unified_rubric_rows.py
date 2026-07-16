@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-import pandas as pd
+import hashlib
+import inspect
 
+import pandas as pd
+import pytest
+
+from backend.config_workspace.editor import ConfigEditorValidationError
 import web_app
 
 
@@ -62,6 +67,7 @@ def test_unified_rows_show_readable_labels_and_preserve_hidden_ids() -> None:
     assert rows[0]["_question_id"] == "Q12"
     assert rows[0]["_part_id"] == "P1"
     assert rows[0]["_step_id"] == "S1"
+    assert rows[0]["_row_id"] == hashlib.sha256(b"Q12\0P1\0S1").hexdigest()[:24]
     assert rows[0]["知识点"] == "使用AAS判定三角形全等并推出对应边相等"
 
 
@@ -81,6 +87,7 @@ def test_unified_table_save_uses_hidden_ids_instead_of_display_labels() -> None:
 def test_multiple_parts_use_question_order_labels() -> None:
     payload = _payload()
     question = payload["rubric"]["questions"][0]
+    payload["answer_key"]["questions"][0]["parts"][0]["part_id"] = "P1"
     question["parts"].append(
         {
             "part_id": "P2",
@@ -89,7 +96,7 @@ def test_multiple_parts_use_question_order_labels() -> None:
             "steps": [{"step_id": "S1", "step_score": 2, "core_goal": "写出结果"}],
         }
     )
-    payload["answer_key"]["questions"][0]["parts"].append({"part_id": "Q12(2)", "standard_answer": "2"})
+    payload["answer_key"]["questions"][0]["parts"].append({"part_id": "P2", "standard_answer": "2"})
 
     rows = web_app.build_unified_rubric_rows(payload)
 
@@ -112,6 +119,24 @@ def test_unified_table_save_can_resolve_visible_labels_without_hidden_columns() 
     steps = updated["rubric"]["questions"][0]["parts"][0]["steps"]
     assert [step["step_id"] for step in steps] == ["S1", "S2"]
     assert [step["step_score"] for step in steps] == [4.0, 2.0]
+
+
+def test_visible_only_reordered_rows_are_rejected_instead_of_miswritten() -> None:
+    payload = _payload()
+    rows = web_app.build_unified_rubric_rows(payload)
+    visible_rows = [{key: value for key, value in row.items() if not key.startswith("_")} for row in reversed(rows)]
+
+    with pytest.raises(ConfigEditorValidationError) as exc:
+        web_app._apply_unified_table_to_payload(payload, pd.DataFrame(visible_rows))
+
+    assert exc.value.issues[0]["code"] == "visible_row_identity_mismatch"
+
+
+def test_manual_split_ui_uses_service_maximum() -> None:
+    source = inspect.getsource(web_app._render_manual_scoring_unit_tools)
+
+    assert "max_value=20" in source
+    assert "max_value=30" not in source
 
 
 def test_unified_rows_explain_complete_set_fill_blank_rule() -> None:

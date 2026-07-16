@@ -24,6 +24,23 @@ from backend.public_data import (
 
 router = APIRouter(prefix="/api", tags=["jobs"])
 
+_SOURCE_CONFIG_PUBLIC_DETAILS = {
+    "queued": "Waiting to generate grading configuration.",
+    "running": "Generating grading configuration.",
+    "config_generation": "Generating grading configuration.",
+    "Split paper": "Preparing source questions.",
+    "Submit per-question requests": "Generating grading configuration.",
+    "Parse question": "Generating grading configuration.",
+    "Assemble rubric": "Finalizing grading configuration.",
+    "AI 赋分": "Finalizing grading configuration.",
+    "AI 赋分完成": "Finalizing grading configuration.",
+    "AI 赋分失败，使用本地均分兜底": "Finalizing grading configuration.",
+    "Word 整卷单次请求": "Generating grading configuration.",
+    "旧版整卷生成": "Generating grading configuration.",
+    "旧版整卷修复": "Generating grading configuration.",
+    "PDF 整卷视觉单次请求": "Generating grading configuration.",
+}
+
 def _job_response(job: JobRecord) -> JobResponse:
     return JobResponse(
         id=job.id,
@@ -33,7 +50,7 @@ def _job_response(job: JobRecord) -> JobResponse:
         status=job.status,
         progress=job.progress,
         stage=job.stage,
-        detail=job.detail,
+        detail=public_job_detail(job),
         error=public_job_error(job),
         cancel_requested=job.cancel_requested,
         created_at=job.created_at,
@@ -44,7 +61,7 @@ def _job_response(job: JobRecord) -> JobResponse:
 
 
 def _job_summary_response(job: JobRecord) -> JobSummaryResponse:
-    detail = sanitize_public_diagnostic_text(job.detail) or ""
+    detail = sanitize_public_diagnostic_text(public_job_detail(job)) or ""
     return JobSummaryResponse(
         id=job.id,
         job_type=job.job_type,
@@ -57,6 +74,17 @@ def _job_summary_response(job: JobRecord) -> JobSummaryResponse:
         updated_at=job.updated_at,
         finished_at=job.finished_at,
     )
+
+
+def public_job_detail(job: JobRecord) -> str:
+    if (
+        job.job_type == "config_generation"
+        and str(job.payload.get("source_id") or "").strip()
+    ):
+        if job.status == "succeeded":
+            return "Grading configuration generated."
+        return _SOURCE_CONFIG_PUBLIC_DETAILS.get(job.stage, "")
+    return job.detail
 
 
 def public_job_result(job: JobRecord) -> dict[str, Any]:
@@ -127,6 +155,8 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
             "failed_count",
             "failed_question_ids",
             "retryable",
+            "mapping_status",
+            "mapping_message",
         )
         return sanitize_public_mapping(
             {key: job.result[key] for key in allowed if key in job.result}
@@ -185,12 +215,9 @@ def public_job_payload(job: JobRecord) -> dict[str, Any]:
             {key: job.payload[key] for key in allowed if key in job.payload}
         )
     if job.job_type == "config_generation":
-        allowed = (
-            "session_id",
-            "mode",
-            "source_job_id",
-            "retry_question_ids",
-        )
+        allowed = ("session_id", "mode")
+        if str(job.payload.get("source_id") or "").strip():
+            allowed += ("generation_mode", "source_id", "source_revision")
         return sanitize_public_mapping(
             {key: job.payload[key] for key in allowed if key in job.payload}
         )

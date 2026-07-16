@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends
 
 from backend.api.app import ApiError
-from backend.api.dependencies import get_grading_db
+from backend.api.dependencies import get_grading_db, get_upload_config_dir
 from backend.api.schemas.sessions import (
     AnswerRegionListResponse,
     AnswerRegionResponse,
+    CreateSessionDraftRequest,
     CreateSessionRequest,
     RenameSessionRequest,
     SessionDetail,
@@ -18,6 +20,7 @@ from backend.api.schemas.sessions import (
     SessionSummary,
     SessionTemplateResponse,
 )
+from backend.config_workspace.drafts import create_session_draft
 from db_manager import DBManager
 
 
@@ -189,6 +192,23 @@ def create_session(
     except ValueError as exc:
         raise ApiError(400, "invalid_session", str(exc)) from exc
     return _session_detail(_require_session(db, session_id))
+
+
+@router.post("/sessions/drafts", response_model=SessionSummary, status_code=201)
+def create_session_draft_route(
+    request: CreateSessionDraftRequest,
+    db: DBManager = Depends(get_grading_db),
+    upload_config_dir: Path = Depends(get_upload_config_dir),
+) -> SessionSummary:
+    try:
+        session_id = create_session_draft(
+            db,
+            upload_config_dir,
+            name=request.name,
+        )
+    except ValueError as exc:
+        raise ApiError(400, "invalid_session_draft", str(exc)) from exc
+    return _session_summary(_require_session(db, session_id))
 
 
 @router.patch("/sessions/{session_id}", response_model=SessionDetail)

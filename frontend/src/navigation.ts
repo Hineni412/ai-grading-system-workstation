@@ -1,4 +1,4 @@
-export type WorkspaceRouteId = 'workbench' | 'grading'
+export type WorkspaceRouteId = 'workbench' | 'sessions' | 'grading'
 
 export interface WorkspaceRouteDefinition {
   id: WorkspaceRouteId
@@ -18,6 +18,15 @@ export const workbenchRouteDefinition = {
   breadcrumb: '工作台',
 } as const satisfies WorkspaceRouteDefinition
 
+export const sessionRouteDefinition: WorkspaceRouteDefinition = {
+  id: 'sessions',
+  label: '考试配置',
+  path: '/sessions',
+  title: '考试配置',
+  description: '创建考试并准备评分依据',
+  breadcrumb: '考试配置',
+}
+
 export const reviewRouteDefinition: WorkspaceRouteDefinition = {
   id: 'grading',
   label: '评分复核',
@@ -27,4 +36,8 @@ export const reviewRouteDefinition: WorkspaceRouteDefinition = {
   breadcrumb: '评分复核',
 }
 
-export const navigationItems = [workbenchRouteDefinition, reviewRouteDefinition] as const
+export const navigationItems = [
+  workbenchRouteDefinition,
+  sessionRouteDefinition,
+  reviewRouteDefinition,
+] as const

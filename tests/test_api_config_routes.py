@@ -84,7 +84,7 @@ def _client_with_db(tmp_path):
     db.initialize()
 
     app = create_app()
-    manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
+    manager = JobManager(JobStore(db.db_path), max_workers=1)
     app.dependency_overrides[get_grading_db] = lambda: db
     app.dependency_overrides[get_job_manager] = lambda: manager
     app.dependency_overrides[get_upload_config_dir] = lambda: tmp_path / "uploaded"

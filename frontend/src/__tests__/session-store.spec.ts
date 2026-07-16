@@ -6,7 +6,8 @@ import {
   SessionReadError,
   type SessionSummary,
 } from '../api/sessions'
-import { SESSION_STORAGE_KEY, useSessionStore } from '../stores/session'
+import { ApiError } from '../api/errors'
+import { SESSION_STORAGE_KEY, SessionDraftOutcomeUnknownError, useSessionStore } from '../stores/session'
 
 const sessions: SessionSummary[] = [
   {
@@ -36,6 +37,57 @@ beforeEach(() => {
 })
 
 describe('session Store', () => {
+  it('selects a created draft only after reloading it from the server list', async () => {
+    const store = useSessionStore()
+    await store.initialize(async () => sessions)
+    const created = { ...sessions[0]!, id: 12, name: '新考试草稿', status: 'created' }
+    const creator = vi.fn(async () => created)
+    const loader = vi.fn(async () => [...sessions, created])
+
+    await expect(store.createDraft(' 新考试草稿 ', creator, loader)).resolves.toEqual(created)
+    expect(creator).toHaveBeenCalledWith('新考试草稿')
+    expect(loader).toHaveBeenCalledTimes(1)
+    expect(store.currentSession?.id).toBe(12)
+    expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBe('12')
+  })
+
+  it('reconciles a lost create response from the authoritative session list', async () => {
+    const store = useSessionStore()
+    await store.initialize(async () => sessions)
+    const created = { ...sessions[0]!, id: 12, name: '新考试草稿', status: 'created' }
+    const creator = vi.fn(async () => {
+      throw new ApiError({ kind: 'timeout', status: null, code: 'request_timeout',
+        message: 'timeout', details: {}, requestId: 'safe', retryable: false })
+    })
+    const loader = vi.fn(async () => [...sessions, created])
+
+    await expect(store.createDraft('新考试草稿', creator, loader)).resolves.toEqual(created)
+    expect(store.currentSession?.id).toBe(12)
+    expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBe('12')
+  })
+
+  it('reports an unknown create outcome when the authoritative list cannot be read', async () => {
+    const store = useSessionStore()
+    const timeout = new ApiError({ kind: 'network', status: null, code: 'network_error',
+      message: 'offline', details: {}, requestId: 'safe', retryable: true })
+    await expect(store.createDraft('新考试草稿', vi.fn(async () => { throw timeout }),
+      vi.fn(async () => { throw new Error('offline') })))
+      .rejects.toBeInstanceOf(SessionDraftOutcomeUnknownError)
+  })
+
+  it('does not let an old list response overwrite a later reload', async () => {
+    const store = useSessionStore()
+    let resolveOld!: (value: SessionSummary[]) => void
+    const oldLoad = store.initialize(() => new Promise((resolve) => { resolveOld = resolve }))
+    await store.initialize(async () => [sessions[1]!])
+    store.selectSession(9)
+    resolveOld([sessions[0]!])
+    await oldLoad
+
+    expect(store.sessions.map(({ id }) => id)).toEqual([9])
+    expect(store.selectedSessionId).toBe(9)
+  })
+
   it('restores only an API-validated persisted id', async () => {
     localStorage.setItem(SESSION_STORAGE_KEY, '9')
     const store = useSessionStore()
