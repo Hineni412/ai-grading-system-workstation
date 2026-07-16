@@ -88,10 +88,10 @@ describe('TemplateRegionEditor adapter', () => {
     canvas.dispatchEvent(pointer('pointermove', { pointerId: 1, clientX: 150, clientY: 210 }))
     canvas.dispatchEvent(pointer('pointerup', { pointerId: 1, clientX: 150, clientY: 210 }))
 
-    const created = updated.mock.calls.at(-1)![0]
-    expect(created.regions.at(-1)).toMatchObject({ x: 100, y: 140, w: 200, h: 280 })
+    const created = updated.mock.calls[updated.mock.calls.length - 1]![0]
+    expect(created.regions[created.regions.length - 1]).toMatchObject({ x: 100, y: 140, w: 200, h: 280 })
     host.querySelector<HTMLButtonElement>('[data-action="undo"]')!.click()
-    expect(updated.mock.calls.at(-1)![0].regions).toHaveLength(1)
+    expect(updated.mock.calls[updated.mock.calls.length - 1]![0].regions).toHaveLength(1)
     app.unmount()
   })
 })

@@ -1,0 +1,33 @@
+@import "../../../components/answer_region_editor/editor.css";
+
+.template-regions-view { min-width: 0; }
+.template-regions-view__header { display: flex; align-items: end; justify-content: space-between; gap: var(--space-5); margin-block-end: var(--space-4); }
+.template-regions-view h1, .template-regions-view h2, .template-regions-view p { margin: 0; }
+.template-regions-view h1 { font-size: var(--font-size-h1); }
+.template-regions-view__header p, .template-upload p { margin-block-start: var(--space-1); color: var(--color-text-secondary); }
+.template-regions__eyebrow { color: var(--color-accent); font-size: var(--font-size-caption); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.template-regions-view__ruler { display: flex; min-height: 36px; align-items: center; gap: var(--space-4); padding-inline: var(--space-4); border-block: var(--border-width) solid var(--color-border-default); background: var(--color-bg-subtle); font-size: var(--font-size-dense); }
+.template-regions-view__ruler::before { width: 4px; height: 24px; background: var(--color-warning); content: ""; }
+.template-regions-view__ruler[data-state="confirmed"]::before { background: var(--color-success); }
+.template-regions-view__state, .template-regions-view__notice, .template-regions-view__snapshot { padding: var(--space-4); border: var(--border-width) solid var(--color-border-default); background: var(--color-bg-subtle); }
+.template-regions-view__notice { margin-block: var(--space-3); border-color: var(--color-warning); background: var(--color-warning-subtle); }
+.template-upload { display: grid; gap: var(--space-4); padding-block: var(--space-5); grid-template-columns: minmax(0, 1fr) minmax(300px, .7fr); border-block-end: var(--border-width) solid var(--color-border-default); }
+.template-upload__intro { display: flex; gap: var(--space-5); }
+.template-upload__thumbs { display: flex; gap: var(--space-2); }
+.template-upload__thumbs figure { margin: 0; text-align: center; }
+.template-upload__thumbs img { width: 72px; height: 96px; border: var(--border-width) solid var(--color-border-default); object-fit: contain; background: white; }
+.template-upload__thumbs figcaption { font-size: var(--font-size-caption); }
+.template-upload__form { display: flex; align-items: end; justify-content: end; gap: var(--space-3); }
+.template-upload__form label span, .template-upload__form legend { display: block; margin-block-end: var(--space-1); font-size: var(--font-size-caption); color: var(--color-text-secondary); }
+.template-upload__form fieldset { display: flex; gap: var(--space-2); margin: 0; padding: 0; border: 0; }
+.template-regions-view button, .template-upload button { min-height: var(--control-height-default); padding-inline: var(--space-3); border: var(--border-width) solid var(--color-accent); border-radius: var(--radius-control); background: var(--color-accent); color: white; }
+.template-regions-view button.secondary, .template-upload button.secondary { border-color: var(--color-border-default); background: var(--color-bg-surface); color: var(--color-text-primary); }
+.template-regions-view button:disabled, .template-upload button:disabled { opacity: .55; }
+.template-region-editor { margin-block-start: var(--space-4); }
+.template-region-editor .region-editor { height: min(72vh, 820px); }
+.template-regions-view__snapshot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); border-color: var(--color-warning); background: var(--color-warning-subtle); }
+@media (max-width: 1100px) {
+  .template-upload { grid-template-columns: 1fr; }
+  .template-upload__form { justify-content: start; flex-wrap: wrap; }
+  .template-regions-view__ruler { align-items: start; flex-direction: column; gap: var(--space-1); padding-block: var(--space-2); }
+}

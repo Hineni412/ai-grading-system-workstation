@@ -16,6 +16,7 @@ import './styles/review-evidence.css'
 import './styles/review-scoring.css'
 import './styles/workbench.css'
 import './styles/session-config.css'
+import './styles/template-regions.css'
 import './styles/knowledge-graph.css'
 
 const app = createApp(App)

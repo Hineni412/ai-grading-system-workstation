@@ -313,6 +313,13 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
             :mapping-status="configStore.mappingStatus"
             @reload="reloadLatestEditor"
           />
+          <div class="config-template-entry">
+            <div>
+              <strong>下一步：样卷题框</strong>
+              <span>上传双页样卷，并在原图上圈出每道题的作答区域。</span>
+            </div>
+            <a :href="`/sessions/${sessionStore.currentSession.id}/regions`">进入样卷题框标定</a>
+          </div>
         </section>
       </template>
     </template>
@@ -330,4 +337,8 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
 .session-config-view__empty { padding: var(--space-5); border-block: var(--border-width) solid var(--color-border-default); background: var(--color-bg-subtle); color: var(--color-text-secondary); }
 .session-config-view__state button { min-height: var(--control-height-default); margin-block-start: var(--space-3); padding-inline: var(--space-3); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); }
 .session-config-view__empty { border-block-start: 0; }
+.config-template-entry { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); margin-block-start: var(--space-5); padding: var(--space-4); border-block: var(--border-width) solid var(--color-border-default); background: var(--color-bg-subtle); }
+.config-template-entry strong, .config-template-entry span { display: block; }
+.config-template-entry span { margin-block-start: var(--space-1); color: var(--color-text-secondary); }
+.config-template-entry a { min-height: var(--control-height-default); padding: var(--space-2) var(--space-3); border-radius: var(--radius-control); background: var(--color-accent); color: white; text-decoration: none; }
 </style>
