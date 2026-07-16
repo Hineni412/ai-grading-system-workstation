@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import hashlib
+import subprocess
 from pathlib import Path
 
 from backend.jobs.store import JobStore
@@ -153,6 +154,98 @@ def test_run_smoke_skip_tests_omits_pytest_step(monkeypatch, tmp_path: Path) -> 
         "两库初始化幂等",
     ]
     assert results[2].skipped
+
+
+def test_parallel_pytest_runs_isolated_and_serial_lanes(monkeypatch, tmp_path: Path) -> None:
+    from tools import smoke_check
+
+    serial_test = tmp_path / "tests" / "test_serial_boundary.py"
+    _write(serial_test, "def test_serial_boundary(): pass\n")
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="1 passed in 0.01s\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(smoke_check.subprocess, "run", fake_run)
+
+    result = smoke_check.run_pytest(
+        tmp_path,
+        workers=2,
+        durations=100,
+        serial_test_paths=(Path("tests/test_serial_boundary.py"),),
+    )
+
+    assert result.ok
+    assert len(calls) == 2
+    assert calls[0][4:8] == ["-n", "2", "--dist", "loadfile"]
+    assert "--durations=100" in calls[0]
+    assert "--ignore=tests/test_serial_boundary.py" in calls[0]
+    assert "-n" not in calls[1]
+    assert calls[1][-1] == "tests/test_serial_boundary.py"
+    assert any("并行车道" in message for message in result.messages)
+    assert any("串行车道" in message for message in result.messages)
+
+
+def test_default_pytest_remains_single_process(monkeypatch, tmp_path: Path) -> None:
+    from tools import smoke_check
+
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="1 passed in 0.01s\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(smoke_check.subprocess, "run", fake_run)
+
+    result = smoke_check.run_pytest(tmp_path)
+
+    assert result.ok
+    assert len(calls) == 1
+    assert calls[0] == [smoke_check.sys.executable, "-m", "pytest", "-q"]
+
+
+def test_default_serial_lane_manifest_only_contains_existing_tests() -> None:
+    from tools import smoke_check
+
+    assert smoke_check.DEFAULT_SERIAL_TEST_PATHS
+    assert all(
+        (smoke_check.PROJECT_ROOT / relative_path).is_file()
+        for relative_path in smoke_check.DEFAULT_SERIAL_TEST_PATHS
+    )
+
+
+def test_cli_forwards_explicit_parallel_pilot_options(monkeypatch) -> None:
+    from tools import smoke_check
+
+    received: dict[str, object] = {}
+
+    def fake_run_smoke(**kwargs):
+        received.update(kwargs)
+        return []
+
+    monkeypatch.setattr(smoke_check, "run_smoke", fake_run_smoke)
+
+    exit_code = smoke_check.main(
+        ["--parallel-tests", "--pytest-workers", "2", "--pytest-durations", "25"]
+    )
+
+    assert exit_code == 0
+    assert received == {
+        "skip_tests": False,
+        "pytest_workers": 2,
+        "pytest_durations": 25,
+    }
 
 
 def test_documentation_check_maps_issues_to_failed_step(tmp_path: Path) -> None:

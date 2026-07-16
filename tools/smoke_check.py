@@ -29,6 +29,23 @@ EXCLUDED_DIR_NAMES = {
     "user_data",
 }
 
+DEFAULT_SERIAL_TEST_PATHS = (
+    Path("tests/api_e2e/test_failure_recovery.py"),
+    Path("tests/api_e2e/test_five_flow.py"),
+    Path("tests/api_e2e/test_harness.py"),
+    Path("tests/api_e2e/test_restart_recovery.py"),
+    Path("tests/test_answer_region_session_lock.py"),
+    Path("tests/test_config_source_service.py"),
+    Path("tests/test_job_manager.py"),
+    Path("tests/test_ops_lock.py"),
+    Path("tests/test_p1_29_acceptance.py"),
+    Path("tests/test_performance_benchmark.py"),
+    Path("tests/test_question_bank_local_file_dialog.py"),
+    Path("tests/test_request_connection_benchmark.py"),
+    Path("tests/test_secure_config_filesystem.py"),
+    Path("tests/test_storage_maintenance.py"),
+)
+
 
 @dataclass(frozen=True)
 class StepResult:
@@ -115,29 +132,82 @@ def run_static_compile(project_root: Path = PROJECT_ROOT) -> StepResult:
     )
 
 
-def run_pytest(project_root: Path = PROJECT_ROOT) -> StepResult:
-    started = time.perf_counter()
-    command = [sys.executable, "-m", "pytest", "-q"]
-    completed = subprocess.run(
-        command,
-        cwd=project_root,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    elapsed = time.perf_counter() - started
+def _pytest_output(completed: subprocess.CompletedProcess[str]) -> tuple[str, list[str]]:
     output = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     summary = lines[-1] if lines else "pytest 未输出摘要。"
-    messages = [summary]
-    if completed.returncode != 0:
-        tail = lines[-30:]
-        messages.extend(["pytest 输出尾部：", *tail])
+    return summary, lines
+
+
+def run_pytest(
+    project_root: Path = PROJECT_ROOT,
+    *,
+    workers: int = 1,
+    durations: int = 0,
+    serial_test_paths: tuple[Path, ...] | None = None,
+) -> StepResult:
+    started = time.perf_counter()
+    root = Path(project_root).resolve()
+    if workers < 1:
+        raise ValueError("workers must be at least 1")
+    if durations < 0:
+        raise ValueError("durations must not be negative")
+
+    base_command = [sys.executable, "-m", "pytest", "-q"]
+    duration_args = [f"--durations={durations}"] if durations else []
+    commands: list[tuple[str, list[str]]] = []
+    if workers == 1:
+        commands.append(("串行全量", [*base_command, *duration_args]))
+    else:
+        serial_paths = serial_test_paths or DEFAULT_SERIAL_TEST_PATHS
+        normalized_serial_paths = tuple(path.as_posix() for path in serial_paths)
+        missing = [path for path in normalized_serial_paths if not (root / path).is_file()]
+        if missing:
+            elapsed = time.perf_counter() - started
+            return StepResult(
+                "全量测试",
+                False,
+                2,
+                elapsed,
+                [f"串行测试清单包含不存在的文件：{missing[0]}"],
+            )
+        parallel_command = [
+            *base_command,
+            "-n",
+            str(workers),
+            "--dist",
+            "loadfile",
+            *duration_args,
+            *(f"--ignore={path}" for path in normalized_serial_paths),
+        ]
+        commands.append((f"并行车道（{workers}进程）", parallel_command))
+        commands.append(
+            ("串行车道", [*base_command, *duration_args, *normalized_serial_paths])
+        )
+
+    messages: list[str] = []
+    return_code = 0
+    for label, command in commands:
+        completed = subprocess.run(
+            command,
+            cwd=root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        summary, lines = _pytest_output(completed)
+        messages.append(f"{label}：{summary}")
+        if completed.returncode != 0:
+            return_code = completed.returncode
+            messages.extend([f"{label}输出尾部：", *lines[-30:]])
+            break
+
+    elapsed = time.perf_counter() - started
     return StepResult(
         "全量测试",
-        completed.returncode == 0,
-        completed.returncode,
+        return_code == 0,
+        return_code,
         elapsed,
         messages,
     )
@@ -210,6 +280,8 @@ def run_smoke(
     grading_db: Path | None = None,
     question_bank_db: Path | None = None,
     skip_tests: bool = False,
+    pytest_workers: int = 1,
+    pytest_durations: int = 0,
 ) -> list[StepResult]:
     from path_manager import get_path_manager
 
@@ -223,7 +295,16 @@ def run_smoke(
             StepResult("全量测试", True, 0, 0.0, ["收到 --skip-tests，已跳过全量测试。"], skipped=True)
         )
     else:
-        results.append(run_pytest(root))
+        if pytest_workers == 1 and pytest_durations == 0:
+            results.append(run_pytest(root))
+        else:
+            results.append(
+                run_pytest(
+                    root,
+                    workers=pytest_workers,
+                    durations=pytest_durations,
+                )
+            )
     results.append(
         run_database_idempotency_check(
             grading_db=resolved_grading_db,
@@ -325,9 +406,30 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="跳过全量 pytest，仅运行静态编译和数据库初始化幂等检查。",
     )
+    parser.add_argument(
+        "--parallel-tests",
+        action="store_true",
+        help="试点：把可隔离测试分配给多个进程，风险测试继续串行。",
+    )
+    parser.add_argument(
+        "--pytest-workers",
+        type=int,
+        default=2,
+        help="并行试点进程数，默认 2；仅在 --parallel-tests 时生效。",
+    )
+    parser.add_argument(
+        "--pytest-durations",
+        type=int,
+        default=0,
+        help="输出最慢的 pytest 用例数量；0 表示不额外输出。",
+    )
     args = parser.parse_args(argv)
 
-    results = run_smoke(skip_tests=args.skip_tests)
+    results = run_smoke(
+        skip_tests=args.skip_tests,
+        pytest_workers=args.pytest_workers if args.parallel_tests else 1,
+        pytest_durations=args.pytest_durations,
+    )
     print("AI 阅卷系统冒烟检查")
     for result in results:
         _print_result(result)
