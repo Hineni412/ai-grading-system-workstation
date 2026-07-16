@@ -210,6 +210,7 @@ def test_template_upload_request_token_is_queryable_and_cannot_be_replayed(tmp_p
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)
     request_token = "2" * 32
+    pdf_bytes = _two_page_template_pdf()
     headers = {
         "content-type": "application/pdf",
         "x-upload-filename": "anonymous-sample.pdf",
@@ -219,7 +220,7 @@ def test_template_upload_request_token_is_queryable_and_cannot_be_replayed(tmp_p
     first = client.post(
         f"/api/sessions/{session_id}/template",
         params={"first_page_role": "front"},
-        content=_two_page_template_pdf(),
+        content=pdf_bytes,
         headers=headers,
     )
     lookup = client.get(
@@ -228,7 +229,7 @@ def test_template_upload_request_token_is_queryable_and_cannot_be_replayed(tmp_p
     replay = client.post(
         f"/api/sessions/{session_id}/template",
         params={"first_page_role": "front"},
-        content=_two_page_template_pdf(),
+        content=pdf_bytes,
         headers=headers,
     )
 
@@ -237,6 +238,43 @@ def test_template_upload_request_token_is_queryable_and_cannot_be_replayed(tmp_p
     assert lookup.json() == {"status": "succeeded", "template": first.json()}
     assert replay.status_code == 409
     assert replay.json()["error"]["code"] == "template_upload_already_submitted"
+
+
+def test_activated_template_recovers_success_when_receipt_write_fails(
+    tmp_path, monkeypatch
+) -> None:
+    from template_upload_service import TemplateUploadService
+
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+    request_token = "7" * 32
+    original_finish = TemplateUploadService.finish_submission
+
+    def fail_success_receipt(self, *, succeeded, **kwargs):
+        if succeeded:
+            raise OSError("synthetic receipt failure")
+        return original_finish(self, succeeded=succeeded, **kwargs)
+
+    monkeypatch.setattr(TemplateUploadService, "finish_submission", fail_success_receipt)
+    uploaded = client.post(
+        f"/api/sessions/{session_id}/template",
+        params={"first_page_role": "front"},
+        content=_two_page_template_pdf(),
+        headers={
+            "content-type": "application/pdf",
+            "x-upload-filename": "anonymous-sample.pdf",
+            "x-client-request-token": request_token,
+        },
+    )
+    lookup = client.get(
+        f"/api/sessions/{session_id}/template/submissions/{request_token}"
+    )
+
+    assert uploaded.status_code == 201
+    assert db.get_session_template(session_id) is not None
+    assert lookup.status_code == 200
+    assert lookup.json() == {"status": "succeeded", "template": uploaded.json()}
+    assert "synthetic receipt failure" not in uploaded.text + lookup.text
 
 
 def test_abandoned_template_upload_token_blocks_a_late_request(tmp_path) -> None:

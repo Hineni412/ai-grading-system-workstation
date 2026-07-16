@@ -151,4 +151,20 @@ describe('template region store', () => {
     expect(result).toBeNull()
     expect(store.errorMessage).toBe('当前考试正在被另一项操作使用，请稍后重试完成标定。')
   })
+
+  it('keeps the upload token when a server error leaves activation uncertain', async () => {
+    vi.mocked(api.fetchRegionReadiness).mockResolvedValue({ session_id: 7,
+      scoring_configured: true, template_present: false, template_ready: false })
+    vi.mocked(api.uploadTemplate).mockRejectedValue(new ApiError({ kind: 'server', status: 500,
+      code: 'template_upload_failed', message: 'failed', details: {},
+      requestId: 'rid-upload', retryable: true }))
+    const store = useTemplateRegionStore()
+    await store.load(7)
+
+    await store.upload(new File(['%PDF'], 'sample.pdf', { type: 'application/pdf' }), 'front')
+
+    expect(store.uploadState).toBe('unknown')
+    expect(store.pendingUploadToken).toMatch(/^[0-9a-f]{32}$/)
+    expect(store.errorMessage).toContain('先核对本次上传')
+  })
 })

@@ -161,7 +161,7 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
       uploadState.value = 'idle'
       await load(id)
     } catch (error) {
-      if (isAmbiguousWriteError(error)) {
+      if (isAmbiguousWriteError(error) || (error instanceof ApiError && error.kind === 'server')) {
         uploadState.value = 'unknown'
         errorMessage.value = '上传结果尚未确认，请先核对本次上传，避免重复提交。'
       } else {
