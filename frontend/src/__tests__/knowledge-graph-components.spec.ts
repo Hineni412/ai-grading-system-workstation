@@ -179,7 +179,12 @@ describe('knowledge graph canvas', () => {
 
     props.selectedKey = nodes[0]!.knowledge_key
     await nextTick()
-    expect(chart.setOption).toHaveBeenCalledTimes(2)
+    expect(chart.setOption).toHaveBeenCalledTimes(1)
+    expect(chart.dispatchAction).toHaveBeenCalledWith({
+      type: 'highlight',
+      seriesIndex: 0,
+      name: nodes[0]!.knowledge_label,
+    })
     ResizeObserverStub.instances[0]!.emit()
     expect(chart.resize).toHaveBeenCalledTimes(1)
     app.unmount()

@@ -381,11 +381,13 @@ test('renders and operates on a reproducible 1000-node anonymous graph', async (
   const selectionMs = performance.now() - selectionStartedAt
   expect(selectionMs).toBeLessThan(PERFORMANCE_LIMITS_MS.selection)
 
+  const actualCandidateSha = execFileSync(
+    'git', ['rev-parse', 'HEAD'], { encoding: 'utf8' },
+  ).trim()
+  expect(process.env.P2_15_CANDIDATE_SHA ?? actualCandidateSha).toBe(actualCandidateSha)
   await testInfo.attach('knowledge-graph-1000-node-baseline.json', {
     body: Buffer.from(JSON.stringify({
-      candidateSha: process.env.P2_15_CANDIDATE_SHA ?? execFileSync(
-        'git', ['rev-parse', 'HEAD'], { encoding: 'utf8' },
-      ).trim(),
+      candidateSha: actualCandidateSha,
       nodeCount: 1000,
       firstRenderMs,
       modeSwitchMs,
