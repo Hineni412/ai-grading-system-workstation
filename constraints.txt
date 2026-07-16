@@ -20,6 +20,7 @@ colorama==0.4.6
 cryptography==49.0.0
 distro==1.9.0
 et_xmlfile==2.0.0
+execnet==2.1.2
 fastapi==0.139.0
 flatbuffers==25.12.19
 gitdb==4.0.12
@@ -75,6 +76,7 @@ PyMuPDF==1.27.2.3
 pyparsing==3.3.2
 pypinyin==0.55.0
 pytest==9.1.1
+pytest-xdist==3.8.0
 python-dateutil==2.9.0.post0
 python-docx==1.2.0
 python-multipart==0.0.32
