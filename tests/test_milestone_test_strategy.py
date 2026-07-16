@@ -27,6 +27,8 @@ def test_handoff_and_nightly_rules_allow_only_a_declared_milestone_base() -> Non
     assert "未声明时仍以 `origin/main` 为基线" in package_readme
     assert "已在 Index 声明的活动里程碑" in nightly
     assert "交接基线" in nightly
+    assert "npm run verify" in nightly
+    assert "lint、typecheck、unit 和 build" not in nightly
 
 
 def test_current_index_declares_first_three_package_milestone() -> None:
