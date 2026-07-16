@@ -166,6 +166,33 @@ describe('ConfigGenerationPanel', () => {
     expect(configStore.pendingJobRequestToken).toBeNull()
   })
 
+  it('shows and reconciles a refine recovery without requiring a P2 source', async () => {
+    const token = '4'.repeat(32)
+    const configStore = useConfigWorkspaceStore()
+    configStore.selectSource(null)
+    configStore.setEditor(editor())
+    configStore.markJobSubmissionPending(token, 'refine')
+    const generationLoader = vi.fn(async () => job({
+      id: 46,
+      status: 'queued',
+      progress: 0,
+      payload: { session_id: 7, mode: 'refine' },
+    }))
+    const mounted = await mountPanel({ generationLoader })
+
+    expect(configStore.canGenerate).toBe(false)
+    const reconcile = mounted.host.querySelector<HTMLButtonElement>(
+      'button[name="重新核对生成任务"]',
+    )!
+    expect(reconcile).not.toBeNull()
+    reconcile.click()
+    await settle()
+
+    expect(generationLoader).toHaveBeenCalledExactlyOnceWith(7, token)
+    expect(configStore.jobId).toBe(46)
+    expect(configStore.pendingJobRequestToken).toBeNull()
+  })
+
   it('retries only checked failed questions and preserves successful counts', async () => {
     const retryer = vi.fn(async () => job({ id: 32, status: 'queued', progress: 0 }))
     const configStore = useConfigWorkspaceStore()
@@ -323,7 +350,7 @@ describe('ConfigGenerationPanel', () => {
     expect(configStore.phase).toBe('editor')
   })
 
-  it('keeps an old submitted Job tracked without attaching it to a new session', async () => {
+  it('blocks a session change until an in-flight submission is attached', async () => {
     const pending = deferred<JobResponse>()
     const submitter = vi.fn((_sessionId: number, _request: ConfigGenerationRequest) => {
       void _sessionId
@@ -334,12 +361,12 @@ describe('ConfigGenerationPanel', () => {
     const mounted = await mountPanel({ submitter })
     mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!.click()
     await nextTick()
-    configStore.selectSession(8)
+    expect(configStore.selectSession(8)).toBe(false)
     pending.resolve(job())
     await settle()
 
-    expect(configStore.sessionId).toBe(8)
-    expect(configStore.jobId).toBeNull()
+    expect(configStore.sessionId).toBe(7)
+    expect(configStore.jobId).toBe(31)
     expect(useJobStore().jobs[31]).toEqual(job())
   })
 

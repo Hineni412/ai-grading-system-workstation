@@ -15,18 +15,27 @@ function selectSession(event: Event): void {
   const selector = event.currentTarget as HTMLSelectElement
   const nextSessionId = selector.value === '' ? null : Number(selector.value)
   const changesSession = nextSessionId !== configStore.sessionId
+  const restoreSelection = () => {
+    selector.value = sessionStore.selectedSessionId === null
+      ? ''
+      : String(sessionStore.selectedSessionId)
+  }
+  if (changesSession && configStore.hasPendingSubmission) {
+    window.alert('上一次上传或生成的结果仍在核对。为避免重复处理，请先回到考试配置完成核对，再切换考试。')
+    restoreSelection()
+    return
+  }
   if (changesSession && configStore.hasDirtyEditor) {
     const discard = window.confirm('当前评分依据有未保存修改。切换考试会丢弃这些修改，是否继续？')
     if (!discard) {
-      selector.value = sessionStore.selectedSessionId === null
-        ? ''
-        : String(sessionStore.selectedSessionId)
+      restoreSelection()
       return
     }
     configStore.discardEditorDraft()
   }
   if (!configStore.selectSession(nextSessionId)) return
   sessionStore.selectSession(nextSessionId)
+  if (nextSessionId !== null) void configStore.loadSelectedSessionWorkspace(nextSessionId)
 }
 
 function retrySessions(): void {

@@ -50,6 +50,7 @@ const rubricInputValid = ref(true)
 
 const saving = computed(() => configStore.saveStatus === 'saving')
 const saveUnknown = computed(() => configStore.saveStatus === 'unknown')
+const submissionPending = computed(() => configStore.hasPendingSubmission)
 const refineActive = computed(() => {
   const current = configStore.jobId === null ? null : jobStore.jobs[configStore.jobId]
   return current?.payload.mode === 'refine'
@@ -161,12 +162,12 @@ function queueCommand(command: ConfigEditorCommand): void {
 
 async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
   if (configStore.sessionId === null || configStore.editor === null
-    || configStore.hasDirtyEditor || refining.value) return
+    || configStore.hasDirtyEditor || refining.value || submissionPending.value) return
   const sessionId = configStore.sessionId
   const context = configStore.captureGenerationContext()
   const requestToken = createClientRequestToken()
+  if (!configStore.markJobSubmissionPending(requestToken, 'refine')) return
   refining.value = true
-  configStore.markJobSubmissionPending(requestToken, 'refine')
   refineError.value = ''
   try {
     const job = await props.editorRefiner(sessionId, {
@@ -241,13 +242,15 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
           :decisions="configStore.decisions"
           @update:decisions="configStore.updateDecisions"
         />
-        <ConfigGenerationPanel v-if="configStore.source" />
+        <ConfigGenerationPanel
+          v-if="configStore.source || configStore.pendingJobRequestToken !== null || configStore.jobId !== null"
+        />
         <section v-if="configStore.editor?.configured" class="config-editor" aria-label="评分依据工作区">
           <RubricEditorTable
             :rows="configStore.effectiveEditorRows"
             :total-score="configStore.effectiveTotalScore"
             :issues="editorIssues"
-            :disabled="saving || refining || refineActive"
+            :disabled="saving || refining || refineActive || submissionPending"
             @edit="configStore.updateEditor"
             @validity="rubricInputValid = $event"
           />
@@ -266,7 +269,7 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
               v-if="activeScoringQuestion"
               :question-id="activeScoringQuestion"
               :parts="activeParts"
-              :disabled="saving || refining || refineActive"
+              :disabled="saving || refining || refineActive || submissionPending"
               @command="queueCommand"
               @refine="refineScoringUnits"
             />
@@ -286,7 +289,7 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
               type="button"
               name="保存评分依据"
               class="config-editor__save-primary"
-              :disabled="!configStore.hasDirtyEditor || saveBlocked || saving || saveUnknown || refining || refineActive"
+              :disabled="!configStore.hasDirtyEditor || saveBlocked || saving || saveUnknown || refining || refineActive || submissionPending"
               @click="saveEditor"
             >{{ saving ? '正在保存…' : '保存评分依据' }}</button>
           </div>
