@@ -47,6 +47,7 @@ async function mountUpload(options: {
   onUploaded?: (value: ConfigSource) => void
   beforeUpload?: () => boolean
   submissionLoader?: (sessionId: number, requestToken: string) => Promise<ConfigSourceSubmission>
+  activeSourceLoader?: (sessionId: number) => Promise<ConfigSource>
 } = {}) {
   const host = document.createElement('div')
   document.body.append(host)
@@ -58,6 +59,7 @@ async function mountUpload(options: {
     uploader,
     beforeUpload: options.beforeUpload,
     submissionLoader: options.submissionLoader,
+    activeSourceLoader: options.activeSourceLoader,
     onUploaded,
   })
   app.mount(host)
@@ -133,6 +135,24 @@ describe('ConfigSourceUpload', () => {
 
     expect(submissionLoader).toHaveBeenCalledExactlyOnceWith(7, token)
     expect(mounted.host.textContent).toContain('重新核对上传结果')
+  })
+
+  it('loads the current active source when the submitted upload was replaced', async () => {
+    const token = '1'.repeat(32)
+    const active = source({ source_id: 'e'.repeat(32), source_revision: 'f'.repeat(64) })
+    useConfigWorkspaceStore().markUploadSubmissionPending(token)
+    const activeSourceLoader = vi.fn(async () => active)
+    const mounted = await mountUpload({
+      submissionLoader: vi.fn(async () => ({ status: 'replaced', source: null } as const)),
+      activeSourceLoader,
+    })
+
+    mounted.host.querySelector<HTMLButtonElement>('button:not([type="submit"])')!.click()
+    await settle()
+
+    expect(activeSourceLoader).toHaveBeenCalledExactlyOnceWith(7)
+    expect(mounted.onUploaded).toHaveBeenCalledWith(active)
+    expect(useConfigWorkspaceStore().pendingUploadRequestToken).toBeNull()
   })
 
   it.each([

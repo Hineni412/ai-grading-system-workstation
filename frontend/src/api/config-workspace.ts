@@ -39,7 +39,7 @@ export interface ConfigSource {
 }
 
 export interface ConfigSourceSubmission {
-  status: 'processing' | 'succeeded' | 'failed'
+  status: 'processing' | 'succeeded' | 'failed' | 'replaced'
   source: ConfigSource | null
 }
 
@@ -290,7 +290,7 @@ export async function fetchConfigSourceSubmission(
       decode: (value) => {
         assertNoPathLikeKeys(value)
         if (!isRecord(value) || !hasExactKeys(value, ['status', 'source'])
-          || !['processing', 'succeeded', 'failed'].includes(String(value.status))) {
+          || !['processing', 'succeeded', 'failed', 'replaced'].includes(String(value.status))) {
           throw new Error('Invalid source submission response')
         }
         if (value.source === null) {
