@@ -29,15 +29,23 @@
 
 尚未被任何任务领取的干净 `ready` 候选可以暂时没有交接块。第一次领取后，自动化必须先读取 `git stash list --format=%H`，再在首次源码修改前写入 `in_progress` 块及不可变 `Stash 基线`（全部现有 SHA 用英文逗号连接，没有则为 `none`）；此后缺块、非法块或把新增 stash 补进基线都视为状态不明。完整字段矩阵与提交规则见执行包 README。
 
-对已经领取的包，自动化从任务、分支和 worktree 唯一解析即时计划与 worktree 绝对路径，然后在主项目根目录运行：
+对已经领取的包，自动化从任务、分支和 worktree 唯一解析即时计划与 worktree 绝对路径，然后在主项目根目录运行。普通包使用：
 
 ```powershell
 runtime\python\python.exe tools\handoff_status.py --plan $resolvedPlanPath --repo $resolvedWorktreePath
 ```
 
+若即时计划声明了 `交接基线`，必须先从 integration 现场的 Index 独立读取当前已验证 SHA，再使用：
+
+```powershell
+runtime\python\python.exe tools\handoff_status.py --plan $resolvedPlanPath --repo $resolvedWorktreePath --expected-handoff-base $expectedHandoffBase
+```
+
+不得从计划自身复制该值充当可信输入。
+
 验证器必须只输出一行 JSON。退出码 2、`ok=false`、工具缺失、非 JSON、多份匹配计划或任一 issue 都使该包/通道降为 `report_only`；项目级映射无法唯一确定时整次运行停止。
 
-验证器同时核对即时计划文件名、块外顶部包号和交接块包号，扫描 `origin/main..HEAD` 整段提交历史及领取后新增 stash 中的 `user_data/` 路径，并在用户验收通过时证明：已复审 SHA 由只改计划的 `waiting_user` 提交锚定，下一提交只修改一份同包验收清单，且清单机器结果块记录同一 SHA 与 `passed`。主线已有但本包未触及的历史跟踪数据和基线中已记录的共享 stash 不构成失败。
+验证器同时核对即时计划文件名、块外顶部包号和交接块包号，扫描有效交接基线到 `HEAD` 的整段提交历史及领取后新增 stash 中的 `user_data/` 路径，并在用户验收通过时证明：已复审 SHA 由只改计划的 `waiting_user` 提交锚定，下一提交只修改一份同包验收清单，且清单机器结果块记录同一 SHA 与 `passed`。未声明里程碑交接基线时，有效基线仍为 `origin/main`；主线已有但本包未触及的历史跟踪数据和基线中已记录的共享 stash 不构成失败。
 
 ## 3. 权威提示词
 
