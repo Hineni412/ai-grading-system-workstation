@@ -72,6 +72,32 @@
   background: var(--color-bg-surface);
 }
 
+.app-topbar__navigation {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.app-topbar__navigation a {
+  min-height: var(--control-height-default);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-dense);
+  font-weight: var(--font-weight-medium);
+  text-decoration: none;
+}
+
+.app-topbar__navigation a:hover {
+  background: var(--color-bg-subtle);
+  color: var(--color-text-primary);
+}
+
+.app-topbar__navigation a.router-link-active {
+  background: var(--color-accent-subtle);
+  color: var(--color-accent-active);
+}
+
 .app-topbar__skip-link {
   position: fixed;
   inset-block-start: var(--space-2);

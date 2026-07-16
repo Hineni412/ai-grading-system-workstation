@@ -1,22 +1,45 @@
 from __future__ import annotations
 
+import asyncio
+import io
 import json
 import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import fitz
 import pytest
+from docx import Document
 
+from backend.config_workspace.sources import (
+    ConfigSourceChangedError,
+    ConfigSourceRecord,
+    ConfigSourceService,
+    QuestionDecision,
+)
 from backend.jobs.config_generation import (
+    cleanup_consumed_config_retry_artifacts,
+    discard_config_generation_input,
     load_config_generation_input,
     run_config_generation_job,
     stage_config_generation_input,
+    stage_config_refine_input,
+    stage_config_source_generation_input,
 )
+from backend.config_workspace.editor import (
+    ManualPartInput,
+    ReplaceScoringUnitsCommand,
+    apply_config_editor_changes,
+    editor_part_ids,
+)
+from backend.config_workspace.publish import load_editor_config
 from backend.jobs.manager import JobCancellationRequested, JobContext
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
-from backend.jobs.store import ConfigRetryAlreadySubmittedError
+from backend.jobs.store import ConfigRetryAlreadySubmittedError, ConfigSessionBusyError
 from db_manager import DBManager
+from question_bank.services.source_paper_archive_service import archive_source_bytes
 from session_manager import save_generated_config
 
 
@@ -92,6 +115,147 @@ def _valid_config_payload() -> dict[str, object]:
     }
 
 
+async def _chunks(content: bytes):
+    yield content
+
+
+def _docx_bytes(text: str = "1. Prove x equals x.\nAnswer: proven") -> bytes:
+    document = Document()
+    document.add_paragraph(text)
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+def _pdf_bytes() -> bytes:
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text(
+        (72, 72),
+        "Synthetic exam\n1. Compute 1 + 1.\nAnswer\n1. 2",
+        fontsize=12,
+    )
+    content = document.tobytes()
+    document.close()
+    return content
+
+
+def _controlled_source(
+    tmp_path: Path,
+    session_id: int,
+    *,
+    suffix: str = ".docx",
+    text: str = "1. Prove x equals x.\nAnswer: proven",
+) -> tuple[ConfigSourceService, ConfigSourceRecord]:
+    service = ConfigSourceService(tmp_path / "uploaded")
+    content = _pdf_bytes() if suffix == ".pdf" else _docx_bytes(text)
+    record = asyncio.run(
+        service.stage_and_parse(
+            session_id=session_id,
+            filename=f"controlled{suffix}",
+            chunks=_chunks(content),
+        )
+    )
+    return service, record
+
+
+def _stage_controlled_input(
+    tmp_path: Path,
+    source_service: ConfigSourceService,
+    source: ConfigSourceRecord,
+    expected_paths: tuple[str, str],
+    *,
+    generation_mode: str,
+) -> str:
+    return stage_config_source_generation_input(
+        tmp_path / "uploaded",
+        session_id=source.session_id,
+        expected_rubric_path=expected_paths[0],
+        expected_answer_key_path=expected_paths[1],
+        generation_mode=generation_mode,
+        source_id=source.source_id,
+        source_revision=source.source_revision,
+        decisions=[
+            {
+                "question_id": source.questions[0].question_id,
+                "question_type": "proof",
+                "excluded": False,
+            }
+        ],
+    )
+
+
+def _two_same_sha_source_jobs(
+    tmp_path: Path,
+) -> tuple[
+    DBManager,
+    list[tuple[int, tuple[str, str], ConfigSourceRecord, JobContext]],
+]:
+    db = DBManager(tmp_path / "grading.db")
+    db.initialize()
+    source_bytes = _docx_bytes("1. Prove shared equals shared.\nAnswer: proven")
+    jobs: list[tuple[int, tuple[str, str], ConfigSourceRecord, JobContext]] = []
+    source_service = ConfigSourceService(tmp_path / "uploaded")
+    for index in range(2):
+        rubric_path, answer_path = save_generated_config(
+            tmp_path / f"initial-{index}",
+            _valid_config_payload(),
+            f"initial-{index}",
+        )
+        old_paths = (str(rubric_path), str(answer_path))
+        session_id = db.create_grading_session(
+            f"Concurrent Config Job {index}",
+            old_paths[0],
+            old_paths[1],
+        )
+        source = asyncio.run(
+            source_service.stage_and_parse(
+                session_id=session_id,
+                filename="shared.docx",
+                chunks=_chunks(source_bytes),
+            )
+        )
+        input_id = _stage_controlled_input(
+            tmp_path,
+            source_service,
+            source,
+            old_paths,
+            generation_mode="per_question",
+        )
+        context, _store = _job_context(
+            db.db_path,
+            {
+                "session_id": session_id,
+                "mode": "generate",
+                "generation_mode": "per_question",
+                "input_id": input_id,
+                "source_id": source.source_id,
+                "source_revision": source.source_revision,
+            },
+        )
+        jobs.append((session_id, old_paths, source, context))
+    assert jobs[0][2].sha256 == jobs[1][2].sha256
+    return db, jobs
+
+
+def _force_concurrent_archive_reuse_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from question_bank.services import source_paper_archive_service as archive_module
+
+    real_reuse = archive_module._reuse_matching
+    barrier = threading.Barrier(2)
+
+    def synchronized_reuse(*args: object, **kwargs: object):
+        try:
+            barrier.wait(timeout=0.5)
+        except threading.BrokenBarrierError:
+            return real_reuse(*args, **kwargs)
+        return None
+
+    monkeypatch.setattr(archive_module, "_reuse_matching", synchronized_reuse)
+
+
 def test_stage_config_generation_input_round_trips_without_client_path(
     tmp_path: Path,
 ) -> None:
@@ -120,14 +284,80 @@ def test_load_config_generation_input_rejects_path_traversal(tmp_path: Path) -> 
         load_config_generation_input(tmp_path, "../outside")
 
 
+def test_load_config_generation_input_enforces_serialized_size_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import backend.jobs.config_generation as generation_module
+
+    input_id = stage_config_generation_input(
+        tmp_path,
+        session_id=7,
+        expected_rubric_path="server-rubric.json",
+        expected_answer_key_path="server-answer.json",
+        **_minimal_input(),
+    )
+    monkeypatch.setattr(generation_module, "MAX_CONFIG_GENERATION_INPUT_BYTES", 8)
+    with pytest.raises(Exception, match="secure file exceeds size limit"):
+        load_config_generation_input(tmp_path, input_id)
+
+
+def test_generation_input_io_uses_secure_root_filesystem(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.config_workspace.secure_fs import SecureRootFilesystem
+
+    writes: list[Path] = []
+    reads: list[Path] = []
+    deletes: list[tuple[Path, ...]] = []
+    real_write = SecureRootFilesystem.write_json_atomic
+    real_read = SecureRootFilesystem.read_text
+    real_unlink = SecureRootFilesystem.unlink_many
+
+    def tracked_write(self, path, payload):
+        writes.append(Path(path))
+        return real_write(self, path, payload)
+
+    def tracked_read(self, path, *, encoding="utf-8", max_bytes=None):
+        reads.append(Path(path))
+        return real_read(self, path, encoding=encoding, max_bytes=max_bytes)
+
+    def tracked_unlink(self, paths):
+        owned = tuple(Path(path) for path in paths)
+        deletes.append(owned)
+        return real_unlink(self, owned)
+
+    monkeypatch.setattr(SecureRootFilesystem, "write_json_atomic", tracked_write)
+    monkeypatch.setattr(SecureRootFilesystem, "read_text", tracked_read)
+    monkeypatch.setattr(SecureRootFilesystem, "unlink_many", tracked_unlink)
+
+    input_id = stage_config_generation_input(
+        tmp_path,
+        session_id=7,
+        expected_rubric_path="server-rubric.json",
+        expected_answer_key_path="server-answer.json",
+        **_minimal_input(),
+    )
+    load_config_generation_input(tmp_path, input_id)
+    discard_config_generation_input(tmp_path, input_id)
+
+    expected = tmp_path / f"config_generation_input_{input_id}.json"
+    assert writes == [expected]
+    assert reads == [expected]
+    assert deletes == [(expected,)]
+
+
 def test_stage_config_generation_input_cleans_temp_file_when_publish_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fail_replace(_source: object, _target: object) -> None:
+    from backend.config_workspace.secure_fs import SecureRootFilesystem
+
+    def fail_write(_self: object, _path: object, _payload: object) -> None:
         raise OSError("publish failed")
 
-    monkeypatch.setattr("backend.jobs.config_generation.os.replace", fail_replace)
+    monkeypatch.setattr(SecureRootFilesystem, "write_json_atomic", fail_write)
 
     with pytest.raises(OSError, match="publish failed"):
         stage_config_generation_input(
@@ -246,7 +476,10 @@ def test_config_generation_job_binds_complete_result_and_returns_safe_summary(
     assert (session["rubric_path"], session["answer_key_path"]) != old_paths
     assert Path(session["rubric_path"]).is_file()
     assert Path(session["answer_key_path"]).is_file()
-    assert result == {
+    assert {key: result[key] for key in (
+        "session_id", "outcome", "total_questions", "generated_questions",
+        "failed_count", "failed_question_ids", "retryable",
+    )} == {
         "session_id": session_id,
         "outcome": "complete",
         "total_questions": 6,
@@ -255,11 +488,723 @@ def test_config_generation_job_binds_complete_result_and_returns_safe_summary(
         "failed_question_ids": [],
         "retryable": False,
     }
+    assert result["mapping_status"] == "not_present"
+    assert isinstance(result["mapping_message"], str)
     assert str(tmp_path) not in json.dumps(result)
     stored_job = context.store.get_job(context.job_id)
     assert stored_job is not None
     assert stored_job.status == "succeeded"
     assert stored_job.result == result
+
+
+def test_complete_generation_persists_mapping_reconfirmation_when_template_files_are_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    db.upsert_session_template(
+        session_id,
+        str(tmp_path / "missing-front.png"),
+        str(tmp_path / "missing-back.png"),
+    )
+    input_id = _stage_job_input(tmp_path, session_id, old_paths)
+    context, _store = _job_context(
+        db.db_path,
+        {"session_id": session_id, "mode": "generate", "input_id": input_id},
+    )
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        lambda *_args, **_kwargs: _valid_config_payload(),
+    )
+
+    result = run_config_generation_job(
+        context=context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        mapping_output_dir=tmp_path / "mapping-output",
+        llm_client_factory=lambda: object(),
+    )
+
+    assert result["mapping_status"] == "reconfirm_required"
+    stored = context.store.get_job(context.job_id)
+    assert stored is not None
+    assert stored.status == "succeeded"
+    assert stored.result["mapping_status"] == "reconfirm_required"
+    assert str(tmp_path) not in json.dumps(stored.result, ensure_ascii=False)
+
+
+def test_mapping_refresh_keeps_job_running_and_session_claimed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    input_id = _stage_job_input(tmp_path, session_id, old_paths)
+    mapping_started = threading.Event()
+    release_mapping = threading.Event()
+
+    def blocked_mapping(*_args: object, **_kwargs: object) -> str:
+        mapping_started.set()
+        assert release_mapping.wait(timeout=5)
+        return "refreshed"
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        lambda *_args, **_kwargs: _valid_config_payload(),
+    )
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.refresh_template_mapping_from_session",
+        blocked_mapping,
+    )
+    manager = JobManager(JobStore(db.db_path), max_workers=1, cleanup_interrupted=False)
+    manager.register(
+        "config_generation",
+        lambda context: run_config_generation_job(
+            context=context,
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            mapping_output_dir=tmp_path / "mapping-output",
+            llm_client_factory=lambda: object(),
+        ),
+    )
+    try:
+        job = manager.submit(
+            "config_generation",
+            {"session_id": session_id, "mode": "generate", "input_id": input_id},
+        )
+        assert mapping_started.wait(timeout=5)
+        during_mapping = manager.get(job.id)
+        assert during_mapping is not None
+        assert during_mapping.status == "running"
+        assert during_mapping.stage == "config_mapping"
+        with pytest.raises(ConfigSessionBusyError):
+            manager.submit(
+                "config_generation",
+                {"session_id": session_id, "mode": "generate", "input_id": input_id},
+            )
+        release_mapping.set()
+        manager.wait(job.id, timeout=5)
+        completed = manager.get(job.id)
+        assert completed is not None
+        assert completed.status == "succeeded"
+        assert completed.result["mapping_status"] == "refreshed"
+    finally:
+        release_mapping.set()
+        manager.shutdown()
+
+
+def test_whole_docx_generation_calls_text_model_exactly_once_and_binds_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    source_service, source = _controlled_source(tmp_path, session_id, suffix=".docx")
+    input_id = _stage_controlled_input(
+        tmp_path,
+        source_service,
+        source,
+        old_paths,
+        generation_mode="whole_document",
+    )
+    context, _store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "whole_document",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+        },
+    )
+    calls = {"text": 0, "images": 0}
+
+    def whole_text(document_text: str, *_args: object, **_kwargs: object):
+        calls["text"] += 1
+        assert document_text == source.private_document_text
+        return _valid_config_payload()
+
+    def whole_images(*_args: object, **_kwargs: object):
+        calls["images"] += 1
+        raise AssertionError("DOCX whole mode must not call the visual generator")
+
+    monkeypatch.setattr("backend.jobs.config_generation.generate_grading_config_from_text", whole_text)
+    monkeypatch.setattr("backend.jobs.config_generation.generate_grading_config_from_images", whole_images)
+
+    result = run_config_generation_job(
+        context=context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        llm_client_factory=lambda: object(),
+    )
+
+    assert calls == {"text": 1, "images": 0}
+    assert result["outcome"] == "complete"
+    session = db.get_grading_session(session_id)
+    assert session is not None
+    assert session["source_paper_sha256"] == source.sha256
+    assert (tmp_path / str(session["source_paper_path"])).is_file()
+
+
+def test_whole_pdf_generation_calls_visual_model_exactly_once_without_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    source_service, source = _controlled_source(tmp_path, session_id, suffix=".pdf")
+    input_id = _stage_controlled_input(
+        tmp_path,
+        source_service,
+        source,
+        old_paths,
+        generation_mode="whole_document",
+    )
+    context, _store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "whole_document",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+        },
+    )
+    calls = {"text": 0, "images": 0}
+
+    def whole_text(*_args: object, **_kwargs: object):
+        calls["text"] += 1
+        raise AssertionError("PDF whole mode must not send extracted text")
+
+    def whole_images(images: list[bytes], document_text: str, *_args: object, **_kwargs: object):
+        calls["images"] += 1
+        assert images == list(source.private_whole_page_images)
+        assert document_text == ""
+        return _valid_config_payload()
+
+    monkeypatch.setattr("backend.jobs.config_generation.generate_grading_config_from_text", whole_text)
+    monkeypatch.setattr("backend.jobs.config_generation.generate_grading_config_from_images", whole_images)
+
+    result = run_config_generation_job(
+        context=context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        llm_client_factory=lambda: object(),
+    )
+
+    assert calls == {"text": 0, "images": 1}
+    assert result["outcome"] == "complete"
+
+
+def test_whole_document_model_failure_is_not_retried_or_partially_published(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    source_service, source = _controlled_source(tmp_path, session_id, suffix=".docx")
+    input_id = _stage_controlled_input(
+        tmp_path,
+        source_service,
+        source,
+        old_paths,
+        generation_mode="whole_document",
+    )
+    context, _store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "whole_document",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+        },
+    )
+    calls = 0
+
+    def fail_once(*_args: object, **_kwargs: object):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("synthetic upstream detail")
+
+    monkeypatch.setattr("backend.jobs.config_generation.generate_grading_config_from_text", fail_once)
+
+    with pytest.raises(RuntimeError, match="synthetic upstream detail"):
+        run_config_generation_job(
+            context=context,
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            llm_client_factory=lambda: object(),
+        )
+
+    assert calls == 1
+    session = db.get_grading_session(session_id)
+    assert session is not None
+    assert (session["rubric_path"], session["answer_key_path"]) == old_paths
+    assert not list((tmp_path / "uploaded").glob("rubric_job-*.json"))
+    assert not list((tmp_path / "question_bank" / "raw_papers").glob("*"))
+
+
+def test_source_job_reloads_active_identity_before_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    source_service, source = _controlled_source(tmp_path, session_id)
+    input_id = _stage_controlled_input(
+        tmp_path,
+        source_service,
+        source,
+        old_paths,
+        generation_mode="per_question",
+    )
+    _controlled_source(tmp_path, session_id, text="1. Prove y equals y.")
+    context, _store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "per_question",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+        },
+    )
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        lambda *_args, **_kwargs: pytest.fail("stale source must fail before model call"),
+    )
+
+    with pytest.raises(ConfigSourceChangedError):
+        run_config_generation_job(
+            context=context,
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            llm_client_factory=lambda: object(),
+        )
+
+
+def test_source_job_reloads_identity_under_lock_before_final_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    source_service, source = _controlled_source(tmp_path, session_id)
+    input_id = _stage_controlled_input(
+        tmp_path,
+        source_service,
+        source,
+        old_paths,
+        generation_mode="per_question",
+    )
+    context, _store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "per_question",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+        },
+    )
+
+    def replace_source(*_args: object, **_kwargs: object):
+        _controlled_source(tmp_path, session_id, text="1. Prove z equals z.")
+        return _valid_config_payload()
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        replace_source,
+    )
+
+    with pytest.raises(ConfigSourceChangedError):
+        run_config_generation_job(
+            context=context,
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            llm_client_factory=lambda: object(),
+        )
+
+    session = db.get_grading_session(session_id)
+    assert session is not None
+    assert (session["rubric_path"], session["answer_key_path"]) == old_paths
+    assert not list((tmp_path / "uploaded").glob("rubric_job-*.json"))
+    assert not list((tmp_path / "question_bank" / "raw_papers").glob("*"))
+
+
+def test_source_generation_reuses_existing_archive_without_deleting_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    source_service, source = _controlled_source(tmp_path, session_id)
+    archived = archive_source_bytes(
+        filename=source.safe_filename,
+        content=source.private_source_bytes,
+        data_root=tmp_path,
+    )
+    input_id = _stage_controlled_input(
+        tmp_path,
+        source_service,
+        source,
+        old_paths,
+        generation_mode="per_question",
+    )
+    context, _store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "per_question",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+        },
+    )
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        lambda *_args, **_kwargs: _valid_config_payload(),
+    )
+
+    run_config_generation_job(
+        context=context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        llm_client_factory=lambda: object(),
+    )
+
+    session = db.get_grading_session(session_id)
+    assert session is not None
+    assert session["source_paper_path"] == archived.stored_path
+    assert archived.physical_path.is_file()
+    assert len(list(archived.physical_path.parent.glob("*"))) == 1
+
+
+def test_concurrent_same_sha_source_jobs_share_one_linearized_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, jobs = _two_same_sha_source_jobs(tmp_path)
+    _force_concurrent_archive_reuse_checks(monkeypatch)
+    real_archive = archive_source_bytes
+    archive_results: list[tuple[str, bool]] = []
+    results_guard = threading.Lock()
+
+    def record_archive(**kwargs: object):
+        result = real_archive(**kwargs)
+        with results_guard:
+            archive_results.append((result.stored_path, result.reused))
+        return result
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.archive_source_bytes",
+        record_archive,
+    )
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        lambda *_args, **_kwargs: _valid_config_payload(),
+    )
+
+    def run(entry: tuple[int, tuple[str, str], ConfigSourceRecord, JobContext]):
+        return run_config_generation_job(
+            context=entry[3],
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            data_root=tmp_path,
+            llm_client_factory=lambda: object(),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(run, jobs))
+
+    assert [result["outcome"] for result in results] == ["complete", "complete"]
+    assert sorted(reused for _path, reused in archive_results) == [False, True]
+    assert len({path for path, _reused in archive_results}) == 1
+    sessions = [db.get_grading_session(entry[0]) for entry in jobs]
+    assert all(session is not None for session in sessions)
+    stored_paths = {str(session["source_paper_path"]) for session in sessions if session}
+    assert stored_paths == {archive_results[0][0]}
+    assert (tmp_path / archive_results[0][0]).is_file()
+
+
+def test_concurrent_same_sha_failed_job_cannot_delete_successful_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, jobs = _two_same_sha_source_jobs(tmp_path)
+    success_entry, failure_entry = jobs
+    _force_concurrent_archive_reuse_checks(monkeypatch)
+    real_archive = archive_source_bytes
+    real_finish = JobStore.finish_config_generation_and_bind
+    archive_results: list[tuple[int, str, bool]] = []
+    results_guard = threading.Lock()
+    both_archived = threading.Event()
+    failure_finished = threading.Event()
+
+    def record_archive(**kwargs: object):
+        result = real_archive(**kwargs)
+        with results_guard:
+            archive_results.append(
+                (threading.get_ident(), result.stored_path, result.reused)
+            )
+            if len(archive_results) == 2:
+                both_archived.set()
+        return result
+
+    def controlled_finish(store: JobStore, job_id: int, **kwargs: object) -> bool:
+        if int(job_id) == failure_entry[3].job_id:
+            both_archived.wait(timeout=0.5)
+            raise sqlite3.IntegrityError("injected concurrent bind failure")
+        if both_archived.wait(timeout=0.1):
+            assert failure_finished.wait(timeout=3)
+        return real_finish(store, job_id, **kwargs)
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.archive_source_bytes",
+        record_archive,
+    )
+    monkeypatch.setattr(
+        JobStore,
+        "finish_config_generation_and_bind",
+        controlled_finish,
+    )
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        lambda *_args, **_kwargs: _valid_config_payload(),
+    )
+
+    def run_success() -> dict[str, object]:
+        return run_config_generation_job(
+            context=success_entry[3],
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            data_root=tmp_path,
+            llm_client_factory=lambda: object(),
+        )
+
+    def run_failure() -> None:
+        try:
+            with pytest.raises(
+                sqlite3.IntegrityError,
+                match="injected concurrent bind failure",
+            ):
+                run_config_generation_job(
+                    context=failure_entry[3],
+                    db=db,
+                    upload_config_dir=tmp_path / "uploaded",
+                    data_root=tmp_path,
+                    llm_client_factory=lambda: object(),
+                )
+        finally:
+            failure_finished.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        success_future = executor.submit(run_success)
+        failure_future = executor.submit(run_failure)
+        success_result = success_future.result(timeout=10)
+        failure_future.result(timeout=10)
+
+    assert success_result["outcome"] == "complete"
+    success_session = db.get_grading_session(success_entry[0])
+    failed_session = db.get_grading_session(failure_entry[0])
+    assert success_session is not None
+    assert failed_session is not None
+    assert success_session["source_paper_path"]
+    assert (tmp_path / str(success_session["source_paper_path"])).is_file()
+    assert (
+        failed_session["rubric_path"],
+        failed_session["answer_key_path"],
+    ) == failure_entry[1]
+    assert not failed_session["source_paper_path"]
+    assert len({path for _thread_id, path, _reused in archive_results}) == 1
+
+
+def test_source_generation_finalization_failure_preserves_committed_truth(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    source_service, source = _controlled_source(tmp_path, session_id)
+    input_id = _stage_controlled_input(
+        tmp_path,
+        source_service,
+        source,
+        old_paths,
+        generation_mode="per_question",
+    )
+    context, _store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "per_question",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+        },
+    )
+    raw_papers = tmp_path / "question_bank" / "raw_papers"
+    raw_papers.mkdir(parents=True)
+    sentinel = raw_papers / "not-created-by-job.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    with sqlite3.connect(db.db_path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER fail_source_config_finish
+            BEFORE UPDATE OF status ON jobs
+            WHEN NEW.id = ? AND NEW.status = 'succeeded'
+            BEGIN
+                SELECT RAISE(ABORT, 'injected source finish failure');
+            END
+            """.replace("?", str(context.job_id))
+        )
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        lambda *_args, **_kwargs: _valid_config_payload(),
+    )
+
+    result = run_config_generation_job(
+        context=context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        llm_client_factory=lambda: object(),
+    )
+
+    session = db.get_grading_session(session_id)
+    assert session is not None
+    assert result["outcome"] == "complete"
+    assert (session["rubric_path"], session["answer_key_path"]) != old_paths
+    assert Path(session["rubric_path"]).is_file()
+    assert Path(session["answer_key_path"]).is_file()
+    assert session["source_paper_path"]
+    assert session["source_paper_sha256"] == source.sha256
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    stored = context.store.get_job(context.job_id)
+    assert stored is not None
+    assert stored.status == "running"
+    assert stored.stage == "config_mapping"
+    assert stored.result["mapping_status"] == "reconfirm_required"
+
+    with sqlite3.connect(db.db_path) as connection:
+        connection.execute("DROP TRIGGER fail_source_config_finish")
+    assert context.store.fail_interrupted_jobs() == 1
+    recovered = context.store.get_job(context.job_id)
+    assert recovered is not None
+    assert recovered.status == "succeeded"
+    assert recovered.result["mapping_status"] == "reconfirm_required"
+
+
+@pytest.mark.parametrize("same_sha", [False, True])
+def test_atomic_source_binding_resets_sync_only_when_preupdate_sha_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    same_sha: bool,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    source_service, source = _controlled_source(tmp_path, session_id)
+    db.bind_grading_session_source(
+        session_id,
+        source_paper_path="question_bank/raw_papers/old.docx",
+        source_paper_sha256=source.sha256 if same_sha else "f" * 64,
+    )
+    db.update_question_bank_sync_state(
+        session_id,
+        state="ready",
+        details={"confirmed": 1},
+        error="old-error",
+    )
+    input_id = _stage_controlled_input(
+        tmp_path,
+        source_service,
+        source,
+        old_paths,
+        generation_mode="per_question",
+    )
+    context, _store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "per_question",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+        },
+    )
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        lambda *_args, **_kwargs: _valid_config_payload(),
+    )
+
+    run_config_generation_job(
+        context=context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        llm_client_factory=lambda: object(),
+    )
+
+    session = db.get_grading_session(session_id)
+    assert session is not None
+    assert session["source_paper_sha256"] == source.sha256
+    if same_sha:
+        assert session["question_bank_sync_state"] == "ready"
+        assert json.loads(session["question_bank_sync_details_json"]) == {"confirmed": 1}
+        assert session["question_bank_sync_error"] == "old-error"
+        assert session["question_bank_sync_updated_at"]
+    else:
+        assert session["question_bank_sync_state"] == "not_started"
+        assert json.loads(session["question_bank_sync_details_json"]) == {}
+        assert session["question_bank_sync_error"] is None
+        assert session["question_bank_sync_updated_at"] is None
+
+
+def test_source_generation_cancellation_preserves_old_binding_and_new_file_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    source_service, source = _controlled_source(tmp_path, session_id)
+    input_id = _stage_controlled_input(
+        tmp_path,
+        source_service,
+        source,
+        old_paths,
+        generation_mode="per_question",
+    )
+    context, store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "per_question",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+        },
+    )
+
+    def cancel(*_args: object, **kwargs: object):
+        assert store.request_cancel(context.job_id)
+        kwargs["report"](0.8, "generation", "returned")
+        return _valid_config_payload()
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        cancel,
+    )
+
+    with pytest.raises(JobCancellationRequested):
+        run_config_generation_job(
+            context=context,
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            llm_client_factory=lambda: object(),
+        )
+
+    session = db.get_grading_session(session_id)
+    assert session is not None
+    assert (session["rubric_path"], session["answer_key_path"]) == old_paths
+    assert not list((tmp_path / "question_bank" / "raw_papers").glob("*"))
 
 
 def test_config_generation_job_saves_partial_draft_without_binding_session(
@@ -306,6 +1251,64 @@ def test_config_generation_job_saves_partial_draft_without_binding_session(
     assert result["retryable"] is True
     draft = tmp_path / "uploaded" / f"config_generation_draft_job_{context.job_id}.json"
     assert json.loads(draft.read_text(encoding="utf-8"))["meta"]["failed_question_ids"] == ["Q2"]
+
+
+def test_partial_generation_rejects_a_source_replaced_while_model_was_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    source_service, source = _controlled_source(tmp_path, session_id)
+    input_id = _stage_controlled_input(
+        tmp_path,
+        source_service,
+        source,
+        old_paths,
+        generation_mode="per_question",
+    )
+    context, _store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "per_question",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+        },
+    )
+    partial = _valid_config_payload()
+    partial["meta"] = {
+        "warnings": ["Q2 generation failed"],
+        "failed_question_ids": ["Q2"],
+        "failed_questions": [{"question_id": "Q2", "error": "temporary"}],
+        "score_allocation_pending": True,
+    }
+
+    def replace_then_return(*_args: object, **_kwargs: object) -> dict[str, object]:
+        asyncio.run(
+            source_service.stage_and_parse(
+                session_id=session_id,
+                filename="replacement.docx",
+                chunks=_chunks(_docx_bytes("1. Prove y equals y.\nAnswer: proven")),
+            )
+        )
+        return partial
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        replace_then_return,
+    )
+
+    with pytest.raises(ConfigSourceChangedError):
+        run_config_generation_job(
+            context=context,
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            llm_client_factory=lambda: object(),
+        )
+
+    assert not (tmp_path / "uploaded" / f"config_generation_draft_job_{context.job_id}.json").exists()
 
 
 def test_config_generation_job_honours_cancellation_before_final_publish(
@@ -460,6 +1463,54 @@ def test_config_generation_retry_loads_source_draft_and_selected_questions(
     assert (session["rubric_path"], session["answer_key_path"]) != old_paths
 
 
+def test_cancelled_retry_preserves_the_partial_jobs_shared_input(
+    tmp_path: Path,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    upload_dir = tmp_path / "uploaded"
+    input_id = _stage_job_input(tmp_path, session_id, old_paths)
+    store = JobStore(db.db_path)
+    source = store.create_job(
+        "config_generation",
+        {"session_id": session_id, "mode": "generate", "input_id": input_id},
+    )
+    store.finish(
+        source.id,
+        "succeeded",
+        result={"session_id": session_id, "outcome": "partial", "retryable": True},
+    )
+    draft = upload_dir / f"config_generation_draft_job_{source.id}.json"
+    draft.write_text(json.dumps(_valid_config_payload()), encoding="utf-8")
+    retry = store.create_job(
+        "config_generation",
+        {
+            "session_id": session_id,
+            "mode": "retry",
+            "source_job_id": source.id,
+            "input_id": input_id,
+        },
+    )
+    assert store.mark_running(retry.id)
+    assert store.request_cancel(retry.id)
+    context = JobContext(
+        job_id=retry.id,
+        job_type=retry.job_type,
+        payload=retry.payload,
+        store=store,
+    )
+
+    with pytest.raises(JobCancellationRequested):
+        run_config_generation_job(
+            context=context,
+            db=db,
+            upload_config_dir=upload_dir,
+            llm_client_factory=lambda: object(),
+        )
+
+    assert (upload_dir / f"config_generation_input_{input_id}.json").is_file()
+    assert draft.is_file()
+
+
 def test_config_generation_job_rejects_input_staged_for_another_session(
     tmp_path: Path,
 ) -> None:
@@ -527,7 +1578,7 @@ def test_config_generation_job_does_not_overwrite_manual_config_change(
     assert not list((tmp_path / "uploaded").glob("answer_key_job-*.json"))
 
 
-def test_atomic_finish_rolls_back_session_bind_when_job_update_fails(
+def test_atomic_bind_rolls_back_session_when_committed_marker_fails(
     tmp_path: Path,
 ) -> None:
     db, session_id, old_paths = _db_with_session(tmp_path)
@@ -537,9 +1588,9 @@ def test_atomic_finish_rolls_back_session_bind_when_job_update_fails(
     with sqlite3.connect(db.db_path) as connection:
         connection.execute(
             """
-            CREATE TRIGGER fail_config_job_finish
-            BEFORE UPDATE OF status ON jobs
-            WHEN NEW.id = ? AND NEW.status = 'succeeded'
+            CREATE TRIGGER fail_config_job_bind
+            BEFORE UPDATE OF stage ON jobs
+            WHEN NEW.id = ? AND NEW.stage = 'config_mapping'
             BEGIN
                 SELECT RAISE(ABORT, 'injected finish failure');
             END
@@ -561,6 +1612,73 @@ def test_atomic_finish_rolls_back_session_bind_when_job_update_fails(
     assert session is not None
     assert (session["rubric_path"], session["answer_key_path"]) == old_paths
     assert store.get_job(job.id).status == "running"
+
+
+def test_bound_config_job_stays_running_until_final_mapping_result_is_persisted(
+    tmp_path: Path,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    store = JobStore(db.db_path)
+    job = store.create_job("config_generation", {"session_id": session_id})
+    assert store.mark_running(job.id)
+    provisional = {
+        "session_id": session_id,
+        "outcome": "complete",
+        "mapping_status": "reconfirm_required",
+        "mapping_message": "safe fallback",
+    }
+
+    assert store.finish_config_generation_and_bind(
+        job.id,
+        session_id=session_id,
+        expected_rubric_path=old_paths[0],
+        expected_answer_key_path=old_paths[1],
+        rubric_path="new-rubric.json",
+        answer_key_path="new-answer.json",
+        result=provisional,
+    )
+    bound = store.get_job(job.id)
+    assert bound is not None
+    assert bound.status == "running"
+    assert bound.stage == "config_mapping"
+    assert bound.result["mapping_status"] == "reconfirm_required"
+    with pytest.raises(ConfigSessionBusyError):
+        store.create_claimed_config_job({"session_id": session_id, "mode": "generate"})
+
+    final = {**provisional, "mapping_status": "refreshed", "mapping_message": "refreshed"}
+    assert store.finalize_bound_config_generation(job.id, final)
+    completed = store.get_job(job.id)
+    assert completed is not None
+    assert completed.status == "succeeded"
+    assert completed.result == final
+
+
+def test_restart_recovers_bound_config_as_conservative_success(tmp_path: Path) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    store = JobStore(db.db_path)
+    job = store.create_job("config_generation", {"session_id": session_id})
+    assert store.mark_running(job.id)
+    provisional = {
+        "session_id": session_id,
+        "outcome": "complete",
+        "mapping_status": "reconfirm_required",
+        "mapping_message": "safe fallback",
+    }
+    assert store.finish_config_generation_and_bind(
+        job.id,
+        session_id=session_id,
+        expected_rubric_path=old_paths[0],
+        expected_answer_key_path=old_paths[1],
+        rubric_path="new-rubric.json",
+        answer_key_path="new-answer.json",
+        result=provisional,
+    )
+
+    assert store.fail_interrupted_jobs() == 1
+    recovered = store.get_job(job.id)
+    assert recovered is not None
+    assert recovered.status == "succeeded"
+    assert recovered.result == provisional
 
 
 def test_config_generation_restart_fails_interrupted_and_preserves_terminal_result(
@@ -610,3 +1728,440 @@ def test_config_retry_claim_is_atomic_across_concurrent_submitters(
 
     assert outcomes[0] == "conflict"
     assert outcomes[1].startswith("job:")
+
+
+def test_config_session_claim_allows_exact_replay_but_rejects_another_active_request(
+    tmp_path: Path,
+) -> None:
+    store = JobStore(tmp_path / "jobs.db")
+    first_payload = {
+        "session_id": 7,
+        "mode": "generate",
+        "client_request_token": "1" * 32,
+        "client_request_fingerprint": "a" * 64,
+    }
+    first, created = store.create_idempotent_config_job(first_payload)
+    replay, replay_created = store.create_idempotent_config_job(first_payload)
+
+    assert created is True
+    assert replay_created is False
+    assert replay.id == first.id
+    with pytest.raises(ConfigSessionBusyError):
+        store.create_idempotent_config_job(
+            {
+                **first_payload,
+                "client_request_token": "2" * 32,
+                "client_request_fingerprint": "b" * 64,
+            }
+        )
+    with pytest.raises(ConfigSessionBusyError):
+        store.create_claimed_config_job({"session_id": 7, "mode": "generate"})
+
+
+def test_job_manager_marks_cancelled_error_terminal_instead_of_leaving_running(
+    tmp_path: Path,
+) -> None:
+    manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
+
+    def cancelled(_context: JobContext) -> dict[str, object]:
+        raise asyncio.CancelledError()
+
+    manager.register("config_generation", cancelled)
+    try:
+        job = manager.submit("config_generation", {"session_id": 7})
+        manager.wait(job.id, timeout=5)
+        terminal = manager.get(job.id)
+        assert terminal is not None
+        assert terminal.status == "failed"
+        assert terminal.finished_at is not None
+    finally:
+        manager.shutdown()
+
+
+def test_restart_cleans_only_interrupted_owned_inputs_and_preserves_retry_shared_input(
+    tmp_path: Path,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    upload_dir = tmp_path / "uploaded"
+    generate_input = _stage_job_input(tmp_path, session_id, old_paths)
+    refine_input = _stage_job_input(tmp_path, session_id, old_paths)
+    retry_input = _stage_job_input(tmp_path, session_id, old_paths)
+    store = JobStore(db.db_path)
+    store.create_job(
+        "config_generation",
+        {"session_id": session_id, "mode": "generate", "input_id": generate_input},
+    )
+    store.create_job(
+        "config_generation",
+        {"session_id": session_id, "mode": "refine", "input_id": refine_input},
+    )
+    store.create_job(
+        "config_generation",
+        {"session_id": session_id, "mode": "retry", "input_id": retry_input},
+    )
+
+    manager = JobManager(
+        JobStore(db.db_path),
+        max_workers=1,
+        cleanup_interrupted=True,
+        interrupted_input_root=upload_dir,
+    )
+    try:
+        assert not (upload_dir / f"config_generation_input_{generate_input}.json").exists()
+        assert not (upload_dir / f"config_generation_input_{refine_input}.json").exists()
+        assert (upload_dir / f"config_generation_input_{retry_input}.json").is_file()
+    finally:
+        manager.shutdown()
+
+
+def test_config_source_references_are_derived_from_private_job_payloads(
+    tmp_path: Path,
+) -> None:
+    store = JobStore(tmp_path / "jobs.db")
+    complete = store.create_job(
+        "config_generation",
+        {
+            "session_id": 7,
+            "source_id": "9" * 32,
+            "source_revision": "8" * 64,
+        },
+    )
+    store.finish(complete.id, "succeeded", result={"outcome": "complete"})
+    partial = store.create_job(
+        "config_generation",
+        {
+            "session_id": 7,
+            "source_id": "7" * 32,
+            "source_revision": "6" * 64,
+        },
+    )
+    store.finish(partial.id, "succeeded", result={"outcome": "partial"})
+    store.create_job(
+        "config_generation",
+        {
+            "session_id": 7,
+            "mode": "generate",
+            "generation_mode": "per_question",
+            "source_id": "a" * 32,
+            "source_revision": "b" * 64,
+            "input_id": "c" * 32,
+        },
+    )
+    store.create_job(
+        "config_generation",
+        {
+            "session_id": 8,
+            "source_id": "d" * 32,
+            "source_revision": "e" * 64,
+        },
+    )
+    store.create_job(
+        "report_export",
+        {"session_id": 7, "source_id": "f" * 32},
+    )
+
+    assert store.referenced_config_source_ids(7) == {"a" * 32, "7" * 32}
+
+
+def test_completed_retry_chain_releases_only_consumed_partial_source_references(
+    tmp_path: Path,
+) -> None:
+    store = JobStore(tmp_path / "jobs.db")
+    source_id = "7" * 32
+    input_id = "8" * 32
+    first = store.create_job(
+        "config_generation",
+        {
+            "session_id": 7,
+            "mode": "generate",
+            "generation_mode": "per_question",
+            "source_id": source_id,
+            "source_revision": "6" * 64,
+            "input_id": input_id,
+        },
+    )
+    store.finish(first.id, "succeeded", result={"outcome": "partial"})
+    second = store.create_job(
+        "config_generation",
+        {
+            "session_id": 7,
+            "mode": "retry",
+            "generation_mode": "per_question",
+            "source_job_id": first.id,
+            "source_id": source_id,
+            "source_revision": "6" * 64,
+            "input_id": input_id,
+        },
+    )
+    store.finish(second.id, "succeeded", result={"outcome": "partial"})
+
+    assert store.referenced_config_source_ids(7) == {source_id}
+
+    final = store.create_job(
+        "config_generation",
+        {
+            "session_id": 7,
+            "mode": "retry",
+            "generation_mode": "per_question",
+            "source_job_id": second.id,
+            "source_id": source_id,
+            "source_revision": "6" * 64,
+            "input_id": input_id,
+        },
+    )
+    store.finish(final.id, "succeeded", result={"outcome": "complete"})
+
+    assert store.consumed_config_retry_artifacts(7) == (
+        (7, first.id, input_id),
+        (7, second.id, input_id),
+    )
+    assert store.referenced_config_source_ids(7) == set()
+
+    active = store.create_job(
+        "config_generation",
+        {
+            "session_id": 7,
+            "mode": "generate",
+            "source_id": source_id,
+            "source_revision": "6" * 64,
+            "input_id": "9" * 32,
+        },
+    )
+    assert active.status == "queued"
+    assert store.referenced_config_source_ids(7) == {source_id}
+
+
+def test_completed_retry_cleanup_removes_only_consumed_artifacts(
+    tmp_path: Path,
+) -> None:
+    upload_dir = tmp_path / "uploaded"
+    upload_dir.mkdir()
+    store = JobStore(tmp_path / "jobs.db")
+    input_id = "8" * 32
+    source = store.create_job(
+        "config_generation",
+        {
+            "session_id": 7,
+            "mode": "generate",
+            "generation_mode": "per_question",
+            "input_id": input_id,
+        },
+    )
+    store.finish(source.id, "succeeded", result={"outcome": "partial"})
+    retry = store.create_job(
+        "config_generation",
+        {
+            "session_id": 7,
+            "mode": "retry",
+            "generation_mode": "per_question",
+            "source_job_id": source.id,
+            "input_id": input_id,
+        },
+    )
+    store.finish(retry.id, "succeeded", result={"outcome": "complete"})
+    draft = upload_dir / f"config_generation_draft_job_{source.id}.json"
+    staged_input = upload_dir / f"config_generation_input_{input_id}.json"
+    sentinel = upload_dir / "keep.json"
+    draft.write_text("{}", encoding="utf-8")
+    staged_input.write_text("{}", encoding="utf-8")
+    sentinel.write_text("keep", encoding="utf-8")
+
+    cleanup_consumed_config_retry_artifacts(upload_dir, store, session_id=7)
+
+    assert not draft.exists()
+    assert not staged_input.exists()
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+def _refine_context(tmp_path: Path):
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    db.bind_grading_session_source(
+        session_id,
+        source_paper_path="papers/original.docx",
+        source_paper_sha256="e" * 64,
+    )
+    current = load_editor_config(db, session_id)
+    candidate = apply_config_editor_changes(
+        current.payload,
+        edits=(),
+        commands=(
+            ReplaceScoringUnitsCommand(
+                kind="replace_parts",
+                question_id="Q1",
+                parts=(
+                    ManualPartInput(part_id="teacher-a", score=8, core_goal="first"),
+                    ManualPartInput(part_id="teacher-b", score=9, core_goal="second"),
+                ),
+            ),
+        ),
+    )
+    input_id = stage_config_refine_input(
+        tmp_path / "uploaded",
+        session_id=session_id,
+        expected_rubric_path=old_paths[0],
+        expected_answer_key_path=old_paths[1],
+        expected_revision=current.revision,
+        existing_payload=current.payload,
+        commands=[
+            {
+                "kind": "replace_parts",
+                "question_id": "Q1",
+                "parts": [
+                    {"part_id": "teacher-a", "score": 8, "core_goal": "first"},
+                    {"part_id": "teacher-b", "score": 9, "core_goal": "second"},
+                ],
+            }
+        ],
+    )
+    context, store = _job_context(
+        db.db_path,
+        {"session_id": session_id, "mode": "refine", "input_id": input_id},
+    )
+    return db, session_id, old_paths, candidate, context, store
+
+
+def test_refine_job_preserves_teacher_part_ids_and_calls_factory_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths, candidate, context, _store = _refine_context(tmp_path)
+    calls = 0
+    client = object()
+
+    def factory():
+        nonlocal calls
+        calls += 1
+        return client
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.refine_grading_config_from_manual_structure",
+        lambda payload, **_kwargs: json.loads(json.dumps(payload)),
+    )
+    result = run_config_generation_job(
+        context=context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        llm_client_factory=factory,
+    )
+
+    assert result["outcome"] == "complete"
+    assert calls == 1
+    current = db.get_grading_session(session_id)
+    assert (current["rubric_path"], current["answer_key_path"]) != old_paths
+    assert current["source_paper_path"] == "papers/original.docx"
+    assert current["source_paper_sha256"] == "e" * 64
+    published = load_editor_config(db, session_id)
+    assert editor_part_ids(published.payload) == editor_part_ids(candidate)
+
+
+def test_refine_job_rejects_changed_teacher_part_ids_and_preserves_old_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths, candidate, context, _store = _refine_context(tmp_path)
+
+    def changed(payload, **_kwargs):
+        result = json.loads(json.dumps(payload))
+        result["rubric"]["questions"][0]["parts"][0]["part_id"] = "changed-id"
+        result["answer_key"]["questions"][0]["parts"][0]["part_id"] = "changed-id"
+        return result
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.refine_grading_config_from_manual_structure",
+        changed,
+    )
+    with pytest.raises(ValueError, match="changed teacher scoring-unit identities"):
+        run_config_generation_job(
+            context=context,
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            llm_client_factory=lambda: object(),
+        )
+    current = db.get_grading_session(session_id)
+    assert (current["rubric_path"], current["answer_key_path"]) == old_paths
+    assert not list((tmp_path / "uploaded").glob("rubric_job-*.json"))
+
+
+def test_refine_job_rejects_changed_teacher_step_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, _session_id, _old_paths, _candidate, context, _store = _refine_context(tmp_path)
+
+    def changed(payload, **_kwargs):
+        result = json.loads(json.dumps(payload))
+        steps = result["rubric"]["questions"][0]["parts"][0].setdefault("steps", [])
+        if steps:
+            steps[0]["step_id"] = "model-replaced-step"
+        else:
+            steps.append(
+                {
+                    "step_id": "model-added-step",
+                    "step_score": 8,
+                    "core_goal": "changed",
+                    "required_elements": [],
+                    "allow_alternative_methods": True,
+                }
+            )
+        return result
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.refine_grading_config_from_manual_structure",
+        changed,
+    )
+    with pytest.raises(ValueError, match="changed teacher scoring-unit identities"):
+        run_config_generation_job(
+            context=context,
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            llm_client_factory=lambda: object(),
+        )
+
+
+def test_refine_cancel_after_model_is_cancelled_before_publish_and_deletes_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, _session_id, _old_paths, _candidate, context, store = _refine_context(tmp_path)
+    input_id = str(context.payload["input_id"])
+
+    def cancel_then_return(payload, **_kwargs):
+        assert store.request_cancel(context.job_id)
+        return json.loads(json.dumps(payload))
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.refine_grading_config_from_manual_structure",
+        cancel_then_return,
+    )
+    with pytest.raises(JobCancellationRequested):
+        run_config_generation_job(
+            context=context,
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            llm_client_factory=lambda: object(),
+        )
+    assert not (tmp_path / "uploaded" / f"config_generation_input_{input_id}.json").exists()
+    assert list((tmp_path / "uploaded").glob("rubric_job-*.json")) == []
+
+
+def test_refine_job_rejects_same_path_old_revision_before_model_call(tmp_path: Path) -> None:
+    db, session_id, old_paths, _candidate, context, _store = _refine_context(tmp_path)
+    rubric_path = Path(old_paths[0])
+    rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+    rubric["exam_title"] = "Concurrent edit"
+    rubric_path.write_text(json.dumps(rubric), encoding="utf-8")
+    called = False
+
+    def factory():
+        nonlocal called
+        called = True
+        return object()
+
+    with pytest.raises(ValueError, match="changed before refinement started"):
+        run_config_generation_job(
+            context=context,
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            llm_client_factory=factory,
+        )
+    assert called is False

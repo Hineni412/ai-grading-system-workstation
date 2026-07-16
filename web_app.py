@@ -10,7 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote, unquote
 
 import pandas as pd
@@ -24,6 +24,20 @@ from answer_region_geometry import answer_regions_with_template_source_sizes, sc
 from answer_region_focus_page import render_answer_region_focus_page
 from answer_region_session_lock import get_answer_region_session_lock
 from api_profiles import get_api_profile_store, normalize_question_allowlist
+from backend.config_workspace.editor import (
+    ConfigEditorValidationError,
+    ManualPartInput,
+    ReplaceScoringUnitsCommand,
+    SplitScoringUnitCommand,
+    apply_config_editor_changes,
+    editor_row_to_streamlit_dict,
+    project_config_editor,
+    streamlit_dataframe_to_editor_edits,
+)
+from backend.config_workspace.publish import (
+    publish_legacy_config_and_refresh_mapping,
+    refresh_template_mapping_from_session as _refresh_template_mapping_service,
+)
 from backend.llm.policy import policy_overrides_from_profile
 from backend.analytics.service import (
     build_legacy_question_analysis,
@@ -2899,44 +2913,59 @@ def render_config_and_session_tab(
                     data_root=APP_DATA_DIR,
                     raw_papers_dir=APP_DATA_DIR / "question_bank" / "raw_papers",
                 )
-                remember_saved_config_for_new_session(
-                    st.session_state,
-                    selected_session_id=selected_session_id,
-                    rubric_path=str(rubric_path),
-                    answer_key_path=str(answer_path),
-                    source_paper_path=source_archive.stored_path,
-                    source_paper_sha256=source_archive.sha256,
-                    source_paper_name=source_name,
-                    settings_store=db,
-                )
                 if selected_session_id is not None:
-                    db.update_grading_session_config(
+                    mapping_result = publish_legacy_config_and_refresh_mapping(
+                        db,
+                        UPLOAD_CONFIG_DIR,
+                        session_id=selected_session_id,
+                        rubric_path=str(rubric_path),
+                        answer_key_path=str(answer_path),
+                        source_paper_path=source_archive.stored_path,
+                        source_paper_sha256=source_archive.sha256,
+                        mapping_output_dir=TEMPLATES_DIR,
+                        mapping_refresher=lambda: _refresh_template_mapping_from_session(
+                            db, selected_session_id
+                        ),
+                    )
+                    remembered_state_saved = _remember_published_config_state(
+                        st.session_state,
+                        selected_session_id=selected_session_id,
+                        rubric_path=str(rubric_path),
+                        answer_key_path=str(answer_path),
+                        source_paper_path=source_archive.stored_path,
+                        source_paper_sha256=source_archive.sha256,
+                        source_paper_name=source_name,
+                        settings_store=db,
+                    )
+                    mapping_status = mapping_result.mapping_status
+                    workflow_state_saved = _record_config_save_workflow_state(
+                        db,
                         selected_session_id,
                         rubric_path=str(rubric_path),
                         answer_key_path=str(answer_path),
+                        mapping_status=mapping_status,
                     )
-                    db.bind_grading_session_source(
-                        selected_session_id,
-                        source_paper_path=source_archive.stored_path,
-                        source_paper_sha256=source_archive.sha256,
+                    notice_level, save_message = _post_publish_config_save_notice(
+                        mapping_status,
+                        remembered_state_saved=remembered_state_saved,
+                        workflow_state_saved=workflow_state_saved,
                     )
-                    refreshed = _refresh_template_mapping_from_session(db, selected_session_id)
-                    _write_session_workflow_state(
-                        db,
-                        selected_session_id,
-                        "word_scoring_saved",
-                        {
-                            "rubric_path": str(rubric_path),
-                            "answer_key_path": str(answer_path),
-                            "template_mapping_refreshed": refreshed,
-                        },
-                    )
-                    if refreshed:
-                        st.success("评分依据已保存，并已同步到当前考试批改；样卷映射表已按新评分标准刷新，请重新确认题框映射。")
+                    if notice_level == "success":
+                        st.success(save_message)
                     else:
-                        st.success("评分依据已保存，并已同步到当前考试批改。")
+                        st.warning(save_message)
                     st.rerun()
                 else:
+                    remember_saved_config_for_new_session(
+                        st.session_state,
+                        selected_session_id=selected_session_id,
+                        rubric_path=str(rubric_path),
+                        answer_key_path=str(answer_path),
+                        source_paper_path=source_archive.stored_path,
+                        source_paper_sha256=source_archive.sha256,
+                        source_paper_name=source_name,
+                        settings_store=db,
+                    )
                     st.success("评分依据已保存，可用于创建考试批改。")
             except Exception as exc:  # noqa: BLE001
                 st.error(f"保存失败：{exc}")
@@ -5543,375 +5572,12 @@ def _answer_match_rule_text(answer_node: dict[str, Any], fallback_node: dict[str
 
 
 def build_unified_rubric_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    rubric = payload.get("rubric", {}) if isinstance(payload, dict) else {}
-    answer_key = payload.get("answer_key", {}) if isinstance(payload, dict) else {}
-    rubric_questions = rubric.get("questions", []) if isinstance(rubric, dict) else []
-    answer_questions = answer_key.get("questions", []) if isinstance(answer_key, dict) else []
-    answer_map = {str(q.get("question_id")): q for q in answer_questions if isinstance(q, dict)}
-    rows: list[dict[str, Any]] = []
-
-    for question in rubric_questions:
-        if not isinstance(question, dict):
-            continue
-        qid = str(question.get("question_id", ""))
-        qtype = str(question.get("question_type", ""))
-        knowledge_label = _knowledge_display_label(
-            str(question.get("knowledge_id") or ""),
-            str(question.get("knowledge_name") or "")
-        )
-
-        ans_q = answer_map.get(qid, {})
-        parts = question.get("parts", []) if isinstance(question.get("parts"), list) else []
-        ans_parts = ans_q.get("parts", []) if ans_q and isinstance(ans_q.get("parts"), list) else []
-        ans_part_map = {str(p.get("part_id")): p for p in ans_parts if isinstance(p, dict)}
-
-        q_require_final = question.get("require_final_answer")
-        if q_require_final is None:
-            q_require_final = qtype == "comprehensive"
-
-        max_score = _to_float(question.get("max_score"), 0.0)
-        q_default_answer_only = max(1, int(round(max_score * 0.25))) if max_score > 0 else 1
-        q_answer_only_max = int(round(_to_float(question.get("answer_only_max_score"), q_default_answer_only)))
-        q_final_rule = _final_answer_rule_text(question) or "一般解答题需要写出最终答或明确结论；未写答/结论不完整，酌情扣1分"
-
-        if not parts:
-            accepted_forms = ans_q.get("accepted_forms", []) if isinstance(ans_q, dict) else []
-            eq_text = "；".join(str(item) for item in accepted_forms)
-            canonical = _answer_text_from_node(ans_q)
-
-            rows.append({
-                "_question_id": qid,
-                "_part_id": "整题",
-                "_step_id": "整题",
-                "题号": qid,
-                "评分单元": "整题",
-                "评分点": "整题",
-                "题型": qtype,
-                "分值": max_score,
-                "标准答案": canonical,
-                "等价答案预案": eq_text,
-                "作答匹配规则": _answer_match_rule_text(ans_q),
-                "证据要求/关键步骤": "",
-                "扣分规则": "",
-                "知识点": knowledge_label,
-                "需要单独写答": bool(q_require_final) if qtype in {"proof", "calculation", "comprehensive"} else None,
-                "无过程结论分上限": q_answer_only_max if qtype in {"proof", "calculation", "comprehensive"} else None,
-                "未写答扣分说明": q_final_rule if qtype in {"proof", "calculation", "comprehensive"} else "",
-            })
-        else:
-            for part_index, part in enumerate(parts, start=1):
-                if not isinstance(part, dict):
-                    continue
-                part_id = str(part.get("part_id") or f"{qid}({part_index})")
-                ans_p = ans_part_map.get(part_id, {})
-                if not ans_p and part_index <= len(ans_parts) and isinstance(ans_parts[part_index - 1], dict):
-                    ans_p = ans_parts[part_index - 1]
-                part_canonical = _answer_text_from_node(ans_p)
-                if not part_canonical and len(parts) == 1:
-                    part_canonical = _answer_text_from_node(ans_q)
-                part_accepted = ans_p.get("accepted_forms", []) if isinstance(ans_p, dict) else []
-                part_eq_text = "；".join(str(item) for item in part_accepted)
-                display_unit = _display_scoring_unit(qid, part_id, part_index, len(parts))
-                part_knowledge_label = _part_knowledge_display_label(part, knowledge_label)
-
-                part_score = _to_float(part.get("part_score") or part.get("max_score"), 0.0)
-                part_default_answer_only = max(1, int(round(part_score * 0.25))) if part_score > 0 else 1
-
-                if "require_final_answer" in part:
-                    part_require_final = bool(part.get("require_final_answer"))
-                else:
-                    part_require_final = bool(q_require_final)
-
-                if "answer_only_max_score" in part:
-                    part_answer_only_max = int(round(_to_float(part.get("answer_only_max_score"), part_default_answer_only)))
-                else:
-                    part_answer_only_max = int(round(_to_float(question.get("answer_only_max_score"), part_default_answer_only)))
-
-                part_final_rule = ""
-                rules = part.get("presentation_rules", [])
-                if isinstance(rules, list):
-                    for r in rules:
-                        if isinstance(r, dict) and r.get("rule_id") == "final_answer_required":
-                            part_final_rule = str(r.get("rule") or "")
-                            break
-                if not part_final_rule:
-                    part_final_rule = q_final_rule
-
-                steps = part.get("steps", []) if isinstance(part.get("steps"), list) else []
-
-                if not steps:
-                    rows.append({
-                        "_question_id": qid,
-                        "_part_id": part_id,
-                        "_step_id": "未拆评分点",
-                        "题号": qid,
-                        "评分单元": display_unit,
-                        "评分点": "未拆评分点",
-                        "分值": part_score,
-                        "题型": qtype,
-                        "标准答案": part_canonical,
-                        "等价答案预案": part_eq_text,
-                        "作答匹配规则": _answer_match_rule_text(ans_p, ans_q),
-                        "证据要求/关键步骤": "",
-                        "扣分规则": "",
-                        "知识点": part_knowledge_label,
-                        "需要单独写答": part_require_final if qtype in {"proof", "calculation", "comprehensive"} else None,
-                        "无过程结论分上限": part_answer_only_max if qtype in {"proof", "calculation", "comprehensive"} else None,
-                        "未写答扣分说明": part_final_rule if qtype in {"proof", "calculation", "comprehensive"} else "",
-                    })
-                else:
-                    for step_index, step in enumerate(steps, start=1):
-                        if not isinstance(step, dict):
-                            continue
-                        step_id = str(step.get("step_id") or step.get("id") or f"{step_index}")
-                        step_score = _to_float(step.get("step_score") or step.get("score") or step.get("point_score") or step.get("max_score"), 0.0)
-
-                        req_elements = step.get("required_elements", [])
-                        req_text = "; ".join(str(e) for e in req_elements) if isinstance(req_elements, list) else str(req_elements or "")
-
-                        ded_rules = step.get("deduction_rules", [])
-                        ded_text = "; ".join(str(d) for d in ded_rules) if isinstance(ded_rules, list) else str(ded_rules or "")
-
-                        is_first = (step_index == 1)
-                        display_point = _display_scoring_point(step, step_index)
-
-                        rows.append({
-                            "_question_id": qid,
-                            "_part_id": part_id,
-                            "_step_id": step_id,
-                            "题号": qid,
-                            "评分单元": display_unit,
-                            "评分点": display_point,
-                            "题型": qtype,
-                            "分值": step_score,
-                            "标准答案": part_canonical if is_first else "",
-                            "等价答案预案": part_eq_text if is_first else "",
-                            "作答匹配规则": _answer_match_rule_text(ans_p, ans_q) if is_first else "",
-                            "证据要求/关键步骤": req_text,
-                            "扣分规则": ded_text,
-                            "知识点": part_knowledge_label if is_first else "",
-                            "需要单独写答": (part_require_final if qtype in {"proof", "calculation", "comprehensive"} else None) if is_first else None,
-                            "无过程结论分上限": (part_answer_only_max if qtype in {"proof", "calculation", "comprehensive"} else None) if is_first else None,
-                            "未写答扣分说明": (part_final_rule if qtype in {"proof", "calculation", "comprehensive"} else "") if is_first else "",
-                        })
-
-    return rows
+    return [editor_row_to_streamlit_dict(row) for row in project_config_editor(payload)]
 
 
 def _apply_unified_table_to_payload(payload: dict[str, Any], edited_df: pd.DataFrame) -> dict[str, Any]:
-    next_payload = json.loads(json.dumps(payload, ensure_ascii=False))
-    rubric = next_payload.setdefault("rubric", {})
-    answer_key = next_payload.setdefault("answer_key", {})
-    rubric_questions = rubric.setdefault("questions", [])
-    answer_questions = answer_key.setdefault("questions", [])
-
-    rubric_q_map = {str(q.get("question_id")): q for q in rubric_questions if isinstance(q, dict)}
-    answer_q_map = {str(q.get("question_id")): q for q in answer_questions if isinstance(q, dict)}
-
-    def resolve_part_id(qid: str, row: dict[str, Any]) -> str:
-        hidden_id = str(row.get("_part_id") or "").strip()
-        if hidden_id:
-            return hidden_id
-        display = str(row.get("小题/评分单元") or row.get("评分单元") or "").strip()
-        if display in {"", "整题"}:
-            return display
-        question = rubric_q_map.get(qid)
-        parts = question.get("parts") if isinstance(question, dict) else []
-        if not isinstance(parts, list) or not parts:
-            return display
-        valid_parts = [part for part in parts if isinstance(part, dict)]
-        if display == qid and len(valid_parts) == 1:
-            return str(valid_parts[0].get("part_id") or display)
-        match = re.fullmatch(r"第\((\d+)\)问", display)
-        if match:
-            index = int(match.group(1)) - 1
-            if 0 <= index < len(valid_parts):
-                return str(valid_parts[index].get("part_id") or display)
-        return display
-
-    records = edited_df.to_dict(orient="records")
-    grouped = {}
-    for r in records:
-        qid = str(r.get("_question_id") or r.get("题号") or "").strip()
-        part_id = resolve_part_id(qid, r)
-        grouped.setdefault((qid, part_id), []).append(r)
-
-    for (qid, part_id), rows in grouped.items():
-        question = rubric_q_map.get(qid)
-        ans_q = answer_q_map.get(qid)
-
-        if not question or not isinstance(question, dict):
-            continue
-
-        qtype = str(question.get("question_type") or "")
-        first_row = rows[0]
-        req_final = first_row.get("需要单独写答")
-        if pd.isna(req_final) or req_final is None:
-            req_final = False
-        else:
-            req_final = bool(req_final)
-
-        ans_only_max = first_row.get("无过程结论分上限")
-        if pd.isna(ans_only_max) or ans_only_max is None:
-            ans_only_max = 0
-        else:
-            ans_only_max = int(round(float(ans_only_max)))
-
-        final_rule = str(first_row.get("未写答扣分说明") or "").strip()
-        canonical = str(first_row.get("标准答案") or "").strip()
-        eq_forms = _unique_texts(_split_semicolon_text(first_row.get("等价答案预案")))
-
-        parts = question.get("parts", []) if isinstance(question.get("parts"), list) else []
-        ans_parts = ans_q.get("parts", []) if ans_q and isinstance(ans_q.get("parts"), list) else []
-
-        if part_id in {"", "整题"}:
-            question["require_final_answer"] = req_final
-            question["answer_only_max_score"] = ans_only_max
-            question["_manual_solution_rules"] = True
-            question["answer_presentation_policy"] = {
-                "require_final_answer": req_final,
-                "answer_only_max_score": ans_only_max,
-                "note": "教师在界面中手动确认的过程/写答规则。",
-            }
-            policies = question.setdefault("deduction_policy", [])
-            _upsert_dict_by_id(policies, "policy_id", {
-                "policy_id": "answer_only_process_missing",
-                "issue": f"只写最终答案但没有有效过程，最多给 {ans_only_max} 分，主要过程分不得给分",
-                "max_deduction": max(0, int(round(_to_float(question.get("max_score"), 0.0))) - ans_only_max),
-                "severity": "major",
-            })
-
-            if ans_q and isinstance(ans_q, dict):
-                ans_q["canonical_answer"] = canonical
-                ans_q["accepted_forms"] = eq_forms
-                ans_q["_manual_accepted_forms"] = True
-
-            step_score = _to_float(first_row.get("分值"), 0.0)
-            question["max_score"] = step_score
-            if ans_q and isinstance(ans_q, dict):
-                ans_q["max_score"] = step_score
-        else:
-            part_node = None
-            for p in parts:
-                if isinstance(p, dict) and str(p.get("part_id")) == part_id:
-                    part_node = p
-                    break
-            if part_node:
-                part_node["require_final_answer"] = req_final
-                part_node["answer_only_max_score"] = ans_only_max
-
-                rules = part_node.setdefault("presentation_rules", [])
-                rules[:] = [r for r in rules if isinstance(r, dict) and r.get("rule_id") != "final_answer_required"]
-                if req_final:
-                    rules.append({
-                        "rule_id": "final_answer_required",
-                        "rule": final_rule or "一般解答题需要写出最终答或明确结论；未写答/结论不完整，酌情扣1分",
-                        "max_deduction": 1,
-                    })
-
-                steps = part_node.get("steps", []) if isinstance(part_node.get("steps"), list) else []
-                part_score_sum = 0.0
-                step_rows = [
-                    r for r in rows
-                    if str(r.get("_step_id") or r.get("评分点") or "") != "未拆评分点"
-                ]
-                if step_rows:
-                    step_map = {str(s.get("step_id") or s.get("id")): s for s in steps if isinstance(s, dict)}
-                    new_steps = []
-                    for s_row in step_rows:
-                        step_id = str(s_row.get("_step_id") or "").strip()
-                        if not step_id:
-                            display_point = str(s_row.get("评分点") or "").strip()
-                            for existing_index, existing_step in enumerate(steps, start=1):
-                                if isinstance(existing_step, dict) and _display_scoring_point(existing_step, existing_index) == display_point:
-                                    step_id = str(existing_step.get("step_id") or existing_step.get("id") or "")
-                                    break
-                        if not step_id:
-                            step_id = str(s_row.get("评分点") or "")
-                        step_node = step_map.get(step_id)
-                        if not step_node:
-                            step_node = {
-                                "step_id": step_id,
-                                "core_goal": "",
-                                "required_elements": [],
-                                "deduction_rules": []
-                            }
-                        s_score = _to_float(s_row.get("分值"), 0.0)
-                        step_node["step_score"] = s_score
-                        step_node["score"] = s_score
-                        step_node["max_score"] = s_score
-                        part_score_sum += s_score
-
-                        req_text = str(s_row.get("证据要求/关键步骤") or "").strip()
-                        step_node["required_elements"] = [x.strip() for x in req_text.split(";") if x.strip()] if req_text else []
-
-                        ded_text = str(s_row.get("扣分规则") or "").strip()
-                        step_node["deduction_rules"] = [x.strip() for x in ded_text.split(";") if x.strip()] if ded_text else []
-                        new_steps.append(step_node)
-                    part_node["steps"] = new_steps
-                else:
-                    part_score_sum = _to_float(first_row.get("分值"), 0.0)
-                    req_text = str(first_row.get("证据要求/关键步骤") or "").strip()
-                    part_node["required_elements"] = [x.strip() for x in req_text.split(";") if x.strip()] if req_text else []
-
-                part_node["part_score"] = part_score_sum
-                part_node["max_score"] = part_score_sum
-
-            ans_part_node = None
-            if ans_q and isinstance(ans_q, dict):
-                for ap in ans_parts:
-                    if isinstance(ap, dict) and str(ap.get("part_id")) == part_id:
-                        ans_part_node = ap
-                        break
-                if ans_part_node:
-                    ans_part_node["answer"] = canonical
-                    ans_part_node["accepted_forms"] = eq_forms
-                    ans_part_node["_manual_accepted_forms"] = True
-                    ans_part_node["part_score"] = part_score_sum
-                    ans_part_node["max_score"] = part_score_sum
-
-    total_score_sum = 0.0
-    for question in rubric_questions:
-        if not isinstance(question, dict):
-            continue
-        parts = question.get("parts", [])
-        if isinstance(parts, list) and parts:
-            q_sum = 0.0
-            for part in parts:
-                if isinstance(part, dict):
-                    q_sum += _to_float(part.get("part_score") or part.get("max_score"), 0.0)
-            question["max_score"] = q_sum
-        total_score_sum += _to_float(question.get("max_score"), 0.0)
-
-        policies = question.get("deduction_policy", [])
-        if isinstance(policies, list):
-            for policy in policies:
-                if isinstance(policy, dict) and policy.get("policy_id") == "answer_only_process_missing":
-                    ans_only_max = int(round(_to_float(question.get("answer_only_max_score"), 0.0)))
-                    policy["max_deduction"] = max(0, int(round(_to_float(question.get("max_score"), 0.0))) - ans_only_max)
-
-    rubric["total_score"] = total_score_sum
-
-    for ans_q in answer_questions:
-        if not isinstance(ans_q, dict):
-            continue
-        qid = str(ans_q.get("question_id"))
-        rub_q = rubric_q_map.get(qid)
-        if rub_q:
-            ans_q["max_score"] = rub_q.get("max_score", 0.0)
-            rub_parts = rub_q.get("parts", [])
-            ans_parts = ans_q.get("parts", [])
-            if isinstance(rub_parts, list) and isinstance(ans_parts, list):
-                rub_part_map = {str(p.get("part_id")): p for p in rub_parts if isinstance(p, dict)}
-                for ans_p in ans_parts:
-                    if isinstance(ans_p, dict):
-                        pid = str(ans_p.get("part_id"))
-                        rub_p = rub_part_map.get(pid)
-                        if rub_p:
-                            ans_p["part_score"] = rub_p.get("part_score", 0.0)
-                            ans_p["max_score"] = rub_p.get("max_score", 0.0)
-
-    return next_payload
+    edits = streamlit_dataframe_to_editor_edits(payload, edited_df.to_dict(orient="records"))
+    return apply_config_editor_changes(payload, edits=edits, commands=())
 
 
 def _render_generated_config_preview(payload: dict[str, Any], doc_name: str) -> bool:
@@ -6214,7 +5880,7 @@ def _render_manual_scoring_unit_tools(payload: dict[str, Any], llm_settings: LLM
             selected_qid = st.selectbox("选择要拆分的题目", qid_options, key="manual_split_question_id")
         with cols[1]:
             split_count = int(
-                st.number_input("拆成几个评分单元", min_value=2, max_value=30, value=4, step=1, key="manual_split_count")
+                st.number_input("拆成几个评分单元", min_value=2, max_value=20, value=4, step=1, key="manual_split_count")
             )
         with cols[2]:
             part_style = st.selectbox(
@@ -6345,152 +6011,51 @@ def _split_payload_question_parts(
     *,
     part_style: str,
 ) -> dict[str, Any]:
-    if split_count < 2:
-        raise ValueError("拆分数量至少为 2")
-    next_payload = json.loads(json.dumps(payload, ensure_ascii=False))
-    rubric_question = _find_rubric_question(next_payload, question_id)
-    if rubric_question is None:
-        raise ValueError(f"未找到题目：{question_id}")
-    answer_question = _find_answer_question(next_payload, question_id)
-    if answer_question is None:
-        answer_question = {"question_id": question_id, "canonical_answer": "", "accepted_forms": [], "method_variants": [], "parts": []}
-        next_payload.setdefault("answer_key", {}).setdefault("questions", []).append(answer_question)
-
-    total_score = int(round(float(rubric_question.get("max_score") or split_count)))
-    if total_score <= 0:
-        total_score = split_count
-    part_scores = _integer_even_split(total_score, split_count)
-    qtype = str(rubric_question.get("question_type") or "comprehensive")
-    is_direct = qtype in {"choice", "fill_blank"} or part_style == "blank"
-
-    rubric_parts: list[dict[str, Any]] = []
-    answer_parts: list[dict[str, Any]] = []
-    for idx, score in enumerate(part_scores, start=1):
-        part_id = f"{question_id}-B{idx}" if part_style == "blank" else f"{question_id}({idx})"
-        core_goal = f"完成 {question_id} 第 {idx} 个填空/评分单元"
-        required = ["答案正确或与标准答案等价"] if is_direct else ["关键过程合理", "结论或证明目标成立"]
-        rubric_parts.append(
-            {
-                "part_id": part_id,
-                "part_score": score,
-                "steps": [
-                    {
-                        "step_id": "S1",
-                        "step_score": score,
-                        "core_goal": core_goal,
-                        "required_elements": required,
-                        "allow_alternative_methods": not (qtype == "choice"),
-                    }
-                ],
-                "presentation_rules": [],
-            }
-        )
-        answer_parts.append(
-            {
-                "part_id": part_id,
-                "answer": "",
-                "analysis": "用户手动拆分的评分单元，请 AI 基于题干与参考答案补全。",
-                "step_milestones": [],
-            }
-        )
-
-    rubric_question["parts"] = rubric_parts
-    if part_style == "blank" and qtype in {"comprehensive", "calculation", "proof"}:
-        rubric_question["grading_mode"] = "direct_answer"
-    answer_question["parts"] = answer_parts
-    answer_question.setdefault("canonical_answer", "")
-    answer_question.setdefault("accepted_forms", [])
-    answer_question.setdefault("method_variants", [])
-
-    meta = next_payload.setdefault("meta", {})
-    warnings = meta.setdefault("warnings", [])
-    if isinstance(warnings, list):
-        warnings.append(f"教师手动将 {question_id} 拆分为 {split_count} 个评分单元，AI 二次完善时必须保留 part_id。")
-    return next_payload
+    return apply_config_editor_changes(
+        payload,
+        edits=(),
+        commands=(
+            SplitScoringUnitCommand(
+                kind="split",
+                question_id=question_id,
+                count=int(split_count),
+                style="blank" if part_style == "blank" else "subquestion",
+            ),
+        ),
+    )
 
 
 def _apply_manual_part_rows(payload: dict[str, Any], question_id: str, edited_parts: pd.DataFrame) -> dict[str, Any]:
-    rows = edited_parts.to_dict(orient="records")
-    if not rows:
-        raise ValueError("评分单元不能为空")
-    part_ids = [str(row.get("评分单元ID") or "").strip() for row in rows]
-    if any(not part_id for part_id in part_ids):
-        raise ValueError("评分单元ID不能为空")
-    if len(set(part_ids)) != len(part_ids):
-        raise ValueError("评分单元ID不能重复")
-
-    next_payload = json.loads(json.dumps(payload, ensure_ascii=False))
-    rubric_question = _find_rubric_question(next_payload, question_id)
-    if rubric_question is None:
-        raise ValueError(f"未找到题目：{question_id}")
-    current_question_score = int(round(float(rubric_question.get("max_score") or 0)))
-    edited_score_total = sum(int(round(float(row.get("分值") or 0))) for row in rows)
-    if current_question_score > 0 and edited_score_total != current_question_score:
-        raise ValueError(f"评分单元分值之和必须等于当前题总分 {current_question_score}，当前为 {edited_score_total}")
-    answer_question = _find_answer_question(next_payload, question_id)
-    if answer_question is None:
-        answer_question = {"question_id": question_id, "canonical_answer": "", "accepted_forms": [], "method_variants": [], "parts": []}
-        next_payload.setdefault("answer_key", {}).setdefault("questions", []).append(answer_question)
-
-    old_rubric_parts = rubric_question.get("parts", []) if isinstance(rubric_question.get("parts"), list) else []
-    old_answer_parts = answer_question.get("parts", []) if isinstance(answer_question.get("parts"), list) else []
-    new_rubric_parts: list[dict[str, Any]] = []
-    new_answer_parts: list[dict[str, Any]] = []
-
-    for idx, row in enumerate(rows, start=1):
-        part_id = str(row.get("评分单元ID") or "").strip()
-        score = int(round(float(row.get("分值") or 0)))
-        core_goal = str(row.get("核心目标") or f"完成 {question_id} 第 {idx} 个评分单元").strip()
-        old_part = old_rubric_parts[idx - 1] if idx - 1 < len(old_rubric_parts) and isinstance(old_rubric_parts[idx - 1], dict) else {}
-        old_answer = old_answer_parts[idx - 1] if idx - 1 < len(old_answer_parts) and isinstance(old_answer_parts[idx - 1], dict) else {}
-
-        steps = old_part.get("steps") if isinstance(old_part.get("steps"), list) else []
-        if steps and isinstance(steps[0], dict):
-            steps = json.loads(json.dumps(steps, ensure_ascii=False))
-            steps[0]["core_goal"] = core_goal
-            steps[0]["step_score"] = score
-            if len(steps) > 1:
-                for extra_step in steps[1:]:
-                    if isinstance(extra_step, dict):
-                        extra_step["step_score"] = 0
-        else:
-            steps = [
-                {
-                    "step_id": "S1",
-                    "step_score": score,
-                    "core_goal": core_goal,
-                    "required_elements": ["答案正确或过程目标完成"],
-                    "allow_alternative_methods": True,
-                }
-            ]
-
-        new_rubric_parts.append(
-            {
-                **old_part,
-                "part_id": part_id,
-                "part_score": score,
-                "steps": steps,
-                "presentation_rules": old_part.get("presentation_rules", []) if isinstance(old_part.get("presentation_rules"), list) else [],
-            }
-        )
-        new_answer_parts.append(
-            {
-                **old_answer,
-                "part_id": part_id,
-                "answer": str(old_answer.get("answer") or ""),
-                "analysis": str(old_answer.get("analysis") or "用户手动编辑的评分单元，请 AI 补全。"),
-                "step_milestones": old_answer.get("step_milestones", []) if isinstance(old_answer.get("step_milestones"), list) else [],
-            }
-        )
-
-    rubric_question["parts"] = new_rubric_parts
-    rubric_question["max_score"] = current_question_score or sum(int(part.get("part_score") or 0) for part in new_rubric_parts)
-    answer_question["parts"] = new_answer_parts
-    meta = next_payload.setdefault("meta", {})
-    warnings = meta.setdefault("warnings", [])
-    if isinstance(warnings, list):
-        warnings.append(f"教师手动编辑了 {question_id} 的评分单元结构，AI 二次完善时必须保留这些 part_id。")
-    return next_payload
+    records = edited_parts.to_dict(orient="records")
+    command = ReplaceScoringUnitsCommand(
+        kind="replace_parts",
+        question_id=question_id,
+        parts=tuple(
+            ManualPartInput(
+                part_id=str(row.get("评分单元ID") or "").strip(),
+                score=_to_float(row.get("分值"), 0.0),
+                core_goal=str(row.get("核心目标") or "").strip(),
+            )
+            for row in records
+        ),
+    )
+    try:
+        return apply_config_editor_changes(payload, edits=(), commands=(command,))
+    except ConfigEditorValidationError as exc:
+        issue = exc.issues[0] if exc.issues else {}
+        code = issue.get("code")
+        if code == "empty_parts":
+            raise ValueError("评分单元不能为空") from None
+        if code == "missing_part_id":
+            raise ValueError("评分单元ID不能为空") from None
+        if code == "duplicate_part_id":
+            raise ValueError("评分单元ID不能重复") from None
+        if code == "score_total_mismatch":
+            current = _find_rubric_question(payload, question_id) or {}
+            expected = int(round(_to_float(current.get("max_score"), 0.0)))
+            actual = int(round(sum(_to_float(row.get("分值"), 0.0) for row in records)))
+            raise ValueError(f"评分单元分值之和必须等于当前题总分 {expected}，当前为 {actual}") from None
+        raise ValueError(str(exc)) from None
 
 
 def _integer_even_split(total: int, count: int) -> list[int]:
@@ -6816,7 +6381,8 @@ def _render_template_config_editor(db: DBManager, session_id: int, template: dic
             st.warning("当前样卷映射表与考试批改绑定的 Word 评分标准不一致，建议先刷新映射表再标定题框。")
             if st.button("按当前 Word 评分标准刷新样卷映射表", key=f"refresh_template_mapping_{session_id}"):
                 try:
-                    if not _refresh_template_mapping_from_session(db, session_id):
+                    mapping_status = _refresh_template_mapping_from_session(db, session_id)
+                    if mapping_status != "refreshed":
                         raise ValueError("未找到可刷新的样卷图片或评分标准")
                     st.success("样卷映射表已刷新。")
                     st.rerun()
@@ -7273,37 +6839,103 @@ def _render_pdf_page_to_image(doc: Any, page_index: int, output_path: Path) -> N
     Image.frombytes("RGB", (pix.width, pix.height), pix.samples).save(output_path, format="JPEG", quality=90)
 
 
-def _refresh_template_mapping_from_session(db: DBManager, session_id: int) -> bool:
-    session = db.get_grading_session(session_id)
-    template = db.get_session_template(session_id)
-    if not session or not template:
-        return False
+def _refresh_template_mapping_from_session(
+    db: DBManager,
+    session_id: int,
+) -> Literal["not_present", "refreshed", "reconfirm_required"]:
+    def after_refresh(package: dict[str, Any]) -> None:
+        _write_regions_snapshot(db, session_id)
+        _write_session_workflow_state(
+            db,
+            session_id,
+            "template_mapping_refreshed",
+            {"package_paths": package["paths"]},
+        )
 
-    front_path = Path(str(template.get("front_template_path") or ""))
-    back_path = Path(str(template.get("back_template_path") or ""))
-    if not front_path.exists() or not back_path.exists():
-        return False
-
-    rubric = _read_json_safely(_resolve_session_file_path(session.get("rubric_path")))
-    answer_key = _read_json_safely(_resolve_session_file_path(session.get("answer_key_path")))
-    if not rubric or not answer_key:
-        return False
-
-    package = create_template_mapping_package(
-        front_path,
-        back_path,
-        rubric=rubric,
-        answer_key=answer_key,
-        output_dir=TEMPLATE_DIR / f"session_{session_id}",
-    )
-    db.update_session_template_analysis(
+    status = _refresh_template_mapping_service(
+        db,
         session_id,
-        ai_analysis_path=package["paths"]["raw_path"],
-        template_config_path=package["paths"]["config_path"],
-        regions_path=package["paths"]["regions_path"],
+        output_root=TEMPLATE_DIR,
+        after_refresh=after_refresh,
     )
-    _write_regions_snapshot(db, session_id)
-    _write_session_workflow_state(db, session_id, "template_mapping_refreshed", {"package_paths": package["paths"]})
+    return status
+
+
+def _template_mapping_save_confirmation(
+    status: Literal["not_present", "refreshed", "reconfirm_required"],
+) -> str:
+    if status == "refreshed":
+        return "评分依据已保存，并已同步到当前考试批改；样卷映射表已按新评分标准刷新，请重新确认题框映射。"
+    if status == "reconfirm_required":
+        return "评分依据已保存，并已同步到当前考试批改；已有样卷映射需要重新确认后才能继续批改。"
+    return "评分依据已保存，并已同步到当前考试批改。"
+
+
+def _remember_published_config_state(
+    state: Any,
+    *,
+    selected_session_id: int,
+    rubric_path: str,
+    answer_key_path: str,
+    source_paper_path: str,
+    source_paper_sha256: str,
+    source_paper_name: str,
+    settings_store: Any,
+) -> bool:
+    try:
+        remember_saved_config_for_new_session(
+            state,
+            selected_session_id=selected_session_id,
+            rubric_path=rubric_path,
+            answer_key_path=answer_key_path,
+            source_paper_path=source_paper_path,
+            source_paper_sha256=source_paper_sha256,
+            source_paper_name=source_paper_name,
+            settings_store=settings_store,
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+def _post_publish_config_save_notice(
+    mapping_status: Literal["not_present", "refreshed", "reconfirm_required"],
+    *,
+    remembered_state_saved: bool,
+    workflow_state_saved: bool,
+) -> tuple[Literal["success", "warning"], str]:
+    save_message = _template_mapping_save_confirmation(mapping_status)
+    if remembered_state_saved and workflow_state_saved:
+        return "success", save_message
+    return (
+        "warning",
+        save_message
+        + " 附属工作状态暂未更新，可稍后重建；已保存的评分依据不受影响。",
+    )
+
+
+def _record_config_save_workflow_state(
+    db: DBManager,
+    session_id: int,
+    *,
+    rubric_path: str,
+    answer_key_path: str,
+    mapping_status: Literal["not_present", "refreshed", "reconfirm_required"],
+) -> bool:
+    try:
+        _write_session_workflow_state(
+            db,
+            session_id,
+            "word_scoring_saved",
+            {
+                "rubric_path": rubric_path,
+                "answer_key_path": answer_key_path,
+                "template_mapping_refreshed": mapping_status == "refreshed",
+                "template_mapping_status": mapping_status,
+            },
+        )
+    except Exception:  # noqa: BLE001
+        return False
     return True
 
 
