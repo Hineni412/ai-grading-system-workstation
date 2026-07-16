@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import multiprocessing
 import os
@@ -16,6 +17,8 @@ from template_upload_service import (
     TemplateUploadSubmissionConflictError,
 )
 
+TEST_CONTENT_SHA256 = "0" * 64
+
 
 def _begin_template_upload_then_exit(templates_dir: str, started) -> None:
     service = TemplateUploadService(templates_dir)
@@ -25,6 +28,7 @@ def _begin_template_upload_then_exit(templates_dir: str, started) -> None:
         filename="interrupted.pdf",
         content_length=100,
         first_page_role="front",
+        content_sha256=TEST_CONTENT_SHA256,
     )
     started.set()
     os._exit(0)
@@ -141,6 +145,7 @@ def test_active_processing_submission_cannot_be_abandoned_by_another_service(tmp
         filename="sample.pdf",
         content_length=100,
         first_page_role="front",
+        content_sha256=TEST_CONTENT_SHA256,
     ) == "started"
 
     with pytest.raises(TemplateUploadSubmissionConflictError):
@@ -157,15 +162,18 @@ def test_one_service_allows_only_one_processing_token_per_session(tmp_path) -> N
     first = "1" * 32
     second = "2" * 32
     assert service.begin_submission(session_id=1, request_token=first,
-        filename="first.pdf", content_length=100, first_page_role="front") == "started"
+        filename="first.pdf", content_length=100, first_page_role="front",
+        content_sha256=TEST_CONTENT_SHA256) == "started"
 
     with pytest.raises(TemplateUploadInProgressError):
         service.begin_submission(session_id=1, request_token=second,
-            filename="second.pdf", content_length=100, first_page_role="front")
+            filename="second.pdf", content_length=100, first_page_role="front",
+            content_sha256=TEST_CONTENT_SHA256)
 
     service.finish_submission(session_id=1, request_token=first, succeeded=False)
     assert service.begin_submission(session_id=1, request_token=second,
-        filename="second.pdf", content_length=100, first_page_role="front") == "started"
+        filename="second.pdf", content_length=100, first_page_role="front",
+        content_sha256=TEST_CONTENT_SHA256) == "started"
     service.finish_submission(session_id=1, request_token=second, succeeded=False)
 
 
@@ -174,11 +182,13 @@ def test_two_service_instances_share_the_disk_single_winner(tmp_path) -> None:
     first_service = TemplateUploadService(templates_dir)
     second_service = TemplateUploadService(templates_dir)
     assert first_service.begin_submission(session_id=1, request_token="3" * 32,
-        filename="first.pdf", content_length=100, first_page_role="front") == "started"
+        filename="first.pdf", content_length=100, first_page_role="front",
+        content_sha256=TEST_CONTENT_SHA256) == "started"
 
     with pytest.raises(TemplateUploadInProgressError):
         second_service.begin_submission(session_id=1, request_token="4" * 32,
-            filename="second.pdf", content_length=100, first_page_role="front")
+            filename="second.pdf", content_length=100, first_page_role="front",
+            content_sha256=TEST_CONTENT_SHA256)
     first_service.finish_submission(
         session_id=1, request_token="3" * 32, succeeded=False
     )
@@ -205,6 +215,7 @@ def test_new_upload_reclaims_an_interrupted_process_submission(tmp_path) -> None
             filename="different.pdf",
             content_length=200,
             first_page_role="back",
+            content_sha256=TEST_CONTENT_SHA256,
         )
     assert restarted_service.begin_submission(
         session_id=1,
@@ -212,6 +223,7 @@ def test_new_upload_reclaims_an_interrupted_process_submission(tmp_path) -> None
         filename="replacement.pdf",
         content_length=100,
         first_page_role="front",
+        content_sha256=TEST_CONTENT_SHA256,
     ) == "started"
     assert restarted_service.submission_public(
         session_id=1, request_token="5" * 32
@@ -239,6 +251,7 @@ def test_activation_receipt_is_written_only_after_database_activation(
         filename="sample.pdf",
         content_length=len(pdf_bytes),
         first_page_role="front",
+        content_sha256=hashlib.sha256(pdf_bytes).hexdigest(),
     )
     original = upload_module._write_activation_receipt
 

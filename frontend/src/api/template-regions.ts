@@ -120,6 +120,10 @@ function decodeCommit(value: unknown): RegionCommitResponse {
 }
 function sessionId(value: number): number { if (!positive(value)) throw new Error('Invalid session id'); return value }
 function token(value: string): string { if (!/^[0-9a-f]{32}$/.test(value)) throw new Error('Invalid request token'); return value }
+async function fileSha256(file: File): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
 
 export function fetchRegionWorkspace(id: number, signal?: AbortSignal): Promise<RegionWorkspace> {
   return apiClient.request(`/api/sessions/${sessionId(id)}/regions/workspace`, { decode: decodeWorkspace, signal })
@@ -136,13 +140,14 @@ export function fetchRegionReadiness(id: number): Promise<RegionReadiness> {
     },
   })
 }
-export function uploadTemplate(id: number, file: File, firstPageRole: PageRole,
+export async function uploadTemplate(id: number, file: File, firstPageRole: PageRole,
   requestToken = createClientRequestToken()): Promise<TemplateSummary> {
   if (!(file instanceof File) || file.type !== 'application/pdf' || !file.name.toLowerCase().endsWith('.pdf')) throw new Error('Invalid PDF')
+  const contentSha256 = await fileSha256(file)
   return apiClient.request(`/api/sessions/${sessionId(id)}/template?first_page_role=${firstPageRole}`, {
     method: 'POST', rawBody: file, timeoutMs: 10 * 60_000, decode: decodeTemplate,
     headers: { 'content-type': 'application/pdf', 'x-upload-filename': encodeURIComponent(file.name),
-      'x-client-request-token': token(requestToken) },
+      'x-client-request-token': token(requestToken), 'x-content-sha256': contentSha256 },
   })
 }
 export function fetchTemplateSubmission(id: number, requestToken: string): Promise<TemplateSubmission> {

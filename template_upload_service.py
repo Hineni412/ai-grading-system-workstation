@@ -258,6 +258,7 @@ class TemplateUploadService:
         filename: str,
         content_length: int | None,
         first_page_role: TemplatePageRole,
+        content_sha256: str,
         db: DBManager | None = None,
     ) -> str:
         token = _request_token(request_token)
@@ -266,6 +267,7 @@ class TemplateUploadService:
             filename=filename,
             content_length=content_length,
             first_page_role=first_page_role,
+            content_sha256=_content_sha256(content_sha256),
         )
         marker_path = _submission_path(session_dir, token)
         lease = _try_acquire_upload_lease(session_dir)
@@ -543,19 +545,31 @@ def _request_token(value: str) -> str:
 
 
 def _request_fingerprint(
-    *, filename: str, content_length: int | None, first_page_role: TemplatePageRole
+    *,
+    filename: str,
+    content_length: int | None,
+    first_page_role: TemplatePageRole,
+    content_sha256: str,
 ) -> str:
     canonical = json.dumps(
         {
             "filename": str(filename),
             "content_length": content_length,
             "first_page_role": first_page_role,
+            "content_sha256": content_sha256,
         },
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _content_sha256(value: str) -> str:
+    digest = str(value or "").strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise TemplateUploadError("invalid template upload content digest")
+    return digest
 
 
 def _submission_path(session_dir: Path, request_token: str) -> Path:

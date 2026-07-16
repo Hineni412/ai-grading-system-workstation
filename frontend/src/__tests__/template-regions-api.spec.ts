@@ -46,6 +46,7 @@ describe('template region API contract', () => {
     expect(init).toMatchObject({ method: 'POST', body: file })
     expect((init as RequestInit).headers).toMatchObject({
       'content-type': 'application/pdf', 'x-client-request-token': 'b'.repeat(32),
+      'x-content-sha256': '315d429b7714cedb6ad04ac31240145257692630457f3c88253c5beceac76027',
     })
   })
 })
