@@ -39,14 +39,14 @@
 ## 昼夜交接
 
 **执行包：** P2-09
-**交接状态：** waiting_user
-**功能提交：** 91d4a04576042c393273de16860f264f83dbb1c1
+**交接状态：** verified_pending_integration
+**功能提交：** 0c30599e59889125c32aeed7b2c460f987237ca0
 **自动验证：** passed
 **独立复审：** passed
-**用户验收：** pending
+**用户验收：** passed
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
 
 ---
@@ -1344,5 +1344,5 @@ Update Implementation Evidence with exact RED/GREEN and gate counts. Change the 
 - Automatic gates: frozen candidate `91d4a04576042c393273de16860f264f83dbb1c1` passed focused backend `271`, frontend lint `0 errors / 0 warnings`, typecheck exit `0`, Vitest `34 files / 344 tests`, build `1675 modules`, P2-09 Chromium E2E `15`, and affected backend `70`; `git diff --check` exited `0`; `tools/smoke_check.py --skip-tests` passed document governance, static compilation of `451` first-party Python files and isolated-copy dual-database idempotence/integrity. Full pytest was not run because no `AGENTS.md` risk trigger occurred.
 - Real data: feature-worktree `user_data/` status is empty. Root grading database remained `2863104` bytes / `2026-07-10T07:10:41.1221109Z` / SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`; root question-bank database remained `3461120` bytes / `2026-07-08T11:58:06.3320883Z` / SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`. Only file metadata and hashes were read.
 - Independent review: frozen candidate `91d4a04576042c393273de16860f264f83dbb1c1` received `0 Critical / 0 Important / 0 Minor` from the requirements reviewer and `0 Critical / 0 Important / 1 Minor` from the standards reviewer. The non-blocking Minor is an empty per-token upload directory retained after an abandoned unknown request; it contains no manifest or private content and does not permit a late request to pass the tombstone.
-- User quick test: pending; the versioned checklist and headed synthetic loopback mode were generated and launch-verified, but no user acceptance result is claimed before independent review anchors an exact SHA.
+- User quick test: passed; on 2026-07-16 the user completed the versioned six-step synthetic loopback checklist against reviewed candidate `91d4a04576042c393273de16860f264f83dbb1c1` and explicitly reported “通过”. The checklist-only evidence commit is `0c30599e59889125c32aeed7b2c460f987237ca0`.
 - Real data: unchanged; final file-level size, UTC mtime and SHA-256 comparison exactly matched the recorded baseline for both root databases.
