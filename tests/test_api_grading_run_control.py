@@ -173,7 +173,7 @@ def test_concurrent_start_requests_create_only_one_grading_job(tmp_path) -> None
             "x-content-sha256": hashlib.sha256(content).hexdigest(),
         },
     )
-    client.post(
+    frozen = client.post(
         f"/api/sessions/{session_id}/scan-uploads/freeze",
         json={"expected_revision": 1},
     )
@@ -187,6 +187,7 @@ def test_concurrent_start_requests_create_only_one_grading_job(tmp_path) -> None
     analysis_path.write_text(
         json.dumps(
             {
+                "scan_batch_id": frozen.json()["batch_id"],
                 "groups": [
                     {
                         "source_label": "001",
@@ -244,8 +245,60 @@ def test_concurrent_start_requests_create_only_one_grading_job(tmp_path) -> None
         )
         assert total == 1
         assert len(jobs) == 1
+        release_handler.set()
+        manager.wait(jobs[0].id, timeout=2)
+        repeated = client.post(
+            f"/api/sessions/{session_id}/grading/run",
+            json=request,
+        )
+        assert repeated.status_code == 409
+        _jobs, repeated_total = manager.list(
+            session_id=session_id,
+            job_types=("grading_run",),
+            limit=10,
+        )
+        assert repeated_total == 1
     finally:
         release_handler.set()
+        manager.shutdown()
+
+
+def test_new_batch_rejects_retry_from_the_previous_batch(tmp_path) -> None:
+    from db_manager import StudentRecord
+    from grading_run_store import GradingRunStore
+
+    client, db, manager = _system(tmp_path)
+    db.upsert_students([StudentRecord("S001", "学生甲", "测试班")])
+    student_id = int(db.list_students()[0]["id"])
+    session_id = db.create_grading_session("旧批次重试", "rubric.json", "answer.json")
+    store = GradingRunStore(db.db_path)
+    failed_run = store.begin(session_id, "a" * 64, "full_paper")
+    store.add_item(
+        failed_run.id,
+        source_label="001",
+        student_id=student_id,
+        paper_fingerprint="b" * 64,
+        config_fingerprint="a" * 64,
+        status="failed",
+    )
+    store.finish(failed_run.run_token, "failed")
+    manager.register("grading_run", lambda _context: {"state": "completed"})
+    try:
+        new_batch = client.post(f"/api/sessions/{session_id}/scan-uploads/new-batch")
+        assert new_batch.status_code == 200
+
+        stale_retry = client.post(
+            f"/api/sessions/{session_id}/grading/runs/{failed_run.id}/retry-failed"
+        )
+        assert stale_retry.status_code == 409
+        jobs, total = manager.list(
+            session_id=session_id,
+            job_types=("grading_run",),
+            limit=10,
+        )
+        assert total == 0
+        assert jobs == []
+    finally:
         manager.shutdown()
 
 
@@ -264,7 +317,7 @@ def test_start_requires_current_frozen_preflight_and_pending_issue_confirmation(
                 "x-content-sha256": hashlib.sha256(content).hexdigest(),
             },
         )
-        client.post(
+        frozen = client.post(
             f"/api/sessions/{session_id}/scan-uploads/freeze",
             json={"expected_revision": 1},
         )
@@ -273,6 +326,7 @@ def test_start_requires_current_frozen_preflight_and_pending_issue_confirmation(
         analysis_path.write_text(
             json.dumps(
                 {
+                    "scan_batch_id": frozen.json()["batch_id"],
                     "groups": [],
                     "issues": [
                         {

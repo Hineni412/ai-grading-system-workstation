@@ -140,7 +140,7 @@ def test_preflight_routes_return_safe_snapshot_and_revisioned_decisions(tmp_path
                     "x-content-sha256": hashlib.sha256(content).hexdigest(),
                 },
             )
-        client.post(
+        frozen = client.post(
             f"/api/sessions/{session_id}/scan-uploads/freeze",
             json={"expected_revision": 2},
         )
@@ -149,6 +149,7 @@ def test_preflight_routes_return_safe_snapshot_and_revisioned_decisions(tmp_path
         analysis_path.write_text(
             json.dumps(
                 {
+                    "scan_batch_id": frozen.json()["batch_id"],
                     "groups": [
                         {
                             "front_image": str(scan_files[0]),
@@ -246,7 +247,7 @@ def test_scan_analysis_uses_frozen_server_batch_and_rejects_client_paths(tmp_pat
                 "x-content-sha256": hashlib.sha256(content).hexdigest(),
             },
         )
-        client.post(
+        frozen = client.post(
             f"/api/sessions/{session_id}/scan-uploads/freeze",
             json={"expected_revision": 1},
         )
@@ -263,5 +264,6 @@ def test_scan_analysis_uses_frozen_server_batch_and_rejects_client_paths(tmp_pat
         internal = manager.get(created.json()["id"])
         assert internal is not None
         assert str(internal.payload["exams_dir"]).startswith(str(tmp_path / "exams"))
+        assert internal.payload["scan_batch_id"] == frozen.json()["batch_id"]
     finally:
         manager.shutdown()

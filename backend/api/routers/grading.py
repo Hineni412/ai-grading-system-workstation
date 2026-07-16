@@ -79,13 +79,24 @@ def resume_session_grading(
     session_id: int,
     run_id: int,
     db: DBManager = Depends(get_grading_db),
-    manager: JobManager = Depends(get_job_manager),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> JobResponse:
     _require_session(db, session_id)
     try:
-        payload = workspace.prepare_resume(session_id, run_id)
-        return _submit_controlled_grading_job(payload, manager, workspace)
+        job = workspace.submit_resume(session_id, run_id)
+        return _job_response(job)
+    except ActiveJobExistsError as exc:
+        raise ApiError(
+            409,
+            "grading_job_already_active",
+            "A grading job is already active",
+        ) from exc
+    except UnsupportedJobTypeError as exc:
+        raise ApiError(
+            404,
+            "job_type_not_supported",
+            "Job type is not supported",
+        ) from exc
     except ScanGradingWorkspaceError as exc:
         raise ApiError(409, "grading_run_not_resumable", "Grading run cannot be resumed") from exc
 
@@ -99,13 +110,24 @@ def retry_failed_session_grading(
     session_id: int,
     run_id: int,
     db: DBManager = Depends(get_grading_db),
-    manager: JobManager = Depends(get_job_manager),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> JobResponse:
     _require_session(db, session_id)
     try:
-        payload = workspace.prepare_failed_retry(session_id, run_id)
-        return _submit_controlled_grading_job(payload, manager, workspace)
+        job = workspace.submit_failed_retry(session_id, run_id)
+        return _job_response(job)
+    except ActiveJobExistsError as exc:
+        raise ApiError(
+            409,
+            "grading_job_already_active",
+            "A grading job is already active",
+        ) from exc
+    except UnsupportedJobTypeError as exc:
+        raise ApiError(
+            404,
+            "job_type_not_supported",
+            "Job type is not supported",
+        ) from exc
     except ScanGradingWorkspaceError as exc:
         raise ApiError(409, "grading_run_not_retryable", "Grading run has no retryable failures") from exc
 

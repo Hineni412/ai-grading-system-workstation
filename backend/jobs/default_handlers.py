@@ -317,17 +317,22 @@ def _build_scan_analysis_handler(
         )
         ocr_workers = context.payload.get("ocr_workers")
         context.report(0.05, "scan_analysis", "starting")
+        scan_kwargs: dict[str, Any] = {
+            "db": DBManager(db_path),
+            "session_id": session_id,
+            "exams_dir": job_exams_dir,
+            "session_work_dir": templates_dir / f"session_{session_id}",
+            "data_root": data_root,
+            "llm_client_factory": llm_client_factory,
+            "enhance_images": bool(context.payload.get("enhance_images", True)),
+            "ocr_workers": int(ocr_workers) if ocr_workers is not None else None,
+            "front_page_parity": str(context.payload.get("front_page_parity") or "odd"),
+            "raise_if_cancelled": context.raise_if_cancelled,
+        }
+        if context.payload.get("scan_batch_id"):
+            scan_kwargs["scan_batch_id"] = str(context.payload["scan_batch_id"])
         result = scan_runner(
-            db=DBManager(db_path),
-            session_id=session_id,
-            exams_dir=job_exams_dir,
-            session_work_dir=templates_dir / f"session_{session_id}",
-            data_root=data_root,
-            llm_client_factory=llm_client_factory,
-            enhance_images=bool(context.payload.get("enhance_images", True)),
-            ocr_workers=int(ocr_workers) if ocr_workers is not None else None,
-            front_page_parity=str(context.payload.get("front_page_parity") or "odd"),
-            raise_if_cancelled=context.raise_if_cancelled,
+            **scan_kwargs,
         )
         summary = result.get("summary") if isinstance(result, dict) else {}
         if isinstance(summary, dict):

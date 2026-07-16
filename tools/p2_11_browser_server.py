@@ -85,6 +85,7 @@ def _scan_handler(paths):
         target.parent.mkdir(parents=True, exist_ok=True)
         context.report(0.4, "scan_analysis", "matching anonymous pages")
         target.write_text(json.dumps({
+            "scan_batch_id": str(context.payload.get("scan_batch_id") or ""),
             "groups": [{
                 "front_image": str(scans[0]), "back_image": str(scans[0]),
                 "student_name": students[0]["name"], "student_id": students[0]["id"],
