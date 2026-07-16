@@ -65,13 +65,14 @@ watch(routeSessionId, loadRoute)
         @reconcile="store.reconcileUpload"
       />
       <TemplateRegionEditor
-        v-model="store.editorState"
+        :model-value="store.editorState"
         :images="store.workspace.template.pages"
         :manual-question-options="store.workspace.manual_question_options"
         :automatic-candidates="store.workspace.automatic_candidates"
         :issues="store.workspace.issues"
         :read-only="store.readOnly"
         :save-status="store.saveState === 'saved' ? '草稿已保存' : '草稿'"
+        @update:model-value="store.updateEditor"
         @finish="finish"
         @exit="router.push('/sessions')"
       />
