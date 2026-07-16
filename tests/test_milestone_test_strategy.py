@@ -29,6 +29,9 @@ def test_handoff_and_nightly_rules_allow_only_a_declared_milestone_base() -> Non
     assert "交接基线" in nightly
     assert "npm run verify" in nightly
     assert "lint、typecheck、unit 和 build" not in nightly
+    assert nightly.count("--expected-handoff-base") >= 2
+    assert "`origin/main..HEAD`" not in nightly
+    assert "有效交接基线到 `HEAD`" in nightly
 
 
 def test_current_index_declares_first_three_package_milestone() -> None:
