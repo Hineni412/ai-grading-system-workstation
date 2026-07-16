@@ -101,6 +101,7 @@ describe('AppShell', () => {
     ).toEqual([
       ['工作台', '/workbench'],
       ['考试配置', '/sessions'],
+      ['知识图谱', '/knowledge-graph'],
       ['评分复核', '/grading'],
     ])
     expect(
@@ -118,6 +119,7 @@ describe('AppShell', () => {
     expect([...host.querySelectorAll('nav a')].map((link) => link.textContent)).toEqual([
       '工作台',
       '考试配置',
+      '知识图谱',
       '评分复核',
     ])
     expect(host.querySelector('[data-testid="navigation-toggle"]')).toBeNull()
@@ -126,7 +128,7 @@ describe('AppShell', () => {
     app.unmount()
   })
 
-  it('navigates between the two truthful destinations and updates the current page', async () => {
+  it('navigates between truthful destinations and updates the current page', async () => {
     const { app, host, router } = await mountShell()
     const workbenchLink = host.querySelector<HTMLAnchorElement>(
       '[data-testid="app-navigation"] a[href="/workbench"]',
