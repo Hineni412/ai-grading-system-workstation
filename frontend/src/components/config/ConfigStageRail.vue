@@ -9,6 +9,7 @@ const props = defineProps<{
   sourceReady: boolean
   generationSubmitted: boolean
   editorReady: boolean
+  templatePresent?: boolean
   templateReady?: boolean
 }>()
 
@@ -17,7 +18,8 @@ const stages = computed(() => [
   { id: 'source', label: '上传与拆题', fact: props.sourceReady ? '来源已读取' : '待上传' },
   { id: 'generation', label: 'AI 生成', fact: props.editorReady ? '已生成' : props.generationSubmitted ? '任务已提交' : '待提交' },
   { id: 'editor', label: '评分依据', fact: props.editorReady ? '可编辑' : '待生成' },
-  { id: 'template', label: '样卷题框', fact: props.templateReady ? '已确认' : props.editorReady ? '可开始' : '待评分依据' },
+  { id: 'template', label: '样卷题框', fact: props.templateReady ? '已确认'
+    : props.templatePresent ? '标定中' : props.editorReady ? '可开始' : '待评分依据' },
 ] as const)
 </script>
 

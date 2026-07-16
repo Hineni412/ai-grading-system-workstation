@@ -27,7 +27,8 @@
 .template-region-editor .region-editor { height: min(72vh, 820px); }
 .template-regions-view__snapshot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); border-color: var(--color-warning); background: var(--color-warning-subtle); }
 .template-regions-view__faces { display: flex; gap: var(--space-2); margin-inline-start: auto; }
-.template-regions-view__faces button { min-height: 28px; }
+.template-regions-view__faces button { min-height: var(--control-height-small); }
+.template-regions-view__faces button[aria-pressed="true"] { border-color: var(--color-accent); background: var(--color-accent-subtle); color: var(--color-text-primary); }
 .template-regions-view__choice, .template-regions-view__prerequisite { padding: var(--space-5); border-block-end: var(--border-width) solid var(--color-border-default); background: var(--color-info-subtle); }
 .template-regions-view__choice p, .template-regions-view__prerequisite p { margin-block: var(--space-2) var(--space-4); color: var(--color-text-secondary); }
 .template-regions-view__choice button + button { margin-inline-start: var(--space-2); }

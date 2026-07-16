@@ -56,6 +56,16 @@ def _scoring_configured(db: DBManager, session_id: int) -> bool:
         return False
 
 
+def _region_lock_timeout_error(session_id: int) -> ApiError:
+    return ApiError(
+        503,
+        "answer_region_lock_timeout",
+        "Answer region work is temporarily busy; retry shortly",
+        {"session_id": int(session_id)},
+        headers={"Retry-After": "1"},
+    )
+
+
 def _upload_response(result: Any) -> TemplateUploadResponse:
     return TemplateUploadResponse(
         session_id=result.session_id,
@@ -204,6 +214,7 @@ def get_region_readiness(
         session_id=int(session_id),
         scoring_configured=_scoring_configured(db, session_id),
         template_present=db.get_session_template(int(session_id)) is not None,
+        template_ready=db.is_template_ready(int(session_id)),
     )
 
 
@@ -561,14 +572,17 @@ def commit_answer_regions(
         Path(draft_service.draft_path).parent,
         draft_service,
     )
-    result = service.commit(
-        session_id=int(session_id),
-        template_id=int(template["id"]),
-        regions=request.regions,
-        image_sizes=request.image_sizes,
-        template_matches=request.template_matches,
-        expected_template_fingerprint=request.expected_template_fingerprint,
-    )
+    try:
+        result = service.commit(
+            session_id=int(session_id),
+            template_id=int(template["id"]),
+            regions=request.regions,
+            image_sizes=request.image_sizes,
+            template_matches=request.template_matches,
+            expected_template_fingerprint=request.expected_template_fingerprint,
+        )
+    except TimeoutError:
+        raise _region_lock_timeout_error(session_id) from None
     region_count = len(db.list_answer_regions(int(session_id))) if result.committed else 0
     return _commit_response(result, region_count)
 
@@ -597,6 +611,9 @@ def retry_answer_region_snapshot(
         Path(draft_service.draft_path).parent,
         draft_service,
     )
-    result = service.retry_pending_snapshot(session_id=int(session_id))
+    try:
+        result = service.retry_pending_snapshot(session_id=int(session_id))
+    except TimeoutError:
+        raise _region_lock_timeout_error(session_id) from None
     region_count = len(db.list_answer_regions(int(session_id))) if result.committed else 0
     return _commit_response(result, region_count)

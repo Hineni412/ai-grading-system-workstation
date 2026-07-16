@@ -52,6 +52,7 @@ class RegionReadinessResponse(BaseModel):
     session_id: int = Field(gt=0)
     scoring_configured: bool
     template_present: bool
+    template_ready: bool
 
 
 class RegionDraftStateResponse(BaseModel):

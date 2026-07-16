@@ -196,6 +196,8 @@
 | 11 | 稳定候选门槛 | passed after scoped fix | 并行总墙钟 62.4 秒；修复复测 43.8 秒 | 1 组：共享编辑器开发目录新增后，旧 Vite 精确配置测试失配 | 双重复审、短测、集成 |
 | 12 | 首轮 Spec/Standards 并行复审 | changes requested | 约 9 分钟 | 7 组：6 组 Important 流程缺口，1 组样式 token；另有 2 项非阻断设计建议 | 批量修复、最终复审、短测、集成 |
 | 13 | 首轮复审问题批量修复与受影响复测 | passed | 约 18 分钟；最终受影响门槛 约 95 秒 | 7 组全部修复；首次真实链路因运行时优先载入主工作区代码失败，修正隔离启动入口后通过 | 冻结候选、最终复审、短测、集成 |
+| 14 | 最终 Spec/Standards 复审 | stopped per policy | 约 7 分钟 | Standards Important 0；Spec Important 3：锁超时契约、第五阶段真实状态、提交前摘要 | 等待用户决定 |
+| 15 | 用户授权的新修复轮次与受影响复测 | passed | 约 20 分钟；受影响门槛约 102 秒 | 3 组 Important 全部修复；1 组 P2-09 浏览器测试桩缺新状态接口 | 重新冻结、独立复审、短测、集成 |
 
 基线证据：Python answer-region/template API `106 passed`（25.20 秒）；editor core `14 passed`（0.15 秒）；P2-09 navigation `20 passed`（6.75 秒）、session config `6 passed`（2.78 秒）；lint/typecheck/build 通过（22.5 秒）；快速冒烟通过（6.31 秒）。首次把这些命令与静态检查并行汇总时，Vitest 子进程未在父级 180 秒上限内退出；拆成单文件顺序反馈后稳定通过，未修改产品代码。
 
@@ -214,6 +216,8 @@ Task 5 证据：Chromium 匿名流程从“草稿已保存”超时暴露出 Vue
 稳定候选证据：Python P2-10/answer-region/read/OpenAPI `132 passed`（54.18 秒）；P2-10 + P2-09 Chromium `17 passed`（36.2 秒）；快速冒烟通过（23.40 秒）；前端 lint/build 通过。全部前端单元为 `511 passed / 1 failed`，唯一失败是 Vite 配置对象新增共享编辑器目录后旧精确断言未同步；修复时把此前 `..` 允许范围收窄为 `frontend/` 与 `components/answer_region_editor/` 两个精确目录，受影响单元 `4 passed`、typecheck、lint、build 通过。按分层规则未重复运行未受影响的 511 项与浏览器/Python 门槛。
 
 首轮复审与批量修复证据：Spec 复审提出评分依据前置门槛、草稿选择、离开/冲突/保存恢复、校验问题抽屉、正式版重新编辑与 P2-11 就绪提示、真实临时数据库浏览器缝共 6 组 Important；Standards 复审提出交接生命周期 1 组 Important 与样式 token 1 组 Minor。已一次性补齐并只复测受影响范围：后端 answer-region/template/OpenAPI `97 passed`（33.84 秒），最终 template/OpenAPI `29 passed`（22.75 秒）；前端 P2-10 单元 `13 passed`，typecheck/lint/build 通过；模拟 Chromium 覆盖键盘、409 冲突与快照重试 `4 passed`（11.6 秒），真实匿名 PDF + 临时数据库上传至刷新只读 `1 passed`（9.9 秒）；快速冒烟 `--skip-tests` 通过（6.07 秒）。真实两库 SHA256 与开工基线一致，临时数据库只写入 `frontend/test-results/p2-10-real/` 忽略目录。
+
+最终复审停止与用户授权证据：最终 Standards 复审 Important 0；最终 Spec 复审仍发现锁超时未映射、配置页第五阶段未读取真实状态、提交前无数量/绑定/异常摘要共 3 组 Important，因此按规则停止。用户于 2026-07-16 明确确认开启一次新的人工授权修复轮次。新轮次增加 `answer_region_lock_timeout` 稳定 503/重试契约与页面安全提示；readiness 返回真实 `template_ready`，配置页区分“准备样卷/继续标定/查看已确认版本”；正式提交确认展示正反面、绑定、待处理和异常摘要，并补齐每面状态与选中态。受影响后端 `30 passed`（33.26 秒）；前端 `21 passed`、typecheck/lint/build 通过；P2-10 与 P2-09 浏览器首轮 `14 passed / 5 failed`，5 项失败同源于 P2-09 模拟环境缺新增 readiness 路由，补齐后只复测对应五视口 `5 passed`（7.1 秒）；P2-10 真实临时数据库 `1 passed`（9.8 秒）；快速冒烟 `--skip-tests` 通过（11.54 秒）。真实两库 SHA256 再次与开工基线一致。
 
 后续每个 RED/GREEN、复审、修复和 integration 门槛均追加一行；同一根因的多条失败只计一个去重问题。
 

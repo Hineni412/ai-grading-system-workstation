@@ -11,10 +11,20 @@ const route = useRoute()
 const router = useRouter()
 const store = useTemplateRegionStore()
 const routeSessionId = computed(() => Number(route.params.sessionId))
-const pageCounts = computed(() => ({
-  front: store.editorState.regions.filter((item) => item.page === 'front').length,
-  back: store.editorState.regions.filter((item) => item.page === 'back').length,
-}))
+function pageStats(page: PageRole) {
+  const regions = store.editorState.regions.filter((item) => item.page === page)
+  const bound = regions.filter((item) => item.mapped_question_id !== null).length
+  const regionIds = new Set(regions.map((item) => item.region_uuid))
+  const issues = store.workspace?.issues.filter((item) => item.region_uuid !== null
+    && regionIds.has(item.region_uuid)).length ?? 0
+  return { total: regions.length, bound, pending: regions.length - bound, issues }
+}
+const pageCounts = computed(() => ({ front: pageStats('front'), back: pageStats('back') }))
+const commitSummary = computed(() => {
+  const total = pageCounts.value.front.total + pageCounts.value.back.total
+  const bound = pageCounts.value.front.bound + pageCounts.value.back.bound
+  return `正面 ${pageCounts.value.front.total} 框，反面 ${pageCounts.value.back.total} 框；已绑定 ${bound} 框，待处理 ${total - bound} 框，校验问题 ${store.workspace?.issues.length ?? 0} 项。确认保存为正式版本？`
+})
 
 function loadRoute(): void {
   if (Number.isSafeInteger(routeSessionId.value) && routeSessionId.value > 0) {
@@ -22,7 +32,7 @@ function loadRoute(): void {
   }
 }
 async function finish(): Promise<void> {
-  if (!window.confirm('确认将当前题框保存为正式版本？保存后将进入只读查看。')) return
+  if (!window.confirm(commitSummary.value)) return
   await store.commit()
 }
 function replaceTemplate(file: File, role: PageRole): void {
@@ -66,8 +76,10 @@ watch(routeSessionId, loadRoute)
         <span>{{ store.saveState === 'saving' ? '正在保存草稿' : store.saveState === 'saved' ? '草稿已保存' : '按原图像素记录' }}</span>
         <span v-if="store.snapshotPending">正式区域已保存，确认快照待补写</span>
         <div v-if="store.editorReady" class="template-regions-view__faces" aria-label="正反面题框状态">
-          <button type="button" class="secondary" @click="store.showPage('front')">正面 {{ pageCounts.front }} 框</button>
-          <button type="button" class="secondary" @click="store.showPage('back')">反面 {{ pageCounts.back }} 框</button>
+          <button type="button" class="secondary" :aria-pressed="store.editorState.active_page === 'front'"
+            @click="store.showPage('front')">正面 {{ pageCounts.front.total }} 框 · 已绑定 {{ pageCounts.front.bound }} · 待处理 {{ pageCounts.front.pending }} · 异常 {{ pageCounts.front.issues }}</button>
+          <button type="button" class="secondary" :aria-pressed="store.editorState.active_page === 'back'"
+            @click="store.showPage('back')">反面 {{ pageCounts.back.total }} 框 · 已绑定 {{ pageCounts.back.bound }} · 待处理 {{ pageCounts.back.pending }} · 异常 {{ pageCounts.back.issues }}</button>
         </div>
       </div>
       <p v-if="store.errorMessage" class="template-regions-view__notice" role="alert">{{ store.errorMessage }}</p>
