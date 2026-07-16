@@ -159,7 +159,7 @@
 
 ### Task 6: 稳定候选、双重复审、短测和交接
 
-- [ ] **Step 1: 包内稳定候选验证**
+- [x] **Step 1: 包内稳定候选验证**
 
   运行 P2-10 聚焦 Python、现有 answer-region 回归、OpenAPI、全部前端 unit、lint/typecheck/build、P2-10/P2-09 Chromium 和 `tools/smoke_check.py --skip-tests`。记录轮次、耗时、去重问题和剩余工作；功能分支默认不跑全量 pytest。
 
@@ -193,6 +193,7 @@
 | 8 | Task 4 API/store/第五阶段与专注页面 | passed | 约 4 分钟开发；46.1 秒首轮门槛、25.5 秒受影响复测 | 5 组：安全解码缺口、旧上下文晚到覆盖、409 后继续保存、无模板无入口、确认态/快照态不清 | 浏览器、稳定候选、复审、集成 |
 | 9 | Task 5 匿名浏览器流程与视口 | passed | 约 3 分钟开发；最终 10.3 秒 | 2 组：编辑输出绕过保存队列、浏览器断言命中两个同文案状态 | 稳定候选、复审、短测、集成 |
 | 10 | 公开模板响应脱敏、架构与短测卡 | passed | 约 2 分钟；Python 25.28 秒、前端 16 秒 | 1 组：旧模板 GET/PUT 仍返回内部路径与快照令牌 | 稳定候选、复审、短测、集成 |
+| 11 | 稳定候选门槛 | passed after scoped fix | 并行总墙钟 62.4 秒；修复复测 43.8 秒 | 1 组：共享编辑器开发目录新增后，旧 Vite 精确配置测试失配 | 双重复审、短测、集成 |
 
 基线证据：Python answer-region/template API `106 passed`（25.20 秒）；editor core `14 passed`（0.15 秒）；P2-09 navigation `20 passed`（6.75 秒）、session config `6 passed`（2.78 秒）；lint/typecheck/build 通过（22.5 秒）；快速冒烟通过（6.31 秒）。首次把这些命令与静态检查并行汇总时，Vitest 子进程未在父级 180 秒上限内退出；拆成单文件顺序反馈后稳定通过，未修改产品代码。
 
@@ -207,6 +208,8 @@ Task 4 证据：P2-10 API/store/editor/view 与 P2-09 navigation/session-config 
 Task 5 证据：Chromium 匿名流程从“草稿已保存”超时暴露出 Vue `v-model` 绕过 store 保存动作，改为显式 `update:modelValue → updateEditor` 后通过；随后只收紧重复文案定位。最终 `2 passed`（7.8 秒测试、10.3 秒总耗时），覆盖上传、反面在前、画框、绑定、自动保存、正式确认、刷新只读及 1920×1080、1440×900、1366×768、1280×800、1024×768 五档视口与 1000×1400/2480×3508 两种页面尺寸。
 
 公开响应与文档证据：既有模板 GET/PUT 响应改为只返回受控正反面 URL、确认状态和时间，不再返回模板、映射、区域路径或快照令牌；template/read/OpenAPI 聚焦回归 `32 passed`（25.28 秒）。架构事实与 P2-10 匿名短测卡已生成；lint 与 P2-10 Chromium `2 passed`（7.9 秒）再次通过。
+
+稳定候选证据：Python P2-10/answer-region/read/OpenAPI `132 passed`（54.18 秒）；P2-10 + P2-09 Chromium `17 passed`（36.2 秒）；快速冒烟通过（23.40 秒）；前端 lint/build 通过。全部前端单元为 `511 passed / 1 failed`，唯一失败是 Vite 配置对象新增共享编辑器目录后旧精确断言未同步；修复时把此前 `..` 允许范围收窄为 `frontend/` 与 `components/answer_region_editor/` 两个精确目录，受影响单元 `4 passed`、typecheck、lint、build 通过。按分层规则未重复运行未受影响的 511 项与浏览器/Python 门槛。
 
 后续每个 RED/GREEN、复审、修复和 integration 门槛均追加一行；同一根因的多条失败只计一个去重问题。
 
