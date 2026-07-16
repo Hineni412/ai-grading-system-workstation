@@ -570,6 +570,10 @@ describe('workbench view', () => {
     expect(loadGraph).toHaveBeenCalledWith(7, '七年级一班')
     expect(host.textContent).toContain('已覆盖 18 / 20 份')
     expect(host.textContent).toContain('2 份作答未关联知识标签')
+    const fullGraphLink = host.querySelector<HTMLAnchorElement>('[data-testid="open-knowledge-graph"]')
+    expect(fullGraphLink?.textContent).toContain('打开完整知识图谱')
+    expect(fullGraphLink?.getAttribute('href')).toContain('session=7')
+    expect(fullGraphLink?.getAttribute('href')).toContain(`class=${encodeURIComponent('七年级一班')}`)
 
     clickButton(host, '分数运算')
     await settleUi()
