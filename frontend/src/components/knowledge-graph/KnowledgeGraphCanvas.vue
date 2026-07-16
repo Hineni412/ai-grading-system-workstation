@@ -53,6 +53,7 @@ const chartError = ref('')
 let chart: ChartLike | null = null
 let observer: ResizeObserver | null = null
 let resizeFrame: number | null = null
+const chartUnavailableMessage = '图表暂时无法显示，文字目录和节点详情仍可使用。'
 
 const bandColourTokens: Record<MasteryBand, { fill: string; border: string }> = {
   weak: { fill: '--color-danger-subtle', border: '--color-danger' },
@@ -101,20 +102,25 @@ function graphOption(): Record<string, unknown> {
         category: node.bandIndex,
         itemStyle: {
           color: themeColour(bandColourTokens[node.band].fill),
-          borderColor: props.selectedKey === node.knowledgeKey
-            ? themeColour('--color-accent')
-            : themeColour(bandColourTokens[node.band].border),
-          borderWidth: props.selectedKey === node.knowledgeKey ? 3 : 1,
+          borderColor: themeColour(bandColourTokens[node.band].border),
+          borderWidth: 1,
         },
         label: {
-          show: props.nodes.length <= 120 || props.selectedKey === node.knowledgeKey,
+          show: props.nodes.length <= 120,
           color: themeColour('--color-text-primary'),
           formatter: `${node.label}\n${node.percentLabel}`,
           fontSize: 12,
           lineHeight: 16,
         },
       })),
-      emphasis: { focus: 'self' },
+      emphasis: {
+        focus: 'self',
+        label: { show: true },
+        itemStyle: {
+          borderColor: themeColour('--color-accent'),
+          borderWidth: 3,
+        },
+      },
     }],
   }
 }
@@ -124,13 +130,6 @@ function treeData(node: GroupingTreeNode): Record<string, unknown> {
     name: node.name,
     ...(node.knowledgeKey ? { knowledgeKey: node.knowledgeKey } : {}),
     children: node.children.map(treeData),
-    ...(node.knowledgeKey === props.selectedKey
-      ? { itemStyle: {
-          color: themeColour('--color-accent-subtle'),
-          borderColor: themeColour('--color-accent'),
-          borderWidth: 3,
-        } }
-      : {}),
   }
 }
 
@@ -161,7 +160,14 @@ function treeOption(): Record<string, unknown> {
       },
       label: { color: themeColour('--color-text-primary'), fontSize: 12, position: 'left' },
       leaves: { label: { position: 'right', color: themeColour('--color-text-primary') } },
-      emphasis: { focus: 'descendant' },
+      emphasis: {
+        focus: 'descendant',
+        itemStyle: {
+          color: themeColour('--color-accent-subtle'),
+          borderColor: themeColour('--color-accent'),
+          borderWidth: 3,
+        },
+      },
     }],
   }
 }
@@ -171,8 +177,26 @@ function renderChart(): void {
   try {
     chart.setOption(props.mode === 'graph' ? graphOption() : treeOption(), true)
     chartError.value = ''
+    updateChartSelection()
   } catch {
-    chartError.value = '图表暂时无法显示，文字目录和节点详情仍可使用。'
+    markChartFailed()
+  }
+}
+
+function markChartFailed(): void {
+  chartError.value = chartUnavailableMessage
+}
+
+function updateChartSelection(): void {
+  if (!chart) return
+  try {
+    chart.dispatchAction({ type: 'downplay', seriesIndex: 0 })
+    const selected = props.nodes.find((node) => node.knowledge_key === props.selectedKey)
+    if (selected) {
+      chart.dispatchAction({ type: 'highlight', seriesIndex: 0, name: selected.knowledge_label })
+    }
+  } catch {
+    markChartFailed()
   }
 }
 
@@ -196,7 +220,7 @@ function resizeChart(): boolean {
     chart?.resize()
     return true
   } catch {
-    chartError.value = '图表暂时无法显示，文字目录和节点详情仍可使用。'
+    markChartFailed()
     return false
   }
 }
@@ -205,7 +229,7 @@ function restoreView(): void {
   try {
     chart?.dispatchAction({ type: 'restore' })
   } catch {
-    chartError.value = '图表暂时无法显示，文字目录和节点详情仍可使用。'
+    markChartFailed()
     return
   }
   renderChart()
@@ -237,7 +261,7 @@ function initializeChart(): void {
       // A broken third-party chart must not escape this component boundary.
     }
     chart = null
-    chartError.value = '图表暂时无法显示，文字目录和节点详情仍可使用。'
+    markChartFailed()
   }
 }
 
@@ -249,10 +273,12 @@ function retryChart(): void {
 }
 
 watch(
-  () => [props.nodes, props.rows, props.mode, props.selectedKey, props.scopeLabel, props.coverage],
+  () => [props.nodes, props.rows, props.mode, props.scopeLabel, props.coverage],
   renderChart,
   { deep: true },
 )
+
+watch(() => props.selectedKey, updateChartSelection)
 
 onMounted(() => {
   initializeChart()

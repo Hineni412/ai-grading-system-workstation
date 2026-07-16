@@ -708,6 +708,8 @@ Expected: validator `ok=true`，停在 `waiting_review`；不得自报独立复�
 - 定向修复去重后的 4 组 Important 已全部关闭；3 个代码/测试 Minor 同批关闭。验收卡候选 SHA 与列表格式按交接协议留到独立复审通过后的用户验收证据提交统一更新，避免在已复审 SHA 形成前伪造验收锚点。剩余工作为冻结新候选、一次用户授权后的独立复审、用户短测和 integration/PR/主线同步。
 - 用户授权后的冻结差异双路复审确认上轮 4 组 Important 主路径均已关闭，但 Standards 报告 `0 Critical / 3 Important / 1 Minor`，Spec 报告 `0 Critical / 1 Important / 1 Minor`；去重为 3 组 Important：resize/ResizeObserver/teardown 的局部失败仍不完整、`ARCHITECTURE.md` 遗留旧 URL 事实和重复编号、未提交工作树不能把旧 HEAD 写成实际受测 SHA。Git 元数据当时由桌面环境设为只读，已停止并向用户说明；用户随后明确授权当前 P2-15 写 `.git`，同时继续禁止 `user_data`，文档治理任务继续运行。
 - Git 授权后的最终定向修复：resize 重试先以 `1 failed / 7 passed` 复现只重绘不 resize；observe 重建以 `1 failed / 8 passed` 复现失效 observer 残留；异常 off 后 dispose 以 `1 failed / 9 passed` 复现清理短路，三条分别转绿到组件 `10 passed`。旧 workbench 地址混入额外受控参数先以 `1 failed / 13 passed` 复现，修复后 route `14 passed`。架构事实改为完整 3×3 受控 URL 与成功刷新清证据，并修正序号。冻结前受影响回归为 5 文件 `54 passed / 0 failed`（约 10 秒），typecheck 通过（约 16 秒），lint 通过（约 11 秒）；未运行大范围测试。
+- 用户于 2026-07-16 明确决定“定向修复，不再复审，然后合并”。本轮不再启动独立复审，按用户决定关闭最后 `1 Important / 2 Minor` 后直接进入 integration；该决定不扩大真实数据、直接 push main、force push 或破坏性操作权限。
+- 最后定向修复 RED/GREEN：节点选择先以组件 `1 failed / 9 passed` 复现整图 `setOption`，随后改为 ECharts highlight/downplay 局部选择并转为 `10 passed`；错误候选 SHA 先令 1000 节点基准按预期失败，再改为附件始终读取真实 `git rev-parse HEAD`，环境值只做一致性校验；四处相同图表降级赋值收敛为统一边界函数。受影响验证为组件 `10 passed`（约 7 秒）、typecheck（约 17 秒）、lint（约 11 秒）、知识图谱 Chromium `8 passed`（约 15 秒）。提交后的真实 HEAD 千节点附件仍须作为 integration 前最终证据重跑。
 
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
