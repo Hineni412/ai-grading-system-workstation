@@ -27,6 +27,8 @@ EXPECTED_OPERATIONS = {
     ("GET", "/api/sessions/{session_id}/template"),
     ("PUT", "/api/sessions/{session_id}/template"),
     ("GET", "/api/sessions/{session_id}/regions"),
+    ("GET", "/api/sessions/{session_id}/regions/readiness"),
+    ("GET", "/api/sessions/{session_id}/regions/workspace"),
     ("GET", "/api/sessions/{session_id}/regions/draft"),
     ("PUT", "/api/sessions/{session_id}/regions/draft"),
     ("POST", "/api/sessions/{session_id}/regions/commit"),

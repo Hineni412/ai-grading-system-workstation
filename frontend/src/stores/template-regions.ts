@@ -7,6 +7,7 @@ import {
   abandonTemplateSubmission,
   commitRegions,
   discardRegionDraft,
+  fetchRegionReadiness,
   fetchRegionWorkspace,
   fetchTemplateSubmission,
   retryRegionSnapshot,
@@ -32,13 +33,21 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
   const uploadState = ref<TemplateUploadState>('idle')
   const pendingUploadToken = ref<string | null>(null)
   const errorMessage = ref('')
+  const scoringConfigured = ref(false)
+  const editorReady = ref(false)
+  const editingConfirmed = ref(false)
   let generation = 0
   let savedRevision = 0
   let saveTimer: ReturnType<typeof setTimeout> | undefined
   let saveInFlight = false
 
-  const readOnly = computed(() => workspace.value?.template_ready === true)
+  const readOnly = computed(() => workspace.value?.template_ready === true && !editingConfirmed.value)
   const snapshotPending = computed(() => workspace.value?.template.regions_snapshot_pending === true)
+  const draftChoiceRequired = computed(() => workspace.value?.draft.status === 'compatible'
+    && !editorReady.value)
+  const hasUnsavedWork = computed(() => uploadState.value === 'uploading'
+    || uploadState.value === 'unknown'
+    || (editorReady.value && !readOnly.value && editorState.value.revision > savedRevision))
 
   function resetForSession(id: number): number {
     clearTimeout(saveTimer)
@@ -52,15 +61,20 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
     uploadState.value = 'idle'
     pendingUploadToken.value = null
     errorMessage.value = ''
+    scoringConfigured.value = false
+    editorReady.value = false
+    editingConfirmed.value = false
     savedRevision = 0
     return generation
   }
 
   function applyWorkspace(value: RegionWorkspace): void {
     workspace.value = value
-    const regions = value.draft.status === 'compatible'
-      ? value.draft.regions : value.formal_regions
-    savedRevision = value.draft.status === 'compatible' ? value.draft.revision : 0
+    editingConfirmed.value = false
+    const blockedDraft = ['compatible', 'incompatible', 'corrupt'].includes(value.draft.status)
+    editorReady.value = !blockedDraft
+    const regions = value.formal_regions
+    savedRevision = 0
     editorState.value = {
       revision: savedRevision,
       active_page: 'front',
@@ -72,23 +86,25 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
   async function load(id: number): Promise<void> {
     const requestGeneration = resetForSession(id)
     try {
+      const readiness = await fetchRegionReadiness(id)
+      if (requestGeneration !== generation || sessionId.value !== id) return
+      scoringConfigured.value = readiness.scoring_configured
+      if (!readiness.template_present) {
+        loadState.value = 'ready'
+        return
+      }
       const response = await fetchRegionWorkspace(id)
       if (requestGeneration === generation && sessionId.value === id) applyWorkspace(response)
-    } catch (error) {
+    } catch {
       if (requestGeneration === generation && sessionId.value === id) {
-        if (error instanceof ApiError && error.status === 404
-          && error.code === 'template_not_found') {
-          loadState.value = 'ready'
-        } else {
-          loadState.value = 'error'
-          errorMessage.value = '样卷工作区暂时无法读取，当前数据没有改变。'
-        }
+        loadState.value = 'error'
+        errorMessage.value = '样卷工作区暂时无法读取，当前数据没有改变。'
       }
     }
   }
 
   function updateEditor(value: EditorState): void {
-    if (readOnly.value || saveState.value === 'conflict') return
+    if (!editorReady.value || readOnly.value || saveState.value === 'conflict') return
     editorState.value = structuredClone(value)
     saveState.value = 'idle'
     clearTimeout(saveTimer)
@@ -133,7 +149,8 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
 
   async function upload(file: File, firstPageRole: PageRole): Promise<void> {
     const id = sessionId.value
-    if (id === null || uploadState.value === 'uploading' || uploadState.value === 'unknown') return
+    if (id === null || !scoringConfigured.value
+      || uploadState.value === 'uploading' || uploadState.value === 'unknown') return
     const token = createClientRequestToken()
     pendingUploadToken.value = token
     uploadState.value = 'uploading'
@@ -184,6 +201,38 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
     await load(id)
   }
 
+  function continueDraft(): void {
+    const current = workspace.value
+    if (current?.draft.status !== 'compatible') return
+    savedRevision = current.draft.revision
+    editorState.value = { revision: savedRevision, active_page: 'front',
+      regions: structuredClone(toRaw(current.draft.regions)) }
+    editorReady.value = true
+    saveState.value = 'saved'
+  }
+
+  async function restartFromFormal(): Promise<void> {
+    await discardDraft()
+  }
+
+  async function startEditingConfirmed(): Promise<void> {
+    const current = workspace.value
+    if (!current?.template_ready) return
+    editingConfirmed.value = true
+    editorReady.value = true
+    savedRevision = 0
+    editorState.value = { revision: 1, active_page: 'front', regions:
+      structuredClone(toRaw(current.formal_regions)).map((region) => ({
+        ...region, is_confirmed: false,
+      })) }
+    await flushDraft()
+  }
+
+  function showPage(page: PageRole): void {
+    if (!editorReady.value) return
+    editorState.value = { ...editorState.value, active_page: page }
+  }
+
   async function commit(): Promise<RegionCommitResponse | null> {
     const id = sessionId.value
     const current = workspace.value
@@ -200,7 +249,10 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
       expected_template_fingerprint: current.template.template_fingerprint,
     })
     if (result.committed) await load(id)
-    else workspace.value = { ...current, issues: result.issues }
+    else {
+      workspace.value = { ...current, issues: result.issues }
+      editorState.value = { ...editorState.value, drawer_open: true }
+    }
     return result
   }
 
@@ -212,6 +264,8 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
   }
 
   return { sessionId, workspace, editorState, loadState, saveState, uploadState,
-    pendingUploadToken, errorMessage, readOnly, snapshotPending, load, updateEditor,
-    flushDraft, upload, reconcileUpload, discardDraft, commit, retrySnapshot }
+    pendingUploadToken, errorMessage, scoringConfigured, editorReady, readOnly,
+    snapshotPending, draftChoiceRequired, hasUnsavedWork, load, updateEditor,
+    flushDraft, upload, reconcileUpload, discardDraft, continueDraft,
+    restartFromFormal, startEditingConfirmed, showPage, commit, retrySnapshot }
 })

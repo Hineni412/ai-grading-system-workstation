@@ -176,6 +176,35 @@ def test_template_upload_selects_page_roles_and_returns_only_safe_media_urls(tmp
     assert Image.open(io.BytesIO(back_response.content)).size == (480, 800)
 
 
+def test_region_readiness_blocks_template_upload_until_scoring_config_is_saved(tmp_path) -> None:
+    from backend.config_workspace.drafts import create_session_draft
+
+    client, db = _client_with_db(tmp_path)
+    session_id = create_session_draft(db, tmp_path / "config", name="Draft Exam")
+
+    readiness = client.get(f"/api/sessions/{session_id}/regions/readiness")
+    upload = client.post(
+        f"/api/sessions/{session_id}/template",
+        params={"first_page_role": "front"},
+        content=_two_page_template_pdf(),
+        headers={
+            "content-type": "application/pdf",
+            "x-upload-filename": "anonymous-sample.pdf",
+            "x-client-request-token": "6" * 32,
+        },
+    )
+
+    assert readiness.status_code == 200
+    assert readiness.json() == {
+        "session_id": session_id,
+        "scoring_configured": False,
+        "template_present": False,
+    }
+    assert upload.status_code == 409
+    assert upload.json()["error"]["code"] == "scoring_config_required"
+    assert db.get_session_template(session_id) is None
+
+
 def test_template_upload_request_token_is_queryable_and_cannot_be_replayed(tmp_path) -> None:
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)

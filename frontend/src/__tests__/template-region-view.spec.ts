@@ -3,14 +3,13 @@ import { createPinia } from 'pinia'
 import { createMemoryHistory } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiError } from '../api/errors'
 import * as api from '../api/template-regions'
 import { createAppRouter } from '../router'
 import TemplateRegionView from '../views/TemplateRegionView.vue'
 
 vi.mock('../api/template-regions', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/template-regions')>(),
-  fetchRegionWorkspace: vi.fn(), saveRegionDraft: vi.fn(), uploadTemplate: vi.fn(),
+  fetchRegionReadiness: vi.fn(), fetchRegionWorkspace: vi.fn(), saveRegionDraft: vi.fn(), uploadTemplate: vi.fn(),
   fetchTemplateSubmission: vi.fn(), abandonTemplateSubmission: vi.fn(),
   discardRegionDraft: vi.fn(), commitRegions: vi.fn(), retryRegionSnapshot: vi.fn(),
 }))
@@ -47,18 +46,33 @@ async function mountView() {
   return { app, host }
 }
 
-beforeEach(() => { document.body.innerHTML = ''; vi.clearAllMocks() })
+beforeEach(() => {
+  document.body.innerHTML = ''; vi.clearAllMocks()
+  vi.mocked(api.fetchRegionReadiness).mockResolvedValue({
+    session_id: 7, scoring_configured: true, template_present: true,
+  })
+})
 
 describe('TemplateRegionView', () => {
   it('offers the first upload when the session has no template yet', async () => {
-    vi.mocked(api.fetchRegionWorkspace).mockRejectedValue(new ApiError({
-      kind: 'not_found', status: 404, code: 'template_not_found', message: 'missing',
-      details: {}, requestId: 'rid', retryable: false,
-    }))
+    vi.mocked(api.fetchRegionReadiness).mockResolvedValue({
+      session_id: 7, scoring_configured: true, template_present: false,
+    })
     const { app, host } = await mountView()
 
     expect(host.textContent).toContain('上传双页样卷')
     expect(host.querySelector<HTMLInputElement>('input[type="file"]')).not.toBeNull()
+    app.unmount()
+  })
+
+  it('blocks upload until the scoring configuration is saved', async () => {
+    vi.mocked(api.fetchRegionReadiness).mockResolvedValue({
+      session_id: 7, scoring_configured: false, template_present: false,
+    })
+    const { app, host } = await mountView()
+
+    expect(host.textContent).toContain('请先完成评分依据')
+    expect(host.querySelector<HTMLInputElement>('input[type="file"]')).toBeNull()
     app.unmount()
   })
 

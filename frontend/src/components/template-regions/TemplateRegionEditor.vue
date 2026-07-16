@@ -43,6 +43,7 @@ const props = defineProps<{
   issues: EditorIssue[]
   readOnly?: boolean
   saveStatus?: string
+  activePage?: 'front' | 'back'
 }>()
 
 const emit = defineEmits<{
@@ -60,7 +61,7 @@ function initialize(): void {
   dispose = answerRegionEditor({
     parentElement: host.value,
     data: {
-      editor_state: props.modelValue,
+      editor_state: { ...props.modelValue, active_page: props.activePage ?? props.modelValue.active_page },
       images: props.images,
       image_sizes: {
         front: [props.images.front.width, props.images.front.height],
@@ -85,7 +86,7 @@ function initialize(): void {
 onMounted(initialize)
 watch(
   () => [props.images, props.manualQuestionOptions, props.automaticCandidates, props.issues,
-    props.readOnly, props.saveStatus],
+    props.readOnly, props.saveStatus, props.activePage],
   async () => { await nextTick(); initialize() },
   { deep: true },
 )
