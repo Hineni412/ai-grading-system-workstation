@@ -4,6 +4,7 @@ import { createMemoryHistory } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from '../api/scan-grading'
+import { fetchStudents } from '../api/students'
 import { createAppRouter } from '../router'
 import ScanGradingView from '../views/ScanGradingView.vue'
 
@@ -12,7 +13,9 @@ vi.mock('../api/scan-grading', async (importOriginal) => ({
   fetchGradingWorkspace: vi.fn(), uploadScan: vi.fn(), removeScan: vi.fn(), clearScans: vi.fn(),
   freezeScans: vi.fn(), startPreflight: vi.fn(), fetchPreflight: vi.fn(),
   saveScanDecisions: vi.fn(), startGrading: vi.fn(), controlGrading: vi.fn(), cancelGrading: vi.fn(),
+  startNewScanBatch: vi.fn(),
 }))
+vi.mock('../api/students', () => ({ fetchStudents: vi.fn() }))
 
 function workspace(): api.GradingWorkspace {
   return {
@@ -35,7 +38,9 @@ async function mountView() {
   document.body.append(host)
   const app = createApp(ScanGradingView)
   app.use(createPinia()); app.use(router); app.mount(host)
-  await Promise.resolve(); await nextTick(); await Promise.resolve(); await nextTick()
+  for (let index = 0; index < 6; index += 1) {
+    await Promise.resolve(); await nextTick()
+  }
   return { app, host }
 }
 
@@ -44,8 +49,15 @@ beforeEach(() => {
   vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(workspace())
   vi.mocked(api.fetchPreflight).mockResolvedValue({
     revision: 2, summary: { auto_matched: 28, issues: 2, absent_candidates: 1, total_pages: 60 },
-    groups: [], issues: [{ issue_id: 'i1' }, { issue_id: 'i2' }], absent_students: [], warnings: [],
+    groups: [], issues: [{ id: 'i1' }, { id: 'i2' }], absent_students: [], warnings: [],
     decisions: [], pending_issue_count: 2,
+  })
+  vi.mocked(fetchStudents).mockResolvedValue([
+    { id: 11, student_code: 'S011', name: '学生甲', class_name: '一班', created_at: null },
+  ])
+  vi.mocked(api.saveScanDecisions).mockResolvedValue({
+    revision: 3, decisions: [{ target_type: 'issue', target_id: 'i1', action: 'invalid' }],
+    pending_issue_count: 1,
   })
 })
 
@@ -76,6 +88,42 @@ describe('scan grading workspace', () => {
     expect(host.querySelector('[data-action="pause"]')).not.toBeNull()
     expect(host.querySelector('[data-action="cancel"]')).not.toBeNull()
     expect(host.textContent).toContain('已完成 12')
+    app.unmount()
+  })
+
+  it('submits the public issue id for an invalid decision', async () => {
+    const { app, host } = await mountView()
+
+    host.querySelector<HTMLButtonElement>('.scan-issue-list .text-button')!.click()
+    await Promise.resolve(); await nextTick()
+
+    expect(api.saveScanDecisions).toHaveBeenCalledWith(7, 2, [
+      { target_type: 'issue', target_id: 'i1', action: 'invalid' },
+    ])
+    app.unmount()
+  })
+
+  it('allows a low-confidence automatic group to be rebound', async () => {
+    vi.mocked(api.fetchPreflight).mockResolvedValue({
+      revision: 2, summary: { auto_matched: 1, issues: 0, absent_candidates: 0, total_pages: 2 },
+      groups: [{ id: 'g1', student_name: '学生乙', detected_name: '学生一', source_label: '001',
+        match_method: 'fuzzy', match_score: 0.7 }], issues: [], absent_students: [], warnings: [],
+      decisions: [], pending_issue_count: 0,
+    })
+    vi.mocked(api.saveScanDecisions).mockResolvedValue({
+      revision: 3, decisions: [{ target_type: 'group', target_id: 'g1', action: 'match', student_id: 11 }],
+      pending_issue_count: 0,
+    })
+    const { app, host } = await mountView()
+    const select = host.querySelector<HTMLSelectElement>('select[aria-label="重新选择学生"]')!
+    select.value = '11'; select.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    host.querySelector<HTMLButtonElement>('.scan-issue-list button.secondary')!.click()
+    await Promise.resolve(); await nextTick()
+
+    expect(api.saveScanDecisions).toHaveBeenCalledWith(7, 2, [
+      { target_type: 'group', target_id: 'g1', action: 'match', student_id: 11 },
+    ])
     app.unmount()
   })
 })

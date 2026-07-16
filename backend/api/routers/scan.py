@@ -204,6 +204,23 @@ def freeze_session_scan_uploads(
     return ScanUploadBatchResponse.model_validate(batch)
 
 
+@router.post(
+    "/sessions/{session_id}/scan-uploads/new-batch",
+    response_model=ScanUploadBatchResponse,
+)
+def start_new_session_scan_batch(
+    session_id: int,
+    db: DBManager = Depends(get_grading_db),
+    workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+) -> ScanUploadBatchResponse:
+    _require_session(db, session_id)
+    try:
+        batch = workspace.start_new_upload_batch(session_id)
+    except ScanGradingWorkspaceError as exc:
+        raise ApiError(409, "grading_run_still_active", "Active grading run must be resolved first") from exc
+    return ScanUploadBatchResponse.model_validate(batch)
+
+
 @router.get(
     "/sessions/{session_id}/scan/preflight",
     response_model=ScanPreflightResponse,
