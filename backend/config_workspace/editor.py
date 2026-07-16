@@ -1129,10 +1129,15 @@ def _set_final_answer_rule(node: dict[str, Any], text: str) -> None:
 
 def _sync_solution_policy(question: dict[str, Any]) -> None:
     max_score = _number(question.get("max_score"), 0.0)
-    answer_only = min(
+    explicit_null = (
+        "answer_only_max_score" in question
+        and question.get("answer_only_max_score") is None
+    )
+    effective_answer_only = min(
         max_score,
         max(0.0, _number(question.get("answer_only_max_score"), 0.0)),
     )
+    answer_only: float | None = None if explicit_null else effective_answer_only
     require_final = bool(question.get("require_final_answer"))
     question["require_final_answer"] = require_final
     question["answer_only_max_score"] = answer_only
@@ -1146,13 +1151,17 @@ def _sync_solution_policy(question: dict[str, Any]) -> None:
     if not isinstance(policies, list):
         policies = []
         question["deduction_policy"] = policies
-    answer_only_text = str(int(answer_only)) if answer_only.is_integer() else str(answer_only)
+    answer_only_text = (
+        str(int(effective_answer_only))
+        if effective_answer_only.is_integer()
+        else str(effective_answer_only)
+    )
     _upsert_policy(
         policies,
         {
             "policy_id": "answer_only_process_missing",
             "issue": f"只写最终答案但没有有效过程，最多给 {answer_only_text} 分，主要过程分不得给分",
-            "max_deduction": max(0.0, max_score - answer_only),
+            "max_deduction": max(0.0, max_score - effective_answer_only),
             "severity": "major",
         },
     )

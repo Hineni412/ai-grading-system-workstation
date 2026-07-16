@@ -115,9 +115,11 @@
 POST /api/sessions/drafts
 PATCH /api/sessions/{session_id}
 POST /api/sessions/{session_id}/config/sources
+POST /api/sessions/{session_id}/config/sources/submissions/{request_token}/abandon
 GET  /api/sessions/{session_id}/config/sources/{source_id}
 GET  /api/sessions/{session_id}/config/sources/{source_id}/questions/{question_id}/assets/{asset_kind}
 POST /api/sessions/{session_id}/config/generate-from-source
+POST /api/sessions/{session_id}/config/generation-jobs/requests/{request_token}/abandon
 GET  /api/sessions/{session_id}/config/editor
 PUT  /api/sessions/{session_id}/config/editor
 POST /api/sessions/{session_id}/config/editor/refine

@@ -534,6 +534,8 @@ class ConfigSourceService:
             raise ConfigSourceNotFoundError()
         with session_config_lock(self.upload_config_dir, clean_session_id):
             marker = self._read_json_object(marker_path)
+            if self._submission_state(marker_path, marker=marker) == "abandoned":
+                raise ConfigSourceNotFoundError()
             state, source = self._submission_result_locked(
                 session_id=clean_session_id,
                 request_token=clean_token,
@@ -541,6 +543,23 @@ class ConfigSourceService:
                 marker=marker,
             )
         return {"status": state, "source": source}
+
+    def abandon_submission(self, *, session_id: int, request_token: str) -> None:
+        """Atomically reserve an unseen token so a late upload cannot start."""
+        clean_session_id = _positive_session_id(session_id)
+        clean_token = _request_token(request_token)
+        marker_path = self._submission_path(clean_session_id, clean_token)
+        self._prepare_source_dir(self._source_dir(clean_session_id, clean_token))
+        with session_config_lock(self.upload_config_dir, clean_session_id):
+            if marker_path.is_file():
+                marker = self._read_json_object(marker_path)
+                if self._submission_state(marker_path, marker=marker) == "abandoned":
+                    return
+                raise ConfigSourceSubmissionConflictError()
+            self._files.write_json_atomic(
+                marker_path,
+                {"status": "abandoned", "source_id": clean_token},
+            )
 
     def _submission_result_locked(
         self,
@@ -655,7 +674,7 @@ class ConfigSourceService:
         marker = marker if marker is not None else self._read_json_object(marker_path)
         state = str(marker.get("status") or "")
         source_id = str(marker.get("source_id") or "")
-        if state not in {"processing", "succeeded", "failed", "replaced"} or not _SOURCE_ID.fullmatch(source_id):
+        if state not in {"processing", "succeeded", "failed", "replaced", "abandoned"} or not _SOURCE_ID.fullmatch(source_id):
             raise ConfigSourceInvalidError()
         return state
 

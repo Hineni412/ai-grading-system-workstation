@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 
 import {
+  abandonConfigSourceSubmission,
   createClientRequestToken,
   fetchActiveConfigSource,
   fetchConfigSourceSubmission,
@@ -21,12 +22,14 @@ const props = withDefaults(defineProps<{
   uploader?: (sessionId: number, file: File, requestToken: string) => Promise<ConfigSource>
   beforeUpload?: () => boolean
   submissionLoader?: (sessionId: number, requestToken: string) => Promise<ConfigSourceSubmission>
+  submissionAbandoner?: (sessionId: number, requestToken: string) => Promise<void>
   activeSourceLoader?: (sessionId: number) => Promise<ConfigSource>
 }>(), {
   source: null,
   uploader: uploadConfigSource,
   beforeUpload: () => true,
   submissionLoader: fetchConfigSourceSubmission,
+  submissionAbandoner: abandonConfigSourceSubmission,
   activeSourceLoader: fetchActiveConfigSource,
 })
 
@@ -79,8 +82,13 @@ async function reconcileUpload(): Promise<void> {
     }
   } catch (error) {
     if (isAuthoritativeNotFoundError(error, 'config_source_not_found')) {
-      configStore.clearUploadSubmissionPending()
-      errorMessage.value = '服务器确认未收到这次上传，可以重新提交。'
+      try {
+        await props.submissionAbandoner(props.sessionId, token)
+        configStore.clearUploadSubmissionPending()
+        errorMessage.value = '服务器确认未收到这次上传，可以重新提交。'
+      } catch {
+        errorMessage.value = '原上传可能仍在到达服务器，当前继续锁定。请稍后再次核对。'
+      }
     } else {
       errorMessage.value = '暂时无法核对这次上传。为避免重复接收，请稍后再次核对。'
     }

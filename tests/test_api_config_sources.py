@@ -64,15 +64,66 @@ def _session(db: DBManager, tmp_path: Path) -> int:
     return db.create_grading_session("Config Source", str(rubric), str(answer))
 
 
-def _upload(client: TestClient, session_id: int, *, filename: str = "数学卷.pdf"):
+def _upload(
+    client: TestClient,
+    session_id: int,
+    *,
+    filename: str = "数学卷.pdf",
+    request_token: str | None = None,
+):
+    headers = {
+        "content-type": "application/octet-stream",
+        "x-upload-filename": quote(filename),
+    }
+    if request_token is not None:
+        headers["x-client-request-token"] = request_token
     return client.post(
         f"/api/sessions/{session_id}/config/sources",
         content=_pdf_bytes(),
-        headers={
-            "content-type": "application/octet-stream",
-            "x-upload-filename": quote(filename),
-        },
+        headers=headers,
     )
+
+
+def test_abandon_unseen_upload_token_blocks_a_late_request(tmp_path: Path) -> None:
+    client, db, _upload_root = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    token = "9" * 32
+
+    abandoned = client.post(
+        f"/api/sessions/{session_id}/config/sources/submissions/{token}/abandon"
+    )
+    replay = client.post(
+        f"/api/sessions/{session_id}/config/sources/submissions/{token}/abandon"
+    )
+    late_upload = _upload(client, session_id, request_token=token)
+    lookup = client.get(
+        f"/api/sessions/{session_id}/config/sources/submissions/{token}"
+    )
+
+    assert abandoned.status_code == 200
+    assert abandoned.json() == {"status": "abandoned"}
+    assert replay.status_code == 200
+    assert late_upload.status_code == 409
+    assert lookup.status_code == 404
+
+
+def test_abandon_upload_token_rejects_an_already_received_request(tmp_path: Path) -> None:
+    client, db, _upload_root = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    token = "8" * 32
+
+    uploaded = _upload(client, session_id, request_token=token)
+    abandoned = client.post(
+        f"/api/sessions/{session_id}/config/sources/submissions/{token}/abandon"
+    )
+    lookup = client.get(
+        f"/api/sessions/{session_id}/config/sources/submissions/{token}"
+    )
+
+    assert uploaded.status_code == 201
+    assert abandoned.status_code == 409
+    assert lookup.status_code == 200
+    assert lookup.json()["source"] == uploaded.json()
 
 
 def test_upload_and_restart_get_return_only_bounded_public_projection(tmp_path: Path) -> None:

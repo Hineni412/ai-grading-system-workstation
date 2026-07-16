@@ -69,6 +69,7 @@ async function mountPanel(options: {
   retryer?: (sessionId: number, jobId: number, questionIds: string[], requestToken: string) => Promise<JobResponse>
   editorLoader?: (sessionId: number) => Promise<ConfigEditorResponse>
   generationLoader?: (sessionId: number, requestToken: string) => Promise<JobResponse>
+  requestAbandoner?: (sessionId: number, requestToken: string) => Promise<void>
 } = {}) {
   const host = document.createElement('div')
   document.body.append(host)
@@ -157,17 +158,42 @@ describe('ConfigGenerationPanel', () => {
     const notFound = new ApiError({ kind: 'not_found', status: 404,
       code: 'config_generation_job_not_found', message: 'missing', details: {},
       requestId: 'safe-404', retryable: false })
+    const requestAbandoner = vi.fn(async () => undefined)
     const mounted = await mountPanel({
       submitter: vi.fn(async () => { throw timeout }),
       generationLoader: vi.fn(async () => { throw notFound }),
+      requestAbandoner,
     })
 
     mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!.click()
     await settle()
 
+    expect(requestAbandoner).toHaveBeenCalledWith(7, expect.stringMatching(/^[0-9a-f]{32}$/))
     expect(useConfigWorkspaceStore().pendingJobRequestToken).toBeNull()
     expect(mounted.host.textContent).toContain('服务器确认未收到这次请求')
     expect(mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')?.disabled).toBe(false)
+  })
+
+  it('keeps generation locked when the missing token cannot be atomically abandoned', async () => {
+    const timeout = new ApiError({ kind: 'network', status: null, code: 'network_error',
+      message: 'offline', details: {}, requestId: 'safe', retryable: true })
+    const notFound = new ApiError({ kind: 'not_found', status: 404,
+      code: 'config_generation_job_not_found', message: 'missing', details: {},
+      requestId: 'safe-404', retryable: false })
+    const conflict = new ApiError({ kind: 'conflict', status: 409,
+      code: 'config_request_token_conflict', message: 'late request', details: {},
+      requestId: 'safe-409', retryable: false })
+    const mounted = await mountPanel({
+      submitter: vi.fn(async () => { throw timeout }),
+      generationLoader: vi.fn(async () => { throw notFound }),
+      requestAbandoner: vi.fn(async () => { throw conflict }),
+    })
+
+    mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!.click()
+    await settle()
+
+    expect(useConfigWorkspaceStore().pendingJobRequestToken).not.toBeNull()
+    expect(mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')?.disabled).toBe(true)
   })
 
   it('reconciles only the exact pending token restored after a refresh', async () => {
@@ -223,6 +249,7 @@ describe('ConfigGenerationPanel', () => {
       requestId: 'safe-404', retryable: false })
     const mounted = await mountPanel({
       generationLoader: vi.fn(async () => { throw notFound }),
+      requestAbandoner: vi.fn(async () => undefined),
     })
 
     mounted.host.querySelector<HTMLButtonElement>('button[name="重新核对生成任务"]')!.click()
@@ -278,6 +305,7 @@ describe('ConfigGenerationPanel', () => {
     const mounted = await mountPanel({
       retryer: vi.fn(async () => { throw timeout }),
       generationLoader: vi.fn(async () => { throw notFound }),
+      requestAbandoner: vi.fn(async () => undefined),
     })
     const failedInputs = mounted.host.querySelectorAll<HTMLInputElement>(
       '.config-generation__partial input[type="checkbox"]',

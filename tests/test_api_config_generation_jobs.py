@@ -280,6 +280,63 @@ def test_generation_request_token_reuses_only_the_exact_job(tmp_path: Path) -> N
     ).id == first.json()["id"]
 
 
+def test_abandon_unseen_generation_token_blocks_a_late_request(tmp_path: Path) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = _source(tmp_path, session_id)
+    token = "9" * 32
+
+    abandoned = client.post(
+        f"/api/sessions/{session_id}/config/generation-jobs/requests/{token}/abandon"
+    )
+    replay = client.post(
+        f"/api/sessions/{session_id}/config/generation-jobs/requests/{token}/abandon"
+    )
+    late_request = client.post(
+        f"/api/sessions/{session_id}/config/generate-from-source",
+        json=_source_request(source, client_request_token=token),
+    )
+    lookup = client.get(
+        f"/api/sessions/{session_id}/config/generation-jobs/requests/{token}"
+    )
+
+    assert abandoned.status_code == 200
+    assert abandoned.json() == {"status": "abandoned"}
+    assert replay.status_code == 200
+    assert late_request.status_code == 409
+    assert late_request.json()["error"]["code"] == "config_request_token_conflict"
+    assert lookup.status_code == 404
+    assert manager.store.find_config_job_by_request_token(
+        session_id=session_id, request_token=token
+    ) is not None
+
+
+def test_abandon_generation_token_rejects_an_already_received_request(
+    tmp_path: Path,
+) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = _source(tmp_path, session_id)
+    token = "8" * 32
+
+    created = client.post(
+        f"/api/sessions/{session_id}/config/generate-from-source",
+        json=_source_request(source, client_request_token=token),
+    )
+    abandoned = client.post(
+        f"/api/sessions/{session_id}/config/generation-jobs/requests/{token}/abandon"
+    )
+    lookup = client.get(
+        f"/api/sessions/{session_id}/config/generation-jobs/requests/{token}"
+    )
+
+    assert created.status_code == 202
+    assert abandoned.status_code == 409
+    assert lookup.status_code == 200
+    assert lookup.json()["id"] == created.json()["id"]
+    manager.wait(created.json()["id"], timeout=5)
+
+
 def test_generation_request_token_rejects_a_different_request(tmp_path: Path) -> None:
     client, db, manager = _client(tmp_path)
     session_id = _session(db, tmp_path)

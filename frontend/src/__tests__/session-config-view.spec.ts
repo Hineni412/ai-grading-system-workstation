@@ -142,6 +142,7 @@ describe('SessionConfigView source replacement guard', () => {
     const app = createApp(SessionConfigView, {
       editorRefiner: vi.fn(async () => { throw timeout }),
       generationLoader: vi.fn(async () => { throw notFound }),
+      requestAbandoner: vi.fn(async () => undefined),
     })
     app.use(pinia)
     app.mount(host)
