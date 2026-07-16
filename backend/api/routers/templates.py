@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Literal
 
@@ -47,6 +48,7 @@ from template_upload_service import (
 
 
 router = APIRouter(prefix="/api", tags=["templates"])
+LOGGER = logging.getLogger("ai_grading.api.templates")
 
 
 def _scoring_configured(db: DBManager, session_id: int) -> bool:
@@ -64,6 +66,31 @@ def _region_lock_timeout_error(session_id: int) -> ApiError:
         {"session_id": int(session_id)},
         headers={"Retry-After": "1"},
     )
+
+
+def _finish_template_submission_best_effort(
+    service: TemplateUploadService,
+    *,
+    session_id: int,
+    request_token: str,
+    succeeded: bool,
+    template: dict[str, object] | None = None,
+) -> None:
+    try:
+        service.finish_submission(
+            session_id=session_id,
+            request_token=request_token,
+            succeeded=succeeded,
+            template=template,
+        )
+    except Exception:
+        # Activation and its manifest are authoritative. A receipt failure must
+        # not rewrite an already activated template as a failed upload.
+        LOGGER.warning(
+            "template_upload_submission_receipt_failed session_id=%s succeeded=%s",
+            int(session_id),
+            succeeded,
+        )
 
 
 def _upload_response(result: Any) -> TemplateUploadResponse:
@@ -175,29 +202,31 @@ async def upload_session_template(
             session_id=session_id,
             pdf_bytes=b"".join(chunks),
             first_page_role=first_page_role,
+            request_token=request_token,
         )
         response = _upload_response(result)
-        service.finish_submission(
-            session_id=session_id,
-            request_token=request_token,
-            succeeded=True,
-            template=response.model_dump(mode="json"),
-        )
     except TemplateUploadTooLargeError:
-        service.finish_submission(
-            session_id=session_id, request_token=request_token, succeeded=False
+        _finish_template_submission_best_effort(
+            service, session_id=session_id, request_token=request_token, succeeded=False
         )
         raise ApiError(413, "template_upload_too_large", "Template upload is too large") from None
     except TemplateUploadError:
-        service.finish_submission(
-            session_id=session_id, request_token=request_token, succeeded=False
+        _finish_template_submission_best_effort(
+            service, session_id=session_id, request_token=request_token, succeeded=False
         )
         raise ApiError(422, "template_upload_invalid", "Template upload is invalid") from None
     except Exception:
-        service.finish_submission(
-            session_id=session_id, request_token=request_token, succeeded=False
+        _finish_template_submission_best_effort(
+            service, session_id=session_id, request_token=request_token, succeeded=False
         )
         raise ApiError(500, "template_upload_failed", "Template upload failed") from None
+    _finish_template_submission_best_effort(
+        service,
+        session_id=session_id,
+        request_token=request_token,
+        succeeded=True,
+        template=response.model_dump(mode="json"),
+    )
     return response
 
 
@@ -231,7 +260,7 @@ def get_template_upload_submission(
     _require_session(db, session_id)
     try:
         return service.submission_public(
-            session_id=session_id, request_token=request_token
+            session_id=session_id, request_token=request_token, db=db
         )
     except FileNotFoundError:
         raise ApiError(

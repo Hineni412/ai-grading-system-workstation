@@ -68,6 +68,7 @@ class TemplateUploadService:
         session_id: int,
         pdf_bytes: bytes,
         first_page_role: TemplatePageRole,
+        request_token: str | None = None,
     ) -> TemplateUploadResult:
         if first_page_role not in {"front", "back"}:
             raise TemplateUploadError("invalid first page role")
@@ -75,6 +76,9 @@ class TemplateUploadService:
             if len(pdf_bytes) > self.max_upload_bytes:
                 raise TemplateUploadTooLargeError("template upload is too large")
             raise TemplateUploadError("template upload is empty")
+        activated_request_token = (
+            _request_token(request_token) if request_token is not None else None
+        )
 
         session_dir = self.templates_dir / f"session_{int(session_id)}"
         session_dir.mkdir(parents=True, exist_ok=True)
@@ -124,6 +128,7 @@ class TemplateUploadService:
                     template_fingerprint=fingerprint,
                     front_size=front_size,
                     back_size=back_size,
+                    request_token=activated_request_token,
                 )
                 try:
                     mapping_package = create_template_mapping_package(
@@ -306,14 +311,24 @@ class TemplateUploadService:
             with self._active_guard:
                 self._active_submissions.discard((int(session_id), token))
 
-    def submission_public(self, *, session_id: int, request_token: str) -> dict[str, object]:
+    def submission_public(
+        self,
+        *,
+        session_id: int,
+        request_token: str,
+        db: DBManager | None = None,
+    ) -> dict[str, object]:
         token = _request_token(request_token)
         session_dir = self.templates_dir / f"session_{int(session_id)}"
         with get_answer_region_session_lock(session_dir):
             marker = _read_json(_submission_path(session_dir, token))
+            manifest = _read_json(session_dir / "template_upload_manifest.json") or {}
         if marker is None:
             raise FileNotFoundError("template upload submission is missing")
         status = str(marker.get("status") or "failed")
+        if status == "processing" and manifest.get("request_token") == token and db is not None:
+            current = self.load_current(db=db, session_id=session_id)
+            return {"status": "succeeded", "template": _submission_template(current)}
         return {
             "status": status,
             "template": marker.get("template") if status == "succeeded" else None,
@@ -335,6 +350,25 @@ def _render_page(document: fitz.Document, page_index: int, output_path: Path) ->
     return int(pixmap.width), int(pixmap.height)
 
 
+def _submission_template(result: TemplateUploadResult) -> dict[str, object]:
+    return {
+        "session_id": result.session_id,
+        "template_id": result.template_id,
+        "template_fingerprint": result.template_fingerprint,
+        "first_page_role": result.first_page_role,
+        "pages": {
+            page: {
+                "url": f"/api/sessions/{result.session_id}/template/pages/{page}",
+                "width": getattr(result, page).width,
+                "height": getattr(result, page).height,
+            }
+            for page in ("front", "back")
+        },
+        "is_confirmed": result.is_confirmed,
+        "regions_snapshot_pending": result.regions_snapshot_pending,
+    }
+
+
 def _write_manifest(
     path: Path,
     *,
@@ -342,12 +376,14 @@ def _write_manifest(
     template_fingerprint: str,
     front_size: tuple[int, int],
     back_size: tuple[int, int],
+    request_token: str | None = None,
 ) -> None:
     payload = {
         "schema_version": 1,
         "first_page_role": first_page_role,
         "template_fingerprint": template_fingerprint,
         "image_sizes": {"front": list(front_size), "back": list(back_size)},
+        "request_token": request_token,
     }
     temp_path = path.with_suffix(".json.tmp")
     temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
