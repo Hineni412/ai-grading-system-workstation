@@ -350,6 +350,26 @@ describe('ConfigGenerationPanel', () => {
     expect(configStore.phase).toBe('editor')
   })
 
+  it.each([
+    ['refreshed', '样卷映射已刷新'],
+    ['reconfirm_required', '样卷映射需要回到旧入口重新确认'],
+    ['not_present', '当前考试没有样卷映射'],
+  ] as const)('shows the %s mapping outcome after complete generation', async (mappingStatus, copy) => {
+    const configStore = useConfigWorkspaceStore()
+    useJobStore().track(job({
+      status: 'succeeded', progress: 1, result: {
+        outcome: 'complete', total_questions: 3, generated_questions: 3,
+        failed_count: 0, failed_question_ids: [], retryable: false,
+        mapping_status: mappingStatus,
+      }, finished_at: '2026-07-15T00:01:00Z',
+    }))
+    configStore.attachJob(31, configStore.captureGenerationContext())
+    const mounted = await mountPanel({ editorLoader: vi.fn(async () => editor()) })
+    await settle()
+
+    expect(mounted.host.textContent).toContain(copy)
+  })
+
   it('blocks a session change until an in-flight submission is attached', async () => {
     const pending = deferred<JobResponse>()
     const submitter = vi.fn((_sessionId: number, _request: ConfigGenerationRequest) => {
