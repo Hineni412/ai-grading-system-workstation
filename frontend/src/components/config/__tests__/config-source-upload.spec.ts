@@ -3,8 +3,10 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ConfigSource, ConfigSourceSubmission } from '../../../api/config-workspace'
+import type { JobResponse } from '../../../api/jobs'
 import { ApiError } from '../../../api/errors'
 import { useConfigWorkspaceStore } from '../../../stores/config-workspace'
+import { useJobStore } from '../../../stores/jobs'
 import ConfigSourceUpload from '../ConfigSourceUpload.vue'
 
 const MiB = 1024 * 1024
@@ -25,6 +27,17 @@ function source(overrides: Partial<ConfigSource> = {}): ConfigSource {
       local_answer_trusted: true, has_question_asset: false, has_answer_asset: false,
     }],
     ...overrides,
+  }
+}
+
+function activeJob(): JobResponse {
+  return {
+    id: 31, job_type: 'config_generation',
+    payload: { session_id: 7, mode: 'generate' }, result: {}, status: 'running',
+    progress: 0.4, stage: 'config_generation', detail: '', error: null,
+    cancel_requested: false, created_at: '2026-07-15T00:00:00Z',
+    started_at: '2026-07-15T00:00:01Z', updated_at: '2026-07-15T00:00:02Z',
+    finished_at: null,
   }
 }
 
@@ -181,6 +194,17 @@ describe('ConfigSourceUpload', () => {
     pending.resolve(source())
     await settle()
     expect(mounted.onUploaded).toHaveBeenCalledWith(source())
+  })
+
+  it('disables source replacement while configuration generation is active', async () => {
+    const configStore = useConfigWorkspaceStore()
+    configStore.jobId = 31
+    useJobStore().track(activeJob())
+    const mounted = await mountUpload({ accepted: source() })
+
+    expect(mounted.host.querySelector<HTMLInputElement>('input[type="file"]')?.disabled).toBe(true)
+    expect(mounted.host.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true)
+    expect(mounted.uploader).not.toHaveBeenCalled()
   })
 
   it('does not start an upload when the request-time guard is cancelled', async () => {

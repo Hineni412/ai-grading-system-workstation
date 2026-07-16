@@ -275,6 +275,35 @@ describe('configuration workspace Store', () => {
     expect(restored.sourceId).toBe(active.source_id)
   })
 
+  it('recovers the active source when cleanup has removed an older cached source', async () => {
+    const oldSourceId = 'd'.repeat(32)
+    const activeSourceId = 'e'.repeat(32)
+    localStorage.setItem(CONFIG_WORKSPACE_STORAGE_KEY, JSON.stringify({
+      sessionId: 7, phase: 'generation', sourceId: oldSourceId,
+      sourceRevision: 'b'.repeat(64), jobId: 31,
+      decisions: [{ question_id: 'Q1', question_type: 'proof', excluded: true }],
+    }))
+    const active = { ...source(activeSourceId), source_revision: 'f'.repeat(64) }
+    const loadActiveSource = vi.fn(async () => active)
+    const store = useConfigWorkspaceStore()
+
+    await store.hydrateSafeIndex([7], 7, {
+      loadSource: async () => { throw notFound() },
+      loadActiveSource,
+      loadJob: async () => job(),
+      loadEditor: async () => editor('current answer'),
+    })
+
+    expect(loadActiveSource).toHaveBeenCalledExactlyOnceWith(7)
+    expect(store.sourceId).toBe(activeSourceId)
+    expect(store.sourceRevision).toBe('f'.repeat(64))
+    expect(store.decisions).toEqual([])
+    expect(store.jobId).toBeNull()
+    expect(JSON.parse(localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)!)).toMatchObject({
+      sourceId: activeSourceId, sourceRevision: 'f'.repeat(64), jobId: null, decisions: [],
+    })
+  })
+
   it('keeps an editor usable when the selected exam has no P2 source', async () => {
     const store = useConfigWorkspaceStore()
 

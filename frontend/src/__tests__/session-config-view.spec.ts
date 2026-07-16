@@ -3,7 +3,9 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { uploadConfigSource, type ConfigSource } from '../api/config-workspace'
+import type { JobResponse } from '../api/jobs'
 import { useConfigWorkspaceStore } from '../stores/config-workspace'
+import { useJobStore } from '../stores/jobs'
 import { useSessionStore } from '../stores/session'
 import SessionConfigView from '../views/SessionConfigView.vue'
 
@@ -17,6 +19,17 @@ function source(id = 'a', revision = 'b'): ConfigSource {
     session_id: 7, source_id: id.repeat(32), source_revision: revision.repeat(64),
     safe_filename: `${id}.pdf`, suffix: '.pdf', size_bytes: 10,
     sha256_prefix: 'c'.repeat(12), parse_state: 'ready', questions: [],
+  }
+}
+
+function activeJob(): JobResponse {
+  return {
+    id: 31, job_type: 'config_generation',
+    payload: { session_id: 7, mode: 'generate' }, result: {}, status: 'running',
+    progress: 0.4, stage: 'config_generation', detail: '', error: null,
+    cancel_requested: false, created_at: '2026-07-15T00:00:00Z',
+    started_at: '2026-07-15T00:00:01Z', updated_at: '2026-07-15T00:00:02Z',
+    finished_at: null,
   }
 }
 
@@ -133,5 +146,15 @@ describe('SessionConfigView source replacement guard', () => {
     expect(mounted.workspace.editor).not.toBeNull()
     expect(mounted.workspace.hasDirtyEditor).toBe(true)
     expect(mounted.host.textContent).not.toContain('private path')
+  })
+
+  it('disables upload and editor save while a configuration job is active', async () => {
+    const mounted = await mountDirtyView()
+    mounted.workspace.jobId = 31
+    useJobStore().track(activeJob())
+    await nextTick()
+
+    expect(mounted.host.querySelector<HTMLInputElement>('.config-source input[type="file"]')?.disabled).toBe(true)
+    expect(mounted.host.querySelector<HTMLButtonElement>('button[name="保存评分依据"]')?.disabled).toBe(true)
   })
 })

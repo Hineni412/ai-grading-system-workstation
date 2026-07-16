@@ -649,7 +649,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     let sourceResult = initialSourceResult
     let sourceWasReplaced = false
     if (candidate.sourceId !== null && sourceResult.status === 'rejected'
-      && isSourceChanged(sourceResult.reason)) {
+      && (isSourceChanged(sourceResult.reason) || isNotFound(sourceResult.reason))) {
       sourceWasReplaced = true
       const [activeSourceResult] = await Promise.allSettled([
         dependencies.loadActiveSource(candidate.sessionId),

@@ -2929,18 +2929,21 @@ def render_config_and_session_tab(
                         lambda: _refresh_template_mapping_from_session(db, selected_session_id)
                     )
                     mapping_status = mapping_result.mapping_status
-                    _write_session_workflow_state(
+                    workflow_state_saved = _record_config_save_workflow_state(
                         db,
                         selected_session_id,
-                        "word_scoring_saved",
-                        {
-                            "rubric_path": str(rubric_path),
-                            "answer_key_path": str(answer_path),
-                            "template_mapping_refreshed": mapping_status == "refreshed",
-                            "template_mapping_status": mapping_status,
-                        },
+                        rubric_path=str(rubric_path),
+                        answer_key_path=str(answer_path),
+                        mapping_status=mapping_status,
                     )
-                    st.success(_template_mapping_save_confirmation(mapping_status))
+                    save_message = _template_mapping_save_confirmation(mapping_status)
+                    if workflow_state_saved:
+                        st.success(save_message)
+                    else:
+                        st.warning(
+                            save_message
+                            + " 附属工作状态暂未更新，可稍后重建；已保存的评分依据不受影响。"
+                        )
                     st.rerun()
                 else:
                     st.success("评分依据已保存，可用于创建考试批改。")
@@ -7084,6 +7087,31 @@ def _template_mapping_save_confirmation(
     if status == "reconfirm_required":
         return "评分依据已保存，并已同步到当前考试批改；已有样卷映射需要重新确认后才能继续批改。"
     return "评分依据已保存，并已同步到当前考试批改。"
+
+
+def _record_config_save_workflow_state(
+    db: DBManager,
+    session_id: int,
+    *,
+    rubric_path: str,
+    answer_key_path: str,
+    mapping_status: Literal["not_present", "refreshed", "reconfirm_required"],
+) -> bool:
+    try:
+        _write_session_workflow_state(
+            db,
+            session_id,
+            "word_scoring_saved",
+            {
+                "rubric_path": rubric_path,
+                "answer_key_path": answer_key_path,
+                "template_mapping_refreshed": mapping_status == "refreshed",
+                "template_mapping_status": mapping_status,
+            },
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    return True
 
 
 def _template_mapping_differs_from_session_rubric(db: DBManager, session_id: int, config: dict[str, Any]) -> bool:
