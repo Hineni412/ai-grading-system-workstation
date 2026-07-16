@@ -2,8 +2,9 @@ import { createRouter, createWebHistory, type RouteRecordRaw, type RouterHistory
 
 import ComponentShowcase from '../components/design-system/ComponentShowcase.vue'
 import {
-  reviewRouteDefinition,
   sessionRouteDefinition,
+  knowledgeGraphRouteDefinition,
+  reviewRouteDefinition,
   workbenchRouteDefinition,
 } from '../navigation'
 
@@ -35,6 +36,16 @@ const routes: RouteRecordRaw[] = [
       title: sessionRouteDefinition.title,
       description: sessionRouteDefinition.description,
       breadcrumb: sessionRouteDefinition.breadcrumb,
+    },
+  },
+  {
+    path: knowledgeGraphRouteDefinition.path,
+    name: knowledgeGraphRouteDefinition.id,
+    component: () => import('../views/KnowledgeGraphView.vue'),
+    meta: {
+      title: knowledgeGraphRouteDefinition.title,
+      description: knowledgeGraphRouteDefinition.description,
+      breadcrumb: knowledgeGraphRouteDefinition.breadcrumb,
     },
   },
   {
