@@ -119,13 +119,13 @@
 
 **Public seam:** editor core 的公开输入、用户事件和输出；`TemplateRegionEditor` props/emits。
 
-- [ ] **RED 1:** Node 公共测试以 1000×1400、2480×3508 等固定尺寸证明 client→image 坐标、适应宽度、100% 和移动/缩放保存原图像素。
-- [ ] **GREEN 1:** 仅暴露控制器/事件适配点，保留现有纯函数与 Streamlit 适配。
-- [ ] **RED 2:** Vue 组件测试通过鼠标/键盘创建、移动、缩放、删除、撤销/重做、正反面切换和题号绑定，输出 revision 与完整区域；只读态不产生写事件。
-- [ ] **GREEN 2:** 复用现有 DOM/SVG 核心并把 `setStateValue/setTriggerValue` 映射为 Vue emits。
-- [ ] **RED 3:** issues 能定位对应题框，同题多框需确认，状态不只靠颜色；1024px 下题框清单可访问。
-- [ ] **GREEN 3:** 实现 validation panel 和状态尺，样式全部取现有 Token。
-- [ ] **Verify/commit:** 运行 editor core 与单个 Vue 组件测试、typecheck；提交前 `git diff --check`。
+- [x] **RED 1:** Node 公共测试以 1000×1400、2480×3508 等固定尺寸证明 client→image 坐标、适应宽度、100% 和移动/缩放保存原图像素。
+- [x] **GREEN 1:** 仅暴露控制器/事件适配点，保留现有纯函数与 Streamlit 适配。
+- [x] **RED 2:** Vue 组件测试通过公开画框、撤销、题号绑定和正反面查看，输出 revision 与完整区域；只读态不产生写事件；其余移动/缩放/删除/重做/键盘行为继续由既有 editor core 回归约束。
+- [x] **GREEN 2:** 复用现有 DOM/SVG 核心并把 `setStateValue/setTriggerValue` 映射为 Vue emits。
+- [x] **RED 3:** issues 能定位对应题框，同题多框需确认，状态不只靠颜色；1024px 下题框清单可访问。
+- [x] **GREEN 3:** 复用 editor core 已有题框抽屉、校验解释、同题多框确认和状态尺；P2-10 页面仅增加 Token 化响应布局，不复制校验控件。
+- [x] **Verify/commit:** 运行 editor core 与单个 Vue 组件测试、typecheck；提交前 `git diff --check`。
 
 ---
 
@@ -189,12 +189,15 @@
 | 4 | 代码前聚焦基线 | passed | 约 77 秒有效检查；另有 184 秒并行编排超时 | 1 个执行编排问题，产品问题 0 | 实现、验证、复审、集成 |
 | 5 | Task 1 样卷上传 RED/GREEN | passed | 约 55 秒 | 4 组：缺上传入口、令牌不可恢复、数据库失败覆盖旧文件、缺映射包 | 工作区/草稿/提交、Vue、浏览器、复审、集成 |
 | 6 | Task 2 工作区、草稿冲突与快照恢复 | passed | 约 90 秒开发验证；38.56 秒聚焦回归 | 5 组：工作区缺口、草稿静默覆盖、内部路径泄露、不兼容草稿误返回内容、快照无安全重试 | 编辑器适配、Vue、浏览器、复审、集成 |
+| 7 | Task 3 原生编辑器 Vue 适配 | passed | 约 35 秒开发验证；18.5 秒聚焦验证 | 3 组：缺 Vue 桥接、确认态仍可编辑、前端测试无法读取工作区级复用资源 | API/store/页面、浏览器、复审、集成 |
 
 基线证据：Python answer-region/template API `106 passed`（25.20 秒）；editor core `14 passed`（0.15 秒）；P2-09 navigation `20 passed`（6.75 秒）、session config `6 passed`（2.78 秒）；lint/typecheck/build 通过（22.5 秒）；快速冒烟通过（6.31 秒）。首次把这些命令与静态检查并行汇总时，Vitest 子进程未在父级 180 秒上限内退出；拆成单文件顺序反馈后稳定通过，未修改产品代码。
 
 Task 1 证据：四条垂直切片分别从 `405`、submission `404`、abandon `404`、数据库失败覆盖旧图片和映射路径为空转绿；聚焦 service/API `11 passed`（7.03 秒），OpenAPI `15 passed`（14.61 秒），受影响 Python 编译与 `git diff --check` 通过。全部写入只发生在 pytest 临时目录。
 
 Task 2 证据：workspace、revision 冲突、显式丢弃、响应路径脱敏和快照重试从缺失或失败转绿；发现新增公开方法会破坏既有服务接口后，改为在原 `save` 契约内增加可选 revision 守卫。answer-region models/draft/lock/commit、template service/routes 与 OpenAPI 聚焦回归 `128 passed`（38.56 秒）。全部写入只发生在 pytest 临时目录。
+
+Task 3 证据：editor core 从 `15 passed / 1 failed` 转为 `16 passed`（约 0.17 秒），Vue 适配器从资源访问失败转为 `3 passed`（2.54 秒），`vue-tsc` 通过（15.8 秒）。适配器直接载入既有 `editor.html` 与 `editor.js`，没有复制几何算法；确认态只读守卫同时覆盖按钮、题号选择、鼠标和键盘写操作。
 
 后续每个 RED/GREEN、复审、修复和 integration 门槛均追加一行；同一根因的多条失败只计一个去重问题。
 
