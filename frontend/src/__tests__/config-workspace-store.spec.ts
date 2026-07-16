@@ -553,6 +553,21 @@ describe('configuration workspace Store', () => {
     })
   })
 
+  it('keeps an explicit answer-only policy clear in the draft and save request', () => {
+    const store = useConfigWorkspaceStore()
+    const loaded = editor('42')
+    loaded.rows[0]!.answer_only_max_score = 2
+    store.selectSession(7)
+    store.setEditor(loaded)
+
+    store.updateEditor({ row_id: 'row-1', answer_only_max_score: null })
+
+    expect(store.effectiveEditorRows[0]?.answer_only_max_score).toBeNull()
+    expect(store.buildSaveRequest().edits).toEqual([
+      { row_id: 'row-1', answer_only_max_score: null },
+    ])
+  })
+
   it('refuses destructive session/source clearing until discard is explicit', () => {
     const store = useConfigWorkspaceStore()
     store.selectSession(7)

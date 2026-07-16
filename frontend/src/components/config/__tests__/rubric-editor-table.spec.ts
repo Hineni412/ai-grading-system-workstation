@@ -109,6 +109,20 @@ describe('RubricEditorTable', () => {
     })
   })
 
+  it('emits an explicit null when the answer-only limit is cleared', async () => {
+    const mounted = await mountTable({ rows: [row({ answer_only_max_score: 2 })] })
+    const answerOnly = mounted.host.querySelector<HTMLInputElement>(
+      '[aria-label="Q12 P1 仅答案最高分"]',
+    )!
+
+    answerOnly.value = ''
+    answerOnly.dispatchEvent(new Event('change', { bubbles: true }))
+
+    expect(mounted.emitted).toEqual([
+      { row_id: 'row-q12-p1-s1', answer_only_max_score: null },
+    ])
+  })
+
   it('focuses the expanded issue field and keeps unlocatable issues global', async () => {
     const mounted = await mountTable({ issues: [
       { code: 'required_missing', severity: 'error', row_id: 'row-q12-p1-s1',

@@ -47,6 +47,7 @@ class ConfigEditorEdit:
     standard_answer: str | None = None
     accepted_answers: tuple[str, ...] | None = None
     answer_only_max_score: float | None = None
+    answer_only_max_score_provided: bool | None = None
     require_final_answer: bool | None = None
     required_elements: tuple[str, ...] | None = None
     deduction_rules: tuple[str, ...] | None = None
@@ -107,7 +108,7 @@ def project_config_editor(payload: dict[str, Any]) -> list[ConfigEditorRow]:
             require_final = question_type == "comprehensive"
         max_score = _number(question.get("max_score"), 0.0)
         answer_only = _number_or_none(question.get("answer_only_max_score"))
-        if answer_only is None:
+        if "answer_only_max_score" not in question:
             answer_only = float(max(1, round(max_score * 0.25))) if max_score > 0 else 1.0
         final_rule = _final_answer_rule(question) or (
             _DEFAULT_FINAL_ANSWER_RULE if question_type in _SOLUTION_TYPES else ""
@@ -143,9 +144,9 @@ def project_config_editor(payload: dict[str, Any]) -> list[ConfigEditorRow]:
             part_score = _number(_first_value(part, "part_score", "max_score"), 0.0)
             part_require_final = bool(part.get("require_final_answer", require_final))
             part_answer_only = _number_or_none(part.get("answer_only_max_score"))
-            if part_answer_only is None:
+            if "answer_only_max_score" not in part:
                 part_answer_only = _number_or_none(question.get("answer_only_max_score"))
-            if part_answer_only is None:
+            if "answer_only_max_score" not in part and "answer_only_max_score" not in question:
                 part_answer_only = float(max(1, round(part_score * 0.25))) if part_score > 0 else 1.0
             part_final_rule = _final_answer_rule(part) or final_rule
             part_knowledge = _part_knowledge(part, knowledge)
@@ -234,12 +235,14 @@ def apply_config_editor_changes(
             raise ConfigEditorValidationError(
                 (_issue("unknown_row_id", "edits.row_id", "The editor row no longer exists.", row_id=edit.row_id),)
             )
-        if row.question_type in _SOLUTION_TYPES and any(
-            value is not None
-            for value in (
-                edit.require_final_answer,
-                edit.answer_only_max_score,
-                edit.final_answer_rule,
+        if row.question_type in _SOLUTION_TYPES and (
+            _answer_only_edit_provided(edit)
+            or any(
+                value is not None
+                for value in (
+                    edit.require_final_answer,
+                    edit.final_answer_rule,
+                )
             )
         ):
             policy_question_ids.add(row.question_id)
@@ -405,6 +408,12 @@ def streamlit_dataframe_to_editor_edits(
     return tuple(edits)
 
 
+def _answer_only_edit_provided(edit: ConfigEditorEdit) -> bool:
+    if edit.answer_only_max_score_provided is not None:
+        return edit.answer_only_max_score_provided
+    return edit.answer_only_max_score is not None
+
+
 def _apply_edit(payload: dict[str, Any], row: ConfigEditorRow, edit: ConfigEditorEdit) -> None:
     question = _question_by_id(payload, "rubric", row.question_id)
     if question is None:
@@ -459,8 +468,12 @@ def _apply_edit(payload: dict[str, Any], row: ConfigEditorRow, edit: ConfigEdito
     policy_node = part if part is not None else question
     if edit.require_final_answer is not None:
         policy_node["require_final_answer"] = bool(edit.require_final_answer)
-    if edit.answer_only_max_score is not None:
-        policy_node["answer_only_max_score"] = _valid_score(edit.answer_only_max_score, row.row_id)
+    if _answer_only_edit_provided(edit):
+        policy_node["answer_only_max_score"] = (
+            None
+            if edit.answer_only_max_score is None
+            else _valid_score(edit.answer_only_max_score, row.row_id)
+        )
     if step is not None:
         if edit.required_elements is not None:
             step["required_elements"] = list(_unique_texts(edit.required_elements))
@@ -623,6 +636,8 @@ def _aggregate_scores(payload: dict[str, Any]) -> None:
                     part_score = _number(_first_value(part, "part_score", "max_score"), 0.0)
                 question_total += part_score
                 raw_answer_only = _number_or_none(part.get("answer_only_max_score"))
+                if raw_answer_only is None and "answer_only_max_score" in part:
+                    continue
                 if raw_answer_only is None:
                     mode = str(part.get("response_mode") or "process_required")
                     raw_answer_only = (

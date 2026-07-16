@@ -216,7 +216,8 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     return (editor.value?.rows ?? []).map((row) => {
       const edit = edits.get(row.row_id)
       return edit ? { ...row, ...Object.fromEntries(
-        Object.entries(edit).filter(([key, value]) => key !== 'row_id' && value !== null),
+        Object.entries(edit).filter(([key, value]) => key !== 'row_id'
+          && (value !== null || key === 'answer_only_max_score')),
       ) } : row
     })
   })
