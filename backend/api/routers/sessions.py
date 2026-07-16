@@ -87,14 +87,12 @@ def _template_response(row: dict[str, Any]) -> SessionTemplateResponse:
     return SessionTemplateResponse(
         id=int(row["id"]),
         session_id=int(row["session_id"]),
-        front_template_path=str(row.get("front_template_path") or ""),
-        back_template_path=str(row.get("back_template_path") or ""),
-        ai_analysis_path=row.get("ai_analysis_path"),
-        template_config_path=row.get("template_config_path"),
-        regions_path=row.get("regions_path"),
+        pages={
+            page: {"url": f"/api/sessions/{int(row['session_id'])}/template/pages/{page}"}
+            for page in ("front", "back")
+        },
         is_confirmed=_bool(row.get("is_confirmed")),
         regions_snapshot_pending=_bool(row.get("regions_snapshot_pending")),
-        regions_snapshot_token=row.get("regions_snapshot_token"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
     )

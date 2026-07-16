@@ -278,6 +278,7 @@ function isTypingTarget(target) {
 
 export default function answerRegionEditor(component) {
   const data = component.data || {};
+  const readOnly = Boolean(data.read_only);
   const state = data.editor_state || {};
   const root = component.parentElement.querySelector('[data-role="editor-root"]');
   if (!root) {
@@ -521,9 +522,11 @@ export default function answerRegionEditor(component) {
       "is-active",
       mode === "create",
     );
-    root.querySelector('[data-action="delete"]').disabled = !selectedUuid;
-    root.querySelector('[data-action="undo"]').disabled = undoStack.length === 0;
-    root.querySelector('[data-action="redo"]').disabled = redoStack.length === 0;
+    root.querySelector('[data-action="create"]').disabled = readOnly;
+    root.querySelector('[data-action="delete"]').disabled = readOnly || !selectedUuid;
+    root.querySelector('[data-action="undo"]').disabled = readOnly || undoStack.length === 0;
+    root.querySelector('[data-action="redo"]').disabled = readOnly || redoStack.length === 0;
+    root.querySelector('[data-action="finish"]').disabled = readOnly;
     root.querySelector('[data-action="drawer"]').classList.toggle(
       "is-active",
       drawerOpen,
@@ -599,6 +602,7 @@ export default function answerRegionEditor(component) {
       select.dataset.regionUuid = region.region_uuid;
       select.setAttribute("aria-label", `题框 ${region.region_order || ""} 映射`);
       appendMappingOptions(select, region);
+      select.disabled = readOnly;
 
       const issueList = document.createElement("ul");
       issueList.className = "region-issues";
@@ -615,6 +619,7 @@ export default function answerRegionEditor(component) {
       locate.dataset.regionUuid = region.region_uuid;
       const remove = createButton("删除", "delete-row");
       remove.dataset.regionUuid = region.region_uuid;
+      remove.disabled = readOnly;
       actions.append(locate, remove);
       row.append(top, issueList, select, actions);
       fragment.append(row);
@@ -643,7 +648,7 @@ export default function answerRegionEditor(component) {
         const confirmed = group.every((region) => region.multi_region_confirmed);
         const button = createButton(confirmed ? "已确认" : "确认同题多框", "confirm-group");
         button.dataset.questionId = questionId;
-        button.disabled = confirmed;
+        button.disabled = readOnly || confirmed;
         row.append(label, button);
         fragment.append(row);
       }
@@ -909,6 +914,9 @@ export default function answerRegionEditor(component) {
       event.preventDefault();
       return;
     }
+    if (readOnly) {
+      return;
+    }
     if (event.button !== 0) {
       return;
     }
@@ -1034,6 +1042,9 @@ export default function answerRegionEditor(component) {
   }
 
   function handleMappingChange(event) {
+    if (readOnly) {
+      return;
+    }
     const select = event.target.closest?.(".mapping-select");
     if (!select) {
       return;
@@ -1075,6 +1086,9 @@ export default function answerRegionEditor(component) {
     }
     if (button.dataset.action === "locate") {
       locateRegion(button.dataset.regionUuid);
+      return;
+    }
+    if (readOnly) {
       return;
     }
     if (button.dataset.action === "delete-row") {
@@ -1153,11 +1167,17 @@ export default function answerRegionEditor(component) {
       return;
     }
     if (event.key === "Delete") {
+      if (readOnly) {
+        return;
+      }
       deleteRegion(selectedUuid);
       event.preventDefault();
       return;
     }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+      if (readOnly) {
+        return;
+      }
       if (event.shiftKey) {
         applyRedo();
       } else {
@@ -1167,6 +1187,9 @@ export default function answerRegionEditor(component) {
       return;
     }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") {
+      if (readOnly) {
+        return;
+      }
       applyRedo();
       event.preventDefault();
     }
