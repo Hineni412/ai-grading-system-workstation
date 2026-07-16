@@ -98,7 +98,7 @@ git -C .worktrees/p2-15-knowledge-graph status --short -- user_data
 
 Expected: HEAD 为计划基线；stash 依次为 `85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2`；`user_data` 无输出。
 
-- [ ] **Step 2: 提交唯一领取计划并验证交接块**
+- [x] **Step 2: 提交唯一领取计划并验证交接块**
 
 ```powershell
 git add -- docs/superpowers/plans/2026-07-15-p2-15-knowledge-graph-evidence-drilldown-implementation.md
@@ -109,7 +109,7 @@ git commit -m "docs: claim P2-15 knowledge graph"
 
 Expected: `origin/main..HEAD` 的第一个 first-parent 提交只修改本计划，validator 输出 `ok=true` 与 `in_progress`。
 
-- [ ] **Step 3: 单独引入已批准设计**
+- [x] **Step 3: 单独引入已批准设计**
 
 ```powershell
 git cherry-pick ca7ef627d86ad25a5d4cf03fe6fd448cd1536965
@@ -118,7 +118,7 @@ git show --stat --oneline HEAD
 
 Expected: 该提交只新增设计说明；计划领取提交仍是首个包提交。
 
-- [ ] **Step 4: 安装冻结依赖并运行代码前基线**
+- [x] **Step 4: 安装冻结依赖并运行代码前基线**
 
 ```powershell
 Push-Location frontend
@@ -151,7 +151,7 @@ Expected: 当前 P2-14/P1-21 基线全绿；任何失败先调查，不写 P2-15
 - Consumes: P1-21 `GraphQueryRequest`、`GraphEvidenceRequest`、`GraphRowsResponse`、`GraphEvidenceResponse` 与现有 `apiClient`。
 - Produces: `GraphQueryInput`, `fetchScopedGraphRows(query, signal)`, `fetchScopedGraphEvidence(query, knowledgeKey, signal, page)`, `fetchStudents(signal)`；保留 `fetchGraphRows(sessionId, className)` 和 `fetchGraphEvidence(...)`。
 
-- [ ] **Step 1: 写 scope、非空 edges 和学生列表 RED 测试**
+- [x] **Step 1: 写 scope、非空 edges 和学生列表 RED 测试**
 
 ```typescript
 const query: GraphQueryInput = {
@@ -180,7 +180,7 @@ it('rejects extra student fields', () => {
 })
 ```
 
-- [ ] **Step 2: 运行目标测试确认 RED**
+- [x] **Step 2: 运行目标测试确认 RED**
 
 ```powershell
 Push-Location frontend
@@ -190,7 +190,7 @@ Pop-Location
 
 Expected: 新模块/函数不存在且当前 decoder 接受合法非空 edges。
 
-- [ ] **Step 3: 实现最小严格请求与解码**
+- [x] **Step 3: 实现最小严格请求与解码**
 
 ```typescript
 export type GraphStudentScopeInput =
@@ -220,7 +220,7 @@ export function fetchScopedGraphRows(query: GraphQueryInput, signal?: AbortSigna
 
 `students.ts` 只接受精确字段 `id/student_code/name/class_name/created_at` 和顶层 `items/total`，捕获失败后抛出固定 `StudentReadError('无法读取学生列表')`。
 
-- [ ] **Step 4: 运行 GREEN 与兼容回归并提交**
+- [x] **Step 4: 运行 GREEN 与兼容回归并提交**
 
 ```powershell
 Push-Location frontend
@@ -248,7 +248,7 @@ Expected: 新 scope 全绿，P2-14 当前班级兼容函数和工作台测试不
 - Consumes: `GraphNode[]`, `GraphRow[]`。
 - Produces: `masteryBand(rate)`, `buildEvidenceLaneModel(nodes)`, `buildGroupingTree(rows, scopeLabel)`, `nodeEvidenceSize(itemCount)`, `summarizeGraph(nodes)`。
 
-- [ ] **Step 1: 写阈值、稳定排序、尺寸和归属树 RED 测试**
+- [x] **Step 1: 写阈值、稳定排序、尺寸和归属树 RED 测试**
 
 ```typescript
 expect([0.9, 0.8999, 0.75, 0.7499, 0.6, 0.5999].map(masteryBand)).toEqual([
@@ -266,7 +266,7 @@ expect(buildGroupingTree(rows, '当前考试 · 七年级一班')).toMatchObject
 
 另断言重复 row 不重复学生下标签、名称按 `student_code/student_name/knowledge_key` 稳定排序、`nodeEvidenceSize` 单调但上下限受控、1000 节点输入不产生 `NaN/Infinity`。
 
-- [ ] **Step 2: 运行测试确认 RED**
+- [x] **Step 2: 运行测试确认 RED**
 
 ```powershell
 Push-Location frontend
@@ -276,7 +276,7 @@ Pop-Location
 
 Expected: `features/knowledge-graph/model.ts` 不存在。
 
-- [ ] **Step 3: 实现最小纯函数模型**
+- [x] **Step 3: 实现最小纯函数模型**
 
 ```typescript
 export type MasteryBand = 'stable' | 'slight' | 'review' | 'weak'
@@ -295,7 +295,7 @@ export function nodeEvidenceSize(itemCount: number): number {
 
 `buildEvidenceLaneModel` 输出稳定的 band index、百分比、文字等级、受控尺寸和 ECharts 坐标槽位，不创建 links。`buildGroupingTree` 只输出 scope/student/tag 三层展示节点，并为 tag 节点保留 `knowledgeKey`；不得读取 `edges` 或 `tag_context.prerequisite`。
 
-- [ ] **Step 4: 运行 GREEN、类型检查并提交**
+- [x] **Step 4: 运行 GREEN、类型检查并提交**
 
 ```powershell
 Push-Location frontend
@@ -321,7 +321,7 @@ git commit -m "feat: model graph evidence lanes"
 - Consumes: Task 1 scoped fetchers、`GraphQueryInput`、`GraphRowsResponse`、`GraphEvidenceResponse`。
 - Produces: `useKnowledgeGraphStore()` with `loadGraph`, `selectNode`, `loadMoreEvidence`, `retryGraph`, `retryEvidence`, `clearScope`；独立 `graphState/evidenceState`。
 
-- [ ] **Step 1: 写请求世代、范围匹配和分页 RED 测试**
+- [x] **Step 1: 写请求世代、范围匹配和分页 RED 测试**
 
 ```typescript
 it('does not let an older scope overwrite the current graph', async () => {
@@ -346,7 +346,7 @@ it('drops old evidence when the selected node changes', async () => {
 
 另测首次失败、最后成功内容 `stale-error`、load more 去重、scope 切换清空选择、空节点状态和 AbortError 不显示错误。
 
-- [ ] **Step 2: 运行测试确认 RED**
+- [x] **Step 2: 运行测试确认 RED**
 
 ```powershell
 Push-Location frontend
@@ -356,7 +356,7 @@ Pop-Location
 
 Expected: store 不存在。
 
-- [ ] **Step 3: 实现最小 store**
+- [x] **Step 3: 实现最小 store**
 
 ```typescript
 export const useKnowledgeGraphStore = defineStore('knowledge-graph', () => {
@@ -378,7 +378,7 @@ export const useKnowledgeGraphStore = defineStore('knowledge-graph', () => {
 
 实现不得缓存到 localStorage，不得保留学生正文；graph scope 变化必须终止 evidence 请求。证据追加按 `(session_id, student_id, question_id, bank_question_id)` 去重。
 
-- [ ] **Step 4: 运行 GREEN 与 store 回归并提交**
+- [x] **Step 4: 运行 GREEN 与 store 回归并提交**
 
 ```powershell
 Push-Location frontend
@@ -406,7 +406,7 @@ git commit -m "feat: manage graph scope and evidence state"
 - Consumes: Task 2 view model、Task 3 node/evidence state。
 - Produces: `select-node`, `change-mode`, `load-more-evidence`, `retry-evidence` component events；ECharts instance lifecycle and accessible text alternative.
 
-- [ ] **Step 1: 写组件 RED 测试**
+- [x] **Step 1: 写组件 RED 测试**
 
 使用可注入 `chartFactory` fake，断言 mount 一次、数据变化 `setOption`、容器变化 `resize`、unmount `dispose`、点击 tag 发 `knowledgeKey`、图谱 option `links=[]`、分组树虚线常驻说明。文字目录断言搜索、50 条分页、ArrowDown/ArrowUp/Enter 选择和可见焦点；inspector 断言文字等级、计数、支持标签、错因、证据 loading/empty/error/stale/pagination。
 
@@ -418,7 +418,7 @@ directory.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: tr
 expect(selected).toEqual(['knowledge_point:三角形全等'])
 ```
 
-- [ ] **Step 2: 运行测试确认 RED**
+- [x] **Step 2: 运行测试确认 RED**
 
 ```powershell
 Push-Location frontend
@@ -428,7 +428,7 @@ Pop-Location
 
 Expected: 三个组件不存在。
 
-- [ ] **Step 3: 实现画布生命周期与两种 option**
+- [x] **Step 3: 实现画布生命周期与两种 option**
 
 ```typescript
 type ChartLike = Pick<ECharts, 'setOption' | 'on' | 'off' | 'resize' | 'dispose' | 'dispatchAction'>
@@ -444,11 +444,11 @@ const props = withDefaults(defineProps<{
 
 图谱 option 使用 `type:'graph'`、`layout:'none'`、Canvas 坐标、`links:[]` 和 roam；树 option 使用 `type:'tree'`、Task 2 临时 hierarchy、浅灰虚线，并在组件外可见文字声明归属含义。ResizeObserver 回调合并到 `requestAnimationFrame`；reduced motion 时 `animation:false`。
 
-- [ ] **Step 4: 实现文字目录与 inspector**
+- [x] **Step 4: 实现文字目录与 inspector**
 
 目录按钮的可访问名称为“标签名，得分率，文字等级，证据数”；键盘选择复用按钮 click 结果。inspector 只渲染 Graph 契约允许字段，得分显示使用有限数值格式化，空原因显示“未记录扣分原因”，不生成建议或关系。
 
-- [ ] **Step 5: 运行 GREEN、lint/typecheck 并提交**
+- [x] **Step 5: 运行 GREEN、lint/typecheck 并提交**
 
 ```powershell
 Push-Location frontend
@@ -484,7 +484,7 @@ git commit -m "feat: render accessible knowledge graph"
 - Consumes: Tasks 1—4、session store、route query `session/class`。
 - Produces: `/knowledge-graph` 页面、主导航入口、工作台带上下文入口和五视口布局。
 
-- [ ] **Step 1: 写页面、路由和工作台入口 RED 测试**
+- [x] **Step 1: 写页面、路由和工作台入口 RED 测试**
 
 ```typescript
 expect(navigationItems.map(({ id, label, path }) => [id, label, path])).toEqual([
@@ -499,7 +499,7 @@ expect(openGraphLink.attributes('href')).toContain('class=')
 
 页面测试覆盖：无班级不发 Graph；有效 route 默认当前考试/班级；无效 session/class 显示安全提示；手动考试/跨考试、班级/单学生/已选学生应用后请求精确 scope；切换图/树不重取；空、error、stale、warning 和 selected inspector。
 
-- [ ] **Step 2: 运行目标测试确认 RED**
+- [x] **Step 2: 运行目标测试确认 RED**
 
 ```powershell
 Push-Location frontend
@@ -509,7 +509,7 @@ Pop-Location
 
 Expected: 页面、路由定义和工作台入口不存在。
 
-- [ ] **Step 3: 实现筛选器和页面编排**
+- [x] **Step 3: 实现筛选器和页面编排**
 
 ```typescript
 export const knowledgeGraphRouteDefinition = {
@@ -524,11 +524,11 @@ export const knowledgeGraphRouteDefinition = {
 
 筛选草稿与已应用范围分开；“应用范围”才调用 store。标签搜索只过滤/聚焦当前 nodes。工作台入口通过命名路由传 `sessionId` 和 `className`；直接导航没有有效班级时显示选择提示。URL 只保留验证后的 ID、枚举和班级值，不保存 evidence。
 
-- [ ] **Step 4: 实现克制视觉与响应式布局**
+- [x] **Step 4: 实现克制视觉与响应式布局**
 
 `knowledge-graph.css` 只使用现有 CSS Variables。1280px 以上 70/30 双栏；1024px 把 inspector 放到画布下方。画布最小高度稳定，筛选器换行但不隐藏；文字目录、warning、覆盖率、焦点和错误恢复始终可见。图例文字同时给出四档阈值，不使用渐变或发光。
 
-- [ ] **Step 5: 运行页面与既有工作台回归并提交**
+- [x] **Step 5: 运行页面与既有工作台回归并提交**
 
 ```powershell
 Push-Location frontend
@@ -556,7 +556,7 @@ git commit -m "feat: route the knowledge graph workspace"
 - Consumes: Task 5 完整页面。
 - Produces: 匿名合成 API、五视口、Canvas 非空、缩放/拖动、图/树、键盘、证据、只读守卫和 1000 节点性能证据。
 
-- [ ] **Step 1: 写匿名 Graph 路由与核心 E2E**
+- [x] **Step 1: 写匿名 Graph 路由与核心 E2E**
 
 ```typescript
 const viewports = [
@@ -580,15 +580,15 @@ test('keeps graph, tree and evidence on one exact scope', async ({ page }) => {
 
 拦截 sessions、students、graph rows/evidence；断言所有请求只有 GET 或两个既有 Graph POST，body 不含 legacy/relations/path 字段。
 
-- [ ] **Step 2: 增加五视口、Canvas 像素和键盘测试**
+- [x] **Step 2: 增加五视口、Canvas 像素和键盘测试**
 
 每档断言 `document.documentElement.scrollWidth <= innerWidth`、主要筛选/覆盖率/目录/inspector 可达。对 canvas bounding box 截图，统计与背景不同像素超过固定最低面积；模拟 wheel/drag 后 ECharts data URL 或截图发生变化，再用“适应画布”恢复。Tab 进入文字目录，ArrowDown + Enter 选择与 canvas click 得到同一 inspector。
 
-- [ ] **Step 3: 增加 1000 节点可复现基线**
+- [x] **Step 3: 增加 1000 节点可复现基线**
 
 合成 `knowledge_point:匿名标签-0001` 至 `-1000`，固定 seed、得分率和证据数。记录页面从 rows fulfill 到 canvas 非空、图/树切换、目录搜索和节点选择的 `performance.now()`；断言无 pageerror、无超过测试超时的冻结、选择结果正确、截图非空，并把测得值作为测试附件与最终验证记录，不提交机器绝对路径。
 
-- [ ] **Step 4: 运行 Chromium 与既有工作台回归并提交**
+- [x] **Step 4: 运行 Chromium 与既有工作台回归并提交**
 
 ```powershell
 Push-Location frontend
@@ -617,7 +617,7 @@ Expected: 五视口、图/树、像素、缩放/拖动、键盘、证据与 1000
 - Consumes: Tasks 0—6 完整候选。
 - Produces: 当前架构事实、版本化 quick 清单、自动验证、独立复审、用户验收和合法 handoff。
 
-- [ ] **Step 1: 运行完整包内与受影响验证**
+- [x] **Step 1: 运行完整包内与受影响验证**
 
 ```powershell
 & '..\..\runtime\python\python.exe' -m pytest tests\test_api_graph_routes.py tests\test_skill_graph_projection.py tests\test_api_openapi_contract.py tests\test_request_read_connections.py tests\test_frontend_api_client.py tests\test_frontend_app_shell.py tests\test_documentation_governance.py -q
@@ -635,13 +635,13 @@ git status --short -- user_data
 
 Expected: 聚焦 pytest、全部前端 unit、lint/typecheck/build、两份 Chromium E2E 和快速冒烟通过；`user_data` 无输出。功能分支默认不跑全量 pytest。
 
-- [ ] **Step 2: 更新架构事实并创建已验证短测卡**
+- [x] **Step 2: 更新架构事实并创建已验证短测卡**
 
 `ARCHITECTURE.md` 只记录已实现事实：独立 Vue 图谱路由、严格通用 scope、ECharts Canvas 证据带/临时归属树、文字目录、Graph evidence 和 `edges=[]` 防线；明确无 API/Schema/关系语义变化。
 
 短测卡只有在 Chromium 启动方式实际验证后生成，绑定候选 SHA、匿名合成数据、URL `/knowledge-graph?session=7&class=七年级一班`、可见标识和关闭方式。步骤覆盖默认范围、考试/班级/学生切换、图/树说明、节点证据、文字目录键盘、缩放/拖动、warning/空态和 1024px；用户无需运行命令或打开真实系统。
 
-- [ ] **Step 3: 记录 `waiting_review` 并创建功能提交**
+- [x] **Step 3: 记录 `waiting_review` 并创建功能提交**
 
 把交接块改为 `waiting_review / branch_head / passed / pending / pending / unchanged / report_only`。暂存明确文件，确认不含 `user_data`、node_modules、dist、playwright-report、test-results、截图缓存或真实导出后提交：
 
@@ -686,16 +686,25 @@ Expected: validator `ok=true`，停在 `waiting_review`；不得自报独立复�
 - 占位扫描：计划不包含待填字段或无测试的“适当处理”；实现步骤给出具体文件、接口、命令、失败预期和边界。
 - 数据安全：计划不创建后端写路径、不打开真实 SQLite、不暂存/stash `user_data`，用户短测只使用匿名合成接口。
 
+## 实施与验证证据（2026-07-16）
+
+- 功能候选：`ab47fe33a26966a93321a098970e485b9e52986a`；后续仅允许文档、复审修复或验收证据提交改变分支头。
+- Graph/前端治理聚焦 pytest：76 passed；导航守卫按 P2-15 真实入口更新后聚焦复核 3 passed。
+- 前端：lint 无告警，typecheck 通过，36 个测试文件 / 314 tests passed，生产 build 通过。
+- Chromium：知识图谱 7 个场景覆盖五视口、Canvas 像素、缩放、图/树、键盘、证据分页和 1000 节点；工作台 10 个既有场景通过。并发复跑暴露旧“快速切换考试”测试未先确认两个旧请求在途，修正测试前置条件后单 worker 聚焦通过，生产切换保护未改。
+- 快速冒烟 `--skip-tests` 通过；功能工作区 `user_data` 无变更；验证前后真实两库 SHA-256、大小和 UTC mtime 指纹一致。
+- 主实施者已按 `origin/main..ab47fe3` 检查 scope 子集、非空 edges 拒绝、分组虚线声明、阈值、ECharts 生命周期、旧请求隔离、证据分页、导航和只读请求；未发现 Critical/Important。独立复审仍按交接字段保持 pending，不以主实施者自审替代。
+
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
 
 **执行包：** P2-15
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** pending
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
