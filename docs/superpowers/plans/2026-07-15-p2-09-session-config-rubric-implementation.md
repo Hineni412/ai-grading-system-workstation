@@ -39,10 +39,10 @@
 ## 昼夜交接
 
 **执行包：** P2-09
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** waiting_user
+**功能提交：** 91d4a04576042c393273de16860f264f83dbb1c1
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** pending
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
@@ -1339,10 +1339,10 @@ Update Implementation Evidence with exact RED/GREEN and gate counts. Change the 
 - Planning baseline: `origin/main` at `c4b5732f4ce33f33defe43626b7ac80d1d71e305`; formal worktree clean; real `user_data/` untouched; stash baseline recorded in the handoff block.
 - Design: 2026-07-15 user approved recoverable pre-generation drafts, continuous workspace option A, all three design sections, and written specification commit `ba926973f2ebe5cfcd1703f154c963426531f5b5`.
 - Baseline tests: before any source change, config API/Job baseline `19 passed`; complete frontend Vitest baseline `25 files / 196 tests passed`.
-- RED/GREEN: Task 10 Chromium RED ran 1 test and failed at the absent “考试名称” control because the initial sessions mock was intentionally incomplete; after the fixture was completed and its API matcher was constrained to real `/api/` requests, the full browser suite passed 14/14. The final suite covers draft/upload/review, partial/reload/retry, whole-mode manual retry, upload failure, 422 focus, 409 retention and confirmed reload, mapping partial success, cancellation race, stale isolation, long/multipart content, keyboard focus, console/page-error guards and all five desktop viewports.
+- RED/GREEN: Task 10 Chromium RED ran 1 test and failed at the absent “考试名称” control because the initial sessions mock was intentionally incomplete; after the fixture was completed and its API matcher was constrained to real `/api/` requests, the full browser suite passed 14/14. The final unknown-write race regression first produced `5 failed / 67 passed` frontend tests and `1 failed / 3 passed` backend tests; after atomic server abandon markers and guarded client unlock were completed, focused GREEN passed `72 frontend / 4 backend`, followed by `146` affected backend tests. The final suite covers draft/upload/review, partial/reload/retry, whole-mode manual retry, upload failure, 422 focus, 409 retention and confirmed reload, mapping partial success, cancellation race, stale isolation, long/multipart content, keyboard focus, console/page-error guards and all five desktop viewports.
 - Browser evidence: six mock-only screenshots were generated under ignored `frontend/test-results/` for upload review, partial recovery and the Rubric ledger at 1024×768 and 1440×900. Visual inspection found no document overflow, clipped controls, sticky-column overlap or competing decoration; keyboard focus remained visible. The versioned quick checklist uses the same verified mock fixture in a headed Chromium session and was launch-tested at `127.0.0.1:5173` without real data or model calls.
-- Automatic gates: focused backend `228 passed`; frontend lint `0 errors / 0 warnings`, typecheck exit `0`, Vitest `34 files / 296 tests passed`, build `1675 modules` and exit `0`, P2-09 Chromium E2E `14 passed`; affected backend `70 passed`; `git diff --check` exit `0`; `tools/smoke_check.py --skip-tests` passed document governance, 449-file static compile and isolated-copy dual-database idempotence. Full pytest was not run because no `AGENTS.md` risk trigger occurred.
+- Automatic gates: frozen candidate `91d4a04576042c393273de16860f264f83dbb1c1` passed focused backend `271`, frontend lint `0 errors / 0 warnings`, typecheck exit `0`, Vitest `34 files / 344 tests`, build `1675 modules`, P2-09 Chromium E2E `15`, and affected backend `70`; `git diff --check` exited `0`; `tools/smoke_check.py --skip-tests` passed document governance, static compilation of `451` first-party Python files and isolated-copy dual-database idempotence/integrity. Full pytest was not run because no `AGENTS.md` risk trigger occurred.
 - Real data: feature-worktree `user_data/` status is empty. Root grading database remained `2863104` bytes / `2026-07-10T07:10:41.1221109Z` / SHA-256 `93FEE56E23EA072AC48351B1E6616D7AF7F4B35CEB2B4779890E8D059FB841CD`; root question-bank database remained `3461120` bytes / `2026-07-08T11:58:06.3320883Z` / SHA-256 `E1E5123AD54C9E8AF5984BDCC5182A8F7A3038A1707F98AB26F168F4577A88B8`. Only file metadata and hashes were read.
-- Independent review: pending.
+- Independent review: frozen candidate `91d4a04576042c393273de16860f264f83dbb1c1` received `0 Critical / 0 Important / 0 Minor` from the requirements reviewer and `0 Critical / 0 Important / 1 Minor` from the standards reviewer. The non-blocking Minor is an empty per-token upload directory retained after an abandoned unknown request; it contains no manifest or private content and does not permit a late request to pass the tombstone.
 - User quick test: pending; the versioned checklist and headed synthetic loopback mode were generated and launch-verified, but no user acceptance result is claimed before independent review anchors an exact SHA.
 - Real data: unchanged; final file-level size, UTC mtime and SHA-256 comparison exactly matched the recorded baseline for both root databases.
