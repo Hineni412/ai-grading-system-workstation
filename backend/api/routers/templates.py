@@ -7,7 +7,13 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse
 
 from answer_region_commit_service import AnswerRegionCommitService, AnswerRegionCommitResult
-from answer_region_draft_service import AnswerRegionDraftService, DraftLoadResult
+from answer_region_draft_service import (
+    AnswerRegionDraftService,
+    DraftLoadResult,
+    DraftRevisionConflictError,
+    DraftTemplateMismatchError,
+)
+from answer_region_models import load_question_binding_catalog, normalize_regions, validate_regions
 from backend.api.app import ApiError
 from backend.api.dependencies import (
     get_grading_db,
@@ -21,7 +27,9 @@ from backend.api.schemas.templates import (
     RegionCommitResponse,
     RegionDraftRequest,
     RegionDraftResponse,
+    RegionWorkspaceResponse,
     RegionIssueResponse,
+    RegionSnapshotRetryRequest,
     TemplateUpdateRequest,
     TemplateUploadSubmissionResponse,
     TemplateUploadResponse,
@@ -56,6 +64,23 @@ def _upload_response(result: Any) -> TemplateUploadResponse:
         is_confirmed=result.is_confirmed,
         regions_snapshot_pending=result.regions_snapshot_pending,
     )
+
+
+def _public_regions(regions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    keys = (
+        "region_uuid",
+        "page",
+        "region_order",
+        "x",
+        "y",
+        "w",
+        "h",
+        "mapped_question_id",
+        "mapping_status",
+        "is_confirmed",
+        "multi_region_confirmed",
+    )
+    return [{key: region.get(key) for key in keys} for region in normalize_regions(regions)]
 
 
 @router.post(
@@ -143,6 +168,11 @@ async def upload_session_template(
             session_id=session_id, request_token=request_token, succeeded=False
         )
         raise ApiError(422, "template_upload_invalid", "Template upload is invalid") from None
+    except Exception:
+        service.finish_submission(
+            session_id=session_id, request_token=request_token, succeeded=False
+        )
+        raise ApiError(500, "template_upload_failed", "Template upload failed") from None
     return response
 
 
@@ -190,6 +220,77 @@ def abandon_template_upload_submission(
     except TemplateUploadError:
         raise ApiError(422, "template_upload_invalid", "Template upload is invalid") from None
     return {"status": "abandoned"}
+
+
+@router.get(
+    "/sessions/{session_id}/regions/workspace",
+    response_model=RegionWorkspaceResponse,
+)
+def get_region_workspace(
+    session_id: int,
+    db: DBManager = Depends(get_grading_db),
+    templates_dir: Path = Depends(get_templates_dir),
+    upload_service: TemplateUploadService = Depends(get_template_upload_service),
+) -> RegionWorkspaceResponse:
+    session = _require_session(db, session_id)
+    try:
+        template_result = upload_service.load_current(db=db, session_id=session_id)
+    except FileNotFoundError:
+        raise ApiError(404, "template_not_found", "Session template not found") from None
+    except TemplateUploadError:
+        raise ApiError(404, "template_file_not_found", "Template file not found") from None
+    session_dir = _session_dir(templates_dir, session_id)
+    draft_service = AnswerRegionDraftService(session_dir)
+    draft_result = draft_service.load(
+        expected_template_fingerprint=template_result.template_fingerprint
+    )
+    formal_regions = _public_regions(db.list_answer_regions(int(session_id)))
+    draft_payload = draft_result.draft if draft_result.status == "compatible" else None
+    draft_regions = _public_regions(
+        list(draft_payload.get("regions", [])) if isinstance(draft_payload, dict) else []
+    )
+    revision = (
+        int(draft_payload.get("revision", 0)) if isinstance(draft_payload, dict) else 0
+    )
+    rubric_path = resolve_stored_file_path(
+        session.get("rubric_path"),
+        search_roots=[session_dir, templates_dir, Path(db.db_path).parent],
+    )
+    catalog = load_question_binding_catalog(rubric_path)
+    active_regions = draft_regions if draft_result.status == "compatible" else formal_regions
+    validation = validate_regions(
+        active_regions,
+        image_sizes={
+            "front": (template_result.front.width, template_result.front.height),
+            "back": (template_result.back.width, template_result.back.height),
+        },
+        template_matches=draft_result.status != "incompatible",
+    )
+    return RegionWorkspaceResponse(
+        session_id=int(session_id),
+        template=_upload_response(template_result),
+        formal_regions=formal_regions,
+        draft={
+            "status": draft_result.status,
+            "revision": revision,
+            "regions": draft_regions,
+        },
+        automatic_candidates=list(catalog.automatic_candidates),
+        manual_question_options=[
+            {"value": option.value, "label": option.label}
+            for option in catalog.manual_options
+        ],
+        issues=[
+            {
+                "code": issue.code,
+                "message": issue.message,
+                "region_uuid": issue.region_uuid,
+                "question_id": issue.question_id,
+            }
+            for issue in validation.issues
+        ],
+        template_ready=db.is_template_ready(int(session_id)),
+    )
 
 
 @router.get("/sessions/{session_id}/template/pages/{page}")
@@ -268,14 +369,18 @@ def _draft_response(
     load_result: DraftLoadResult,
     template_fingerprint: str,
 ) -> RegionDraftResponse:
+    public_draft = None
+    if load_result.status == "compatible" and load_result.draft is not None:
+        public_draft = {
+            "revision": int(load_result.draft.get("revision", 0)),
+            "regions": _public_regions(list(load_result.draft.get("regions", []))),
+        }
     return RegionDraftResponse(
         status=load_result.status,
         session_id=int(session_id),
         template_id=int(template["id"]),
         template_fingerprint=template_fingerprint,
-        draft_path=str(draft_service.draft_path),
-        draft=load_result.draft,
-        quarantined_path=str(load_result.quarantined_path) if load_result.quarantined_path else None,
+        draft=public_draft,
     )
 
 
@@ -283,7 +388,6 @@ def _commit_response(result: AnswerRegionCommitResult, region_count: int) -> Reg
     return RegionCommitResponse(
         committed=result.committed,
         snapshot_pending=result.snapshot_pending,
-        snapshot_path=str(result.snapshot_path) if result.snapshot_path else None,
         error=result.error,
         issues=[
             RegionIssueResponse(
@@ -353,12 +457,43 @@ def save_answer_region_draft(
     template = _require_template(db, session_id)
     draft_service = _draft_service(templates_dir, session_id)
     fingerprint = _template_fingerprint(template, draft_service)
-    draft_service.save(
-        session_id=int(session_id),
-        template_fingerprint=fingerprint,
-        revision=request.revision,
-        regions=request.regions,
-    )
+    if (
+        request.expected_template_fingerprint is not None
+        and request.expected_template_fingerprint != fingerprint
+    ):
+        raise ApiError(
+            409,
+            "region_draft_template_changed",
+            "Session template changed before the draft was saved",
+        )
+    try:
+        if request.expected_revision is None:
+            draft_service.save(
+                session_id=int(session_id),
+                template_fingerprint=fingerprint,
+                revision=request.revision,
+                regions=request.regions,
+            )
+        else:
+            draft_service.save(
+                session_id=int(session_id),
+                template_fingerprint=fingerprint,
+                expected_revision=request.expected_revision,
+                revision=request.revision,
+                regions=request.regions,
+            )
+    except DraftRevisionConflictError:
+        raise ApiError(
+            409,
+            "region_draft_revision_conflict",
+            "Answer region draft changed before it was saved",
+        ) from None
+    except DraftTemplateMismatchError:
+        raise ApiError(
+            409,
+            "region_draft_template_changed",
+            "Session template changed before the draft was saved",
+        ) from None
     load_result = draft_service.load(expected_template_fingerprint=fingerprint)
     return _draft_response(
         session_id=session_id,
@@ -367,6 +502,17 @@ def save_answer_region_draft(
         load_result=load_result,
         template_fingerprint=fingerprint,
     )
+
+
+@router.delete("/sessions/{session_id}/regions/draft")
+def discard_answer_region_draft(
+    session_id: int,
+    db: DBManager = Depends(get_grading_db),
+    templates_dir: Path = Depends(get_templates_dir),
+) -> dict[str, str]:
+    _require_template(db, session_id)
+    _draft_service(templates_dir, session_id).discard()
+    return {"status": "discarded"}
 
 
 @router.post("/sessions/{session_id}/regions/commit", response_model=RegionCommitResponse)
@@ -392,5 +538,34 @@ def commit_answer_regions(
         template_matches=request.template_matches,
         expected_template_fingerprint=request.expected_template_fingerprint,
     )
+    region_count = len(db.list_answer_regions(int(session_id))) if result.committed else 0
+    return _commit_response(result, region_count)
+
+
+@router.post(
+    "/sessions/{session_id}/regions/snapshot/retry",
+    response_model=RegionCommitResponse,
+)
+def retry_answer_region_snapshot(
+    session_id: int,
+    request: RegionSnapshotRetryRequest,
+    db: DBManager = Depends(get_grading_db),
+    templates_dir: Path = Depends(get_templates_dir),
+) -> RegionCommitResponse:
+    template = _require_template(db, session_id)
+    draft_service = _draft_service(templates_dir, session_id)
+    fingerprint = _template_fingerprint(template, draft_service)
+    if fingerprint != request.expected_template_fingerprint:
+        raise ApiError(
+            409,
+            "region_snapshot_template_changed",
+            "Session template changed before the snapshot was retried",
+        )
+    service = AnswerRegionCommitService(
+        db,
+        Path(draft_service.draft_path).parent,
+        draft_service,
+    )
+    result = service.retry_pending_snapshot(session_id=int(session_id))
     region_count = len(db.list_answer_regions(int(session_id))) if result.committed else 0
     return _commit_response(result, region_count)

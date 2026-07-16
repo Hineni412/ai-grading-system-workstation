@@ -21,6 +21,14 @@ class DraftLoadResult:
     quarantined_path: Path | None = None
 
 
+class DraftRevisionConflictError(RuntimeError):
+    pass
+
+
+class DraftTemplateMismatchError(RuntimeError):
+    pass
+
+
 class AnswerRegionDraftService:
     def __init__(self, session_dir: Path) -> None:
         resolved_dir = Path(session_dir).resolve(strict=False)
@@ -46,6 +54,7 @@ class AnswerRegionDraftService:
         template_fingerprint: str,
         revision: int,
         regions: list[dict[str, Any]],
+        expected_revision: int | None = None,
     ) -> Path:
         draft = {
             "schema_version": _SCHEMA_VERSION,
@@ -59,6 +68,23 @@ class AnswerRegionDraftService:
             raise ValueError("invalid answer region draft")
         serialized = json.dumps(draft, ensure_ascii=False, indent=2)
         with self._lock:
+            if expected_revision is not None:
+                current = self.load(expected_template_fingerprint=template_fingerprint)
+                if current.status == "incompatible":
+                    raise DraftTemplateMismatchError(
+                        "answer region draft template changed"
+                    )
+                current_revision = (
+                    int(current.draft.get("revision", 0))
+                    if current.status == "compatible" and current.draft is not None
+                    else 0
+                )
+                if current_revision != int(expected_revision):
+                    raise DraftRevisionConflictError(
+                        "answer region draft revision changed"
+                    )
+                if int(revision) <= current_revision:
+                    raise ValueError("answer region draft revision must advance")
             self.draft_path.parent.mkdir(parents=True, exist_ok=True)
             try:
                 self.temp_path.write_text(serialized, encoding="utf-8")

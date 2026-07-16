@@ -105,13 +105,13 @@
 
 **Public seam:** workspace GET、受控 page GET、draft PUT/GET/discard、commit、snapshot retry；持久化通过公开服务/DBManager 读取。
 
-- [ ] **RED 1:** workspace 读取只返回图片 URL/尺寸/指纹、正式区域、草稿状态、题号目录、issues 与 ready 状态；任何绝对路径均被契约拒绝。
-- [ ] **GREEN 1:** 组合现有 template、rubric catalog、formal regions、draft 和 validation 服务，增加受控图片路由。
-- [ ] **RED 2:** 相同模板和 revision 可保存草稿；模板变化或 revision 前进返回 409；损坏/不兼容草稿只返回安全状态并需显式丢弃。
-- [ ] **GREEN 2:** 扩展 draft schema 与 lock 内比较写入，不改变现有草稿文件版本之外的业务含义。
-- [ ] **RED 3:** 提交校验一次返回全部 issues；成功后 workspace 为只读 confirmed；快照失败仍显示 committed，并可安全重试到一致。
-- [ ] **GREEN 3:** 复用 `AnswerRegionCommitService`/retry，并把 timeout、fingerprint 和 issues 映射为稳定 API。
-- [ ] **Verify/commit:** 运行 answer-region models/draft/lock/commit、template routes 与 OpenAPI 受影响测试；不跑全量。
+- [x] **RED 1:** workspace 读取只返回图片 URL/尺寸/指纹、正式区域、草稿状态、题号目录、issues 与 ready 状态；任何绝对路径均被契约拒绝。
+- [x] **GREEN 1:** 组合现有 template、rubric catalog、formal regions、draft 和 validation 服务，增加受控图片路由。
+- [x] **RED 2:** 相同模板和 revision 可保存草稿；模板变化或 revision 前进返回 409；损坏/不兼容草稿只返回安全状态并需显式丢弃。
+- [x] **GREEN 2:** 扩展 draft schema 与 lock 内比较写入，不改变现有草稿文件版本之外的业务含义。
+- [x] **RED 3:** 提交校验一次返回全部 issues；成功后 workspace 为只读 confirmed；快照失败仍显示 committed，并可安全重试到一致。
+- [x] **GREEN 3:** 复用 `AnswerRegionCommitService`/retry，并把 timeout、fingerprint 和 issues 映射为稳定 API。
+- [x] **Verify/commit:** 运行 answer-region models/draft/lock/commit、template routes 与 OpenAPI 受影响测试；不跑全量。
 
 ---
 
@@ -188,10 +188,13 @@
 | 3 | 测试缝确认 | completed | 记录于会话 | 0 | 计划、实现、验证、复审、集成 |
 | 4 | 代码前聚焦基线 | passed | 约 77 秒有效检查；另有 184 秒并行编排超时 | 1 个执行编排问题，产品问题 0 | 实现、验证、复审、集成 |
 | 5 | Task 1 样卷上传 RED/GREEN | passed | 约 55 秒 | 4 组：缺上传入口、令牌不可恢复、数据库失败覆盖旧文件、缺映射包 | 工作区/草稿/提交、Vue、浏览器、复审、集成 |
+| 6 | Task 2 工作区、草稿冲突与快照恢复 | passed | 约 90 秒开发验证；38.56 秒聚焦回归 | 5 组：工作区缺口、草稿静默覆盖、内部路径泄露、不兼容草稿误返回内容、快照无安全重试 | 编辑器适配、Vue、浏览器、复审、集成 |
 
 基线证据：Python answer-region/template API `106 passed`（25.20 秒）；editor core `14 passed`（0.15 秒）；P2-09 navigation `20 passed`（6.75 秒）、session config `6 passed`（2.78 秒）；lint/typecheck/build 通过（22.5 秒）；快速冒烟通过（6.31 秒）。首次把这些命令与静态检查并行汇总时，Vitest 子进程未在父级 180 秒上限内退出；拆成单文件顺序反馈后稳定通过，未修改产品代码。
 
 Task 1 证据：四条垂直切片分别从 `405`、submission `404`、abandon `404`、数据库失败覆盖旧图片和映射路径为空转绿；聚焦 service/API `11 passed`（7.03 秒），OpenAPI `15 passed`（14.61 秒），受影响 Python 编译与 `git diff --check` 通过。全部写入只发生在 pytest 临时目录。
+
+Task 2 证据：workspace、revision 冲突、显式丢弃、响应路径脱敏和快照重试从缺失或失败转绿；发现新增公开方法会破坏既有服务接口后，改为在原 `save` 契约内增加可选 revision 守卫。answer-region models/draft/lock/commit、template service/routes 与 OpenAPI 聚焦回归 `128 passed`（38.56 秒）。全部写入只发生在 pytest 临时目录。
 
 后续每个 RED/GREEN、复审、修复和 integration 门槛均追加一行；同一根因的多条失败只计一个去重问题。
 

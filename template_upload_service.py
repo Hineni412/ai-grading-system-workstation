@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import re
 import shutil
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -57,6 +58,8 @@ class TemplateUploadService:
     def __init__(self, templates_dir: Path, *, max_upload_bytes: int = 100 * 1024 * 1024) -> None:
         self.templates_dir = Path(templates_dir)
         self.max_upload_bytes = int(max_upload_bytes)
+        self._active_guard = threading.Lock()
+        self._active_submissions: set[tuple[int, str]] = set()
 
     def upload(
         self,
@@ -179,6 +182,45 @@ class TemplateUploadService:
                 regions_snapshot_pending=bool(template.get("regions_snapshot_pending")),
             )
 
+    def load_current(self, *, db: DBManager, session_id: int) -> TemplateUploadResult:
+        session_dir = self.templates_dir / f"session_{int(session_id)}"
+        with get_answer_region_session_lock(session_dir):
+            template = db.get_session_template(int(session_id))
+            if template is None:
+                raise FileNotFoundError("session template is missing")
+            paths = {
+                role: resolve_stored_file_path(
+                    template.get(f"{role}_template_path"),
+                    search_roots=[session_dir, self.templates_dir],
+                )
+                for role in ("front", "back")
+            }
+            if not all(path.is_file() for path in paths.values()):
+                raise TemplateUploadError("session template file is missing")
+            sizes: dict[str, tuple[int, int]] = {}
+            for role, path in paths.items():
+                with Image.open(path) as image:
+                    sizes[role] = (int(image.width), int(image.height))
+            fingerprint = AnswerRegionDraftService(session_dir).compute_template_fingerprint(
+                paths["front"], paths["back"]
+            )
+            manifest = _read_json(session_dir / "template_upload_manifest.json") or {}
+            manifest_fingerprint = str(manifest.get("template_fingerprint") or "")
+            role = str(manifest.get("first_page_role") or "front")
+            first_page_role: TemplatePageRole = (
+                role if manifest_fingerprint == fingerprint and role in {"front", "back"} else "front"
+            )
+            return TemplateUploadResult(
+                session_id=int(session_id),
+                template_id=int(template["id"]),
+                template_fingerprint=fingerprint,
+                first_page_role=first_page_role,
+                front=TemplatePage(paths["front"], *sizes["front"]),
+                back=TemplatePage(paths["back"], *sizes["back"]),
+                is_confirmed=bool(template.get("is_confirmed")),
+                regions_snapshot_pending=bool(template.get("regions_snapshot_pending")),
+            )
+
     def begin_submission(
         self,
         *,
@@ -211,6 +253,8 @@ class TemplateUploadService:
                 marker_path,
                 {"status": "processing", "request_fingerprint": fingerprint},
             )
+            with self._active_guard:
+                self._active_submissions.add((int(session_id), token))
             return "started"
 
     def abandon_submission(self, *, session_id: int, request_token: str) -> None:
@@ -218,11 +262,22 @@ class TemplateUploadService:
         session_dir = self.templates_dir / f"session_{int(session_id)}"
         marker_path = _submission_path(session_dir, token)
         with get_answer_region_session_lock(session_dir):
-            if _read_json(marker_path) is not None:
+            marker = _read_json(marker_path)
+            with self._active_guard:
+                active = (int(session_id), token) in self._active_submissions
+            if active or (marker is not None and marker.get("status") != "processing"):
                 raise TemplateUploadSubmissionConflictError(
                     "template upload submission already exists"
                 )
-            _write_json_atomic(marker_path, {"status": "abandoned"})
+            _write_json_atomic(
+                marker_path,
+                {
+                    "status": "abandoned",
+                    "request_fingerprint": (
+                        marker.get("request_fingerprint") if marker is not None else None
+                    ),
+                },
+            )
 
     def finish_submission(
         self,
@@ -235,17 +290,21 @@ class TemplateUploadService:
         token = _request_token(request_token)
         session_dir = self.templates_dir / f"session_{int(session_id)}"
         marker_path = _submission_path(session_dir, token)
-        with get_answer_region_session_lock(session_dir):
-            marker = _read_json(marker_path)
-            if marker is None:
-                raise TemplateUploadError("template upload submission is missing")
-            next_marker = {
-                "status": "succeeded" if succeeded else "failed",
-                "request_fingerprint": marker.get("request_fingerprint"),
-            }
-            if succeeded and template is not None:
-                next_marker["template"] = template
-            _write_json_atomic(marker_path, next_marker)
+        try:
+            with get_answer_region_session_lock(session_dir):
+                marker = _read_json(marker_path)
+                if marker is None:
+                    raise TemplateUploadError("template upload submission is missing")
+                next_marker = {
+                    "status": "succeeded" if succeeded else "failed",
+                    "request_fingerprint": marker.get("request_fingerprint"),
+                }
+                if succeeded and template is not None:
+                    next_marker["template"] = template
+                _write_json_atomic(marker_path, next_marker)
+        finally:
+            with self._active_guard:
+                self._active_submissions.discard((int(session_id), token))
 
     def submission_public(self, *, session_id: int, request_token: str) -> dict[str, object]:
         token = _request_token(request_token)

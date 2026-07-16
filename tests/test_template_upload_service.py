@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import sqlite3
 import json
+import sqlite3
 
 import fitz
 import pytest
 
 from db_manager import DBManager
-from template_upload_service import TemplateUploadService
+from template_upload_service import (
+    TemplateUploadService,
+    TemplateUploadSubmissionConflictError,
+)
 
 
 def _two_page_pdf() -> bytes:
@@ -109,3 +112,27 @@ def test_upload_activates_a_mapping_package_from_the_saved_scoring_config(tmp_pa
         )
     )
     assert [item["question_id"] for item in config["questions"]] == ["Q1", "Q2"]
+
+
+def test_only_an_inactive_processing_submission_can_be_abandoned(tmp_path) -> None:
+    templates_dir = tmp_path / "templates"
+    active_service = TemplateUploadService(templates_dir)
+    token = "a" * 32
+    assert active_service.begin_submission(
+        session_id=1,
+        request_token=token,
+        filename="sample.pdf",
+        content_length=100,
+        first_page_role="front",
+    ) == "started"
+
+    with pytest.raises(TemplateUploadSubmissionConflictError):
+        active_service.abandon_submission(session_id=1, request_token=token)
+
+    restarted_service = TemplateUploadService(templates_dir)
+    restarted_service.abandon_submission(session_id=1, request_token=token)
+
+    assert restarted_service.submission_public(session_id=1, request_token=token) == {
+        "status": "abandoned",
+        "template": None,
+    }
