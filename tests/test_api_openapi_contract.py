@@ -25,6 +25,7 @@ EXPECTED_OPERATIONS = {
     ("PUT", "/api/sessions/{session_id}/config/editor"),
     ("POST", "/api/sessions/{session_id}/config/editor/refine"),
     ("GET", "/api/sessions/{session_id}/template"),
+    ("POST", "/api/sessions/{session_id}/template"),
     ("PUT", "/api/sessions/{session_id}/template"),
     ("GET", "/api/sessions/{session_id}/regions"),
     ("GET", "/api/sessions/{session_id}/regions/readiness"),
@@ -237,6 +238,31 @@ def test_question_bank_write_openapi_declares_binary_upload_and_stable_errors() 
             assert responses[str(status)]["content"]["application/json"]["schema"] == {
                 "$ref": "#/components/schemas/ErrorResponse"
             }
+
+
+def test_template_upload_openapi_declares_binary_pdf_and_required_headers() -> None:
+    from backend.api.app import create_app
+
+    operation = create_app().openapi()["paths"][
+        "/api/sessions/{session_id}/template"
+    ]["post"]
+    parameters = {
+        (parameter["in"], parameter["name"].lower()): parameter
+        for parameter in operation["parameters"]
+    }
+    for header in (
+        "x-client-request-token",
+        "x-content-sha256",
+        "x-upload-filename",
+    ):
+        assert parameters[("header", header)]["required"] is True
+    digest_schema = parameters[("header", "x-content-sha256")]["schema"]
+    assert digest_schema["pattern"] == "^[0-9a-fA-F]{64}$"
+    body_schema = operation["requestBody"]["content"]["application/pdf"]["schema"]
+    assert body_schema == {"type": "string", "format": "binary"}
+    assert operation["responses"]["201"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/TemplateUploadResponse"
+    }
 
 
 def test_config_generation_openapi_declares_safe_requests_and_stable_errors() -> None:
