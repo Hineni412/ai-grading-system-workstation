@@ -232,3 +232,35 @@ def test_preflight_projection_hides_paths_and_saves_revisioned_decisions(tmp_pat
             valid_student_ids={11, 12},
             decisions=[],
         )
+
+
+def test_starting_a_new_batch_archives_the_previous_preflight(tmp_path) -> None:
+    from backend.scan_grading.workspace import ScanGradingWorkspace
+
+    workspace = ScanGradingWorkspace(
+        exams_root=tmp_path / "exams",
+        templates_root=tmp_path / "templates",
+    )
+    content = b"old scan"
+    workspace.add_upload(
+        4, filename="old.jpg", media_type="image/jpeg",
+        content_sha256=hashlib.sha256(content).hexdigest(), source=io.BytesIO(content),
+    )
+    old_batch = workspace.freeze_uploads(4, expected_revision=1)
+    session_dir = tmp_path / "templates" / "session_4"
+    for name in (
+        "scan_analysis_latest.json", "scan_decisions_state.json",
+        "scan_manual_decisions_latest.json",
+    ):
+        (session_dir / name).write_text("{}" if name != "scan_manual_decisions_latest.json" else "[]", encoding="utf-8")
+
+    new_batch = workspace.start_new_upload_batch(4)
+
+    assert new_batch["state"] == "draft"
+    assert new_batch["batch_id"] != old_batch["batch_id"]
+    for name in (
+        "scan_analysis_latest.json", "scan_decisions_state.json",
+        "scan_manual_decisions_latest.json",
+    ):
+        assert not (session_dir / name).exists()
+        assert (session_dir / "scan_history" / old_batch["batch_id"] / name).exists()

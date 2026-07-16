@@ -111,6 +111,10 @@ class ScanGradingWorkspace:
         if run.state in {"completed", "failed"} and counts["failed"] > 0:
             actions.append("retry_failed")
         projected_state = run.state
+        active_job = self._active_grading_job(session_id)
+        if run.state in {"running", "pause_requested"} and active_job is None:
+            projected_state = "interrupted"
+            actions = ["resume", "cancel"]
         control = self._read_grading_control(session_id)
         if int(control.get("run_id") or 0) == run.id and control.get("cancel_requested"):
             projected_state = (
@@ -126,25 +130,29 @@ class ScanGradingWorkspace:
             "counts": counts,
             "allowed_actions": actions,
         }
-        if self.job_manager is not None:
-            jobs, _total = self.job_manager.list(
-                session_id=int(session_id),
-                job_types=("grading_run",),
-                statuses=("queued", "running"),
-                limit=1,
+        if active_job is not None:
+            job = active_job
+            result.update(
+                {
+                    "job_id": job.id,
+                    "job_status": job.status,
+                    "progress": job.progress,
+                    "started_at": job.started_at,
+                    "updated_at": job.updated_at,
+                }
             )
-            if jobs:
-                job = jobs[0]
-                result.update(
-                    {
-                        "job_id": job.id,
-                        "job_status": job.status,
-                        "progress": job.progress,
-                        "started_at": job.started_at,
-                        "updated_at": job.updated_at,
-                    }
-                )
         return result
+
+    def _active_grading_job(self, session_id: int):
+        if self.job_manager is None:
+            return None
+        jobs, _total = self.job_manager.list(
+            session_id=int(session_id),
+            job_types=("grading_run",),
+            statuses=("queued", "running"),
+            limit=1,
+        )
+        return jobs[0] if jobs else None
 
     def pause_grading_run(self, session_id: int, run_id: int) -> dict[str, Any]:
         if self.grading_db_path is None:
@@ -166,7 +174,7 @@ class ScanGradingWorkspace:
         self,
         session_id: int,
         run_id: int,
-        job_id: int,
+        job_id: int | None,
         *,
         confirmed: bool,
     ) -> dict[str, Any]:
@@ -178,13 +186,15 @@ class ScanGradingWorkspace:
         run = store.get_run(int(run_id))
         if run is None or run.session_id != int(session_id):
             raise ScanGradingWorkspaceError("grading run was not found")
+        if run.state not in {"running", "pause_requested", "paused"}:
+            raise ScanGradingWorkspaceError("grading run cannot be cancelled")
         if confirmed and run.state in {"running", "pause_requested"}:
             store.finish(run.run_token, "paused")
         self._atomic_write_json(
             self._grading_control_path(session_id),
             {
                 "run_id": int(run_id),
-                "job_id": int(job_id),
+                "job_id": int(job_id) if job_id is not None else None,
                 "cancel_requested": True,
                 "cancel_confirmed": bool(confirmed),
                 "updated_at": self._now(),
@@ -200,7 +210,13 @@ class ScanGradingWorkspace:
         control = self._read_grading_control(session_id)
         if int(control.get("run_id") or 0) == run.id and control.get("cancel_requested"):
             raise ScanGradingWorkspaceError("cancelled grading run cannot resume")
-        if run.state != "paused" or counts.get("pending", 0) <= 0:
+        if run.state in {"running", "pause_requested"} and self._active_grading_job(session_id) is None:
+            from grading_run_store import GradingRunStore
+
+            GradingRunStore(self.grading_db_path).finish(run.run_token, "paused")
+        elif run.state != "paused":
+            raise ScanGradingWorkspaceError("grading run cannot resume")
+        if counts.get("pending", 0) <= 0:
             raise ScanGradingWorkspaceError("grading run cannot resume")
         return {
             "session_id": int(session_id),
@@ -235,6 +251,11 @@ class ScanGradingWorkspace:
         requests_per_minute: int | None,
     ) -> dict[str, Any]:
         with self._lock(session_id):
+            current_run = self.get_grading_run(session_id)
+            if current_run is not None and current_run["state"] in {
+                "running", "pause_requested", "paused", "interrupted", "cancel_requested"
+            }:
+                raise ScanGradingWorkspaceError("an active grading run already exists")
             manifest = self._load_or_create_manifest(session_id)
             if manifest.get("state") != "frozen":
                 raise ScanGradingWorkspaceError("scan upload batch is not frozen")
@@ -258,6 +279,34 @@ class ScanGradingWorkspace:
             if requests_per_minute is not None:
                 payload["requests_per_minute"] = int(requests_per_minute)
             return payload
+
+    def start_new_upload_batch(self, session_id: int) -> dict[str, Any]:
+        with self._lock(session_id):
+            current_run = self.get_grading_run(session_id)
+            if current_run is not None and current_run["state"] in {
+                "running", "pause_requested", "paused", "interrupted", "cancel_requested"
+            }:
+                raise ScanGradingWorkspaceError("active grading run must be resolved first")
+            previous_manifest = self._load_or_create_manifest(session_id)
+            manifest = {
+                "batch_id": uuid4().hex,
+                "revision": 0,
+                "state": "draft",
+                "files": [],
+                "frozen_at": None,
+            }
+            self._write_manifest(session_id, manifest)
+            history_dir = self._session_dir(session_id) / "scan_history" / str(previous_manifest["batch_id"])
+            for name in (
+                "scan_analysis_latest.json",
+                "scan_decisions_state.json",
+                "scan_manual_decisions_latest.json",
+            ):
+                source = self._session_dir(session_id) / name
+                if source.exists():
+                    history_dir.mkdir(parents=True, exist_ok=True)
+                    os.replace(source, history_dir / name)
+            return self._public_batch(manifest)
 
     def _require_run(self, session_id: int, run_id: int):
         if self.grading_db_path is None:

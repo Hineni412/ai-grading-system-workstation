@@ -16,7 +16,6 @@ test('real isolated API preserves upload, preflight, grading controls and refres
     const payload = await response.json() as { items: Array<{ status: string }> }
     return payload.items[0]?.status
   }).toBe('succeeded')
-  await page.getByRole('button', { name: '刷新预检结果' }).click()
   await expect(page.getByText('仍有 1 份异常答卷待处理')).toBeVisible()
 
   await page.locator('[data-confirm-pending]').check()
@@ -32,7 +31,7 @@ test('real isolated API preserves upload, preflight, grading controls and refres
   await expect(page.locator('[data-action="cancel"]')).toBeVisible()
 
   await page.locator('[data-action="pause"]').click()
-  await expect(page.getByText(/pause_requested|paused/)).toBeVisible()
+  await expect(page.getByText(/正在安全暂停|已安全暂停/)).toBeVisible()
   await page.reload()
   await expect(page.locator('[data-action="resume"]')).toBeVisible()
   await page.locator('[data-action="resume"]').click()
@@ -45,7 +44,7 @@ test('real isolated API preserves upload, preflight, grading controls and refres
   await expect(page.locator('[data-action="cancel"]')).toBeVisible()
   page.once('dialog', (dialog) => dialog.accept())
   await page.locator('[data-action="cancel"]').click()
-  await expect(page.getByText(/cancel_requested|cancelled/)).toBeVisible()
+  await expect(page.getByText(/正在安全取消|本次运行已取消/)).toBeVisible()
   await expect.poll(async () => {
     const response = await page.request.get('/api/sessions/1/grading-workspace')
     const payload = await response.json() as { grading_run: { state: string } }

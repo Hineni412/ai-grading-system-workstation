@@ -20,7 +20,19 @@ const stage = computed(() => {
 })
 const pendingCount = computed(() => store.preflight?.pending_issue_count ?? 0)
 const canStart = computed(() => Boolean(store.preflight)
-  && (pendingCount.value === 0 || confirmPending.value) && !store.busyAction)
+  && !store.gradingRun && (pendingCount.value === 0 || confirmPending.value) && !store.busyAction)
+const invalidCount = computed(() => store.preflight?.decisions
+  .filter((item) => item.target_type === 'issue' && item.action === 'invalid').length ?? 0)
+const missingBackCount = computed(() => store.preflight?.issues
+  .filter((item) => item.issue_type === 'missing_back' || item.issue_type === 'orphan_page').length ?? 0)
+const lowConfidenceGroups = computed(() => store.preflight?.groups.filter((item) => (
+  item.match_method !== 'exact' || Number(item.match_score ?? 0) < 1
+)) ?? [])
+const runStateLabel = computed(() => ({
+  running: '批改运行中', pause_requested: '正在安全暂停', paused: '已安全暂停',
+  interrupted: '上次运行已中断', cancel_requested: '正在安全取消', cancelled: '本次运行已取消',
+  completed: '本次运行已完成', failed: '本次运行有失败项',
+}[store.gradingRun?.state ?? ''] ?? store.gradingRun?.state ?? ''))
 
 function loadRoute(): void {
   if (Number.isSafeInteger(sessionId.value) && sessionId.value > 0) void store.load(sessionId.value)
@@ -31,17 +43,21 @@ function chooseFiles(event: Event): void {
   input.value = ''
 }
 function start(mode: GradingMode): void { void store.begin(mode, confirmPending.value) }
-function issueDecision(issue: Record<string, unknown>, action: 'match' | 'invalid'): void {
-  const targetId = String(issue.issue_id ?? '')
+function saveDecision(targetType: 'group' | 'issue', targetId: string, action: 'match' | 'invalid' | 'pending'): void {
   const decisions: ScanDecision[] = [...(store.preflight?.decisions ?? [])
-    .filter((item) => !(item.target_type === 'issue' && item.target_id === targetId))]
-  decisions.push({ target_type: 'issue', target_id: targetId, action,
+    .filter((item) => !(item.target_type === targetType && item.target_id === targetId))]
+  decisions.push({ target_type: targetType, target_id: targetId, action,
     ...(action === 'match' ? { student_id: selectedStudents.value[targetId] } : {}) })
   void store.saveDecisions(decisions)
 }
 function cancelRun(): void {
   if (window.confirm('取消后，本次运行会结束；已经完成的成绩会保留，未完成部分以后可重新发起。确认取消吗？')) {
     void store.cancel()
+  }
+}
+function beginNewBatch(): void {
+  if (window.confirm('开始新批次会保留既有成绩和运行记录，并建立一份空的上传队列。确认继续吗？')) {
+    void store.newBatch()
   }
 }
 
@@ -102,20 +118,31 @@ watch(sessionId, loadRoute)
           <strong v-if="store.preflight">自动匹配 {{ store.preflight.summary.auto_matched ?? 0 }} · 异常 {{ store.preflight.summary.issues ?? 0 }}</strong>
         </div>
         <div v-if="!store.preflight" class="scan-empty">
-          <p>冻结答卷后运行识别，再在这里核对学生归属和异常页。</p>
+          <p>{{ store.preflightJobId ? '预检正在后台运行，完成后这里会自动更新。' : '冻结答卷后运行识别，再在这里核对学生归属和异常页。' }}</p>
           <button v-if="store.uploadBatch?.state === 'frozen'" type="button" class="secondary" @click="store.refreshPreflight">刷新预检结果</button>
         </div>
         <template v-else>
           <p v-if="pendingCount" class="scan-warning"><strong>仍有 {{ pendingCount }} 份异常答卷待处理</strong>。它们可以暂时跳过，不会阻塞其余学生批改。</p>
-          <div v-if="store.preflight.issues.length" class="scan-issue-list">
-            <div v-for="issue in store.preflight.issues" :key="String(issue.issue_id)">
-              <span><strong>{{ issue.detected_name || '未识别姓名' }}</strong><small>{{ issue.source_label || '异常答卷' }}</small></span>
-              <select v-model="selectedStudents[String(issue.issue_id)]" aria-label="选择学生">
-                <option :value="undefined">选择学生</option>
-                <option v-for="student in store.preflight.absent_students" :key="Number(student.id)" :value="Number(student.id)">{{ student.name }}</option>
+          <div v-if="lowConfidenceGroups.length" class="scan-issue-list" aria-label="低可信自动匹配">
+            <div v-for="group in lowConfidenceGroups" :key="String(group.id)">
+              <span><strong>{{ group.student_name || group.detected_name || '待核对姓名' }}</strong><small>{{ group.source_label }} · {{ group.match_method }}</small></span>
+              <select v-model="selectedStudents[String(group.id)]" aria-label="重新选择学生">
+                <option :value="undefined">重新选择学生</option>
+                <option v-for="student in store.students" :key="student.id" :value="student.id">{{ student.name }} · {{ student.student_code }}</option>
               </select>
-              <button type="button" class="secondary" :disabled="!selectedStudents[String(issue.issue_id)]" @click="issueDecision(issue, 'match')">匹配</button>
-              <button type="button" class="text-button" @click="issueDecision(issue, 'invalid')">标记无效</button>
+              <button type="button" class="secondary" :disabled="!selectedStudents[String(group.id)]" @click="saveDecision('group', String(group.id), 'match')">确认改绑</button>
+            </div>
+          </div>
+          <div v-if="store.preflight.issues.length" class="scan-issue-list">
+            <div v-for="issue in store.preflight.issues" :key="String(issue.id)">
+              <span><strong>{{ issue.detected_name || '未识别姓名' }}</strong><small>{{ issue.source_label || '异常答卷' }}</small></span>
+              <select v-model="selectedStudents[String(issue.id)]" aria-label="选择学生">
+                <option :value="undefined">选择学生</option>
+                <option v-for="student in store.students" :key="student.id" :value="student.id">{{ student.name }} · {{ student.student_code }}</option>
+              </select>
+              <button type="button" class="secondary" :disabled="!selectedStudents[String(issue.id)]" @click="saveDecision('issue', String(issue.id), 'match')">匹配</button>
+              <button type="button" class="text-button" @click="saveDecision('issue', String(issue.id), 'invalid')">标记无效</button>
+              <button type="button" class="text-button" @click="saveDecision('issue', String(issue.id), 'pending')">稍后处理</button>
             </div>
           </div>
         </template>
@@ -127,6 +154,10 @@ watch(sessionId, loadRoute)
           <input v-model="confirmPending" data-confirm-pending type="checkbox">
           我已知晓：{{ pendingCount }} 份异常答卷本轮会跳过，之后可继续匹配和补批。
         </label>
+        <p v-if="store.preflight" class="scan-start-summary">
+          本轮可批改 {{ store.preflight.summary.auto_matched ?? 0 }} 份；待处理异常 {{ pendingCount }} 份；
+          已标无效 {{ invalidCount }} 份；缺反面/孤页 {{ missingBackCount }} 份；缺考候选 {{ store.preflight.summary.absent_candidates ?? 0 }} 人。
+        </p>
         <div class="grading-modes">
           <button type="button" data-grading-mode="full_paper" :disabled="!canStart" @click="start('full_paper')">
             <span>整卷批改</span><strong>按学生逐份完成</strong><small>适合日常整班批改，过程直观。</small>
@@ -138,7 +169,7 @@ watch(sessionId, loadRoute)
       </section>
 
       <section class="scan-stage" aria-labelledby="run-title">
-        <div class="scan-stage__heading"><div><span>04</span><h2 id="run-title">运行与补批</h2></div><strong v-if="store.gradingRun">{{ store.gradingRun.state }}</strong></div>
+        <div class="scan-stage__heading"><div><span>04</span><h2 id="run-title">运行与补批</h2></div><strong v-if="store.gradingRun">{{ runStateLabel }}</strong></div>
         <div v-if="store.gradingRun" class="run-console">
           <div class="run-counts">
             <span><strong>已完成 {{ store.gradingRun.counts.graded }}</strong></span>
@@ -150,6 +181,7 @@ watch(sessionId, loadRoute)
             <button v-if="store.gradingRun.allowed_actions.includes('resume')" data-action="resume" type="button" @click="store.control('resume')">继续本次运行</button>
             <button v-if="store.gradingRun.allowed_actions.includes('retry_failed')" data-action="retry-failed" type="button" class="secondary" @click="store.control('retry-failed')">仅重试失败项</button>
             <button v-if="store.gradingRun.allowed_actions.includes('cancel')" data-action="cancel" type="button" class="danger" @click="cancelRun">取消本次运行</button>
+            <button v-if="['cancelled', 'completed', 'failed'].includes(store.gradingRun.state)" data-action="new-batch" type="button" class="secondary" @click="beginNewBatch">开始新批次</button>
           </div>
         </div>
         <p v-else class="scan-empty">尚未开始批改。启动后，刷新页面仍可恢复这里的运行状态。</p>

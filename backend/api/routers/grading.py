@@ -50,7 +50,7 @@ def _submit_controlled_grading_job(
     workspace: ScanGradingWorkspace,
 ) -> JobResponse:
     session_id = int(payload["session_id"])
-    if workspace.upload_batch_exists(session_id):
+    if workspace.upload_batch_exists(session_id) and not bool(payload.get("failed_only")):
         payload["exams_dir"] = str(workspace.frozen_scan_dir(session_id))
     try:
         job = manager.submit("grading_run", payload)
@@ -117,21 +117,32 @@ def cancel_session_grading(
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> GradingRunSummaryResponse:
     _require_session(db, session_id)
-    job = manager.get(request.job_id)
-    if (
-        job is None
-        or job.job_type != "grading_run"
-        or int(job.payload.get("session_id") or 0) != int(session_id)
-    ):
-        raise ApiError(404, "grading_job_not_found", "Grading job was not found")
-    manager.cancel(job.id)
-    updated = manager.get(job.id)
+    summary = workspace.get_grading_run(session_id)
+    if summary is None or int(summary["run_id"]) != int(run_id):
+        raise ApiError(409, "grading_run_not_cancellable", "Grading run cannot be cancelled")
+    active_job_id = summary.get("job_id")
+    job = manager.get(request.job_id) if request.job_id is not None else None
+    if summary["state"] in {"running", "pause_requested", "cancel_requested"}:
+        if (
+            job is None
+            or job.id != active_job_id
+            or job.job_type != "grading_run"
+            or int(job.payload.get("session_id") or 0) != int(session_id)
+        ):
+            raise ApiError(409, "grading_job_run_mismatch", "Grading job does not belong to this run")
+        manager.cancel(job.id)
+        updated = manager.get(job.id)
+        confirmed = bool(updated and updated.status == "cancelled")
+    elif summary["state"] in {"paused", "interrupted"}:
+        confirmed = True
+    else:
+        raise ApiError(409, "grading_run_not_cancellable", "Grading run cannot be cancelled")
     try:
         summary = workspace.record_cancel_request(
             session_id,
             run_id,
-            job.id,
-            confirmed=bool(updated and updated.status == "cancelled"),
+            job.id if job is not None else None,
+            confirmed=confirmed,
         )
     except ScanGradingWorkspaceError as exc:
         raise ApiError(409, "grading_run_not_cancellable", "Grading run cannot be cancelled") from exc

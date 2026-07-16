@@ -70,8 +70,21 @@ function finiteInteger(value: unknown, minimum = 0): value is number {
   return Number.isSafeInteger(value) && Number(value) >= minimum
 }
 
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const expected = [...keys].sort()
+  const actual = Object.keys(value).sort()
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index])
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const allowed = new Set(keys)
+  return Object.keys(value).every((key) => allowed.has(key))
+}
+
 function decodeUploadFile(value: unknown): ScanUploadFile {
-  if (!isRecord(value)
+  if (!isRecord(value) || !hasExactKeys(value, [
+    'id', 'name', 'media_type', 'size_bytes', 'sha256_prefix', 'added_at',
+  ])
     || typeof value.id !== 'string' || !value.id
     || typeof value.name !== 'string' || !value.name
     || typeof value.media_type !== 'string'
@@ -82,7 +95,9 @@ function decodeUploadFile(value: unknown): ScanUploadFile {
 }
 
 function decodeUploadBatch(value: unknown): ScanUploadBatch {
-  if (!isRecord(value)
+  if (!isRecord(value) || !hasExactKeys(value, [
+    'batch_id', 'revision', 'state', 'files', 'file_count', 'total_bytes', 'frozen_at',
+  ])
     || typeof value.batch_id !== 'string' || !value.batch_id
     || !finiteInteger(value.revision)
     || (value.state !== 'draft' && value.state !== 'frozen')
@@ -96,7 +111,10 @@ function decodeUploadBatch(value: unknown): ScanUploadBatch {
 }
 
 function decodeRun(value: unknown): GradingRunSummary {
-  if (!isRecord(value) || !finiteInteger(value.run_id, 1)
+  if (!isRecord(value) || !hasOnlyKeys(value, [
+    'run_id', 'job_id', 'job_status', 'progress', 'started_at', 'updated_at',
+    'mode', 'state', 'counts', 'allowed_actions',
+  ]) || !finiteInteger(value.run_id, 1)
     || (value.mode !== 'full_paper' && value.mode !== 'hybrid_batch')
     || typeof value.state !== 'string' || !isRecord(value.counts)
     || !Array.isArray(value.allowed_actions) || !value.allowed_actions.every((item) => typeof item === 'string')) {
@@ -107,19 +125,14 @@ function decodeRun(value: unknown): GradingRunSummary {
     && (typeof value.progress !== 'number' || value.progress < 0 || value.progress > 1)) throw new Error('Invalid grading progress')
   const counts = value.counts
   const keys = ['graded', 'grading', 'pending', 'skipped', 'failed', 'conflict', 'total'] as const
-  if (!keys.every((key) => finiteInteger(counts[key]))) throw new Error('Invalid grading counts')
+  if (!hasExactKeys(counts, keys) || !keys.every((key) => finiteInteger(counts[key]))) throw new Error('Invalid grading counts')
   return value as unknown as GradingRunSummary
 }
 
 export function decodeGradingWorkspace(value: unknown): GradingWorkspace {
-  if (!isRecord(value) || !finiteInteger(value.session_id, 1) || !('upload_batch' in value)
+  if (!isRecord(value) || !hasExactKeys(value, ['session_id', 'upload_batch', 'grading_run'])
+    || !finiteInteger(value.session_id, 1) || !('upload_batch' in value)
     || !(value.grading_run === null || isRecord(value.grading_run))) throw new Error('Invalid grading workspace')
-  const batchForSafety = isRecord(value.upload_batch) ? { ...value.upload_batch } : value.upload_batch
-  if (isRecord(batchForSafety)) {
-    delete batchForSafety.files
-    delete batchForSafety.file_count
-  }
-  assertNoPathLikeKeys({ ...value, upload_batch: batchForSafety })
   return {
     session_id: value.session_id,
     upload_batch: decodeUploadBatch(value.upload_batch),
@@ -183,6 +196,12 @@ export function freezeScans(sessionId: number, revision: number): Promise<ScanUp
   })
 }
 
+export function startNewScanBatch(sessionId: number): Promise<ScanUploadBatch> {
+  return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan-uploads/new-batch`, {
+    method: 'POST', decode: decodeUploadBatch,
+  })
+}
+
 export function startPreflight(sessionId: number): Promise<JobResponse> {
   return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan/analyze`, {
     method: 'POST', body: { enhance_images: true }, decode: decodeJobResponse,
@@ -225,7 +244,7 @@ export function controlGrading(sessionId: number, runId: number, action: 'pause'
   })
 }
 
-export function cancelGrading(sessionId: number, runId: number, jobId: number): Promise<GradingRunSummary> {
+export function cancelGrading(sessionId: number, runId: number, jobId: number | null): Promise<GradingRunSummary> {
   return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/grading/runs/${runId}/cancel`, {
     method: 'POST', body: { job_id: jobId }, decode: decodeRun,
   })

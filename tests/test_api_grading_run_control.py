@@ -104,8 +104,16 @@ def test_cancelled_run_cannot_resume_and_failed_retry_keeps_original_mode(tmp_pa
     store = GradingRunStore(db.db_path)
     cancelled_run = store.begin(session_id, "a" * 64, "hybrid_batch")
     manager.register("grading_run", lambda context: {"state": "completed"})
+    wrong_job = manager.store.create_job("grading_run", {"session_id": session_id})
     queued = manager.store.create_job("grading_run", {"session_id": session_id})
     try:
+        mismatched = client.post(
+            f"/api/sessions/{session_id}/grading/runs/{cancelled_run.id}/cancel",
+            json={"job_id": wrong_job.id},
+        )
+        assert mismatched.status_code == 409
+        assert mismatched.json()["error"]["code"] == "grading_job_run_mismatch"
+
         cancelled = client.post(
             f"/api/sessions/{session_id}/grading/runs/{cancelled_run.id}/cancel",
             json={"job_id": queued.id},
@@ -118,6 +126,10 @@ def test_cancelled_run_cannot_resume_and_failed_retry_keeps_original_mode(tmp_pa
             f"/api/sessions/{session_id}/grading/runs/{cancelled_run.id}/resume"
         )
         assert resume.status_code == 409
+
+        new_batch = client.post(f"/api/sessions/{session_id}/scan-uploads/new-batch")
+        assert new_batch.status_code == 200
+        assert new_batch.json()["state"] == "draft"
 
         failed_run = store.begin(session_id, "b" * 64, "full_paper")
         store.add_item(
@@ -215,5 +227,49 @@ def test_start_requires_current_frozen_preflight_and_pending_issue_confirmation(
         assert started.status_code == 202
         assert started.json()["payload"]["grading_mode"] == "hybrid_batch"
         assert "exams_dir" not in started.json()["payload"]
+
+        from grading_run_store import GradingRunStore
+
+        active_run = GradingRunStore(db.db_path).begin(session_id, "d" * 64, "hybrid_batch")
+        duplicate = client.post(
+            f"/api/sessions/{session_id}/grading/run",
+            json={
+                "grading_mode": "hybrid_batch",
+                "upload_revision": 2,
+                "decision_revision": 0,
+                "confirm_pending_issues": True,
+            },
+        )
+        assert duplicate.status_code == 409
+        assert duplicate.json()["error"]["code"] == "grading_input_not_ready"
+        GradingRunStore(db.db_path).finish(active_run.run_token, "completed")
+    finally:
+        manager.shutdown()
+
+
+def test_orphaned_running_ledger_projects_interrupted_and_can_resume(tmp_path) -> None:
+    from db_manager import StudentRecord
+    from grading_run_store import GradingRunStore
+
+    client, db, manager = _system(tmp_path)
+    db.upsert_students([StudentRecord("S001", "学生甲", "测试班")])
+    student_id = int(db.list_students()[0]["id"])
+    session_id = db.create_grading_session("重启恢复", "rubric.json", "answer.json")
+    store = GradingRunStore(db.db_path)
+    run = store.begin(session_id, "a" * 64, "full_paper")
+    store.add_item(
+        run.id, source_label="001", student_id=student_id,
+        paper_fingerprint="b" * 64, config_fingerprint="a" * 64, status="pending",
+    )
+    manager.register("grading_run", lambda context: {"state": "completed"})
+    try:
+        loaded = client.get(f"/api/sessions/{session_id}/grading-workspace")
+        assert loaded.status_code == 200
+        assert loaded.json()["grading_run"]["state"] == "interrupted"
+        assert loaded.json()["grading_run"]["allowed_actions"] == ["resume", "cancel"]
+
+        resumed = client.post(f"/api/sessions/{session_id}/grading/runs/{run.id}/resume")
+        assert resumed.status_code == 202
+        assert resumed.json()["payload"]["resume_run_id"] == run.id
     finally:
         manager.shutdown()

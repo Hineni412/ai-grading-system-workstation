@@ -20,4 +20,4 @@ class GradingRunRequest(BaseModel):
 
 
 class GradingRunCancelRequest(BaseModel):
-    job_id: int = Field(gt=0)
+    job_id: int | None = Field(default=None, gt=0)

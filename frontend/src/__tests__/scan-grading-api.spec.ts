@@ -41,6 +41,25 @@ describe('scan grading API contract', () => {
     } satisfies Partial<ApiError>)
   })
 
+  it('rejects an extra storage field nested inside an upload file', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => response({
+      session_id: 7,
+      upload_batch: {
+        batch_id: 'batch-1', revision: 1, state: 'draft', file_count: 1, total_bytes: 4,
+        frozen_at: null, files: [{
+          id: 'file-1', name: 'scan.jpg', media_type: 'image/jpeg', size_bytes: 4,
+          sha256_prefix: 'a'.repeat(12), added_at: '2026-07-16T12:00:00Z',
+          storage_path: 'C:\\private\\scan.jpg',
+        }],
+      },
+      grading_run: null,
+    })))
+
+    await expect(fetchGradingWorkspace(7)).rejects.toMatchObject({
+      kind: 'contract', code: 'invalid_success_contract',
+    } satisfies Partial<ApiError>)
+  })
+
   it('uploads a scan with its encoded filename and content digest', async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => response({
       duplicate: false,

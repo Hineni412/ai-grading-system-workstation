@@ -12,25 +12,31 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path[:1]:
     sys.path.insert(0, str(REPO_ROOT))
-ALLOWED_DATA_ROOT = (REPO_ROOT / "frontend" / "test-results" / "p2-11-real").resolve()
+ALLOWED_DATA_ROOT = Path(os.path.abspath(REPO_ROOT / "frontend" / "test-results" / "p2-11-real"))
 
 
 def _prepare_paths(data_root: Path):
-    resolved = data_root.resolve()
-    if resolved != ALLOWED_DATA_ROOT:
+    candidate = Path(os.path.abspath(data_root))
+    if candidate != ALLOWED_DATA_ROOT:
         raise RuntimeError("P2-11 browser data root must be the dedicated test directory")
-    if resolved.exists():
-        shutil.rmtree(resolved)
+    resolved = candidate.resolve(strict=False)
+    if not resolved.is_relative_to(REPO_ROOT.resolve()) or resolved != ALLOWED_DATA_ROOT.resolve(strict=False):
+        raise RuntimeError("P2-11 browser data root resolves outside the repository")
+    if candidate.exists():
+        is_junction = getattr(candidate, "is_junction", lambda: False)
+        if candidate.is_symlink() or is_junction():
+            raise RuntimeError("P2-11 browser data root cannot be a link or junction")
+        shutil.rmtree(candidate)
 
     from path_manager import PathManager
 
     paths = PathManager.__new__(PathManager)
     paths._project_root = REPO_ROOT
     paths._cfg = {}
-    paths._data_root = resolved / "data"
-    paths._logs_root = resolved / "logs"
-    paths._api_profiles_path = resolved / "machine-config" / "api_profiles.json"
-    paths._ops_state_dir = resolved / "ops"
+    paths._data_root = candidate / "data"
+    paths._logs_root = candidate / "logs"
+    paths._api_profiles_path = candidate / "machine-config" / "api_profiles.json"
+    paths._ops_state_dir = candidate / "ops"
     paths.ensure_directories()
     os.environ["AI_GRADING_DATA_DIR"] = str(paths.data_root)
     os.environ["AI_GRADING_API_PROFILES_PATH"] = str(paths.api_profiles_path)
