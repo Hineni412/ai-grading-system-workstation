@@ -1,10 +1,25 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { fetchSessions, type SessionLoader, type SessionSummary } from '../api/sessions'
+import {
+  createSessionDraft,
+  fetchSessions,
+  renameSession,
+  type SessionDraftCreator,
+  type SessionLoader,
+  type SessionSummary,
+} from '../api/sessions'
+import { isAmbiguousWriteError } from '../api/errors'
 
 export const SESSION_STORAGE_KEY = 'ai-grading:selected-session:v1'
 export type SessionLoadState = 'idle' | 'loading' | 'ready' | 'error'
+
+export class SessionDraftOutcomeUnknownError extends Error {
+  constructor() {
+    super('考试草稿创建结果未知')
+    this.name = 'SessionDraftOutcomeUnknownError'
+  }
+}
 
 function readPersistedId(): number | null {
   const raw = localStorage.getItem(SESSION_STORAGE_KEY)
@@ -19,6 +34,7 @@ export const useSessionStore = defineStore('session', () => {
   const loadState = ref<SessionLoadState>('idle')
   const errorMessage = ref('')
   let persistedCandidateId: number | null = null
+  let loadRequest = 0
 
   const currentSession = computed(
     () =>
@@ -26,20 +42,23 @@ export const useSessionStore = defineStore('session', () => {
   )
 
   async function initialize(loader: SessionLoader = fetchSessions): Promise<void> {
+    const request = ++loadRequest
     persistedCandidateId = readPersistedId()
+    const candidateId = persistedCandidateId
     selectedSessionId.value = null
     loadState.value = 'loading'
     errorMessage.value = ''
 
     try {
       const loadedSessions = await loader()
+      if (request !== loadRequest) return
       sessions.value = loadedSessions
 
       if (
-        persistedCandidateId !== null &&
-        loadedSessions.some((session) => session.id === persistedCandidateId)
+        candidateId !== null &&
+        loadedSessions.some((session) => session.id === candidateId)
       ) {
-        selectedSessionId.value = persistedCandidateId
+        selectedSessionId.value = candidateId
       } else {
         persistedCandidateId = null
         localStorage.removeItem(SESSION_STORAGE_KEY)
@@ -47,10 +66,51 @@ export const useSessionStore = defineStore('session', () => {
 
       loadState.value = 'ready'
     } catch {
+      if (request !== loadRequest) return
       sessions.value = []
       loadState.value = 'error'
       errorMessage.value = '考试列表暂时无法读取。已保存的选择没有丢失，可以重新加载。'
     }
+  }
+
+  async function createDraft(
+    name: string,
+    creator: SessionDraftCreator = createSessionDraft,
+    loader: SessionLoader = fetchSessions,
+  ): Promise<SessionSummary> {
+    const normalized = name.trim()
+    if (!normalized) throw new Error('考试名称不能为空')
+    const knownIds = new Set(sessions.value.map((session) => session.id))
+    let created: SessionSummary
+    try {
+      created = await creator(normalized)
+    } catch (error) {
+      if (!isAmbiguousWriteError(error)) throw error
+      let loaded: SessionSummary[]
+      try {
+        loaded = await loader()
+      } catch {
+        throw new SessionDraftOutcomeUnknownError()
+      }
+      const reconciled = loaded.find((session) => !knownIds.has(session.id)
+        && session.name.trim() === normalized && !session.is_deleted)
+      sessions.value = loaded
+      loadState.value = 'ready'
+      if (!reconciled) throw new Error('考试草稿创建请求已核对，服务器未出现新草稿')
+      created = reconciled
+    }
+    persistedCandidateId = created.id
+    localStorage.setItem(SESSION_STORAGE_KEY, String(created.id))
+    await initialize(loader)
+    return created
+  }
+
+  async function renameSelected(name: string): Promise<SessionSummary> {
+    if (selectedSessionId.value === null) throw new Error('请先选择考试')
+    const renamed = await renameSession(selectedSessionId.value, name)
+    const index = sessions.value.findIndex((session) => session.id === renamed.id)
+    if (index >= 0) sessions.value[index] = renamed
+    return renamed
   }
 
   function selectSession(id: number | null): void {
@@ -80,6 +140,8 @@ export const useSessionStore = defineStore('session', () => {
     loadState,
     errorMessage,
     initialize,
+    createDraft,
+    renameSelected,
     selectSession,
     clearSelection,
   }

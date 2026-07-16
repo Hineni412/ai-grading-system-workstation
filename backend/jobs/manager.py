@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
+from contextlib import nullcontext
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 from .store import JobRecord, JobStore
@@ -55,6 +57,7 @@ class JobManager:
         *,
         max_workers: int = 2,
         cleanup_interrupted: bool = True,
+        interrupted_input_root: Path | None = None,
     ) -> None:
         self.store = store
         self._handlers: dict[str, JobHandler] = {}
@@ -62,8 +65,30 @@ class JobManager:
         self._futures: dict[int, Future[None]] = {}
         self._lock = threading.Lock()
         self._shutdown = False
+        self._config_lock_root = (
+            Path(interrupted_input_root).resolve(strict=False)
+            if interrupted_input_root is not None
+            else None
+        )
         if cleanup_interrupted:
+            owned_input_ids = (
+                self.store.interrupted_owned_config_input_ids()
+                if interrupted_input_root is not None
+                else set()
+            )
             self.store.fail_interrupted_jobs()
+            if interrupted_input_root is not None:
+                from .config_generation import (
+                    cleanup_consumed_config_retry_artifacts,
+                    discard_config_generation_input,
+                )
+
+                for input_id in owned_input_ids:
+                    discard_config_generation_input(interrupted_input_root, input_id)
+                cleanup_consumed_config_retry_artifacts(
+                    interrupted_input_root,
+                    self.store,
+                )
 
     def register(self, job_type: str, handler: JobHandler) -> None:
         clean_type = str(job_type or "").strip()
@@ -79,7 +104,12 @@ class JobManager:
         with self._lock:
             if self._shutdown:
                 raise RuntimeError("JobManager has shut down")
-            job = self.store.create_job(clean_type, dict(payload or {}))
+            clean_payload = dict(payload or {})
+            with self._config_submission_guard(clean_type, clean_payload):
+                if clean_type == "config_generation":
+                    job = self.store.create_claimed_config_job(clean_payload)
+                else:
+                    job = self.store.create_job(clean_type, clean_payload)
             future = self._executor.submit(self._run_job, job.id, handler)
             self._futures[job.id] = future
         future.add_done_callback(
@@ -90,6 +120,31 @@ class JobManager:
         )
         return job
 
+    def submit_idempotent_config(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[JobRecord, bool]:
+        handler = self._handlers.get("config_generation")
+        if handler is None:
+            raise UnsupportedJobTypeError("unsupported job type: config_generation")
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("JobManager has shut down")
+            clean_payload = dict(payload)
+            with self._config_submission_guard("config_generation", clean_payload):
+                job, created = self.store.create_idempotent_config_job(clean_payload)
+            if not created:
+                return job, False
+            future = self._executor.submit(self._run_job, job.id, handler)
+            self._futures[job.id] = future
+        future.add_done_callback(
+            lambda completed, job_id=job.id: self._discard_completed_future(
+                job_id,
+                completed,
+            )
+        )
+        return job, True
+
     def submit_config_retry(self, payload: dict[str, Any]) -> JobRecord:
         handler = self._handlers.get("config_generation")
         if handler is None:
@@ -97,7 +152,9 @@ class JobManager:
         with self._lock:
             if self._shutdown:
                 raise RuntimeError("JobManager has shut down")
-            job = self.store.create_config_retry_job(dict(payload))
+            clean_payload = dict(payload)
+            with self._config_submission_guard("config_generation", clean_payload):
+                job = self.store.create_config_retry_job(clean_payload)
             future = self._executor.submit(self._run_job, job.id, handler)
             self._futures[job.id] = future
         future.add_done_callback(
@@ -107,6 +164,31 @@ class JobManager:
             )
         )
         return job
+
+    def submit_idempotent_config_retry(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[JobRecord, bool]:
+        handler = self._handlers.get("config_generation")
+        if handler is None:
+            raise UnsupportedJobTypeError("unsupported job type: config_generation")
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("JobManager has shut down")
+            clean_payload = dict(payload)
+            with self._config_submission_guard("config_generation", clean_payload):
+                job, created = self.store.create_idempotent_config_retry_job(clean_payload)
+            if not created:
+                return job, False
+            future = self._executor.submit(self._run_job, job.id, handler)
+            self._futures[job.id] = future
+        future.add_done_callback(
+            lambda completed, job_id=job.id: self._discard_completed_future(
+                job_id,
+                completed,
+            )
+        )
+        return job, True
 
     def get(self, job_id: int) -> JobRecord | None:
         return self.store.get_job(int(job_id))
@@ -127,6 +209,19 @@ class JobManager:
             limit=limit,
             offset=offset,
         )
+
+    def _config_submission_guard(self, job_type: str, payload: dict[str, Any]):
+        if job_type != "config_generation" or self._config_lock_root is None:
+            return nullcontext()
+        try:
+            session_id = int(payload.get("session_id") or 0)
+        except (TypeError, ValueError):
+            return nullcontext()
+        if session_id <= 0:
+            return nullcontext()
+        from backend.config_workspace.locks import session_config_lock
+
+        return session_config_lock(self._config_lock_root, session_id)
 
     def cancel(self, job_id: int) -> bool:
         return self.store.request_cancel(int(job_id))
@@ -184,7 +279,14 @@ class JobManager:
                 self.store.finish(job_id, "failed", error=str(exc))
             return
         except Exception as exc:  # noqa: BLE001
-            self.store.finish(job_id, "failed", error=str(exc))
+            self.store.finish(job_id, "failed", error=str(exc) or type(exc).__name__)
+            return
+        except BaseException as exc:  # noqa: BLE001
+            if self.store.is_cancel_requested(job_id):
+                if not self.store.confirm_cancelled(job_id):
+                    self.store.finish(job_id, "failed", error=type(exc).__name__)
+            else:
+                self.store.finish(job_id, "failed", error=str(exc) or type(exc).__name__)
             return
         try:
             self.store.finish(
@@ -192,9 +294,30 @@ class JobManager:
                 "succeeded",
                 result=result if isinstance(result, dict) else {},
             )
+            self._cleanup_completed_config_retry(job_id)
         except Exception:  # noqa: BLE001
             self.store.finish(
                 job_id,
                 "failed",
                 error="Job result could not be persisted.",
             )
+
+    def _cleanup_completed_config_retry(self, job_id: int) -> None:
+        if self._config_lock_root is None:
+            return
+        job = self.store.get_job(job_id)
+        if (
+            job is None
+            or job.status != "succeeded"
+            or job.job_type != "config_generation"
+            or job.payload.get("mode") != "retry"
+            or job.result.get("outcome") != "complete"
+        ):
+            return
+        from .config_generation import cleanup_consumed_config_retry_artifacts
+
+        cleanup_consumed_config_retry_artifacts(
+            self._config_lock_root,
+            self.store,
+            session_id=int(job.payload.get("session_id") or 0),
+        )

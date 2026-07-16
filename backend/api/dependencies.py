@@ -12,6 +12,7 @@ from backend.api.read_connections import (
     RequestReadContextCleanupError,
     request_read_context,
 )
+from backend.config_workspace.sources import ConfigSourceService
 from backend.files.service import JobFileService
 from backend.jobs.default_handlers import register_default_job_handlers
 from backend.jobs.manager import JobManager
@@ -79,8 +80,20 @@ def get_upload_config_dir() -> Path:
     return get_path_manager().upload_config_dir
 
 
+def get_config_source_service(
+    upload_config_dir: Path = Depends(get_upload_config_dir),
+) -> ConfigSourceService:
+    return ConfigSourceService(upload_config_dir)
+
+
 def get_templates_dir() -> Path:
     return get_path_manager().templates_dir
+
+
+def get_config_mapping_output_dir(
+    templates_dir: Path = Depends(get_templates_dir),
+) -> Path:
+    return templates_dir
 
 
 def get_annotated_dir() -> Path:
@@ -229,7 +242,15 @@ def get_review_application_service(
 
 def create_job_manager(path_manager: PathManager | None = None) -> JobManager:
     paths = path_manager or get_path_manager()
-    manager = JobManager(JobStore(paths.db_path))
+    upload_config_dir = getattr(
+        paths,
+        "upload_config_dir",
+        Path(paths.data_root) / "config" / "uploaded",
+    )
+    manager = JobManager(
+        JobStore(paths.db_path),
+        interrupted_input_root=Path(upload_config_dir),
+    )
     try:
         register_default_job_handlers(
             manager,
@@ -243,11 +264,7 @@ def create_job_manager(path_manager: PathManager | None = None) -> JobManager:
                 "qb_db_path",
                 Path(paths.data_root) / "databases" / "question_bank.db",
             ),
-            upload_config_dir=getattr(
-                paths,
-                "upload_config_dir",
-                Path(paths.data_root) / "config" / "uploaded",
-            ),
+            upload_config_dir=upload_config_dir,
             training_output_root=getattr(
                 paths,
                 "outputs_dir",

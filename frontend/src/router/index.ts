@@ -1,7 +1,11 @@
 import { createRouter, createWebHistory, type RouteRecordRaw, type RouterHistory } from 'vue-router'
 
 import ComponentShowcase from '../components/design-system/ComponentShowcase.vue'
-import { reviewRouteDefinition, workbenchRouteDefinition } from '../navigation'
+import {
+  reviewRouteDefinition,
+  sessionRouteDefinition,
+  workbenchRouteDefinition,
+} from '../navigation'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -21,6 +25,16 @@ const routes: RouteRecordRaw[] = [
       title: workbenchRouteDefinition.title,
       description: workbenchRouteDefinition.description,
       breadcrumb: workbenchRouteDefinition.breadcrumb,
+    },
+  },
+  {
+    path: sessionRouteDefinition.path,
+    name: sessionRouteDefinition.id,
+    component: () => import('../views/SessionConfigView.vue'),
+    meta: {
+      title: sessionRouteDefinition.title,
+      description: sessionRouteDefinition.description,
+      breadcrumb: sessionRouteDefinition.breadcrumb,
     },
   },
   {
