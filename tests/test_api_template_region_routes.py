@@ -199,6 +199,7 @@ def test_region_readiness_blocks_template_upload_until_scoring_config_is_saved(t
         "session_id": session_id,
         "scoring_configured": False,
         "template_present": False,
+        "template_ready": False,
     }
     assert upload.status_code == 409
     assert upload.json()["error"]["code"] == "scoring_config_required"
@@ -427,6 +428,12 @@ def test_answer_region_commit_route_commits_regions_and_snapshot(tmp_path) -> No
     assert body["issues"] == []
     assert body["region_count"] == 1
     assert db.is_template_ready(session_id) is True
+    assert client.get(f"/api/sessions/{session_id}/regions/readiness").json() == {
+        "session_id": session_id,
+        "scoring_configured": True,
+        "template_present": True,
+        "template_ready": True,
+    }
     saved = db.list_answer_regions(session_id)
     assert saved[0]["region_uuid"] == "r1"
     assert saved[0]["is_confirmed"] == 1
@@ -502,6 +509,43 @@ def test_answer_region_commit_route_returns_validation_issues_without_commit(tmp
     assert body["committed"] is False
     assert body["issues"][0]["code"] == "unbound_question"
     assert db.list_answer_regions(session_id) == []
+
+
+def test_answer_region_commit_lock_timeout_has_stable_retryable_contract(
+    tmp_path, monkeypatch
+) -> None:
+    import backend.api.routers.templates as template_routes
+
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+    front, back = _template_files(tmp_path)
+    _bind_template(client, session_id, front, back)
+
+    def time_out(*_args, **_kwargs):
+        raise TimeoutError("private lock detail")
+
+    monkeypatch.setattr(template_routes.AnswerRegionCommitService, "commit", time_out)
+    response = client.post(
+        f"/api/sessions/{session_id}/regions/commit",
+        json={
+            "regions": [_region()],
+            "image_sizes": {"front": [1000, 1000], "back": [1000, 1000]},
+            "template_matches": True,
+        },
+        headers={"x-request-id": "rid-region-lock"},
+    )
+
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "1"
+    assert response.json() == {
+        "error": {
+            "code": "answer_region_lock_timeout",
+            "message": "Answer region work is temporarily busy; retry shortly",
+            "details": {"session_id": session_id},
+            "request_id": "rid-region-lock",
+        }
+    }
+    assert "private lock detail" not in response.text
 
 
 def test_answer_region_draft_route_requires_template(tmp_path) -> None:

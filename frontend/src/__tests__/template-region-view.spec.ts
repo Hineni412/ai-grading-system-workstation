@@ -32,6 +32,21 @@ function confirmedWorkspace(): api.RegionWorkspace {
   }
 }
 
+function editableWorkspace(): api.RegionWorkspace {
+  const value = confirmedWorkspace()
+  value.template.is_confirmed = false
+  value.template.regions_snapshot_pending = false
+  value.template_ready = false
+  value.formal_regions = [
+    { ...value.formal_regions[0]!, is_confirmed: false },
+    { ...value.formal_regions[0]!, region_uuid: 'r2', page: 'back', region_order: 2,
+      mapped_question_id: null, mapping_status: 'unbound', is_confirmed: false },
+  ]
+  value.issues = [{ code: 'unbound_question', message: '待绑定', region_uuid: 'r2',
+    question_id: null }]
+  return value
+}
+
 async function mountView() {
   const router = createAppRouter(createMemoryHistory())
   await router.push('/sessions/7/regions')
@@ -50,6 +65,7 @@ beforeEach(() => {
   document.body.innerHTML = ''; vi.clearAllMocks()
   vi.mocked(api.fetchRegionReadiness).mockResolvedValue({
     session_id: 7, scoring_configured: true, template_present: true,
+    template_ready: false,
   })
 })
 
@@ -57,6 +73,7 @@ describe('TemplateRegionView', () => {
   it('offers the first upload when the session has no template yet', async () => {
     vi.mocked(api.fetchRegionReadiness).mockResolvedValue({
       session_id: 7, scoring_configured: true, template_present: false,
+      template_ready: false,
     })
     const { app, host } = await mountView()
 
@@ -68,6 +85,7 @@ describe('TemplateRegionView', () => {
   it('blocks upload until the scoring configuration is saved', async () => {
     vi.mocked(api.fetchRegionReadiness).mockResolvedValue({
       session_id: 7, scoring_configured: false, template_present: false,
+      template_ready: false,
     })
     const { app, host } = await mountView()
 
@@ -84,6 +102,21 @@ describe('TemplateRegionView', () => {
     expect(host.textContent).toContain('重试生成确认快照')
     expect(host.querySelector<HTMLButtonElement>('[data-action="finish"]')?.disabled).toBe(true)
     expect(host.querySelectorAll('[data-region-uuid]')).toHaveLength(1)
+    app.unmount()
+  })
+
+  it('summarizes both pages, bindings and issues before formal commit', async () => {
+    vi.mocked(api.fetchRegionWorkspace).mockResolvedValue(editableWorkspace())
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const { app, host } = await mountView()
+
+    host.querySelector<HTMLButtonElement>('[data-action="finish"]')!.click()
+    await nextTick()
+
+    expect(confirm).toHaveBeenCalledWith(
+      '正面 1 框，反面 1 框；已绑定 1 框，待处理 1 框，校验问题 1 项。确认保存为正式版本？',
+    )
+    expect(api.commitRegions).not.toHaveBeenCalled()
     app.unmount()
   })
 })

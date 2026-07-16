@@ -239,15 +239,23 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
     if (id === null || current === null || saveState.value === 'conflict') return null
     await flushDraft()
     if (['error', 'conflict'].includes(saveState.value)) return null
-    const result = await commitRegions(id, {
-      regions: editorState.value.regions as Region[],
-      image_sizes: {
-        front: [current.template.pages.front.width, current.template.pages.front.height],
-        back: [current.template.pages.back.width, current.template.pages.back.height],
-      },
-      template_matches: true,
-      expected_template_fingerprint: current.template.template_fingerprint,
-    })
+    let result: RegionCommitResponse
+    try {
+      result = await commitRegions(id, {
+        regions: editorState.value.regions as Region[],
+        image_sizes: {
+          front: [current.template.pages.front.width, current.template.pages.front.height],
+          back: [current.template.pages.back.width, current.template.pages.back.height],
+        },
+        template_matches: true,
+        expected_template_fingerprint: current.template.template_fingerprint,
+      })
+    } catch (error) {
+      errorMessage.value = error instanceof ApiError && error.code === 'answer_region_lock_timeout'
+        ? '当前考试正在被另一项操作使用，请稍后重试完成标定。'
+        : '题框暂时无法确认，草稿仍已保留，请稍后重试。'
+      return null
+    }
     if (result.committed) await load(id)
     else {
       workspace.value = { ...current, issues: result.issues }

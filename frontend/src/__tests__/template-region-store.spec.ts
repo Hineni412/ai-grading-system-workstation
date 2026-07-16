@@ -31,7 +31,7 @@ beforeEach(() => {
   setActivePinia(createPinia())
   vi.clearAllMocks()
   vi.mocked(api.fetchRegionReadiness).mockResolvedValue({
-    session_id: 7, scoring_configured: true, template_present: true,
+    session_id: 7, scoring_configured: true, template_present: true, template_ready: false,
   })
 })
 
@@ -43,6 +43,7 @@ describe('template region store', () => {
       .mockResolvedValueOnce(workspace(8))
     vi.mocked(api.fetchRegionReadiness).mockImplementation(async (sessionId) => ({
       session_id: sessionId, scoring_configured: true, template_present: true,
+      template_ready: false,
     }))
     const store = useTemplateRegionStore()
 
@@ -135,5 +136,19 @@ describe('template region store', () => {
     expect(store.readOnly).toBe(false)
     expect(store.editorState.regions[0]?.is_confirmed).toBe(false)
     expect(api.saveRegionDraft).toHaveBeenCalledOnce()
+  })
+
+  it('turns a commit lock timeout into a safe retry message', async () => {
+    vi.mocked(api.fetchRegionWorkspace).mockResolvedValue(workspace())
+    vi.mocked(api.commitRegions).mockRejectedValue(new ApiError({ kind: 'server', status: 503,
+      code: 'answer_region_lock_timeout', message: 'busy', details: {},
+      requestId: 'rid-lock', retryable: true }))
+    const store = useTemplateRegionStore()
+    await store.load(7)
+
+    const result = await store.commit()
+
+    expect(result).toBeNull()
+    expect(store.errorMessage).toBe('当前考试正在被另一项操作使用，请稍后重试完成标定。')
   })
 })

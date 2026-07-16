@@ -38,6 +38,7 @@ async function installApi(page: Page, initiallyUploaded = false,
     } else if (path === '/api/sessions/7/regions/readiness' && method === 'GET') {
       await route.fulfill({ json: {
         session_id: 7, scoring_configured: true, template_present: uploaded,
+        template_ready: committed,
       } })
     } else if (path === '/api/sessions/7/regions/workspace' && method === 'GET') {
       if (!uploaded) await route.fulfill(apiError(route, 'template_not_found', 'missing'))
