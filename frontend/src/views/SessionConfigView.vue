@@ -9,7 +9,7 @@ import QuestionBlockReview from '../components/config/QuestionBlockReview.vue'
 import RubricEditorTable from '../components/config/RubricEditorTable.vue'
 import ScoringUnitEditor from '../components/config/ScoringUnitEditor.vue'
 import SessionDraftPanel from '../components/config/SessionDraftPanel.vue'
-import { ApiError, isAmbiguousWriteError } from '../api/errors'
+import { ApiError, isAmbiguousWriteError, isAuthoritativeNotFoundError } from '../api/errors'
 import {
   createClientRequestToken,
   fetchConfigEditor,
@@ -187,8 +187,13 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
         jobStore.track(reconciled)
         configStore.attachJob(reconciled.id, context)
         refineError.value = ''
-      } catch {
-        refineError.value = 'AI 完善任务结果仍无法确认。为避免重复生成，请在生成区重新核对。'
+      } catch (reconciliationError) {
+        if (isAuthoritativeNotFoundError(reconciliationError, 'config_generation_job_not_found')) {
+          configStore.clearGenerationSubmissionPending()
+          refineError.value = '服务器确认未收到这次 AI 完善请求，可以重新提交。'
+        } else {
+          refineError.value = 'AI 完善任务结果仍无法确认。为避免重复生成，请在生成区重新核对。'
+        }
       }
     } else {
       configStore.clearGenerationSubmissionPending()

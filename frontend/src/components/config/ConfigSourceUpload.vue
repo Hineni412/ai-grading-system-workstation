@@ -9,7 +9,7 @@ import {
   type ConfigSource,
   type ConfigSourceSubmission,
 } from '../../api/config-workspace'
-import { isAmbiguousWriteError } from '../../api/errors'
+import { isAmbiguousWriteError, isAuthoritativeNotFoundError } from '../../api/errors'
 import { useConfigWorkspaceStore } from '../../stores/config-workspace'
 import { useJobStore } from '../../stores/jobs'
 
@@ -41,6 +41,8 @@ const errorMessage = ref('')
 const configStore = useConfigWorkspaceStore()
 const jobStore = useJobStore()
 const submissionUnknown = computed(() => configStore.pendingUploadRequestToken !== null)
+const selectedFileInvalid = computed(() => selectedFile.value === null
+  || validateFile(selectedFile.value) !== '')
 const activeGeneration = computed(() => {
   const current = configStore.jobId === null ? null : jobStore.jobs[configStore.jobId]
   return current?.job_type === 'config_generation'
@@ -75,8 +77,13 @@ async function reconcileUpload(): Promise<void> {
     } else {
       errorMessage.value = '这次上传仍在处理中，请稍后再次核对。'
     }
-  } catch {
-    errorMessage.value = '暂时无法核对这次上传。为避免重复接收，请稍后再次核对。'
+  } catch (error) {
+    if (isAuthoritativeNotFoundError(error, 'config_source_not_found')) {
+      configStore.clearUploadSubmissionPending()
+      errorMessage.value = '服务器确认未收到这次上传，可以重新提交。'
+    } else {
+      errorMessage.value = '暂时无法核对这次上传。为避免重复接收，请稍后再次核对。'
+    }
   } finally {
     uploading.value = false
   }
@@ -153,7 +160,7 @@ function formatBytes(bytes: number): string {
           @change="onFileChange"
         >
       </label>
-      <button type="submit" :disabled="uploading || workspaceLocked || selectedFile === null || errorMessage !== ''">
+      <button type="submit" :disabled="uploading || workspaceLocked || selectedFileInvalid">
         上传并拆题
       </button>
     </form>

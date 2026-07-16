@@ -52,6 +52,14 @@ export function isAmbiguousWriteError(error: unknown): error is ApiError {
     && (error.kind === 'network' || error.kind === 'timeout' || error.kind === 'cancelled')
 }
 
+export function isAuthoritativeNotFoundError(
+  error: unknown,
+  expectedCode: string,
+): error is ApiError {
+  return error instanceof ApiError && error.status === 404 && error.kind === 'not_found'
+    && error.code === expectedCode
+}
+
 function contractError(status: number, requestId: string): ApiError {
   return new ApiError({
     kind: 'contract',

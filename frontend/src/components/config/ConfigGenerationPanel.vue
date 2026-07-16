@@ -12,7 +12,7 @@ import {
   type GenerationMode,
 } from '../../api/config-workspace'
 import type { JobResponse } from '../../api/jobs'
-import { isAmbiguousWriteError } from '../../api/errors'
+import { isAmbiguousWriteError, isAuthoritativeNotFoundError } from '../../api/errors'
 import {
   useConfigWorkspaceStore,
   type ConfigGenerationSummary,
@@ -129,8 +129,13 @@ async function startGeneration(requestedMode: GenerationMode = mode.value): Prom
         jobStore.track(reconciled)
         configStore.attachJob(reconciled.id, context)
         requestError.value = ''
-      } catch {
-        requestError.value = '生成请求结果未知，尚未找到可确认的任务。为避免重复生成，请稍后重新核对。'
+      } catch (reconciliationError) {
+        if (isAuthoritativeNotFoundError(reconciliationError, 'config_generation_job_not_found')) {
+          configStore.clearGenerationSubmissionPending()
+          requestError.value = '服务器确认未收到这次请求，可以重新提交。'
+        } else {
+          requestError.value = '生成请求结果未知，尚未找到可确认的任务。为避免重复生成，请稍后重新核对。'
+        }
       }
     } else {
       configStore.clearGenerationSubmissionPending()
@@ -153,8 +158,13 @@ async function reconcileUnknownSubmission(): Promise<void> {
     jobStore.track(reconciled)
     configStore.attachJob(reconciled.id, context, configStore.generationSummary ?? undefined)
     requestError.value = ''
-  } catch {
-    requestError.value = '仍未找到可确认的任务。为避免重复生成，当前保持锁定，请稍后再次核对。'
+  } catch (error) {
+    if (isAuthoritativeNotFoundError(error, 'config_generation_job_not_found')) {
+      configStore.clearGenerationSubmissionPending()
+      requestError.value = '服务器确认未收到这次请求，可以重新提交。'
+    } else {
+      requestError.value = '仍未找到可确认的任务。为避免重复生成，当前保持锁定，请稍后再次核对。'
+    }
   } finally {
     submitting.value = false
   }
@@ -189,8 +199,13 @@ async function retrySelected(): Promise<void> {
         jobStore.track(reconciled)
         configStore.attachJob(reconciled.id, context, retainedSummary)
         requestError.value = ''
-      } catch {
-        requestError.value = '重试请求结果仍无法确认。为避免重复生成，请稍后重新核对。'
+      } catch (reconciliationError) {
+        if (isAuthoritativeNotFoundError(reconciliationError, 'config_generation_job_not_found')) {
+          configStore.clearGenerationSubmissionPending()
+          requestError.value = '服务器确认未收到这次请求，可以重新提交。'
+        } else {
+          requestError.value = '重试请求结果仍无法确认。为避免重复生成，请稍后重新核对。'
+        }
       }
     } else {
       configStore.clearGenerationSubmissionPending()

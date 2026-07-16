@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { uploadConfigSource, type ConfigSource } from '../api/config-workspace'
 import type { JobResponse } from '../api/jobs'
+import { ApiError } from '../api/errors'
 import { useConfigWorkspaceStore } from '../stores/config-workspace'
 import { useJobStore } from '../stores/jobs'
 import { useSessionStore } from '../stores/session'
@@ -107,6 +108,50 @@ describe('SessionConfigView source replacement guard', () => {
 
     expect(host.querySelector('button[name="重新核对生成任务"]')).not.toBeNull()
     expect(host.textContent).toContain('结果尚未确认')
+    app.unmount()
+  })
+
+  it('unlocks an ambiguous refine request when its exact lookup confirms 404', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const sessions = useSessionStore(pinia)
+    sessions.$patch({
+      sessions: [{ id: 7, name: '旧考试', status: 'created', is_deleted: false,
+        deleted_at: null, created_at: null, updated_at: null }],
+      selectedSessionId: 7,
+      loadState: 'ready',
+    })
+    const workspace = useConfigWorkspaceStore(pinia)
+    workspace.selectSession(7)
+    workspace.setEditor({
+      session_id: 7, configured: true, revision: 'd'.repeat(64), total_score: 100,
+      issues: [], source: null,
+      rows: [{ row_id: 'row-q1-p1-s1', question_id: 'Q1', part_id: 'P1', step_id: 'S1',
+        part_label: '第 1 问', question_type: 'calculation', core_goal: '计算', score: 100,
+        standard_answer: '1', accepted_answers: ['1'], match_rule: 'exact', knowledge: '',
+        answer_only_max_score: null, require_final_answer: true, required_elements: [],
+        deduction_rules: [], final_answer_rule: '' }],
+    })
+    const timeout = new ApiError({ kind: 'network', status: null, code: 'network_error',
+      message: 'offline', details: {}, requestId: 'safe', retryable: true })
+    const notFound = new ApiError({ kind: 'not_found', status: 404,
+      code: 'config_generation_job_not_found', message: 'missing', details: {},
+      requestId: 'safe-404', retryable: false })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(SessionConfigView, {
+      editorRefiner: vi.fn(async () => { throw timeout }),
+      generationLoader: vi.fn(async () => { throw notFound }),
+    })
+    app.use(pinia)
+    app.mount(host)
+    await nextTick()
+
+    host.querySelector<HTMLButtonElement>('button[name="AI 完善评分单元"]')!.click()
+    await settle()
+
+    expect(workspace.pendingJobRequestToken).toBeNull()
+    expect(host.textContent).toContain('服务器确认未收到这次 AI 完善请求')
     app.unmount()
   })
 
