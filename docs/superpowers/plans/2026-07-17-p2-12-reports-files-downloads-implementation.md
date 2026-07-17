@@ -130,8 +130,8 @@
 
 - [x] 固定匿名临时数据库/输出根贯通 XLSX、PDF、Markdown/ZIP、刷新、取消和过期文件重导。
 - [x] 覆盖 1920×1080、1440×900、1366×768、1280×800、1024×768；长中文文件名、100 条历史、加载/空白/错误/禁用/焦点无溢出。
-- [ ] 更新 `ARCHITECTURE.md` 的 P2-12 增量边界；页面可运行并复审后再生成 quick 自测清单。
-- [ ] 聚焦测试、受影响回归、`npm run verify`、浏览器 prepared 门槛、`tools/smoke_check.py --skip-tests`、`git diff --check`、handoff validator 和真实两库指纹守卫通过。
+- [x] 更新 `ARCHITECTURE.md` 的 P2-12 增量边界；页面可运行并复审后再生成 quick 自测清单。
+- [x] 聚焦测试、受影响回归、`npm run verify`、浏览器 prepared 门槛、`tools/smoke_check.py --skip-tests`、`git diff --check`、handoff validator 和真实两库指纹守卫通过。
 
 ## Verification Strategy
 
@@ -164,12 +164,12 @@ integration 负责最终 Index 状态、里程碑组合证据、共享入口冲�
 ## 昼夜交接
 
 **执行包：** P2-12
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** pending
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
