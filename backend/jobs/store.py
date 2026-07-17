@@ -17,6 +17,7 @@ TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 _SOURCE_ID = re.compile(r"^[0-9a-f]{32}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REQUEST_TOKEN = re.compile(r"^[0-9a-f]{32}$")
+_SCAN_BATCH_ID = re.compile(r"^[0-9a-f]{32}$")
 
 
 class ConfigRetryAlreadySubmittedError(RuntimeError):
@@ -28,6 +29,10 @@ class ConfigRequestTokenConflictError(RuntimeError):
 
 
 class ConfigSessionBusyError(RuntimeError):
+    pass
+
+
+class GradingSessionBusyError(RuntimeError):
     pass
 
 
@@ -110,6 +115,58 @@ class JobStore:
         if loaded is None:
             raise RuntimeError(f"created job {job_id} could not be loaded")
         return loaded
+
+    def create_idempotent_scan_grading_start(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[JobRecord, bool]:
+        clean_payload = dict(payload)
+        session_id = _positive_int(clean_payload.get("session_id"))
+        batch_id = str(clean_payload.get("scan_batch_id") or "").strip().lower()
+        if not _SCAN_BATCH_ID.fullmatch(batch_id):
+            raise ValueError("scan_batch_id must be 32 lowercase hex characters")
+        payload_json = json.dumps(clean_payload, ensure_ascii=False, sort_keys=True)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = conn.execute(
+                    "SELECT * FROM jobs WHERE job_type = 'grading_run' "
+                    "AND status IN ('queued','running','paused','succeeded') "
+                    "AND json_valid(payload_json) = 1 "
+                    "AND json_extract(payload_json, '$.session_id') = ? "
+                    "AND json_extract(payload_json, '$.scan_batch_id') = ? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (session_id, batch_id),
+                ).fetchone()
+                if existing is not None:
+                    conn.commit()
+                    return _job_record(existing), False
+                active = conn.execute(
+                    "SELECT id FROM jobs WHERE job_type = 'grading_run' "
+                    "AND status IN ('queued','running','paused') "
+                    "AND json_valid(payload_json) = 1 "
+                    "AND json_extract(payload_json, '$.session_id') = ? "
+                    "LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+                if active is not None:
+                    raise GradingSessionBusyError(
+                        f"grading work is already active for session {session_id}"
+                    )
+                cursor = conn.execute(
+                    "INSERT INTO jobs (job_type, payload_json, status) "
+                    "VALUES ('grading_run', ?, 'queued')",
+                    (payload_json,),
+                )
+                job_id = int(cursor.lastrowid)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        loaded = self.get_job(job_id)
+        if loaded is None:
+            raise RuntimeError(f"created job {job_id} could not be loaded")
+        return loaded, True
 
     def create_claimed_config_job(self, payload: dict[str, Any]) -> JobRecord:
         clean_payload = dict(payload)

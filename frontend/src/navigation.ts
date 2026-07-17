@@ -1,4 +1,9 @@
-export type WorkspaceRouteId = 'workbench' | 'sessions' | 'knowledge-graph' | 'grading'
+export type WorkspaceRouteId =
+  | 'workbench'
+  | 'sessions'
+  | 'knowledge-graph'
+  | 'files'
+  | 'grading'
 
 export interface WorkspaceRouteDefinition {
   id: WorkspaceRouteId
@@ -27,6 +32,22 @@ export const sessionRouteDefinition: WorkspaceRouteDefinition = {
   breadcrumb: '考试配置',
 }
 
+export const templateRegionRouteDefinition = {
+  id: 'template-regions',
+  path: '/sessions/:sessionId/regions',
+  title: '样卷题框标定',
+  description: '上传样卷并标定每道题的作答区域',
+  breadcrumb: '考试配置 / 样卷题框标定',
+} as const
+
+export const gradingRunRouteDefinition = {
+  id: 'grading-run',
+  path: '/sessions/:sessionId/grading-run',
+  title: '批改执行',
+  description: '上传整班答卷、完成扫描预检并控制批改运行',
+  breadcrumb: '考试配置 / 批改执行',
+} as const
+
 export const reviewRouteDefinition: WorkspaceRouteDefinition = {
   id: 'grading',
   label: '评分复核',
@@ -45,9 +66,19 @@ export const knowledgeGraphRouteDefinition = {
   breadcrumb: '知识图谱',
 } as const satisfies WorkspaceRouteDefinition
 
+export const filesRouteDefinition: WorkspaceRouteDefinition = {
+  id: 'files',
+  label: '文件中心',
+  path: '/files',
+  title: '文件中心',
+  description: '生成、查看并安全下载成绩表、批注原卷和训练材料',
+  breadcrumb: '文件中心',
+}
+
 export const navigationItems = [
   workbenchRouteDefinition,
   sessionRouteDefinition,
   knowledgeGraphRouteDefinition,
+  filesRouteDefinition,
   reviewRouteDefinition,
 ] as const

@@ -3,6 +3,9 @@ import { createRouter, createWebHistory, type RouteRecordRaw, type RouterHistory
 import ComponentShowcase from '../components/design-system/ComponentShowcase.vue'
 import {
   sessionRouteDefinition,
+  filesRouteDefinition,
+  templateRegionRouteDefinition,
+  gradingRunRouteDefinition,
   knowledgeGraphRouteDefinition,
   reviewRouteDefinition,
   workbenchRouteDefinition,
@@ -39,6 +42,26 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: templateRegionRouteDefinition.path,
+    name: templateRegionRouteDefinition.id,
+    component: () => import('../views/TemplateRegionView.vue'),
+    meta: {
+      title: templateRegionRouteDefinition.title,
+      description: templateRegionRouteDefinition.description,
+      breadcrumb: templateRegionRouteDefinition.breadcrumb,
+    },
+  },
+  {
+    path: gradingRunRouteDefinition.path,
+    name: gradingRunRouteDefinition.id,
+    component: () => import('../views/ScanGradingView.vue'),
+    meta: {
+      title: gradingRunRouteDefinition.title,
+      description: gradingRunRouteDefinition.description,
+      breadcrumb: gradingRunRouteDefinition.breadcrumb,
+    },
+  },
+  {
     path: knowledgeGraphRouteDefinition.path,
     name: knowledgeGraphRouteDefinition.id,
     component: () => import('../views/KnowledgeGraphView.vue'),
@@ -46,6 +69,16 @@ const routes: RouteRecordRaw[] = [
       title: knowledgeGraphRouteDefinition.title,
       description: knowledgeGraphRouteDefinition.description,
       breadcrumb: knowledgeGraphRouteDefinition.breadcrumb,
+    },
+  },
+  {
+    path: filesRouteDefinition.path,
+    name: filesRouteDefinition.id,
+    component: () => import('../views/FileCenterView.vue'),
+    meta: {
+      title: filesRouteDefinition.title,
+      description: filesRouteDefinition.description,
+      breadcrumb: filesRouteDefinition.breadcrumb,
     },
   },
   {

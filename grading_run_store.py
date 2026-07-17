@@ -27,6 +27,10 @@ class GradingRunConflictError(RuntimeError):
     """已存在活动运行时再次 begin 抛出。"""
 
 
+class GradingRunResumeMismatchError(RuntimeError):
+    """指定运行、状态、模式或配置与恢复/补充请求不完全一致。"""
+
+
 @dataclass(frozen=True, slots=True)
 class GradingRun:
     id: int
@@ -199,6 +203,96 @@ class GradingRunStore:
             session_id,
             row["config_fingerprint"],
             row["grading_mode"],
+            "running",
+        )
+
+    def resume_exact(
+        self,
+        run_id: int,
+        session_id: int,
+        config_fingerprint: str,
+        grading_mode: str,
+    ) -> GradingRun:
+        return self._activate_exact(
+            run_id=run_id,
+            session_id=session_id,
+            config_fingerprint=config_fingerprint,
+            grading_mode=grading_mode,
+            allowed_states=("paused",),
+        )
+
+    def reopen_for_supplement(
+        self,
+        run_id: int,
+        session_id: int,
+        config_fingerprint: str,
+        grading_mode: str,
+    ) -> GradingRun:
+        return self._activate_exact(
+            run_id=run_id,
+            session_id=session_id,
+            config_fingerprint=config_fingerprint,
+            grading_mode=grading_mode,
+            allowed_states=("completed", "failed"),
+        )
+
+    def _activate_exact(
+        self,
+        *,
+        run_id: int,
+        session_id: int,
+        config_fingerprint: str,
+        grading_mode: str,
+        allowed_states: tuple[str, ...],
+    ) -> GradingRun:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT * FROM grading_runs WHERE id = ?",
+                    (int(run_id),),
+                ).fetchone()
+                latest = conn.execute(
+                    "SELECT id FROM grading_runs WHERE session_id = ? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (int(session_id),),
+                ).fetchone()
+                if (
+                    row is None
+                    or int(row["session_id"]) != int(session_id)
+                    or latest is None
+                    or int(latest["id"]) != int(run_id)
+                    or str(row["state"]) not in allowed_states
+                    or str(row["config_fingerprint"]) != str(config_fingerprint)
+                    or str(row["grading_mode"]) != str(grading_mode)
+                ):
+                    raise GradingRunResumeMismatchError(
+                        "grading run configuration or state does not match"
+                    )
+                active = conn.execute(
+                    "SELECT id FROM grading_runs WHERE session_id = ? "
+                    "AND state IN ('running','pause_requested') AND id <> ? LIMIT 1",
+                    (int(session_id), int(run_id)),
+                ).fetchone()
+                if active is not None:
+                    raise GradingRunResumeMismatchError(
+                        "another grading run is already active"
+                    )
+                conn.execute(
+                    "UPDATE grading_runs SET state = 'running', finished_at = NULL, "
+                    "updated_at = datetime('now','localtime') WHERE id = ?",
+                    (int(run_id),),
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return GradingRun(
+            int(row["id"]),
+            str(row["run_token"]),
+            int(row["session_id"]),
+            str(row["config_fingerprint"]),
+            str(row["grading_mode"]),
             "running",
         )
 

@@ -155,6 +155,9 @@ async function installConfigWorkspaceMockApi(page: Page, options: MockOptions = 
       await route.fulfill({ json: session })
     } else if (path === '/api/sessions/7' && method === 'PATCH') {
       await route.fulfill({ json: session })
+    } else if (path === '/api/sessions/7/regions/readiness' && method === 'GET') {
+      await route.fulfill({ json: { session_id: 7, scoring_configured: state.editorReady,
+        template_present: false, template_ready: false } })
     } else if (path === '/api/sessions/7/config/sources' && method === 'POST') {
       if (state.uploadFailures > 0) {
         state.uploadFailures -= 1

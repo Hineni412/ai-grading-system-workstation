@@ -108,6 +108,17 @@ test("imagePointFromClient converts client coordinates into SVG viewBox coordina
   assert.deepEqual(point, { x: 520, y: 390 });
 });
 
+test("imagePointFromClient preserves original pixels across template sizes", () => {
+  for (const [imageWidth, imageHeight] of [[1000, 1400], [2480, 3508]]) {
+    const point = imagePointFromClient(
+      { x: 300, y: 225 },
+      { x: 50, y: 50, width: 500, height: 350 },
+      { x: 0, y: 0, width: imageWidth, height: imageHeight },
+    );
+    assert.deepEqual(point, { x: imageWidth / 2, y: imageHeight / 2 });
+  }
+});
+
 test("clampRegion snaps slight edge overflow and preserves the input", () => {
   const region = { region_uuid: "a", x: -8, y: 10, w: 110, h: 95 };
 
@@ -187,6 +198,13 @@ test("space panning state resets on blur and visibility loss through cleaned-up 
 test("keyboard-focusable editor root has a visible focus-visible style", () => {
   assert.match(editorCss, /\.region-editor:focus-visible\s*\{[^}]*outline:/s);
   assert.doesNotMatch(editorCss, /\.region-editor\s*\{[^}]*outline:\s*none/s);
+});
+
+test("read-only mode blocks editing while retaining page and zoom controls", () => {
+  assert.match(editorSource, /const readOnly = Boolean\(data\.read_only\);/);
+  assert.match(editorSource, /if \(readOnly\) \{\s*return;\s*\}\s*if \(event\.button !== 0/s);
+  assert.match(editorSource, /select\.disabled = readOnly;/);
+  assert.match(editorSource, /button\.disabled = readOnly \|\| confirmed;/);
 });
 
 test("pushHistory limits and isolates undo and redo snapshots", () => {

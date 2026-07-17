@@ -22,6 +22,8 @@
     "demo:test": "node --test demo/p2-08-server.test.mjs",
     "e2e:p2-08:prepared": "playwright test --config playwright.p2-08.config.ts",
     "e2e:p2-08": "npm run build && npm run e2e:p2-08:prepared",
+    "e2e:p2-10-real:prepared": "playwright test --config playwright.p2-10-real.config.ts",
+    "e2e:p2-10-real": "npm run build && npm run e2e:p2-10-real:prepared",
     "e2e:phase2-recalibration:prepared": "npm run e2e:p2-08:prepared",
     "e2e:phase2-recalibration": "npm run build && npm run e2e:phase2-recalibration:prepared",
     "e2e:install": "playwright install chromium",

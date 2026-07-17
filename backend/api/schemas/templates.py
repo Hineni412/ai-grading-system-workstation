@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -27,9 +27,63 @@ class TemplateUpdateRequest(BaseModel):
         return clean or None
 
 
+class TemplatePageResponse(BaseModel):
+    url: str
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+
+
+class TemplateUploadResponse(BaseModel):
+    session_id: int = Field(gt=0)
+    template_id: int = Field(gt=0)
+    template_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    first_page_role: Literal["front", "back"]
+    pages: dict[Literal["front", "back"], TemplatePageResponse]
+    is_confirmed: bool
+    regions_snapshot_pending: bool
+
+
+class TemplateUploadSubmissionResponse(BaseModel):
+    status: Literal["processing", "succeeded", "failed", "replaced", "abandoned"]
+    template: TemplateUploadResponse | None = None
+
+
+class RegionReadinessResponse(BaseModel):
+    session_id: int = Field(gt=0)
+    scoring_configured: bool
+    template_present: bool
+    template_ready: bool
+
+
+class RegionDraftStateResponse(BaseModel):
+    status: Literal["missing", "compatible", "incompatible", "corrupt"]
+    revision: int = Field(ge=0)
+    regions: list[dict[str, Any]]
+
+
+class QuestionBindingOptionResponse(BaseModel):
+    value: str
+    label: str
+
+
+class RegionWorkspaceResponse(BaseModel):
+    session_id: int = Field(gt=0)
+    template: TemplateUploadResponse
+    formal_regions: list[dict[str, Any]]
+    draft: RegionDraftStateResponse
+    automatic_candidates: list[str]
+    manual_question_options: list[QuestionBindingOptionResponse]
+    issues: list["RegionIssueResponse"]
+    template_ready: bool
+
+
 class RegionDraftRequest(BaseModel):
     revision: int = Field(default=0, ge=0)
     regions: list[dict[str, Any]] = Field(default_factory=list)
+    expected_template_fingerprint: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    expected_revision: int | None = Field(default=None, ge=0)
 
 
 class RegionDraftResponse(BaseModel):
@@ -37,9 +91,7 @@ class RegionDraftResponse(BaseModel):
     session_id: int
     template_id: int
     template_fingerprint: str
-    draft_path: str | None = None
     draft: dict[str, Any] | None = None
-    quarantined_path: str | None = None
 
 
 class RegionCommitRequest(BaseModel):
@@ -47,6 +99,10 @@ class RegionCommitRequest(BaseModel):
     image_sizes: dict[str, tuple[int, int]]
     template_matches: bool = True
     expected_template_fingerprint: str | None = None
+
+
+class RegionSnapshotRetryRequest(BaseModel):
+    expected_template_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class RegionIssueResponse(BaseModel):
@@ -59,7 +115,6 @@ class RegionIssueResponse(BaseModel):
 class RegionCommitResponse(BaseModel):
     committed: bool
     snapshot_pending: bool
-    snapshot_path: str | None = None
     error: str | None = None
     issues: list[RegionIssueResponse]
     region_count: int

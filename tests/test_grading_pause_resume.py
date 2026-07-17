@@ -488,3 +488,106 @@ def test_same_student_different_papers_flagged_conflict(patched, tmp_path, monke
     )
     assert grader.call_count == 0
     assert sum(e.get("event") == "paper_conflict" for e in events) == 2
+
+
+def test_resume_with_changed_config_does_not_fall_back_to_a_new_run(
+    patched,
+    tmp_path,
+    monkeypatch,
+):
+    from grading_run_store import GradingRunResumeMismatchError
+
+    db, session_id = _seed(tmp_path, [(1, "stu1")])
+    monkeypatch.setattr(db, "is_template_ready", lambda _session_id: True)
+    store = GradingRunStore(db.db_path)
+    run = store.begin(session_id, "a" * 64, "full_paper")
+    store.add_item(
+        run.id,
+        source_label="001",
+        student_id=1,
+        paper_fingerprint="b" * 64,
+        config_fingerprint="a" * 64,
+        status="pending",
+    )
+    store.finish(run.run_token, "paused")
+
+    with pytest.raises(GradingRunResumeMismatchError):
+        list(
+            _service(db).run_session_grading(
+                session_id=session_id,
+                exams_dir=tmp_path,
+                rubric_path=tmp_path / "rubric.json",
+                answer_key_path=tmp_path / "answer.json",
+                scan_analysis={"groups": [], "issues": []},
+                grading_mode="full_paper",
+                enhance_images=False,
+                resume_run_id=run.id,
+            )
+        )
+
+    assert store.latest(session_id).id == run.id
+    assert store.latest(session_id).state == "paused"
+
+
+def test_supplement_grades_only_new_sources_without_clearing_prior_results(
+    patched,
+    tmp_path,
+    monkeypatch,
+):
+    db, session_id = _seed(tmp_path, [(1, "stu1"), (2, "stu2")])
+    first = _make_group(tmp_path, "stu1", 1, b"paper-one")
+    second = _make_group(tmp_path, "stu2", 2, b"paper-two")
+    visible_groups = [first]
+    monkeypatch.setattr(
+        grading_service,
+        "_apply_manual_decisions",
+        lambda _analysis, _decisions, _students: list(visible_groups),
+    )
+    monkeypatch.setattr(db, "is_template_ready", lambda _session_id: True)
+
+    first_events = list(
+        _service(db).run_session_grading(
+            session_id=session_id,
+            exams_dir=tmp_path,
+            rubric_path=tmp_path / "rubric.json",
+            answer_key_path=tmp_path / "answer.json",
+            scan_analysis={"groups": [], "issues": []},
+            grading_mode="full_paper",
+            enhance_images=False,
+        )
+    )
+    assert any(event.get("event") == "graded" for event in first_events)
+    run = GradingRunStore(db.db_path).latest(session_id)
+    assert run is not None and run.state == "completed"
+    assert patched.call_count == 1
+
+    visible_groups[:] = [first, second]
+    supplement_events = list(
+        _service(db).run_session_grading(
+            session_id=session_id,
+            exams_dir=tmp_path,
+            rubric_path=tmp_path / "rubric.json",
+            answer_key_path=tmp_path / "answer.json",
+            scan_analysis={"groups": [], "issues": []},
+            grading_mode="full_paper",
+            enhance_images=False,
+            supplement_only=True,
+            supplement_run_id=run.id,
+        )
+    )
+
+    assert sum(event.get("event") == "graded" for event in supplement_events) == 1
+    assert patched.call_count == 2
+    with db._connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM exam_papers WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()[0] == 2
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_results WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()[0] == 2
+    refreshed = GradingRunStore(db.db_path).latest(session_id)
+    assert refreshed is not None and refreshed.id == run.id
+    assert refreshed.state == "completed"
+    assert GradingRunStore(db.db_path).counts(run.id)["graded"] == 2
