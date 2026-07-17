@@ -365,3 +365,107 @@ def test_preflight_rejects_analysis_from_previous_batch(tmp_path) -> None:
 
     with pytest.raises(ScanGradingWorkspaceError):
         workspace.get_preflight(6)
+
+
+def test_restart_rolls_back_interrupted_batch_archive(tmp_path, monkeypatch) -> None:
+    import backend.scan_grading.workspace as workspace_module
+    from backend.scan_grading.workspace import ScanGradingWorkspace
+
+    workspace = ScanGradingWorkspace(
+        exams_root=tmp_path / "exams",
+        templates_root=tmp_path / "templates",
+    )
+    content = b"restart scan"
+    workspace.add_upload(
+        8,
+        filename="restart.jpg",
+        media_type="image/jpeg",
+        content_sha256=hashlib.sha256(content).hexdigest(),
+        source=io.BytesIO(content),
+    )
+    old_batch = workspace.freeze_uploads(8, expected_revision=1)
+    session_dir = tmp_path / "templates" / "session_8"
+    names = (
+        "scan_analysis_latest.json",
+        "scan_decisions_state.json",
+        "scan_manual_decisions_latest.json",
+    )
+    for name in names:
+        (session_dir / name).write_text("{}", encoding="utf-8")
+    original_replace = workspace_module.os.replace
+    interrupted = False
+
+    def exit_after_first_archive(source, target):
+        nonlocal interrupted
+        result = original_replace(source, target)
+        if not interrupted and "scan_history" in str(target):
+            interrupted = True
+            raise SystemExit("injected process exit")
+        return result
+
+    monkeypatch.setattr(workspace_module.os, "replace", exit_after_first_archive)
+    with pytest.raises(SystemExit):
+        workspace.start_new_upload_batch(8)
+    monkeypatch.setattr(workspace_module.os, "replace", original_replace)
+
+    restarted = ScanGradingWorkspace(
+        exams_root=tmp_path / "exams",
+        templates_root=tmp_path / "templates",
+    )
+    loaded = restarted.get_workspace(8)
+    assert loaded["upload_batch"]["batch_id"] == old_batch["batch_id"]
+    assert all((session_dir / name).is_file() for name in names)
+    assert not (session_dir / "scan_batch_transition.json").exists()
+
+
+def test_restart_finishes_archive_after_new_manifest_was_published(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from pathlib import Path
+
+    from backend.scan_grading.workspace import ScanGradingWorkspace
+
+    workspace = ScanGradingWorkspace(
+        exams_root=tmp_path / "exams",
+        templates_root=tmp_path / "templates",
+    )
+    content = b"committed scan"
+    workspace.add_upload(
+        9,
+        filename="committed.jpg",
+        media_type="image/jpeg",
+        content_sha256=hashlib.sha256(content).hexdigest(),
+        source=io.BytesIO(content),
+    )
+    old_batch = workspace.freeze_uploads(9, expected_revision=1)
+    session_dir = tmp_path / "templates" / "session_9"
+    names = (
+        "scan_analysis_latest.json",
+        "scan_decisions_state.json",
+        "scan_manual_decisions_latest.json",
+    )
+    for name in names:
+        (session_dir / name).write_text("{}", encoding="utf-8")
+    original_unlink = Path.unlink
+
+    def exit_before_transition_cleanup(path, *args, **kwargs):
+        if path.name == "scan_batch_transition.json":
+            raise SystemExit("injected process exit")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", exit_before_transition_cleanup)
+    with pytest.raises(SystemExit):
+        workspace.start_new_upload_batch(9)
+    monkeypatch.setattr(Path, "unlink", original_unlink)
+
+    restarted = ScanGradingWorkspace(
+        exams_root=tmp_path / "exams",
+        templates_root=tmp_path / "templates",
+    )
+    loaded = restarted.get_workspace(9)
+    assert loaded["upload_batch"]["batch_id"] != old_batch["batch_id"]
+    for name in names:
+        assert not (session_dir / name).exists()
+        assert (session_dir / "scan_history" / old_batch["batch_id"] / name).is_file()
+    assert not (session_dir / "scan_batch_transition.json").exists()

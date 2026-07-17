@@ -204,7 +204,6 @@ def test_concurrent_start_requests_create_only_one_grading_job(tmp_path) -> None
         ),
         encoding="utf-8",
     )
-    barrier = threading.Barrier(2)
     release_handler = threading.Event()
 
     def wait_for_release(_context):
@@ -212,14 +211,6 @@ def test_concurrent_start_requests_create_only_one_grading_job(tmp_path) -> None
         return {"state": "completed"}
 
     manager.register("grading_run", wait_for_release)
-    original_submit = manager.submit
-
-    def synchronized_submit(job_type, payload=None):
-        if job_type == "grading_run":
-            barrier.wait(timeout=2)
-        return original_submit(job_type, payload)
-
-    manager.submit = synchronized_submit
     request = {
         "grading_mode": "full_paper",
         "upload_revision": 2,
@@ -298,6 +289,97 @@ def test_new_batch_rejects_retry_from_the_previous_batch(tmp_path) -> None:
         )
         assert total == 0
         assert jobs == []
+    finally:
+        manager.shutdown()
+
+
+def test_restart_can_submit_when_manifest_has_orphaned_reservation(tmp_path) -> None:
+    client, db, manager = _system(tmp_path)
+    session_id = db.create_grading_session("启动中断恢复", "rubric.json", "answer.json")
+    content = b"front"
+    client.post(
+        f"/api/sessions/{session_id}/scan-uploads",
+        content=content,
+        headers={
+            "content-type": "image/jpeg",
+            "x-upload-filename": "front.jpg",
+            "x-content-sha256": hashlib.sha256(content).hexdigest(),
+        },
+    )
+    frozen = client.post(
+        f"/api/sessions/{session_id}/scan-uploads/freeze",
+        json={"expected_revision": 1},
+    )
+    batch_id = frozen.json()["batch_id"]
+    scan_file = next((tmp_path / "exams").rglob("*.jpg"))
+    session_dir = tmp_path / "templates" / f"session_{session_id}"
+    (session_dir / "scan_analysis_latest.json").write_text(
+        json.dumps(
+            {
+                "scan_batch_id": batch_id,
+                "groups": [
+                    {
+                        "source_label": "001",
+                        "front_image": str(scan_file),
+                        "back_image": None,
+                        "student_id": 1,
+                    }
+                ],
+                "issues": [],
+                "absent_students": [],
+                "warnings": [],
+                "total_pages": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = session_dir / "scan_upload_batch.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["grading_submissions"] = {
+        f"start:{batch_id}": {
+            "token": "f" * 32,
+            "reserved_at": "2026-07-17T00:00:00+00:00",
+        }
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    interrupted_job, created = manager.store.create_idempotent_scan_grading_start(
+        {
+            "session_id": session_id,
+            "scan_batch_id": batch_id,
+            "grading_mode": "full_paper",
+            "failed_only": False,
+            "enhance_images": True,
+            "exams_dir": str(scan_file.parent),
+        }
+    )
+    assert created is True
+    manager.store.fail_interrupted_jobs()
+    assert manager.get(interrupted_job.id).status == "failed"
+    manager.register("grading_run", lambda _context: {"state": "completed"})
+    try:
+        recovered = client.post(
+            f"/api/sessions/{session_id}/grading/run",
+            json={
+                "grading_mode": "full_paper",
+                "upload_revision": 2,
+                "decision_revision": 0,
+                "confirm_pending_issues": False,
+            },
+        )
+        assert recovered.status_code == 202
+        jobs, total = manager.list(
+            session_id=session_id,
+            job_types=("grading_run",),
+            limit=10,
+        )
+        assert total == 2
+        assert len(jobs) == 2
+        interrupted_status = next(
+            job.status for job in jobs if job.id == interrupted_job.id
+        )
+        assert interrupted_status == "failed"
+        recovered_job = next(job for job in jobs if job.id != interrupted_job.id)
+        assert recovered_job.status in {"queued", "running", "succeeded"}
     finally:
         manager.shutdown()
 

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from .store import JobRecord, JobStore
+from .store import GradingSessionBusyError, JobRecord, JobStore
 
 
 JobHandler = Callable[["JobContext"], dict[str, Any] | None]
@@ -162,6 +162,36 @@ class JobManager:
             )
         )
         return job
+
+    def submit_idempotent_scan_start(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[JobRecord, bool]:
+        handler = self._handlers.get("grading_run")
+        if handler is None:
+            raise UnsupportedJobTypeError("unsupported job type: grading_run")
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("JobManager has shut down")
+            try:
+                job, created = self.store.create_idempotent_scan_grading_start(payload)
+            except GradingSessionBusyError as exc:
+                raise ActiveJobExistsError(str(exc)) from exc
+            if not created:
+                return job, False
+            try:
+                future = self._executor.submit(self._run_job, job.id, handler)
+            except Exception as exc:
+                self.store.finish(job.id, "failed", "job scheduling failed")
+                raise RuntimeError("grading job could not be scheduled") from exc
+            self._futures[job.id] = future
+        future.add_done_callback(
+            lambda completed, job_id=job.id: self._discard_completed_future(
+                job_id,
+                completed,
+            )
+        )
+        return job, True
 
     def submit_idempotent_config(
         self,

@@ -330,44 +330,10 @@ class ScanGradingWorkspace:
             manifest = self._load_or_create_manifest(session_id)
             payload["scan_batch_id"] = str(manifest["batch_id"])
             payload["exams_dir"] = str(self.frozen_scan_dir(session_id))
-            return self._submit_grading_once(
-                session_id,
-                submission_key=f"start:{manifest['batch_id']}",
-                payload=payload,
-                manifest=manifest,
-            )
-
-    def _submit_grading_once(
-        self,
-        session_id: int,
-        *,
-        submission_key: str,
-        payload: dict[str, Any],
-        manifest: dict[str, Any],
-    ) -> Any:
-        if self.job_manager is None:
-            raise ScanGradingWorkspaceError("grading job manager is unavailable")
-        submissions = dict(manifest.get("grading_submissions") or {})
-        if submission_key in submissions:
-            raise ScanGradingWorkspaceError("grading submission was already accepted")
-        reservation_token = uuid4().hex
-        submissions[submission_key] = {
-            "token": reservation_token,
-            "reserved_at": self._now(),
-        }
-        manifest["grading_submissions"] = submissions
-        self._write_manifest(session_id, manifest)
-        try:
-            return self.job_manager.submit_unique_active("grading_run", payload)
-        except Exception:
-            current = self._load_or_create_manifest(session_id)
-            current_submissions = dict(current.get("grading_submissions") or {})
-            reservation = current_submissions.get(submission_key)
-            if isinstance(reservation, dict) and reservation.get("token") == reservation_token:
-                current_submissions.pop(submission_key, None)
-                current["grading_submissions"] = current_submissions
-                self._write_manifest(session_id, current)
-            raise
+            job, created = self.job_manager.submit_idempotent_scan_start(payload)
+            if not created:
+                raise ScanGradingWorkspaceError("grading submission was already accepted")
+            return job
 
     def start_new_upload_batch(self, session_id: int) -> dict[str, Any]:
         with self._lock(session_id):
@@ -400,9 +366,12 @@ class ScanGradingWorkspace:
                 "files": [],
                 "frozen_at": None,
                 "run_floor_id": run_floor_id,
-                "grading_submissions": {},
             }
-            history_dir = self._session_dir(session_id) / "scan_history" / str(previous_manifest["batch_id"])
+            history_dir = (
+                self._session_dir(session_id)
+                / "scan_history"
+                / str(previous_manifest["batch_id"])
+            )
             archive_pairs = []
             for name in (
                 "scan_analysis_latest.json",
@@ -412,28 +381,30 @@ class ScanGradingWorkspace:
                 source = self._session_dir(session_id) / name
                 if source.exists():
                     archive_pairs.append((source, history_dir / name))
-            moved: list[tuple[Path, Path]] = []
+            if any(target.exists() for _source, target in archive_pairs):
+                raise ScanGradingWorkspaceError("scan batch archive already exists")
+            transition = {
+                "version": 1,
+                "previous_batch_id": str(previous_manifest["batch_id"]),
+                "next_manifest": manifest,
+                "archive_files": [source.name for source, _target in archive_pairs],
+            }
+            self._atomic_write_json(self._transition_path(session_id), transition)
             try:
                 if archive_pairs:
                     history_dir.mkdir(parents=True, exist_ok=True)
                 for source, target in archive_pairs:
                     os.replace(source, target)
-                    moved.append((source, target))
                 self._write_manifest(session_id, manifest)
+                self._transition_path(session_id).unlink()
             except Exception as exc:
-                rollback_failed = False
-                for source, target in reversed(moved):
-                    try:
-                        if target.exists() and not source.exists():
-                            os.replace(target, source)
-                    except OSError:
-                        rollback_failed = True
-                message = (
-                    "scan batch archive rollback failed"
-                    if rollback_failed
-                    else "scan batch archive failed"
-                )
-                raise ScanGradingWorkspaceError(message) from exc
+                try:
+                    committed = self._recover_batch_transition(session_id)
+                except ScanGradingWorkspaceError:
+                    raise
+                if committed:
+                    return self._public_batch(manifest)
+                raise ScanGradingWorkspaceError("scan batch archive failed") from exc
             return self._public_batch(manifest)
 
     def _require_run(self, session_id: int, run_id: int):
@@ -776,6 +747,7 @@ class ScanGradingWorkspace:
             return path
 
     def _load_or_create_manifest(self, session_id: int) -> dict[str, Any]:
+        self._recover_batch_transition(session_id)
         path = self._manifest_path(session_id)
         if path.exists():
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -788,7 +760,6 @@ class ScanGradingWorkspace:
             "files": [],
             "frozen_at": None,
             "run_floor_id": 0,
-            "grading_submissions": {},
         }
 
     def _write_manifest(self, session_id: int, manifest: dict[str, Any]) -> None:
@@ -819,6 +790,76 @@ class ScanGradingWorkspace:
 
     def _manifest_path(self, session_id: int) -> Path:
         return self._session_dir(session_id) / "scan_upload_batch.json"
+
+    def _transition_path(self, session_id: int) -> Path:
+        return self._session_dir(session_id) / "scan_batch_transition.json"
+
+    def _recover_batch_transition(self, session_id: int) -> bool | None:
+        transition_path = self._transition_path(session_id)
+        if not transition_path.exists():
+            return None
+        try:
+            transition = json.loads(transition_path.read_text(encoding="utf-8"))
+            if not isinstance(transition, dict) or transition.get("version") != 1:
+                raise ValueError("invalid transition")
+            previous_batch_id = str(transition["previous_batch_id"])
+            next_manifest = transition["next_manifest"]
+            archive_files = transition["archive_files"]
+            if (
+                not re.fullmatch(r"[0-9a-f]{32}", previous_batch_id)
+                or not isinstance(next_manifest, dict)
+                or not re.fullmatch(
+                    r"[0-9a-f]{32}",
+                    str(next_manifest.get("batch_id") or ""),
+                )
+                or not isinstance(archive_files, list)
+            ):
+                raise ValueError("invalid transition")
+            allowed_names = {
+                "scan_analysis_latest.json",
+                "scan_decisions_state.json",
+                "scan_manual_decisions_latest.json",
+            }
+            names = [str(name) for name in archive_files]
+            if len(names) != len(set(names)) or any(
+                name not in allowed_names for name in names
+            ):
+                raise ValueError("invalid transition")
+            current_manifest: dict[str, Any] = {}
+            manifest_path = self._manifest_path(session_id)
+            if manifest_path.exists():
+                loaded = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if not isinstance(loaded, dict):
+                    raise ValueError("invalid manifest")
+                current_manifest = loaded
+            committed = str(current_manifest.get("batch_id") or "") == str(
+                next_manifest["batch_id"]
+            )
+            history_dir = (
+                self._session_dir(session_id)
+                / "scan_history"
+                / previous_batch_id
+            )
+            pairs = [
+                (self._session_dir(session_id) / name, history_dir / name)
+                for name in names
+            ]
+            ordered_pairs = pairs if committed else list(reversed(pairs))
+            for source, target in ordered_pairs:
+                move_from, move_to = (
+                    (source, target) if committed else (target, source)
+                )
+                if move_from.exists():
+                    if move_to.exists():
+                        raise ValueError("transition paths conflict")
+                    move_to.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(move_from, move_to)
+            transition_path.unlink()
+            return committed
+        except (KeyError, OSError, ValueError, TypeError) as exc:
+            raise ScanGradingWorkspaceError(
+                "scan batch transition recovery failed"
+            ) from exc
 
     def _session_dir(self, session_id: int) -> Path:
         return self.templates_root / f"session_{int(session_id)}"
