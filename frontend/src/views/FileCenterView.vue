@@ -158,6 +158,7 @@ async function configureTraining(taskId: number): Promise<void> {
   actionError.value = ''
   try {
     const detail = await fileCenter.loadTrainingTask(taskId)
+    if (!detail || fileCenter.selectedTrainingTask?.id !== taskId) return
     trainingPanelOpen.value = true
     trainingMode.value = 'bundle'
     trainingFormat.value = 'docx'
@@ -329,7 +330,10 @@ function isTrainingDownloadable(job: JobResponse): boolean {
                 type="button"
                 class="file-button file-button--primary"
                 :data-testid="`generate-${definition.type}`"
-                :disabled="fileCenter.submittingKey === `report:${definition.type}`"
+                :disabled="
+                  fileCenter.submittingKey === `report:${definition.type}`
+                  || fileCenter.reportContext?.has_results === false
+                "
                 @click="generateReport(definition.type)"
               >
                 生成文件
@@ -346,6 +350,13 @@ function isTrainingDownloadable(job: JobResponse): boolean {
             </div>
           </article>
         </div>
+        <p
+          v-if="fileCenter.reportContext?.has_results === false"
+          class="file-center__warning"
+          role="status"
+        >
+          当前考试还没有已保存成绩，完成批改后才能生成考试文件。
+        </p>
 
         <div class="file-ledger">
           <h3>报表记录</h3>

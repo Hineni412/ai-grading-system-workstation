@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   JobSummaryList,
   ReportContext,
+  TrainingTaskDetail,
   TrainingTaskList,
 } from '../api/exports'
 import type { JobResponse } from '../api/jobs'
@@ -137,6 +138,50 @@ describe('file center store', () => {
     )
   })
 
+  it('tracks active jobs discovered from server history after refresh', async () => {
+    const reportJob = makeJob({ id: 61 })
+    const trainingJob = makeJob({
+      id: 62,
+      job_type: 'training_export',
+      payload: { task_id: 12, format: 'docx' },
+      status: 'running',
+    })
+    const api = makeApi({
+      getReportContext: vi.fn(async () => ({
+        ...reportContext(7),
+        jobs: [{
+          ...reportJob,
+          is_current_revision: true,
+          file_status: 'pending',
+        }],
+        total: 1,
+      })),
+      listTrainingExportJobs: vi.fn(async () => ({
+        ...noJobs,
+        items: [{
+          id: trainingJob.id,
+          job_type: trainingJob.job_type,
+          status: trainingJob.status,
+          progress: trainingJob.progress,
+          stage: trainingJob.stage,
+          detail: trainingJob.detail,
+          cancel_requested: trainingJob.cancel_requested,
+          created_at: trainingJob.created_at,
+          updated_at: trainingJob.updated_at,
+        }],
+        total: 1,
+      })),
+      getJob: vi.fn(async () => trainingJob),
+    })
+    const store = useFileCenterStore()
+    const jobStore = useJobStore()
+
+    await store.load(7, api)
+
+    expect(jobStore.jobs[61]?.status).toBe('queued')
+    expect(jobStore.jobs[62]?.status).toBe('running')
+  })
+
   it('ignores an old session response after the user switches exams', async () => {
     const old = deferred<ReportContext>()
     const api = makeApi({
@@ -216,5 +261,29 @@ describe('file center store', () => {
       audience: 'teacher',
     })
     expect(canceller).toHaveBeenCalledWith(51)
+  })
+
+  it('does not expose a slow training detail after the exam changes', async () => {
+    const slowDetail = deferred<TrainingTaskDetail>()
+    const detail = {
+      ...tasks.items[0]!,
+      diagnosis_snapshot: {},
+      variants: [],
+      exports: [],
+    }
+    const api = makeApi({
+      getTrainingTask: vi.fn(() => slowDetail.promise),
+    })
+    const store = useFileCenterStore()
+    await store.load(7, api)
+
+    const loading = store.loadTrainingTask(12, api)
+    await store.load(9, api)
+    slowDetail.resolve(detail)
+
+    await expect(loading).resolves.toBeNull()
+    expect(store.sessionId).toBe(9)
+    expect(store.selectedTrainingTask).toBeNull()
+    expect(store.trainingDetailState).toBe('idle')
   })
 })

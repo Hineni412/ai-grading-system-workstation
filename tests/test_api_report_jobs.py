@@ -3,6 +3,7 @@ from __future__ import annotations
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import sqlite3
 
 warnings.filterwarnings(
     "ignore",
@@ -11,6 +12,32 @@ warnings.filterwarnings(
 
 import pytest
 from fastapi.testclient import TestClient
+
+
+def _seed_result(db, session_id: int) -> None:
+    with sqlite3.connect(db.db_path) as conn:
+        student = conn.execute(
+            "INSERT INTO students (student_code, name, class_name) VALUES (?, ?, ?)",
+            (f"S-{session_id}", "匿名学生", "匿名班级"),
+        )
+        paper = conn.execute(
+            """
+            INSERT INTO exam_papers (
+                session_id, front_image, back_image, student_id,
+                match_status, processing_status
+            ) VALUES (?, '', '', ?, 'matched', 'graded')
+            """,
+            (session_id, int(student.lastrowid)),
+        )
+        conn.execute(
+            """
+            INSERT INTO session_results (
+                session_id, student_id, paper_id, total_score, student_score,
+                needs_human_review, raw_json
+            ) VALUES (?, ?, ?, 100, 88, 0, '{}')
+            """,
+            (session_id, int(student.lastrowid), int(paper.lastrowid)),
+        )
 
 
 @pytest.fixture
@@ -91,6 +118,7 @@ def test_session_report_export_route_queues_annotated_original_pdf(
 ) -> None:
     client, db, manager = client_with_db_and_manager
     session_id = db.create_grading_session("七年级期中", "rubric.json", "answer.json")
+    _seed_result(db, session_id)
 
     response = client.post(
         f"/api/sessions/{session_id}/reports/export",
@@ -131,11 +159,27 @@ def test_session_report_export_route_rejects_unknown_report_type(
     assert response.json()["error"]["code"] == "validation_error"
 
 
+def test_session_report_export_rejects_empty_exam(
+    client_with_db_and_manager,
+) -> None:
+    client, db, _manager = client_with_db_and_manager
+    session_id = db.create_grading_session("Empty exam", "rubric.json", "answer.json")
+
+    response = client.post(
+        f"/api/sessions/{session_id}/reports/export",
+        json={"report_type": "score_excel"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "report_results_missing"
+
+
 def test_session_report_export_reuses_current_available_file_by_default(
     client_with_db_and_manager,
 ) -> None:
     client, db, manager = client_with_db_and_manager
     session_id = db.create_grading_session("Exam A", "rubric.json", "answer.json")
+    _seed_result(db, session_id)
     request = {"report_type": "score_excel"}
 
     first = client.post(
@@ -152,11 +196,46 @@ def test_session_report_export_reuses_current_available_file_by_default(
     assert second.json()["id"] == first.json()["id"]
 
 
+def test_session_report_export_reuses_cache_older_than_first_history_page(
+    client_with_db_and_manager,
+) -> None:
+    client, db, manager = client_with_db_and_manager
+    session_id = db.create_grading_session("Exam A", "rubric.json", "answer.json")
+    _seed_result(db, session_id)
+
+    first = client.post(
+        f"/api/sessions/{session_id}/reports/export",
+        json={"report_type": "score_excel"},
+    )
+    manager.wait(first.json()["id"], timeout=5)
+    newest = None
+    for index in range(100):
+        newest = manager.submit(
+            "report_export",
+            {
+                "session_id": session_id,
+                "report_type": "annotated_original_pdf",
+                "score_revision": f"historical-{index}",
+            },
+        )
+    assert newest is not None
+    manager.wait(newest.id, timeout=5)
+
+    repeated = client.post(
+        f"/api/sessions/{session_id}/reports/export",
+        json={"report_type": "score_excel"},
+    )
+
+    assert repeated.status_code == 202
+    assert repeated.json()["id"] == first.json()["id"]
+
+
 def test_session_report_export_force_regenerate_creates_new_job(
     client_with_db_and_manager,
 ) -> None:
     client, db, manager = client_with_db_and_manager
     session_id = db.create_grading_session("Exam A", "rubric.json", "answer.json")
+    _seed_result(db, session_id)
 
     first = client.post(
         f"/api/sessions/{session_id}/reports/export",
@@ -177,6 +256,7 @@ def test_session_report_export_creates_one_job_for_simultaneous_requests(
 ) -> None:
     client, db, _manager = client_with_db_and_manager
     session_id = db.create_grading_session("Exam A", "rubric.json", "answer.json")
+    _seed_result(db, session_id)
 
     def submit(_index: int) -> int:
         response = client.post(
@@ -198,6 +278,7 @@ def test_session_report_export_uses_new_job_after_score_revision_changes(
 ) -> None:
     client, db, manager = client_with_db_and_manager
     session_id = db.create_grading_session("Exam A", "rubric.json", "answer.json")
+    _seed_result(db, session_id)
     revisions = iter(("a" * 64, "b" * 64))
     monkeypatch.setattr(
         "backend.api.routers.reports.score_revision",
@@ -226,6 +307,7 @@ def test_session_report_export_rebuilds_when_cached_file_is_missing(
 ) -> None:
     client, db, manager = client_with_db_and_manager
     session_id = db.create_grading_session("Exam A", "rubric.json", "answer.json")
+    _seed_result(db, session_id)
 
     first = client.post(
         f"/api/sessions/{session_id}/reports/export",
@@ -248,6 +330,7 @@ def test_report_context_marks_current_and_expired_history_without_paths(
 ) -> None:
     client, db, manager = client_with_db_and_manager
     session_id = db.create_grading_session("Exam A", "rubric.json", "answer.json")
+    _seed_result(db, session_id)
     current = client.post(
         f"/api/sessions/{session_id}/reports/export",
         json={"report_type": "score_excel"},
@@ -262,7 +345,7 @@ def test_report_context_marks_current_and_expired_history_without_paths(
     assert response.status_code == 200
     payload = response.json()
     assert payload["score_revision"] == current.json()["payload"]["score_revision"]
-    assert payload["has_results"] is False
+    assert payload["has_results"] is True
     assert payload["jobs"][0]["id"] == current.json()["id"]
     assert payload["jobs"][0]["is_current_revision"] is True
     assert payload["jobs"][0]["file_status"] == "expired"
@@ -279,6 +362,7 @@ def test_report_context_paginates_history(
 ) -> None:
     client, db, manager = client_with_db_and_manager
     session_id = db.create_grading_session("Exam A", "rubric.json", "answer.json")
+    _seed_result(db, session_id)
     for _index in range(2):
         created = client.post(
             f"/api/sessions/{session_id}/reports/export",

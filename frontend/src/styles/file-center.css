@@ -154,7 +154,7 @@
 
 .file-button--primary {
   background: var(--color-accent);
-  color: #fff;
+  color: var(--color-bg-surface);
 }
 
 .file-button--primary:hover {
