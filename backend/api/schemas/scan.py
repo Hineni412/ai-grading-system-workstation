@@ -45,6 +45,16 @@ class ScanGradingWorkspaceResponse(BaseModel):
     session_id: int = Field(gt=0)
     upload_batch: ScanUploadBatchResponse
     grading_run: "GradingRunSummaryResponse | None" = None
+    scan_analysis_job: "ScanAnalysisJobSummaryResponse | None" = None
+
+
+class ScanAnalysisJobSummaryResponse(BaseModel):
+    id: int = Field(gt=0)
+    status: str
+    progress: float = Field(ge=0, le=1)
+    updated_at: str
+    cancel_requested: bool
+    scan_batch_id: str = Field(min_length=1)
 
 
 class GradingRunCountsResponse(BaseModel):

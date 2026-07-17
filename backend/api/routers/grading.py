@@ -14,6 +14,7 @@ from backend.api.schemas.grading import GradingRunCancelRequest, GradingRunReque
 from backend.api.schemas.jobs import JobResponse
 from backend.api.schemas.scan import GradingRunSummaryResponse
 from backend.scan_grading.workspace import (
+    GradingConfigChangedError,
     PendingScanIssuesError,
     ScanGradingWorkspace,
     ScanGradingWorkspaceError,
@@ -97,6 +98,12 @@ def resume_session_grading(
             "job_type_not_supported",
             "Job type is not supported",
         ) from exc
+    except GradingConfigChangedError as exc:
+        raise ApiError(
+            409,
+            "grading_config_changed",
+            "Grading configuration changed; this run cannot be resumed",
+        ) from exc
     except ScanGradingWorkspaceError as exc:
         raise ApiError(409, "grading_run_not_resumable", "Grading run cannot be resumed") from exc
 
@@ -130,6 +137,47 @@ def retry_failed_session_grading(
         ) from exc
     except ScanGradingWorkspaceError as exc:
         raise ApiError(409, "grading_run_not_retryable", "Grading run has no retryable failures") from exc
+
+
+@router.post(
+    "/sessions/{session_id}/grading/runs/{run_id}/supplement-new-matches",
+    response_model=JobResponse,
+    status_code=202,
+)
+def supplement_session_grading(
+    session_id: int,
+    run_id: int,
+    db: DBManager = Depends(get_grading_db),
+    workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+) -> JobResponse:
+    _require_session(db, session_id)
+    try:
+        job = workspace.submit_supplement(session_id, run_id)
+        return _job_response(job)
+    except ActiveJobExistsError as exc:
+        raise ApiError(
+            409,
+            "grading_job_already_active",
+            "A grading job is already active",
+        ) from exc
+    except UnsupportedJobTypeError as exc:
+        raise ApiError(
+            404,
+            "job_type_not_supported",
+            "Job type is not supported",
+        ) from exc
+    except GradingConfigChangedError as exc:
+        raise ApiError(
+            409,
+            "grading_config_changed",
+            "Grading configuration changed; newly matched scans cannot be supplemented",
+        ) from exc
+    except ScanGradingWorkspaceError as exc:
+        raise ApiError(
+            409,
+            "grading_run_not_supplementable",
+            "Grading run cannot supplement newly matched scans",
+        ) from exc
 
 
 @router.post(

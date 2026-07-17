@@ -30,6 +30,7 @@ const lowConfidenceGroups = computed(() => store.preflight?.groups.filter((item)
 )) ?? [])
 const runStateLabel = computed(() => ({
   running: '批改运行中', pause_requested: '正在安全暂停', paused: '已安全暂停',
+  starting: '批改任务正在启动',
   interrupted: '上次运行已中断', cancel_requested: '正在安全取消', cancelled: '本次运行已取消',
   completed: '本次运行已完成', failed: '本次运行有失败项',
 }[store.gradingRun?.state ?? ''] ?? store.gradingRun?.state ?? ''))
@@ -63,6 +64,10 @@ function beginNewBatch(): void {
 
 onMounted(loadRoute)
 watch(sessionId, loadRoute)
+watch(
+  () => `${store.uploadBatch?.batch_id ?? ''}:${store.uploadBatch?.revision ?? -1}:${store.preflight?.revision ?? -1}`,
+  () => { confirmPending.value = false },
+)
 </script>
 
 <template>
@@ -119,7 +124,7 @@ watch(sessionId, loadRoute)
         </div>
         <div v-if="!store.preflight" class="scan-empty">
           <p>{{ store.preflightJobId ? '预检正在后台运行，完成后这里会自动更新。' : '冻结答卷后运行识别，再在这里核对学生归属和异常页。' }}</p>
-          <button v-if="store.uploadBatch?.state === 'frozen'" type="button" class="secondary" @click="store.refreshPreflight">刷新预检结果</button>
+          <button v-if="store.uploadBatch?.state === 'frozen' && !store.preflightJobId" data-action="retry-preflight" type="button" class="secondary" @click="store.analyze">运行或重新运行预检</button>
         </div>
         <template v-else>
           <p v-if="pendingCount" class="scan-warning"><strong>仍有 {{ pendingCount }} 份异常答卷待处理</strong>。它们可以暂时跳过，不会阻塞其余学生批改。</p>
@@ -180,6 +185,7 @@ watch(sessionId, loadRoute)
             <button v-if="store.gradingRun.allowed_actions.includes('pause')" data-action="pause" type="button" @click="store.control('pause')">安全暂停</button>
             <button v-if="store.gradingRun.allowed_actions.includes('resume')" data-action="resume" type="button" @click="store.control('resume')">继续本次运行</button>
             <button v-if="store.gradingRun.allowed_actions.includes('retry_failed')" data-action="retry-failed" type="button" class="secondary" @click="store.control('retry-failed')">仅重试失败项</button>
+            <button v-if="store.gradingRun.allowed_actions.includes('supplement_new_matches')" data-action="supplement" type="button" class="secondary" @click="store.supplement">补批后来匹配的答卷</button>
             <button v-if="store.gradingRun.allowed_actions.includes('cancel')" data-action="cancel" type="button" class="danger" @click="cancelRun">取消本次运行</button>
             <button v-if="['cancelled', 'completed', 'failed'].includes(store.gradingRun.state)" data-action="new-batch" type="button" class="secondary" @click="beginNewBatch">开始新批次</button>
           </div>

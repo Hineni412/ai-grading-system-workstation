@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '../api/errors'
-import { fetchGradingWorkspace, uploadScan } from '../api/scan-grading'
+import { fetchGradingWorkspace, supplementGrading, uploadScan } from '../api/scan-grading'
 
 function response(value: unknown): Response {
   return new Response(JSON.stringify(value), {
@@ -24,6 +24,25 @@ describe('scan grading API contract', () => {
     })))
 
     await expect(fetchGradingWorkspace(7)).resolves.toMatchObject({ session_id: 7 })
+  })
+
+  it('accepts a path-free server projection for the current preflight job', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => response({
+      session_id: 7,
+      upload_batch: {
+        batch_id: 'batch-1', revision: 1, state: 'frozen', files: [], file_count: 0,
+        total_bytes: 0, frozen_at: '2026-07-17T00:00:00Z',
+      },
+      grading_run: null,
+      scan_analysis_job: {
+        id: 41, status: 'running', progress: 0.4, updated_at: '2026-07-17T00:00:01Z',
+        cancel_requested: false, scan_batch_id: 'batch-1',
+      },
+    })))
+
+    await expect(fetchGradingWorkspace(7)).resolves.toMatchObject({
+      scan_analysis_job: { id: 41, status: 'running' },
+    })
   })
 
   it('rejects a path-shaped field returned by the workspace endpoint', async () => {
@@ -81,5 +100,22 @@ describe('scan grading API contract', () => {
       'x-upload-filename': encodeURIComponent('答卷 1.jpg'),
       'x-content-sha256': '9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a',
     })
+  })
+
+  it('submits supplementation through its run-specific endpoint', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => response({
+      id: 9, job_type: 'grading_run', payload: { session_id: 7 }, result: {}, status: 'queued',
+      progress: 0, stage: 'queued', detail: '', error: null, cancel_requested: false,
+      created_at: '2026-07-17T00:00:00Z', started_at: null,
+      updated_at: '2026-07-17T00:00:00Z', finished_at: null,
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await supplementGrading(7, 19)
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      '/api/sessions/7/grading/runs/19/supplement-new-matches',
+    )
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'POST' })
   })
 })

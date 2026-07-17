@@ -37,6 +37,8 @@ def run_grading_job(
     max_workers: int | None = None,
     requests_per_minute: int | None = None,
     resume_run_id: int | None = None,
+    supplement_only: bool = False,
+    supplement_run_id: int | None = None,
     raise_if_cancelled: Callable[[], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, object]:
@@ -79,6 +81,8 @@ def run_grading_job(
         grading_mode=_normalize_grading_mode(grading_mode),
         failed_only=bool(failed_only),
         resume_run_id=resume_run_id,
+        supplement_only=bool(supplement_only),
+        supplement_run_id=supplement_run_id,
         should_cancel=should_cancel,
     ):
         event_type = str(event.get("event") or "")

@@ -13,12 +13,14 @@ import {
   startGrading,
   startNewScanBatch,
   startPreflight,
+  supplementGrading,
   uploadScan,
   type GradingMode,
   type GradingWorkspace,
   type ScanDecision,
   type ScanPreflight,
 } from '../api/scan-grading'
+import { TERMINAL_JOB_STATUSES, type JobResponse } from '../api/jobs'
 import { fetchStudents, type StudentSummary } from '../api/students'
 import { useJobStore } from './jobs'
 
@@ -35,6 +37,8 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
   const preflightJobId = ref<number | null>(null)
   let generation = 0
   let jobsInitialized = false
+  let workspaceRefresh: Promise<void> | null = null
+  let workspaceRefreshQueued = false
 
   const uploadBatch = computed(() => workspace.value?.upload_batch ?? null)
   const gradingRun = computed(() => workspace.value?.grading_run ?? null)
@@ -47,6 +51,88 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
     return sessionId.value === id && generation === expectedGeneration
   }
 
+  function projectedScanJob(next: GradingWorkspace): JobResponse | null {
+    const job = next.scan_analysis_job
+    if (!job) return null
+    const terminal = TERMINAL_JOB_STATUSES.has(job.status)
+    return {
+      id: job.id,
+      job_type: 'scan_analysis',
+      payload: { session_id: next.session_id, scan_batch_id: job.scan_batch_id },
+      result: {},
+      status: job.status,
+      progress: job.progress,
+      stage: job.status,
+      detail: '',
+      error: null,
+      cancel_requested: job.cancel_requested,
+      created_at: job.updated_at,
+      started_at: null,
+      updated_at: job.updated_at,
+      finished_at: terminal ? job.updated_at : null,
+    }
+  }
+
+  function applyWorkspaceSnapshot(next: GradingWorkspace): void {
+    workspace.value = next
+    if (next.grading_run === null) activeJobId.value = null
+    else if (next.grading_run.job_id) {
+      activeJobId.value = next.grading_run.job_id
+      if (next.grading_run.job_status && next.grading_run.updated_at
+        && !jobStore.jobs[next.grading_run.job_id]) {
+        jobStore.track({
+          id: next.grading_run.job_id,
+          job_type: 'grading_run',
+          payload: { session_id: next.session_id },
+          result: {},
+          status: next.grading_run.job_status,
+          progress: next.grading_run.progress ?? 0,
+          stage: next.grading_run.job_status,
+          detail: '',
+          error: null,
+          cancel_requested: next.grading_run.state === 'cancel_requested',
+          created_at: next.grading_run.started_at ?? next.grading_run.updated_at,
+          started_at: next.grading_run.started_at ?? null,
+          updated_at: next.grading_run.updated_at,
+          finished_at: TERMINAL_JOB_STATUSES.has(next.grading_run.job_status)
+            ? next.grading_run.updated_at : null,
+        })
+      }
+    }
+    const scanJob = projectedScanJob(next)
+    if (scanJob && !TERMINAL_JOB_STATUSES.has(scanJob.status)) {
+      jobStore.track(scanJob)
+      preflightJobId.value = scanJob.id
+    } else {
+      preflightJobId.value = null
+    }
+  }
+
+  async function refreshWorkspaceSnapshot(): Promise<void> {
+    if (workspaceRefresh) {
+      workspaceRefreshQueued = true
+      return workspaceRefresh
+    }
+    const id = sessionId.value; const current = generation
+    if (!id) return
+    const refresh = (async () => {
+      try {
+        const next = await fetchGradingWorkspace(id)
+        if (isCurrent(id, current)) applyWorkspaceSnapshot(next)
+      } catch (error) {
+        if (isCurrent(id, current)) errorMessage.value = safeMessage(error)
+      } finally {
+        workspaceRefresh = null
+        if (workspaceRefreshQueued) {
+          workspaceRefreshQueued = false
+          void refreshWorkspaceSnapshot()
+        }
+      }
+    })()
+    workspaceRefresh = refresh
+    return refresh
+  }
+
   async function load(id: number): Promise<void> {
     const current = ++generation
     sessionId.value = id
@@ -55,6 +141,7 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
     students.value = []
     activeJobId.value = null
     preflightJobId.value = null
+    workspaceRefreshQueued = false
     busyAction.value = ''
     errorMessage.value = ''
     loadState.value = 'loading'
@@ -68,9 +155,8 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
         fetchStudents().catch(() => []),
       ])
       if (!isCurrent(id, current)) return
-      workspace.value = next
+      applyWorkspaceSnapshot(next)
       students.value = studentList
-      activeJobId.value = next.grading_run?.job_id ?? null
       loadState.value = 'ready'
       if (next.upload_batch.state === 'frozen') {
         try {
@@ -85,9 +171,11 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
       const gradingJob = jobs.find((job) => job.job_type === 'grading_run'
         && Number(job.payload.session_id) === id && !['succeeded', 'failed', 'cancelled'].includes(job.status))
       const scanJob = jobs.find((job) => job.job_type === 'scan_analysis'
-        && Number(job.payload.session_id) === id && !['failed', 'cancelled'].includes(job.status))
+        && Number(job.payload.session_id) === id && !TERMINAL_JOB_STATUSES.has(job.status))
       activeJobId.value = activeJobId.value ?? gradingJob?.id ?? null
-      preflightJobId.value = scanJob?.id ?? null
+      if (next.scan_analysis_job === undefined) {
+        preflightJobId.value = preflightJobId.value ?? scanJob?.id ?? null
+      }
     } catch (error) {
       if (!isCurrent(id, current)) return
       loadState.value = 'error'
@@ -180,8 +268,22 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
     (status) => {
       if (status === 'succeeded') void refreshPreflight()
       else if ((status === 'failed' || status === 'cancelled') && sessionId.value !== null) {
+        preflightJobId.value = null
         errorMessage.value = '预检没有发布新结果；已上传文件和上一次成功结果仍然保留。'
+        void refreshWorkspaceSnapshot()
       }
+    },
+  )
+
+  watch(
+    () => {
+      const job = activeJobId.value === null ? null : jobStore.jobs[activeJobId.value]
+      return job == null
+        ? null
+        : `${job.id}:${job.status}:${job.progress}:${job.updated_at}`
+    },
+    (marker) => {
+      if (marker !== null) void refreshWorkspaceSnapshot()
     },
   )
 
@@ -231,6 +333,18 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
     })
   }
 
+  async function supplement(): Promise<void> {
+    const id = sessionId.value; const run = gradingRun.value; const current = generation
+    if (!id || !run) return
+    await runAction('supplement', id, current, async () => {
+      const job = await supplementGrading(id, run.run_id)
+      if (!isCurrent(id, current)) return
+      jobStore.track(job)
+      activeJobId.value = job.id
+      await refreshWorkspaceSnapshot()
+    })
+  }
+
   async function newBatch(): Promise<void> {
     const id = sessionId.value; const current = generation
     if (!id) return
@@ -247,5 +361,5 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
 
   return { sessionId, workspace, preflight, students, loadState, busyAction, errorMessage,
     activeJobId, preflightJobId, uploadBatch, gradingRun, load, addFiles, remove, clear,
-    analyze, refreshPreflight, saveDecisions, begin, control, cancel, newBatch }
+    analyze, refreshPreflight, saveDecisions, begin, control, cancel, supplement, newBatch }
 })

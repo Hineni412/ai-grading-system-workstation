@@ -273,6 +273,7 @@ def _build_grading_run_handler(
         max_workers = context.payload.get("max_workers")
         requests_per_minute = context.payload.get("requests_per_minute")
         resume_run_id = context.payload.get("resume_run_id")
+        supplement_run_id = context.payload.get("supplement_run_id")
         result = grading_runner(
             db=DBManager(db_path),
             session_id=session_id,
@@ -288,6 +289,10 @@ def _build_grading_run_handler(
             max_workers=int(max_workers) if max_workers is not None else None,
             requests_per_minute=int(requests_per_minute) if requests_per_minute is not None else None,
             resume_run_id=int(resume_run_id) if resume_run_id is not None else None,
+            supplement_only=bool(context.payload.get("supplement_only", False)),
+            supplement_run_id=(
+                int(supplement_run_id) if supplement_run_id is not None else None
+            ),
             raise_if_cancelled=context.raise_if_cancelled,
             should_cancel=context.is_cancel_requested,
         )

@@ -24,6 +24,9 @@ from backend.ops.service import OpsSelfCheckService
 from backend.ops.plan_store import OpsPlanStore
 from backend.ops.write_service import OpsWriteService
 from backend.review.service import ReviewApplicationService
+from backend.scan_grading.config_fingerprint import (
+    session_grading_config_fingerprint,
+)
 from backend.scan_grading.workspace import ScanGradingWorkspace
 from backend.workbench.service import WorkbenchService
 from template_upload_service import TemplateUploadService
@@ -309,12 +312,21 @@ def get_scan_grading_workspace(
     manager: JobManager = Depends(get_job_manager),
     exams_dir: Path = Depends(get_exams_dir),
     templates_dir: Path = Depends(get_templates_dir),
+    data_root: Path = Depends(get_data_root),
 ) -> ScanGradingWorkspace:
     return ScanGradingWorkspace(
         exams_root=exams_dir,
         templates_root=templates_dir,
         grading_db_path=db.db_path,
         job_manager=manager,
+        config_fingerprint_resolver=lambda session_id, grading_mode: (
+            session_grading_config_fingerprint(
+                db=db,
+                data_root=data_root,
+                session_id=session_id,
+                grading_mode=grading_mode,
+            )
+        ),
     )
 
 

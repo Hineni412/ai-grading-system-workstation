@@ -65,6 +65,7 @@ def _seed(paths) -> None:
         StudentRecord("A001", "匿名学生一", "测试班"),
         StudentRecord("A002", "匿名学生二", "测试班"),
         StudentRecord("A003", "匿名学生三", "测试班"),
+        StudentRecord("A004", "匿名学生四", "测试班"),
     ])
     fixture = ALLOWED_DATA_ROOT / "anonymous-class-scan.jpg"
     image = Image.new("RGB", (900, 1200), "white")
@@ -107,24 +108,64 @@ def _scan_handler(paths):
 
 def _grading_handler(paths):
     def handler(context):
+        from backend.scan_grading.config_fingerprint import (
+            session_grading_config_fingerprint,
+        )
+        from db_manager import DBManager
         from grading_run_store import GradingRunStore
 
         session_id = int(context.payload["session_id"])
         mode = str(context.payload.get("grading_mode") or "full_paper")
+        db = DBManager(paths.db_path)
+        config_fingerprint = session_grading_config_fingerprint(
+            db=db,
+            data_root=paths.data_root,
+            session_id=session_id,
+            grading_mode=mode,
+        )
         store = GradingRunStore(paths.db_path)
         resume_run_id = context.payload.get("resume_run_id")
-        run = store.resume(session_id, "a" * 64, mode) if resume_run_id else store.begin(session_id, "a" * 64, mode)
-        if run is None:
-            raise RuntimeError("anonymous grading run cannot resume")
-        students = __import__("db_manager").DBManager(paths.db_path).list_students()
+        supplement_run_id = context.payload.get("supplement_run_id")
+        if resume_run_id:
+            run = store.resume_exact(
+                int(resume_run_id),
+                session_id,
+                config_fingerprint,
+                mode,
+            )
+        elif supplement_run_id:
+            run = store.reopen_for_supplement(
+                int(supplement_run_id),
+                session_id,
+                config_fingerprint,
+                mode,
+            )
+        else:
+            run = store.begin(session_id, config_fingerprint, mode)
+        students = db.list_students()
+        if supplement_run_id:
+            item_id = store.add_item(
+                run.id,
+                source_label="anonymous-supplement-004",
+                student_id=int(students[3]["id"]),
+                paper_fingerprint="e" * 64,
+                config_fingerprint=config_fingerprint,
+                status="pending",
+            )
+            store.set_item_status(item_id, "graded")
+            store.finish(run.run_token, "completed")
+            context.report(1.0, "grading_run", "anonymous supplement complete")
+            return {"state": "completed", "run_id": run.id}
         if not resume_run_id:
             for index, status in enumerate(("graded", "failed", "pending")):
                 store.add_item(
                     run.id, source_label=f"anonymous-{index + 1:03d}", student_id=int(students[index]["id"]),
-                    paper_fingerprint=chr(98 + index) * 64, config_fingerprint="a" * 64, status=status,
+                    paper_fingerprint=chr(98 + index) * 64,
+                    config_fingerprint=config_fingerprint,
+                    status=status,
                 )
         context.report(0.42, "grading_run", "anonymous grading active")
-        for _ in range(150):
+        for _ in range(40):
             current = store.get_run(run.id)
             if current is not None and current.state == "pause_requested":
                 store.finish(run.run_token, "paused")

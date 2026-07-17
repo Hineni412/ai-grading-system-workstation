@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import { decodeJobResponse, type JobResponse } from './jobs'
+import { JOB_STATUSES, decodeJobResponse, type JobResponse, type JobStatus } from './jobs'
 import { assertNoPathLikeKeys, isRecord } from './validation'
 
 export type UploadBatchState = 'draft' | 'frozen'
@@ -27,7 +27,7 @@ export interface ScanUploadBatch {
 export interface GradingRunSummary {
   run_id: number
   job_id?: number | null
-  job_status?: string | null
+  job_status?: JobStatus | null
   progress?: number | null
   started_at?: string | null
   updated_at?: string | null
@@ -37,10 +37,20 @@ export interface GradingRunSummary {
   allowed_actions: string[]
 }
 
+export interface ScanAnalysisJobSummary {
+  id: number
+  status: JobStatus
+  progress: number
+  updated_at: string
+  cancel_requested: boolean
+  scan_batch_id: string
+}
+
 export interface GradingWorkspace {
   session_id: number
   upload_batch: ScanUploadBatch
   grading_run: GradingRunSummary | null
+  scan_analysis_job?: ScanAnalysisJobSummary | null
 }
 
 export interface ScanDecision {
@@ -121,6 +131,8 @@ function decodeRun(value: unknown): GradingRunSummary {
     throw new Error('Invalid grading run')
   }
   if (value.job_id !== undefined && value.job_id !== null && !finiteInteger(value.job_id, 1)) throw new Error('Invalid grading job id')
+  if (value.job_status !== undefined && value.job_status !== null
+    && !JOB_STATUSES.some((status) => status === value.job_status)) throw new Error('Invalid grading job status')
   if (value.progress !== undefined && value.progress !== null
     && (typeof value.progress !== 'number' || value.progress < 0 || value.progress > 1)) throw new Error('Invalid grading progress')
   const counts = value.counts
@@ -129,14 +141,33 @@ function decodeRun(value: unknown): GradingRunSummary {
   return value as unknown as GradingRunSummary
 }
 
+function decodeScanAnalysisJob(value: unknown): ScanAnalysisJobSummary {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    'id', 'status', 'progress', 'updated_at', 'cancel_requested', 'scan_batch_id',
+  ]) || !finiteInteger(value.id, 1)
+    || !JOB_STATUSES.some((status) => status === value.status)
+    || typeof value.progress !== 'number' || value.progress < 0 || value.progress > 1
+    || typeof value.updated_at !== 'string' || typeof value.cancel_requested !== 'boolean'
+    || typeof value.scan_batch_id !== 'string' || !value.scan_batch_id) {
+    throw new Error('Invalid scan analysis job')
+  }
+  return value as unknown as ScanAnalysisJobSummary
+}
+
 export function decodeGradingWorkspace(value: unknown): GradingWorkspace {
-  if (!isRecord(value) || !hasExactKeys(value, ['session_id', 'upload_batch', 'grading_run'])
-    || !finiteInteger(value.session_id, 1) || !('upload_batch' in value)
-    || !(value.grading_run === null || isRecord(value.grading_run))) throw new Error('Invalid grading workspace')
+  if (!isRecord(value) || !hasOnlyKeys(value, [
+    'session_id', 'upload_batch', 'grading_run', 'scan_analysis_job',
+  ]) || !('session_id' in value) || !('upload_batch' in value) || !('grading_run' in value)
+    || !finiteInteger(value.session_id, 1)
+    || !(value.grading_run === null || isRecord(value.grading_run))
+    || !(value.scan_analysis_job === undefined || value.scan_analysis_job === null
+      || isRecord(value.scan_analysis_job))) throw new Error('Invalid grading workspace')
   return {
     session_id: value.session_id,
     upload_batch: decodeUploadBatch(value.upload_batch),
     grading_run: value.grading_run === null ? null : decodeRun(value.grading_run),
+    scan_analysis_job: value.scan_analysis_job === undefined || value.scan_analysis_job === null
+      ? null : decodeScanAnalysisJob(value.scan_analysis_job),
   }
 }
 
@@ -247,5 +278,11 @@ export function controlGrading(sessionId: number, runId: number, action: 'pause'
 export function cancelGrading(sessionId: number, runId: number, jobId: number | null): Promise<GradingRunSummary> {
   return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/grading/runs/${runId}/cancel`, {
     method: 'POST', body: { job_id: jobId }, decode: decodeRun,
+  })
+}
+
+export function supplementGrading(sessionId: number, runId: number): Promise<JobResponse> {
+  return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/grading/runs/${runId}/supplement-new-matches`, {
+    method: 'POST', decode: decodeJobResponse,
   })
 }

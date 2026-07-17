@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 
-def _system(tmp_path):
+def _system(tmp_path, *, config_fingerprint_resolver=None):
     from backend.api.app import create_app
     from backend.api.dependencies import (
         get_exams_dir,
@@ -29,6 +29,18 @@ def _system(tmp_path):
     app.dependency_overrides[get_job_manager] = lambda: manager
     app.dependency_overrides[get_exams_dir] = lambda: tmp_path / "exams"
     app.dependency_overrides[get_templates_dir] = lambda: tmp_path / "templates"
+    if config_fingerprint_resolver is not None:
+        from backend.api.dependencies import get_scan_grading_workspace
+        from backend.scan_grading.workspace import ScanGradingWorkspace
+
+        grading_workspace = ScanGradingWorkspace(
+            exams_root=tmp_path / "exams",
+            templates_root=tmp_path / "templates",
+            grading_db_path=db.db_path,
+            job_manager=manager,
+            config_fingerprint_resolver=config_fingerprint_resolver,
+        )
+        app.dependency_overrides[get_scan_grading_workspace] = lambda: grading_workspace
     return TestClient(app), db, manager
 
 
@@ -177,6 +189,10 @@ def test_cancelled_run_cannot_resume_and_failed_retry_keeps_original_mode(tmp_pa
             f"/api/sessions/{session_id}/grading/runs/{cancelled_run.id}/resume"
         )
         assert resume.status_code == 409
+        supplement = client.post(
+            f"/api/sessions/{session_id}/grading/runs/{cancelled_run.id}/supplement-new-matches"
+        )
+        assert supplement.status_code == 409
 
         new_batch = client.post(f"/api/sessions/{session_id}/scan-uploads/new-batch")
         assert new_batch.status_code == 200
@@ -196,7 +212,10 @@ def test_cancelled_run_cannot_resume_and_failed_retry_keeps_original_mode(tmp_pa
         )
         store.finish(failed_run.run_token, "failed")
         retryable = client.get(f"/api/sessions/{session_id}/grading-workspace")
-        assert retryable.json()["grading_run"]["allowed_actions"] == ["retry_failed"]
+        assert retryable.json()["grading_run"]["allowed_actions"] == [
+            "retry_failed",
+            "supplement_new_matches",
+        ]
         retried = client.post(
             f"/api/sessions/{session_id}/grading/runs/{failed_run.id}/retry-failed"
         )
@@ -595,7 +614,10 @@ def test_orphaned_running_ledger_projects_interrupted_and_can_resume(tmp_path) -
     from db_manager import StudentRecord
     from grading_run_store import GradingRunStore
 
-    client, db, manager = _system(tmp_path)
+    client, db, manager = _system(
+        tmp_path,
+        config_fingerprint_resolver=lambda _session_id, _mode: "a" * 64,
+    )
     db.upsert_students([StudentRecord("S001", "学生甲", "测试班")])
     student_id = int(db.list_students()[0]["id"])
     session_id = db.create_grading_session("重启恢复", "rubric.json", "answer.json")
@@ -615,5 +637,185 @@ def test_orphaned_running_ledger_projects_interrupted_and_can_resume(tmp_path) -
         resumed = client.post(f"/api/sessions/{session_id}/grading/runs/{run.id}/resume")
         assert resumed.status_code == 202
         assert resumed.json()["payload"]["resume_run_id"] == run.id
+    finally:
+        manager.shutdown()
+
+
+def test_terminal_run_wins_an_unconfirmed_cancel_race(tmp_path) -> None:
+    from db_manager import StudentRecord
+    from grading_run_store import GradingRunStore
+
+    client, db, manager = _system(tmp_path)
+    db.upsert_students([StudentRecord("S001", "学生甲", "测试班")])
+    student_id = int(db.list_students()[0]["id"])
+    session_id = db.create_grading_session("取消完成竞态", "rubric.json", "answer.json")
+    store = GradingRunStore(db.db_path)
+    run = store.begin(session_id, "a" * 64, "full_paper")
+    item_id = store.add_item(
+        run.id,
+        source_label="001",
+        student_id=student_id,
+        paper_fingerprint="b" * 64,
+        config_fingerprint="a" * 64,
+        status="pending",
+    )
+    store.set_item_status(item_id, "graded")
+    store.finish(run.run_token, "completed")
+    job = manager.store.create_job("grading_run", {"session_id": session_id})
+    assert manager.store.mark_running(job.id) is True
+    manager.store.finish(job.id, "succeeded", result={"state": "completed"})
+    control_path = tmp_path / "templates" / f"session_{session_id}" / "grading_control_state.json"
+    control_path.parent.mkdir(parents=True, exist_ok=True)
+    control_path.write_text(
+        json.dumps(
+            {
+                "run_id": run.id,
+                "job_id": job.id,
+                "cancel_requested": True,
+                "cancel_confirmed": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    try:
+        loaded = client.get(f"/api/sessions/{session_id}/grading-workspace")
+        assert loaded.status_code == 200
+        assert loaded.json()["grading_run"]["state"] == "completed"
+        assert loaded.json()["grading_run"]["allowed_actions"] == [
+            "supplement_new_matches"
+        ]
+
+        new_batch = client.post(f"/api/sessions/{session_id}/scan-uploads/new-batch")
+        assert new_batch.status_code == 200
+    finally:
+        manager.shutdown()
+
+
+def test_restart_does_not_leave_an_unconfirmed_cancel_request_stuck(tmp_path) -> None:
+    from db_manager import StudentRecord
+    from grading_run_store import GradingRunStore
+
+    client, db, manager = _system(
+        tmp_path,
+        config_fingerprint_resolver=lambda _session_id, _mode: "a" * 64,
+    )
+    db.upsert_students([StudentRecord("S001", "学生甲", "测试班")])
+    student_id = int(db.list_students()[0]["id"])
+    session_id = db.create_grading_session("取消后重启", "rubric.json", "answer.json")
+    store = GradingRunStore(db.db_path)
+    run = store.begin(session_id, "a" * 64, "full_paper")
+    store.add_item(
+        run.id,
+        source_label="001",
+        student_id=student_id,
+        paper_fingerprint="b" * 64,
+        config_fingerprint="a" * 64,
+        status="pending",
+    )
+    job = manager.store.create_job("grading_run", {"session_id": session_id})
+    assert manager.store.mark_running(job.id) is True
+    manager.store.request_cancel(job.id)
+    manager.store.fail_interrupted_jobs()
+    control_path = tmp_path / "templates" / f"session_{session_id}" / "grading_control_state.json"
+    control_path.parent.mkdir(parents=True, exist_ok=True)
+    control_path.write_text(
+        json.dumps(
+            {
+                "run_id": run.id,
+                "job_id": job.id,
+                "cancel_requested": True,
+                "cancel_confirmed": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    manager.register("grading_run", lambda _context: {"state": "completed"})
+    try:
+        loaded = client.get(f"/api/sessions/{session_id}/grading-workspace")
+        assert loaded.status_code == 200
+        assert loaded.json()["grading_run"]["state"] == "interrupted"
+        assert loaded.json()["grading_run"]["allowed_actions"] == ["resume", "cancel"]
+
+        resumed = client.post(
+            f"/api/sessions/{session_id}/grading/runs/{run.id}/resume"
+        )
+        assert resumed.status_code == 202
+        assert not control_path.exists()
+    finally:
+        manager.shutdown()
+
+
+def test_resume_rejects_changed_grading_configuration_before_submitting_job(tmp_path) -> None:
+    from db_manager import StudentRecord
+    from grading_run_store import GradingRunStore
+
+    client, db, manager = _system(
+        tmp_path,
+        config_fingerprint_resolver=lambda _session_id, _mode: "b" * 64,
+    )
+    db.upsert_students([StudentRecord("S001", "学生甲", "测试班")])
+    student_id = int(db.list_students()[0]["id"])
+    session_id = db.create_grading_session("配置变化恢复", "rubric.json", "answer.json")
+    store = GradingRunStore(db.db_path)
+    run = store.begin(session_id, "a" * 64, "full_paper")
+    store.add_item(
+        run.id,
+        source_label="001",
+        student_id=student_id,
+        paper_fingerprint="c" * 64,
+        config_fingerprint="a" * 64,
+        status="pending",
+    )
+    store.finish(run.run_token, "paused")
+    manager.register("grading_run", lambda _context: {"state": "completed"})
+    try:
+        response = client.post(
+            f"/api/sessions/{session_id}/grading/runs/{run.id}/resume"
+        )
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "grading_config_changed"
+        jobs, total = manager.list(
+            session_id=session_id,
+            job_types=("grading_run",),
+            limit=10,
+        )
+        assert total == 0
+        assert jobs == []
+        assert store.latest(session_id).id == run.id
+    finally:
+        manager.shutdown()
+
+
+def test_terminal_run_can_submit_separate_original_mode_supplement(tmp_path) -> None:
+    from grading_run_store import GradingRunStore
+
+    client, db, manager = _system(
+        tmp_path,
+        config_fingerprint_resolver=lambda _session_id, _mode: "a" * 64,
+    )
+    session_id = db.create_grading_session("异常卷补批", "rubric.json", "answer.json")
+    frozen = _prepare_ready_scan_batch(client, tmp_path, session_id)
+    store = GradingRunStore(db.db_path)
+    run = store.begin(session_id, "a" * 64, "hybrid_batch")
+    store.finish(run.run_token, "completed")
+    manager.register("grading_run", lambda _context: {"state": "completed"})
+    try:
+        loaded = client.get(f"/api/sessions/{session_id}/grading-workspace")
+        assert loaded.status_code == 200
+        assert "supplement_new_matches" in loaded.json()["grading_run"]["allowed_actions"]
+
+        submitted = client.post(
+            f"/api/sessions/{session_id}/grading/runs/{run.id}/supplement-new-matches"
+        )
+        assert submitted.status_code == 202
+        assert submitted.json()["payload"] == {
+            "session_id": session_id,
+            "grading_mode": "hybrid_batch",
+            "failed_only": False,
+            "supplement_only": True,
+            "supplement_run_id": run.id,
+            "enhance_images": True,
+            "scan_batch_id": frozen["batch_id"],
+        }
     finally:
         manager.shutdown()

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import threading
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
@@ -265,5 +267,171 @@ def test_scan_analysis_uses_frozen_server_batch_and_rejects_client_paths(tmp_pat
         assert internal is not None
         assert str(internal.payload["exams_dir"]).startswith(str(tmp_path / "exams"))
         assert internal.payload["scan_batch_id"] == frozen.json()["batch_id"]
+    finally:
+        manager.shutdown()
+
+
+def test_active_preflight_is_server_projected_and_blocks_new_batch(tmp_path) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = db.create_grading_session("预检批次隔离", "rubric.json", "answer.json")
+    release = threading.Event()
+
+    def blocking_handler(_context):
+        release.wait(timeout=5)
+        return {"state": "completed"}
+
+    manager.register("scan_analysis", blocking_handler)
+    content = b"front"
+    try:
+        client.post(
+            f"/api/sessions/{session_id}/scan-uploads",
+            content=content,
+            headers={
+                "content-type": "image/jpeg",
+                "x-upload-filename": "front.jpg",
+                "x-content-sha256": hashlib.sha256(content).hexdigest(),
+            },
+        )
+        frozen = client.post(
+            f"/api/sessions/{session_id}/scan-uploads/freeze",
+            json={"expected_revision": 1},
+        ).json()
+        created = client.post(f"/api/sessions/{session_id}/scan/analyze", json={})
+        assert created.status_code == 202
+
+        loaded = client.get(f"/api/sessions/{session_id}/grading-workspace")
+        assert loaded.status_code == 200
+        projected = loaded.json()["scan_analysis_job"]
+        assert projected["id"] == created.json()["id"]
+        assert projected["status"] in {"queued", "running"}
+        assert projected["scan_batch_id"] == frozen["batch_id"]
+
+        rejected = client.post(f"/api/sessions/{session_id}/scan-uploads/new-batch")
+        assert rejected.status_code == 409
+        assert rejected.json()["error"]["code"] == "scan_analysis_still_active"
+    finally:
+        release.set()
+        if 'created' in locals() and created.status_code == 202:
+            manager.wait(created.json()["id"], timeout=5)
+        manager.shutdown()
+
+
+def test_preflight_submission_and_new_batch_share_one_session_lock(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from backend.jobs.manager import JobManager
+    from backend.jobs.store import JobStore
+    from backend.scan_grading.workspace import (
+        ActiveScanAnalysisError,
+        ScanGradingWorkspace,
+    )
+
+    manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
+    job_release = threading.Event()
+
+    def blocking_handler(_context):
+        job_release.wait(timeout=5)
+        return {"state": "completed"}
+
+    manager.register("scan_analysis", blocking_handler)
+    workspace = ScanGradingWorkspace(
+        exams_root=tmp_path / "exams",
+        templates_root=tmp_path / "templates",
+        job_manager=manager,
+    )
+    content = b"front"
+    workspace.add_upload(
+        1,
+        filename="front.jpg",
+        media_type="image/jpeg",
+        content_sha256=hashlib.sha256(content).hexdigest(),
+        source=io.BytesIO(content),
+    )
+    workspace.freeze_uploads(1, expected_revision=1)
+
+    submit_entered = threading.Event()
+    submit_release = threading.Event()
+    original_submit = manager.submit_unique_active
+
+    def delayed_submit(job_type, payload=None):
+        submit_entered.set()
+        assert submit_release.wait(timeout=5)
+        return original_submit(job_type, payload)
+
+    monkeypatch.setattr(manager, "submit_unique_active", delayed_submit)
+    submitted: dict[str, object] = {}
+    batch_result: dict[str, object] = {}
+
+    def submit_preflight() -> None:
+        submitted["job"] = workspace.submit_scan_analysis(1, {"enhance_images": True})
+
+    def start_batch() -> None:
+        try:
+            batch_result["batch"] = workspace.start_new_upload_batch(1)
+        except Exception as exc:  # noqa: BLE001 - the assertion checks the public error type
+            batch_result["error"] = exc
+
+    preflight_thread = threading.Thread(target=submit_preflight)
+    batch_thread = threading.Thread(target=start_batch)
+    try:
+        preflight_thread.start()
+        assert submit_entered.wait(timeout=5)
+        batch_thread.start()
+        batch_thread.join(timeout=0.1)
+        assert batch_thread.is_alive()
+
+        submit_release.set()
+        preflight_thread.join(timeout=5)
+        batch_thread.join(timeout=5)
+
+        assert "job" in submitted
+        assert isinstance(batch_result.get("error"), ActiveScanAnalysisError)
+    finally:
+        submit_release.set()
+        job_release.set()
+        preflight_thread.join(timeout=5)
+        batch_thread.join(timeout=5)
+        job = submitted.get("job")
+        if job is not None:
+            manager.wait(job.id, timeout=5)
+        manager.shutdown()
+
+
+def test_failed_preflight_after_restart_is_projected_and_can_be_retried(tmp_path) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = db.create_grading_session("预检重启恢复", "rubric.json", "answer.json")
+    content = b"front"
+    try:
+        client.post(
+            f"/api/sessions/{session_id}/scan-uploads",
+            content=content,
+            headers={
+                "content-type": "image/jpeg",
+                "x-upload-filename": "front.jpg",
+                "x-content-sha256": hashlib.sha256(content).hexdigest(),
+            },
+        )
+        frozen = client.post(
+            f"/api/sessions/{session_id}/scan-uploads/freeze",
+            json={"expected_revision": 1},
+        ).json()
+        interrupted = manager.store.create_job(
+            "scan_analysis",
+            {"session_id": session_id, "scan_batch_id": frozen["batch_id"]},
+        )
+        assert manager.store.mark_running(interrupted.id) is True
+        manager.store.request_cancel(interrupted.id)
+        manager.store.fail_interrupted_jobs()
+        manager.register("scan_analysis", lambda _context: {"state": "completed"})
+
+        loaded = client.get(f"/api/sessions/{session_id}/grading-workspace")
+        assert loaded.status_code == 200
+        assert loaded.json()["scan_analysis_job"]["id"] == interrupted.id
+        assert loaded.json()["scan_analysis_job"]["status"] == "failed"
+
+        retried = client.post(f"/api/sessions/{session_id}/scan/analyze", json={})
+        assert retried.status_code == 202
+        assert retried.json()["id"] != interrupted.id
     finally:
         manager.shutdown()
