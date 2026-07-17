@@ -144,6 +144,13 @@
 
 稳定候选冻结后使用 `code-review`，让 Spec 与 Standards 两名评审代理检查同一个 SHA。全部意见返回后由主代理统一去重和归因；仅本次修改直接引入或当前任务遗漏的 `Critical`/`Important` 阻塞。若有阻塞问题，只做一次统一修复和受影响复测，再由原评审者进行一次限定最终复审；第二轮仍有 `Critical`/`Important` 时停止并向用户汇报。
 
+## Review Record
+
+- **初审：** Spec 与 Standards 两路检查同一冻结版本；原始意见 5 条，去重后 4 条 `Important`、1 条 `Suggestion`。
+- **统一修复：** 补齐空考试拒绝、跨 100 条历史缓存复用、刷新后活动任务跟踪/取消、训练详情跨考试隔离，并把主按钮颜色改为既有 Token。
+- **修复验证：** 后端受影响回归 68 项通过；前端完整门槛 56 个测试文件、578 项通过；快速冒烟通过；真实两库指纹不变。
+- **最终复审：** 原 Spec 与 Standards 评审者仅复核首轮问题和修复区域，5 条均为 resolved，未发现直接回归。
+
 ## Ownership
 
 P2-12 功能分支预期拥有：
@@ -164,10 +171,10 @@ integration 负责最终 Index 状态、里程碑组合证据、共享入口冲�
 ## 昼夜交接
 
 **执行包：** P2-12
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** waiting_user
+**功能提交：** dc524fa241c7a6f12157751fba609d3b89382911
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** pending
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
