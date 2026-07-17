@@ -150,6 +150,7 @@
 - **统一修复：** 补齐空考试拒绝、跨 100 条历史缓存复用、刷新后活动任务跟踪/取消、训练详情跨考试隔离，并把主按钮颜色改为既有 Token。
 - **修复验证：** 后端受影响回归 68 项通过；前端完整门槛 56 个测试文件、578 项通过；快速冒烟通过；真实两库指纹不变。
 - **最终复审：** 原 Spec 与 Standards 评审者仅复核候选 `dc524fa241c7a6f12157751fba609d3b89382911` 的首轮问题和修复区域，5 条均为 resolved，未发现直接回归。
+- **用户短测：** 2026-07-17 通过；步骤 4 的清单名称与页面措辞略有不同，用户确认功能完整，不影响验收。
 
 ## Ownership
 
@@ -171,12 +172,12 @@ integration 负责最终 Index 状态、里程碑组合证据、共享入口冲�
 ## 昼夜交接
 
 **执行包：** P2-12
-**交接状态：** waiting_user
-**功能提交：** 228d3de5694b19adaeb98f1cf0c35e07c3b372d9
+**交接状态：** verified_pending_integration
+**功能提交：** 6bb3650400abfe1e81a039b8c2b1bddcd4491585
 **自动验证：** passed
 **独立复审：** passed
-**用户验收：** pending
+**用户验收：** passed
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
