@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -36,6 +37,8 @@ def run_grading_job(
     max_workers: int | None = None,
     requests_per_minute: int | None = None,
     resume_run_id: int | None = None,
+    supplement_only: bool = False,
+    supplement_run_id: int | None = None,
     raise_if_cancelled: Callable[[], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, object]:
@@ -46,8 +49,9 @@ def run_grading_job(
         raise ValueError(f"session not found: {session_id}")
 
     session_work_dir = Path(session_work_dir)
-    scan_analysis = None if failed_only else _read_required_json(session_work_dir / "scan_analysis_latest.json")
-    manual_decisions = None if failed_only else _read_optional_json_list(session_work_dir / "scan_manual_decisions_latest.json")
+    analysis_path = session_work_dir / "scan_analysis_latest.json"
+    scan_analysis = None if failed_only else _read_required_json(analysis_path)
+    manual_decisions = None if failed_only else _read_current_manual_decisions(session_work_dir, analysis_path)
 
     service = service_factory(db, llm_client_factory(), question_bank_db_path=question_bank_db_path)
     summary = {
@@ -77,6 +81,8 @@ def run_grading_job(
         grading_mode=_normalize_grading_mode(grading_mode),
         failed_only=bool(failed_only),
         resume_run_id=resume_run_id,
+        supplement_only=bool(supplement_only),
+        supplement_run_id=supplement_run_id,
         should_cancel=should_cancel,
     ):
         event_type = str(event.get("event") or "")
@@ -178,3 +184,24 @@ def _report_from_event(
 def _check_cancelled(callback: Callable[[], None] | None) -> None:
     if callback is not None:
         callback()
+
+
+def _read_current_manual_decisions(session_work_dir: Path, analysis_path: Path) -> list[dict[str, Any]] | None:
+    state_path = session_work_dir / "scan_decisions_state.json"
+    if state_path.exists():
+        if not analysis_path.exists():
+            return None
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            identity = hashlib.sha256(analysis_path.read_bytes()).hexdigest()
+            decisions = state.get("internal_decisions") if isinstance(state, dict) else None
+            if (
+                isinstance(state, dict)
+                and state.get("analysis_identity") == identity
+                and isinstance(decisions, list)
+            ):
+                return [dict(item) for item in decisions if isinstance(item, dict)]
+        except (OSError, ValueError):
+            return None
+        return None
+    return _read_optional_json_list(session_work_dir / "scan_manual_decisions_latest.json")

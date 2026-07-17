@@ -105,6 +105,11 @@ function openGrading(questionId?: string): void {
   void router.push(questionId ? { path: '/grading', query: { question: questionId } } : '/grading')
 }
 
+function openGradingRun(): void {
+  const sessionId = sessionStore.selectedSessionId
+  if (sessionId !== null) void router.push(`/sessions/${sessionId}/grading-run`)
+}
+
 async function openAnomalies(): Promise<void> {
   showAnomalies.value = true
   const sessionId = sessionStore.selectedSessionId
@@ -190,6 +195,7 @@ function loadMoreAnomalies(): void {
       </div>
       <div class="workbench-hero__meta">
         <span>数据更新 {{ formatTime(workbenchStore.overview?.updated_at ?? null) }}</span>
+        <button type="button" class="workbench-primary-button" @click="openGradingRun">进入批改执行</button>
         <button type="button" class="workbench-secondary-button" @click="retryOverview">刷新工作台</button>
       </div>
     </header>

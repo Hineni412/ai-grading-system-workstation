@@ -4,6 +4,7 @@ import ComponentShowcase from '../components/design-system/ComponentShowcase.vue
 import {
   sessionRouteDefinition,
   templateRegionRouteDefinition,
+  gradingRunRouteDefinition,
   knowledgeGraphRouteDefinition,
   reviewRouteDefinition,
   workbenchRouteDefinition,
@@ -47,6 +48,16 @@ const routes: RouteRecordRaw[] = [
       title: templateRegionRouteDefinition.title,
       description: templateRegionRouteDefinition.description,
       breadcrumb: templateRegionRouteDefinition.breadcrumb,
+    },
+  },
+  {
+    path: gradingRunRouteDefinition.path,
+    name: gradingRunRouteDefinition.id,
+    component: () => import('../views/ScanGradingView.vue'),
+    meta: {
+      title: gradingRunRouteDefinition.title,
+      description: gradingRunRouteDefinition.description,
+      breadcrumb: gradingRunRouteDefinition.breadcrumb,
     },
   },
   {

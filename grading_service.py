@@ -145,8 +145,14 @@ class GradingService:
         objective_escalation_question_ids: Iterable[str] | None = None,
         failed_only: bool = False,
         resume_run_id: int | None = None,
+        supplement_only: bool = False,
+        supplement_run_id: int | None = None,
         should_cancel: Any | None = None,
     ) -> Iterable[dict]:
+        if resume_run_id is not None and supplement_run_id is not None:
+            raise ValueError("resume and supplement cannot target the same job")
+        if bool(supplement_only) != (supplement_run_id is not None):
+            raise ValueError("supplement run identity is incomplete")
         if not self.db.is_template_ready(session_id):
             raise ValueError("当前会话尚未完成模板题框映射确认，请先在“评分依据与会话”页完成模板配置")
         session = self.db.get_grading_session(session_id)
@@ -185,6 +191,9 @@ class GradingService:
         run_store = None
         run = None
         config_fingerprint = ""
+        strict_existing_run = resume_run_id is not None or supplement_run_id is not None
+        from grading_run_store import GradingRunResumeMismatchError
+
         try:
             from grading_run_store import GradingRunStore
             from grading_run_identity import grading_config_fingerprint
@@ -198,11 +207,29 @@ class GradingService:
             )
             run_store = GradingRunStore(self.db.db_path)
             if resume_run_id is not None:
-                run = run_store.resume(session_id, config_fingerprint, resolved_grading_mode)
-            if run is None:
+                run = run_store.resume_exact(
+                    resume_run_id,
+                    session_id,
+                    config_fingerprint,
+                    resolved_grading_mode,
+                )
+            elif supplement_run_id is not None:
+                run = run_store.reopen_for_supplement(
+                    supplement_run_id,
+                    session_id,
+                    config_fingerprint,
+                    resolved_grading_mode,
+                )
+            else:
                 run_store.fail_active_runs(session_id)
                 run = run_store.begin(session_id, config_fingerprint, resolved_grading_mode)
-        except Exception:
+        except GradingRunResumeMismatchError:
+            raise
+        except Exception as exc:
+            if strict_existing_run:
+                raise GradingRunResumeMismatchError(
+                    "grading run configuration could not be verified"
+                ) from exc
             run_store = None
             run = None
 
@@ -261,21 +288,24 @@ class GradingService:
             yield _finish_cancelled_run(release_session=False)
             return
 
-        if not failed_only:
-            if not self.db.try_start_session_run(session_id):
-                raise RuntimeError("当前考试批改已有运行中的批改任务，请等待完成后再启动")
-            if _cancel_requested():
-                yield _finish_cancelled_run(release_session=True)
-                return
+        if not self.db.try_start_session_run(session_id):
+            raise RuntimeError("当前考试批改已有运行中的批改任务，请等待完成后再启动")
+        if _cancel_requested():
+            yield _finish_cancelled_run(release_session=True)
+            return
+        if not failed_only and not supplement_only:
             self.db.clear_session_run_data(session_id)
-        else:
-            if not self.db.try_start_session_run(session_id):
-                raise RuntimeError("当前考试批改已有运行中的批改任务，请等待完成后再启动")
         if _cancel_requested():
             yield _finish_cancelled_run(release_session=True)
             return
 
         matched_records: list[tuple[int, ExamPaperGroup, int]] = []
+        supplement_fingerprints: set[str] = set()
+        supplement_student_ids: set[int] = set()
+        if supplement_only:
+            supplement_fingerprints, supplement_student_ids = (
+                self._existing_supplement_identities(session_id)
+            )
 
         if failed_only:
             failed_detailed = self.db.list_failed_papers_detailed(session_id)
@@ -340,6 +370,22 @@ class GradingService:
                 if _cancel_requested():
                     yield _finish_cancelled_run(release_session=True)
                     return
+                source_fingerprint = ""
+                if supplement_only:
+                    from grading_run_identity import paper_fingerprint
+
+                    source_fingerprint = paper_fingerprint(
+                        group.front_image,
+                        group.back_image,
+                    )
+                    if source_fingerprint in supplement_fingerprints:
+                        yield {
+                            "event": "paper_skipped",
+                            "student_name": group.student_name,
+                            "reason": "scan source was already handled by an earlier run",
+                            "kind": "existing",
+                        }
+                        continue
                 student = {"id": group.student_id, "name": group.student_name} if group.student_id else self.db.find_student_by_name(group.student_name)
                 if student is None:
                     paper_id = self.db.create_exam_paper(
@@ -365,6 +411,15 @@ class GradingService:
                         return
                     continue
 
+                if supplement_only and int(student["id"]) in supplement_student_ids:
+                    yield {
+                        "event": "paper_conflict",
+                        "student_name": group.student_name,
+                        "reason": "student already has another handled scan source",
+                        "fingerprint": source_fingerprint[:8],
+                    }
+                    continue
+
                 paper_id = self.db.create_exam_paper(
                     session_id=session_id,
                     front_image=str(group.front_image),
@@ -376,6 +431,9 @@ class GradingService:
                 )
                 paper_cancel_restore_state[paper_id] = ("pending", None)
                 matched_records.append((paper_id, group, int(student["id"])))
+                if supplement_only:
+                    supplement_fingerprints.add(source_fingerprint)
+                    supplement_student_ids.add(int(student["id"]))
 
                 if _cancel_requested():
                     yield _finish_cancelled_run(release_session=True)
@@ -427,6 +485,19 @@ class GradingService:
             }
 
         if resolved_grading_mode == "hybrid_batch":
+            hybrid_run_item_by_paper: dict[int, int] = {}
+            if supplement_only:
+                matched_records, hybrid_run_item_by_paper = yield from (
+                    self._classify_full_paper_candidates(
+                        matched_records,
+                        run_store=run_store,
+                        run=run,
+                        session_id=session_id,
+                        config_fingerprint=config_fingerprint,
+                        resume_run_id=supplement_run_id,
+                    )
+                )
+                total = len(matched_records)
             existing_results_by_student = {}
             skipped_questions_by_student = {}
             if failed_only:
@@ -480,10 +551,15 @@ class GradingService:
             for idx, (paper_id, group, student_id) in enumerate(matched_records, start=1):
                 if _cancel_requested():
                     for marked_paper_id in hybrid_marked_paper_ids:
-                        _restore_paper_after_cancel(marked_paper_id)
+                        _restore_paper_after_cancel(
+                            marked_paper_id,
+                            hybrid_run_item_by_paper.get(marked_paper_id),
+                        )
                     yield _finish_cancelled_run(release_session=True)
                     return
                 self.db.update_exam_paper_status(paper_id, "grading")
+                if paper_id in hybrid_run_item_by_paper:
+                    run_store.mark_grading(hybrid_run_item_by_paper[paper_id])
                 hybrid_marked_paper_ids.append(paper_id)
                 yield {
                     "event": "grading_started",
@@ -494,7 +570,10 @@ class GradingService:
                 }
                 if _cancel_requested():
                     for marked_paper_id in hybrid_marked_paper_ids:
-                        _restore_paper_after_cancel(marked_paper_id)
+                        _restore_paper_after_cancel(
+                            marked_paper_id,
+                            hybrid_run_item_by_paper.get(marked_paper_id),
+                        )
                     yield _finish_cancelled_run(release_session=True)
                     return
 
@@ -564,7 +643,10 @@ class GradingService:
                     batch_run = future.result()
                 if _cancel_requested():
                     for marked_paper_id in hybrid_marked_paper_ids:
-                        _restore_paper_after_cancel(marked_paper_id)
+                        _restore_paper_after_cancel(
+                            marked_paper_id,
+                            hybrid_run_item_by_paper.get(marked_paper_id),
+                        )
                     yield _finish_cancelled_run(release_session=True)
                     return
                 fallback_items_by_key = _fallback_items_by_paper_key(batch_run.fallback_items)
@@ -575,7 +657,10 @@ class GradingService:
             except Exception as exc:  # noqa: BLE001
                 if _cancel_requested():
                     for marked_paper_id in hybrid_marked_paper_ids:
-                        _restore_paper_after_cancel(marked_paper_id)
+                        _restore_paper_after_cancel(
+                            marked_paper_id,
+                            hybrid_run_item_by_paper.get(marked_paper_id),
+                        )
                     yield _finish_cancelled_run(release_session=True)
                     return
                 for _, (paper_id, group, student_id) in enumerate(matched_records, start=1):
@@ -587,6 +672,12 @@ class GradingService:
                             _failed_retry_attempt(exc, retry_existing["affected_major_ids"]),
                         )
                     self.db.update_exam_paper_status(paper_id, "failed", str(exc))
+                    if paper_id in hybrid_run_item_by_paper:
+                        run_store.set_item_status(
+                            hybrid_run_item_by_paper[paper_id],
+                            "failed",
+                            disposition_reason=str(exc),
+                        )
                     yield {
                         "event": "grading_failed",
                         "paper_id": paper_id,
@@ -595,6 +686,8 @@ class GradingService:
                         "current": completed,
                         "total": total,
                     }
+                if run_store is not None and run is not None:
+                    run_store.finish(run.run_token, "completed")
                 self.db.finish_session_run(session_id, "completed")
                 progress = self.db.get_session_progress(session_id)
                 yield {"event": "session_completed", "progress": progress}
@@ -603,7 +696,10 @@ class GradingService:
             for result_index, (paper_id, group, student_id) in enumerate(matched_records):
                 if _cancel_requested():
                     for pending_paper_id, _, _ in matched_records[result_index:]:
-                        _restore_paper_after_cancel(pending_paper_id)
+                        _restore_paper_after_cancel(
+                            pending_paper_id,
+                            hybrid_run_item_by_paper.get(pending_paper_id),
+                        )
                     yield _finish_cancelled_run(release_session=True)
                     return
                 completed += 1
@@ -689,7 +785,10 @@ class GradingService:
 
                     if _cancel_requested():
                         for pending_paper_id, _, _ in matched_records[result_index:]:
-                            _restore_paper_after_cancel(pending_paper_id)
+                            _restore_paper_after_cancel(
+                                pending_paper_id,
+                                hybrid_run_item_by_paper.get(pending_paper_id),
+                            )
                         yield _finish_cancelled_run(release_session=True)
                         return
 
@@ -720,6 +819,12 @@ class GradingService:
                     else:
                         result_id = self.db.save_session_result(session_id, student_id, paper_id, result)
                     self.db.update_exam_paper_status(paper_id, "graded")
+                    if paper_id in hybrid_run_item_by_paper:
+                        run_store.set_item_status(
+                            hybrid_run_item_by_paper[paper_id],
+                            "graded",
+                            result_id=result_id,
+                        )
                     yield {
                         "event": "graded",
                         "paper_id": paper_id,
@@ -738,6 +843,12 @@ class GradingService:
                             _failed_retry_attempt(exc, retry_existing["affected_major_ids"]),
                         )
                     self.db.update_exam_paper_status(paper_id, "failed", str(exc))
+                    if paper_id in hybrid_run_item_by_paper:
+                        run_store.set_item_status(
+                            hybrid_run_item_by_paper[paper_id],
+                            "failed",
+                            disposition_reason=str(exc),
+                        )
                     yield {
                         "event": "grading_failed",
                         "paper_id": paper_id,
@@ -772,7 +883,7 @@ class GradingService:
             run=run,
             session_id=session_id,
             config_fingerprint=config_fingerprint,
-            resume_run_id=resume_run_id,
+            resume_run_id=resume_run_id or supplement_run_id,
         )
 
         total_grade = len(grade_records)
@@ -944,6 +1055,32 @@ class GradingService:
         self.db.finish_session_run(session_id, "completed")
         progress = self.db.get_session_progress(session_id)
         yield {"event": "session_completed", "progress": progress}
+
+    def _existing_supplement_identities(
+        self,
+        session_id: int,
+    ) -> tuple[set[str], set[int]]:
+        from grading_run_identity import paper_fingerprint
+
+        with self.db._connect() as conn:
+            rows = conn.execute(
+                "SELECT front_image, back_image, student_id FROM exam_papers "
+                "WHERE session_id = ?",
+                (int(session_id),),
+            ).fetchall()
+        fingerprints = {
+            paper_fingerprint(
+                row["front_image"],
+                row["back_image"] if row["back_image"] else None,
+            )
+            for row in rows
+        }
+        student_ids = {
+            int(row["student_id"])
+            for row in rows
+            if row["student_id"] is not None
+        }
+        return fingerprints, student_ids
 
     def _classify_full_paper_candidates(
         self,
@@ -1221,17 +1358,36 @@ def _exam_identity_tokens(text: str) -> set[str]:
     return tokens
 
 
-def _apply_manual_decisions(
+def apply_scan_manual_decisions(
     analysis: ScanAnalysis,
     manual_decisions: list[dict],
     students: list[dict],
 ) -> list[ExamPaperGroup]:
     student_by_id = {int(student["id"]): student for student in students}
     issue_by_id = {issue.issue_id: issue for issue in analysis.issues}
+    group_by_source = {group.source_label: group for group in analysis.groups}
     decided_issue_ids: set[str] = set()
     result = list(analysis.groups)
 
     for decision in manual_decisions:
+        group_source_label = str(decision.get("group_source_label") or "")
+        if group_source_label:
+            group = group_by_source.get(group_source_label)
+            if group is None or str(decision.get("action") or "") != "match":
+                continue
+            try:
+                student_id = int(decision.get("student_id"))
+            except (TypeError, ValueError):
+                continue
+            student = student_by_id.get(student_id)
+            if student is None:
+                continue
+            group.student_id = student_id
+            group.student_name = str(student["name"])
+            group.match_method = "manual"
+            group.match_score = 1.0
+            continue
+
         issue_id = str(decision.get("issue_id") or "")
         action = str(decision.get("action") or "")
         issue = issue_by_id.get(issue_id)
@@ -1264,6 +1420,14 @@ def _apply_manual_decisions(
 
     analysis.issues = [issue for issue in analysis.issues if issue.issue_id not in decided_issue_ids]
     return result
+
+
+def _apply_manual_decisions(
+    analysis: ScanAnalysis,
+    manual_decisions: list[dict],
+    students: list[dict],
+) -> list[ExamPaperGroup]:
+    return apply_scan_manual_decisions(analysis, manual_decisions, students)
 
 
 def _attach_enhanced_paths(analysis: ScanAnalysis, output_dir: Path) -> None:
