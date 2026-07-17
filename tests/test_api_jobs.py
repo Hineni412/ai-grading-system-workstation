@@ -465,10 +465,7 @@ def test_jobs_api_redacts_internal_paths_and_sensitive_keys_from_public_payload(
         },
     ).json()
 
-    assert created["payload"] == {
-        "session_id": 8,
-        "nested": {"summary": {"count": 1}},
-    }
+    assert created["payload"] == {"session_id": 8}
     manager.wait(created["id"], timeout=5)
     loaded = client.get(f"/api/jobs/{created['id']}").json()
     assert loaded["payload"] == created["payload"]
@@ -491,10 +488,7 @@ def test_job_response_redacts_sensitive_keys_from_legacy_stored_payload(
     )
 
     payload = _job_response(legacy).model_dump()["payload"]
-    assert payload == {
-        "session_id": 8,
-        "nested": {"summary": {"count": 1}},
-    }
+    assert payload == {"session_id": 8}
     assert "old-secret" not in str(payload)
 
 
