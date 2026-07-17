@@ -7,6 +7,29 @@ import json
 import pytest
 
 
+def _frozen_workspace(tmp_path, session_id: int):
+    from backend.scan_grading.workspace import ScanGradingWorkspace
+
+    workspace = ScanGradingWorkspace(
+        exams_root=tmp_path / "exams",
+        templates_root=tmp_path / "templates",
+    )
+    content = f"batch-{session_id}".encode()
+    workspace.add_upload(
+        session_id,
+        filename="scan.jpg",
+        media_type="image/jpeg",
+        content_sha256=hashlib.sha256(content).hexdigest(),
+        source=io.BytesIO(content),
+    )
+    workspace.freeze_uploads(session_id, expected_revision=1)
+    session_dir = tmp_path / "templates" / f"session_{session_id}"
+    previous_manifest = json.loads(
+        (session_dir / "scan_upload_batch.json").read_text(encoding="utf-8")
+    )
+    return workspace, session_dir, previous_manifest
+
+
 def test_upload_batch_adds_deduplicates_and_freezes_files(tmp_path) -> None:
     from backend.scan_grading.workspace import (
         FrozenUploadBatchError,
@@ -469,3 +492,109 @@ def test_restart_finishes_archive_after_new_manifest_was_published(
         assert not (session_dir / name).exists()
         assert (session_dir / "scan_history" / old_batch["batch_id"] / name).is_file()
     assert not (session_dir / "scan_batch_transition.json").exists()
+
+
+@pytest.mark.parametrize("fault", ["same_batch_ids", "unrelated_current_manifest"])
+def test_transition_recovery_rejects_ambiguous_manifest_identity_without_moving_files(
+    tmp_path,
+    fault: str,
+) -> None:
+    from backend.scan_grading.workspace import ScanGradingWorkspaceError
+
+    workspace, session_dir, previous_manifest = _frozen_workspace(tmp_path, 10)
+    next_manifest = {
+        "batch_id": "b" * 32,
+        "revision": 0,
+        "state": "draft",
+        "files": [],
+        "frozen_at": None,
+        "run_floor_id": 0,
+    }
+    source = session_dir / "scan_analysis_latest.json"
+    target = (
+        session_dir
+        / "scan_history"
+        / previous_manifest["batch_id"]
+        / source.name
+    )
+    if fault == "same_batch_ids":
+        next_manifest = dict(previous_manifest)
+        source.write_text("old analysis", encoding="utf-8")
+        expected_path, absent_path = source, target
+    else:
+        unrelated_manifest = dict(previous_manifest)
+        unrelated_manifest["batch_id"] = "c" * 32
+        (session_dir / "scan_upload_batch.json").write_text(
+            json.dumps(unrelated_manifest),
+            encoding="utf-8",
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("old analysis", encoding="utf-8")
+        expected_path, absent_path = target, source
+    transition_path = session_dir / "scan_batch_transition.json"
+    transition_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "previous_batch_id": previous_manifest["batch_id"],
+                "previous_manifest": previous_manifest,
+                "next_manifest": next_manifest,
+                "archive_files": [source.name],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ScanGradingWorkspaceError):
+        workspace.get_workspace(10)
+
+    assert transition_path.is_file()
+    assert expected_path.read_text(encoding="utf-8") == "old analysis"
+    assert not absent_path.exists()
+
+
+def test_transition_recovery_validates_every_file_before_recovery_moves_any_file(
+    tmp_path,
+) -> None:
+    from backend.scan_grading.workspace import ScanGradingWorkspaceError
+
+    workspace, session_dir, previous_manifest = _frozen_workspace(tmp_path, 11)
+    next_manifest = {
+        "batch_id": "d" * 32,
+        "revision": 0,
+        "state": "draft",
+        "files": [],
+        "frozen_at": None,
+        "run_floor_id": 0,
+    }
+    history_dir = (
+        session_dir / "scan_history" / previous_manifest["batch_id"]
+    )
+    history_dir.mkdir(parents=True, exist_ok=True)
+    archived_analysis = history_dir / "scan_analysis_latest.json"
+    archived_analysis.write_text("archived analysis", encoding="utf-8")
+    transition_path = session_dir / "scan_batch_transition.json"
+    transition_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "previous_batch_id": previous_manifest["batch_id"],
+                "previous_manifest": previous_manifest,
+                "next_manifest": next_manifest,
+                "archive_files": [
+                    "scan_decisions_state.json",
+                    "scan_analysis_latest.json",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ScanGradingWorkspaceError):
+        workspace.get_workspace(11)
+
+    assert transition_path.is_file()
+    assert archived_analysis.read_text(encoding="utf-8") == "archived analysis"
+    assert not (session_dir / "scan_analysis_latest.json").exists()
+    assert not (session_dir / "scan_decisions_state.json").exists()
+    assert not (history_dir / "scan_decisions_state.json").exists()

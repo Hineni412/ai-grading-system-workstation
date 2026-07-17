@@ -273,10 +273,10 @@ class ScanGradingWorkspace:
     ) -> dict[str, Any]:
         with self._lock(session_id):
             current_run = self.get_grading_run(session_id)
-            if current_run is not None and current_run["state"] in {
-                "running", "pause_requested", "paused", "interrupted", "cancel_requested"
-            }:
-                raise ScanGradingWorkspaceError("an active grading run already exists")
+            if current_run is not None:
+                raise ScanGradingWorkspaceError(
+                    "the current scan batch already has a grading run"
+                )
             manifest = self._load_or_create_manifest(session_id)
             if manifest.get("state") != "frozen":
                 raise ScanGradingWorkspaceError("scan upload batch is not frozen")
@@ -352,6 +352,8 @@ class ScanGradingWorkspace:
             ) or active_job is not None:
                 raise ScanGradingWorkspaceError("active grading run must be resolved first")
             previous_manifest = self._load_or_create_manifest(session_id)
+            if not self._manifest_path(session_id).exists():
+                self._write_manifest(session_id, previous_manifest)
             run_floor_id = int(previous_manifest.get("run_floor_id") or 0)
             if self.grading_db_path is not None:
                 from grading_run_store import GradingRunStore
@@ -384,8 +386,9 @@ class ScanGradingWorkspace:
             if any(target.exists() for _source, target in archive_pairs):
                 raise ScanGradingWorkspaceError("scan batch archive already exists")
             transition = {
-                "version": 1,
+                "version": 2,
                 "previous_batch_id": str(previous_manifest["batch_id"]),
+                "previous_manifest": previous_manifest,
                 "next_manifest": manifest,
                 "archive_files": [source.name for source, _target in archive_pairs],
             }
@@ -800,18 +803,23 @@ class ScanGradingWorkspace:
             return None
         try:
             transition = json.loads(transition_path.read_text(encoding="utf-8"))
-            if not isinstance(transition, dict) or transition.get("version") != 1:
+            if not isinstance(transition, dict) or transition.get("version") != 2:
                 raise ValueError("invalid transition")
             previous_batch_id = str(transition["previous_batch_id"])
+            previous_manifest = transition["previous_manifest"]
             next_manifest = transition["next_manifest"]
             archive_files = transition["archive_files"]
             if (
                 not re.fullmatch(r"[0-9a-f]{32}", previous_batch_id)
+                or not isinstance(previous_manifest, dict)
+                or str(previous_manifest.get("batch_id") or "")
+                != previous_batch_id
                 or not isinstance(next_manifest, dict)
                 or not re.fullmatch(
                     r"[0-9a-f]{32}",
                     str(next_manifest.get("batch_id") or ""),
                 )
+                or str(next_manifest.get("batch_id")) == previous_batch_id
                 or not isinstance(archive_files, list)
             ):
                 raise ValueError("invalid transition")
@@ -825,16 +833,18 @@ class ScanGradingWorkspace:
                 name not in allowed_names for name in names
             ):
                 raise ValueError("invalid transition")
-            current_manifest: dict[str, Any] = {}
             manifest_path = self._manifest_path(session_id)
-            if manifest_path.exists():
-                loaded = json.loads(manifest_path.read_text(encoding="utf-8"))
-                if not isinstance(loaded, dict):
-                    raise ValueError("invalid manifest")
-                current_manifest = loaded
-            committed = str(current_manifest.get("batch_id") or "") == str(
-                next_manifest["batch_id"]
-            )
+            if not manifest_path.exists():
+                raise ValueError("missing manifest")
+            current_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(current_manifest, dict):
+                raise ValueError("invalid manifest")
+            if current_manifest == next_manifest:
+                committed = True
+            elif current_manifest == previous_manifest:
+                committed = False
+            else:
+                raise ValueError("transition manifest conflict")
             history_dir = (
                 self._session_dir(session_id)
                 / "scan_history"
@@ -844,6 +854,11 @@ class ScanGradingWorkspace:
                 (self._session_dir(session_id) / name, history_dir / name)
                 for name in names
             ]
+            if any(
+                source.exists() == target.exists()
+                for source, target in pairs
+            ):
+                raise ValueError("transition file locations are inconsistent")
             ordered_pairs = pairs if committed else list(reversed(pairs))
             for source, target in ordered_pairs:
                 move_from, move_to = (

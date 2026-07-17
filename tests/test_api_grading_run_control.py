@@ -5,6 +5,7 @@ import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -29,6 +30,53 @@ def _system(tmp_path):
     app.dependency_overrides[get_exams_dir] = lambda: tmp_path / "exams"
     app.dependency_overrides[get_templates_dir] = lambda: tmp_path / "templates"
     return TestClient(app), db, manager
+
+
+def _prepare_ready_scan_batch(client, tmp_path, session_id: int) -> dict:
+    content = b"ready scan"
+    uploaded = client.post(
+        f"/api/sessions/{session_id}/scan-uploads",
+        content=content,
+        headers={
+            "content-type": "image/jpeg",
+            "x-upload-filename": "ready.jpg",
+            "x-content-sha256": hashlib.sha256(content).hexdigest(),
+        },
+    )
+    assert uploaded.status_code == 201
+    frozen = client.post(
+        f"/api/sessions/{session_id}/scan-uploads/freeze",
+        json={"expected_revision": 1},
+    )
+    assert frozen.status_code == 200
+    scan_file = next((tmp_path / "exams").rglob("*.jpg"))
+    analysis_path = (
+        tmp_path
+        / "templates"
+        / f"session_{session_id}"
+        / "scan_analysis_latest.json"
+    )
+    analysis_path.write_text(
+        json.dumps(
+            {
+                "scan_batch_id": frozen.json()["batch_id"],
+                "groups": [
+                    {
+                        "source_label": "001",
+                        "front_image": str(scan_file),
+                        "back_image": None,
+                        "student_id": 1,
+                    }
+                ],
+                "issues": [],
+                "absent_students": [],
+                "warnings": [],
+                "total_pages": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return frozen.json()
 
 
 def test_workspace_projects_run_counts_and_requests_safe_pause(tmp_path) -> None:
@@ -380,6 +428,71 @@ def test_restart_can_submit_when_manifest_has_orphaned_reservation(tmp_path) -> 
         assert interrupted_status == "failed"
         recovered_job = next(job for job in jobs if job.id != interrupted_job.id)
         assert recovered_job.status in {"queued", "running", "succeeded"}
+    finally:
+        manager.shutdown()
+
+
+@pytest.mark.parametrize("terminal_state", ["completed", "failed", "cancelled"])
+def test_terminal_run_blocks_fresh_start_for_the_same_scan_batch(
+    tmp_path,
+    terminal_state: str,
+) -> None:
+    from grading_run_store import GradingRunStore
+
+    client, db, manager = _system(tmp_path)
+    session_id = db.create_grading_session(
+        f"terminal-{terminal_state}",
+        "rubric.json",
+        "answer.json",
+    )
+    frozen = _prepare_ready_scan_batch(client, tmp_path, session_id)
+    store = GradingRunStore(db.db_path)
+    run = store.begin(session_id, "a" * 64, "full_paper")
+    prior_job, created = manager.store.create_idempotent_scan_grading_start(
+        {
+            "session_id": session_id,
+            "scan_batch_id": frozen["batch_id"],
+            "grading_mode": "full_paper",
+            "failed_only": False,
+            "enhance_images": True,
+            "exams_dir": str(next((tmp_path / "exams").rglob("*.jpg")).parent),
+        }
+    )
+    assert created is True
+    if terminal_state == "cancelled":
+        cancelled = client.post(
+            f"/api/sessions/{session_id}/grading/runs/{run.id}/cancel",
+            json={"job_id": prior_job.id},
+        )
+        assert cancelled.status_code == 200
+        assert cancelled.json()["state"] == "cancelled"
+    else:
+        assert manager.store.mark_running(prior_job.id) is True
+        store.finish(run.run_token, terminal_state)
+        manager.store.fail_interrupted_jobs()
+        assert manager.get(prior_job.id).status == "failed"
+
+    manager.register("grading_run", lambda _context: {"state": "completed"})
+    try:
+        repeated = client.post(
+            f"/api/sessions/{session_id}/grading/run",
+            json={
+                "grading_mode": "full_paper",
+                "upload_revision": 2,
+                "decision_revision": 0,
+                "confirm_pending_issues": False,
+            },
+        )
+
+        assert repeated.status_code == 409
+        assert repeated.json()["error"]["code"] == "grading_input_not_ready"
+        jobs, total = manager.list(
+            session_id=session_id,
+            job_types=("grading_run",),
+            limit=10,
+        )
+        assert total == 1
+        assert [job.id for job in jobs] == [prior_job.id]
     finally:
         manager.shutdown()
 
