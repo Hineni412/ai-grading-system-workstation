@@ -2,6 +2,41 @@
 
 本文件是 Codex 在本仓库工作的优先入口。历史内容如提到 `CLAUDE.md`，等同于阅读本文件；`CLAUDE.md` 只保留兼容指针。
 
+## Agent skills
+
+### Skill authority
+
+本项目使用 Matt Pocock engineering skills，禁止调用 Superpowers skills。
+
+`docs/superpowers/` 是历史兼容目录名，不代表允许调用同名技能。历史计划中的 `superpowers:*` 指令只保留为过程背景，实际执行改用：
+
+- 存在必须由用户决定、会明显改变最终结果且无法从项目资料判断的需求或设计选择：`grilling`
+- 测试优先开发：`tdd`
+- 按计划实施：`implement`
+- 困难故障诊断：`diagnosing-bugs`
+- 稳定候选复审：`code-review`
+- 合并冲突：`resolving-merge-conflicts`
+
+能够从项目文件、设计文档、现有代码或测试查明的事实必须自行调查；其他轻微不确定性采用最保守的合理假设继续，并在结果中说明，不得仅为消除形式上的不确定而打断用户。使用 `grilling` 时一次只询问一个关键问题，并同时给出推荐答案。
+
+匹配的 Matt Pocock skill 在当前会话可用时优先使用；如果项目指定的 skill 已安装但当前会话没有提供，或读取失败，则说明原因并按本文件和项目现有流程继续，不虚构调用结果，也不因技能不可用而放弃仍可安全完成的工作。
+
+技能内的通用测试、提交和分支建议如与本仓库规则冲突，以本文件的分层测试、真实数据保护、执行包、worktree 和 integration 规则为准。
+
+代码与需求复审的严重程度统一使用 `Critical`、`Important`、`Suggestion`；用户可见功能验收继续使用 `Blocker`、`Major`、`Minor`。两套等级用途不同，不混用，也不追溯改写历史证据。
+
+### Issue tracker
+
+包内任务、问题、设计决定和待办事项使用 GitHub Issues 管理。正式执行包状态仍只以 `docs/superpowers/packages/EXECUTION_INDEX.md` 为准；关闭 Issue 不代表执行包已经合并。详见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+采用 Matt Pocock 默认标签：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`。详见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+采用 single-context：领域词汇使用根目录 `CONTEXT.md`，架构决定在首次需要时使用 docs/adr/。这些文件按实际需要逐步建立，不为初始化制造空文档。详见 `docs/agents/domain.md`。
+
 ## 当前产品边界
 
 - 版本以根目录 `VERSION` 为准。
@@ -12,27 +47,29 @@
 
 ## 必读顺序
 
-开始任何较大改动前，按顺序阅读：
+开始任何较大改动前，按顺序阅读基础资料：
 
 1. `AGENTS.md`
-2. `ARCHITECTURE.md`
+2. `ARCHITECTURE.md` 中与当前改动相关的章节
 3. `docs/superpowers/packages/README.md`
 4. `docs/superpowers/packages/EXECUTION_INDEX.md`
-5. `docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md`
-6. `docs/superpowers/packages/NIGHTLY_AUTOMATION.md`
-7. `docs/superpowers/packages/PARALLEL_WORKTREE_EXECUTION.md`
-8. `docs/user-testing/README.md`
-9. 当前包对应的 `docs/superpowers/packages/phase-*-execution-packages.md`
-10. `docs/superpowers/plans/2026-07-03-frontend-backend-modernization-master-plan.md`
-11. 当前执行包的即时实现计划、相关代码、测试和迁移文件
+5. 当前包对应的 `docs/superpowers/packages/phase-*-execution-packages.md`
+6. 当前执行包的即时实现计划、相关代码、测试和迁移文件
+
+再按任务场景增读，不把无关资料加入每次上下文：
+
+- 夜间自动化：`docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md`、`docs/superpowers/packages/NIGHTLY_AUTOMATION.md`
+- 并行、worktree 或 integration：`docs/superpowers/packages/PARALLEL_WORKTREE_EXECUTION.md`
+- 可见功能或用户验收：`docs/user-testing/README.md`
+- 跨阶段设计、目标架构或权威冲突：`docs/superpowers/plans/2026-07-03-frontend-backend-modernization-master-plan.md`
 
 前端视觉改造还必须阅读 `docs/ui/STYLE.md`；该文件只约束颜色、字体、间距、密度、控件外观、可访问性和通用视觉质量，不定义导航、页面、字段、操作、状态、快捷键或流程。AI 概念图、演示数据、目标架构和历史计划都不能单独作为业务来源。
 
-可见前端必须先建立“业务能力与 UX 设计溯源表”。P2-03 至 P2-08 已实现 Vue 行为是待核验能力清单、审计输入和复用候选，不能单独证明业务事实；只有回溯到业务事实来源，或有用户留下日期与范围的明确决定支持的部分，才能进入业务基线。
+可见前端必须先建立“业务能力与 UX 设计溯源表”。P2-03 至 P2-08 已实现的 Vue 行为仅作为历史证据、审计输入和复用候选，不能单独证明业务事实或界面范式；只有回溯到业务事实来源，或有用户留下日期与范围的明确决定支持的部分，才能进入业务基线。
 
 在业务能力可达、数据语义和结果等价、安全边界不降低的前提下，新 Vue SPA 可以主动重组导航、合并或拆分页面、调整布局、控件、呈现顺序和操作步骤。无来源的业务能力、数据语义或业务结果不得实现；服务于已有能力的新布局和控件不要求旧 UI 存在同形元素。
 
-当前 P2-08 已合并；Phase 2 前端来源重校准门槛通过验收前，不扩散迁移 P2-09 及其他复杂页面。
+Phase 2 复杂页面扩散必须满足来源重校准门槛和包依赖；门槛结果与当前包状态只在 `docs/superpowers/packages/EXECUTION_INDEX.md` 维护。
 
 ## 权威顺序
 
@@ -64,12 +101,14 @@
 ## 执行包工作原则
 
 - 先调查再判断，不凭文件名猜字段、接口、状态或业务规则。
+- 并行默认策略：当 Index 已标记 `ready`、依赖已进入共同基线、文件所有权可以分离且真实数据风险受控时，优先同时使用两个功能通道；不能满足条件时不为凑数量强行并行。
+- GitHub Issues 可以拆分包内任务和记录阻塞关系，但不能自行改变执行包状态、依赖或领取顺序。
 - 优先复用现有服务与测试，不为目标架构提前重写业务逻辑。
 - 结构性变化同步更新 `ARCHITECTURE.md`；普通局部修复不做无意义文档改写。
 - 执行包是稳定边界，不是永久有效的代码级步骤。每包开工前根据最新源码生成即时实现计划，完成后更新索引与证据。
 - 已领取正式包必须在即时计划维护标记化交接块；允许状态及证据规则以 packages README 为准，字段或 Git 证据不一致时安全停机。
 - 用户验收必须使用版本化清单，明确分类、证据和用户确认。具体数据源、启动方式、地址、可见标识与关闭方式，只有在对应执行包实现并验证后才能写入清单；不得把尚未实现的专用验收运行环境写成现有能力。
-- 模型分工、升级条件、夜间资格和复核要求以 packages README、资格矩阵及当前包定义为准。
+- 夜间资格和复核要求以 packages README、资格矩阵及当前包定义为准。
 - 普通开发按里程碑批次推进，每批固定 3 个相关执行包；数据库迁移、核心状态机、生产切换、正式用户验收、删除等高风险包可以单独成批，不为凑数搭配无关任务。批次组成、顺序和精确基线必须先写入 `EXECUTION_INDEX.md`。
 - 测试按反馈范围分层：开发和复审修复阶段运行当前测试、包内聚焦测试与受影响回归；功能分支交接前运行 `tools/smoke_check.py --skip-tests`，默认不运行全量 pytest。integration 逐包运行受影响验证，并在里程碑批次末只运行一次完整门槛。
 - 完整测试证据仅在代码 SHA、依赖基线和测试配置相同且其后没有实质代码变化时复用。独立复审、纯文档或交接提交、PR 合并后的主线同步本身不触发全量测试。

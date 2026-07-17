@@ -1,6 +1,6 @@
 # P2-15 知识图谱与证据下钻 v1 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** Use the Matt Pocock `tdd` skill for scoped implementation and fixes, and follow this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 交付独立的只读 Vue 知识图谱页面，让教师按考试、班级和学生查看精确知识标签得分率、分组树、节点事实和分页证据，同时明确禁止把展示分组线解释为知识父子或先修关系。
 
