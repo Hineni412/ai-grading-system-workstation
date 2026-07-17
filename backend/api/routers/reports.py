@@ -45,6 +45,12 @@ def export_session_report(
     file_service: JobFileService = Depends(get_job_file_service),
 ) -> JobResponse:
     _require_session(db, session_id)
+    if request is not None and not db.get_session_results(int(session_id)):
+        raise ApiError(
+            409,
+            "report_results_missing",
+            "The exam has no grading results to export",
+        )
     try:
         if request is None:
             job = manager.submit("report_export", {"session_id": int(session_id)})

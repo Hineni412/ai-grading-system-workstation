@@ -11,7 +11,7 @@ import {
   type TrainingTaskDetail,
   type TrainingTaskList,
 } from '../api/exports'
-import type { JobResponse } from '../api/jobs'
+import { TERMINAL_JOB_STATUSES, type JobResponse } from '../api/jobs'
 import { useJobStore } from './jobs'
 
 export type FileCenterState =
@@ -77,6 +77,7 @@ export const useFileCenterStore = defineStore('file-center', () => {
 
   let generation = 0
   let controller: AbortController | null = null
+  let detailController: AbortController | null = null
 
   async function load(
     nextSessionId: number,
@@ -86,6 +87,8 @@ export const useFileCenterStore = defineStore('file-center', () => {
       throw new Error('Invalid session id')
     }
     controller?.abort()
+    detailController?.abort()
+    detailController = null
     const nextController = new AbortController()
     controller = nextController
     const requestGeneration = ++generation
@@ -119,6 +122,10 @@ export const useFileCenterStore = defineStore('file-center', () => {
       reportContext.value = nextReports
       trainingTasks.value = nextTasks.items
       trainingJobs.value = nextJobs
+      const jobStore = useJobStore()
+      for (const job of [...nextReports.jobs, ...nextJobs]) {
+        if (!TERMINAL_JOB_STATUSES.has(job.status)) jobStore.track(job)
+      }
       const hasAnything = nextReports.jobs.length > 0
         || nextTasks.items.length > 0
         || nextJobs.length > 0
@@ -178,16 +185,33 @@ export const useFileCenterStore = defineStore('file-center', () => {
   async function loadTrainingTask(
     taskId: number,
     api: FileCenterApi = exportsApi,
-  ): Promise<TrainingTaskDetail> {
+  ): Promise<TrainingTaskDetail | null> {
+    const requestGeneration = generation
+    const requestSessionId = sessionId.value
+    detailController?.abort()
+    const nextController = new AbortController()
+    detailController = nextController
     trainingDetailState.value = 'loading'
     try {
-      const detail = await api.getTrainingTask(taskId)
+      const detail = await api.getTrainingTask(taskId, nextController.signal)
+      if (
+        nextController.signal.aborted
+        || generation !== requestGeneration
+        || sessionId.value !== requestSessionId
+      ) return null
       selectedTrainingTask.value = detail
       trainingDetailState.value = 'ready'
       return detail
     } catch (error) {
+      if (
+        nextController.signal.aborted
+        || generation !== requestGeneration
+        || sessionId.value !== requestSessionId
+      ) return null
       trainingDetailState.value = 'error'
       throw error
+    } finally {
+      if (detailController === nextController) detailController = null
     }
   }
 
@@ -241,6 +265,8 @@ export const useFileCenterStore = defineStore('file-center', () => {
   function reset(): void {
     controller?.abort()
     controller = null
+    detailController?.abort()
+    detailController = null
     generation += 1
     sessionId.value = null
     reportContext.value = null

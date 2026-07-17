@@ -271,7 +271,10 @@ describe('file center view', () => {
     await vi.waitFor(() => expect(host.textContent).toContain('TRAIN-12'))
 
     host.querySelector<HTMLButtonElement>('[data-testid="configure-training-12"]')!.click()
-    await vi.waitFor(() => expect(apiMock.getTrainingTask).toHaveBeenCalledWith(12))
+    await vi.waitFor(() => expect(apiMock.getTrainingTask).toHaveBeenCalledWith(
+      12,
+      expect.any(AbortSignal),
+    ))
     await vi.waitFor(() => expect(host.querySelector('[data-testid="training-export-form"]')).not.toBeNull())
 
     const mode = host.querySelector<HTMLSelectElement>('[data-testid="training-mode"]')!
@@ -304,6 +307,33 @@ describe('file center view', () => {
 
     expect(host.textContent).toContain('请先在顶部选择考试')
     expect(apiMock.getReportContext).not.toHaveBeenCalled()
+  })
+
+  it('disables report generation when the exam has no saved results', async () => {
+    apiMock.getReportContext.mockResolvedValueOnce({
+      score_revision: '0'.repeat(64),
+      has_results: false,
+      jobs: [],
+      total: 0,
+      page: 1,
+      page_size: 100,
+      total_pages: 1,
+    })
+
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.textContent).toContain(
+      '当前考试还没有已保存成绩',
+    ))
+
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="generate-score_excel"]')
+        ?.disabled,
+    ).toBe(true)
+    expect(
+      host.querySelector<HTMLButtonElement>(
+        '[data-testid="generate-annotated_original_pdf"]',
+      )?.disabled,
+    ).toBe(true)
   })
 
   it('never presents an old score revision as the current download', async () => {

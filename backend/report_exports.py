@@ -53,24 +53,29 @@ def submit_report_export(
     }
     with _submit_lock:
         if not force_regenerate:
-            jobs, _total = manager.list(
-                session_id=int(session_id),
-                job_types=("report_export",),
-                statuses=("queued", "running", "succeeded"),
-                limit=100,
-                offset=0,
-            )
-            for job in jobs:
-                if (
-                    job.payload.get("report_type") != report_type
-                    or job.payload.get("score_revision") != revision
-                ):
-                    continue
-                if job.status in {"queued", "running"}:
+            offset = 0
+            while True:
+                jobs, total = manager.list(
+                    session_id=int(session_id),
+                    job_types=("report_export",),
+                    statuses=("queued", "running", "succeeded"),
+                    limit=100,
+                    offset=offset,
+                )
+                for job in jobs:
+                    if (
+                        job.payload.get("report_type") != report_type
+                        or job.payload.get("score_revision") != revision
+                    ):
+                        continue
+                    if job.status in {"queued", "running"}:
+                        return job
+                    try:
+                        file_service.resolve(job)
+                    except ControlledFileError:
+                        continue
                     return job
-                try:
-                    file_service.resolve(job)
-                except ControlledFileError:
-                    continue
-                return job
+                offset += len(jobs)
+                if not jobs or offset >= total:
+                    break
         return manager.submit("report_export", payload)
