@@ -7,6 +7,14 @@ import json
 import pytest
 
 
+def _jpeg(payload: bytes) -> bytes:
+    return b"\xff\xd8\xff" + payload
+
+
+def _png(payload: bytes) -> bytes:
+    return b"\x89PNG\r\n\x1a\n" + payload
+
+
 def _frozen_workspace(tmp_path, session_id: int):
     from backend.scan_grading.workspace import ScanGradingWorkspace
 
@@ -14,7 +22,7 @@ def _frozen_workspace(tmp_path, session_id: int):
         exams_root=tmp_path / "exams",
         templates_root=tmp_path / "templates",
     )
-    content = f"batch-{session_id}".encode()
+    content = _jpeg(f"batch-{session_id}".encode())
     workspace.add_upload(
         session_id,
         filename="scan.jpg",
@@ -40,7 +48,7 @@ def test_upload_batch_adds_deduplicates_and_freezes_files(tmp_path) -> None:
         exams_root=tmp_path / "exams",
         templates_root=tmp_path / "templates",
     )
-    content = b"anonymous scan image"
+    content = _jpeg(b"anonymous scan image")
     digest = hashlib.sha256(content).hexdigest()
 
     first = workspace.add_upload(
@@ -104,7 +112,7 @@ def test_upload_batch_removes_and_clears_only_draft_files(tmp_path) -> None:
         templates_root=tmp_path / "templates",
     )
     added = []
-    for name, content in (("front.png", b"front"), ("back.png", b"back")):
+    for name, content in (("front.png", _png(b"front")), ("back.png", _png(b"back"))):
         added.append(
             workspace.add_upload(
                 9,
@@ -169,7 +177,7 @@ def test_preflight_projection_hides_paths_and_saves_revisioned_decisions(tmp_pat
         exams_root=tmp_path / "exams",
         templates_root=tmp_path / "templates",
     )
-    for name, content in (("front.jpg", b"front"), ("back.jpg", b"back")):
+    for name, content in (("front.jpg", _jpeg(b"front")), ("back.jpg", _jpeg(b"back"))):
         workspace.add_upload(
             3,
             filename=name,
@@ -219,6 +227,7 @@ def test_preflight_projection_hides_paths_and_saves_revisioned_decisions(tmp_pat
     preflight = workspace.get_preflight(3)
     assert preflight["summary"] == {
         "auto_matched": 1,
+        "ready_to_grade": 1,
         "issues": 1,
         "absent_candidates": 1,
         "total_pages": 4,
@@ -265,7 +274,7 @@ def test_starting_a_new_batch_archives_the_previous_preflight(tmp_path) -> None:
         exams_root=tmp_path / "exams",
         templates_root=tmp_path / "templates",
     )
-    content = b"old scan"
+    content = _jpeg(b"old scan")
     workspace.add_upload(
         4, filename="old.jpg", media_type="image/jpeg",
         content_sha256=hashlib.sha256(content).hexdigest(), source=io.BytesIO(content),
@@ -301,7 +310,7 @@ def test_new_batch_archive_failure_keeps_previous_batch_intact(tmp_path, monkeyp
         exams_root=tmp_path / "exams",
         templates_root=tmp_path / "templates",
     )
-    content = b"old scan"
+    content = _jpeg(b"old scan")
     workspace.add_upload(
         5,
         filename="old.jpg",
@@ -352,7 +361,7 @@ def test_preflight_rejects_analysis_from_previous_batch(tmp_path) -> None:
         exams_root=tmp_path / "exams",
         templates_root=tmp_path / "templates",
     )
-    old_content = b"old scan"
+    old_content = _jpeg(b"old scan")
     workspace.add_upload(
         6,
         filename="old.jpg",
@@ -362,7 +371,7 @@ def test_preflight_rejects_analysis_from_previous_batch(tmp_path) -> None:
     )
     old_batch = workspace.freeze_uploads(6, expected_revision=1)
     workspace.start_new_upload_batch(6)
-    new_content = b"new scan"
+    new_content = _jpeg(b"new scan")
     workspace.add_upload(
         6,
         filename="new.jpg",
@@ -398,7 +407,7 @@ def test_restart_rolls_back_interrupted_batch_archive(tmp_path, monkeypatch) -> 
         exams_root=tmp_path / "exams",
         templates_root=tmp_path / "templates",
     )
-    content = b"restart scan"
+    content = _jpeg(b"restart scan")
     workspace.add_upload(
         8,
         filename="restart.jpg",
@@ -453,7 +462,7 @@ def test_restart_finishes_archive_after_new_manifest_was_published(
         exams_root=tmp_path / "exams",
         templates_root=tmp_path / "templates",
     )
-    content = b"committed scan"
+    content = _jpeg(b"committed scan")
     workspace.add_upload(
         9,
         filename="committed.jpg",

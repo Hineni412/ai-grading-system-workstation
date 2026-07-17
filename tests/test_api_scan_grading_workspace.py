@@ -6,7 +6,16 @@ import json
 import threading
 from urllib.parse import quote
 
+import pytest
 from fastapi.testclient import TestClient
+
+
+def _jpeg(payload: bytes) -> bytes:
+    return b"\xff\xd8\xff" + payload
+
+
+def _png(payload: bytes) -> bytes:
+    return b"\x89PNG\r\n\x1a\n" + payload
 
 
 def _client(tmp_path):
@@ -35,7 +44,7 @@ def _client(tmp_path):
 def test_scan_upload_routes_publish_safe_queue_and_freeze_it(tmp_path) -> None:
     client, db, manager = _client(tmp_path)
     session_id = db.create_grading_session("匿名月考", "rubric.json", "answer.json")
-    content = b"anonymous-jpeg"
+    content = _jpeg(b"anonymous-jpeg")
     digest = hashlib.sha256(content).hexdigest()
     headers = {
         "content-type": "image/jpeg",
@@ -85,12 +94,52 @@ def test_scan_upload_routes_publish_safe_queue_and_freeze_it(tmp_path) -> None:
         manager.shutdown()
 
 
+@pytest.mark.parametrize(
+    ("filename", "media_type", "content"),
+    [
+        ("forged.jpg", "image/jpeg", b"this is not a jpeg"),
+        ("forged.png", "image/png", b"this is not a png"),
+        ("forged.pdf", "application/pdf", b"this is not a pdf"),
+        ("jpeg-as-png.png", "image/png", _jpeg(b"wrong declared type")),
+    ],
+)
+def test_scan_upload_rejects_false_file_type_without_changing_the_batch(
+    tmp_path,
+    filename: str,
+    media_type: str,
+    content: bytes,
+) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = db.create_grading_session("格式校验", "rubric.json", "answer.json")
+    try:
+        rejected = client.post(
+            f"/api/sessions/{session_id}/scan-uploads",
+            content=content,
+            headers={
+                "content-type": media_type,
+                "x-upload-filename": filename,
+                "x-content-sha256": hashlib.sha256(content).hexdigest(),
+            },
+        )
+
+        assert rejected.status_code == 415
+        assert rejected.json()["error"]["code"] == "invalid_scan_upload"
+        batch = client.get(f"/api/sessions/{session_id}/grading-workspace").json()[
+            "upload_batch"
+        ]
+        assert batch["revision"] == 0
+        assert batch["files"] == []
+        assert not list((tmp_path / "exams").rglob("*.tmp"))
+    finally:
+        manager.shutdown()
+
+
 def test_scan_upload_routes_remove_and_clear_draft_queue(tmp_path) -> None:
     client, db, manager = _client(tmp_path)
     session_id = db.create_grading_session("匿名周测", "rubric.json", "answer.json")
     try:
         ids = []
-        for index, content in enumerate((b"front", b"back"), start=1):
+        for index, content in enumerate((_png(b"front"), _png(b"back")), start=1):
             response = client.post(
                 f"/api/sessions/{session_id}/scan-uploads",
                 content=content,
@@ -132,7 +181,7 @@ def test_preflight_routes_return_safe_snapshot_and_revisioned_decisions(tmp_path
     students = db.list_students()
     session_id = db.create_grading_session("匿名期中", "rubric.json", "answer.json")
     try:
-        for index, content in enumerate((b"front", b"back"), start=1):
+        for index, content in enumerate((_jpeg(b"front"), _jpeg(b"back")), start=1):
             client.post(
                 f"/api/sessions/{session_id}/scan-uploads",
                 content=content,
@@ -186,10 +235,11 @@ def test_preflight_routes_return_safe_snapshot_and_revisioned_decisions(tmp_path
         loaded = client.get(f"/api/sessions/{session_id}/scan/preflight")
         assert loaded.status_code == 200
         assert str(tmp_path) not in loaded.text
+        assert loaded.json()["summary"]["ready_to_grade"] == 1
         group_id = loaded.json()["groups"][0]["id"]
         media = client.get(loaded.json()["groups"][0]["front_media_url"])
         assert media.status_code == 200
-        assert media.content in {b"front", b"back"}
+        assert media.content in {_jpeg(b"front"), _jpeg(b"back")}
         assert client.get(
             f"/api/sessions/{session_id}/scan/preflight/media/issue:forged:front"
         ).status_code == 404
@@ -208,13 +258,17 @@ def test_preflight_routes_return_safe_snapshot_and_revisioned_decisions(tmp_path
                     {
                         "target_type": "issue",
                         "target_id": "issue-1",
-                        "action": "invalid",
+                        "action": "match",
+                        "student_id": students[0]["id"],
                     },
                 ],
             },
         )
         assert saved.status_code == 200
         assert saved.json()["pending_issue_count"] == 0
+        assert saved.json()["ready_to_grade"] == 2
+        refreshed = client.get(f"/api/sessions/{session_id}/scan/preflight")
+        assert refreshed.json()["summary"]["ready_to_grade"] == 2
 
         stale = client.put(
             f"/api/sessions/{session_id}/scan/preflight/decisions",
@@ -238,7 +292,7 @@ def test_scan_analysis_uses_frozen_server_batch_and_rejects_client_paths(tmp_pat
         }
 
     manager.register("scan_analysis", handler)
-    content = b"front"
+    content = _jpeg(b"front")
     try:
         client.post(
             f"/api/sessions/{session_id}/scan-uploads",
@@ -281,7 +335,7 @@ def test_active_preflight_is_server_projected_and_blocks_new_batch(tmp_path) -> 
         return {"state": "completed"}
 
     manager.register("scan_analysis", blocking_handler)
-    content = b"front"
+    content = _jpeg(b"front")
     try:
         client.post(
             f"/api/sessions/{session_id}/scan-uploads",
@@ -340,7 +394,7 @@ def test_preflight_submission_and_new_batch_share_one_session_lock(
         templates_root=tmp_path / "templates",
         job_manager=manager,
     )
-    content = b"front"
+    content = _jpeg(b"front")
     workspace.add_upload(
         1,
         filename="front.jpg",
@@ -401,7 +455,7 @@ def test_preflight_submission_and_new_batch_share_one_session_lock(
 def test_failed_preflight_after_restart_is_projected_and_can_be_retried(tmp_path) -> None:
     client, db, manager = _client(tmp_path)
     session_id = db.create_grading_session("预检重启恢复", "rubric.json", "answer.json")
-    content = b"front"
+    content = _jpeg(b"front")
     try:
         client.post(
             f"/api/sessions/{session_id}/scan-uploads",

@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '../api/errors'
-import { fetchGradingWorkspace, supplementGrading, uploadScan } from '../api/scan-grading'
+import {
+  fetchGradingWorkspace,
+  fetchPreflight,
+  supplementGrading,
+  uploadScan,
+} from '../api/scan-grading'
 
 function response(value: unknown): Response {
   return new Response(JSON.stringify(value), {
@@ -100,6 +105,23 @@ describe('scan grading API contract', () => {
       'x-upload-filename': encodeURIComponent('答卷 1.jpg'),
       'x-content-sha256': '9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a',
     })
+  })
+
+  it('rejects a preflight projection without the true gradable count', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => response({
+      revision: 0,
+      summary: { auto_matched: 1, issues: 1, absent_candidates: 0, total_pages: 3 },
+      groups: [],
+      issues: [],
+      absent_students: [],
+      warnings: [],
+      decisions: [],
+      pending_issue_count: 1,
+    })))
+
+    await expect(fetchPreflight(7)).rejects.toMatchObject({
+      kind: 'contract', code: 'invalid_success_contract',
+    } satisfies Partial<ApiError>)
   })
 
   it('submits supplementation through its run-specific endpoint', async () => {

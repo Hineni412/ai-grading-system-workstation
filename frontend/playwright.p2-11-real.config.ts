@@ -7,16 +7,12 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   workers: 1,
   reporter: 'line',
-  use: { baseURL: 'http://127.0.0.1:5175', trace: 'on-first-retry' },
+  use: { baseURL: 'http://127.0.0.1:8000', trace: 'on-first-retry' },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: [
     {
       command: '..\\..\\..\\runtime\\python\\python.exe ../tools/p2_11_browser_server.py --data-root test-results/p2-11-real',
       url: 'http://127.0.0.1:8000/api/healthz', reuseExistingServer: false, timeout: 60_000,
-    },
-    {
-      command: 'npm run dev -- --port 5175',
-      url: 'http://127.0.0.1:5175', reuseExistingServer: false, timeout: 60_000,
     },
   ],
 })

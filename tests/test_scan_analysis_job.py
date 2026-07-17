@@ -36,6 +36,12 @@ def test_run_scan_analysis_persists_payload_and_summary(tmp_path, monkeypatch: p
     scan_dir = tmp_path / "exams" / f"session_{session_id}" / "uploaded_scans"
     scan_dir.mkdir(parents=True)
     (scan_dir / "001_front.jpg").write_bytes(b"fake image")
+    work_dir = tmp_path / "templates" / f"session_{session_id}"
+    work_dir.mkdir(parents=True)
+    (work_dir / "scan_upload_batch.json").write_text(
+        json.dumps({"batch_id": "anonymous-batch-1"}),
+        encoding="utf-8",
+    )
 
     class FakeScanner:
         def __init__(self, **kwargs: Any) -> None:
@@ -64,7 +70,7 @@ def test_run_scan_analysis_persists_payload_and_summary(tmp_path, monkeypatch: p
         db=db,
         session_id=session_id,
         exams_dir=scan_dir,
-        session_work_dir=tmp_path / "templates" / f"session_{session_id}",
+        session_work_dir=work_dir,
         data_root=tmp_path,
         llm_client_factory=lambda: object(),
         scanner_factory=FakeScanner,
@@ -231,6 +237,58 @@ def test_stale_scan_batch_cannot_publish_over_the_current_snapshot(
             llm_client_factory=lambda: object(),
             scanner_factory=FakeScanner,
             scan_batch_id="stale-batch",
+        )
+
+    assert latest.read_text(encoding="utf-8") == '{"version":"current"}'
+    assert list(work_dir.glob(".scan_analysis_latest.*.tmp")) == []
+
+
+def test_batch_bound_scan_cannot_publish_when_manifest_is_missing(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.jobs.scan_analysis import run_scan_analysis
+    from scanner import ScanAnalysis
+
+    class FakeDb:
+        def get_grading_session(self, session_id: int) -> dict[str, int]:
+            return {"id": session_id}
+
+        def is_template_ready(self, _session_id: int) -> bool:
+            return True
+
+        def list_students(self) -> list[dict[str, object]]:
+            return [{"id": 1, "name": "Alice"}]
+
+    class FakeScanner:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def analyze(self, _students: list[dict[str, Any]]) -> ScanAnalysis:
+            return ScanAnalysis(total_pages=1)
+
+    monkeypatch.setattr(
+        "backend.jobs.scan_analysis.answer_regions_with_template_source_sizes",
+        lambda _db, _session_id, data_root: [],
+    )
+    scan_dir = tmp_path / "exams"
+    scan_dir.mkdir()
+    (scan_dir / "front.jpg").write_bytes(b"scan")
+    work_dir = tmp_path / "templates" / "session_1"
+    work_dir.mkdir(parents=True)
+    latest = work_dir / "scan_analysis_latest.json"
+    latest.write_text('{"version":"current"}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="manifest|batch"):
+        run_scan_analysis(
+            db=FakeDb(),
+            session_id=1,
+            exams_dir=scan_dir,
+            session_work_dir=work_dir,
+            data_root=tmp_path,
+            llm_client_factory=lambda: object(),
+            scanner_factory=FakeScanner,
+            scan_batch_id="missing-batch",
         )
 
     assert latest.read_text(encoding="utf-8") == '{"version":"current"}'

@@ -96,11 +96,20 @@ class ScanDecisionResponse(BaseModel):
     revision: int = Field(ge=0)
     decisions: list[ScanDecisionItem]
     pending_issue_count: int = Field(ge=0)
+    ready_to_grade: int = Field(ge=0)
+
+
+class ScanPreflightSummaryResponse(BaseModel):
+    auto_matched: int = Field(ge=0)
+    ready_to_grade: int = Field(ge=0)
+    issues: int = Field(ge=0)
+    absent_candidates: int = Field(ge=0)
+    total_pages: int = Field(ge=0)
 
 
 class ScanPreflightResponse(BaseModel):
     revision: int = Field(ge=0)
-    summary: dict[str, int]
+    summary: ScanPreflightSummaryResponse
     groups: list[dict[str, Any]]
     issues: list[dict[str, Any]]
     absent_students: list[dict[str, Any]]

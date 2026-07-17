@@ -188,13 +188,20 @@ def _check_cancelled(callback: Callable[[], None] | None) -> None:
 
 def _read_current_manual_decisions(session_work_dir: Path, analysis_path: Path) -> list[dict[str, Any]] | None:
     state_path = session_work_dir / "scan_decisions_state.json"
-    if state_path.exists() and analysis_path.exists():
+    if state_path.exists():
+        if not analysis_path.exists():
+            return None
         try:
             state = json.loads(state_path.read_text(encoding="utf-8"))
             identity = hashlib.sha256(analysis_path.read_bytes()).hexdigest()
             decisions = state.get("internal_decisions") if isinstance(state, dict) else None
-            if state.get("analysis_identity") == identity and isinstance(decisions, list):
+            if (
+                isinstance(state, dict)
+                and state.get("analysis_identity") == identity
+                and isinstance(decisions, list)
+            ):
                 return [dict(item) for item in decisions if isinstance(item, dict)]
         except (OSError, ValueError):
-            pass
+            return None
+        return None
     return _read_optional_json_list(session_work_dir / "scan_manual_decisions_latest.json")

@@ -56,6 +56,12 @@ class ScanGradingWorkspace:
         ".jpeg": "image/jpeg",
         ".png": "image/png",
     }
+    _upload_signatures = {
+        ".pdf": b"%PDF-",
+        ".jpg": b"\xff\xd8\xff",
+        ".jpeg": b"\xff\xd8\xff",
+        ".png": b"\x89PNG\r\n\x1a\n",
+    }
 
     def __init__(
         self,
@@ -639,9 +645,10 @@ class ScanGradingWorkspace:
                 or self._allowed_uploads.get(suffix) != str(media_type or "").lower()
             ):
                 raise InvalidScanUploadError("scan upload metadata is invalid")
-            for item in manifest["files"]:
-                if item["sha256"] == digest:
-                    return {"duplicate": True, "file": self._public_file(item)}
+            duplicate = next(
+                (item for item in manifest["files"] if item["sha256"] == digest),
+                None,
+            )
 
             batch_dir = self._batch_dir(session_id, manifest["batch_id"])
             files_dir = batch_dir / "files"
@@ -650,6 +657,7 @@ class ScanGradingWorkspace:
             target = files_dir / storage_name
             temporary_path: Path | None = None
             calculated = hashlib.sha256()
+            header = bytearray()
             size = 0
             try:
                 with tempfile.NamedTemporaryFile(
@@ -664,6 +672,8 @@ class ScanGradingWorkspace:
                         chunk = source.read(1024 * 1024)
                         if not chunk:
                             break
+                        if len(header) < 8:
+                            header.extend(chunk[: 8 - len(header)])
                         calculated.update(chunk)
                         size += len(chunk)
                         if size > self.max_file_bytes:
@@ -673,6 +683,12 @@ class ScanGradingWorkspace:
                     os.fsync(temporary.fileno())
                 if calculated.hexdigest() != digest:
                     raise ScanGradingWorkspaceError("uploaded content digest does not match")
+                if not bytes(header).startswith(self._upload_signatures[suffix]):
+                    raise InvalidScanUploadError(
+                        "scan upload content does not match its declared type"
+                    )
+                if duplicate is not None:
+                    return {"duplicate": True, "file": self._public_file(duplicate)}
                 os.replace(temporary_path, target)
                 temporary_path = None
             finally:
@@ -769,15 +785,23 @@ class ScanGradingWorkspace:
                 raise ScanGradingWorkspaceError("scan upload batch is not frozen")
             analysis, identity = self._read_analysis(session_id)
             state = self._read_decision_state(session_id, identity)
-            groups = [
-                self._public_group(session_id, item)
+            analysis_groups = [
+                item
                 for item in analysis.get("groups", [])
                 if isinstance(item, dict)
             ]
-            issues = [
-                self._public_issue(session_id, item)
+            analysis_issues = [
+                item
                 for item in analysis.get("issues", [])
                 if isinstance(item, dict)
+            ]
+            groups = [
+                self._public_group(session_id, item)
+                for item in analysis_groups
+            ]
+            issues = [
+                self._public_issue(session_id, item)
+                for item in analysis_issues
             ]
             absent = [
                 {
@@ -792,6 +816,11 @@ class ScanGradingWorkspace:
                 "revision": int(state["revision"]),
                 "summary": {
                     "auto_matched": len(groups),
+                    "ready_to_grade": self._ready_to_grade_count(
+                        analysis_groups,
+                        analysis_issues,
+                        state,
+                    ),
                     "issues": len(issues),
                     "absent_candidates": len(absent),
                     "total_pages": int(analysis.get("total_pages") or 0),
@@ -896,6 +925,19 @@ class ScanGradingWorkspace:
                 "revision": next_state["revision"],
                 "decisions": public_decisions,
                 "pending_issue_count": issue_count - len(decided_issue_ids),
+                "ready_to_grade": self._ready_to_grade_count(
+                    [
+                        item
+                        for item in analysis.get("groups", [])
+                        if isinstance(item, dict)
+                    ],
+                    [
+                        item
+                        for item in analysis.get("issues", [])
+                        if isinstance(item, dict)
+                    ],
+                    next_state,
+                ),
             }
 
     def resolve_preflight_media(self, session_id: int, media_ref: str) -> Path:
@@ -1181,6 +1223,24 @@ class ScanGradingWorkspace:
             if item.get("target_type") == "issue" and item.get("action") != "pending"
         }
         return sum(1 for item in issues if item["id"] not in decided)
+
+    @staticmethod
+    def _ready_to_grade_count(
+        groups: list[dict[str, Any]],
+        issues: list[dict[str, Any]],
+        state: dict[str, Any],
+    ) -> int:
+        gradable_issue_ids = {
+            str(item.get("issue_id") or "")
+            for item in issues
+            if item.get("back_image")
+        }
+        matched_issue_ids = {
+            str(item.get("target_id") or "")
+            for item in state.get("public_decisions", [])
+            if item.get("target_type") == "issue" and item.get("action") == "match"
+        }
+        return len(groups) + len(gradable_issue_ids & matched_issue_ids)
 
     def _lock(self, session_id: int) -> threading.RLock:
         key = f"{self.templates_root.resolve()}:{int(session_id)}"

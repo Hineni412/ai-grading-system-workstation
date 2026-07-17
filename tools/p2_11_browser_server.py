@@ -198,6 +198,25 @@ def main() -> None:
     manager.register("grading_run", _grading_handler(paths))
     app = create_app(path_manager=paths)
     app.dependency_overrides[get_job_manager] = lambda: manager
+    frontend_dist = REPO_ROOT / "frontend" / "dist"
+    if not (frontend_dist / "index.html").is_file():
+        raise RuntimeError("build the frontend before running the P2-11 browser gate")
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount(
+        "/assets",
+        StaticFiles(directory=frontend_dist / "assets"),
+        name="p2-11-assets",
+    )
+
+    @app.get("/{frontend_path:path}", include_in_schema=False)
+    def serve_frontend(frontend_path: str):
+        if frontend_path.startswith("api/"):
+            raise HTTPException(status_code=404)
+        return FileResponse(frontend_dist / "index.html")
+
     uvicorn.run(app, host="127.0.0.1", port=args.port)
 
 
