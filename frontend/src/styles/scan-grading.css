@@ -8,7 +8,7 @@
 .scan-run-rail { position: sticky; top: var(--space-4); display: grid; list-style: none; padding: 0; margin: var(--space-6) 0 0; border: var(--border-width) solid var(--color-border-default); background: var(--color-bg-surface); }
 .scan-run-rail li { position: relative; display: grid; gap: var(--space-2); padding: var(--space-4); color: var(--color-text-secondary); border-bottom: var(--border-width) solid var(--color-border-default); }
 .scan-run-rail li:last-child { border-bottom: 0; }
-.scan-run-rail li span { display: grid; width: var(--space-6); height: var(--space-6); place-items: center; border: var(--border-width) solid currentColor; border-radius: 50%; font-size: var(--font-size-caption); }
+.scan-run-rail li span { display: grid; width: var(--space-6); height: var(--space-6); place-items: center; border: var(--border-width) solid currentColor; border-radius: var(--radius-circle); font-size: var(--font-size-caption); }
 .scan-run-rail li[data-state="current"] { color: var(--color-accent); background: var(--color-accent-subtle); }
 .scan-run-rail li[data-state="complete"] { color: var(--color-success); }
 .scan-stage { margin-top: var(--space-4); border: var(--border-width) solid var(--color-border-default); border-left: var(--border-selected-width) solid var(--color-border-strong); background: var(--color-bg-surface); padding: var(--space-5); }

@@ -523,7 +523,13 @@ class ApiE2EHarness:
         assert config_job["result"]["outcome"] == "complete"
 
         committed = self.bind_and_commit_template(session_id)
-        snapshot_path = Path(committed.pop("snapshot_path"))
+        snapshots = list(
+            (
+                self.paths.templates_dir / f"session_{session_id}"
+            ).glob("regions_confirmed_*.json")
+        )
+        assert len(snapshots) == 1
+        snapshot_path = snapshots[0]
         assert snapshot_path.is_file()
         snapshot_path.resolve().relative_to(
             (self.paths.templates_dir / f"session_{session_id}").resolve()

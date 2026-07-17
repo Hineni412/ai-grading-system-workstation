@@ -1,5 +1,4 @@
 import { apiClient } from './client'
-import { ApiError, parseErrorResponse } from './errors'
 import {
   decodeJobResponse,
   jobApi,
@@ -328,44 +327,11 @@ function filenameFromDisposition(disposition: string | null, jobId: number): str
 }
 
 async function downloadJobFile(jobId: number): Promise<DownloadedJobFile> {
-  const requestId = globalThis.crypto.randomUUID()
-  let response: Response
-  try {
-    response = await globalThis.fetch(`/api/jobs/${jobId}/download`, {
-      method: 'GET',
-      headers: {
-        accept: 'application/octet-stream',
-        'x-request-id': requestId,
-      },
-    })
-  } catch {
-    throw new ApiError({
-      kind: 'network',
-      status: null,
-      code: 'network_error',
-      message: '暂时无法连接服务器',
-      details: {},
-      requestId,
-      retryable: true,
-    })
-  }
-  if (!response.ok) {
-    let payload: unknown
-    try {
-      payload = await response.json()
-    } catch {
-      payload = null
-    }
-    throw parseErrorResponse(
-      payload,
-      response.headers.get('x-request-id')?.trim() || requestId,
-      response.status,
-    )
-  }
+  const response = await apiClient.download(`/api/jobs/${jobId}/download`)
   return {
-    blob: await response.blob(),
+    blob: response.blob,
     filename: filenameFromDisposition(
-      response.headers.get('content-disposition'),
+      response.contentDisposition,
       jobId,
     ),
   }
