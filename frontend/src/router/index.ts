@@ -3,6 +3,7 @@ import { createRouter, createWebHistory, type RouteRecordRaw, type RouterHistory
 import ComponentShowcase from '../components/design-system/ComponentShowcase.vue'
 import {
   sessionRouteDefinition,
+  filesRouteDefinition,
   templateRegionRouteDefinition,
   gradingRunRouteDefinition,
   knowledgeGraphRouteDefinition,
@@ -68,6 +69,16 @@ const routes: RouteRecordRaw[] = [
       title: knowledgeGraphRouteDefinition.title,
       description: knowledgeGraphRouteDefinition.description,
       breadcrumb: knowledgeGraphRouteDefinition.breadcrumb,
+    },
+  },
+  {
+    path: filesRouteDefinition.path,
+    name: filesRouteDefinition.id,
+    component: () => import('../views/FileCenterView.vue'),
+    meta: {
+      title: filesRouteDefinition.title,
+      description: filesRouteDefinition.description,
+      breadcrumb: filesRouteDefinition.breadcrumb,
     },
   },
   {

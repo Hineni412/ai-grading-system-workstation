@@ -9,6 +9,7 @@ from api_profiles import active_api_profile, get_api_profile_store
 from backend.llm.policy import policy_overrides_from_profile
 from db_manager import DBManager
 from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
+from original_paper_exporter import OriginalPaperExporter
 from report import ReportGenerator
 from question_bank.services.ai_tagging_service import AITaggingService
 from question_bank.services.question_write_service import QuestionBankWriteService
@@ -27,6 +28,11 @@ class ReportGeneratorFactory(Protocol):
         ...
 
 
+class OriginalPaperExporterFactory(Protocol):
+    def __call__(self, db: DBManager, output_dir: Path) -> OriginalPaperExporter:
+        ...
+
+
 def register_default_job_handlers(
     manager: JobManager,
     *,
@@ -39,6 +45,7 @@ def register_default_job_handlers(
     upload_config_dir: Path | None = None,
     training_output_root: Path | None = None,
     report_generator_factory: ReportGeneratorFactory = ReportGenerator,
+    original_paper_exporter_factory: OriginalPaperExporterFactory = OriginalPaperExporter,
     scan_runner: Callable[..., dict[str, object]] = run_scan_analysis,
     grading_runner: Callable[..., dict[str, object]] = run_grading_job,
     config_generation_runner: Callable[..., dict[str, object]] = run_config_generation_job,
@@ -61,6 +68,7 @@ def register_default_job_handlers(
             db_path=Path(db_path),
             reports_dir=Path(reports_dir),
             report_generator_factory=report_generator_factory,
+            original_paper_exporter_factory=original_paper_exporter_factory,
         ),
     )
     manager.register(
@@ -214,6 +222,7 @@ def _build_report_export_handler(
     db_path: Path,
     reports_dir: Path,
     report_generator_factory: ReportGeneratorFactory,
+    original_paper_exporter_factory: OriginalPaperExporterFactory,
 ):
     def handler(context: JobContext) -> dict[str, object]:
         raw_session_id = context.payload.get("session_id")
@@ -223,6 +232,13 @@ def _build_report_export_handler(
             session_id = int(raw_session_id)
         except (TypeError, ValueError) as exc:
             raise ValueError("session_id must be an integer") from exc
+        explicit_report_type = "report_type" in context.payload
+        report_type = str(
+            context.payload.get("report_type") or "score_excel"
+        ).strip()
+        if report_type not in {"score_excel", "annotated_original_pdf"}:
+            raise ValueError("report_type is not supported")
+        score_revision = str(context.payload.get("score_revision") or "").strip()
         reports_dir.mkdir(parents=True, exist_ok=True)
         context.raise_if_cancelled()
         context.report(0.05, "report_export", "starting")
@@ -231,9 +247,17 @@ def _build_report_export_handler(
             prefix=f".job-{context.job_id}-",
         ) as staging_dir_value:
             staging_dir = Path(staging_dir_value)
-            staged_output = Path(
-                report_generator_factory(db_path, staging_dir).export_session(session_id)
-            )
+            if report_type == "score_excel":
+                staged_output = Path(
+                    report_generator_factory(db_path, staging_dir).export_session(session_id)
+                )
+            else:
+                staged_output = Path(
+                    original_paper_exporter_factory(
+                        DBManager(db_path),
+                        staging_dir,
+                    ).export_session_originals(session_id)
+                )
             try:
                 staged_output.resolve().relative_to(staging_dir.resolve())
             except ValueError as exc:
@@ -246,11 +270,16 @@ def _build_report_export_handler(
                 f"{staged_output.stem}_job-{context.job_id}{staged_output.suffix}"
             )
             os.replace(staged_output, output_path)
-            return {
+            result: dict[str, object] = {
                 "session_id": session_id,
                 "file_path": str(output_path),
                 "filename": output_path.name,
             }
+            if explicit_report_type:
+                result["report_type"] = report_type
+            if score_revision:
+                result["score_revision"] = score_revision
+            return result
 
     return handler
 
