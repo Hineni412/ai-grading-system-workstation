@@ -202,6 +202,30 @@ def test_report_job_download_streams_controlled_file(file_client) -> None:
     assert response.headers["cache-control"] == "no-store"
 
 
+def test_annotated_original_pdf_download_preserves_chinese_filename(file_client) -> None:
+    client, store, reports_dir = file_client
+    report = reports_dir / "七年级期中_批注原卷.pdf"
+    report.write_bytes(b"%PDF-1.7")
+    job = _finish_job(
+        store,
+        "report_export",
+        result={
+            "session_id": 1,
+            "report_type": "annotated_original_pdf",
+            "file_path": str(report),
+            "filename": report.name,
+        },
+    )
+
+    response = client.get(f"/api/jobs/{job.id}/download")
+
+    assert response.status_code == 200
+    assert response.content == b"%PDF-1.7"
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["cache-control"] == "no-store"
+    assert "filename*=" in response.headers["content-disposition"]
+
+
 @pytest.mark.parametrize(
     ("job_type", "root_index"),
     [("ops_backup", 2), ("ops_transfer_export", 3)],

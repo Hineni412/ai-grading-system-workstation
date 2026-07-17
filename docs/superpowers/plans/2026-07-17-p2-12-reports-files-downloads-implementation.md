@@ -104,32 +104,32 @@
 
 ### Slice 0：领取与计划
 
-- [ ] 首个 first-parent 提交只包含本即时计划和合法 `in_progress` 交接块。
-- [ ] handoff validator 使用独立可信基线 `56851637a82da115dd557d2dae60c237f8962655` 通过。
-- [ ] 记录真实两库只读指纹，功能 worktree 的 `user_data/` 状态干净。
+- [x] 首个 first-parent 提交只包含本即时计划和合法 `in_progress` 交接块。
+- [x] handoff validator 使用独立可信基线 `56851637a82da115dd557d2dae60c237f8962655` 通过。
+- [x] 记录真实两库只读指纹，功能 worktree 的 `user_data/` 状态干净。
 
 ### Slice 1：报告类型、revision 缓存与 PDF Job
 
-- [ ] RED：Excel 默认兼容；PDF 类型；同 revision 普通重复/并发复用；显式重导；成绩变化不复用；无结果拒绝；取消前不发布。
-- [ ] GREEN：最小报告上下文/协调服务、请求/响应 schema、路由和 handler 分派；复用 `ReportGenerator` 与 `OriginalPaperExporter`，不改两类导出器内容。
-- [ ] 下载白名单只增加 PDF；中文文件名与公开结果脱敏测试转绿。
+- [x] RED：Excel 默认兼容；PDF 类型；同 revision 普通重复/并发复用；显式重导；成绩变化不复用；无结果拒绝；取消前不发布。
+- [x] GREEN：最小报告上下文/协调服务、请求/响应 schema、路由和 handler 分派；复用 `ReportGenerator` 与 `OriginalPaperExporter`，不改两类导出器内容。
+- [x] 下载白名单只增加 PDF；中文文件名与公开结果脱敏测试转绿。
 
 ### Slice 2：任务发现、过期恢复与 Training 契约包装
 
-- [ ] RED：报告历史按当前 session；Training 历史为全局任务；列表摘要后按 ID 获取安全详情；删除输出后 410；failed/cancelled/重启中断显示正确恢复动作。
-- [ ] GREEN：前端 `exports` API 解码器、二进制下载与文件名解析；只调用既有 Training task/export/retry 契约。
-- [ ] 验证旧响应不覆盖新 session，失败刷新保留同一范围最后成功历史。
+- [x] RED：报告历史按当前 session；Training 历史为全局任务；列表摘要后按 ID 获取安全详情；删除输出后 410；failed/cancelled/重启中断显示正确恢复动作。
+- [x] GREEN：前端 `exports` API 解码器、二进制下载与文件名解析；只调用既有 Training task/export/retry 契约。
+- [x] 验证旧响应不覆盖新 session，失败刷新保留同一范围最后成功历史。
 
 ### Slice 3：Vue 文件中心
 
-- [ ] RED：路由/导航/工作台入口、三条出件行、任务登记簿、缓存/过期/失败/取消/空白/加载/禁用/焦点状态。
-- [ ] GREEN：新增文件中心 view/store/components 与局部 Token 样式；同一操作区只有一个主按钮，显式重导为次要动作。
-- [ ] 训练材料选择必须来自真实 task/detail；没有任务时只说明如何先建立训练任务，不创建未来占位能力。
+- [x] RED：路由/导航/工作台入口、三条出件行、任务登记簿、缓存/过期/失败/取消/空白/加载/禁用/焦点状态。
+- [x] GREEN：新增文件中心 view/store/components 与局部 Token 样式；同一操作区只有一个主按钮，显式重导为次要动作。
+- [x] 训练材料选择必须来自真实 task/detail；没有任务时只说明如何先建立训练任务，不创建未来占位能力。
 
 ### Slice 4：匿名浏览器、文档与交接候选
 
-- [ ] 固定匿名临时数据库/输出根贯通 XLSX、PDF、Markdown/ZIP、刷新、取消和过期文件重导。
-- [ ] 覆盖 1920×1080、1440×900、1366×768、1280×800、1024×768；长中文文件名、100 条历史、加载/空白/错误/禁用/焦点无溢出。
+- [x] 固定匿名临时数据库/输出根贯通 XLSX、PDF、Markdown/ZIP、刷新、取消和过期文件重导。
+- [x] 覆盖 1920×1080、1440×900、1366×768、1280×800、1024×768；长中文文件名、100 条历史、加载/空白/错误/禁用/焦点无溢出。
 - [ ] 更新 `ARCHITECTURE.md` 的 P2-12 增量边界；页面可运行并复审后再生成 quick 自测清单。
 - [ ] 聚焦测试、受影响回归、`npm run verify`、浏览器 prepared 门槛、`tools/smoke_check.py --skip-tests`、`git diff --check`、handoff validator 和真实两库指纹守卫通过。
 

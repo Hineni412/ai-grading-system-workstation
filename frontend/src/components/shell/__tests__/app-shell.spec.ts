@@ -102,6 +102,7 @@ describe('AppShell', () => {
       ['工作台', '/workbench'],
       ['考试配置', '/sessions'],
       ['知识图谱', '/knowledge-graph'],
+      ['文件中心', '/files'],
       ['评分复核', '/grading'],
     ])
     expect(
@@ -120,6 +121,7 @@ describe('AppShell', () => {
       '工作台',
       '考试配置',
       '知识图谱',
+      '文件中心',
       '评分复核',
     ])
     expect(host.querySelector('[data-testid="navigation-toggle"]')).toBeNull()
