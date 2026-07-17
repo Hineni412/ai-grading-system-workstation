@@ -21,6 +21,7 @@ XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.s
 DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 MARKDOWN_MEDIA_TYPE = "text/markdown"
 ZIP_MEDIA_TYPE = "application/zip"
+PDF_MEDIA_TYPE = "application/pdf"
 BINARY_SCHEMA = {"type": "string", "format": "binary"}
 
 
@@ -34,6 +35,7 @@ BINARY_SCHEMA = {"type": "string", "format": "binary"}
                 DOCX_MEDIA_TYPE: {"schema": BINARY_SCHEMA},
                 MARKDOWN_MEDIA_TYPE: {"schema": BINARY_SCHEMA},
                 ZIP_MEDIA_TYPE: {"schema": BINARY_SCHEMA},
+                PDF_MEDIA_TYPE: {"schema": BINARY_SCHEMA},
             }
         }
     },

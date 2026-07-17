@@ -176,8 +176,9 @@ def test_binary_routes_publish_exact_200_media_types_and_binary_schemas() -> Non
     expected_media_types = {
         "/api/jobs/{job_id}/download": {
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "application/zip",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/pdf",
+                "application/zip",
             "text/markdown",
         },
         "/api/sessions/{session_id}/results/{result_id}/pages/{page}": {
@@ -335,6 +336,23 @@ def test_training_export_openapi_declares_dedicated_safe_operations() -> None:
     request_schema = schema["components"]["schemas"][request_ref.rsplit("/", 1)[-1]]
     assert request_schema["additionalProperties"] is False
     assert not (forbidden & set(request_schema.get("properties", {})))
+
+
+def test_report_export_openapi_declares_strict_requests_and_pdf_download() -> None:
+    from backend.api.app import create_app
+
+    schema = create_app().openapi()
+    operation = schema["paths"]["/api/sessions/{session_id}/reports/export"]["post"]
+    request_schema = operation["requestBody"]["content"]["application/json"]["schema"]
+    request_ref = request_schema["anyOf"][0]["$ref"]
+    body_schema = schema["components"]["schemas"][request_ref.rsplit("/", 1)[-1]]
+
+    assert body_schema["additionalProperties"] is False
+    assert set(body_schema["properties"]) == {"report_type", "force_regenerate"}
+    download_content = schema["paths"]["/api/jobs/{job_id}/download"]["get"][
+        "responses"
+    ]["200"]["content"]
+    assert "application/pdf" in download_content
 
 
 def test_question_bank_job_openapi_declares_dedicated_safe_operations() -> None:

@@ -22,7 +22,11 @@ export function assertNoPathLikeKeys(value: unknown): void {
       token === 'path' || token === 'root' || token === 'dir'
       || token === 'directory' || token === 'file'
     ))
-    if (key !== 'safe_filename' && sensitive) throw new Error('Path-like response key')
+    if (
+      key !== 'safe_filename'
+      && key !== 'file_status'
+      && sensitive
+    ) throw new Error('Path-like response key')
     assertNoPathLikeKeys(child)
   }
 }
