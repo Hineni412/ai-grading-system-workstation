@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as api from '../api/scan-grading'
 import { fetchStudents } from '../api/students'
 import type { JobResponse } from '../api/jobs'
+import { useJobStore } from '../stores/jobs'
 import { useScanGradingStore } from '../stores/scan-grading'
 
 vi.mock('../api/scan-grading', async (importOriginal) => ({
@@ -11,7 +12,7 @@ vi.mock('../api/scan-grading', async (importOriginal) => ({
   fetchGradingWorkspace: vi.fn(), uploadScan: vi.fn(), removeScan: vi.fn(), clearScans: vi.fn(),
   freezeScans: vi.fn(), startPreflight: vi.fn(), fetchPreflight: vi.fn(),
   saveScanDecisions: vi.fn(), startGrading: vi.fn(), controlGrading: vi.fn(), cancelGrading: vi.fn(),
-  startNewScanBatch: vi.fn(),
+  supplementGrading: vi.fn(), startNewScanBatch: vi.fn(),
 }))
 vi.mock('../api/students', () => ({ fetchStudents: vi.fn() }))
 
@@ -103,5 +104,100 @@ describe('scan grading store isolation and recovery', () => {
     expect(store.uploadBatch?.file_count).toBe(2)
     expect(store.errorMessage).toContain('1 个文件未加入队列')
     expect(api.uploadScan).toHaveBeenCalledTimes(3)
+  })
+
+  it('refreshes server counts and actions when a grading job poll changes', async () => {
+    const running = workspace(1, 'frozen')
+    running.grading_run = {
+      run_id: 19, job_id: 71, mode: 'full_paper', state: 'running',
+      counts: { graded: 1, grading: 1, pending: 3, skipped: 0, failed: 0, conflict: 0, total: 5 },
+      allowed_actions: ['pause', 'cancel'],
+    }
+    const completed = workspace(1, 'frozen')
+    completed.grading_run = {
+      run_id: 19, job_id: 71, job_status: 'succeeded', mode: 'full_paper', state: 'completed',
+      counts: { graded: 5, grading: 0, pending: 0, skipped: 0, failed: 0, conflict: 0, total: 5 },
+      allowed_actions: ['supplement_new_matches'],
+    }
+    vi.mocked(api.fetchGradingWorkspace)
+      .mockResolvedValueOnce(running)
+      .mockResolvedValue(completed)
+    vi.mocked(api.fetchPreflight).mockResolvedValue({
+      revision: 0, summary: {}, groups: [], issues: [], absent_students: [], warnings: [],
+      decisions: [], pending_issue_count: 0,
+    })
+    const store = useScanGradingStore()
+    await store.load(1)
+    const jobs = useJobStore()
+    jobs.jobs[71] = {
+      id: 71, job_type: 'grading_run', payload: { session_id: 1 }, result: {}, status: 'succeeded',
+      progress: 1, stage: 'grading_completed', detail: '', error: null, cancel_requested: false,
+      created_at: '2026-07-17T00:00:00Z', started_at: '2026-07-17T00:00:01Z',
+      updated_at: '2026-07-17T00:00:03Z', finished_at: '2026-07-17T00:00:03Z',
+    }
+    for (let index = 0; index < 6; index += 1) await Promise.resolve()
+
+    expect(api.fetchGradingWorkspace).toHaveBeenCalledTimes(2)
+    expect(store.gradingRun?.state).toBe('completed')
+    expect(store.gradingRun?.counts.graded).toBe(5)
+    expect(store.gradingRun?.allowed_actions).toContain('supplement_new_matches')
+  })
+
+  it('does one trailing workspace refresh when a terminal poll arrives mid-refresh', async () => {
+    const running = workspace(1, 'frozen')
+    running.grading_run = {
+      run_id: 21, job_id: 73, mode: 'full_paper', state: 'running',
+      counts: { graded: 1, grading: 1, pending: 2, skipped: 0, failed: 0, conflict: 0, total: 4 },
+      allowed_actions: ['pause', 'cancel'],
+    }
+    const completed = workspace(1, 'frozen')
+    completed.grading_run = {
+      run_id: 21, mode: 'full_paper', state: 'completed',
+      counts: { graded: 4, grading: 0, pending: 0, skipped: 0, failed: 0, conflict: 0, total: 4 },
+      allowed_actions: ['supplement_new_matches'],
+    }
+    let resolveStaleRefresh!: (value: api.GradingWorkspace) => void
+    vi.mocked(api.fetchGradingWorkspace)
+      .mockResolvedValueOnce(running)
+      .mockReturnValueOnce(new Promise((resolve) => { resolveStaleRefresh = resolve }))
+      .mockResolvedValue(completed)
+    vi.mocked(api.fetchPreflight).mockResolvedValue({
+      revision: 0, summary: {}, groups: [], issues: [], absent_students: [], warnings: [],
+      decisions: [], pending_issue_count: 0,
+    })
+    const store = useScanGradingStore()
+    await store.load(1)
+    const jobs = useJobStore()
+    jobs.jobs[73] = {
+      id: 73, job_type: 'grading_run', payload: { session_id: 1 }, result: {}, status: 'running',
+      progress: 0.5, stage: 'grading_run', detail: '', error: null, cancel_requested: false,
+      created_at: '2026-07-17T00:00:00Z', started_at: '2026-07-17T00:00:01Z',
+      updated_at: '2026-07-17T00:00:02Z', finished_at: null,
+    }
+    for (let index = 0; index < 4; index += 1) await Promise.resolve()
+    jobs.jobs[73] = { ...jobs.jobs[73]!, status: 'succeeded', progress: 1,
+      updated_at: '2026-07-17T00:00:03Z', finished_at: '2026-07-17T00:00:03Z' }
+    await Promise.resolve()
+    resolveStaleRefresh(running)
+    for (let index = 0; index < 10; index += 1) await Promise.resolve()
+
+    expect(api.fetchGradingWorkspace).toHaveBeenCalledTimes(3)
+    expect(store.gradingRun?.state).toBe('completed')
+    expect(store.gradingRun?.counts.graded).toBe(4)
+  })
+
+  it('recovers an active preflight from the server without browser storage', async () => {
+    const value = workspace(1, 'frozen')
+    value.scan_analysis_job = {
+      id: 81, status: 'running', progress: 0.4, updated_at: '2026-07-17T00:00:02Z',
+      cancel_requested: false, scan_batch_id: 'batch-1',
+    }
+    vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(value)
+    vi.mocked(api.fetchPreflight).mockRejectedValue(new Error('not ready'))
+    const store = useScanGradingStore()
+    await store.load(1)
+
+    expect(store.preflightJobId).toBe(81)
+    expect(useJobStore().jobs[81]?.status).toBe('running')
   })
 })

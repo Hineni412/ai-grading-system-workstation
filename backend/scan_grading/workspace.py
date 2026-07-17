@@ -8,7 +8,7 @@ import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO, Any
+from typing import BinaryIO, Any, Callable
 from uuid import uuid4
 
 
@@ -36,6 +36,14 @@ class PendingScanIssuesError(ScanGradingWorkspaceError):
     """仍有异常卷，启动前尚未得到明确确认。"""
 
 
+class GradingConfigChangedError(ScanGradingWorkspaceError):
+    """暂停或终态运行所用的批改配置已经变化。"""
+
+
+class ActiveScanAnalysisError(ScanGradingWorkspaceError):
+    """当前上传批次仍有预检任务在运行。"""
+
+
 class ScanGradingWorkspace:
     """隐藏上传文件、manifest 与后续扫描状态的会话级模块。"""
 
@@ -56,12 +64,14 @@ class ScanGradingWorkspace:
         templates_root: Path,
         grading_db_path: Path | None = None,
         job_manager: Any | None = None,
+        config_fingerprint_resolver: Callable[[int, str], str] | None = None,
         max_file_bytes: int = 100 * 1024 * 1024,
     ) -> None:
         self.exams_root = Path(exams_root)
         self.templates_root = Path(templates_root)
         self.grading_db_path = Path(grading_db_path) if grading_db_path is not None else None
         self.job_manager = job_manager
+        self.config_fingerprint_resolver = config_fingerprint_resolver
         self.max_file_bytes = int(max_file_bytes)
 
     def get_workspace(self, session_id: int) -> dict[str, Any]:
@@ -71,6 +81,10 @@ class ScanGradingWorkspace:
                 "session_id": int(session_id),
                 "upload_batch": self._public_batch(manifest),
                 "grading_run": self.get_grading_run(session_id),
+                "scan_analysis_job": self._scan_analysis_job_summary(
+                    session_id,
+                    str(manifest["batch_id"]),
+                ),
             }
 
     def get_grading_run(self, session_id: int) -> dict[str, Any] | None:
@@ -113,19 +127,40 @@ class ScanGradingWorkspace:
         }.get(run.state, [])
         if run.state in {"completed", "failed"} and counts["failed"] > 0:
             actions.append("retry_failed")
+        if run.state in {"completed", "failed"}:
+            actions.append("supplement_new_matches")
         projected_state = run.state
         active_job = self._active_grading_job(session_id)
         if run.state in {"running", "pause_requested"} and active_job is None:
             projected_state = "interrupted"
             actions = ["resume", "cancel"]
+        elif run.state in {"completed", "failed"} and active_job is not None:
+            projected_state = "starting"
+            actions = []
         control = self._read_grading_control(session_id)
         if int(control.get("run_id") or 0) == run.id and control.get("cancel_requested"):
-            projected_state = (
-                "cancelled"
-                if run.state == "paused" or control.get("cancel_confirmed")
-                else "cancel_requested"
-            )
-            actions = []
+            control_job = self._grading_control_job(control)
+            if run.state in {"completed", "failed"}:
+                pass
+            elif control.get("cancel_confirmed") or (
+                control_job is not None and control_job.status == "cancelled"
+            ):
+                projected_state = "cancelled"
+                actions = []
+            elif (
+                active_job is not None
+                and control_job is not None
+                and active_job.id == control_job.id
+                and control_job.cancel_requested
+            ):
+                projected_state = "cancel_requested"
+                actions = []
+            elif (
+                run.state in {"running", "pause_requested"}
+                and active_job is None
+            ):
+                projected_state = "interrupted"
+                actions = ["resume", "cancel"]
         result: dict[str, Any] = {
             "run_id": run.id,
             "mode": run.grading_mode,
@@ -146,6 +181,15 @@ class ScanGradingWorkspace:
             )
         return result
 
+    def _grading_control_job(self, control: dict[str, Any]):
+        if self.job_manager is None:
+            return None
+        try:
+            job_id = int(control.get("job_id") or 0)
+        except (TypeError, ValueError):
+            return None
+        return self.job_manager.get(job_id) if job_id > 0 else None
+
     def _active_grading_job(self, session_id: int):
         if self.job_manager is None:
             return None
@@ -156,6 +200,79 @@ class ScanGradingWorkspace:
             limit=1,
         )
         return jobs[0] if jobs else None
+
+    def _scan_analysis_job(self, session_id: int, batch_id: str, *, active_only: bool = False):
+        if self.job_manager is None:
+            return None
+        statuses = ("queued", "running") if active_only else ()
+        jobs, _total = self.job_manager.list(
+            session_id=int(session_id),
+            job_types=("scan_analysis",),
+            statuses=statuses,
+            limit=100,
+        )
+        return next(
+            (
+                job
+                for job in jobs
+                if str(job.payload.get("scan_batch_id") or "") == str(batch_id)
+            ),
+            None,
+        )
+
+    def _active_scan_analysis_job(
+        self,
+        session_id: int,
+        batch_id: str | None = None,
+    ):
+        if batch_id is not None:
+            return self._scan_analysis_job(session_id, batch_id, active_only=True)
+        if self.job_manager is None:
+            return None
+        jobs, _total = self.job_manager.list(
+            session_id=int(session_id),
+            job_types=("scan_analysis",),
+            statuses=("queued", "running"),
+            limit=1,
+        )
+        return jobs[0] if jobs else None
+
+    def _scan_analysis_job_summary(
+        self,
+        session_id: int,
+        batch_id: str,
+    ) -> dict[str, Any] | None:
+        job = self._scan_analysis_job(session_id, batch_id)
+        if job is None:
+            return None
+        return {
+            "id": job.id,
+            "status": job.status,
+            "progress": job.progress,
+            "updated_at": job.updated_at,
+            "cancel_requested": job.cancel_requested,
+            "scan_batch_id": str(batch_id),
+        }
+
+    def submit_scan_analysis(
+        self,
+        session_id: int,
+        payload: dict[str, Any],
+    ) -> Any:
+        """Bind preflight submission to the current upload batch atomically."""
+        if self.job_manager is None:
+            raise ScanGradingWorkspaceError("scan analysis job manager is unavailable")
+        with self._lock(session_id):
+            clean_payload = dict(payload)
+            clean_payload["session_id"] = int(session_id)
+            if self.upload_batch_exists(session_id):
+                scan_dir, scan_batch_id = self.frozen_scan_input(session_id)
+                clean_payload["exams_dir"] = str(scan_dir)
+                clean_payload["scan_batch_id"] = scan_batch_id
+            return self.job_manager.submit_unique_active(
+                "scan_analysis",
+                clean_payload,
+            )
 
     def pause_grading_run(self, session_id: int, run_id: int) -> dict[str, Any]:
         if self.grading_db_path is None:
@@ -189,6 +306,11 @@ class ScanGradingWorkspace:
         run = store.get_run(int(run_id))
         if run is None or run.session_id != int(session_id):
             raise ScanGradingWorkspaceError("grading run was not found")
+        if run.state in {"completed", "failed"}:
+            summary = self.get_grading_run(session_id)
+            if summary is None:
+                raise ScanGradingWorkspaceError("grading run was not found")
+            return summary
         if run.state not in {"running", "pause_requested", "paused"}:
             raise ScanGradingWorkspaceError("grading run cannot be cancelled")
         if confirmed and run.state in {"running", "pause_requested"}:
@@ -211,8 +333,19 @@ class ScanGradingWorkspace:
     def prepare_resume(self, session_id: int, run_id: int) -> dict[str, Any]:
         run, counts = self._require_run(session_id, run_id)
         control = self._read_grading_control(session_id)
-        if int(control.get("run_id") or 0) == run.id and control.get("cancel_requested"):
+        if (
+            int(control.get("run_id") or 0) == run.id
+            and control.get("cancel_requested")
+            and (
+                control.get("cancel_confirmed")
+                or (
+                    (control_job := self._grading_control_job(control)) is not None
+                    and control_job.status == "cancelled"
+                )
+            )
+        ):
             raise ScanGradingWorkspaceError("cancelled grading run cannot resume")
+        self._require_current_config(session_id, run)
         if run.state in {"running", "pause_requested"} and self._active_grading_job(session_id) is None:
             from grading_run_store import GradingRunStore
 
@@ -229,6 +362,21 @@ class ScanGradingWorkspace:
             "resume_run_id": run.id,
         }
 
+    def _require_current_config(self, session_id: int, run: Any) -> None:
+        if self.config_fingerprint_resolver is None:
+            raise GradingConfigChangedError("grading configuration cannot be verified")
+        try:
+            current = self.config_fingerprint_resolver(
+                int(session_id),
+                str(run.grading_mode),
+            )
+        except Exception as exc:
+            raise GradingConfigChangedError(
+                "grading configuration cannot be verified"
+            ) from exc
+        if str(current) != str(run.config_fingerprint):
+            raise GradingConfigChangedError("grading configuration changed")
+
     def prepare_failed_retry(self, session_id: int, run_id: int) -> dict[str, Any]:
         run, counts = self._require_run(session_id, run_id)
         if counts.get("failed", 0) <= 0 or run.state not in {"completed", "failed"}:
@@ -241,6 +389,26 @@ class ScanGradingWorkspace:
             "source_run_id": run.id,
         }
 
+    def prepare_supplement(self, session_id: int, run_id: int) -> dict[str, Any]:
+        run, _counts = self._require_run(session_id, run_id)
+        if run.state not in {"completed", "failed"}:
+            raise ScanGradingWorkspaceError("grading run cannot be supplemented")
+        self._require_current_config(session_id, run)
+        manifest = self._load_or_create_manifest(session_id)
+        if manifest.get("state") != "frozen":
+            raise ScanGradingWorkspaceError("scan upload batch is not frozen")
+        if self._active_scan_analysis_job(session_id, str(manifest["batch_id"])) is not None:
+            raise ScanGradingWorkspaceError("scan preflight is still active")
+        self.get_preflight(session_id)
+        return {
+            "session_id": int(session_id),
+            "grading_mode": run.grading_mode,
+            "failed_only": False,
+            "supplement_only": True,
+            "supplement_run_id": run.id,
+            "enhance_images": True,
+        }
+
     def submit_resume(self, session_id: int, run_id: int) -> Any:
         if self.job_manager is None:
             raise ScanGradingWorkspaceError("grading job manager is unavailable")
@@ -248,7 +416,11 @@ class ScanGradingWorkspace:
             payload = self.prepare_resume(session_id, run_id)
             manifest = self._load_or_create_manifest(session_id)
             payload["scan_batch_id"] = str(manifest["batch_id"])
-            return self.job_manager.submit_unique_active("grading_run", payload)
+            if manifest.get("state") == "frozen":
+                payload["exams_dir"] = str(self.frozen_scan_dir(session_id))
+            job = self.job_manager.submit_unique_active("grading_run", payload)
+            self._clear_grading_control(session_id, run_id)
+            return job
 
     def submit_failed_retry(self, session_id: int, run_id: int) -> Any:
         if self.job_manager is None:
@@ -257,6 +429,16 @@ class ScanGradingWorkspace:
             payload = self.prepare_failed_retry(session_id, run_id)
             manifest = self._load_or_create_manifest(session_id)
             payload["scan_batch_id"] = str(manifest["batch_id"])
+            return self.job_manager.submit_unique_active("grading_run", payload)
+
+    def submit_supplement(self, session_id: int, run_id: int) -> Any:
+        if self.job_manager is None:
+            raise ScanGradingWorkspaceError("grading job manager is unavailable")
+        with self._lock(session_id):
+            payload = self.prepare_supplement(session_id, run_id)
+            manifest = self._load_or_create_manifest(session_id)
+            payload["scan_batch_id"] = str(manifest["batch_id"])
+            payload["exams_dir"] = str(self.frozen_scan_dir(session_id))
             return self.job_manager.submit_unique_active("grading_run", payload)
 
     def prepare_start(
@@ -337,6 +519,11 @@ class ScanGradingWorkspace:
 
     def start_new_upload_batch(self, session_id: int) -> dict[str, Any]:
         with self._lock(session_id):
+            current_manifest = self._load_or_create_manifest(session_id)
+            if self._active_scan_analysis_job(session_id) is not None:
+                raise ActiveScanAnalysisError(
+                    "active scan analysis must be resolved first"
+                )
             current_run = self.get_grading_run(session_id)
             active_job = self._active_grading_job(session_id)
             if (
@@ -351,7 +538,7 @@ class ScanGradingWorkspace:
                 }
             ) or active_job is not None:
                 raise ScanGradingWorkspaceError("active grading run must be resolved first")
-            previous_manifest = self._load_or_create_manifest(session_id)
+            previous_manifest = current_manifest
             if not self._manifest_path(session_id).exists():
                 self._write_manifest(session_id, previous_manifest)
             run_floor_id = int(previous_manifest.get("run_floor_id") or 0)
@@ -894,6 +1081,16 @@ class ScanGradingWorkspace:
         except (OSError, ValueError):
             return {}
         return payload if isinstance(payload, dict) else {}
+
+    def _clear_grading_control(self, session_id: int, run_id: int) -> None:
+        path = self._grading_control_path(session_id)
+        control = self._read_grading_control(session_id)
+        if int(control.get("run_id") or 0) != int(run_id):
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def _batch_dir(self, session_id: int, batch_id: str) -> Path:
         return self.exams_root / f"session_{int(session_id)}" / "scan_batches" / str(batch_id)

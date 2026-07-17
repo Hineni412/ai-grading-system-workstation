@@ -9,7 +9,6 @@ from fastapi.responses import FileResponse
 from backend.api.app import ApiError
 from backend.api.dependencies import (
     get_grading_db,
-    get_job_manager,
     get_scan_grading_workspace,
 )
 from backend.api.routers.jobs import _job_response
@@ -26,6 +25,7 @@ from backend.api.schemas.scan import (
     ScanUploadResponse,
 )
 from backend.scan_grading.workspace import (
+    ActiveScanAnalysisError,
     FrozenUploadBatchError,
     InvalidScanUploadError,
     ScanGradingWorkspace,
@@ -33,7 +33,7 @@ from backend.scan_grading.workspace import (
     ScanUploadTooLargeError,
     UploadBatchRevisionError,
 )
-from backend.jobs.manager import JobManager, UnsupportedJobTypeError
+from backend.jobs.manager import ActiveJobExistsError, UnsupportedJobTypeError
 from db_manager import DBManager
 
 
@@ -216,6 +216,12 @@ def start_new_session_scan_batch(
     _require_session(db, session_id)
     try:
         batch = workspace.start_new_upload_batch(session_id)
+    except ActiveScanAnalysisError as exc:
+        raise ApiError(
+            409,
+            "scan_analysis_still_active",
+            "Active scan analysis must finish before starting a new batch",
+        ) from exc
     except ScanGradingWorkspaceError as exc:
         raise ApiError(409, "grading_run_still_active", "Active grading run must be resolved first") from exc
     return ScanUploadBatchResponse.model_validate(batch)
@@ -296,7 +302,6 @@ def analyze_session_scans(
     session_id: int,
     request: ScanAnalyzeRequest | None = None,
     db: DBManager = Depends(get_grading_db),
-    manager: JobManager = Depends(get_job_manager),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> JobResponse:
     _require_session(db, session_id)
@@ -307,21 +312,22 @@ def analyze_session_scans(
     }
     if request.ocr_workers is not None:
         payload["ocr_workers"] = request.ocr_workers
-    if workspace.upload_batch_exists(session_id):
-        try:
-            scan_dir, scan_batch_id = workspace.frozen_scan_input(session_id)
-            payload["exams_dir"] = str(scan_dir)
-            payload["scan_batch_id"] = scan_batch_id
-        except ScanGradingWorkspaceError as exc:
-            raise ApiError(
-                409,
-                "scan_upload_batch_not_frozen",
-                "Freeze the scan upload batch before preflight",
-            ) from exc
     if request.front_page_parity:
         payload["front_page_parity"] = request.front_page_parity
     try:
-        job = manager.submit("scan_analysis", payload)
+        job = workspace.submit_scan_analysis(session_id, payload)
+    except ScanGradingWorkspaceError as exc:
+        raise ApiError(
+            409,
+            "scan_upload_batch_not_frozen",
+            "Freeze the scan upload batch before preflight",
+        ) from exc
+    except ActiveJobExistsError as exc:
+        raise ApiError(
+            409,
+            "scan_analysis_already_active",
+            "A scan analysis job is already active for this session",
+        ) from exc
     except UnsupportedJobTypeError as exc:
         raise ApiError(
             404,

@@ -191,12 +191,57 @@ def test_run_grading_job_allows_failed_only_without_scan(tmp_path) -> None:
     assert result["state"] == "completed"
 
 
+def test_run_grading_job_passes_supplement_identity_to_service(tmp_path) -> None:
+    from backend.jobs.grading_run import run_grading_job
+
+    db, session_id = _seed_session(tmp_path)
+    (tmp_path / "rubric.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "answer.json").write_text("{}", encoding="utf-8")
+    work_dir = tmp_path / "templates" / f"session_{session_id}"
+    work_dir.mkdir(parents=True)
+    (work_dir / "scan_analysis_latest.json").write_text(
+        json.dumps({"groups": [], "issues": [], "total_pages": 0}),
+        encoding="utf-8",
+    )
+    captured: dict[str, Any] = {}
+
+    class FakeService:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def run_session_grading(self, **kwargs: Any):
+            captured.update(kwargs)
+            yield {"event": "session_completed", "progress": {"completed": 0}}
+
+    result = run_grading_job(
+        db=db,
+        session_id=session_id,
+        exams_dir=tmp_path / "exams",
+        session_work_dir=work_dir,
+        data_root=tmp_path,
+        question_bank_db_path=tmp_path / "databases" / "question_bank.db",
+        llm_client_factory=lambda: object(),
+        service_factory=FakeService,
+        grading_mode="hybrid_batch",
+        supplement_only=True,
+        supplement_run_id=17,
+    )
+
+    assert captured["grading_mode"] == "hybrid_batch"
+    assert captured["supplement_only"] is True
+    assert captured["supplement_run_id"] == 17
+    assert result["state"] == "completed"
+
+
 def test_grading_run_handler_persists_result(tmp_path) -> None:
     from backend.jobs.default_handlers import register_default_job_handlers
     from backend.jobs.manager import JobManager
     from backend.jobs.store import JobStore
 
+    captured: dict[str, Any] = {}
+
     def fake_grading_runner(**kwargs: Any) -> dict[str, object]:
+        captured.update(kwargs)
         assert callable(kwargs["raise_if_cancelled"])
         assert callable(kwargs["should_cancel"])
         return {
@@ -217,10 +262,22 @@ def test_grading_run_handler_persists_result(tmp_path) -> None:
         llm_client_factory=lambda: object(),
     )
 
-    job = manager.submit("grading_run", {"session_id": 5, "grading_mode": "full_paper", "failed_only": False})
+    job = manager.submit(
+        "grading_run",
+        {
+            "session_id": 5,
+            "grading_mode": "hybrid_batch",
+            "failed_only": False,
+            "supplement_only": True,
+            "supplement_run_id": 17,
+        },
+    )
     manager.wait(job.id, timeout=5)
 
     loaded = manager.get(job.id)
     assert loaded.status == "succeeded"
     assert loaded.result["session_id"] == 5
     assert loaded.result["summary"]["graded"] == 2
+    assert captured["grading_mode"] == "hybrid_batch"
+    assert captured["supplement_only"] is True
+    assert captured["supplement_run_id"] == 17

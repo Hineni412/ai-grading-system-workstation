@@ -13,7 +13,7 @@ vi.mock('../api/scan-grading', async (importOriginal) => ({
   fetchGradingWorkspace: vi.fn(), uploadScan: vi.fn(), removeScan: vi.fn(), clearScans: vi.fn(),
   freezeScans: vi.fn(), startPreflight: vi.fn(), fetchPreflight: vi.fn(),
   saveScanDecisions: vi.fn(), startGrading: vi.fn(), controlGrading: vi.fn(), cancelGrading: vi.fn(),
-  startNewScanBatch: vi.fn(),
+  supplementGrading: vi.fn(), startNewScanBatch: vi.fn(),
 }))
 vi.mock('../api/students', () => ({ fetchStudents: vi.fn() }))
 
@@ -124,6 +124,78 @@ describe('scan grading workspace', () => {
     expect(api.saveScanDecisions).toHaveBeenCalledWith(7, 2, [
       { target_type: 'group', target_id: 'g1', action: 'match', student_id: 11 },
     ])
+    app.unmount()
+  })
+
+  it('invalidates pending-issue confirmation when a decision revision changes', async () => {
+    const { app, host } = await mountView()
+    const confirmation = host.querySelector<HTMLInputElement>('[data-confirm-pending]')!
+    confirmation.checked = true
+    confirmation.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    expect(confirmation.checked).toBe(true)
+
+    host.querySelector<HTMLButtonElement>('.scan-issue-list .text-button')!.click()
+    for (let index = 0; index < 4; index += 1) {
+      await Promise.resolve(); await nextTick()
+    }
+
+    expect(confirmation.checked).toBe(false)
+    app.unmount()
+  })
+
+  it('keeps supplementation separate from failed-item retry', async () => {
+    const value = workspace()
+    value.grading_run = {
+      run_id: 19, mode: 'hybrid_batch', state: 'completed',
+      counts: { graded: 28, grading: 0, pending: 0, skipped: 2, failed: 1, conflict: 0, total: 31 },
+      allowed_actions: ['retry_failed', 'supplement_new_matches'],
+    }
+    vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(value)
+    vi.mocked(api.supplementGrading).mockResolvedValue({
+      id: 92, job_type: 'grading_run', payload: { session_id: 7 }, result: {}, status: 'queued',
+      progress: 0, stage: 'queued', detail: '', error: null, cancel_requested: false,
+      created_at: '2026-07-17T00:00:00Z', started_at: null,
+      updated_at: '2026-07-17T00:00:00Z', finished_at: null,
+    })
+    const { app, host } = await mountView()
+
+    expect(host.querySelector('[data-action="retry-failed"]')).not.toBeNull()
+    const supplement = host.querySelector<HTMLButtonElement>('[data-action="supplement"]')!
+    expect(supplement).not.toBeNull()
+    supplement.click()
+    for (let index = 0; index < 4; index += 1) {
+      await Promise.resolve(); await nextTick()
+    }
+
+    expect(api.supplementGrading).toHaveBeenCalledWith(7, 19)
+    app.unmount()
+  })
+
+  it('offers a server-backed preflight retry after restart failure', async () => {
+    const value = workspace()
+    value.scan_analysis_job = {
+      id: 31, status: 'failed', progress: 0.4, updated_at: '2026-07-17T00:00:01Z',
+      cancel_requested: true, scan_batch_id: 'batch-1',
+    }
+    vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(value)
+    vi.mocked(api.fetchPreflight).mockRejectedValue(new Error('not ready'))
+    vi.mocked(api.startPreflight).mockResolvedValue({
+      id: 32, job_type: 'scan_analysis', payload: { session_id: 7 }, result: {}, status: 'queued',
+      progress: 0, stage: 'queued', detail: '', error: null, cancel_requested: false,
+      created_at: '2026-07-17T00:00:02Z', started_at: null,
+      updated_at: '2026-07-17T00:00:02Z', finished_at: null,
+    })
+    const { app, host } = await mountView()
+    const retry = host.querySelector<HTMLButtonElement>('[data-action="retry-preflight"]')!
+    expect(retry).not.toBeNull()
+
+    retry.click()
+    for (let index = 0; index < 4; index += 1) {
+      await Promise.resolve(); await nextTick()
+    }
+
+    expect(api.startPreflight).toHaveBeenCalledWith(7)
     app.unmount()
   })
 })

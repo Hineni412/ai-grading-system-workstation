@@ -84,6 +84,7 @@ def run_scan_analysis(
             temporary.write("\n")
             temporary.flush()
         _check_cancelled(raise_if_cancelled)
+        _require_current_scan_batch(session_work_dir, scan_batch_id)
         os.replace(temporary_path, output_path)
         temporary_path = None
     finally:
@@ -127,3 +128,22 @@ def _ocr_model_for_client(client: Any) -> str | None:
 def _check_cancelled(callback: Callable[[], None] | None) -> None:
     if callback is not None:
         callback()
+
+
+def _require_current_scan_batch(
+    session_work_dir: Path,
+    scan_batch_id: str | None,
+) -> None:
+    if not scan_batch_id:
+        return
+    manifest_path = Path(session_work_dir) / "scan_upload_batch.json"
+    if not manifest_path.exists():
+        return
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError("scan batch manifest is unavailable") from exc
+    if not isinstance(manifest, dict) or str(manifest.get("batch_id") or "") != str(
+        scan_batch_id
+    ):
+        raise ValueError("scan batch changed before analysis could be published")
