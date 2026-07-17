@@ -85,14 +85,9 @@ class SessionProgress(BaseModel):
 class SessionTemplateResponse(BaseModel):
     id: int
     session_id: int
-    front_template_path: str
-    back_template_path: str
-    ai_analysis_path: str | None = None
-    template_config_path: str | None = None
-    regions_path: str | None = None
+    pages: dict[str, dict[str, str]]
     is_confirmed: bool
     regions_snapshot_pending: bool
-    regions_snapshot_token: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
 

@@ -3,25 +3,30 @@ import { describe, expect, it } from 'vitest'
 
 import {
   navigationItems,
+  filesRouteDefinition,
   reviewRouteDefinition,
   sessionRouteDefinition,
+  templateRegionRouteDefinition,
+  gradingRunRouteDefinition,
   knowledgeGraphRouteDefinition,
   workbenchRouteDefinition,
 } from '../navigation'
 import { createAppRouter } from '../router'
 
 describe('source-recalibrated navigation', () => {
-  it('exposes the truthful workbench, configuration, knowledge graph and review destinations', () => {
+  it('exposes the truthful workbench, configuration, knowledge graph, files and review destinations', () => {
     expect(navigationItems).toEqual([
       workbenchRouteDefinition,
       sessionRouteDefinition,
       knowledgeGraphRouteDefinition,
+      filesRouteDefinition,
       reviewRouteDefinition,
     ])
     expect(navigationItems.map(({ id, label, path }) => [id, label, path])).toEqual([
       ['workbench', '工作台', '/workbench'],
       ['sessions', '考试配置', '/sessions'],
       ['knowledge-graph', '知识图谱', '/knowledge-graph'],
+      ['files', '文件中心', '/files'],
       ['grading', '评分复核', '/grading'],
     ])
   })
@@ -30,6 +35,7 @@ describe('source-recalibrated navigation', () => {
     workbenchRouteDefinition,
     sessionRouteDefinition,
     knowledgeGraphRouteDefinition,
+    filesRouteDefinition,
     reviewRouteDefinition,
   ])(
     'resolves $id from the shared metadata',
@@ -50,7 +56,10 @@ describe('source-recalibrated navigation', () => {
     ['/', '/workbench'],
     ['/workbench', '/workbench'],
     ['/sessions', '/sessions'],
+    ['/sessions/7/regions', '/sessions/7/regions'],
+    ['/sessions/7/grading-run', '/sessions/7/grading-run'],
     ['/knowledge-graph?session=7&class=七年级一班', '/knowledge-graph?session=7&class=七年级一班'],
+    ['/files', '/files'],
     ['/grading', '/grading'],
     ['/design-system', '/design-system'],
     ['/missing/deep/path', '/missing/deep/path'],
@@ -105,6 +114,30 @@ describe('source-recalibrated navigation', () => {
     expect((component as { __name?: string } | undefined)?.__name).toBe('SessionConfigView')
   })
 
+  it('loads the dedicated template region workspace without adding a top-level destination', async () => {
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/sessions/7/regions')
+    await router.isReady()
+
+    expect(router.currentRoute.value.name).toBe(templateRegionRouteDefinition.id)
+    expect(navigationItems.map((item) => String(item.path))).not.toContain('/sessions/7/regions')
+    const matched = router.currentRoute.value.matched
+    const component = matched[matched.length - 1]?.components?.default
+    expect((component as { __name?: string } | undefined)?.__name).toBe('TemplateRegionView')
+  })
+
+  it('loads the dedicated grading run workspace without replacing scoring review', async () => {
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/sessions/7/grading-run')
+    await router.isReady()
+
+    expect(router.currentRoute.value.name).toBe(gradingRunRouteDefinition.id)
+    expect(navigationItems.map((item) => String(item.path))).not.toContain('/sessions/7/grading-run')
+    const matched = router.currentRoute.value.matched
+    const component = matched[matched.length - 1]?.components?.default
+    expect((component as { __name?: string } | undefined)?.__name).toBe('ScanGradingView')
+  })
+
   it('loads the knowledge graph view for its route', async () => {
     const router = createAppRouter(createMemoryHistory())
     await router.push('/knowledge-graph?session=7&class=七年级一班')
@@ -114,5 +147,16 @@ describe('source-recalibrated navigation', () => {
     const matched = router.currentRoute.value.matched
     const component = matched[matched.length - 1]?.components?.default
     expect((component as { __name?: string } | undefined)?.__name).toBe('KnowledgeGraphView')
+  })
+
+  it('loads the file center view for controlled downloads', async () => {
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/files')
+    await router.isReady()
+
+    expect(router.currentRoute.value.name).toBe('files')
+    const matched = router.currentRoute.value.matched
+    const component = matched[matched.length - 1]?.components?.default
+    expect((component as { __name?: string } | undefined)?.__name).toBe('FileCenterView')
   })
 })

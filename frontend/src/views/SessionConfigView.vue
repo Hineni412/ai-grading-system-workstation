@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import ConfigStageRail from '../components/config/ConfigStageRail.vue'
 import ConfigSourceUpload from '../components/config/ConfigSourceUpload.vue'
@@ -25,6 +25,7 @@ import {
   type ManualPartInput,
 } from '../api/config-workspace'
 import type { JobResponse } from '../api/jobs'
+import { fetchRegionReadiness, type RegionReadiness } from '../api/template-regions'
 import { useConfigWorkspaceStore } from '../stores/config-workspace'
 import { useJobStore } from '../stores/jobs'
 import { useSessionStore } from '../stores/session'
@@ -35,12 +36,14 @@ const props = withDefaults(defineProps<{
   editorRefiner?: (sessionId: number, request: ConfigEditorRefineRequest) => Promise<JobResponse>
   generationLoader?: (sessionId: number, requestToken: string) => Promise<JobResponse>
   requestAbandoner?: (sessionId: number, requestToken: string) => Promise<void>
+  templateReadinessLoader?: (sessionId: number) => Promise<RegionReadiness>
 }>(), {
   editorSaver: saveConfigEditor,
   editorLoader: fetchConfigEditor,
   editorRefiner: refineConfigEditor,
   generationLoader: fetchConfigGenerationJobByToken,
   requestAbandoner: abandonConfigGenerationRequest,
+  templateReadinessLoader: fetchRegionReadiness,
 })
 
 const sessionStore = useSessionStore()
@@ -50,6 +53,9 @@ const selectedScoringQuestion = ref('')
 const refining = ref(false)
 const refineError = ref('')
 const rubricInputValid = ref(true)
+const templatePresent = ref(false)
+const templateReady = ref(false)
+let templateLoadGeneration = 0
 
 const saving = computed(() => configStore.saveStatus === 'saving')
 const saveUnknown = computed(() => configStore.saveStatus === 'unknown')
@@ -87,6 +93,26 @@ const activeParts = computed<ManualPartInput[]>(() => {
   }
   return [...byPart.values()]
 })
+const templateAction = computed(() => templateReady.value ? '查看已确认版本'
+  : templatePresent.value ? '继续标定' : '准备样卷')
+const templateSummary = computed(() => templateReady.value
+  ? '题框已确认，可查看正式版本。'
+  : templatePresent.value ? '样卷已上传，题框标定尚未确认。'
+    : '尚未上传样卷，请准备双页 PDF 后开始标定。')
+
+watch(() => sessionStore.currentSession?.id ?? null, async (sessionId) => {
+  const generation = ++templateLoadGeneration
+  templatePresent.value = false
+  templateReady.value = false
+  if (sessionId === null) return
+  try {
+    const readiness = await props.templateReadinessLoader(sessionId)
+    if (generation !== templateLoadGeneration
+      || sessionStore.currentSession?.id !== sessionId) return
+    templatePresent.value = readiness.template_present
+    templateReady.value = readiness.template_ready
+  } catch { /* keep the conservative not-started state without exposing details */ }
+}, { immediate: true })
 
 function confirmSourceUpload(): boolean {
   if (!configStore.hasDirtyEditor) return true
@@ -239,6 +265,8 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
         :source-ready="configStore.sourceId !== null && configStore.sourceRevision !== null"
         :generation-submitted="configStore.jobId !== null"
         :editor-ready="configStore.editor?.configured === true"
+        :template-present="templatePresent"
+        :template-ready="templateReady"
       />
       <p v-if="sessionStore.sessions.length === 0" class="session-config-view__empty">
         还没有考试。创建草稿后，可以继续上传试卷并准备评分依据。
@@ -313,6 +341,20 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
             :mapping-status="configStore.mappingStatus"
             @reload="reloadLatestEditor"
           />
+          <div class="config-template-entry">
+            <div>
+              <strong>下一步：样卷题框</strong>
+              <span>{{ templateSummary }}</span>
+            </div>
+            <a :href="`/sessions/${sessionStore.currentSession.id}/regions`">{{ templateAction }}</a>
+          </div>
+          <div class="config-template-entry">
+            <div>
+              <strong>批改执行</strong>
+              <span>{{ templateReady ? '样卷题框已确认，可以上传整班答卷并开始扫描预检。' : '完成样卷题框确认后即可开始整班批改。' }}</span>
+            </div>
+            <a v-if="templateReady" :href="`/sessions/${sessionStore.currentSession.id}/grading-run`">进入批改执行</a>
+          </div>
         </section>
       </template>
     </template>
@@ -330,4 +372,8 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
 .session-config-view__empty { padding: var(--space-5); border-block: var(--border-width) solid var(--color-border-default); background: var(--color-bg-subtle); color: var(--color-text-secondary); }
 .session-config-view__state button { min-height: var(--control-height-default); margin-block-start: var(--space-3); padding-inline: var(--space-3); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); }
 .session-config-view__empty { border-block-start: 0; }
+.config-template-entry { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); margin-block-start: var(--space-5); padding: var(--space-4); border-block: var(--border-width) solid var(--color-border-default); background: var(--color-bg-subtle); }
+.config-template-entry strong, .config-template-entry span { display: block; }
+.config-template-entry span { margin-block-start: var(--space-1); color: var(--color-text-secondary); }
+.config-template-entry a { min-height: var(--control-height-default); padding: var(--space-2) var(--space-3); border-radius: var(--radius-control); background: var(--color-accent); color: white; text-decoration: none; }
 </style>

@@ -167,8 +167,9 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
         and str(job.result.get("file_path") or "").strip()
     ):
         result: dict[str, Any] = {}
-        if job.result.get("session_id") is not None:
-            result["session_id"] = job.result["session_id"]
+        for key in ("session_id", "report_type", "score_revision"):
+            if job.result.get(key) is not None:
+                result[key] = job.result[key]
         filename = _safe_filename(
             job.result.get("filename") or job.result.get("file_path")
         )
@@ -188,6 +189,11 @@ def public_job_error(job: JobRecord) -> str | None:
 
 
 def public_job_payload(job: JobRecord) -> dict[str, Any]:
+    if job.job_type == "report_export":
+        allowed = ("session_id", "report_type", "score_revision", "retry_of_job_id")
+        return sanitize_public_mapping(
+            {key: job.payload[key] for key in allowed if key in job.payload}
+        )
     if job.job_type == "training_export":
         allowed = (
             "task_id",

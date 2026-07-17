@@ -3,6 +3,9 @@ import { isRecord } from './validation'
 export type ApiErrorKind =
   | 'validation'
   | 'not_found'
+  | 'forbidden'
+  | 'gone'
+  | 'unsupported'
   | 'conflict'
   | 'server'
   | 'network'
@@ -75,6 +78,9 @@ function contractError(status: number, requestId: string): ApiError {
 function kindForStatus(status: number): ApiErrorKind | null {
   if (status === 400 || status === 422) return 'validation'
   if (status === 404) return 'not_found'
+  if (status === 403) return 'forbidden'
+  if (status === 410) return 'gone'
+  if (status === 415) return 'unsupported'
   if (status === 409) return 'conflict'
   if (status >= 500 && status <= 599) return 'server'
   return null

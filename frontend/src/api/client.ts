@@ -13,6 +13,16 @@ export interface ApiRequestOptions<T> {
   timeoutMs?: number
 }
 
+export interface ApiBinaryResponse {
+  blob: Blob
+  contentDisposition: string | null
+}
+
+export interface ApiBinaryRequestOptions {
+  signal?: AbortSignal
+  timeoutMs?: number
+}
+
 export interface ApiClientDependencies {
   fetch: typeof globalThis.fetch
   createRequestId: () => string
@@ -21,6 +31,7 @@ export interface ApiClientDependencies {
 
 export interface ApiClient {
   request<T>(path: string, options: ApiRequestOptions<T>): Promise<T>
+  download(path: string, options?: ApiBinaryRequestOptions): Promise<ApiBinaryResponse>
 }
 
 function abortAwareDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
@@ -199,6 +210,57 @@ export function createApiClient(
             throw normalized
           }
         }
+        throw networkError(requestId)
+      } finally {
+        clearTimeout(timeoutHandle)
+        options.signal?.removeEventListener('abort', onCallerAbort)
+      }
+    },
+
+    async download(
+      path: string,
+      options: ApiBinaryRequestOptions = {},
+    ): Promise<ApiBinaryResponse> {
+      const requestId = dependencies.createRequestId()
+      if (!isSafeApiPath(path)) {
+        throw contractError('unsafe_api_path', requestId, null)
+      }
+      const controller = new AbortController()
+      let timedOut = false
+      const timeoutHandle = setTimeout(() => {
+        timedOut = true
+        controller.abort()
+      }, options.timeoutMs ?? 15_000)
+      const onCallerAbort = () => controller.abort()
+      options.signal?.addEventListener('abort', onCallerAbort, { once: true })
+      if (options.signal?.aborted) controller.abort()
+
+      try {
+        const response = await dependencies.fetch(path, {
+          method: 'GET',
+          headers: {
+            accept: 'application/octet-stream',
+            'x-request-id': requestId,
+          },
+          signal: controller.signal,
+        })
+        const responseRequestId = response.headers.get('x-request-id')?.trim() || requestId
+        if (!response.ok) {
+          let payload: unknown
+          try {
+            payload = await response.json()
+          } catch {
+            payload = null
+          }
+          throw parseErrorResponse(payload, responseRequestId, response.status)
+        }
+        return {
+          blob: await response.blob(),
+          contentDisposition: response.headers.get('content-disposition'),
+        }
+      } catch (error) {
+        if (controller.signal.aborted) throw abortError(requestId, timedOut)
+        if (error instanceof ApiError) throw error
         throw networkError(requestId)
       } finally {
         clearTimeout(timeoutHandle)

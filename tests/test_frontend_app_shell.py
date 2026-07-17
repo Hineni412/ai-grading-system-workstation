@@ -16,6 +16,7 @@ def test_recalibrated_shell_keeps_one_truthful_navigation_source_and_general_cli
         r"workbenchRouteDefinition,\s*"
         r"sessionRouteDefinition,\s*"
         r"knowledgeGraphRouteDefinition,\s*"
+        r"filesRouteDefinition,\s*"
         r"reviewRouteDefinition,\s*"
         r"\] as const",
         navigation,
