@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tools import check_documentation as documentation
 from tools.check_documentation import (
+    check_acceptance_status_consistency,
     check_markdown_links,
     check_package_registry,
     check_removed_references,
@@ -45,6 +47,21 @@ def test_user_documents_reject_obsolete_runtime_and_skill_instructions(
     assert {item.code for item in issues} == {"DOC101", "DOC102"}
 
 
+def test_active_documents_reject_superpowers_skill_invocations(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path / "docs/current.md",
+        "使用 `superpowers:writing-plans` 生成计划。\n",
+    )
+
+    issues = documentation.check_skill_authority(tmp_path)
+
+    assert [(item.code, item.path, item.line) for item in issues] == [
+        ("DOC403", "docs/current.md", 1)
+    ]
+
+
 def test_user_testing_docs_reject_unimplemented_runtime_banner_claim(
     tmp_path: Path,
 ) -> None:
@@ -55,6 +72,22 @@ def test_user_testing_docs_reject_unimplemented_runtime_banner_claim(
     issues = check_user_documents(tmp_path)
     assert [(item.code, item.path) for item in issues] == [
         ("DOC105", "docs/user-testing/README.md")
+    ]
+
+
+def test_acceptance_visible_status_must_match_machine_result(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "docs/user-testing/checkpoints/P2-99-example.md",
+        "**状态：** pending\n"
+        "<!-- USER_ACCEPTANCE_RESULT_START -->\n"
+        "**结果：** passed\n"
+        "<!-- USER_ACCEPTANCE_RESULT_END -->\n",
+    )
+
+    issues = check_acceptance_status_consistency(tmp_path)
+
+    assert [(item.code, item.path, item.line) for item in issues] == [
+        ("DOC106", "docs/user-testing/checkpoints/P2-99-example.md", 1)
     ]
 
 
@@ -91,6 +124,15 @@ def test_entry_documents_reject_volatile_snapshots(tmp_path: Path) -> None:
     assert {item.code for item in issues} == {"DOC205", "DOC207", "DOC208"}
 
 
+def test_entry_documents_reject_live_package_status_actions(tmp_path: Path) -> None:
+    _write(tmp_path / "AGENTS.md", "当前 P2-09 已合并。\n")
+    _write(tmp_path / "ARCHITECTURE.md", "阻断 P2-14。\n")
+
+    issues = check_status_ownership(tmp_path)
+
+    assert {item.code for item in issues} == {"DOC211", "DOC212"}
+
+
 def test_persistent_docs_reject_live_worktree_assignment_claims(tmp_path: Path) -> None:
     _write(
         tmp_path / "docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md",
@@ -113,6 +155,25 @@ def test_removed_document_name_is_rejected_outside_governance_plan(
     issues = check_removed_references(tmp_path)
     assert [(item.code, item.path) for item in issues] == [
         ("DOC401", "docs/current.md")
+    ]
+
+
+def test_retired_completed_plan_cannot_be_restored(tmp_path: Path) -> None:
+    retired = (
+        tmp_path
+        / "docs/superpowers/plans"
+        / "2026-07-15-p2-14-workbench-analysis-overview-implementation.md"
+    )
+    _write(retired, "# Restored historical plan\n")
+
+    issues = check_removed_references(tmp_path)
+
+    assert [(item.code, item.path) for item in issues] == [
+        (
+            "DOC402",
+            "docs/superpowers/plans/"
+            "2026-07-15-p2-14-workbench-analysis-overview-implementation.md",
+        )
     ]
 
 

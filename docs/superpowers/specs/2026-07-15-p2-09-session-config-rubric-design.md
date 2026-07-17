@@ -315,7 +315,7 @@ POST /api/sessions/{session_id}/config/editor/refine
 ## 15. 实施前门槛
 
 1. 用户复核并确认本书面规格；
-2. 使用 `superpowers:writing-plans` 基于最新源码生成 P2-09 源码级即时实现计划；
+2. 按 `AGENTS.md` 的 Matt Pocock skills 规则，先用 `grilling` 清零不确定项，再基于最新源码生成 P2-09 源码级即时实现计划；计划确认后使用 `implement` 执行；
 3. 即时计划包含本规格的业务能力与 UX 设计溯源表、`quick` 用户自测声明、合法交接块和真实数据指纹守卫；
 4. P2-09 只在专属干净 worktree 实施，先写失败测试并确认 RED；
 5. 计划或源码若证明现有接口、评分语义或样卷联动与本设计不一致，立即回到调查，不通过扩大范围猜测。
