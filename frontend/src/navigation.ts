@@ -35,6 +35,14 @@ export const templateRegionRouteDefinition = {
   breadcrumb: '考试配置 / 样卷题框标定',
 } as const
 
+export const gradingRunRouteDefinition = {
+  id: 'grading-run',
+  path: '/sessions/:sessionId/grading-run',
+  title: '批改执行',
+  description: '上传整班答卷、完成扫描预检并控制批改运行',
+  breadcrumb: '考试配置 / 批改执行',
+} as const
+
 export const reviewRouteDefinition: WorkspaceRouteDefinition = {
   id: 'grading',
   label: '评分复核',
