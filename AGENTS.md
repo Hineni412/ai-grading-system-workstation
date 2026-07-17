@@ -101,7 +101,7 @@ Phase 2 复杂页面扩散必须满足来源重校准门槛和包依赖；门槛
 ## 执行包工作原则
 
 - 先调查再判断，不凭文件名猜字段、接口、状态或业务规则。
-- 并行默认策略：当 Index 已标记 `ready`、依赖已进入共同基线、文件所有权可以分离且真实数据风险受控时，优先同时使用两个功能通道；不能满足条件时不为凑数量强行并行。
+- 工作目录默认策略：根目录保持 `main`；有活动里程碑时默认只保留一个滚动复用的功能 worktree 和一个 integration worktree，按 Index 的固定顺序串行推进。每个执行包仍使用独立短分支；只有 Index 明确记录并行收益、文件所有权和第二通道时，才临时启用第二个功能 worktree。
 - GitHub Issues 可以拆分包内任务和记录阻塞关系，但不能自行改变执行包状态、依赖或领取顺序。
 - 优先复用现有服务与测试，不为目标架构提前重写业务逻辑。
 - 结构性变化同步更新 `ARCHITECTURE.md`；普通局部修复不做无意义文档改写。
@@ -118,22 +118,25 @@ Phase 2 复杂页面扩散必须满足来源重校准门槛和包依赖；门槛
 
 并行分工、共享文件所有权和启动规则以 `docs/superpowers/packages/PARALLEL_WORKTREE_EXECUTION.md` 为准：
 
-1. 一个功能 worktree/分支同一时间只实施一个执行包；里程碑第 1 包从 `origin/main` 创建，后续包可以从该里程碑已验证的 integration 精确 SHA 创建新分支。
-2. 功能分支完成 TDD、包内回归、快速冒烟和指定复核后，提交给 integration 分支，不直接写入 `main`。
-3. integration 一次合入一个包并解决共享入口/文档冲突；逐包只跑受影响验证，里程碑完成后运行一次组合回归与完整冒烟，并核对真实两库指纹不变。
-4. 里程碑门槛通过后才推送 integration，并通过一个 PR 合并 GitHub `main`；默认禁止直接 push `main`。
-5. PR 合并后同步 `origin/main`、本地 `main` 和活动 worktree；下一里程碑必须基于新主线。第 3 包确实受阻时，允许前 2 包作为明确记录的部分里程碑收口。
-6. 只有 `git branch --merged origin/main` 能证明已合并且不再承担任务的分支才可普通删除；独有提交必须保留，除非用户明确授权丢弃。
-7. 删除 linked worktree 前分别检查源码状态、`user_data/` 和 Windows reparse point。存在本地数据、未合并提交或指向外部的链接时必须停止；禁止手工递归删除 worktree。
-8. 任何阶段都不得暂存、提交或 stash 真实 `user_data/`。
+1. 根目录始终保持本地 `main`。有活动里程碑时，默认拓扑是一个滚动功能 worktree 加一个 integration worktree；没有活动里程碑时可以只保留根目录。
+2. 滚动功能 worktree 同一时间只实施一个执行包；每个包仍创建独立短分支。复用的是物理目录，不是在旧功能分支继续叠包。
+3. 里程碑第 1 包从 `origin/main` 创建；后续包从该里程碑已完成逐包验证的 integration 精确 SHA 创建新分支。
+4. 只有上一包已进入 integration 并完成逐包验证、功能目录干净、`user_data/` 无本地项、没有未知或未交接提交且没有外部 reparse point 时，才可在同一功能 worktree 切换到下一包分支。
+5. 功能分支完成 TDD、包内回归、快速冒烟和指定复核后，提交给 integration 分支，不直接写入 `main`。
+6. integration 一次合入一个包并解决共享入口/文档冲突；逐包只跑受影响验证，里程碑完成后运行一次组合回归与完整冒烟，并核对真实两库指纹不变。
+7. 里程碑门槛通过后才推送 integration，并通过一个 PR 合并 GitHub `main`；默认禁止直接 push `main`。
+8. PR 合并后同步 `origin/main`、本地 `main` 和活动 worktree；下一里程碑必须基于新主线。第 3 包确实受阻时，允许前 2 包作为明确记录的部分里程碑收口。
+9. 只有 `git branch --merged origin/main` 能证明已合并且不再承担任务的分支才可普通删除；独有提交必须保留，除非用户明确授权丢弃。
+10. 删除或重新分配 linked worktree 前分别检查源码状态、`user_data/` 和 Windows reparse point。存在本地数据、未合并提交或指向外部的链接时必须停止；禁止手工递归删除 worktree。
+11. 任何阶段都不得暂存、提交或 stash 真实 `user_data/`。
 
 用户明确要求启动执行包，即持续授权该包走完标准功能分支、integration、push、PR、合并和基线同步流程。该授权不包含直接 push `main`、force push、真实数据写入、不可逆删除，或丢弃 `origin/main` 未包含的历史提交。
 
 ## 夜间自动化
 
-每天 4:00 的“阅卷系统夜间4点推进”以 `docs/superpowers/packages/NIGHTLY_AUTOMATION.md` 为唯一权威提示词。任务选择还必须读取资格矩阵、并行手册、Index 和候选包即时计划，并用 `tools/handoff_status.py` 核验证据。
+如启用每天 4:00 的“阅卷系统夜间4点推进”，以 `docs/superpowers/packages/NIGHTLY_AUTOMATION.md` 为唯一权威提示词。任务选择还必须读取资格矩阵、并行手册、Index 和候选包即时计划，并用 `tools/handoff_status.py` 核验证据。
 
-夜间只允许实施同时满足以下条件的包：资格为 `eligible_after_plan`、有专属干净 worktree、Index 状态和即时计划满足自动化门槛、规划已经过要求的复核。夜间实现只能形成本地功能提交并留下 `waiting_review`，不得自行宣称独立复审或用户验收通过，不得 push、创建 PR、合并、清理 worktree/分支或操作真实数据。
+夜间只允许实施同时满足以下条件的包：资格为 `eligible_after_plan`、有白天预先分配且由当前包独占的干净滚动功能 worktree、Index 状态和即时计划满足自动化门槛、规划已经过要求的复核。夜间不得自行切换旧分支或重新分配 worktree；实现只能形成本地功能提交并留下 `waiting_review`，不得自行宣称独立复审或用户验收通过，不得 push、创建 PR、合并、清理 worktree/分支或操作真实数据。
 
 ## 常用命令
 
