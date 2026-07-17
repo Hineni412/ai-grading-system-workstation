@@ -216,6 +216,7 @@ P2-11 功能分支预期拥有：
 | 24 | 登记问题公开 RED | expected_failures | 后端 25.76 秒、页面 15.86 秒、前端契约 3.98 秒 | 后端 5 failed/28 passed；页面 2 failed/7 passed；契约 1 failed/6 passed，精确覆盖 5 个 Important | 统一修复四组根因，不再扩展问题清单 |
 | 25 | 四组根因统一修复与稳定候选门槛 | passed | 约 55 分钟；后端 41.41 秒、前端 6.63 秒、浏览器 21.6 秒、冒烟 9.25 秒 | 5 个 Important 转绿；1 个 Suggestion 完成 Token 自检；后端 66 passed、前端 22 passed，类型检查、定向 lint、构建通过 | 原两名评审者只做一次限定最终复审；通过后进行 quick 用户短测与交接 |
 | 26 | 原评审者限定最终 Spec / Standards 复审 | passed | 约 6 分钟 | 原始 0 条、去重 0 条；无 Critical、Important 或 Suggestion | quick 用户短测；通过后进入 integration 交接 |
+| 27 | quick 用户短测与真实数据守卫复核 | passed | 用户完成，未单独计时 | 1–9 步全部通过；失败等级 none；真实两库及 worktree 数据副本指纹不变 | integration 逐包验证与里程碑收口 |
 
 后续每个 RED/GREEN、门槛、复审、批量修复和集成验证追加一行。
 
@@ -235,6 +236,8 @@ P2-11 功能分支预期拥有：
 
 限定最终复审证据：原 Standards 与 Spec 评审者针对同一冻结提交 `69074bbf1a77f1bad3666aa851f328b9a10f2d7f`，只核对首轮登记的 6 条问题、修复区域及直接回归。Standards 确认状态身份失败关闭、带批次清单缺失时拒绝发布和样式 Token 收口均符合规则；Spec 确认可批改数即时更新、受控正反面证据与保存/确认状态、三类文件魔数校验及拒绝后的原状态保持均符合需求。两路均为 PASS，原始意见 0 条、去重后 0 条，无 Critical、Important 或 Suggestion，不再开展新一轮评审。当前实现、自动验证与独立复审均已通过；剩余工作只有 quick 用户短测和 integration，P2-11 尚未允许发布。
 
+用户短测证据：用户在隔离的匿名合成考试环境中完成 P2-11 清单 1–9 步，并明确回复“通过”。短测覆盖上传与魔数校验后的正常路径、正反面受控证据、决定保存/确认、可批改数即时更新、暂停/继续/取消、刷新恢复、后来匹配补批、新批次隔离及约 1024×768 可用性。验收记录提交为 `420e8d6f7a658821fc0a8383440a744bdb2573c0`；测试结束后隔离服务已关闭，主工作目录真实两库及功能 worktree 数据副本的 SHA-256、大小和 UTC 修改时间仍与短测前一致。P2-11 的实现、自动验证、限定最终复审和用户验收均已通过，当前只等待 integration 逐包验证与里程碑收口，尚未合并或发布。
+
 ## Rollback and Stop Conditions
 
 - 功能回退为撤销 P2-11 提交并继续使用旧 Streamlit 批改页；不删除上传、预检、账本或已有评分结果。
@@ -248,12 +251,12 @@ P2-11 功能分支预期拥有：
 ## 昼夜交接
 
 **执行包：** P2-11
-**交接状态：** waiting_user
-**功能提交：** 69074bbf1a77f1bad3666aa851f328b9a10f2d7f
+**交接状态：** verified_pending_integration
+**功能提交：** 420e8d6f7a658821fc0a8383440a744bdb2573c0
 **自动验证：** passed
 **独立复审：** passed
-**用户验收：** pending
+**用户验收：** passed
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
