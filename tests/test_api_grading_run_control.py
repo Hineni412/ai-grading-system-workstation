@@ -45,7 +45,7 @@ def _system(tmp_path, *, config_fingerprint_resolver=None):
 
 
 def _prepare_ready_scan_batch(client, tmp_path, session_id: int) -> dict:
-    content = b"ready scan"
+    content = b"\xff\xd8\xffready scan"
     uploaded = client.post(
         f"/api/sessions/{session_id}/scan-uploads",
         content=content,
@@ -230,7 +230,7 @@ def test_cancelled_run_cannot_resume_and_failed_retry_keeps_original_mode(tmp_pa
 def test_concurrent_start_requests_create_only_one_grading_job(tmp_path) -> None:
     client, db, manager = _system(tmp_path)
     session_id = db.create_grading_session("并发启动测试", "rubric.json", "answer.json")
-    content = b"front"
+    content = b"\xff\xd8\xfffront"
     client.post(
         f"/api/sessions/{session_id}/scan-uploads",
         content=content,
@@ -363,7 +363,7 @@ def test_new_batch_rejects_retry_from_the_previous_batch(tmp_path) -> None:
 def test_restart_can_submit_when_manifest_has_orphaned_reservation(tmp_path) -> None:
     client, db, manager = _system(tmp_path)
     session_id = db.create_grading_session("启动中断恢复", "rubric.json", "answer.json")
-    content = b"front"
+    content = b"\xff\xd8\xfffront"
     client.post(
         f"/api/sessions/{session_id}/scan-uploads",
         content=content,
@@ -520,7 +520,7 @@ def test_start_requires_current_frozen_preflight_and_pending_issue_confirmation(
     client, db, manager = _system(tmp_path)
     session_id = db.create_grading_session("匿名期末", "rubric.json", "answer.json")
     manager.register("grading_run", lambda context: {"state": "completed"})
-    content = b"front"
+    content = b"\xff\xd8\xfffront"
     try:
         client.post(
             f"/api/sessions/{session_id}/scan-uploads",

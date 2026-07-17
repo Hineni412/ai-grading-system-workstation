@@ -100,6 +100,60 @@ def test_run_grading_job_uses_saved_scan_payload_and_manual_decisions(tmp_path) 
     assert reports[-1][1] == "grading_completed"
 
 
+def test_run_grading_job_does_not_fall_back_to_legacy_decisions_when_state_identity_changed(
+    tmp_path,
+) -> None:
+    from backend.jobs.grading_run import run_grading_job
+
+    db, session_id = _seed_session(tmp_path)
+    (tmp_path / "rubric.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "answer.json").write_text("{}", encoding="utf-8")
+    work_dir = tmp_path / "templates" / f"session_{session_id}"
+    work_dir.mkdir(parents=True)
+    analysis_path = work_dir / "scan_analysis_latest.json"
+    analysis_path.write_text(
+        json.dumps({"groups": [], "issues": [], "total_pages": 0}),
+        encoding="utf-8",
+    )
+    stale_decisions = [{"issue_id": "old-issue", "action": "match", "student_id": 99}]
+    (work_dir / "scan_manual_decisions_latest.json").write_text(
+        json.dumps(stale_decisions),
+        encoding="utf-8",
+    )
+    (work_dir / "scan_decisions_state.json").write_text(
+        json.dumps(
+            {
+                "analysis_identity": hashlib.sha256(b"previous analysis").hexdigest(),
+                "revision": 4,
+                "internal_decisions": stale_decisions,
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, Any] = {}
+
+    class FakeService:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def run_session_grading(self, **kwargs: Any):
+            captured.update(kwargs)
+            yield {"event": "session_completed", "progress": {"completed": 0}}
+
+    run_grading_job(
+        db=db,
+        session_id=session_id,
+        exams_dir=tmp_path / "exams",
+        session_work_dir=work_dir,
+        data_root=tmp_path,
+        question_bank_db_path=tmp_path / "databases" / "question_bank.db",
+        llm_client_factory=lambda: object(),
+        service_factory=FakeService,
+    )
+
+    assert captured["manual_decisions"] is None
+
+
 def test_run_grading_job_confirms_cancel_when_service_stops(tmp_path) -> None:
     from backend.jobs.grading_run import run_grading_job
     from backend.jobs.manager import JobCancellationRequested

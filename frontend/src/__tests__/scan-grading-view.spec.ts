@@ -48,8 +48,17 @@ beforeEach(() => {
   document.body.innerHTML = ''; localStorage.clear(); vi.clearAllMocks()
   vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(workspace())
   vi.mocked(api.fetchPreflight).mockResolvedValue({
-    revision: 2, summary: { auto_matched: 28, issues: 2, absent_candidates: 1, total_pages: 60 },
-    groups: [], issues: [{ id: 'i1' }, { id: 'i2' }], absent_students: [], warnings: [],
+    revision: 2, summary: {
+      auto_matched: 28, ready_to_grade: 28, issues: 2, absent_candidates: 1, total_pages: 60,
+    },
+    groups: [], issues: [
+      { id: 'i1', detected_name: '待核对甲', source_label: '001',
+        front_media_url: '/api/sessions/7/scan/preflight/media/issue:i1:front',
+        back_media_url: '/api/sessions/7/scan/preflight/media/issue:i1:back' },
+      { id: 'i2', detected_name: '待核对乙', source_label: '002',
+        front_media_url: '/api/sessions/7/scan/preflight/media/issue:i2:front',
+        back_media_url: null },
+    ], absent_students: [], warnings: [],
     decisions: [], pending_issue_count: 2,
   })
   vi.mocked(fetchStudents).mockResolvedValue([
@@ -57,7 +66,7 @@ beforeEach(() => {
   ])
   vi.mocked(api.saveScanDecisions).mockResolvedValue({
     revision: 3, decisions: [{ target_type: 'issue', target_id: 'i1', action: 'invalid' }],
-    pending_issue_count: 1,
+    pending_issue_count: 1, ready_to_grade: 28,
   })
 })
 
@@ -103,16 +112,59 @@ describe('scan grading workspace', () => {
     app.unmount()
   })
 
+  it('shows controlled front and back evidence plus saved-decision status', async () => {
+    const { app, host } = await mountView()
+
+    const evidence = [...host.querySelectorAll<HTMLImageElement>('.scan-evidence img')]
+    expect(evidence.map((image) => image.getAttribute('src'))).toEqual([
+      '/api/sessions/7/scan/preflight/media/issue:i1:front',
+      '/api/sessions/7/scan/preflight/media/issue:i1:back',
+      '/api/sessions/7/scan/preflight/media/issue:i2:front',
+    ])
+
+    host.querySelector<HTMLButtonElement>('.scan-issue-list .text-button')!.click()
+    for (let index = 0; index < 4; index += 1) {
+      await Promise.resolve(); await nextTick()
+    }
+
+    expect(host.querySelector('[data-saved-decision="issue:i1"]')?.textContent).toContain('已保存：标记无效')
+    expect(host.textContent).toContain('已确认 1 项')
+    app.unmount()
+  })
+
+  it('updates the true gradable count after an issue is matched', async () => {
+    vi.mocked(api.saveScanDecisions).mockResolvedValue({
+      revision: 3,
+      decisions: [{ target_type: 'issue', target_id: 'i1', action: 'match', student_id: 11 }],
+      pending_issue_count: 1,
+      ready_to_grade: 29,
+    })
+    const { app, host } = await mountView()
+    const select = host.querySelector<HTMLSelectElement>('select[aria-label="选择学生"]')!
+    select.value = '11'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    host.querySelector<HTMLButtonElement>('.scan-issue-list button.secondary')!.click()
+    for (let index = 0; index < 4; index += 1) {
+      await Promise.resolve(); await nextTick()
+    }
+
+    expect(host.textContent).toContain('本轮可批改 29 份')
+    app.unmount()
+  })
+
   it('allows a low-confidence automatic group to be rebound', async () => {
     vi.mocked(api.fetchPreflight).mockResolvedValue({
-      revision: 2, summary: { auto_matched: 1, issues: 0, absent_candidates: 0, total_pages: 2 },
+      revision: 2, summary: {
+        auto_matched: 1, ready_to_grade: 1, issues: 0, absent_candidates: 0, total_pages: 2,
+      },
       groups: [{ id: 'g1', student_name: '学生乙', detected_name: '学生一', source_label: '001',
         match_method: 'fuzzy', match_score: 0.7 }], issues: [], absent_students: [], warnings: [],
       decisions: [], pending_issue_count: 0,
     })
     vi.mocked(api.saveScanDecisions).mockResolvedValue({
       revision: 3, decisions: [{ target_type: 'group', target_id: 'g1', action: 'match', student_id: 11 }],
-      pending_issue_count: 0,
+      pending_issue_count: 0, ready_to_grade: 1,
     })
     const { app, host } = await mountView()
     const select = host.querySelector<HTMLSelectElement>('select[aria-label="重新选择学生"]')!

@@ -138,7 +138,7 @@ def _require_current_scan_batch(
         return
     manifest_path = Path(session_work_dir) / "scan_upload_batch.json"
     if not manifest_path.exists():
-        return
+        raise ValueError("scan batch manifest is unavailable")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:

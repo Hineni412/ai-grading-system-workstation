@@ -296,6 +296,7 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
       check.revision = saved.revision
       check.decisions = saved.decisions
       check.pending_issue_count = saved.pending_issue_count
+      check.summary.ready_to_grade = saved.ready_to_grade
     })
   }
 

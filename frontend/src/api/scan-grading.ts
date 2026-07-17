@@ -173,11 +173,18 @@ export function decodeGradingWorkspace(value: unknown): GradingWorkspace {
 
 function decodePreflight(value: unknown): ScanPreflight {
   assertNoPathLikeKeys(value)
-  if (!isRecord(value) || !finiteInteger(value.revision) || !isRecord(value.summary)
+  if (!isRecord(value) || !finiteInteger(value.revision)
     || !Array.isArray(value.groups) || !Array.isArray(value.issues)
     || !Array.isArray(value.absent_students) || !Array.isArray(value.warnings)
     || !Array.isArray(value.decisions) || !finiteInteger(value.pending_issue_count)) {
     throw new Error('Invalid scan preflight')
+  }
+  const summary = value.summary
+  const summaryKeys = [
+    'auto_matched', 'ready_to_grade', 'issues', 'absent_candidates', 'total_pages',
+  ] as const
+  if (!isRecord(summary) || !summaryKeys.every((key) => finiteInteger(summary[key]))) {
+    throw new Error('Invalid scan preflight summary')
   }
   return value as unknown as ScanPreflight
 }
@@ -243,14 +250,26 @@ export function fetchPreflight(sessionId: number): Promise<ScanPreflight> {
   return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan/preflight`, { decode: decodePreflight })
 }
 
-export function saveScanDecisions(sessionId: number, revision: number, decisions: ScanDecision[]): Promise<{ revision: number, decisions: ScanDecision[], pending_issue_count: number }> {
+export function saveScanDecisions(sessionId: number, revision: number, decisions: ScanDecision[]): Promise<{
+  revision: number
+  decisions: ScanDecision[]
+  pending_issue_count: number
+  ready_to_grade: number
+}> {
   return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan/preflight/decisions`, {
     method: 'PUT', body: { expected_revision: revision, decisions },
     decode(value) {
       assertNoPathLikeKeys(value)
       if (!isRecord(value) || !finiteInteger(value.revision) || !Array.isArray(value.decisions)
-        || !finiteInteger(value.pending_issue_count)) throw new Error('Invalid scan decisions')
-      return value as { revision: number, decisions: ScanDecision[], pending_issue_count: number }
+        || !finiteInteger(value.pending_issue_count) || !finiteInteger(value.ready_to_grade)) {
+        throw new Error('Invalid scan decisions')
+      }
+      return value as unknown as {
+        revision: number
+        decisions: ScanDecision[]
+        pending_issue_count: number
+        ready_to_grade: number
+      }
     },
   })
 }

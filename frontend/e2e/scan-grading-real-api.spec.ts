@@ -17,6 +17,8 @@ test('real isolated API preserves grading controls, later-match supplement and b
     return payload.items[0]?.status
   }).toBe('succeeded')
   await expect(page.getByText('仍有 1 份异常答卷待处理')).toBeVisible()
+  await expect(page.locator('.scan-evidence img')).toHaveCount(2)
+  await expect(page.locator('.scan-evidence img').first()).toBeVisible()
 
   await page.locator('[data-confirm-pending]').check()
   await page.locator('[data-grading-mode="hybrid_batch"]').click()
@@ -50,6 +52,9 @@ test('real isolated API preserves grading controls, later-match supplement and b
   await page.getByLabel('选择学生').selectOption({ label: '匿名学生四 · A004' })
   await page.getByRole('button', { name: '匹配', exact: true }).click()
   await expect(page.getByText('待处理异常 0 份')).toBeVisible()
+  await expect(page.getByText('本轮可批改 2 份')).toBeVisible()
+  await expect(page.locator('[data-saved-decision="issue:anonymous-issue-1"]')).toContainText('已保存：匹配至 匿名学生四')
+  await expect(page.getByText('已确认 1 项')).toBeVisible()
   await expect(page.locator('[data-action="retry-failed"]')).toBeVisible()
   await page.locator('[data-action="supplement"]').click()
   await expect.poll(async () => {
