@@ -215,6 +215,7 @@ P2-11 功能分支预期拥有：
 | 23 | 用户授权后的登记问题集中调查与边界冻结 | passed | 约 12 分钟 | 原始 6 条、去重 6 条：5 个 Important、1 个 Suggestion，归并为 4 组根因 | 为 5 个业务问题补公开 RED，统一修复 4 组根因，受影响验证，限定最终复审 |
 | 24 | 登记问题公开 RED | expected_failures | 后端 25.76 秒、页面 15.86 秒、前端契约 3.98 秒 | 后端 5 failed/28 passed；页面 2 failed/7 passed；契约 1 failed/6 passed，精确覆盖 5 个 Important | 统一修复四组根因，不再扩展问题清单 |
 | 25 | 四组根因统一修复与稳定候选门槛 | passed | 约 55 分钟；后端 41.41 秒、前端 6.63 秒、浏览器 21.6 秒、冒烟 9.25 秒 | 5 个 Important 转绿；1 个 Suggestion 完成 Token 自检；后端 66 passed、前端 22 passed，类型检查、定向 lint、构建通过 | 原两名评审者只做一次限定最终复审；通过后进行 quick 用户短测与交接 |
+| 26 | 原评审者限定最终 Spec / Standards 复审 | passed | 约 6 分钟 | 原始 0 条、去重 0 条；无 Critical、Important 或 Suggestion | quick 用户短测；通过后进入 integration 交接 |
 
 后续每个 RED/GREEN、门槛、复审、批量修复和集成验证追加一行。
 
@@ -232,6 +233,8 @@ P2-11 功能分支预期拥有：
 
 登记问题统一修复证据：用户授权后以 `83eba09b09fa2a31c0ae0c64e70a31ed8519b31f` 冻结 6 条意见和 4 组根因。公开 RED 精确复现决定身份不一致仍采用旧文件、带批次任务缺失 manifest 仍发布、后来匹配不更新可批改数、页面缺少受控证据/保存状态、三类声明格式可被伪造等失败。功能提交 `e5fce9819ef50e3710b344163af2db282f0386d3` 统一改为身份失败关闭，在原子发布前核对 PDF/JPEG/PNG 文件头，公开并即时更新由当前决定派生的 `ready_to_grade`，显示正反面证据、每项保存状态和“已确认”分区，并把本页可直接映射的字号、间距、宽度和禁用透明度收回既有 Token。稳定候选受影响回归为后端 `66 passed`（41.41 秒）、前端 `22 passed`（6.63 秒），类型检查、定向 lint、正式构建通过；真实匿名 Chromium `1 passed`（21.6 秒），快速冒烟 `--skip-tests` 通过（9.25 秒）。全部写入只发生在 pytest、Playwright、构建和冒烟临时目录；主工作目录真实两库及功能 worktree 数据副本的 SHA-256、大小和 UTC 修改时间均保持不变。当前任务实现与自动验收完成，版本仍须经过限定最终复审、quick 用户短测和 integration 才允许发布。
 
+限定最终复审证据：原 Standards 与 Spec 评审者针对同一冻结提交 `69074bbf1a77f1bad3666aa851f328b9a10f2d7f`，只核对首轮登记的 6 条问题、修复区域及直接回归。Standards 确认状态身份失败关闭、带批次清单缺失时拒绝发布和样式 Token 收口均符合规则；Spec 确认可批改数即时更新、受控正反面证据与保存/确认状态、三类文件魔数校验及拒绝后的原状态保持均符合需求。两路均为 PASS，原始意见 0 条、去重后 0 条，无 Critical、Important 或 Suggestion，不再开展新一轮评审。当前实现、自动验证与独立复审均已通过；剩余工作只有 quick 用户短测和 integration，P2-11 尚未允许发布。
+
 ## Rollback and Stop Conditions
 
 - 功能回退为撤销 P2-11 提交并继续使用旧 Streamlit 批改页；不删除上传、预检、账本或已有评分结果。
@@ -245,10 +248,10 @@ P2-11 功能分支预期拥有：
 ## 昼夜交接
 
 **执行包：** P2-11
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** waiting_user
+**功能提交：** 69074bbf1a77f1bad3666aa851f328b9a10f2d7f
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** pending
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
