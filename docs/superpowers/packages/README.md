@@ -34,7 +34,9 @@
 
 文件：`docs/superpowers/plans/YYYY-MM-DD-<package-id>-<slug>-implementation.md`
 
-用途：开工前重新调查当前代码，写出准确文件、接口、失败测试、最小实现、验证命令和提交范围。实现计划必须使用 checkbox。执行采用 Matt Pocock skills：不确定的需求或设计先使用 `grilling`，行为修改优先使用 `tdd`，按已确认计划实施时使用 `implement`，稳定候选使用 `code-review`。技能的通用测试和提交建议必须服从本仓库的分层测试、worktree、integration 和真实数据保护规则。
+用途：开工前重新调查当前代码，写出准确文件、接口、失败测试、最小实现、验证命令和提交范围。实现计划必须使用 checkbox。执行采用 Matt Pocock skills：只有存在必须由用户决定、会明显改变最终结果且无法从项目资料判断的需求或设计选择时，才使用 `grilling`；其他不确定性按根目录 `AGENTS.md` 自行调查或采用最保守的合理假设继续。行为修改优先使用 `tdd`，按已确认计划实施时使用 `implement`，稳定候选使用 `code-review`。指定 skill 在当前会话不可用时，必须说明原因并按项目现有流程继续，不得虚构调用结果。技能的通用测试、提交和分支建议必须服从本仓库的分层测试、worktree、integration 和真实数据保护规则。
+
+代码与需求复审统一使用 `Critical`、`Important`、`Suggestion`；用户自测与正式验收继续使用 `Blocker`、`Major`、`Minor`。历史计划和验收证据保留其原始术语，不作为新复审混用等级的依据。
 
 可见前端包还必须在即时计划中建立“业务能力与 UX 设计溯源表”：
 
