@@ -24,6 +24,7 @@ from backend.ops.service import OpsSelfCheckService
 from backend.ops.plan_store import OpsPlanStore
 from backend.ops.write_service import OpsWriteService
 from backend.review.service import ReviewApplicationService
+from backend.students import StudentRosterModule
 from backend.scan_grading.config_fingerprint import (
     session_grading_config_fingerprint,
 )
@@ -40,6 +41,7 @@ from question_bank.services.question_read_service import (
 )
 from question_bank.services.training_task_service import TrainingTaskService
 from question_bank.services.question_write_service import QuestionBankWriteService
+from question_bank.services.assembly_workspace_service import AssemblyWorkspaceService
 
 
 _TEMPLATE_UPLOAD_SERVICE_GUARD = threading.Lock()
@@ -47,6 +49,12 @@ _TEMPLATE_UPLOAD_SERVICE_GUARD = threading.Lock()
 
 def get_grading_db() -> DBManager:
     return DBManager(get_path_manager().db_path)
+
+
+def get_student_roster_module(
+    db: DBManager = Depends(get_grading_db),
+) -> StudentRosterModule:
+    return StudentRosterModule(db)
 
 
 def get_session_analysis_service(
@@ -154,6 +162,10 @@ def get_question_bank_write_service() -> QuestionBankWriteService:
     return QuestionBankWriteService(paths.qb_db_path, data_root=paths.data_root)
 
 
+def get_assembly_workspace_service() -> AssemblyWorkspaceService:
+    return AssemblyWorkspaceService(get_path_manager().data_root)
+
+
 def get_diagnosis_profile_service() -> DiagnosisProfileService:
     paths = get_path_manager()
     return DiagnosisProfileService(paths.db_path, paths.qb_db_path)
@@ -226,6 +238,9 @@ def get_job_file_service(
     return JobFileService(
         reports_dir,
         training_outputs_dir=outputs_dir / "training",
+        assembly_outputs_dir=get_path_manager().data_root
+        / "question_bank"
+        / "assembly_exports",
         backups_dir=backups_dir,
         ops_outputs_dir=outputs_dir / "ops",
     )

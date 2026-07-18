@@ -15,6 +15,9 @@ def test_recalibrated_shell_keeps_one_truthful_navigation_source_and_general_cli
         r"export const navigationItems = \[\s*"
         r"workbenchRouteDefinition,\s*"
         r"sessionRouteDefinition,\s*"
+        r"studentsRouteDefinition,\s*"
+        r"questionBankRouteDefinition,\s*"
+        r"questionAssemblyRouteDefinition,\s*"
         r"knowledgeGraphRouteDefinition,\s*"
         r"filesRouteDefinition,\s*"
         r"reviewRouteDefinition,\s*"
@@ -23,6 +26,9 @@ def test_recalibrated_shell_keeps_one_truthful_navigation_source_and_general_cli
     )
     assert "path: '/workbench'" in navigation
     assert "path: '/sessions'" in navigation
+    assert "path: '/students'" in navigation
+    assert "path: '/question-bank'" in navigation
+    assert "path: '/question-assembly'" in navigation
     assert "path: '/knowledge-graph'" in navigation
     assert "path: '/grading'" in navigation
     assert "futureReason" not in navigation

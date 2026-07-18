@@ -6,8 +6,8 @@ from pathlib import Path
 from question_bank.database.schema import connect
 from question_bank.importers.batch_importer import (
     BatchImportResult,
-    PaperMetadata,
     ScannedPaper,
+    infer_metadata_from_filename,
     import_scanned_papers,
 )
 from question_bank.services.question_write_service import (
@@ -72,7 +72,7 @@ def _run_question_import_job_locked(
                 ScannedPaper(
                     source_file=str(resource.source_path),
                     file_type=resource.suffix.lstrip("."),
-                    metadata=PaperMetadata(),
+                    metadata=infer_metadata_from_filename(resource.filename),
                 )
             ],
             Path(question_bank_db_path),

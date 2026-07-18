@@ -231,6 +231,116 @@ def test_overview_without_session_does_not_choose_one(workbench_client) -> None:
     assert len(payload["recent_sessions"]) == 3
 
 
+def test_student_delete_returns_unlinked_graded_paper_to_pending_workbench_state(
+    workbench_client,
+) -> None:
+    client, _session_id, db_path, _latest_job_id = workbench_client
+
+    with sqlite3.connect(db_path) as conn:
+        rubric_path = conn.execute(
+            "SELECT rubric_path FROM grading_sessions ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+        session_id = int(
+            conn.execute(
+                """
+                INSERT INTO grading_sessions (
+                    session_name, rubric_path, answer_key_path, status
+                ) VALUES ('Delete progress regression', ?, '', 'completed')
+                """,
+                (rubric_path,),
+            ).lastrowid
+        )
+        student_id = int(
+            conn.execute(
+                """
+                INSERT INTO students (student_code, name, class_name)
+                VALUES ('S-DELETE-PROGRESS', 'Delete Progress Student', 'Class D')
+                """
+            ).lastrowid
+        )
+        paper_id = int(
+            conn.execute(
+                """
+                INSERT INTO exam_papers (
+                    session_id, front_image, back_image, ocr_name, student_id,
+                    match_status, processing_status, error_message
+                ) VALUES (?, 'front-delete.jpg', '', 'Delete Progress Student', ?,
+                          'matched', 'graded', 'old grading result')
+                """,
+                (session_id, student_id),
+            ).lastrowid
+        )
+        result_id = int(
+            conn.execute(
+                """
+                INSERT INTO session_results (
+                    session_id, student_id, paper_id, total_score, student_score,
+                    needs_human_review, raw_json
+                ) VALUES (?, ?, ?, 10, 8, 0, '{}')
+                """,
+                (session_id, student_id, paper_id),
+            ).lastrowid
+        )
+        conn.commit()
+
+    from grading_run_store import GradingRunStore
+
+    run_store = GradingRunStore(db_path)
+    run = run_store.begin(session_id, "a" * 64, "full_paper")
+    run_store.add_item(
+        run.id,
+        source_label="delete-progress",
+        student_id=student_id,
+        paper_fingerprint="b" * 64,
+        config_fingerprint="a" * 64,
+        status="graded",
+        paper_id=paper_id,
+        result_id=result_id,
+    )
+    run_store.finish(run.run_token, "completed")
+
+    impact = client.get(f"/api/students/{student_id}/deletion-impact").json()
+    deleted = client.delete(
+        f"/api/students/{student_id}",
+        params={
+            "expected_revision": impact["roster_revision"],
+            "confirmed": "true",
+        },
+    )
+    overview = client.get(
+        "/api/workbench/overview",
+        params={"session_id": session_id},
+    )
+
+    assert deleted.status_code == 200
+    assert overview.status_code == 200
+    assert overview.json()["progress"] == {
+        "total_papers": 1,
+        "matched_papers": 0,
+        "unmatched_papers": 1,
+        "graded_papers": 0,
+        "failed_papers": 0,
+        "grading_papers": 0,
+        "needs_human_review": 0,
+        "absent_students": 0,
+        "scan_issue_students": 0,
+        "progress_percent": 0.0,
+    }
+    assert overview.json()["anomalies"] == {
+        "unmatched_papers": 1,
+        "scan_issue_students": 0,
+        "failed_papers": 0,
+    }
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            """
+            SELECT student_id, match_status, processing_status, error_message
+            FROM exam_papers WHERE id = ?
+            """,
+            (paper_id,),
+        ).fetchone() == (None, "student_deleted", "pending", None)
+
+
 @pytest.mark.parametrize("recent_limit", [1, 20])
 def test_overview_accepts_recent_limit_bounds(
     workbench_client,

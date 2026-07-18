@@ -561,6 +561,14 @@ describe('workbench view', () => {
     expect(host.textContent).not.toMatch(/取消任务|重试任务|提交任务/)
   })
 
+  it('opens the student roster from the workbench header', async () => {
+    const { host, router } = await mountView()
+
+    host.querySelector<HTMLButtonElement>('[data-testid="workbench-students"]')!.click()
+
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/students'))
+  })
+
   it('loads graph only after a class is selected and exposes controlled evidence', async () => {
     const { host, loadGraph } = await mountView()
     expect(loadGraph).not.toHaveBeenCalled()

@@ -1,4 +1,5 @@
 from .analytics import router as analytics_router
+from .assembly import router as assembly_router
 from .config import router as config_router
 from .files import router as files_router
 from .grading import router as grading_router
@@ -18,6 +19,7 @@ from .workbench import router as workbench_router
 
 __all__ = [
     "analytics_router",
+    "assembly_router",
     "config_router",
     "files_router",
     "grading_router",

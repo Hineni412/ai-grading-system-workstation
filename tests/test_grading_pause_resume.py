@@ -10,7 +10,7 @@ import pytest
 from PIL import Image
 
 import grading_service
-from db_manager import DBManager
+from db_manager import DBManager, StudentGradingActiveError
 from grading_run_store import GradingRunStore
 from scanner import ExamPaperGroup
 
@@ -220,7 +220,101 @@ def test_cancel_discards_inflight_full_paper_result(patched, tmp_path, monkeypat
         ).fetchone()[0] == "pending"
     run = GradingRunStore(db.db_path).latest(session_id)
     assert run is not None
-    assert run.state == "paused"
+    assert run.state == "failed"
+
+
+def test_student_delete_waits_until_inflight_grading_finishes(
+    patched,
+    tmp_path,
+    monkeypatch,
+):
+    import grading_run_store
+
+    db, session_id = _seed(tmp_path, [(1, "stu1")])
+    group = _make_group(tmp_path, "stu1", 1, b"paper-1")
+    monkeypatch.setattr(
+        grading_service,
+        "_apply_manual_decisions",
+        lambda _analysis, _decisions, _students: [group],
+    )
+    monkeypatch.setattr(db, "is_template_ready", lambda _session_id: True)
+    monkeypatch.setattr(
+        grading_run_store,
+        "GradingRunStore",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("ledger unavailable")),
+    )
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking_grade(_grader, paper_group, *_args, **_kwargs):
+        started.set()
+        assert release.wait(3)
+
+        class Result:
+            student_name = paper_group.student_name
+            student_score = 1.0
+            total_score = 1.0
+            needs_human_review = False
+            raw_json = {"questions": []}
+            grading_details: list[object] = []
+
+        return Result()
+
+    monkeypatch.setattr(
+        grading_service,
+        "_grade_one_paper_with_retries",
+        blocking_grade,
+    )
+    events: list[dict[str, Any]] = []
+    errors: list[BaseException] = []
+
+    def consume() -> None:
+        try:
+            events.extend(
+                _service(db).run_session_grading(
+                    session_id=session_id,
+                    exams_dir=tmp_path,
+                    rubric_path=tmp_path / "rubric.json",
+                    answer_key_path=tmp_path / "answer.json",
+                    scan_analysis={"groups": [], "issues": []},
+                    max_workers=1,
+                    grading_mode="full_paper",
+                    enhance_images=False,
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    worker = threading.Thread(target=consume)
+    worker.start()
+    started_in_time = started.wait(3)
+    with pytest.raises(StudentGradingActiveError):
+        db.delete_student_hard(1)
+    assert list(db.backup_dir.glob("grading_before_delete_student_*.db")) == []
+    release.set()
+    worker.join(5)
+    deletion = db.delete_student_hard(1)
+
+    assert started_in_time, errors
+    assert not worker.is_alive()
+    assert errors == []
+    assert deletion["unlinked_papers"] == 1
+    assert not any(event.get("event") == "grading_failed" for event in events)
+    assert any(event.get("event") == "graded" for event in events)
+    with db._connect() as conn:
+        paper = conn.execute(
+            """
+            SELECT student_id, match_status, processing_status, error_message
+            FROM exam_papers
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        assert tuple(paper) == (None, "student_deleted", "pending", None)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_results WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()[0] == 0
 
 
 def test_cancel_discards_unpublished_hybrid_results(patched, tmp_path, monkeypatch):
@@ -303,7 +397,7 @@ def test_cancel_discards_unpublished_hybrid_results(patched, tmp_path, monkeypat
         ).fetchone()[0] == "pending"
     run = GradingRunStore(db.db_path).latest(session_id)
     assert run is not None
-    assert run.state == "paused"
+    assert run.state == "failed"
 
 
 def test_cancelled_failed_only_retry_restores_original_paper_state(

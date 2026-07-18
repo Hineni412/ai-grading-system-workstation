@@ -1,6 +1,9 @@
 export type WorkspaceRouteId =
   | 'workbench'
   | 'sessions'
+  | 'students'
+  | 'question-bank'
+  | 'question-assembly'
   | 'knowledge-graph'
   | 'files'
   | 'grading'
@@ -30,6 +33,33 @@ export const sessionRouteDefinition: WorkspaceRouteDefinition = {
   title: '考试配置',
   description: '创建考试并准备评分依据',
   breadcrumb: '考试配置',
+}
+
+export const studentsRouteDefinition: WorkspaceRouteDefinition = {
+  id: 'students',
+  label: '学生名单',
+  path: '/students',
+  title: '学生名单',
+  description: '导入、核对和维护参与阅卷的学生名单',
+  breadcrumb: '学生名单',
+}
+
+export const questionBankRouteDefinition: WorkspaceRouteDefinition = {
+  id: 'question-bank',
+  label: '题库管理',
+  path: '/question-bank',
+  title: '题库管理',
+  description: '筛选、核对、导入并安全维护可用于阅卷与分析的题目',
+  breadcrumb: '题库管理',
+}
+
+export const questionAssemblyRouteDefinition: WorkspaceRouteDefinition = {
+  id: 'question-assembly',
+  label: '组卷工作台',
+  path: '/question-assembly',
+  title: '组卷工作台',
+  description: '从题库选择试题，整理顺序和分节，并导出练习试卷',
+  breadcrumb: '组卷工作台',
 }
 
 export const templateRegionRouteDefinition = {
@@ -78,6 +108,9 @@ export const filesRouteDefinition: WorkspaceRouteDefinition = {
 export const navigationItems = [
   workbenchRouteDefinition,
   sessionRouteDefinition,
+  studentsRouteDefinition,
+  questionBankRouteDefinition,
+  questionAssemblyRouteDefinition,
   knowledgeGraphRouteDefinition,
   filesRouteDefinition,
   reviewRouteDefinition,
