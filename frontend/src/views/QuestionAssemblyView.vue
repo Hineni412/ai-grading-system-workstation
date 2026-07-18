@@ -289,6 +289,8 @@ function dropIntoUnassigned(): void {
                 <li
                   draggable="true"
                   @dragstart="startQuestionDrag(question.id)"
+                  @dragover.prevent
+                  @drop="dropBefore(question.id)"
                 >
                   <span class="assembly-list__index">{{ questionLabel(question) }}</span>
                   <span class="assembly-list__text">{{ question.question_text }}</span>

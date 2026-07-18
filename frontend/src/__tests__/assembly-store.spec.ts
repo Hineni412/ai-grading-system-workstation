@@ -197,4 +197,66 @@ describe('assembly store', () => {
     expect(store.questionsState).toBe('ready')
     expect(store.message).toBe('')
   })
+
+  it('reorders questions inside the active manual section', async () => {
+    const { useAssemblyStore } = await import('../stores/assembly')
+    const store = useAssemblyStore()
+    const api = {
+      getDraft: vi.fn(async () => draft({
+        basket_ids: [7, 8, 9],
+        order_ids: [7, 8, 9],
+        layout_mode: 'sections',
+        sections: [{ id: 'section-a', title: '第一部分', question_ids: [7, 8, 9] }],
+      })),
+      saveDraft: vi.fn(async (_revision: string, nextDraft: AssemblyDraft) => ({ ...nextDraft, revision: revisionB })),
+      resolveQuestions: vi.fn(async () => ({
+        items: [question(7), question(8), question(9)],
+        missing_question_ids: [],
+      })),
+      listRecords: vi.fn(async (): Promise<AssemblyRecordList> => ({ items: [], total: 0 })),
+      deleteRecord: vi.fn(),
+      restoreRecord: vi.fn(),
+      submitExport: vi.fn(),
+      retryExport: vi.fn(),
+    }
+
+    await store.load({ api })
+    await store.moveQuestion(8, -1)
+
+    expect(api.saveDraft).toHaveBeenLastCalledWith(revisionA, expect.objectContaining({
+      sections: [expect.objectContaining({ id: 'section-a', question_ids: [8, 7, 9] })],
+    }))
+    expect(store.draft.sections[0]?.question_ids).toEqual([8, 7, 9])
+  })
+
+  it('drops a section question before another question in the same section', async () => {
+    const { useAssemblyStore } = await import('../stores/assembly')
+    const store = useAssemblyStore()
+    const api = {
+      getDraft: vi.fn(async () => draft({
+        basket_ids: [7, 8, 9],
+        order_ids: [7, 8, 9],
+        layout_mode: 'sections',
+        sections: [{ id: 'section-a', title: '第一部分', question_ids: [7, 8, 9] }],
+      })),
+      saveDraft: vi.fn(async (_revision: string, nextDraft: AssemblyDraft) => ({ ...nextDraft, revision: revisionB })),
+      resolveQuestions: vi.fn(async () => ({
+        items: [question(7), question(8), question(9)],
+        missing_question_ids: [],
+      })),
+      listRecords: vi.fn(async (): Promise<AssemblyRecordList> => ({ items: [], total: 0 })),
+      deleteRecord: vi.fn(),
+      restoreRecord: vi.fn(),
+      submitExport: vi.fn(),
+      retryExport: vi.fn(),
+    }
+
+    await store.load({ api })
+    await store.moveQuestionBefore(9, 7)
+
+    expect(api.saveDraft).toHaveBeenLastCalledWith(revisionA, expect.objectContaining({
+      sections: [expect.objectContaining({ id: 'section-a', question_ids: [9, 7, 8] })],
+    }))
+    expect(store.draft.sections[0]?.question_ids).toEqual([9, 7, 8])
+  })
 })

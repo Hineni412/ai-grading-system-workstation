@@ -195,6 +195,22 @@ export const useAssemblyStore = defineStore('assembly', () => {
   }
 
   async function moveQuestion(questionId: number, direction: -1 | 1): Promise<boolean> {
+    const section = draft.value.sections.find((item) => item.question_ids.includes(questionId))
+    if (section) {
+      const index = section.question_ids.indexOf(questionId)
+      const nextIndex = index + direction
+      if (index < 0 || nextIndex < 0 || nextIndex >= section.question_ids.length) return false
+      const ids = [...section.question_ids]
+      const [item] = ids.splice(index, 1)
+      ids.splice(nextIndex, 0, item!)
+      return save({
+        ...draft.value,
+        sections: draft.value.sections.map((item) => (
+          item.id === section.id ? { ...item, question_ids: ids } : item
+        )),
+      })
+    }
+
     const order = [...draft.value.order_ids]
     const index = order.indexOf(questionId)
     const nextIndex = index + direction
@@ -206,6 +222,22 @@ export const useAssemblyStore = defineStore('assembly', () => {
 
   async function moveQuestionBefore(questionId: number, beforeQuestionId: number): Promise<boolean> {
     if (questionId === beforeQuestionId) return false
+    const section = draft.value.sections.find((item) => (
+      item.question_ids.includes(questionId) && item.question_ids.includes(beforeQuestionId)
+    ))
+    if (section) {
+      const ids = section.question_ids.filter((id) => id !== questionId)
+      const targetIndex = ids.indexOf(beforeQuestionId)
+      if (targetIndex < 0) return false
+      ids.splice(targetIndex, 0, questionId)
+      return save({
+        ...draft.value,
+        sections: draft.value.sections.map((item) => (
+          item.id === section.id ? { ...item, question_ids: ids } : item
+        )),
+      })
+    }
+
     const order = draft.value.order_ids.filter((id) => id !== questionId)
     const targetIndex = order.indexOf(beforeQuestionId)
     if (targetIndex < 0 || !draft.value.order_ids.includes(questionId)) return false
