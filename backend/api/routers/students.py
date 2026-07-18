@@ -22,6 +22,7 @@ from backend.students import (
     StudentBackupFailed,
     StudentCodeConflict,
     StudentDeleteFailed,
+    StudentGradingActive,
     StudentRosterConflict,
     StudentRosterError,
     StudentRosterModule,
@@ -251,7 +252,10 @@ def get_student_deletion_impact(
     response_model=StudentDeleteResponse,
     responses={
         404: {"model": ErrorResponse, "description": "Student not found"},
-        409: {"model": ErrorResponse, "description": "Student roster conflict"},
+        409: {
+            "model": ErrorResponse,
+            "description": "Student roster changed or grading is still active",
+        },
         500: {"model": ErrorResponse, "description": "Student deletion failed"},
     },
 )
@@ -279,6 +283,12 @@ def delete_student(
             409,
             exc.code,
             "Student roster changed; refresh the impact before deleting",
+        ) from exc
+    except StudentGradingActive as exc:
+        raise ApiError(
+            409,
+            exc.code,
+            "Wait for grading to finish before deleting this student",
         ) from exc
     except StudentBackupFailed as exc:
         raise ApiError(

@@ -270,16 +270,34 @@ def test_student_delete_returns_unlinked_graded_paper_to_pending_workbench_state
                 (session_id, student_id),
             ).lastrowid
         )
-        conn.execute(
-            """
-            INSERT INTO session_results (
-                session_id, student_id, paper_id, total_score, student_score,
-                needs_human_review, raw_json
-            ) VALUES (?, ?, ?, 10, 8, 0, '{}')
-            """,
-            (session_id, student_id, paper_id),
+        result_id = int(
+            conn.execute(
+                """
+                INSERT INTO session_results (
+                    session_id, student_id, paper_id, total_score, student_score,
+                    needs_human_review, raw_json
+                ) VALUES (?, ?, ?, 10, 8, 0, '{}')
+                """,
+                (session_id, student_id, paper_id),
+            ).lastrowid
         )
         conn.commit()
+
+    from grading_run_store import GradingRunStore
+
+    run_store = GradingRunStore(db_path)
+    run = run_store.begin(session_id, "a" * 64, "full_paper")
+    run_store.add_item(
+        run.id,
+        source_label="delete-progress",
+        student_id=student_id,
+        paper_fingerprint="b" * 64,
+        config_fingerprint="a" * 64,
+        status="graded",
+        paper_id=paper_id,
+        result_id=result_id,
+    )
+    run_store.finish(run.run_token, "completed")
 
     impact = client.get(f"/api/students/{student_id}/deletion-impact").json()
     deleted = client.delete(

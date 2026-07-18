@@ -44,6 +44,9 @@ function safeImportMessage(error: unknown): string {
 }
 
 function safeDeleteMessage(error: unknown): string {
+  if (error instanceof ApiError && error.code === 'student_grading_active') {
+    return '批改仍在进行，请等待批改结束后再删除学生。'
+  }
   if (error instanceof ApiError && error.code === 'student_backup_failed') {
     return '备份没有成功，系统已停止删除，学生数据保持不变。'
   }

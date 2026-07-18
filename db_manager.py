@@ -44,6 +44,10 @@ class StudentBackupFailedError(RuntimeError):
     pass
 
 
+class StudentGradingActiveError(RuntimeError):
+    pass
+
+
 def student_roster_revision(rows: list[dict[str, Any]]) -> str:
     payload = [
         {
@@ -934,6 +938,35 @@ class DBManager:
                 raise StudentRosterRevisionConflict(
                     "Student roster changed before delete"
                 )
+            active_grading = conn.execute(
+                """
+                SELECT 1
+                FROM grading_sessions
+                WHERE status = 'running'
+                LIMIT 1
+                """
+            ).fetchone()
+            has_grading_runs = conn.execute(
+                """
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table' AND name = 'grading_runs'
+                """
+            ).fetchone() is not None
+            if active_grading is None and has_grading_runs:
+                active_grading = conn.execute(
+                    """
+                    SELECT 1
+                    FROM grading_runs
+                    WHERE state IN ('running', 'pause_requested', 'paused')
+                    LIMIT 1
+                    """
+                ).fetchone()
+            if active_grading is not None:
+                conn.rollback()
+                raise StudentGradingActiveError(
+                    "Student has an active grading run"
+                )
             try:
                 backup_path = self.create_backup("delete_student")
             except Exception as exc:
@@ -945,6 +978,18 @@ class DBManager:
                 conn.rollback()
                 raise StudentBackupFailedError(
                     "Student backup was not created before delete"
+                )
+            has_grading_run_items = conn.execute(
+                """
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table' AND name = 'grading_run_items'
+                """
+            ).fetchone() is not None
+            if has_grading_run_items:
+                conn.execute(
+                    "DELETE FROM grading_run_items WHERE student_id = ?",
+                    (int(student_id),),
                 )
             result_rows = conn.execute(
                 "SELECT id FROM session_results WHERE student_id = ?",

@@ -10,7 +10,7 @@ import pytest
 from PIL import Image
 
 import grading_service
-from db_manager import DBManager
+from db_manager import DBManager, StudentGradingActiveError
 from grading_run_store import GradingRunStore
 from scanner import ExamPaperGroup
 
@@ -223,7 +223,7 @@ def test_cancel_discards_inflight_full_paper_result(patched, tmp_path, monkeypat
     assert run.state == "paused"
 
 
-def test_student_delete_discards_inflight_result_without_marking_paper_failed(
+def test_student_delete_waits_until_inflight_grading_finishes(
     patched,
     tmp_path,
     monkeypatch,
@@ -288,20 +288,19 @@ def test_student_delete_discards_inflight_result_without_marking_paper_failed(
     worker = threading.Thread(target=consume)
     worker.start()
     started_in_time = started.wait(3)
-    deletion = db.delete_student_hard(1)
+    with pytest.raises(StudentGradingActiveError):
+        db.delete_student_hard(1)
+    assert list(db.backup_dir.glob("grading_before_delete_student_*.db")) == []
     release.set()
     worker.join(5)
+    deletion = db.delete_student_hard(1)
 
     assert started_in_time, errors
     assert not worker.is_alive()
     assert errors == []
     assert deletion["unlinked_papers"] == 1
     assert not any(event.get("event") == "grading_failed" for event in events)
-    assert any(
-        event.get("event") == "paper_skipped"
-        and event.get("kind") == "assignment_changed"
-        for event in events
-    )
+    assert any(event.get("event") == "graded" for event in events)
     with db._connect() as conn:
         paper = conn.execute(
             """

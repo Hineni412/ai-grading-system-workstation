@@ -12,6 +12,7 @@ from db_manager import (
     DBManager,
     StudentBackupFailedError,
     StudentCodeConflictError,
+    StudentGradingActiveError,
     StudentRecord,
     StudentRosterRevisionConflict,
     student_roster_revision,
@@ -56,6 +57,10 @@ class StudentBackupFailed(StudentRosterError):
 
 class StudentDeleteFailed(StudentRosterError):
     code = "student_delete_failed"
+
+
+class StudentGradingActive(StudentRosterError):
+    code = "student_grading_active"
 
 
 @dataclass(frozen=True)
@@ -439,6 +444,10 @@ class StudentRosterModule:
             raise StudentRosterConflict("学生名单已变化，请刷新后重试") from exc
         except StudentBackupFailedError as exc:
             raise StudentBackupFailed("备份失败，学生未删除") from exc
+        except StudentGradingActiveError as exc:
+            raise StudentGradingActive(
+                "Student cannot be deleted while grading is active"
+            ) from exc
         except sqlite3.Error as exc:
             raise StudentDeleteFailed(
                 "删除失败，学生和历史数据均未改变"
