@@ -262,8 +262,8 @@ store 隐藏 revision、请求 generation、AbortController、完整快照规范
 - **不包含：** 未新增自动组卷算法、未调用真实模型、未修改数据库 Schema、未切换生产 UI、未写入真实 `user_data/`。
 - **自动验证：** 后端受影响回归 22 passed；前端受影响回归 63 passed；限定缺陷测试补充后组卷 store 4 passed；用户反馈修复后前端受影响 12 passed、后端组卷相关 8 passed、`npm run lint` passed、`npm run typecheck` passed、`npm run build` passed；`tools/smoke_check.py --skip-tests` passed。
 - **复审：** 首轮 Spec/Standards 共 4 项 `Important`，去重后 4 项；统一修复后 Spec 限定复审通过。Standards 最终复审发现 1 项旧请求失败竞态；用户授权后已作为限定跟进修复，最终 Standards 限定复审通过。用户步骤 3 反馈修复后，Spec 发现并登记 1 项分节内排序 `Important`，统一修复后 Spec/Standards 最终限定复审均通过，无 `Critical`/`Important` 剩余。
-- **剩余工作：** 记录用户 quick 短测通过证据、合入 M2-02 integration、逐包受影响验证和 M2-02 批次末组合门槛。
-- **当前包验收：** 自动验证与独立复审通过，用户短测已口头确认通过，待写入版本化清单证据。
+- **剩余工作：** 合入 M2-02 integration、逐包受影响验证和 M2-02 批次末组合门槛。
+- **当前包验收：** 自动验证、独立复审和用户 quick 短测均通过；验收证据已写入版本化清单。
 - **版本发布：** P2-17 尚未进入 integration，M2-02 尚未完成批次末门槛，当前版本不允许发布。
 
 ## Ownership
@@ -282,12 +282,12 @@ P2-17 功能分支拥有 Assembly workspace/API/Job/Markdown、Question Bank 批
 ## 昼夜交接
 
 **执行包：** P2-17
-**交接状态：** waiting_user
-**功能提交：** `89d0e84728ab3de49bc0c49e7380d22a37ef65a6`
+**交接状态：** verified_pending_integration
+**功能提交：** `642074c7218af0fd23f04f24aa2a1d5cfb3b6c5a`
 **自动验证：** passed
 **独立复审：** passed
-**用户验收：** pending
+**用户验收：** passed
 **真实数据指纹：** not_touched
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
