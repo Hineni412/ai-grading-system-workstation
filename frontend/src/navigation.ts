@@ -1,6 +1,7 @@
 export type WorkspaceRouteId =
   | 'workbench'
   | 'sessions'
+  | 'students'
   | 'knowledge-graph'
   | 'files'
   | 'grading'
@@ -30,6 +31,15 @@ export const sessionRouteDefinition: WorkspaceRouteDefinition = {
   title: '考试配置',
   description: '创建考试并准备评分依据',
   breadcrumb: '考试配置',
+}
+
+export const studentsRouteDefinition: WorkspaceRouteDefinition = {
+  id: 'students',
+  label: '学生名单',
+  path: '/students',
+  title: '学生名单',
+  description: '导入、核对和维护参与阅卷的学生名单',
+  breadcrumb: '学生名单',
 }
 
 export const templateRegionRouteDefinition = {
@@ -78,6 +88,7 @@ export const filesRouteDefinition: WorkspaceRouteDefinition = {
 export const navigationItems = [
   workbenchRouteDefinition,
   sessionRouteDefinition,
+  studentsRouteDefinition,
   knowledgeGraphRouteDefinition,
   filesRouteDefinition,
   reviewRouteDefinition,
