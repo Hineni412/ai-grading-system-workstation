@@ -975,7 +975,10 @@ class DBManager:
             unlinked_papers = conn.execute(
                 """
                 UPDATE exam_papers
-                SET student_id = NULL, match_status = 'student_deleted'
+                SET student_id = NULL,
+                    match_status = 'student_deleted',
+                    processing_status = 'pending',
+                    error_message = NULL
                 WHERE student_id = ?
                 """,
                 (int(student_id),),
