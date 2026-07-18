@@ -133,6 +133,10 @@ export const useAssemblyStore = defineStore('assembly', () => {
       missingQuestionIds.value = result.missing_question_ids
       questionsState.value = result.items.length ? 'ready' : 'empty'
     } catch (error) {
+      if (
+        generation !== questionGeneration ||
+        ids.join(',') !== draft.value.order_ids.join(',')
+      ) return
       questionsState.value = 'error'
       message.value = safeMessage(error)
     }

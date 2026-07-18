@@ -162,4 +162,39 @@ describe('assembly store', () => {
     expect(store.draft.order_ids).toEqual([8])
     expect(store.orderedQuestions.map((item) => item.id)).toEqual([8])
   })
+
+  it('ignores late question failures from an older draft', async () => {
+    const { useAssemblyStore } = await import('../stores/assembly')
+    const store = useAssemblyStore()
+    let rejectOld!: (reason?: unknown) => void
+    const oldQuestions = new Promise<{ items: AssemblyQuestion[]; missing_question_ids: number[] }>((_, reject) => {
+      rejectOld = reject
+    })
+    const api = {
+      getDraft: vi.fn(async () => draft({ basket_ids: [7], order_ids: [7] })),
+      saveDraft: vi.fn(async () => draft({ basket_ids: [8], order_ids: [8], revision: revisionB })),
+      resolveQuestions: vi.fn((ids: readonly number[]) => (
+        ids[0] === 7
+          ? oldQuestions
+          : Promise.resolve({ items: [question(8)], missing_question_ids: [] })
+      )),
+      listRecords: vi.fn(async (): Promise<AssemblyRecordList> => ({ items: [], total: 0 })),
+      deleteRecord: vi.fn(),
+      restoreRecord: vi.fn(),
+      submitExport: vi.fn(),
+      retryExport: vi.fn(),
+    }
+
+    const loading = store.load({ api })
+    await vi.waitFor(() => expect(store.draft.order_ids).toEqual([7]))
+    await store.addQuestions([8])
+    expect(store.questionsState).toBe('ready')
+    rejectOld(new Error('old draft unavailable'))
+    await loading
+
+    expect(store.draft.order_ids).toEqual([8])
+    expect(store.orderedQuestions.map((item) => item.id)).toEqual([8])
+    expect(store.questionsState).toBe('ready')
+    expect(store.message).toBe('')
+  })
 })
