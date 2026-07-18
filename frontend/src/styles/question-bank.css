@@ -381,6 +381,13 @@
   color: var(--color-text-secondary);
 }
 
+.qb-selection-bar__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
 .qb-ledger__table {
   overflow-x: auto;
   border: var(--border-width) solid var(--color-border-subtle);

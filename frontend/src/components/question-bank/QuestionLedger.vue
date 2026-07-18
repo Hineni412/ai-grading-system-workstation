@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useRouter } from 'vue-router'
 
+import { useAssemblyStore } from '../../stores/assembly'
 import { useQuestionBankStore } from '../../stores/question-bank'
 
 const store = useQuestionBankStore()
+const assembly = useAssemblyStore()
+const router = useRouter()
 const allOnPage = computed(() => (
   store.questions.length > 0
   && store.selectedOnPageCount === store.questions.length
@@ -13,13 +17,20 @@ function changePage(next: number): void {
   if (next < 1 || next > store.totalPages || next === store.page) return
   void store.loadQuestions({ ...store.appliedFilters, page: next })
 }
+
+async function addSelectionToAssembly(): Promise<void> {
+  if (store.selectedCount === 0 || assembly.saveState === 'saving') return
+  if (assembly.loadState === 'idle') await assembly.load()
+  const added = await assembly.addQuestions(store.selectedQuestionIds)
+  if (added) await router.push('/question-assembly')
+}
 </script>
 
 <template>
   <section class="qb-ledger" aria-labelledby="qb-ledger-title">
     <header class="qb-section-heading">
       <div>
-        <p class="qb-eyebrow">题册索引</p>
+        <p class="qb-eyebrow">Question ledger</p>
         <h2 id="qb-ledger-title">连续题目台账</h2>
       </div>
       <strong>共 {{ store.total }} 题</strong>
@@ -30,14 +41,24 @@ function changePage(next: number): void {
         已选 <strong>{{ store.selectedCount }}</strong> 题
         <template v-if="store.hiddenSelectionCount">，其中 {{ store.hiddenSelectionCount }} 题在其他页</template>
       </span>
-      <button type="button" class="qb-link" @click="store.clearSelection">清空选择</button>
+      <span class="qb-selection-bar__actions">
+        <button
+          type="button"
+          class="qb-button qb-button--primary"
+          :disabled="assembly.saveState === 'saving'"
+          @click="addSelectionToAssembly"
+        >
+          加入组卷篮
+        </button>
+        <button type="button" class="qb-link" @click="store.clearSelection">清空选择</button>
+      </span>
     </div>
 
     <p v-if="store.listState === 'stale-error'" class="qb-feedback is-warning" role="alert">
       新数据暂时无法读取，当前仍显示上一次成功结果。
     </p>
     <div v-if="store.listState === 'loading' && store.questions.length === 0" class="qb-empty" role="status">
-      正在读取题库……
+      正在读取题库...
     </div>
     <div v-else-if="store.listState === 'error'" class="qb-empty" role="alert">
       <span>{{ store.listError }}</span>
@@ -87,7 +108,7 @@ function changePage(next: number): void {
               >
             </td>
             <td class="qb-ledger__number">
-              <strong>{{ question.question_number || '—' }}</strong>
+              <strong>{{ question.question_number || '-' }}</strong>
               <small>#{{ question.id }}</small>
             </td>
             <td>
@@ -101,7 +122,7 @@ function changePage(next: number): void {
               </button>
               <span class="qb-inline-meta">
                 {{ question.question_type || '未分类' }}
-                · 难度 {{ question.difficulty || '—' }}
+                · 难度 {{ question.difficulty || '-' }}
                 <template v-if="question.has_images"> · 含图片</template>
               </span>
             </td>
