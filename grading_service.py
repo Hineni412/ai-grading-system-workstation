@@ -671,7 +671,23 @@ class GradingService:
                             retry_existing["result_id"],
                             _failed_retry_attempt(exc, retry_existing["affected_major_ids"]),
                         )
-                    self.db.update_exam_paper_status(paper_id, "failed", str(exc))
+                    assignment_is_current = (
+                        self.db.update_exam_paper_status_if_current_assignment(
+                            paper_id,
+                            student_id,
+                            "failed",
+                            str(exc),
+                        )
+                    )
+                    if not assignment_is_current:
+                        yield {
+                            "event": "paper_skipped",
+                            "paper_id": paper_id,
+                            "student_name": group.student_name,
+                            "reason": "paper assignment changed while grading was running",
+                            "kind": "assignment_changed",
+                        }
+                        continue
                     if paper_id in hybrid_run_item_by_paper:
                         run_store.set_item_status(
                             hybrid_run_item_by_paper[paper_id],
@@ -816,9 +832,32 @@ class GradingService:
                             needs_human_review=result.needs_human_review,
                             raw_json=result.raw_json,
                         )
+                        assignment_is_current = (
+                            self.db.update_exam_paper_status_if_current_assignment(
+                                paper_id,
+                                student_id,
+                                "graded",
+                            )
+                        )
                     else:
-                        result_id = self.db.save_session_result(session_id, student_id, paper_id, result)
-                    self.db.update_exam_paper_status(paper_id, "graded")
+                        result_id = (
+                            self.db.publish_session_result_if_current_assignment(
+                                session_id,
+                                student_id,
+                                paper_id,
+                                result,
+                            )
+                        )
+                        assignment_is_current = result_id is not None
+                    if not assignment_is_current:
+                        yield {
+                            "event": "paper_skipped",
+                            "paper_id": paper_id,
+                            "student_name": group.student_name,
+                            "reason": "paper assignment changed while grading was running",
+                            "kind": "assignment_changed",
+                        }
+                        continue
                     if paper_id in hybrid_run_item_by_paper:
                         run_store.set_item_status(
                             hybrid_run_item_by_paper[paper_id],
@@ -842,7 +881,23 @@ class GradingService:
                             retry_existing["result_id"],
                             _failed_retry_attempt(exc, retry_existing["affected_major_ids"]),
                         )
-                    self.db.update_exam_paper_status(paper_id, "failed", str(exc))
+                    assignment_is_current = (
+                        self.db.update_exam_paper_status_if_current_assignment(
+                            paper_id,
+                            student_id,
+                            "failed",
+                            str(exc),
+                        )
+                    )
+                    if not assignment_is_current:
+                        yield {
+                            "event": "paper_skipped",
+                            "paper_id": paper_id,
+                            "student_name": group.student_name,
+                            "reason": "paper assignment changed while grading was running",
+                            "kind": "assignment_changed",
+                        }
+                        continue
                     if paper_id in hybrid_run_item_by_paper:
                         run_store.set_item_status(
                             hybrid_run_item_by_paper[paper_id],
@@ -988,8 +1043,23 @@ class GradingService:
                                 run_item_by_paper.get(paper_id),
                             )
                             continue
-                        result_id = self.db.save_session_result(session_id, student_id, paper_id, result)
-                        self.db.update_exam_paper_status(paper_id, "graded")
+                        result_id = (
+                            self.db.publish_session_result_if_current_assignment(
+                                session_id,
+                                student_id,
+                                paper_id,
+                                result,
+                            )
+                        )
+                        if result_id is None:
+                            yield {
+                                "event": "paper_skipped",
+                                "paper_id": paper_id,
+                                "student_name": group.student_name,
+                                "reason": "paper assignment changed while grading was running",
+                                "kind": "assignment_changed",
+                            }
+                            continue
                         if run_store is not None and paper_id in run_item_by_paper:
                             try:
                                 run_store.set_item_status(run_item_by_paper[paper_id], "graded", result_id=result_id)
@@ -1007,7 +1077,23 @@ class GradingService:
                             "total": total_grade,
                         }
                     except Exception as exc:  # noqa: BLE001
-                        self.db.update_exam_paper_status(paper_id, "failed", str(exc))
+                        assignment_is_current = (
+                            self.db.update_exam_paper_status_if_current_assignment(
+                                paper_id,
+                                student_id,
+                                "failed",
+                                str(exc),
+                            )
+                        )
+                        if not assignment_is_current:
+                            yield {
+                                "event": "paper_skipped",
+                                "paper_id": paper_id,
+                                "student_name": group.student_name,
+                                "reason": "paper assignment changed while grading was running",
+                                "kind": "assignment_changed",
+                            }
+                            continue
                         if run_store is not None and paper_id in run_item_by_paper:
                             try:
                                 run_store.set_item_status(

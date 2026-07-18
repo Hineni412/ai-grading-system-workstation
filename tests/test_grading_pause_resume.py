@@ -223,6 +223,101 @@ def test_cancel_discards_inflight_full_paper_result(patched, tmp_path, monkeypat
     assert run.state == "paused"
 
 
+def test_student_delete_discards_inflight_result_without_marking_paper_failed(
+    patched,
+    tmp_path,
+    monkeypatch,
+):
+    import grading_run_store
+
+    db, session_id = _seed(tmp_path, [(1, "stu1")])
+    group = _make_group(tmp_path, "stu1", 1, b"paper-1")
+    monkeypatch.setattr(
+        grading_service,
+        "_apply_manual_decisions",
+        lambda _analysis, _decisions, _students: [group],
+    )
+    monkeypatch.setattr(db, "is_template_ready", lambda _session_id: True)
+    monkeypatch.setattr(
+        grading_run_store,
+        "GradingRunStore",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("ledger unavailable")),
+    )
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking_grade(_grader, paper_group, *_args, **_kwargs):
+        started.set()
+        assert release.wait(3)
+
+        class Result:
+            student_name = paper_group.student_name
+            student_score = 1.0
+            total_score = 1.0
+            needs_human_review = False
+            raw_json = {"questions": []}
+            grading_details: list[object] = []
+
+        return Result()
+
+    monkeypatch.setattr(
+        grading_service,
+        "_grade_one_paper_with_retries",
+        blocking_grade,
+    )
+    events: list[dict[str, Any]] = []
+    errors: list[BaseException] = []
+
+    def consume() -> None:
+        try:
+            events.extend(
+                _service(db).run_session_grading(
+                    session_id=session_id,
+                    exams_dir=tmp_path,
+                    rubric_path=tmp_path / "rubric.json",
+                    answer_key_path=tmp_path / "answer.json",
+                    scan_analysis={"groups": [], "issues": []},
+                    max_workers=1,
+                    grading_mode="full_paper",
+                    enhance_images=False,
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    worker = threading.Thread(target=consume)
+    worker.start()
+    started_in_time = started.wait(3)
+    deletion = db.delete_student_hard(1)
+    release.set()
+    worker.join(5)
+
+    assert started_in_time, errors
+    assert not worker.is_alive()
+    assert errors == []
+    assert deletion["unlinked_papers"] == 1
+    assert not any(event.get("event") == "grading_failed" for event in events)
+    assert any(
+        event.get("event") == "paper_skipped"
+        and event.get("kind") == "assignment_changed"
+        for event in events
+    )
+    with db._connect() as conn:
+        paper = conn.execute(
+            """
+            SELECT student_id, match_status, processing_status, error_message
+            FROM exam_papers
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        assert tuple(paper) == (None, "student_deleted", "pending", None)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_results WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()[0] == 0
+
+
 def test_cancel_discards_unpublished_hybrid_results(patched, tmp_path, monkeypatch):
     from hybrid_batch_grading_service import HybridBatchRunResult, PaperEntry
 
