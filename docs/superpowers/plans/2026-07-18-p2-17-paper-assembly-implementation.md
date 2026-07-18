@@ -149,11 +149,11 @@ store 隐藏 revision、请求 generation、AbortController、完整快照规范
 
 ### Slice 0：领取、计划与安全基线
 
-- [ ] 首个 first-parent 提交只包含本即时计划和合法 `in_progress` 交接块。
-- [ ] handoff validator 使用 integration 现场可信基线 `5c1181e4e7f7827779c7a5b4da772c27a156f951` 通过。
-- [ ] 功能 worktree 源码与 `user_data/` 状态干净；源码区无外部 reparse point。
-- [ ] 真实两库只读基线已记录：`grading_system.db` SHA-256 `93fee56e23ea072ac48351b1e6616d7af7f4b35ceb2b4779890e8d059fb841cd`、2,863,104 bytes、UTC mtime `2026-07-10T07:10:41.1221109Z`；`question_bank.db` SHA-256 `e1e5123ad54c9e8af5984bdcc5182a8f7a3038a1707f98ab26f168f4577a88b8`、3,461,120 bytes、UTC mtime `2026-07-08T11:58:06.3320883Z`。
-- [ ] 第二个文档提交把功能分支所见 Index 的 P2-17/当前动作改为 `in_progress`；首个源码测试前完成。
+- [x] 首个 first-parent 提交只包含本即时计划和合法 `in_progress` 交接块。
+- [x] handoff validator 使用 integration 现场可信基线 `5c1181e4e7f7827779c7a5b4da772c27a156f951` 通过。
+- [x] 功能 worktree 源码与 `user_data/` 状态干净；源码区无外部 reparse point。
+- [x] 真实两库只读基线已记录：`grading_system.db` SHA-256 `93fee56e23ea072ac48351b1e6616d7af7f4b35ceb2b4779890e8d059fb841cd`、2,863,104 bytes、UTC mtime `2026-07-10T07:10:41.1221109Z`；`question_bank.db` SHA-256 `e1e5123ad54c9e8af5984bdcc5182a8f7a3038a1707f98ab26f168f4577a88b8`、3,461,120 bytes、UTC mtime `2026-07-08T11:58:06.3320883Z`。
+- [x] 第二个文档提交把功能分支所见 Index 的 P2-17/当前动作改为 `in_progress`；首个源码测试前完成。
 
 ### Slice 1：Assembly Workspace 深模块
 
