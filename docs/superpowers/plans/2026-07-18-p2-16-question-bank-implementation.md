@@ -1,7 +1,7 @@
 # P2-16 题库管理即时实现计划
 
 **执行包：** P2-16
-**规划状态：** waiting_user
+**规划状态：** verified_pending_integration
 **计划基线：** 89a00416151c7a59d038e7dd6b936c21cd9425a7
 **交接基线：** 89a00416151c7a59d038e7dd6b936c21cd9425a7
 **用户自测：** quick
@@ -187,7 +187,7 @@ store 隐藏请求 generation、AbortController、严格 decoder、选择去重/
 - [x] 稳定候选提交后冻结 SHA；Spec 与 Standards 两名评审代理检查同一版本。
 - [x] 汇总、去重并只阻塞本次修改直接引入或当前任务遗漏的 `Critical`/`Important`。
 - [x] 如有阻塞问题，只进行一个统一修复阶段、受影响复测和一次限定最终复审。
-- [ ] quick 用户短测绑定已复审 SHA；通过后更新交接块为 `verified_pending_integration`。
+- [x] quick 用户短测绑定已复审 SHA；通过后更新交接块为 `verified_pending_integration`。
 - [ ] 合入 M2-02 integration，运行 P2-16 逐包受影响验证并更新 Index 精确 SHA。
 
 ## File Map
@@ -239,6 +239,7 @@ store 隐藏请求 generation、AbortController、严格 decoder、选择去重/
 | 限定最终复审 | 约 10 分钟 | 原 Spec 与 Standards 评审仅复核首轮问题、修复区域及直接回归 | 0 | 0 个 Critical、0 个 Important | 用户 quick 短测、integration | 等待用户验收 | 否 |
 | 用户 quick 首轮 | 约 5 分钟 | 用户反馈其他功能完整，步骤 2 的题目预览为纯黑 `1×1` 页面 | 1 | 1 个 Major：匿名验收数据使用不可读占位图 | 修复匿名验收图与回归门槛、用户复查步骤 2、integration | 否 | 否 |
 | 用户问题修复 | 约 20 分钟 | 原始 HTTP 图片检查由 RED 变 GREEN；真实浏览器流程 1 项通过；图片生成脚本编译和可视检查通过 | 0 | 0 个未解决问题 | 用户复查步骤 2、integration | 等待用户验收 | 否 |
+| 用户 quick 复查 | 约 2 分钟 | 用户确认步骤 2 已通过，并明确回复 P2-16 1–7 通过 | 0 | 0 个 Blocker、0 个 Major | integration | 通过 | 否 |
 
 ## Ownership
 
@@ -257,12 +258,12 @@ P2-16 功能分支拥有 question-import 自动元数据局部修正、Question 
 ## 昼夜交接
 
 **执行包：** P2-16
-**交接状态：** waiting_user
-**功能提交：** dea61390d7a91e86c1e3abf216af52ac5b772040
+**交接状态：** verified_pending_integration
+**功能提交：** 38e3337260dddb76fb4fa4495f81c808d8744b60
 **自动验证：** passed
 **独立复审：** passed
-**用户验收：** pending
-**真实数据指纹：** not_touched
+**用户验收：** passed
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
