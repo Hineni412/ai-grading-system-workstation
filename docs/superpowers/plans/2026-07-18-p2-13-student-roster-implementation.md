@@ -219,7 +219,7 @@ Interface 隐藏文件类型/大小/编码校验、字段别名、值规范化�
 | 稳定候选 | 约 2 小时 20 分钟 | Python 聚焦 46 项；前端 591 项、lint/typecheck/build；匿名真实浏览器；快速冒烟；格式、交接与两库指纹守卫 | 0 | 0 | 双路初审与用户短测 | 否 | 否 |
 | 初审 | 约 8 分钟 | Spec + Standards 同查 `a98de6a7ff9abe39e7ddaaa7d5a6ceb6cebd07ef` | 3 | 3 个 Important：影响请求串线、表格缺记录号/建立时间、删除成功缺清理数 | 统一修复与限定复审 | 否 | 否 |
 | 统一修复 | 约 10 分钟 | 先以 3 个失败断言复现；修复后受影响单元 8 项、lint/typecheck/build 和匿名真实浏览器通过 | 3 | 3 个 Important 已统一修复 | 原评审者限定最终复审 | 否 | 否 |
-| 最终复审 | pending | 仅首轮问题/修复区/直接回归 | pending | pending | pending | pending | 否 |
+| 最终复审 | 约 3 分钟 | 原 Spec/Standards 评审者仅核对 3 项首轮问题、修复区与直接回归 | 0 | 0；3 个 Important 均已解决 | 用户短测 | 否 | 否 |
 
 ## Ownership
 
@@ -238,10 +238,10 @@ P2-13 功能分支拥有学生名册 Module、students router/schema 的包内�
 ## 昼夜交接
 
 **执行包：** P2-13
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** waiting_user
+**功能提交：** 19dedc590041555dcc9f3a269b853be26b846962
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** pending
 **真实数据指纹：** not_touched
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
