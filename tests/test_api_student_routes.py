@@ -268,6 +268,57 @@ def test_student_delete_is_rejected_when_session_is_running_without_a_ledger(
     assert list(db.backup_dir.glob("grading_before_delete_student_*.db")) == []
 
 
+def test_student_delete_succeeds_after_a_paused_run_is_cancelled(tmp_path) -> None:
+    from backend.scan_grading.workspace import ScanGradingWorkspace
+    from db_manager import StudentRecord
+    from grading_run_store import GradingRunStore
+
+    client, db = _client_with_db(tmp_path)
+    db.upsert_students([StudentRecord("S001", "Alice", "Class 1")])
+    student_id = int(db.list_students()[0]["id"])
+    session_id = db.create_grading_session(
+        "Cancelled grading",
+        "rubric.json",
+        "answer.json",
+    )
+    run_store = GradingRunStore(db.db_path)
+    run = run_store.begin(session_id, "a" * 64, "full_paper")
+    run_store.add_item(
+        run.id,
+        source_label="cancelled-001",
+        student_id=student_id,
+        paper_fingerprint="b" * 64,
+        config_fingerprint="a" * 64,
+        status="pending",
+    )
+    run_store.finish(run.run_token, "paused")
+    workspace = ScanGradingWorkspace(
+        exams_root=tmp_path / "exams",
+        templates_root=tmp_path / "templates",
+        grading_db_path=db.db_path,
+    )
+    cancelled = workspace.record_cancel_request(
+        session_id,
+        run.id,
+        None,
+        confirmed=True,
+    )
+    assert cancelled["state"] == "cancelled"
+    impact = client.get(f"/api/students/{student_id}/deletion-impact").json()
+
+    response = client.delete(
+        f"/api/students/{student_id}",
+        params={
+            "expected_revision": impact["roster_revision"],
+            "confirmed": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    assert db.list_students() == []
+    assert run_store.counts(run.id)["pending"] == 0
+
+
 def test_student_delete_reports_backup_failure_without_exposing_details(
     tmp_path,
     monkeypatch,

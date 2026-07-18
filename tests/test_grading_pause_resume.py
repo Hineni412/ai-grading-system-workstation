@@ -220,7 +220,7 @@ def test_cancel_discards_inflight_full_paper_result(patched, tmp_path, monkeypat
         ).fetchone()[0] == "pending"
     run = GradingRunStore(db.db_path).latest(session_id)
     assert run is not None
-    assert run.state == "paused"
+    assert run.state == "failed"
 
 
 def test_student_delete_waits_until_inflight_grading_finishes(
@@ -397,7 +397,7 @@ def test_cancel_discards_unpublished_hybrid_results(patched, tmp_path, monkeypat
         ).fetchone()[0] == "pending"
     run = GradingRunStore(db.db_path).latest(session_id)
     assert run is not None
-    assert run.state == "paused"
+    assert run.state == "failed"
 
 
 def test_cancelled_failed_only_retry_restores_original_paper_state(

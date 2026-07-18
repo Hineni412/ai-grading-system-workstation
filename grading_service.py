@@ -252,7 +252,10 @@ class GradingService:
         def _finish_cancelled_run(*, release_session: bool) -> dict[str, Any]:
             if run_store is not None and run is not None:
                 try:
-                    run_store.finish(run.run_token, "paused")
+                    # The ledger schema predates a dedicated cancelled state.
+                    # Store cancellation as terminal failed; the workspace
+                    # projects the persisted cancellation control as cancelled.
+                    run_store.finish(run.run_token, "failed")
                 except Exception:
                     pass
             if release_session:

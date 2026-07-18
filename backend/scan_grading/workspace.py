@@ -146,13 +146,13 @@ class ScanGradingWorkspace:
         control = self._read_grading_control(session_id)
         if int(control.get("run_id") or 0) == run.id and control.get("cancel_requested"):
             control_job = self._grading_control_job(control)
-            if run.state in {"completed", "failed"}:
-                pass
-            elif control.get("cancel_confirmed") or (
+            if control.get("cancel_confirmed") or (
                 control_job is not None and control_job.status == "cancelled"
             ):
                 projected_state = "cancelled"
                 actions = []
+            elif run.state in {"completed", "failed"}:
+                pass
             elif (
                 active_job is not None
                 and control_job is not None
@@ -319,8 +319,8 @@ class ScanGradingWorkspace:
             return summary
         if run.state not in {"running", "pause_requested", "paused"}:
             raise ScanGradingWorkspaceError("grading run cannot be cancelled")
-        if confirmed and run.state in {"running", "pause_requested"}:
-            store.finish(run.run_token, "paused")
+        if confirmed:
+            store.finish(run.run_token, "failed")
         self._atomic_write_json(
             self._grading_control_path(session_id),
             {
@@ -385,6 +385,8 @@ class ScanGradingWorkspace:
 
     def prepare_failed_retry(self, session_id: int, run_id: int) -> dict[str, Any]:
         run, counts = self._require_run(session_id, run_id)
+        if self._run_was_cancelled(session_id, run.id):
+            raise ScanGradingWorkspaceError("cancelled grading run cannot retry")
         if counts.get("failed", 0) <= 0 or run.state not in {"completed", "failed"}:
             raise ScanGradingWorkspaceError("grading run has no retryable failures")
         return {
@@ -397,6 +399,8 @@ class ScanGradingWorkspace:
 
     def prepare_supplement(self, session_id: int, run_id: int) -> dict[str, Any]:
         run, _counts = self._require_run(session_id, run_id)
+        if self._run_was_cancelled(session_id, run.id):
+            raise ScanGradingWorkspaceError("cancelled grading run cannot supplement")
         if run.state not in {"completed", "failed"}:
             raise ScanGradingWorkspaceError("grading run cannot be supplemented")
         self._require_current_config(session_id, run)
@@ -1123,6 +1127,18 @@ class ScanGradingWorkspace:
         except (OSError, ValueError):
             return {}
         return payload if isinstance(payload, dict) else {}
+
+    def _run_was_cancelled(self, session_id: int, run_id: int) -> bool:
+        control = self._read_grading_control(session_id)
+        if (
+            int(control.get("run_id") or 0) != int(run_id)
+            or not control.get("cancel_requested")
+        ):
+            return False
+        if control.get("cancel_confirmed"):
+            return True
+        control_job = self._grading_control_job(control)
+        return control_job is not None and control_job.status == "cancelled"
 
     def _clear_grading_control(self, session_id: int, run_id: int) -> None:
         path = self._grading_control_path(session_id)
