@@ -16,6 +16,7 @@ from question_bank.services.question_write_service import QuestionBankWriteServi
 
 from .manager import JobContext, JobManager
 from .config_generation import run_config_generation_job
+from .assembly_export import run_assembly_export_job
 from .grading_run import run_grading_job
 from .question_import import run_question_import_job
 from .scan_analysis import run_scan_analysis
@@ -52,6 +53,7 @@ def register_default_job_handlers(
     question_import_runner: Callable[..., dict[str, object]] = run_question_import_job,
     tagging_sync_runner: Callable[..., dict[str, object]] = run_tagging_sync_job,
     training_export_runner: Callable[..., dict[str, object]] = run_training_export_job,
+    assembly_export_runner: Callable[..., dict[str, object]] = run_assembly_export_job,
     tagging_ai_service_factory: Callable[[], Any] = AITaggingService,
     llm_client_factory: Callable[[], Any] | None = None,
 ) -> None:
@@ -141,6 +143,30 @@ def register_default_job_handlers(
             training_export_runner=training_export_runner,
         ),
     )
+    manager.register(
+        "assembly_export",
+        _build_assembly_export_handler(
+            question_bank_db_path=resolved_question_bank_db,
+            data_root=base_data_root,
+            assembly_export_runner=assembly_export_runner,
+        ),
+    )
+
+
+def _build_assembly_export_handler(
+    *,
+    question_bank_db_path: Path,
+    data_root: Path,
+    assembly_export_runner: Callable[..., dict[str, object]],
+):
+    def handler(context: JobContext) -> dict[str, object]:
+        return assembly_export_runner(
+            context=context,
+            question_bank_db_path=question_bank_db_path,
+            data_root=data_root,
+        )
+
+    return handler
 
 
 def _build_training_export_handler(

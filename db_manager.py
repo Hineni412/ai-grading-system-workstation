@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 import re
@@ -29,6 +30,42 @@ class StudentRecord:
     student_code: str
     name: str
     class_name: str | None = None
+
+
+class StudentRosterRevisionConflict(ValueError):
+    pass
+
+
+class StudentCodeConflictError(ValueError):
+    pass
+
+
+class StudentBackupFailedError(RuntimeError):
+    pass
+
+
+class StudentGradingActiveError(RuntimeError):
+    pass
+
+
+def student_roster_revision(rows: list[dict[str, Any]]) -> str:
+    payload = [
+        {
+            "id": int(row["id"]),
+            "student_code": str(row["student_code"]),
+            "name": str(row["name"]),
+            "class_name": row.get("class_name"),
+            "created_at": row.get("created_at"),
+        }
+        for row in sorted(rows, key=lambda item: int(item["id"]))
+    ]
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 class ReviewAdjustmentOwnershipError(ValueError):
@@ -527,55 +564,204 @@ class DBManager:
     def upsert_students(self, students: list[StudentRecord]) -> dict[str, int]:
         if not students:
             return {"inserted": 0, "updated": 0, "total": 0}
-            
+
         if hasattr(self, "_cached_students_for_find"):
             delattr(self, "_cached_students_for_find")
 
-        inserted = 0
-        updated = 0
-
         with self._connect() as conn:
-            cursor = conn.cursor()
-            
-            codes = [s.student_code for s in students]
-            placeholders = ",".join(["?"] * len(codes))
-            existing_rows = cursor.execute(
-                f"SELECT id, student_code, name, class_name FROM students WHERE student_code IN ({placeholders})",
-                codes
-            ).fetchall()
-            existing_map = {row["student_code"]: row for row in existing_rows}
-            
-            to_insert = []
-            to_update = []
-            
-            for s in students:
-                existing = existing_map.get(s.student_code)
-                if not existing:
-                    to_insert.append((s.student_code, s.name, s.class_name))
-                else:
-                    if existing["name"] != s.name or (existing["class_name"] or "") != (s.class_name or ""):
-                        to_update.append((s.name, s.class_name, existing["id"]))
-
-            if to_insert:
-                cursor.executemany("INSERT INTO students (student_code, name, class_name) VALUES (?, ?, ?)", to_insert)
-                inserted = len(to_insert)
-            if to_update:
-                cursor.executemany("UPDATE students SET name = ?, class_name = ? WHERE id = ?", to_update)
-                updated = len(to_update)
+            result = self._upsert_students_in_connection(conn, students)
             conn.commit()
+        return result
 
-        return {"inserted": inserted, "updated": updated, "total": inserted + updated}
+    @staticmethod
+    def _student_rows_in_connection(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            """
+            SELECT id, student_code, name, class_name, created_at
+            FROM students
+            ORDER BY class_name ASC, name ASC, id ASC
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def _upsert_students_in_connection(
+        conn: sqlite3.Connection,
+        students: list[StudentRecord],
+    ) -> dict[str, int]:
+        cursor = conn.cursor()
+        codes = [student.student_code for student in students]
+        placeholders = ",".join(["?"] * len(codes))
+        existing_rows = cursor.execute(
+            f"""
+            SELECT id, student_code, name, class_name
+            FROM students
+            WHERE student_code IN ({placeholders})
+            """,
+            codes,
+        ).fetchall()
+        existing_map = {row["student_code"]: row for row in existing_rows}
+        to_insert: list[tuple[str, str, str | None]] = []
+        to_update: list[tuple[str, str | None, int]] = []
+        for student in students:
+            existing = existing_map.get(student.student_code)
+            if existing is None:
+                to_insert.append(
+                    (student.student_code, student.name, student.class_name)
+                )
+            elif (
+                existing["name"] != student.name
+                or (existing["class_name"] or "") != (student.class_name or "")
+            ):
+                to_update.append(
+                    (student.name, student.class_name, int(existing["id"]))
+                )
+        if to_insert:
+            cursor.executemany(
+                """
+                INSERT INTO students (student_code, name, class_name)
+                VALUES (?, ?, ?)
+                """,
+                to_insert,
+            )
+        if to_update:
+            cursor.executemany(
+                """
+                UPDATE students
+                SET name = ?, class_name = ?
+                WHERE id = ?
+                """,
+                to_update,
+            )
+        return {
+            "inserted": len(to_insert),
+            "updated": len(to_update),
+            "total": len(to_insert) + len(to_update),
+        }
+
+    def student_roster_snapshot(self) -> tuple[list[dict[str, Any]], str]:
+        with self._connect() as conn:
+            rows = self._student_rows_in_connection(conn)
+        return rows, student_roster_revision(rows)
+
+    def student_workspace_snapshot(
+        self,
+        *,
+        search: str,
+        class_name: str,
+        page: int,
+        page_size: int,
+    ) -> dict[str, Any]:
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        if search:
+            escaped = (
+                search.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
+            pattern = f"%{escaped}%"
+            clauses.append(
+                """
+                (
+                    student_code LIKE ? ESCAPE '\\'
+                    OR name LIKE ? ESCAPE '\\'
+                    OR COALESCE(class_name, '') LIKE ? ESCAPE '\\'
+                )
+                """
+            )
+            parameters.extend([pattern, pattern, pattern])
+        if class_name:
+            clauses.append("COALESCE(class_name, '') = ?")
+            parameters.append(class_name)
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        offset = (page - 1) * page_size
+        with self._connect() as conn:
+            conn.execute("BEGIN")
+            all_rows = self._student_rows_in_connection(conn)
+            total = int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM students {where_sql}",
+                    parameters,
+                ).fetchone()[0]
+            )
+            page_rows = conn.execute(
+                f"""
+                SELECT id, student_code, name, class_name, created_at
+                FROM students
+                {where_sql}
+                ORDER BY class_name ASC, name ASC, id ASC
+                LIMIT ? OFFSET ?
+                """,
+                [*parameters, page_size, offset],
+            ).fetchall()
+            class_rows = conn.execute(
+                """
+                SELECT DISTINCT class_name
+                FROM students
+                WHERE COALESCE(class_name, '') <> ''
+                ORDER BY class_name ASC
+                """
+            ).fetchall()
+            conn.rollback()
+        return {
+            "items": [dict(row) for row in page_rows],
+            "total": total,
+            "class_names": [str(row["class_name"]) for row in class_rows],
+            "roster_revision": student_roster_revision(all_rows),
+        }
+
+    def upsert_students_if_revision(
+        self,
+        students: list[StudentRecord],
+        *,
+        expected_revision: str,
+    ) -> dict[str, int | str]:
+        if hasattr(self, "_cached_students_for_find"):
+            delattr(self, "_cached_students_for_find")
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current_rows = self._student_rows_in_connection(conn)
+            if student_roster_revision(current_rows) != str(expected_revision):
+                conn.rollback()
+                raise StudentRosterRevisionConflict(
+                    "Student roster changed after preview"
+                )
+            result = self._upsert_students_in_connection(conn, students)
+            next_rows = self._student_rows_in_connection(conn)
+            next_revision = student_roster_revision(next_rows)
+            conn.commit()
+        return {**result, "roster_revision": next_revision}
 
     def list_students(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT id, student_code, name, class_name, created_at FROM students ORDER BY class_name ASC, name ASC"
-            ).fetchall()
-            return [dict(row) for row in rows]
+            return self._student_rows_in_connection(conn)
 
     def update_student(self, student_id: int, student_code: str, name: str, class_name: str | None) -> None:
         if hasattr(self, "_cached_students_for_find"):
             delattr(self, "_cached_students_for_find")
+        try:
+            with self._connect() as conn:
+                self._update_student_in_connection(
+                    conn,
+                    student_id,
+                    student_code,
+                    name,
+                    class_name,
+                )
+                conn.commit()
+        except sqlite3.IntegrityError as exc:
+            clean_code = str(student_code or "").strip()
+            raise ValueError(f"学号已存在，无法保存: {clean_code}") from exc
+
+    @staticmethod
+    def _update_student_in_connection(
+        conn: sqlite3.Connection,
+        student_id: int,
+        student_code: str,
+        name: str,
+        class_name: str | None,
+    ) -> None:
         clean_code = str(student_code or "").strip()
         clean_name = str(name or "").strip()
         clean_class_name = str(class_name or "").strip() or None
@@ -583,28 +769,228 @@ class DBManager:
             raise ValueError("学生学号不能为空")
         if not clean_name:
             raise ValueError("学生姓名不能为空")
+        cursor = conn.execute(
+            """
+            UPDATE students
+            SET student_code = ?, name = ?, class_name = ?
+            WHERE id = ?
+            """,
+            (clean_code, clean_name, clean_class_name, int(student_id)),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError(f"未找到学生记录: {student_id}")
 
-        try:
-            with self._connect() as conn:
-                cursor = conn.execute(
-                    """
-                    UPDATE students
-                    SET student_code = ?, name = ?, class_name = ?
-                    WHERE id = ?
-                    """,
-                    (clean_code, clean_name, clean_class_name, int(student_id)),
-                )
-                if cursor.rowcount != 1:
-                    raise ValueError(f"未找到学生记录: {student_id}")
-                conn.commit()
-        except sqlite3.IntegrityError as exc:
-            raise ValueError(f"学号已存在，无法保存: {clean_code}") from exc
-
-    def delete_student_hard(self, student_id: int) -> dict[str, int]:
+    def update_student_if_revision(
+        self,
+        student_id: int,
+        student_code: str,
+        name: str,
+        class_name: str | None,
+        *,
+        expected_revision: str,
+    ) -> dict[str, Any]:
         if hasattr(self, "_cached_students_for_find"):
             delattr(self, "_cached_students_for_find")
-        self.create_backup("delete_student")
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current_rows = self._student_rows_in_connection(conn)
+            if student_roster_revision(current_rows) != str(expected_revision):
+                conn.rollback()
+                raise StudentRosterRevisionConflict(
+                    "Student roster changed before update"
+                )
+            try:
+                self._update_student_in_connection(
+                    conn,
+                    student_id,
+                    student_code,
+                    name,
+                    class_name,
+                )
+            except sqlite3.IntegrityError as exc:
+                conn.rollback()
+                raise StudentCodeConflictError(
+                    "Student code already exists"
+                ) from exc
+            next_rows = self._student_rows_in_connection(conn)
+            student = next(
+                (
+                    row
+                    for row in next_rows
+                    if int(row["id"]) == int(student_id)
+                ),
+                None,
+            )
+            if student is None:
+                conn.rollback()
+                raise ValueError(f"未找到学生记录: {student_id}")
+            next_revision = student_roster_revision(next_rows)
+            conn.commit()
+        return {
+            "student": student,
+            "roster_revision": next_revision,
+        }
+
+    @staticmethod
+    def _student_deletion_impact_in_connection(
+        conn: sqlite3.Connection,
+        student_id: int,
+    ) -> dict[str, int]:
+        return {
+            "deleted_students": int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM students WHERE id = ?",
+                    (int(student_id),),
+                ).fetchone()[0]
+            ),
+            "deleted_results": int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM session_results WHERE student_id = ?",
+                    (int(student_id),),
+                ).fetchone()[0]
+            ),
+            "deleted_details": int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM session_details detail
+                    JOIN session_results result ON result.id = detail.result_id
+                    WHERE result.student_id = ?
+                    """,
+                    (int(student_id),),
+                ).fetchone()[0]
+            ),
+            "deleted_annotations": int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM annotated_results annotation
+                    JOIN session_results result ON result.id = annotation.result_id
+                    WHERE result.student_id = ?
+                    """,
+                    (int(student_id),),
+                ).fetchone()[0]
+            ),
+            "deleted_attendance": int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM session_attendance WHERE student_id = ?",
+                    (int(student_id),),
+                ).fetchone()[0]
+            ),
+            "unlinked_papers": int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM exam_papers WHERE student_id = ?",
+                    (int(student_id),),
+                ).fetchone()[0]
+            ),
+        }
+
+    def student_deletion_impact(self, student_id: int) -> dict[str, Any]:
+        with self._connect() as conn:
+            conn.execute("BEGIN")
+            rows = self._student_rows_in_connection(conn)
+            student = next(
+                (row for row in rows if int(row["id"]) == int(student_id)),
+                None,
+            )
+            if student is None:
+                conn.rollback()
+                raise ValueError(f"未找到学生记录: {student_id}")
+            counts = self._student_deletion_impact_in_connection(
+                conn,
+                int(student_id),
+            )
+            revision = student_roster_revision(rows)
+            conn.rollback()
+        return {
+            "student": student,
+            "counts": counts,
+            "roster_revision": revision,
+        }
+
+    def delete_student_hard(
+        self,
+        student_id: int,
+        *,
+        expected_revision: str | None = None,
+    ) -> dict[str, Any]:
+        if hasattr(self, "_cached_students_for_find"):
+            delattr(self, "_cached_students_for_find")
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current_rows = self._student_rows_in_connection(conn)
+            student = next(
+                (
+                    row
+                    for row in current_rows
+                    if int(row["id"]) == int(student_id)
+                ),
+                None,
+            )
+            if student is None:
+                conn.rollback()
+                raise ValueError(f"未找到学生记录: {student_id}")
+            if (
+                expected_revision is not None
+                and student_roster_revision(current_rows) != str(expected_revision)
+            ):
+                conn.rollback()
+                raise StudentRosterRevisionConflict(
+                    "Student roster changed before delete"
+                )
+            active_grading = conn.execute(
+                """
+                SELECT 1
+                FROM grading_sessions
+                WHERE status = 'running'
+                LIMIT 1
+                """
+            ).fetchone()
+            has_grading_runs = conn.execute(
+                """
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table' AND name = 'grading_runs'
+                """
+            ).fetchone() is not None
+            if active_grading is None and has_grading_runs:
+                active_grading = conn.execute(
+                    """
+                    SELECT 1
+                    FROM grading_runs
+                    WHERE state IN ('running', 'pause_requested', 'paused')
+                    LIMIT 1
+                    """
+                ).fetchone()
+            if active_grading is not None:
+                conn.rollback()
+                raise StudentGradingActiveError(
+                    "Student has an active grading run"
+                )
+            try:
+                backup_path = self.create_backup("delete_student")
+            except Exception as exc:
+                conn.rollback()
+                raise StudentBackupFailedError(
+                    "Student backup failed before delete"
+                ) from exc
+            if backup_path is None:
+                conn.rollback()
+                raise StudentBackupFailedError(
+                    "Student backup was not created before delete"
+                )
+            has_grading_run_items = conn.execute(
+                """
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table' AND name = 'grading_run_items'
+                """
+            ).fetchone() is not None
+            if has_grading_run_items:
+                conn.execute(
+                    "DELETE FROM grading_run_items WHERE student_id = ?",
+                    (int(student_id),),
+                )
             result_rows = conn.execute(
                 "SELECT id FROM session_results WHERE student_id = ?",
                 (int(student_id),),
@@ -634,7 +1020,10 @@ class DBManager:
             unlinked_papers = conn.execute(
                 """
                 UPDATE exam_papers
-                SET student_id = NULL, match_status = 'student_deleted'
+                SET student_id = NULL,
+                    match_status = 'student_deleted',
+                    processing_status = 'pending',
+                    error_message = NULL
                 WHERE student_id = ?
                 """,
                 (int(student_id),),
@@ -643,6 +1032,8 @@ class DBManager:
                 "DELETE FROM students WHERE id = ?",
                 (int(student_id),),
             ).rowcount
+            next_rows = self._student_rows_in_connection(conn)
+            next_revision = student_roster_revision(next_rows)
             conn.commit()
             return {
                 "deleted_students": int(deleted_students),
@@ -651,6 +1042,8 @@ class DBManager:
                 "deleted_annotations": int(deleted_annotations),
                 "deleted_attendance": int(deleted_attendance),
                 "unlinked_papers": int(unlinked_papers),
+                "backup_created": True,
+                "roster_revision": next_revision,
             }
 
     def find_student_by_name(self, name: str) -> dict[str, Any] | None:
@@ -1633,60 +2026,148 @@ class DBManager:
             )
             conn.commit()
 
-    def save_session_result(self, session_id: int, student_id: int, paper_id: int, grading_result: GradingResult) -> int:
+    def update_exam_paper_status_if_current_assignment(
+        self,
+        paper_id: int,
+        student_id: int,
+        processing_status: str,
+        error_message: str | None = None,
+    ) -> bool:
         with self._connect() as conn:
-            cursor = conn.cursor()
-            
-            # Remove old results for this student in this session
-            cursor.execute("SELECT id FROM session_results WHERE session_id = ? AND student_id = ?", (session_id, student_id))
-            old_rows = cursor.fetchall()
-            for old_row in old_rows:
-                old_id = old_row[0]
-                cursor.execute("DELETE FROM annotated_results WHERE result_id = ?", (old_id,))
-                cursor.execute("DELETE FROM session_details WHERE result_id = ?", (old_id,))
-                cursor.execute("DELETE FROM session_results WHERE id = ?", (old_id,))
-                
+            cursor = conn.execute(
+                """
+                UPDATE exam_papers
+                SET processing_status = ?, error_message = ?
+                WHERE id = ?
+                  AND student_id = ?
+                  AND match_status = 'matched'
+                """,
+                (processing_status, error_message, paper_id, student_id),
+            )
+            conn.commit()
+            return cursor.rowcount == 1
+
+    def _save_session_result_in_connection(
+        self,
+        conn: sqlite3.Connection,
+        session_id: int,
+        student_id: int,
+        paper_id: int,
+        grading_result: GradingResult,
+    ) -> int:
+        cursor = conn.cursor()
+
+        # Remove old results for this student in this session
+        cursor.execute(
+            "SELECT id FROM session_results WHERE session_id = ? AND student_id = ?",
+            (session_id, student_id),
+        )
+        old_rows = cursor.fetchall()
+        for old_row in old_rows:
+            old_id = old_row[0]
+            cursor.execute("DELETE FROM annotated_results WHERE result_id = ?", (old_id,))
+            cursor.execute("DELETE FROM session_details WHERE result_id = ?", (old_id,))
+            cursor.execute("DELETE FROM session_results WHERE id = ?", (old_id,))
+
+        cursor.execute(
+            """
+            INSERT INTO session_results (
+                session_id, student_id, paper_id, total_score, student_score,
+                needs_human_review, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                student_id,
+                paper_id,
+                grading_result.total_score,
+                grading_result.student_score,
+                1 if grading_result.needs_human_review else 0,
+                json.dumps(grading_result.raw_json, ensure_ascii=False),
+            ),
+        )
+
+        result_id = int(cursor.lastrowid)
+        for detail in grading_result.grading_details:
             cursor.execute(
                 """
-                INSERT INTO session_results (
-                    session_id, student_id, paper_id, total_score, student_score,
-                    needs_human_review, raw_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO session_details (
+                    result_id, question_id, score_awarded, deduction_reason,
+                    knowledge_id, knowledge_ids, error_category, error_summary,
+                    confidence_score, secondary_errors_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    session_id,
-                    student_id,
-                    paper_id,
-                    grading_result.total_score,
-                    grading_result.student_score,
-                    1 if grading_result.needs_human_review else 0,
-                    json.dumps(grading_result.raw_json, ensure_ascii=False),
+                    result_id,
+                    detail.question_id,
+                    detail.score_awarded,
+                    detail.deduction_reason,
+                    detail.knowledge_id,
+                    json.dumps(_detail_knowledge_ids(detail), ensure_ascii=False),
+                    getattr(detail, "error_category", None),
+                    getattr(detail, "error_summary", None),
+                    getattr(detail, "confidence_score", None),
+                    _serialize_secondary_errors(getattr(detail, "secondary_errors", [])),
                 ),
             )
+        return result_id
 
-            result_id = int(cursor.lastrowid)
-            for detail in grading_result.grading_details:
-                cursor.execute(
-                    """
-                    INSERT INTO session_details (
-                        result_id, question_id, score_awarded, deduction_reason,
-                        knowledge_id, knowledge_ids, error_category, error_summary,
-                        confidence_score, secondary_errors_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        result_id,
-                        detail.question_id,
-                        detail.score_awarded,
-                        detail.deduction_reason,
-                        detail.knowledge_id,
-                        json.dumps(_detail_knowledge_ids(detail), ensure_ascii=False),
-                        getattr(detail, "error_category", None),
-                        getattr(detail, "error_summary", None),
-                        getattr(detail, "confidence_score", None),
-                        _serialize_secondary_errors(getattr(detail, "secondary_errors", [])),
-                    ),
-                )
+    def save_session_result(
+        self,
+        session_id: int,
+        student_id: int,
+        paper_id: int,
+        grading_result: GradingResult,
+    ) -> int:
+        with self._connect() as conn:
+            result_id = self._save_session_result_in_connection(
+                conn,
+                session_id,
+                student_id,
+                paper_id,
+                grading_result,
+            )
+            conn.commit()
+            return result_id
+
+    def publish_session_result_if_current_assignment(
+        self,
+        session_id: int,
+        student_id: int,
+        paper_id: int,
+        grading_result: GradingResult,
+    ) -> int | None:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute(
+                """
+                SELECT 1
+                FROM exam_papers
+                WHERE id = ?
+                  AND session_id = ?
+                  AND student_id = ?
+                  AND match_status = 'matched'
+                """,
+                (paper_id, session_id, student_id),
+            ).fetchone()
+            if current is None:
+                conn.rollback()
+                return None
+            result_id = self._save_session_result_in_connection(
+                conn,
+                session_id,
+                student_id,
+                paper_id,
+                grading_result,
+            )
+            conn.execute(
+                """
+                UPDATE exam_papers
+                SET processing_status = 'graded', error_message = NULL
+                WHERE id = ?
+                """,
+                (paper_id,),
+            )
             conn.commit()
             return result_id
 

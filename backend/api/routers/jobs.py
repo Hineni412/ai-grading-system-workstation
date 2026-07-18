@@ -127,6 +127,28 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
                 result["filename"] = filename
             result["download_url"] = f"/api/jobs/{job.id}/download"
         return sanitize_public_mapping(result)
+    if job.job_type == "assembly_export":
+        result = {
+            key: job.result[key]
+            for key in (
+                "record_id",
+                "format",
+                "question_count",
+                "draft_cleared",
+            )
+            if key in job.result
+        }
+        if (
+            job.status == "succeeded"
+            and str(job.result.get("file_path") or "").strip()
+        ):
+            filename = _safe_filename(
+                job.result.get("filename") or job.result.get("file_path")
+            )
+            if filename:
+                result["filename"] = filename
+            result["download_url"] = f"/api/jobs/{job.id}/download"
+        return sanitize_public_mapping(result)
     if job.job_type in {"question_import", "tagging_sync"}:
         allowed = (
             "request_id",
@@ -202,6 +224,11 @@ def public_job_payload(job: JobRecord) -> dict[str, Any]:
             "audience",
             "retry_of_job_id",
         )
+        return sanitize_public_mapping(
+            {key: job.payload[key] for key in allowed if key in job.payload}
+        )
+    if job.job_type == "assembly_export":
+        allowed = ("draft_revision", "format", "question_count", "retry_of_job_id")
         return sanitize_public_mapping(
             {key: job.payload[key] for key in allowed if key in job.payload}
         )
@@ -296,6 +323,7 @@ def submit_job(
         "question_import",
         "tagging_sync",
         "training_export",
+        "assembly_export",
         "ops_backup",
         "ops_restore_prepare",
         "ops_migration_prepare",

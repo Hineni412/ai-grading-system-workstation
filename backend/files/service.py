@@ -36,6 +36,12 @@ JOB_FILE_RULES = {
         root_name="training_outputs_dir",
         data_root_depth=2,
     ),
+    "assembly_export": JobFileRule(
+        result_field="file_path",
+        allowed_suffixes=frozenset({".docx", ".md"}),
+        root_name="assembly_outputs_dir",
+        data_root_depth=2,
+    ),
     "ops_backup": JobFileRule(
         result_field="file_path",
         allowed_suffixes=frozenset({".zip"}),
@@ -57,12 +63,16 @@ class JobFileService:
         reports_dir: Path,
         *,
         training_outputs_dir: Path | None = None,
+        assembly_outputs_dir: Path | None = None,
         backups_dir: Path | None = None,
         ops_outputs_dir: Path | None = None,
     ) -> None:
         self.reports_dir = Path(reports_dir)
         self.training_outputs_dir = (
             Path(training_outputs_dir) if training_outputs_dir is not None else None
+        )
+        self.assembly_outputs_dir = (
+            Path(assembly_outputs_dir) if assembly_outputs_dir is not None else None
         )
         self.backups_dir = Path(backups_dir) if backups_dir is not None else None
         self.ops_outputs_dir = (

@@ -191,6 +191,15 @@ class _FakeDB:
     def update_exam_paper_status(self, paper_id: int, status: str, error: str | None = None) -> None:
         return None
 
+    def update_exam_paper_status_if_current_assignment(
+        self,
+        paper_id: int,
+        student_id: int,
+        status: str,
+        error: str | None = None,
+    ) -> bool:
+        return True
+
     def finish_session_run(self, session_id: int, status: str) -> None:
         return None
 

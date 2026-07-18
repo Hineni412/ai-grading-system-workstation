@@ -130,6 +130,42 @@ def test_question_import_job_uses_server_request_and_returns_safe_ids(
     assert str(tmp_path) not in json.dumps(result, ensure_ascii=False)
 
 
+def test_question_import_job_restores_safe_filename_metadata_inference(
+    tmp_path: Path,
+) -> None:
+    service = QuestionBankWriteService(
+        tmp_path / "data" / "databases" / "question_bank.db",
+        data_root=tmp_path / "data",
+    )
+    upload = service.stage_upload(
+        filename="2025广东省深圳市九年级下学期期末试卷.docx",
+        content=b"fake-docx",
+    )
+    request = service.create_import_request(upload_id=upload.upload_id)
+    context, _store = _context(tmp_path, {"request_id": request.request_id})
+    captured = {}
+
+    def importer(scanned, database_path, **_kwargs):
+        captured["metadata"] = scanned[0].metadata
+        return _successful_importer(scanned, database_path, **_kwargs)
+
+    run_question_import_job(
+        context=context,
+        question_bank_db_path=service.db_path,
+        data_root=service.data_root,
+        write_service=service,
+        importer=importer,
+    )
+
+    metadata = captured["metadata"]
+    assert metadata.year == "2025"
+    assert metadata.province == "广东省"
+    assert metadata.city == "深圳市"
+    assert metadata.exam_type == "期末"
+    assert metadata.grade == "九年级"
+    assert metadata.semester == "下学期"
+
+
 def test_question_import_job_maps_import_failure_to_safe_retryable_summary(
     tmp_path: Path,
 ) -> None:

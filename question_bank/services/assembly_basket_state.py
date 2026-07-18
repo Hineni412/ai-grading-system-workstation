@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Iterable
@@ -113,14 +115,34 @@ def save_basket_draft(
     try:
         path = _draft_file_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        payload: dict = {
-            "basket_ids": normalize_question_ids(basket_ids),
-            "order_ids": normalize_question_ids(order_ids or []),
-        }
+        payload: dict = {}
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    payload = loaded
+            except Exception:
+                payload = {}
+        payload["basket_ids"] = normalize_question_ids(basket_ids)
+        payload["order_ids"] = normalize_question_ids(order_ids or [])
         sections_payload = _sections_to_payload(sections)
         if sections_payload:
             payload["sections"] = sections_payload
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        else:
+            payload.pop("sections", None)
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            delete=False,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(json.dumps(payload, ensure_ascii=False, indent=2))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
     except Exception:
         pass
 
