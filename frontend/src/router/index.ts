@@ -4,6 +4,7 @@ import ComponentShowcase from '../components/design-system/ComponentShowcase.vue
 import {
   sessionRouteDefinition,
   studentsRouteDefinition,
+  questionBankRouteDefinition,
   filesRouteDefinition,
   templateRegionRouteDefinition,
   gradingRunRouteDefinition,
@@ -50,6 +51,16 @@ const routes: RouteRecordRaw[] = [
       title: studentsRouteDefinition.title,
       description: studentsRouteDefinition.description,
       breadcrumb: studentsRouteDefinition.breadcrumb,
+    },
+  },
+  {
+    path: questionBankRouteDefinition.path,
+    name: questionBankRouteDefinition.id,
+    component: () => import('../views/QuestionBankView.vue'),
+    meta: {
+      title: questionBankRouteDefinition.title,
+      description: questionBankRouteDefinition.description,
+      breadcrumb: questionBankRouteDefinition.breadcrumb,
     },
   },
   {

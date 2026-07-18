@@ -141,45 +141,45 @@ store 隐藏请求 generation、AbortController、严格 decoder、选择去重/
 
 ### Slice 0：领取、计划与安全基线
 
-- [ ] 即时计划成为相对交接基线后的首个 first-parent 提交，且只修改本计划。
-- [ ] 记录不可变 stash 基线；handoff validator 通过。
-- [ ] 功能 worktree 源码与 `user_data/` 状态干净、无 reparse point。
-- [ ] 记录真实两库只读 SHA-256/大小/UTC mtime，不把绝对路径写入文档。
-- [ ] 第二个文档提交把 Index 的 P2-16/当前动作改为 `in_progress`；首个源码测试前完成。
+- [x] 即时计划成为相对交接基线后的首个 first-parent 提交，且只修改本计划。
+- [x] 记录不可变 stash 基线；handoff validator 通过。
+- [x] 功能 worktree 源码与 `user_data/` 状态干净、无 reparse point。
+- [x] 记录真实两库只读 SHA-256/大小/UTC mtime，不把绝对路径写入文档。
+- [x] 第二个文档提交把 Index 的 P2-16/当前动作改为 `in_progress`；首个源码测试前完成。
 
 ### Slice 1：类型化 Question Bank API
 
-- [ ] RED：papers、组合 filters、questions/detail、rich/media URL、tag write、delete/restore、上传/请求/Job/retry 的严格成功与失败契约。
-- [ ] GREEN：最小 `frontend/src/api/question-bank.ts`；只允许同源 `/api/`；写请求单次发送；二进制上传使用安全文件名和 200 MiB 前置限制。
-- [ ] RED/GREEN：question-import 从安全文件名恢复既有自动元数据推断；重复来源和安全结果保持不变。
+- [x] RED：papers、组合 filters、questions/detail、rich/media URL、tag write、delete/restore、上传/请求/Job/retry 的严格成功与失败契约。
+- [x] GREEN：最小 `frontend/src/api/question-bank.ts`；只允许同源 `/api/`；写请求单次发送；二进制上传使用安全文件名和 200 MiB 前置限制。
+- [x] RED/GREEN：question-import 从安全文件名恢复既有自动元数据推断；重复来源和安全结果保持不变。
 
 ### Slice 2：题库 Store 与分页选择
 
-- [ ] RED：筛选草稿不自动请求；应用后规范化 query；旧列表/详情响应隔离；服务器分页 scope 核对。
-- [ ] GREEN：papers/list/detail store、请求 generation、AbortController、加载/空/错/保留同范围旧数据。
-- [ ] RED/GREEN：当前页全选、跨页选择、隐藏选择计数、去重、删除后选择收口和 500 上限。
-- [ ] RED/GREEN：标签草稿、revision 保存、409 保留输入与重新加载；软删除后立即恢复。
+- [x] RED：筛选草稿不自动请求；应用后规范化 query；旧列表/详情响应隔离；服务器分页 scope 核对。
+- [x] GREEN：papers/list/detail store、请求 generation、AbortController、加载/空/错/保留同范围旧数据。
+- [x] RED/GREEN：当前页全选、跨页选择、隐藏选择计数、去重、删除后选择收口和 500 上限。
+- [x] RED/GREEN：标签草稿、revision 保存、409 保留输入与重新加载；软删除后立即恢复。
 
 ### Slice 3：导入、AI Job 与费用保护
 
-- [ ] RED：DOCX/PDF/空文件/超限；多文件独立提交；双击不会重复提交；刷新恢复当前浏览器记录的两类 Job。
-- [ ] GREEN：导入任务队列和 Job Store 接入；不保存文件字节、路径、题干或密钥到 localStorage。
-- [ ] RED：AI 未确认时零请求；确认显示实际题数；取消语义；partial 不是成功；失败 CSV 只含安全字段；只重试允许失败 ID。
-- [ ] GREEN：tagging Job 面板、取消、重新同步、CSV 下载和专用 retry。
+- [x] RED：DOCX/PDF/空文件/超限；多文件独立提交；双击不会重复提交；刷新恢复当前浏览器记录的两类 Job。
+- [x] GREEN：导入任务队列和 Job Store 接入；不保存文件字节、路径、题干或密钥到 localStorage。
+- [x] RED：AI 未确认时零请求；确认显示实际题数；取消语义；partial 不是成功；失败 CSV 只含安全字段；只重试允许失败 ID。
+- [x] GREEN：tagging Job 面板、取消、重新同步、CSV 下载和专用 retry。
 
 ### Slice 4：Vue 题册台账与检查器
 
-- [ ] RED/GREEN：路由、导航、紧凑覆盖摘要、筛选带、服务器分页、连续题目台账和跨页选择。
-- [ ] RED/GREEN：题干/答案/富文本/素材/预览检查器；加载、缺失、过期、长公式、长中文、无标签和焦点状态。
-- [ ] RED/GREEN：标签整集编辑、校验、冲突恢复、软删除确认和立即恢复。
-- [ ] RED/GREEN：导入与任务工作区、费用确认、取消、partial、失败下载和重试。
-- [ ] CSS 只使用现有 Token；实现题册装订标；无卡片海洋、渐变或无来源功能。
+- [x] RED/GREEN：路由、导航、紧凑覆盖摘要、筛选带、服务器分页、连续题目台账和跨页选择。
+- [x] RED/GREEN：题干/答案/富文本/素材/预览检查器；加载、缺失、过期、长公式、长中文、无标签和焦点状态。
+- [x] RED/GREEN：标签整集编辑、校验、冲突恢复、软删除确认和立即恢复。
+- [x] RED/GREEN：导入与任务工作区、费用确认、取消、partial、失败下载和重试。
+- [x] CSS 只使用现有 Token；实现题册装订标；无卡片海洋、渐变或无来源功能。
 
 ### Slice 5：匿名浏览器、文档与稳定候选
 
-- [ ] 固定生成数千题临时题库、匿名 DOCX/PDF 和假 tagging 服务；所有写入发生在临时数据根。
-- [ ] 覆盖 1920×1080、1440×900、1366×768、1280×800、1024×768；长公式/图片、100 页、跨页选择、刷新恢复和冲突。
-- [ ] 更新 `ARCHITECTURE.md` 的 P2-16 已实现事实；页面稳定后生成 quick 自测清单。
+- [x] 固定生成数千题临时题库、匿名 DOCX/PDF 和假 tagging 服务；所有写入发生在临时数据根。
+- [x] 覆盖 1920×1080、1440×900、1366×768、1280×800、1024×768；长公式/图片、100 页、跨页选择、刷新恢复和冲突。
+- [x] 更新 `ARCHITECTURE.md` 的 P2-16 已实现事实；页面稳定后生成 quick 自测清单。
 - [ ] 聚焦测试、受影响 Question Bank/Job 回归、`npm run verify`、真实浏览器、`tools/smoke_check.py --skip-tests`、`git diff --check`、handoff validator 和真实两库指纹守卫通过。
 
 ### Slice 6：冻结、双路复审与交接
@@ -233,6 +233,7 @@ store 隐藏请求 generation、AbortController、严格 decoder、选择去重/
 | 阶段 | 耗时 | 测试/复审 | 原始意见 | 去重结果 | 剩余工作 | 当前包验收 | 版本可发布 |
 |---|---:|---|---:|---|---|---|---|
 | 集中调查与计划 | 约 40 分钟 | 必读资料、P1-15/P1-16/P1-18 契约、旧页面行为、前端基础设施、worktree/数据守卫 | 0 | 6 个根因组 | 实现、自动门槛、复审、用户短测、integration | 否 | 否 |
+| 稳定候选前实现 | 约 2 小时 | TDD API/store/view、Question Bank/Job 后端 110 项聚焦回归、前端 612 项验证、2005 题真实浏览器、快速冒烟 | 0 | 0 个阻塞问题 | 冻结提交、双路复审、用户短测、integration | 自动验收通过 | 否 |
 
 ## Ownership
 
