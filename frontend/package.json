@@ -24,6 +24,8 @@
     "e2e:p2-08": "npm run build && npm run e2e:p2-08:prepared",
     "e2e:p2-10-real:prepared": "playwright test --config playwright.p2-10-real.config.ts",
     "e2e:p2-10-real": "npm run build && npm run e2e:p2-10-real:prepared",
+    "e2e:p2-13-real:prepared": "playwright test --config playwright.p2-13-real.config.ts",
+    "e2e:p2-13-real": "npm run build && npm run e2e:p2-13-real:prepared",
     "e2e:phase2-recalibration:prepared": "npm run e2e:p2-08:prepared",
     "e2e:phase2-recalibration": "npm run build && npm run e2e:phase2-recalibration:prepared",
     "e2e:install": "playwright install chromium",

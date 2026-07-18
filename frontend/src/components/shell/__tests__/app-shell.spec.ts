@@ -101,6 +101,7 @@ describe('AppShell', () => {
     ).toEqual([
       ['工作台', '/workbench'],
       ['考试配置', '/sessions'],
+      ['学生名单', '/students'],
       ['知识图谱', '/knowledge-graph'],
       ['文件中心', '/files'],
       ['评分复核', '/grading'],
@@ -120,6 +121,7 @@ describe('AppShell', () => {
     expect([...host.querySelectorAll('nav a')].map((link) => link.textContent)).toEqual([
       '工作台',
       '考试配置',
+      '学生名单',
       '知识图谱',
       '文件中心',
       '评分复核',

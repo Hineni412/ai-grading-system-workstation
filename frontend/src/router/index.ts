@@ -3,6 +3,7 @@ import { createRouter, createWebHistory, type RouteRecordRaw, type RouterHistory
 import ComponentShowcase from '../components/design-system/ComponentShowcase.vue'
 import {
   sessionRouteDefinition,
+  studentsRouteDefinition,
   filesRouteDefinition,
   templateRegionRouteDefinition,
   gradingRunRouteDefinition,
@@ -39,6 +40,16 @@ const routes: RouteRecordRaw[] = [
       title: sessionRouteDefinition.title,
       description: sessionRouteDefinition.description,
       breadcrumb: sessionRouteDefinition.breadcrumb,
+    },
+  },
+  {
+    path: studentsRouteDefinition.path,
+    name: studentsRouteDefinition.id,
+    component: () => import('../views/StudentsView.vue'),
+    meta: {
+      title: studentsRouteDefinition.title,
+      description: studentsRouteDefinition.description,
+      breadcrumb: studentsRouteDefinition.breadcrumb,
     },
   },
   {

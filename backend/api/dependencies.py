@@ -24,6 +24,7 @@ from backend.ops.service import OpsSelfCheckService
 from backend.ops.plan_store import OpsPlanStore
 from backend.ops.write_service import OpsWriteService
 from backend.review.service import ReviewApplicationService
+from backend.students import StudentRosterModule
 from backend.scan_grading.config_fingerprint import (
     session_grading_config_fingerprint,
 )
@@ -47,6 +48,12 @@ _TEMPLATE_UPLOAD_SERVICE_GUARD = threading.Lock()
 
 def get_grading_db() -> DBManager:
     return DBManager(get_path_manager().db_path)
+
+
+def get_student_roster_module(
+    db: DBManager = Depends(get_grading_db),
+) -> StudentRosterModule:
+    return StudentRosterModule(db)
 
 
 def get_session_analysis_service(

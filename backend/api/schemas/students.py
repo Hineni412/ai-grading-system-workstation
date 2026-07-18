@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -28,7 +30,7 @@ class StudentUpsertRequest(BaseModel):
 
 
 class StudentUpdateRequest(StudentUpsertItem):
-    pass
+    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class StudentResponse(BaseModel):
@@ -58,3 +60,83 @@ class StudentDeleteResponse(BaseModel):
     deleted_annotations: int
     deleted_attendance: int
     unlinked_papers: int
+    backup_created: bool
+    roster_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class StudentMutationResponse(BaseModel):
+    student: StudentResponse
+    roster_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class StudentDeletionCounts(BaseModel):
+    deleted_students: int
+    deleted_results: int
+    deleted_details: int
+    deleted_annotations: int
+    deleted_attendance: int
+    unlinked_papers: int
+
+
+class StudentDeletionImpactResponse(BaseModel):
+    student: StudentResponse
+    counts: StudentDeletionCounts
+    roster_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class StudentImportMapping(BaseModel):
+    student_code: str | None = None
+    name: str | None = None
+    class_name: str | None = None
+
+
+class StudentImportCounts(BaseModel):
+    insert: int
+    update: int
+    unchanged: int
+    invalid: int
+    duplicate: int
+
+
+class StudentImportRowResponse(BaseModel):
+    source_row: int
+    student_code: str
+    name: str
+    class_name: str | None = None
+    operation: Literal["insert", "update", "unchanged", "invalid", "duplicate"]
+    selectable: bool
+    issues: list[str]
+    existing: StudentResponse | None = None
+
+
+class StudentImportPreviewResponse(BaseModel):
+    filename: str
+    columns: list[str]
+    mapping: StudentImportMapping
+    counts: StudentImportCounts
+    rows: list[StudentImportRowResponse]
+    roster_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    issues: list[str]
+
+
+class StudentWorkspaceResponse(BaseModel):
+    items: list[StudentResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    class_names: list[str]
+    roster_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class StudentImportCommitRequest(BaseModel):
+    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    items: list[StudentUpsertItem] = Field(min_length=1, max_length=10000)
+
+
+class StudentImportCommitResponse(BaseModel):
+    inserted: int
+    updated: int
+    unchanged: int
+    total: int
+    roster_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
