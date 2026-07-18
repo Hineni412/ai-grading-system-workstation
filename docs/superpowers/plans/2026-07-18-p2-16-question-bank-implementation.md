@@ -1,7 +1,7 @@
 # P2-16 题库管理即时实现计划
 
 **执行包：** P2-16
-**规划状态：** ready_for_execution
+**规划状态：** waiting_review
 **计划基线：** 89a00416151c7a59d038e7dd6b936c21cd9425a7
 **交接基线：** 89a00416151c7a59d038e7dd6b936c21cd9425a7
 **用户自测：** quick
@@ -180,7 +180,7 @@ store 隐藏请求 generation、AbortController、严格 decoder、选择去重/
 - [x] 固定生成数千题临时题库、匿名 DOCX/PDF 和假 tagging 服务；所有写入发生在临时数据根。
 - [x] 覆盖 1920×1080、1440×900、1366×768、1280×800、1024×768；长公式/图片、100 页、跨页选择、刷新恢复和冲突。
 - [x] 更新 `ARCHITECTURE.md` 的 P2-16 已实现事实；页面稳定后生成 quick 自测清单。
-- [ ] 聚焦测试、受影响 Question Bank/Job 回归、`npm run verify`、真实浏览器、`tools/smoke_check.py --skip-tests`、`git diff --check`、handoff validator 和真实两库指纹守卫通过。
+- [x] 聚焦测试、受影响 Question Bank/Job 回归、`npm run verify`、真实浏览器、`tools/smoke_check.py --skip-tests`、`git diff --check`、handoff validator 和真实两库指纹守卫通过。
 
 ### Slice 6：冻结、双路复审与交接
 
@@ -233,7 +233,7 @@ store 隐藏请求 generation、AbortController、严格 decoder、选择去重/
 | 阶段 | 耗时 | 测试/复审 | 原始意见 | 去重结果 | 剩余工作 | 当前包验收 | 版本可发布 |
 |---|---:|---|---:|---|---|---|---|
 | 集中调查与计划 | 约 40 分钟 | 必读资料、P1-15/P1-16/P1-18 契约、旧页面行为、前端基础设施、worktree/数据守卫 | 0 | 6 个根因组 | 实现、自动门槛、复审、用户短测、integration | 否 | 否 |
-| 稳定候选前实现 | 约 2 小时 | TDD API/store/view、Question Bank/Job 后端 110 项聚焦回归、前端 612 项验证、2005 题真实浏览器、快速冒烟 | 0 | 0 个阻塞问题 | 冻结提交、双路复审、用户短测、integration | 自动验收通过 | 否 |
+| 稳定候选前实现 | 约 2 小时 | TDD API/store/view、Question Bank/Job 后端 110 项聚焦回归、前端 613 项验证、2005 题真实浏览器、快速冒烟 | 0 | 0 个阻塞问题 | 双路复审、用户短测、integration | 自动验收通过 | 否 |
 
 ## Ownership
 
@@ -252,9 +252,9 @@ P2-16 功能分支拥有 question-import 自动元数据局部修正、Question 
 ## 昼夜交接
 
 **执行包：** P2-16
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** pending
 **真实数据指纹：** not_touched
