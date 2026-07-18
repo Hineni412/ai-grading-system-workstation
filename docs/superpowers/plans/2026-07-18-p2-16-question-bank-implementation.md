@@ -237,6 +237,8 @@ store 隐藏请求 generation、AbortController、严格 decoder、选择去重/
 | 并行初审 | 约 20 分钟 | Spec 与 Standards 评审同一冻结候选 | 8 | 去重为 6 个 Important、1 个 Suggestion | 统一修复、限定最终复审、用户短测、integration | 否 | 否 |
 | 统一修复 | 约 35 分钟 | 20 项受影响前端测试、类型检查、代码规范检查、构建、真实浏览器流程 | 0 | 首轮 7 项全部完成修复 | 限定最终复审、用户短测、integration | 自动验收通过 | 否 |
 | 限定最终复审 | 约 10 分钟 | 原 Spec 与 Standards 评审仅复核首轮问题、修复区域及直接回归 | 0 | 0 个 Critical、0 个 Important | 用户 quick 短测、integration | 等待用户验收 | 否 |
+| 用户 quick 首轮 | 约 5 分钟 | 用户反馈其他功能完整，步骤 2 的题目预览为纯黑 `1×1` 页面 | 1 | 1 个 Major：匿名验收数据使用不可读占位图 | 修复匿名验收图与回归门槛、用户复查步骤 2、integration | 否 | 否 |
+| 用户问题修复 | 约 20 分钟 | 原始 HTTP 图片检查由 RED 变 GREEN；真实浏览器流程 1 项通过；图片生成脚本编译和可视检查通过 | 0 | 0 个未解决问题 | 用户复查步骤 2、integration | 等待用户验收 | 否 |
 
 ## Ownership
 
@@ -256,7 +258,7 @@ P2-16 功能分支拥有 question-import 自动元数据局部修正、Question 
 
 **执行包：** P2-16
 **交接状态：** waiting_user
-**功能提交：** 829c1bbe5e171727fc43a456dfee883faf5f7e8c
+**功能提交：** dea61390d7a91e86c1e3abf216af52ac5b772040
 **自动验证：** passed
 **独立复审：** passed
 **用户验收：** pending
