@@ -94,8 +94,12 @@ def _seed(paths) -> None:
             conn.execute(
                 """
                 INSERT INTO exam_papers (
-                    session_id, front_image, back_image, student_id, match_status
-                ) VALUES (?, 'anonymous-front.png', 'anonymous-back.png', ?, 'matched')
+                    session_id, front_image, back_image, student_id, match_status,
+                    processing_status, error_message
+                ) VALUES (
+                    ?, 'anonymous-front.png', 'anonymous-back.png', ?, 'matched',
+                    'graded', 'anonymous previous grading result'
+                )
                 """,
                 (session_id, int(first_student["id"])),
             ).lastrowid

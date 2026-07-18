@@ -44,6 +44,10 @@ class StudentBackupFailedError(RuntimeError):
     pass
 
 
+class StudentGradingActiveError(RuntimeError):
+    pass
+
+
 def student_roster_revision(rows: list[dict[str, Any]]) -> str:
     payload = [
         {
@@ -934,6 +938,35 @@ class DBManager:
                 raise StudentRosterRevisionConflict(
                     "Student roster changed before delete"
                 )
+            active_grading = conn.execute(
+                """
+                SELECT 1
+                FROM grading_sessions
+                WHERE status = 'running'
+                LIMIT 1
+                """
+            ).fetchone()
+            has_grading_runs = conn.execute(
+                """
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table' AND name = 'grading_runs'
+                """
+            ).fetchone() is not None
+            if active_grading is None and has_grading_runs:
+                active_grading = conn.execute(
+                    """
+                    SELECT 1
+                    FROM grading_runs
+                    WHERE state IN ('running', 'pause_requested', 'paused')
+                    LIMIT 1
+                    """
+                ).fetchone()
+            if active_grading is not None:
+                conn.rollback()
+                raise StudentGradingActiveError(
+                    "Student has an active grading run"
+                )
             try:
                 backup_path = self.create_backup("delete_student")
             except Exception as exc:
@@ -945,6 +978,18 @@ class DBManager:
                 conn.rollback()
                 raise StudentBackupFailedError(
                     "Student backup was not created before delete"
+                )
+            has_grading_run_items = conn.execute(
+                """
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table' AND name = 'grading_run_items'
+                """
+            ).fetchone() is not None
+            if has_grading_run_items:
+                conn.execute(
+                    "DELETE FROM grading_run_items WHERE student_id = ?",
+                    (int(student_id),),
                 )
             result_rows = conn.execute(
                 "SELECT id FROM session_results WHERE student_id = ?",
@@ -975,7 +1020,10 @@ class DBManager:
             unlinked_papers = conn.execute(
                 """
                 UPDATE exam_papers
-                SET student_id = NULL, match_status = 'student_deleted'
+                SET student_id = NULL,
+                    match_status = 'student_deleted',
+                    processing_status = 'pending',
+                    error_message = NULL
                 WHERE student_id = ?
                 """,
                 (int(student_id),),
@@ -1978,60 +2026,148 @@ class DBManager:
             )
             conn.commit()
 
-    def save_session_result(self, session_id: int, student_id: int, paper_id: int, grading_result: GradingResult) -> int:
+    def update_exam_paper_status_if_current_assignment(
+        self,
+        paper_id: int,
+        student_id: int,
+        processing_status: str,
+        error_message: str | None = None,
+    ) -> bool:
         with self._connect() as conn:
-            cursor = conn.cursor()
-            
-            # Remove old results for this student in this session
-            cursor.execute("SELECT id FROM session_results WHERE session_id = ? AND student_id = ?", (session_id, student_id))
-            old_rows = cursor.fetchall()
-            for old_row in old_rows:
-                old_id = old_row[0]
-                cursor.execute("DELETE FROM annotated_results WHERE result_id = ?", (old_id,))
-                cursor.execute("DELETE FROM session_details WHERE result_id = ?", (old_id,))
-                cursor.execute("DELETE FROM session_results WHERE id = ?", (old_id,))
-                
+            cursor = conn.execute(
+                """
+                UPDATE exam_papers
+                SET processing_status = ?, error_message = ?
+                WHERE id = ?
+                  AND student_id = ?
+                  AND match_status = 'matched'
+                """,
+                (processing_status, error_message, paper_id, student_id),
+            )
+            conn.commit()
+            return cursor.rowcount == 1
+
+    def _save_session_result_in_connection(
+        self,
+        conn: sqlite3.Connection,
+        session_id: int,
+        student_id: int,
+        paper_id: int,
+        grading_result: GradingResult,
+    ) -> int:
+        cursor = conn.cursor()
+
+        # Remove old results for this student in this session
+        cursor.execute(
+            "SELECT id FROM session_results WHERE session_id = ? AND student_id = ?",
+            (session_id, student_id),
+        )
+        old_rows = cursor.fetchall()
+        for old_row in old_rows:
+            old_id = old_row[0]
+            cursor.execute("DELETE FROM annotated_results WHERE result_id = ?", (old_id,))
+            cursor.execute("DELETE FROM session_details WHERE result_id = ?", (old_id,))
+            cursor.execute("DELETE FROM session_results WHERE id = ?", (old_id,))
+
+        cursor.execute(
+            """
+            INSERT INTO session_results (
+                session_id, student_id, paper_id, total_score, student_score,
+                needs_human_review, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                student_id,
+                paper_id,
+                grading_result.total_score,
+                grading_result.student_score,
+                1 if grading_result.needs_human_review else 0,
+                json.dumps(grading_result.raw_json, ensure_ascii=False),
+            ),
+        )
+
+        result_id = int(cursor.lastrowid)
+        for detail in grading_result.grading_details:
             cursor.execute(
                 """
-                INSERT INTO session_results (
-                    session_id, student_id, paper_id, total_score, student_score,
-                    needs_human_review, raw_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO session_details (
+                    result_id, question_id, score_awarded, deduction_reason,
+                    knowledge_id, knowledge_ids, error_category, error_summary,
+                    confidence_score, secondary_errors_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    session_id,
-                    student_id,
-                    paper_id,
-                    grading_result.total_score,
-                    grading_result.student_score,
-                    1 if grading_result.needs_human_review else 0,
-                    json.dumps(grading_result.raw_json, ensure_ascii=False),
+                    result_id,
+                    detail.question_id,
+                    detail.score_awarded,
+                    detail.deduction_reason,
+                    detail.knowledge_id,
+                    json.dumps(_detail_knowledge_ids(detail), ensure_ascii=False),
+                    getattr(detail, "error_category", None),
+                    getattr(detail, "error_summary", None),
+                    getattr(detail, "confidence_score", None),
+                    _serialize_secondary_errors(getattr(detail, "secondary_errors", [])),
                 ),
             )
+        return result_id
 
-            result_id = int(cursor.lastrowid)
-            for detail in grading_result.grading_details:
-                cursor.execute(
-                    """
-                    INSERT INTO session_details (
-                        result_id, question_id, score_awarded, deduction_reason,
-                        knowledge_id, knowledge_ids, error_category, error_summary,
-                        confidence_score, secondary_errors_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        result_id,
-                        detail.question_id,
-                        detail.score_awarded,
-                        detail.deduction_reason,
-                        detail.knowledge_id,
-                        json.dumps(_detail_knowledge_ids(detail), ensure_ascii=False),
-                        getattr(detail, "error_category", None),
-                        getattr(detail, "error_summary", None),
-                        getattr(detail, "confidence_score", None),
-                        _serialize_secondary_errors(getattr(detail, "secondary_errors", [])),
-                    ),
-                )
+    def save_session_result(
+        self,
+        session_id: int,
+        student_id: int,
+        paper_id: int,
+        grading_result: GradingResult,
+    ) -> int:
+        with self._connect() as conn:
+            result_id = self._save_session_result_in_connection(
+                conn,
+                session_id,
+                student_id,
+                paper_id,
+                grading_result,
+            )
+            conn.commit()
+            return result_id
+
+    def publish_session_result_if_current_assignment(
+        self,
+        session_id: int,
+        student_id: int,
+        paper_id: int,
+        grading_result: GradingResult,
+    ) -> int | None:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute(
+                """
+                SELECT 1
+                FROM exam_papers
+                WHERE id = ?
+                  AND session_id = ?
+                  AND student_id = ?
+                  AND match_status = 'matched'
+                """,
+                (paper_id, session_id, student_id),
+            ).fetchone()
+            if current is None:
+                conn.rollback()
+                return None
+            result_id = self._save_session_result_in_connection(
+                conn,
+                session_id,
+                student_id,
+                paper_id,
+                grading_result,
+            )
+            conn.execute(
+                """
+                UPDATE exam_papers
+                SET processing_status = 'graded', error_message = NULL
+                WHERE id = ?
+                """,
+                (paper_id,),
+            )
             conn.commit()
             return result_id
 

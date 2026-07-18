@@ -233,4 +233,42 @@ describe('student roster store', () => {
     expect(store.noticeMessage).toContain('1 条考勤')
     expect(store.noticeMessage).toContain('2 份答卷')
   })
+
+  it('tells the teacher to wait when grading blocks deletion', async () => {
+    const api = makeApi({
+      getDeletionImpact: vi.fn(async () => ({
+        student: makeWorkspace().items[0]!,
+        counts: {
+          deleted_students: 1,
+          deleted_results: 0,
+          deleted_details: 0,
+          deleted_annotations: 0,
+          deleted_attendance: 0,
+          unlinked_papers: 0,
+        },
+        roster_revision: 'a'.repeat(64),
+      })),
+      deleteStudent: vi.fn(async () => {
+        throw new ApiError({
+          kind: 'conflict',
+          status: 409,
+          code: 'student_grading_active',
+          message: 'Wait for grading to finish before deleting this student',
+          details: {},
+          requestId: 'rid-delete-active',
+          retryable: false,
+        })
+      }),
+    })
+    const store = useStudentRosterStore()
+    await store.load({}, api)
+    store.selectStudent(12)
+    await store.loadDeletionImpact(api)
+
+    const deleted = await store.deleteSelected(api)
+
+    expect(deleted).toBe(false)
+    expect(store.errorMessage).toBe('批改仍在进行，请等待批改结束后再删除学生。')
+    expect(store.selectedStudent?.id).toBe(12)
+  })
 })

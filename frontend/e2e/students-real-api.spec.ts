@@ -64,6 +64,14 @@ test('真实 API 名单流程保持可预览、可恢复且不会横向溢出', 
   await page.getByRole('button', { name: '创建备份并永久删除' }).click()
   await expect(page.getByText(/学生及关联记录已安全删除，备份已完成：1 名学生、1 份成绩、1 条评分明细、1 条批注、1 条考勤；已解除 1 份答卷关联。/)).toBeVisible()
 
+  await page.goto('/workbench')
+  await page.getByRole('combobox', { name: '当前考试' }).selectOption({
+    label: '匿名名单验收考试',
+  })
+  await expect(page.getByText('0 / 1 份', { exact: true })).toBeVisible()
+  await expect(page.getByText('0% 已批改', { exact: true })).toBeVisible()
+  await page.goto('/students')
+
   await fileInput.setInputFiles(resolve('test-results/p2-13-real/anonymous-students.xlsx'))
   await expect(page.getByText('新增 1', { exact: true })).toBeVisible()
   await expect(page.getByText('无变化 1', { exact: true })).toBeVisible()

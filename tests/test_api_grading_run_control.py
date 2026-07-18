@@ -227,6 +227,53 @@ def test_cancelled_run_cannot_resume_and_failed_retry_keeps_original_mode(tmp_pa
         manager.shutdown()
 
 
+def test_student_can_be_deleted_after_grading_cancel_is_confirmed(tmp_path) -> None:
+    from db_manager import StudentRecord
+    from grading_run_store import GradingRunStore
+
+    client, db, manager = _system(tmp_path)
+    db.upsert_students([StudentRecord("S001", "学生甲", "七年级 1 班")])
+    student_id = int(db.list_students()[0]["id"])
+    session_id = db.create_grading_session(
+        "取消后删除",
+        "rubric.json",
+        "answer.json",
+    )
+    store = GradingRunStore(db.db_path)
+    run = store.begin(session_id, "a" * 64, "full_paper")
+    store.add_item(
+        run.id,
+        source_label="cancel-delete-001",
+        student_id=student_id,
+        paper_fingerprint="b" * 64,
+        config_fingerprint="a" * 64,
+        status="pending",
+    )
+    queued = manager.store.create_job("grading_run", {"session_id": session_id})
+    try:
+        cancelled = client.post(
+            f"/api/sessions/{session_id}/grading/runs/{run.id}/cancel",
+            json={"job_id": queued.id},
+        )
+        assert cancelled.status_code == 200
+        assert cancelled.json()["state"] == "cancelled"
+        impact = client.get(f"/api/students/{student_id}/deletion-impact").json()
+
+        deleted = client.delete(
+            f"/api/students/{student_id}",
+            params={
+                "expected_revision": impact["roster_revision"],
+                "confirmed": "true",
+            },
+        )
+
+        assert deleted.status_code == 200
+        assert db.list_students() == []
+        assert store.counts(run.id)["pending"] == 0
+    finally:
+        manager.shutdown()
+
+
 def test_concurrent_start_requests_create_only_one_grading_job(tmp_path) -> None:
     client, db, manager = _system(tmp_path)
     session_id = db.create_grading_session("并发启动测试", "rubric.json", "answer.json")
