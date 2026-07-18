@@ -97,19 +97,31 @@ def test_student_write_routes_upsert_update_conflict_and_delete(tmp_path) -> Non
     students = client.get("/api/students").json()["items"]
     alice_id = students[0]["id"]
     bob_id = students[1]["id"]
+    roster_revision = client.get("/api/students/workspace").json()["roster_revision"]
 
     update_response = client.patch(
         f"/api/students/{alice_id}",
-        json={"student_code": "S001", "name": "Alice Zhang", "class_name": "Class 9"},
+        json={
+            "expected_revision": roster_revision,
+            "student_code": "S001",
+            "name": "Alice Zhang",
+            "class_name": "Class 9",
+        },
     )
 
     assert update_response.status_code == 200
-    assert update_response.json()["name"] == "Alice Zhang"
-    assert update_response.json()["class_name"] == "Class 9"
+    assert update_response.json()["student"]["name"] == "Alice Zhang"
+    assert update_response.json()["student"]["class_name"] == "Class 9"
+    updated_revision = update_response.json()["roster_revision"]
 
     conflict_response = client.patch(
         f"/api/students/{alice_id}",
-        json={"student_code": "S002", "name": "Alice Zhang", "class_name": "Class 9"},
+        json={
+            "expected_revision": updated_revision,
+            "student_code": "S002",
+            "name": "Alice Zhang",
+            "class_name": "Class 9",
+        },
         headers={"x-request-id": "rid-student-conflict"},
     )
 
@@ -117,10 +129,20 @@ def test_student_write_routes_upsert_update_conflict_and_delete(tmp_path) -> Non
     assert conflict_response.json()["error"]["code"] == "student_code_conflict"
     assert conflict_response.json()["error"]["request_id"] == "rid-student-conflict"
 
-    delete_response = client.delete(f"/api/students/{bob_id}")
+    impact_response = client.get(f"/api/students/{bob_id}/deletion-impact")
+    assert impact_response.status_code == 200
+    assert impact_response.json()["counts"]["deleted_students"] == 1
+    delete_response = client.delete(
+        f"/api/students/{bob_id}",
+        params={
+            "expected_revision": impact_response.json()["roster_revision"],
+            "confirmed": "true",
+        },
+    )
 
     assert delete_response.status_code == 200
     assert delete_response.json()["deleted_students"] == 1
+    assert delete_response.json()["backup_created"] is True
     remaining_codes = [item["student_code"] for item in client.get("/api/students").json()["items"]]
     assert remaining_codes == ["S001"]
     assert (db.backup_dir).exists()
@@ -128,10 +150,16 @@ def test_student_write_routes_upsert_update_conflict_and_delete(tmp_path) -> Non
 
 def test_missing_student_write_route_uses_unified_404_error(tmp_path) -> None:
     client, _db = _client_with_db(tmp_path)
+    roster_revision = client.get("/api/students/workspace").json()["roster_revision"]
 
     response = client.patch(
         "/api/students/404",
-        json={"student_code": "S404", "name": "Nobody", "class_name": None},
+        json={
+            "expected_revision": roster_revision,
+            "student_code": "S404",
+            "name": "Nobody",
+            "class_name": None,
+        },
         headers={"x-request-id": "rid-student-missing"},
     )
 
