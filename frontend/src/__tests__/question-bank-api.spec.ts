@@ -397,4 +397,37 @@ describe('question bank API contracts', () => {
     expect(csv).not.toContain('internal_path')
     expect(csv).not.toContain('private')
   })
+
+  it('derives the exact retry question ids from either failures or the public source payload', async () => {
+    const { questionJobRetryIds } = await import('../api/question-bank')
+    const source = {
+      id: 41,
+      job_type: 'tagging_sync',
+      payload: { question_ids: [17, 18, 18] },
+      result: {},
+      status: 'failed',
+      progress: 1,
+      stage: 'failed',
+      detail: '',
+      error: 'failed',
+      cancel_requested: false,
+      created_at: '2026-07-18T10:00:00Z',
+      started_at: '2026-07-18T10:00:01Z',
+      updated_at: '2026-07-18T10:00:02Z',
+      finished_at: '2026-07-18T10:00:02Z',
+    } as const
+
+    expect(questionJobRetryIds(source)).toEqual([17, 18])
+    expect(questionJobRetryIds({
+      ...source,
+      status: 'succeeded',
+      result: {
+        failures: [{
+          question_id: 18,
+          category: 'model_timeout',
+          message: 'timeout',
+        }],
+      },
+    })).toEqual([18])
+  })
 })

@@ -76,6 +76,10 @@ function changePage(next: number): void {
                 type="checkbox"
                 :aria-label="`选择第 ${question.question_number || question.id} 题`"
                 :checked="store.selectedQuestionIds.includes(question.id)"
+                :disabled="
+                  store.selectionIsFull
+                  && !store.selectedQuestionIds.includes(question.id)
+                "
                 @change="store.toggleQuestionSelection(
                   question.id,
                   ($event.currentTarget as HTMLInputElement).checked,

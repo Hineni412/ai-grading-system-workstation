@@ -12,6 +12,7 @@ const draft = reactive({
   paperId: '',
   year: '',
   examType: '',
+  examScope: '',
   grade: '',
   questionType: '',
   difficultyMin: '',
@@ -38,6 +39,7 @@ function apply(): void {
     paperIds: draft.paperId ? [Number(draft.paperId)] : [],
     years: draft.year ? [draft.year] : [],
     examTypes: draft.examType ? [draft.examType] : [],
+    examScopes: draft.examScope ? [draft.examScope] : [],
     grades: draft.grade ? [draft.grade] : [],
     questionTypes: draft.questionType ? [draft.questionType] : [],
     difficultyMin: hasDifficultyRange ? difficultyMin : undefined,
@@ -57,6 +59,7 @@ function reset(): void {
     paperId: '',
     year: '',
     examType: '',
+    examScope: '',
     grade: '',
     questionType: '',
     difficultyMin: '',
@@ -104,6 +107,7 @@ function reset(): void {
       <div class="qb-more-filters__grid">
         <label class="qb-field"><span>年份</span><input v-model="draft.year" placeholder="2025"></label>
         <label class="qb-field"><span>考试类型</span><input v-model="draft.examType" placeholder="期末"></label>
+        <label class="qb-field"><span>考试范围</span><input v-model="draft.examScope" placeholder="如 期中"></label>
         <label class="qb-field"><span>年级</span><input v-model="draft.grade" placeholder="九年级"></label>
         <label class="qb-field"><span>题型</span><input v-model="draft.questionType" placeholder="解答题"></label>
         <label class="qb-field"><span>最低难度</span><input v-model="draft.difficultyMin" type="number" min="1" max="10"></label>

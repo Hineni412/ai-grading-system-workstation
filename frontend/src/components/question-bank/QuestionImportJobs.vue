@@ -5,6 +5,7 @@ import {
   questionBankApi,
   questionJobFailures,
   questionJobFailuresCsv,
+  questionJobRetryIds,
 } from '../../api/question-bank'
 import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
 import { useJobStore } from '../../stores/jobs'
@@ -81,17 +82,20 @@ async function startTagging(): Promise<void> {
 
 async function retry(job: JobResponse): Promise<void> {
   if (busy.value) return
-  const failures = questionJobFailures(job.result)
   if (job.job_type === 'tagging_sync') {
-    const ids = failures.map(({ question_id }) => question_id)
+    const ids = questionJobRetryIds(job)
     const count = ids.length
+    if (count === 0) {
+      feedback.value = '服务端没有公开可安全重试的题目范围，请先刷新任务。'
+      return
+    }
     const confirmed = window.confirm(
-      `将只重试 ${count || '服务端允许的'} 道失败题目，可能产生外部费用。确认继续吗？`,
+      `将只重试 ${count} 道失败题目，可能产生外部费用。确认继续吗？`,
     )
     if (!confirmed) return
     busy.value = true
     try {
-      jobStore.track(await questionBankApi.retryTagging(job.id, count ? ids : undefined))
+      jobStore.track(await questionBankApi.retryTagging(job.id, ids))
       feedback.value = '失败题目已提交新的重试任务。'
     } catch {
       feedback.value = '重试任务没有提交，原任务记录保持不变。'
@@ -172,6 +176,12 @@ function downloadFailures(job: JobResponse): void {
           失败 {{ safeCount(job.result, 'failed_count') }}。
         </p>
         <p v-if="job.error" class="qb-feedback is-error">{{ job.error }}</p>
+        <p v-if="jobStore.syncErrors[job.id]" class="qb-feedback is-error" role="alert">
+          {{ jobStore.syncErrors[job.id]?.message }}
+          <template v-if="jobStore.syncErrors[job.id]?.requestId">
+            请求编号：{{ jobStore.syncErrors[job.id]?.requestId }}
+          </template>
+        </p>
         <div class="qb-job__actions">
           <button
             v-if="!TERMINAL_JOB_STATUSES.has(job.status)"
@@ -191,7 +201,14 @@ function downloadFailures(job: JobResponse): void {
             下载失败清单
           </button>
           <button
-            v-if="TERMINAL_JOB_STATUSES.has(job.status) && (job.status !== 'succeeded' || job.result.outcome === 'partial')"
+            v-if="
+              TERMINAL_JOB_STATUSES.has(job.status)
+              && (
+                job.job_type === 'question_import'
+                || questionJobRetryIds(job).length > 0
+              )
+              && (job.status !== 'succeeded' || job.result.outcome === 'partial')
+            "
             type="button"
             class="qb-link"
             :disabled="busy"

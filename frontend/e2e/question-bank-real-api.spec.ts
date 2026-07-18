@@ -5,6 +5,12 @@ test('real API question bank handles scale, evidence, recovery and guarded write
   await page.goto('/question-bank')
   await expect(page.getByRole('heading', { name: '题库管理', exact: true })).toBeVisible()
   await expect(page.getByText('共 2005 题', { exact: true })).toBeVisible()
+  const fileInput = page.locator('input[type="file"]')
+  await fileInput.focus()
+  expect(await fileInput.evaluate((input) => {
+    const picker = input.closest('.qb-file-picker')
+    return picker ? getComputedStyle(picker).outlineStyle : 'none'
+  })).not.toBe('none')
 
   const keyword = page.getByRole('searchbox', { name: '关键词' })
   await keyword.fill('LONG_FORMULA')
@@ -40,6 +46,11 @@ test('real API question bank handles scale, evidence, recovery and guarded write
   page.once('dialog', (dialog) => dialog.accept())
   await page.getByRole('button', { name: 'AI 标注 2 题' }).click()
   await expect(page.getByText(/部分完成：成功 1/)).toBeVisible()
+  page.once('dialog', async (dialog) => {
+    expect(dialog.message()).toContain('只重试 1 道失败题目')
+    await dialog.dismiss()
+  })
+  await page.getByRole('button', { name: '重试允许的失败项' }).click()
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('button', { name: '下载失败清单' }).click()
   const download = await downloadPromise
@@ -49,7 +60,7 @@ test('real API question bank handles scale, evidence, recovery and guarded write
   await expect(page.getByText(/AI 标注 #/)).toBeVisible()
   await expect(page.getByText(/部分完成：成功 1/)).toBeVisible()
 
-  await page.locator('input[type="file"]').setInputFiles(
+  await fileInput.setInputFiles(
     resolve('test-results/p2-16-real/anonymous-import.docx'),
   )
   await expect(page.getByText(/已提交任务/)).toBeVisible()

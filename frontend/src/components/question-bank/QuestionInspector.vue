@@ -135,13 +135,15 @@ function mediaFailed(url: string): void {
         <template v-if="store.detail.rich_content.answer_blocks.length">
           <div v-for="(block, index) in store.detail.rich_content.answer_blocks" :key="index" class="qb-rich-block">
             <p>{{ block.text || '此段只有图片素材' }}</p>
-            <img
-              v-for="url in block.asset_urls"
-              :key="url"
-              :src="url"
-              alt="答案图片素材"
-              @error="mediaFailed(url)"
-            >
+            <template v-for="url in block.asset_urls" :key="url">
+              <img
+                v-if="!missingMedia.includes(url)"
+                :src="url"
+                alt="答案图片素材"
+                @error="mediaFailed(url)"
+              >
+              <p v-else class="qb-media-missing">这张答案图片暂时无法读取，答案文字仍可查看。</p>
+            </template>
           </div>
         </template>
         <p v-else>{{ store.detail.answer_text || '暂未录入答案或解析。' }}</p>

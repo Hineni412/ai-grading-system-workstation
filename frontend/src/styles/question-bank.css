@@ -171,12 +171,12 @@
 .qb-button--primary {
   border-color: var(--color-accent);
   background: var(--color-accent);
-  color: #fff;
+  color: var(--color-bg-surface);
 }
 
 .qb-button--primary:hover:not(:disabled) {
   background: var(--color-accent-hover);
-  color: #fff;
+  color: var(--color-bg-surface);
 }
 
 .qb-button--quiet {
@@ -283,6 +283,12 @@
 .qb-file-picker:hover {
   border-color: var(--color-accent);
   background: var(--color-accent-subtle);
+}
+
+.qb-file-picker:focus-within {
+  outline: var(--border-width) solid var(--color-accent);
+  outline-offset: var(--focus-offset);
+  box-shadow: var(--focus-ring);
 }
 
 .qb-file-picker input {

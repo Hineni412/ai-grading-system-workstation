@@ -129,6 +129,7 @@ describe('question bank store', () => {
     }
 
     expect(store.selectedCount).toBe(500)
+    expect(store.selectionIsFull).toBe(true)
     expect(store.hiddenSelectionCount).toBe(499)
     expect(store.toggleQuestionSelection(501, true)).toBe(false)
     expect(store.selectedQuestionIds).not.toContain(501)

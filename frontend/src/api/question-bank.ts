@@ -665,6 +665,30 @@ export function questionJobFailuresCsv(result: Record<string, unknown>): string 
   ].map((row) => row.map(csvCell).join(',')).join('\r\n')
 }
 
+function safeQuestionIds(value: unknown): number[] {
+  if (!Array.isArray(value)) return []
+  const result: number[] = []
+  const seen = new Set<number>()
+  for (const item of value) {
+    if (isPositiveInteger(item) && !seen.has(item)) {
+      seen.add(item)
+      result.push(item)
+    }
+  }
+  return result.slice(0, 500)
+}
+
+export function questionJobRetryIds(job: JobResponse): number[] {
+  const explicit = safeQuestionIds(job.result.failed_question_ids)
+  if (explicit.length > 0) return explicit
+  const failures = questionJobFailures(job.result).map(({ question_id }) => question_id)
+  if (failures.length > 0) return [...new Set(failures)]
+  if (job.status === 'failed' || job.status === 'cancelled') {
+    return safeQuestionIds(job.payload.question_ids)
+  }
+  return []
+}
+
 export const questionBankApi = {
   listPapers(signal?: AbortSignal): Promise<QuestionBankPaperListResponse> {
     return apiClient.request('/api/question-bank/papers', {
