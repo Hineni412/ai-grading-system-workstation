@@ -143,6 +143,7 @@
   border-left: 3px solid var(--color-border-strong);
   border-radius: var(--radius-control);
   background: var(--color-bg-subtle);
+  cursor: grab;
 }
 
 .assembly-list__index {

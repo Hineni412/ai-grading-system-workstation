@@ -11,6 +11,7 @@ const assembly = useAssemblyStore()
 const bank = useQuestionBankStore()
 const jobs = useJobStore()
 const newSectionTitle = ref('')
+const draggedQuestionId = ref<number | null>(null)
 
 const currentJob = computed(() => (
   assembly.exportJobId === null ? null : jobs.jobs[assembly.exportJobId] ?? null
@@ -92,6 +93,28 @@ function addSection(): void {
 
 function removeSection(sectionId: string): void {
   void assembly.replaceSections(assembly.draft.sections.filter((section) => section.id !== sectionId))
+}
+
+function startQuestionDrag(questionId: number): void {
+  draggedQuestionId.value = questionId
+}
+
+function dropBefore(questionId: number): void {
+  const dragged = draggedQuestionId.value
+  draggedQuestionId.value = null
+  if (dragged === null) return
+  void assembly.moveQuestionBefore(dragged, questionId)
+}
+
+function dropIntoSection(sectionId: string): void {
+  const dragged = draggedQuestionId.value
+  draggedQuestionId.value = null
+  if (dragged === null) return
+  const next = assembly.draft.sections.map((section) => {
+    const ids = section.question_ids.filter((id) => id !== dragged)
+    return section.id === sectionId ? { ...section, question_ids: [...ids, dragged] } : { ...section, question_ids: ids }
+  })
+  void assembly.replaceSections(next)
 }
 </script>
 
@@ -178,7 +201,14 @@ function removeSection(sectionId: string): void {
         </div>
 
         <ol v-if="assembly.orderedQuestions.length" class="assembly-list">
-          <li v-for="question in assembly.orderedQuestions" :key="question.id">
+          <li
+            v-for="question in assembly.orderedQuestions"
+            :key="question.id"
+            draggable="true"
+            @dragstart="startQuestionDrag(question.id)"
+            @dragover.prevent
+            @drop="dropBefore(question.id)"
+          >
             <span class="assembly-list__index">{{ questionLabel(question) }}</span>
             <span class="assembly-list__text">{{ question.question_text }}</span>
             <span class="assembly-list__meta">{{ scoreLabel(question) }}</span>
@@ -215,7 +245,13 @@ function removeSection(sectionId: string): void {
             <input v-model="newSectionTitle" maxlength="80" placeholder="新增分节标题">
             <button type="button" class="qb-button" @click="addSection">新增分节</button>
           </div>
-          <div v-for="section in assembly.draft.sections" :key="section.id" class="assembly-section-editor">
+          <div
+            v-for="section in assembly.draft.sections"
+            :key="section.id"
+            class="assembly-section-editor"
+            @dragover.prevent
+            @drop="dropIntoSection(section.id)"
+          >
             <header>
               <strong>{{ section.title }}</strong>
               <button type="button" class="qb-link is-danger" @click="removeSection(section.id)">删除分节</button>
@@ -309,6 +345,7 @@ function removeSection(sectionId: string): void {
               <small>{{ record.filename }}</small>
             </div>
             <a class="qb-link" :href="record.download_url">下载</a>
+            <button type="button" class="qb-link" @click="assembly.restoreRecord(record.id)">恢复</button>
             <button type="button" class="qb-link is-danger" @click="assembly.deleteRecord(record.id)">删除记录</button>
           </li>
         </ul>

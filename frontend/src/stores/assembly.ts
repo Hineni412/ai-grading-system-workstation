@@ -82,6 +82,7 @@ export const useAssemblyStore = defineStore('assembly', () => {
   const exportJobId = ref<number | null>(null)
   const submitting = ref(false)
   let dependencies = defaultDependencies
+  let questionGeneration = 0
 
   const questionMap = computed(() => new Map(questions.value.map((item) => [item.id, item])))
   const orderedQuestions = computed(() => draft.value.order_ids
@@ -113,7 +114,8 @@ export const useAssemblyStore = defineStore('assembly', () => {
   }
 
   async function loadQuestions(): Promise<void> {
-    const ids = draft.value.order_ids
+    const ids = [...draft.value.order_ids]
+    const generation = ++questionGeneration
     if (!ids.length) {
       questions.value = []
       missingQuestionIds.value = []
@@ -123,6 +125,10 @@ export const useAssemblyStore = defineStore('assembly', () => {
     questionsState.value = 'loading'
     try {
       const result = await dependencies.api.resolveQuestions(ids)
+      if (
+        generation !== questionGeneration ||
+        ids.join(',') !== draft.value.order_ids.join(',')
+      ) return
       questions.value = result.items
       missingQuestionIds.value = result.missing_question_ids
       questionsState.value = result.items.length ? 'ready' : 'empty'
@@ -194,6 +200,15 @@ export const useAssemblyStore = defineStore('assembly', () => {
     return save({ ...draft.value, order_ids: order })
   }
 
+  async function moveQuestionBefore(questionId: number, beforeQuestionId: number): Promise<boolean> {
+    if (questionId === beforeQuestionId) return false
+    const order = draft.value.order_ids.filter((id) => id !== questionId)
+    const targetIndex = order.indexOf(beforeQuestionId)
+    if (targetIndex < 0 || !draft.value.order_ids.includes(questionId)) return false
+    order.splice(targetIndex, 0, questionId)
+    return save({ ...draft.value, order_ids: order })
+  }
+
   async function updateSettings(patch: {
     title?: string
     header_text?: string
@@ -252,6 +267,24 @@ export const useAssemblyStore = defineStore('assembly', () => {
     }
   }
 
+  async function restoreRecord(recordId: string): Promise<boolean> {
+    saveState.value = 'saving'
+    message.value = ''
+    try {
+      draft.value = await dependencies.api.restoreRecord(recordId, draft.value.revision)
+      saveState.value = 'idle'
+      loadState.value = draft.value.order_ids.length ? 'ready' : 'empty'
+      await loadQuestions()
+      return true
+    } catch (error) {
+      saveState.value = error instanceof ApiError && error.code === 'assembly_draft_conflict'
+        ? 'conflict'
+        : 'error'
+      message.value = safeMessage(error)
+      return false
+    }
+  }
+
   return {
     draft,
     questions,
@@ -277,10 +310,12 @@ export const useAssemblyStore = defineStore('assembly', () => {
     addQuestions,
     removeQuestion,
     moveQuestion,
+    moveQuestionBefore,
     updateSettings,
     replaceSections,
     submitExport,
     retryExport,
     deleteRecord,
+    restoreRecord,
   }
 })

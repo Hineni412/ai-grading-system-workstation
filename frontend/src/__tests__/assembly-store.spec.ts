@@ -78,6 +78,7 @@ describe('assembly store', () => {
       })),
       listRecords: vi.fn(async (): Promise<AssemblyRecordList> => ({ items: [], total: 0 })),
       deleteRecord: vi.fn(),
+      restoreRecord: vi.fn(),
       submitExport: vi.fn(async () => job()),
       retryExport: vi.fn(),
     }
@@ -116,6 +117,7 @@ describe('assembly store', () => {
       resolveQuestions: vi.fn(async () => ({ items: [question(7)], missing_question_ids: [] })),
       listRecords: vi.fn(async (): Promise<AssemblyRecordList> => ({ items: [], total: 0 })),
       deleteRecord: vi.fn(),
+      restoreRecord: vi.fn(),
       submitExport: vi.fn(),
       retryExport: vi.fn(),
     }
@@ -127,5 +129,37 @@ describe('assembly store', () => {
     expect(store.saveState).toBe('conflict')
     expect(store.draft.order_ids).toEqual([7])
     expect(store.message).toContain('另一个窗口')
+  })
+
+  it('ignores late question responses from an older draft', async () => {
+    const { useAssemblyStore } = await import('../stores/assembly')
+    const store = useAssemblyStore()
+    let releaseOld!: (value: { items: AssemblyQuestion[]; missing_question_ids: number[] }) => void
+    const oldQuestions = new Promise<{ items: AssemblyQuestion[]; missing_question_ids: number[] }>((resolve) => {
+      releaseOld = resolve
+    })
+    const api = {
+      getDraft: vi.fn(async () => draft({ basket_ids: [7], order_ids: [7] })),
+      saveDraft: vi.fn(async () => draft({ basket_ids: [8], order_ids: [8], revision: revisionB })),
+      resolveQuestions: vi.fn((ids: readonly number[]) => (
+        ids[0] === 7
+          ? oldQuestions
+          : Promise.resolve({ items: [question(8)], missing_question_ids: [] })
+      )),
+      listRecords: vi.fn(async (): Promise<AssemblyRecordList> => ({ items: [], total: 0 })),
+      deleteRecord: vi.fn(),
+      restoreRecord: vi.fn(),
+      submitExport: vi.fn(),
+      retryExport: vi.fn(),
+    }
+
+    const loading = store.load({ api })
+    await vi.waitFor(() => expect(store.draft.order_ids).toEqual([7]))
+    await store.addQuestions([8])
+    releaseOld({ items: [question(7)], missing_question_ids: [] })
+    await loading
+
+    expect(store.draft.order_ids).toEqual([8])
+    expect(store.orderedQuestions.map((item) => item.id)).toEqual([8])
   })
 })

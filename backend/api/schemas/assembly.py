@@ -42,6 +42,10 @@ class AssemblyExportSubmitRequest(_AssemblyModel):
     format: Literal["docx", "markdown"] = "docx"
 
 
+class AssemblyRecordRestoreRequest(_AssemblyModel):
+    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class AssemblyQuestionItem(_AssemblyModel):
     id: int
     revision: str

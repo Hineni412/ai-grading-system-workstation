@@ -19,6 +19,7 @@ from backend.api.schemas.assembly import (
     AssemblyQuestionListResponse,
     AssemblyRecordDeleteResponse,
     AssemblyRecordListResponse,
+    AssemblyRecordRestoreRequest,
     AssemblyRecordResponse,
 )
 from backend.api.schemas.jobs import JobResponse
@@ -261,6 +262,57 @@ def delete_assembly_record(
             {"record_id": record_id},
         )
     return AssemblyRecordDeleteResponse(record_id=record_id, deleted=True)
+
+
+@router.post(
+    "/records/{record_id}/restore",
+    response_model=AssemblyDraftResponse,
+    responses={
+        409: {"model": ErrorResponse, "description": "Assembly draft changed"},
+    },
+)
+def restore_assembly_record(
+    record_id: str,
+    body: AssemblyRecordRestoreRequest,
+    service: AssemblyWorkspaceService = Depends(get_assembly_workspace_service),
+) -> AssemblyDraftResponse:
+    record = service.get_record(record_id)
+    if record is None:
+        raise ApiError(
+            404,
+            "assembly_record_not_found",
+            "Assembly record not found",
+            {"record_id": record_id},
+        )
+    try:
+        restored = service.save_draft(
+            expected_revision=body.expected_revision,
+            draft={
+                "basket_ids": list(record.question_ids),
+                "order_ids": list(record.order_ids),
+                "sections": [section.to_payload() for section in record.sections],
+                "title": record.title,
+                "header_text": "",
+                "include_answer": record.include_answer,
+                "layout_mode": "sections" if record.sections else "sequential",
+                "preview_mode": "teacher",
+            },
+        )
+    except AssemblyDraftConflict as exc:
+        raise ApiError(
+            409,
+            "assembly_draft_conflict",
+            "Assembly draft has changed",
+            {"current_revision": exc.current_revision},
+        ) from exc
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "assembly_record_restore_invalid",
+            "Assembly record cannot be restored",
+            {"record_id": record_id},
+        ) from exc
+    return AssemblyDraftResponse(**_draft_payload(restored))
 
 
 @router.get("/records/{record_id}/download", response_class=FileResponse)

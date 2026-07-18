@@ -1,5 +1,6 @@
 import { createApp, h, nextTick } from 'vue'
 import { createPinia } from 'pinia'
+import { createMemoryHistory } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import QuestionBankView from '../views/QuestionBankView.vue'
@@ -7,6 +8,7 @@ import QuestionInspector from '../components/question-bank/QuestionInspector.vue
 import QuestionImportJobs from '../components/question-bank/QuestionImportJobs.vue'
 import { useJobStore } from '../stores/jobs'
 import { useQuestionBankStore } from '../stores/question-bank'
+import { createAppRouter } from '../router'
 
 const revision = 'a'.repeat(64)
 const item = {
@@ -62,13 +64,17 @@ async function mountView() {
   document.body.append(host)
   const app = createApp(QuestionBankView)
   const pinia = createPinia()
+  const router = createAppRouter(createMemoryHistory())
+  await router.push('/question-bank')
+  await router.isReady()
   app.use(pinia)
+  app.use(router)
   app.mount(host)
   mounted.push(app)
   await vi.waitFor(() => {
     expect(host.textContent).toContain('已知 x + y = 3')
   })
-  return { host, pinia }
+  return { host, pinia, router }
 }
 
 afterEach(() => {
@@ -191,6 +197,73 @@ describe('question bank workspace', () => {
     expect(store.selectedCount).toBe(500)
   })
 
+  it('adds selected question-bank rows to the assembly basket from the ledger toolbar', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/question-bank/papers') {
+        return response({ items: [paper], total: 1 })
+      }
+      if (url.startsWith('/api/question-bank/questions?')) {
+        return response({
+          items: [item],
+          total: 1,
+          page: 1,
+          page_size: 20,
+          total_pages: 1,
+        })
+      }
+      if (url === '/api/question-assembly/draft' && init?.method !== 'PUT') {
+        return response({
+          basket_ids: [],
+          order_ids: [],
+          sections: [],
+          title: '',
+          header_text: '',
+          include_answer: true,
+          layout_mode: 'sequential',
+          preview_mode: 'teacher',
+          revision,
+        })
+      }
+      if (url === '/api/question-assembly/records?limit=100') {
+        return response({ items: [], total: 0 })
+      }
+      if (url === '/api/question-assembly/draft' && init?.method === 'PUT') {
+        return response({
+          basket_ids: [17],
+          order_ids: [17],
+          sections: [],
+          title: '',
+          header_text: '',
+          include_answer: true,
+          layout_mode: 'sequential',
+          preview_mode: 'teacher',
+          revision: 'b'.repeat(64),
+        })
+      }
+      if (url.startsWith('/api/question-assembly/questions?')) {
+        return response({ items: [], missing_question_ids: [17] })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    const { host, router } = await mountView()
+
+    host.querySelector<HTMLInputElement>('input[aria-label="选择第 1 题"]')!.click()
+    await nextTick()
+    const add = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('加入组卷篮'))!
+    add.click()
+
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/question-assembly'))
+    const saveCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(
+      ([input, init]) => String(input) === '/api/question-assembly/draft' && init?.method === 'PUT',
+    )
+    expect(JSON.parse(String(saveCall?.[1]?.body))).toMatchObject({
+      expected_revision: revision,
+      draft: { basket_ids: [17], order_ids: [17] },
+    })
+  })
+
   it('explains an answer-image failure and a failed job synchronization', async () => {
     const host = document.createElement('div')
     document.body.append(host)
@@ -253,3 +326,10 @@ describe('question bank workspace', () => {
     expect(document.body.textContent).toContain('取消请求未能同步，任务可能仍在继续。')
   })
 })
+
+function response(body: unknown, status = 200): Promise<Response> {
+  return Promise.resolve(new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  }))
+}

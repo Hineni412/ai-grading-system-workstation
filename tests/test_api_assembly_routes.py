@@ -173,6 +173,17 @@ def _exercise_assembly_draft_and_bulk_questions_use_safe_public_contract(
     assert download.headers["cache-control"] == "no-store"
     assert "匿名练习" in download.text
 
+    after_export = client.get("/api/question-assembly/draft").json()
+    records = client.get("/api/question-assembly/records").json()
+    restore = client.post(
+        f"/api/question-assembly/records/{records['items'][0]['id']}/restore",
+        json={"expected_revision": after_export["revision"]},
+    )
+    assert restore.status_code == 200
+    assert restore.json()["order_ids"] == [11, 12]
+    assert restore.json()["title"] == "匿名练习"
+    assert "file_path" not in repr(restore.json())
+
 
 def test_assembly_export_rejects_stale_revision_and_generic_submit(tmp_path: Path) -> None:
     client, manager = _assembly_client(tmp_path)

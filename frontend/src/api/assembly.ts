@@ -327,6 +327,25 @@ export const assemblyApi = {
     })
   },
 
+  restoreRecord(
+    recordId: string,
+    expectedRevision: string,
+    signal?: AbortSignal,
+  ): Promise<AssemblyDraft> {
+    if (!recordId.trim() || !isRevision(expectedRevision)) {
+      throw new Error('Invalid assembly record restore')
+    }
+    return apiClient.request(
+      `/api/question-assembly/records/${encodeURIComponent(recordId)}/restore`,
+      {
+        method: 'POST',
+        body: { expected_revision: expectedRevision },
+        decode: decodeAssemblyDraft,
+        signal,
+      },
+    )
+  },
+
   submitExport(
     draftRevision: string,
     format: AssemblyExportFormat,
