@@ -22,6 +22,7 @@ import './styles/knowledge-graph.css'
 import './styles/file-center.css'
 import './styles/students.css'
 import './styles/question-bank.css'
+import './styles/question-assembly.css'
 
 const app = createApp(App)
 const pinia = createPinia()

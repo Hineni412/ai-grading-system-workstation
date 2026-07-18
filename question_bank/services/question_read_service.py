@@ -11,7 +11,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, BinaryIO, Iterator
+from typing import Any, BinaryIO, Iterable, Iterator
 
 from backend.file_access import (
     ControlledFileForbidden,
@@ -732,6 +732,67 @@ class QuestionBankReadService:
         )
         item["previews"] = previews
         return item
+
+    def get_questions(self, question_ids: Iterable[int]) -> list[dict[str, Any]]:
+        ordered_ids: list[int] = []
+        for value in question_ids:
+            question_id = int(value)
+            if question_id > 0 and question_id not in ordered_ids:
+                ordered_ids.append(question_id)
+        if not ordered_ids:
+            return []
+        if len(ordered_ids) > 500:
+            raise ValueError("At most 500 question IDs are supported")
+
+        placeholders = ", ".join("?" for _ in ordered_ids)
+        with _read_connection(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    q.id,
+                    q.paper_id,
+                    q.question_number,
+                    q.question_type,
+                    q.question_text,
+                    q.answer_text,
+                    q.image_paths AS _image_paths,
+                    q.difficulty,
+                    q.typicality,
+                    q.reason,
+                    q.needs_review,
+                    q.has_images,
+                    q.needs_image_review,
+                    q.created_at,
+                    q.updated_at,
+                    p.title AS paper_title,
+                    p.year,
+                    p.province,
+                    p.city,
+                    p.district,
+                    p.exam_type,
+                    p.grade,
+                    p.semester,
+                    p.textbook_version
+                FROM questions q
+                LEFT JOIN papers p ON p.id = q.paper_id
+                WHERE q.id IN ({placeholders})
+                  AND COALESCE(q.is_deleted, 0) = 0
+                """,
+                ordered_ids,
+            ).fetchall()
+            rows_by_id = {int(row["id"]): row for row in rows}
+            tags_by_question = _load_page_tags(conn, list(rows_by_id))
+            revisions = question_revisions(conn, list(rows_by_id))
+
+        return [
+            _public_question_item(
+                rows_by_id[question_id],
+                tags_by_question.get(question_id, []),
+                revision=revisions[question_id],
+            )
+            for question_id in ordered_ids
+            if question_id in rows_by_id
+        ]
 
     def resolve_asset(self, question_id: int, asset_index: int) -> ResolvedFile:
         with _read_connection(self.db_path) as conn:
