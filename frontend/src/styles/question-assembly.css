@@ -153,7 +153,7 @@
   gap: var(--space-1) var(--space-2);
   padding: var(--space-3);
   border: var(--border-width) solid var(--color-border-subtle);
-  border-left: 3px solid var(--color-border-strong);
+  border-left: var(--border-selected-width) solid var(--color-border-strong);
   border-radius: var(--radius-control);
   background: var(--color-bg-subtle);
   cursor: grab;
@@ -285,7 +285,7 @@
 }
 
 .assembly-sheet h3 {
-  padding-left: 62px;
+  padding-left: calc(var(--space-9) + var(--space-4));
   font-family: var(--font-family-sans);
   font-size: var(--font-size-h3);
 }
@@ -294,7 +294,7 @@
   display: grid;
   gap: var(--space-4);
   margin: 0;
-  padding-left: 76px;
+  padding-left: calc(var(--space-9) + var(--space-6));
 }
 
 .assembly-question-text,
