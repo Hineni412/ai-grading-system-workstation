@@ -1,7 +1,7 @@
 # P2-16 题库管理即时实现计划
 
 **执行包：** P2-16
-**规划状态：** waiting_review
+**规划状态：** waiting_user
 **计划基线：** 89a00416151c7a59d038e7dd6b936c21cd9425a7
 **交接基线：** 89a00416151c7a59d038e7dd6b936c21cd9425a7
 **用户自测：** quick
@@ -184,9 +184,9 @@ store 隐藏请求 generation、AbortController、严格 decoder、选择去重/
 
 ### Slice 6：冻结、双路复审与交接
 
-- [ ] 稳定候选提交后冻结 SHA；Spec 与 Standards 两名评审代理检查同一版本。
-- [ ] 汇总、去重并只阻塞本次修改直接引入或当前任务遗漏的 `Critical`/`Important`。
-- [ ] 如有阻塞问题，只进行一个统一修复阶段、受影响复测和一次限定最终复审。
+- [x] 稳定候选提交后冻结 SHA；Spec 与 Standards 两名评审代理检查同一版本。
+- [x] 汇总、去重并只阻塞本次修改直接引入或当前任务遗漏的 `Critical`/`Important`。
+- [x] 如有阻塞问题，只进行一个统一修复阶段、受影响复测和一次限定最终复审。
 - [ ] quick 用户短测绑定已复审 SHA；通过后更新交接块为 `verified_pending_integration`。
 - [ ] 合入 M2-02 integration，运行 P2-16 逐包受影响验证并更新 Index 精确 SHA。
 
@@ -234,6 +234,9 @@ store 隐藏请求 generation、AbortController、严格 decoder、选择去重/
 |---|---:|---|---:|---|---|---|---|
 | 集中调查与计划 | 约 40 分钟 | 必读资料、P1-15/P1-16/P1-18 契约、旧页面行为、前端基础设施、worktree/数据守卫 | 0 | 6 个根因组 | 实现、自动门槛、复审、用户短测、integration | 否 | 否 |
 | 稳定候选前实现 | 约 2 小时 | TDD API/store/view、Question Bank/Job 后端 110 项聚焦回归、前端 613 项验证、2005 题真实浏览器、快速冒烟 | 0 | 0 个阻塞问题 | 双路复审、用户短测、integration | 自动验收通过 | 否 |
+| 并行初审 | 约 20 分钟 | Spec 与 Standards 评审同一冻结候选 | 8 | 去重为 6 个 Important、1 个 Suggestion | 统一修复、限定最终复审、用户短测、integration | 否 | 否 |
+| 统一修复 | 约 35 分钟 | 20 项受影响前端测试、类型检查、代码规范检查、构建、真实浏览器流程 | 0 | 首轮 7 项全部完成修复 | 限定最终复审、用户短测、integration | 自动验收通过 | 否 |
+| 限定最终复审 | 约 10 分钟 | 原 Spec 与 Standards 评审仅复核首轮问题、修复区域及直接回归 | 0 | 0 个 Critical、0 个 Important | 用户 quick 短测、integration | 等待用户验收 | 否 |
 
 ## Ownership
 
@@ -252,10 +255,10 @@ P2-16 功能分支拥有 question-import 自动元数据局部修正、Question 
 ## 昼夜交接
 
 **执行包：** P2-16
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** waiting_user
+**功能提交：** 829c1bbe5e171727fc43a456dfee883faf5f7e8c
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** pending
 **真实数据指纹：** not_touched
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
