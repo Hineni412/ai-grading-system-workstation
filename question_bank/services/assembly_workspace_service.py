@@ -435,7 +435,7 @@ def _normalize_sections(
             for question_id in normalize_question_ids(raw.get("question_ids"))
             if question_id in allowed and question_id not in seen_questions
         ]
-        if not title or not ids:
+        if not title:
             continue
         section_id = _clean_section_id(raw.get("id"), index, seen_section_ids)
         seen_section_ids.add(section_id)

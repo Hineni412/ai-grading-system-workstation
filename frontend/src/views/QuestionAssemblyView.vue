@@ -10,7 +10,6 @@ import { useQuestionBankStore } from '../stores/question-bank'
 const assembly = useAssemblyStore()
 const bank = useQuestionBankStore()
 const jobs = useJobStore()
-const newSectionTitle = ref('')
 const draggedQuestionId = ref<number | null>(null)
 
 const currentJob = computed(() => (
@@ -18,6 +17,18 @@ const currentJob = computed(() => (
 ))
 const currentJobDone = computed(() => (
   currentJob.value !== null && TERMINAL_JOB_STATUSES.has(currentJob.value.status)
+))
+const editableSections = computed(() => assembly.draft.sections.filter(
+  (section) => !isUnassignedSection(section),
+))
+const assignedQuestionIds = computed(() => new Set(
+  editableSections.value.flatMap((section) => section.question_ids),
+))
+const unassignedQuestions = computed(() => assembly.orderedQuestions.filter(
+  (question) => !assignedQuestionIds.value.has(question.id),
+))
+const usesManualSections = computed(() => (
+  assembly.draft.layout_mode === 'sections' || editableSections.value.length > 0
 ))
 
 onMounted(() => {
@@ -36,14 +47,18 @@ function scoreLabel(question: AssemblyQuestion): string {
 }
 
 function previewSections(): Array<{ id: string; title: string; questions: AssemblyQuestion[] }> {
-  if (assembly.draft.layout_mode === 'sections' && assembly.draft.sections.length > 0) {
-    return assembly.draft.sections.map((section) => ({
+  if (assembly.draft.layout_mode === 'sections' && editableSections.value.length > 0) {
+    const manualSections = editableSections.value.map((section) => ({
       id: section.id,
       title: section.title,
       questions: section.question_ids
         .map((id) => assembly.questionMap.get(id))
         .filter((item): item is AssemblyQuestion => item !== undefined),
     }))
+    const remaining = unassignedQuestions.value
+    return remaining.length
+      ? [{ id: 'unassigned', title: '未分节', questions: remaining }, ...manualSections]
+      : manualSections
   }
   if (assembly.draft.layout_mode === 'grouped_by_type') {
     const groups = new Map<string, AssemblyQuestion[]>()
@@ -64,39 +79,39 @@ function previewSections(): Array<{ id: string; title: string; questions: Assemb
   }]
 }
 
-function sectionHasQuestion(section: AssemblySection, questionId: number): boolean {
-  return section.question_ids.includes(questionId)
-}
-
-function toggleSectionQuestion(sectionId: string, questionId: number, checked: boolean): void {
-  const next = assembly.draft.sections.map((section) => {
-    if (section.id !== sectionId) return section
-    const current = new Set(section.question_ids)
-    if (checked) current.add(questionId)
-    else current.delete(questionId)
-    return { ...section, question_ids: [...current] }
-  })
-  void assembly.replaceSections(next)
-}
-
-function addSection(): void {
-  const title = newSectionTitle.value.trim()
-  if (!title) return
+function addDefaultSection(): void {
   const next: AssemblySection = {
     id: `section-${Date.now().toString(36)}`,
-    title,
+    title: `分节 ${editableSections.value.length + 1}`,
     question_ids: [],
   }
-  newSectionTitle.value = ''
-  void assembly.replaceSections([...assembly.draft.sections, next])
+  void assembly.replaceSections([...editableSections.value, next])
 }
 
 function removeSection(sectionId: string): void {
-  void assembly.replaceSections(assembly.draft.sections.filter((section) => section.id !== sectionId))
+  void assembly.replaceSections(editableSections.value.filter((section) => section.id !== sectionId))
+}
+
+function renameSection(sectionId: string, title: string): void {
+  const nextTitle = title.trim()
+  if (!nextTitle) return
+  void assembly.replaceSections(editableSections.value.map((section) => (
+    section.id === sectionId ? { ...section, title: nextTitle } : section
+  )))
 }
 
 function startQuestionDrag(questionId: number): void {
   draggedQuestionId.value = questionId
+}
+
+function sectionQuestions(section: AssemblySection): AssemblyQuestion[] {
+  return section.question_ids
+    .map((id) => assembly.questionMap.get(id))
+    .filter((question): question is AssemblyQuestion => question !== undefined)
+}
+
+function isUnassignedSection(section: AssemblySection): boolean {
+  return section.id === 'unassigned'
 }
 
 function dropBefore(questionId: number): void {
@@ -110,10 +125,21 @@ function dropIntoSection(sectionId: string): void {
   const dragged = draggedQuestionId.value
   draggedQuestionId.value = null
   if (dragged === null) return
-  const next = assembly.draft.sections.map((section) => {
+  const next = editableSections.value.map((section) => {
     const ids = section.question_ids.filter((id) => id !== dragged)
     return section.id === sectionId ? { ...section, question_ids: [...ids, dragged] } : { ...section, question_ids: ids }
   })
+  void assembly.replaceSections(next)
+}
+
+function dropIntoUnassigned(): void {
+  const dragged = draggedQuestionId.value
+  draggedQuestionId.value = null
+  if (dragged === null) return
+  const next = editableSections.value.map((section) => ({
+    ...section,
+    question_ids: section.question_ids.filter((id) => id !== dragged),
+  }))
   void assembly.replaceSections(next)
 }
 </script>
@@ -200,7 +226,84 @@ function dropIntoSection(sectionId: string): void {
           </label>
         </div>
 
-        <ol v-if="assembly.orderedQuestions.length" class="assembly-list">
+        <div v-if="assembly.orderedQuestions.length" class="assembly-section-tools">
+          <button
+            type="button"
+            class="qb-button"
+            :disabled="assembly.saveState === 'saving'"
+            @click="addDefaultSection"
+          >
+            添加分节
+          </button>
+          <span>分节会显示在这里，可直接改名，也可把题拖入对应分节。</span>
+        </div>
+
+        <div v-if="assembly.orderedQuestions.length && usesManualSections" class="assembly-spine">
+          <section
+            class="assembly-spine__section is-unassigned"
+            @dragover.prevent
+            @drop="dropIntoUnassigned"
+          >
+            <header>
+              <strong>未分节</strong>
+              <span>{{ unassignedQuestions.length }} 题</span>
+            </header>
+            <ol class="assembly-list">
+              <li
+                v-for="question in unassignedQuestions"
+                :key="question.id"
+                draggable="true"
+                @dragstart="startQuestionDrag(question.id)"
+                @dragover.prevent
+                @drop="dropBefore(question.id)"
+              >
+                <span class="assembly-list__index">{{ questionLabel(question) }}</span>
+                <span class="assembly-list__text">{{ question.question_text }}</span>
+                <span class="assembly-list__meta">{{ scoreLabel(question) }}</span>
+                <button type="button" class="qb-link" @click="assembly.moveQuestion(question.id, -1)">上移</button>
+                <button type="button" class="qb-link" @click="assembly.moveQuestion(question.id, 1)">下移</button>
+                <button type="button" class="qb-link is-danger" @click="assembly.removeQuestion(question.id)">移除</button>
+              </li>
+            </ol>
+            <p v-if="!unassignedQuestions.length" class="assembly-empty is-compact">所有题都已放入分节。</p>
+          </section>
+
+          <section
+            v-for="section in editableSections"
+            :key="section.id"
+            class="assembly-spine__section"
+            @dragover.prevent
+            @drop="dropIntoSection(section.id)"
+          >
+            <header>
+              <input
+                :value="section.title"
+                maxlength="80"
+                aria-label="分节名称"
+                @change="renameSection(section.id, ($event.target as HTMLInputElement).value)"
+              >
+              <button type="button" class="qb-link is-danger" @click="removeSection(section.id)">删除分节</button>
+            </header>
+            <ol class="assembly-list">
+              <template v-for="question in sectionQuestions(section)" :key="question.id">
+                <li
+                  draggable="true"
+                  @dragstart="startQuestionDrag(question.id)"
+                >
+                  <span class="assembly-list__index">{{ questionLabel(question) }}</span>
+                  <span class="assembly-list__text">{{ question.question_text }}</span>
+                  <span class="assembly-list__meta">{{ scoreLabel(question) }}</span>
+                  <button type="button" class="qb-link" @click="assembly.moveQuestion(question.id, -1)">上移</button>
+                  <button type="button" class="qb-link" @click="assembly.moveQuestion(question.id, 1)">下移</button>
+                  <button type="button" class="qb-link is-danger" @click="assembly.removeQuestion(question.id)">移除</button>
+                </li>
+              </template>
+            </ol>
+            <p v-if="!section.question_ids.length" class="assembly-empty is-compact">把左侧未分节题拖到这里。</p>
+          </section>
+        </div>
+
+        <ol v-else-if="assembly.orderedQuestions.length" class="assembly-list">
           <li
             v-for="question in assembly.orderedQuestions"
             :key="question.id"
@@ -239,33 +342,6 @@ function dropIntoSection(sectionId: string): void {
             <option value="sections">按手动分节</option>
           </select>
         </header>
-
-        <div v-if="assembly.draft.layout_mode === 'sections'" class="assembly-sections">
-          <div class="assembly-sections__new">
-            <input v-model="newSectionTitle" maxlength="80" placeholder="新增分节标题">
-            <button type="button" class="qb-button" @click="addSection">新增分节</button>
-          </div>
-          <div
-            v-for="section in assembly.draft.sections"
-            :key="section.id"
-            class="assembly-section-editor"
-            @dragover.prevent
-            @drop="dropIntoSection(section.id)"
-          >
-            <header>
-              <strong>{{ section.title }}</strong>
-              <button type="button" class="qb-link is-danger" @click="removeSection(section.id)">删除分节</button>
-            </header>
-            <label v-for="question in assembly.orderedQuestions" :key="question.id">
-              <input
-                type="checkbox"
-                :checked="sectionHasQuestion(section, question.id)"
-                @change="toggleSectionQuestion(section.id, question.id, ($event.target as HTMLInputElement).checked)"
-              >
-              <span>{{ questionLabel(question) }}</span>
-            </label>
-          </div>
-        </div>
 
         <article class="assembly-sheet" :class="{ 'is-teacher': assembly.draft.preview_mode === 'teacher' }">
           <section v-for="section in previewSections()" :key="section.id">

@@ -112,9 +112,22 @@
 .assembly-export-actions,
 .assembly-job,
 .assembly-sections,
-.assembly-section-editor {
+.assembly-section-editor,
+.assembly-section-tools,
+.assembly-spine {
   display: grid;
   gap: var(--space-3);
+}
+
+.assembly-section-tools {
+  padding-top: var(--space-2);
+  border-top: var(--border-width) solid var(--color-border-subtle);
+}
+
+.assembly-section-tools span {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
 }
 
 .assembly-check {
@@ -162,6 +175,53 @@
 .assembly-list li .qb-link {
   justify-self: start;
   font-size: var(--font-size-caption);
+}
+
+.assembly-spine__section {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
+}
+
+.assembly-spine__section.is-unassigned {
+  border-style: dashed;
+  background: var(--color-bg-subtle);
+}
+
+.assembly-spine__section header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.assembly-spine__section header strong {
+  color: var(--color-text-primary);
+}
+
+.assembly-spine__section header span {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+.assembly-spine__section input {
+  min-width: 0;
+  min-height: var(--control-height-default);
+  padding: 0 var(--space-3);
+  border: var(--border-width) solid var(--color-border-default);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-semibold);
+}
+
+.assembly-empty.is-compact {
+  padding: var(--space-3);
+  font-size: var(--font-size-caption);
+  text-align: left;
 }
 
 .assembly-paper {

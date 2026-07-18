@@ -144,6 +144,84 @@ describe('question assembly view', () => {
     })
     await vi.waitFor(() => expect(host.textContent).toContain('任务 #51'))
   })
+
+  it('manages section names from the basket without a separate preview editor', async () => {
+    const saveDraft = vi.fn(async (_revision: string, nextDraft: ReturnType<typeof draft>) => ({
+      ...nextDraft,
+      revision: revisionB,
+      sections: [
+        ...nextDraft.sections,
+        { id: 'unassigned', title: '未分节', question_ids: [17, 18] },
+      ],
+    }))
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/question-assembly/draft' && init?.method !== 'PUT') {
+        return json(draft([17, 18]))
+      }
+      if (url === '/api/question-assembly/draft' && init?.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { expected_revision: string; draft: ReturnType<typeof draft> }
+        return json(await saveDraft(body.expected_revision, body.draft))
+      }
+      if (url.startsWith('/api/question-assembly/questions?')) {
+        return json({
+          items: [
+            question(17, 'question 17', 5),
+            question(18, 'question 18', 10),
+          ],
+          missing_question_ids: [],
+        })
+      }
+      if (url === '/api/question-assembly/records?limit=100') {
+        return json({ items: [], total: 0 })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionAssemblyView)
+    app.use(createPinia())
+    app.mount(host)
+    mounted.push(app)
+    await settle()
+
+    await vi.waitFor(() => expect(host.textContent).toContain('question 17'))
+    const addSection = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('添加分节'))!
+    expect(addSection).toBeTruthy()
+    await vi.waitFor(() => expect(addSection.disabled).toBe(false))
+    addSection.click()
+
+    await vi.waitFor(() => expect(host.textContent).toContain('分节 1'))
+    expect(host.textContent).toContain('未分节')
+    expect(host.textContent).toContain('question 17')
+    expect(host.textContent).not.toContain('新增分节标题')
+    expect(host.querySelectorAll<HTMLInputElement>('input[aria-label="分节名称"]')).toHaveLength(1)
+    const sectionSave = fetchSpy.mock.calls
+      .filter(([input, init]) => String(input) === '/api/question-assembly/draft' && init?.method === 'PUT')
+      .map(([, init]) => JSON.parse(String(init?.body)))
+      .find((body) => body.draft.layout_mode === 'sections')
+    expect(sectionSave).toMatchObject({
+      expected_revision: revisionA,
+      draft: {
+        layout_mode: 'sections',
+        sections: [expect.objectContaining({ title: '分节 1', question_ids: [] })],
+      },
+    })
+
+    const sectionName = host.querySelector<HTMLInputElement>('input[aria-label="分节名称"]')
+    expect(sectionName).toBeTruthy()
+    sectionName!.value = '第一部分'
+    sectionName!.dispatchEvent(new Event('change', { bubbles: true }))
+
+    await vi.waitFor(() => expect(saveDraft).toHaveBeenCalledWith(
+      revisionB,
+      expect.objectContaining({
+        sections: [expect.objectContaining({ title: '第一部分', question_ids: [] })],
+      }),
+    ))
+  })
 })
 
 function question(id: number, text: string, score: number) {

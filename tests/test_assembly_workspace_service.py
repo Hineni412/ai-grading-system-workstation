@@ -111,3 +111,30 @@ def test_workspace_adds_questions_and_keeps_record_files_private(tmp_path) -> No
 
     assert service.delete_record(record.id) is True
     assert output_path.exists()
+
+
+def test_workspace_preserves_empty_named_sections(tmp_path) -> None:
+    data_root = tmp_path / "data"
+    service = AssemblyWorkspaceService(data_root)
+    empty = service.load_draft()
+    added = service.add_questions(
+        expected_revision=empty.revision,
+        question_ids=[17, 18],
+    )
+
+    saved = service.save_draft(
+        expected_revision=added.revision,
+        draft={
+            **added.to_payload(),
+            "layout_mode": "sections",
+            "sections": [
+                {"id": "section-a", "title": "第一部分", "question_ids": []},
+            ],
+        },
+    )
+
+    assert [(section.title, section.question_ids) for section in saved.sections] == [
+        ("第一部分", ()),
+        ("未分节", (17, 18)),
+    ]
+    assert saved.layout_mode == "sections"
