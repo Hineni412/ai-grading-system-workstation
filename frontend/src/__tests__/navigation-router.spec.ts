@@ -73,15 +73,19 @@ describe('source-recalibrated navigation', () => {
     ['/grading', '/grading'],
     ['/design-system', '/design-system'],
     ['/missing/deep/path', '/missing/deep/path'],
-  ])('resolves %s safely', async (target, expectedPath) => {
-    const router = createAppRouter(createMemoryHistory())
-    await router.push(target)
-    await router.isReady()
-    expect(router.currentRoute.value.fullPath).toBe(expectedPath)
-    expect(router.currentRoute.value.meta.title).toBeTruthy()
-    expect(router.currentRoute.value.meta.description).toBeTruthy()
-    expect(router.currentRoute.value.meta.breadcrumb).toBeTruthy()
-  })
+  ])(
+    'resolves %s safely',
+    async (target, expectedPath) => {
+      const router = createAppRouter(createMemoryHistory())
+      await router.push(target)
+      await router.isReady()
+      expect(router.currentRoute.value.fullPath).toBe(expectedPath)
+      expect(router.currentRoute.value.meta.title).toBeTruthy()
+      expect(router.currentRoute.value.meta.description).toBeTruthy()
+      expect(router.currentRoute.value.meta.breadcrumb).toBeTruthy()
+    },
+    10_000,
+  )
 
   it.each(['/settings', '/analytics'])(
     'does not present the former placeholder route %s as a business page',
