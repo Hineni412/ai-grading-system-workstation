@@ -20,8 +20,22 @@ test('real API question bank handles scale, evidence, recovery and guarded write
   await page.getByRole('button', { name: '打开第 1 题详情' }).click()
   await expect(page.getByRole('heading', { name: '第 1 题' })).toBeVisible()
   await expect(page.getByLabel('第 1 题', { exact: true }).getByText(/∑_\{k=1\}\^\{120\}/)).toBeVisible()
-  await expect(page.getByAltText('题目图片素材')).toBeVisible()
+  const questionAsset = page.getByAltText('题目图片素材')
+  await expect(questionAsset).toBeVisible()
+  expect(await questionAsset.evaluate((image) => ({
+    width: (image as HTMLImageElement).naturalWidth,
+    height: (image as HTMLImageElement).naturalHeight,
+  }))).toEqual({ width: 960, height: 360 })
   await expect(page.getByRole('link', { name: /打开题目预览/ })).toBeVisible()
+  const previewResponse = await page.request.get(
+    '/api/question-bank/questions/1/previews/question',
+  )
+  expect(previewResponse.ok()).toBe(true)
+  const previewBytes = await previewResponse.body()
+  expect(previewBytes.subarray(12, 16).toString('ascii')).toBe('IHDR')
+  expect(previewBytes.readUInt32BE(16)).toBe(1200)
+  expect(previewBytes.readUInt32BE(20)).toBe(1600)
+  expect(previewBytes.byteLength).toBeGreaterThan(8_000)
 
   await page.getByRole('button', { name: '添加标签' }).click()
   const values = page.getByLabel(/标签值/)

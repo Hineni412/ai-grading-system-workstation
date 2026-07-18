@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
 import shutil
@@ -17,6 +16,106 @@ if str(REPO_ROOT) not in sys.path[:1]:
 ALLOWED_DATA_ROOT = Path(
     os.path.abspath(REPO_ROOT / "frontend" / "test-results" / "p2-16-real")
 )
+
+
+def _font(size: int):
+    from PIL import ImageFont
+
+    for family in ("arial.ttf", "DejaVuSans.ttf"):
+        try:
+            return ImageFont.truetype(family, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def _seed_visual_assets(asset_path: Path, preview_path: Path) -> None:
+    from PIL import Image, ImageDraw
+
+    asset = Image.new("RGB", (960, 360), "#f8fafc")
+    draw = ImageDraw.Draw(asset)
+    draw.rounded_rectangle(
+        (12, 12, 947, 347),
+        radius=22,
+        fill="#ffffff",
+        outline="#2563eb",
+        width=4,
+    )
+    draw.text(
+        (48, 42),
+        "ANONYMOUS FORMULA ASSET",
+        fill="#1e3a5f",
+        font=_font(30),
+    )
+    draw.text(
+        (48, 108),
+        "f(x) = sum[(x_k^2 + 2x_k y_k + y_k^2) / (1 + k^2)]",
+        fill="#111827",
+        font=_font(24),
+    )
+    draw.line((70, 290, 890, 290), fill="#64748b", width=3)
+    draw.line((480, 190, 480, 325), fill="#64748b", width=3)
+    points = []
+    for x in range(-180, 181, 4):
+        screen_x = 480 + x
+        screen_y = 292 - int((x / 28) ** 2)
+        points.append((screen_x, screen_y))
+    draw.line(points, fill="#b04444", width=5)
+    asset.save(asset_path, format="PNG", optimize=True)
+
+    preview = Image.new("RGB", (1200, 1600), "#e5e7eb")
+    draw = ImageDraw.Draw(preview)
+    draw.rounded_rectangle(
+        (70, 50, 1130, 1550),
+        radius=18,
+        fill="#ffffff",
+        outline="#cbd5e1",
+        width=4,
+    )
+    draw.text(
+        (120, 105),
+        "ANONYMOUS QUESTION PREVIEW",
+        fill="#1e3a5f",
+        font=_font(42),
+    )
+    draw.line((120, 178, 1080, 178), fill="#2563eb", width=5)
+    draw.text((120, 230), "QUESTION 1", fill="#111827", font=_font(34))
+    draw.multiline_text(
+        (120, 305),
+        (
+            "LONG_FORMULA\n"
+            "Let f(x) = sum from k=1 to 120 of\n"
+            "(x_k^2 + 2x_k y_k + y_k^2) / (1 + k^2).\n"
+            "Prove that the function has a unique minimum."
+        ),
+        fill="#20242a",
+        font=_font(28),
+        spacing=18,
+    )
+    draw.rounded_rectangle(
+        (120, 600, 1080, 1070),
+        radius=12,
+        fill="#f8fafc",
+        outline="#94a3b8",
+        width=3,
+    )
+    draw.line((180, 950, 1010, 950), fill="#64748b", width=3)
+    draw.line((595, 650, 595, 1015), fill="#64748b", width=3)
+    points = []
+    for x in range(-300, 301, 5):
+        screen_x = 595 + x
+        screen_y = 950 - int((x / 34) ** 2)
+        points.append((screen_x, screen_y))
+    draw.line(points, fill="#b04444", width=6)
+    draw.text(
+        (120, 1130),
+        "Show the complete reasoning and verify the minimum.",
+        fill="#374151",
+        font=_font(28),
+    )
+    for y in range(1215, 1460, 55):
+        draw.line((120, y, 1080, y), fill="#d1d5db", width=2)
+    preview.save(preview_path, format="PNG", optimize=True)
 
 
 def _prepare_paths(data_root: Path):
@@ -67,12 +166,10 @@ def _seed_question_bank(paths) -> None:
     asset_root.mkdir(parents=True, exist_ok=True)
     preview_root.mkdir(parents=True, exist_ok=True)
     rich_root.mkdir(parents=True, exist_ok=True)
-    png = base64.b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
-        "YAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+    _seed_visual_assets(
+        asset_root / "formula.png",
+        preview_root / "question-1.png",
     )
-    (asset_root / "formula.png").write_bytes(png)
-    (preview_root / "question-1.png").write_bytes(png)
 
     long_formula = (
         "LONG_FORMULA：设 f(x)=∑_{k=1}^{120} "
