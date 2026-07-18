@@ -136,41 +136,41 @@ Store 隐藏 scope signature、generation、AbortController、confirmation ID、
 ### Slice 0：领取、计划与安全基线
 
 - [x] 首个 first-parent 提交只包含本即时计划和合法 `in_progress` 交接块。
-- [ ] handoff validator 以最新 `origin/main` 验证领取关系。
+- [x] handoff validator 以最新 `origin/main` 验证领取关系。
 - [x] 功能 worktree 源码与 `user_data/` 状态干净；源码区无外部 reparse point。
 - [x] 真实两库只读基线已记录：`grading_system.db` SHA-256 `93fee56e23ea072ac48351b1e6616d7af7f4b35ceb2b4779890e8d059fb841cd`、`question_bank.db` SHA-256 `e1e5123ad54c9e8af5984bdcc5182a8f7a3038a1707f98ab26f168f4577a88b8`。
-- [ ] 第二个文档提交把功能分支所见 Index 的 P2-18/当前动作改为 `in_progress`；首个源码测试前完成。
+- [x] 第二个文档提交把功能分支所见 Index 的 P2-18/当前动作改为 `in_progress`；首个源码测试前完成。
 
 ### Slice 1：Typed Training API
 
-- [ ] RED：合法 diagnosis/plan/task worked examples；路径字段、旧 skill identity、非法 revision、越界 mastery、畸形证据/变体。
-- [ ] GREEN：严格类型、decoder 与 diagnosis/preview/confirm 请求；复用既有 task/export API，不修改网络 client。
+- [x] RED：合法 diagnosis/plan/task worked examples；路径字段、旧 skill identity、非法 revision、越界 mastery、畸形证据/变体。
+- [x] GREEN：严格类型、decoder 与 diagnosis/preview/confirm 请求；复用既有 task/export API，不修改网络 client。
 
 ### Slice 2：Training Store 范围与诊断
 
-- [ ] RED：单人/多选/整班、当前/跨考试/手选范围；选择变化废止旧结果；迟到 response；空证据和覆盖缺口。
-- [ ] GREEN：规范化 scope、generation/abort、诊断状态、文字摘要和证据选择。
+- [x] RED：单人/多选/整班、当前/跨考试/手选范围；选择变化废止旧结果；迟到 response；空证据和覆盖缺口。
+- [x] GREEN：规范化 scope、generation/abort、诊断状态、文字摘要和证据选择。
 
 ### Slice 3：计划预览与幂等确认
 
-- [ ] RED：默认 60/30/10、8—12 题、独立/自动分组、只精确标签、无推荐、缺题；同 revision 稳定 confirmation ID；409 与人工重试。
-- [ ] GREEN：计划配置、路径投影、preview revision、确认状态和当前任务。
+- [x] RED：默认 60/30/10、8—12 题、独立/自动分组、只精确标签、无推荐、缺题；同 revision 稳定 confirmation ID；409 与人工重试。
+- [x] GREEN：计划配置、路径投影、preview revision、确认状态和当前任务。
 
 ### Slice 4：历史、导出与 Job 恢复
 
-- [ ] RED：最近任务、详情、整包/变体导出、学生/教师版、tracked Job、取消、failed/cancelled retry、成功下载和过期提示。
-- [ ] GREEN：复用 exports API 和通用 Job Store；页面只做训练任务级编排，完整登记簿跳转文件中心。
+- [x] RED：最近任务、详情、整包/变体导出、学生/教师版、tracked Job、取消、failed/cancelled retry、成功下载和过期提示。
+- [x] GREEN：复用 exports API 和通用 Job Store；页面只做训练任务级编排，完整登记簿跳转文件中心。
 
 ### Slice 5：Vue 工作台、路由与视觉状态
 
-- [ ] RED：范围、诊断热力账本、文字摘要、证据下钻、推荐路径、确认栏、历史/出件、加载/空白/错误/禁用/焦点。
-- [ ] GREEN：`TrainingRecommendationsView.vue`、克制的专用 CSS、导航/路由/main 注册；五档视口和长中文不溢出。
+- [x] RED：范围、诊断热力账本、文字摘要、证据下钻、推荐路径、确认栏、历史/出件、加载/空白/错误/禁用/焦点。
+- [x] GREEN：`TrainingRecommendationsView.vue`、克制的专用 CSS、导航/路由/main 注册；五档视口和长中文不溢出。
 
 ### Slice 6：匿名真实浏览器、文档与稳定候选
 
-- [ ] 固定临时双库启动真实 API + Vue；覆盖成功、空证据、缺题、revision 冲突、确认重试、刷新历史、导出和下载。
-- [ ] 运行受影响 Python/前端测试、`npm run verify`、同一构建的 prepared Chromium 五视口和 `tools/smoke_check.py --skip-tests`。
-- [ ] 更新 `ARCHITECTURE.md`、即时计划阶段记录和版本化 quick 清单；记录真实两库指纹未变。
+- [x] 固定临时双库启动真实 API + Vue；覆盖成功、空证据、缺题、revision 冲突、确认重试、刷新历史、导出和下载。
+- [x] 运行受影响 Python/前端测试、`npm run verify`、同一构建的 prepared Chromium 五视口和 `tools/smoke_check.py --skip-tests`。
+- [x] 更新 `ARCHITECTURE.md`、即时计划阶段记录和版本化 quick 清单；记录真实两库指纹未变。
 - [ ] 冻结候选 SHA，按 Spec/Standards 双路复审；阻塞项统一修补，最多三次授权内完成限定最终复审。
 
 ## Expected Files
@@ -211,6 +211,7 @@ Store 隐藏 scope signature、generation、AbortController、confirmation ID、
 | 阶段 | 耗时 | 测试/复审 | 原始意见 | 去重结果 | 剩余工作 | 当前包验收 | 版本可发布 |
 |---|---:|---|---:|---|---|---|---|
 | 集中调查与计划 | 约 35 分钟 | 必读资料、Phase map、旧训练页、Diagnosis/Plan/Task/Export API、P2-12 File Center、前端 session/student/Job 基础设施、worktree/数据守卫 | 0 | 5 个根因组 | 实现、自动门槛、复审、quick 证据、integration | 否 | 否 |
+| 实现与稳定候选 | 约 2 小时 20 分钟 | TDD 完成 API/store/view/导航；前端完整门槛 645 passed；后端训练相关 58 passed；匿名 Chromium 1 passed；快速冒烟和五档视口通过 | 0 | 0 Critical / 0 Important | 冻结提交、双路复审、quick 证据、integration | 否 | 否 |
 
 ## Ownership
 
@@ -228,9 +229,9 @@ P2-18 功能分支拥有 Vue Training API/store/view/CSS、导航/路由接入�
 ## 昼夜交接
 
 **执行包：** P2-18
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** pending
 **真实数据指纹：** not_touched

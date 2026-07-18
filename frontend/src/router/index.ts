@@ -6,6 +6,7 @@ import {
   studentsRouteDefinition,
   questionBankRouteDefinition,
   questionAssemblyRouteDefinition,
+  trainingRouteDefinition,
   filesRouteDefinition,
   templateRegionRouteDefinition,
   gradingRunRouteDefinition,
@@ -72,6 +73,16 @@ const routes: RouteRecordRaw[] = [
       title: questionAssemblyRouteDefinition.title,
       description: questionAssemblyRouteDefinition.description,
       breadcrumb: questionAssemblyRouteDefinition.breadcrumb,
+    },
+  },
+  {
+    path: trainingRouteDefinition.path,
+    name: trainingRouteDefinition.id,
+    component: () => import('../views/TrainingRecommendationsView.vue'),
+    meta: {
+      title: trainingRouteDefinition.title,
+      description: trainingRouteDefinition.description,
+      breadcrumb: trainingRouteDefinition.breadcrumb,
     },
   },
   {
