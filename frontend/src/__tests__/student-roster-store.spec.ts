@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '../api/errors'
 import type {
+  StudentDeletionImpact,
   StudentImportPreview,
   StudentWorkspace,
 } from '../api/students'
@@ -150,5 +151,86 @@ describe('student roster store', () => {
     expect(store.importState).toBe('conflict')
     expect(store.preview?.filename).toBe('students.csv')
     expect(store.errorMessage).toContain('名单已经变化')
+  })
+
+  it('ignores a late deletion impact after the selected student changes', async () => {
+    const oldRequest = deferred<StudentDeletionImpact>()
+    const customWorkspace = makeWorkspace()
+    customWorkspace.items.push({
+      id: 13,
+      student_code: 'S013',
+      name: '另一名学生',
+      class_name: '七年级一班',
+      created_at: '2026-07-18T08:01:00Z',
+    })
+    customWorkspace.total = 2
+    const api = makeApi({
+      getWorkspace: vi.fn(async () => customWorkspace),
+      getDeletionImpact: vi.fn(() => oldRequest.promise),
+    })
+    const store = useStudentRosterStore()
+    await store.load({}, api)
+    store.selectStudent(12)
+
+    const oldLoad = store.loadDeletionImpact(api)
+    store.selectStudent(13)
+    oldRequest.resolve({
+      student: customWorkspace.items[0]!,
+      counts: {
+        deleted_students: 1,
+        deleted_results: 2,
+        deleted_details: 10,
+        deleted_annotations: 2,
+        deleted_attendance: 1,
+        unlinked_papers: 2,
+      },
+      roster_revision: 'a'.repeat(64),
+    })
+    await oldLoad
+
+    expect(store.selectedStudent?.id).toBe(13)
+    expect(store.deletionImpact).toBeNull()
+    expect(store.deletionState).toBe('idle')
+  })
+
+  it('reports every cleanup count after a backed-up deletion', async () => {
+    const api = makeApi({
+      getDeletionImpact: vi.fn(async () => ({
+        student: makeWorkspace().items[0]!,
+        counts: {
+          deleted_students: 1,
+          deleted_results: 2,
+          deleted_details: 10,
+          deleted_annotations: 2,
+          deleted_attendance: 1,
+          unlinked_papers: 2,
+        },
+        roster_revision: 'a'.repeat(64),
+      })),
+      deleteStudent: vi.fn(async () => ({
+        deleted_students: 1,
+        deleted_results: 2,
+        deleted_details: 10,
+        deleted_annotations: 2,
+        deleted_attendance: 1,
+        unlinked_papers: 2,
+        backup_created: true,
+        roster_revision: 'b'.repeat(64),
+      })),
+    })
+    const store = useStudentRosterStore()
+    await store.load({}, api)
+    store.selectStudent(12)
+    await store.loadDeletionImpact(api)
+
+    await store.deleteSelected(api)
+
+    expect(store.noticeMessage).toContain('备份已完成')
+    expect(store.noticeMessage).toContain('1 名学生')
+    expect(store.noticeMessage).toContain('2 份成绩')
+    expect(store.noticeMessage).toContain('10 条评分明细')
+    expect(store.noticeMessage).toContain('2 条批注')
+    expect(store.noticeMessage).toContain('1 条考勤')
+    expect(store.noticeMessage).toContain('2 份答卷')
   })
 })

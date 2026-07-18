@@ -77,6 +77,7 @@ export const useStudentRosterStore = defineStore('student-roster', () => {
   let loadGeneration = 0
   let loadController: AbortController | null = null
   let previewController: AbortController | null = null
+  let deletionGeneration = 0
 
   const selectedStudent = computed<StudentSummary | null>(() => (
     workspace.value?.items.find(({ id }) => id === selectedStudentId.value) ?? null
@@ -131,6 +132,8 @@ export const useStudentRosterStore = defineStore('student-roster', () => {
   }
 
   function selectStudent(studentId: number | null): void {
+    if (deletionState.value === 'deleting') return
+    deletionGeneration += 1
     selectedStudentId.value = studentId
     deletionImpact.value = null
     deletionState.value = 'idle'
@@ -230,12 +233,21 @@ export const useStudentRosterStore = defineStore('student-roster', () => {
     api: StudentRosterApi = studentRosterApi,
   ): Promise<void> {
     if (!selectedStudent.value) return
+    const studentId = selectedStudent.value.id
+    const generation = ++deletionGeneration
     deletionState.value = 'loading'
     errorMessage.value = ''
     try {
-      deletionImpact.value = await api.getDeletionImpact(selectedStudent.value.id)
+      const result = await api.getDeletionImpact(studentId)
+      if (
+        generation !== deletionGeneration
+        || selectedStudentId.value !== studentId
+        || result.student.id !== studentId
+      ) return
+      deletionImpact.value = result
       deletionState.value = 'ready'
     } catch (error) {
+      if (generation !== deletionGeneration || selectedStudentId.value !== studentId) return
       deletionState.value = 'error'
       errorMessage.value = safeDeleteMessage(error)
     }
@@ -244,7 +256,11 @@ export const useStudentRosterStore = defineStore('student-roster', () => {
   async function deleteSelected(
     api: StudentRosterApi = studentRosterApi,
   ): Promise<boolean> {
-    if (!selectedStudent.value || !deletionImpact.value) return false
+    if (
+      !selectedStudent.value
+      || !deletionImpact.value
+      || deletionImpact.value.student.id !== selectedStudent.value.id
+    ) return false
     deletionState.value = 'deleting'
     errorMessage.value = ''
     noticeMessage.value = ''
@@ -262,7 +278,15 @@ export const useStudentRosterStore = defineStore('student-roster', () => {
       selectedStudentId.value = null
       deletionImpact.value = null
       deletionState.value = 'idle'
-      noticeMessage.value = '学生及关联记录已安全删除，删除前备份已完成。'
+      noticeMessage.value = [
+        '学生及关联记录已安全删除，备份已完成：',
+        `${result.deleted_students} 名学生、`,
+        `${result.deleted_results} 份成绩、`,
+        `${result.deleted_details} 条评分明细、`,
+        `${result.deleted_annotations} 条批注、`,
+        `${result.deleted_attendance} 条考勤；`,
+        `已解除 ${result.unlinked_papers} 份答卷关联。`,
+      ].join('')
       return true
     } catch (error) {
       deletionState.value = 'error'

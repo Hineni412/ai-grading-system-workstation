@@ -217,8 +217,8 @@ Interface 隐藏文件类型/大小/编码校验、字段别名、值规范化�
 |---|---:|---|---:|---|---|---|---|
 | 集中调查与计划 | 约 35 分钟 | 文档治理、依赖/源码/数据守卫调查 | 0 | 4 个根因组 | 自动门槛、复审与用户短测 | 否 | 否 |
 | 稳定候选 | 约 2 小时 20 分钟 | Python 聚焦 46 项；前端 591 项、lint/typecheck/build；匿名真实浏览器；快速冒烟；格式、交接与两库指纹守卫 | 0 | 0 | 双路初审与用户短测 | 否 | 否 |
-| 初审 | pending | Spec + Standards 同一 SHA | pending | pending | pending | pending | 否 |
-| 统一修复 | pending | 仅受影响复测 | pending | pending | pending | pending | 否 |
+| 初审 | 约 8 分钟 | Spec + Standards 同查 `a98de6a7ff9abe39e7ddaaa7d5a6ceb6cebd07ef` | 3 | 3 个 Important：影响请求串线、表格缺记录号/建立时间、删除成功缺清理数 | 统一修复与限定复审 | 否 | 否 |
+| 统一修复 | 约 10 分钟 | 先以 3 个失败断言复现；修复后受影响单元 8 项、lint/typecheck/build 和匿名真实浏览器通过 | 3 | 3 个 Important 已统一修复 | 原评审者限定最终复审 | 否 | 否 |
 | 最终复审 | pending | 仅首轮问题/修复区/直接回归 | pending | pending | pending | pending | 否 |
 
 ## Ownership

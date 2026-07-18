@@ -15,6 +15,10 @@ function goToPage(nextPage: number): void {
   if (!roster.workspace || nextPage < 1 || nextPage > roster.workspace.total_pages) return
   void roster.load({ page: nextPage })
 }
+
+function formatCreatedAt(value: string | null): string {
+  return value ? value.replace('T', ' ').replace(/Z$/, '') : '—'
+}
 </script>
 
 <template>
@@ -63,9 +67,11 @@ function goToPage(nextPage: number): void {
       <table>
         <thead>
           <tr>
+            <th scope="col">记录号</th>
             <th scope="col">学号</th>
             <th scope="col">姓名</th>
             <th scope="col">班级</th>
+            <th scope="col">建立时间</th>
             <th scope="col"><span class="sr-only">操作</span></th>
           </tr>
         </thead>
@@ -75,9 +81,16 @@ function goToPage(nextPage: number): void {
             :key="student.id"
             :class="{ 'is-selected': roster.selectedStudentId === student.id }"
           >
+            <td>#{{ student.id }}</td>
             <td>{{ student.student_code }}</td>
             <td><strong>{{ student.name }}</strong></td>
             <td>{{ student.class_name || '未分班' }}</td>
+            <td>
+              <time v-if="student.created_at" :datetime="student.created_at">
+                {{ formatCreatedAt(student.created_at) }}
+              </time>
+              <span v-else>—</span>
+            </td>
             <td>
               <button
                 type="button"

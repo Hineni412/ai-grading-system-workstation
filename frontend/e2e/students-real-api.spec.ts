@@ -62,7 +62,7 @@ test('真实 API 名单流程保持可预览、可恢复且不会横向溢出', 
   await expect(page.getByText(/同时删除 1 条批注、\s*1 条考勤，并解除\s*1 份答卷/)).toBeVisible()
   await page.getByLabel('输入学号 A001 确认').fill('A001')
   await page.getByRole('button', { name: '创建备份并永久删除' }).click()
-  await expect(page.getByText('学生及关联记录已安全删除，删除前备份已完成。')).toBeVisible()
+  await expect(page.getByText(/学生及关联记录已安全删除，备份已完成：1 名学生、1 份成绩、1 条评分明细、1 条批注、1 条考勤；已解除 1 份答卷关联。/)).toBeVisible()
 
   await fileInput.setInputFiles(resolve('test-results/p2-13-real/anonymous-students.xlsx'))
   await expect(page.getByText('新增 1', { exact: true })).toBeVisible()
