@@ -132,42 +132,42 @@ Interface 隐藏文件类型/大小/编码校验、字段别名、值规范化�
 ### Slice 0：领取与计划
 
 - [x] M2-02 与 P2-13 已通过 PR #55 进入 `origin/main`，功能分支从精确合并 SHA 创建。
-- [ ] 首个 first-parent 功能提交只包含本即时计划和合法 `in_progress` 交接块。
-- [ ] handoff validator 通过；功能 worktree 源码与 `user_data/` 状态干净、无 reparse point。
-- [ ] 记录真实两库只读 SHA-256/大小/UTC mtime，不把绝对路径写入文档。
+- [x] 首个 first-parent 功能提交只包含本即时计划和合法 `in_progress` 交接块。
+- [x] handoff validator 通过；功能 worktree 源码与 `user_data/` 状态干净、无 reparse point。
+- [x] 记录真实两库只读 SHA-256/大小/UTC mtime，不把绝对路径写入文档。
 
 ### Slice 1：学生名册 Module 与 import preview
 
-- [ ] RED：CSV/XLSX 正常映射；手动映射；空文件、缺列、不可解码、错误文件魔数；无效行；同文件重复以后行为准；数据库 insert/update/unchanged；5,000 行预览。
-- [ ] GREEN：最小 `StudentRosterModule.preview_import()` 和安全命名错误；旧 `StudentManager` 兼容调用继续通过。
-- [ ] RED/GREEN：workspace 搜索、班级筛选、稳定分页和 roster revision；保留既有 `GET /api/students` 响应不变。
+- [x] RED：CSV/XLSX 正常映射；手动映射；空文件、缺列、不可解码、错误文件魔数；无效行；同文件重复以后行为准；数据库 insert/update/unchanged；5,000 行预览。
+- [x] GREEN：最小 `StudentRosterModule.preview_import()` 和安全命名错误；旧 `StudentManager` 兼容调用继续通过。
+- [x] RED/GREEN：workspace 搜索、班级筛选、稳定分页和 roster revision；保留既有 `GET /api/students` 响应不变。
 
 ### Slice 2：原子确认、编辑和删除保护
 
-- [ ] RED：重复/并发 import 只有一个 revision 赢家；任一项错误零写入；重新预览同一数据为 unchanged。
-- [ ] GREEN：`BEGIN IMMEDIATE` 内重算 revision 并批量 upsert；路由写请求不自动重放。
-- [ ] RED/GREEN：编辑的非空/唯一/revision 保护和失败保留。
-- [ ] RED：删除影响计数；备份失败零删除；删除语句故障整批回滚；并发 revision；成功备份不泄露路径。
-- [ ] GREEN：锁内影响复核、备份和硬删除；旧 Streamlit `delete_student_hard()` 继续兼容。
+- [x] RED：重复/并发 import 只有一个 revision 赢家；任一项错误零写入；重新预览同一数据为 unchanged。
+- [x] GREEN：`BEGIN IMMEDIATE` 内重算 revision 并批量 upsert；路由写请求不自动重放。
+- [x] RED/GREEN：编辑的非空/唯一/revision 保护和失败保留。
+- [x] RED：删除影响计数；备份失败零删除；删除语句故障整批回滚；并发 revision；成功备份不泄露路径。
+- [x] GREEN：锁内影响复核、备份和硬删除；旧 Streamlit `delete_student_hard()` 继续兼容。
 
 ### Slice 3：HTTP 契约与 Vue 数据层
 
-- [ ] RED/GREEN：students schema/router/OpenAPI 的 preview、commit、workspace、edit、impact、delete 契约和稳定错误码。
-- [ ] RED/GREEN：扩展 `frontend/src/api/students.ts` 与新 store；严格解码、请求世代、AbortController、冲突刷新、写请求不重放。
-- [ ] 保留 Knowledge Graph 与 Scan Grading 的既有 `fetchStudents()` 行为和严格顶层响应。
+- [x] RED/GREEN：students schema/router/OpenAPI 的 preview、commit、workspace、edit、impact、delete 契约和稳定错误码。
+- [x] RED/GREEN：扩展 `frontend/src/api/students.ts` 与新 store；严格解码、请求世代、AbortController、冲突刷新、写请求不重放。
+- [x] 保留 Knowledge Graph 与 Scan Grading 的既有 `fetchStudents()` 行为和严格顶层响应。
 
 ### Slice 4：Vue 学生名单工作区
 
-- [ ] RED/GREEN：路由、导航和工作台受控入口；导入三阶段、映射、预览分类、选择有效行、写入摘要。
-- [ ] RED/GREEN：名册台账、搜索、班级筛选、分页、选择检查器、编辑、删除影响和确认。
-- [ ] 加载、空白、部分无效、冲突、备份失败、禁用、长中文、焦点和刷新恢复状态齐全；CSS 只使用现有 Token。
+- [x] RED/GREEN：路由、导航和工作台受控入口；导入三阶段、映射、预览分类、选择有效行、写入摘要。
+- [x] RED/GREEN：名册台账、搜索、班级筛选、分页、选择检查器、编辑、删除影响和确认。
+- [x] 加载、空白、部分无效、冲突、备份失败、禁用、长中文、焦点和刷新恢复状态齐全；CSS 只使用现有 Token。
 
 ### Slice 5：匿名浏览器、文档与稳定候选
 
-- [ ] 固定匿名 CSV/XLSX 和临时数据库贯通导入、编辑、删除备份失败/成功、刷新和重启恢复。
-- [ ] 覆盖 1920×1080、1440×900、1366×768、1280×800、1024×768；5,000 行、长姓名、映射错误和焦点无溢出。
-- [ ] 更新 `ARCHITECTURE.md` 的 P2-13 增量边界；页面可运行并冻结后再生成 quick 自测清单。
-- [ ] 聚焦测试、受影响回归、`npm run verify`、浏览器 prepared 门槛、`tools/smoke_check.py --skip-tests`、`git diff --check`、handoff validator 和真实两库指纹守卫通过。
+- [x] 固定匿名 CSV/XLSX 和临时数据库贯通导入、编辑、删除备份失败/成功、刷新和重启恢复。
+- [x] 覆盖 1920×1080、1440×900、1366×768、1280×800、1024×768；5,000 行、长姓名、映射错误和焦点无溢出。
+- [x] 更新 `ARCHITECTURE.md` 的 P2-13 增量边界；页面可运行并冻结后再生成 quick 自测清单。
+- [x] 聚焦测试、受影响回归、`npm run verify`、浏览器 prepared 门槛、`tools/smoke_check.py --skip-tests`、`git diff --check`、handoff validator 和真实两库指纹守卫通过。
 
 ## File Map
 
@@ -215,8 +215,8 @@ Interface 隐藏文件类型/大小/编码校验、字段别名、值规范化�
 
 | 阶段 | 耗时 | 测试/复审 | 原始意见 | 去重结果 | 剩余工作 | 当前包验收 | 版本可发布 |
 |---|---:|---|---:|---|---|---|---|
-| 集中调查与计划 | pending | 文档治理、依赖/源码/数据守卫调查 | 0 | 4 个根因组 | Slice 0～5 | 否 | 否 |
-| 稳定候选 | pending | pending | pending | pending | pending | pending | 否 |
+| 集中调查与计划 | 约 35 分钟 | 文档治理、依赖/源码/数据守卫调查 | 0 | 4 个根因组 | 自动门槛、复审与用户短测 | 否 | 否 |
+| 稳定候选 | 约 2 小时 20 分钟 | Python 聚焦 46 项；前端 591 项、lint/typecheck/build；匿名真实浏览器；快速冒烟；格式、交接与两库指纹守卫 | 0 | 0 | 双路初审与用户短测 | 否 | 否 |
 | 初审 | pending | Spec + Standards 同一 SHA | pending | pending | pending | pending | 否 |
 | 统一修复 | pending | 仅受影响复测 | pending | pending | pending | pending | 否 |
 | 最终复审 | pending | 仅首轮问题/修复区/直接回归 | pending | pending | pending | pending | 否 |
@@ -238,9 +238,9 @@ P2-13 功能分支拥有学生名册 Module、students router/schema 的包内�
 ## 昼夜交接
 
 **执行包：** P2-13
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** pending
 **真实数据指纹：** not_touched

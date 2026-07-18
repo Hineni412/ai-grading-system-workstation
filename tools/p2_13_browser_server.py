@@ -53,6 +53,8 @@ def _prepare_paths(data_root: Path):
 
 
 def _seed(paths) -> None:
+    import pandas as pd
+
     from db_manager import DBManager, StudentRecord
 
     db = DBManager(paths.db_path)
@@ -61,7 +63,11 @@ def _seed(paths) -> None:
         [
             StudentRecord(
                 f"A{index:03d}",
-                f"匿名学生{index:03d}",
+                (
+                    "匿名超长姓名用于验证名单表格不会撑出窗口边界050"
+                    if index == 50
+                    else f"匿名学生{index:03d}"
+                ),
                 "测试一班" if index <= 60 else "测试二班",
             )
             for index in range(1, 126)
@@ -144,6 +150,20 @@ def _seed(paths) -> None:
         + "\n",
         encoding="utf-8-sig",
     )
+    pd.DataFrame(
+        [
+            {
+                "student_code": "A002",
+                "name": "匿名学生002已核对",
+                "class_name": "测试一班",
+            },
+            {
+                "student_code": "A128",
+                "name": "匿名学生128",
+                "class_name": "测试三班",
+            },
+        ]
+    ).to_excel(ALLOWED_DATA_ROOT / "anonymous-students.xlsx", index=False)
 
 
 def main() -> None:
@@ -155,9 +175,21 @@ def main() -> None:
     _seed(paths)
 
     from backend.api.app import create_app
+    from backend.api.dependencies import get_grading_db
+    from db_manager import DBManager
     import uvicorn
 
+    backup_failure = {"next": False}
+
+    class BrowserDBManager(DBManager):
+        def create_backup(self, reason: str, *, once_per_day: bool = False):
+            if backup_failure["next"]:
+                backup_failure["next"] = False
+                raise OSError("anonymous injected backup failure")
+            return super().create_backup(reason, once_per_day=once_per_day)
+
     app = create_app(path_manager=paths)
+    app.dependency_overrides[get_grading_db] = lambda: BrowserDBManager(paths.db_path)
     frontend_dist = REPO_ROOT / "frontend" / "dist"
     if not (frontend_dist / "index.html").is_file():
         raise RuntimeError("build the frontend before running the P2-13 browser gate")
@@ -171,6 +203,11 @@ def main() -> None:
         StaticFiles(directory=frontend_dist / "assets"),
         name="p2-13-assets",
     )
+
+    @app.post("/test-support/fail-next-backup", include_in_schema=False)
+    def fail_next_backup():
+        backup_failure["next"] = True
+        return {"armed": True}
 
     @app.get("/{frontend_path:path}", include_in_schema=False)
     def serve_frontend(frontend_path: str):
