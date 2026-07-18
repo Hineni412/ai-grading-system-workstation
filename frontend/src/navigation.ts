@@ -2,6 +2,7 @@ export type WorkspaceRouteId =
   | 'workbench'
   | 'sessions'
   | 'students'
+  | 'question-bank'
   | 'knowledge-graph'
   | 'files'
   | 'grading'
@@ -40,6 +41,15 @@ export const studentsRouteDefinition: WorkspaceRouteDefinition = {
   title: '学生名单',
   description: '导入、核对和维护参与阅卷的学生名单',
   breadcrumb: '学生名单',
+}
+
+export const questionBankRouteDefinition: WorkspaceRouteDefinition = {
+  id: 'question-bank',
+  label: '题库管理',
+  path: '/question-bank',
+  title: '题库管理',
+  description: '筛选、核对、导入并安全维护可用于阅卷与分析的题目',
+  breadcrumb: '题库管理',
 }
 
 export const templateRegionRouteDefinition = {
@@ -89,6 +99,7 @@ export const navigationItems = [
   workbenchRouteDefinition,
   sessionRouteDefinition,
   studentsRouteDefinition,
+  questionBankRouteDefinition,
   knowledgeGraphRouteDefinition,
   filesRouteDefinition,
   reviewRouteDefinition,
