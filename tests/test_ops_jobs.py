@@ -172,6 +172,20 @@ def test_ops_online_job_rejects_resource_changed_after_submission(tmp_path: Path
         run_ops_transfer_export_job(context=_Context(payload), paths=paths)
 
 
+def test_ops_transfer_export_still_rejects_business_database_changes(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    service = _service(paths)
+    payload = _payload(service, "transfer_export", scope="lean")
+    with sqlite3.connect(paths.db_path) as connection:
+        connection.execute("UPDATE sample SET value = 'changed'")
+        connection.commit()
+
+    with pytest.raises(ValueError, match="preflight resource changed"):
+        run_ops_transfer_export_job(context=_Context(payload), paths=paths)
+
+
 def test_register_ops_job_handlers_registers_online_types(tmp_path: Path) -> None:
     from backend.jobs.manager import JobManager
     from backend.jobs.store import JobStore
@@ -188,6 +202,35 @@ def test_register_ops_job_handlers_registers_online_types(tmp_path: Path) -> Non
         loaded = manager.get(job.id)
         assert loaded is not None
         assert loaded.status == "succeeded"
+    finally:
+        manager.shutdown()
+
+
+def test_ops_transfer_export_allows_job_store_updates_inside_data_root(
+    tmp_path: Path,
+) -> None:
+    from backend.jobs.manager import JobManager
+    from backend.jobs.store import JobStore
+
+    paths = _paths(tmp_path)
+    manager = JobManager(
+        JobStore(paths.db_path),
+        max_workers=1,
+    )
+    register_ops_job_handlers(manager, paths=paths)
+    try:
+        payload = _payload(_service(paths), "transfer_export", scope="lean")
+
+        job = manager.submit("ops_transfer_export", payload)
+        manager.wait(job.id, timeout=5)
+        loaded = manager.get(job.id)
+
+        assert loaded is not None
+        assert loaded.status == "succeeded", loaded.error
+        assert loaded.error is None
+        published = paths.outputs_dir / "ops" / str(loaded.result["filename"])
+        assert published.is_file()
+        assert zipfile.is_zipfile(published)
     finally:
         manager.shutdown()
 

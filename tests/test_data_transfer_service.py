@@ -83,6 +83,22 @@ def test_export_skips_case_variant_sensitive_filename(tmp_path: Path) -> None:
     assert "user_data/config/API_PROFILES.JSON" not in _arc_names(entries)
 
 
+def test_export_skips_sqlite_runtime_sidecars(tmp_path: Path) -> None:
+    data_root = tmp_path / "project" / "user_data"
+    databases = data_root / "databases"
+    for name in (
+        "grading_system.db",
+        "grading_system.db-wal",
+        "grading_system.db-shm",
+        "grading_system.db-journal",
+    ):
+        _write(databases / name)
+
+    entries = build_export_manifest([(data_root, "user_data")], scope="full")
+
+    assert _arc_names(entries) == {"user_data/databases/grading_system.db"}
+
+
 def test_export_rejects_symlink_below_controlled_root(tmp_path: Path) -> None:
     source_root = tmp_path / "source"
     outside = _write(tmp_path / "outside.txt", "secret")
