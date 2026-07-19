@@ -341,6 +341,119 @@ describe('training store', () => {
     await expect(store.confirmPlan(api)).rejects.toThrow('请重新生成训练计划')
   })
 
+  it('does not let an aborted confirmation overwrite the new scope state', async () => {
+    const pending = deferred<TrainingTaskDetail>()
+    const api = makeTrainingApi({
+      confirm: vi.fn(() => pending.promise),
+    })
+    const store = useTrainingStore()
+    store.setStudentScope({
+      mode: 'selected',
+      studentIds: ['12', '13'],
+      classId: '',
+    })
+    store.setExamScope({ mode: 'manual', sessionIds: [14] })
+    await store.analyze(api)
+    await store.previewPlan({
+      variantMode: 'individual',
+      questionCount: 10,
+      stageRatios: { direct: 0.6, prerequisite: 0.3, transfer: 0.1 },
+      excludeCurrentExamOriginals: true,
+    }, api)
+
+    const confirmation = store.confirmPlan(api)
+    store.setStudentScope({
+      mode: 'student',
+      studentIds: ['99'],
+      classId: '',
+    })
+    pending.resolve(task)
+    await expect(confirmation).rejects.toThrow()
+
+    expect(store.confirmState).toBe('idle')
+    expect(store.errorMessage).toBe('')
+    expect(store.confirmedTask).toBeNull()
+  })
+
+  it('reuses the same confirmation id after returning to an unchanged preview', async () => {
+    const ambiguous = new ApiError({
+      kind: 'network',
+      status: null,
+      code: 'network_error',
+      message: 'Network request failed',
+      details: {},
+      requestId: 'req-ambiguous',
+      retryable: true,
+    })
+    const confirm = vi.fn()
+      .mockRejectedValueOnce(ambiguous)
+      .mockResolvedValueOnce(task)
+    const api = makeTrainingApi({ confirm })
+    vi.mocked(crypto.randomUUID)
+      .mockReturnValueOnce('11111111-1111-4111-8111-111111111111')
+      .mockReturnValueOnce('22222222-2222-4222-8222-222222222222')
+    const store = useTrainingStore()
+    const firstScope = {
+      mode: 'selected' as const,
+      studentIds: ['12', '13'],
+      classId: '',
+    }
+    store.setStudentScope(firstScope)
+    store.setExamScope({ mode: 'manual', sessionIds: [14] })
+    await store.analyze(api)
+    await store.previewPlan({
+      variantMode: 'individual',
+      questionCount: 10,
+      stageRatios: { direct: 0.6, prerequisite: 0.3, transfer: 0.1 },
+      excludeCurrentExamOriginals: true,
+    }, api)
+    await expect(store.confirmPlan(api)).rejects.toBe(ambiguous)
+
+    store.setStudentScope({ mode: 'student', studentIds: ['99'], classId: '' })
+    store.setStudentScope(firstScope)
+    await store.analyze(api)
+    await store.previewPlan({
+      variantMode: 'individual',
+      questionCount: 10,
+      stageRatios: { direct: 0.6, prerequisite: 0.3, transfer: 0.1 },
+      excludeCurrentExamOriginals: true,
+    }, api)
+    await store.confirmPlan(api)
+
+    const confirmationIds = confirm.mock.calls.map(
+      ([body]) => (body as TrainingTaskConfirmRequest).confirmation_id,
+    )
+    expect(confirmationIds).toEqual([
+      '11111111-1111-4111-8111-111111111111',
+      '11111111-1111-4111-8111-111111111111',
+    ])
+  })
+
+  it('invalidates a preview when its visible plan configuration changes', async () => {
+    const api = makeTrainingApi()
+    const store = useTrainingStore()
+    store.setStudentScope({
+      mode: 'selected',
+      studentIds: ['12', '13'],
+      classId: '',
+    })
+    store.setExamScope({ mode: 'manual', sessionIds: [14] })
+    await store.analyze(api)
+    await store.previewPlan({
+      variantMode: 'individual',
+      questionCount: 10,
+      stageRatios: { direct: 0.6, prerequisite: 0.3, transfer: 0.1 },
+      excludeCurrentExamOriginals: true,
+    }, api)
+
+    store.invalidatePlan()
+
+    expect(store.plan).toBeNull()
+    expect(store.confirmationId).toBe('')
+    expect(store.planState).toBe('idle')
+    await expect(store.confirmPlan(api)).rejects.toThrow('请先生成当前训练计划')
+  })
+
   it('loads history and tracks a submitted export job for refresh recovery', async () => {
     const historyApi = makeHistoryApi()
     const jobStore = useJobStore()
@@ -362,5 +475,18 @@ describe('training store', () => {
         jobType: 'training_export',
         trackedAt: expect.any(String),
       }])
+  })
+
+  it('explains how to recover when a completed export file is unavailable', async () => {
+    const historyApi = makeHistoryApi({
+      downloadJobFile: vi.fn(async () => {
+        throw new Error('gone')
+      }),
+    })
+    const store = useTrainingStore()
+
+    await expect(store.download(51, historyApi)).rejects.toThrow('gone')
+
+    expect(store.errorMessage).toContain('重新生成')
   })
 })

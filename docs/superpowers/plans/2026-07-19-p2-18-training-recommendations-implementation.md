@@ -212,6 +212,8 @@ Store 隐藏 scope signature、generation、AbortController、confirmation ID、
 |---|---:|---|---:|---|---|---|---|
 | 集中调查与计划 | 约 35 分钟 | 必读资料、Phase map、旧训练页、Diagnosis/Plan/Task/Export API、P2-12 File Center、前端 session/student/Job 基础设施、worktree/数据守卫 | 0 | 5 个根因组 | 实现、自动门槛、复审、quick 证据、integration | 否 | 否 |
 | 实现与稳定候选 | 约 2 小时 20 分钟 | TDD 完成 API/store/view/导航；前端完整门槛 645 passed；后端训练相关 58 passed；匿名 Chromium 1 passed；快速冒烟和五档视口通过 | 0 | 0 Critical / 0 Important | 冻结提交、双路复审、quick 证据、integration | 否 | 否 |
+| 并行初审 | 约 11 分钟 | 同一冻结 SHA `96580a1f4ce641b6d3a7bac6bdde047d10637102` 的 Spec/Standards 双路复审 | 9 | 7 Important：Job 刷新恢复、任务详情、配置失效/阶段比例、确认切范围、覆盖缺口、指定版本出件、过期下载 | 一次统一修复、受影响复测、限定最终复审 | 否 | 否 |
+| 统一修复 | 约 35 分钟 | 7 个根因一次修复；新增/受影响 store+view 13 passed，typecheck/lint/build 通过，匿名 Chromium 覆盖导出后刷新恢复并通过 | 0 | 首轮 7 Important 均已有代码与测试关闭证据 | 原评审者限定最终复审、quick 证据、integration | 否 | 否 |
 
 ## Ownership
 

@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
+import type { TrainingVariant } from '../api/exports'
 import type { JobResponse } from '../api/jobs'
 import { fetchStudents, type StudentSummary } from '../api/students'
 import type {
@@ -33,6 +34,9 @@ const selectedWeakKey = ref('')
 const variantMode = ref<'individual' | 'auto_group'>('individual')
 const questionCount = ref(10)
 const excludeCurrentOriginals = ref(true)
+const directRatio = ref(60)
+const prerequisiteRatio = ref(30)
+const transferRatio = ref(10)
 const exportMode = ref<ExportMode>('bundle')
 const exportFormat = ref<'docx' | 'markdown'>('docx')
 const exportAudience = ref<'student' | 'teacher'>('student')
@@ -62,6 +66,23 @@ const selectedTask = computed(
   () => training.selectedTask ?? training.confirmedTask,
 )
 
+const selectedTaskStudentNames = computed(() => {
+  const snapshot = selectedTask.value?.diagnosis_snapshot
+  const profiles = snapshot && Array.isArray(snapshot.students) ? snapshot.students : []
+  return new Map(profiles.flatMap((profile) => {
+    if (
+      typeof profile !== 'object'
+      || profile === null
+      || Array.isArray(profile)
+    ) return []
+    const studentId = profile.student_id
+    const studentName = profile.student_name
+    return typeof studentId === 'string' && typeof studentName === 'string'
+      ? [[studentId, studentName] as const]
+      : []
+  }))
+})
+
 const trainingJobs = computed(() => Object.values(jobs.jobs)
   .filter((job) => job.job_type === 'training_export')
   .sort((left, right) => right.id - left.id))
@@ -70,6 +91,18 @@ const coverageText = computed(() => {
   const coverage = training.diagnosis?.coverage
   if (!coverage) return ''
   return `已覆盖 ${coverage.covered_items} / ${coverage.total_items} 个评分题`
+})
+
+const coverageEntries = computed(() => Object.entries(
+  training.diagnosis?.coverage.missing_items ?? {},
+).sort(([left], [right]) => left.localeCompare(right, 'zh-CN')))
+
+const stageRatioTotal = computed<number | null>(() => {
+  const values = [directRatio.value, prerequisiteRatio.value, transferRatio.value]
+  if (values.some((value) => !Number.isFinite(value) || value < 0 || value > 100)) {
+    return null
+  }
+  return values.reduce((total, value) => total + value, 0)
 })
 
 const selectedStudentCount = computed(() => {
@@ -97,6 +130,12 @@ const canConfirm = computed(
     && training.planState === 'ready'
     && training.confirmState !== 'submitting'
     && training.confirmState !== 'conflict',
+)
+
+const canPreview = computed(
+  () => training.hasCurrentDiagnosis
+    && training.planState !== 'loading'
+    && stageRatioTotal.value === 100,
 )
 
 function weakKey(studentId: string, knowledgeKey: string): string {
@@ -137,6 +176,72 @@ function statusLabel(status: JobResponse['status']): string {
     failed: '生成失败',
     cancelled: '已取消',
   }[status]
+}
+
+function taskStatusLabel(status: NonNullable<typeof selectedTask.value>['status']): string {
+  return {
+    draft: '草稿',
+    ready: '可出件',
+    exporting: '生成材料中',
+    completed: '已完成',
+    cancelled: '已取消',
+    failed: '失败',
+  }[status]
+}
+
+function variantStudentNames(variant: TrainingVariant): string {
+  const names = variant.students
+    .map((student) => {
+      if (typeof student.student_name === 'string') return student.student_name.trim()
+      const studentId = typeof student.student_id === 'string' ? student.student_id : ''
+      return selectedTaskStudentNames.value.get(studentId) ?? ''
+    })
+    .filter(Boolean)
+  return names.length ? names.join('、') : `${variant.students.length} 名学生`
+}
+
+function nestedRecord(
+  item: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> {
+  const value = item[key]
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
+
+function firstText(
+  records: Record<string, unknown>[],
+  keys: string[],
+): string {
+  for (const record of records) {
+    for (const key of keys) {
+      const value = record[key]
+      if (typeof value === 'string' && value.trim()) return value.trim()
+    }
+  }
+  return ''
+}
+
+function variantItemLabel(item: Record<string, unknown>, index: number): string {
+  const recommendation = nestedRecord(item, 'recommendation_snapshot')
+  const question = nestedRecord(item, 'question_snapshot')
+  const questionNumber = firstText(
+    [item, question],
+    ['question_number'],
+  ) || String(index + 1)
+  const knowledgePoint = firstText(
+    [item, recommendation],
+    ['knowledge_point'],
+  ) || '未命名知识点'
+  return `题 ${questionNumber} · ${knowledgePoint}`
+}
+
+function variantItemReason(item: Record<string, unknown>): string {
+  return firstText(
+    [item, nestedRecord(item, 'recommendation_snapshot')],
+    ['reason'],
+  )
 }
 
 function scopeStudentIds(): string[] {
@@ -209,7 +314,11 @@ async function previewPlan(): Promise<void> {
     await training.previewPlan({
       variantMode: variantMode.value,
       questionCount: questionCount.value,
-      stageRatios: { direct: 0.6, prerequisite: 0.3, transfer: 0.1 },
+      stageRatios: {
+        direct: directRatio.value / 100,
+        prerequisite: prerequisiteRatio.value / 100,
+        transfer: transferRatio.value / 100,
+      },
       excludeCurrentExamOriginals: excludeCurrentOriginals.value,
     })
   } catch {
@@ -238,7 +347,8 @@ async function submitExport(): Promise<void> {
   const task = selectedTask.value
   if (!task) return
   try {
-    if (exportMode.value === 'variant' && exportVariantId.value) {
+    if (exportMode.value === 'variant') {
+      if (!exportVariantId.value) return
       await training.submitExport({
         taskId: task.id,
         variant_id: exportVariantId.value,
@@ -293,9 +403,38 @@ watch(
   },
 )
 
+watch(
+  [
+    variantMode,
+    questionCount,
+    excludeCurrentOriginals,
+    directRatio,
+    prerequisiteRatio,
+    transferRatio,
+  ],
+  () => {
+    if (
+      training.plan
+      || training.planState !== 'idle'
+      || training.confirmState !== 'idle'
+    ) {
+      training.invalidatePlan()
+    }
+  },
+)
+
+watch(
+  selectedTask,
+  (task) => {
+    exportVariantId.value = task?.variants[0]?.id ?? null
+  },
+  { immediate: true },
+)
+
 onMounted(() => {
   void loadStudents()
   void training.loadTasks().catch(() => undefined)
+  void jobs.initialize().catch(() => undefined)
 })
 
 onBeforeUnmount(() => {
@@ -495,6 +634,15 @@ onBeforeUnmount(() => {
             <ul v-if="training.diagnosis.warnings.length" class="training-warning-list">
               <li v-for="warning in training.diagnosis.warnings" :key="warning">{{ warning }}</li>
             </ul>
+            <div v-if="coverageEntries.length" class="training-coverage-gaps">
+              <strong>需要补齐的评分题</strong>
+              <ul>
+                <li v-for="[questionId, reason] in coverageEntries" :key="questionId">
+                  <span>{{ questionId }}：</span>{{ reason }}
+                </li>
+              </ul>
+              <p>请到题库核对这些来源题的关联和知识点标签后，再重新分析。</p>
+            </div>
           </template>
         </section>
 
@@ -538,7 +686,10 @@ onBeforeUnmount(() => {
               <p class="training-eyebrow">03 · 形成计划</p>
               <h2 id="plan-title">推荐路径</h2>
             </div>
-            <span>针对训练 60% · 基础巩固 30% · 提升应用 10%</span>
+            <span>
+              针对训练 {{ directRatio }}% · 基础巩固 {{ prerequisiteRatio }}% ·
+              提升应用 {{ transferRatio }}%
+            </span>
           </div>
 
           <div class="training-plan-controls">
@@ -551,12 +702,46 @@ onBeforeUnmount(() => {
             </label>
             <label>
               每个版本题量
-              <select v-model.number="questionCount">
+              <select v-model.number="questionCount" data-testid="training-question-count">
                 <option v-for="count in [8, 9, 10, 11, 12]" :key="count" :value="count">
                   {{ count }} 题
                 </option>
               </select>
             </label>
+            <fieldset class="training-ratio-controls">
+              <legend>阶段比例（合计 100%）</legend>
+              <label>
+                针对训练
+                <input
+                  v-model.number="directRatio"
+                  data-testid="training-ratio-direct"
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="5"
+                >
+              </label>
+              <label>
+                基础巩固
+                <input
+                  v-model.number="prerequisiteRatio"
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="5"
+                >
+              </label>
+              <label>
+                提升应用
+                <input
+                  v-model.number="transferRatio"
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="5"
+                >
+              </label>
+            </fieldset>
             <label class="training-checkbox">
               <input v-model="excludeCurrentOriginals" type="checkbox">
               排除当前考试原题
@@ -565,12 +750,15 @@ onBeforeUnmount(() => {
               type="button"
               class="training-button is-secondary"
               data-testid="preview-training"
-              :disabled="!training.hasCurrentDiagnosis || training.planState === 'loading'"
+              :disabled="!canPreview"
               @click="previewPlan"
             >
               {{ training.planState === 'loading' ? '正在生成…' : '生成计划预览' }}
             </button>
           </div>
+          <p v-if="stageRatioTotal !== 100" class="training-feedback is-warning" role="alert">
+            三个阶段当前合计 {{ stageRatioTotal ?? '未完成' }}%，请调整为 100% 后再生成计划。
+          </p>
 
           <div v-if="training.planState === 'empty'" class="training-empty">
             当前精确标签下没有可确认的推荐题。请到题库补充同一知识点候选题，或调整已明确的范围。
@@ -674,9 +862,32 @@ onBeforeUnmount(() => {
               <h2>生成训练材料</h2>
             </div>
           </div>
+          <div class="training-task-detail" data-testid="training-task-detail">
+            <p>
+              <strong>{{ selectedTask.task_code }}</strong>
+              · {{ taskStatusLabel(selectedTask.status) }}
+            </p>
+            <ul v-if="selectedTask.warnings.length" class="training-warning-list">
+              <li v-for="warning in selectedTask.warnings" :key="warning">
+                {{ localizedWarning(warning) }}
+              </li>
+            </ul>
+            <article v-for="variant in selectedTask.variants" :key="variant.id">
+              <header>
+                <strong>{{ variant.variant_key }}</strong>
+                <span>{{ variantStudentNames(variant) }}</span>
+              </header>
+              <ol>
+                <li v-for="(item, index) in variant.items" :key="String(item.question_id ?? index)">
+                  <strong>{{ variantItemLabel(item, index) }}</strong>
+                  <span v-if="variantItemReason(item)">{{ variantItemReason(item) }}</span>
+                </li>
+              </ol>
+            </article>
+          </div>
           <label>
             出件范围
-            <select v-model="exportMode">
+            <select v-model="exportMode" data-testid="training-export-mode">
               <option value="bundle">整任务文件包</option>
               <option value="variant">指定训练版本</option>
             </select>
@@ -707,7 +918,7 @@ onBeforeUnmount(() => {
             type="button"
             class="training-button is-primary"
             data-testid="export-training-task"
-            :disabled="Boolean(training.submittingExportKey)"
+            :disabled="Boolean(training.submittingExportKey) || (exportMode === 'variant' && !exportVariantId)"
             @click="submitExport"
           >
             {{ training.submittingExportKey ? '正在提交…' : '生成训练材料' }}

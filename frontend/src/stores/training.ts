@@ -153,7 +153,10 @@ export const useTrainingStore = defineStore('training', () => {
   let detailController: AbortController | null = null
   let diagnosisScopeKey = ''
   let planScopeKey = ''
+  let planGeneration = 0
   let lastPlanRequest: TrainingPlanRequest | null = null
+  let confirmationCacheKey = ''
+  const confirmationIds = new Map<string, string>()
 
   const hasCurrentDiagnosis = computed(
     () => diagnosis.value !== null && diagnosisScopeKey === scopeKey(),
@@ -206,6 +209,7 @@ export const useTrainingStore = defineStore('training', () => {
 
   function invalidateScopeResults(): void {
     generation += 1
+    planGeneration += 1
     diagnosisController?.abort()
     planController?.abort()
     confirmController?.abort()
@@ -219,7 +223,26 @@ export const useTrainingStore = defineStore('training', () => {
     diagnosisScopeKey = ''
     planScopeKey = ''
     lastPlanRequest = null
+    confirmationCacheKey = ''
     analysisState.value = 'idle'
+    planState.value = 'idle'
+    confirmState.value = 'idle'
+    errorMessage.value = ''
+    actionMessage.value = ''
+  }
+
+  function invalidatePlan(): void {
+    planGeneration += 1
+    planController?.abort()
+    confirmController?.abort()
+    planController = null
+    confirmController = null
+    plan.value = null
+    confirmationId.value = ''
+    confirmedTask.value = null
+    planScopeKey = ''
+    lastPlanRequest = null
+    confirmationCacheKey = ''
     planState.value = 'idle'
     confirmState.value = 'idle'
     errorMessage.value = ''
@@ -315,6 +338,7 @@ export const useTrainingStore = defineStore('training', () => {
     const controller = new AbortController()
     planController = controller
     const requestGeneration = generation
+    const requestPlanGeneration = planGeneration
     const requestScopeKey = scopeKey()
     plan.value = null
     confirmationId.value = ''
@@ -330,18 +354,26 @@ export const useTrainingStore = defineStore('training', () => {
       if (
         controller.signal.aborted
         || requestGeneration !== generation
+        || requestPlanGeneration !== planGeneration
         || requestScopeKey !== scopeKey()
       ) return null
       plan.value = next
       planScopeKey = requestScopeKey
       lastPlanRequest = body
-      confirmationId.value = crypto.randomUUID()
+      confirmationCacheKey = JSON.stringify({
+        request: body,
+        plan_revision: next.plan_revision,
+      })
+      const cachedConfirmationId = confirmationIds.get(confirmationCacheKey)
+      confirmationId.value = cachedConfirmationId ?? crypto.randomUUID()
+      confirmationIds.set(confirmationCacheKey, confirmationId.value)
       planState.value = hasRecommendation(next) ? 'ready' : 'empty'
       return next
     } catch (error) {
       if (
         controller.signal.aborted
         || requestGeneration !== generation
+        || requestPlanGeneration !== planGeneration
         || requestScopeKey !== scopeKey()
       ) return null
       planState.value = 'error'
@@ -371,6 +403,7 @@ export const useTrainingStore = defineStore('training', () => {
     const controller = new AbortController()
     confirmController = controller
     const requestGeneration = generation
+    const requestPlanGeneration = planGeneration
     const requestScopeKey = scopeKey()
     confirmState.value = 'submitting'
     errorMessage.value = ''
@@ -380,6 +413,7 @@ export const useTrainingStore = defineStore('training', () => {
       if (
         controller.signal.aborted
         || requestGeneration !== generation
+        || requestPlanGeneration !== planGeneration
         || requestScopeKey !== scopeKey()
       ) throw new Error('训练任务现场已经变化')
       confirmedTask.value = next
@@ -392,6 +426,14 @@ export const useTrainingStore = defineStore('training', () => {
       actionMessage.value = `训练任务已保存：${next.task_code}`
       return next
     } catch (error) {
+      if (
+        controller.signal.aborted
+        || requestGeneration !== generation
+        || requestPlanGeneration !== planGeneration
+        || requestScopeKey !== scopeKey()
+      ) {
+        throw error
+      }
       if (error instanceof ApiError && error.kind === 'conflict') {
         confirmState.value = 'conflict'
         errorMessage.value = '训练候选题已经变化，请重新分析并生成计划后再确认。'
@@ -491,7 +533,12 @@ export const useTrainingStore = defineStore('training', () => {
     jobId: number,
     api: TrainingHistoryApi = exportsApi,
   ): Promise<DownloadedJobFile> {
-    return api.downloadJobFile(jobId)
+    try {
+      return await api.downloadJobFile(jobId)
+    } catch (error) {
+      errorMessage.value = '训练材料文件已过期或暂时无法下载，请重新生成训练材料。'
+      throw error
+    }
   }
 
   function reset(): void {
@@ -506,6 +553,7 @@ export const useTrainingStore = defineStore('training', () => {
     selectedTask.value = null
     historyState.value = 'idle'
     submittingExportKey.value = ''
+    confirmationIds.clear()
   }
 
   return {
@@ -529,6 +577,7 @@ export const useTrainingStore = defineStore('training', () => {
     knowledgePoints,
     setStudentScope,
     setExamScope,
+    invalidatePlan,
     analyze,
     previewPlan,
     confirmPlan,
