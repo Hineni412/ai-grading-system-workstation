@@ -24,6 +24,7 @@ import './styles/students.css'
 import './styles/question-bank.css'
 import './styles/question-assembly.css'
 import './styles/training-recommendations.css'
+import './styles/settings-ops.css'
 
 const app = createApp(App)
 const pinia = createPinia()

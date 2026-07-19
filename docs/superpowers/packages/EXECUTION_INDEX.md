@@ -11,7 +11,7 @@
 |---|---|---|---:|---:|---|
 | Phase 0 | 地基与防护网 | `merged` | 5 | 0 | 工程防护网与冻结基线 |
 | Phase 1 | API、任务、LLM、数据访问 | `merged` | 21 | 0 | 组合回归、完整冒烟、正式验收、模型请求超时与真实两库指纹门槛均已通过 |
-| Phase 2 | Vue SPA 与 Streamlit 切换 | `in_progress` | 18 | 4 | M2-01 与 M2-02 已通过 PR 合入主线；P2-18 已进入 M2-03 integration 并完成逐包验证，下一任务为 P2-19 |
+| Phase 2 | Vue SPA 与 Streamlit 切换 | `in_progress` | 18 | 4 | M2-01 与 M2-02 已通过 PR 合入主线；P2-18 已进入 M2-03 integration 并完成逐包验证，P2-19 正在进行 quick 用户验收 |
 | Phase 3 | 后端拆分、Schema 收敛、瘦身 | `planned` | 0 | 19 | 迁移预演、全量测试、删除可独立回退 |
 | Phase 4 | 图谱 2.0 与训练闭环 | `planned` | 0 | 12 | 新旧口径对照、闭环 E2E、评估达标 |
 | Phase 5 | 教师命题训练 | `planned` | 0 | 13 | 实验门槛通过后才冻结 Schema |
