@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import argparse
 import csv
 import hashlib
 import json
+import os
+import re
 import shutil
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -14,11 +19,18 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path[:1]:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from tools import p1_29_acceptance as workspace_tools
 
 
 PACKAGE = "P2-20"
 METADATA_FILENAME = "p2-20-acceptance.json"
+_CONFIG_KEY_RE = re.compile(
+    r"^[ \t]*(?P<key>DATA_DIR|LOGS_DIR|[\"']DATA_DIR[\"']|[\"']LOGS_DIR[\"'])[ \t]*:"
+)
 
 
 class AcceptanceError(RuntimeError):
@@ -714,3 +726,357 @@ def create_model_budget_proxy(
         )
 
     return app
+
+
+def _replace_config_value(line: str, value: str) -> str:
+    if line.endswith("\r\n"):
+        ending = "\r\n"
+    elif line.endswith("\n"):
+        ending = "\n"
+    else:
+        ending = ""
+    return f"{value}{ending}"
+
+
+def configure_staged_runtime(workspace: Path | str) -> None:
+    target = validate_workspace(workspace, require_empty=False)
+    metadata = load_metadata(target)
+    if metadata["state"] != "runtime_ready":
+        raise AcceptanceError("acceptance runtime profile has not been prepared")
+    config_path = target / "config" / "app_config.yaml"
+    try:
+        lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    except (OSError, UnicodeError) as exc:
+        raise AcceptanceError("staged app config is unavailable") from exc
+    positions: dict[str, list[int]] = {"DATA_DIR": [], "LOGS_DIR": []}
+    for index, line in enumerate(lines):
+        match = _CONFIG_KEY_RE.match(line)
+        if match:
+            positions[match.group("key").strip("\"'")].append(index)
+    if any(len(indexes) != 1 for indexes in positions.values()):
+        raise AcceptanceError(
+            "staged config must contain exactly one DATA_DIR and LOGS_DIR key"
+        )
+    lines[positions["DATA_DIR"][0]] = _replace_config_value(
+        lines[positions["DATA_DIR"][0]],
+        "DATA_DIR: acceptance_data",
+    )
+    lines[positions["LOGS_DIR"][0]] = _replace_config_value(
+        lines[positions["LOGS_DIR"][0]],
+        "LOGS_DIR: acceptance_logs",
+    )
+    temporary = config_path.with_suffix(".yaml.tmp")
+    temporary.write_text("".join(lines), encoding="utf-8", newline="")
+    temporary.replace(config_path)
+    for relative in ("acceptance_data", "acceptance_logs", "acceptance_ops"):
+        directory = target / relative
+        directory.mkdir(exist_ok=False)
+
+
+def _sanitize_build_log(text: str, *, workspace: Path, repo_root: Path) -> str:
+    sanitized = text
+    replacements = (
+        (workspace, "<workspace>"),
+        (repo_root, "<source-repo>"),
+    )
+    for path, placeholder in replacements:
+        native = str(path.resolve())
+        for variant in {native, native.replace("\\", "/"), native.replace("/", "\\")}:
+            sanitized = re.sub(
+                re.escape(variant),
+                lambda _match, value=placeholder: value,
+                sanitized,
+                flags=re.IGNORECASE,
+            )
+    return sanitized
+
+
+def build_and_copy_frontend(
+    workspace: Path | str,
+    *,
+    repo_root: Path | str,
+    expected_source_sha: str,
+) -> None:
+    target = validate_workspace(workspace, require_empty=False)
+    metadata = load_metadata(target)
+    if metadata["source_sha"] != expected_source_sha:
+        raise AcceptanceError("frontend build source does not match prepared code")
+    source_root = Path(repo_root).resolve()
+    resolved = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if resolved.returncode != 0 or resolved.stdout.strip() != expected_source_sha:
+        raise AcceptanceError("frontend build requires the exact source commit")
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=no"],
+        cwd=source_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if status.returncode != 0 or status.stdout.strip():
+        raise AcceptanceError("frontend build source must have no tracked changes")
+    npm = shutil.which("npm.cmd") or shutil.which("npm")
+    if not npm:
+        raise AcceptanceError("npm is required to build the acceptance frontend")
+    completed = subprocess.run(
+        [npm, "run", "build"],
+        cwd=source_root / "frontend",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    log_path = target / "acceptance_logs" / "frontend-build.log"
+    log_path.write_text(
+        _sanitize_build_log(
+            completed.stdout + completed.stderr,
+            workspace=target,
+            repo_root=source_root,
+        ),
+        encoding="utf-8",
+    )
+    if completed.returncode != 0:
+        raise AcceptanceError("frontend build failed; see the sanitized workspace log")
+    source_dist = source_root / "frontend" / "dist"
+    if not (source_dist / "index.html").is_file() or not (
+        source_dist / "assets"
+    ).is_dir():
+        raise AcceptanceError("frontend build did not produce a complete dist")
+    destination = target / "frontend" / "dist"
+    if destination.exists():
+        raise AcceptanceError("acceptance frontend dist already exists")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source_dist, destination)
+
+
+def _validate_staged_config(workspace: Path) -> None:
+    config_path = workspace / "config" / "app_config.yaml"
+    try:
+        lines = config_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise AcceptanceError("prepared app config is unavailable") from exc
+    values: dict[str, list[str]] = {"DATA_DIR": [], "LOGS_DIR": []}
+    for line in lines:
+        match = _CONFIG_KEY_RE.match(line)
+        if match:
+            key = match.group("key").strip("\"'")
+            values[key].append(line.split(":", 1)[1].strip())
+    if values != {
+        "DATA_DIR": ["acceptance_data"],
+        "LOGS_DIR": ["acceptance_logs"],
+    }:
+        raise AcceptanceError("prepared app config is not acceptance-safe")
+
+
+def create_acceptance_app(workspace: Path | str):
+    target = validate_workspace(workspace, require_empty=False)
+    metadata = load_metadata(target)
+    if metadata["state"] != "runtime_ready":
+        raise AcceptanceError("acceptance runtime is not ready")
+    _validate_staged_config(target)
+    frontend_dist = target / "frontend" / "dist"
+    if not (frontend_dist / "index.html").is_file() or not (
+        frontend_dist / "assets"
+    ).is_dir():
+        raise AcceptanceError("acceptance frontend dist is missing")
+    launcher_root = Path(__file__).resolve().parents[1]
+    if launcher_root != target:
+        raise AcceptanceError("acceptance server must run from the staged workspace")
+
+    os.environ["AI_GRADING_DATA_DIR"] = str(target / "acceptance_data")
+    os.environ["AI_GRADING_API_PROFILES_PATH"] = str(
+        target / "acceptance_config" / "api_profiles.json"
+    )
+    os.environ["AI_GRADING_OPS_STATE_DIR"] = str(target / "acceptance_ops")
+    for name in (
+        "LLM_API_KEY",
+        "LLM_CONFIG_API_KEY",
+        "LLM_OBJECTIVE_API_KEY",
+        "OPENAI_API_KEY",
+        "QUESTION_BANK_TAGGING_API_KEY",
+        "QUESTION_BANK_TAGGING_REVIEW_API_KEY",
+    ):
+        os.environ[name] = ""
+
+    from path_manager import PathManager
+
+    paths = PathManager()
+    if (
+        paths.project_root.resolve() != target
+        or paths.data_root.resolve() != (target / "acceptance_data").resolve()
+        or paths.api_profiles_path.resolve()
+        != (target / "acceptance_config" / "api_profiles.json").resolve()
+        or paths.ops_state_dir.resolve() != (target / "acceptance_ops").resolve()
+    ):
+        raise AcceptanceError("acceptance runtime resolved outside the workspace")
+    paths.ensure_directories()
+
+    from db_manager import DBManager
+    from question_bank.database.schema import initialize_database
+
+    DBManager(paths.db_path).initialize()
+    initialize_database(paths.qb_db_path, seed_skills=False)
+
+    from backend.api.app import create_app
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+
+    app = create_app(path_manager=paths)
+    proxy = create_model_budget_proxy(
+        target / "acceptance_config" / "upstream.json",
+        state_path=target / "acceptance_config" / "budget-state.json",
+    )
+    app.mount("/acceptance-llm", proxy, name="p2-20-model-budget")
+    app.mount(
+        "/assets",
+        StaticFiles(directory=frontend_dist / "assets"),
+        name="p2-20-assets",
+    )
+
+    @app.get("/{frontend_path:path}", include_in_schema=False)
+    def serve_frontend(frontend_path: str):
+        if frontend_path.startswith(("api/", "acceptance-llm/")):
+            raise HTTPException(status_code=404)
+        return FileResponse(frontend_dist / "index.html")
+
+    return app
+
+
+def safe_status(workspace: Path | str) -> dict[str, object]:
+    target = validate_workspace(workspace, require_empty=False)
+    metadata = load_metadata(target)
+    result = {
+        key: metadata[key]
+        for key in (
+            "package",
+            "state",
+            "source_sha",
+            "authorized_session_id",
+            "paper_count",
+            "model_request_budget",
+        )
+        if key in metadata
+    }
+    budget_path = target / "acceptance_config" / "budget-state.json"
+    if "model_request_budget" in metadata:
+        state = _load_budget_state(
+            budget_path,
+            int(metadata["model_request_budget"]),
+        )
+        result.update(
+            {
+                "forwarded_requests": state["forwarded_requests"],
+                "local_ocr_requests": state["local_ocr_requests"],
+            }
+        )
+    return result
+
+
+def _validate_port(port: int) -> int:
+    if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535:
+        raise AcceptanceError("port must be between 1024 and 65535")
+    return port
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="P2-20 bounded acceptance launcher")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    prepare = subparsers.add_parser("prepare")
+    prepare.add_argument("--source-ref", required=True)
+    prepare.add_argument("--workspace", type=Path, required=True)
+    prepare.add_argument("--source-data-root", type=Path, required=True)
+    prepare.add_argument("--session-id", type=int, required=True)
+    prepare.add_argument("--session-name", required=True)
+    prepare.add_argument("--profile-path", type=Path, required=True)
+    prepare.add_argument("--port", type=int, required=True)
+    serve = subparsers.add_parser("serve")
+    serve.add_argument("--workspace", type=Path, required=True)
+    serve.add_argument("--port", type=int, required=True)
+    status = subparsers.add_parser("status")
+    status.add_argument("--workspace", type=Path, required=True)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        if args.command == "prepare":
+            port = _validate_port(args.port)
+            code_metadata = prepare_code_workspace(
+                args.source_ref,
+                args.workspace,
+                repo_root=REPO_ROOT,
+            )
+            prepare_authorized_inputs(
+                args.workspace,
+                source_data_root=args.source_data_root,
+                session_id=args.session_id,
+                expected_session_name=args.session_name,
+                paper_limit=3,
+            )
+            prepare_runtime_profile(
+                args.workspace,
+                source_profile_path=args.profile_path,
+                proxy_base_url=(
+                    f"http://127.0.0.1:{port}/acceptance-llm/v1"
+                ),
+                max_forwarded_requests=4,
+            )
+            configure_staged_runtime(args.workspace)
+            build_and_copy_frontend(
+                args.workspace,
+                repo_root=REPO_ROOT,
+                expected_source_sha=str(code_metadata["source_sha"]),
+            )
+            result = safe_status(args.workspace)
+        elif args.command == "status":
+            result = safe_status(args.workspace)
+        elif args.command == "serve":
+            port = _validate_port(args.port)
+            target = validate_workspace(args.workspace, require_empty=False)
+            profiles = json.loads(
+                (
+                    target / "acceptance_config" / "api_profiles.json"
+                ).read_text(encoding="utf-8")
+            )
+            expected_proxy = (
+                f"http://127.0.0.1:{port}/acceptance-llm/v1"
+            )
+            if (
+                not isinstance(profiles, list)
+                or len(profiles) != 1
+                or profiles[0].get("base_url") != expected_proxy
+            ):
+                raise AcceptanceError(
+                    "serve port does not match the prepared model proxy"
+                )
+            app = create_acceptance_app(target)
+            import uvicorn
+
+            uvicorn.run(app, host="127.0.0.1", port=port)
+            return 0
+        else:
+            raise AcceptanceError("unsupported acceptance command")
+        print(json.dumps(result, ensure_ascii=True, separators=(",", ":")))
+        return 0
+    except KeyboardInterrupt:
+        return 130
+    except (AcceptanceError, OSError, KeyError, ValueError) as exc:
+        print(
+            json.dumps(
+                {"ok": False, "error": str(exc)},
+                ensure_ascii=True,
+                separators=(",", ":"),
+            ),
+            file=sys.stderr,
+        )
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
