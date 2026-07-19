@@ -607,12 +607,14 @@ def test_build_and_copy_frontend_requires_exact_clean_source(
     (workspace / "acceptance_data").mkdir()
     (workspace / "acceptance_logs").mkdir()
     calls: list[list[str]] = []
+    call_options: list[dict[str, object]] = []
 
     def fake_run(
         command: list[str],
         **kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
         calls.append(command)
+        call_options.append(dict(kwargs))
         if command[:2] == ["git", "rev-parse"]:
             return subprocess.CompletedProcess(command, 0, source_sha, "")
         if command[:2] == ["git", "status"]:
@@ -636,6 +638,11 @@ def test_build_and_copy_frontend_requires_exact_clean_source(
 
     assert (workspace / "frontend" / "dist" / "index.html").is_file()
     assert any(command[-2:] == ["run", "build"] for command in calls)
+    build_index = next(
+        index for index, command in enumerate(calls) if command[-2:] == ["run", "build"]
+    )
+    assert call_options[build_index]["encoding"] == "utf-8"
+    assert call_options[build_index]["errors"] == "replace"
 
 
 def test_create_acceptance_app_rejects_missing_frontend_dist(tmp_path: Path) -> None:
