@@ -2,7 +2,7 @@
 
 **关联执行包：** P2-09（已合并实现的独立缺陷修复）
 **阻塞：** P2-20 formal 用户验收
-**状态：** waiting_final_review
+**状态：** ready_for_integration
 **基线：** `c9662850bbd75a2ba062c0011a6762241818f4d8`
 **分支：** `codex/issue-60-p2-09-docx-inline-marker`
 **用户自测：** none（修复进入 M2-03 后恢复 P2-20 的既有 formal 清单）
@@ -46,7 +46,7 @@
 - [x] 运行聚焦测试、受影响回归和快速冒烟。
 - [x] 冻结候选并进行 Spec/Standards 双路复审。
 - [x] 统一修复初审登记的 4 个 Important，并完成受影响测试。
-- [ ] 由原评审者限定复核登记问题、修复区域和直接回归。
+- [x] 由原评审者限定复核登记问题、修复区域和直接回归。
 - [ ] 进入 M2-03 integration 并恢复 P2-20。
 
 ## 数据守卫
@@ -64,6 +64,7 @@
 | RED→GREEN | 约 35 分钟 | 公开 API 精确复现 `Q10/Q12`；直接 7 passed；Config Source/策略 133 passed；配置生成受影响回归 89 passed；快速冒烟通过 | 1 | 连续题号被 Word 合并到同段，而本地拆题只读取段首；采用“连续内联号 + 后续段首号闭合序列”保守识别 | 双路复审、integration | 是（待复审） | 否 |
 | 并行初审 | 约 20 分钟 | Spec/Standards 检查同一候选 `52b3b9f` | 5 | 4 Important：交接提交引用过期、普通正文连续数字误拆、题号前图片归属错误、纯文本内联答案漏拆；1 Suggestion：富文本/纯文本状态推进存在重复 | 一次统一修复、限定终审、integration | 否 | 否 |
 | 统一修复 | 约 25 分钟 | 3 个新增 RED 均复现；直接修复用例 6 passed；Config Source/策略 136 passed；配置生成受影响回归 89 passed；快速冒烟通过 | 4 个阻塞项 | 4 个 Important 已统一处理；Suggestion 不阻塞且不在本轮扩大为结构重构 | 限定终审、integration | 是（待终审） | 否 |
+| 限定终审 | 约 10 分钟 | 原 Spec/Standards 评审者仅复核首轮问题、修复区域和直接回归；分别取得 10 passed / 6 passed | 0 个新增阻塞项 | `Critical 0 / Important 0`；首轮 4 个 Important 全部关闭；保留 1 个未恶化的重复代码 Suggestion | integration 逐包验证 | 是 | 否（待 integration） |
 
 ## 根因与假设结论
 
