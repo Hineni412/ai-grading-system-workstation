@@ -121,6 +121,42 @@ def test_plain_text_preview_does_not_promote_nonconsecutive_inline_reference() -
     assert "appendix reference 11." in blocks[0]["question_text"]
 
 
+def test_plain_text_preview_does_not_promote_consecutive_inline_prose_number() -> None:
+    text = "\n".join(
+        [
+            "10. Tenth question.",
+            "According to clause 11. this remains part of question ten.",
+            "12. Twelfth question.",
+        ]
+    )
+
+    blocks = session_manager.preview_question_blocks_from_docx_text(text)
+
+    assert [block["question_id"] for block in blocks] == ["Q10", "Q12"]
+    assert "clause 11." in blocks[0]["question_text"]
+
+
+def test_plain_text_inline_answers_still_split_consecutive_main_question() -> None:
+    text = "\n".join(
+        [
+            "10. Tenth question.",
+            "【答案】A",
+            "End of question ten. 11. Eleventh question.",
+            "【答案】B",
+            "12. Twelfth question.",
+            "【答案】C",
+        ]
+    )
+
+    blocks = session_manager.preview_question_blocks_from_docx_text(text)
+
+    assert [block["question_id"] for block in blocks] == ["Q10", "Q11", "Q12"]
+    by_id = {block["question_id"]: block for block in blocks}
+    assert "Eleventh question" in by_id["Q11"]["question_text"]
+    assert by_id["Q11"]["canonical_answer"] == "B"
+    assert by_id["Q12"]["canonical_answer"] == "C"
+
+
 @pytest.mark.parametrize(
     "continuation",
     [

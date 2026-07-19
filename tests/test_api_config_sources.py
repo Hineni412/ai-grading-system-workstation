@@ -76,6 +76,20 @@ def _docx_with_inline_question_media_bytes() -> bytes:
     return output.getvalue()
 
 
+def _docx_with_image_before_inline_question_marker_bytes() -> bytes:
+    image = io.BytesIO()
+    Image.new("RGB", (24, 18), "maroon").save(image, format="PNG")
+    document = Document()
+    document.add_paragraph("10. Tenth question.")
+    paragraph = document.add_paragraph("Continuation of question ten.")
+    paragraph.add_run().add_picture(io.BytesIO(image.getvalue()), width=Inches(0.25))
+    paragraph.add_run(" 11. Eleventh question.")
+    document.add_paragraph("12. Twelfth question.")
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
 def _client(tmp_path: Path) -> tuple[TestClient, DBManager, Path]:
     db = DBManager(tmp_path / "grading.db")
     db.initialize()
@@ -237,6 +251,30 @@ def test_docx_inline_question_keeps_following_formula_and_image_with_new_block(
     assert questions["Q11"]["has_question_asset"] is True
     assert "Eleventh question x" in questions["Q11"]["question_preview"]
     assert questions["Q11"]["question_preview"].endswith("2")
+
+
+def test_docx_inline_question_keeps_preceding_image_with_current_block(
+    tmp_path: Path,
+) -> None:
+    client, db, _upload_root = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+
+    uploaded = client.post(
+        f"/api/sessions/{session_id}/config/sources",
+        content=_docx_with_image_before_inline_question_marker_bytes(),
+        headers={
+            "content-type": "application/octet-stream",
+            "x-upload-filename": quote("inline-question-preceding-image.docx"),
+        },
+    )
+
+    assert uploaded.status_code == 201
+    questions = {
+        question["question_id"]: question
+        for question in uploaded.json()["questions"]
+    }
+    assert questions["Q10"]["has_question_asset"] is True
+    assert questions["Q11"]["has_question_asset"] is False
 
 
 def test_active_source_endpoint_returns_replacement_without_old_source_id(
