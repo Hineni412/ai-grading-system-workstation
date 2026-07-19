@@ -10,7 +10,9 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from openpyxl import Workbook
 
+from db_manager import DBManager
 from tools import p2_20_acceptance as acceptance
 
 
@@ -140,6 +142,699 @@ def _authorized_source_data(tmp_path: Path, *, paper_count: int = 3) -> Path:
     connection.commit()
     connection.close()
     return data_root
+
+
+def _prepared_report_workspace(
+    tmp_path: Path,
+) -> tuple[Path, Path, DBManager, int]:
+    repo, source_sha = _committed_source_repo(tmp_path)
+    workspace = tmp_path / "prepared"
+    acceptance.prepare_code_workspace(source_sha, workspace, repo_root=repo)
+    source_data = _authorized_source_data(tmp_path)
+    acceptance.prepare_authorized_inputs(
+        workspace,
+        source_data_root=source_data,
+        session_id=1,
+        expected_session_name="0609",
+        paper_limit=3,
+    )
+    profile_path = tmp_path / "machine-config" / "api_profiles.json"
+    profile_path.parent.mkdir()
+    profile_path.write_text(
+        json.dumps(
+            [
+                {
+                    "provider": "custom-openai-compatible",
+                    "base_url": "https://grading.example.invalid/v1",
+                    "api_key": "grading-secret",
+                    "grading_model": "grading-model",
+                    "config_model": "config-model",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    acceptance.prepare_runtime_profile(
+        workspace,
+        source_profile_path=profile_path,
+        proxy_base_url="http://127.0.0.1:8120/acceptance-llm/v1",
+        max_forwarded_requests=4,
+    )
+
+    data_root = workspace / "acceptance_data"
+    config_dir = data_root / "config" / "uploaded"
+    config_dir.mkdir(parents=True)
+    rubric = config_dir / "rubric.json"
+    answer = config_dir / "answer.json"
+    rubric.write_text(
+        json.dumps(
+            {
+                "total_score": 100,
+                "questions": [
+                    {"question_id": "Q1", "max_score": 40},
+                    {"question_id": "Q2", "max_score": 60},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    answer.write_text(
+        json.dumps(
+            {
+                "questions": [
+                    {"question_id": "Q1", "canonical_answer": "A"},
+                    {"question_id": "Q2", "canonical_answer": "B"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (data_root / "databases").mkdir()
+    db = DBManager(data_root / "databases" / "grading_system.db")
+    db.initialize()
+    session_id = db.create_grading_session(
+        "P2-20 synthetic acceptance",
+        str(rubric),
+        str(answer),
+    )
+    return workspace, source_data, db, session_id
+
+
+def _seed_confirmed_template(
+    workspace: Path,
+    db: DBManager,
+    session_id: int,
+    *,
+    regions: list[dict[str, object]] | None = None,
+) -> int:
+    template_dir = (
+        workspace
+        / "acceptance_data"
+        / "templates"
+        / f"session_{session_id}"
+    )
+    template_dir.mkdir(parents=True)
+    paths = {
+        "front": template_dir / "front.png",
+        "back": template_dir / "back.png",
+        "analysis": template_dir / "analysis.json",
+        "config": template_dir / "template.json",
+        "regions": template_dir / "regions.json",
+    }
+    paths["front"].write_bytes(b"synthetic-front")
+    paths["back"].write_bytes(b"synthetic-back")
+    for key in ("analysis", "config", "regions"):
+        paths[key].write_text("{}", encoding="utf-8")
+    template_id = db.activate_session_template(
+        session_id,
+        front_template_path=str(paths["front"]),
+        back_template_path=str(paths["back"]),
+        ai_analysis_path=str(paths["analysis"]),
+        template_config_path=str(paths["config"]),
+        regions_path=str(paths["regions"]),
+    )
+    token = db.replace_answer_regions_atomic(
+        session_id,
+        template_id,
+        regions
+        or [
+            {
+                "region_uuid": "region-q1",
+                "page": "front",
+                "region_order": 1,
+                "x": 1,
+                "y": 1,
+                "w": 10,
+                "h": 10,
+                "mapped_question_id": "Q1",
+                "mapping_status": "manual",
+            },
+            {
+                "region_uuid": "region-q2",
+                "page": "back",
+                "region_order": 2,
+                "x": 2,
+                "y": 2,
+                "w": 10,
+                "h": 10,
+                "mapped_question_id": "Q2",
+                "mapping_status": "manual",
+            },
+        ],
+        confirmed=True,
+    )
+    assert db.mark_region_snapshot_complete(
+        session_id,
+        expected_token=token,
+    )
+    return template_id
+
+
+def _seed_complete_grading(
+    workspace: Path,
+    db: DBManager,
+    session_id: int,
+) -> None:
+    scans_dir = workspace / "acceptance_data" / "scans"
+    scans_dir.mkdir(parents=True)
+    database = workspace / "acceptance_data" / "databases" / "grading_system.db"
+    with sqlite3.connect(database) as connection:
+        for index in range(1, 4):
+            front = scans_dir / f"paper-{index}-front.jpg"
+            back = scans_dir / f"paper-{index}-back.jpg"
+            front.write_bytes(f"front-{index}".encode())
+            back.write_bytes(f"back-{index}".encode())
+            student_id = int(
+                connection.execute(
+                    """
+                    INSERT INTO students (student_code, name, class_name)
+                    VALUES (?, ?, ?)
+                    """,
+                    (f"S{index:03}", f"Student {index}", "Class A"),
+                ).lastrowid
+            )
+            paper_id = int(
+                connection.execute(
+                    """
+                    INSERT INTO exam_papers (
+                        session_id, front_image, back_image, ocr_name,
+                        student_id, match_status, processing_status
+                    ) VALUES (?, ?, ?, ?, ?, 'matched', 'graded')
+                    """,
+                    (
+                        session_id,
+                        str(front),
+                        str(back),
+                        f"Student {index}",
+                        student_id,
+                    ),
+                ).lastrowid
+            )
+            result_id = int(
+                connection.execute(
+                    """
+                    INSERT INTO session_results (
+                        session_id, student_id, paper_id, total_score,
+                        student_score, needs_human_review, raw_json
+                    ) VALUES (?, ?, ?, 100, 70, 0, ?)
+                    """,
+                    (
+                        session_id,
+                        student_id,
+                        paper_id,
+                        json.dumps(
+                            {
+                                "grading_completeness": {
+                                    "status": "complete",
+                                    "missing_question_ids": [],
+                                    "duplicate_question_ids": [],
+                                    "unexpected_question_ids": [],
+                                }
+                            }
+                        ),
+                    ),
+                ).lastrowid
+            )
+            connection.executemany(
+                """
+                INSERT INTO session_details (
+                    result_id, question_id, score_awarded,
+                    deduction_reason, knowledge_id, confidence_score
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (result_id, "Q1", 30, "", "K1", 95),
+                    (result_id, "Q2", 40, "", "K2", 95),
+                ],
+            )
+        connection.commit()
+    db.update_session_status(session_id, "completed")
+
+
+def _write_matching_report(workspace: Path) -> Path:
+    reports_dir = workspace / "acceptance_data" / "reports"
+    reports_dir.mkdir(parents=True)
+    report_path = reports_dir / "session-report.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "成绩与小题明细"
+    sheet.append(["学号", "总分"])
+    for index in range(1, 4):
+        sheet.append([f"S{index:03}", 70])
+    workbook.save(report_path)
+    workbook.close()
+    return report_path
+
+
+def test_consistency_report_accepts_safe_created_session_stage(
+    tmp_path: Path,
+) -> None:
+    workspace, source_data, _db, session_id = _prepared_report_workspace(tmp_path)
+
+    report = acceptance.build_consistency_report(
+        workspace,
+        stage="session",
+        session_id=session_id,
+        source_data_root=source_data,
+    )
+
+    assert report == {
+        "package": "P2-20",
+        "stage": "session",
+        "ok": True,
+        "source_unchanged": True,
+        "session_id": session_id,
+        "session_status": "created",
+        "counts": {
+            "papers": 0,
+            "results": 0,
+            "details": 0,
+        },
+    }
+    evidence = json.loads(
+        (
+            workspace
+            / "acceptance_evidence"
+            / "consistency-session.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert evidence == report
+    encoded = json.dumps(report)
+    assert str(workspace) not in encoded
+    assert "P2-20 synthetic acceptance" not in encoded
+
+
+def test_consistency_report_accepts_matching_config_without_content_or_paths(
+    tmp_path: Path,
+) -> None:
+    workspace, source_data, _db, session_id = _prepared_report_workspace(tmp_path)
+
+    report = acceptance.build_consistency_report(
+        workspace,
+        stage="config",
+        session_id=session_id,
+        source_data_root=source_data,
+    )
+
+    assert report["stage"] == "config"
+    assert report["ok"] is True
+    assert report["source_unchanged"] is True
+    assert report["question_count"] == 2
+    assert len(str(report["config_sha256"])) == 64
+    assert report["counts"] == {"papers": 0, "results": 0, "details": 0}
+    encoded = json.dumps(report)
+    assert str(workspace) not in encoded
+    assert "canonical_answer" not in encoded
+    assert '"A"' not in encoded
+    assert (
+        json.loads(
+            (
+                workspace
+                / "acceptance_evidence"
+                / "consistency-config.json"
+            ).read_text(encoding="utf-8")
+        )
+        == report
+    )
+
+
+def test_consistency_report_rejects_conflicting_config_question_sets(
+    tmp_path: Path,
+) -> None:
+    workspace, source_data, _db, session_id = _prepared_report_workspace(tmp_path)
+    answer_path = (
+        workspace
+        / "acceptance_data"
+        / "config"
+        / "uploaded"
+        / "answer.json"
+    )
+    answer_path.write_text(
+        json.dumps(
+            {
+                "questions": [
+                    {"question_id": "Q1", "canonical_answer": "A"},
+                    {"question_id": "Q3", "canonical_answer": "C"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        acceptance.AcceptanceError,
+        match="configuration question identities conflict",
+    ):
+        acceptance.build_consistency_report(
+            workspace,
+            stage="config",
+            session_id=session_id,
+            source_data_root=source_data,
+        )
+
+
+def test_consistency_report_rejects_config_path_outside_acceptance_data(
+    tmp_path: Path,
+) -> None:
+    workspace, source_data, _db, session_id = _prepared_report_workspace(tmp_path)
+    outside_rubric = tmp_path / "outside-rubric.json"
+    outside_rubric.write_text(
+        json.dumps(
+            {
+                "questions": [
+                    {"question_id": "Q1", "max_score": 40},
+                    {"question_id": "Q2", "max_score": 60},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    database = workspace / "acceptance_data" / "databases" / "grading_system.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE grading_sessions SET rubric_path = ? WHERE id = ?",
+            (str(outside_rubric), session_id),
+        )
+        connection.commit()
+
+    with pytest.raises(
+        acceptance.AcceptanceError,
+        match="outside the acceptance workspace",
+    ):
+        acceptance.build_consistency_report(
+            workspace,
+            stage="config",
+            session_id=session_id,
+            source_data_root=source_data,
+        )
+
+
+def test_consistency_report_accepts_confirmed_template_and_regions(
+    tmp_path: Path,
+) -> None:
+    workspace, source_data, db, session_id = _prepared_report_workspace(tmp_path)
+    _seed_confirmed_template(workspace, db, session_id)
+
+    report = acceptance.build_consistency_report(
+        workspace,
+        stage="template",
+        session_id=session_id,
+        source_data_root=source_data,
+    )
+
+    assert report["stage"] == "template"
+    assert report["question_count"] == 2
+    assert report["region_count"] == 2
+    assert report["template_confirmed"] is True
+    assert len(str(report["template_sha256"])) == 64
+    encoded = json.dumps(report)
+    assert str(workspace) not in encoded
+    assert "region-q1" not in encoded
+    assert "Q1" not in encoded
+
+
+def test_consistency_report_rejects_pending_region_snapshot(
+    tmp_path: Path,
+) -> None:
+    workspace, source_data, db, session_id = _prepared_report_workspace(tmp_path)
+    template_id = _seed_confirmed_template(workspace, db, session_id)
+    db.replace_answer_regions_atomic(
+        session_id,
+        template_id,
+        [
+            {
+                "region_uuid": "pending-region",
+                "mapped_question_id": "Q1",
+            }
+        ],
+        confirmed=True,
+    )
+
+    with pytest.raises(
+        acceptance.AcceptanceError,
+        match="region snapshot is incomplete",
+    ):
+        acceptance.build_consistency_report(
+            workspace,
+            stage="template",
+            session_id=session_id,
+            source_data_root=source_data,
+        )
+
+
+def test_consistency_report_accepts_part_regions_and_optional_name_region(
+    tmp_path: Path,
+) -> None:
+    workspace, source_data, db, session_id = _prepared_report_workspace(tmp_path)
+    config_dir = workspace / "acceptance_data" / "config" / "uploaded"
+    (config_dir / "rubric.json").write_text(
+        json.dumps(
+            {
+                "questions": [
+                    {"question_id": "Q1", "max_score": 40},
+                    {
+                        "question_id": "Q2",
+                        "max_score": 60,
+                        "parts": [
+                            {"part_id": "Q2(1)", "part_score": 30},
+                            {"part_id": "Q2(2)", "part_score": 30},
+                        ],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    _seed_confirmed_template(
+        workspace,
+        db,
+        session_id,
+        regions=[
+            {
+                "region_uuid": "region-name",
+                "mapped_question_id": "__student_name__",
+                "mapping_status": "manual",
+            },
+            {
+                "region_uuid": "region-q1",
+                "mapped_question_id": "Q1",
+                "mapping_status": "manual",
+            },
+            {
+                "region_uuid": "region-q2-p1",
+                "mapped_question_id": "Q2(P1)",
+                "mapping_status": "manual",
+            },
+            {
+                "region_uuid": "region-q2-p2",
+                "mapped_question_id": "Q2(P2)",
+                "mapping_status": "manual",
+            },
+        ],
+    )
+
+    report = acceptance.build_consistency_report(
+        workspace,
+        stage="template",
+        session_id=session_id,
+        source_data_root=source_data,
+    )
+
+    assert report["region_count"] == 4
+    assert report["template_confirmed"] is True
+
+
+def test_consistency_report_accepts_three_complete_grading_results(
+    tmp_path: Path,
+) -> None:
+    workspace, source_data, db, session_id = _prepared_report_workspace(tmp_path)
+    _seed_confirmed_template(workspace, db, session_id)
+    _seed_complete_grading(workspace, db, session_id)
+
+    report = acceptance.build_consistency_report(
+        workspace,
+        stage="grading",
+        session_id=session_id,
+        source_data_root=source_data,
+    )
+
+    assert report["stage"] == "grading"
+    assert report["grading_complete"] is True
+    assert report["counts"] == {"papers": 3, "results": 3, "details": 6}
+    encoded = json.dumps(report)
+    assert "Student" not in encoded
+    assert "S001" not in encoded
+    assert str(workspace) not in encoded
+
+
+def test_consistency_report_rejects_partial_grading(
+    tmp_path: Path,
+) -> None:
+    workspace, source_data, db, session_id = _prepared_report_workspace(tmp_path)
+    _seed_confirmed_template(workspace, db, session_id)
+    _seed_complete_grading(workspace, db, session_id)
+    database = workspace / "acceptance_data" / "databases" / "grading_system.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE exam_papers SET processing_status = 'pending' WHERE id = 2"
+        )
+        connection.commit()
+
+    with pytest.raises(
+        acceptance.AcceptanceError,
+        match="grading is incomplete or conflicted",
+    ):
+        acceptance.build_consistency_report(
+            workspace,
+            stage="grading",
+            session_id=session_id,
+            source_data_root=source_data,
+        )
+
+
+def test_consistency_report_rejects_unresolved_teacher_review(
+    tmp_path: Path,
+) -> None:
+    workspace, source_data, db, session_id = _prepared_report_workspace(tmp_path)
+    _seed_confirmed_template(workspace, db, session_id)
+    _seed_complete_grading(workspace, db, session_id)
+    database = workspace / "acceptance_data" / "databases" / "grading_system.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE session_details SET confidence_score = 50 WHERE id = 1"
+        )
+        connection.commit()
+
+    with pytest.raises(
+        acceptance.AcceptanceError,
+        match="teacher review is incomplete",
+    ):
+        acceptance.build_consistency_report(
+            workspace,
+            stage="review",
+            session_id=session_id,
+            source_data_root=source_data,
+        )
+
+
+def test_consistency_report_accepts_completed_teacher_review(
+    tmp_path: Path,
+) -> None:
+    workspace, source_data, db, session_id = _prepared_report_workspace(tmp_path)
+    _seed_confirmed_template(workspace, db, session_id)
+    _seed_complete_grading(workspace, db, session_id)
+
+    report = acceptance.build_consistency_report(
+        workspace,
+        stage="review",
+        session_id=session_id,
+        source_data_root=source_data,
+    )
+
+    assert report["stage"] == "review"
+    assert report["teacher_review_complete"] is True
+    assert report["pending_review_count"] == 0
+
+
+def test_consistency_report_accepts_report_matching_reviewed_scores(
+    tmp_path: Path,
+) -> None:
+    workspace, source_data, db, session_id = _prepared_report_workspace(tmp_path)
+    _seed_confirmed_template(workspace, db, session_id)
+    _seed_complete_grading(workspace, db, session_id)
+    report_path = _write_matching_report(workspace)
+
+    report = acceptance.build_consistency_report(
+        workspace,
+        stage="report",
+        session_id=session_id,
+        source_data_root=source_data,
+        report_file=report_path,
+    )
+
+    assert report["stage"] == "report"
+    assert report["report_matches_results"] is True
+    assert report["report_row_count"] == 3
+    assert len(str(report["report_sha256"])) == 64
+    encoded = json.dumps(report)
+    assert "S001" not in encoded
+    assert "Student" not in encoded
+    assert str(workspace) not in encoded
+
+
+def test_consistency_report_rejects_report_score_conflict(
+    tmp_path: Path,
+) -> None:
+    workspace, source_data, db, session_id = _prepared_report_workspace(tmp_path)
+    _seed_confirmed_template(workspace, db, session_id)
+    _seed_complete_grading(workspace, db, session_id)
+    report_path = _write_matching_report(workspace)
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(report_path)
+    workbook["成绩与小题明细"]["B2"] = 69
+    workbook.save(report_path)
+    workbook.close()
+
+    with pytest.raises(
+        acceptance.AcceptanceError,
+        match="report conflicts with reviewed results",
+    ):
+        acceptance.build_consistency_report(
+            workspace,
+            stage="report",
+            session_id=session_id,
+            source_data_root=source_data,
+            report_file=report_path,
+        )
+
+
+def test_consistency_report_rechecks_authorized_source_fingerprint(
+    tmp_path: Path,
+) -> None:
+    workspace, source_data, _db, session_id = _prepared_report_workspace(tmp_path)
+    source_database = source_data / "databases" / "grading_system.db"
+    with sqlite3.connect(source_database) as connection:
+        connection.execute("UPDATE students SET name = 'changed' WHERE id = 1")
+        connection.commit()
+
+    with pytest.raises(
+        acceptance.AcceptanceError,
+        match="authorized source changed after preparation",
+    ):
+        acceptance.build_consistency_report(
+            workspace,
+            stage="session",
+            session_id=session_id,
+            source_data_root=source_data,
+        )
+
+
+def test_consistency_report_cli_emits_only_safe_json(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace, source_data, _db, session_id = _prepared_report_workspace(tmp_path)
+
+    exit_code = acceptance.main(
+        [
+            "report",
+            "--workspace",
+            str(workspace),
+            "--stage",
+            "session",
+            "--session-id",
+            str(session_id),
+            "--source-data-root",
+            str(source_data),
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["stage"] == "session"
+    assert payload["ok"] is True
+    assert str(workspace) not in json.dumps(payload)
 
 
 def test_validate_workspace_accepts_only_empty_directory_below_system_temp(
