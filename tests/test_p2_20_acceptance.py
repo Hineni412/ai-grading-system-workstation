@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import socket
 import sqlite3
 import tempfile
 import subprocess
+import textwrap
+import time
 import zipfile
 from pathlib import Path
 
@@ -1467,3 +1470,209 @@ def test_main_prepare_orchestrates_exact_authorized_scope(
     assert calls[1][1]["paper_limit"] == 3
     assert calls[2][1]["max_forwarded_requests"] == 4
     assert json.loads(capsys.readouterr().out)["state"] == "runtime_ready"
+
+
+def test_main_start_returns_after_the_acceptance_service_is_healthy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace = tmp_path / "workspace"
+    calls: list[tuple[Path, int]] = []
+
+    monkeypatch.setattr(
+        acceptance,
+        "start_acceptance_server",
+        lambda target, port: calls.append((Path(target), port))
+        or {
+            "package": "P2-20",
+            "server_state": "running",
+            "port": port,
+            "forwarded_requests": 0,
+            "local_ocr_requests": 0,
+        },
+        raising=False,
+    )
+
+    result = acceptance.main(
+        [
+            "start",
+            "--workspace",
+            str(workspace),
+            "--port",
+            "8120",
+        ]
+    )
+
+    assert result == 0
+    assert calls == [(workspace, 8120)]
+    assert json.loads(capsys.readouterr().out) == {
+        "package": "P2-20",
+        "server_state": "running",
+        "port": 8120,
+        "forwarded_requests": 0,
+        "local_ocr_requests": 0,
+    }
+
+
+def test_main_stop_returns_after_the_acceptance_service_is_down(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace = tmp_path / "workspace"
+    calls: list[Path] = []
+
+    monkeypatch.setattr(
+        acceptance,
+        "stop_acceptance_server",
+        lambda target: calls.append(Path(target))
+        or {
+            "package": "P2-20",
+            "server_state": "stopped",
+            "port": 8120,
+            "forwarded_requests": 0,
+            "local_ocr_requests": 0,
+        },
+    )
+
+    result = acceptance.main(
+        [
+            "stop",
+            "--workspace",
+            str(workspace),
+        ]
+    )
+
+    assert result == 0
+    assert calls == [workspace]
+    assert json.loads(capsys.readouterr().out) == {
+        "package": "P2-20",
+        "server_state": "stopped",
+        "port": 8120,
+        "forwarded_requests": 0,
+        "local_ocr_requests": 0,
+    }
+
+
+def test_status_explicitly_reports_that_no_acceptance_server_is_running(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    (workspace / "acceptance_config").mkdir(parents=True)
+    (workspace / acceptance.METADATA_FILENAME).write_text(
+        json.dumps(
+            {
+                "package": "P2-20",
+                "source_sha": "a" * 40,
+                "state": "runtime_ready",
+                "authorized_session_id": 1,
+                "paper_count": 3,
+                "source_fingerprint": "b" * 64,
+                "input_manifest": "acceptance_inputs/manifest.json",
+                "profile_fingerprint": "c" * 64,
+                "model_request_budget": 4,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = acceptance.safe_status(workspace)
+
+    assert status["server_state"] == "stopped"
+
+
+def test_start_and_stop_manage_a_detached_acceptance_service(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    (workspace / "acceptance_config").mkdir(parents=True)
+    (workspace / "acceptance_logs").mkdir()
+    (workspace / "tools").mkdir()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
+    (workspace / acceptance.METADATA_FILENAME).write_text(
+        json.dumps(
+            {
+                "package": "P2-20",
+                "source_sha": "a" * 40,
+                "state": "runtime_ready",
+                "authorized_session_id": 1,
+                "paper_count": 3,
+                "source_fingerprint": "b" * 64,
+                "input_manifest": "acceptance_inputs/manifest.json",
+                "profile_fingerprint": "c" * 64,
+                "model_request_budget": 4,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (workspace / "acceptance_config" / "api_profiles.json").write_text(
+        json.dumps(
+            [
+                {
+                    "base_url": (
+                        f"http://127.0.0.1:{port}/acceptance-llm/v1"
+                    )
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (workspace / "tools" / "p2_20_acceptance.py").write_text(
+        textwrap.dedent(
+            """
+            import argparse
+            from http.server import BaseHTTPRequestHandler, HTTPServer
+            from pathlib import Path
+
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("--workspace", required=True)
+            parser.add_argument("--port", type=int, required=True)
+            args = parser.parse_args()
+            stop_path = Path(args.workspace) / "acceptance_config" / "server-stop.request"
+
+            class Handler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b"ready")
+
+                def log_message(self, _format, *_args):
+                    return
+
+            server = HTTPServer(("127.0.0.1", args.port), Handler)
+            server.timeout = 0.1
+            try:
+                while not stop_path.exists():
+                    server.handle_request()
+            finally:
+                server.server_close()
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    started_at = time.monotonic()
+    started = acceptance.start_acceptance_server(
+        workspace,
+        port,
+        ready_timeout=5,
+    )
+    elapsed = time.monotonic() - started_at
+    try:
+        assert elapsed < 5
+        assert started["server_state"] == "running"
+        assert acceptance.safe_status(workspace)["server_state"] == "running"
+    finally:
+        stopped = acceptance.stop_acceptance_server(
+            workspace,
+            stop_timeout=5,
+        )
+
+    assert stopped["server_state"] == "stopped"
+    assert acceptance.safe_status(workspace)["server_state"] == "stopped"
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        assert probe.connect_ex(("127.0.0.1", port)) != 0

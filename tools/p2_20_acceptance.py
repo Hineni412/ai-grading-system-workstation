@@ -8,6 +8,7 @@ import math
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -18,7 +19,9 @@ import zipfile
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
+from urllib.error import URLError
 from urllib.parse import urlparse
+from urllib.request import urlopen
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path[:1]:
@@ -30,6 +33,8 @@ from question_id_contract import QuestionIdCatalog, QuestionIdContractError
 
 PACKAGE = "P2-20"
 METADATA_FILENAME = "p2-20-acceptance.json"
+SERVER_STATE_FILENAME = "server-state.json"
+SERVER_STOP_FILENAME = "server-stop.request"
 _CONFIG_KEY_RE = re.compile(
     r"^[ \t]*(?P<key>DATA_DIR|LOGS_DIR|[\"']DATA_DIR[\"']|[\"']LOGS_DIR[\"'])[ \t]*:"
 )
@@ -1697,6 +1702,284 @@ def create_acceptance_app(workspace: Path | str):
     return app
 
 
+def _server_state_path(workspace: Path) -> Path:
+    return workspace / "acceptance_config" / SERVER_STATE_FILENAME
+
+
+def _server_stop_path(workspace: Path) -> Path:
+    return workspace / "acceptance_config" / SERVER_STOP_FILENAME
+
+
+def _load_server_state(workspace: Path) -> dict[str, object] | None:
+    state_path = _server_state_path(workspace)
+    if not state_path.exists():
+        return None
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise AcceptanceError("acceptance server state is unavailable") from exc
+    expected = {"package", "source_sha", "state", "pid", "port"}
+    if (
+        not isinstance(state, dict)
+        or set(state) != expected
+        or state["package"] != PACKAGE
+        or state["state"] not in {"starting", "running"}
+        or isinstance(state["pid"], bool)
+        or not isinstance(state["pid"], int)
+        or state["pid"] <= 0
+        or isinstance(state["port"], bool)
+        or not isinstance(state["port"], int)
+        or not 1024 <= state["port"] <= 65535
+        or not isinstance(state["source_sha"], str)
+        or len(state["source_sha"]) != 40
+    ):
+        raise AcceptanceError("acceptance server state is invalid")
+    return state
+
+
+def _write_server_state(workspace: Path, state: dict[str, object]) -> None:
+    state_path = _server_state_path(workspace)
+    temporary = state_path.with_suffix(f"{state_path.suffix}.tmp")
+    temporary.write_text(
+        json.dumps(state, ensure_ascii=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    temporary.replace(state_path)
+
+
+def _remove_server_state_for_pid(workspace: Path, pid: int) -> None:
+    try:
+        state = _load_server_state(workspace)
+    except AcceptanceError:
+        return
+    if state is not None and state["pid"] == pid:
+        _server_state_path(workspace).unlink(missing_ok=True)
+
+
+def _server_is_healthy(port: int) -> bool:
+    try:
+        with urlopen(f"http://127.0.0.1:{port}/", timeout=0.5) as response:
+            return response.status == 200
+    except (OSError, URLError, ValueError):
+        return False
+
+
+def _process_is_running(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        process_query_limited_information = 0x1000
+        still_active = 259
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        ]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(
+            process_query_limited_information,
+            False,
+            pid,
+        )
+        if not handle:
+            return False
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(
+                handle,
+                ctypes.byref(exit_code),
+            ):
+                return False
+            return exit_code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        return False
+    return True
+
+
+def _ensure_loopback_port_available(port: int) -> None:
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if sys.platform == "win32":
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        probe.bind(("127.0.0.1", port))
+    except OSError as exc:
+        raise AcceptanceError("acceptance server port is already in use") from exc
+    finally:
+        probe.close()
+
+
+def _validate_prepared_proxy_port(workspace: Path, port: int) -> None:
+    try:
+        profiles = json.loads(
+            (
+                workspace / "acceptance_config" / "api_profiles.json"
+            ).read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise AcceptanceError("prepared API profile is unavailable") from exc
+    expected_proxy = f"http://127.0.0.1:{port}/acceptance-llm/v1"
+    if (
+        not isinstance(profiles, list)
+        or len(profiles) != 1
+        or profiles[0].get("base_url") != expected_proxy
+    ):
+        raise AcceptanceError("serve port does not match the prepared model proxy")
+
+
+def start_acceptance_server(
+    workspace: Path | str,
+    port: int,
+    *,
+    ready_timeout: float = 30.0,
+) -> dict[str, object]:
+    target = validate_workspace(workspace, require_empty=False)
+    metadata = load_metadata(target)
+    if metadata["state"] != "runtime_ready":
+        raise AcceptanceError("acceptance runtime is not ready")
+    validated_port = _validate_port(port)
+    _validate_prepared_proxy_port(target, validated_port)
+    existing = _load_server_state(target)
+    if existing is not None:
+        if (
+            existing["source_sha"] == metadata["source_sha"]
+            and existing["port"] == validated_port
+            and _server_is_healthy(validated_port)
+        ):
+            result = safe_status(target)
+            result.update({"server_state": "running", "port": validated_port})
+            return result
+        raise AcceptanceError(
+            "acceptance server state is stale; stop it before restarting"
+        )
+    _ensure_loopback_port_available(validated_port)
+    _server_stop_path(target).unlink(missing_ok=True)
+    stdout_path = target / "acceptance_logs" / "server-stdout.log"
+    stderr_path = target / "acceptance_logs" / "server-stderr.log"
+    creationflags = 0
+    if sys.platform == "win32":
+        creationflags = (
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+        )
+    command = [
+        sys.executable,
+        str(target / "tools" / "p2_20_acceptance.py"),
+        "serve",
+        "--workspace",
+        str(target),
+        "--port",
+        str(validated_port),
+    ]
+    with stdout_path.open("ab") as stdout, stderr_path.open("ab") as stderr:
+        process = subprocess.Popen(
+            command,
+            cwd=target,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout,
+            stderr=stderr,
+            close_fds=True,
+            creationflags=creationflags,
+        )
+    state = {
+        "package": PACKAGE,
+        "source_sha": metadata["source_sha"],
+        "state": "starting",
+        "pid": process.pid,
+        "port": validated_port,
+    }
+    _write_server_state(target, state)
+    deadline = time.monotonic() + max(1.0, float(ready_timeout))
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            _remove_server_state_for_pid(target, process.pid)
+            raise AcceptanceError(
+                "acceptance server exited during startup; see workspace logs"
+            )
+        if _server_is_healthy(validated_port):
+            state["state"] = "running"
+            _write_server_state(target, state)
+            result = safe_status(target)
+            result.update({"server_state": "running", "port": validated_port})
+            return result
+        time.sleep(0.2)
+    _server_stop_path(target).touch(exist_ok=True)
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+    _remove_server_state_for_pid(target, process.pid)
+    raise AcceptanceError("acceptance server did not become healthy in time")
+
+
+def stop_acceptance_server(
+    workspace: Path | str,
+    *,
+    stop_timeout: float = 20.0,
+) -> dict[str, object]:
+    target = validate_workspace(workspace, require_empty=False)
+    metadata = load_metadata(target)
+    state = _load_server_state(target)
+    if state is None:
+        result = safe_status(target)
+        result.update({"server_state": "stopped"})
+        return result
+    if state["source_sha"] != metadata["source_sha"]:
+        raise AcceptanceError("acceptance server source does not match the workspace")
+    port = int(state["port"])
+    _server_stop_path(target).touch(exist_ok=True)
+    deadline = time.monotonic() + max(1.0, float(stop_timeout))
+    while time.monotonic() < deadline:
+        if not _process_is_running(int(state["pid"])):
+            _server_state_path(target).unlink(missing_ok=True)
+            _server_stop_path(target).unlink(missing_ok=True)
+            result = safe_status(target)
+            result.update({"server_state": "stopped", "port": port})
+            return result
+        time.sleep(0.2)
+    raise AcceptanceError("acceptance server did not stop in time")
+
+
+def run_acceptance_server(workspace: Path | str, port: int) -> None:
+    target = validate_workspace(workspace, require_empty=False)
+    app = create_acceptance_app(target)
+    import uvicorn
+
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=port)
+    )
+    stop_path = _server_stop_path(target)
+
+    def watch_for_stop() -> None:
+        while not server.should_exit:
+            if stop_path.exists():
+                server.should_exit = True
+                return
+            time.sleep(0.2)
+
+    watcher = threading.Thread(target=watch_for_stop, daemon=True)
+    watcher.start()
+    try:
+        server.run()
+    finally:
+        stop_path.unlink(missing_ok=True)
+        _remove_server_state_for_pid(target, os.getpid())
+
+
 def safe_status(workspace: Path | str) -> dict[str, object]:
     target = validate_workspace(workspace, require_empty=False)
     metadata = load_metadata(target)
@@ -1724,6 +2007,25 @@ def safe_status(workspace: Path | str) -> dict[str, object]:
                 "local_ocr_requests": state["local_ocr_requests"],
             }
         )
+    server = _load_server_state(target)
+    if server is None:
+        result["server_state"] = "stopped"
+    else:
+        port = int(server["port"])
+        result.update(
+            {
+                "server_state": (
+                    "running"
+                    if _server_is_healthy(port)
+                    else (
+                        "starting"
+                        if server["state"] == "starting"
+                        else "unhealthy"
+                    )
+                ),
+                "port": port,
+            }
+        )
     return result
 
 
@@ -1747,6 +2049,11 @@ def _parser() -> argparse.ArgumentParser:
     serve = subparsers.add_parser("serve")
     serve.add_argument("--workspace", type=Path, required=True)
     serve.add_argument("--port", type=int, required=True)
+    start = subparsers.add_parser("start")
+    start.add_argument("--workspace", type=Path, required=True)
+    start.add_argument("--port", type=int, required=True)
+    stop = subparsers.add_parser("stop")
+    stop.add_argument("--workspace", type=Path, required=True)
     status = subparsers.add_parser("status")
     status.add_argument("--workspace", type=Path, required=True)
     report = subparsers.add_parser("report")
@@ -1796,6 +2103,10 @@ def main(argv: list[str] | None = None) -> int:
             result = safe_status(args.workspace)
         elif args.command == "status":
             result = safe_status(args.workspace)
+        elif args.command == "start":
+            result = start_acceptance_server(args.workspace, args.port)
+        elif args.command == "stop":
+            result = stop_acceptance_server(args.workspace)
         elif args.command == "report":
             result = build_consistency_report(
                 args.workspace,
@@ -1807,26 +2118,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "serve":
             port = _validate_port(args.port)
             target = validate_workspace(args.workspace, require_empty=False)
-            profiles = json.loads(
-                (
-                    target / "acceptance_config" / "api_profiles.json"
-                ).read_text(encoding="utf-8")
-            )
-            expected_proxy = (
-                f"http://127.0.0.1:{port}/acceptance-llm/v1"
-            )
-            if (
-                not isinstance(profiles, list)
-                or len(profiles) != 1
-                or profiles[0].get("base_url") != expected_proxy
-            ):
-                raise AcceptanceError(
-                    "serve port does not match the prepared model proxy"
-                )
-            app = create_acceptance_app(target)
-            import uvicorn
-
-            uvicorn.run(app, host="127.0.0.1", port=port)
+            _validate_prepared_proxy_port(target, port)
+            run_acceptance_server(target, port)
             return 0
         else:
             raise AcceptanceError("unsupported acceptance command")
