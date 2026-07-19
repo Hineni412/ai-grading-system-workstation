@@ -13,6 +13,7 @@ import {
   knowledgeGraphRouteDefinition,
   reviewRouteDefinition,
   workbenchRouteDefinition,
+  settingsRouteDefinition,
 } from '../navigation'
 
 const routes: RouteRecordRaw[] = [
@@ -133,6 +134,16 @@ const routes: RouteRecordRaw[] = [
       title: reviewRouteDefinition.title,
       description: reviewRouteDefinition.description,
       breadcrumb: reviewRouteDefinition.breadcrumb,
+    },
+  },
+  {
+    path: settingsRouteDefinition.path,
+    name: settingsRouteDefinition.id,
+    component: () => import('../views/SettingsOpsView.vue'),
+    meta: {
+      title: settingsRouteDefinition.title,
+      description: settingsRouteDefinition.description,
+      breadcrumb: settingsRouteDefinition.breadcrumb,
     },
   },
   {
