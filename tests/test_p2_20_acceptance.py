@@ -1874,3 +1874,56 @@ def test_start_stops_the_service_when_running_state_cannot_be_saved(
     assert not acceptance._server_claim_path(workspace).exists()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         assert probe.connect_ex(("127.0.0.1", port)) != 0
+
+
+def test_second_start_cannot_succeed_before_running_state_is_saved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, port = _detached_lifecycle_workspace(tmp_path)
+    running_write_reached = threading.Event()
+    allow_running_write = threading.Event()
+    original_write = acceptance._write_server_state
+    first_result: dict[str, object] | None = None
+
+    def pause_running_state(
+        target: Path,
+        state: dict[str, object],
+    ) -> None:
+        if state["state"] == "running":
+            running_write_reached.set()
+            if not allow_running_write.wait(timeout=5):
+                raise OSError("timed out waiting to save running state")
+        original_write(target, state)
+
+    monkeypatch.setattr(acceptance, "_write_server_state", pause_running_state)
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(
+        acceptance.start_acceptance_server,
+        workspace,
+        port,
+        ready_timeout=5,
+    )
+    try:
+        assert running_write_reached.wait(timeout=5)
+        assert acceptance.safe_status(workspace)["server_state"] == "starting"
+        with pytest.raises(
+            acceptance.AcceptanceError,
+            match="start is still in progress",
+        ):
+            acceptance.start_acceptance_server(
+                workspace,
+                port,
+                ready_timeout=5,
+            )
+    finally:
+        allow_running_write.set()
+        try:
+            first_result = future.result(timeout=10)
+        finally:
+            executor.shutdown(wait=True)
+            if acceptance._load_server_state(workspace) is not None:
+                acceptance.stop_acceptance_server(workspace, stop_timeout=5)
+
+    assert first_result is not None
+    assert first_result["server_state"] == "running"
