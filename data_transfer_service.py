@@ -29,6 +29,9 @@ COMMON_SKIP_DIR_NAMES = {
 }
 
 COMMON_SKIP_EXTENSIONS = {
+    ".db-journal",
+    ".db-shm",
+    ".db-wal",
     ".log",
     ".pyc",
     ".pyo",
