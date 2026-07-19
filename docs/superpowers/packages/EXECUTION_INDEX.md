@@ -101,7 +101,7 @@ M2-03 按“训练闭环与切换前验收”固定为 P2-18、P2-19、P2-20：�
 
 Issue #59 是 P1-23 已合并实现的独立缺陷修复，不改变 87 包计数。临时第二功能通道 `.worktrees/p1-23-export-fix` 从精确基线 `3076b43ebf63ba8f2317faf2ea2988c0f5915f7d` 完成实现；冻结候选 `ffc0c844797c9e7b61db527c50527ccbfffb8651` 经过一轮并行初审、一次统一修复和原评审者限定终审，最终 0 Critical / 0 Important / 0 Suggestion。修复只使用临时数据根，已合入 M2-03 integration 并在 `7561d98283d84b4162b227ea6469561424744991` 通过受影响回归、临时 API、快速冒烟和真实两库指纹守卫；GitHub Issue #59 已按 completed 关闭，P2-19 quick 用户验收阻塞解除。
 
-Issue #60 是 P2-09 已合并实现的独立回归修复，不改变 87 包计数。用户已于 2026-07-19 明确启动修复，Issue 已认领；临时第二功能通道固定为 `.worktrees/issue-60-p2-09-docx-split`，分支 `codex/issue-60-p2-09-docx-inline-marker`，精确基线为 M2-03 当前已验证 SHA `c9662850bbd75a2ba062c0011a6762241818f4d8`。该通道独占 `question_bank/importers/batch_importer.py` 及其直接回归测试，只使用合成 DOCX/富文本段落；P2-20 通道继续独占验收工具、formal 证据与本 Index 的现场状态记录。修复候选通过聚焦回归和双路复审后，才可进入 M2-03 integration 并恢复 P2-20；不得在修复通道读取或提交真实业务数据。
+Issue #60 是 P2-09 已合并实现的独立回归修复，不改变 87 包计数。用户已于 2026-07-19 明确启动修复，Issue 已认领；临时第二功能通道固定为 `.worktrees/issue-60-p2-09-docx-split`，分支 `codex/issue-60-p2-09-docx-inline-marker`，精确基线为 M2-03 当前已验证 SHA `c9662850bbd75a2ba062c0011a6762241818f4d8`。该通道独占 `session_manager.py` 中 P2-09 的本地拆题归一化及 Config Source 直接回归测试，只使用合成 DOCX/富文本段落；共享题库导入器、P2-20 验收工具、formal 证据与本 Index 的现场状态记录继续由原通道持有。修复候选通过聚焦回归和双路复审后，才可进入 M2-03 integration 并恢复 P2-20；不得在修复通道读取或提交真实业务数据。
 
 M2-01 是首个三包里程碑，也是 Python 完整测试并行试点的第一个里程碑：批次稳定候选在同一 SHA 上各运行一次串行和 2 进程对照。若第 3 包确实受阻，可明确改记为前 2 包的部分里程碑后收口；不得静默跳过或替换为无关包。
 
