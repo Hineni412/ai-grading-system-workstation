@@ -223,8 +223,8 @@ Store 隐藏 scope signature、generation、AbortController、confirmation ID、
 - **不包含：** 未修改诊断或推荐算法、数据库 Schema、导出格式、模型策略、生产 UI；未写入真实 `user_data/`。
 - **自动验证：** 前端完整门槛 645 passed；后端训练相关回归 58 passed；统一修复后受影响 13 passed；typecheck/lint/build、匿名 Chromium 五视口与快速冒烟均通过。
 - **复审：** 首轮 Spec/Standards 原始 9 条，去重为 7 个 Important；统一修复后由原评审者限定最终复审，剩余 0 Critical / 0 Important。
-- **剩余工作：** 写入用户预授权 quick 通过证据，完成最终交接并合入 M2-03 integration。
-- **当前包验收：** 自动验证与独立复审通过；用户 quick 结论待证据提交。
+- **剩余工作：** 合入 M2-03 integration 并完成逐包受影响验证。
+- **当前包验收：** 自动验证、独立复审和用户预授权 quick 验收均通过；版本化证据已提交。
 - **版本发布：** P2-18 尚未进入 integration，M2-03 尚未完成批次末门槛，当前版本不允许发布。
 
 ## Ownership
@@ -243,12 +243,12 @@ P2-18 功能分支拥有 Vue Training API/store/view/CSS、导航/路由接入�
 ## 昼夜交接
 
 **执行包：** P2-18
-**交接状态：** waiting_user
-**功能提交：** `96f6e463be59308fbbc9885bc4c32d14c8ebf064`
+**交接状态：** verified_pending_integration
+**功能提交：** `e9256b6be121ebf748ec426d5335b8211776e503`
 **自动验证：** passed
 **独立复审：** passed
-**用户验收：** pending
+**用户验收：** passed
 **真实数据指纹：** not_touched
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
