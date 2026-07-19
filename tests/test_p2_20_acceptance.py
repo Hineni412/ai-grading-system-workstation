@@ -32,6 +32,12 @@ def _committed_source_repo(tmp_path: Path) -> tuple[Path, str]:
     _git(repo, "config", "user.email", "p2-20@example.invalid")
     _git(repo, "config", "user.name", "P2-20 Test")
     (repo / "safe.txt").write_text("safe", encoding="utf-8")
+    config_dir = repo / "config"
+    config_dir.mkdir()
+    (config_dir / "app_config.yaml").write_text(
+        "DATA_DIR: user_data\nLOGS_DIR: logs\nVERSION: test\n",
+        encoding="utf-8",
+    )
     protected = repo / "user_data"
     protected.mkdir()
     (protected / "secret.txt").write_text("must not stage", encoding="utf-8")
@@ -537,3 +543,225 @@ def test_model_budget_proxy_rejects_wrong_key_and_unknown_model(tmp_path: Path) 
         ).status_code
         == 403
     )
+
+
+def test_configure_staged_runtime_uses_only_workspace_relative_paths(
+    tmp_path: Path,
+) -> None:
+    repo, source_sha = _committed_source_repo(tmp_path)
+    workspace = tmp_path / "prepared"
+    acceptance.prepare_code_workspace(source_sha, workspace, repo_root=repo)
+    source_data = _authorized_source_data(tmp_path)
+    acceptance.prepare_authorized_inputs(
+        workspace,
+        source_data_root=source_data,
+        session_id=1,
+        expected_session_name="0609",
+        paper_limit=3,
+    )
+    profile_path = tmp_path / "profile.json"
+    profile_path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "active",
+                    "provider": "custom-openai-compatible",
+                    "base_url": "https://provider.example.invalid/v1",
+                    "api_key": "secret",
+                    "grading_model": "shared-model",
+                    "config_model": "shared-model",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    acceptance.prepare_runtime_profile(
+        workspace,
+        source_profile_path=profile_path,
+        proxy_base_url="http://127.0.0.1:8120/acceptance-llm/v1",
+        max_forwarded_requests=4,
+    )
+
+    acceptance.configure_staged_runtime(workspace)
+
+    config_text = (workspace / "config" / "app_config.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "DATA_DIR: acceptance_data" in config_text
+    assert "LOGS_DIR: acceptance_logs" in config_text
+    assert "user_data" not in config_text
+    assert (workspace / "acceptance_data").is_dir()
+    assert (workspace / "acceptance_logs").is_dir()
+    assert (workspace / "acceptance_ops").is_dir()
+    assert acceptance.load_metadata(workspace)["state"] == "runtime_ready"
+
+
+def test_build_and_copy_frontend_requires_exact_clean_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, source_sha = _committed_source_repo(tmp_path)
+    (repo / "frontend").mkdir()
+    workspace = tmp_path / "prepared"
+    acceptance.prepare_code_workspace(source_sha, workspace, repo_root=repo)
+    (workspace / "acceptance_data").mkdir()
+    (workspace / "acceptance_logs").mkdir()
+    calls: list[list[str]] = []
+
+    def fake_run(
+        command: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command[:2] == ["git", "rev-parse"]:
+            return subprocess.CompletedProcess(command, 0, source_sha, "")
+        if command[:2] == ["git", "status"]:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[-2:] == ["run", "build"]:
+            dist = repo / "frontend" / "dist"
+            (dist / "assets").mkdir(parents=True)
+            (dist / "index.html").write_text("<main>P2-20</main>", encoding="utf-8")
+            (dist / "assets" / "app.js").write_text("ok", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "built", "")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(acceptance.subprocess, "run", fake_run)
+    monkeypatch.setattr(acceptance.shutil, "which", lambda _name: "npm")
+
+    acceptance.build_and_copy_frontend(
+        workspace,
+        repo_root=repo,
+        expected_source_sha=source_sha,
+    )
+
+    assert (workspace / "frontend" / "dist" / "index.html").is_file()
+    assert any(command[-2:] == ["run", "build"] for command in calls)
+
+
+def test_create_acceptance_app_rejects_missing_frontend_dist(tmp_path: Path) -> None:
+    repo, source_sha = _committed_source_repo(tmp_path)
+    workspace = tmp_path / "prepared"
+    acceptance.prepare_code_workspace(source_sha, workspace, repo_root=repo)
+    source_data = _authorized_source_data(tmp_path)
+    acceptance.prepare_authorized_inputs(
+        workspace,
+        source_data_root=source_data,
+        session_id=1,
+        expected_session_name="0609",
+        paper_limit=3,
+    )
+    profile_path = tmp_path / "profile.json"
+    profile_path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "active",
+                    "provider": "custom-openai-compatible",
+                    "base_url": "https://provider.example.invalid/v1",
+                    "api_key": "secret",
+                    "grading_model": "shared-model",
+                    "config_model": "shared-model",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    acceptance.prepare_runtime_profile(
+        workspace,
+        source_profile_path=profile_path,
+        proxy_base_url="http://127.0.0.1:8120/acceptance-llm/v1",
+        max_forwarded_requests=4,
+    )
+    acceptance.configure_staged_runtime(workspace)
+
+    with pytest.raises(acceptance.AcceptanceError, match="frontend dist"):
+        acceptance.create_acceptance_app(workspace)
+
+
+def test_main_prepare_orchestrates_exact_authorized_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace = tmp_path / "workspace"
+    source_data = tmp_path / "source-user-data"
+    profile = tmp_path / "api_profiles.json"
+    source_sha = "a" * 40
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(
+        acceptance,
+        "prepare_code_workspace",
+        lambda source_ref, target, repo_root: calls.append(
+            ("code", (source_ref, Path(target), Path(repo_root)))
+        )
+        or {
+            "source_sha": source_sha,
+        },
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "prepare_authorized_inputs",
+        lambda target, **kwargs: calls.append(("inputs", kwargs)) or {},
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "prepare_runtime_profile",
+        lambda target, **kwargs: calls.append(("profile", kwargs)) or {},
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "configure_staged_runtime",
+        lambda target: calls.append(("config", Path(target))),
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "build_and_copy_frontend",
+        lambda target, **kwargs: calls.append(("build", kwargs)),
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "safe_status",
+        lambda target: {
+            "package": "P2-20",
+            "state": "runtime_ready",
+            "source_sha": source_sha,
+            "authorized_session_id": 1,
+            "paper_count": 3,
+            "model_request_budget": 4,
+            "forwarded_requests": 0,
+            "local_ocr_requests": 0,
+        },
+    )
+
+    result = acceptance.main(
+        [
+            "prepare",
+            "--source-ref",
+            source_sha,
+            "--workspace",
+            str(workspace),
+            "--source-data-root",
+            str(source_data),
+            "--session-id",
+            "1",
+            "--session-name",
+            "0609",
+            "--profile-path",
+            str(profile),
+            "--port",
+            "8120",
+        ]
+    )
+
+    assert result == 0
+    assert [name for name, _details in calls] == [
+        "code",
+        "inputs",
+        "profile",
+        "config",
+        "build",
+    ]
+    assert calls[1][1]["paper_limit"] == 3
+    assert calls[2][1]["max_forwarded_requests"] == 4
+    assert json.loads(capsys.readouterr().out)["state"] == "runtime_ready"
