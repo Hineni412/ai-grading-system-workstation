@@ -59,6 +59,20 @@ def _docx_with_inline_main_question_marker_bytes() -> bytes:
     return output.getvalue()
 
 
+def _docx_with_inline_question_after_breaks_bytes() -> bytes:
+    document = Document()
+    document.add_paragraph("10. Tenth question.")
+    paragraph = document.add_paragraph("Continuation of question ten.")
+    breaks = paragraph.add_run()
+    for _index in range(4):
+        breaks.add_break()
+    paragraph.add_run("11. Eleventh question.")
+    document.add_paragraph("12. Twelfth question.")
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
 def _docx_with_inline_question_media_bytes() -> bytes:
     image = io.BytesIO()
     Image.new("RGB", (24, 18), "navy").save(image, format="PNG")
@@ -209,6 +223,36 @@ def test_docx_upload_splits_consecutive_main_question_marker_mid_paragraph(
         headers={
             "content-type": "application/octet-stream",
             "x-upload-filename": quote("inline-question.docx"),
+        },
+    )
+
+    assert uploaded.status_code == 201
+    questions = uploaded.json()["questions"]
+    assert [question["question_id"] for question in questions] == [
+        "Q10",
+        "Q11",
+        "Q12",
+    ]
+    previews = {
+        question["question_id"]: question["question_preview"]
+        for question in questions
+    }
+    assert "Eleventh question" not in previews["Q10"]
+    assert "Eleventh question" in previews["Q11"]
+
+
+def test_docx_upload_splits_inline_question_after_same_paragraph_breaks(
+    tmp_path: Path,
+) -> None:
+    client, db, _upload_root = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+
+    uploaded = client.post(
+        f"/api/sessions/{session_id}/config/sources",
+        content=_docx_with_inline_question_after_breaks_bytes(),
+        headers={
+            "content-type": "application/octet-stream",
+            "x-upload-filename": quote("inline-question-after-breaks.docx"),
         },
     )
 
