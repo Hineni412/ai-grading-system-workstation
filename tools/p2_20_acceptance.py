@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import hmac
 import json
 import math
 import os
 import re
+import secrets
 import shutil
 import socket
 import sqlite3
@@ -21,7 +23,7 @@ from pathlib import Path
 from typing import Any
 from urllib.error import URLError
 from urllib.parse import urlparse
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path[:1]:
@@ -34,6 +36,7 @@ from question_id_contract import QuestionIdCatalog, QuestionIdContractError
 PACKAGE = "P2-20"
 METADATA_FILENAME = "p2-20-acceptance.json"
 SERVER_STATE_FILENAME = "server-state.json"
+SERVER_CLAIM_FILENAME = "server-start.claim"
 SERVER_STOP_FILENAME = "server-stop.request"
 _CONFIG_KEY_RE = re.compile(
     r"^[ \t]*(?P<key>DATA_DIR|LOGS_DIR|[\"']DATA_DIR[\"']|[\"']LOGS_DIR[\"'])[ \t]*:"
@@ -1627,7 +1630,10 @@ def _validate_staged_config(workspace: Path) -> None:
         raise AcceptanceError("prepared app config is not acceptance-safe")
 
 
-def create_acceptance_app(workspace: Path | str):
+def create_acceptance_app(
+    workspace: Path | str,
+    control_token: str | None = None,
+):
     target = validate_workspace(workspace, require_empty=False)
     metadata = load_metadata(target)
     if metadata["state"] != "runtime_ready":
@@ -1677,7 +1683,7 @@ def create_acceptance_app(workspace: Path | str):
     initialize_database(paths.qb_db_path, seed_skills=False)
 
     from backend.api.app import create_app
-    from fastapi import HTTPException
+    from fastapi import HTTPException, Request as FastAPIRequest
     from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
 
@@ -1693,9 +1699,25 @@ def create_acceptance_app(workspace: Path | str):
         name="p2-20-assets",
     )
 
+    @app.get("/acceptance-control/health", include_in_schema=False)
+    def acceptance_control_health(request: FastAPIRequest):
+        supplied_token = request.headers.get("x-acceptance-control-token")
+        if (
+            control_token is None
+            or supplied_token is None
+            or not hmac.compare_digest(supplied_token, control_token)
+        ):
+            raise HTTPException(status_code=404)
+        return {
+            "package": PACKAGE,
+            "source_sha": str(metadata["source_sha"]),
+        }
+
     @app.get("/{frontend_path:path}", include_in_schema=False)
     def serve_frontend(frontend_path: str):
-        if frontend_path.startswith(("api/", "acceptance-llm/")):
+        if frontend_path.startswith(
+            ("api/", "acceptance-llm/", "acceptance-control/")
+        ):
             raise HTTPException(status_code=404)
         return FileResponse(frontend_dist / "index.html")
 
@@ -1706,8 +1728,97 @@ def _server_state_path(workspace: Path) -> Path:
     return workspace / "acceptance_config" / SERVER_STATE_FILENAME
 
 
+def _server_claim_path(workspace: Path) -> Path:
+    return workspace / "acceptance_config" / SERVER_CLAIM_FILENAME
+
+
 def _server_stop_path(workspace: Path) -> Path:
     return workspace / "acceptance_config" / SERVER_STOP_FILENAME
+
+
+def _validate_control_token(value: object) -> str:
+    if not isinstance(value, str) or not 8 <= len(value) <= 256:
+        raise AcceptanceError("acceptance server control token is invalid")
+    return value
+
+
+def _load_server_claim(workspace: Path) -> dict[str, object] | None:
+    claim_path = _server_claim_path(workspace)
+    if not claim_path.exists():
+        return None
+    try:
+        claim = json.loads(claim_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise AcceptanceError("acceptance server start claim is unavailable") from exc
+    expected = {
+        "package",
+        "source_sha",
+        "port",
+        "control_token",
+        "owner_pid",
+    }
+    if (
+        not isinstance(claim, dict)
+        or set(claim) != expected
+        or claim["package"] != PACKAGE
+        or not isinstance(claim["source_sha"], str)
+        or len(claim["source_sha"]) != 40
+        or isinstance(claim["port"], bool)
+        or not isinstance(claim["port"], int)
+        or not 1024 <= claim["port"] <= 65535
+        or isinstance(claim["owner_pid"], bool)
+        or not isinstance(claim["owner_pid"], int)
+        or claim["owner_pid"] <= 0
+    ):
+        raise AcceptanceError("acceptance server start claim is invalid")
+    _validate_control_token(claim["control_token"])
+    return claim
+
+
+def _claim_server_start(
+    workspace: Path,
+    *,
+    source_sha: str,
+    port: int,
+    control_token: str,
+) -> None:
+    _validate_control_token(control_token)
+    claim = {
+        "package": PACKAGE,
+        "source_sha": source_sha,
+        "port": port,
+        "control_token": control_token,
+        "owner_pid": os.getpid(),
+    }
+    claim_path = _server_claim_path(workspace)
+    try:
+        descriptor = os.open(
+            claim_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+    except FileExistsError as exc:
+        raise AcceptanceError(
+            "acceptance server start is already claimed; stop it before restarting"
+        ) from exc
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(claim, stream, ensure_ascii=True, separators=(",", ":"))
+    except BaseException:
+        claim_path.unlink(missing_ok=True)
+        raise
+
+
+def _remove_server_claim_for_token(workspace: Path, control_token: str) -> None:
+    try:
+        claim = _load_server_claim(workspace)
+    except AcceptanceError:
+        return
+    if claim is not None and hmac.compare_digest(
+        str(claim["control_token"]),
+        control_token,
+    ):
+        _server_claim_path(workspace).unlink(missing_ok=True)
 
 
 def _load_server_state(workspace: Path) -> dict[str, object] | None:
@@ -1718,7 +1829,14 @@ def _load_server_state(workspace: Path) -> dict[str, object] | None:
         state = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise AcceptanceError("acceptance server state is unavailable") from exc
-    expected = {"package", "source_sha", "state", "pid", "port"}
+    expected = {
+        "package",
+        "source_sha",
+        "state",
+        "pid",
+        "port",
+        "control_token",
+    }
     if (
         not isinstance(state, dict)
         or set(state) != expected
@@ -1734,17 +1852,23 @@ def _load_server_state(workspace: Path) -> dict[str, object] | None:
         or len(state["source_sha"]) != 40
     ):
         raise AcceptanceError("acceptance server state is invalid")
+    _validate_control_token(state["control_token"])
     return state
 
 
 def _write_server_state(workspace: Path, state: dict[str, object]) -> None:
     state_path = _server_state_path(workspace)
-    temporary = state_path.with_suffix(f"{state_path.suffix}.tmp")
-    temporary.write_text(
-        json.dumps(state, ensure_ascii=True, separators=(",", ":")),
-        encoding="utf-8",
+    temporary = state_path.with_name(
+        f".{state_path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
     )
-    temporary.replace(state_path)
+    try:
+        temporary.write_text(
+            json.dumps(state, ensure_ascii=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        temporary.replace(state_path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _remove_server_state_for_pid(workspace: Path, pid: int) -> None:
@@ -1756,11 +1880,26 @@ def _remove_server_state_for_pid(workspace: Path, pid: int) -> None:
         _server_state_path(workspace).unlink(missing_ok=True)
 
 
-def _server_is_healthy(port: int) -> bool:
+def _server_is_healthy(
+    port: int,
+    *,
+    control_token: str,
+    source_sha: str,
+) -> bool:
     try:
-        with urlopen(f"http://127.0.0.1:{port}/", timeout=0.5) as response:
-            return response.status == 200
-    except (OSError, URLError, ValueError):
+        request = Request(
+            f"http://127.0.0.1:{port}/acceptance-control/health",
+            headers={"X-Acceptance-Control-Token": control_token},
+        )
+        with urlopen(request, timeout=0.5) as response:
+            if response.status != 200:
+                return False
+            payload = json.loads(response.read().decode("utf-8"))
+        return payload == {
+            "package": PACKAGE,
+            "source_sha": source_sha,
+        }
+    except (OSError, URLError, UnicodeError, ValueError, json.JSONDecodeError):
         return False
 
 
@@ -1856,7 +1995,12 @@ def start_acceptance_server(
         if (
             existing["source_sha"] == metadata["source_sha"]
             and existing["port"] == validated_port
-            and _server_is_healthy(validated_port)
+            and _process_is_running(int(existing["pid"]))
+            and _server_is_healthy(
+                validated_port,
+                control_token=str(existing["control_token"]),
+                source_sha=str(existing["source_sha"]),
+            )
         ):
             result = safe_status(target)
             result.update({"server_state": "running", "port": validated_port})
@@ -1864,54 +2008,78 @@ def start_acceptance_server(
         raise AcceptanceError(
             "acceptance server state is stale; stop it before restarting"
         )
-    _ensure_loopback_port_available(validated_port)
-    _server_stop_path(target).unlink(missing_ok=True)
-    stdout_path = target / "acceptance_logs" / "server-stdout.log"
-    stderr_path = target / "acceptance_logs" / "server-stderr.log"
-    creationflags = 0
-    if sys.platform == "win32":
-        creationflags = (
-            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            | getattr(subprocess, "DETACHED_PROCESS", 0)
+    if _load_server_claim(target) is not None:
+        raise AcceptanceError(
+            "acceptance server start is already claimed; stop it before restarting"
         )
-    command = [
-        sys.executable,
-        str(target / "tools" / "p2_20_acceptance.py"),
-        "serve",
-        "--workspace",
-        str(target),
-        "--port",
-        str(validated_port),
-    ]
-    with stdout_path.open("ab") as stdout, stderr_path.open("ab") as stderr:
-        process = subprocess.Popen(
-            command,
-            cwd=target,
-            stdin=subprocess.DEVNULL,
-            stdout=stdout,
-            stderr=stderr,
-            close_fds=True,
-            creationflags=creationflags,
-        )
-    state = {
-        "package": PACKAGE,
-        "source_sha": metadata["source_sha"],
-        "state": "starting",
-        "pid": process.pid,
-        "port": validated_port,
-    }
-    _write_server_state(target, state)
+    control_token = secrets.token_urlsafe(32)
+    _claim_server_start(
+        target,
+        source_sha=str(metadata["source_sha"]),
+        port=validated_port,
+        control_token=control_token,
+    )
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        _ensure_loopback_port_available(validated_port)
+        _server_stop_path(target).unlink(missing_ok=True)
+        stdout_path = target / "acceptance_logs" / "server-stdout.log"
+        stderr_path = target / "acceptance_logs" / "server-stderr.log"
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = (
+                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                | getattr(subprocess, "DETACHED_PROCESS", 0)
+            )
+        command = [
+            sys.executable,
+            str(target / "tools" / "p2_20_acceptance.py"),
+            "serve",
+            "--workspace",
+            str(target),
+            "--port",
+            str(validated_port),
+            "--control-token",
+            control_token,
+        ]
+        with stdout_path.open("ab") as stdout, stderr_path.open("ab") as stderr:
+            process = subprocess.Popen(
+                command,
+                cwd=target,
+                stdin=subprocess.DEVNULL,
+                stdout=stdout,
+                stderr=stderr,
+                close_fds=True,
+                creationflags=creationflags,
+            )
+    except BaseException:
+        _remove_server_claim_for_token(target, control_token)
+        raise
+    assert process is not None
     deadline = time.monotonic() + max(1.0, float(ready_timeout))
     while time.monotonic() < deadline:
         if process.poll() is not None:
             _remove_server_state_for_pid(target, process.pid)
+            _remove_server_claim_for_token(target, control_token)
             raise AcceptanceError(
                 "acceptance server exited during startup; see workspace logs"
             )
-        if _server_is_healthy(validated_port):
-            state["state"] = "running"
-            _write_server_state(target, state)
+        if _server_is_healthy(
+            validated_port,
+            control_token=control_token,
+            source_sha=str(metadata["source_sha"]),
+        ):
+            registered = _load_server_state(target)
+            if (
+                registered is None
+                or registered["pid"] != process.pid
+                or not hmac.compare_digest(
+                    str(registered["control_token"]),
+                    control_token,
+                )
+            ):
+                break
             result = safe_status(target)
             result.update({"server_state": "running", "port": validated_port})
             return result
@@ -1923,6 +2091,7 @@ def start_acceptance_server(
         process.kill()
         process.wait(timeout=5)
     _remove_server_state_for_pid(target, process.pid)
+    _remove_server_claim_for_token(target, control_token)
     raise AcceptanceError("acceptance server did not become healthy in time")
 
 
@@ -1935,11 +2104,32 @@ def stop_acceptance_server(
     metadata = load_metadata(target)
     state = _load_server_state(target)
     if state is None:
+        claim = _load_server_claim(target)
+        if claim is not None:
+            if _process_is_running(int(claim["owner_pid"])):
+                raise AcceptanceError(
+                    "acceptance server start is still in progress; retry stop shortly"
+                )
+            _remove_server_claim_for_token(
+                target,
+                str(claim["control_token"]),
+            )
         result = safe_status(target)
         result.update({"server_state": "stopped"})
         return result
     if state["source_sha"] != metadata["source_sha"]:
         raise AcceptanceError("acceptance server source does not match the workspace")
+    claim = _load_server_claim(target)
+    if (
+        claim is None
+        or claim["source_sha"] != state["source_sha"]
+        or claim["port"] != state["port"]
+        or not hmac.compare_digest(
+            str(claim["control_token"]),
+            str(state["control_token"]),
+        )
+    ):
+        raise AcceptanceError("acceptance server ownership is inconsistent")
     port = int(state["port"])
     _server_stop_path(target).touch(exist_ok=True)
     deadline = time.monotonic() + max(1.0, float(stop_timeout))
@@ -1947,6 +2137,10 @@ def stop_acceptance_server(
         if not _process_is_running(int(state["pid"])):
             _server_state_path(target).unlink(missing_ok=True)
             _server_stop_path(target).unlink(missing_ok=True)
+            _remove_server_claim_for_token(
+                target,
+                str(state["control_token"]),
+            )
             result = safe_status(target)
             result.update({"server_state": "stopped", "port": port})
             return result
@@ -1954,30 +2148,58 @@ def stop_acceptance_server(
     raise AcceptanceError("acceptance server did not stop in time")
 
 
-def run_acceptance_server(workspace: Path | str, port: int) -> None:
+def run_acceptance_server(
+    workspace: Path | str,
+    port: int,
+    control_token: str,
+) -> None:
     target = validate_workspace(workspace, require_empty=False)
-    app = create_acceptance_app(target)
-    import uvicorn
-
-    server = uvicorn.Server(
-        uvicorn.Config(app, host="127.0.0.1", port=port)
-    )
-    stop_path = _server_stop_path(target)
-
-    def watch_for_stop() -> None:
-        while not server.should_exit:
-            if stop_path.exists():
-                server.should_exit = True
-                return
-            time.sleep(0.2)
-
-    watcher = threading.Thread(target=watch_for_stop, daemon=True)
-    watcher.start()
+    metadata = load_metadata(target)
+    validated_port = _validate_port(port)
+    _validate_control_token(control_token)
+    claim = _load_server_claim(target)
+    if (
+        claim is None
+        or claim["source_sha"] != metadata["source_sha"]
+        or claim["port"] != validated_port
+        or not hmac.compare_digest(
+            str(claim["control_token"]),
+            control_token,
+        )
+    ):
+        raise AcceptanceError("acceptance server start claim does not match")
+    state = {
+        "package": PACKAGE,
+        "source_sha": metadata["source_sha"],
+        "state": "starting",
+        "pid": os.getpid(),
+        "port": validated_port,
+        "control_token": control_token,
+    }
     try:
+        _write_server_state(target, state)
+        app = create_acceptance_app(target, control_token)
+        import uvicorn
+
+        server = uvicorn.Server(
+            uvicorn.Config(app, host="127.0.0.1", port=validated_port)
+        )
+        stop_path = _server_stop_path(target)
+
+        def watch_for_stop() -> None:
+            while not server.should_exit:
+                if stop_path.exists():
+                    server.should_exit = True
+                    return
+                time.sleep(0.2)
+
+        watcher = threading.Thread(target=watch_for_stop, daemon=True)
+        watcher.start()
         server.run()
     finally:
-        stop_path.unlink(missing_ok=True)
+        _server_stop_path(target).unlink(missing_ok=True)
         _remove_server_state_for_pid(target, os.getpid())
+        _remove_server_claim_for_token(target, control_token)
 
 
 def safe_status(workspace: Path | str) -> dict[str, object]:
@@ -2012,11 +2234,19 @@ def safe_status(workspace: Path | str) -> dict[str, object]:
         result["server_state"] = "stopped"
     else:
         port = int(server["port"])
+        healthy = (
+            _process_is_running(int(server["pid"]))
+            and _server_is_healthy(
+                port,
+                control_token=str(server["control_token"]),
+                source_sha=str(server["source_sha"]),
+            )
+        )
         result.update(
             {
                 "server_state": (
                     "running"
-                    if _server_is_healthy(port)
+                    if healthy
                     else (
                         "starting"
                         if server["state"] == "starting"
@@ -2049,6 +2279,7 @@ def _parser() -> argparse.ArgumentParser:
     serve = subparsers.add_parser("serve")
     serve.add_argument("--workspace", type=Path, required=True)
     serve.add_argument("--port", type=int, required=True)
+    serve.add_argument("--control-token", required=True)
     start = subparsers.add_parser("start")
     start.add_argument("--workspace", type=Path, required=True)
     start.add_argument("--port", type=int, required=True)
@@ -2119,7 +2350,7 @@ def main(argv: list[str] | None = None) -> int:
             port = _validate_port(args.port)
             target = validate_workspace(args.workspace, require_empty=False)
             _validate_prepared_proxy_port(target, port)
-            run_acceptance_server(target, port)
+            run_acceptance_server(target, port, args.control_token)
             return 0
         else:
             raise AcceptanceError("unsupported acceptance command")
