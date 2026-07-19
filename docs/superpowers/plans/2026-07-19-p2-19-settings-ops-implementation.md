@@ -142,7 +142,7 @@
 - [x] 运行包内前端/API 测试、受影响 Ops 后端回归、`npm run verify`、同一构建的真实浏览器流程和 `tools/smoke_check.py --skip-tests`。
 - [x] 更新 `ARCHITECTURE.md`、即时计划阶段记录和版本化 quick 清单；记录真实两库指纹未变。
 - [x] 冻结候选 SHA，按 Spec/Standards 双路复审；阻塞项统一修补一次，并由原评审者完成限定最终复审。
-- [ ] 独立复审通过后生成只绑定已复审 SHA 的 quick 清单，等待用户实际短测并明确给出 `passed` 或问题。
+- [x] 独立复审通过后生成 quick 清单；Issue #59 解除阻塞后，将两份已终审候选无代码冲突地组合并建立新的精确验收锚点。
 - [ ] 用户通过后完成 evidence/交接提交，验证 `verified_pending_integration`，再合入 M2-03 integration 并运行 P2-19 逐包受影响门槛。
 
 ## Expected Files
@@ -186,6 +186,7 @@
 | 集中调查与计划 | 14 分钟 | 必读资料、P1-22/P1-23 规格与 Ops API/Job/File、旧自检/数据管理、前端 API/Job/导航基础设施、worktree/数据守卫 | 0 | 6 个根因组：公开契约、确认与并发、Job/重启恢复、文件下载、脱敏、视觉与可达性 | 已完成 | 否 | 否 |
 | TDD 实现 | 34 分钟 | API、Store、页面、路由与导航测试；相关测试 83 passed | 0 | 0 Critical / 0 Important | 自动门槛与真实浏览器 | 否 | 否 |
 | 稳定候选验证 | 31 分钟 | 前端 verify 700 passed；Ops 后端 98 passed；五类预检、备份下载、恢复准备/撤销、五档视口；快速冒烟 | 4 个实现期问题 | 4 个已统一修复；另有 1 个 P1-23 修改前导出问题单独登记 | 双路复审、quick；既有导出问题待裁定 | 否 | 否 |
+| 解除外部阻塞与组合验证 | 12 分钟 | Issue #59 终审通过并先进入 integration；组合时仅 Index 文档冲突；前端直接检查 103 passed、后端聚焦 62 passed / 2 skipped、文档治理与快速冒烟通过 | 0 | P2-19 已终审前端与已终审后端修复无代码冲突，公开 Ops 契约未改变 | 用户 1—7 项 quick | 否 | 否 |
 
 ## Initial review and unified fix
 
@@ -198,11 +199,12 @@
 - 修改前已有的导出失败 1 条单独登记，不在 P2-19 内修改；映射文案去重 1 条为非阻塞建议，不扩大本包。
 - 统一修复验证：新增/受影响检查 21 passed；相关回归 115 passed；前端完整门槛 70 files / 702 tests passed，lint、typecheck、production build 均通过。
 - 限定最终复审：首轮两位原评审者检查统一修复候选 `df024058a60f138a11bcdc8301c078da7a897963`；原始意见 0 条、去重后 0 条，当前范围 `Critical`/`Important` 均为 0。
-- 当前包实现与独立复审已经通过；修改前已有的 `transfer_export` 故障仍是外部验收阻塞。剩余工作是由用户决定是否开启独立 P1-23 修复任务，问题解决后再进行 P2-19 quick 验收。
+- 当前包实现与独立复审已经通过；修改前已有的 `transfer_export` 故障已由独立 Issue #59 修复、限定终审并在 M2-03 integration 验证。组合提交 `c074c5674ed9786934ce9795d96e9e68538602ee` 只在动态 Index 发生文档冲突，业务代码无冲突；现只等待用户完成 P2-19 quick 验收。
 
 ## Out-of-scope finding
 
 - **修改前已经存在 / Important：** 临时真实 API 中，`transfer_export` 预检后正常提交可因在线 SQLite 相关文件造成资源指纹变化而失败，Job 内部原因为 `preflight resource changed`。P2-19 未修改后端 Ops 实现，98 项既有聚焦回归通过；本包前端已修正为如实显示失败、没有产物且不自动重试。该问题属于 P1-23 既有实现，按范围规则不在本包自动修改；是否阻止 P2-19 验收由复审统一裁定。
+- **独立解决：** GitHub Issue #59 已按 completed 关闭；冻结候选 `ffc0c844797c9e7b61db527c50527ccbfffb8651` 的两库逻辑指纹、一致性快照和 WAL 回归已通过限定终审，随后在 M2-03 integration 通过 128 项受影响回归、临时真实 API、快速冒烟和真实两库指纹守卫。该修复未扩大 P2-19 前端边界。
 
 ## Rollback and Stop Conditions
 
@@ -217,7 +219,7 @@
 
 **执行包：** P2-19
 **交接状态：** waiting_user
-**功能提交：** df024058a60f138a11bcdc8301c078da7a897963
+**功能提交：** c074c5674ed9786934ce9795d96e9e68538602ee
 **自动验证：** passed
 **独立复审：** passed
 **用户验收：** pending
