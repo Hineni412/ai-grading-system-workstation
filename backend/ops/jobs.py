@@ -129,9 +129,11 @@ def run_ops_transfer_export_job(
             dir=output_root,
             prefix=f".job-{context.job_id}-",
         ) as staging_value:
-            archive_path = Path(staging_value) / "export.zip"
-            entries = build_export_manifest(
-                default_export_sources(Path(paths.project_root), Path(paths.data_root)),
+            staging_root = Path(staging_value)
+            archive_path = staging_root / "export.zip"
+            entries = _transfer_export_entries(
+                paths,
+                staging_root,
                 scope=scope,
             )
             write_export_zip(entries, archive_path)
@@ -366,6 +368,42 @@ def _backup_entries(paths: Any, staging_root: Path) -> list[ExportEntry]:
             ExportEntry(source, name, size_bytes, _backup_source_root(paths, name))
         )
     return entries
+
+
+def _transfer_export_entries(
+    paths: Any,
+    staging_root: Path,
+    *,
+    scope: str,
+) -> list[ExportEntry]:
+    entries = build_export_manifest(
+        default_export_sources(Path(paths.project_root), Path(paths.data_root)),
+        scope=scope,
+    )
+    snapshot_root = staging_root / "database-snapshots"
+    snapshots = {
+        Path(paths.db_path).resolve(strict=False): snapshot_root
+        / "grading_system.db",
+        Path(paths.qb_db_path).resolve(strict=False): snapshot_root
+        / "question_bank.db",
+    }
+    prepared: list[ExportEntry] = []
+    for entry in entries:
+        snapshot = snapshots.get(Path(entry.source_path).resolve(strict=False))
+        if snapshot is None:
+            prepared.append(entry)
+            continue
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        _sqlite_snapshot(Path(entry.source_path), snapshot)
+        prepared.append(
+            ExportEntry(
+                snapshot,
+                str(entry.arc_name),
+                snapshot.stat().st_size,
+                staging_root,
+            )
+        )
+    return prepared
 
 
 def _backup_source_path(paths: Any, arc_name: str) -> Path:
