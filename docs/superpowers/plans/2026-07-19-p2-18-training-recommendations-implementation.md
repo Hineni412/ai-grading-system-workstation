@@ -171,7 +171,7 @@ Store 隐藏 scope signature、generation、AbortController、confirmation ID、
 - [x] 固定临时双库启动真实 API + Vue；覆盖成功、空证据、缺题、revision 冲突、确认重试、刷新历史、导出和下载。
 - [x] 运行受影响 Python/前端测试、`npm run verify`、同一构建的 prepared Chromium 五视口和 `tools/smoke_check.py --skip-tests`。
 - [x] 更新 `ARCHITECTURE.md`、即时计划阶段记录和版本化 quick 清单；记录真实两库指纹未变。
-- [ ] 冻结候选 SHA，按 Spec/Standards 双路复审；阻塞项统一修补，最多三次授权内完成限定最终复审。
+- [x] 冻结候选 SHA，按 Spec/Standards 双路复审；阻塞项统一修补，最多三次授权内完成限定最终复审。
 
 ## Expected Files
 
@@ -214,6 +214,18 @@ Store 隐藏 scope signature、generation、AbortController、confirmation ID、
 | 实现与稳定候选 | 约 2 小时 20 分钟 | TDD 完成 API/store/view/导航；前端完整门槛 645 passed；后端训练相关 58 passed；匿名 Chromium 1 passed；快速冒烟和五档视口通过 | 0 | 0 Critical / 0 Important | 冻结提交、双路复审、quick 证据、integration | 否 | 否 |
 | 并行初审 | 约 11 分钟 | 同一冻结 SHA `96580a1f4ce641b6d3a7bac6bdde047d10637102` 的 Spec/Standards 双路复审 | 9 | 7 Important：Job 刷新恢复、任务详情、配置失效/阶段比例、确认切范围、覆盖缺口、指定版本出件、过期下载 | 一次统一修复、受影响复测、限定最终复审 | 否 | 否 |
 | 统一修复 | 约 35 分钟 | 7 个根因一次修复；新增/受影响 store+view 13 passed，typecheck/lint/build 通过，匿名 Chromium 覆盖导出后刷新恢复并通过 | 0 | 首轮 7 Important 均已有代码与测试关闭证据 | 原评审者限定最终复审、quick 证据、integration | 否 | 否 |
+| 限定最终复审 | 约 5 分钟 | 原 Spec/Standards 评审者只检查首轮问题、修复区域和直接回归；受影响 13 passed 证据复核 | 0 | 0 Critical / 0 Important；1 条“比例默认展开”Suggestion 不阻塞 | quick 证据、integration | 自动与独立复审通过 | 否 |
+
+## Stable Candidate
+
+- **已复审功能提交：** `96f6e463be59308fbbc9885bc4c32d14c8ebf064`
+- **实现状态：** 已完成明确考试/学生范围、tag-only 诊断与具体覆盖缺口、可调阶段比例、精确标签计划、幂等确认与 revision 冲突、任务详情、导出 Job 刷新恢复/取消/重试/过期提示和受控下载。
+- **不包含：** 未修改诊断或推荐算法、数据库 Schema、导出格式、模型策略、生产 UI；未写入真实 `user_data/`。
+- **自动验证：** 前端完整门槛 645 passed；后端训练相关回归 58 passed；统一修复后受影响 13 passed；typecheck/lint/build、匿名 Chromium 五视口与快速冒烟均通过。
+- **复审：** 首轮 Spec/Standards 原始 9 条，去重为 7 个 Important；统一修复后由原评审者限定最终复审，剩余 0 Critical / 0 Important。
+- **剩余工作：** 写入用户预授权 quick 通过证据，完成最终交接并合入 M2-03 integration。
+- **当前包验收：** 自动验证与独立复审通过；用户 quick 结论待证据提交。
+- **版本发布：** P2-18 尚未进入 integration，M2-03 尚未完成批次末门槛，当前版本不允许发布。
 
 ## Ownership
 
@@ -231,10 +243,10 @@ P2-18 功能分支拥有 Vue Training API/store/view/CSS、导航/路由接入�
 ## 昼夜交接
 
 **执行包：** P2-18
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** waiting_user
+**功能提交：** `96f6e463be59308fbbc9885bc4c32d14c8ebf064`
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** pending
 **真实数据指纹：** not_touched
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
