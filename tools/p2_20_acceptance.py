@@ -828,12 +828,14 @@ def build_and_copy_frontend(
         cwd=source_root / "frontend",
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     log_path = target / "acceptance_logs" / "frontend-build.log"
     log_path.write_text(
         _sanitize_build_log(
-            completed.stdout + completed.stderr,
+            (completed.stdout or "") + (completed.stderr or ""),
             workspace=target,
             repo_root=source_root,
         ),
