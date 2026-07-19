@@ -234,6 +234,41 @@ describe('Ops store read-only ledger', () => {
 })
 
 describe('Ops store protected write flow', () => {
+  it('locks every protected entry while a dangerous submit is unresolved', async () => {
+    const pending = deferred<JobResponse>()
+    const api = makeOpsApi({
+      submit: vi.fn(() => pending.promise),
+    })
+    const store = useOpsStore()
+    await store.startPreflight({
+      operation: 'backup',
+      reason: 'manual',
+    }, api)
+
+    const submission = store.submitConfirmed(api)
+    await Promise.resolve()
+    await store.startPreflight({
+      operation: 'migration',
+      target: 'all',
+    }, api)
+    await store.stageImport(
+      new File(['zip'], '课堂数据.zip', { type: 'application/zip' }),
+      api,
+    )
+
+    expect(api.preflight).toHaveBeenCalledTimes(1)
+    expect(api.stageImport).not.toHaveBeenCalled()
+    expect(store.hasBlockingOperation).toBe(true)
+    expect(store.actionError).toMatchObject({
+      message: '已有运维操作正在进行',
+    })
+
+    pending.resolve(makeJob())
+    await submission
+    expect(store.activeJob?.id).toBe(41)
+    expect(store.actionError).toBeNull()
+  })
+
   it('clears a finished result when a new protected flow begins', async () => {
     const api = makeOpsApi()
     const jobs = useJobStore()

@@ -53,6 +53,17 @@ const TOOL_LABELS: Record<string, string> = {
   pdflatex: 'PDFLaTeX',
 }
 
+const BACKUP_REASON_LABELS: Record<string, string> = {
+  before_exam: '考试前',
+  before_update: '更新前',
+  before_import: '导入前',
+  before_restore: '恢复前',
+  manual: '手动备份',
+  after_exam: '考试后',
+  database_automatic: '数据库自动备份',
+  unknown: '未记录',
+}
+
 const requiredPhrase = computed(() => {
   const operation = ops.preflight?.operation
   return operation ? CONFIRMATION_PHRASES[operation] : ''
@@ -130,18 +141,45 @@ function dateTime(value: string): string {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString('zh-CN')
 }
 
-function jobTitle(status: string): string {
+function isOfflineJob(jobType: string): boolean {
+  return jobType.endsWith('_prepare')
+}
+
+function jobTitle(status: string, jobType: string): string {
   if (status === 'succeeded') return '任务处理完成'
-  if (status === 'failed') return '任务执行失败'
+  if (status === 'failed') {
+    return isOfflineJob(jobType) ? '离线准备失败' : '任务执行失败'
+  }
   if (status === 'cancelled') return '任务已取消'
   if (status === 'paused') return '任务已暂停'
   return '任务正在处理'
 }
 
-function jobDetail(status: string, detail: string): string {
-  if (status === 'failed') return '本次任务没有生成可下载结果，也不会自动重试。请刷新状态后重新预检。'
+function jobDetail(status: string, detail: string, jobType: string): string {
+  if (status === 'failed' && isOfflineJob(jobType)) {
+    return '业务数据尚未应用；准备阶段可能已经创建安全备份。请刷新并查看备份清单，确认现状后再重新预检。'
+  }
+  if (status === 'failed') {
+    return '本次任务没有生成可下载结果，也不会自动重试。请刷新状态后重新预检。'
+  }
   if (status === 'cancelled') return '本次任务已停止，没有生成新的运维结果。'
   return detail || '系统正在记录并执行已确认的操作。'
+}
+
+function preflightImpact(operation: OpsOperation): string {
+  if (operation === 'restore') {
+    return '恢复会覆盖备份包内的同名数据，但不会删除包外文件；业务数据在重启前不会应用。'
+  }
+  if (operation === 'transfer_import') {
+    return '导入会覆盖数据包内的同名数据，但不会删除包外文件；业务数据在重启前不会应用。'
+  }
+  if (operation === 'migration') {
+    return '迁移只会在临时候选上预演；本次确认仅准备待重启操作，不会立即改动业务数据库。'
+  }
+  if (operation === 'backup') {
+    return '备份会生成新的 ZIP 文件，不会改动现有业务数据。'
+  }
+  return '导出只会生成新的 ZIP 文件，敏感配置不会写入数据包。'
 }
 
 async function refreshLedger(): Promise<void> {
@@ -321,11 +359,12 @@ onMounted(async () => {
           </p>
           <div class="ops-table-wrap">
             <table>
-              <thead><tr><th>类型</th><th>文件</th><th>时间</th><th>大小</th></tr></thead>
+              <thead><tr><th>类型</th><th>文件</th><th>原因</th><th>时间</th><th>大小</th></tr></thead>
               <tbody>
                 <tr v-for="item in ops.backups" :key="`${item.kind}:${item.filename}`">
                   <td>{{ item.kind === 'zip' ? '完整备份' : '数据库快照' }}</td>
                   <td>{{ item.filename }}</td>
+                  <td>{{ BACKUP_REASON_LABELS[item.reason] ?? item.reason }}</td>
                   <td>{{ dateTime(item.created_at) }}</td>
                   <td>{{ bytes(item.size_bytes) }}</td>
                 </tr>
@@ -354,7 +393,7 @@ onMounted(async () => {
                 <option value="before_import">导入前</option>
               </select>
             </label>
-            <button class="ops-button is-secondary" type="button" @click="begin({ operation: 'backup', reason: backupReason })">开始预检</button>
+            <button class="ops-button is-secondary" type="button" :disabled="ops.hasBlockingOperation" @click="begin({ operation: 'backup', reason: backupReason })">开始预检</button>
           </article>
 
           <article class="ops-action is-danger">
@@ -366,7 +405,7 @@ onMounted(async () => {
                 <span>{{ item.filename }}</span>
               </label>
             </fieldset>
-            <button class="ops-button is-danger" type="button" data-testid="preflight-restore" :disabled="!selectedBackup" @click="preflightRestore">检查恢复影响</button>
+            <button class="ops-button is-danger" type="button" data-testid="preflight-restore" :disabled="!selectedBackup || ops.hasBlockingOperation" @click="preflightRestore">检查恢复影响</button>
           </article>
 
           <article class="ops-action is-danger">
@@ -378,7 +417,7 @@ onMounted(async () => {
                 <option value="question_bank">题库数据库</option>
               </select>
             </label>
-            <button class="ops-button is-danger" type="button" @click="begin({ operation: 'migration', target: migrationTarget })">检查迁移影响</button>
+            <button class="ops-button is-danger" type="button" :disabled="ops.hasBlockingOperation" @click="begin({ operation: 'migration', target: migrationTarget })">检查迁移影响</button>
           </article>
 
           <article class="ops-action">
@@ -389,13 +428,13 @@ onMounted(async () => {
                 <option value="full">完整数据</option>
               </select>
             </label>
-            <button class="ops-button is-secondary" type="button" @click="begin({ operation: 'transfer_export', scope: exportScope })">开始预检</button>
+            <button class="ops-button is-secondary" type="button" :disabled="ops.hasBlockingOperation" @click="begin({ operation: 'transfer_export', scope: exportScope })">开始预检</button>
           </article>
 
           <article class="ops-action is-danger">
             <div><h3>导入数据包</h3><p>先上传 ZIP 数据包并检查内容；通过后才可准备导入。</p></div>
             <label class="ops-file">
-              <input type="file" accept=".zip,application/zip" :disabled="ops.uploadLoading" @change="selectImport">
+              <input type="file" accept=".zip,application/zip" :disabled="ops.hasBlockingOperation" @change="selectImport">
               <span>{{ ops.uploadLoading ? '正在安全检查文件…' : '选择 ZIP 数据包' }}</span>
               <strong v-if="ops.importUpload">{{ ops.importUpload.filename }}</strong>
             </label>
@@ -403,7 +442,7 @@ onMounted(async () => {
               class="ops-button is-danger"
               type="button"
               data-testid="preflight-import"
-              :disabled="!ops.importUpload"
+              :disabled="!ops.importUpload || ops.hasBlockingOperation"
               @click="ops.importUpload && begin({ operation: 'transfer_import', upload_id: ops.importUpload.upload_id })"
             >
               检查导入影响
@@ -430,11 +469,16 @@ onMounted(async () => {
         <div v-if="ops.preflight" class="ops-gate__preflight">
           <span class="ops-state is-success">预检完成</span>
           <h3>{{ OPERATION_LABELS[ops.preflight.operation] }}</h3>
+          <p class="ops-gate__impact">{{ preflightImpact(ops.preflight.operation) }}</p>
           <dl>
+            <template v-if="ops.preflightRequest?.operation === 'backup'"><dt>备份原因</dt><dd>{{ BACKUP_REASON_LABELS[ops.preflightRequest.reason] }}</dd></template>
             <template v-if="ops.preflight.summary.file_count !== null"><dt>文件</dt><dd>{{ ops.preflight.summary.file_count }} 个</dd></template>
             <template v-if="ops.preflight.summary.database_count !== null"><dt>数据库</dt><dd>{{ ops.preflight.summary.database_count }} 个</dd></template>
+            <template v-if="ops.preflight.summary.total_size_bytes !== null"><dt>预计大小</dt><dd>{{ bytes(ops.preflight.summary.total_size_bytes) }}</dd></template>
+            <template v-if="ops.preflight.summary.total_expanded_bytes !== null"><dt>展开后大小</dt><dd>{{ bytes(ops.preflight.summary.total_expanded_bytes) }}</dd></template>
             <template v-if="ops.preflight.summary.pending_migrations !== null"><dt>待迁移</dt><dd>{{ ops.preflight.summary.pending_migrations }} 项</dd></template>
             <template v-if="ops.preflight.summary.skipped_count !== null"><dt>跳过</dt><dd>{{ ops.preflight.summary.skipped_count }} 项</dd></template>
+            <template v-if="ops.preflight.summary.sensitive_skipped_count !== null"><dt>敏感文件跳过</dt><dd>{{ ops.preflight.summary.sensitive_skipped_count }} 项</dd></template>
           </dl>
           <p v-if="ops.preflight.requires_restart" class="ops-feedback is-warning">
             本次操作需要重启应用后才会生效
@@ -459,11 +503,11 @@ onMounted(async () => {
 
         <div v-if="ops.activeJob && !ops.operationState" class="ops-gate__job" aria-live="polite">
           <span class="ops-state is-info">运维任务 #{{ ops.activeJob.id }}</span>
-          <h3>{{ jobTitle(ops.activeJob.status) }}</h3>
+          <h3>{{ jobTitle(ops.activeJob.status, ops.activeJob.job_type) }}</h3>
           <progress :value="ops.activeJob.progress" max="1">
             {{ Math.round(ops.activeJob.progress * 100) }}%
           </progress>
-          <p>{{ jobDetail(ops.activeJob.status, ops.activeJob.detail) }}</p>
+          <p>{{ jobDetail(ops.activeJob.status, ops.activeJob.detail, ops.activeJob.job_type) }}</p>
           <button
             v-if="!TERMINAL_JOB_STATUSES.has(ops.activeJob.status)"
             class="ops-button is-secondary is-full"

@@ -181,6 +181,12 @@ export const useOpsStore = defineStore('ops', () => {
   const operationApplied = computed(() => operationState.value?.status === 'applied')
 
   const hasBlockingOperation = computed(() => {
+    if (
+      uploadLoading.value
+      || preflightLoading.value
+      || submitting.value
+      || operationLoading.value
+    ) return true
     const job = activeJob.value
     if (job && !TERMINAL_JOB_STATUSES.has(job.status)) return true
     return operationState.value !== null
@@ -341,6 +347,7 @@ export const useOpsStore = defineStore('ops', () => {
         jobStore.track(job)
         activeJobId.value = job.id
         operationState.value = null
+        actionError.value = null
       } catch (error) {
         if (isAmbiguousWriteError(error)) {
           resultUnknown.value = true

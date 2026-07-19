@@ -263,6 +263,28 @@ describe('settings and Ops view', () => {
     ).toBe(false)
   })
 
+  it('explains offline preparation failure without claiming business data was applied', async () => {
+    localStorage.setItem('ai-grading:tracked-jobs:v1', JSON.stringify([{
+      id: 41,
+      jobType: 'ops_restore_prepare',
+      trackedAt: '2026-07-19T12:00:00Z',
+    }]))
+    jobApiMock.getJob.mockResolvedValue(job({
+      job_type: 'ops_restore_prepare',
+      status: 'failed',
+      error: 'Job failed; see local logs for details.',
+      finished_at: '2026-07-19T12:01:00Z',
+    }))
+
+    const host = await mountView()
+
+    await vi.waitFor(() => expect(host.textContent).toContain('离线准备失败'))
+    expect(host.textContent).toContain('业务数据尚未应用')
+    expect(host.textContent).toContain('可能已经创建安全备份')
+    expect(host.textContent).toContain('查看备份清单')
+    expect(host.textContent).not.toContain('操作已经应用')
+  })
+
   it('shows a readable system ledger and all five protected operation entries', async () => {
     const host = await mountView()
 
@@ -277,6 +299,7 @@ describe('settings and Ops view', () => {
     expect(host.textContent).toContain('数据库迁移')
     expect(host.textContent).toContain('导出数据包')
     expect(host.textContent).toContain('导入数据包')
+    expect(host.textContent).toContain('手动备份')
     expect(host.textContent).not.toMatch(/C:\\|\/user_data|sk-secret/i)
   })
 
@@ -311,6 +334,11 @@ describe('settings and Ops view', () => {
     expect(gate.textContent).toContain('安全闸门')
     expect(gate.textContent).toContain('预检完成')
     expect(gate.textContent).toContain('本次操作需要重启应用后才会生效')
+    expect(gate.textContent).toContain('覆盖备份包内的同名数据')
+    expect(gate.textContent).toContain('不会删除包外文件')
+    expect(gate.textContent).toContain('展开后大小')
+    expect(gate.textContent).toContain('8.0 KB')
+    expect(gate.textContent).toContain('敏感文件跳过')
     expect(confirm.disabled).toBe(true)
 
     setInput(host, '[data-testid="confirmation-phrase"]', '确认恢复')
