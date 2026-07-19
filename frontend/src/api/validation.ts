@@ -25,6 +25,7 @@ export function assertNoPathLikeKeys(value: unknown): void {
     if (
       key !== 'safe_filename'
       && key !== 'file_status'
+      && key !== 'file_count'
       && sensitive
     ) throw new Error('Path-like response key')
     assertNoPathLikeKeys(child)
