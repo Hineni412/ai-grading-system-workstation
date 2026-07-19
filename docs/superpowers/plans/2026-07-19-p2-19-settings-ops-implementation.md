@@ -143,7 +143,8 @@
 - [x] 更新 `ARCHITECTURE.md`、即时计划阶段记录和版本化 quick 清单；记录真实两库指纹未变。
 - [x] 冻结候选 SHA，按 Spec/Standards 双路复审；阻塞项统一修补一次，并由原评审者完成限定最终复审。
 - [x] 独立复审通过后生成 quick 清单；Issue #59 解除阻塞后，将两份已终审候选无代码冲突地组合并建立新的精确验收锚点。
-- [ ] 用户通过后完成 evidence/交接提交，验证 `verified_pending_integration`，再合入 M2-03 integration 并运行 P2-19 逐包受影响门槛。
+- [x] 用户通过后完成 evidence/交接提交并验证 `verified_pending_integration`。
+- [ ] 合入 M2-03 integration 并运行 P2-19 逐包受影响门槛。
 
 ## Expected Files
 
@@ -187,6 +188,7 @@
 | TDD 实现 | 34 分钟 | API、Store、页面、路由与导航测试；相关测试 83 passed | 0 | 0 Critical / 0 Important | 自动门槛与真实浏览器 | 否 | 否 |
 | 稳定候选验证 | 31 分钟 | 前端 verify 700 passed；Ops 后端 98 passed；五类预检、备份下载、恢复准备/撤销、五档视口；快速冒烟 | 4 个实现期问题 | 4 个已统一修复；另有 1 个 P1-23 修改前导出问题单独登记 | 双路复审、quick；既有导出问题待裁定 | 否 | 否 |
 | 解除外部阻塞与组合验证 | 12 分钟 | Issue #59 终审通过并先进入 integration；组合时仅 Index 文档冲突；前端直接检查 103 passed、后端聚焦 62 passed / 2 skipped、文档治理与快速冒烟通过 | 0 | P2-19 已终审前端与已终审后端修复无代码冲突，公开 Ops 契约未改变 | 用户 1—7 项 quick | 否 | 否 |
+| 用户 quick 验收 | 5—8 分钟 | 用户在匿名临时环境完成版本化清单第 1—7 项并回复“通过” | 0 | 0 Blocker / 0 Major / 0 Minor | integration 逐包验证 | 是 | 否 |
 
 ## Initial review and unified fix
 
@@ -218,12 +220,12 @@
 ## 昼夜交接
 
 **执行包：** P2-19
-**交接状态：** waiting_user
-**功能提交：** c074c5674ed9786934ce9795d96e9e68538602ee
+**交接状态：** verified_pending_integration
+**功能提交：** e5785af0afb947888531cd9e4b85257fe8d9dc96
 **自动验证：** passed
 **独立复审：** passed
-**用户验收：** pending
+**用户验收：** passed
 **真实数据指纹：** not_touched
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
