@@ -26,6 +26,24 @@ describe('Job API contract', () => {
     expect(decodeJobResponse(job)).toEqual(job)
   })
 
+  it('accepts the backend-approved file count aggregate in an Ops Job result', () => {
+    const opsJob = {
+      ...job,
+      job_type: 'ops_backup',
+      status: 'succeeded',
+      progress: 1,
+      result: {
+        operation: 'backup',
+        filename: 'backup_20260719_120000_manual.zip',
+        file_count: 4,
+        download_url: '/api/jobs/41/download',
+      },
+      finished_at: '2026-07-19T12:01:00Z',
+    } as const
+
+    expect(decodeJobResponse(opsJob)).toEqual(opsJob)
+  })
+
   it.each([
     { ...job, status: 'cancelling' },
     { ...job, id: 0 },

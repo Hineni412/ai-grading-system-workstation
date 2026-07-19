@@ -108,6 +108,7 @@ describe('AppShell', () => {
       ['知识图谱', '/knowledge-graph'],
       ['文件中心', '/files'],
       ['评分复核', '/grading'],
+      ['设置与运维', '/settings'],
     ])
     expect(
       host.querySelector('[data-testid="app-navigation"] a[href="/grading"]')?.getAttribute(
@@ -131,6 +132,7 @@ describe('AppShell', () => {
       '知识图谱',
       '文件中心',
       '评分复核',
+      '设置与运维',
     ])
     expect(host.querySelector('[data-testid="navigation-toggle"]')).toBeNull()
     expect(host.querySelector('[data-testid="inspector-toggle"]')).toBeNull()

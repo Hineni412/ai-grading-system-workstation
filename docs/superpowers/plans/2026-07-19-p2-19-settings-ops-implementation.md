@@ -107,40 +107,40 @@
 
 ### Task 1: 领取与基线守卫
 
-- [ ] 首个 first-parent 提交只包含本即时计划和合法 `in_progress` 交接块。
-- [ ] `tools/handoff_status.py` 以 integration 现场的 `3076b43...` 可信输入验证领取关系。
-- [ ] 功能 worktree 源码与 `user_data/` 干净；除内部前端依赖链接外无外部 reparse point。
-- [ ] 真实两库只读基线已记录，后续只比较不写入。
-- [ ] 第二个文档提交把功能分支所见 Index 的 P2-19/M2-03 当前动作改为 `in_progress`。
+- [x] 首个 first-parent 提交只包含本即时计划和合法 `in_progress` 交接块。
+- [x] `tools/handoff_status.py` 以 integration 现场的 `3076b43...` 可信输入验证领取关系。
+- [x] 功能 worktree 源码与 `user_data/` 干净；除内部前端依赖链接外无外部 reparse point。
+- [x] 真实两库只读基线已记录，后续只比较不写入。
+- [x] 第二个文档提交把功能分支所见 Index 的 P2-19/M2-03 当前动作改为 `in_progress`。
 
 ### Task 2: 类型化 Ops API
 
-- [ ] RED：自检、备份、上传、五类预检、Job 提交、operation 查询/撤销和下载的合法 worked examples。
-- [ ] RED：路径样字段、密钥、未知状态、非法 filename/operation、越界数字和畸形摘要 fail closed。
-- [ ] GREEN：新增 `frontend/src/api/ops.ts`，只使用同源固定 Ops 路径和现有 `apiClient`，写请求单次发送。
+- [x] RED：自检、备份、上传、五类预检、Job 提交、operation 查询/撤销和下载的合法 worked examples。
+- [x] RED：路径样字段、密钥、未知状态、非法 filename/operation、越界数字和畸形摘要 fail closed。
+- [x] GREEN：新增 `frontend/src/api/ops.ts`，只使用同源固定 Ops 路径和现有 `apiClient`，写请求单次发送。
 
 ### Task 3: Ops Store 状态机
 
-- [ ] RED：只读刷新保留最后成功内容；旧响应隔离；预检失效；重复提交锁；Job 刷新恢复；在线下载；离线 operation 查询/撤销。
-- [ ] RED：模糊写失败、双标签锁冲突、取消竞态、prepared 与 applied 区分、rolled_back/failed 恢复说明。
-- [ ] GREEN：新增 `frontend/src/stores/ops.ts`，复用通用 Job Store，不创建第二套轮询器，不持久化令牌或上传正文。
+- [x] RED：只读刷新保留最后成功内容；旧响应隔离；预检失效；重复提交锁；Job 刷新恢复；在线下载；离线 operation 查询/撤销。
+- [x] RED：模糊写失败、双标签锁冲突、取消竞态、prepared 与 applied 区分、rolled_back/failed 恢复说明。
+- [x] GREEN：新增 `frontend/src/stores/ops.ts`，复用通用 Job Store，不创建第二套轮询器，不持久化令牌或上传正文。
 
 ### Task 4: 设置与运维页面
 
-- [ ] RED：系统状态账本、脱敏诊断复制、备份列表、五类入口、唯一安全闸门、确认短语、阶段合法动作、加载/空白/错误/禁用/焦点。
-- [ ] RED：危险按钮不与普通主按钮并列；离线 Job succeeded 不显示已应用；1024px 长中文/长文件名不溢出。
-- [ ] GREEN：新增 `SettingsOpsView.vue` 与专用 Token 化 CSS；接入导航、路由和 main 样式。
+- [x] RED：系统状态账本、脱敏诊断复制、备份列表、五类入口、唯一安全闸门、确认短语、阶段合法动作、加载/空白/错误/禁用/焦点。
+- [x] RED：危险按钮不与普通主按钮并列；离线 Job succeeded 不显示已应用；1024px 长中文/长文件名不溢出。
+- [x] GREEN：新增 `SettingsOpsView.vue` 与专用 Token 化 CSS；接入导航、路由和 main 样式。
 
 ### Task 5: 临时数据根真实 API 浏览器
 
-- [ ] 使用临时双库、临时备份/输出/本机状态区和固定无密钥配置启动真实 FastAPI + Vue。
-- [ ] 覆盖只读自检、备份预检/确认/Job/下载、恢复或导入的准备/重启提示/撤销、失败恢复与脱敏复制。
-- [ ] 验证 1920×1080、1440×900、1366×768、1280×800、1024×768，无控制台错误和意外横向溢出。
+- [x] 使用临时双库、临时备份/输出/本机状态区和固定无密钥配置启动真实 FastAPI + Vue。
+- [x] 覆盖只读自检、五类预检、备份确认/Job/下载、恢复准备/重启提示/撤销、失败恢复与脱敏复制。
+- [x] 验证 1920×1080、1440×900、1366×768、1280×800、1024×768，无控制台错误和意外横向溢出。
 
 ### Task 6: 稳定候选、复审与交接
 
-- [ ] 运行包内前端/API 测试、受影响 Ops 后端回归、`npm run verify`、同一构建的 prepared Chromium 和 `tools/smoke_check.py --skip-tests`。
-- [ ] 更新 `ARCHITECTURE.md`、即时计划阶段记录和版本化 quick 清单；记录真实两库指纹未变。
+- [x] 运行包内前端/API 测试、受影响 Ops 后端回归、`npm run verify`、同一构建的真实浏览器流程和 `tools/smoke_check.py --skip-tests`。
+- [x] 更新 `ARCHITECTURE.md`、即时计划阶段记录和版本化 quick 清单；记录真实两库指纹未变。
 - [ ] 冻结候选 SHA，按 Spec/Standards 双路复审；阻塞项统一修补一次，必要时由原评审者限定最终复审。
 - [ ] 独立复审通过后生成只绑定已复审 SHA 的 quick 清单，等待用户实际短测并明确给出 `passed` 或问题。
 - [ ] 用户通过后完成 evidence/交接提交，验证 `verified_pending_integration`，再合入 M2-03 integration 并运行 P2-19 逐包受影响门槛。
@@ -158,9 +158,6 @@
 - `frontend/src/router/index.ts`
 - `frontend/src/__tests__/navigation-router.spec.ts`
 - `frontend/src/main.ts`
-- `frontend/e2e/settings-ops-real-api.spec.ts`
-- `frontend/playwright.p2-19-real.config.ts`
-- `frontend/package.json`
 - `tools/p2_19_browser_server.py`
 - `ARCHITECTURE.md`
 - `docs/user-testing/checkpoints/P2-19-v1.5.0-settings-ops-quick-check.md`
@@ -174,7 +171,7 @@
 - 单切片：`npm run test -- --run <ops-test-file>`
 - 前端门槛：`npm run verify`
 - 后端受影响：根目录便携 Python 在功能 worktree 运行 Ops API/服务/Job/File/迁移/数据传输聚焦测试。
-- 浏览器：先使用同一 SHA 的 `npm run build`，再运行 `npm run e2e:p2-19-real:prepared`。
+- 浏览器：先使用同一源码的 `npm run build`，再以 Playwright CLI 驱动受控临时 FastAPI + Vue，保存五档视口与下载证据到忽略的 `output/playwright/p2-19/`。
 - 快速冒烟：根目录便携 Python 在功能 worktree 运行 `tools/smoke_check.py --skip-tests`。
 - 功能分支不运行完整 pytest；P2-19 进入 integration 后只跑受影响验证，M2-03 三包完成后才运行一次批次末完整门槛。
 
@@ -186,7 +183,13 @@
 
 | 阶段 | 耗时 | 测试/复审 | 原始意见 | 去重结果 | 剩余工作 | 当前包验收 | 版本可发布 |
 |---|---:|---|---:|---|---|---|---|
-| 集中调查与计划 | 进行中 | 必读资料、P1-22/P1-23 规格与 Ops API/Job/File、旧自检/数据管理、前端 API/Job/导航基础设施、worktree/数据守卫 | 0 | 6 个根因组：公开契约、确认与并发、Job/重启恢复、文件下载、脱敏、视觉与可达性 | TDD 实现、自动门槛、双路复审、quick、integration | 否 | 否 |
+| 集中调查与计划 | 14 分钟 | 必读资料、P1-22/P1-23 规格与 Ops API/Job/File、旧自检/数据管理、前端 API/Job/导航基础设施、worktree/数据守卫 | 0 | 6 个根因组：公开契约、确认与并发、Job/重启恢复、文件下载、脱敏、视觉与可达性 | 已完成 | 否 | 否 |
+| TDD 实现 | 34 分钟 | API、Store、页面、路由与导航测试；相关测试 83 passed | 0 | 0 Critical / 0 Important | 自动门槛与真实浏览器 | 否 | 否 |
+| 稳定候选验证 | 31 分钟 | 前端 verify 700 passed；Ops 后端 98 passed；五类预检、备份下载、恢复准备/撤销、五档视口；快速冒烟 | 4 个实现期问题 | 4 个已统一修复；另有 1 个 P1-23 修改前导出问题单独登记 | 双路复审、quick；既有导出问题待裁定 | 否 | 否 |
+
+## Out-of-scope finding
+
+- **修改前已经存在 / Important：** 临时真实 API 中，`transfer_export` 预检后正常提交可因在线 SQLite 相关文件造成资源指纹变化而失败，Job 内部原因为 `preflight resource changed`。P2-19 未修改后端 Ops 实现，98 项既有聚焦回归通过；本包前端已修正为如实显示失败、没有产物且不自动重试。该问题属于 P1-23 既有实现，按范围规则不在本包自动修改；是否阻止 P2-19 验收由复审统一裁定。
 
 ## Rollback and Stop Conditions
 
@@ -200,9 +203,9 @@
 ## 昼夜交接
 
 **执行包：** P2-19
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** pending
 **真实数据指纹：** not_touched

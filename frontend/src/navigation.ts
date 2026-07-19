@@ -8,6 +8,7 @@ export type WorkspaceRouteId =
   | 'knowledge-graph'
   | 'files'
   | 'grading'
+  | 'settings'
 
 export interface WorkspaceRouteDefinition {
   id: WorkspaceRouteId
@@ -115,6 +116,15 @@ export const filesRouteDefinition: WorkspaceRouteDefinition = {
   breadcrumb: '文件中心',
 }
 
+export const settingsRouteDefinition: WorkspaceRouteDefinition = {
+  id: 'settings',
+  label: '设置与运维',
+  path: '/settings',
+  title: '设置与运维',
+  description: '查看系统状态，并通过安全预检执行备份、恢复、迁移和数据转移',
+  breadcrumb: '设置与运维',
+}
+
 export const navigationItems = [
   workbenchRouteDefinition,
   sessionRouteDefinition,
@@ -125,4 +135,5 @@ export const navigationItems = [
   knowledgeGraphRouteDefinition,
   filesRouteDefinition,
   reviewRouteDefinition,
+  settingsRouteDefinition,
 ] as const
