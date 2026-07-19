@@ -7,8 +7,11 @@ import sqlite3
 import tempfile
 import subprocess
 import textwrap
+import threading
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
@@ -1582,6 +1585,119 @@ def test_status_explicitly_reports_that_no_acceptance_server_is_running(
     assert status["server_state"] == "stopped"
 
 
+def test_start_claim_is_atomic_when_two_starts_race(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    (workspace / "acceptance_config").mkdir(parents=True)
+    barrier = threading.Barrier(2)
+
+    def claim(token: str) -> str:
+        barrier.wait()
+        acceptance._claim_server_start(
+            workspace,
+            source_sha="a" * 40,
+            port=8120,
+            control_token=token,
+        )
+        return token
+
+    results: list[str] = []
+    errors: list[BaseException] = []
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(claim, "first-token"),
+            executor.submit(claim, "second-token"),
+        ]
+        for future in futures:
+            try:
+                results.append(future.result())
+            except BaseException as exc:
+                errors.append(exc)
+
+    assert len(results) == 1
+    assert len(errors) == 1
+    assert isinstance(errors[0], acceptance.AcceptanceError)
+
+
+def test_health_probe_rejects_an_unrelated_http_200_service() -> None:
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ready")
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        assert not acceptance._server_is_healthy(
+            int(server.server_port),
+            control_token="expected-token",
+            source_sha="a" * 40,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_server_does_not_create_the_app_when_state_registration_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    (workspace / "acceptance_config").mkdir(parents=True)
+    (workspace / acceptance.METADATA_FILENAME).write_text(
+        json.dumps(
+            {
+                "package": "P2-20",
+                "source_sha": "a" * 40,
+                "state": "runtime_ready",
+                "authorized_session_id": 1,
+                "paper_count": 3,
+                "source_fingerprint": "b" * 64,
+                "input_manifest": "acceptance_inputs/manifest.json",
+                "profile_fingerprint": "c" * 64,
+                "model_request_budget": 4,
+            }
+        ),
+        encoding="utf-8",
+    )
+    acceptance._claim_server_start(
+        workspace,
+        source_sha="a" * 40,
+        port=8120,
+        control_token="expected-token",
+    )
+    app_created = False
+
+    def fail_state_write(
+        _workspace: Path,
+        _state: dict[str, object],
+    ) -> None:
+        raise OSError("simulated state write failure")
+
+    def mark_app_created(_workspace: Path, _control_token: str):
+        nonlocal app_created
+        app_created = True
+        raise AssertionError("the app must not be created")
+
+    monkeypatch.setattr(acceptance, "_write_server_state", fail_state_write)
+    monkeypatch.setattr(acceptance, "create_acceptance_app", mark_app_created)
+
+    with pytest.raises(OSError, match="simulated state write failure"):
+        acceptance.run_acceptance_server(
+            workspace,
+            8120,
+            "expected-token",
+        )
+
+    assert not app_created
+    assert not acceptance._server_claim_path(workspace).exists()
+
+
 def test_start_and_stop_manage_a_detached_acceptance_service(
     tmp_path: Path,
 ) -> None:
@@ -1624,6 +1740,8 @@ def test_start_and_stop_manage_a_detached_acceptance_service(
         textwrap.dedent(
             """
             import argparse
+            import json
+            import os
             from http.server import BaseHTTPRequestHandler, HTTPServer
             from pathlib import Path
 
@@ -1631,14 +1749,45 @@ def test_start_and_stop_manage_a_detached_acceptance_service(
             parser.add_argument("command")
             parser.add_argument("--workspace", required=True)
             parser.add_argument("--port", type=int, required=True)
+            parser.add_argument("--control-token", required=True)
             args = parser.parse_args()
             stop_path = Path(args.workspace) / "acceptance_config" / "server-stop.request"
+            state_path = Path(args.workspace) / "acceptance_config" / "server-state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "package": "P2-20",
+                        "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "state": "starting",
+                        "pid": os.getpid(),
+                        "port": args.port,
+                        "control_token": args.control_token,
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             class Handler(BaseHTTPRequestHandler):
                 def do_GET(self):
+                    if (
+                        self.path != "/acceptance-control/health"
+                        or self.headers.get("X-Acceptance-Control-Token")
+                        != args.control_token
+                    ):
+                        self.send_response(404)
+                        self.end_headers()
+                        return
+                    payload = json.dumps(
+                        {
+                            "package": "P2-20",
+                            "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        }
+                    ).encode("utf-8")
                     self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
                     self.end_headers()
-                    self.wfile.write(b"ready")
+                    self.wfile.write(payload)
 
                 def log_message(self, _format, *_args):
                     return
