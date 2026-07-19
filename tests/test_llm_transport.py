@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from types import SimpleNamespace
 
 import llm_client
 from backend.llm import LLMRequestKind, NullUsageSink
@@ -117,6 +118,41 @@ def test_adapter_forwards_request_kind_client_and_a_fresh_kwargs_copy() -> None:
         "messages": [],
         "response_format": {"type": "json_object"},
     }
+
+
+def test_config_generation_default_timeout_reaches_sdk_through_public_adapter() -> None:
+    transport = _transport()
+    sdk_calls: list[dict[str, object]] = []
+
+    class FakeCreate:
+        def create(self, **kwargs: object) -> object:
+            sdk_calls.append(kwargs)
+            return SimpleNamespace(usage=None)
+
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=FakeCreate())
+    )
+    adapter = transport.LLMProtocolAdapter(
+        api_key="secret",
+        base_url="https://example.test/v1",
+        client=fake_client,
+        usage_sink_factory=NullUsageSink,
+    )
+
+    adapter.chat_completions(
+        request_kind=LLMRequestKind.CONFIG_GENERATION,
+        model="config-model",
+        kwargs={"messages": []},
+        allow_retry=False,
+    )
+
+    assert sdk_calls == [
+        {
+            "messages": [],
+            "model": "config-model",
+            "timeout": 600.0,
+        }
+    ]
 
 
 def test_adapter_owns_one_created_client_and_one_gateway_for_both_protocols(

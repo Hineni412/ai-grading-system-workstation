@@ -1719,7 +1719,7 @@ def test_llm_client_gateway_chat_uses_timeout_and_request_id(
     )
 
     assert client.json_from_text("prompt") == {"ok": True}
-    assert completions.calls[0]["timeout"] == 120.0
+    assert completions.calls[0]["timeout"] == 600.0
     assert sink.events[0].request_kind == "config_generation"
     assert sink.events[0].request_id
     assert len(gateway_configs) == 1
@@ -1761,8 +1761,8 @@ def test_llm_client_gateway_maps_legacy_request_kinds_exactly(
     assert [call["timeout"] for call in completions.calls] == [
         60.0,
         300.0,
-        120.0,
-        120.0,
+        600.0,
+        600.0,
     ]
 
 

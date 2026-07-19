@@ -2,7 +2,7 @@
 
 **关联执行包：** P1-24（已合并模型策略的独立行为调整）
 **阻塞：** P2-20 formal 用户验收
-**状态：** in_progress
+**状态：** waiting_review
 **基线：** `252b768e3b29ec4a80853a6f3a0cf6165e9dba2d`
 **分支：** `codex/issue-61-config-timeout`
 **用户自测：** none（修复进入 M2-03 后恢复 P2-20 的既有 formal 清单）
@@ -46,10 +46,10 @@
 
 - [x] 创建并更正 GitHub Issue #61，冻结边界与用户决定。
 - [x] 从 M2-03 精确 SHA 创建独立修复 worktree/分支并登记文件所有权。
-- [ ] 在公共适配器接缝加入默认 600 秒回归并确认 RED。
-- [ ] 最小调整 `config_generation` 默认策略并确认 GREEN。
-- [ ] 更新既有策略期望和当前架构事实。
-- [ ] 运行聚焦测试、受影响 LLM/config 回归与快速冒烟。
+- [x] 在公共适配器接缝加入默认 600 秒回归并确认 RED。
+- [x] 最小调整 `config_generation` 默认策略并确认 GREEN。
+- [x] 更新既有策略期望和当前架构事实。
+- [x] 运行聚焦测试、受影响 LLM/config 回归与快速冒烟。
 - [ ] 冻结候选并进行 Spec/Standards 双路复审。
 - [ ] 合入 M2-03 integration，逐包验证并恢复 P2-20。
 
@@ -65,6 +65,8 @@
 | 阶段 | 耗时 | 测试/复审 | 原始问题 | 去重结果 | 剩余工作 | 修复验收 | 版本可发布 |
 |---|---:|---|---:|---|---|---|---|
 | 调查与边界冻结 | 约 20 分钟 | P1-24 设计、Gateway/Policy/LLMClient、活动 profile 安全字段、P2-20 第六副本证据、Issue #61 | 1 | 1 Important：默认 120 秒不足以支持本次整卷生成；原“600 秒被意外覆盖”假设已按权威设计纠正 | RED→GREEN、回归、双路复审、integration | 否 | 否 |
+| RED→GREEN | 约 5 分钟 | 公共 `LLMProtocolAdapter` → 真实 Gateway → 假 SDK：RED 收到 120 秒；最小策略修改后 3 项聚焦测试通过 | 0 | 0 | 受影响回归、快速冒烟、双路复审、integration | 局部通过 | 否 |
+| 稳定候选 | 约 25 分钟 | 受影响 LLM/config 回归 196 passed；`smoke_check.py --skip-tests` 通过，编译 495 个文件并在临时副本验证两库初始化幂等 | 2 | 0：两项均为旧测试的 120 秒期望，已按冻结需求统一更新 | 双路初审、integration | 自动验收通过 | 否 |
 
 ## 假设排序与结论
 
