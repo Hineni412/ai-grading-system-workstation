@@ -1991,11 +1991,27 @@ def start_acceptance_server(
     validated_port = _validate_port(port)
     _validate_prepared_proxy_port(target, validated_port)
     existing = _load_server_state(target)
+    claim = _load_server_claim(target)
     if existing is not None:
-        if (
-            existing["source_sha"] == metadata["source_sha"]
+        ownership_matches = (
+            claim is not None
+            and existing["source_sha"] == metadata["source_sha"]
+            and claim["source_sha"] == existing["source_sha"]
             and existing["port"] == validated_port
+            and claim["port"] == existing["port"]
+            and hmac.compare_digest(
+                str(claim["control_token"]),
+                str(existing["control_token"]),
+            )
             and _process_is_running(int(existing["pid"]))
+        )
+        if ownership_matches and existing["state"] == "starting":
+            raise AcceptanceError(
+                "acceptance server start is still in progress"
+            )
+        if (
+            ownership_matches
+            and existing["state"] == "running"
             and _server_is_healthy(
                 validated_port,
                 control_token=str(existing["control_token"]),
@@ -2008,7 +2024,7 @@ def start_acceptance_server(
         raise AcceptanceError(
             "acceptance server state is stale; stop it before restarting"
         )
-    if _load_server_claim(target) is not None:
+    if claim is not None:
         raise AcceptanceError(
             "acceptance server start is already claimed; stop it before restarting"
         )
@@ -2244,25 +2260,22 @@ def safe_status(workspace: Path | str) -> dict[str, object]:
         result["server_state"] = "stopped"
     else:
         port = int(server["port"])
-        healthy = (
-            _process_is_running(int(server["pid"]))
-            and _server_is_healthy(
-                port,
-                control_token=str(server["control_token"]),
-                source_sha=str(server["source_sha"]),
-            )
-        )
+        process_running = _process_is_running(int(server["pid"]))
+        if not process_running:
+            visible_state = "unhealthy"
+        elif server["state"] == "starting":
+            visible_state = "starting"
+        elif _server_is_healthy(
+            port,
+            control_token=str(server["control_token"]),
+            source_sha=str(server["source_sha"]),
+        ):
+            visible_state = "running"
+        else:
+            visible_state = "unhealthy"
         result.update(
             {
-                "server_state": (
-                    "running"
-                    if healthy
-                    else (
-                        "starting"
-                        if server["state"] == "starting"
-                        else "unhealthy"
-                    )
-                ),
+                "server_state": visible_state,
                 "port": port,
             }
         )
