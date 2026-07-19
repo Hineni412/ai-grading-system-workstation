@@ -596,7 +596,7 @@ def preview_question_blocks_from_docx_text(doc_text: str) -> list[dict[str, Any]
 
 _INLINE_IMAGE_MARKER = re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]")
 _INLINE_MAIN_QUESTION_MARKER = re.compile(
-    r"(?P<prefix>[。！？!?．.][ \t]*)"
+    r"(?P<prefix>[。！？!?．.][ \t\r\n]*)"
     r"(?P<number>\d{1,2})[ \t]*[.．、](?![ \t]*\d)[ \t]*"
 )
 
