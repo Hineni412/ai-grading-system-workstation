@@ -154,6 +154,7 @@
 | 状态转换初审与统一修复 | 约 20 分钟 | Spec/Standards 复审同一候选；第二个并发 `start` 提前成功回归先失败后通过；P2-20 38 passed，快速冒烟通过 | 2 | 去重为 1 Important：`starting` 状态的健康实例不得被第二个 `start` 或 `status` 提前当作已提交的 `running`；已统一修复 | 由原评审者限定终审首轮问题与直接回归 | 自动修复候选通过 | 否 |
 | 状态转换限定终审 | 约 10 分钟 | 原 Spec/Standards 评审者只复核首轮问题、修复区域与直接回归；两路均复跑并发启动、健康丢失和提交失败测试 | 0 | 0 Critical / 0 Important / 0 Suggestion；首轮唯一问题已关闭，P2-20 38 passed | 绑定已复审 SHA 重建全新隔离副本，恢复已授权的 1 次整卷请求 | 自动修复验收通过，formal 待恢复 | 否 |
 | 健康接口 422 独立修复候选 | 约 15 分钟 | 精确锚点副本真实启动；Uvicorn 已监听但健康路由连续 422，30 秒内安全回收；FastAPI HTTP 回归 422→200/404；P2-20 39 passed，快速冒烟通过 | 1 | 1 Important：局部导入的请求类型在延迟注解解析时不可见，导致健康接口误把请求对象当查询参数；已改为显式 Header 注入 | 冻结候选并进行新的 Spec/Standards 双路复审 | 自动修复候选通过；模型/OCR 0 | 否 |
+| 健康接口双路复审 | 约 10 分钟 | Spec/Standards 检查同一冻结候选；真实 FastAPI HTTP 回归和 P2-20 39 项复跑通过 | 0 | 0 Critical / 0 Important / 0 Suggestion；正确令牌 200/精确包与 SHA，缺失或错误令牌 404，未触及模型或产品行为 | 绑定已复审 SHA 重建第三个全新副本并复验 `start`/零计数 | 自动修复验收通过，formal 待恢复 | 否 |
 
 ### 生命周期状态转换独立修复边界（用户于 2026-07-19 批准）
 
@@ -208,10 +209,10 @@
 ## 昼夜交接
 
 **执行包：** P2-20
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** waiting_user
+**功能提交：** 3e56ca5787429775f4f6d5e47b1d14c1d6c0158e
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** pending
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
