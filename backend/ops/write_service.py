@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import sqlite3
 import time
 import uuid
 from collections.abc import AsyncIterable, Callable
@@ -318,7 +319,10 @@ class OpsWriteService:
             "total_size_bytes": sum(entry.size_bytes for entry in entries),
             "warnings": [],
         }
-        fingerprint = _entry_fingerprint(entries)
+        fingerprint = _entry_fingerprint(
+            entries,
+            job_store_path=Path(self.paths.db_path),
+        )
         return self._plan(
             OpsOperation.TRANSFER_EXPORT,
             {"scope": scope},
@@ -361,7 +365,10 @@ class OpsWriteService:
                 default_export_sources(Path(self.paths.project_root), Path(self.paths.data_root)),
                 scope=str(plan.parameters["scope"]),
             )
-            return _entry_fingerprint(entries)
+            return _entry_fingerprint(
+                entries,
+                job_store_path=Path(self.paths.db_path),
+            )
         if plan.operation is OpsOperation.MIGRATION:
             target = str(plan.parameters["target"])
             targets = ("grading", "question_bank") if target == "all" else (target,)
@@ -430,17 +437,133 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _entry_fingerprint(entries: list[Any]) -> str:
+def _entry_fingerprint(
+    entries: list[Any],
+    *,
+    job_store_path: Path | None = None,
+) -> str:
     digest = hashlib.sha256()
+    resolved_job_store = (
+        Path(job_store_path).resolve(strict=False)
+        if job_store_path is not None
+        else None
+    )
     for entry in entries:
         digest.update(str(entry.arc_name).encode("utf-8"))
+        source_path = Path(entry.source_path)
+        if (
+            resolved_job_store is not None
+            and source_path.resolve(strict=False) == resolved_job_store
+        ):
+            digest.update(
+                _sqlite_logical_fingerprint(
+                    source_path,
+                    ignored_data_tables=frozenset({"jobs"}),
+                ).encode("ascii")
+            )
+            continue
         try:
-            stat_result = Path(entry.source_path).stat()
+            stat_result = source_path.stat()
             digest.update(str(stat_result.st_size).encode("ascii"))
             digest.update(str(stat_result.st_mtime_ns).encode("ascii"))
         except OSError:
             digest.update(b"missing")
     return digest.hexdigest()
+
+
+def _sqlite_logical_fingerprint(
+    path: Path,
+    *,
+    ignored_data_tables: frozenset[str],
+) -> str:
+    digest = hashlib.sha256()
+    ignored = {name.casefold() for name in ignored_data_tables}
+    uri = f"{Path(path).resolve(strict=True).as_uri()}?mode=ro"
+    connection = sqlite3.connect(uri, uri=True)
+    try:
+        connection.execute("PRAGMA query_only = ON")
+        connection.execute("BEGIN")
+        schema_rows = connection.execute(
+            "SELECT type, name, tbl_name, sql "
+            "FROM sqlite_schema "
+            "WHERE name NOT LIKE 'sqlite_%' "
+            "ORDER BY type, name"
+        ).fetchall()
+        for row in schema_rows:
+            _digest_sqlite_row(digest, row)
+
+        table_rows = connection.execute(
+            "SELECT name FROM sqlite_schema "
+            "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' "
+            "ORDER BY name"
+        ).fetchall()
+        for (table_name_value,) in table_rows:
+            table_name = str(table_name_value)
+            if table_name.casefold() in ignored:
+                continue
+            quoted = _quote_sqlite_identifier(table_name)
+            table_info = connection.execute(
+                f"PRAGMA table_info({quoted})"
+            ).fetchall()
+            primary_key_columns = [
+                str(row[1])
+                for row in sorted(table_info, key=lambda row: int(row[5]))
+                if int(row[5]) > 0
+            ]
+            digest.update(table_name.encode("utf-8"))
+            if primary_key_columns:
+                order_by = ", ".join(
+                    _quote_sqlite_identifier(name)
+                    for name in primary_key_columns
+                )
+                rows = connection.execute(
+                    f"SELECT * FROM {quoted} ORDER BY {order_by}"
+                )
+            else:
+                rows = connection.execute(
+                    f"SELECT rowid, * FROM {quoted} ORDER BY rowid"
+                )
+            for row in rows:
+                _digest_sqlite_row(digest, row)
+
+        has_sequence = connection.execute(
+            "SELECT 1 FROM sqlite_schema "
+            "WHERE type = 'table' AND name = 'sqlite_sequence'"
+        ).fetchone()
+        if has_sequence is not None:
+            for row in connection.execute(
+                "SELECT name, seq FROM sqlite_sequence ORDER BY name"
+            ):
+                if str(row[0]).casefold() not in ignored:
+                    _digest_sqlite_row(digest, row)
+        connection.rollback()
+    finally:
+        connection.close()
+    return digest.hexdigest()
+
+
+def _quote_sqlite_identifier(value: str) -> str:
+    return '"' + str(value).replace('"', '""') + '"'
+
+
+def _digest_sqlite_row(
+    digest: Any,
+    row: Any,
+) -> None:
+    for value in row:
+        if value is None:
+            marker, encoded = b"N", b""
+        elif isinstance(value, bytes):
+            marker, encoded = b"B", value
+        elif isinstance(value, int):
+            marker, encoded = b"I", str(value).encode("ascii")
+        elif isinstance(value, float):
+            marker, encoded = b"F", value.hex().encode("ascii")
+        else:
+            marker, encoded = b"T", str(value).encode("utf-8")
+        digest.update(marker)
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
 
 
 __all__ = [
