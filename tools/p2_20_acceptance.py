@@ -1630,6 +1630,33 @@ def _validate_staged_config(workspace: Path) -> None:
         raise AcceptanceError("prepared app config is not acceptance-safe")
 
 
+def mount_acceptance_control_health(
+    app: Any,
+    *,
+    control_token: str | None,
+    source_sha: str,
+) -> None:
+    from fastapi import Header, HTTPException
+
+    @app.get("/acceptance-control/health", include_in_schema=False)
+    def acceptance_control_health(
+        x_acceptance_control_token: str | None = Header(default=None),
+    ):
+        if (
+            control_token is None
+            or x_acceptance_control_token is None
+            or not hmac.compare_digest(
+                x_acceptance_control_token,
+                control_token,
+            )
+        ):
+            raise HTTPException(status_code=404)
+        return {
+            "package": PACKAGE,
+            "source_sha": source_sha,
+        }
+
+
 def create_acceptance_app(
     workspace: Path | str,
     control_token: str | None = None,
@@ -1683,7 +1710,7 @@ def create_acceptance_app(
     initialize_database(paths.qb_db_path, seed_skills=False)
 
     from backend.api.app import create_app
-    from fastapi import HTTPException, Request as FastAPIRequest
+    from fastapi import HTTPException
     from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
 
@@ -1699,19 +1726,11 @@ def create_acceptance_app(
         name="p2-20-assets",
     )
 
-    @app.get("/acceptance-control/health", include_in_schema=False)
-    def acceptance_control_health(request: FastAPIRequest):
-        supplied_token = request.headers.get("x-acceptance-control-token")
-        if (
-            control_token is None
-            or supplied_token is None
-            or not hmac.compare_digest(supplied_token, control_token)
-        ):
-            raise HTTPException(status_code=404)
-        return {
-            "package": PACKAGE,
-            "source_sha": str(metadata["source_sha"]),
-        }
+    mount_acceptance_control_health(
+        app,
+        control_token=control_token,
+        source_sha=str(metadata["source_sha"]),
+    )
 
     @app.get("/{frontend_path:path}", include_in_schema=False)
     def serve_frontend(frontend_path: str):

@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
@@ -1641,6 +1642,35 @@ def test_health_probe_rejects_an_unrelated_http_200_service() -> None:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_acceptance_health_requires_the_exact_control_token() -> None:
+    app = FastAPI()
+    acceptance.mount_acceptance_control_health(
+        app,
+        control_token="expected-token",
+        source_sha="a" * 40,
+    )
+    client = TestClient(app)
+
+    response = client.get(
+        "/acceptance-control/health",
+        headers={"X-Acceptance-Control-Token": "expected-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "package": "P2-20",
+        "source_sha": "a" * 40,
+    }
+    assert client.get("/acceptance-control/health").status_code == 404
+    assert (
+        client.get(
+            "/acceptance-control/health",
+            headers={"X-Acceptance-Control-Token": "wrong-token"},
+        ).status_code
+        == 404
+    )
 
 
 def test_server_does_not_create_the_app_when_state_registration_fails(
