@@ -595,6 +595,10 @@ def preview_question_blocks_from_docx_text(doc_text: str) -> list[dict[str, Any]
 
 
 _INLINE_IMAGE_MARKER = re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]")
+_INLINE_MAIN_QUESTION_MARKER = re.compile(
+    r"(?:(?<=\s)|(?<=[。！？!?；;：:．]))"
+    r"(?P<number>\d{1,2})[ \t]*[.．、](?![ \t]*\d)[ \t]*"
+)
 
 
 class _ControlledDocxWriteError(RuntimeError):
@@ -667,7 +671,8 @@ def _extract_rich_question_blocks(
         write_created_file=(controlled_writer if write_created_file is not None else None),
     )
     content = map_rich_content_by_number(
-        extracted.rich_paragraphs, source_file=str(tmp_path)
+        _split_inline_main_question_paragraphs(extracted.rich_paragraphs),
+        source_file=str(tmp_path),
     )
 
     question_map = content.get("question") if isinstance(content, dict) else {}
@@ -697,6 +702,95 @@ def _extract_rich_question_blocks(
         if block:
             blocks.append(block)
     return blocks or None
+
+
+def _split_inline_main_question_paragraphs(
+    rich_paragraphs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Split only consecutive main-question markers embedded in DOCX paragraphs."""
+    normalized: list[dict[str, Any]] = []
+    current_number: int | None = None
+    in_answer_section = False
+    plain_paragraphs = [
+        _strip_inline_html(
+            _INLINE_IMAGE_MARKER.sub("", str(paragraph.get("text") or ""))
+        ).strip()
+        for paragraph in rich_paragraphs
+    ]
+
+    for index, paragraph in enumerate(rich_paragraphs):
+        text = str(paragraph.get("text") or "").strip()
+        plain_text = plain_paragraphs[index]
+        if _looks_like_answer_section_heading(plain_text):
+            in_answer_section = True
+        if in_answer_section or not text:
+            normalized.append(paragraph)
+            continue
+
+        leading_number = _extract_question_marker_number(plain_text)
+        if leading_number is not None:
+            current_number = leading_number
+        if current_number is None:
+            normalized.append(paragraph)
+            continue
+
+        segments, final_number = _split_consecutive_inline_main_questions(
+            text,
+            current_number=current_number,
+            following_number=_next_leading_main_question_number(
+                plain_paragraphs,
+                after_index=index,
+            ),
+        )
+        if len(segments) == 1:
+            normalized.append(paragraph)
+            continue
+
+        for segment in segments:
+            normalized.append({**paragraph, "text": segment})
+        current_number = final_number
+
+    return normalized
+
+
+def _split_consecutive_inline_main_questions(
+    text: str,
+    *,
+    current_number: int,
+    following_number: int | None,
+) -> tuple[list[str], int]:
+    split_offsets: list[int] = []
+    expected_number = current_number + 1
+    for marker in _INLINE_MAIN_QUESTION_MARKER.finditer(text):
+        marker_number = int(marker.group("number"))
+        if marker_number != expected_number:
+            continue
+        split_offsets.append(marker.start("number"))
+        expected_number += 1
+    if not split_offsets or expected_number != following_number:
+        return [text], current_number
+
+    boundaries = [0, *split_offsets, len(text)]
+    segments = [
+        text[start:end].strip()
+        for start, end in zip(boundaries, boundaries[1:])
+        if text[start:end].strip()
+    ]
+    return segments, expected_number - 1
+
+
+def _next_leading_main_question_number(
+    texts: list[str],
+    *,
+    after_index: int,
+) -> int | None:
+    for text in texts[after_index + 1 :]:
+        if _looks_like_answer_section_heading(text):
+            return None
+        number = _extract_question_marker_number(text)
+        if number is not None:
+            return number
+    return None
 
 
 def _flatten_answer_blocks(answer_map: Any) -> list[dict[str, Any]]:
@@ -1366,11 +1460,18 @@ def _extract_local_question_blocks(doc_text: str) -> list[dict[str, Any]]:
     if inline_blocks:
         return inline_blocks
 
+    normalized_doc_text = "\n".join(
+        _normalize_inline_main_question_lines(doc_text)
+    )
     parsed_questions: list[Any] = []
     try:
         from question_bank.importers.batch_importer import parse_paper_text
 
-        parsed = parse_paper_text(str(doc_text or ""), source_file="grading_config.docx", page_range="document")
+        parsed = parse_paper_text(
+            normalized_doc_text,
+            source_file="grading_config.docx",
+            page_range="document",
+        )
         parsed_questions = list(parsed.questions)
     except Exception:
         parsed_questions = []
@@ -1391,10 +1492,10 @@ def _extract_local_question_blocks(doc_text: str) -> list[dict[str, Any]]:
             last_number = number
         parsed_questions = truncated
 
-    answer_section = _local_answer_section_text(doc_text)
+    answer_section = _local_answer_section_text(normalized_doc_text)
     answer_blocks = _local_answer_blocks(answer_section)
     choice_answers = _extract_choice_answer_sequence(answer_section)
-    section_hints = _question_type_hints_from_section_headings(doc_text)
+    section_hints = _question_type_hints_from_section_headings(normalized_doc_text)
 
     blocks: list[dict[str, Any]] = []
     if parsed_questions:
@@ -1436,7 +1537,7 @@ def _extract_local_question_blocks(doc_text: str) -> list[dict[str, Any]]:
                 }
             )
     else:
-        for block in _split_doc_text_into_question_blocks(doc_text):
+        for block in _split_doc_text_into_question_blocks(normalized_doc_text):
             qid = str(block.get("question_id") or "")
             number = qid.removeprefix("Q")
             question_text = str(block.get("text") or "")
@@ -1985,7 +2086,7 @@ def _restore_precalibration_objective_answers(payload: dict[str, Any], previous_
 
 
 def _split_doc_text_into_question_blocks(doc_text: str) -> list[dict[str, str]]:
-    lines = [line.rstrip() for line in str(doc_text or "").splitlines()]
+    lines = _normalize_inline_main_question_lines(doc_text)
     markers: list[tuple[int, str]] = []
     last_number = 0
     for idx, line in enumerate(lines):
@@ -2005,6 +2106,35 @@ def _split_doc_text_into_question_blocks(doc_text: str) -> list[dict[str, str]]:
         if text:
             blocks.append({"question_id": qid, "text": text})
     return blocks
+
+
+def _normalize_inline_main_question_lines(doc_text: str) -> list[str]:
+    lines: list[str] = []
+    current_number: int | None = None
+    in_answer_section = False
+    raw_lines = [raw_line.rstrip() for raw_line in str(doc_text or "").splitlines()]
+    for index, line in enumerate(raw_lines):
+        if _looks_like_answer_section_heading(line) and current_number is not None:
+            in_answer_section = True
+        if in_answer_section:
+            lines.append(line)
+            continue
+        leading_number = _extract_question_marker_number(line)
+        if leading_number is not None:
+            current_number = leading_number
+        if current_number is None:
+            lines.append(line)
+            continue
+        segments, current_number = _split_consecutive_inline_main_questions(
+            line,
+            current_number=current_number,
+            following_number=_next_leading_main_question_number(
+                raw_lines,
+                after_index=index,
+            ),
+        )
+        lines.extend(segments)
+    return lines
 
 
 def _extract_question_marker_number(line: str) -> int | None:
