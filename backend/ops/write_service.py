@@ -321,7 +321,10 @@ class OpsWriteService:
         }
         fingerprint = _entry_fingerprint(
             entries,
-            job_store_path=Path(self.paths.db_path),
+            sqlite_ignored_data_tables={
+                Path(self.paths.db_path): frozenset({"jobs"}),
+                Path(self.paths.qb_db_path): frozenset(),
+            },
         )
         return self._plan(
             OpsOperation.TRANSFER_EXPORT,
@@ -367,7 +370,10 @@ class OpsWriteService:
             )
             return _entry_fingerprint(
                 entries,
-                job_store_path=Path(self.paths.db_path),
+                sqlite_ignored_data_tables={
+                    Path(self.paths.db_path): frozenset({"jobs"}),
+                    Path(self.paths.qb_db_path): frozenset(),
+                },
             )
         if plan.operation is OpsOperation.MIGRATION:
             target = str(plan.parameters["target"])
@@ -440,25 +446,24 @@ def _file_sha256(path: Path) -> str:
 def _entry_fingerprint(
     entries: list[Any],
     *,
-    job_store_path: Path | None = None,
+    sqlite_ignored_data_tables: dict[Path, frozenset[str]] | None = None,
 ) -> str:
     digest = hashlib.sha256()
-    resolved_job_store = (
-        Path(job_store_path).resolve(strict=False)
-        if job_store_path is not None
-        else None
-    )
+    sqlite_tables_by_path = {
+        Path(path).resolve(strict=False): ignored_tables
+        for path, ignored_tables in (sqlite_ignored_data_tables or {}).items()
+    }
     for entry in entries:
         digest.update(str(entry.arc_name).encode("utf-8"))
         source_path = Path(entry.source_path)
-        if (
-            resolved_job_store is not None
-            and source_path.resolve(strict=False) == resolved_job_store
-        ):
+        ignored_tables = sqlite_tables_by_path.get(
+            source_path.resolve(strict=False)
+        )
+        if ignored_tables is not None:
             digest.update(
                 _sqlite_logical_fingerprint(
                     source_path,
-                    ignored_data_tables=frozenset({"jobs"}),
+                    ignored_data_tables=ignored_tables,
                 ).encode("ascii")
             )
             continue
