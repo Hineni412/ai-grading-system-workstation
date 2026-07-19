@@ -1698,9 +1698,9 @@ def test_server_does_not_create_the_app_when_state_registration_fails(
     assert not acceptance._server_claim_path(workspace).exists()
 
 
-def test_start_and_stop_manage_a_detached_acceptance_service(
+def _detached_lifecycle_workspace(
     tmp_path: Path,
-) -> None:
+) -> tuple[Path, int]:
     workspace = tmp_path / "workspace"
     (workspace / "acceptance_config").mkdir(parents=True)
     (workspace / "acceptance_logs").mkdir()
@@ -1752,6 +1752,7 @@ def test_start_and_stop_manage_a_detached_acceptance_service(
             parser.add_argument("--control-token", required=True)
             args = parser.parse_args()
             stop_path = Path(args.workspace) / "acceptance_config" / "server-stop.request"
+            unhealthy_path = Path(args.workspace) / "acceptance_config" / "server-unhealthy.request"
             state_path = Path(args.workspace) / "acceptance_config" / "server-state.json"
             state_path.write_text(
                 json.dumps(
@@ -1773,8 +1774,9 @@ def test_start_and_stop_manage_a_detached_acceptance_service(
                         self.path != "/acceptance-control/health"
                         or self.headers.get("X-Acceptance-Control-Token")
                         != args.control_token
+                        or unhealthy_path.exists()
                     ):
-                        self.send_response(404)
+                        self.send_response(503 if unhealthy_path.exists() else 404)
                         self.end_headers()
                         return
                     payload = json.dumps(
@@ -1803,6 +1805,13 @@ def test_start_and_stop_manage_a_detached_acceptance_service(
         ),
         encoding="utf-8",
     )
+    return workspace, port
+
+
+def test_detached_service_reports_unhealthy_after_losing_health(
+    tmp_path: Path,
+) -> None:
+    workspace, port = _detached_lifecycle_workspace(tmp_path)
 
     started_at = time.monotonic()
     started = acceptance.start_acceptance_server(
@@ -1815,6 +1824,13 @@ def test_start_and_stop_manage_a_detached_acceptance_service(
         assert elapsed < 5
         assert started["server_state"] == "running"
         assert acceptance.safe_status(workspace)["server_state"] == "running"
+        (workspace / "acceptance_config" / "server-unhealthy.request").touch()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if acceptance.safe_status(workspace)["server_state"] == "unhealthy":
+                break
+            time.sleep(0.1)
+        assert acceptance.safe_status(workspace)["server_state"] == "unhealthy"
     finally:
         stopped = acceptance.stop_acceptance_server(
             workspace,
@@ -1823,5 +1839,38 @@ def test_start_and_stop_manage_a_detached_acceptance_service(
 
     assert stopped["server_state"] == "stopped"
     assert acceptance.safe_status(workspace)["server_state"] == "stopped"
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        assert probe.connect_ex(("127.0.0.1", port)) != 0
+
+
+def test_start_stops_the_service_when_running_state_cannot_be_saved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, port = _detached_lifecycle_workspace(tmp_path)
+    original_write = acceptance._write_server_state
+
+    def fail_running_state(
+        target: Path,
+        state: dict[str, object],
+    ) -> None:
+        if state["state"] == "running":
+            raise OSError("simulated running state write failure")
+        original_write(target, state)
+
+    monkeypatch.setattr(acceptance, "_write_server_state", fail_running_state)
+
+    with pytest.raises(
+        acceptance.AcceptanceError,
+        match="running state could not be saved",
+    ):
+        acceptance.start_acceptance_server(
+            workspace,
+            port,
+            ready_timeout=5,
+        )
+
+    assert not acceptance._server_state_path(workspace).exists()
+    assert not acceptance._server_claim_path(workspace).exists()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         assert probe.connect_ex(("127.0.0.1", port)) != 0
