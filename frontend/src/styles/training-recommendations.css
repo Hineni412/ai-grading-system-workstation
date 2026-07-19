@@ -127,6 +127,16 @@
   color: var(--color-text-primary);
 }
 
+.training-workspace input[type="number"] {
+  width: 100%;
+  min-height: var(--control-height-default);
+  padding: 0 var(--space-3);
+  border: var(--border-width) solid var(--color-border-default);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+}
+
 .training-workspace select[multiple] {
   min-height: 112px;
   padding: var(--space-2);
@@ -202,6 +212,25 @@
 .training-warning-list {
   background: var(--color-warning-subtle);
   color: var(--color-warning);
+}
+
+.training-coverage-gaps {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-left: var(--border-selected-width) solid var(--color-warning);
+  background: var(--color-warning-subtle);
+}
+
+.training-coverage-gaps ul {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding-left: var(--space-5);
+}
+
+.training-coverage-gaps p {
+  color: var(--color-text-secondary);
 }
 
 .training-empty {
@@ -372,6 +401,22 @@
   background: var(--color-bg-subtle);
 }
 
+.training-ratio-controls {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--color-border-subtle);
+}
+
+.training-ratio-controls legend {
+  padding: 0 var(--space-2);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-dense);
+}
+
 .training-checkbox {
   display: flex !important;
   min-height: var(--control-height-default);
@@ -519,6 +564,40 @@
   background: var(--color-bg-subtle) !important;
 }
 
+.training-task-detail {
+  display: grid;
+  max-height: 360px;
+  gap: var(--space-3);
+  overflow-y: auto;
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--color-border-subtle);
+  background: var(--color-bg-surface);
+}
+
+.training-task-detail article,
+.training-task-detail article header,
+.training-task-detail article ol,
+.training-task-detail article li {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.training-task-detail article {
+  padding-top: var(--space-2);
+  border-top: var(--border-width) solid var(--color-border-subtle);
+}
+
+.training-task-detail article header span,
+.training-task-detail article li span {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+.training-task-detail article ol {
+  margin: 0;
+  padding-left: var(--space-5);
+}
+
 .training-jobs ul {
   display: grid;
 }
@@ -577,6 +656,7 @@
   .training-scope-grid,
   .training-sidebar,
   .training-plan-controls,
+  .training-ratio-controls,
   .training-path {
     grid-template-columns: minmax(0, 1fr);
   }

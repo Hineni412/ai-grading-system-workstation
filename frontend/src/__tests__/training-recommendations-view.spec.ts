@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { TrainingDiagnosis, TrainingPlanResponse } from '../api/training'
 import { createAppRouter } from '../router'
+import { useJobStore } from '../stores/jobs'
 import { useSessionStore } from '../stores/session'
 import TrainingRecommendationsView from '../views/TrainingRecommendationsView.vue'
 
@@ -276,6 +277,7 @@ describe('training recommendations view', () => {
 
     await vi.waitFor(() => expect(host.textContent).toContain('55%'))
     expect(host.textContent).toContain('1 条证据')
+    expect(host.textContent).toContain('Q2：题目尚未关联题库来源')
     host.querySelector<HTMLButtonElement>('[data-testid="weak-point-12-knowledge_point:三角形全等"]')!.click()
     await settle()
     expect(host.textContent).toContain('证明步骤缺少依据')
@@ -284,7 +286,18 @@ describe('training recommendations view', () => {
     host.querySelector<HTMLButtonElement>('[data-testid="preview-training"]')!.click()
     await vi.waitFor(() => expect(host.textContent).toContain('与薄弱知识点标签完全相同'))
     expect(host.textContent).toContain('提升应用阶段缺少 1 道精确标签候选题')
+    expect(host.querySelector('[data-testid="training-ratio-direct"]')).not.toBeNull()
 
+    selectValue(
+      host.querySelector<HTMLSelectElement>('[data-testid="training-question-count"]')!,
+      '8',
+    )
+    await settle()
+    expect(host.textContent).not.toContain('与薄弱知识点标签完全相同')
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="confirm-training"]')).toBeNull()
+
+    host.querySelector<HTMLButtonElement>('[data-testid="preview-training"]')!.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('与薄弱知识点标签完全相同'))
     host.querySelector<HTMLButtonElement>('[data-testid="confirm-training"]')!.click()
     await vi.waitFor(() => expect(trainingApiMock.confirm).toHaveBeenCalled())
     await vi.waitFor(() => expect(host.textContent).toContain('训练任务已保存'))
@@ -298,13 +311,52 @@ describe('training recommendations view', () => {
     await vi.waitFor(() => expect(
       host.querySelector('[data-testid="export-training-task"]'),
     ).not.toBeNull())
+    expect(host.textContent).toContain('匿名学生甲')
+    expect(host.textContent).toContain('题 11 · 三角形全等')
 
+    selectValue(
+      host.querySelector<HTMLSelectElement>('[data-testid="training-export-mode"]')!,
+      'variant',
+    )
     host.querySelector<HTMLButtonElement>('[data-testid="export-training-task"]')!.click()
     await vi.waitFor(() => expect(exportsApiMock.submitTrainingExport).toHaveBeenCalledWith(
       31,
-      { format: 'docx' },
+      {
+        variant_id: 301,
+        format: 'docx',
+        audience: 'student',
+      },
     ))
     await vi.waitFor(() => expect(host.textContent).toContain('训练材料已加入生成队列'))
     await vi.waitFor(() => expect(host.textContent).toContain('排队中'))
+  })
+
+  it('shows a recovery action when a completed export can no longer be downloaded', async () => {
+    exportsApiMock.downloadJobFile.mockRejectedValueOnce(new Error('gone'))
+    const { host } = await mountView()
+    const jobStore = useJobStore()
+    jobStore.track({
+      id: 52,
+      job_type: 'training_export',
+      payload: { task_id: 31, format: 'docx' },
+      result: { download_url: '/api/jobs/52/download' },
+      status: 'succeeded',
+      progress: 1,
+      stage: 'completed',
+      detail: '',
+      error: null,
+      cancel_requested: false,
+      created_at: '2026-07-19T01:31:00Z',
+      started_at: '2026-07-19T01:31:00Z',
+      updated_at: '2026-07-19T01:32:00Z',
+      finished_at: '2026-07-19T01:32:00Z',
+    })
+    await settle()
+
+    const download = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '下载')
+    download!.click()
+
+    await vi.waitFor(() => expect(host.textContent).toContain('请重新生成'))
   })
 })
