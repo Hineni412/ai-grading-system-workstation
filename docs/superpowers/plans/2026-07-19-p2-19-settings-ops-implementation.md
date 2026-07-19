@@ -141,7 +141,7 @@
 
 - [x] 运行包内前端/API 测试、受影响 Ops 后端回归、`npm run verify`、同一构建的真实浏览器流程和 `tools/smoke_check.py --skip-tests`。
 - [x] 更新 `ARCHITECTURE.md`、即时计划阶段记录和版本化 quick 清单；记录真实两库指纹未变。
-- [ ] 冻结候选 SHA，按 Spec/Standards 双路复审；阻塞项统一修补一次，必要时由原评审者限定最终复审。
+- [x] 冻结候选 SHA，按 Spec/Standards 双路复审；阻塞项统一修补一次，并由原评审者完成限定最终复审。
 - [ ] 独立复审通过后生成只绑定已复审 SHA 的 quick 清单，等待用户实际短测并明确给出 `passed` 或问题。
 - [ ] 用户通过后完成 evidence/交接提交，验证 `verified_pending_integration`，再合入 M2-03 integration 并运行 P2-19 逐包受影响门槛。
 
@@ -197,7 +197,8 @@
   3. 离线准备失败时明确说明业务数据尚未应用、可能已经创建安全备份，并引导先检查备份清单。
 - 修改前已有的导出失败 1 条单独登记，不在 P2-19 内修改；映射文案去重 1 条为非阻塞建议，不扩大本包。
 - 统一修复验证：新增/受影响检查 21 passed；相关回归 115 passed；前端完整门槛 70 files / 702 tests passed，lint、typecheck、production build 均通过。
-- 剩余工作：由首轮原评审者对已登记问题及修复直接影响范围做一次最终复审；若仍有当前范围内 `Critical`/`Important`，停止并汇报，不开启第三轮。
+- 限定最终复审：首轮两位原评审者检查统一修复候选 `df024058a60f138a11bcdc8301c078da7a897963`；原始意见 0 条、去重后 0 条，当前范围 `Critical`/`Important` 均为 0。
+- 当前包实现与独立复审已经通过；修改前已有的 `transfer_export` 故障仍是外部验收阻塞。剩余工作是由用户决定是否开启独立 P1-23 修复任务，问题解决后再进行 P2-19 quick 验收。
 
 ## Out-of-scope finding
 
@@ -215,10 +216,10 @@
 ## 昼夜交接
 
 **执行包：** P2-19
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** waiting_user
+**功能提交：** df024058a60f138a11bcdc8301c078da7a897963
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** pending
 **真实数据指纹：** not_touched
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
