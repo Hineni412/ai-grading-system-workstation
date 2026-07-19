@@ -186,9 +186,9 @@
 ## 昼夜交接
 
 **执行包：** P2-20
-**交接状态：** waiting_user
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** pending
 **真实数据指纹：** unchanged
