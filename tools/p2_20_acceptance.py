@@ -2057,6 +2057,7 @@ def start_acceptance_server(
         _remove_server_claim_for_token(target, control_token)
         raise
     assert process is not None
+    startup_failure = "acceptance server did not become healthy in time"
     deadline = time.monotonic() + max(1.0, float(ready_timeout))
     while time.monotonic() < deadline:
         if process.poll() is not None:
@@ -2080,9 +2081,18 @@ def start_acceptance_server(
                 )
             ):
                 break
+            registered["state"] = "running"
+            try:
+                _write_server_state(target, registered)
+            except OSError:
+                startup_failure = "acceptance server running state could not be saved"
+                break
             result = safe_status(target)
-            result.update({"server_state": "running", "port": validated_port})
-            return result
+            if result["server_state"] == "running":
+                result.update({"port": validated_port})
+                return result
+            startup_failure = "acceptance server lost health during startup"
+            break
         time.sleep(0.2)
     _server_stop_path(target).touch(exist_ok=True)
     try:
@@ -2092,7 +2102,7 @@ def start_acceptance_server(
         process.wait(timeout=5)
     _remove_server_state_for_pid(target, process.pid)
     _remove_server_claim_for_token(target, control_token)
-    raise AcceptanceError("acceptance server did not become healthy in time")
+    raise AcceptanceError(startup_failure)
 
 
 def stop_acceptance_server(
