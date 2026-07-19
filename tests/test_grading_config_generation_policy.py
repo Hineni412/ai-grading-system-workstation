@@ -89,6 +89,118 @@ D. 4
     assert answers["Q3"] == "4"
 
 
+def test_plain_text_preview_splits_consecutive_main_question_mid_line() -> None:
+    text = "\n".join(
+        [
+            "10. Tenth question.",
+            "Continuation of question ten. 11. Eleventh question.",
+            "12. Twelfth question.",
+        ]
+    )
+
+    blocks = session_manager.preview_question_blocks_from_docx_text(text)
+
+    assert [block["question_id"] for block in blocks] == ["Q10", "Q11", "Q12"]
+    by_id = {block["question_id"]: block["question_text"] for block in blocks}
+    assert "Eleventh question" not in by_id["Q10"]
+    assert "Eleventh question" in by_id["Q11"]
+
+
+def test_plain_text_preview_does_not_promote_nonconsecutive_inline_reference() -> None:
+    text = "\n".join(
+        [
+            "10. Tenth question.",
+            "The appendix reference 11. remains part of question ten.",
+            "13. Thirteenth question.",
+        ]
+    )
+
+    blocks = session_manager.preview_question_blocks_from_docx_text(text)
+
+    assert [block["question_id"] for block in blocks] == ["Q10", "Q13"]
+    assert "appendix reference 11." in blocks[0]["question_text"]
+
+
+def test_plain_text_preview_does_not_promote_consecutive_inline_prose_number() -> None:
+    text = "\n".join(
+        [
+            "10. Tenth question.",
+            "According to clause 11. this remains part of question ten.",
+            "12. Twelfth question.",
+        ]
+    )
+
+    blocks = session_manager.preview_question_blocks_from_docx_text(text)
+
+    assert [block["question_id"] for block in blocks] == ["Q10", "Q12"]
+    assert "clause 11." in blocks[0]["question_text"]
+
+
+def test_plain_text_inline_answers_still_split_consecutive_main_question() -> None:
+    text = "\n".join(
+        [
+            "10. Tenth question.",
+            "【答案】A",
+            "End of question ten. 11. Eleventh question.",
+            "【答案】B",
+            "12. Twelfth question.",
+            "【答案】C",
+        ]
+    )
+
+    blocks = session_manager.preview_question_blocks_from_docx_text(text)
+
+    assert [block["question_id"] for block in blocks] == ["Q10", "Q11", "Q12"]
+    by_id = {block["question_id"]: block for block in blocks}
+    assert "Eleventh question" in by_id["Q11"]["question_text"]
+    assert by_id["Q11"]["canonical_answer"] == "B"
+    assert by_id["Q12"]["canonical_answer"] == "C"
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    [
+        "The measured value is 11.5 units.",
+        "Subpart (11) remains part of question ten.",
+    ],
+)
+def test_plain_text_preview_does_not_split_decimal_or_subpart(
+    continuation: str,
+) -> None:
+    text = "\n".join(
+        [
+            "10. Tenth question.",
+            continuation,
+            "11. Eleventh question.",
+            "12. Twelfth question.",
+        ]
+    )
+
+    blocks = session_manager.preview_question_blocks_from_docx_text(text)
+
+    assert [block["question_id"] for block in blocks] == ["Q10", "Q11", "Q12"]
+    assert continuation in blocks[0]["question_text"]
+
+
+def test_plain_text_preview_splits_multiple_consecutive_markers_in_one_line() -> None:
+    text = "\n".join(
+        [
+            "10. Tenth question.",
+            "Continuation. 11. Eleventh question. 12. Twelfth question.",
+            "13. Thirteenth question.",
+        ]
+    )
+
+    blocks = session_manager.preview_question_blocks_from_docx_text(text)
+
+    assert [block["question_id"] for block in blocks] == [
+        "Q10",
+        "Q11",
+        "Q12",
+        "Q13",
+    ]
+
+
 def test_confirmed_question_type_is_sent_to_ai_and_restored_after_merge(monkeypatch: pytest.MonkeyPatch) -> None:
     confirmed = {
         "question_id": "Q5",
