@@ -2,7 +2,7 @@
 
 **关联执行包：** P1-23（已合并实现的独立缺陷修复）
 **阻塞：** P2-19 quick 用户验收
-**状态：** waiting_review
+**状态：** review_passed
 **基线：** `3076b43ebf63ba8f2317faf2ea2988c0f5915f7d`
 **分支：** `codex/issue-59-p1-23-export-fingerprint`
 **用户自测：** none（修复通过后恢复 P2-19 的既有 quick 清单）
@@ -43,7 +43,7 @@
 - [x] 排列并验证 4 个可证伪根因假设。
 - [x] 做最小修复并确认 GREEN，同时证明真实源变化仍拒绝。
 - [x] 运行 Ops 聚焦测试、受影响回归、临时真实 API 和快速冒烟。
-- [ ] 冻结候选，按 Spec/Standards 对同一 SHA 复审。
+- [x] 冻结候选，按 Spec/Standards 对同一 SHA 复审。
 - [ ] 进入 M2-03 integration 逐项验证并恢复 P2-19 quick 验收。
 
 ## 数据守卫
@@ -61,6 +61,7 @@
 | RED→GREEN | 31 分钟 | 确定性复现 1 failed；核心 4 passed；Ops 聚焦与受影响回归 126 passed / 2 skipped；临时真实 HTTP 预检、提交、Job、下载和 ZIP 通过；快速冒烟通过 | 2 个同根因触发点 | JobStore 与阅卷库同文件；SQLite 运行时边车进入清单 | 双路复审、integration | 是（待复审） | 否 |
 | 并行初审 | 8 分钟 | Spec 与 Standards 对同一候选 `177f887` 复审 | 2 | 1 Important：题库 WAL 最新提交可能漏出 ZIP；1 Suggestion：修复计划有行尾空白 | 一次统一修复、限定终审、integration | 否 | 否 |
 | 统一修复 | 18 分钟 | 新增 2 个题库 WAL 回归；核心 6 passed；聚焦 62 passed / 2 skipped；受影响回归 128 passed / 2 skipped；临时 API 下载、ZIP 完整性和最新提交验证通过；快速冒烟通过 | 2 | 两库逻辑指纹与一致性快照；计划格式清理 | 限定终审、integration | 是（待终审） | 否 |
+| 限定终审 | 6 分钟 | 原 Spec/Standards 评审者只复核首轮问题、统一修复区域及直接回归 | 0 | 0 Critical / 0 Important / 0 Suggestion | integration | 是 | 否 |
 
 ## 根因与假设结论
 
