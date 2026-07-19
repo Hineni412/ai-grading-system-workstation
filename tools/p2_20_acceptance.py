@@ -4,6 +4,7 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -24,6 +25,7 @@ if str(REPO_ROOT) not in sys.path[:1]:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import p1_29_acceptance as workspace_tools
+from question_id_contract import QuestionIdCatalog, QuestionIdContractError
 
 
 PACKAGE = "P2-20"
@@ -421,6 +423,752 @@ def prepare_authorized_inputs(
     }
     _write_metadata(target, prepared_metadata)
     return load_metadata(target)
+
+
+def _current_authorized_source_fingerprint(
+    source_data_root: Path | str,
+    *,
+    session_id: int,
+    paper_limit: int,
+) -> str:
+    data_root = Path(source_data_root).expanduser().resolve()
+    database = data_root / "databases" / "grading_system.db"
+    if not data_root.is_dir() or not database.is_file():
+        raise AcceptanceError("authorized source data is unavailable")
+
+    connection = sqlite3.connect(
+        f"file:{database.as_posix()}?mode=ro",
+        uri=True,
+    )
+    connection.row_factory = sqlite3.Row
+    try:
+        session = connection.execute(
+            """
+            SELECT source_paper_path
+            FROM grading_sessions
+            WHERE id = ? AND COALESCE(is_deleted, 0) = 0
+            """,
+            (session_id,),
+        ).fetchone()
+        papers = connection.execute(
+            """
+            SELECT DISTINCT p.front_image, p.back_image
+            FROM exam_papers AS p
+            JOIN students AS s ON s.id = p.student_id
+            JOIN session_results AS r
+              ON r.session_id = p.session_id
+             AND r.paper_id = p.id
+             AND r.student_id = s.id
+            WHERE p.session_id = ?
+              AND p.match_status = 'matched'
+              AND p.processing_status = 'graded'
+              AND TRIM(COALESCE(s.student_code, '')) <> ''
+              AND TRIM(COALESCE(s.name, '')) <> ''
+            ORDER BY p.id
+            LIMIT ?
+            """,
+            (session_id, paper_limit),
+        ).fetchall()
+    except sqlite3.Error as exc:
+        raise AcceptanceError("authorized source could not be verified safely") from exc
+    finally:
+        connection.close()
+    if session is None or len(papers) != paper_limit:
+        raise AcceptanceError("authorized source no longer matches the prepared scope")
+
+    source_paper = _resolve_source_file(session["source_paper_path"], data_root)
+    template_candidates = sorted(
+        (data_root / "templates" / f"session_{session_id}").glob("*.pdf")
+    )
+    if len(template_candidates) != 1:
+        raise AcceptanceError("authorized source no longer matches the prepared scope")
+    selected_files: list[tuple[str, Path]] = [
+        (f"source-paper{source_paper.suffix.lower()}", source_paper),
+        (
+            "template.pdf",
+            _resolve_source_file(str(template_candidates[0]), data_root),
+        ),
+    ]
+    for index, paper in enumerate(papers, start=1):
+        front = _resolve_source_file(paper["front_image"], data_root)
+        back = _resolve_source_file(paper["back_image"], data_root)
+        selected_files.extend(
+            [
+                (f"answer-sheets/answer-{index:02}-front{front.suffix.lower()}", front),
+                (f"answer-sheets/answer-{index:02}-back{back.suffix.lower()}", back),
+            ]
+        )
+    return _combined_fingerprint(
+        _database_generation(database),
+        {
+            logical_name: _sha256_file(source_path)
+            for logical_name, source_path in selected_files
+        },
+    )
+
+
+def _acceptance_data_file(
+    raw_path: object,
+    *,
+    data_root: Path,
+    label: str,
+    suffix: str | None = None,
+) -> Path:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise AcceptanceError(f"{label} is missing")
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = data_root / path
+    resolved = path.resolve()
+    if not _is_relative_to(resolved, data_root) or not resolved.is_file():
+        raise AcceptanceError(f"{label} is outside the acceptance workspace or missing")
+    if suffix is not None and resolved.suffix.casefold() != suffix.casefold():
+        raise AcceptanceError(f"{label} has an unexpected file type")
+    return resolved
+
+
+def _load_json_object(path: Path, *, label: str) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise AcceptanceError(f"{label} is not valid JSON") from exc
+    if not isinstance(value, dict):
+        raise AcceptanceError(f"{label} is not a JSON object")
+    return value
+
+
+def _config_summary(
+    session: sqlite3.Row,
+    *,
+    data_root: Path,
+) -> tuple[list[str], set[str], QuestionIdCatalog, str]:
+    rubric_path = _acceptance_data_file(
+        session["rubric_path"],
+        data_root=data_root,
+        label="rubric",
+        suffix=".json",
+    )
+    answer_path = _acceptance_data_file(
+        session["answer_key_path"],
+        data_root=data_root,
+        label="answer key",
+        suffix=".json",
+    )
+    rubric = _load_json_object(rubric_path, label="rubric")
+    answer = _load_json_object(answer_path, label="answer key")
+    rubric_questions = rubric.get("questions")
+    answer_questions = answer.get("questions")
+    if not isinstance(rubric_questions, list) or not isinstance(
+        answer_questions,
+        list,
+    ):
+        raise AcceptanceError("configuration questions are missing")
+
+    def question_ids(
+        questions: list[object],
+        *,
+        label: str,
+    ) -> list[str]:
+        values: list[str] = []
+        for question in questions:
+            if not isinstance(question, dict):
+                raise AcceptanceError(f"{label} contains an invalid question")
+            question_id = str(question.get("question_id") or "").strip()
+            if not question_id or question_id in values:
+                raise AcceptanceError(f"{label} question identities are invalid")
+            values.append(question_id)
+        if not values:
+            raise AcceptanceError(f"{label} questions are missing")
+        return values
+
+    rubric_ids = question_ids(rubric_questions, label="rubric")
+    answer_ids = question_ids(answer_questions, label="answer key")
+    if set(rubric_ids) != set(answer_ids):
+        raise AcceptanceError("configuration question identities conflict")
+
+    try:
+        question_catalog = QuestionIdCatalog.from_document(rubric)
+    except QuestionIdContractError as exc:
+        raise AcceptanceError(
+            "rubric question identities are invalid"
+        ) from exc
+    if (
+        not question_catalog.parent_ids
+        or set(question_catalog.parent_ids) != set(rubric_ids)
+        or not question_catalog.detail_ids
+    ):
+        raise AcceptanceError("rubric question identities are invalid")
+    scoring_ids = (
+        set(question_catalog.parent_ids)
+        | set(question_catalog.detail_ids)
+        | set(question_catalog.aliases)
+    )
+    config_hash = _combined_fingerprint(
+        None,
+        {
+            "rubric.json": _sha256_file(rubric_path),
+            "answer.json": _sha256_file(answer_path),
+        },
+    )
+    return rubric_ids, scoring_ids, question_catalog, config_hash
+
+
+def _template_summary(
+    database: Path,
+    *,
+    session_id: int,
+    data_root: Path,
+    question_catalog: QuestionIdCatalog,
+) -> tuple[int, str]:
+    connection = sqlite3.connect(
+        f"file:{database.as_posix()}?mode=ro",
+        uri=True,
+    )
+    connection.row_factory = sqlite3.Row
+    try:
+        templates = connection.execute(
+            """
+            SELECT front_template_path, back_template_path, ai_analysis_path,
+                   template_config_path, regions_path, is_confirmed,
+                   regions_snapshot_pending, regions_snapshot_token
+            FROM session_templates
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchall()
+        regions = connection.execute(
+            """
+            SELECT mapped_question_id, is_confirmed, mapping_status,
+                   multi_region_confirmed
+            FROM answer_regions
+            WHERE session_id = ?
+            ORDER BY id
+            """,
+            (session_id,),
+        ).fetchall()
+    except sqlite3.Error as exc:
+        raise AcceptanceError(
+            "acceptance template could not be verified safely"
+        ) from exc
+    finally:
+        connection.close()
+    if len(templates) != 1 or not bool(templates[0]["is_confirmed"]):
+        raise AcceptanceError("acceptance template is missing or unconfirmed")
+    template = templates[0]
+    if bool(template["regions_snapshot_pending"]) or template[
+        "regions_snapshot_token"
+    ]:
+        raise AcceptanceError("region snapshot is incomplete")
+
+    template_files: dict[str, str] = {}
+    for field, label in (
+        ("front_template_path", "front template"),
+        ("back_template_path", "back template"),
+        ("ai_analysis_path", "template analysis"),
+        ("template_config_path", "template configuration"),
+        ("regions_path", "region snapshot"),
+    ):
+        path = _acceptance_data_file(
+            template[field],
+            data_root=data_root,
+            label=label,
+        )
+        template_files[label] = _sha256_file(path)
+
+    if not regions:
+        raise AcceptanceError("confirmed answer regions are missing")
+    covered_detail_ids: set[str] = set()
+    mapped_regions: dict[str, list[bool]] = {}
+    for region in regions:
+        mapped_question_id = str(region["mapped_question_id"] or "").strip()
+        if (
+            not mapped_question_id
+            or not bool(region["is_confirmed"])
+            or str(region["mapping_status"] or "") == "unbound"
+            ):
+            raise AcceptanceError("answer regions contain an unconfirmed mapping")
+        if mapped_question_id == "__student_name__":
+            resolved_question_id = mapped_question_id
+            expanded = ()
+        else:
+            resolved_question_id = question_catalog.resolve(mapped_question_id)
+            expanded = (
+                question_catalog.expand(resolved_question_id)
+                if resolved_question_id is not None
+                else ()
+            )
+        if resolved_question_id is None or (
+            resolved_question_id != "__student_name__" and not expanded
+        ):
+            raise AcceptanceError("answer regions conflict with configuration")
+        existing_mappings = mapped_regions.setdefault(
+            resolved_question_id,
+            [],
+        )
+        existing_mappings.append(bool(region["multi_region_confirmed"]))
+        for detail_id in expanded:
+            if detail_id in covered_detail_ids and not existing_mappings[:-1]:
+                raise AcceptanceError("answer regions conflict with configuration")
+            covered_detail_ids.add(detail_id)
+    if any(
+        len(confirmations) > 1 and not all(confirmations)
+        for confirmations in mapped_regions.values()
+    ):
+        raise AcceptanceError("duplicate answer regions are not confirmed")
+    if covered_detail_ids != set(question_catalog.detail_ids):
+        raise AcceptanceError("answer regions are missing configured questions")
+    return len(regions), _combined_fingerprint(None, template_files)
+
+
+def _grading_summary(
+    database: Path,
+    *,
+    session_id: int,
+    data_root: Path,
+    expected_paper_count: int,
+    scoring_ids: set[str],
+) -> None:
+    connection = sqlite3.connect(
+        f"file:{database.as_posix()}?mode=ro",
+        uri=True,
+    )
+    connection.row_factory = sqlite3.Row
+    try:
+        papers = connection.execute(
+            """
+            SELECT p.id, p.student_id, p.front_image, p.back_image,
+                   p.match_status, p.processing_status,
+                   s.student_code, s.name
+            FROM exam_papers AS p
+            LEFT JOIN students AS s ON s.id = p.student_id
+            WHERE p.session_id = ?
+            ORDER BY p.id
+            """,
+            (session_id,),
+        ).fetchall()
+        results = connection.execute(
+            """
+            SELECT id, student_id, paper_id, total_score, student_score,
+                   raw_json
+            FROM session_results
+            WHERE session_id = ?
+            ORDER BY id
+            """,
+            (session_id,),
+        ).fetchall()
+        details = connection.execute(
+            """
+            SELECT d.result_id, d.question_id, d.score_awarded
+            FROM session_details AS d
+            JOIN session_results AS r ON r.id = d.result_id
+            WHERE r.session_id = ?
+            ORDER BY d.result_id, d.id
+            """,
+            (session_id,),
+        ).fetchall()
+    except sqlite3.Error as exc:
+        raise AcceptanceError(
+            "acceptance grading could not be verified safely"
+        ) from exc
+    finally:
+        connection.close()
+
+    if len(papers) != expected_paper_count or len(results) != expected_paper_count:
+        raise AcceptanceError("grading is incomplete or conflicted")
+    paper_students: dict[int, int] = {}
+    for paper in papers:
+        student_id = paper["student_id"]
+        if (
+            student_id is None
+            or str(paper["match_status"]) != "matched"
+            or str(paper["processing_status"]) != "graded"
+            or not str(paper["student_code"] or "").strip()
+            or not str(paper["name"] or "").strip()
+        ):
+            raise AcceptanceError("grading is incomplete or conflicted")
+        paper_id = int(paper["id"])
+        paper_students[paper_id] = int(student_id)
+        _acceptance_data_file(
+            paper["front_image"],
+            data_root=data_root,
+            label="graded paper front image",
+        )
+        _acceptance_data_file(
+            paper["back_image"],
+            data_root=data_root,
+            label="graded paper back image",
+        )
+
+    details_by_result: dict[int, list[sqlite3.Row]] = {}
+    for detail in details:
+        details_by_result.setdefault(int(detail["result_id"]), []).append(detail)
+    seen_papers: set[int] = set()
+    seen_students: set[int] = set()
+    for result in results:
+        result_id = int(result["id"])
+        paper_id = int(result["paper_id"])
+        student_id = int(result["student_id"])
+        if (
+            paper_id in seen_papers
+            or student_id in seen_students
+            or paper_students.get(paper_id) != student_id
+        ):
+            raise AcceptanceError("grading is incomplete or conflicted")
+        seen_papers.add(paper_id)
+        seen_students.add(student_id)
+        result_details = details_by_result.get(result_id, [])
+        if not result_details:
+            raise AcceptanceError("grading is incomplete or conflicted")
+        seen_question_ids: set[str] = set()
+        awarded_total = 0.0
+        for detail in result_details:
+            question_id = str(detail["question_id"] or "").strip()
+            try:
+                score = float(detail["score_awarded"])
+            except (TypeError, ValueError) as exc:
+                raise AcceptanceError(
+                    "grading is incomplete or conflicted"
+                ) from exc
+            if (
+                not question_id
+                or question_id not in scoring_ids
+                or question_id in seen_question_ids
+                or not math.isfinite(score)
+                or score < 0
+            ):
+                raise AcceptanceError("grading is incomplete or conflicted")
+            seen_question_ids.add(question_id)
+            awarded_total += score
+        try:
+            student_score = float(result["student_score"])
+            total_score = float(result["total_score"])
+        except (TypeError, ValueError) as exc:
+            raise AcceptanceError("grading is incomplete or conflicted") from exc
+        if (
+            not math.isfinite(student_score)
+            or not math.isfinite(total_score)
+            or total_score <= 0
+            or student_score < 0
+            or student_score > total_score + 1e-6
+            or abs(awarded_total - student_score) > 1e-6
+        ):
+            raise AcceptanceError("grading is incomplete or conflicted")
+        try:
+            raw_json = json.loads(str(result["raw_json"]))
+        except json.JSONDecodeError as exc:
+            raise AcceptanceError("grading is incomplete or conflicted") from exc
+        completeness = (
+            raw_json.get("grading_completeness")
+            if isinstance(raw_json, dict)
+            else None
+        )
+        if (
+            not isinstance(completeness, dict)
+            or completeness.get("status") != "complete"
+            or any(
+                completeness.get(key)
+                for key in (
+                    "missing_question_ids",
+                    "duplicate_question_ids",
+                    "unexpected_question_ids",
+                )
+            )
+        ):
+            raise AcceptanceError("grading is incomplete or conflicted")
+
+
+def _pending_teacher_review_count(
+    database: Path,
+    *,
+    session_id: int,
+) -> int:
+    try:
+        from backend.review.service import ReviewApplicationService
+        from db_manager import DBManager
+
+        db = DBManager(database)
+        session = db.get_grading_session(session_id)
+        if not session:
+            raise AcceptanceError("acceptance session is missing or deleted")
+        questions = ReviewApplicationService(db).list_questions(
+            session_id,
+            session,
+        )
+    except AcceptanceError:
+        raise
+    except Exception as exc:
+        raise AcceptanceError(
+            "teacher review could not be verified safely"
+        ) from exc
+    return sum(int(question.needs_review_count) for question in questions)
+
+
+def _report_summary(
+    database: Path,
+    *,
+    session_id: int,
+    data_root: Path,
+    report_file: Path | str | None,
+) -> tuple[int, str]:
+    report_path = _acceptance_data_file(
+        str(report_file) if report_file is not None else None,
+        data_root=data_root,
+        label="exported report",
+        suffix=".xlsx",
+    )
+    reports_root = (data_root / "reports").resolve()
+    if not _is_relative_to(report_path, reports_root):
+        raise AcceptanceError("exported report is outside the reports directory")
+
+    connection = sqlite3.connect(
+        f"file:{database.as_posix()}?mode=ro",
+        uri=True,
+    )
+    connection.row_factory = sqlite3.Row
+    try:
+        expected_rows = connection.execute(
+            """
+            SELECT s.student_code, r.student_score
+            FROM session_results AS r
+            JOIN students AS s ON s.id = r.student_id
+            WHERE r.session_id = ?
+            ORDER BY r.id
+            """,
+            (session_id,),
+        ).fetchall()
+    except sqlite3.Error as exc:
+        raise AcceptanceError(
+            "reviewed results could not be verified safely"
+        ) from exc
+    finally:
+        connection.close()
+    expected = {
+        str(row["student_code"]): float(row["student_score"])
+        for row in expected_rows
+    }
+
+    try:
+        from openpyxl import load_workbook
+
+        workbook = load_workbook(
+            report_path,
+            read_only=True,
+            data_only=True,
+        )
+        try:
+            if "成绩与小题明细" not in workbook.sheetnames:
+                raise AcceptanceError("exported report is missing the score sheet")
+            rows = workbook["成绩与小题明细"].iter_rows(values_only=True)
+            header_row = next(rows)
+            headers = {
+                str(value).strip(): index
+                for index, value in enumerate(header_row)
+                if value is not None and str(value).strip()
+            }
+            if "学号" not in headers or "总分" not in headers:
+                raise AcceptanceError(
+                    "exported report is missing required score columns"
+                )
+            actual: dict[str, float] = {}
+            for row in rows:
+                raw_code = row[headers["学号"]]
+                raw_score = row[headers["总分"]]
+                if raw_code is None and raw_score is None:
+                    continue
+                student_code = str(raw_code or "").strip()
+                try:
+                    score = float(raw_score)
+                except (TypeError, ValueError) as exc:
+                    raise AcceptanceError(
+                        "report conflicts with reviewed results"
+                    ) from exc
+                if (
+                    not student_code
+                    or student_code in actual
+                    or not math.isfinite(score)
+                ):
+                    raise AcceptanceError(
+                        "report conflicts with reviewed results"
+                    )
+                actual[student_code] = score
+        finally:
+            workbook.close()
+    except AcceptanceError:
+        raise
+    except (OSError, KeyError, StopIteration, ValueError) as exc:
+        raise AcceptanceError(
+            "exported report could not be verified safely"
+        ) from exc
+    if set(actual) != set(expected) or any(
+        abs(actual[student_code] - score) > 1e-6
+        for student_code, score in expected.items()
+    ):
+        raise AcceptanceError("report conflicts with reviewed results")
+    return len(actual), _sha256_file(report_path)
+
+
+def build_consistency_report(
+    workspace: Path | str,
+    *,
+    stage: str,
+    session_id: int,
+    source_data_root: Path | str,
+    report_file: Path | str | None = None,
+) -> dict[str, object]:
+    target = validate_workspace(workspace, require_empty=False)
+    metadata = load_metadata(target)
+    if metadata["state"] != "runtime_ready":
+        raise AcceptanceError("acceptance runtime is not ready")
+    clean_stage = str(stage or "").strip()
+    stages = ("session", "config", "template", "grading", "review", "report")
+    if clean_stage not in stages:
+        raise AcceptanceError("unsupported consistency stage")
+    if isinstance(session_id, bool) or not isinstance(session_id, int) or session_id < 1:
+        raise AcceptanceError("acceptance session identity is invalid")
+
+    authorized_session_id = int(metadata["authorized_session_id"])
+    paper_limit = int(metadata["paper_count"])
+    source_fingerprint = _current_authorized_source_fingerprint(
+        source_data_root,
+        session_id=authorized_session_id,
+        paper_limit=paper_limit,
+    )
+    if source_fingerprint != metadata["source_fingerprint"]:
+        raise AcceptanceError("authorized source changed after preparation")
+
+    database = target / "acceptance_data" / "databases" / "grading_system.db"
+    if not database.is_file():
+        raise AcceptanceError("acceptance database is unavailable")
+    connection = sqlite3.connect(
+        f"file:{database.as_posix()}?mode=ro",
+        uri=True,
+    )
+    connection.row_factory = sqlite3.Row
+    try:
+        session = connection.execute(
+            """
+            SELECT status, COALESCE(is_deleted, 0) AS is_deleted,
+                   rubric_path, answer_key_path
+            FROM grading_sessions
+            WHERE id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        papers = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM exam_papers WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()[0]
+        )
+        results = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM session_results WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()[0]
+        )
+        details = int(
+            connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM session_details AS d
+                JOIN session_results AS r ON r.id = d.result_id
+                WHERE r.session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()[0]
+        )
+    except sqlite3.Error as exc:
+        raise AcceptanceError("acceptance session could not be verified safely") from exc
+    finally:
+        connection.close()
+    if session is None or bool(session["is_deleted"]):
+        raise AcceptanceError("acceptance session is missing or deleted")
+
+    data_root = (target / "acceptance_data").resolve()
+    report: dict[str, object] = {
+        "package": PACKAGE,
+        "stage": clean_stage,
+        "ok": True,
+        "source_unchanged": True,
+        "session_id": session_id,
+        "session_status": str(session["status"]),
+        "counts": {
+            "papers": papers,
+            "results": results,
+            "details": details,
+        },
+    }
+    if stages.index(clean_stage) >= stages.index("config"):
+        question_ids, scoring_ids, question_catalog, config_hash = _config_summary(
+            session,
+            data_root=data_root,
+        )
+        report.update(
+            {
+                "question_count": len(question_ids),
+                "config_sha256": config_hash,
+            }
+        )
+    if stages.index(clean_stage) >= stages.index("template"):
+        region_count, template_hash = _template_summary(
+            database,
+            session_id=session_id,
+            data_root=data_root,
+            question_catalog=question_catalog,
+        )
+        report.update(
+            {
+                "region_count": region_count,
+                "template_confirmed": True,
+                "template_sha256": template_hash,
+            }
+        )
+    if stages.index(clean_stage) >= stages.index("grading"):
+        _grading_summary(
+            database,
+            session_id=session_id,
+            data_root=data_root,
+            expected_paper_count=paper_limit,
+            scoring_ids=scoring_ids,
+        )
+        report["grading_complete"] = True
+    if stages.index(clean_stage) >= stages.index("review"):
+        pending_review_count = _pending_teacher_review_count(
+            database,
+            session_id=session_id,
+        )
+        if pending_review_count:
+            raise AcceptanceError("teacher review is incomplete")
+        report.update(
+            {
+                "teacher_review_complete": True,
+                "pending_review_count": 0,
+            }
+        )
+    if clean_stage == "report":
+        report_row_count, report_hash = _report_summary(
+            database,
+            session_id=session_id,
+            data_root=data_root,
+            report_file=report_file,
+        )
+        report.update(
+            {
+                "report_matches_results": True,
+                "report_row_count": report_row_count,
+                "report_sha256": report_hash,
+            }
+        )
+    evidence_dir = target / "acceptance_evidence"
+    evidence_dir.mkdir(exist_ok=True)
+    evidence_path = evidence_dir / f"consistency-{clean_stage}.json"
+    temporary_path = evidence_path.with_suffix(".json.tmp")
+    temporary_path.write_text(
+        json.dumps(report, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    temporary_path.replace(evidence_path)
+    return report
 
 
 def _require_nonempty_string(profile: dict[str, object], key: str) -> str:
@@ -1001,6 +1749,16 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, required=True)
     status = subparsers.add_parser("status")
     status.add_argument("--workspace", type=Path, required=True)
+    report = subparsers.add_parser("report")
+    report.add_argument("--workspace", type=Path, required=True)
+    report.add_argument(
+        "--stage",
+        choices=("session", "config", "template", "grading", "review", "report"),
+        required=True,
+    )
+    report.add_argument("--session-id", type=int, required=True)
+    report.add_argument("--source-data-root", type=Path, required=True)
+    report.add_argument("--report-file", type=Path)
     return parser
 
 
@@ -1038,6 +1796,14 @@ def main(argv: list[str] | None = None) -> int:
             result = safe_status(args.workspace)
         elif args.command == "status":
             result = safe_status(args.workspace)
+        elif args.command == "report":
+            result = build_consistency_report(
+                args.workspace,
+                stage=args.stage,
+                session_id=args.session_id,
+                source_data_root=args.source_data_root,
+                report_file=args.report_file,
+            )
         elif args.command == "serve":
             port = _validate_port(args.port)
             target = validate_workspace(args.workspace, require_empty=False)
