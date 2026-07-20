@@ -1152,7 +1152,11 @@ def retry_failed_grading_config_batches(
     meta = existing_payload.get("meta") if isinstance(existing_payload, dict) else None
     failed_batches = meta.get("failed_batches") if isinstance(meta, dict) else None
     if not isinstance(failed_batches, list) or not failed_batches:
-        return copy.deepcopy(existing_payload)
+        return finalize_completed_grading_config_draft(
+            existing_payload,
+            question_blocks,
+            q_images=q_images,
+        )
 
     failed_by_id: dict[str, list[str]] = {}
     for item in failed_batches:
@@ -1335,18 +1339,40 @@ def _run_config_generation_batches(
         refresh_generated_config_quality_warnings(merged)
         return merged
 
-    expected_ids = [str(block.get("question_id") or "").strip() for block in question_blocks]
-    _validate_exact_batch_payload(merged, expected_ids)
-    force_payload_total_score(merged, target_total=100.0)
-    meta["score_allocation_mode"] = "local_normalization"
-    meta["score_allocation_ai_success"] = False
-    meta["score_allocation_pending"] = False
-    _attach_reference_answer_images(merged, q_images)
-    refresh_generated_config_quality_warnings(merged)
-    validate_generated_config(merged)
+    merged = finalize_completed_grading_config_draft(
+        merged,
+        question_blocks,
+        q_images=q_images,
+    )
     if report:
         report(0.92, "分批生成完成", f"{len(batches)} 个批次全部完成，已在本地统一分配总分。")
     return merged
+
+
+def finalize_completed_grading_config_draft(
+    existing_payload: dict[str, Any],
+    question_blocks: list[dict[str, Any]],
+    *,
+    q_images: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Finish an all-succeeded checkpoint locally without another model request."""
+    payload = copy.deepcopy(existing_payload)
+    if failed_grading_config_batches(payload):
+        raise ValueError("仍有失败批次，不能完成本地发布。")
+    _validate_unique_batch_question_ids(question_blocks)
+    _apply_local_question_facts(payload, question_blocks)
+    normalize_generated_config_schema(payload)
+    expected_ids = [str(block.get("question_id") or "").strip() for block in question_blocks]
+    _validate_exact_batch_payload(payload, expected_ids)
+    force_payload_total_score(payload, target_total=100.0)
+    meta = payload.setdefault("meta", {})
+    meta["score_allocation_mode"] = "local_normalization"
+    meta["score_allocation_ai_success"] = False
+    meta["score_allocation_pending"] = False
+    _attach_reference_answer_images(payload, q_images)
+    refresh_generated_config_quality_warnings(payload)
+    validate_generated_config(payload)
+    return payload
 
 
 def _validate_unique_batch_question_ids(question_blocks: list[dict[str, Any]]) -> None:

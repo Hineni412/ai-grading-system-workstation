@@ -927,6 +927,45 @@ def test_config_generation_retry_accepts_checkpointed_terminal_job(
     assert response.status_code == 202
 
 
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_config_generation_retry_accepts_complete_checkpoint_for_local_publish(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = manager.store.create_job(
+        "config_generation",
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": "a" * 32,
+        },
+    )
+    manager.store.finish(
+        source.id,
+        status,
+        result={
+            "session_id": session_id,
+            "outcome": "complete",
+            "failed_question_ids": [],
+            "failed_batches": [],
+            "retryable": False,
+        },
+    )
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate/retry",
+        json={"source_job_id": source.id},
+    )
+
+    assert response.status_code == 202
+    stored = manager.get(response.json()["id"])
+    assert stored is not None
+    assert "retry_question_ids" not in stored.payload
+
+
 def test_config_generation_retry_route_returns_404_for_missing_source_job(
     tmp_path: Path,
 ) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import html
 import inspect
 import os
@@ -107,6 +108,7 @@ from session_manager import (
     force_payload_total_score,
     failed_grading_config_batches,
     failed_grading_config_question_ids,
+    finalize_completed_grading_config_draft,
     generate_grading_config_in_batches,
     generate_grading_config_from_docx_text_legacy,
     preview_question_blocks_from_docx_bytes,
@@ -2523,8 +2525,6 @@ def render_config_and_session_tab(
 
                     def run_confirmed_generation() -> None:
                         try:
-                            if llm_settings is None:
-                                raise ValueError("请先在左侧配置 API Key/Base URL")
                             confirmed_blocks: list[dict[str, Any]] = []
                             for i, block in enumerate(pending_blocks):
                                 if st.session_state.get(f"del_{i}"):
@@ -2552,6 +2552,25 @@ def render_config_and_session_tab(
                             is_pdf = bool(st.session_state.get("pending_is_pdf"))
                             if is_pdf:
                                 _session_manager._validate_image_semantic_inputs(confirmed_blocks, q_images)
+                            document_bytes = bytes(st.session_state.get("generated_doc_bytes") or b"")
+                            checkpoint_path = _config_generation_checkpoint_path(document_bytes)
+                            recovered = _load_matching_config_generation_checkpoint(
+                                checkpoint_path,
+                                confirmed_blocks,
+                            )
+                            if recovered is not None:
+                                if not failed_grading_config_batches(recovered):
+                                    recovered = finalize_completed_grading_config_draft(
+                                        recovered,
+                                        confirmed_blocks,
+                                        q_images=q_images,
+                                    )
+                                    _write_compact_json_file(checkpoint_path, recovered)
+                                st.session_state.generated_config_payload = recovered
+                                st.info("已从本机恢复已保存批次，没有重新调用模型。")
+                                return
+                            if llm_settings is None:
+                                raise ValueError("请先在左侧配置 API Key/Base URL")
 
                             def generate_work(report) -> dict[str, Any]:
                                 llm_client = LLMClient(llm_settings)
@@ -2562,7 +2581,6 @@ def render_config_and_session_tab(
                                     f"已确认 {len(confirmed_blocks)} 题，开始按每批最多 3 题生成评分标准"
                                     + (f"（PDF 模式，携带 {img_count} 张题目裁图）。" if is_pdf else "。"),
                                 )
-                                checkpoint_path = UPLOAD_CONFIG_DIR / f"generated_config_batch_draft_{ts}.json"
                                 payload = generate_grading_config_in_batches(
                                     confirmed_blocks,
                                     doc_text,
@@ -2581,6 +2599,7 @@ def render_config_and_session_tab(
                                 done_text="预览准备就绪",
                             )
                             st.session_state.generated_config_payload = payload
+                            _write_compact_json_file(checkpoint_path, payload)
                             generated_raw_path = UPLOAD_CONFIG_DIR / f"generated_config_preview_{ts}.json"
                             _write_compact_json_file(generated_raw_path, payload)
                             st.success(
@@ -2604,10 +2623,12 @@ def render_config_and_session_tab(
                                 raise ValueError("已确认的题目数据已丢失，请重新拆分试卷")
                             doc_text = str(st.session_state.get("pending_doc_text") or "")
                             q_images = st.session_state.get("pending_q_images") or None
+                            checkpoint_path = _config_generation_checkpoint_path(
+                                bytes(st.session_state.get("generated_doc_bytes") or b"")
+                            )
 
                             def retry_work(report) -> dict[str, Any]:
                                 report(0.08, "重试失败批次", "仅重新发送失败批次，已成功批次保持不变。")
-                                retry_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                                 return retry_failed_grading_config_batches(
                                     current_payload,
                                     confirmed_blocks,
@@ -2617,7 +2638,7 @@ def render_config_and_session_tab(
                                     report=report,
                                     q_images=q_images,
                                     checkpoint=lambda draft: _write_compact_json_file(
-                                        UPLOAD_CONFIG_DIR / f"generated_config_batch_retry_draft_{retry_ts}.json",
+                                        checkpoint_path,
                                         draft,
                                     ),
                                 )
@@ -2628,6 +2649,7 @@ def render_config_and_session_tab(
                                 done_text="失败批次重试完成",
                             )
                             st.session_state.generated_config_payload = payload
+                            _write_compact_json_file(checkpoint_path, payload)
                             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                             _write_compact_json_file(
                                 UPLOAD_CONFIG_DIR / f"generated_config_retry_{ts}.json",
@@ -2644,6 +2666,12 @@ def render_config_and_session_tab(
                     current_split_payload = st.session_state.get("generated_config_payload")
                     current_confirmed_blocks = st.session_state.get("pending_confirmed_blocks") or []
                     if isinstance(current_split_payload, dict) and current_confirmed_blocks:
+                        repaired_batches = _local_json_repair_batch_ids(current_split_payload)
+                        if repaired_batches:
+                            st.info(
+                                f"本地程序已修复 {len(repaired_batches)} 个批次的 JSON"
+                                f"（{', '.join(repaired_batches)}），未产生额外模型请求。"
+                            )
                         failed_qids = failed_grading_config_question_ids(current_split_payload)
                         if failed_qids:
                             st.error(f"{len(failed_qids)} 道题所在批次生成失败：{', '.join(failed_qids)}。成功批次已保留。")
@@ -6553,6 +6581,47 @@ def _write_json_file(path: Path, data: Any) -> None:
 def _write_compact_json_file(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+
+
+def _config_generation_checkpoint_path(document_bytes: bytes) -> Path:
+    digest = hashlib.sha256(document_bytes).hexdigest()
+    return UPLOAD_CONFIG_DIR / f"generated_config_batch_draft_{digest}.json"
+
+
+def _load_matching_config_generation_checkpoint(
+    path: Path,
+    confirmed_blocks: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not path.is_file() or path.stat().st_size > 20 * 1024 * 1024:
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    meta = payload.get("meta")
+    batches = meta.get("batches") if isinstance(meta, dict) else None
+    planned_ids = [
+        str(qid)
+        for batch in batches or []
+        if isinstance(batch, dict)
+        for qid in batch.get("question_ids") or []
+    ]
+    expected_ids = [str(block.get("question_id") or "") for block in confirmed_blocks]
+    return payload if planned_ids == expected_ids and planned_ids else None
+
+
+def _local_json_repair_batch_ids(payload: dict[str, Any]) -> list[str]:
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    batches = meta.get("batches") if isinstance(meta, dict) else None
+    return [
+        str(batch.get("batch_id") or "")
+        for batch in batches or []
+        if isinstance(batch, dict)
+        and isinstance(batch.get("local_json_repair"), dict)
+        and bool(batch["local_json_repair"].get("repaired"))
+    ]
 
 
 def _write_regions_snapshot(db: DBManager, session_id: int) -> Path | None:

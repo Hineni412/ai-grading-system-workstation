@@ -989,12 +989,21 @@ def retry_session_config_generation(
             "Config generation job not found",
             {"source_job_id": int(request.source_job_id)},
         )
+    source_failed_batches = source.result.get("failed_batches")
+    retry_failed_batches = (
+        source.result.get("outcome") == "partial"
+        and isinstance(source_failed_batches, list)
+        and bool(source_failed_batches)
+    )
+    resume_complete_draft = (
+        source.result.get("outcome") == "complete"
+        and source.status in {"failed", "cancelled"}
+        and request.retry_question_ids is None
+    )
     if (
         source.job_type != "config_generation"
         or source.status not in {"succeeded", "failed", "cancelled"}
-        or source.result.get("outcome") != "partial"
-        or not isinstance(source.result.get("failed_batches"), list)
-        or not source.result.get("failed_batches")
+        or not (retry_failed_batches or resume_complete_draft)
         or int(source.payload.get("session_id") or 0) != int(session_id)
         or str(source.payload.get("generation_mode") or "")
         not in {"batched", "per_question"}
@@ -1015,7 +1024,7 @@ def retry_session_config_generation(
                 "Requested questions are not currently failed",
                 {"source_job_id": int(request.source_job_id)},
             )
-        raw_batches = source.result.get("failed_batches")
+        raw_batches = source_failed_batches
         failed_batches = [item for item in raw_batches or [] if isinstance(item, dict)]
         selected = set(request.retry_question_ids)
         complete_selection = {

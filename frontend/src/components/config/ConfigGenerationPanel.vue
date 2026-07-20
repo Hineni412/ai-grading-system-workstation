@@ -55,6 +55,10 @@ interface FailedBatch {
   batch_id: string
   question_ids: string[]
 }
+interface LocalJsonRepair {
+  batch_id: string
+  question_ids: string[]
+}
 const failedBatches = computed<FailedBatch[]>(() => {
   const raw = job.value?.result.failed_batches
   if (!Array.isArray(raw)) return []
@@ -64,6 +68,17 @@ const failedBatches = computed<FailedBatch[]>(() => {
     if (typeof value.batch_id !== 'string' || !Array.isArray(value.question_ids)) return []
     const ids = value.question_ids.filter((qid): qid is string => typeof qid === 'string' && qid.length > 0)
     return ids.length > 0 ? [{ batch_id: value.batch_id, question_ids: ids }] : []
+  })
+})
+const localJsonRepairs = computed<LocalJsonRepair[]>(() => {
+  const raw = job.value?.result.local_json_repairs
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((item) => {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) return []
+    const value = item as Record<string, unknown>
+    if (typeof value.batch_id !== 'string' || !Array.isArray(value.question_ids)) return []
+    const ids = value.question_ids.filter((qid): qid is string => typeof qid === 'string' && qid.length > 0)
+    return [{ batch_id: value.batch_id, question_ids: ids }]
   })
 })
 const generatedCount = computed(() => safeCount(job.value?.result.generated_questions))
@@ -199,13 +214,13 @@ async function reconcileUnknownSubmission(): Promise<void> {
   }
 }
 
-async function retrySelected(): Promise<void> {
+async function retrySelected(resumeComplete = false): Promise<void> {
   const current = job.value
   if (current === null || submitting.value || workspacePending.value
     || configStore.sessionId === null) return
   const selectedBatches = failedBatches.value.filter((item) => selectedFailed.value.includes(item.batch_id))
-  const ids = [...new Set(selectedBatches.flatMap((item) => item.question_ids))]
-  if (ids.length === 0) return
+  const ids = resumeComplete ? [] : [...new Set(selectedBatches.flatMap((item) => item.question_ids))]
+  if (!resumeComplete && ids.length === 0) return
   const context = configStore.captureGenerationContext()
   const retainedSummary: ConfigGenerationSummary = {
     totalQuestions: safeCount(current.result.total_questions),
@@ -302,13 +317,16 @@ watch(job, (current, previous) => {
       </p>
       <p v-else-if="safeDetail">{{ safeDetail }}</p>
       <p v-if="mappingNotice" class="config-generation__mapping" role="status">{{ mappingNotice }}</p>
+      <p v-if="localJsonRepairs.length > 0" class="config-generation__retained" role="status">
+        本地程序已修复 {{ localJsonRepairs.length }} 个批次的 JSON（{{ localJsonRepairs.map((item) => item.batch_id).join('、') }}），未产生额外模型请求。
+      </p>
       <p v-if="configStore.generationSummary" class="config-generation__retained">
         <strong>上一轮已成功 {{ configStore.generationSummary.succeededQuestions }} 题</strong>
         / 共 {{ configStore.generationSummary.totalQuestions }} 题；
         当前恢复任务：{{ statusCopy(job) }}。
       </p>
 
-      <div v-if="job.status === 'succeeded' && outcome === 'partial'" class="config-generation__partial">
+      <div v-if="['succeeded', 'failed', 'cancelled'].includes(job.status) && outcome === 'partial'" class="config-generation__partial">
         <p><strong>已成功 {{ generatedCount }} 题</strong>，失败 {{ failedCount }} 题。成功批次已保存，不会重复请求。</p>
         <fieldset>
           <legend>选择要重试的失败批次</legend>
@@ -317,8 +335,15 @@ watch(job, (current, previous) => {
             {{ batch.batch_id }}（{{ batch.question_ids.join('、') }}）
           </label>
         </fieldset>
-        <button type="button" name="重试所选批次" :disabled="submitting || workspacePending || selectedFailed.length === 0" @click="retrySelected">
+        <button type="button" name="重试所选批次" :disabled="submitting || workspacePending || selectedFailed.length === 0" @click="retrySelected()">
           重试所选批次
+        </button>
+      </div>
+
+      <div v-if="['failed', 'cancelled'].includes(job.status) && outcome === 'complete'" class="config-generation__partial">
+        <p>全部批次已经保存在本机，只差本地校验和发布；继续时不会调用模型。</p>
+        <button type="button" name="完成本地发布" :disabled="submitting || workspacePending" @click="retrySelected(true)">
+          完成本地发布
         </button>
       </div>
 
@@ -339,7 +364,7 @@ watch(job, (current, previous) => {
         </button>
       </div>
       <button
-        v-else-if="job.status === 'failed'"
+        v-else-if="job.status === 'failed' && outcome !== 'partial' && outcome !== 'complete'"
         type="button"
         name="重新分批生成"
         class="config-generation__primary"
