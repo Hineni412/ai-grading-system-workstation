@@ -108,7 +108,6 @@ from session_manager import (
     force_payload_total_score,
     failed_grading_config_batches,
     failed_grading_config_question_ids,
-    finalize_completed_grading_config_draft,
     generate_grading_config_in_batches,
     generate_grading_config_from_docx_text_legacy,
     preview_question_blocks_from_docx_bytes,
@@ -2076,7 +2075,7 @@ def _render_upload_paths_guide(is_pdf: bool | None) -> None:
                 <span class="flow-arrow">➔</span>
                 <span class="step-node">结构合并</span>
                 <span class="flow-arrow">➔</span>
-                <span class="step-node">本地统一赋分</span>
+                <span class="step-node">AI 统一配分</span>
             </div>
             <div class="path-card-desc">
                 <b>适用场景</b>：试卷包含几何图形、函数图表、较多插图，或扫描版试卷。<br>
@@ -2098,11 +2097,11 @@ def _render_upload_paths_guide(is_pdf: bool | None) -> None:
                 <span class="flow-arrow">➔</span>
                 <span class="step-node">结构合并</span>
                 <span class="flow-arrow">➔</span>
-                <span class="step-node">本地统一赋分</span>
+                <span class="step-node">AI 统一配分</span>
             </div>
             <div class="path-card-desc">
                 <b>适用场景</b>：试卷由排版规范的 DOCX 文档生成，且包含不少大题步骤。<br>
-                <b>核心机制</b>：按顺序每批最多 3 题，不自动重试；成功批次保留，最终总分由本地程序统一分配。
+                <b>核心机制</b>：按顺序每批最多 3 题，不自动重试；成功批次保留，全部批次成功后再由 AI 统一配置 100 分。
             </div>
         </div>
         """
@@ -2353,7 +2352,7 @@ def render_config_and_session_tab(
             st.caption("上传 Word 或 PDF 试卷，AI 会抽取题目、分值、答案与步骤给分规则。")
             word_upload = st.file_uploader("上传试卷 (支持 .docx 或 .pdf)", type=["docx", "pdf"], key="word_exam_uploader")
 
-            st.info("当前统一使用小批次生成：每批最多 3 题、每批一次请求；本地修复后仍失败的批次才需手动重试。")
+            st.info("当前统一使用小批次生成：每批最多 3 题、每批一次请求；全部批次成功后再请求一次 AI 统一配置 100 分，任何失败都不会自动重试。")
 
             is_pdf = word_upload.name.lower().endswith(".pdf") if word_upload is not None else None
             _render_upload_paths_guide(is_pdf)
@@ -2559,13 +2558,6 @@ def render_config_and_session_tab(
                                 confirmed_blocks,
                             )
                             if recovered is not None:
-                                if not failed_grading_config_batches(recovered):
-                                    recovered = finalize_completed_grading_config_draft(
-                                        recovered,
-                                        confirmed_blocks,
-                                        q_images=q_images,
-                                    )
-                                    _write_compact_json_file(checkpoint_path, recovered)
                                 st.session_state.generated_config_payload = recovered
                                 st.info("已从本机恢复已保存批次，没有重新调用模型。")
                                 return
@@ -2658,8 +2650,10 @@ def render_config_and_session_tab(
                             remaining = failed_grading_config_question_ids(payload)
                             if remaining:
                                 st.warning(f"仍有 {len(remaining)} 道题生成失败：{', '.join(remaining)}")
+                            elif bool(payload.get("meta", {}).get("score_allocation_pending")):
+                                st.warning("题目批次已全部补齐，但 AI 统一配分尚未成功；没有使用本地分数替代。")
                             else:
-                                st.success("失败批次已全部补齐，并已在本地统一分配总分。")
+                                st.success("失败批次已全部补齐，并已由 AI 统一配置为 100 分。")
                         except Exception as exc:  # noqa: BLE001
                             st.error(f"失败题目重试失败：{exc}")
 
@@ -2673,6 +2667,9 @@ def render_config_and_session_tab(
                                 f"（{', '.join(repaired_batches)}），未产生额外模型请求。"
                             )
                         failed_qids = failed_grading_config_question_ids(current_split_payload)
+                        score_allocation_pending = bool(
+                            current_split_payload.get("meta", {}).get("score_allocation_pending")
+                        )
                         if failed_qids:
                             st.error(f"{len(failed_qids)} 道题所在批次生成失败：{', '.join(failed_qids)}。成功批次已保留。")
                             failed_details = failed_grading_config_batches(current_split_payload)
@@ -2687,8 +2684,12 @@ def render_config_and_session_tab(
                                         )
                             if st.button("仅重试失败批次", key="retry_failed_config_questions_btn", type="primary"):
                                 run_failed_question_retry()
+                        elif score_allocation_pending:
+                            st.warning("全部题目批次已经保存在本机，只差 AI 统一配置 100 分；没有使用本地分数替代。")
+                            if st.button("进行 AI 统一配分", key="retry_config_score_allocation_btn", type="primary"):
+                                run_failed_question_retry()
                         else:
-                            st.success("全部批次已完成，总分已由本地程序统一分配，不会再产生 AI 赋分请求。")
+                            st.success("全部批次已完成，并已由 AI 统一配置为 100 分。")
 
     with session_col:
         with st.container(border=True):
