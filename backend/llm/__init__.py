@@ -13,6 +13,8 @@ from .usage import (
     JsonlUsageSink,
     LLMUsageEvent,
     NullUsageSink,
+    is_truncation_finish_reason,
+    looks_like_truncated_json_object,
     response_diagnostics,
     usage_fields,
 )
@@ -40,6 +42,8 @@ __all__ = [
     "create_openai_client",
     "gateway_config_key",
     "is_retryable_error",
+    "is_truncation_finish_reason",
+    "looks_like_truncated_json_object",
     "normalize_openai_base_url",
     "policy_from_profile",
     "policy_overrides_from_profile",

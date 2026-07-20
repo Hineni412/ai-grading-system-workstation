@@ -22,6 +22,14 @@ _SAFE_FINISH_REASONS = frozenset(
         "max_output_tokens",
     }
 )
+_TRUNCATION_FINISH_REASONS = frozenset(
+    {
+        "length",
+        "max_tokens",
+        "max_completion_tokens",
+        "max_output_tokens",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +134,52 @@ def _normalized_response_text(response: object) -> str:
     return output_text if isinstance(output_text, str) else ""
 
 
+def is_truncation_finish_reason(value: object) -> bool:
+    return str(value or "").strip().lower() in _TRUNCATION_FINISH_REASONS
+
+
+def looks_like_truncated_json_object(text: str) -> bool:
+    cleaned = str(text or "").strip().lstrip("\ufeff")
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+    if cleaned.lower().startswith("json\n"):
+        cleaned = cleaned[5:].strip()
+    if not cleaned.startswith("{"):
+        return False
+
+    stack: list[str] = []
+    pairs = {"}": "{", "]": "["}
+    in_string = False
+    escape = False
+    for char in cleaned:
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char in "{[":
+            stack.append(char)
+            continue
+        if char in "}]":
+            if not stack or stack[-1] != pairs[char]:
+                return False
+            stack.pop()
+            if not stack:
+                return False
+    return bool(stack)
+
+
 def response_diagnostics(response: object) -> dict[str, object]:
     choices = _optional_value(response, "choices") or []
     finish_reason = ""
@@ -148,12 +202,9 @@ def response_diagnostics(response: object) -> dict[str, object]:
     if normalized_reason and normalized_reason not in _SAFE_FINISH_REASONS:
         normalized_reason = "unknown"
     finish_reason = normalized_reason
-    output_truncated = normalized_reason in {
-        "length",
-        "max_tokens",
-        "max_completion_tokens",
-        "max_output_tokens",
-    }
+    output_truncated = is_truncation_finish_reason(
+        normalized_reason
+    ) or looks_like_truncated_json_object(text)
     return {
         "finish_reason": finish_reason,
         "output_truncated": output_truncated,

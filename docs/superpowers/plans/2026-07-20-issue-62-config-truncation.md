@@ -1,6 +1,6 @@
 # Issue #62 配置整卷生成输出截断修复
 
-**状态：** ready_for_review
+**状态：** final_review
 **基线：** `0a2e481dc7b02252feacff46000b78308e7a46bb`
 **关联：** GitHub Issue #62、P2-20 正式验收外部阻塞
 
@@ -57,3 +57,5 @@
 |---|---|---:|---|---|---|---|
 | 集中调查与边界冻结 | 现有实现、P2-20 运行证据、Issue #61 基线、公开测试 seam | 0 | 3 个根因 | RED→GREEN、受影响回归、双路复审、integration | 否 | 否 |
 | 稳定候选 | 逐行为 RED→GREEN；后端受影响回归 231 passed；前端完整 verify 703 passed、lint/typecheck/build 通过；匿名 Chromium 截断恢复 1 passed；快速冒烟通过；应用内浏览器页面身份、非空与控制台检查通过，目标模拟因缺少文件注入/路由拦截能力按 P2-20 计划转仓库 Playwright | 0 | 0 Critical / 0 Important | Spec/Standards 双路复审、integration | 自动验收候选通过 | 否 |
+| 双路初审 | 同一冻结 SHA `616fc22` 的 Spec 与 Standards 并行复审 | 3 | 3 Important：括号错配误报截断、Job API 吞掉安全截断说明、结构截断未写入用量标记 | 一次统一修复与限定终审 | 否 | 否 |
+| 统一修复 | 为括号栈分类、结构截断日志和配置 Job 固定公开错误补 RED→GREEN；受影响回归 276 passed；快速冒烟通过 | 0 | 首轮 3 Important 均已实现修复 | 原评审者限定终审、integration | 自动复测通过 | 否 |
