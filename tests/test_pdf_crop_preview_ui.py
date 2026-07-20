@@ -49,6 +49,16 @@ def test_split_generation_ui_retries_only_failed_batches_and_scores_locally() ->
     assert "总分已由本地程序统一分配" in page
 
 
+def test_streamlit_batch_draft_is_reloaded_by_document_digest_and_reports_local_repair() -> None:
+    page = WEB_APP.read_text(encoding="utf-8")
+
+    assert "_config_generation_checkpoint_path(document_bytes)" in page
+    assert "_load_matching_config_generation_checkpoint" in page
+    assert "已从本机恢复已保存批次，没有重新调用模型" in page
+    assert "_local_json_repair_batch_ids" in page
+    assert "未产生额外模型请求" in page
+
+
 def test_whole_visual_mode_is_not_exposed_in_the_streamlit_ui() -> None:
     page = WEB_APP.read_text(encoding="utf-8")
 

@@ -189,6 +189,7 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
             "failed_question_ids",
             "failed_batch_count",
             "failed_batches",
+            "local_json_repairs",
             "retryable",
             "mapping_status",
             "mapping_message",

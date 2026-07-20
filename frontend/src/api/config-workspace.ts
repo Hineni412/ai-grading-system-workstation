@@ -53,7 +53,7 @@ export interface ConfigGenerationRequest {
 
 export interface ConfigGenerationRetryRequest {
   source_job_id: number
-  retry_question_ids: string[]
+  retry_question_ids?: string[]
   client_request_token?: string
 }
 
@@ -393,13 +393,14 @@ export async function retryConfigGeneration(
   const id = requireSessionId(sessionId)
   if (!isPositiveInteger(sourceJobId)) throw new Error('Invalid source Job id')
   const questionIds = [...new Set(retryQuestionIds.map((item) => item.trim()))]
-  if (questionIds.length === 0 || questionIds.some((item) => !item || item.length > 100)) {
+  if ((retryQuestionIds.length > 0 && questionIds.length === 0)
+    || questionIds.some((item) => !item || item.length > 100)) {
     throw new Error('Invalid retry question ids')
   }
   const request: ConfigGenerationRetryRequest = {
     source_job_id: sourceJobId,
-    retry_question_ids: questionIds,
   }
+  if (questionIds.length > 0) request.retry_question_ids = questionIds
   if (requestToken) request.client_request_token = requireRequestToken(requestToken)
   return apiClient.request(`/api/sessions/${id}/config/generate/retry`, {
     method: 'POST', body: request, decode: decodeStrictJob,

@@ -459,9 +459,26 @@ def test_config_generation_job_binds_complete_result_and_returns_safe_summary(
         {"session_id": session_id, "mode": "generate", "input_id": input_id},
     )
     fake_client = object()
+    generated_payload = _valid_config_payload()
+    generated_payload["meta"] = {
+        "batches": [
+            {
+                "batch_id": "B001",
+                "question_ids": ["Q1", "Q2", "Q3"],
+                "status": "succeeded",
+                "local_json_repair": {
+                    "repaired": True,
+                    "operations": ["remove_trailing_comma"],
+                    "response_chars": 123,
+                    "response_sha256": "a" * 64,
+                },
+            }
+        ],
+        "failed_batches": [],
+    }
     monkeypatch.setattr(
         "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
-        lambda *_args, **_kwargs: _valid_config_payload(),
+        lambda *_args, **_kwargs: generated_payload,
     )
 
     result = run_config_generation_job(
@@ -489,6 +506,13 @@ def test_config_generation_job_binds_complete_result_and_returns_safe_summary(
         "retryable": False,
     }
     assert result["mapping_status"] == "not_present"
+    assert result["local_json_repairs"] == [
+        {
+            "batch_id": "B001",
+            "question_ids": ["Q1", "Q2", "Q3"],
+            "operations": ["remove_trailing_comma"],
+        }
+    ]
     assert isinstance(result["mapping_message"], str)
     assert str(tmp_path) not in json.dumps(result)
     stored_job = context.store.get_job(context.job_id)

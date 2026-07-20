@@ -8,6 +8,7 @@ import {
   fetchConfigSource,
   fetchConfigSourceSubmission,
   refineConfigEditor,
+  retryConfigGeneration,
   saveConfigEditor,
   submitConfigGeneration,
   uploadConfigSource,
@@ -159,6 +160,17 @@ describe('configuration workspace API', () => {
       [`/api/sessions/7/config/sources/submissions/${token}/abandon`, 'POST'],
       [`/api/sessions/7/config/generation-jobs/requests/${token}/abandon`, 'POST'],
     ])
+  })
+
+  it('omits question ids when resuming an all-succeeded local checkpoint', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(response(job, 202))
+
+    await expect(retryConfigGeneration(7, 31, [], '8'.repeat(32))).resolves.toEqual(job)
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      source_job_id: 31,
+      client_request_token: '8'.repeat(32),
+    })
   })
 
   it('never retries a raw upload write failure', async () => {

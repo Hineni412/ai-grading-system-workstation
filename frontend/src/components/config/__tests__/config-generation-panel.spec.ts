@@ -291,6 +291,75 @@ describe('ConfigGenerationPanel', () => {
     expect(mounted.host.textContent).toContain('当前恢复任务')
   })
 
+  it.each(['failed', 'cancelled'] as const)(
+    'keeps the failed-batch retry entry for a %s checkpointed job',
+    async (status) => {
+      const retryer = vi.fn(async () => job({ id: 33, status: 'queued', progress: 0 }))
+      const configStore = useConfigWorkspaceStore()
+      useJobStore().track(job({
+        status, progress: 1, result: {
+          outcome: 'partial', total_questions: 3, generated_questions: 2,
+          failed_count: 1, failed_question_ids: ['Q3'],
+          failed_batches: [{ batch_id: 'B001', question_ids: ['Q3'] }],
+        }, finished_at: '2026-07-15T00:01:00Z',
+      }))
+      configStore.attachJob(31, configStore.captureGenerationContext())
+      const mounted = await mountPanel({ retryer })
+
+      expect(mounted.host.querySelector('button[name="重新分批生成"]')).toBeNull()
+      mounted.host.querySelector<HTMLInputElement>('[aria-label="选择失败批次 B001"]')!.click()
+      await nextTick()
+      mounted.host.querySelector<HTMLButtonElement>('button[name="重试所选批次"]')!.click()
+      await settle()
+
+      expect(retryer).toHaveBeenCalledWith(
+        7, 31, ['Q3'], expect.stringMatching(/^[0-9a-f]{32}$/),
+      )
+    },
+  )
+
+  it.each(['failed', 'cancelled'] as const)(
+    'resumes local publish without question retries for a %s complete checkpoint',
+    async (status) => {
+      const retryer = vi.fn(async () => job({ id: 34, status: 'queued', progress: 0 }))
+      const configStore = useConfigWorkspaceStore()
+      useJobStore().track(job({
+        status, progress: 1, result: {
+          outcome: 'complete', total_questions: 3, generated_questions: 3,
+          failed_count: 0, failed_question_ids: [], failed_batches: [],
+        }, finished_at: '2026-07-15T00:01:00Z',
+      }))
+      configStore.attachJob(31, configStore.captureGenerationContext())
+      const mounted = await mountPanel({ retryer })
+
+      expect(mounted.host.textContent).toContain('不会调用模型')
+      mounted.host.querySelector<HTMLButtonElement>('button[name="完成本地发布"]')!.click()
+      await settle()
+
+      expect(retryer).toHaveBeenCalledWith(
+        7, 31, [], expect.stringMatching(/^[0-9a-f]{32}$/),
+      )
+    },
+  )
+
+  it('shows batches repaired locally without exposing the model response', async () => {
+    const configStore = useConfigWorkspaceStore()
+    useJobStore().track(job({
+      status: 'succeeded', progress: 1, result: {
+        outcome: 'complete', total_questions: 3, generated_questions: 3,
+        failed_count: 0, failed_question_ids: [], failed_batches: [],
+        local_json_repairs: [
+          { batch_id: 'B001', question_ids: ['Q1', 'Q2', 'Q3'], operations: ['remove_trailing_comma'] },
+        ],
+      }, finished_at: '2026-07-15T00:01:00Z',
+    }))
+    configStore.attachJob(31, configStore.captureGenerationContext())
+    const mounted = await mountPanel()
+
+    expect(mounted.host.textContent).toContain('本地程序已修复 1 个批次的 JSON（B001）')
+    expect(mounted.host.textContent).toContain('未产生额外模型请求')
+  })
+
   it('unlocks an ambiguous retry when its exact lookup confirms 404', async () => {
     const timeout = new ApiError({ kind: 'timeout', status: null, code: 'request_timeout',
       message: 'timeout', details: {}, requestId: 'safe', retryable: false })

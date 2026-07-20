@@ -356,11 +356,18 @@ def _run_config_generation_job_impl(
     else:
         source_job_id = _required_int(context.payload, "source_job_id")
         source_job = context.store.get_job(source_job_id)
+        source_outcome = source_job.result.get("outcome") if source_job is not None else None
+        retry_failed_batches = source_outcome == "partial"
+        resume_complete_draft = (
+            source_outcome == "complete"
+            and source_job is not None
+            and source_job.status in {"failed", "cancelled"}
+        )
         if (
             source_job is None
             or source_job.job_type != "config_generation"
             or source_job.status not in {"succeeded", "failed", "cancelled"}
-            or source_job.result.get("outcome") != "partial"
+            or not (retry_failed_batches or resume_complete_draft)
             or _required_int(source_job.payload, "session_id") != session_id
             or str(source_job.payload.get("generation_mode") or "batched")
             not in {"batched", "per_question"}
@@ -523,6 +530,7 @@ def _run_config_generation_job_impl(
         total_questions,
         failed_ids,
         failed_batches=failed_grading_config_batches(payload),
+        local_json_repairs=_local_json_repairs(payload),
         retryable_mode=True,
     )
     if failed_ids:
@@ -878,6 +886,7 @@ def _summary(
     failed_ids: list[str],
     *,
     failed_batches: list[dict[str, Any]] | None = None,
+    local_json_repairs: list[dict[str, Any]] | None = None,
     retryable_mode: bool = True,
 ) -> dict[str, object]:
     failed_count = len(failed_ids)
@@ -891,8 +900,29 @@ def _summary(
         "failed_question_ids": failed_ids,
         "failed_batch_count": len(clean_batches),
         "failed_batches": clean_batches,
+        "local_json_repairs": list(local_json_repairs or []),
         "retryable": bool(failed_count and retryable_mode),
     }
+
+
+def _local_json_repairs(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    batches = meta.get("batches") if isinstance(meta, dict) else None
+    reports: list[dict[str, Any]] = []
+    for batch in batches or []:
+        if not isinstance(batch, dict):
+            continue
+        repair = batch.get("local_json_repair")
+        if not isinstance(repair, dict) or not bool(repair.get("repaired")):
+            continue
+        reports.append(
+            {
+                "batch_id": str(batch.get("batch_id") or ""),
+                "question_ids": [str(qid) for qid in batch.get("question_ids") or []],
+                "operations": [str(item) for item in repair.get("operations") or []],
+            }
+        )
+    return reports
 
 
 def _summary_from_batch_draft(
@@ -913,6 +943,7 @@ def _summary_from_batch_draft(
         len(all_ids) or _question_count(payload, []),
         failed_ids,
         failed_batches=failed_grading_config_batches(payload),
+        local_json_repairs=_local_json_repairs(payload),
         retryable_mode=True,
     )
 

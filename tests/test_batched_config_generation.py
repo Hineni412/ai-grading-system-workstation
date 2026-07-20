@@ -158,6 +158,32 @@ def test_failed_batch_is_retained_and_retry_only_calls_that_complete_batch() -> 
     assert completed["meta"]["failed_question_ids"] == []
 
 
+def test_all_succeeded_checkpoint_resumes_with_local_finalization_and_no_model_call() -> None:
+    initial_client = FakeBatchClient()
+    completed = session_manager.generate_grading_config_in_batches(
+        _blocks(12), "document", llm_client=initial_client
+    )
+    checkpoint = copy.deepcopy(completed)
+    checkpoint["rubric"]["total_score"] = 12
+    for question in checkpoint["rubric"]["questions"]:
+        question["max_score"] = 1
+        question["parts"][0]["part_score"] = 1
+        question["parts"][0]["steps"][0]["step_score"] = 1
+    resume_client = FakeBatchClient()
+
+    resumed = session_manager.retry_failed_grading_config_batches(
+        checkpoint,
+        _blocks(12),
+        "document",
+        llm_client=resume_client,
+    )
+
+    assert resume_client.calls == []
+    assert resumed["rubric"]["total_score"] == 100
+    assert sum(item["max_score"] for item in resumed["rubric"]["questions"]) == 100
+    assert resumed["meta"]["score_allocation_mode"] == "local_normalization"
+
+
 def test_retry_rejects_partial_failed_batch_without_calling_model() -> None:
     client = FakeBatchClient({("Q4", "Q5", "Q6")})
     partial = session_manager.generate_grading_config_in_batches(
