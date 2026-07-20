@@ -10,7 +10,12 @@ from typing import Callable, Mapping
 from .errors import classify_llm_error, is_retryable_error
 from .pacing import LLMPacerRegistry
 from .policy import LLMProtocol, LLMRequestKind, policy_from_profile
-from .usage import LLMUsageEvent, NullUsageSink, usage_fields
+from .usage import (
+    LLMUsageEvent,
+    NullUsageSink,
+    response_diagnostics,
+    usage_fields,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -250,6 +255,7 @@ class LLMGateway:
     ) -> None:
         try:
             normalized_usage = usage_fields(response)
+            diagnostics = response_diagnostics(response)
             event = LLMUsageEvent(
                 request_id=request_id,
                 attempt=attempt,
@@ -260,6 +266,7 @@ class LLMGateway:
                 success=True,
                 compatibility_fallback=compatibility_fallback,
                 **normalized_usage,
+                **diagnostics,
             )
         except Exception:
             _warn_safely("Failed to normalize LLM usage metadata")
