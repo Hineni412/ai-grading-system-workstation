@@ -105,6 +105,7 @@ describe('ConfigGenerationPanel', () => {
 
     expect(mounted.host.textContent).toContain('小批次生成')
     expect(mounted.host.textContent).toContain('每批最多 3 题')
+    expect(mounted.host.textContent).toContain('全部批次成功后，再请求一次 AI 统一配置 100 分')
     expect(mounted.host.textContent).not.toContain('整卷单次生成')
     const submit = mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!
     submit.click()
@@ -319,7 +320,7 @@ describe('ConfigGenerationPanel', () => {
   )
 
   it.each(['failed', 'cancelled'] as const)(
-    'resumes local publish without question retries for a %s complete checkpoint',
+    'resumes AI score allocation without question retries for a %s complete checkpoint',
     async (status) => {
       const retryer = vi.fn(async () => job({ id: 34, status: 'queued', progress: 0 }))
       const configStore = useConfigWorkspaceStore()
@@ -332,8 +333,8 @@ describe('ConfigGenerationPanel', () => {
       configStore.attachJob(31, configStore.captureGenerationContext())
       const mounted = await mountPanel({ retryer })
 
-      expect(mounted.host.textContent).toContain('不会调用模型')
-      mounted.host.querySelector<HTMLButtonElement>('button[name="完成本地发布"]')!.click()
+      expect(mounted.host.textContent).toContain('将调用模型一次')
+      mounted.host.querySelector<HTMLButtonElement>('button[name="继续 AI 统一配分"]')!.click()
       await settle()
 
       expect(retryer).toHaveBeenCalledWith(
@@ -341,6 +342,31 @@ describe('ConfigGenerationPanel', () => {
       )
     },
   )
+
+  it('resumes only AI score allocation after all batches were retained', async () => {
+    const retryer = vi.fn(async () => job({ id: 35, status: 'queued', progress: 0 }))
+    const configStore = useConfigWorkspaceStore()
+    useJobStore().track(job({
+      status: 'succeeded', progress: 1, result: {
+        outcome: 'partial', total_questions: 12, generated_questions: 12,
+        failed_count: 0, failed_question_ids: [], failed_batches: [],
+        score_allocation_pending: true, score_allocation_failed: true,
+        retryable: true,
+      }, finished_at: '2026-07-15T00:01:00Z',
+    }))
+    configStore.attachJob(31, configStore.captureGenerationContext())
+    const mounted = await mountPanel({ retryer })
+
+    expect(mounted.host.textContent).toContain('12 道题的批次结果已经保存在本机')
+    expect(mounted.host.textContent).toContain('没有使用本地分数替代')
+    expect(mounted.host.querySelectorAll('input[type="checkbox"]')).toHaveLength(0)
+    mounted.host.querySelector<HTMLButtonElement>('button[name="重新进行 AI 统一配分"]')!.click()
+    await settle()
+
+    expect(retryer).toHaveBeenCalledWith(
+      7, 31, [], expect.stringMatching(/^[0-9a-f]{32}$/),
+    )
+  })
 
   it('shows batches repaired locally without exposing the model response', async () => {
     const configStore = useConfigWorkspaceStore()

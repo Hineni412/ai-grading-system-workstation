@@ -1152,10 +1152,15 @@ def retry_failed_grading_config_batches(
     meta = existing_payload.get("meta") if isinstance(existing_payload, dict) else None
     failed_batches = meta.get("failed_batches") if isinstance(meta, dict) else None
     if not isinstance(failed_batches, list) or not failed_batches:
-        return finalize_completed_grading_config_draft(
+        return _score_completed_batch_draft_once(
             existing_payload,
             question_blocks,
+            doc_text,
+            llm_client,
+            model_name=model_name,
+            report=report,
             q_images=q_images,
+            checkpoint=checkpoint,
         )
 
     failed_by_id: dict[str, list[str]] = {}
@@ -1282,7 +1287,11 @@ def _run_config_generation_batches(
                     model=model_name,
                     extra_kwargs=_config_generation_extra_kwargs(),
                 )
-            _validate_exact_batch_payload(batch_payload, question_ids)
+            _validate_exact_batch_payload(
+                batch_payload,
+                question_ids,
+                require_canonical_answer=False,
+            )
             normalize_generated_config_schema(batch_payload)
             _validate_exact_batch_payload(batch_payload, question_ids)
             _replace_retry_question_payloads(
@@ -1339,14 +1348,276 @@ def _run_config_generation_batches(
         refresh_generated_config_quality_warnings(merged)
         return merged
 
-    merged = finalize_completed_grading_config_draft(
+    merged = _score_completed_batch_draft_once(
         merged,
+        question_blocks,
+        doc_text,
+        llm_client,
+        model_name=model_name,
+        report=report,
+        q_images=q_images,
+        checkpoint=checkpoint,
+    )
+    if report:
+        report(0.92, "分批生成完成", f"{len(batches)} 个批次和整卷 AI 统一配分均已完成。")
+    return merged
+
+
+def _score_completed_batch_draft_once(
+    existing_payload: dict[str, Any],
+    question_blocks: list[dict[str, Any]],
+    doc_text: str,
+    llm_client: LLMClient,
+    model_name: str | None = None,
+    report: Any = None,
+    q_images: dict[str, Any] | None = None,
+    checkpoint: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Allocate scores once after every generation batch has succeeded."""
+    if failed_grading_config_batches(existing_payload):
+        raise ValueError("仍有失败批次，不能进行整卷 AI 统一配分。")
+    payload = copy.deepcopy(existing_payload)
+    meta = payload.setdefault("meta", {})
+    if (
+        isinstance(meta, dict)
+        and bool(meta.get("score_allocation_ai_success"))
+        and not bool(meta.get("score_allocation_pending"))
+    ):
+        return payload
+    if not isinstance(meta, dict):
+        payload["meta"] = meta = {}
+    meta["score_allocation_mode"] = "dedicated_ai_scoring"
+    meta["score_allocation_ai_success"] = False
+    meta["score_allocation_pending"] = True
+    meta["score_allocation_failed"] = False
+    meta.pop("score_allocation_error", None)
+    meta.pop("score_allocation_failure_category", None)
+    if checkpoint:
+        checkpoint(copy.deepcopy(payload))
+
+    structure_summary = _score_allocation_structure_summary(payload)
+    question_ids = [str(item.get("question_id") or "") for item in structure_summary]
+    prompt = _build_score_allocation_prompt(
+        structure_summary,
+        doc_text,
+        include_document_text=not (
+            bool(q_images)
+            or any(
+                str(block.get("semantic_source") or "").strip() == "images"
+                for block in question_blocks
+            )
+        ),
+    )
+    prompt = (
+        f"SCORE_QUESTION_IDS_JSON={json.dumps(question_ids, ensure_ascii=False)}\n"
+        + prompt
+    )
+    if report:
+        report(
+            0.88,
+            "AI 统一配分",
+            f"正在根据 {len(question_ids)} 道题的完整评分步骤统一配置 100 分。",
+        )
+    score_repair: dict[str, Any] | None = None
+    try:
+        score_data = llm_client.json_from_text_once(
+            prompt,
+            model=model_name,
+            extra_kwargs=_config_generation_extra_kwargs(),
+        )
+        score_meta = score_data.get("meta") if isinstance(score_data, dict) else None
+        raw_score_repair = (
+            score_meta.get("local_json_repair")
+            if isinstance(score_meta, dict)
+            else None
+        )
+        if isinstance(raw_score_repair, dict):
+            score_repair = {
+                "repaired": bool(raw_score_repair.get("repaired")),
+                "operations": [
+                    str(item) for item in raw_score_repair.get("operations") or []
+                ],
+                "response_chars": int(raw_score_repair.get("response_chars") or 0),
+                "response_sha256": str(
+                    raw_score_repair.get("response_sha256") or ""
+                ),
+            }
+        _validate_exact_score_allocation_payload(score_data, structure_summary)
+        _apply_score_allocation(payload, score_data)
+    except Exception as exc:
+        meta["score_allocation_failed"] = True
+        meta["score_allocation_failure_category"] = (
+            "transient_network"
+            if _is_transient_config_generation_error(exc)
+            else "model_request"
+        )
+        meta["score_allocation_error"] = _safe_score_allocation_failure_message(exc)
+        if report:
+            report(
+                0.91,
+                "AI 统一配分失败",
+                "评分标准批次已保存在本机；没有自动重试，也没有使用本地分值替代。",
+            )
+        if checkpoint:
+            checkpoint(copy.deepcopy(payload))
+        return payload
+    payload = finalize_completed_grading_config_draft(
+        payload,
         question_blocks,
         q_images=q_images,
     )
-    if report:
-        report(0.92, "分批生成完成", f"{len(batches)} 个批次全部完成，已在本地统一分配总分。")
-    return merged
+    meta = payload.setdefault("meta", {})
+    meta["score_allocation_mode"] = "dedicated_ai_scoring"
+    meta["score_allocation_ai_success"] = True
+    meta["score_allocation_pending"] = False
+    meta["score_allocation_failed"] = False
+    meta.pop("score_allocation_error", None)
+    meta.pop("score_allocation_failure_category", None)
+    if score_repair is not None:
+        meta["score_allocation_local_json_repair"] = score_repair
+    else:
+        meta.pop("score_allocation_local_json_repair", None)
+    if checkpoint:
+        checkpoint(copy.deepcopy(payload))
+    return payload
+
+
+def _safe_score_allocation_failure_message(exc: Exception) -> str:
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int):
+        return f"AI 统一配分失败（HTTP {status_code}），未自动重试。"
+    return "AI 统一配分或本地校验失败，未自动重试。"
+
+
+def _validate_exact_score_allocation_payload(
+    score_data: dict[str, Any],
+    structure_summary: list[dict[str, Any]],
+) -> None:
+    if not isinstance(score_data, dict):
+        raise ValueError("AI 统一配分结果顶层不是 JSON 对象。")
+    raw_scores = score_data.get("question_scores")
+    if not isinstance(raw_scores, list):
+        raise ValueError("AI 统一配分缺少 question_scores。")
+    expected_ids = [str(item.get("question_id") or "") for item in structure_summary]
+    actual_ids = [
+        str(item.get("question_id") or "") if isinstance(item, dict) else ""
+        for item in raw_scores
+    ]
+    if actual_ids != expected_ids or len(set(actual_ids)) != len(actual_ids):
+        raise ValueError("AI 统一配分的题号缺失、重复、越界或顺序不一致。")
+
+    total_score = 0
+    objective_scores: dict[str, int] = {}
+    for expected, actual in zip(structure_summary, raw_scores):
+        if not isinstance(actual, dict):
+            raise ValueError("AI 统一配分的题目结构无效。")
+        question_score = _strict_positive_score(actual.get("max_score"))
+        if question_score > MAX_QUESTION_SCORE:
+            raise ValueError("AI 统一配分存在超过单题上限的分值。")
+        total_score += question_score
+        question_type = str(expected.get("question_type") or "").strip()
+        if question_type in {"choice", "fill_blank", "judgement", "true_false"}:
+            previous = objective_scores.setdefault(question_type, question_score)
+            if previous != question_score:
+                raise ValueError("AI 统一配分未保持同类型客观题同分。")
+
+        expected_parts = expected.get("parts")
+        actual_parts = actual.get("parts")
+        if not isinstance(expected_parts, list) or not isinstance(actual_parts, list):
+            raise ValueError("AI 统一配分的分问结构无效。")
+        expected_part_ids = [
+            str(item.get("part_id") or "") if isinstance(item, dict) else ""
+            for item in expected_parts
+        ]
+        actual_part_ids = [
+            str(item.get("part_id") or "") if isinstance(item, dict) else ""
+            for item in actual_parts
+        ]
+        if actual_part_ids != expected_part_ids:
+            raise ValueError("AI 统一配分改变了分问结构。")
+
+        part_total = 0
+        for expected_part, actual_part in zip(expected_parts, actual_parts):
+            if not isinstance(expected_part, dict) or not isinstance(actual_part, dict):
+                raise ValueError("AI 统一配分的分问结构无效。")
+            part_score = _strict_positive_score(actual_part.get("part_score"))
+            part_total += part_score
+            expected_steps = expected_part.get("steps")
+            actual_steps = actual_part.get("steps")
+            if not isinstance(expected_steps, list) or not isinstance(actual_steps, list):
+                raise ValueError("AI 统一配分的步骤结构无效。")
+            expected_step_ids = [
+                str(item.get("step_id") or "") if isinstance(item, dict) else ""
+                for item in expected_steps
+            ]
+            actual_step_ids = [
+                str(item.get("step_id") or "") if isinstance(item, dict) else ""
+                for item in actual_steps
+            ]
+            if actual_step_ids != expected_step_ids:
+                raise ValueError("AI 统一配分改变了评分步骤结构。")
+            step_total = sum(
+                _strict_positive_score(item.get("step_score"))
+                for item in actual_steps
+                if isinstance(item, dict)
+            )
+            if step_total != part_score:
+                raise ValueError("AI 统一配分的步骤分之和不等于分问分。")
+        if part_total != question_score:
+            raise ValueError("AI 统一配分的分问分之和不等于题目分。")
+    if total_score != 100:
+        raise ValueError("AI 统一配分总分不是 100。")
+
+
+def _strict_positive_score(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("AI 统一配分包含非整数分值。")
+    score = int(value)
+    if float(value) != float(score) or score <= 0:
+        raise ValueError("AI 统一配分包含非正整数分值。")
+    return score
+
+
+def _score_allocation_structure_summary(
+    payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rubric = payload.get("rubric") if isinstance(payload, dict) else None
+    questions = rubric.get("questions") if isinstance(rubric, dict) else None
+    summary: list[dict[str, Any]] = []
+    for question in questions or []:
+        if not isinstance(question, dict):
+            continue
+        parts: list[dict[str, Any]] = []
+        for part in question.get("parts") or []:
+            if not isinstance(part, dict):
+                continue
+            steps = [
+                {
+                    "step_id": str(step.get("step_id") or ""),
+                    "core_goal": str(step.get("core_goal") or ""),
+                    "required_elements": [
+                        str(item) for item in step.get("required_elements") or []
+                    ],
+                }
+                for step in part.get("steps") or []
+                if isinstance(step, dict)
+            ]
+            parts.append(
+                {
+                    "part_id": str(part.get("part_id") or ""),
+                    "response_mode": str(part.get("response_mode") or ""),
+                    "steps": steps,
+                }
+            )
+        summary.append(
+            {
+                "question_id": str(question.get("question_id") or ""),
+                "question_type": str(question.get("question_type") or ""),
+                "knowledge_name": str(question.get("knowledge_name") or ""),
+                "parts": parts,
+            }
+        )
+    return summary
 
 
 def finalize_completed_grading_config_draft(
@@ -1433,7 +1704,12 @@ def _attach_batch_generation_meta(
     ]
 
 
-def _validate_exact_batch_payload(payload: dict[str, Any], question_ids: list[str]) -> None:
+def _validate_exact_batch_payload(
+    payload: dict[str, Any],
+    question_ids: list[str],
+    *,
+    require_canonical_answer: bool = True,
+) -> None:
     if not isinstance(payload, dict):
         raise _BatchSchemaMismatch("批次结果顶层不是 JSON 对象。")
     rubric = payload.get("rubric")
@@ -1462,7 +1738,7 @@ def _validate_exact_batch_payload(payload: dict[str, Any], question_ids: list[st
         if not isinstance(question.get("parts"), list) or not question["parts"]:
             raise _BatchSchemaMismatch("批次评分结构不完整。")
     for answer in answers:
-        if "canonical_answer" not in answer:
+        if require_canonical_answer and "canonical_answer" not in answer:
             raise _BatchSchemaMismatch("批次答案结构不完整。")
 
 

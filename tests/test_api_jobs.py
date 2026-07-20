@@ -332,6 +332,36 @@ def test_config_generation_truncation_returns_fixed_actionable_public_error(
     assert "C:/private" not in response.text
 
 
+def test_config_generation_exposes_safe_score_allocation_state(
+    client_with_manager,
+) -> None:
+    client, manager = client_with_manager
+    job = manager.store.create_job(
+        "config_generation",
+        {"session_id": 7, "mode": "generate", "generation_mode": "batched"},
+    )
+    manager.store.finish(
+        job.id,
+        "succeeded",
+        result={
+            "session_id": 7,
+            "outcome": "partial",
+            "score_allocation_pending": True,
+            "score_allocation_failed": True,
+            "score_allocation_error": "AI 统一配分失败（HTTP 502），未自动重试。",
+            "private_response": "must not be exposed",
+        },
+    )
+
+    response = client.get(f"/api/jobs/{job.id}")
+
+    assert response.status_code == 200
+    assert response.json()["result"]["score_allocation_pending"] is True
+    assert response.json()["result"]["score_allocation_failed"] is True
+    assert response.json()["result"]["score_allocation_error"].startswith("AI 统一配分失败")
+    assert "private_response" not in response.text
+
+
 def test_jobs_api_returns_unified_error_for_unsupported_type(client_with_manager) -> None:
     client, _manager = client_with_manager
 

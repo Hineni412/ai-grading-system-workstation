@@ -81,6 +81,12 @@ const localJsonRepairs = computed<LocalJsonRepair[]>(() => {
     return [{ batch_id: value.batch_id, question_ids: ids }]
   })
 })
+const scoreAllocationPending = computed(
+  () => job.value?.result.score_allocation_pending === true,
+)
+const scoreAllocationFailed = computed(
+  () => job.value?.result.score_allocation_failed === true,
+)
 const generatedCount = computed(() => safeCount(job.value?.result.generated_questions))
 const failedCount = computed(() => safeCount(job.value?.result.failed_count))
 const active = computed(() => job.value !== null
@@ -294,7 +300,7 @@ watch(job, (current, previous) => {
 
     <div class="config-generation__modes" role="note">
       <strong>小批次生成</strong>
-      <small>按顺序每批最多 3 题，每批只请求一次；不会自动重试，也不会再调用 AI 统一赋分。</small>
+      <small>按顺序每批最多 3 题，每批只请求一次；全部批次成功后，再请求一次 AI 统一配置 100 分。任何失败都不会自动重试。</small>
     </div>
 
     <button
@@ -326,7 +332,7 @@ watch(job, (current, previous) => {
         当前恢复任务：{{ statusCopy(job) }}。
       </p>
 
-      <div v-if="['succeeded', 'failed', 'cancelled'].includes(job.status) && outcome === 'partial'" class="config-generation__partial">
+      <div v-if="['succeeded', 'failed', 'cancelled'].includes(job.status) && outcome === 'partial' && failedBatches.length > 0" class="config-generation__partial">
         <p><strong>已成功 {{ generatedCount }} 题</strong>，失败 {{ failedCount }} 题。成功批次已保存，不会重复请求。</p>
         <fieldset>
           <legend>选择要重试的失败批次</legend>
@@ -340,10 +346,21 @@ watch(job, (current, previous) => {
         </button>
       </div>
 
+      <div v-if="['succeeded', 'failed', 'cancelled'].includes(job.status) && outcome === 'partial' && scoreAllocationPending" class="config-generation__partial">
+        <p>
+          <strong>{{ generatedCount }} 道题的批次结果已经保存在本机。</strong>
+          <template v-if="scoreAllocationFailed">AI 统一配分没有成功；没有发布评分依据，也没有使用本地分数替代。</template>
+          <template v-else>尚未完成 AI 统一配分。</template>
+        </p>
+        <button type="button" name="重新进行 AI 统一配分" :disabled="submitting || workspacePending" @click="retrySelected(true)">
+          重新进行 AI 统一配分
+        </button>
+      </div>
+
       <div v-if="['failed', 'cancelled'].includes(job.status) && outcome === 'complete'" class="config-generation__partial">
-        <p>全部批次已经保存在本机，只差本地校验和发布；继续时不会调用模型。</p>
-        <button type="button" name="完成本地发布" :disabled="submitting || workspacePending" @click="retrySelected(true)">
-          完成本地发布
+        <p>全部批次已经保存在本机，只差 AI 统一配分；继续时将调用模型一次，不会重新生成题目批次。</p>
+        <button type="button" name="继续 AI 统一配分" :disabled="submitting || workspacePending" @click="retrySelected(true)">
+          继续 AI 统一配分
         </button>
       </div>
 

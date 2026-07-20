@@ -1173,6 +1173,59 @@ def test_config_generation_job_saves_partial_draft_without_binding_session(
     assert json.loads(draft.read_text(encoding="utf-8"))["meta"]["failed_question_ids"] == ["Q2"]
 
 
+def test_config_generation_job_saves_score_pending_draft_without_binding_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    input_id = _stage_job_input(tmp_path, session_id, old_paths)
+    context, _store = _job_context(
+        db.db_path,
+        {"session_id": session_id, "mode": "generate", "input_id": input_id},
+    )
+    pending = _valid_config_payload()
+    pending["meta"] = {
+        "warnings": [],
+        "batches": [
+            {
+                "batch_id": "B001",
+                "question_ids": ["Q1", "Q2", "Q3", "Q4", "Q5", "Q6"],
+                "status": "succeeded",
+            }
+        ],
+        "failed_batches": [],
+        "failed_question_ids": [],
+        "score_allocation_mode": "dedicated_ai_scoring",
+        "score_allocation_ai_success": False,
+        "score_allocation_pending": True,
+        "score_allocation_failed": True,
+        "score_allocation_error": "AI 统一配分失败（HTTP 502），未自动重试。",
+    }
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        lambda *_args, **_kwargs: pending,
+    )
+
+    result = run_config_generation_job(
+        context=context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        llm_client_factory=lambda: object(),
+    )
+
+    session = db.get_grading_session(session_id)
+    assert session is not None
+    assert (session["rubric_path"], session["answer_key_path"]) == old_paths
+    assert result["outcome"] == "partial"
+    assert result["generated_questions"] == 6
+    assert result["failed_count"] == 0
+    assert result["score_allocation_pending"] is True
+    assert result["score_allocation_failed"] is True
+    assert result["retryable"] is True
+    draft = tmp_path / "uploaded" / f"config_generation_draft_job_{context.job_id}.json"
+    assert json.loads(draft.read_text(encoding="utf-8"))["meta"]["score_allocation_pending"] is True
+
+
 def test_partial_generation_rejects_a_source_replaced_while_model_was_running(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

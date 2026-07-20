@@ -995,6 +995,12 @@ def retry_session_config_generation(
         and isinstance(source_failed_batches, list)
         and bool(source_failed_batches)
     )
+    retry_score_allocation = (
+        source.result.get("outcome") == "partial"
+        and bool(source.result.get("score_allocation_pending"))
+        and not bool(source_failed_batches)
+        and request.retry_question_ids is None
+    )
     resume_complete_draft = (
         source.result.get("outcome") == "complete"
         and source.status in {"failed", "cancelled"}
@@ -1003,7 +1009,11 @@ def retry_session_config_generation(
     if (
         source.job_type != "config_generation"
         or source.status not in {"succeeded", "failed", "cancelled"}
-        or not (retry_failed_batches or resume_complete_draft)
+        or not (
+            retry_failed_batches
+            or retry_score_allocation
+            or resume_complete_draft
+        )
         or int(source.payload.get("session_id") or 0) != int(session_id)
         or str(source.payload.get("generation_mode") or "")
         not in {"batched", "per_question"}
