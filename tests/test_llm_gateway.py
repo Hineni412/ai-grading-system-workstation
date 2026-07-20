@@ -381,6 +381,39 @@ def test_success_event_normalizes_usage_and_latency():
     assert event.total_tokens == 16
 
 
+def test_success_event_records_safe_output_diagnostics():
+    sink = RecordingSink()
+    result = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                finish_reason="length",
+                message=SimpleNamespace(content='{"rubric":['),
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=11,
+            completion_tokens=4096,
+            total_tokens=4107,
+        ),
+    )
+    operation = FakeCreate([result])
+    gateway = _gateway(sink=sink)
+
+    gateway.chat_completions(
+        request_kind=LLMRequestKind.CONFIG_GENERATION,
+        client=_client_for("chat", operation),
+        model="config-model",
+        kwargs={"messages": []},
+    )
+
+    event = sink.events[0]
+    assert event.finish_reason == "length"
+    assert event.output_truncated is True
+    assert event.response_chars == 11
+    assert len(event.response_sha256) == 64
+    assert "rubric" not in repr(event)
+
+
 def test_usage_sink_failure_does_not_change_returned_response():
     class FailingSink:
         def write(self, event: object) -> None:
