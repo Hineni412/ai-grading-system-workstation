@@ -105,16 +105,14 @@ from session_cleanup import hard_delete_session_from_recycle_bin
 from session_manager import (
     extract_docx_text,
     force_payload_total_score,
+    failed_grading_config_batches,
     failed_grading_config_question_ids,
-    generate_grading_config_from_confirmed_blocks,
-    generate_grading_config_from_docx_text,
+    generate_grading_config_in_batches,
     generate_grading_config_from_docx_text_legacy,
-    generate_grading_config_from_images,
     preview_question_blocks_from_docx_bytes,
     preview_question_blocks_from_docx_text,
     refine_grading_config_from_manual_structure,
-    retry_failed_grading_config_questions,
-    retry_grading_config_score_allocation,
+    retry_failed_grading_config_batches,
     save_generated_config,
 )
 from student_manager import StudentManager
@@ -2042,20 +2040,17 @@ def _student_cell_text(value: Any) -> str:
     return str(value).strip()
 
 
-def _render_upload_paths_guide(is_pdf: bool | None, use_text_only: bool) -> None:
+def _render_upload_paths_guide(is_pdf: bool | None) -> None:
     active_idx = -1
     if is_pdf is not None:
-        if not use_text_only:
-            active_idx = 0 if is_pdf else 1
-        else:
-            active_idx = 2 if is_pdf else 3
+        active_idx = 0 if is_pdf else 1
 
     status_html = ""
     if is_pdf is None:
         status_html = '<div class="status-prompt">💡 <b>使用提示</b>：请在上方上传试卷（.docx 或 .pdf）并选择模式，系统将自动激活匹配的解析路径。</div>'
     else:
         file_type = "PDF" if is_pdf else "Word"
-        mode_type = "整卷单次请求" if use_text_only else "单题并发 (推荐)"
+        mode_type = "小批次生成（每批最多 3 题）"
         status_html = f'<div class="status-prompt" style="background: #ECFDF5; color: #065F46; border: 1px solid #A7F3D0; margin-bottom: 14px;">✅ <b>当前激活路径</b>：您上传了 <b>{file_type}</b> 文件，选择了 <b>{mode_type}</b> 模式，已激活下方高亮路径。</div>'
 
     def get_class(idx: int) -> str:
@@ -2063,11 +2058,10 @@ def _render_upload_paths_guide(is_pdf: bool | None, use_text_only: bool) -> None
             return "path-card"
         return "path-card active" if active_idx == idx else "path-card inactive"
 
-    if not use_text_only:
-        cards_html = f"""
+    cards_html = f"""
         <div class="path-card {get_class(0)}">
             { '<span class="active-badge">当前生效</span>' if active_idx == 0 else '' }
-            <div class="path-card-title">📝🖼️ 单题并发 + PDF 格式</div>
+            <div class="path-card-title">📝🖼️ 小批次生成 + PDF 格式</div>
             <div class="path-card-mode-badge">多模态视觉裁图模式</div>
             <div class="flow-steps">
                 <span class="step-node">PDF文件</span>
@@ -2080,16 +2074,16 @@ def _render_upload_paths_guide(is_pdf: bool | None, use_text_only: bool) -> None
                 <span class="flow-arrow">➔</span>
                 <span class="step-node">结构合并</span>
                 <span class="flow-arrow">➔</span>
-                <span class="step-node">统一赋分</span>
+                <span class="step-node">本地统一赋分</span>
             </div>
             <div class="path-card-desc">
                 <b>适用场景</b>：试卷包含几何图形、函数图表、较多插图，或扫描版试卷。<br>
-                <b>核心机制</b>：AI 仅接收裁切出的题目/答案高清图和少量规则；PDF 抽取文字仅用于本地拆题定位，不发送给 AI。
+                <b>核心机制</b>：每批最多 3 题且只请求一次；返回 JSON 先在本地修复，失败批次才需要手动重试。
             </div>
         </div>
         <div class="path-card {get_class(1)}">
             { '<span class="active-badge">当前生效</span>' if active_idx == 1 else '' }
-            <div class="path-card-title">📝✍️ 单题并发 + Word 格式</div>
+            <div class="path-card-title">📝✍️ 小批次生成 + Word 格式</div>
             <div class="path-card-mode-badge">文本与公式混合模式</div>
             <div class="flow-steps">
                 <span class="step-node">Word文件</span>
@@ -2102,46 +2096,11 @@ def _render_upload_paths_guide(is_pdf: bool | None, use_text_only: bool) -> None
                 <span class="flow-arrow">➔</span>
                 <span class="step-node">结构合并</span>
                 <span class="flow-arrow">➔</span>
-                <span class="step-node">统一赋分</span>
+                <span class="step-node">本地统一赋分</span>
             </div>
             <div class="path-card-desc">
                 <b>适用场景</b>：试卷由排版规范的 DOCX 文档生成，且包含不少大题步骤。<br>
-                <b>核心机制</b>：AI 接收每道题的富文本、公式 HTML 和可用的内嵌图片；失败题支持自动与手动重试。
-            </div>
-        </div>
-        """
-    else:
-        cards_html = f"""
-        <div class="path-card {get_class(2)}">
-            { '<span class="active-badge">当前生效</span>' if active_idx == 2 else '' }
-            <div class="path-card-title">📝🖼️ PDF 整卷视觉单次请求</div>
-            <div class="path-card-mode-badge">真正单次视觉请求</div>
-            <div class="flow-steps">
-                <span class="step-node">PDF文件</span>
-                <span class="flow-arrow">➔</span>
-                <span class="step-node">逐页渲染图片</span>
-                <span class="flow-arrow">➔</span>
-                <span class="step-node">AI 一次性解析与赋分</span>
-            </div>
-            <div class="path-card-desc">
-                <b>适用场景</b>：本地无法可靠拆题，或需要让 AI 从整卷上下文判断题目与答案对应关系。<br>
-                <b>核心机制</b>：一次性发送全部 PDF 整页图片，不发送 PDF 抽取文字；失败后仅手动重试。
-            </div>
-        </div>
-        <div class="path-card {get_class(3)}">
-            { '<span class="active-badge">当前生效</span>' if active_idx == 3 else '' }
-            <div class="path-card-title">📝📄 Word 整卷文本单次请求</div>
-            <div class="path-card-mode-badge">真正单次文本请求</div>
-            <div class="flow-steps">
-                <span class="step-node">Word文件</span>
-                <span class="flow-arrow">➔</span>
-                <span class="step-node">提取整卷文本</span>
-                <span class="flow-arrow">➔</span>
-                <span class="step-node">AI 一次性解析与赋分</span>
-            </div>
-            <div class="path-card-desc">
-                <b>适用场景</b>：排版极为简单、无图无公式的纯客观题试卷。<br>
-                <b>核心机制</b>：一次性将整卷文本发给 AI，不自动修复或补请求；失败后仅手动重试。
+                <b>核心机制</b>：按顺序每批最多 3 题，不自动重试；成功批次保留，最终总分由本地程序统一分配。
             </div>
         </div>
         """
@@ -2375,8 +2334,6 @@ def render_config_and_session_tab(
         st.session_state.generated_doc_name = ""
     if "generated_doc_bytes" not in st.session_state:
         st.session_state.generated_doc_bytes = b""
-    if "whole_config_generation_failed" not in st.session_state:
-        st.session_state.whole_config_generation_failed = False
     _render_persistent_rubric_overview(db, selected_session_id)
     intake_notice = st.session_state.pop("_question_bank_intake_notice", None)
     if isinstance(intake_notice, dict):
@@ -2394,92 +2351,12 @@ def render_config_and_session_tab(
             st.caption("上传 Word 或 PDF 试卷，AI 会抽取题目、分值、答案与步骤给分规则。")
             word_upload = st.file_uploader("上传试卷 (支持 .docx 或 .pdf)", type=["docx", "pdf"], key="word_exam_uploader")
 
-            def run_word_config_generation(use_text_only: bool = False) -> None:
-                try:
-                    st.session_state.generated_config_payload = None
-                    st.session_state.generated_doc_name = ""
-                    if llm_settings is None:
-                        raise ValueError("请先在左侧配置 API Key/Base URL")
-                    if word_upload is None:
-                        raise ValueError("请先上传 .docx 或 .pdf 文件")
-                    word_bytes = word_upload.getvalue()
-                    is_pdf = word_upload.name.lower().endswith(".pdf")
-
-                    def generate_work(report) -> tuple[dict[str, Any], Path | None, str]:
-                        llm_client = LLMClient(llm_settings)
-                        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        if is_pdf:
-                            from rubric_auto_cropper import extract_pdf_images
-
-                            report(0.04, "渲染 PDF 整页图片")
-                            page_images = extract_pdf_images(word_bytes)
-                            report(0.14, "PDF 整卷视觉单次请求", f"已准备 {len(page_images)} 张整页图片；不会发送 PDF 抽取文字。")
-                            payload = generate_grading_config_from_images(
-                                page_images,
-                                "",
-                                llm_client=llm_client,
-                                model_name=llm_settings.config_model,
-                                report=report,
-                            )
-                            extracted_path = None
-                        else:
-                            report(0.04, "读取 Word 文件")
-                            doc_text = extract_docx_text(word_bytes)
-                            report(0.10, "写入 Word 文本缓存", f"已提取约 {len(doc_text):,} 个字符")
-                            extracted_path = UPLOAD_CONFIG_DIR / f"extracted_word_text_{ts}.txt"
-                            extracted_path.write_text(doc_text, encoding="utf-8")
-                            report(0.16, "Word 整卷文本单次请求", "整份 Word 文本仅发送一次；失败后由用户手动重试。")
-                            payload = generate_grading_config_from_docx_text(
-                                doc_text,
-                                llm_client=llm_client,
-                                model_name=llm_settings.config_model,
-                                report=report,
-                            )
-                        report(0.98, "校验结构完成")
-                        return payload, extracted_path, ts
-
-                    payload, extracted_path, generated_ts = _run_with_stage_progress(
-                        "AI 试卷解析",
-                        generate_work,
-                        done_text="预览准备就绪",
-                    )
-                    st.session_state.generated_config_payload = payload
-                    st.session_state.generated_doc_name = word_upload.name
-                    st.session_state.generated_doc_bytes = word_bytes
-                    st.session_state.whole_config_generation_failed = False
-                    generated_raw_path = UPLOAD_CONFIG_DIR / f"generated_config_preview_{generated_ts}.json"
-                    _write_compact_json_file(generated_raw_path, payload)
-                    if extracted_path is not None:
-                        st.success(f"AI 已生成评分标准，请先预览再确认保存。Word 提取文本已保存：{extracted_path.name}")
-                    else:
-                        st.success("AI 已通过 PDF 整卷视觉单次请求生成评分标准，请先预览再确认保存。")
-                except Exception as exc:  # noqa: BLE001
-                    st.session_state.whole_config_generation_failed = True
-                    st.error(f"生成失败：{exc}")
-
-            use_text_only = st.checkbox(
-                "整卷单次请求模式（不走本地拆题；Word 发送整卷文本，PDF 发送全部整页图片）",
-                value=False,
-                key="config_generation_use_text_only",
-                help="适合本地拆题不可靠时使用。整卷模式严格只请求一次，不自动重试；失败后可手动重试。",
-            )
+            st.info("当前统一使用小批次生成：每批最多 3 题、每批一次请求；本地修复后仍失败的批次才需手动重试。")
 
             is_pdf = word_upload.name.lower().endswith(".pdf") if word_upload is not None else None
-            _render_upload_paths_guide(is_pdf, use_text_only)
+            _render_upload_paths_guide(is_pdf)
 
-            if use_text_only:
-                whole_button_label = (
-                    "重试整卷生成"
-                    if st.session_state.get("whole_config_generation_failed")
-                    else "AI 生成评分标准（整卷单次请求）"
-                )
-                if st.button(
-                    whole_button_label,
-                    key="generate_from_word_btn",
-                    type="primary",
-                ):
-                    run_word_config_generation(use_text_only=True)
-            else:
+            if True:
                 _QTYPE_LABELS = {
                     "choice": "选择",
                     "fill_blank": "填空",
@@ -2539,7 +2416,7 @@ def render_config_and_session_tab(
                         st.session_state.generated_doc_name = word_upload.name
                         st.session_state.generated_doc_bytes = word_bytes
                         if not blocks:
-                            st.warning("本地未能拆分出任何题目，请检查文档格式或改用旧版整卷模式。")
+                            st.warning("本地未能拆分出任何题目，请检查文档格式；未完成拆题时不会调用模型。")
                     except Exception as exc:  # noqa: BLE001
                         st.error(f"拆题失败：{exc}")
 
@@ -2681,23 +2558,25 @@ def render_config_and_session_tab(
                                 img_count = len(q_images) if q_images else 0
                                 report(
                                     0.10,
-                                    "单题并发生成",
-                                    f"已确认 {len(confirmed_blocks)} 题，开始单题并发生成评分标准结构"
+                                    "小批次生成",
+                                    f"已确认 {len(confirmed_blocks)} 题，开始按每批最多 3 题生成评分标准"
                                     + (f"（PDF 模式，携带 {img_count} 张题目裁图）。" if is_pdf else "。"),
                                 )
-                                payload = generate_grading_config_from_confirmed_blocks(
+                                checkpoint_path = UPLOAD_CONFIG_DIR / f"generated_config_batch_draft_{ts}.json"
+                                payload = generate_grading_config_in_batches(
                                     confirmed_blocks,
                                     doc_text,
                                     llm_client=llm_client,
                                     model_name=llm_settings.config_model,
                                     report=report,
                                     q_images=q_images,
+                                    checkpoint=lambda draft: _write_compact_json_file(checkpoint_path, draft),
                                 )
                                 report(0.98, "校验结构完成")
                                 return payload
 
                             payload = _run_with_stage_progress(
-                                "AI 评分标准生成（单题并发）",
+                                "AI 评分标准生成（小批次）",
                                 generate_work,
                                 done_text="预览准备就绪",
                             )
@@ -2727,8 +2606,9 @@ def render_config_and_session_tab(
                             q_images = st.session_state.get("pending_q_images") or None
 
                             def retry_work(report) -> dict[str, Any]:
-                                report(0.08, "重试失败题目", "仅重新发送失败题目，已成功题目保持不变。")
-                                return retry_failed_grading_config_questions(
+                                report(0.08, "重试失败批次", "仅重新发送失败批次，已成功批次保持不变。")
+                                retry_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                return retry_failed_grading_config_batches(
                                     current_payload,
                                     confirmed_blocks,
                                     doc_text,
@@ -2736,12 +2616,16 @@ def render_config_and_session_tab(
                                     model_name=llm_settings.config_model,
                                     report=report,
                                     q_images=q_images,
+                                    checkpoint=lambda draft: _write_compact_json_file(
+                                        UPLOAD_CONFIG_DIR / f"generated_config_batch_retry_draft_{retry_ts}.json",
+                                        draft,
+                                    ),
                                 )
 
                             payload = _run_with_stage_progress(
                                 "AI 评分标准恢复",
                                 retry_work,
-                                done_text="失败题目重试完成",
+                                done_text="失败批次重试完成",
                             )
                             st.session_state.generated_config_payload = payload
                             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -2753,75 +2637,30 @@ def render_config_and_session_tab(
                             if remaining:
                                 st.warning(f"仍有 {len(remaining)} 道题生成失败：{', '.join(remaining)}")
                             else:
-                                st.success("失败题目已全部补齐，并已重新完成 AI 整体赋分。")
+                                st.success("失败批次已全部补齐，并已在本地统一分配总分。")
                         except Exception as exc:  # noqa: BLE001
                             st.error(f"失败题目重试失败：{exc}")
-
-                    def run_score_allocation_retry() -> None:
-                        try:
-                            if llm_settings is None:
-                                raise ValueError("请先在左侧配置 API Key/Base URL")
-                            current_payload = st.session_state.get("generated_config_payload")
-                            confirmed_blocks = st.session_state.get("pending_confirmed_blocks") or []
-                            if not isinstance(current_payload, dict):
-                                raise ValueError("当前没有可重新赋分的评分标准")
-                            if not confirmed_blocks:
-                                raise ValueError("已确认的题目数据已丢失，请重新拆分试卷")
-                            doc_text = str(st.session_state.get("pending_doc_text") or "")
-                            q_images = st.session_state.get("pending_q_images") or None
-
-                            def score_work(report) -> dict[str, Any]:
-                                report(0.10, "重新整体赋分", "保持题目与评分点不变，仅重新分配整卷分值。")
-                                return retry_grading_config_score_allocation(
-                                    current_payload,
-                                    confirmed_blocks,
-                                    doc_text,
-                                    llm_client=LLMClient(llm_settings),
-                                    model_name=llm_settings.config_model,
-                                    report=report,
-                                    q_images=q_images,
-                                )
-
-                            payload = _run_with_stage_progress(
-                                "AI 重新整体赋分",
-                                score_work,
-                                done_text="整体赋分完成",
-                            )
-                            st.session_state.generated_config_payload = payload
-                            if payload.get("meta", {}).get("score_allocation_ai_success"):
-                                st.success("AI 整体赋分已重新完成。")
-                            else:
-                                st.warning("AI 整体赋分仍失败，当前保留本地兜底分值，可再次点击重试。")
-                        except Exception as exc:  # noqa: BLE001
-                            st.error(f"重新整体赋分失败：{exc}")
 
                     current_split_payload = st.session_state.get("generated_config_payload")
                     current_confirmed_blocks = st.session_state.get("pending_confirmed_blocks") or []
                     if isinstance(current_split_payload, dict) and current_confirmed_blocks:
                         failed_qids = failed_grading_config_question_ids(current_split_payload)
                         if failed_qids:
-                            st.error(f"{len(failed_qids)} 道题生成失败：{', '.join(failed_qids)}。整体赋分已暂停。")
-                            failed_details = current_split_payload.get("meta", {}).get("failed_questions", [])
+                            st.error(f"{len(failed_qids)} 道题所在批次生成失败：{', '.join(failed_qids)}。成功批次已保留。")
+                            failed_details = failed_grading_config_batches(current_split_payload)
                             if isinstance(failed_details, list) and failed_details:
                                 with st.expander("查看失败原因", expanded=False):
                                     for failure in failed_details:
                                         if not isinstance(failure, dict):
                                             continue
                                         st.write(
-                                            f"{failure.get('question_id', '')}："
-                                            f"已尝试 {failure.get('attempts', 1)} 次；"
+                                            f"{failure.get('batch_id', '')}（{', '.join(failure.get('question_ids', []))}）："
                                             f"{failure.get('error', '未知错误')}"
                                         )
-                            if st.button("仅重试失败题目", key="retry_failed_config_questions_btn", type="primary"):
+                            if st.button("仅重试失败批次", key="retry_failed_config_questions_btn", type="primary"):
                                 run_failed_question_retry()
                         else:
-                            score_success = bool(
-                                current_split_payload.get("meta", {}).get("score_allocation_ai_success")
-                            )
-                            if not score_success:
-                                st.warning("题目均已生成，但 AI 整体赋分未成功，当前使用本地兜底分值。")
-                            if st.button("重新整体赋分", key="retry_config_score_allocation_btn"):
-                                run_score_allocation_retry()
+                            st.success("全部批次已完成，总分已由本地程序统一分配，不会再产生 AI 赋分请求。")
 
     with session_col:
         with st.container(border=True):

@@ -6,7 +6,7 @@ export const QUESTION_TYPES = [
   'choice', 'fill_blank', 'calculation', 'proof', 'comprehensive',
 ] as const
 export type QuestionType = (typeof QUESTION_TYPES)[number]
-export type GenerationMode = 'per_question' | 'whole_document'
+export type GenerationMode = 'batched'
 
 export interface QuestionDecision {
   question_id: string
@@ -342,7 +342,7 @@ export async function fetchLatestConfigGenerationJob(
   const id = requireSessionId(sessionId)
   const sourceId = requireSourceId(request.source_id)
   if (!/^[0-9a-f]{64}$/.test(request.source_revision)
-    || !['per_question', 'whole_document'].includes(request.generation_mode)) {
+    || request.generation_mode !== 'batched') {
     throw new Error('Invalid generation lookup')
   }
   const query = new URLSearchParams({

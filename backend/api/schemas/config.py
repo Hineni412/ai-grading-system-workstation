@@ -78,7 +78,14 @@ class ConfigSourceGenerationRequest(BaseModel):
 
     source_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     source_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
-    generation_mode: Literal["per_question", "whole_document"]
+    generation_mode: Literal["batched", "per_question"] = "batched"
+
+    @field_validator("generation_mode")
+    @classmethod
+    def _normalize_legacy_generation_mode(cls, value: str) -> str:
+        # Older clients called this mode "per_question". Keep accepting the
+        # wire value while always executing the new three-question batches.
+        return "batched" if value == "per_question" else value
     decisions: list[ConfigSourceQuestionDecisionRequest] = Field(
         default_factory=list,
         max_length=500,

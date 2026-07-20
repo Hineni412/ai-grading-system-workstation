@@ -209,7 +209,7 @@ describe('configuration workspace API', () => {
     await expect(submitConfigGeneration(7, {
       source_id: source.source_id,
       source_revision: source.source_revision,
-      generation_mode: 'per_question',
+      generation_mode: 'batched',
       decisions: [{ question_id: 'Q1', question_type: 'calculation', excluded: false }],
     })).resolves.toEqual(job)
     await expect(fetchConfigEditor(7)).resolves.toEqual(editor)
@@ -284,7 +284,7 @@ describe('configuration workspace API', () => {
     await expect(submitConfigGeneration(7, {
       source_id: source.source_id,
       source_revision: source.source_revision,
-      generation_mode: 'per_question',
+      generation_mode: 'batched',
       decisions: [],
     })).rejects.toMatchObject({ kind: 'contract', code: 'invalid_success_contract' })
   })
