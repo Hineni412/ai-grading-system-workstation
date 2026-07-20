@@ -47,6 +47,7 @@
 - **P1-27 增量边界：** `POST /api/training/diagnosis`、`POST /api/training/plans/preview` 与 `POST /api/graph/{profiles,rows,evidence}` 每个请求分别捕获阅卷库和题库临时候选，并由请求上下文各自拥有一条 `mode=ro`、`query_only`、显式稳定读事务连接；服务只借用连接，请求结束统一关闭连接并清理候选。Streamlit、旧构造方式、`POST /api/training/tasks` 和其他写事务保持原行为，不引入跨请求连接池或缓存。生成数据聚合对比位于 `docs/performance/p1-27-request-connection-comparison.*`；验证只在临时/生成数据库执行写入，真实根与功能工作区两库仅做只读指纹核对且保持不变。
 - **P1-28 增量边界：** `tests/api_e2e/` 使用临时双库、合成图片和假外部模型串联配置与评分依据、模板/答题区域、扫描匹配、部分批改失败与 failed-only 恢复、教师复核、真实 XLSX 导出/下载和 Job 重启恢复；FastAPI、现有服务、JobManager 与数据库编排仍在真实调用链内。E2E 不调用真实模型、不读取或写入真实业务数据，也不改变业务规则、API 契约或 Schema。
 - **P1-29 收口边界：** Phase 1 组合门槛复核 P1-26 优化前基线、P1-27 请求级只读连接与 P1-28 五流程 E2E，并通过受影响回归、OpenAPI/`timeout=None` 门槛和完整 smoke。`tools/p1_29_acceptance.py` 只从完整 Git SHA 在系统临时目录生成匿名源码/数据副本，排除并二次拒绝 `user_data`，把项目模块、API profile、Ops state、日志和双库全部限制在副本内，清空继承的敏感 Key，在交接前把日志中的临时工作区、功能仓库和运行时仓库绝对根替换为逻辑占位符，再以 loopback 启动真实 Uvicorn 与 Streamlit；两名合成学生的最终结果固定为 90/70。该工具只服务正式验收，不改变生产启动入口、API、评分规则或 Schema；详细交接由 Git/PR 历史保留，正式验收见版本化清单，当前阶段状态只见执行 Index。
+- **P2-20 人工续接验收边界：** `tools/p2_20_acceptance.py` 的隔离验收模式可取消累计数字硬上限，但不会自动重试；每次 Q11、Q12 或 AI 统一配分出站都必须由本机页面单独点击，并在发送前原子递增永久计数。一次性许可精确绑定阶段与 `api.ohmygpt.com` / `apic1.ohmycdn.com` 两条固定线路之一，未许可的 Q12 后续自动配分会在本机拦截且不计数；传输断连按可能已产生费用计数，进程中断的在途请求恢复为结果未知。页面和脱敏日志不返回密钥、提示词、图片、响应正文或内部路径，人工模式禁用敏感请求抓取并忽略 HTTP 代理环境变量；该能力只存在于精确源码和数据副本，不修改正式产品的 API profile、生成规则、600 秒等待、评分或发布语义。
 
 ### 主要证据
 
