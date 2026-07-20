@@ -1343,7 +1343,10 @@ def _run_config_generation_batches(
     if failed:
         meta["score_allocation_mode"] = "pending_failed_batches"
         meta["score_allocation_ai_success"] = False
-        meta["score_allocation_pending"] = True
+        meta["score_allocation_pending"] = False
+        meta["score_allocation_failed"] = False
+        meta.pop("score_allocation_error", None)
+        meta.pop("score_allocation_failure_category", None)
         _attach_reference_answer_images(merged, q_images)
         refresh_generated_config_quality_warnings(merged)
         return merged
