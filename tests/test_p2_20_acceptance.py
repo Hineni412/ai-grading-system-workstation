@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -1203,6 +1204,536 @@ def test_model_budget_proxy_stubs_ocr_and_hard_stops_at_explicit_budget(
         "max_forwarded_requests": budget,
     }
     assert "secret" not in blocked.text
+
+
+@pytest.mark.parametrize(
+    (
+        "forward_result",
+        "raised_cause",
+        "expected_outcome",
+        "expected_status",
+        "expected_error_type",
+    ),
+    [
+        (
+            (
+                502,
+                {"content-type": "text/plain"},
+                b"provider-private-response",
+            ),
+            None,
+            "upstream_http_error",
+            502,
+            "",
+        ),
+        (
+            None,
+            httpx.ReadTimeout(
+                "transport-private-detail",
+                request=httpx.Request(
+                    "POST", "https://provider.example.invalid/v1/chat/completions"
+                ),
+            ),
+            "transport_error",
+            None,
+            "ReadTimeout",
+        ),
+    ],
+)
+def test_model_budget_proxy_diagnostic_log_distinguishes_502_source_without_content(
+    tmp_path: Path,
+    forward_result: tuple[int, dict[str, str], bytes] | None,
+    raised_cause: Exception | None,
+    expected_outcome: str,
+    expected_status: int | None,
+    expected_error_type: str,
+) -> None:
+    upstream_path = tmp_path / "upstream.json"
+    upstream_path.write_text(
+        json.dumps(
+            {
+                "grading": {
+                    "base_url": "https://provider.example.invalid/v1",
+                    "api_key": "grading-super-secret",
+                    "model": "shared-model",
+                },
+                "config": {
+                    "base_url": "https://provider.example.invalid/v1",
+                    "api_key": "config-super-secret",
+                    "model": "shared-model",
+                },
+                "max_forwarded_requests": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    diagnostic_path = tmp_path / "model-proxy.jsonl"
+    payload = {
+        "model": "shared-model",
+        "messages": [{"role": "user", "content": "private-q12-prompt"}],
+        "image_url": "data:image/png;base64,private-image",
+    }
+
+    async def fake_forward(
+        upstream: dict[str, str],
+        request_payload: dict[str, object],
+    ) -> tuple[int, dict[str, str], bytes]:
+        assert upstream["api_key"] in {"grading-super-secret", "config-super-secret"}
+        assert request_payload == payload
+        if raised_cause is not None:
+            try:
+                raise raised_cause
+            except Exception as exc:
+                raise acceptance.AcceptanceError(
+                    "approved model request failed at the provider"
+                ) from exc
+        assert forward_result is not None
+        return forward_result
+
+    app = acceptance.create_model_budget_proxy(
+        upstream_path,
+        state_path=tmp_path / "budget-state.json",
+        diagnostic_log_path=diagnostic_path,
+        forwarder=fake_forward,
+    )
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer acceptance-proxy"},
+        json=payload,
+    )
+
+    assert response.status_code == 502
+    event = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+    expected_payload = json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    expected_response = forward_result[2] if forward_result is not None else b""
+    assert event["schema_version"] == 1
+    assert event["event"] == "model_proxy_forward"
+    assert event["outcome"] == expected_outcome
+    assert event["upstream_status_code"] == expected_status
+    assert event["transport_error_type"] == expected_error_type
+    assert event["model"] == "shared-model"
+    assert event["request_number"] == 1
+    assert event["max_forwarded_requests"] == 1
+    assert event["elapsed_ms"] >= 0
+    assert event["payload_bytes"] == len(expected_payload)
+    assert event["payload_sha256"] == hashlib.sha256(expected_payload).hexdigest()
+    assert event["response_bytes"] == len(expected_response)
+    assert event["response_sha256"] == (
+        hashlib.sha256(expected_response).hexdigest() if expected_response else ""
+    )
+    assert set(event) == {
+        "schema_version",
+        "event",
+        "recorded_at_unix_ms",
+        "outcome",
+        "upstream_status_code",
+        "transport_error_type",
+        "elapsed_ms",
+        "model",
+        "request_number",
+        "max_forwarded_requests",
+        "payload_bytes",
+        "payload_sha256",
+        "response_bytes",
+        "response_sha256",
+        "finish_reason",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+    }
+    serialized = diagnostic_path.read_text(encoding="utf-8")
+    assert "super-secret" not in serialized
+    assert "private-q12-prompt" not in serialized
+    assert "private-image" not in serialized
+    assert "provider-private-response" not in serialized
+    assert "transport-private-detail" not in serialized
+    assert str(tmp_path) not in serialized
+
+
+def test_model_budget_proxy_diagnostic_log_summarizes_success_without_response_text(
+    tmp_path: Path,
+) -> None:
+    upstream_path = tmp_path / "upstream.json"
+    upstream_path.write_text(
+        json.dumps(
+            {
+                "grading": {
+                    "base_url": "https://provider.example.invalid/v1",
+                    "api_key": "grading-secret",
+                    "model": "shared-model",
+                },
+                "config": {
+                    "base_url": "https://provider.example.invalid/v1",
+                    "api_key": "config-secret",
+                    "model": "shared-model",
+                },
+                "max_forwarded_requests": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    response_body = json.dumps(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "private-answer"},
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 11,
+                "completion_tokens": 7,
+                "total_tokens": 18,
+            },
+        }
+    ).encode()
+
+    async def fake_forward(
+        _upstream: dict[str, str],
+        _payload: dict[str, object],
+    ) -> tuple[int, dict[str, str], bytes]:
+        return 200, {"content-type": "application/json"}, response_body
+
+    diagnostic_path = tmp_path / "model-proxy.jsonl"
+    app = acceptance.create_model_budget_proxy(
+        upstream_path,
+        state_path=tmp_path / "budget-state.json",
+        diagnostic_log_path=diagnostic_path,
+        forwarder=fake_forward,
+    )
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer acceptance-proxy"},
+        json={
+            "model": "shared-model",
+            "messages": [{"role": "user", "content": "private-prompt"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "private-answer"
+    event = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+    assert event["outcome"] == "success"
+    assert event["upstream_status_code"] == 200
+    assert event["transport_error_type"] == ""
+    assert event["finish_reason"] == "stop"
+    assert event["prompt_tokens"] == 11
+    assert event["completion_tokens"] == 7
+    assert event["total_tokens"] == 18
+    assert event["response_bytes"] == len(response_body)
+    assert len(event["response_sha256"]) == 64
+    serialized = diagnostic_path.read_text(encoding="utf-8")
+    assert "private-prompt" not in serialized
+    assert "private-answer" not in serialized
+    assert "grading-secret" not in serialized
+    assert "config-secret" not in serialized
+
+
+def test_model_budget_proxy_captures_the_exact_canonical_body_before_forwarding(
+    tmp_path: Path,
+) -> None:
+    upstream_path = tmp_path / "upstream.json"
+    upstream_path.write_text(
+        json.dumps(
+            {
+                "grading": {
+                    "base_url": "https://provider.example.invalid/v1",
+                    "api_key": "grading-secret",
+                    "model": "shared-model",
+                },
+                "config": {
+                    "base_url": "https://provider.example.invalid/v1",
+                    "api_key": "config-secret",
+                    "model": "shared-model",
+                },
+                "max_forwarded_requests": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    payload = {
+        "model": "shared-model",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Q12 only"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,captured"},
+                    },
+                ],
+            }
+        ],
+        "temperature": 0,
+        "max_tokens": 32000,
+    }
+    expected_body = json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    capture_path = tmp_path / "request-capture.json"
+    diagnostic_path = tmp_path / "model-proxy.jsonl"
+
+    async def fake_forward(
+        upstream: dict[str, str],
+        request_payload: dict[str, object],
+    ) -> tuple[int, dict[str, str], bytes]:
+        assert upstream["api_key"] in {"grading-secret", "config-secret"}
+        assert request_payload == payload
+        assert capture_path.read_bytes() == expected_body
+        return (
+            200,
+            {"content-type": "application/json"},
+            b'{"choices":[{"finish_reason":"stop","message":{"content":"ok"}}]}',
+        )
+
+    app = acceptance.create_model_budget_proxy(
+        upstream_path,
+        state_path=tmp_path / "budget-state.json",
+        diagnostic_log_path=diagnostic_path,
+        request_capture_path=capture_path,
+        forwarder=fake_forward,
+    )
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer acceptance-proxy"},
+        json=payload,
+    )
+
+    assert response.status_code == 200
+    assert capture_path.read_bytes() == expected_body
+    assert b"grading-secret" not in capture_path.read_bytes()
+    assert b"config-secret" not in capture_path.read_bytes()
+    event = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+    assert event["payload_bytes"] == len(expected_body)
+    assert event["payload_sha256"] == hashlib.sha256(expected_body).hexdigest()
+
+
+def test_model_budget_proxy_sends_the_captured_bytes_to_the_real_http_seam(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, bytes | str] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length") or "0")
+            captured["path"] = self.path
+            captured["authorization"] = self.headers.get("Authorization") or ""
+            captured["body"] = self.rfile.read(length)
+            response = (
+                b'{"choices":[{"finish_reason":"stop","message":{"content":"ok"}}]}'
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        upstream_path = tmp_path / "upstream.json"
+        upstream_path.write_text(
+            json.dumps(
+                {
+                    "grading": {
+                        "base_url": f"http://127.0.0.1:{server.server_port}/v1",
+                        "api_key": "grading-secret",
+                        "model": "shared-model",
+                    },
+                    "config": {
+                        "base_url": f"http://127.0.0.1:{server.server_port}/v1",
+                        "api_key": "config-secret",
+                        "model": "shared-model",
+                    },
+                    "max_forwarded_requests": 1,
+                }
+            ),
+            encoding="utf-8",
+        )
+        payload = {
+            "model": "shared-model",
+            "temperature": 0,
+            "messages": [{"role": "user", "content": "Q12 only"}],
+        }
+        expected_body = json.dumps(
+            payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        capture_path = tmp_path / "request-capture.json"
+        app = acceptance.create_model_budget_proxy(
+            upstream_path,
+            state_path=tmp_path / "budget-state.json",
+            diagnostic_log_path=tmp_path / "model-proxy.jsonl",
+            request_capture_path=capture_path,
+        )
+
+        response = TestClient(app).post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer acceptance-proxy"},
+            json=payload,
+        )
+
+        assert response.status_code == 200
+        assert captured == {
+            "path": "/v1/chat/completions",
+            "authorization": "Bearer config-secret",
+            "body": expected_body,
+        }
+        assert capture_path.read_bytes() == expected_body
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+@pytest.mark.parametrize("transport_failure", [False, True])
+def test_model_budget_proxy_diagnostic_write_failure_never_changes_paid_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    transport_failure: bool,
+) -> None:
+    upstream_path = tmp_path / "upstream.json"
+    upstream_path.write_text(
+        json.dumps(
+            {
+                "grading": {
+                    "base_url": "https://provider.example.invalid/v1",
+                    "api_key": "grading-secret",
+                    "model": "shared-model",
+                },
+                "config": {
+                    "base_url": "https://provider.example.invalid/v1",
+                    "api_key": "config-secret",
+                    "model": "shared-model",
+                },
+                "max_forwarded_requests": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    response_body = (
+        b'{"choices":[{"finish_reason":"stop","message":{"content":"paid-ok"}}]}'
+    )
+
+    async def fake_forward(
+        _upstream: dict[str, str],
+        _payload: dict[str, object],
+    ) -> tuple[int, dict[str, str], bytes]:
+        if transport_failure:
+            try:
+                raise httpx.ReadTimeout("private-timeout")
+            except httpx.ReadTimeout as exc:
+                raise acceptance.AcceptanceError(
+                    "approved model request failed at the provider"
+                ) from exc
+        return 200, {"content-type": "application/json"}, response_body
+
+    app = acceptance.create_model_budget_proxy(
+        upstream_path,
+        state_path=tmp_path / "budget-state.json",
+        diagnostic_log_path=tmp_path / "model-proxy.jsonl",
+        forwarder=fake_forward,
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "_append_model_proxy_diagnostic",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("private-log-write-detail")
+        ),
+    )
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer acceptance-proxy"},
+        json={"model": "shared-model", "messages": []},
+    )
+
+    if transport_failure:
+        assert response.status_code == 502
+        assert "approved model request failed at the provider" in response.text
+    else:
+        assert response.status_code == 200
+        assert response.content == response_body
+    stderr = capsys.readouterr().err
+    assert "model_proxy_diagnostic_write_failed" in stderr
+    assert "OSError" in stderr
+    assert "private-log-write-detail" not in stderr
+
+
+def test_model_budget_proxy_redacts_unknown_finish_reason(tmp_path: Path) -> None:
+    upstream_path = tmp_path / "upstream.json"
+    upstream_path.write_text(
+        json.dumps(
+            {
+                "grading": {
+                    "base_url": "https://provider.example.invalid/v1",
+                    "api_key": "grading-secret",
+                    "model": "shared-model",
+                },
+                "config": {
+                    "base_url": "https://provider.example.invalid/v1",
+                    "api_key": "config-secret",
+                    "model": "shared-model",
+                },
+                "max_forwarded_requests": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    private_reason = "private-provider-content"
+
+    async def fake_forward(
+        _upstream: dict[str, str],
+        _payload: dict[str, object],
+    ) -> tuple[int, dict[str, str], bytes]:
+        return (
+            200,
+            {"content-type": "application/json"},
+            json.dumps(
+                {
+                    "choices": [
+                        {
+                            "finish_reason": private_reason,
+                            "message": {"content": "private-response"},
+                        }
+                    ]
+                }
+            ).encode(),
+        )
+
+    diagnostic_path = tmp_path / "model-proxy.jsonl"
+    app = acceptance.create_model_budget_proxy(
+        upstream_path,
+        state_path=tmp_path / "budget-state.json",
+        diagnostic_log_path=diagnostic_path,
+        forwarder=fake_forward,
+    )
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer acceptance-proxy"},
+        json={"model": "shared-model", "messages": []},
+    )
+
+    assert response.status_code == 200
+    event = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+    assert event["finish_reason"] == "other"
+    assert private_reason not in diagnostic_path.read_text(encoding="utf-8")
+    assert "private-response" not in diagnostic_path.read_text(encoding="utf-8")
 
 
 def test_model_budget_proxy_rejects_wrong_key_and_unknown_model(tmp_path: Path) -> None:
