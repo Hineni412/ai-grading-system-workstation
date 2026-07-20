@@ -1681,7 +1681,7 @@ def test_llm_single_request_reports_provider_length_stop_without_raw_content(
     assert len(raised.value.response_sha256) == 64
     assert "输出长度上限" in str(raised.value)
     assert "未自动重试" in str(raised.value)
-    assert "逐题生成" in str(raised.value)
+    assert "重试失败批次" in str(raised.value)
     assert "private answer" not in str(raised.value)
     assert sink.events[0].finish_reason == "length"
     assert sink.events[0].output_truncated is True
@@ -1757,6 +1757,29 @@ def test_llm_single_request_keeps_non_truncated_invalid_json_distinct_and_safe(
     assert "响应字符数" in str(raised.value)
     assert sink.events[0].finish_reason == "stop"
     assert sink.events[0].output_truncated is False
+
+
+def test_llm_single_request_repairs_json_locally_without_second_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, completions, sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [
+            _gateway_json_completion(
+                '{"rubric":{},"answer_key" {"questions":[]},"meta":{}}',
+                finish_reason="stop",
+            )
+        ],
+    )
+
+    result = client.json_from_text_once("prompt")
+
+    assert len(completions.calls) == 1
+    assert result["answer_key"] == {"questions": []}
+    repair = result["meta"]["local_json_repair"]
+    assert repair["operations"] == ["insert_missing_colon"]
+    assert len(repair["response_sha256"]) == 64
+    assert sink.events[0].finish_reason == "stop"
 
 
 def _gateway_client_factory(

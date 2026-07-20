@@ -327,7 +327,7 @@ def test_config_generation_truncation_returns_fixed_actionable_public_error(
     assert response.status_code == 200
     assert response.json()["error"].startswith("模型因输出长度上限停止")
     assert "未自动重试" in response.json()["error"]
-    assert "逐题生成" in response.json()["error"]
+    assert "重试失败批次" in response.json()["error"]
     assert "private-hash" not in response.text
     assert "C:/private" not in response.text
 

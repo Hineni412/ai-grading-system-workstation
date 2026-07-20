@@ -109,10 +109,11 @@ function job(id: number, mode: Mode) {
   return {
     id, job_type: 'config_generation',
     payload: { session_id: 7, source_id: sourceId, source_revision: sourceRevision,
-      generation_mode: failed ? 'whole_document' : 'per_question' },
+      generation_mode: 'batched' },
     result: partial
       ? { outcome: 'partial', total_questions: 3, generated_questions: 2,
-          failed_count: 1, failed_question_ids: ['Q3'], retryable: true }
+          failed_count: 1, failed_question_ids: ['Q3'],
+          failed_batches: [{ batch_id: 'B001', question_ids: ['Q3'] }], retryable: true }
       : complete
         ? { outcome: 'complete', total_questions: 3, generated_questions: 3,
             failed_count: 0, failed_question_ids: [], retryable: false }
@@ -120,7 +121,7 @@ function job(id: number, mode: Mode) {
     status: partial || complete ? 'succeeded' : failed ? 'failed' : 'running',
     progress: partial || complete || failed ? 1 : 0.35,
     stage: failed ? 'failed' : complete ? 'complete' : partial ? 'partial' : 'generating',
-    detail: failed ? '整卷生成未完成' : '',
+    detail: failed ? '批次生成未完成' : '',
     error: failed
       ? '模型因输出长度上限停止，返回结果不完整（响应摘要: synthetic-private-hash）。'
       : null,
@@ -173,12 +174,10 @@ async function installConfigWorkspaceMockApi(page: Page, options: MockOptions = 
       await route.fulfill({ json: source })
     } else if (path === '/api/sessions/7/config/generate-from-source' && method === 'POST') {
       state.generationRequests += 1
-      const requested = request.postDataJSON() as { generation_mode?: string }
       const mode = state.generationRequests === 1
         ? (options.firstGeneration ?? 'partial')
         : 'complete'
-      const next = job(30 + state.generationRequests,
-        requested.generation_mode === 'whole_document' && mode !== 'complete' ? 'whole-fail' : mode)
+      const next = job(30 + state.generationRequests, mode)
       state.jobs.set(next.id, next)
       if (mode === 'complete') state.editorReady = true
       await route.fulfill({ json: next })
@@ -302,9 +301,9 @@ test('draft to saved rubric survives partial generation and refresh', async ({ p
   await expect(page.getByText('已成功 2 题')).toBeVisible()
 
   await page.reload()
-  await expect(page.getByLabel('选择失败题 Q3')).toBeVisible()
-  await page.getByLabel('选择失败题 Q3').check()
-  await page.getByRole('button', { name: '重试所选题' }).click()
+  await expect(page.getByLabel('选择失败批次 B001')).toBeVisible()
+  await page.getByLabel('选择失败批次 B001').check()
+  await page.getByRole('button', { name: '重试所选批次' }).click()
   await expect(page.getByRole('heading', { name: '编辑评分依据' })).toBeVisible()
   await page.getByLabel('Q1 P1 S1 分值').fill('20')
   await page.getByLabel('Q1 P1 S1 分值').press('Tab')
@@ -336,17 +335,15 @@ test('expanded rubric policy fields submit exact row-id edits', async ({ page })
   }))
 })
 
-test('whole-document truncation waits for an explicit user-selected fallback', async ({ page }) => {
+test('failed legacy generation restarts only in the new batched mode', async ({ page }) => {
   const state = await installConfigWorkspaceMockApi(page, { initialSessions: true, firstGeneration: 'whole-fail' })
   await openSeededWorkspace(page, state)
-  await page.getByLabel('整卷单次生成').check()
   await page.getByRole('button', { name: '开始生成' }).click()
   await expect(page.getByText('生成失败')).toBeVisible()
-  await expect(page.getByText('整卷结果被截断，未发布评分依据。')).toBeVisible()
-  await expect(page.getByText('系统没有自动重试', { exact: false })).toBeVisible()
+  await expect(page.getByText('小批次生成')).toBeVisible()
   await expect(page.getByText('synthetic-private-hash')).toHaveCount(0)
   expect(state.generationRequests).toBe(1)
-  await page.getByRole('button', { name: '改用逐题生成' }).click()
+  await page.getByRole('button', { name: '重新分批生成' }).click()
   await expect(page.getByRole('heading', { name: '编辑评分依据' })).toBeVisible()
   expect(state.generationRequests).toBe(2)
 })
@@ -458,8 +455,8 @@ test('synthetic visual evidence covers upload, partial recovery, and the rubric 
       }))
     }, { sourceIdValue: sourceId, revisionValue: sourceRevision })
     await page.reload()
-    await expect(page.getByLabel('选择失败题 Q3')).toBeVisible()
-    await page.getByLabel('选择失败题 Q3').scrollIntoViewIfNeeded()
+    await expect(page.getByLabel('选择失败批次 B001')).toBeVisible()
+    await page.getByLabel('选择失败批次 B001').scrollIntoViewIfNeeded()
     await page.screenshot({ path: testInfo.outputPath(`${viewport.name}-partial-recovery.png`) })
 
     state.editorReady = true
