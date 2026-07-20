@@ -1,6 +1,6 @@
 # Issue #62 配置整卷生成输出截断修复
 
-**状态：** ready_for_integration
+**状态：** milestone_integrated
 **基线：** `0a2e481dc7b02252feacff46000b78308e7a46bb`
 **关联：** GitHub Issue #62、P2-20 正式验收外部阻塞
 
@@ -60,3 +60,4 @@
 | 双路初审 | 同一冻结 SHA `616fc22` 的 Spec 与 Standards 并行复审 | 3 | 3 Important：括号错配误报截断、Job API 吞掉安全截断说明、结构截断未写入用量标记 | 一次统一修复与限定终审 | 否 | 否 |
 | 统一修复 | 为括号栈分类、结构截断日志和配置 Job 固定公开错误补 RED→GREEN；受影响回归 276 passed；快速冒烟通过 | 0 | 首轮 3 Important 均已实现修复 | 原评审者限定终审、integration | 自动复测通过 | 否 |
 | 限定终审 | 两名首轮原评审者仅复核 3 条登记问题、统一修复区域和直接回归；约 3 分钟 | 0 | 0 Critical / 0 Important / 0 Suggestion；首轮 3 Important 全部关闭 | integration 逐包验证 | 当前任务通过自动验收 | 否 |
+| M2-03 逐包集成 | 约 3 分钟；合入 `2fc2aca`；后端受影响回归 158 passed、前端截断提示 30 passed、快速冒烟通过 | 0 | 0；隔离数据库副本初始化幂等与完整性检查通过，真实数据未变 | 用户另行授权一次新的整卷模型请求后继续 P2-20 | 当前任务通过验收 | 否：P2-20 formal 尚未完成 |
