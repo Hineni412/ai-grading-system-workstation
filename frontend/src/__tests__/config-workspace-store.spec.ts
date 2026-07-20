@@ -44,7 +44,7 @@ function job(overrides: Partial<JobResponse> = {}): JobResponse {
     payload: {
       session_id: 7,
       mode: 'generate',
-      generation_mode: 'per_question',
+      generation_mode: 'batched',
       source_id: 'd'.repeat(32),
       source_revision: 'b'.repeat(64),
     },
@@ -88,9 +88,9 @@ describe('configuration workspace Store', () => {
     const generation = store.captureGenerationContext()
 
     expect(store.canGenerate).toBe(true)
-    expect(store.sourceRequest('per_question')).toEqual({
+    expect(store.sourceRequest('batched')).toEqual({
       source_id: 'd'.repeat(32), source_revision: 'b'.repeat(64),
-      generation_mode: 'per_question',
+      generation_mode: 'batched',
       decisions: [{ question_id: 'Q1', question_type: 'proof', excluded: false }],
     })
     store.acceptUploadedSource({ ...source('e'.repeat(32)), source_revision: 'f'.repeat(64) })
@@ -594,7 +594,7 @@ describe('configuration workspace Store', () => {
     store.selectSession(7)
     expect(store.markJobSubmissionPending('1'.repeat(32), 'refine')).toBe(true)
 
-    expect(store.markJobSubmissionPending('2'.repeat(32), 'generate', 'per_question')).toBe(false)
+    expect(store.markJobSubmissionPending('2'.repeat(32), 'generate', 'batched')).toBe(false)
     expect(store.markUploadSubmissionPending('3'.repeat(32))).toBe(false)
     expect(store.selectSession(9, true)).toBe(false)
     expect(store.selectSource('f'.repeat(32), true)).toBe(false)
