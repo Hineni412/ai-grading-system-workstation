@@ -118,6 +118,32 @@ def test_response_diagnostics_sanitizes_untrusted_finish_reason():
     assert "C:\\" not in repr(diagnostics)
 
 
+def test_response_diagnostics_distinguishes_unclosed_from_mismatched_json():
+    unclosed = response_diagnostics(
+        {
+            "choices": [
+                {
+                    "finish_reason": None,
+                    "message": {"content": '{"rubric":{"questions":['},
+                }
+            ]
+        }
+    )
+    mismatched = response_diagnostics(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": '{"a":1]'},
+                }
+            ]
+        }
+    )
+
+    assert unclosed["output_truncated"] is True
+    assert mismatched["output_truncated"] is False
+
+
 def test_failed_request_event_defaults_to_zero_usage():
     event = _event(
         success=False,

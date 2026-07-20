@@ -1706,7 +1706,7 @@ def test_llm_single_request_reports_length_stop_even_when_content_is_empty(
 def test_llm_single_request_reports_structural_truncation_without_finish_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, completions, _sink, _gateway_configs = _gateway_client_factory(
+    client, completions, sink, _gateway_configs = _gateway_client_factory(
         monkeypatch,
         [_gateway_json_completion('{"rubric":{"questions":[')],
     )
@@ -1718,6 +1718,24 @@ def test_llm_single_request_reports_structural_truncation_without_finish_reason(
     assert raised.value.finish_reason == ""
     assert "JSON 结构未闭合" in str(raised.value)
     assert "未自动重试" in str(raised.value)
+    assert sink.events[0].output_truncated is True
+
+
+def test_llm_single_request_keeps_mismatched_json_distinct_from_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, completions, sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [_gateway_json_completion('{"a":1]', finish_reason="stop")],
+    )
+
+    with pytest.raises(ValueError) as raised:
+        client.json_from_text_once("prompt")
+
+    assert not isinstance(raised.value, llm_client.LLMOutputTruncatedError)
+    assert len(completions.calls) == 1
+    assert "模型返回非 JSON" in str(raised.value)
+    assert sink.events[0].output_truncated is False
 
 
 def test_llm_single_request_keeps_non_truncated_invalid_json_distinct_and_safe(

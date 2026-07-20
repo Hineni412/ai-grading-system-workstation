@@ -17,6 +17,8 @@ from backend.llm import (
     LLMGateway,
     LLMRequestKind,
     classify_llm_error,
+    is_truncation_finish_reason,
+    looks_like_truncated_json_object,
     response_diagnostics,
 )
 from backend.llm.transport import (
@@ -701,7 +703,9 @@ def _parse_single_request_json(completion: Any) -> dict[str, Any]:
             finish_reason=str(diagnostics["finish_reason"]),
             response_chars=int(diagnostics["response_chars"]),
             response_sha256=str(diagnostics["response_sha256"]),
-            provider_reported=True,
+            provider_reported=is_truncation_finish_reason(
+                diagnostics["finish_reason"]
+            ),
         )
     text = _extract_text_from_completion(completion)
     try:
@@ -804,9 +808,4 @@ def _remove_trailing_commas(text: str) -> str:
 
 
 def _looks_truncated_json(text: str) -> bool:
-    cleaned = _clean_json_text(text)
-    if not cleaned:
-        return False
-    if _extract_first_json_object(cleaned):
-        return False
-    return "{" in cleaned and not cleaned.rstrip().endswith("}")
+    return looks_like_truncated_json_object(text)
