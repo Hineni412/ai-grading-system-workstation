@@ -232,10 +232,10 @@
 ## 昼夜交接
 
 **执行包：** P2-20
-**交接状态：** waiting_user
-**功能提交：** 7614a42eacba5b8f42d948b2f8ac083ff1e354c2
+**交接状态：** waiting_review
+**功能提交：** branch_head
 **自动验证：** passed
-**独立复审：** passed
+**独立复审：** pending
 **用户验收：** pending
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
