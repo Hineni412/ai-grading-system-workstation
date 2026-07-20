@@ -1,7 +1,7 @@
 # Issue #62 配置整卷生成输出截断修复
 
-**状态：** in_progress  
-**基线：** `0a2e481dc7b02252feacff46000b78308e7a46bb`  
+**状态：** ready_for_review
+**基线：** `0a2e481dc7b02252feacff46000b78308e7a46bb`
 **关联：** GitHub Issue #62、P2-20 正式验收外部阻塞
 
 ## 冻结边界
@@ -56,3 +56,4 @@
 | 阶段 | 测试/复审 | 原始意见 | 去重结果 | 剩余工作 | 当前验收 | 版本可发布 |
 |---|---|---:|---|---|---|---|
 | 集中调查与边界冻结 | 现有实现、P2-20 运行证据、Issue #61 基线、公开测试 seam | 0 | 3 个根因 | RED→GREEN、受影响回归、双路复审、integration | 否 | 否 |
+| 稳定候选 | 逐行为 RED→GREEN；后端受影响回归 231 passed；前端完整 verify 703 passed、lint/typecheck/build 通过；匿名 Chromium 截断恢复 1 passed；快速冒烟通过；应用内浏览器页面身份、非空与控制台检查通过，目标模拟因缺少文件注入/路由拦截能力按 P2-20 计划转仓库 Playwright | 0 | 0 Critical / 0 Important | Spec/Standards 双路复审、integration | 自动验收候选通过 | 否 |

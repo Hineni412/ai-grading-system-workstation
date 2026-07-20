@@ -9,7 +9,13 @@ from .policy import (
     policy_from_profile,
     policy_overrides_from_profile,
 )
-from .usage import JsonlUsageSink, LLMUsageEvent, NullUsageSink, usage_fields
+from .usage import (
+    JsonlUsageSink,
+    LLMUsageEvent,
+    NullUsageSink,
+    response_diagnostics,
+    usage_fields,
+)
 from .transport import (
     LLMProtocolAdapter,
     create_openai_client,
@@ -37,5 +43,6 @@ __all__ = [
     "normalize_openai_base_url",
     "policy_from_profile",
     "policy_overrides_from_profile",
+    "response_diagnostics",
     "usage_fields",
 ]

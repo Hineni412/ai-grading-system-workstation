@@ -1538,7 +1538,7 @@ def test_llm_single_request_json_methods_do_not_run_ai_repair(monkeypatch: pytes
     assert completions.calls == 2
 
 
-def test_llm_single_request_method_does_not_retry_parameter_fallback(
+def test_llm_single_request_method_sends_explicit_output_limit_without_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeCompletions:
@@ -1549,8 +1549,6 @@ def test_llm_single_request_method_does_not_retry_parameter_fallback(
         def create(self, **kwargs):
             self.calls += 1
             self.last_kwargs = kwargs
-            if "max_tokens" in kwargs or "response_format" in kwargs:
-                raise RuntimeError("unsupported compatibility parameter")
             return type(
                 "Completion",
                 (),
@@ -1582,8 +1580,41 @@ def test_llm_single_request_method_does_not_retry_parameter_fallback(
 
     assert client.json_from_text_once("prompt") == {"ok": True}
     assert completions.calls == 1
-    assert "max_tokens" not in completions.last_kwargs
+    assert completions.last_kwargs["max_tokens"] == 32000
     assert "response_format" not in completions.last_kwargs
+
+
+def test_llm_single_request_does_not_retry_unsupported_output_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeCompletions:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            raise RuntimeError("unsupported compatibility parameter")
+
+    completions = FakeCompletions()
+    fake_openai = type("FakeOpenAI", (), {"chat": type("Chat", (), {"completions": completions})()})()
+    settings = llm_client.LLMSettings(
+        api_key="x",
+        base_url="https://example.invalid/v1",
+        ocr_model="model",
+        grading_model="model",
+        config_model="model",
+    )
+    monkeypatch.setattr(llm_client, "_create_openai_client", lambda *_args, **_kwargs: fake_openai)
+    client = llm_client.LLMClient(
+        settings,
+        usage_sink_factory=NullUsageSink,
+    )
+
+    with pytest.raises(RuntimeError, match="unsupported compatibility parameter"):
+        client.json_from_text_once("prompt")
+
+    assert len(completions.calls) == 1
+    assert completions.calls[0]["max_tokens"] == 32000
 
 
 class _GatewayTestCompletions:
@@ -1612,15 +1643,102 @@ class _GatewayTestPacer:
         return None
 
 
-def _gateway_json_completion(text: str) -> SimpleNamespace:
+def _gateway_json_completion(
+    text: str,
+    *,
+    finish_reason: str | None = None,
+) -> SimpleNamespace:
     return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=text))],
+        choices=[
+            SimpleNamespace(
+                finish_reason=finish_reason,
+                message=SimpleNamespace(content=text),
+            )
+        ],
         usage=SimpleNamespace(
             prompt_tokens=1,
             completion_tokens=1,
             total_tokens=2,
         ),
     )
+
+
+def test_llm_single_request_reports_provider_length_stop_without_raw_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret_fragment = '{"rubric":{"student_answer":"private answer"'
+    client, completions, sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [_gateway_json_completion(secret_fragment, finish_reason="length")],
+    )
+
+    with pytest.raises(llm_client.LLMOutputTruncatedError) as raised:
+        client.json_from_text_once("prompt")
+
+    assert len(completions.calls) == 1
+    assert raised.value.finish_reason == "length"
+    assert raised.value.response_chars == len(secret_fragment)
+    assert len(raised.value.response_sha256) == 64
+    assert "输出长度上限" in str(raised.value)
+    assert "未自动重试" in str(raised.value)
+    assert "逐题生成" in str(raised.value)
+    assert "private answer" not in str(raised.value)
+    assert sink.events[0].finish_reason == "length"
+    assert sink.events[0].output_truncated is True
+
+
+def test_llm_single_request_reports_length_stop_even_when_content_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, completions, _sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [_gateway_json_completion("", finish_reason="length")],
+    )
+
+    with pytest.raises(llm_client.LLMOutputTruncatedError) as raised:
+        client.json_from_text_once("prompt")
+
+    assert len(completions.calls) == 1
+    assert raised.value.finish_reason == "length"
+    assert raised.value.response_chars == 0
+
+
+def test_llm_single_request_reports_structural_truncation_without_finish_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, completions, _sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [_gateway_json_completion('{"rubric":{"questions":[')],
+    )
+
+    with pytest.raises(llm_client.LLMOutputTruncatedError) as raised:
+        client.json_from_text_once("prompt")
+
+    assert len(completions.calls) == 1
+    assert raised.value.finish_reason == ""
+    assert "JSON 结构未闭合" in str(raised.value)
+    assert "未自动重试" in str(raised.value)
+
+
+def test_llm_single_request_keeps_non_truncated_invalid_json_distinct_and_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalid = '{"student_answer": private_answer}'
+    client, completions, sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [_gateway_json_completion(invalid, finish_reason="stop")],
+    )
+
+    with pytest.raises(ValueError) as raised:
+        client.json_from_text_once("prompt")
+
+    assert not isinstance(raised.value, llm_client.LLMOutputTruncatedError)
+    assert len(completions.calls) == 1
+    assert "模型返回非 JSON" in str(raised.value)
+    assert "private_answer" not in str(raised.value)
+    assert "响应字符数" in str(raised.value)
+    assert sink.events[0].finish_reason == "stop"
+    assert sink.events[0].output_truncated is False
 
 
 def _gateway_client_factory(

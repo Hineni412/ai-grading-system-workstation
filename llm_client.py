@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 from itertools import count
 import json
@@ -16,6 +17,7 @@ from backend.llm import (
     LLMGateway,
     LLMRequestKind,
     classify_llm_error,
+    response_diagnostics,
 )
 from backend.llm.transport import (
     create_openai_client as _shared_create_openai_client,
@@ -41,6 +43,31 @@ class LLMSettings:
     config_api_key: str | None = None
     config_base_url: str | None = None
     policy_profile: Mapping[str, object] | None = None
+
+
+class LLMOutputTruncatedError(ValueError):
+    def __init__(
+        self,
+        *,
+        finish_reason: str,
+        response_chars: int,
+        response_sha256: str,
+        provider_reported: bool,
+    ) -> None:
+        self.finish_reason = str(finish_reason or "")
+        self.response_chars = int(response_chars)
+        self.response_sha256 = str(response_sha256 or "")
+        reason = self.finish_reason or "服务未提供"
+        if provider_reported:
+            problem = "模型因输出长度上限停止，返回结果不完整"
+        else:
+            problem = "模型返回的 JSON 结构未闭合，疑似输出被截断"
+        super().__init__(
+            f"{problem}（停止原因: {reason}；响应字符数: {self.response_chars}；"
+            f"响应摘要: {self.response_sha256 or '无'}）。"
+            "未发布配置，也未自动重试。请更换支持更大输出的模型后手动重试，"
+            "或明确选择逐题生成（会增加模型调用次数）。"
+        )
 
 
 class LLMClient:
@@ -235,7 +262,7 @@ class LLMClient:
     ) -> dict[str, Any]:
         """Make exactly one model request and parse JSON locally without AI repair."""
         strict_kwargs = dict(extra_kwargs or {})
-        strict_kwargs["omit_token_limit"] = True
+        strict_kwargs.pop("omit_token_limit", None)
         completion = self._create_chat_completion(
             self.config_client,
             model=model or self.settings.config_model,
@@ -246,7 +273,7 @@ class LLMClient:
             request_kind=LLMRequestKind.CONFIG_GENERATION,
             single_request=True,
         )
-        return _parse_json_text(_extract_text_from_completion(completion))
+        return _parse_single_request_json(completion)
 
     def json_from_images_once(
         self,
@@ -268,7 +295,7 @@ class LLMClient:
             else LLMRequestKind.GRADING
         )
         strict_kwargs = dict(extra_kwargs or {})
-        strict_kwargs["omit_token_limit"] = True
+        strict_kwargs.pop("omit_token_limit", None)
         
         content: list[dict[str, Any]] = []
         if prompt:
@@ -306,7 +333,7 @@ class LLMClient:
             request_kind=request_kind,
             single_request=True,
         )
-        return _parse_json_text(_extract_text_from_completion(completion))
+        return _parse_single_request_json(completion)
 
     def _parse_or_repair_json(
         self,
@@ -660,7 +687,44 @@ def _parse_json_text(text: str) -> dict[str, Any]:
     detail = ""
     if last_error is not None:
         detail = f"解析位置 line {last_error.lineno}, col {last_error.colno}: {last_error.msg}。"
-    raise ValueError(f"模型返回非 JSON，无法解析。{detail}原始输出: {text[:3000]}")
+    response_chars, response_sha256 = _safe_output_summary(text)
+    raise ValueError(
+        f"模型返回非 JSON，无法解析。{detail}"
+        f"响应字符数: {response_chars}；响应摘要: {response_sha256 or '无'}。"
+    )
+
+
+def _parse_single_request_json(completion: Any) -> dict[str, Any]:
+    diagnostics = response_diagnostics(completion)
+    if diagnostics["output_truncated"]:
+        raise LLMOutputTruncatedError(
+            finish_reason=str(diagnostics["finish_reason"]),
+            response_chars=int(diagnostics["response_chars"]),
+            response_sha256=str(diagnostics["response_sha256"]),
+            provider_reported=True,
+        )
+    text = _extract_text_from_completion(completion)
+    try:
+        return _parse_json_text(text)
+    except ValueError as exc:
+        if not _looks_truncated_json(text):
+            raise
+        raise LLMOutputTruncatedError(
+            finish_reason=str(diagnostics["finish_reason"]),
+            response_chars=int(diagnostics["response_chars"]),
+            response_sha256=str(diagnostics["response_sha256"]),
+            provider_reported=False,
+        ) from exc
+
+
+def _safe_output_summary(text: str) -> tuple[int, str]:
+    normalized = str(text or "")
+    return (
+        len(normalized),
+        hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        if normalized
+        else "",
+    )
 
 
 def _clean_json_text(text: str) -> str:
