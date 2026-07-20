@@ -886,7 +886,7 @@ def generate_session_config(
             {
                 "session_id": int(session_id),
                 "mode": "generate",
-                "generation_mode": "per_question",
+                "generation_mode": "batched",
                 "input_id": input_id,
             },
         )
@@ -991,11 +991,13 @@ def retry_session_config_generation(
         )
     if (
         source.job_type != "config_generation"
-        or source.status != "succeeded"
+        or source.status not in {"succeeded", "failed", "cancelled"}
         or source.result.get("outcome") != "partial"
+        or not isinstance(source.result.get("failed_batches"), list)
+        or not source.result.get("failed_batches")
         or int(source.payload.get("session_id") or 0) != int(session_id)
-        or str(source.payload.get("generation_mode") or "per_question")
-        != "per_question"
+        or str(source.payload.get("generation_mode") or "")
+        not in {"batched", "per_question"}
     ):
         raise ApiError(
             409,
@@ -1013,10 +1015,30 @@ def retry_session_config_generation(
                 "Requested questions are not currently failed",
                 {"source_job_id": int(request.source_job_id)},
             )
+        raw_batches = source.result.get("failed_batches")
+        failed_batches = [item for item in raw_batches or [] if isinstance(item, dict)]
+        selected = set(request.retry_question_ids)
+        complete_selection = {
+            str(qid)
+            for item in failed_batches
+            if {
+                str(value)
+                for value in item.get("question_ids") or []
+                if str(value).strip()
+            }.issubset(selected)
+            for qid in item.get("question_ids") or []
+        }
+        if failed_batches and selected != complete_selection:
+            raise ApiError(
+                409,
+                "config_generation_retry_not_available",
+                "Requested questions must contain complete failed batches",
+                {"source_job_id": int(request.source_job_id)},
+            )
     payload: dict[str, object] = {
         "session_id": int(session_id),
         "mode": "retry",
-        "generation_mode": "per_question",
+        "generation_mode": "batched",
         "source_job_id": int(request.source_job_id),
         "input_id": str(source.payload.get("input_id") or ""),
         **_request_identity(request),

@@ -21,6 +21,7 @@ from backend.llm import (
     looks_like_truncated_json_object,
     response_diagnostics,
 )
+from backend.llm.json_repair import parse_json_object_locally
 from backend.llm.transport import (
     create_openai_client as _shared_create_openai_client,
     gateway_config_key as _shared_gateway_config_key,
@@ -67,8 +68,8 @@ class LLMOutputTruncatedError(ValueError):
         super().__init__(
             f"{problem}（停止原因: {reason}；响应字符数: {self.response_chars}；"
             f"响应摘要: {self.response_sha256 or '无'}）。"
-            "未发布配置，也未自动重试。请更换支持更大输出的模型后手动重试，"
-            "或明确选择逐题生成（会增加模型调用次数）。"
+            "未发布配置，也未自动重试。请手动重试失败批次；"
+            "已经成功的批次不会重复请求。"
         )
 
 
@@ -709,7 +710,7 @@ def _parse_single_request_json(completion: Any) -> dict[str, Any]:
         )
     text = _extract_text_from_completion(completion)
     try:
-        return _parse_json_text(text)
+        parsed = parse_json_object_locally(text)
     except ValueError as exc:
         if not _looks_truncated_json(text):
             raise
@@ -719,6 +720,17 @@ def _parse_single_request_json(completion: Any) -> dict[str, Any]:
             response_sha256=str(diagnostics["response_sha256"]),
             provider_reported=False,
         ) from exc
+    if parsed.report.repaired:
+        meta = parsed.payload.setdefault("meta", {})
+        if not isinstance(meta, dict):
+            raise ValueError("模型返回 JSON 的 meta 必须为对象")
+        meta["local_json_repair"] = {
+            "repaired": True,
+            "operations": list(parsed.report.operations),
+            "response_chars": parsed.report.response_chars,
+            "response_sha256": parsed.report.response_sha256,
+        }
+    return parsed.payload
 
 
 def _safe_output_summary(text: str) -> tuple[int, str]:

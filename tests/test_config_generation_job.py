@@ -592,115 +592,13 @@ def test_mapping_refresh_keeps_job_running_and_session_claimed(
         manager.shutdown()
 
 
-def test_whole_docx_generation_calls_text_model_exactly_once_and_binds_source(
+@pytest.mark.parametrize("suffix", [".docx", ".pdf"])
+def test_whole_document_generation_is_rejected_before_model_call(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    suffix: str,
 ) -> None:
     db, session_id, old_paths = _db_with_session(tmp_path)
-    source_service, source = _controlled_source(tmp_path, session_id, suffix=".docx")
-    input_id = _stage_controlled_input(
-        tmp_path,
-        source_service,
-        source,
-        old_paths,
-        generation_mode="whole_document",
-    )
-    context, _store = _job_context(
-        db.db_path,
-        {
-            "session_id": session_id,
-            "mode": "generate",
-            "generation_mode": "whole_document",
-            "input_id": input_id,
-            "source_id": source.source_id,
-            "source_revision": source.source_revision,
-        },
-    )
-    calls = {"text": 0, "images": 0}
-
-    def whole_text(document_text: str, *_args: object, **_kwargs: object):
-        calls["text"] += 1
-        assert document_text == source.private_document_text
-        return _valid_config_payload()
-
-    def whole_images(*_args: object, **_kwargs: object):
-        calls["images"] += 1
-        raise AssertionError("DOCX whole mode must not call the visual generator")
-
-    monkeypatch.setattr("backend.jobs.config_generation.generate_grading_config_from_text", whole_text)
-    monkeypatch.setattr("backend.jobs.config_generation.generate_grading_config_from_images", whole_images)
-
-    result = run_config_generation_job(
-        context=context,
-        db=db,
-        upload_config_dir=tmp_path / "uploaded",
-        llm_client_factory=lambda: object(),
-    )
-
-    assert calls == {"text": 1, "images": 0}
-    assert result["outcome"] == "complete"
-    session = db.get_grading_session(session_id)
-    assert session is not None
-    assert session["source_paper_sha256"] == source.sha256
-    assert (tmp_path / str(session["source_paper_path"])).is_file()
-
-
-def test_whole_pdf_generation_calls_visual_model_exactly_once_without_text(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db, session_id, old_paths = _db_with_session(tmp_path)
-    source_service, source = _controlled_source(tmp_path, session_id, suffix=".pdf")
-    input_id = _stage_controlled_input(
-        tmp_path,
-        source_service,
-        source,
-        old_paths,
-        generation_mode="whole_document",
-    )
-    context, _store = _job_context(
-        db.db_path,
-        {
-            "session_id": session_id,
-            "mode": "generate",
-            "generation_mode": "whole_document",
-            "input_id": input_id,
-            "source_id": source.source_id,
-            "source_revision": source.source_revision,
-        },
-    )
-    calls = {"text": 0, "images": 0}
-
-    def whole_text(*_args: object, **_kwargs: object):
-        calls["text"] += 1
-        raise AssertionError("PDF whole mode must not send extracted text")
-
-    def whole_images(images: list[bytes], document_text: str, *_args: object, **_kwargs: object):
-        calls["images"] += 1
-        assert images == list(source.private_whole_page_images)
-        assert document_text == ""
-        return _valid_config_payload()
-
-    monkeypatch.setattr("backend.jobs.config_generation.generate_grading_config_from_text", whole_text)
-    monkeypatch.setattr("backend.jobs.config_generation.generate_grading_config_from_images", whole_images)
-
-    result = run_config_generation_job(
-        context=context,
-        db=db,
-        upload_config_dir=tmp_path / "uploaded",
-        llm_client_factory=lambda: object(),
-    )
-
-    assert calls == {"text": 0, "images": 1}
-    assert result["outcome"] == "complete"
-
-
-def test_whole_document_model_failure_is_not_retried_or_partially_published(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db, session_id, old_paths = _db_with_session(tmp_path)
-    source_service, source = _controlled_source(tmp_path, session_id, suffix=".docx")
+    source_service, source = _controlled_source(tmp_path, session_id, suffix=suffix)
     input_id = _stage_controlled_input(
         tmp_path,
         source_service,
@@ -721,22 +619,20 @@ def test_whole_document_model_failure_is_not_retried_or_partially_published(
     )
     calls = 0
 
-    def fail_once(*_args: object, **_kwargs: object):
+    def client_factory() -> object:
         nonlocal calls
         calls += 1
-        raise RuntimeError("synthetic upstream detail")
+        return object()
 
-    monkeypatch.setattr("backend.jobs.config_generation.generate_grading_config_from_text", fail_once)
-
-    with pytest.raises(RuntimeError, match="synthetic upstream detail"):
+    with pytest.raises(ValueError, match="unsupported config generation mode"):
         run_config_generation_job(
             context=context,
             db=db,
             upload_config_dir=tmp_path / "uploaded",
-            llm_client_factory=lambda: object(),
+            llm_client_factory=client_factory,
         )
 
-    assert calls == 1
+    assert calls == 0
     session = db.get_grading_session(session_id)
     assert session is not None
     assert (session["rubric_path"], session["answer_key_path"]) == old_paths
@@ -1814,6 +1710,63 @@ def test_restart_cleans_only_interrupted_owned_inputs_and_preserves_retry_shared
         manager.shutdown()
 
 
+def test_restart_preserves_checkpointed_batch_input_and_exposes_partial_result(
+    tmp_path: Path,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    upload_dir = tmp_path / "uploaded"
+    input_id = _stage_job_input(tmp_path, session_id, old_paths)
+    store = JobStore(db.db_path)
+    job = store.create_job(
+        "config_generation",
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": input_id,
+        },
+    )
+    assert store.mark_running(job.id)
+    draft_payload = _valid_config_payload()
+    draft_payload["meta"] = {
+        "generation_mode": "batched",
+        "batch_size": 3,
+        "batches": [
+            {"batch_id": "B001", "question_ids": ["Q1"], "status": "succeeded"},
+            {"batch_id": "B002", "question_ids": ["Q2"], "status": "pending"},
+        ],
+        "failed_batches": [
+            {
+                "batch_id": "B002",
+                "question_ids": ["Q2"],
+                "category": "pending",
+                "error": "批次尚未开始",
+            }
+        ],
+        "failed_question_ids": ["Q2"],
+    }
+    (upload_dir / f"config_generation_draft_job_{job.id}.json").write_text(
+        json.dumps(draft_payload, ensure_ascii=False), encoding="utf-8"
+    )
+
+    manager = JobManager(
+        JobStore(db.db_path),
+        max_workers=1,
+        cleanup_interrupted=True,
+        interrupted_input_root=upload_dir,
+    )
+    try:
+        recovered = manager.get(job.id)
+        assert recovered is not None
+        assert recovered.status == "failed"
+        assert recovered.result["outcome"] == "partial"
+        assert recovered.result["failed_question_ids"] == ["Q2"]
+        assert recovered.result["failed_batches"][0]["batch_id"] == "B002"
+        assert (upload_dir / f"config_generation_input_{input_id}.json").is_file()
+    finally:
+        manager.shutdown()
+
+
 def test_config_source_references_are_derived_from_private_job_payloads(
     tmp_path: Path,
 ) -> None:
@@ -2142,6 +2095,68 @@ def test_refine_cancel_after_model_is_cancelled_before_publish_and_deletes_input
         )
     assert not (tmp_path / "uploaded" / f"config_generation_input_{input_id}.json").exists()
     assert list((tmp_path / "uploaded").glob("rubric_job-*.json")) == []
+
+
+def test_batch_cancellation_keeps_checkpoint_and_input_for_manual_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    upload_dir = tmp_path / "uploaded"
+    input_id = _stage_job_input(tmp_path, session_id, old_paths)
+    context, store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": input_id,
+        },
+    )
+    draft_payload = _valid_config_payload()
+    draft_payload["meta"] = {
+        "generation_mode": "batched",
+        "batch_size": 3,
+        "batches": [
+            {"batch_id": "B001", "question_ids": ["Q1"], "status": "succeeded"},
+            {"batch_id": "B002", "question_ids": ["Q2"], "status": "pending"},
+        ],
+        "failed_batches": [
+            {
+                "batch_id": "B002",
+                "question_ids": ["Q2"],
+                "category": "pending",
+                "error": "批次尚未开始",
+            }
+        ],
+        "failed_question_ids": ["Q2"],
+    }
+
+    def cancel_after_checkpoint(*_args: object, **kwargs: object) -> dict[str, object]:
+        assert store.request_cancel(context.job_id)
+        kwargs["checkpoint"](draft_payload)
+        raise AssertionError("checkpoint must stop before another batch starts")
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        cancel_after_checkpoint,
+    )
+
+    with pytest.raises(JobCancellationRequested):
+        run_config_generation_job(
+            context=context,
+            db=db,
+            upload_config_dir=upload_dir,
+            llm_client_factory=lambda: object(),
+        )
+
+    cancelled = store.get_job(context.job_id)
+    assert cancelled is not None
+    assert cancelled.status == "cancelled"
+    assert cancelled.result["outcome"] == "partial"
+    assert cancelled.result["failed_question_ids"] == ["Q2"]
+    assert (upload_dir / f"config_generation_input_{input_id}.json").is_file()
+    assert (upload_dir / f"config_generation_draft_job_{context.job_id}.json").is_file()
 
 
 def test_refine_job_rejects_same_path_old_revision_before_model_call(tmp_path: Path) -> None:
