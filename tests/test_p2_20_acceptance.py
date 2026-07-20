@@ -1075,6 +1075,70 @@ def test_prepare_runtime_profile_keeps_only_bounded_config_and_grading_secrets(
     }
 
 
+def test_prepare_runtime_profile_supports_manual_counting_without_a_hard_limit(
+    tmp_path: Path,
+) -> None:
+    repo, source_sha = _committed_source_repo(tmp_path)
+    workspace = tmp_path / "prepared"
+    acceptance.prepare_code_workspace(source_sha, workspace, repo_root=repo)
+    source_data = _authorized_source_data(tmp_path)
+    acceptance.prepare_authorized_inputs(
+        workspace,
+        source_data_root=source_data,
+        session_id=1,
+        expected_session_name="0609",
+        paper_limit=3,
+    )
+    profile_path = tmp_path / "machine-config" / "api_profiles.json"
+    profile_path.parent.mkdir()
+    profile_path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "active",
+                    "provider": "custom-openai-compatible",
+                    "base_url": "https://apic1.ohmycdn.com/v1",
+                    "api_key": "shared-secret",
+                    "grading_model": "grading-model",
+                    "config_model": "config-model",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    metadata = acceptance.prepare_runtime_profile(
+        workspace,
+        source_profile_path=profile_path,
+        proxy_base_url="http://127.0.0.1:8120/acceptance-llm/v1",
+        max_forwarded_requests=None,
+        initial_forwarded_requests=9,
+        direct_diagnostic_requests=1,
+    )
+
+    assert metadata["model_request_budget"] is None
+    assert metadata["model_request_count_baseline"] == 9
+    assert metadata["direct_diagnostic_requests"] == 1
+    upstream = json.loads(
+        (workspace / "acceptance_config" / "upstream.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert upstream["max_forwarded_requests"] is None
+    assert upstream["initial_forwarded_requests"] == 9
+    assert upstream["direct_diagnostic_requests"] == 1
+    assert upstream["manual_request_control"] == {
+        "default_route_id": "ohmygpt",
+        "routes": {
+            "ohmycdn": "https://apic1.ohmycdn.com/v1",
+            "ohmygpt": "https://api.ohmygpt.com/v1",
+        },
+    }
+    serialized = json.dumps(upstream, ensure_ascii=False)
+    assert "shared-secret" in serialized
+    assert "acceptance-proxy" not in serialized
+
+
 def test_prepare_runtime_profile_rejects_unsupported_or_unconfigured_provider(
     tmp_path: Path,
 ) -> None:
@@ -1204,6 +1268,1347 @@ def test_model_budget_proxy_stubs_ocr_and_hard_stops_at_explicit_budget(
         "max_forwarded_requests": budget,
     }
     assert "secret" not in blocked.text
+
+
+def test_manual_model_control_counts_past_nine_and_freezes_each_selected_route(
+    tmp_path: Path,
+) -> None:
+    upstream_path = tmp_path / "upstream.json"
+    upstream_path.write_text(
+        json.dumps(
+            {
+                "grading": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "grading-secret",
+                    "model": "grading-model",
+                },
+                "config": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "config-secret",
+                    "model": "config-model",
+                },
+                "max_forwarded_requests": None,
+                "initial_forwarded_requests": 9,
+                "direct_diagnostic_requests": 1,
+                "manual_request_control": {
+                    "default_route_id": "ohmygpt",
+                    "routes": {
+                        "ohmycdn": "https://apic1.ohmycdn.com/v1",
+                        "ohmygpt": "https://api.ohmygpt.com/v1",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    forwarded_routes: list[str] = []
+
+    async def fake_forward(
+        upstream: dict[str, str],
+        _payload: dict[str, object],
+    ) -> tuple[int, dict[str, str], bytes]:
+        forwarded_routes.append(upstream["base_url"])
+        return (
+            200,
+            {"content-type": "application/json"},
+            b'{"choices":[{"finish_reason":"stop","message":{"content":"ok"}}]}',
+        )
+
+    proxy = acceptance.create_model_budget_proxy(
+        upstream_path,
+        state_path=tmp_path / "budget-state.json",
+        forwarder=fake_forward,
+    )
+    app = FastAPI()
+    app.mount("/acceptance-llm", proxy)
+    acceptance.mount_acceptance_model_control(
+        app,
+        controller=proxy.state.model_control,
+        control_token="expected-token",
+    )
+    client = TestClient(app)
+    control_headers = {"X-Acceptance-Control-Token": "expected-token"}
+    proxy_headers = {"Authorization": "Bearer acceptance-proxy"}
+
+    for offset in range(11):
+        route_id = "ohmycdn" if offset % 2 else "ohmygpt"
+        token = f"{offset + 1:032x}"
+        permit = client.post(
+            "/acceptance-control/model-permit",
+            headers=control_headers,
+            json={
+                "action": "q11",
+                "route_id": route_id,
+                "token": token,
+                "source_job_id": 5,
+            },
+        )
+        assert permit.status_code == 200
+        response = client.post(
+            "/acceptance-llm/v1/chat/completions",
+            headers=proxy_headers,
+            json={
+                "model": "config-model",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": 'BATCH_QUESTION_IDS_JSON=["Q11"]\nprivate prompt',
+                    }
+                ],
+            },
+        )
+        assert response.status_code == 200
+
+    assert forwarded_routes == [
+        (
+            "https://apic1.ohmycdn.com/v1"
+            if offset % 2
+            else "https://api.ohmygpt.com/v1"
+        )
+        for offset in range(11)
+    ]
+    state_response = client.get(
+        "/acceptance-control/model-state",
+        headers=control_headers,
+    )
+    assert state_response.status_code == 200
+    state = state_response.json()
+    assert state["mode"] == "manual_unbounded"
+    assert state["forwarded_requests"] == 20
+    assert state["direct_diagnostic_requests"] == 1
+    assert state["total_external_requests"] == 21
+    assert state["max_forwarded_requests"] is None
+    assert state["in_flight_request"] is None
+    assert state["active_permit"] is None
+    assert state["outcome_counts"]["success"] == 11
+    serialized = state_response.text
+    assert "secret" not in serialized
+    assert "private prompt" not in serialized
+
+
+def test_manual_model_control_requires_one_matching_permit_and_an_allowed_route(
+    tmp_path: Path,
+) -> None:
+    upstream_path = tmp_path / "upstream.json"
+    upstream_path.write_text(
+        json.dumps(
+            {
+                "grading": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "grading-secret",
+                    "model": "grading-model",
+                },
+                "config": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "config-secret",
+                    "model": "config-model",
+                },
+                "max_forwarded_requests": None,
+                "initial_forwarded_requests": 9,
+                "direct_diagnostic_requests": 1,
+                "manual_request_control": {
+                    "default_route_id": "ohmygpt",
+                    "routes": {
+                        "ohmycdn": "https://apic1.ohmycdn.com/v1",
+                        "ohmygpt": "https://api.ohmygpt.com/v1",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    forwards = 0
+
+    async def fake_forward(
+        _upstream: dict[str, str],
+        _payload: dict[str, object],
+    ) -> tuple[int, dict[str, str], bytes]:
+        nonlocal forwards
+        forwards += 1
+        return 200, {"content-type": "application/json"}, b"{}"
+
+    proxy = acceptance.create_model_budget_proxy(
+        upstream_path,
+        state_path=tmp_path / "budget-state.json",
+        forwarder=fake_forward,
+    )
+    app = FastAPI()
+    app.mount("/acceptance-llm", proxy)
+    acceptance.mount_acceptance_model_control(
+        app,
+        controller=proxy.state.model_control,
+        control_token="expected-token",
+    )
+    client = TestClient(app)
+    control_headers = {"X-Acceptance-Control-Token": "expected-token"}
+    proxy_headers = {"Authorization": "Bearer acceptance-proxy"}
+
+    q11_payload = {
+        "model": "config-model",
+        "messages": [
+            {
+                "role": "user",
+                "content": 'BATCH_QUESTION_IDS_JSON=["Q11"]\nprivate',
+            }
+        ],
+    }
+    q12_payload = {
+        "model": "config-model",
+        "messages": [
+            {
+                "role": "user",
+                "content": 'BATCH_QUESTION_IDS_JSON=["Q12"]\nprivate',
+            }
+        ],
+    }
+
+    assert client.post(
+        "/acceptance-llm/v1/chat/completions",
+        headers=proxy_headers,
+        json=q11_payload,
+    ).status_code == 428
+    invalid_route = client.post(
+        "/acceptance-control/model-permit",
+        headers=control_headers,
+        json={
+            "action": "q11",
+            "route_id": "custom",
+            "token": "1" * 32,
+            "source_job_id": 5,
+        },
+    )
+    assert invalid_route.status_code == 409
+    assert "https://" not in invalid_route.text
+
+    assert client.post(
+        "/acceptance-control/model-permit",
+        headers=control_headers,
+        json={
+            "action": "q11",
+            "route_id": "ohmycdn",
+            "token": "2" * 32,
+            "source_job_id": 5,
+        },
+    ).status_code == 200
+    assert client.post(
+        "/acceptance-llm/v1/chat/completions",
+        headers=proxy_headers,
+        json=q12_payload,
+    ).status_code == 428
+    assert client.post(
+        "/acceptance-llm/v1/chat/completions",
+        headers=proxy_headers,
+        json=q11_payload,
+    ).status_code == 200
+    assert client.post(
+        "/acceptance-llm/v1/chat/completions",
+        headers=proxy_headers,
+        json=q11_payload,
+    ).status_code == 428
+
+    state = client.get(
+        "/acceptance-control/model-state",
+        headers=control_headers,
+    ).json()
+    assert forwards == 1
+    assert state["forwarded_requests"] == 10
+    assert state["outcome_counts"]["success"] == 1
+    assert state["active_permit"] is None
+
+
+def test_manual_continuation_page_is_local_explicit_and_contains_no_secret(
+    tmp_path: Path,
+) -> None:
+    upstream_path = tmp_path / "upstream.json"
+    upstream_path.write_text(
+        json.dumps(
+            {
+                "grading": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "grading-private-secret",
+                    "model": "grading-model",
+                },
+                "config": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "config-private-secret",
+                    "model": "config-model",
+                },
+                "max_forwarded_requests": None,
+                "initial_forwarded_requests": 9,
+                "direct_diagnostic_requests": 1,
+                "manual_request_control": {
+                    "default_route_id": "ohmygpt",
+                    "routes": {
+                        "ohmycdn": "https://apic1.ohmycdn.com/v1",
+                        "ohmygpt": "https://api.ohmygpt.com/v1",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    proxy = acceptance.create_model_budget_proxy(
+        upstream_path,
+        state_path=tmp_path / "budget-state.json",
+        forwarder=lambda *_args: None,
+    )
+    app = FastAPI()
+    acceptance.mount_manual_continuation(
+        app,
+        controller=proxy.state.model_control,
+        control_token="expected-token",
+        session_id=1,
+    )
+
+    response = TestClient(app).get("/manual")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+    assert "仅请求 Q11" in response.text
+    assert "仅请求 Q12" in response.text
+    assert "AI 统一配分" in response.text
+    assert "已等待" in response.text
+    assert "https://api.ohmygpt.com/v1" in response.text
+    assert "https://apic1.ohmycdn.com/v1" in response.text
+    assert "不设总次数上限" in response.text
+    assert "程序不会自动重试" in response.text
+    assert "最近一次" in response.text
+    assert "grading-private-secret" not in response.text
+    assert "config-private-secret" not in response.text
+    assert str(tmp_path) not in response.text
+    assert TestClient(app).get("/acceptance-control/manual-state").status_code == 404
+
+
+def test_manual_unbounded_proxy_rejects_sensitive_request_capture(
+    tmp_path: Path,
+) -> None:
+    upstream_path = tmp_path / "upstream.json"
+    upstream_path.write_text(
+        json.dumps(
+            {
+                "grading": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "grading-secret",
+                    "model": "grading-model",
+                },
+                "config": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "config-secret",
+                    "model": "config-model",
+                },
+                "max_forwarded_requests": None,
+                "initial_forwarded_requests": 9,
+                "direct_diagnostic_requests": 1,
+                "manual_request_control": {
+                    "default_route_id": "ohmygpt",
+                    "routes": {
+                        "ohmycdn": "https://apic1.ohmycdn.com/v1",
+                        "ohmygpt": "https://api.ohmygpt.com/v1",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        acceptance.AcceptanceError,
+        match="manual mode does not allow model request capture",
+    ):
+        acceptance.create_model_budget_proxy(
+            upstream_path,
+            state_path=tmp_path / "budget-state.json",
+            request_capture_path=tmp_path / "request-capture.json",
+            forwarder=lambda *_args: None,
+        )
+
+    assert not (tmp_path / "budget-state.json").exists()
+    assert not (tmp_path / "request-capture.json").exists()
+
+
+def test_manual_action_is_stage_bound_and_replays_the_same_click_token(
+    tmp_path: Path,
+) -> None:
+    upstream_path = tmp_path / "upstream.json"
+    upstream_path.write_text(
+        json.dumps(
+            {
+                "grading": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "grading-secret",
+                    "model": "grading-model",
+                },
+                "config": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "config-secret",
+                    "model": "config-model",
+                },
+                "max_forwarded_requests": None,
+                "initial_forwarded_requests": 9,
+                "direct_diagnostic_requests": 1,
+                "manual_request_control": {
+                    "default_route_id": "ohmygpt",
+                    "routes": {
+                        "ohmycdn": "https://apic1.ohmycdn.com/v1",
+                        "ohmygpt": "https://api.ohmygpt.com/v1",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    forwarded = 0
+
+    async def fake_forward(
+        _upstream: dict[str, str],
+        _payload: dict[str, object],
+    ) -> tuple[int, dict[str, str], bytes]:
+        nonlocal forwarded
+        forwarded += 1
+        return 200, {"content-type": "application/json"}, b"{}"
+
+    proxy = acceptance.create_model_budget_proxy(
+        upstream_path,
+        state_path=tmp_path / "budget-state.json",
+        forwarder=fake_forward,
+    )
+
+    class Job:
+        def __init__(
+            self,
+            job_id: int,
+            *,
+            failed_ids: list[str],
+        ) -> None:
+            self.id = job_id
+            self.status = "succeeded"
+            self.progress = 1.0
+            self.stage = "partial"
+            self.detail = ""
+            self.result = {
+                "outcome": "partial",
+                "failed_question_ids": failed_ids,
+                "failed_batches": [
+                    {"batch_id": "B005", "question_ids": ["Q11"]},
+                    {"batch_id": "B006", "question_ids": ["Q12"]},
+                ],
+            }
+
+    class Manager:
+        def __init__(self) -> None:
+            self.jobs = {5: Job(5, failed_ids=["Q11", "Q12"])}
+
+        def list(
+            self,
+            *,
+            statuses: tuple[str, ...] = (),
+            **_kwargs: object,
+        ) -> tuple[list[Job], int]:
+            jobs = [
+                job
+                for job in sorted(
+                    self.jobs.values(), key=lambda item: item.id, reverse=True
+                )
+                if not statuses or job.status in statuses
+            ]
+            return jobs[:1], len(jobs)
+
+        def get(self, job_id: int) -> Job | None:
+            return self.jobs.get(job_id)
+
+    manager = Manager()
+    submitted: list[dict[str, object]] = []
+
+    def submit_action(**kwargs: object) -> dict[str, object]:
+        submitted.append(dict(kwargs))
+        manager.jobs[6] = Job(6, failed_ids=["Q11", "Q12"])
+        return {"id": 6, "status": "queued"}
+
+    app = FastAPI()
+    app.state.job_manager = manager
+    app.mount("/acceptance-llm", proxy)
+    acceptance.mount_manual_continuation(
+        app,
+        controller=proxy.state.model_control,
+        control_token="expected-token",
+        session_id=1,
+        submit_action=submit_action,
+    )
+    client = TestClient(app)
+    headers = {
+        "Content-Type": "application/json",
+        "X-Acceptance-Control-Token": "expected-token",
+    }
+    token = "a" * 32
+
+    wrong_stage = client.post(
+        "/acceptance-control/manual-action",
+        headers=headers,
+        json={
+            "action": "q12",
+            "route_id": "ohmycdn",
+            "source_job_id": 5,
+            "token": "b" * 32,
+        },
+    )
+    assert wrong_stage.status_code == 409
+
+    first = client.post(
+        "/acceptance-control/manual-action",
+        headers=headers,
+        json={
+            "action": "q11",
+            "route_id": "ohmycdn",
+            "source_job_id": 5,
+            "token": token,
+        },
+    )
+    duplicate = client.post(
+        "/acceptance-control/manual-action",
+        headers=headers,
+        json={
+            "action": "q11",
+            "route_id": "ohmycdn",
+            "source_job_id": 5,
+            "token": token,
+        },
+    )
+    assert first.status_code == 200
+    assert duplicate.status_code == 200
+    assert first.json() == duplicate.json() == {"id": 6, "status": "queued"}
+    assert len(submitted) == 1
+
+    q11 = client.post(
+        "/acceptance-llm/v1/chat/completions",
+        headers={"Authorization": "Bearer acceptance-proxy"},
+        json={
+            "model": "config-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": 'BATCH_QUESTION_IDS_JSON=["Q11"]\nprivate',
+                }
+            ],
+        },
+    )
+    automatic_score = client.post(
+        "/acceptance-llm/v1/chat/completions",
+        headers={"Authorization": "Bearer acceptance-proxy"},
+        json={
+            "model": "config-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        "SCORE_QUESTION_IDS_JSON="
+                        + json.dumps([f"Q{number}" for number in range(1, 13)])
+                    ),
+                }
+            ],
+        },
+    )
+    assert q11.status_code == 200
+    assert automatic_score.status_code == 428
+    assert forwarded == 1
+
+
+def test_manual_action_uses_the_real_config_retry_api_contract(
+    tmp_path: Path,
+) -> None:
+    from backend.jobs.manager import JobManager
+    from backend.jobs.store import JobStore
+
+    database_path = tmp_path / "grading.db"
+    db = DBManager(database_path)
+    db.initialize()
+    rubric = tmp_path / "rubric.json"
+    answer = tmp_path / "answer.json"
+    rubric.write_text("{}", encoding="utf-8")
+    answer.write_text("{}", encoding="utf-8")
+    session_id = db.create_grading_session(
+        "P2-20 manual continuation",
+        str(rubric),
+        str(answer),
+    )
+    store = JobStore(database_path)
+    source = store.create_job(
+        "config_generation",
+        {
+            "session_id": session_id,
+            "generation_mode": "batched",
+            "input_id": "input-1",
+            "source_id": "a" * 32,
+            "source_revision": "b" * 64,
+        },
+    )
+    partial = {
+        "outcome": "partial",
+        "failed_question_ids": ["Q11", "Q12"],
+        "failed_batches": [
+            {"batch_id": "B005", "question_ids": ["Q11"]},
+            {"batch_id": "B006", "question_ids": ["Q12"]},
+        ],
+        "score_allocation_pending": False,
+    }
+    store.finish(source.id, "succeeded", result=partial)
+    manager = JobManager(store, max_workers=1, cleanup_interrupted=False)
+    manager.register("config_generation", lambda _context: partial)
+
+    upstream_path = tmp_path / "upstream.json"
+    upstream_path.write_text(
+        json.dumps(
+            {
+                "grading": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "grading-secret",
+                    "model": "grading-model",
+                },
+                "config": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "config-secret",
+                    "model": "config-model",
+                },
+                "max_forwarded_requests": None,
+                "initial_forwarded_requests": 9,
+                "direct_diagnostic_requests": 1,
+                "manual_request_control": {
+                    "default_route_id": "ohmygpt",
+                    "routes": {
+                        "ohmycdn": "https://apic1.ohmycdn.com/v1",
+                        "ohmygpt": "https://api.ohmygpt.com/v1",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    proxy = acceptance.create_model_budget_proxy(
+        upstream_path,
+        state_path=tmp_path / "budget-state.json",
+        forwarder=lambda *_args: None,
+    )
+    app = FastAPI()
+    app.state.job_manager = manager
+
+    class Paths:
+        db_path = database_path
+
+    app.state.path_manager = Paths()
+    acceptance.mount_manual_continuation(
+        app,
+        controller=proxy.state.model_control,
+        control_token="expected-token",
+        session_id=session_id,
+    )
+    client = TestClient(app)
+    token = "f" * 32
+    try:
+        response = client.post(
+            "/acceptance-control/manual-action",
+            headers={"X-Acceptance-Control-Token": "expected-token"},
+            json={
+                "action": "q11",
+                "route_id": "ohmycdn",
+                "source_job_id": source.id,
+                "token": token,
+            },
+        )
+        assert response.status_code == 200
+        job_id = int(response.json()["id"])
+        manager.wait(job_id, timeout=5)
+        created = manager.get(job_id)
+        assert created is not None
+        assert created.payload["session_id"] == session_id
+        assert created.payload["source_job_id"] == source.id
+        assert created.payload["retry_question_ids"] == ["Q11"]
+        assert created.payload["client_request_token"] == token
+        assert proxy.state.model_control.snapshot()["active_permit"] == {
+            "action": "q11",
+            "route_id": "ohmycdn",
+            "source_job_id": source.id,
+        }
+    finally:
+        proxy.state.model_control.revoke_pending_permit(token)
+        manager.shutdown()
+
+
+def test_q12_and_score_allocation_each_require_their_own_manual_click(
+    tmp_path: Path,
+) -> None:
+    upstream_path = tmp_path / "upstream.json"
+    upstream_path.write_text(
+        json.dumps(
+            {
+                "grading": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "grading-secret",
+                    "model": "grading-model",
+                },
+                "config": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "config-secret",
+                    "model": "config-model",
+                },
+                "max_forwarded_requests": None,
+                "initial_forwarded_requests": 9,
+                "direct_diagnostic_requests": 1,
+                "manual_request_control": {
+                    "default_route_id": "ohmygpt",
+                    "routes": {
+                        "ohmycdn": "https://apic1.ohmycdn.com/v1",
+                        "ohmygpt": "https://api.ohmygpt.com/v1",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    forwards: list[str] = []
+
+    async def fake_forward(
+        upstream: dict[str, str],
+        payload: dict[str, object],
+    ) -> tuple[int, dict[str, str], bytes]:
+        serialized = json.dumps(payload)
+        action = "q12" if "BATCH_QUESTION_IDS_JSON" in serialized else "score"
+        forwards.append(f"{upstream['_route_id']}:{action}")
+        return 200, {"content-type": "application/json"}, b"{}"
+
+    proxy = acceptance.create_model_budget_proxy(
+        upstream_path,
+        state_path=tmp_path / "budget-state.json",
+        forwarder=fake_forward,
+    )
+
+    class Job:
+        def __init__(
+            self,
+            job_id: int,
+            *,
+            failed_ids: list[str],
+            score_pending: bool,
+            outcome: str = "partial",
+        ) -> None:
+            self.id = job_id
+            self.status = "succeeded"
+            self.progress = 1.0
+            self.stage = "complete" if outcome == "complete" else "partial"
+            self.detail = ""
+            self.result = {
+                "outcome": outcome,
+                "failed_question_ids": failed_ids,
+                "failed_batches": [
+                    {"batch_id": "B006", "question_ids": ["Q12"]}
+                ]
+                if failed_ids
+                else [],
+                "score_allocation_pending": score_pending,
+            }
+
+    class Manager:
+        def __init__(self) -> None:
+            self.jobs = {
+                5: Job(
+                    5,
+                    failed_ids=["Q12"],
+                    score_pending=False,
+                )
+            }
+
+        def list(
+            self,
+            *,
+            statuses: tuple[str, ...] = (),
+            **_kwargs: object,
+        ) -> tuple[list[Job], int]:
+            jobs = [
+                job
+                for job in sorted(
+                    self.jobs.values(), key=lambda item: item.id, reverse=True
+                )
+                if not statuses or job.status in statuses
+            ]
+            return jobs[:1], len(jobs)
+
+        def get(self, job_id: int) -> Job | None:
+            return self.jobs.get(job_id)
+
+    manager = Manager()
+
+    def submit_action(**kwargs: object) -> dict[str, object]:
+        if kwargs["action"] == "q12":
+            manager.jobs[6] = Job(
+                6,
+                failed_ids=[],
+                score_pending=True,
+            )
+            return {"id": 6, "status": "queued"}
+        manager.jobs[7] = Job(
+            7,
+            failed_ids=[],
+            score_pending=False,
+            outcome="complete",
+        )
+        return {"id": 7, "status": "queued"}
+
+    app = FastAPI()
+    app.state.job_manager = manager
+    app.mount("/acceptance-llm", proxy)
+    acceptance.mount_manual_continuation(
+        app,
+        controller=proxy.state.model_control,
+        control_token="expected-token",
+        session_id=1,
+        submit_action=submit_action,
+    )
+    client = TestClient(app)
+    control_headers = {"X-Acceptance-Control-Token": "expected-token"}
+    proxy_headers = {"Authorization": "Bearer acceptance-proxy"}
+    score_marker = (
+        "SCORE_QUESTION_IDS_JSON="
+        + json.dumps([f"Q{number}" for number in range(1, 13)])
+    )
+
+    assert client.post(
+        "/acceptance-control/manual-action",
+        headers=control_headers,
+        json={
+            "action": "q12",
+            "route_id": "ohmycdn",
+            "source_job_id": 5,
+            "token": "1" * 32,
+        },
+    ).status_code == 200
+    assert client.post(
+        "/acceptance-llm/v1/chat/completions",
+        headers=proxy_headers,
+        json={
+            "model": "config-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": 'BATCH_QUESTION_IDS_JSON=["Q12"]',
+                }
+            ],
+        },
+    ).status_code == 200
+    assert client.post(
+        "/acceptance-llm/v1/chat/completions",
+        headers=proxy_headers,
+        json={
+            "model": "config-model",
+            "messages": [{"role": "user", "content": score_marker}],
+        },
+    ).status_code == 428
+    state_after_q12 = client.get(
+        "/acceptance-control/manual-state",
+        headers=control_headers,
+    ).json()
+    assert state_after_q12["available_action"] == "score"
+    assert state_after_q12["forwarded_requests"] == 10
+
+    assert client.post(
+        "/acceptance-control/manual-action",
+        headers=control_headers,
+        json={
+            "action": "score",
+            "route_id": "ohmygpt",
+            "source_job_id": 6,
+            "token": "2" * 32,
+        },
+    ).status_code == 200
+    assert client.post(
+        "/acceptance-llm/v1/chat/completions",
+        headers=proxy_headers,
+        json={
+            "model": "config-model",
+            "messages": [{"role": "user", "content": score_marker}],
+        },
+    ).status_code == 200
+
+    assert forwards == ["ohmycdn:q12", "ohmygpt:score"]
+    assert proxy.state.model_control.snapshot()["forwarded_requests"] == 11
+
+
+def test_manual_model_control_allows_only_one_concurrent_permit_consumer(
+    tmp_path: Path,
+) -> None:
+    upstream_path = tmp_path / "upstream.json"
+    upstream_path.write_text(
+        json.dumps(
+            {
+                "grading": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "grading-secret",
+                    "model": "grading-model",
+                },
+                "config": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "config-secret",
+                    "model": "config-model",
+                },
+                "max_forwarded_requests": None,
+                "initial_forwarded_requests": 9,
+                "direct_diagnostic_requests": 1,
+                "manual_request_control": {
+                    "default_route_id": "ohmygpt",
+                    "routes": {
+                        "ohmycdn": "https://apic1.ohmycdn.com/v1",
+                        "ohmygpt": "https://api.ohmygpt.com/v1",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    forwards = 0
+
+    async def blocking_forward(
+        _upstream: dict[str, str],
+        _payload: dict[str, object],
+    ) -> tuple[int, dict[str, str], bytes]:
+        nonlocal forwards
+        forwards += 1
+        entered.set()
+        assert release.wait(timeout=5)
+        return 200, {"content-type": "application/json"}, b"{}"
+
+    proxy = acceptance.create_model_budget_proxy(
+        upstream_path,
+        state_path=tmp_path / "budget-state.json",
+        forwarder=blocking_forward,
+    )
+    app = FastAPI()
+    app.mount("/acceptance-llm", proxy)
+    acceptance.mount_acceptance_model_control(
+        app,
+        controller=proxy.state.model_control,
+        control_token="expected-token",
+    )
+    control = TestClient(app)
+    assert control.post(
+        "/acceptance-control/model-permit",
+        headers={"X-Acceptance-Control-Token": "expected-token"},
+        json={
+            "action": "q11",
+            "route_id": "ohmygpt",
+            "token": "c" * 32,
+            "source_job_id": 5,
+        },
+    ).status_code == 200
+    payload = {
+        "model": "config-model",
+        "messages": [
+            {
+                "role": "user",
+                "content": 'BATCH_QUESTION_IDS_JSON=["Q11"]\nprivate',
+            }
+        ],
+    }
+    headers = {"Authorization": "Bearer acceptance-proxy"}
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first = executor.submit(
+            TestClient(app).post,
+            "/acceptance-llm/v1/chat/completions",
+            headers=headers,
+            json=payload,
+        )
+        assert entered.wait(timeout=5)
+        second = TestClient(app).post(
+            "/acceptance-llm/v1/chat/completions",
+            headers=headers,
+            json=payload,
+        )
+        release.set()
+        first_response = first.result(timeout=5)
+
+    assert first_response.status_code == 200
+    assert second.status_code == 428
+    assert forwards == 1
+    assert control.get(
+        "/acceptance-control/model-state",
+        headers={"X-Acceptance-Control-Token": "expected-token"},
+    ).json()["forwarded_requests"] == 10
+
+
+def test_manual_model_control_counts_transport_failure_then_allows_manual_retry(
+    tmp_path: Path,
+) -> None:
+    upstream_path = tmp_path / "upstream.json"
+    upstream_path.write_text(
+        json.dumps(
+            {
+                "grading": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "grading-secret",
+                    "model": "grading-model",
+                },
+                "config": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "config-secret",
+                    "model": "config-model",
+                },
+                "max_forwarded_requests": None,
+                "initial_forwarded_requests": 9,
+                "direct_diagnostic_requests": 1,
+                "manual_request_control": {
+                    "default_route_id": "ohmygpt",
+                    "routes": {
+                        "ohmycdn": "https://apic1.ohmycdn.com/v1",
+                        "ohmygpt": "https://api.ohmygpt.com/v1",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    attempts = 0
+
+    async def flaky_forward(
+        _upstream: dict[str, str],
+        _payload: dict[str, object],
+    ) -> tuple[int, dict[str, str], bytes]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            try:
+                raise httpx.ReadTimeout("private transport detail")
+            except httpx.ReadTimeout as exc:
+                raise acceptance.AcceptanceError(
+                    "approved model request failed at the provider"
+                ) from exc
+        return 200, {"content-type": "application/json"}, b"{}"
+
+    proxy = acceptance.create_model_budget_proxy(
+        upstream_path,
+        state_path=tmp_path / "budget-state.json",
+        forwarder=flaky_forward,
+    )
+    app = FastAPI()
+    app.mount("/acceptance-llm", proxy)
+    acceptance.mount_acceptance_model_control(
+        app,
+        controller=proxy.state.model_control,
+        control_token="expected-token",
+    )
+    client = TestClient(app)
+    control_headers = {"X-Acceptance-Control-Token": "expected-token"}
+    payload = {
+        "model": "config-model",
+        "messages": [
+            {
+                "role": "user",
+                "content": 'BATCH_QUESTION_IDS_JSON=["Q11"]\nprivate',
+            }
+        ],
+    }
+
+    statuses: list[int] = []
+    for index, route_id in enumerate(("ohmygpt", "ohmycdn"), start=1):
+        assert client.post(
+            "/acceptance-control/model-permit",
+            headers=control_headers,
+            json={
+                "action": "q11",
+                "route_id": route_id,
+                "token": f"{index:032x}",
+                "source_job_id": 5,
+            },
+        ).status_code == 200
+        statuses.append(
+            client.post(
+                "/acceptance-llm/v1/chat/completions",
+                headers={"Authorization": "Bearer acceptance-proxy"},
+                json=payload,
+            ).status_code
+        )
+
+    state = client.get(
+        "/acceptance-control/model-state",
+        headers=control_headers,
+    ).json()
+    assert statuses == [502, 200]
+    assert attempts == 2
+    assert state["forwarded_requests"] == 11
+    assert state["outcome_counts"] == {
+        "success": 1,
+        "upstream_http_error": 0,
+        "transport_error": 1,
+        "unknown": 0,
+    }
+    assert state["last_request"]["route_id"] == "ohmycdn"
+
+
+def test_manual_model_control_recovers_an_interrupted_request_as_unknown(
+    tmp_path: Path,
+) -> None:
+    upstream_path = tmp_path / "upstream.json"
+    upstream_path.write_text(
+        json.dumps(
+            {
+                "grading": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "grading-secret",
+                    "model": "grading-model",
+                },
+                "config": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "config-secret",
+                    "model": "config-model",
+                },
+                "max_forwarded_requests": None,
+                "initial_forwarded_requests": 9,
+                "direct_diagnostic_requests": 1,
+                "manual_request_control": {
+                    "default_route_id": "ohmygpt",
+                    "routes": {
+                        "ohmycdn": "https://apic1.ohmycdn.com/v1",
+                        "ohmygpt": "https://api.ohmygpt.com/v1",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class SimulatedProcessExit(BaseException):
+        pass
+
+    async def interrupted_forward(
+        _upstream: dict[str, str],
+        _payload: dict[str, object],
+    ) -> tuple[int, dict[str, str], bytes]:
+        raise SimulatedProcessExit()
+
+    state_path = tmp_path / "budget-state.json"
+    first_proxy = acceptance.create_model_budget_proxy(
+        upstream_path,
+        state_path=state_path,
+        forwarder=interrupted_forward,
+    )
+    first_app = FastAPI()
+    first_app.mount("/acceptance-llm", first_proxy)
+    acceptance.mount_acceptance_model_control(
+        first_app,
+        controller=first_proxy.state.model_control,
+        control_token="expected-token",
+    )
+    first_client = TestClient(first_app)
+    assert first_client.post(
+        "/acceptance-control/model-permit",
+        headers={"X-Acceptance-Control-Token": "expected-token"},
+        json={
+            "action": "q11",
+            "route_id": "ohmygpt",
+            "token": "d" * 32,
+            "source_job_id": 5,
+        },
+    ).status_code == 200
+    with pytest.raises(SimulatedProcessExit):
+        first_client.post(
+            "/acceptance-llm/v1/chat/completions",
+            headers={"Authorization": "Bearer acceptance-proxy"},
+            json={
+                "model": "config-model",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": 'BATCH_QUESTION_IDS_JSON=["Q11"]',
+                    }
+                ],
+            },
+        )
+
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted["forwarded_requests"] == 10
+    assert persisted["in_flight_request"]["number"] == 10
+
+    recovered_proxy = acceptance.create_model_budget_proxy(
+        upstream_path,
+        state_path=state_path,
+        forwarder=interrupted_forward,
+    )
+    recovered_app = FastAPI()
+    acceptance.mount_acceptance_model_control(
+        recovered_app,
+        controller=recovered_proxy.state.model_control,
+        control_token="expected-token",
+    )
+    recovered = TestClient(recovered_app).get(
+        "/acceptance-control/model-state",
+        headers={"X-Acceptance-Control-Token": "expected-token"},
+    ).json()
+
+    assert recovered["forwarded_requests"] == 10
+    assert recovered["outcome_counts"]["unknown"] == 1
+    assert recovered["in_flight_request"] is None
+    assert recovered["last_request"]["number"] == 10
+    assert recovered["last_request"]["outcome"] == "unknown"
+
+
+def test_manual_model_control_rejects_corrupted_persisted_permission(
+    tmp_path: Path,
+) -> None:
+    upstream_path = tmp_path / "upstream.json"
+    upstream_path.write_text(
+        json.dumps(
+            {
+                "grading": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "grading-secret",
+                    "model": "grading-model",
+                },
+                "config": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "config-secret",
+                    "model": "config-model",
+                },
+                "max_forwarded_requests": None,
+                "initial_forwarded_requests": 9,
+                "direct_diagnostic_requests": 1,
+                "manual_request_control": {
+                    "default_route_id": "ohmygpt",
+                    "routes": {
+                        "ohmycdn": "https://apic1.ohmycdn.com/v1",
+                        "ohmygpt": "https://api.ohmygpt.com/v1",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    state_path = tmp_path / "budget-state.json"
+    proxy = acceptance.create_model_budget_proxy(
+        upstream_path,
+        state_path=state_path,
+        forwarder=lambda *_args: None,
+    )
+    app = FastAPI()
+    acceptance.mount_acceptance_model_control(
+        app,
+        controller=proxy.state.model_control,
+        control_token="expected-token",
+    )
+    assert TestClient(app).post(
+        "/acceptance-control/model-permit",
+        headers={"X-Acceptance-Control-Token": "expected-token"},
+        json={
+            "action": "q11",
+            "route_id": "ohmygpt",
+            "token": "e" * 32,
+            "source_job_id": 5,
+        },
+    ).status_code == 200
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["active_permit"]["route_id"] = "unlisted"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(
+        acceptance.AcceptanceError,
+        match="manual model request state",
+    ):
+        acceptance.create_model_budget_proxy(
+            upstream_path,
+            state_path=state_path,
+            forwarder=lambda *_args: None,
+        )
+
+
+def test_manual_model_diagnostic_records_the_selected_route_without_content(
+    tmp_path: Path,
+) -> None:
+    upstream_path = tmp_path / "upstream.json"
+    upstream_path.write_text(
+        json.dumps(
+            {
+                "grading": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "grading-private-secret",
+                    "model": "grading-model",
+                },
+                "config": {
+                    "base_url": "https://unused.example.invalid/v1",
+                    "api_key": "config-private-secret",
+                    "model": "config-model",
+                },
+                "max_forwarded_requests": None,
+                "initial_forwarded_requests": 9,
+                "direct_diagnostic_requests": 1,
+                "manual_request_control": {
+                    "default_route_id": "ohmygpt",
+                    "routes": {
+                        "ohmycdn": "https://apic1.ohmycdn.com/v1",
+                        "ohmygpt": "https://api.ohmygpt.com/v1",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    diagnostic_path = tmp_path / "model-proxy.jsonl"
+
+    async def fake_forward(
+        _upstream: dict[str, str],
+        _payload: dict[str, object],
+    ) -> tuple[int, dict[str, str], bytes]:
+        return 200, {"content-type": "application/json"}, b"{}"
+
+    proxy = acceptance.create_model_budget_proxy(
+        upstream_path,
+        state_path=tmp_path / "budget-state.json",
+        diagnostic_log_path=diagnostic_path,
+        forwarder=fake_forward,
+    )
+    app = FastAPI()
+    app.mount("/acceptance-llm", proxy)
+    acceptance.mount_acceptance_model_control(
+        app,
+        controller=proxy.state.model_control,
+        control_token="expected-token",
+    )
+    client = TestClient(app)
+    assert client.post(
+        "/acceptance-control/model-permit",
+        headers={"X-Acceptance-Control-Token": "expected-token"},
+        json={
+            "action": "q11",
+            "route_id": "ohmycdn",
+            "token": "9" * 32,
+            "source_job_id": 5,
+        },
+    ).status_code == 200
+    assert client.post(
+        "/acceptance-llm/v1/chat/completions",
+        headers={"Authorization": "Bearer acceptance-proxy"},
+        json={
+            "model": "config-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        'BATCH_QUESTION_IDS_JSON=["Q11"]\n'
+                        "private prompt body"
+                    ),
+                }
+            ],
+        },
+    ).status_code == 200
+
+    event = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+    assert event["request_number"] == 10
+    assert event["max_forwarded_requests"] is None
+    assert event["route_id"] == "ohmycdn"
+    assert event["upstream_host"] == "apic1.ohmycdn.com"
+    serialized = diagnostic_path.read_text(encoding="utf-8")
+    assert "private prompt body" not in serialized
+    assert "grading-private-secret" not in serialized
+    assert "config-private-secret" not in serialized
 
 
 @pytest.mark.parametrize(
@@ -2019,6 +3424,93 @@ def test_main_prepare_orchestrates_exact_authorized_scope(
     assert calls[1][1]["paper_limit"] == 3
     assert calls[2][1]["max_forwarded_requests"] == expected_budget
     assert json.loads(capsys.readouterr().out)["state"] == "runtime_ready"
+
+
+def test_main_prepare_supports_manual_unbounded_count_migration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace = tmp_path / "workspace"
+    source_data = tmp_path / "source-user-data"
+    profile = tmp_path / "api_profiles.json"
+    source_sha = "a" * 40
+    profile_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        acceptance,
+        "prepare_code_workspace",
+        lambda *_args, **_kwargs: {"source_sha": source_sha},
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "prepare_authorized_inputs",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "prepare_runtime_profile",
+        lambda _target, **kwargs: profile_calls.append(dict(kwargs)) or {},
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "configure_staged_runtime",
+        lambda _target: None,
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "build_and_copy_frontend",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "safe_status",
+        lambda _target: {
+            "package": "P2-20",
+            "state": "runtime_ready",
+            "model_request_budget": None,
+            "forwarded_requests": 9,
+            "direct_diagnostic_requests": 1,
+            "total_external_requests": 10,
+        },
+    )
+
+    result = acceptance.main(
+        [
+            "prepare",
+            "--source-ref",
+            source_sha,
+            "--workspace",
+            str(workspace),
+            "--source-data-root",
+            str(source_data),
+            "--session-id",
+            "1",
+            "--session-name",
+            "0609",
+            "--profile-path",
+            str(profile),
+            "--port",
+            "8120",
+            "--unlimited-model-requests",
+            "--initial-model-request-count",
+            "9",
+            "--direct-diagnostic-request-count",
+            "1",
+        ]
+    )
+
+    assert result == 0
+    assert profile_calls == [
+        {
+            "source_profile_path": profile,
+            "proxy_base_url": "http://127.0.0.1:8120/acceptance-llm/v1",
+            "max_forwarded_requests": None,
+            "initial_forwarded_requests": 9,
+            "direct_diagnostic_requests": 1,
+        }
+    ]
+    assert json.loads(capsys.readouterr().out)["total_external_requests"] == 10
 
 
 def test_main_start_returns_after_the_acceptance_service_is_healthy(
