@@ -63,6 +63,12 @@ const active = computed(() => job.value !== null
 const waitingForCancel = computed(() => job.value?.cancel_requested === true
   && (job.value.status === 'queued' || job.value.status === 'running'))
 const refineJob = computed(() => job.value?.payload.mode === 'refine')
+const truncatedFailure = computed(() => {
+  if (job.value?.status !== 'failed' || jobMode.value !== 'whole_document') return false
+  const error = job.value.error?.trim() ?? ''
+  return error.startsWith('模型因输出长度上限停止')
+    || error.startsWith('模型返回的 JSON 结构未闭合')
+})
 const safeDetail = computed(() => {
   const detail = job.value?.detail.trim() ?? ''
   if (!detail || detail.length > 240 || /(?:[a-z]:[\\/]|\\\\|\/[^ ]+\/)/i.test(detail)) return ''
@@ -299,6 +305,10 @@ watch(job, (current, previous) => {
       </p>
       <p v-else-if="safeDetail">{{ safeDetail }}</p>
       <p v-if="mappingNotice" class="config-generation__mapping" role="status">{{ mappingNotice }}</p>
+      <div v-if="truncatedFailure" class="config-generation__warning" role="alert">
+        <p><strong>整卷结果被截断，未发布评分依据。</strong>系统没有自动重试，现有内容也没有作为配置保存。</p>
+        <p>整卷重试会新增 1 次模型调用；逐题生成会按题目产生多次调用，请按本次费用计划主动选择。</p>
+      </div>
 
       <p v-if="configStore.generationSummary" class="config-generation__retained">
         <strong>上一轮已成功 {{ configStore.generationSummary.succeededQuestions }} 题</strong>
@@ -336,14 +346,26 @@ watch(job, (current, previous) => {
           返回编辑器
         </button>
       </div>
-      <button
+      <div
         v-else-if="job.status === 'failed' && jobMode === 'whole_document'"
-        type="button"
-        name="重新整卷生成"
-        class="config-generation__primary"
-        :disabled="submitting || workspacePending"
-        @click="startGeneration('whole_document')"
-      >重新整卷生成</button>
+        class="config-generation__failure-actions"
+      >
+        <button
+          type="button"
+          name="重新整卷生成"
+          class="config-generation__primary"
+          :disabled="submitting || workspacePending"
+          @click="startGeneration('whole_document')"
+        >重新整卷生成</button>
+        <button
+          v-if="truncatedFailure"
+          type="button"
+          name="改用逐题生成"
+          class="config-generation__secondary"
+          :disabled="submitting || workspacePending"
+          @click="startGeneration('per_question')"
+        >改用逐题生成</button>
+      </div>
       <button
         v-else-if="job.status === 'failed'"
         type="button"
@@ -378,6 +400,7 @@ watch(job, (current, previous) => {
 <style scoped>
 .config-generation { min-width: 0; margin-block-start: var(--space-6); border-block-start: var(--border-width) solid var(--color-border-default); }
 .config-generation__modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); margin: 0 0 var(--space-3); padding: var(--space-4); border: var(--border-width) solid var(--color-border-default); background: var(--color-bg-subtle); }
+.config-generation__failure-actions { display: flex; flex-wrap: wrap; gap: var(--space-3); }
 .config-generation__modes legend { padding-inline: var(--space-1); font-weight: var(--font-weight-medium); }
 .config-generation__modes label { display: flex; align-items: flex-start; gap: var(--space-2); min-width: 0; }
 .config-generation__modes span { display: grid; gap: var(--space-1); }
