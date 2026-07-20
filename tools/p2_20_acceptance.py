@@ -41,6 +41,10 @@ SERVER_STOP_FILENAME = "server-stop.request"
 _CONFIG_KEY_RE = re.compile(
     r"^[ \t]*(?P<key>DATA_DIR|LOGS_DIR|[\"']DATA_DIR[\"']|[\"']LOGS_DIR[\"'])[ \t]*:"
 )
+_SAFE_FINISH_REASONS = frozenset(
+    {"stop", "length", "content_filter", "tool_calls", "function_call"}
+)
+_CAPTURE_NEXT_MODEL_REQUEST_ENV = "AI_GRADING_P2_20_CAPTURE_NEXT_MODEL_REQUEST"
 
 
 class AcceptanceError(RuntimeError):
@@ -1383,6 +1387,184 @@ def _write_budget_state(state_path: Path, state: dict[str, int]) -> None:
     temporary.replace(state_path)
 
 
+def _canonical_json_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _nonnegative_int(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, value)
+
+
+def _model_response_diagnostic_fields(content: bytes) -> dict[str, object]:
+    fields: dict[str, object] = {
+        "response_bytes": len(content),
+        "response_sha256": hashlib.sha256(content).hexdigest() if content else "",
+        "finish_reason": "",
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
+    if not content:
+        return fields
+    try:
+        payload = json.loads(content)
+    except (UnicodeError, json.JSONDecodeError):
+        return fields
+    if not isinstance(payload, dict):
+        return fields
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        finish_reason = str(choices[0].get("finish_reason") or "")
+        fields["finish_reason"] = (
+            finish_reason
+            if finish_reason in _SAFE_FINISH_REASONS
+            else ("other" if finish_reason else "")
+        )
+    usage = payload.get("usage")
+    if isinstance(usage, dict):
+        fields["prompt_tokens"] = _nonnegative_int(usage.get("prompt_tokens"))
+        fields["completion_tokens"] = _nonnegative_int(
+            usage.get("completion_tokens")
+        )
+        fields["total_tokens"] = _nonnegative_int(usage.get("total_tokens"))
+    return fields
+
+
+def _prepare_model_proxy_diagnostic_log(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8"):
+        pass
+    path.chmod(0o600)
+
+
+def _prepare_model_request_capture(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
+    if path.exists() or temporary.exists():
+        raise AcceptanceError("model request capture destination is not empty")
+    probe = path.with_suffix(f"{path.suffix}.probe")
+    probe_created = False
+    try:
+        with probe.open("xb") as destination:
+            probe_created = True
+            destination.write(b"capture-ready")
+            destination.flush()
+            os.fsync(destination.fileno())
+        probe.chmod(0o600)
+    finally:
+        if probe_created:
+            probe.unlink(missing_ok=True)
+
+
+def _write_model_request_capture(path: Path, payload: dict[str, object]) -> None:
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
+    if path.exists() or temporary.exists():
+        raise AcceptanceError("model request capture has already been written")
+    payload_bytes = _canonical_json_bytes(payload)
+    try:
+        with temporary.open("xb") as destination:
+            destination.write(payload_bytes)
+            destination.flush()
+            os.fsync(destination.fileno())
+        temporary.chmod(0o600)
+        temporary.replace(path)
+        path.chmod(0o600)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _append_model_proxy_diagnostic(
+    path: Path | None,
+    lock: threading.Lock,
+    event: dict[str, object],
+) -> None:
+    if path is None:
+        return
+    serialized = json.dumps(
+        event,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    with lock:
+        existing = path.read_bytes()
+        temporary = path.with_suffix(f"{path.suffix}.tmp")
+        try:
+            with temporary.open("wb") as destination:
+                destination.write(existing)
+                destination.write(serialized.encode("utf-8"))
+                destination.write(b"\n")
+                destination.flush()
+                os.fsync(destination.fileno())
+            temporary.chmod(0o600)
+            temporary.replace(path)
+            path.chmod(0o600)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+
+
+def _try_append_model_proxy_diagnostic(
+    path: Path | None,
+    lock: threading.Lock,
+    event: dict[str, object],
+) -> None:
+    try:
+        _append_model_proxy_diagnostic(path, lock, event)
+    except OSError as exc:
+        print(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "event": "model_proxy_diagnostic_write_failed",
+                    "error_type": type(exc).__name__,
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def _model_proxy_diagnostic_event(
+    *,
+    payload: dict[str, object],
+    request_number: int,
+    maximum: int,
+    started: float,
+    outcome: str,
+    status_code: int | None,
+    transport_error_type: str = "",
+    response_content: bytes = b"",
+) -> dict[str, object]:
+    payload_bytes = _canonical_json_bytes(payload)
+    return {
+        "schema_version": 1,
+        "event": "model_proxy_forward",
+        "recorded_at_unix_ms": int(round(time.time() * 1000.0)),
+        "outcome": outcome,
+        "upstream_status_code": status_code,
+        "transport_error_type": transport_error_type,
+        "elapsed_ms": max(0, int(round((time.monotonic() - started) * 1000.0))),
+        "model": str(payload.get("model") or ""),
+        "request_number": request_number,
+        "max_forwarded_requests": maximum,
+        "payload_bytes": len(payload_bytes),
+        "payload_sha256": hashlib.sha256(payload_bytes).hexdigest(),
+        **_model_response_diagnostic_fields(response_content),
+    }
+
+
 async def _default_model_forwarder(
     upstream: dict[str, str],
     payload: dict[str, object],
@@ -1390,6 +1572,7 @@ async def _default_model_forwarder(
     import httpx
 
     url = f"{upstream['base_url'].rstrip('/')}/chat/completions"
+    payload_bytes = _canonical_json_bytes(payload)
     try:
         async with httpx.AsyncClient(timeout=600.0) as client:
             response = await client.post(
@@ -1398,7 +1581,7 @@ async def _default_model_forwarder(
                     "Authorization": f"Bearer {upstream['api_key']}",
                     "Content-Type": "application/json",
                 },
-                json=payload,
+                content=payload_bytes,
             )
     except httpx.HTTPError as exc:
         raise AcceptanceError("approved model request failed at the provider") from exc
@@ -1413,6 +1596,8 @@ def create_model_budget_proxy(
     upstream_config_path: Path | str,
     *,
     state_path: Path | str,
+    diagnostic_log_path: Path | str | None = None,
+    request_capture_path: Path | str | None = None,
     forwarder: ModelForwarder | None = None,
 ):
     from fastapi import FastAPI, Header, HTTPException
@@ -1425,6 +1610,22 @@ def create_model_budget_proxy(
     state = _load_budget_state(budget_path, maximum)
     _write_budget_state(budget_path, state)
     state_lock = threading.Lock()
+    diagnostic_lock = threading.Lock()
+    diagnostic_path = (
+        Path(diagnostic_log_path).resolve()
+        if diagnostic_log_path is not None
+        else None
+    )
+    if diagnostic_path is not None:
+        _prepare_model_proxy_diagnostic_log(diagnostic_path)
+    capture_path = (
+        Path(request_capture_path).resolve()
+        if request_capture_path is not None
+        else None
+    )
+    capture_pending = capture_path is not None
+    if capture_path is not None:
+        _prepare_model_request_capture(capture_path)
     dispatch = forwarder or _default_model_forwarder
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -1463,18 +1664,56 @@ def create_model_budget_proxy(
         ]
         if not candidates:
             raise HTTPException(status_code=403, detail="model is outside P2-20 scope")
+        nonlocal capture_pending
         with state_lock:
             if state["forwarded_requests"] >= maximum:
                 raise HTTPException(
                     status_code=429,
                     detail="P2-20 model request budget exhausted",
                 )
+            if capture_pending:
+                assert capture_path is not None
+                _write_model_request_capture(capture_path, payload)
+                capture_pending = False
             state["forwarded_requests"] += 1
+            request_number = state["forwarded_requests"]
             _write_budget_state(budget_path, state)
+        started = time.monotonic()
         try:
             status_code, headers, content = await dispatch(candidates[0], payload)
         except AcceptanceError as exc:
+            cause = exc.__cause__
+            _try_append_model_proxy_diagnostic(
+                diagnostic_path,
+                diagnostic_lock,
+                _model_proxy_diagnostic_event(
+                    payload=payload,
+                    request_number=request_number,
+                    maximum=maximum,
+                    started=started,
+                    outcome="transport_error",
+                    status_code=None,
+                    transport_error_type=type(cause).__name__ if cause else type(exc).__name__,
+                ),
+            )
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+        _try_append_model_proxy_diagnostic(
+            diagnostic_path,
+            diagnostic_lock,
+            _model_proxy_diagnostic_event(
+                payload=payload,
+                request_number=request_number,
+                maximum=maximum,
+                started=started,
+                outcome=(
+                    "success"
+                    if 200 <= status_code < 300
+                    else "upstream_http_error"
+                ),
+                status_code=status_code,
+                response_content=content,
+            ),
+        )
         return Response(
             content=content,
             status_code=status_code,
@@ -1715,9 +1954,16 @@ def create_acceptance_app(
     from fastapi.staticfiles import StaticFiles
 
     app = create_app(path_manager=paths)
+    request_capture_path = (
+        target / "acceptance_evidence" / "model-request-capture.json"
+        if os.getenv(_CAPTURE_NEXT_MODEL_REQUEST_ENV) == "1"
+        else None
+    )
     proxy = create_model_budget_proxy(
         target / "acceptance_config" / "upstream.json",
         state_path=target / "acceptance_config" / "budget-state.json",
+        diagnostic_log_path=target / "acceptance_logs" / "model-proxy.jsonl",
+        request_capture_path=request_capture_path,
     )
     app.mount("/acceptance-llm", proxy, name="p2-20-model-budget")
     app.mount(
