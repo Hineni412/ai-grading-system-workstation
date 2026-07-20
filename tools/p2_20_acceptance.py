@@ -1220,9 +1220,9 @@ def prepare_runtime_profile(
         isinstance(max_forwarded_requests, bool)
         or not isinstance(max_forwarded_requests, int)
         or max_forwarded_requests < 1
-        or max_forwarded_requests > 4
+        or max_forwarded_requests > 5
     ):
-        raise AcceptanceError("model request budget must be between 1 and 4")
+        raise AcceptanceError("model request budget must be between 1 and 5")
     proxy_url = _validate_proxy_base_url(proxy_base_url)
     source_path = Path(source_profile_path).expanduser().resolve()
     if not source_path.is_file() or _is_relative_to(source_path, target):
@@ -1327,7 +1327,7 @@ def _load_upstream_config(path: Path) -> dict[str, object]:
         raise AcceptanceError("acceptance upstream config is invalid")
     if (
         not isinstance(config.get("max_forwarded_requests"), int)
-        or not 1 <= int(config["max_forwarded_requests"]) <= 4
+        or not 1 <= int(config["max_forwarded_requests"]) <= 5
     ):
         raise AcceptanceError("acceptance upstream config is invalid")
     for kind in ("grading", "config"):
@@ -2318,6 +2318,12 @@ def _parser() -> argparse.ArgumentParser:
     prepare.add_argument("--session-name", required=True)
     prepare.add_argument("--profile-path", type=Path, required=True)
     prepare.add_argument("--port", type=int, required=True)
+    prepare.add_argument(
+        "--model-request-budget",
+        type=int,
+        choices=range(1, 6),
+        default=4,
+    )
     serve = subparsers.add_parser("serve")
     serve.add_argument("--workspace", type=Path, required=True)
     serve.add_argument("--port", type=int, required=True)
@@ -2365,7 +2371,7 @@ def main(argv: list[str] | None = None) -> int:
                 proxy_base_url=(
                     f"http://127.0.0.1:{port}/acceptance-llm/v1"
                 ),
-                max_forwarded_requests=4,
+                max_forwarded_requests=args.model_request_budget,
             )
             configure_staged_runtime(args.workspace)
             build_and_copy_frontend(
