@@ -82,7 +82,7 @@ def _source_request(source: ConfigSourceRecord, **overrides: object) -> dict[str
     payload: dict[str, object] = {
         "source_id": source.source_id,
         "source_revision": source.source_revision,
-        "generation_mode": "per_question",
+        "generation_mode": "batched",
         "decisions": [
             {
                 "question_id": source.questions[0].question_id,
@@ -175,7 +175,7 @@ def test_generate_from_source_stages_private_input_and_public_job_is_safe(
     assert response.json()["payload"] == {
         "session_id": session_id,
         "mode": "generate",
-        "generation_mode": "per_question",
+        "generation_mode": "batched",
         "source_id": source.source_id,
         "source_revision": source.source_revision,
     }
@@ -194,7 +194,7 @@ def test_generate_from_source_stages_private_input_and_public_job_is_safe(
     assert "whole_page_images" not in private_input
     assert private_input["source_id"] == source.source_id
     assert private_input["source_revision"] == source.source_revision
-    assert private_input["generation_mode"] == "per_question"
+    assert private_input["generation_mode"] == "batched"
     assert private_input["decisions"] == [
         {"excluded": False, "question_id": "Q1", "question_type": "proof"}
     ]
@@ -217,7 +217,7 @@ def test_latest_generation_job_endpoint_authoritatively_finds_matching_job(
         params={
             "source_id": source.source_id,
             "source_revision": source.source_revision,
-            "generation_mode": "per_question",
+            "generation_mode": "batched",
         },
     )
 
@@ -356,8 +356,7 @@ def test_generation_request_token_rejects_a_different_request(tmp_path: Path) ->
     )
 
     assert first.status_code == 202
-    assert conflict.status_code == 409
-    assert conflict.json()["error"]["code"] == "config_request_token_conflict"
+    assert conflict.status_code == 422
     manager.wait(first.json()["id"], timeout=5)
 
 
@@ -440,7 +439,7 @@ def test_source_config_job_public_detail_is_fixed_and_path_free(
         {
             "session_id": 7,
             "mode": mode,
-            "generation_mode": "per_question",
+            "generation_mode": "batched",
             "source_id": "b" * 32,
             "source_revision": "c" * 64,
             "input_id": "a" * 32,
@@ -818,13 +817,16 @@ def test_config_generation_retry_route_accepts_partial_source_job(tmp_path: Path
             "session_id": session_id,
             "outcome": "partial",
             "failed_question_ids": ["Q1", "Q2"],
+            "failed_batches": [
+                {"batch_id": "B001", "question_ids": ["Q1", "Q2"]}
+            ],
             "retryable": True,
         },
     )
 
     request = {
         "source_job_id": source.id,
-        "retry_question_ids": ["Q2"],
+        "retry_question_ids": ["Q1", "Q2"],
         "client_request_token": "d" * 32,
     }
     response = client.post(
@@ -842,7 +844,7 @@ def test_config_generation_retry_route_accepts_partial_source_job(tmp_path: Path
     assert response.json()["payload"] == {
         "session_id": session_id,
         "mode": "retry",
-        "generation_mode": "per_question",
+        "generation_mode": "batched",
         "source_id": "b" * 32,
         "source_revision": "c" * 64,
     }
@@ -850,6 +852,118 @@ def test_config_generation_retry_route_accepts_partial_source_job(tmp_path: Path
     assert stored is not None
     assert stored.payload["input_id"] == "a" * 32
     assert "input_id" not in response.json()["payload"]
+
+
+def test_config_generation_retry_rejects_part_of_a_failed_batch(tmp_path: Path) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = manager.store.create_job(
+        "config_generation",
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": "a" * 32,
+        },
+    )
+    manager.store.finish(
+        source.id,
+        "succeeded",
+        result={
+            "session_id": session_id,
+            "outcome": "partial",
+            "failed_question_ids": ["Q1", "Q2"],
+            "failed_batches": [
+                {"batch_id": "B001", "question_ids": ["Q1", "Q2"]}
+            ],
+            "retryable": True,
+        },
+    )
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate/retry",
+        json={"source_job_id": source.id, "retry_question_ids": ["Q2"]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "config_generation_retry_not_available"
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_config_generation_retry_accepts_checkpointed_terminal_job(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = manager.store.create_job(
+        "config_generation",
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": "a" * 32,
+        },
+    )
+    manager.store.finish(
+        source.id,
+        status,
+        result={
+            "session_id": session_id,
+            "outcome": "partial",
+            "failed_question_ids": ["Q1"],
+            "failed_batches": [
+                {"batch_id": "B001", "question_ids": ["Q1"]}
+            ],
+            "retryable": True,
+        },
+    )
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate/retry",
+        json={"source_job_id": source.id, "retry_question_ids": ["Q1"]},
+    )
+
+    assert response.status_code == 202
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_config_generation_retry_accepts_complete_checkpoint_for_local_publish(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = manager.store.create_job(
+        "config_generation",
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": "a" * 32,
+        },
+    )
+    manager.store.finish(
+        source.id,
+        status,
+        result={
+            "session_id": session_id,
+            "outcome": "complete",
+            "failed_question_ids": [],
+            "failed_batches": [],
+            "retryable": False,
+        },
+    )
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate/retry",
+        json={"source_job_id": source.id},
+    )
+
+    assert response.status_code == 202
+    stored = manager.get(response.json()["id"])
+    assert stored is not None
+    assert "retry_question_ids" not in stored.payload
 
 
 def test_config_generation_retry_route_returns_404_for_missing_source_job(
@@ -877,7 +991,7 @@ def test_config_generation_retry_source_cannot_be_replayed(
         {
             "session_id": session_id,
             "mode": "generate",
-            "generation_mode": "per_question",
+            "generation_mode": "batched",
             "source_id": "b" * 32,
             "source_revision": "c" * 64,
             "input_id": "a" * 32,
@@ -890,6 +1004,9 @@ def test_config_generation_retry_source_cannot_be_replayed(
             "session_id": session_id,
             "outcome": "partial",
             "failed_question_ids": ["Q1"],
+            "failed_batches": [
+                {"batch_id": "B001", "question_ids": ["Q1"]}
+            ],
             "retryable": True,
         },
     )

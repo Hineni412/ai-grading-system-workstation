@@ -80,6 +80,16 @@ class JobManager:
                 if interrupted_input_root is not None
                 else set()
             )
+            protected_input_ids: set[str] = set()
+            if interrupted_input_root is not None:
+                from .config_generation import (
+                    preserve_interrupted_config_generation_checkpoints,
+                )
+
+                protected_input_ids = preserve_interrupted_config_generation_checkpoints(
+                    interrupted_input_root,
+                    self.store,
+                )
             self.store.fail_interrupted_jobs()
             if interrupted_input_root is not None:
                 from .config_generation import (
@@ -87,7 +97,7 @@ class JobManager:
                     discard_config_generation_input,
                 )
 
-                for input_id in owned_input_ids:
+                for input_id in owned_input_ids - protected_input_ids:
                     discard_config_generation_input(interrupted_input_root, input_id)
                 cleanup_consumed_config_retry_artifacts(
                     interrupted_input_root,

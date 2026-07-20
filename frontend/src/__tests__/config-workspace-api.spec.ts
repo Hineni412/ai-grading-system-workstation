@@ -8,6 +8,7 @@ import {
   fetchConfigSource,
   fetchConfigSourceSubmission,
   refineConfigEditor,
+  retryConfigGeneration,
   saveConfigEditor,
   submitConfigGeneration,
   uploadConfigSource,
@@ -161,6 +162,17 @@ describe('configuration workspace API', () => {
     ])
   })
 
+  it('omits question ids when resuming an all-succeeded local checkpoint', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(response(job, 202))
+
+    await expect(retryConfigGeneration(7, 31, [], '8'.repeat(32))).resolves.toEqual(job)
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      source_job_id: 31,
+      client_request_token: '8'.repeat(32),
+    })
+  })
+
   it('never retries a raw upload write failure', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('offline'))
     await expect(uploadConfigSource(7, new File(['x'], 'a.pdf'))).rejects.toMatchObject({
@@ -209,7 +221,7 @@ describe('configuration workspace API', () => {
     await expect(submitConfigGeneration(7, {
       source_id: source.source_id,
       source_revision: source.source_revision,
-      generation_mode: 'per_question',
+      generation_mode: 'batched',
       decisions: [{ question_id: 'Q1', question_type: 'calculation', excluded: false }],
     })).resolves.toEqual(job)
     await expect(fetchConfigEditor(7)).resolves.toEqual(editor)
@@ -284,7 +296,7 @@ describe('configuration workspace API', () => {
     await expect(submitConfigGeneration(7, {
       source_id: source.source_id,
       source_revision: source.source_revision,
-      generation_mode: 'per_question',
+      generation_mode: 'batched',
       decisions: [],
     })).rejects.toMatchObject({ kind: 'contract', code: 'invalid_success_contract' })
   })
