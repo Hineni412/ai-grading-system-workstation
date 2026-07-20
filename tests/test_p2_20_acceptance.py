@@ -1115,8 +1115,10 @@ def test_prepare_runtime_profile_rejects_unsupported_or_unconfigured_provider(
     assert acceptance.load_metadata(workspace)["state"] == "inputs_prepared"
 
 
-def test_model_budget_proxy_stubs_ocr_and_hard_stops_after_four_forwards(
+@pytest.mark.parametrize("budget", [4, 5])
+def test_model_budget_proxy_stubs_ocr_and_hard_stops_at_explicit_budget(
     tmp_path: Path,
+    budget: int,
 ) -> None:
     upstream_path = tmp_path / "upstream.json"
     upstream_path.write_text(
@@ -1132,7 +1134,7 @@ def test_model_budget_proxy_stubs_ocr_and_hard_stops_after_four_forwards(
                     "api_key": "config-secret",
                     "model": "shared-model",
                 },
-                "max_forwarded_requests": 4,
+                "max_forwarded_requests": budget,
             }
         ),
         encoding="utf-8",
@@ -1174,7 +1176,7 @@ def test_model_budget_proxy_stubs_ocr_and_hard_stops_after_four_forwards(
     assert ocr.json()["choices"][0]["message"]["content"] == "NOT_FOUND"
     assert forwarded == []
 
-    for _ in range(4):
+    for _ in range(budget):
         response = client.post(
             "/v1/chat/completions",
             headers=headers,
@@ -1187,7 +1189,7 @@ def test_model_budget_proxy_stubs_ocr_and_hard_stops_after_four_forwards(
         json={"model": "shared-model", "messages": []},
     )
     assert blocked.status_code == 429
-    assert len(forwarded) == 4
+    assert len(forwarded) == budget
     assert all(
         item["upstream"]["api_key"] in {"grading-secret", "config-secret"}
         for item in forwarded
@@ -1196,9 +1198,9 @@ def test_model_budget_proxy_stubs_ocr_and_hard_stops_after_four_forwards(
         (tmp_path / "budget-state.json").read_text(encoding="utf-8")
     )
     assert state == {
-        "forwarded_requests": 4,
+        "forwarded_requests": budget,
         "local_ocr_requests": 1,
-        "max_forwarded_requests": 4,
+        "max_forwarded_requests": budget,
     }
     assert "secret" not in blocked.text
 
@@ -1387,10 +1389,19 @@ def test_create_acceptance_app_rejects_missing_frontend_dist(tmp_path: Path) -> 
         acceptance.create_acceptance_app(workspace)
 
 
+@pytest.mark.parametrize(
+    ("budget_args", "expected_budget"),
+    [
+        ([], 4),
+        (["--model-request-budget", "5"], 5),
+    ],
+)
 def test_main_prepare_orchestrates_exact_authorized_scope(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    budget_args: list[str],
+    expected_budget: int,
 ) -> None:
     workspace = tmp_path / "workspace"
     source_data = tmp_path / "source-user-data"
@@ -1460,6 +1471,7 @@ def test_main_prepare_orchestrates_exact_authorized_scope(
             str(profile),
             "--port",
             "8120",
+            *budget_args,
         ]
     )
 
@@ -1472,7 +1484,7 @@ def test_main_prepare_orchestrates_exact_authorized_scope(
         "build",
     ]
     assert calls[1][1]["paper_limit"] == 3
-    assert calls[2][1]["max_forwarded_requests"] == 4
+    assert calls[2][1]["max_forwarded_requests"] == expected_budget
     assert json.loads(capsys.readouterr().out)["state"] == "runtime_ready"
 
 
