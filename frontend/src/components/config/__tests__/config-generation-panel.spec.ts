@@ -345,6 +345,34 @@ describe('ConfigGenerationPanel', () => {
     expect(retryer).not.toHaveBeenCalled()
   })
 
+  it('explains truncation and lets the user explicitly switch to per-question generation', async () => {
+    const submitter = vi.fn(async (_sessionId: number, _request: ConfigGenerationRequest) => {
+      void _sessionId
+      void _request
+      return job({ id: 32, status: 'queued', progress: 0 })
+    })
+    const configStore = useConfigWorkspaceStore()
+    useJobStore().track(job({
+      status: 'failed', payload: { ...job().payload, generation_mode: 'whole_document' },
+      error: '模型因输出长度上限停止，返回结果不完整（响应摘要: private-hash）。',
+      finished_at: '2026-07-15T00:01:00Z',
+    }))
+    configStore.attachJob(31, configStore.captureGenerationContext())
+    const mounted = await mountPanel({ submitter })
+
+    expect(mounted.host.textContent).toContain('整卷结果被截断，未发布评分依据')
+    expect(mounted.host.textContent).toContain('系统没有自动重试')
+    expect(mounted.host.textContent).toContain('整卷重试会新增 1 次模型调用')
+    expect(mounted.host.textContent).toContain('逐题生成会按题目产生多次调用')
+    expect(mounted.host.textContent).not.toContain('private-hash')
+    expect(mounted.host.querySelector('button[name="重新整卷生成"]')).not.toBeNull()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="改用逐题生成"]')!.click()
+    await settle()
+
+    expect(submitter).toHaveBeenCalledOnce()
+    expect(submitter.mock.calls[0]?.[1]).toMatchObject({ generation_mode: 'per_question' })
+  })
+
   it('keeps refine failures in the editor workflow without offering generation retry', async () => {
     const submitter = vi.fn()
     const configStore = useConfigWorkspaceStore()

@@ -40,6 +40,18 @@ _SOURCE_CONFIG_PUBLIC_DETAILS = {
     "旧版整卷修复": "Generating grading configuration.",
     "PDF 整卷视觉单次请求": "Generating grading configuration.",
 }
+_CONFIG_TRUNCATION_PUBLIC_ERRORS = {
+    "模型因输出长度上限停止": (
+        "模型因输出长度上限停止，整卷结果不完整；未发布配置，也未自动重试。"
+        "请更换支持更大输出的模型后手动重试，或明确选择逐题生成"
+        "（会增加模型调用次数）。"
+    ),
+    "模型返回的 JSON 结构未闭合": (
+        "模型返回的 JSON 结构未闭合，整卷结果疑似被截断；"
+        "未发布配置，也未自动重试。请更换支持更大输出的模型后手动重试，"
+        "或明确选择逐题生成（会增加模型调用次数）。"
+    ),
+}
 
 def _job_response(job: JobRecord) -> JobResponse:
     return JobResponse(
@@ -205,6 +217,10 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
 def public_job_error(job: JobRecord) -> str | None:
     if not job.error:
         return None
+    if job.job_type == "config_generation" and job.status == "failed":
+        for prefix, public_error in _CONFIG_TRUNCATION_PUBLIC_ERRORS.items():
+            if job.error.startswith(prefix):
+                return public_error
     if job.status == "failed":
         return "Job failed; see local logs for details."
     return "Job ended with an internal error; see local logs for details."

@@ -120,7 +120,10 @@ function job(id: number, mode: Mode) {
     status: partial || complete ? 'succeeded' : failed ? 'failed' : 'running',
     progress: partial || complete || failed ? 1 : 0.35,
     stage: failed ? 'failed' : complete ? 'complete' : partial ? 'partial' : 'generating',
-    detail: failed ? '整卷生成未完成' : '', error: failed ? 'synthetic failure' : null,
+    detail: failed ? '整卷生成未完成' : '',
+    error: failed
+      ? '模型因输出长度上限停止，返回结果不完整（响应摘要: synthetic-private-hash）。'
+      : null,
     cancel_requested: false, created_at: '2026-07-15T08:01:00Z',
     started_at: '2026-07-15T08:01:01Z', updated_at: `2026-07-15T08:01:${String(id).padStart(2, '0')}Z`,
     finished_at: partial || complete || failed ? '2026-07-15T08:02:00Z' : null,
@@ -333,14 +336,17 @@ test('expanded rubric policy fields submit exact row-id edits', async ({ page })
   }))
 })
 
-test('whole-document failure waits for an explicit manual retry', async ({ page }) => {
+test('whole-document truncation waits for an explicit user-selected fallback', async ({ page }) => {
   const state = await installConfigWorkspaceMockApi(page, { initialSessions: true, firstGeneration: 'whole-fail' })
   await openSeededWorkspace(page, state)
   await page.getByLabel('整卷单次生成').check()
   await page.getByRole('button', { name: '开始生成' }).click()
   await expect(page.getByText('生成失败')).toBeVisible()
+  await expect(page.getByText('整卷结果被截断，未发布评分依据。')).toBeVisible()
+  await expect(page.getByText('系统没有自动重试', { exact: false })).toBeVisible()
+  await expect(page.getByText('synthetic-private-hash')).toHaveCount(0)
   expect(state.generationRequests).toBe(1)
-  await page.getByRole('button', { name: '重新整卷生成' }).click()
+  await page.getByRole('button', { name: '改用逐题生成' }).click()
   await expect(page.getByRole('heading', { name: '编辑评分依据' })).toBeVisible()
   expect(state.generationRequests).toBe(2)
 })
