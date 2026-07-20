@@ -120,7 +120,7 @@ function parsePersisted(raw: string | null): PersistedConfigWorkspace | null {
       || (item.jobId !== null && !positiveInteger(item.jobId))
       || !Array.isArray(item.decisions) || !item.decisions.every(validDecision)
       || ('pendingGenerationMode' in item
-        && !['per_question', 'whole_document'].includes(String(item.pendingGenerationMode)))
+        && !['batched', 'per_question', 'whole_document'].includes(String(item.pendingGenerationMode)))
       || ('pendingJobRequestToken' in item
         && !/^[0-9a-f]{32}$/.test(String(item.pendingJobRequestToken)))
       || ('pendingJobRequestKind' in item
@@ -130,6 +130,8 @@ function parsePersisted(raw: string | null): PersistedConfigWorkspace | null {
       || ('generationSummary' in item && !validGenerationSummary(item.generationSummary))) return null
     if (('pendingJobRequestToken' in item) !== ('pendingJobRequestKind' in item)) return null
     if ((item.sourceId === null) !== (item.sourceRevision === null)) return null
+    if (item.pendingGenerationMode === 'per_question'
+      || item.pendingGenerationMode === 'whole_document') item.pendingGenerationMode = 'batched'
     return item as unknown as PersistedConfigWorkspace
   } catch {
     return null

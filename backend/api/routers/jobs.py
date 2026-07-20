@@ -42,14 +42,13 @@ _SOURCE_CONFIG_PUBLIC_DETAILS = {
 }
 _CONFIG_TRUNCATION_PUBLIC_ERRORS = {
     "模型因输出长度上限停止": (
-        "模型因输出长度上限停止，整卷结果不完整；未发布配置，也未自动重试。"
-        "请更换支持更大输出的模型后手动重试，或明确选择逐题生成"
-        "（会增加模型调用次数）。"
+        "模型因输出长度上限停止，当前批次结果不完整；未发布配置，也未自动重试。"
+        "请手动重试失败批次；已经成功的批次不会重复请求。"
     ),
     "模型返回的 JSON 结构未闭合": (
-        "模型返回的 JSON 结构未闭合，整卷结果疑似被截断；"
-        "未发布配置，也未自动重试。请更换支持更大输出的模型后手动重试，"
-        "或明确选择逐题生成（会增加模型调用次数）。"
+        "模型返回的 JSON 结构未闭合，当前批次结果疑似被截断；"
+        "未发布配置，也未自动重试。请手动重试失败批次；"
+        "已经成功的批次不会重复请求。"
     ),
 }
 
@@ -188,6 +187,9 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
             "generated_questions",
             "failed_count",
             "failed_question_ids",
+            "failed_batch_count",
+            "failed_batches",
+            "local_json_repairs",
             "retryable",
             "mapping_status",
             "mapping_message",
