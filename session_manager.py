@@ -1132,7 +1132,7 @@ def generate_grading_config_in_batches(
         report=report,
         q_images=q_images,
         batch_size=clean_size,
-        retry_batch_ids=None,
+        retry_question_ids=None,
         checkpoint=checkpoint,
     )
 
@@ -1176,7 +1176,9 @@ def retry_failed_grading_config_batches(
         raise ValueError("失败批次记录已损坏，请重新开始分批生成。")
 
     if retry_question_ids is None:
-        selected_batch_ids = list(failed_by_id)
+        selected_question_ids = {
+            qid for ids in failed_by_id.values() for qid in ids
+        }
     else:
         selected_ids = list(
             dict.fromkeys(str(qid).strip() for qid in retry_question_ids if str(qid).strip())
@@ -1192,6 +1194,7 @@ def retry_failed_grading_config_batches(
         }
         if not selected_set or selected_set != expected_set:
             raise ValueError("只能按完整失败批次重试，不能只选择批次中的部分题目。")
+        selected_question_ids = expected_set
 
     existing_size = meta.get("batch_size") if isinstance(meta, dict) else None
     try:
@@ -1211,7 +1214,7 @@ def retry_failed_grading_config_batches(
         report=report,
         q_images=q_images,
         batch_size=batch_size,
-        retry_batch_ids=set(selected_batch_ids),
+        retry_question_ids=selected_question_ids,
         checkpoint=checkpoint,
     )
 
@@ -1232,11 +1235,28 @@ def _run_config_generation_batches(
     report: Any,
     q_images: dict[str, Any] | None,
     batch_size: int,
-    retry_batch_ids: set[str] | None,
+    retry_question_ids: set[str] | None,
     checkpoint: Callable[[dict[str, Any]], None] | None,
 ) -> dict[str, Any]:
     _validate_unique_batch_question_ids(question_blocks)
     _validate_image_semantic_inputs(question_blocks, q_images)
+    batch_groups: list[list[dict[str, Any]]] = []
+    objective_group: list[dict[str, Any]] = []
+    for block in question_blocks:
+        question_type = str(block.get("question_type") or "").strip().lower()
+        if question_type in {"choice", "fill_blank"}:
+            objective_group.append(block)
+            if len(objective_group) >= batch_size:
+                batch_groups.append(objective_group)
+                objective_group = []
+            continue
+        if objective_group:
+            batch_groups.append(objective_group)
+            objective_group = []
+        batch_groups.append([block])
+    if objective_group:
+        batch_groups.append(objective_group)
+
     batches = [
         {
             "batch_id": f"B{index + 1:03d}",
@@ -1245,8 +1265,7 @@ def _run_config_generation_batches(
             ],
             "blocks": group,
         }
-        for index, start in enumerate(range(0, len(question_blocks), batch_size))
-        for group in [question_blocks[start : start + batch_size]]
+        for index, group in enumerate(batch_groups)
     ]
     merged = copy.deepcopy(existing_payload) if existing_payload is not None else {
         "rubric": {"exam_title": "generated", "total_score": 100, "questions": []},
@@ -1254,10 +1273,19 @@ def _run_config_generation_batches(
         "meta": {"warnings": []},
     }
     states = _existing_batch_states(merged)
-    targets = [
-        batch for batch in batches
-        if retry_batch_ids is None or batch["batch_id"] in retry_batch_ids
-    ]
+    if retry_question_ids is None:
+        targets = list(batches)
+    else:
+        targets = [
+            batch
+            for batch in batches
+            if set(batch["question_ids"]).issubset(retry_question_ids)
+        ]
+        targeted_question_ids = {
+            qid for batch in targets for qid in batch["question_ids"]
+        }
+        if targeted_question_ids != retry_question_ids:
+            raise ValueError("旧草稿的失败题目不能安全映射到新的分批规则。")
     total_targets = len(targets)
     for completed, batch in enumerate(targets, start=1):
         batch_id = str(batch["batch_id"])

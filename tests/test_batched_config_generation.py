@@ -10,25 +10,40 @@ import session_manager
 
 
 def _blocks(count: int) -> list[dict[str, object]]:
+    def question_type(index: int) -> str:
+        if index <= 6:
+            return "choice"
+        if index <= 9:
+            return "fill_blank"
+        return "calculation"
+
     return [
         {
             "question_id": f"Q{index}",
-            "question_type": "choice" if index <= 6 else "calculation",
+            "question_type": question_type(index),
             "question_type_confirmed": True,
             "text": f"Question {index}",
-            "answer_text": "A" if index <= 6 else str(index),
+            "answer_text": "A" if index <= 9 else str(index),
         }
         for index in range(1, count + 1)
     ]
 
 
 def _batch_payload(question_ids: list[str]) -> dict:
+    def question_type(question_id: str) -> str:
+        index = int(question_id[1:])
+        if index <= 6:
+            return "choice"
+        if index <= 9:
+            return "fill_blank"
+        return "calculation"
+
     return {
         "rubric": {
             "questions": [
                 {
                     "question_id": qid,
-                    "question_type": "choice" if int(qid[1:]) <= 6 else "calculation",
+                    "question_type": question_type(qid),
                     "knowledge_id": f"K-{qid}",
                     "knowledge_name": f"Knowledge {qid}",
                     "max_score": 1,
@@ -148,7 +163,7 @@ class FakeBatchClient:
         raise AssertionError("batch generation must not make an extra AI scoring/repair call")
 
 
-def test_twelve_questions_use_four_batches_then_one_ai_score_allocation() -> None:
+def test_twelve_questions_send_constructed_response_questions_one_per_batch() -> None:
     client = FakeBatchClient()
     checkpoints: list[dict] = []
 
@@ -163,10 +178,12 @@ def test_twelve_questions_use_four_batches_then_one_ai_score_allocation() -> Non
         ("Q1", "Q2", "Q3"),
         ("Q4", "Q5", "Q6"),
         ("Q7", "Q8", "Q9"),
-        ("Q10", "Q11", "Q12"),
+        ("Q10",),
+        ("Q11",),
+        ("Q12",),
     ]
     assert client.score_calls == 1
-    assert len(checkpoints) == 6
+    assert len(checkpoints) == 8
     assert payload["meta"]["generation_mode"] == "batched"
     assert payload["meta"]["score_allocation_mode"] == "dedicated_ai_scoring"
     assert payload["meta"]["score_allocation_ai_success"] is True
@@ -237,7 +254,9 @@ def test_score_allocation_failure_preserves_batches_and_retries_only_scoring() -
         ("Q1", "Q2", "Q3"),
         ("Q4", "Q5", "Q6"),
         ("Q7", "Q8", "Q9"),
-        ("Q10", "Q11", "Q12"),
+        ("Q10",),
+        ("Q11",),
+        ("Q12",),
     ]
     assert failed_client.score_calls == 1
     assert pending["meta"]["failed_batches"] == []
@@ -362,6 +381,79 @@ def test_failed_batch_is_retained_and_retry_only_calls_that_complete_batch() -> 
     assert completed["meta"]["failed_question_ids"] == []
 
 
+def test_legacy_failed_big_question_batch_resumes_as_three_single_question_batches() -> None:
+    successful_ids = [f"Q{index}" for index in range(1, 10)]
+    successful_payload = _batch_payload(successful_ids)
+    legacy_partial = {
+        "rubric": {
+            "exam_title": "generated",
+            "total_score": 100,
+            "questions": successful_payload["rubric"]["questions"],
+        },
+        "answer_key": successful_payload["answer_key"],
+        "meta": {
+            "generation_mode": "batched",
+            "batch_size": 3,
+            "batches": [
+                {
+                    "batch_id": "B001",
+                    "question_ids": ["Q1", "Q2", "Q3"],
+                    "status": "succeeded",
+                },
+                {
+                    "batch_id": "B002",
+                    "question_ids": ["Q4", "Q5", "Q6"],
+                    "status": "succeeded",
+                },
+                {
+                    "batch_id": "B003",
+                    "question_ids": ["Q7", "Q8", "Q9"],
+                    "status": "succeeded",
+                },
+                {
+                    "batch_id": "B004",
+                    "question_ids": ["Q10", "Q11", "Q12"],
+                    "status": "failed",
+                    "category": "transient_network",
+                    "error": "模型请求暂时失败（HTTP 502）",
+                },
+            ],
+            "failed_batches": [
+                {
+                    "batch_id": "B004",
+                    "question_ids": ["Q10", "Q11", "Q12"],
+                    "category": "transient_network",
+                    "error": "模型请求暂时失败（HTTP 502）",
+                }
+            ],
+            "failed_question_ids": ["Q10", "Q11", "Q12"],
+        },
+    }
+    before = {
+        item["question_id"]: copy.deepcopy(item)
+        for item in legacy_partial["rubric"]["questions"]
+    }
+    client = FakeBatchClient()
+
+    completed = session_manager.retry_failed_grading_config_batches(
+        legacy_partial,
+        _blocks(12),
+        "document",
+        llm_client=client,
+        retry_question_ids=["Q10", "Q11", "Q12"],
+    )
+
+    assert client.calls == [("Q10",), ("Q11",), ("Q12",)]
+    assert client.score_calls == 1
+    after = {
+        item["question_id"]: item for item in completed["rubric"]["questions"]
+    }
+    for question_id, question in before.items():
+        assert after[question_id]["knowledge_id"] == question["knowledge_id"]
+        assert after[question_id]["knowledge_name"] == question["knowledge_name"]
+    assert completed["meta"]["failed_batches"] == []
+
+
 def test_already_ai_scored_checkpoint_resumes_without_another_model_call() -> None:
     initial_client = FakeBatchClient()
     checkpoint = session_manager.generate_grading_config_in_batches(
@@ -446,6 +538,6 @@ def test_pdf_image_batch_does_not_send_extracted_text() -> None:
 
     assert client.calls == [
         ("Q1", "Q2", "Q3"), ("Q4", "Q5", "Q6"),
-        ("Q7", "Q8", "Q9"), ("Q10", "Q11", "Q12"),
+        ("Q7", "Q8", "Q9"), ("Q10",), ("Q11",), ("Q12",),
     ]
     assert all("PRIVATE_EXTRACTED_PDF_TEXT" not in prompt for prompt in client.prompts)

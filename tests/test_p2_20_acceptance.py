@@ -1115,7 +1115,7 @@ def test_prepare_runtime_profile_rejects_unsupported_or_unconfigured_provider(
     assert acceptance.load_metadata(workspace)["state"] == "inputs_prepared"
 
 
-@pytest.mark.parametrize("budget", [4, 5, 6])
+@pytest.mark.parametrize("budget", [4, 5, 6, 9])
 def test_model_budget_proxy_stubs_ocr_and_hard_stops_at_explicit_budget(
     tmp_path: Path,
     budget: int,
@@ -1395,6 +1395,7 @@ def test_create_acceptance_app_rejects_missing_frontend_dist(tmp_path: Path) -> 
         ([], 4),
         (["--model-request-budget", "5"], 5),
         (["--model-request-budget", "6"], 6),
+        (["--model-request-budget", "9"], 9),
     ],
 )
 def test_main_prepare_orchestrates_exact_authorized_scope(
