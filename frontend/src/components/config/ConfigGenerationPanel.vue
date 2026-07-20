@@ -346,7 +346,7 @@ watch(job, (current, previous) => {
         </button>
       </div>
 
-      <div v-if="['succeeded', 'failed', 'cancelled'].includes(job.status) && outcome === 'partial' && scoreAllocationPending" class="config-generation__partial">
+      <div v-if="['succeeded', 'failed', 'cancelled'].includes(job.status) && outcome === 'partial' && failedBatches.length === 0 && scoreAllocationPending" class="config-generation__partial">
         <p>
           <strong>{{ generatedCount }} 道题的批次结果已经保存在本机。</strong>
           <template v-if="scoreAllocationFailed">AI 统一配分没有成功；没有发布评分依据，也没有使用本地分数替代。</template>

@@ -271,6 +271,7 @@ describe('ConfigGenerationPanel', () => {
           { batch_id: 'B001', question_ids: ['Q2'] },
           { batch_id: 'B002', question_ids: ['Q5'] },
         ],
+        score_allocation_pending: true,
       }, finished_at: '2026-07-15T00:01:00Z',
     }))
     configStore.attachJob(31, configStore.captureGenerationContext())
@@ -279,6 +280,7 @@ describe('ConfigGenerationPanel', () => {
     expect(mounted.host.textContent).toContain('已成功 3 题')
     expect(mounted.host.textContent).toContain('失败 2 题')
     expect(mounted.host.querySelectorAll('input[type="checkbox"]')).toHaveLength(2)
+    expect(mounted.host.querySelector('button[name="重新进行 AI 统一配分"]')).toBeNull()
     mounted.host.querySelector<HTMLInputElement>('[aria-label="选择失败批次 B002"]')!.click()
     await nextTick()
     mounted.host.querySelector<HTMLButtonElement>('button[name="重试所选批次"]')!.click()

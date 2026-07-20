@@ -339,6 +339,8 @@ def test_failed_batch_is_retained_and_retry_only_calls_that_complete_batch() -> 
             "error": "模型返回非 JSON；响应字符数: 10；响应摘要: " + "a" * 64,
         }
     ]
+    assert partial["meta"]["score_allocation_pending"] is False
+    assert partial["meta"]["score_allocation_failed"] is False
     successful_before = copy.deepcopy(partial["rubric"]["questions"])
 
     retry_client = FakeBatchClient()
