@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -9,6 +10,26 @@ from usage_logger import log_llm_usage
 
 
 logger = logging.getLogger(__name__)
+_SAFE_FINISH_REASONS = frozenset(
+    {
+        "stop",
+        "length",
+        "content_filter",
+        "tool_calls",
+        "function_call",
+        "max_tokens",
+        "max_completion_tokens",
+        "max_output_tokens",
+    }
+)
+_TRUNCATION_FINISH_REASONS = frozenset(
+    {
+        "length",
+        "max_tokens",
+        "max_completion_tokens",
+        "max_output_tokens",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +48,10 @@ class LLMUsageEvent:
     cached_tokens: int = 0
     reasoning_tokens: int = 0
     total_tokens: int = 0
+    finish_reason: str = ""
+    output_truncated: bool = False
+    response_chars: int = 0
+    response_sha256: str = ""
 
 
 def _value(source: object, *names: str) -> object:
@@ -78,6 +103,115 @@ def usage_fields(response_or_usage: object) -> dict[str, int]:
             or 0
         ),
         "total_tokens": int(_value(usage, "total_tokens") or 0),
+    }
+
+
+def _optional_value(source: object, name: str) -> object | None:
+    if isinstance(source, Mapping):
+        return source.get(name)
+    return getattr(source, name, None)
+
+
+def _normalized_response_text(response: object) -> str:
+    choices = _optional_value(response, "choices") or []
+    if choices:
+        first = choices[0]
+        message = _optional_value(first, "message")
+        content = _optional_value(message, "content") if message is not None else None
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                    continue
+                text = _optional_value(item, "text")
+                if isinstance(text, str):
+                    parts.append(text)
+            return "\n".join(parts)
+    output_text = _optional_value(response, "output_text")
+    return output_text if isinstance(output_text, str) else ""
+
+
+def is_truncation_finish_reason(value: object) -> bool:
+    return str(value or "").strip().lower() in _TRUNCATION_FINISH_REASONS
+
+
+def looks_like_truncated_json_object(text: str) -> bool:
+    cleaned = str(text or "").strip().lstrip("\ufeff")
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+    if cleaned.lower().startswith("json\n"):
+        cleaned = cleaned[5:].strip()
+    if not cleaned.startswith("{"):
+        return False
+
+    stack: list[str] = []
+    pairs = {"}": "{", "]": "["}
+    in_string = False
+    escape = False
+    for char in cleaned:
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char in "{[":
+            stack.append(char)
+            continue
+        if char in "}]":
+            if not stack or stack[-1] != pairs[char]:
+                return False
+            stack.pop()
+            if not stack:
+                return False
+    return bool(stack)
+
+
+def response_diagnostics(response: object) -> dict[str, object]:
+    choices = _optional_value(response, "choices") or []
+    finish_reason = ""
+    if choices:
+        raw_reason = _optional_value(choices[0], "finish_reason")
+        if raw_reason is not None:
+            finish_reason = str(raw_reason)
+    if not finish_reason:
+        incomplete = _optional_value(response, "incomplete_details")
+        raw_reason = (
+            _optional_value(incomplete, "reason")
+            if incomplete is not None
+            else None
+        )
+        if raw_reason is not None:
+            finish_reason = str(raw_reason)
+
+    text = _normalized_response_text(response)
+    normalized_reason = finish_reason.strip().lower()
+    if normalized_reason and normalized_reason not in _SAFE_FINISH_REASONS:
+        normalized_reason = "unknown"
+    finish_reason = normalized_reason
+    output_truncated = is_truncation_finish_reason(
+        normalized_reason
+    ) or looks_like_truncated_json_object(text)
+    return {
+        "finish_reason": finish_reason,
+        "output_truncated": output_truncated,
+        "response_chars": len(text),
+        "response_sha256": (
+            hashlib.sha256(text.encode("utf-8")).hexdigest() if text else ""
+        ),
     }
 
 
