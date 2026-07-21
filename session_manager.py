@@ -2451,6 +2451,15 @@ def _looks_like_serialized_answer_list(value: Any) -> bool:
     return bool(re.fullmatch(r"\s*\[[\s\S]*\]\s*", str(value or "")))
 
 
+def _looks_like_serialized_knowledge_sequence(value: Any) -> bool:
+    return bool(
+        re.fullmatch(
+            r"\s*(?:\[[\s\S]*\]|\([\s\S]*\))\s*",
+            str(value or ""),
+        )
+    )
+
+
 def _normalize_serialized_answer_list(value: Any) -> str:
     text = str(value or "").strip()
     if not _looks_like_serialized_answer_list(text):
@@ -2538,8 +2547,16 @@ def collect_generated_config_quality_warnings(payload: dict[str, Any]) -> list[s
             text_fields.extend(_quality_answer_texts(answer_part))
         if any(_looks_like_garbled_generated_text(value) for value in text_fields):
             warnings.append(f"[质量检查-阻断] {qid} 的题干、公式、答案或踩分点中存在疑似乱码")
-        if any(_looks_like_serialized_answer_list(value) for value in text_fields):
-            warnings.append(f"[质量检查-阻断] {qid} 的知识点、答案或评分点中混入列表字符串")
+        if (
+            any(_looks_like_serialized_answer_list(value) for value in text_fields)
+            or any(
+                _looks_like_serialized_knowledge_sequence(value)
+                for value in knowledge_texts
+            )
+        ):
+            warnings.append(
+                f"[质量检查-阻断] {qid} 的知识点、答案或评分点中混入列表字符串或元组字符串"
+            )
 
         if qtype in {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}:
             if not answer_texts and not answer_image_present:
@@ -3585,7 +3602,7 @@ def _safe_knowledge_sequence(value: Any) -> list[str] | None:
     candidate = value
     if isinstance(value, str):
         text = value.strip()
-        if not _looks_like_serialized_answer_list(text):
+        if not _looks_like_serialized_knowledge_sequence(text):
             return None
         try:
             candidate = ast.literal_eval(text)
@@ -3605,6 +3622,67 @@ def _safe_knowledge_sequence(value: Any) -> list[str] | None:
     return values
 
 
+def _redundant_knowledge_fields_match_pairs(
+    question: dict[str, Any],
+    paired_ids: list[str],
+    paired_names: list[str],
+) -> bool:
+    raw_ids = question.get("knowledge_ids")
+    if raw_ids not in (None, "", []):
+        ids_match = _safe_knowledge_sequence(raw_ids) == paired_ids
+        if (
+            not ids_match
+            and isinstance(raw_ids, (list, tuple))
+            and len(raw_ids) == 1
+        ):
+            ids_match = _safe_knowledge_sequence(raw_ids[0]) == paired_ids
+        if not ids_match:
+            return False
+
+    raw_points = question.get("knowledge_points")
+    if raw_points in (None, "", []):
+        return True
+    if not isinstance(raw_points, (list, tuple)):
+        return False
+
+    expected_names = dict(zip(paired_ids, paired_names))
+    canonical_ids: set[str] = set()
+    for point in raw_points:
+        if isinstance(point, dict):
+            raw_id = point.get("knowledge_id") or point.get("id") or ""
+            raw_name = (
+                point.get("knowledge_name")
+                or point.get("name")
+                or point.get("label")
+                or ""
+            )
+        else:
+            raw_id = point
+            raw_name = ""
+
+        point_ids = _safe_knowledge_sequence(raw_id)
+        if point_ids is not None:
+            if point_ids != paired_ids:
+                return False
+            if raw_name and _safe_knowledge_sequence(raw_name) != paired_names:
+                return False
+            continue
+        if _looks_like_serialized_knowledge_sequence(raw_id):
+            return False
+        if raw_name and _looks_like_serialized_knowledge_sequence(raw_name):
+            return False
+
+        kid = str(raw_id or "").strip()
+        name = str(raw_name or "").strip()
+        if not kid or kid not in expected_names:
+            return False
+        if name and name != expected_names[kid]:
+            return False
+        canonical_ids.add(kid)
+
+    return not canonical_ids or canonical_ids == set(paired_ids)
+
+
 def _normalize_question_knowledge_fields(question: dict[str, Any]) -> None:
     raw_primary_id = question.get("knowledge_id") or "UNKNOWN"
     raw_primary_name = question.get("knowledge_name") or ""
@@ -3615,6 +3693,11 @@ def _normalize_question_knowledge_fields(question: dict[str, Any]) -> None:
         and paired_names is not None
         and len(paired_ids) == len(paired_names)
         and len(set(paired_ids)) == len(paired_ids)
+        and _redundant_knowledge_fields_match_pairs(
+            question,
+            paired_ids,
+            paired_names,
+        )
     ):
         paired_points = [
             {"knowledge_id": kid, "knowledge_name": name}
@@ -3735,7 +3818,7 @@ def normalize_generated_config_knowledge_fields(payload: dict[str, Any]) -> bool
                 isinstance(value, (list, tuple))
                 or (
                     isinstance(value, str)
-                    and _looks_like_serialized_answer_list(value)
+                    and _looks_like_serialized_knowledge_sequence(value)
                 )
                 for value in sequence_values
             )
