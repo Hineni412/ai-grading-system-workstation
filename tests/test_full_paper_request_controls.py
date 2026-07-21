@@ -88,6 +88,7 @@ def test_full_paper_grading_uses_one_model_request_and_local_json_repair_path(
     assert result.student_score == 5
     assert len(client.once_calls) == 1
     assert callable(client.once_calls[0]["usage_callback"])
+    assert client.once_calls[0]["extra_kwargs"] == {"timeout": 600}
     assert client.repairing_calls == 0
 
 

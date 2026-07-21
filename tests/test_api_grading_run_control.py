@@ -352,8 +352,20 @@ def test_concurrent_start_requests_create_only_one_grading_job(tmp_path) -> None
         assert total == 1
         assert len(jobs) == 1
         assert jobs[0].payload["max_workers"] == 1
+        projected = client.get(f"/api/sessions/{session_id}/grading-workspace")
+        assert projected.status_code == 200
+        assert projected.json()["grading_run"] is None
+        grading_job = projected.json()["grading_job"]
+        assert grading_job["id"] == jobs[0].id
+        assert grading_job["status"] in {"queued", "running"}
+        assert grading_job["scan_batch_id"] == frozen.json()["batch_id"]
+        assert grading_job["cancel_requested"] is False
         release_handler.set()
         manager.wait(jobs[0].id, timeout=2)
+        completed = client.get(f"/api/sessions/{session_id}/grading-workspace")
+        assert completed.status_code == 200
+        assert completed.json()["grading_run"] is None
+        assert completed.json()["grading_job"]["status"] == "succeeded"
         repeated = client.post(
             f"/api/sessions/{session_id}/grading/run",
             json=request,

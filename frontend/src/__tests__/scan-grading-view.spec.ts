@@ -113,6 +113,7 @@ describe('scan grading workspace', () => {
     start.click()
     expect(api.startGrading).toHaveBeenCalledTimes(1)
     expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalledTimes(1)
+    expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalledWith({ block: 'start' })
 
     resolveStart({
       id: 91, job_type: 'grading_run', payload: { session_id: 7 }, result: {}, status: 'queued',
@@ -120,12 +121,62 @@ describe('scan grading workspace', () => {
       created_at: '2026-07-17T00:00:00Z', started_at: null,
       updated_at: '2026-07-17T00:00:00Z', finished_at: null,
     })
+    const activeWorkspace = workspace()
+    activeWorkspace.grading_job = {
+      id: 91, status: 'queued', progress: 0, updated_at: '2026-07-17T00:00:00Z',
+      cancel_requested: false, scan_batch_id: 'batch-1',
+    }
+    vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(activeWorkspace)
     for (let index = 0; index < 8; index += 1) {
       await Promise.resolve(); await nextTick()
     }
 
     expect(host.querySelector('[data-grading-starting]')).not.toBeNull()
     expect(api.startGrading).toHaveBeenCalledTimes(1)
+    app.unmount()
+
+    localStorage.clear()
+    const reopened = await mountView()
+    expect(reopened.host.querySelector('[data-grading-starting]')).not.toBeNull()
+    expect([...reopened.host.querySelectorAll<HTMLButtonElement>('[data-grading-mode]')]
+      .every((button) => button.disabled)).toBe(true)
+    reopened.app.unmount()
+  })
+
+  it('releases the start lock when a job fails before creating its run ledger', async () => {
+    const failedWorkspace = workspace()
+    failedWorkspace.grading_job = {
+      id: 92, status: 'failed', progress: 0, updated_at: '2026-07-17T00:00:02Z',
+      cancel_requested: false, scan_batch_id: 'batch-1',
+    }
+    vi.mocked(api.fetchGradingWorkspace)
+      .mockResolvedValueOnce(workspace())
+      .mockResolvedValue(failedWorkspace)
+    vi.mocked(api.startGrading).mockResolvedValue({
+      id: 92, job_type: 'grading_run', payload: { session_id: 7 }, result: {}, status: 'queued',
+      progress: 0, stage: 'queued', detail: '', error: null, cancel_requested: false,
+      created_at: '2026-07-17T00:00:00Z', started_at: null,
+      updated_at: '2026-07-17T00:00:00Z', finished_at: null,
+    })
+    const { app, host } = await mountView()
+    const confirmation = host.querySelector<HTMLInputElement>('[data-confirm-pending]')!
+    confirmation.checked = true
+    confirmation.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+
+    host.querySelector<HTMLButtonElement>('[data-grading-mode="full_paper"]')!.click()
+    for (let index = 0; index < 10; index += 1) {
+      await Promise.resolve(); await nextTick()
+    }
+
+    expect(host.querySelector('[data-grading-starting]')).toBeNull()
+    expect(host.textContent).toContain('批改任务未能建立运行记录，可以重新提交')
+    const retryConfirmation = host.querySelector<HTMLInputElement>('[data-confirm-pending]')!
+    retryConfirmation.checked = true
+    retryConfirmation.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    expect([...host.querySelectorAll<HTMLButtonElement>('[data-grading-mode]')]
+      .every((button) => !button.disabled)).toBe(true)
     app.unmount()
   })
 

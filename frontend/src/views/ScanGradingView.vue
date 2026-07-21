@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { TERMINAL_JOB_STATUSES } from '../api/jobs'
 import type { GradingMode, ScanDecision } from '../api/scan-grading'
 import { useScanGradingStore } from '../stores/scan-grading'
 
@@ -58,7 +59,7 @@ async function start(mode: GradingMode): Promise<void> {
   gradingSubmissionPending.value = true
   const submission = store.begin(mode, confirmPending.value)
   await nextTick()
-  runSection.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  runSection.value?.scrollIntoView({ block: 'start' })
   await submission
   if (store.errorMessage && !store.gradingRun && store.activeJobId === null) {
     gradingSubmissionPending.value = false
@@ -113,6 +114,11 @@ watch(sessionId, () => {
 })
 watch(() => store.gradingRun, (run) => {
   if (run) gradingSubmissionPending.value = false
+})
+watch(() => store.workspace?.grading_job?.status ?? null, (status) => {
+  if (status && TERMINAL_JOB_STATUSES.has(status) && !store.gradingRun) {
+    gradingSubmissionPending.value = false
+  }
 })
 watch(
   () => `${store.uploadBatch?.batch_id ?? ''}:${store.uploadBatch?.revision ?? -1}:${store.preflight?.revision ?? -1}`,

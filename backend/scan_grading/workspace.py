@@ -83,13 +83,18 @@ class ScanGradingWorkspace:
     def get_workspace(self, session_id: int) -> dict[str, Any]:
         with self._lock(session_id):
             manifest = self._load_or_create_manifest(session_id)
+            scan_batch_id = str(manifest["batch_id"])
             return {
                 "session_id": int(session_id),
                 "upload_batch": self._public_batch(manifest),
                 "grading_run": self.get_grading_run(session_id),
+                "grading_job": self._grading_job_summary(
+                    session_id,
+                    scan_batch_id,
+                ),
                 "scan_analysis_job": self._scan_analysis_job_summary(
                     session_id,
-                    str(manifest["batch_id"]),
+                    scan_batch_id,
                 ),
             }
 
@@ -206,6 +211,40 @@ class ScanGradingWorkspace:
             limit=1,
         )
         return jobs[0] if jobs else None
+
+    def _grading_job(self, session_id: int, batch_id: str):
+        if self.job_manager is None:
+            return None
+        jobs, _total = self.job_manager.list(
+            session_id=int(session_id),
+            job_types=("grading_run",),
+            limit=100,
+        )
+        return next(
+            (
+                job
+                for job in jobs
+                if str(job.payload.get("scan_batch_id") or "") == str(batch_id)
+            ),
+            None,
+        )
+
+    def _grading_job_summary(
+        self,
+        session_id: int,
+        batch_id: str,
+    ) -> dict[str, Any] | None:
+        job = self._grading_job(session_id, batch_id)
+        if job is None:
+            return None
+        return {
+            "id": job.id,
+            "status": job.status,
+            "progress": job.progress,
+            "updated_at": job.updated_at,
+            "cancel_requested": job.cancel_requested,
+            "scan_batch_id": str(batch_id),
+        }
 
     def _scan_analysis_job(self, session_id: int, batch_id: str, *, active_only: bool = False):
         if self.job_manager is None:
