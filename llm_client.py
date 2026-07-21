@@ -288,6 +288,7 @@ class LLMClient:
         use_config_client: bool = False,
         static_image_blobs: list[bytes] | None = None,
         dynamic_prompt: str | None = None,
+        usage_callback=None,
     ) -> dict[str, Any]:
         """Make exactly one visual model request and parse JSON locally without AI repair."""
         active_client = self.config_client if use_config_client else self.client
@@ -331,6 +332,7 @@ class LLMClient:
             model=model or default_model,
             messages=messages,
             expect_json=False,
+            usage_callback=usage_callback,
             extra_kwargs=strict_kwargs,
             allow_parameter_fallback=False,
             request_kind=request_kind,
@@ -441,6 +443,11 @@ class LLMClient:
             kwargs["max_tokens"] = 32000
         if extra_kwargs and "timeout" in extra_kwargs:
             kwargs["timeout"] = extra_kwargs.get("timeout")
+        timeout_override_seconds = (
+            extra_kwargs.get("timeout_override_seconds")
+            if extra_kwargs
+            else None
+        )
         if expect_json:
             kwargs["response_format"] = {"type": "json_object"}
             
@@ -480,6 +487,7 @@ class LLMClient:
                 request_id=logical_request_id,
                 allow_retry=allow_retry,
                 compatibility_fallback=compatibility_fallback,
+                timeout_override_seconds=timeout_override_seconds,
                 _next_attempt=next_attempt,
             )
             if usage_callback:
