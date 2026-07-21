@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { TERMINAL_JOB_STATUSES } from '../api/jobs'
 import type { GradingMode, ScanDecision } from '../api/scan-grading'
 import { useScanGradingStore } from '../stores/scan-grading'
 
@@ -11,16 +12,26 @@ const store = useScanGradingStore()
 const sessionId = computed(() => Number(route.params.sessionId))
 const confirmPending = ref(false)
 const selectedStudents = ref<Record<string, number | undefined>>({})
+const gradingSubmissionPending = ref(false)
+const runSection = ref<HTMLElement | null>(null)
+const gradingStarting = computed(() => !store.gradingRun && (
+  gradingSubmissionPending.value
+  || store.busyAction === 'grading'
+  || store.activeJobId !== null
+))
+const gradingCompletedWithoutRun = computed(() => !store.gradingRun
+  && store.workspace?.grading_job?.status === 'succeeded')
 
 const stage = computed(() => {
-  if (store.gradingRun) return 4
+  if (store.gradingRun || gradingStarting.value || gradingCompletedWithoutRun.value) return 4
   if (store.preflight) return 3
   if (store.uploadBatch?.state === 'frozen') return 2
   return 1
 })
 const pendingCount = computed(() => store.preflight?.pending_issue_count ?? 0)
 const canStart = computed(() => Boolean(store.preflight)
-  && !store.gradingRun && (pendingCount.value === 0 || confirmPending.value) && !store.busyAction)
+  && !store.gradingRun && !gradingStarting.value && !gradingCompletedWithoutRun.value
+  && (pendingCount.value === 0 || confirmPending.value) && !store.busyAction)
 const invalidCount = computed(() => store.preflight?.decisions
   .filter((item) => item.target_type === 'issue' && item.action === 'invalid').length ?? 0)
 const missingBackCount = computed(() => store.preflight?.issues
@@ -45,7 +56,17 @@ function chooseFiles(event: Event): void {
   if (input.files?.length) void store.addFiles([...input.files])
   input.value = ''
 }
-function start(mode: GradingMode): void { void store.begin(mode, confirmPending.value) }
+async function start(mode: GradingMode): Promise<void> {
+  if (!canStart.value) return
+  gradingSubmissionPending.value = true
+  const submission = store.begin(mode, confirmPending.value)
+  await nextTick()
+  runSection.value?.scrollIntoView({ block: 'start' })
+  await submission
+  if (store.errorMessage && !store.gradingRun && store.activeJobId === null) {
+    gradingSubmissionPending.value = false
+  }
+}
 function decisionFor(targetType: 'group' | 'issue', targetId: string): ScanDecision | undefined {
   return store.preflight?.decisions.find((item) => (
     item.target_type === targetType && item.target_id === targetId
@@ -89,7 +110,18 @@ function beginNewBatch(): void {
 }
 
 onMounted(loadRoute)
-watch(sessionId, loadRoute)
+watch(sessionId, () => {
+  gradingSubmissionPending.value = false
+  loadRoute()
+})
+watch(() => store.gradingRun, (run) => {
+  if (run) gradingSubmissionPending.value = false
+})
+watch(() => store.workspace?.grading_job?.status ?? null, (status) => {
+  if (status && TERMINAL_JOB_STATUSES.has(status) && !store.gradingRun) {
+    gradingSubmissionPending.value = false
+  }
+})
 watch(
   () => `${store.uploadBatch?.batch_id ?? ''}:${store.uploadBatch?.revision ?? -1}:${store.preflight?.revision ?? -1}`,
   () => { confirmPending.value = false },
@@ -234,10 +266,13 @@ watch(
             <span>混合批改</span><strong>客观题批量 + 主观题并行</strong><small>适合题量较大、希望提高吞吐的班级。</small>
           </button>
         </div>
+        <p v-if="gradingStarting" data-grading-submit-status class="scan-grading__notice" role="status">
+          批改任务已提交，正在后台启动；进度出现前请勿重复点击。
+        </p>
       </section>
 
-      <section class="scan-stage" aria-labelledby="run-title">
-        <div class="scan-stage__heading"><div><span>04</span><h2 id="run-title">运行与补批</h2></div><strong v-if="store.gradingRun">{{ runStateLabel }}</strong></div>
+      <section ref="runSection" class="scan-stage" aria-labelledby="run-title">
+        <div class="scan-stage__heading"><div><span>04</span><h2 id="run-title">运行与补批</h2></div><strong v-if="store.gradingRun">{{ runStateLabel }}</strong><strong v-else-if="gradingCompletedWithoutRun">批改处理已结束</strong></div>
         <div v-if="store.gradingRun" class="run-console">
           <div class="run-counts">
             <span><strong>已完成 {{ store.gradingRun.counts.graded }}</strong></span>
@@ -251,6 +286,16 @@ watch(
             <button v-if="store.gradingRun.allowed_actions.includes('supplement_new_matches')" data-action="supplement" type="button" class="secondary" @click="store.supplement">补批后来匹配的答卷</button>
             <button v-if="store.gradingRun.allowed_actions.includes('cancel')" data-action="cancel" type="button" class="danger" @click="cancelRun">取消本次运行</button>
             <button v-if="['cancelled', 'completed', 'failed'].includes(store.gradingRun.state)" data-action="new-batch" type="button" class="secondary" @click="beginNewBatch">开始新批次</button>
+          </div>
+        </div>
+        <p v-else-if="gradingStarting" data-grading-starting class="scan-empty" role="status">
+          启动请求已接收，正在建立本次批改进度。可以留在本页等待，刷新后也会自动恢复。
+        </p>
+        <div v-else-if="gradingCompletedWithoutRun" data-grading-completed-without-run class="scan-empty" role="status">
+          <p>批改处理已结束，但本次运行进度记录没有生成。任务结束不代表每份答卷都成功，请先核对完成与失败数量；这里不会开放重复提交。</p>
+          <div class="scan-stage__actions">
+            <button type="button" data-open-workbench @click="router.push('/workbench')">查看工作台状态</button>
+            <button type="button" data-open-grading-results class="secondary" @click="router.push('/grading')">进入评分复核</button>
           </div>
         </div>
         <p v-else class="scan-empty">尚未开始批改。启动后，刷新页面仍可恢复这里的运行状态。</p>
