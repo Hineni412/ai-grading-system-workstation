@@ -34,7 +34,7 @@ class LLMRequestPolicy:
 DEFAULT_POLICIES: Mapping[LLMRequestKind, LLMRequestPolicy] = MappingProxyType(
     {
         LLMRequestKind.GRADING: LLMRequestPolicy(
-            300.0, 2, 1000, (0.5, 1.5, 3.0, 5.0, 8.0)
+            600.0, 2, 1000, (0.5, 1.5, 3.0, 5.0, 8.0)
         ),
         LLMRequestKind.RECOGNITION: LLMRequestPolicy(
             60.0, 2, 1000, (0.5, 1.5, 3.0, 5.0, 8.0)

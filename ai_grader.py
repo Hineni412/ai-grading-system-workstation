@@ -221,24 +221,33 @@ class AIGrader:
             except Exception as e:
                 print(f"Warning: Failed to log usage in ai_grader: {e}")
 
-        json_from_images = getattr(self.llm_client, "json_from_images_with_options", None)
-        if callable(json_from_images):
-            parsed = json_from_images(
+        json_from_images_once = getattr(self.llm_client, "json_from_images_once", None)
+        if callable(json_from_images_once):
+            parsed = json_from_images_once(
                 user_prompt,
                 [*[blob for _qid, blob in reference_images], front_blob, back_blob],
                 model=self.grading_model,
                 system_prompt=system_prompt,
                 usage_callback=_usage_callback,
-                extra_kwargs={"timeout": 300},
             )
         else:
-            parsed = self.llm_client.json_from_images(
-                user_prompt,
-                [*[blob for _qid, blob in reference_images], front_blob, back_blob],
-                model=self.grading_model,
-                system_prompt=system_prompt,
-                usage_callback=_usage_callback,
-            )
+            json_from_images = getattr(self.llm_client, "json_from_images_with_options", None)
+            if callable(json_from_images):
+                parsed = json_from_images(
+                    user_prompt,
+                    [*[blob for _qid, blob in reference_images], front_blob, back_blob],
+                    model=self.grading_model,
+                    system_prompt=system_prompt,
+                    usage_callback=_usage_callback,
+                )
+            else:
+                parsed = self.llm_client.json_from_images(
+                    user_prompt,
+                    [*[blob for _qid, blob in reference_images], front_blob, back_blob],
+                    model=self.grading_model,
+                    system_prompt=system_prompt,
+                    usage_callback=_usage_callback,
+                )
         
         if report:
             report("模型返回 JSON 解析成功，准备入库校验。")

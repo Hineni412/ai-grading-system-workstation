@@ -288,6 +288,7 @@ class LLMClient:
         use_config_client: bool = False,
         static_image_blobs: list[bytes] | None = None,
         dynamic_prompt: str | None = None,
+        usage_callback=None,
     ) -> dict[str, Any]:
         """Make exactly one visual model request and parse JSON locally without AI repair."""
         active_client = self.config_client if use_config_client else self.client
@@ -331,6 +332,7 @@ class LLMClient:
             model=model or default_model,
             messages=messages,
             expect_json=False,
+            usage_callback=usage_callback,
             extra_kwargs=strict_kwargs,
             allow_parameter_fallback=False,
             request_kind=request_kind,

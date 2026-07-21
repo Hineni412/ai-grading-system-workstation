@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import type { GradingMode, ScanDecision } from '../api/scan-grading'
@@ -11,16 +11,24 @@ const store = useScanGradingStore()
 const sessionId = computed(() => Number(route.params.sessionId))
 const confirmPending = ref(false)
 const selectedStudents = ref<Record<string, number | undefined>>({})
+const gradingSubmissionPending = ref(false)
+const runSection = ref<HTMLElement | null>(null)
+const gradingStarting = computed(() => !store.gradingRun && (
+  gradingSubmissionPending.value
+  || store.busyAction === 'grading'
+  || store.activeJobId !== null
+))
 
 const stage = computed(() => {
-  if (store.gradingRun) return 4
+  if (store.gradingRun || gradingStarting.value) return 4
   if (store.preflight) return 3
   if (store.uploadBatch?.state === 'frozen') return 2
   return 1
 })
 const pendingCount = computed(() => store.preflight?.pending_issue_count ?? 0)
 const canStart = computed(() => Boolean(store.preflight)
-  && !store.gradingRun && (pendingCount.value === 0 || confirmPending.value) && !store.busyAction)
+  && !store.gradingRun && !gradingStarting.value
+  && (pendingCount.value === 0 || confirmPending.value) && !store.busyAction)
 const invalidCount = computed(() => store.preflight?.decisions
   .filter((item) => item.target_type === 'issue' && item.action === 'invalid').length ?? 0)
 const missingBackCount = computed(() => store.preflight?.issues
@@ -45,7 +53,17 @@ function chooseFiles(event: Event): void {
   if (input.files?.length) void store.addFiles([...input.files])
   input.value = ''
 }
-function start(mode: GradingMode): void { void store.begin(mode, confirmPending.value) }
+async function start(mode: GradingMode): Promise<void> {
+  if (!canStart.value) return
+  gradingSubmissionPending.value = true
+  const submission = store.begin(mode, confirmPending.value)
+  await nextTick()
+  runSection.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  await submission
+  if (store.errorMessage && !store.gradingRun && store.activeJobId === null) {
+    gradingSubmissionPending.value = false
+  }
+}
 function decisionFor(targetType: 'group' | 'issue', targetId: string): ScanDecision | undefined {
   return store.preflight?.decisions.find((item) => (
     item.target_type === targetType && item.target_id === targetId
@@ -89,7 +107,13 @@ function beginNewBatch(): void {
 }
 
 onMounted(loadRoute)
-watch(sessionId, loadRoute)
+watch(sessionId, () => {
+  gradingSubmissionPending.value = false
+  loadRoute()
+})
+watch(() => store.gradingRun, (run) => {
+  if (run) gradingSubmissionPending.value = false
+})
 watch(
   () => `${store.uploadBatch?.batch_id ?? ''}:${store.uploadBatch?.revision ?? -1}:${store.preflight?.revision ?? -1}`,
   () => { confirmPending.value = false },
@@ -234,9 +258,12 @@ watch(
             <span>混合批改</span><strong>客观题批量 + 主观题并行</strong><small>适合题量较大、希望提高吞吐的班级。</small>
           </button>
         </div>
+        <p v-if="gradingStarting" data-grading-submit-status class="scan-grading__notice" role="status">
+          批改任务已提交，正在后台启动；进度出现前请勿重复点击。
+        </p>
       </section>
 
-      <section class="scan-stage" aria-labelledby="run-title">
+      <section ref="runSection" class="scan-stage" aria-labelledby="run-title">
         <div class="scan-stage__heading"><div><span>04</span><h2 id="run-title">运行与补批</h2></div><strong v-if="store.gradingRun">{{ runStateLabel }}</strong></div>
         <div v-if="store.gradingRun" class="run-console">
           <div class="run-counts">
@@ -253,6 +280,9 @@ watch(
             <button v-if="['cancelled', 'completed', 'failed'].includes(store.gradingRun.state)" data-action="new-batch" type="button" class="secondary" @click="beginNewBatch">开始新批次</button>
           </div>
         </div>
+        <p v-else-if="gradingStarting" data-grading-starting class="scan-empty" role="status">
+          启动请求已接收，正在建立本次批改进度。可以留在本页等待，刷新后也会自动恢复。
+        </p>
         <p v-else class="scan-empty">尚未开始批改。启动后，刷新页面仍可恢复这里的运行状态。</p>
       </section>
     </template>

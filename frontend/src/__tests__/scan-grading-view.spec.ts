@@ -4,6 +4,7 @@ import { createMemoryHistory } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from '../api/scan-grading'
+import type { JobResponse } from '../api/jobs'
 import { fetchStudents } from '../api/students'
 import { createAppRouter } from '../router'
 import ScanGradingView from '../views/ScanGradingView.vue'
@@ -46,6 +47,10 @@ async function mountView() {
 
 beforeEach(() => {
   document.body.innerHTML = ''; localStorage.clear(); vi.clearAllMocks()
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+    configurable: true,
+    value: vi.fn(),
+  })
   vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(workspace())
   vi.mocked(api.fetchPreflight).mockResolvedValue({
     revision: 2, summary: {
@@ -81,6 +86,46 @@ describe('scan grading workspace', () => {
     expect(host.querySelectorAll('[data-grading-mode]')).toHaveLength(2)
     expect(host.textContent).toContain('仍有 2 份异常答卷待处理')
     expect(host.querySelector<HTMLInputElement>('[data-confirm-pending]')?.checked).toBe(false)
+    app.unmount()
+  })
+
+  it('acknowledges a submitted grading job immediately without requiring a reload', async () => {
+    let resolveStart!: (job: JobResponse) => void
+    vi.mocked(api.startGrading).mockReturnValue(new Promise((resolve) => {
+      resolveStart = resolve
+    }))
+    const { app, host } = await mountView()
+    const confirmation = host.querySelector<HTMLInputElement>('[data-confirm-pending]')!
+    confirmation.checked = true
+    confirmation.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    const start = host.querySelector<HTMLButtonElement>('[data-grading-mode="full_paper"]')!
+
+    start.click()
+    await nextTick()
+
+    expect(host.querySelector('[data-grading-submit-status]')?.textContent).toContain(
+      '批改任务已提交，正在后台启动',
+    )
+    expect(host.querySelector('[data-grading-starting]')).not.toBeNull()
+    expect([...host.querySelectorAll<HTMLButtonElement>('[data-grading-mode]')]
+      .every((button) => button.disabled)).toBe(true)
+    start.click()
+    expect(api.startGrading).toHaveBeenCalledTimes(1)
+    expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalledTimes(1)
+
+    resolveStart({
+      id: 91, job_type: 'grading_run', payload: { session_id: 7 }, result: {}, status: 'queued',
+      progress: 0, stage: 'queued', detail: '', error: null, cancel_requested: false,
+      created_at: '2026-07-17T00:00:00Z', started_at: null,
+      updated_at: '2026-07-17T00:00:00Z', finished_at: null,
+    })
+    for (let index = 0; index < 8; index += 1) {
+      await Promise.resolve(); await nextTick()
+    }
+
+    expect(host.querySelector('[data-grading-starting]')).not.toBeNull()
+    expect(api.startGrading).toHaveBeenCalledTimes(1)
     app.unmount()
   })
 

@@ -1595,7 +1595,7 @@ def _grade_one_paper_with_retries(
 ):
     from openai import APIConnectionError, APITimeoutError, RateLimitError
 
-    retry_count = bounded_int(os.getenv("AI_GRADING_FULL_PAPER_RETRIES"), 1, 0, 5)
+    retry_count = bounded_int(os.getenv("AI_GRADING_FULL_PAPER_RETRIES"), 0, 0, 5)
     attempts = retry_count + 1
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):

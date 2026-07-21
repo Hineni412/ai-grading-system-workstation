@@ -38,7 +38,7 @@ def test_request_and_protocol_values_are_stable():
 
 
 def test_default_timeout_budgets_are_explicit():
-    assert policy_from_profile(LLMRequestKind.GRADING, None).timeout_seconds == 300.0
+    assert policy_from_profile(LLMRequestKind.GRADING, None).timeout_seconds == 600.0
     assert policy_from_profile(LLMRequestKind.RECOGNITION, None).timeout_seconds == 60.0
     assert policy_from_profile(LLMRequestKind.CONFIG_GENERATION, None).timeout_seconds == 600.0
     assert policy_from_profile(LLMRequestKind.TAGGING, None).timeout_seconds == 120.0
