@@ -73,10 +73,42 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
     }
   }
 
+  function projectedGradingJob(next: GradingWorkspace): JobResponse | null {
+    const job = next.grading_job
+    if (!job) return null
+    const terminal = TERMINAL_JOB_STATUSES.has(job.status)
+    return {
+      id: job.id,
+      job_type: 'grading_run',
+      payload: { session_id: next.session_id, scan_batch_id: job.scan_batch_id },
+      result: {},
+      status: job.status,
+      progress: job.progress,
+      stage: job.status,
+      detail: '',
+      error: null,
+      cancel_requested: job.cancel_requested,
+      created_at: job.updated_at,
+      started_at: null,
+      updated_at: job.updated_at,
+      finished_at: terminal ? job.updated_at : null,
+    }
+  }
+
   function applyWorkspaceSnapshot(next: GradingWorkspace): void {
     workspace.value = next
-    if (next.grading_run === null) activeJobId.value = null
-    else if (next.grading_run.job_id) {
+    const gradingJob = projectedGradingJob(next)
+    if (next.grading_run === null) {
+      if (gradingJob) jobStore.track(gradingJob)
+      if (gradingJob && !TERMINAL_JOB_STATUSES.has(gradingJob.status)) {
+        activeJobId.value = gradingJob.id
+      } else {
+        activeJobId.value = null
+        if (gradingJob && gradingJob.status !== 'succeeded' && !errorMessage.value) {
+          errorMessage.value = '批改任务未能建立运行记录，可以重新提交。'
+        }
+      }
+    } else if (next.grading_run.job_id) {
       activeJobId.value = next.grading_run.job_id
       if (next.grading_run.job_status && next.grading_run.updated_at
         && !jobStore.jobs[next.grading_run.job_id]) {

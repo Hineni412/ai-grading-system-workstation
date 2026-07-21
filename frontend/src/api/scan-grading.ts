@@ -46,10 +46,13 @@ export interface ScanAnalysisJobSummary {
   scan_batch_id: string
 }
 
+export type GradingJobSummary = ScanAnalysisJobSummary
+
 export interface GradingWorkspace {
   session_id: number
   upload_batch: ScanUploadBatch
   grading_run: GradingRunSummary | null
+  grading_job?: GradingJobSummary | null
   scan_analysis_job?: ScanAnalysisJobSummary | null
 }
 
@@ -156,16 +159,20 @@ function decodeScanAnalysisJob(value: unknown): ScanAnalysisJobSummary {
 
 export function decodeGradingWorkspace(value: unknown): GradingWorkspace {
   if (!isRecord(value) || !hasOnlyKeys(value, [
-    'session_id', 'upload_batch', 'grading_run', 'scan_analysis_job',
+    'session_id', 'upload_batch', 'grading_run', 'grading_job', 'scan_analysis_job',
   ]) || !('session_id' in value) || !('upload_batch' in value) || !('grading_run' in value)
     || !finiteInteger(value.session_id, 1)
     || !(value.grading_run === null || isRecord(value.grading_run))
+    || !(value.grading_job === undefined || value.grading_job === null
+      || isRecord(value.grading_job))
     || !(value.scan_analysis_job === undefined || value.scan_analysis_job === null
       || isRecord(value.scan_analysis_job))) throw new Error('Invalid grading workspace')
   return {
     session_id: value.session_id,
     upload_batch: decodeUploadBatch(value.upload_batch),
     grading_run: value.grading_run === null ? null : decodeRun(value.grading_run),
+    grading_job: value.grading_job === undefined || value.grading_job === null
+      ? null : decodeScanAnalysisJob(value.grading_job),
     scan_analysis_job: value.scan_analysis_job === undefined || value.scan_analysis_job === null
       ? null : decodeScanAnalysisJob(value.scan_analysis_job),
   }
