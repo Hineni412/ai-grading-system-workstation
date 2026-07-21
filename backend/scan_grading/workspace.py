@@ -360,13 +360,16 @@ class ScanGradingWorkspace:
             raise ScanGradingWorkspaceError("grading run cannot resume")
         if counts.get("pending", 0) <= 0:
             raise ScanGradingWorkspaceError("grading run cannot resume")
-        return {
+        payload = {
             "session_id": int(session_id),
             "grading_mode": run.grading_mode,
             "failed_only": False,
             "enhance_images": True,
             "resume_run_id": run.id,
         }
+        if run.grading_mode == "full_paper":
+            payload["max_workers"] = 1
+        return payload
 
     def _require_current_config(self, session_id: int, run: Any) -> None:
         if self.config_fingerprint_resolver is None:
@@ -389,13 +392,16 @@ class ScanGradingWorkspace:
             raise ScanGradingWorkspaceError("cancelled grading run cannot retry")
         if counts.get("failed", 0) <= 0 or run.state not in {"completed", "failed"}:
             raise ScanGradingWorkspaceError("grading run has no retryable failures")
-        return {
+        payload = {
             "session_id": int(session_id),
             "grading_mode": run.grading_mode,
             "failed_only": True,
             "enhance_images": True,
             "source_run_id": run.id,
         }
+        if run.grading_mode == "full_paper":
+            payload["max_workers"] = 1
+        return payload
 
     def prepare_supplement(self, session_id: int, run_id: int) -> dict[str, Any]:
         run, _counts = self._require_run(session_id, run_id)
@@ -410,7 +416,7 @@ class ScanGradingWorkspace:
         if self._active_scan_analysis_job(session_id, str(manifest["batch_id"])) is not None:
             raise ScanGradingWorkspaceError("scan preflight is still active")
         self.get_preflight(session_id)
-        return {
+        payload = {
             "session_id": int(session_id),
             "grading_mode": run.grading_mode,
             "failed_only": False,
@@ -418,6 +424,9 @@ class ScanGradingWorkspace:
             "supplement_run_id": run.id,
             "enhance_images": True,
         }
+        if run.grading_mode == "full_paper":
+            payload["max_workers"] = 1
+        return payload
 
     def submit_resume(self, session_id: int, run_id: int) -> Any:
         if self.job_manager is None:
@@ -489,6 +498,8 @@ class ScanGradingWorkspace:
             }
             if max_workers is not None:
                 payload["max_workers"] = int(max_workers)
+            elif payload["grading_mode"] == "full_paper":
+                payload["max_workers"] = 1
             if requests_per_minute is not None:
                 payload["requests_per_minute"] = int(requests_per_minute)
             return payload

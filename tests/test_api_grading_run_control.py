@@ -223,6 +223,7 @@ def test_cancelled_run_cannot_resume_and_failed_retry_keeps_original_mode(tmp_pa
         assert retried.json()["payload"]["grading_mode"] == "full_paper"
         assert retried.json()["payload"]["failed_only"] is True
         assert retried.json()["payload"]["source_run_id"] == failed_run.id
+        assert retried.json()["payload"]["max_workers"] == 1
     finally:
         manager.shutdown()
 
@@ -350,6 +351,7 @@ def test_concurrent_start_requests_create_only_one_grading_job(tmp_path) -> None
         )
         assert total == 1
         assert len(jobs) == 1
+        assert jobs[0].payload["max_workers"] == 1
         release_handler.set()
         manager.wait(jobs[0].id, timeout=2)
         repeated = client.post(
@@ -684,6 +686,7 @@ def test_orphaned_running_ledger_projects_interrupted_and_can_resume(tmp_path) -
         resumed = client.post(f"/api/sessions/{session_id}/grading/runs/{run.id}/resume")
         assert resumed.status_code == 202
         assert resumed.json()["payload"]["resume_run_id"] == run.id
+        assert resumed.json()["payload"]["max_workers"] == 1
     finally:
         manager.shutdown()
 
@@ -833,7 +836,15 @@ def test_resume_rejects_changed_grading_configuration_before_submitting_job(tmp_
         manager.shutdown()
 
 
-def test_terminal_run_can_submit_separate_original_mode_supplement(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("grading_mode", "expected_max_workers"),
+    [("hybrid_batch", None), ("full_paper", 1)],
+)
+def test_terminal_run_can_submit_separate_original_mode_supplement(
+    tmp_path,
+    grading_mode: str,
+    expected_max_workers: int | None,
+) -> None:
     from grading_run_store import GradingRunStore
 
     client, db, manager = _system(
@@ -843,7 +854,7 @@ def test_terminal_run_can_submit_separate_original_mode_supplement(tmp_path) -> 
     session_id = db.create_grading_session("异常卷补批", "rubric.json", "answer.json")
     frozen = _prepare_ready_scan_batch(client, tmp_path, session_id)
     store = GradingRunStore(db.db_path)
-    run = store.begin(session_id, "a" * 64, "hybrid_batch")
+    run = store.begin(session_id, "a" * 64, grading_mode)
     store.finish(run.run_token, "completed")
     manager.register("grading_run", lambda _context: {"state": "completed"})
     try:
@@ -855,14 +866,17 @@ def test_terminal_run_can_submit_separate_original_mode_supplement(tmp_path) -> 
             f"/api/sessions/{session_id}/grading/runs/{run.id}/supplement-new-matches"
         )
         assert submitted.status_code == 202
-        assert submitted.json()["payload"] == {
+        expected_payload = {
             "session_id": session_id,
-            "grading_mode": "hybrid_batch",
+            "grading_mode": grading_mode,
             "failed_only": False,
             "supplement_only": True,
             "supplement_run_id": run.id,
             "enhance_images": True,
             "scan_batch_id": frozen["batch_id"],
         }
+        if expected_max_workers is not None:
+            expected_payload["max_workers"] = expected_max_workers
+        assert submitted.json()["payload"] == expected_payload
     finally:
         manager.shutdown()
