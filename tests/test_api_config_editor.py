@@ -177,6 +177,94 @@ def test_put_is_strict_reports_stable_row_issues_and_noop(editor_env) -> None:
     assert current["answer_key_path"] == old_paths["answer_key_path"]
 
 
+def test_editor_can_publish_safe_knowledge_normalization_without_teacher_edits(editor_env) -> None:
+    client, db, _manager, tmp_path = editor_env
+    payload = _payload()
+    question = payload["rubric"]["questions"][0]
+    question.update({
+        "knowledge_id": "['K1', 'K2', 'K3']",
+        "knowledge_name": "['知识点一', '知识点二', '知识点三']",
+        "knowledge_ids": ["['K1', 'K2', 'K3']"],
+        "knowledge_points": [
+            {
+                "knowledge_id": "['K1', 'K2', 'K3']",
+                "knowledge_name": "['知识点一', '知识点二', '知识点三']",
+            },
+            {"knowledge_id": "['K1', 'K2', 'K3']", "knowledge_name": ""},
+        ],
+    })
+    for index, answer in enumerate(payload["answer_key"]["questions"], start=1):
+        stable_answer = f"答案{index}"
+        answer["canonical_answer"] = stable_answer
+        answer["accepted_forms"] = [stable_answer]
+        answer["parts"][0]["answer"] = stable_answer
+    original_answer_content = [
+        (
+            answer["question_id"],
+            answer["canonical_answer"],
+            answer["accepted_forms"],
+            [(part["part_id"], part["answer"]) for part in answer["parts"]],
+        )
+        for answer in payload["answer_key"]["questions"]
+    ]
+    original_scores = [item["max_score"] for item in payload["rubric"]["questions"]]
+    session_id = _write_config(tmp_path, db, payload)
+    before = db.get_grading_session(session_id)
+    old_rubric_path = Path(before["rubric_path"])
+    old_answer_path = Path(before["answer_key_path"])
+    old_rubric_bytes = old_rubric_path.read_bytes()
+    old_answer_bytes = old_answer_path.read_bytes()
+
+    first = client.get(f"/api/sessions/{session_id}/config/editor")
+
+    assert first.status_code == 200
+    body = first.json()
+    assert any(issue["code"] == "knowledge_normalization_pending" for issue in body["issues"])
+    assert not any(issue["code"] == "quality_blocking" for issue in body["issues"])
+    assert client.get(f"/api/sessions/{session_id}/config/editor").json()["revision"] == body["revision"]
+    assert old_rubric_path.read_bytes() == old_rubric_bytes
+    assert old_answer_path.read_bytes() == old_answer_bytes
+
+    saved = client.put(
+        f"/api/sessions/{session_id}/config/editor",
+        json={"revision": body["revision"], "edits": [], "commands": []},
+    )
+
+    assert saved.status_code == 200
+    saved_body = saved.json()
+    assert saved_body["save_result"]["config_saved"] is True
+    assert not any(
+        issue["code"] == "knowledge_normalization_pending"
+        for issue in saved_body["issues"]
+    )
+    current = db.get_grading_session(session_id)
+    assert current["rubric_path"] != str(old_rubric_path)
+    assert current["answer_key_path"] != str(old_answer_path)
+    assert old_rubric_path.read_bytes() == old_rubric_bytes
+    assert old_answer_path.read_bytes() == old_answer_bytes
+    published_rubric = json.loads(Path(current["rubric_path"]).read_text(encoding="utf-8"))
+    published_answer = json.loads(Path(current["answer_key_path"]).read_text(encoding="utf-8"))
+    published_question = published_rubric["questions"][0]
+    assert published_question["knowledge_id"] == "K1"
+    assert published_question["knowledge_name"] == "知识点一"
+    assert published_question["knowledge_ids"] == ["K1", "K2", "K3"]
+    assert published_question["knowledge_points"] == [
+        {"knowledge_id": "K1", "knowledge_name": "知识点一"},
+        {"knowledge_id": "K2", "knowledge_name": "知识点二"},
+        {"knowledge_id": "K3", "knowledge_name": "知识点三"},
+    ]
+    assert [
+        (
+            answer["question_id"],
+            answer["canonical_answer"],
+            answer["accepted_forms"],
+            [(part["part_id"], part["answer"]) for part in answer["parts"]],
+        )
+        for answer in published_answer["questions"]
+    ] == original_answer_content
+    assert [item["max_score"] for item in published_rubric["questions"]] == original_scores
+
+
 def test_put_saves_once_preserves_source_and_rejects_stale_revision(editor_env) -> None:
     client, db, _manager, tmp_path = editor_env
     session_id = _write_config(tmp_path, db)

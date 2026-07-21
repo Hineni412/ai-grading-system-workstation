@@ -2451,6 +2451,15 @@ def _looks_like_serialized_answer_list(value: Any) -> bool:
     return bool(re.fullmatch(r"\s*\[[\s\S]*\]\s*", str(value or "")))
 
 
+def _looks_like_serialized_knowledge_sequence(value: Any) -> bool:
+    return bool(
+        re.fullmatch(
+            r"\s*(?:\[[\s\S]*\]|\([\s\S]*\))\s*",
+            str(value or ""),
+        )
+    )
+
+
 def _normalize_serialized_answer_list(value: Any) -> str:
     text = str(value or "").strip()
     if not _looks_like_serialized_answer_list(text):
@@ -2506,7 +2515,21 @@ def collect_generated_config_quality_warnings(payload: dict[str, Any]) -> list[s
         if not isinstance(answer_parts, list):
             answer_parts = []
 
-        text_fields: list[Any] = [stem, knowledge_name, *answer_texts]
+        knowledge_texts: list[Any] = [knowledge_id, knowledge_name]
+        knowledge_ids = question.get("knowledge_ids")
+        if isinstance(knowledge_ids, list):
+            knowledge_texts.extend(knowledge_ids)
+        knowledge_points = question.get("knowledge_points")
+        if isinstance(knowledge_points, list):
+            for point in knowledge_points:
+                if isinstance(point, dict):
+                    knowledge_texts.extend(
+                        (point.get("knowledge_id"), point.get("knowledge_name"))
+                    )
+                else:
+                    knowledge_texts.append(point)
+
+        text_fields: list[Any] = [stem, *knowledge_texts, *answer_texts]
         parts = question.get("parts")
         if not isinstance(parts, list):
             parts = []
@@ -2524,8 +2547,16 @@ def collect_generated_config_quality_warnings(payload: dict[str, Any]) -> list[s
             text_fields.extend(_quality_answer_texts(answer_part))
         if any(_looks_like_garbled_generated_text(value) for value in text_fields):
             warnings.append(f"[质量检查-阻断] {qid} 的题干、公式、答案或踩分点中存在疑似乱码")
-        if any(_looks_like_serialized_answer_list(value) for value in text_fields):
-            warnings.append(f"[质量检查-阻断] {qid} 的答案中混入列表字符串，无法作为合法等价答案")
+        if (
+            any(_looks_like_serialized_answer_list(value) for value in text_fields)
+            or any(
+                _looks_like_serialized_knowledge_sequence(value)
+                for value in knowledge_texts
+            )
+        ):
+            warnings.append(
+                f"[质量检查-阻断] {qid} 的知识点、答案或评分点中混入列表字符串或元组字符串"
+            )
 
         if qtype in {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}:
             if not answer_texts and not answer_image_present:
@@ -3510,14 +3541,14 @@ def normalize_generated_config_schema(payload: dict[str, Any]) -> None:
             or question.get("points"),
             0.0,
         )
-        question["knowledge_id"] = str(question.get("knowledge_id") or question.get("knowledge") or "UNKNOWN")
-        question["knowledge_name"] = str(
+        question["knowledge_id"] = question.get("knowledge_id") or question.get("knowledge") or "UNKNOWN"
+        question["knowledge_name"] = (
             question.get("knowledge_name")
             or question.get("knowledge_text")
             or question.get("knowledge_label")
             or question.get("knowledge")
             or ""
-        ).strip()
+        )
         _normalize_question_knowledge_fields(question)
         question["stem_summary"] = str(question.get("stem_summary") or question.get("棰樺共鎽樿") or "").strip()
         question["grading_mode"] = str(
@@ -3567,7 +3598,117 @@ def _canonical_question_id(value: Any, fallback: str = "") -> str:
     return raw
 
 
+def _safe_knowledge_sequence(value: Any) -> list[str] | None:
+    candidate = value
+    if isinstance(value, str):
+        text = value.strip()
+        if not _looks_like_serialized_knowledge_sequence(text):
+            return None
+        try:
+            candidate = ast.literal_eval(text)
+        except (SyntaxError, ValueError):
+            return None
+    if not isinstance(candidate, (list, tuple)) or not candidate:
+        return None
+
+    values: list[str] = []
+    for item in candidate:
+        if isinstance(item, bool) or not isinstance(item, (str, int, float)):
+            return None
+        text = str(item).strip()
+        if not text:
+            return None
+        values.append(text)
+    return values
+
+
+def _redundant_knowledge_fields_match_pairs(
+    question: dict[str, Any],
+    paired_ids: list[str],
+    paired_names: list[str],
+) -> bool:
+    raw_ids = question.get("knowledge_ids")
+    if raw_ids not in (None, "", []):
+        ids_match = _safe_knowledge_sequence(raw_ids) == paired_ids
+        if (
+            not ids_match
+            and isinstance(raw_ids, (list, tuple))
+            and len(raw_ids) == 1
+        ):
+            ids_match = _safe_knowledge_sequence(raw_ids[0]) == paired_ids
+        if not ids_match:
+            return False
+
+    raw_points = question.get("knowledge_points")
+    if raw_points in (None, "", []):
+        return True
+    if not isinstance(raw_points, (list, tuple)):
+        return False
+
+    expected_names = dict(zip(paired_ids, paired_names))
+    canonical_ids: set[str] = set()
+    for point in raw_points:
+        if isinstance(point, dict):
+            raw_id = point.get("knowledge_id") or point.get("id") or ""
+            raw_name = (
+                point.get("knowledge_name")
+                or point.get("name")
+                or point.get("label")
+                or ""
+            )
+        else:
+            raw_id = point
+            raw_name = ""
+
+        point_ids = _safe_knowledge_sequence(raw_id)
+        if point_ids is not None:
+            if point_ids != paired_ids:
+                return False
+            if raw_name and _safe_knowledge_sequence(raw_name) != paired_names:
+                return False
+            continue
+        if _looks_like_serialized_knowledge_sequence(raw_id):
+            return False
+        if raw_name and _looks_like_serialized_knowledge_sequence(raw_name):
+            return False
+
+        kid = str(raw_id or "").strip()
+        name = str(raw_name or "").strip()
+        if not kid or kid not in expected_names:
+            return False
+        if name and name != expected_names[kid]:
+            return False
+        canonical_ids.add(kid)
+
+    return not canonical_ids or canonical_ids == set(paired_ids)
+
+
 def _normalize_question_knowledge_fields(question: dict[str, Any]) -> None:
+    raw_primary_id = question.get("knowledge_id") or "UNKNOWN"
+    raw_primary_name = question.get("knowledge_name") or ""
+    paired_ids = _safe_knowledge_sequence(raw_primary_id)
+    paired_names = _safe_knowledge_sequence(raw_primary_name)
+    if (
+        paired_ids is not None
+        and paired_names is not None
+        and len(paired_ids) == len(paired_names)
+        and len(set(paired_ids)) == len(paired_ids)
+        and _redundant_knowledge_fields_match_pairs(
+            question,
+            paired_ids,
+            paired_names,
+        )
+    ):
+        paired_points = [
+            {"knowledge_id": kid, "knowledge_name": name}
+            for kid, name in zip(paired_ids, paired_names)
+        ]
+        question["knowledge_points"] = paired_points
+        question["knowledge_ids"] = list(paired_ids)
+        question["knowledge_id"] = paired_ids[0]
+        question["knowledge_name"] = paired_names[0]
+        return
+
     raw_points = question.get("knowledge_points")
     points: list[dict[str, str]] = []
     if isinstance(raw_points, list):
@@ -3595,8 +3736,8 @@ def _normalize_question_knowledge_fields(question: dict[str, Any]) -> None:
             if kid:
                 points.append({"knowledge_id": kid, "knowledge_name": ""})
 
-    primary_id = str(question.get("knowledge_id") or "UNKNOWN").strip()
-    primary_name = str(question.get("knowledge_name") or "").strip()
+    primary_id = str(raw_primary_id).strip()
+    primary_name = str(raw_primary_name).strip()
     if primary_id:
         points.append({"knowledge_id": primary_id, "knowledge_name": primary_name})
 
@@ -3605,14 +3746,27 @@ def _normalize_question_knowledge_fields(question: dict[str, Any]) -> None:
         points = useful_points
 
     normalized: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
     for point in points:
         kid = point["knowledge_id"]
-        key = (kid, point.get("knowledge_name", ""))
-        if not kid or key in seen:
+        name = point.get("knowledge_name", "")
+        if not kid:
             continue
-        seen.add(key)
-        normalized.append(point)
+        same_id = [
+            index for index, existing in enumerate(normalized)
+            if existing["knowledge_id"] == kid
+        ]
+        if any(normalized[index].get("knowledge_name", "") == name for index in same_id):
+            continue
+        if not name and same_id:
+            continue
+        empty_index = next(
+            (index for index in same_id if not normalized[index].get("knowledge_name")),
+            None,
+        )
+        if name and empty_index is not None:
+            normalized[empty_index]["knowledge_name"] = name
+        else:
+            normalized.append({"knowledge_id": kid, "knowledge_name": name})
 
     if not normalized:
         normalized = [{"knowledge_id": "UNKNOWN", "knowledge_name": ""}]
@@ -3622,6 +3776,62 @@ def _normalize_question_knowledge_fields(question: dict[str, Any]) -> None:
     question["knowledge_id"] = normalized[0]["knowledge_id"]
     if normalized[0].get("knowledge_name"):
         question["knowledge_name"] = normalized[0]["knowledge_name"]
+
+
+def normalize_generated_config_knowledge_fields(payload: dict[str, Any]) -> bool:
+    """Normalize only rubric knowledge metadata and report whether it changed."""
+    rubric = payload.get("rubric") if isinstance(payload, dict) else None
+    questions = rubric.get("questions") if isinstance(rubric, dict) else None
+    if not isinstance(questions, list):
+        return False
+
+    changed = False
+    tracked = ("knowledge_id", "knowledge_name", "knowledge_ids", "knowledge_points")
+    for question in questions:
+        if not isinstance(question, dict):
+            continue
+        raw_points = question.get("knowledge_points")
+        point_ids = [
+            str(point.get("knowledge_id") or point.get("id") or "").strip()
+            for point in raw_points
+            if isinstance(point, dict)
+        ] if isinstance(raw_points, list) else []
+        sequence_values: list[Any] = [
+            question.get("knowledge_id"),
+            question.get("knowledge_name"),
+        ]
+        raw_ids = question.get("knowledge_ids")
+        if isinstance(raw_ids, list):
+            sequence_values.extend(raw_ids)
+        elif raw_ids is not None:
+            sequence_values.append(raw_ids)
+        if isinstance(raw_points, list):
+            for point in raw_points:
+                if isinstance(point, dict):
+                    sequence_values.extend(
+                        (point.get("knowledge_id"), point.get("knowledge_name"))
+                    )
+                else:
+                    sequence_values.append(point)
+        needs_compatibility = (
+            any(
+                isinstance(value, (list, tuple))
+                or (
+                    isinstance(value, str)
+                    and _looks_like_serialized_knowledge_sequence(value)
+                )
+                for value in sequence_values
+            )
+            or len([kid for kid in point_ids if kid])
+            != len(set(kid for kid in point_ids if kid))
+        )
+        if not needs_compatibility:
+            continue
+        before = {key: copy.deepcopy(question.get(key)) for key in tracked}
+        _normalize_question_knowledge_fields(question)
+        after = {key: question.get(key) for key in tracked}
+        changed = changed or before != after
+    return changed
 
 
 def iter_effective_rubric_items(
