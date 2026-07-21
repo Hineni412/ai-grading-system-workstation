@@ -19,16 +19,18 @@ const gradingStarting = computed(() => !store.gradingRun && (
   || store.busyAction === 'grading'
   || store.activeJobId !== null
 ))
+const gradingCompletedWithoutRun = computed(() => !store.gradingRun
+  && store.workspace?.grading_job?.status === 'succeeded')
 
 const stage = computed(() => {
-  if (store.gradingRun || gradingStarting.value) return 4
+  if (store.gradingRun || gradingStarting.value || gradingCompletedWithoutRun.value) return 4
   if (store.preflight) return 3
   if (store.uploadBatch?.state === 'frozen') return 2
   return 1
 })
 const pendingCount = computed(() => store.preflight?.pending_issue_count ?? 0)
 const canStart = computed(() => Boolean(store.preflight)
-  && !store.gradingRun && !gradingStarting.value
+  && !store.gradingRun && !gradingStarting.value && !gradingCompletedWithoutRun.value
   && (pendingCount.value === 0 || confirmPending.value) && !store.busyAction)
 const invalidCount = computed(() => store.preflight?.decisions
   .filter((item) => item.target_type === 'issue' && item.action === 'invalid').length ?? 0)
@@ -270,7 +272,7 @@ watch(
       </section>
 
       <section ref="runSection" class="scan-stage" aria-labelledby="run-title">
-        <div class="scan-stage__heading"><div><span>04</span><h2 id="run-title">运行与补批</h2></div><strong v-if="store.gradingRun">{{ runStateLabel }}</strong></div>
+        <div class="scan-stage__heading"><div><span>04</span><h2 id="run-title">运行与补批</h2></div><strong v-if="store.gradingRun">{{ runStateLabel }}</strong><strong v-else-if="gradingCompletedWithoutRun">批改处理已结束</strong></div>
         <div v-if="store.gradingRun" class="run-console">
           <div class="run-counts">
             <span><strong>已完成 {{ store.gradingRun.counts.graded }}</strong></span>
@@ -289,6 +291,13 @@ watch(
         <p v-else-if="gradingStarting" data-grading-starting class="scan-empty" role="status">
           启动请求已接收，正在建立本次批改进度。可以留在本页等待，刷新后也会自动恢复。
         </p>
+        <div v-else-if="gradingCompletedWithoutRun" data-grading-completed-without-run class="scan-empty" role="status">
+          <p>批改处理已结束，但本次运行进度记录没有生成。任务结束不代表每份答卷都成功，请先核对完成与失败数量；这里不会开放重复提交。</p>
+          <div class="scan-stage__actions">
+            <button type="button" data-open-workbench @click="router.push('/workbench')">查看工作台状态</button>
+            <button type="button" data-open-grading-results class="secondary" @click="router.push('/grading')">进入评分复核</button>
+          </div>
+        </div>
         <p v-else class="scan-empty">尚未开始批改。启动后，刷新页面仍可恢复这里的运行状态。</p>
       </section>
     </template>

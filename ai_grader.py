@@ -229,7 +229,7 @@ class AIGrader:
                 model=self.grading_model,
                 system_prompt=system_prompt,
                 usage_callback=_usage_callback,
-                extra_kwargs={"timeout": 600},
+                extra_kwargs={"timeout_override_seconds": 600},
             )
         else:
             json_from_images = getattr(self.llm_client, "json_from_images_with_options", None)
@@ -240,7 +240,7 @@ class AIGrader:
                     model=self.grading_model,
                     system_prompt=system_prompt,
                     usage_callback=_usage_callback,
-                    extra_kwargs={"timeout": 600},
+                    extra_kwargs={"timeout_override_seconds": 600},
                 )
             else:
                 parsed = self.llm_client.json_from_images(

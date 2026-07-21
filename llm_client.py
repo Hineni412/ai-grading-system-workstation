@@ -443,6 +443,11 @@ class LLMClient:
             kwargs["max_tokens"] = 32000
         if extra_kwargs and "timeout" in extra_kwargs:
             kwargs["timeout"] = extra_kwargs.get("timeout")
+        timeout_override_seconds = (
+            extra_kwargs.get("timeout_override_seconds")
+            if extra_kwargs
+            else None
+        )
         if expect_json:
             kwargs["response_format"] = {"type": "json_object"}
             
@@ -482,6 +487,7 @@ class LLMClient:
                 request_id=logical_request_id,
                 allow_retry=allow_retry,
                 compatibility_fallback=compatibility_fallback,
+                timeout_override_seconds=timeout_override_seconds,
                 _next_attempt=next_attempt,
             )
             if usage_callback:
