@@ -104,7 +104,7 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
         activeJobId.value = gradingJob.id
       } else {
         activeJobId.value = null
-        if (gradingJob && !errorMessage.value) {
+        if (gradingJob && gradingJob.status !== 'succeeded' && !errorMessage.value) {
           errorMessage.value = '批改任务未能建立运行记录，可以重新提交。'
         }
       }

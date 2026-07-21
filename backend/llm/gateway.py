@@ -9,7 +9,7 @@ from typing import Callable, Mapping
 
 from .errors import classify_llm_error, is_retryable_error
 from .pacing import LLMPacerRegistry
-from .policy import LLMProtocol, LLMRequestKind, policy_from_profile
+from .policy import LLMPolicyError, LLMProtocol, LLMRequestKind, policy_from_profile
 from .usage import (
     LLMUsageEvent,
     NullUsageSink,
@@ -30,6 +30,27 @@ def _warn_safely(message: str) -> None:
         logger.warning(message)
     except Exception:
         return
+
+
+def _resolved_timeout_seconds(
+    policy_timeout_seconds: float,
+    timeout_override_seconds: float | None,
+) -> float:
+    if timeout_override_seconds is None:
+        return float(policy_timeout_seconds)
+    if isinstance(timeout_override_seconds, bool) or not isinstance(
+        timeout_override_seconds,
+        (int, float),
+    ):
+        raise LLMPolicyError(
+            "timeout_override_seconds must be a finite number"
+        )
+    parsed = float(timeout_override_seconds)
+    if not math.isfinite(parsed) or not 1.0 <= parsed <= 600.0:
+        raise LLMPolicyError(
+            "timeout_override_seconds must be between 1.0 and 600.0"
+        )
+    return parsed
 
 
 class LLMGateway:
@@ -60,6 +81,7 @@ class LLMGateway:
         request_id: object | None = None,
         allow_retry: bool = True,
         compatibility_fallback: str = "",
+        timeout_override_seconds: float | None = None,
         _next_attempt: Callable[[], int] | None = None,
     ) -> object:
         return self._execute(
@@ -71,6 +93,7 @@ class LLMGateway:
             request_id=request_id,
             allow_retry=allow_retry,
             compatibility_fallback=compatibility_fallback,
+            timeout_override_seconds=timeout_override_seconds,
             next_attempt=_next_attempt,
         )
 
@@ -84,6 +107,7 @@ class LLMGateway:
         request_id: object | None = None,
         allow_retry: bool = True,
         compatibility_fallback: str = "",
+        timeout_override_seconds: float | None = None,
         _next_attempt: Callable[[], int] | None = None,
     ) -> object:
         return self._execute(
@@ -95,6 +119,7 @@ class LLMGateway:
             request_id=request_id,
             allow_retry=allow_retry,
             compatibility_fallback=compatibility_fallback,
+            timeout_override_seconds=timeout_override_seconds,
             next_attempt=_next_attempt,
         )
 
@@ -109,6 +134,7 @@ class LLMGateway:
         request_id: object | None,
         allow_retry: bool,
         compatibility_fallback: str,
+        timeout_override_seconds: float | None,
         next_attempt: Callable[[], int] | None,
     ) -> object:
         kind = LLMRequestKind(request_kind)
@@ -124,6 +150,10 @@ class LLMGateway:
             else ""
         )
         attempt_counter = next_attempt or count(1).__next__
+        request_timeout_seconds = _resolved_timeout_seconds(
+            policy.timeout_seconds,
+            timeout_override_seconds,
+        )
 
         for retry_index in range(retry_limit + 1):
             attempt = attempt_counter()
@@ -136,7 +166,7 @@ class LLMGateway:
             try:
                 payload = dict(kwargs)
                 payload["model"] = model
-                payload["timeout"] = policy.timeout_seconds
+                payload["timeout"] = request_timeout_seconds
                 response = self._invoke(protocol, client, payload)
             except Exception as exc:
                 latency_ms = self._latency_ms(started)

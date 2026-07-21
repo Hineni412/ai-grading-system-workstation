@@ -180,6 +180,30 @@ describe('scan grading workspace', () => {
     app.unmount()
   })
 
+  it('keeps a succeeded job without a run ledger non-retryable and points to saved results', async () => {
+    const succeededWorkspace = workspace()
+    succeededWorkspace.grading_job = {
+      id: 93, status: 'succeeded', progress: 1, updated_at: '2026-07-17T00:00:03Z',
+      cancel_requested: false, scan_batch_id: 'batch-1',
+    }
+    vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(succeededWorkspace)
+
+    const { app, host } = await mountView()
+    const confirmation = host.querySelector<HTMLInputElement>('[data-confirm-pending]')!
+    confirmation.checked = true
+    confirmation.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+
+    expect(host.textContent).toContain('批改处理已结束，但本次运行进度记录没有生成')
+    expect(host.textContent).not.toContain('批改任务未能建立运行记录，可以重新提交')
+    expect([...host.querySelectorAll<HTMLButtonElement>('[data-grading-mode]')]
+      .every((button) => button.disabled)).toBe(true)
+    expect(host.querySelector('[data-open-grading-results]')).not.toBeNull()
+    expect(host.querySelector('[data-open-workbench]')).not.toBeNull()
+    expect(api.startGrading).not.toHaveBeenCalled()
+    app.unmount()
+  })
+
   it('offers pause and cancel together for a running grading run', async () => {
     const value = workspace()
     value.grading_run = {
