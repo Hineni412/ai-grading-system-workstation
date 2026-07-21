@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 import base64
 from types import SimpleNamespace
@@ -923,6 +924,193 @@ def test_subjective_top_level_equivalents_do_not_absorb_part_answers_or_list_str
     assert answer["parts"][0]["accepted_forms"] == ["6，2"]
     assert "3" not in answer["parts"][1]["accepted_forms"]
     assert answer["parts"][0]["answer"] == "6，2"
+
+
+def test_generated_config_normalization_recovers_paired_knowledge_list_strings_idempotently() -> None:
+    payload = {
+        "rubric": {
+            "total_score": 12,
+            "questions": [
+                {
+                    "question_id": "Q12",
+                    "question_type": "proof",
+                    "max_score": 12,
+                    "knowledge_id": "['K-CONGRUENCE', 'K-BISECTOR', 'K-PROOF']",
+                    "knowledge_name": "['全等三角形', '角平分线性质', '几何证明']",
+                    "knowledge_ids": ["['K-CONGRUENCE', 'K-BISECTOR', 'K-PROOF']"],
+                    "knowledge_points": [
+                        {
+                            "knowledge_id": "['K-CONGRUENCE', 'K-BISECTOR', 'K-PROOF']",
+                            "knowledge_name": "['全等三角形', '角平分线性质', '几何证明']",
+                        },
+                        {
+                            "knowledge_id": "['K-CONGRUENCE', 'K-BISECTOR', 'K-PROOF']",
+                            "knowledge_name": "",
+                        },
+                    ],
+                    "parts": [],
+                }
+            ],
+        },
+        "answer_key": {
+            "questions": [
+                {
+                    "question_id": "Q12",
+                    "canonical_answer": "证明结论成立",
+                    "accepted_forms": ["证明结论成立"],
+                }
+            ]
+        },
+    }
+    original_answer = copy.deepcopy(payload["answer_key"]["questions"][0])
+
+    session_manager.normalize_generated_config_schema(payload)
+    once = copy.deepcopy(payload["rubric"]["questions"][0])
+    changed_again = session_manager.normalize_generated_config_knowledge_fields(payload)
+
+    question = payload["rubric"]["questions"][0]
+    assert question["knowledge_id"] == "K-CONGRUENCE"
+    assert question["knowledge_name"] == "全等三角形"
+    assert question["knowledge_ids"] == ["K-CONGRUENCE", "K-BISECTOR", "K-PROOF"]
+    assert question["knowledge_points"] == [
+        {"knowledge_id": "K-CONGRUENCE", "knowledge_name": "全等三角形"},
+        {"knowledge_id": "K-BISECTOR", "knowledge_name": "角平分线性质"},
+        {"knowledge_id": "K-PROOF", "knowledge_name": "几何证明"},
+    ]
+    assert question == once
+    assert changed_again is False
+    answer = payload["answer_key"]["questions"][0]
+    assert answer["canonical_answer"] == original_answer["canonical_answer"]
+    assert answer["accepted_forms"] == original_answer["accepted_forms"]
+    assert question["max_score"] == 12
+    warnings = session_manager.collect_generated_config_quality_warnings(payload)
+    assert not any("列表字符串" in warning for warning in warnings)
+
+
+def test_generated_config_normalization_recovers_paired_knowledge_tuple_strings() -> None:
+    payload = {
+        "rubric": {
+            "total_score": 2,
+            "questions": [
+                {
+                    "question_id": "Q2",
+                    "question_type": "proof",
+                    "max_score": 2,
+                    "knowledge_id": "('K1', 'K2')",
+                    "knowledge_name": "('知识点一', '知识点二')",
+                    "parts": [],
+                }
+            ],
+        },
+        "answer_key": {
+            "questions": [
+                {
+                    "question_id": "Q2",
+                    "canonical_answer": "结论成立",
+                    "accepted_forms": ["结论成立"],
+                }
+            ]
+        },
+    }
+
+    session_manager.normalize_generated_config_schema(payload)
+
+    question = payload["rubric"]["questions"][0]
+    assert question["knowledge_id"] == "K1"
+    assert question["knowledge_name"] == "知识点一"
+    assert question["knowledge_ids"] == ["K1", "K2"]
+    assert question["knowledge_points"] == [
+        {"knowledge_id": "K1", "knowledge_name": "知识点一"},
+        {"knowledge_id": "K2", "knowledge_name": "知识点二"},
+    ]
+    warnings = session_manager.collect_generated_config_quality_warnings(payload)
+    assert not any("列表字符串" in warning for warning in warnings)
+
+
+def test_generated_config_normalization_blocks_conflicting_redundant_knowledge_fields() -> None:
+    payload = {
+        "rubric": {
+            "total_score": 2,
+            "questions": [
+                {
+                    "question_id": "Q2",
+                    "question_type": "proof",
+                    "max_score": 2,
+                    "knowledge_id": "['K1', 'K2']",
+                    "knowledge_name": "['知识点一', '知识点二']",
+                    "knowledge_ids": ["K3"],
+                    "knowledge_points": [
+                        {"knowledge_id": "K3", "knowledge_name": "已有合法知识点"},
+                    ],
+                    "parts": [],
+                }
+            ],
+        },
+        "answer_key": {
+            "questions": [
+                {
+                    "question_id": "Q2",
+                    "canonical_answer": "结论成立",
+                    "accepted_forms": ["结论成立"],
+                }
+            ]
+        },
+    }
+
+    session_manager.normalize_generated_config_schema(payload)
+
+    question = payload["rubric"]["questions"][0]
+    assert any(
+        point["knowledge_id"] == "K3"
+        and point["knowledge_name"] == "已有合法知识点"
+        for point in question["knowledge_points"]
+    )
+    warnings = session_manager.collect_generated_config_quality_warnings(payload)
+    assert any("Q2" in warning and "列表字符串" in warning for warning in warnings)
+
+
+@pytest.mark.parametrize(
+    ("knowledge_id", "knowledge_name"),
+    [
+        ("['K1', 'K2']", "单个知识点名称"),
+        ("['K1', 'K2']", "['名称一']"),
+        ("['K1', invalid]", "['名称一', '名称二']"),
+        ("['K1', 'K1']", "['名称一', '名称二']"),
+    ],
+)
+def test_generated_config_normalization_keeps_unsafe_knowledge_lists_blocked(
+    knowledge_id: str,
+    knowledge_name: str,
+) -> None:
+    payload = {
+        "rubric": {
+            "total_score": 1,
+            "questions": [
+                {
+                    "question_id": "Q1",
+                    "question_type": "proof",
+                    "max_score": 1,
+                    "knowledge_id": knowledge_id,
+                    "knowledge_name": knowledge_name,
+                    "parts": [],
+                }
+            ],
+        },
+        "answer_key": {
+            "questions": [
+                {
+                    "question_id": "Q1",
+                    "canonical_answer": "结论成立",
+                    "accepted_forms": ["结论成立"],
+                }
+            ]
+        },
+    }
+
+    session_manager.normalize_generated_config_schema(payload)
+
+    warnings = session_manager.collect_generated_config_quality_warnings(payload)
+    assert any("Q1" in warning and "列表字符串" in warning for warning in warnings)
 
 
 def test_quality_warnings_flag_overly_broad_knowledge_and_serialized_answer_lists() -> None:

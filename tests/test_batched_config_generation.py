@@ -339,6 +339,46 @@ def test_batch_accepts_answer_aliases_through_local_normalization() -> None:
     assert payload["meta"]["score_allocation_ai_success"] is True
 
 
+def test_batched_generation_preserves_multi_knowledge_fields_without_extra_model_calls() -> None:
+    class MultiKnowledgeClient(FakeBatchClient):
+        def json_from_text_once(self, prompt: str, **_kwargs):
+            payload = super().json_from_text_once(prompt, **_kwargs)
+            for question in payload["rubric"]["questions"]:
+                if question["question_id"] == "Q12":
+                    question["knowledge_id"] = ["K-CONGRUENCE", "K-BISECTOR", "K-PROOF"]
+                    question["knowledge_name"] = ["全等三角形", "角平分线性质", "几何证明"]
+            return payload
+
+    client = MultiKnowledgeClient()
+
+    payload = session_manager.generate_grading_config_in_batches(
+        _blocks(12), "document", llm_client=client
+    )
+
+    assert client.calls == [
+        ("Q1", "Q2", "Q3"),
+        ("Q4", "Q5", "Q6"),
+        ("Q7", "Q8", "Q9"),
+        ("Q10",),
+        ("Q11",),
+        ("Q12",),
+    ]
+    question = next(
+        item for item in payload["rubric"]["questions"]
+        if item["question_id"] == "Q12"
+    )
+    assert question["knowledge_id"] == "K-CONGRUENCE"
+    assert question["knowledge_name"] == "全等三角形"
+    assert question["knowledge_ids"] == ["K-CONGRUENCE", "K-BISECTOR", "K-PROOF"]
+    assert question["knowledge_points"] == [
+        {"knowledge_id": "K-CONGRUENCE", "knowledge_name": "全等三角形"},
+        {"knowledge_id": "K-BISECTOR", "knowledge_name": "角平分线性质"},
+        {"knowledge_id": "K-PROOF", "knowledge_name": "几何证明"},
+    ]
+    warnings = session_manager.collect_generated_config_quality_warnings(payload)
+    assert not any("Q12" in warning and "列表字符串" in warning for warning in warnings)
+
+
 def test_failed_batch_is_retained_and_retry_only_calls_that_complete_batch() -> None:
     failed = {("Q4", "Q5", "Q6")}
     initial_client = FakeBatchClient(failed)
