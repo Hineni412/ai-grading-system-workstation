@@ -50,6 +50,25 @@ describe('scan grading API contract', () => {
     })
   })
 
+  it('accepts a path-free grading job before its run ledger exists', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => response({
+      session_id: 7,
+      upload_batch: {
+        batch_id: 'batch-1', revision: 1, state: 'frozen', files: [], file_count: 0,
+        total_bytes: 0, frozen_at: '2026-07-17T00:00:00Z',
+      },
+      grading_run: null,
+      grading_job: {
+        id: 42, status: 'running', progress: 0, updated_at: '2026-07-17T00:00:01Z',
+        cancel_requested: false, scan_batch_id: 'batch-1',
+      },
+    })))
+
+    await expect(fetchGradingWorkspace(7)).resolves.toMatchObject({
+      grading_job: { id: 42, status: 'running' },
+    })
+  })
+
   it('rejects a path-shaped field returned by the workspace endpoint', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => response({
       session_id: 7,

@@ -88,6 +88,7 @@ class LLMProtocolAdapter:
         kwargs: Mapping[str, object],
         request_id: object | None = None,
         allow_retry: bool = True,
+        timeout_override_seconds: float | None = None,
     ) -> object:
         return self.gateway.chat_completions(
             request_kind=request_kind,
@@ -96,6 +97,7 @@ class LLMProtocolAdapter:
             kwargs=dict(kwargs),
             request_id=request_id,
             allow_retry=allow_retry,
+            timeout_override_seconds=timeout_override_seconds,
         )
 
     def responses(
@@ -106,6 +108,7 @@ class LLMProtocolAdapter:
         kwargs: Mapping[str, object],
         request_id: object | None = None,
         allow_retry: bool = True,
+        timeout_override_seconds: float | None = None,
     ) -> object:
         return self.gateway.responses(
             request_kind=request_kind,
@@ -114,4 +117,5 @@ class LLMProtocolAdapter:
             kwargs=dict(kwargs),
             request_id=request_id,
             allow_retry=allow_retry,
+            timeout_override_seconds=timeout_override_seconds,
         )
