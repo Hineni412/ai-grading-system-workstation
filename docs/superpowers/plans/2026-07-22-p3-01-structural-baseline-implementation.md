@@ -14,9 +14,9 @@
 ## 昼夜交接
 
 **执行包：** P3-01
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
 **真实数据指纹：** not_touched
@@ -149,3 +149,12 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - `Important 3｜本次修改直接引入`：只检查外层 output dir；预先存在的 publication/release junction、symlink 或其他 reparse point 仍可能把写入引到受控目录之外。
 - `Important 4｜当前任务原本遗漏`：文件内容做了 flush/fsync，但 release 与 manifest 原子改名后没有同步父目录；突然掉电后的目录项持久化承诺不足。
 - 本轮只统一修正以上四点，并增加 Git 换行转换后的文本摘要稳定性守卫；不扩展扫描内容、报告字段或生产业务范围。修复后只允许对这四点及直接修改区域进行一次最终限定复审。
+
+### 统一修正结果（等待最终限定复审）
+
+- 统一修正提交 `be621b6b7aaa285bf8777252427c99ba2d78215f`：旧直出文件对会先成为可解析的活动 release，再尝试激活新报告；无 manifest 时解析器仅为完整、普通文件组成的旧文件对提供迁移回退。
+- 解析器现在以两份实际文本重算 release ID，同时验证固定文件名与摘要；publication、releases、release 和报告文件任一层存在 symlink、junction 或其他 reparse point 都会拒绝写入/解析。
+- release 目录和 manifest 原子改名后分别同步父目录；Windows 使用带目录语义的句柄执行 `FlushFileBuffers`，其他平台使用目录 `fsync`。命令只有在内容和目录项同步成功后才报告成功。
+- 新增 4 个直接修复场景及 1 个 Git 换行转换场景；P3-01 与 Schema/性能证据受影响回归共 55 项通过（72.71 秒，1 条既有 Starlette/httpx 弃用警告），快速冒烟再次通过（文档治理、512 个第一方 Python 文件编译、两库临时副本初始化幂等）。
+- 更新后的活动 evidence release 为 `e3e751e8dcee0cbfa3a238987a0198f2927b0415a2dfc9aa6c0f5855295a5cd2`，绑定统一修正提交，记录 289 个第一方 Python 文件、2,792 条静态导入和 4 条动态导入线索；旧的非活动 evidence release 从版本化证据中移除。
+- 当前剩余工作：由首轮原 Spec/Standards 复审者仅核对四条登记问题及直接修改区域；若仍有当前范围 `Critical`/`Important`，按规则立即停止，不再自动修复。
