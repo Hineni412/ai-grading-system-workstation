@@ -85,13 +85,6 @@ def _module_name(relative_path: str) -> str:
     return without_suffix.replace("/", ".")
 
 
-def _module_index(paths: Iterable[Path], root: Path) -> dict[str, str]:
-    return {
-        _module_name(_relative(path, root)): _relative(path, root)
-        for path in paths
-    }
-
-
 def _literal_argument(node: ast.Call) -> str:
     if not node.args:
         return "<missing>"
@@ -104,6 +97,17 @@ def _literal_argument(node: ast.Call) -> str:
 def _imports_for_tree(tree: ast.AST) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     imports: list[dict[str, Any]] = []
     dynamic_imports: list[dict[str, Any]] = []
+    importlib_names = {"importlib"}
+    import_module_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "importlib":
+                    importlib_names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "importlib":
+            for alias in node.names:
+                if alias.name == "import_module":
+                    import_module_names.add(alias.asname or alias.name)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -138,8 +142,16 @@ def _imports_for_tree(tree: ast.AST) -> tuple[list[dict[str, Any]], list[dict[st
                 isinstance(node.func, ast.Attribute)
                 and node.func.attr == "import_module"
                 and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "importlib"
+                and node.func.value.id in importlib_names
             ):
+                dynamic_imports.append(
+                    {
+                        "kind": "importlib.import_module",
+                        "line": node.lineno,
+                        "module": _literal_argument(node),
+                    }
+                )
+            elif isinstance(node.func, ast.Name) and node.func.id in import_module_names:
                 dynamic_imports.append(
                     {
                         "kind": "importlib.import_module",
@@ -206,6 +218,7 @@ def _source_revision(root: Path) -> str:
 def _require_file(root: Path, raw_path: str) -> Path:
     candidate = Path(raw_path)
     path = candidate if candidate.is_absolute() else root / candidate
+    _reject_user_data(path.resolve(), root, "input")
     if not path.is_file():
         raise BaselineInputError(f"missing required input: {raw_path}")
     try:
@@ -213,6 +226,15 @@ def _require_file(root: Path, raw_path: str) -> Path:
     except ValueError as exc:
         raise BaselineInputError("required input must be inside the repository") from exc
     return path
+
+
+def _reject_user_data(path: Path, root: Path, description: str) -> None:
+    data_root = (root / "user_data").resolve()
+    try:
+        path.relative_to(data_root)
+    except ValueError:
+        return
+    raise BaselineInputError(f"user_data is not an allowed {description}")
 
 
 def _schema_inputs(root: Path) -> dict[str, dict[str, Any]]:
@@ -279,7 +301,6 @@ def build_report(root: Path, *, p1_26_report: str, p1_27_report: str) -> dict[st
         }
 
     paths = _python_paths(root)
-    module_paths = _module_index(paths, root)
     source_imports: list[dict[str, Any]] = []
     dynamic_imports: list[dict[str, Any]] = []
     source_manifest: list[dict[str, str]] = []
@@ -410,31 +431,41 @@ def render_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _atomic_write(path: Path, content: str) -> None:
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        newline="\n",
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as temporary:
-        temporary.write(content)
-        temporary_path = Path(temporary.name)
-    try:
-        os.replace(temporary_path, path)
-    finally:
-        if temporary_path.exists():
-            temporary_path.unlink()
-
-
 def publish_report(output_dir: Path, report: dict[str, Any]) -> tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / f"{REPORT_STEM}.json"
     markdown_path = output_dir / f"{REPORT_STEM}.md"
-    _atomic_write(json_path, json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
-    _atomic_write(markdown_path, render_markdown(report))
+    targets = (json_path, markdown_path)
+    if any(path.exists() and path.is_dir() for path in targets):
+        raise BaselineInputError("report output targets must be files")
+    contents = {
+        json_path.name: json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        markdown_path.name: render_markdown(report),
+    }
+    with tempfile.TemporaryDirectory(prefix=".p3_01_baseline_", dir=output_dir.parent) as raw_staging:
+        staging = Path(raw_staging)
+        staged = {name: staging / name for name in contents}
+        for name, content in contents.items():
+            staged[name].write_text(content, encoding="utf-8", newline="\n")
+        backups: dict[Path, Path] = {}
+        published: list[Path] = []
+        try:
+            for target in targets:
+                if target.exists() or target.is_symlink():
+                    backup = staging / f"previous-{target.name}"
+                    os.replace(target, backup)
+                    backups[target] = backup
+            for target in targets:
+                os.replace(staged[target.name], target)
+                published.append(target)
+        except OSError as exc:
+            for target in reversed(published):
+                if target.exists() and not target.is_dir():
+                    target.unlink()
+            for target, backup in backups.items():
+                if backup.exists():
+                    os.replace(backup, target)
+            raise BaselineInputError("unable to publish both reports") from exc
     return json_path, markdown_path
 
 
@@ -452,6 +483,7 @@ def main(argv: list[str] | None = None) -> int:
     root = args.root.resolve()
     output_dir = args.output_dir.resolve()
     try:
+        _reject_user_data(output_dir, root, "output directory")
         report = build_report(
             root,
             p1_26_report=args.p1_26_report,
