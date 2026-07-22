@@ -52,6 +52,12 @@ def test_p3_01_command_emits_reproducible_redacted_structural_baseline(
         item["kind"] in {"importlib.import_module", "__import__"}
         for item in payload["dynamic_imports"]
     )
+    assert {
+        "source": "pages/题库管理.py",
+        "kind": "importlib.import_module",
+        "line": 201,
+        "module": "question_bank.services.rich_content_backfill_service",
+    } in payload["dynamic_imports"]
     assert any(
         item["target"] == "db_manager.py" for item in payload["test_coverage_map"]
     )
@@ -89,3 +95,31 @@ def test_p3_01_command_rejects_missing_controlled_evidence_without_publication(
     assert completed.returncode != 0
     assert "missing required input" in completed.stderr
     assert not output_dir.exists()
+
+
+def test_p3_01_command_rejects_user_data_output_before_scanning(
+    tmp_path: Path,
+) -> None:
+    isolated_root = tmp_path / "repository"
+    output_dir = isolated_root / "user_data" / "baseline"
+
+    completed = _run(output_dir, "--root", str(isolated_root))
+
+    assert completed.returncode != 0
+    assert "user_data" in completed.stderr
+    assert not output_dir.exists()
+
+
+def test_p3_01_command_does_not_publish_one_report_when_the_pair_is_blocked(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    blocked_markdown_path = output_dir / "p3-01-structural-baseline.md"
+    blocked_markdown_path.mkdir()
+
+    completed = _run(output_dir)
+
+    assert completed.returncode != 0
+    assert not (output_dir / "p3-01-structural-baseline.json").exists()
+    assert blocked_markdown_path.is_dir()
