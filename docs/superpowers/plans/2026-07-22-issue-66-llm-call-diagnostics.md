@@ -75,3 +75,4 @@
 | TDD 稳定候选 | 8 个 RED→GREEN 切片；Gateway/JSONL/Adapter/LLMClient/静态边界及全部受影响调用方共 201 项通过；快速冒烟通过（文档、506 文件编译、两库副本幂等） | 3 | 实现期只读核对发现失败字段提取异常时缺终态、Mapping 响应实际模型取值不准、包装超时未优先显示 `ReadTimeout`；均已完成 RED→GREEN | 候选可冻结复审；测试日志已隔离且工作树无 trace 文件，真实模型调用 0，真实 `user_data/` 未触碰 |
 | 冻结候选双路初审 | Spec 与 Standards 检查同一 `38e93e6433743f8433c17326b04dd6e00f4f379b` | 1 | 0 Critical / 1 Important / 0 Suggestion：参数兼容回退实际继续请求，但失败终态误记 `will_retry=false` | 统一修复一次；Standards 为 0/0/0 |
 | 统一修复 | 新增兼容回退计划标记，只改变 trace 的 `will_retry` 事实，不改变 Gateway 内外重试所有权、次数或等待；受影响 202 项通过 | 1 | 首次与第二次参数兼容失败现在均记录 `will_retry=true`、等待 0，第三次成功；测试日志文件不存在 | 等待原 Spec 评审员限定终审 |
+| 限定终审 | 原 Spec 评审员只检查首轮问题、修复区域及直接回归；代码冻结 SHA `fc368a6b033415d074f0657b4001eedd8d3756d6` | 0 | 0 Critical / 0 Important / 0 Suggestion；首轮 Important 已关闭，参数兼容与网络重试边界保持不变 | Issue #66 通过验收，可合入 M2-03；真实模型调用 0，真实 `user_data/` 未触碰 |
