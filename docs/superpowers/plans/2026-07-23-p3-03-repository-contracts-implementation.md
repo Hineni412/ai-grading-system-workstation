@@ -2,7 +2,7 @@
 
 **执行包：** P3-03
 **计划日期：** 2026-07-23
-**规划状态：** ready_for_execution
+**规划状态：** waiting_review
 **规划模型：** 当前连续作业模型
 **允许夜间执行：** yes
 **计划基线：** dae97291aedf190e6cd1dd40e88f8e410bf9a881
@@ -14,9 +14,9 @@
 ## 昼夜交接
 
 **执行包：** P3-03
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
 **真实数据指纹：** unchanged
@@ -63,19 +63,27 @@
 
 ## 实施步骤
 
-- [ ] 先写临时库公共契约测试并取得 RED：模块缺失、提交/回滚/嵌套/只读/线程隔离尚不存在。
-- [ ] 最小实现连接 factory、session、Protocol 和稳定异常，使单会话提交/关闭转 GREEN。
-- [ ] 逐个补齐外层回滚、嵌套 savepoint、只读拒写、跨线程拒绝和缺失只读库，每条保持行为测试。
+- [x] 先写临时库公共契约测试并取得 RED：模块缺失、提交/回滚/嵌套/只读/线程隔离尚不存在。
+- [x] 最小实现连接 factory、session、Protocol 和稳定异常，使单会话提交/关闭转 GREEN。
+- [x] 逐个补齐外层回滚、嵌套 savepoint、只读拒写、跨线程拒绝和缺失只读库，每条保持行为测试。
 - [ ] 运行聚焦与 DBManager/请求连接受影响回归、快速冒烟、双路独立复审、交接与真实两库指纹门槛。
 
 ## 计划验证命令
 
 ```powershell
 runtime\python\python.exe -m pytest tests\test_p3_03_repository_contracts.py -q
-runtime\python\python.exe -m pytest tests\test_request_read_connections.py tests\test_db_manager.py -q
+runtime\python\python.exe -m pytest tests\test_request_read_connections.py tests\test_request_connection_benchmark.py tests\test_db_performance_instrumentation.py -q
 runtime\python\python.exe tools\smoke_check.py --skip-tests
 runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\2026-07-23-p3-03-repository-contracts-implementation.md --repo . --expected-handoff-base dae97291aedf190e6cd1dd40e88f8e410bf9a881
 ```
+
+## 实施记录
+
+- **实现提交：** `2fc377581c3948dceee92f70699eeb740b8dd810`
+- **TDD 结果：** 新增 10 项公共契约测试；其中未显式事务写入、回滚失败保留原异常、关闭失败不遮蔽原异常均先出现预期失败，再完成修正。
+- **自动验证：** 10 项 P3-03 测试与 45 项连接/性能受影响回归组合运行，共 55 项通过；唯一警告为既有 Starlette/httpx 弃用提示。
+- **快速冒烟：** 文档治理、517 个第一方 Python 文件静态编译、两库隔离副本初始化幂等全部通过；按功能分支规则跳过全量测试。
+- **真实数据：** 未读写真实业务表；所有写入测试仅使用临时数据库，真实两库指纹保持不变。
 
 ## 回退
 
