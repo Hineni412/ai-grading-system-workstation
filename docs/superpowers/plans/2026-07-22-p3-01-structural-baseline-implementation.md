@@ -14,9 +14,9 @@
 ## 昼夜交接
 
 **执行包：** P3-01
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
 **真实数据指纹：** not_touched
@@ -166,3 +166,11 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - `Important 2｜当前任务原本遗漏`：两份文件已 fsync，release 改名后也同步了 `releases` 父目录，但改名前没有同步 staging 目录本身；掉电时文件名目录项仍可能未持久化。
 - 用户此前授予同类问题最多两次自动授权，本任务现启用第 2 次、也是最后一次授权。新修复只允许：用公开渲染结果证明旧 JSON/Markdown 匹配；在 release 改名前同步 staging 目录。不得修改其他行为或扩大范围。
 - 第 2 次修复仍执行一次 Spec/Standards 初审、必要时一次统一修正和一次最终限定复审；如果最终仍有当前范围 `Critical`/`Important`，立即停止 P3-01 和后续依赖包，不再自动建立第三个修复任务。
+
+### 第 2 次独立修复候选（等待复审）
+
+- 修复提交 `1eec63b88b7c7b755c1b1ef55a47230f39d4f3f9` 只处理两条登记问题：旧格式回退会重新从 JSON 渲染 Markdown 并要求完全一致；两份文件 fsync 后进一步同步 staging 目录，再执行 release 原子改名。
+- 两个公开/文件系统边界测试分别先得到 RED，再转为 GREEN；同时把结构报告表格顺序固定为 `CORE_TARGETS` 权威顺序，使从排序后的 JSON 重建 Markdown 仍与原报告一致，不改变报告字段或扫描内容。
+- P3-01、Schema 与性能证据受影响回归共 57 项通过（82.11 秒，1 条既有 Starlette/httpx 弃用警告）；快速冒烟通过（文档治理、512 个第一方 Python 文件编译、两库临时副本初始化幂等）。
+- 更新后的活动 evidence release 为 `66bcc9e80ea3fb9bb2ed61bc7b9579c40ece39db86ecda99c482286b0ce37a77`，绑定修复提交，记录 289 个第一方 Python 文件、2,792 条静态导入和 4 条动态导入线索。
+- 当前进入第 2 次独立修复的一轮 Spec/Standards 初审；若需要统一修正仍只限本节两条问题及直接回归，随后最多一次最终限定复审。
