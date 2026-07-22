@@ -4,6 +4,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, nullcontext
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -13,11 +14,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from backend.api.frontend import mount_frontend
 from backend.performance.metrics import PerformanceSink, request_performance_scope
 from path_manager import PathManager, get_path_manager as get_default_path_manager
 
 
 LOGGER = logging.getLogger("ai_grading.api")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class HealthResponse(BaseModel):
@@ -122,6 +125,10 @@ def create_app(
         },
     )
     api.state.path_manager = paths
+    project_root = getattr(paths, "project_root", None)
+    if project_root is None:
+        project_root = PROJECT_ROOT
+    mount_frontend(api, project_root / "frontend" / "dist")
 
     @api.middleware("http")
     async def request_context(request: Request, call_next):
