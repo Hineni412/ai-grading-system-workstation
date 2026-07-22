@@ -492,6 +492,7 @@ class LLMClient:
             compatibility_fallback: str,
             *,
             allow_retry: bool,
+            planned_parameter_fallback: bool,
         ) -> Any:
             res = gateway.chat_completions(
                 request_kind=request_kind,
@@ -501,6 +502,7 @@ class LLMClient:
                 request_id=logical_request_id,
                 allow_retry=allow_retry,
                 compatibility_fallback=compatibility_fallback,
+                planned_parameter_fallback=planned_parameter_fallback,
                 timeout_override_seconds=timeout_override_seconds,
                 _next_attempt=next_attempt,
             )
@@ -513,6 +515,10 @@ class LLMClient:
             return invoke(
                 "",
                 allow_retry=allow_gateway_retry and not single_request,
+                planned_parameter_fallback=(
+                    allow_parameter_fallback
+                    and ("max_tokens" in kwargs or expect_json)
+                ),
             )
         except Exception as exc:
             if not allow_parameter_fallback:
@@ -526,6 +532,7 @@ class LLMClient:
                     return invoke(
                         "max_completion_tokens",
                         allow_retry=False,
+                        planned_parameter_fallback=expect_json,
                     )
                 except Exception as retry_exc:
                     if not _is_parameter_fallback_error(retry_exc):
@@ -533,7 +540,11 @@ class LLMClient:
                     kwargs.pop("max_completion_tokens", None)
             if expect_json:
                 kwargs.pop("response_format", None)
-                return invoke("response_format", allow_retry=False)
+                return invoke(
+                    "response_format",
+                    allow_retry=False,
+                    planned_parameter_fallback=False,
+                )
             raise exc
 
 

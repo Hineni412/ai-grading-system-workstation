@@ -7,7 +7,7 @@ import uuid
 from itertools import count
 from typing import Callable, Mapping
 
-from .errors import classify_llm_error, is_retryable_error
+from .errors import LLMErrorCategory, classify_llm_error, is_retryable_error
 from .pacing import LLMPacerRegistry
 from .policy import LLMPolicyError, LLMProtocol, LLMRequestKind, policy_from_profile
 from .usage import (
@@ -99,6 +99,7 @@ class LLMGateway:
         request_id: object | None = None,
         allow_retry: bool = True,
         compatibility_fallback: str = "",
+        planned_parameter_fallback: bool = False,
         timeout_override_seconds: float | None = None,
         _next_attempt: Callable[[], int] | None = None,
     ) -> object:
@@ -111,6 +112,7 @@ class LLMGateway:
             request_id=request_id,
             allow_retry=allow_retry,
             compatibility_fallback=compatibility_fallback,
+            planned_parameter_fallback=planned_parameter_fallback,
             timeout_override_seconds=timeout_override_seconds,
             next_attempt=_next_attempt,
         )
@@ -125,6 +127,7 @@ class LLMGateway:
         request_id: object | None = None,
         allow_retry: bool = True,
         compatibility_fallback: str = "",
+        planned_parameter_fallback: bool = False,
         timeout_override_seconds: float | None = None,
         _next_attempt: Callable[[], int] | None = None,
     ) -> object:
@@ -137,6 +140,7 @@ class LLMGateway:
             request_id=request_id,
             allow_retry=allow_retry,
             compatibility_fallback=compatibility_fallback,
+            planned_parameter_fallback=planned_parameter_fallback,
             timeout_override_seconds=timeout_override_seconds,
             next_attempt=_next_attempt,
         )
@@ -152,6 +156,7 @@ class LLMGateway:
         request_id: object | None,
         allow_retry: bool,
         compatibility_fallback: str,
+        planned_parameter_fallback: bool,
         timeout_override_seconds: float | None,
         next_attempt: Callable[[], int] | None,
     ) -> object:
@@ -220,6 +225,14 @@ class LLMGateway:
                     if should_retry
                     else 0.0
                 )
+                try:
+                    will_use_parameter_fallback = bool(
+                        planned_parameter_fallback
+                        and classify_llm_error(exc)
+                        is LLMErrorCategory.PARAMETER_INCOMPATIBLE
+                    )
+                except Exception:
+                    will_use_parameter_fallback = False
                 self._record_failure(
                     request_id=logical_request_id,
                     attempt=attempt,
@@ -243,7 +256,9 @@ class LLMGateway:
                     request_shape=request_shape,
                     latency_ms=latency_ms,
                     error=exc,
-                    will_retry=should_retry,
+                    will_retry=(
+                        should_retry or will_use_parameter_fallback
+                    ),
                     retry_delay=retry_delay,
                 )
                 if not should_retry:
