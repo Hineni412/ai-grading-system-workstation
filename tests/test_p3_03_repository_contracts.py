@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -118,6 +119,23 @@ def test_write_outside_explicit_transaction_is_rolled_back_when_session_closes(
         assert verification.execute("SELECT value FROM items").fetchall() == []
 
 
+def test_repository_connection_does_not_expose_transaction_lifecycle_methods(
+    tmp_path: Path,
+) -> None:
+    from backend.repositories import SQLiteConnectionFactory
+
+    database = tmp_path / "repository.db"
+    _create_database(database)
+
+    with SQLiteConnectionFactory(database).session() as session:
+        session.connection.execute("INSERT INTO items(value) VALUES ('uncommitted')")
+        for method_name in ("commit", "rollback", "close", "executescript"):
+            assert not hasattr(session.connection, method_name)
+
+    with sqlite3.connect(database) as verification:
+        assert verification.execute("SELECT value FROM items").fetchall() == []
+
+
 def test_sessions_are_thread_bound_and_factory_creates_distinct_thread_connections(
     tmp_path: Path,
 ) -> None:
@@ -167,8 +185,40 @@ def test_locked_immediate_transaction_fails_without_automatic_retry(tmp_path: Pa
         assert verification.execute("SELECT value FROM items").fetchall() == [("winner",)]
 
 
+def test_nested_immediate_requires_an_immediate_outer_transaction(tmp_path: Path) -> None:
+    from backend.repositories import RepositoryTransactionError, SQLiteConnectionFactory
+
+    database = tmp_path / "repository.db"
+    _create_database(database)
+    factory = SQLiteConnectionFactory(database)
+
+    with factory.session() as session:
+        with session.transaction():
+            with pytest.raises(RepositoryTransactionError, match="immediate"):
+                with session.transaction(immediate=True):
+                    pass
+            session.connection.execute("INSERT INTO items(value) VALUES ('outer')")
+
+    with factory.session() as session:
+        with session.transaction(immediate=True):
+            with session.transaction(immediate=True):
+                session.connection.execute("INSERT INTO items(value) VALUES ('nested')")
+
+    with sqlite3.connect(database) as verification:
+        assert verification.execute("SELECT value FROM items ORDER BY id").fetchall() == [
+            ("outer",),
+            ("nested",),
+        ]
+
+
 def test_row_mapping_and_repository_protocol_use_the_shared_session(tmp_path: Path) -> None:
-    from backend.repositories import Repository, SQLiteConnectionFactory, map_row, map_rows
+    from backend.repositories import (
+        Repository,
+        RepositorySession,
+        SQLiteConnectionFactory,
+        map_row,
+        map_rows,
+    )
 
     @dataclass(frozen=True)
     class Item:
@@ -176,11 +226,11 @@ def test_row_mapping_and_repository_protocol_use_the_shared_session(tmp_path: Pa
         value: str
 
     class ItemRepository:
-        def __init__(self, session: object) -> None:
+        def __init__(self, session: RepositorySession) -> None:
             self._session = session
 
         @property
-        def session(self) -> object:
+        def session(self) -> RepositorySession:
             return self._session
 
     def mapper(row: sqlite3.Row) -> Item:
@@ -251,3 +301,130 @@ def test_close_failure_does_not_mask_the_original_session_error(tmp_path: Path) 
         with factory.session():
             raise Cancelled()
     assert any("could not close" in note for note in raised.value.__notes__)
+
+
+def test_cleanup_attempts_close_after_rollback_failure_and_reports_both_failures(
+    tmp_path: Path,
+) -> None:
+    from backend.repositories import RepositoryConnectionError, SQLiteConnectionFactory
+
+    class BrokenCleanupConnection:
+        in_transaction = True
+
+        def __init__(self) -> None:
+            self.close_attempted = False
+
+        def rollback(self) -> None:
+            raise sqlite3.OperationalError("rollback failed")
+
+        def close(self) -> None:
+            self.close_attempted = True
+            raise sqlite3.OperationalError("close failed")
+
+    connection = BrokenCleanupConnection()
+
+    class BrokenCleanupFactory(SQLiteConnectionFactory):
+        def _open(self, *, read_only: bool) -> BrokenCleanupConnection:
+            return connection
+
+    with pytest.raises(RepositoryConnectionError) as raised:
+        with BrokenCleanupFactory(tmp_path / "unused.db").session():
+            pass
+    assert connection.close_attempted is True
+    assert isinstance(raised.value.__cause__, sqlite3.OperationalError)
+    assert any("close also failed" in note for note in raised.value.__notes__)
+
+
+def test_cleanup_failure_is_attached_without_masking_original_error(tmp_path: Path) -> None:
+    from backend.repositories import SQLiteConnectionFactory
+
+    class Cancelled(BaseException):
+        pass
+
+    class BrokenCleanupConnection:
+        in_transaction = True
+
+        def rollback(self) -> None:
+            raise sqlite3.OperationalError("rollback failed")
+
+        def close(self) -> None:
+            raise sqlite3.OperationalError("close failed")
+
+    class BrokenCleanupFactory(SQLiteConnectionFactory):
+        def _open(self, *, read_only: bool) -> BrokenCleanupConnection:
+            return BrokenCleanupConnection()
+
+    with pytest.raises(Cancelled) as raised:
+        with BrokenCleanupFactory(tmp_path / "unused.db").session():
+            raise Cancelled()
+    assert any("roll back before close" in note for note in raised.value.__notes__)
+    assert any("close also failed" in note for note in raised.value.__notes__)
+
+
+def test_commit_and_rollback_failures_are_both_preserved() -> None:
+    from backend.repositories import RepositorySession, RepositoryTransactionError
+
+    class BrokenCommitConnection:
+        def execute(self, _statement: str) -> None:
+            return None
+
+        def commit(self) -> None:
+            raise sqlite3.OperationalError("commit failed")
+
+        def rollback(self) -> None:
+            raise sqlite3.OperationalError("rollback failed")
+
+    session = RepositorySession(BrokenCommitConnection(), read_only=False)  # type: ignore[arg-type]
+    with pytest.raises(RepositoryTransactionError) as raised:
+        with session.transaction():
+            pass
+    assert isinstance(raised.value.__cause__, RepositoryTransactionError)
+    assert isinstance(raised.value.__cause__.__cause__, sqlite3.OperationalError)
+    assert any("commit also failed" in note for note in raised.value.__notes__)
+
+
+def test_connection_initialization_failure_closes_the_opened_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.repositories import RepositoryConnectionError, SQLiteConnectionFactory
+    from backend.repositories import base as base_module
+
+    class BrokenPragmaConnection:
+        row_factory = None
+
+        def __init__(self) -> None:
+            self.closed = False
+
+        def execute(self, _statement: str) -> None:
+            raise sqlite3.OperationalError("pragma failed")
+
+        def close(self) -> None:
+            self.closed = True
+
+    connection = BrokenPragmaConnection()
+    monkeypatch.setattr(base_module.sqlite3, "connect", lambda *_args, **_kwargs: connection)
+
+    with pytest.raises(RepositoryConnectionError):
+        SQLiteConnectionFactory(tmp_path / "repository.db")._open(read_only=False)
+    assert connection.closed is True
+
+
+def test_repository_module_has_no_module_level_sqlite_connection() -> None:
+    from backend.repositories import base as base_module
+
+    module = ast.parse(Path(base_module.__file__).read_text(encoding="utf-8"))
+    top_level_calls = [
+        node
+        for statement in module.body
+        for node in ast.walk(statement)
+        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and isinstance(node, ast.Call)
+    ]
+    assert not any(
+        isinstance(call.func, ast.Attribute)
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "sqlite3"
+        and call.func.attr == "connect"
+        for call in top_level_calls
+    )
