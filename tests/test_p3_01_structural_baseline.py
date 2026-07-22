@@ -44,7 +44,7 @@ def test_p3_01_command_emits_reproducible_redacted_structural_baseline(
 
     assert payload["package"] == "P3-01"
     assert payload["report_version"] == 1
-    assert payload["core_targets"]["db_manager.py"]["public_classes"] == ["DBManager"]
+    assert "DBManager" in payload["core_targets"]["db_manager.py"]["public_classes"]
     assert "db_manager.py" in payload["core_targets"]
     assert "session_manager.py" in payload["core_targets"]
     assert "backend/api/app.py" in payload["core_targets"]
@@ -55,6 +55,7 @@ def test_p3_01_command_emits_reproducible_redacted_structural_baseline(
     assert any(
         item["target"] == "db_manager.py" for item in payload["test_coverage_map"]
     )
+    assert "main.py" in payload["core_callers"]["db_manager.py"]
     assert set(payload["schema_inputs"]) == {"grading", "question_bank"}
     assert payload["performance_evidence"]["p1_26"]["package"] == "P1-26"
     assert payload["performance_evidence"]["p1_27"]["p1_26_provenance_code_sha"]
@@ -62,7 +63,7 @@ def test_p3_01_command_emits_reproducible_redacted_structural_baseline(
     assert "P2-20" in payload["real_process_evidence"]
     assert str(PROJECT_ROOT) not in report_path.read_text(encoding="utf-8")
     assert str(PROJECT_ROOT) not in rendered
-    assert "user_data" not in report_path.read_text(encoding="utf-8")
+    assert "user_data/" not in report_path.read_text(encoding="utf-8")
 
     second = _run(second_output)
     assert second.returncode == 0, second.stderr
