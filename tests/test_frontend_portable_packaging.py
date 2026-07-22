@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,6 +26,10 @@ def test_copy_sources_carries_only_built_frontend_assets(tmp_path: Path) -> None
     (source / "frontend" / "dist" / "assets").mkdir(parents=True)
     (source / "frontend" / "src").mkdir(parents=True)
     (source / "frontend" / "node_modules").mkdir(parents=True)
+    (source / "backend" / "api").mkdir(parents=True)
+    (source / "backend" / "api" / "app.py").write_text(
+        "APP_READY = True\n", encoding="utf-8"
+    )
     (source / "frontend" / "dist" / "index.html").write_text(
         "<div id='app'></div>", encoding="utf-8"
     )
@@ -42,5 +48,44 @@ def test_copy_sources_carries_only_built_frontend_assets(tmp_path: Path) -> None
     assert stats["frontend_dist_files"] == 2
     assert (package / "frontend" / "dist" / "index.html").is_file()
     assert (package / "frontend" / "dist" / "assets" / "app.js").is_file()
+    assert (package / "backend" / "api" / "app.py").is_file()
     assert not (package / "frontend" / "src").exists()
     assert not (package / "frontend" / "node_modules").exists()
+
+
+@pytest.mark.parametrize("missing", ["dist", "index", "assets"])
+def test_copy_sources_rejects_incomplete_frontend_dist(
+    tmp_path: Path,
+    missing: str,
+) -> None:
+    packager = _load_packager()
+    source = tmp_path / "source"
+    package = tmp_path / "package"
+    source.mkdir()
+    package.mkdir()
+    dist = source / "frontend" / "dist"
+    if missing != "dist":
+        dist.mkdir(parents=True)
+    if missing != "index" and missing != "dist":
+        (dist / "index.html").write_text("<main></main>", encoding="utf-8")
+    if missing != "assets" and missing != "dist":
+        (dist / "assets").mkdir()
+
+    with pytest.raises(RuntimeError, match="frontend/dist"):
+        packager.copy_sources(source, package, "v1.5.0")
+
+
+def test_packaged_launcher_is_copied_from_the_single_source_launcher(
+    tmp_path: Path,
+) -> None:
+    packager = _load_packager()
+    source = tmp_path / "source"
+    package = tmp_path / "package"
+    source.mkdir()
+    package.mkdir()
+    launcher = b"@echo off\r\necho P2-21 launcher\r\n"
+    (source / "运行.bat").write_bytes(launcher)
+
+    packager.write_launcher(source, package)
+
+    assert (package / "运行.bat").read_bytes() == launcher
