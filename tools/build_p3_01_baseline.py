@@ -402,7 +402,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         "|---|---:|---:|---:|---:|---:|---:|",
     ]
     test_map = {item["target"]: item["tests"] for item in report["test_coverage_map"]}
-    for path, target in report["core_targets"].items():
+    for path in CORE_TARGETS:
+        target = report["core_targets"][path]
         lines.append(
             "| {path} | {classes} | {functions} | {methods} | {imports} | {callers} | {tests} |".format(
                 path=f"`{path}`",
@@ -555,9 +556,13 @@ def _legacy_report_pair(output_dir: Path) -> tuple[Path, Path] | None:
     if any(_is_reparse_point(path) or not path.is_file() for path in (json_path, markdown_path)):
         raise BaselineInputError("legacy report pair must contain regular files")
     try:
-        json.loads(json_path.read_text(encoding="utf-8"))
-        markdown_path.read_text(encoding="utf-8")
-    except (OSError, json.JSONDecodeError) as exc:
+        report = json.loads(json_path.read_text(encoding="utf-8"))
+        markdown = markdown_path.read_text(encoding="utf-8")
+        if not isinstance(report, dict) or render_markdown(report) != markdown:
+            raise BaselineInputError("legacy report pair does not match")
+    except BaselineInputError:
+        raise
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
         raise BaselineInputError("legacy report pair is invalid") from exc
     return json_path, markdown_path
 
@@ -630,6 +635,7 @@ def _publish_contents(output_dir: Path, contents: dict[str, str]) -> tuple[Path,
             staging = Path(tempfile.mkdtemp(prefix=f".staging-{release_id}-", dir=releases_dir))
             for name, content in contents.items():
                 _write_text_durable(staging / name, content)
+            _sync_directory(staging)
             os.replace(staging, release_dir)
             staging = None
             _sync_directory(releases_dir)

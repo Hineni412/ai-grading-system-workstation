@@ -311,3 +311,53 @@ def test_p3_01_resolver_accepts_git_checkout_newline_conversion(
 
     assert converted_json == active_json
     assert converted_markdown == active_markdown
+
+
+def test_p3_01_legacy_fallback_rejects_json_markdown_mismatch(
+    tmp_path: Path,
+) -> None:
+    source_output = tmp_path / "source"
+    completed = _run(source_output)
+    assert completed.returncode == 0, completed.stderr
+    source_json, source_markdown = TOOL_MODULE.resolve_published_report(source_output)
+    legacy_output = tmp_path / "legacy"
+    legacy_output.mkdir()
+    (legacy_output / "p3-01-structural-baseline.json").write_bytes(source_json.read_bytes())
+    (legacy_output / "p3-01-structural-baseline.md").write_text(
+        source_markdown.read_text(encoding="utf-8") + "不匹配",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TOOL_MODULE.BaselineInputError):
+        TOOL_MODULE.resolve_published_report(legacy_output)
+
+
+def test_p3_01_publication_syncs_staging_directory_before_release_activation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_output = tmp_path / "source"
+    completed = _run(source_output)
+    assert completed.returncode == 0, completed.stderr
+    source_json, _ = TOOL_MODULE.resolve_published_report(source_output)
+    report = json.loads(source_json.read_text(encoding="utf-8"))
+    output_dir = tmp_path / "output"
+    synced_directories: set[Path] = set()
+    real_sync = TOOL_MODULE._sync_directory
+    real_replace = TOOL_MODULE.os.replace
+
+    def record_sync(path: Path) -> None:
+        real_sync(path)
+        synced_directories.add(Path(path))
+
+    def require_sync_before_release(source: Path, destination: Path) -> None:
+        source_path = Path(source)
+        destination_path = Path(destination)
+        if source_path.name.startswith(".staging-") and destination_path.parent.name == "releases":
+            assert source_path in synced_directories
+        real_replace(source, destination)
+
+    monkeypatch.setattr(TOOL_MODULE, "_sync_directory", record_sync)
+    monkeypatch.setattr(TOOL_MODULE.os, "replace", require_sync_before_release)
+
+    TOOL_MODULE.publish_report(output_dir, report)
