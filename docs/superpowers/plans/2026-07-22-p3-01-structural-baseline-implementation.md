@@ -14,9 +14,9 @@
 ## 昼夜交接
 
 **执行包：** P3-01
-**交接状态：** waiting_review
-**功能提交：** branch_head
-**自动验证：** passed
+**交接状态：** in_progress
+**功能提交：** none
+**自动验证：** pending
 **独立复审：** pending
 **用户验收：** not_required
 **真实数据指纹：** not_touched
@@ -140,3 +140,12 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - 受影响回归合计 51 项通过（53.90 秒，1 条既有 Starlette/httpx 弃用警告）；快速冒烟通过（文档治理、512 个第一方 Python 文件编译、两库临时副本初始化幂等），未运行全量 pytest。
 - 新证据 release `67e2fc5671dc39bace5672b7eae02d867c1f8760ffb15648025b728970655f3c` 绑定功能提交，记录 289 个第一方 Python 文件、2,789 条静态导入和 4 条动态导入线索；绝对工作路径与 `user_data/` 命中均为 0。
 - 当前剩余工作：同一冻结候选的 Spec/Standards 限定复审、必要时一次统一修复、交接核验和进入 N3-01 integration。
+
+### 独立修复初审结果与统一修正范围
+
+- 同一冻结候选 `65266b4af8f10fe7cc051d1374664d55a5c553d4` 的 Spec/Standards 初审原始 5 条意见，按根因去重为 4 条 `Important`、0 条 `Critical`、0 条 `Suggestion`。
+- `Important 1｜当前任务原本遗漏`：旧直出 JSON/Markdown 尚未先转换成可恢复的活动 release，首次 manifest 激活前中断时重启无法通过新解析入口取得旧文件对。
+- `Important 2｜当前任务原本遗漏`：解析端只校验 release ID 格式与文件摘要，没有以实际文件内容重算 release ID，无法发现 manifest 指向“内容相同但目录 ID 伪造”的冲突。
+- `Important 3｜本次修改直接引入`：只检查外层 output dir；预先存在的 publication/release junction、symlink 或其他 reparse point 仍可能把写入引到受控目录之外。
+- `Important 4｜当前任务原本遗漏`：文件内容做了 flush/fsync，但 release 与 manifest 原子改名后没有同步父目录；突然掉电后的目录项持久化承诺不足。
+- 本轮只统一修正以上四点，并增加 Git 换行转换后的文本摘要稳定性守卫；不扩展扫描内容、报告字段或生产业务范围。修复后只允许对这四点及直接修改区域进行一次最终限定复审。

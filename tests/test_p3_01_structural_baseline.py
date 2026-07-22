@@ -6,6 +6,7 @@ import json
 import importlib.util
 import subprocess
 import sys
+import os
 from pathlib import Path
 
 import pytest
@@ -209,3 +210,104 @@ def test_p3_01_resolver_rejects_manifest_path_escape_and_digest_mismatch(
     active_json.write_text("tampered", encoding="utf-8")
     with pytest.raises(TOOL_MODULE.BaselineInputError):
         TOOL_MODULE.resolve_published_report(output_dir)
+
+
+def test_p3_01_legacy_pair_remains_resolvable_if_new_activation_is_interrupted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_output = tmp_path / "source"
+    completed = _run(source_output)
+    assert completed.returncode == 0, completed.stderr
+    source_json, source_markdown = TOOL_MODULE.resolve_published_report(source_output)
+    legacy_output = tmp_path / "legacy"
+    legacy_output.mkdir()
+    legacy_json = legacy_output / "p3-01-structural-baseline.json"
+    legacy_markdown = legacy_output / "p3-01-structural-baseline.md"
+    legacy_json.write_bytes(source_json.read_bytes())
+    legacy_markdown.write_bytes(source_markdown.read_bytes())
+    replacement = json.loads(source_json.read_text(encoding="utf-8"))
+    replacement["source_revision"] = "replacement-candidate"
+    real_replace = TOOL_MODULE.os.replace
+    manifest_activations = 0
+
+    def interrupt_second_manifest(source: Path, destination: Path) -> None:
+        nonlocal manifest_activations
+        if Path(destination).name == "manifest.json":
+            manifest_activations += 1
+            if manifest_activations == 2:
+                raise KeyboardInterrupt
+        real_replace(source, destination)
+
+    monkeypatch.setattr(TOOL_MODULE.os, "replace", interrupt_second_manifest)
+    with pytest.raises(KeyboardInterrupt):
+        TOOL_MODULE.publish_report(legacy_output, replacement)
+
+    active_json, active_markdown = TOOL_MODULE.resolve_published_report(legacy_output)
+    assert active_json.read_bytes() == legacy_json.read_bytes()
+    assert active_markdown.read_bytes() == legacy_markdown.read_bytes()
+
+
+def test_p3_01_resolver_rejects_release_directory_not_derived_from_contents(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "output"
+    completed = _run(output_dir)
+    assert completed.returncode == 0, completed.stderr
+    publication_dir = output_dir / "p3-01-structural-baseline"
+    manifest_path = publication_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    original_release = publication_dir / "releases" / manifest["active_release"]
+    fake_release_id = "0" * 64
+    fake_release = publication_dir / "releases" / fake_release_id
+    fake_release.mkdir()
+    for source in original_release.iterdir():
+        (fake_release / source.name).write_bytes(source.read_bytes())
+    manifest["active_release"] = fake_release_id
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(TOOL_MODULE.BaselineInputError):
+        TOOL_MODULE.resolve_published_report(output_dir)
+
+
+def test_p3_01_command_rejects_nested_publication_reparse_point(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    external_target = tmp_path / "external"
+    external_target.mkdir()
+    publication_link = output_dir / "p3-01-structural-baseline"
+    if os.name == "nt":
+        linked = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(publication_link), str(external_target)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert linked.returncode == 0, linked.stderr
+    else:
+        publication_link.symlink_to(external_target, target_is_directory=True)
+
+    completed = _run(output_dir)
+
+    assert completed.returncode != 0
+    assert "reparse" in completed.stderr
+    assert list(external_target.iterdir()) == []
+
+
+def test_p3_01_resolver_accepts_git_checkout_newline_conversion(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "output"
+    completed = _run(output_dir)
+    assert completed.returncode == 0, completed.stderr
+    active_json, active_markdown = TOOL_MODULE.resolve_published_report(output_dir)
+    for path in (active_json, active_markdown):
+        content = path.read_bytes().replace(b"\r\n", b"\n")
+        path.write_bytes(content.replace(b"\n", b"\r\n"))
+
+    converted_json, converted_markdown = TOOL_MODULE.resolve_published_report(output_dir)
+
+    assert converted_json == active_json
+    assert converted_markdown == active_markdown

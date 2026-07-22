@@ -9,17 +9,22 @@ from __future__ import annotations
 
 import argparse
 import ast
+import ctypes
 import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
+
+if os.name == "nt":
+    from ctypes import wintypes
 
 
 PACKAGE = "P3-01"
@@ -444,8 +449,82 @@ def _write_text_durable(path: Path, content: str) -> None:
         os.fsync(stream.fileno())
 
 
-def _file_digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def _sync_directory(path: Path) -> None:
+    if os.name != "nt":
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        return
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    handle = create_file(
+        str(path),
+        0x40000000,  # GENERIC_WRITE is required by FlushFileBuffers.
+        0x00000001 | 0x00000002 | 0x00000004,
+        None,
+        3,  # OPEN_EXISTING
+        0x02000000,  # FILE_FLAG_BACKUP_SEMANTICS permits directory handles.
+        None,
+    )
+    invalid_handle = wintypes.HANDLE(-1).value
+    if handle == invalid_handle:
+        raise OSError(ctypes.get_last_error(), f"unable to open directory for sync: {path.name}")
+    try:
+        if not kernel32.FlushFileBuffers(handle):
+            raise OSError(ctypes.get_last_error(), f"unable to sync directory: {path.name}")
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _is_reparse_point(path: Path) -> bool:
+    if not path.exists() and not path.is_symlink():
+        return False
+    attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    return path.is_symlink() or bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+
+
+def _ensure_publication_layout(output_dir: Path) -> tuple[Path, Path]:
+    if output_dir.exists() and (_is_reparse_point(output_dir) or not output_dir.is_dir()):
+        raise BaselineInputError("report output directory must be a regular directory")
+    if not output_dir.exists():
+        output_dir.mkdir(parents=True)
+        _sync_directory(output_dir.parent)
+    publication_dir = output_dir / REPORT_STEM
+    releases_dir = publication_dir / "releases"
+    for path, parent in ((publication_dir, output_dir), (releases_dir, publication_dir)):
+        if path.exists() or path.is_symlink():
+            if _is_reparse_point(path) or not path.is_dir():
+                raise BaselineInputError("report publication layout must not use reparse points")
+        else:
+            path.mkdir()
+            _sync_directory(parent)
+    return publication_dir, releases_dir
+
+
+def _text_digest(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _release_id_for_contents(contents: dict[str, str]) -> str:
+    release_hash = hashlib.sha256()
+    for name in (JSON_REPORT_NAME, MARKDOWN_REPORT_NAME):
+        release_hash.update(name.encode("utf-8"))
+        release_hash.update(b"\0")
+        release_hash.update(contents[name].encode("utf-8"))
+        release_hash.update(b"\0")
+    return release_hash.hexdigest()
 
 
 def _publication_manifest(release_id: str, contents: dict[str, str]) -> dict[str, Any]:
@@ -455,14 +534,32 @@ def _publication_manifest(release_id: str, contents: dict[str, str]) -> dict[str
         "files": {
             "json": {
                 "name": JSON_REPORT_NAME,
-                "sha256": hashlib.sha256(contents[JSON_REPORT_NAME].encode("utf-8")).hexdigest(),
+                "sha256": _text_digest(contents[JSON_REPORT_NAME]),
             },
             "markdown": {
                 "name": MARKDOWN_REPORT_NAME,
-                "sha256": hashlib.sha256(contents[MARKDOWN_REPORT_NAME].encode("utf-8")).hexdigest(),
+                "sha256": _text_digest(contents[MARKDOWN_REPORT_NAME]),
             },
         },
-    }
+}
+
+
+def _legacy_report_pair(output_dir: Path) -> tuple[Path, Path] | None:
+    json_path = output_dir / JSON_REPORT_NAME
+    markdown_path = output_dir / MARKDOWN_REPORT_NAME
+    present = [path.exists() or path.is_symlink() for path in (json_path, markdown_path)]
+    if not any(present):
+        return None
+    if not all(present):
+        raise BaselineInputError("legacy report pair is incomplete")
+    if any(_is_reparse_point(path) or not path.is_file() for path in (json_path, markdown_path)):
+        raise BaselineInputError("legacy report pair must contain regular files")
+    try:
+        json.loads(json_path.read_text(encoding="utf-8"))
+        markdown_path.read_text(encoding="utf-8")
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BaselineInputError("legacy report pair is invalid") from exc
+    return json_path, markdown_path
 
 
 def resolve_published_report(output_dir: Path) -> tuple[Path, Path]:
@@ -470,6 +567,11 @@ def resolve_published_report(output_dir: Path) -> tuple[Path, Path]:
     manifest_path = publication_dir / "manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        legacy = _legacy_report_pair(output_dir)
+        if legacy is not None:
+            return legacy
+        raise BaselineInputError("published report manifest is missing or invalid") from exc
     except (OSError, json.JSONDecodeError) as exc:
         raise BaselineInputError("published report manifest is missing or invalid") from exc
     release_id = manifest.get("active_release")
@@ -487,7 +589,10 @@ def resolve_published_report(output_dir: Path) -> tuple[Path, Path]:
     if not isinstance(files, dict) or set(files) != set(expected_names):
         raise BaselineInputError("published report manifest files are invalid")
     release_dir = publication_dir / "releases" / release_id
+    if _is_reparse_point(publication_dir) or _is_reparse_point(release_dir.parent) or _is_reparse_point(release_dir):
+        raise BaselineInputError("published report release must not use reparse points")
     resolved: dict[str, Path] = {}
+    resolved_contents: dict[str, str] = {}
     for label, expected_name in expected_names.items():
         entry = files.get(label)
         if (
@@ -498,28 +603,23 @@ def resolve_published_report(output_dir: Path) -> tuple[Path, Path]:
         ):
             raise BaselineInputError("published report manifest files are invalid")
         path = release_dir / expected_name
-        if not path.is_file() or path.is_symlink() or _file_digest(path) != entry["sha256"]:
+        if not path.is_file() or _is_reparse_point(path):
+            raise BaselineInputError("published report release is missing or invalid")
+        content = path.read_text(encoding="utf-8")
+        if _text_digest(content) != entry["sha256"]:
             raise BaselineInputError("published report release is missing or invalid")
         resolved[label] = path
+        resolved_contents[expected_name] = content
+    if _release_id_for_contents(resolved_contents) != release_id:
+        raise BaselineInputError("published report release identity is invalid")
     return resolved["json"], resolved["markdown"]
 
 
-def publish_report(output_dir: Path, report: dict[str, Any]) -> tuple[Path, Path]:
-    contents = {
-        JSON_REPORT_NAME: json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        MARKDOWN_REPORT_NAME: render_markdown(report),
-    }
-    release_hash = hashlib.sha256()
-    for name in (JSON_REPORT_NAME, MARKDOWN_REPORT_NAME):
-        release_hash.update(name.encode("utf-8"))
-        release_hash.update(b"\0")
-        release_hash.update(contents[name].encode("utf-8"))
-        release_hash.update(b"\0")
-    release_id = release_hash.hexdigest()
+def _publish_contents(output_dir: Path, contents: dict[str, str]) -> tuple[Path, Path]:
+    release_id = _release_id_for_contents(contents)
     manifest = _publication_manifest(release_id, contents)
     manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    publication_dir = output_dir / REPORT_STEM
-    releases_dir = publication_dir / "releases"
+    publication_dir, releases_dir = _ensure_publication_layout(output_dir)
     release_dir = releases_dir / release_id
     manifest_path = publication_dir / "manifest.json"
     staging: Path | None = None
@@ -532,11 +632,18 @@ def publish_report(output_dir: Path, report: dict[str, Any]) -> tuple[Path, Path
                 _write_text_durable(staging / name, content)
             os.replace(staging, release_dir)
             staging = None
+            _sync_directory(releases_dir)
         else:
+            if _is_reparse_point(release_dir) or not release_dir.is_dir():
+                raise BaselineInputError("existing report release is invalid")
             expected_manifest = _publication_manifest(release_id, contents)
             for entry in expected_manifest["files"].values():
                 existing = release_dir / entry["name"]
-                if not existing.is_file() or existing.is_symlink() or _file_digest(existing) != entry["sha256"]:
+                if (
+                    not existing.is_file()
+                    or _is_reparse_point(existing)
+                    or _text_digest(existing.read_text(encoding="utf-8")) != entry["sha256"]
+                ):
                     raise BaselineInputError("existing report release is invalid")
         descriptor, raw_manifest_staging = tempfile.mkstemp(
             prefix=".manifest-", suffix=".json", dir=publication_dir
@@ -546,6 +653,7 @@ def publish_report(output_dir: Path, report: dict[str, Any]) -> tuple[Path, Path
         _write_text_durable(manifest_staging, manifest_text)
         os.replace(manifest_staging, manifest_path)
         manifest_staging = None
+        _sync_directory(publication_dir)
     except BaselineInputError:
         raise
     except OSError as exc:
@@ -556,6 +664,23 @@ def publish_report(output_dir: Path, report: dict[str, Any]) -> tuple[Path, Path
         if manifest_staging is not None and manifest_staging.exists():
             manifest_staging.unlink(missing_ok=True)
     return resolve_published_report(output_dir)
+
+
+def publish_report(output_dir: Path, report: dict[str, Any]) -> tuple[Path, Path]:
+    publication_dir = output_dir / REPORT_STEM
+    manifest_exists = (publication_dir / "manifest.json").exists()
+    legacy = None if manifest_exists else _legacy_report_pair(output_dir)
+    if legacy is not None:
+        legacy_contents = {
+            JSON_REPORT_NAME: legacy[0].read_text(encoding="utf-8"),
+            MARKDOWN_REPORT_NAME: legacy[1].read_text(encoding="utf-8"),
+        }
+        _publish_contents(output_dir, legacy_contents)
+    contents = {
+        JSON_REPORT_NAME: json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        MARKDOWN_REPORT_NAME: render_markdown(report),
+    }
+    return _publish_contents(output_dir, contents)
 
 
 def build_parser() -> argparse.ArgumentParser:
