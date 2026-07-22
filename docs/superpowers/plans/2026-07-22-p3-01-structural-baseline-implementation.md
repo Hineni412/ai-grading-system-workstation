@@ -14,14 +14,14 @@
 ## 昼夜交接
 
 **执行包：** P3-01
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** 63fad40989f6698f7757961f8ccf77dbc228974c
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
 
 ## 任务边界（已冻结）
@@ -131,7 +131,7 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - [x] 先新增一个公开行为测试，证明发布入口必须通过 manifest 解析完整文件对（RED）。
 - [x] 最小实现不可变 release + 原子 manifest，并使公开解析测试与中断恢复测试转绿（GREEN）。
 - [x] 补齐重复生成、陈旧 staging、摘要和路径校验；旧格式直出文件由新的 manifest 入口替代，不作为活动结果继续保留。
-- [ ] 重新生成版本化证据，运行 P3-01 聚焦测试、受影响回归、快速冒烟、双路限定复审和交接核验。
+- [x] 重新生成版本化证据，运行 P3-01 聚焦测试、受影响回归、快速冒烟、双路限定复审和交接核验。
 
 ### 修复候选记录（等待限定复审）
 
@@ -174,3 +174,10 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - P3-01、Schema 与性能证据受影响回归共 57 项通过（82.11 秒，1 条既有 Starlette/httpx 弃用警告）；快速冒烟通过（文档治理、512 个第一方 Python 文件编译、两库临时副本初始化幂等）。
 - 更新后的活动 evidence release 为 `66bcc9e80ea3fb9bb2ed61bc7b9579c40ece39db86ecda99c482286b0ce37a77`，绑定修复提交，记录 289 个第一方 Python 文件、2,792 条静态导入和 4 条动态导入线索。
 - 当前进入第 2 次独立修复的一轮 Spec/Standards 初审；若需要统一修正仍只限本节两条问题及直接回归，随后最多一次最终限定复审。
+
+### 第 2 次独立修复复审结论
+
+- 冻结候选 `63fad40989f6698f7757961f8ccf77dbc228974c` 的 Spec 与 Standards 初审均为 `0 Critical / 0 Important / 0 Suggestion`；旧报告匹配与 staging 目录持久化两条问题均有代码和测试证据，未发现范围膨胀或直接回归。
+- 因初审没有阻塞问题，按规则不再开展无目标最终复审。P3-01 自动验证、独立复审、文档治理、快速冒烟和真实两库指纹门槛均通过，用户验收不适用。
+- 阶段统计：原 P3-01 初审 4 条原始意见去重为 3 `Important` + 1 `Suggestion`；第 1 次独立修复初审 5 条原始意见去重为 4 `Important`，最终仍余 2 `Important`；第 2 次独立修复初审 0 条。两次自动授权已全部使用，后续若再出现阻塞问题必须停止并由用户重新决定。
+- 当前任务通过包级验收，可以进入 N3-01 临时 integration；因为 P2-22 仍处于 deferred，本候选和后续 P3 候选仍不得进入 `main`。
