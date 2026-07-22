@@ -110,14 +110,22 @@
 
 回退本包的静态托管、启动器和打包提交即可恢复当前 Streamlit 默认入口。回退不涉及数据库迁移、数据转换、真实业务文件或 API Schema。
 
+## 自动验证与复审记录
+
+- 自动验证：静态托管、启动器、批处理契约与便携打包 20 项通过；受影响 API/OpenAPI/便携路径回归 24 项通过；快速冒烟通过（文档治理、510 个第一方 Python 文件编译、两库副本初始化幂等）。前端 `npm run verify` 的 716 项通过证据可从未改动前端源码的同一构建基线复用。
+- 首轮复审：冻结候选 `f3c03c67846aec8fcd2c52fc9a5ac4587372b7a0` 发现 3 项 Important，已统一修复为 `9866401f4c13149351b9977161375374afd951be`；其中空资源、监听失败与 formal 清单缺失均已关闭。
+- 首次终审：候选 `f5b5f4995623352b8cca9d243c484f28478b5032` 仍发现便携打包接受空 `assets/` 的 Important。用户于 2026-07-22 明确授权建立限定后续修复，不扩大 P2-21 范围。
+- 后续修复：`030d58fffbda2c8d548075d8ce1284bc8e746d3d` 在复制前拒绝空资源目录；20 项关联测试和快速冒烟通过，限定 Spec/Standards 复审均为 Critical 0 / Important 0 / Suggestion 0。
+- 当前候选等待用户按 `docs/user-testing/checkpoints/P2-21-v1.5.0-fastapi-startup-cutover-formal.md` 完成 formal 验收；验收前不得进入 `main`。
+
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
 
 **执行包：** P2-21
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
-**独立复审：** pending
+**交接状态：** waiting_user
+**功能提交：** 030d58fffbda2c8d548075d8ce1284bc8e746d3d
+**自动验证：** passed
+**独立复审：** passed
 **用户验收：** pending
 **真实数据指纹：** not_touched
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
