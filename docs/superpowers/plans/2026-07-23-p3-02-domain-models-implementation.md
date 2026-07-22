@@ -14,9 +14,9 @@
 ## 昼夜交接
 
 **执行包：** P3-02
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
 **真实数据指纹：** unchanged
@@ -58,9 +58,9 @@
 
 ## 实施步骤
 
-- [ ] 新增 P3-02 契约测试并取得 RED：新模块缺失、旧新身份尚不存在、反向导入仍存在。
-- [ ] 最小创建领域模型模块，并把原定义改为兼容导入，使身份/字段/序列化测试 GREEN。
-- [ ] 逐个切换生产类型调用方，保持行为类与 helper 原导入不动；运行 import/编译和聚焦回归。
+- [x] 新增 P3-02 契约测试并取得 RED：新模块缺失、旧新身份尚不存在、反向导入仍存在。
+- [x] 最小创建领域模型模块，并把原定义改为兼容导入，使身份/字段/序列化测试 GREEN。
+- [x] 逐个切换生产类型调用方，保持行为类与 helper 原导入不动；运行 import/编译和聚焦回归。
 - [ ] 运行受影响回归、快速冒烟、双路独立复审、交接核验和真实两库指纹复核。
 
 ## 计划验证命令
@@ -75,3 +75,10 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 ## 回退
 
 本包不改数据和行为；回退新领域模块与对应 import 提交即可恢复原定义位置。兼容旧 import 在本版本不会删除。
+
+## 实施记录（等待独立复审）
+
+- 实现提交 `e9534a9778ba01179cb5574e7087381fb98b4ce7` 新增无服务依赖的 `backend/domain_models.py`，四个 dataclass 的字段、默认值、冻结属性和嵌套结构保持原样；`ai_grader`/`scanner` 旧入口直接导入同一类对象。
+- 第一条公共 import 测试先因新模块缺失得到 RED；反向依赖守卫随后先确认 `db_manager.py` 仍导入 `ai_grader` 得到 RED，再迁为领域模型 import 后转绿。
+- P3-02 新契约 3 项通过；grading、scanner、hybrid、objective、retry 和 secondary error 受影响回归 70 项通过；变更模块编译通过，快速冒烟通过（文档治理、514 个第一方 Python 文件编译、两库临时副本初始化幂等）。
+- 未运行全量 pytest；没有 Schema、数据库写入、真实模型或 `user_data/` 操作。当前剩余工作为同一冻结候选的 Spec/Standards 双路复审、必要时一次统一修复和交接核验。
