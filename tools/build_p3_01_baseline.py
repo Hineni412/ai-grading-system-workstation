@@ -12,6 +12,8 @@ import ast
 import hashlib
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,6 +25,10 @@ from typing import Any, Iterable
 PACKAGE = "P3-01"
 REPORT_VERSION = 1
 REPORT_STEM = "p3-01-structural-baseline"
+PUBLICATION_VERSION = 1
+JSON_REPORT_NAME = f"{REPORT_STEM}.json"
+MARKDOWN_REPORT_NAME = f"{REPORT_STEM}.md"
+RELEASE_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 CORE_TARGETS = (
     "db_manager.py",
     "session_manager.py",
@@ -431,42 +437,125 @@ def render_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def publish_report(output_dir: Path, report: dict[str, Any]) -> tuple[Path, Path]:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    json_path = output_dir / f"{REPORT_STEM}.json"
-    markdown_path = output_dir / f"{REPORT_STEM}.md"
-    targets = (json_path, markdown_path)
-    if any(path.exists() and path.is_dir() for path in targets):
-        raise BaselineInputError("report output targets must be files")
-    contents = {
-        json_path.name: json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        markdown_path.name: render_markdown(report),
+def _write_text_durable(path: Path, content: str) -> None:
+    with path.open("w", encoding="utf-8", newline="\n") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _file_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _publication_manifest(release_id: str, contents: dict[str, str]) -> dict[str, Any]:
+    return {
+        "publication_version": PUBLICATION_VERSION,
+        "active_release": release_id,
+        "files": {
+            "json": {
+                "name": JSON_REPORT_NAME,
+                "sha256": hashlib.sha256(contents[JSON_REPORT_NAME].encode("utf-8")).hexdigest(),
+            },
+            "markdown": {
+                "name": MARKDOWN_REPORT_NAME,
+                "sha256": hashlib.sha256(contents[MARKDOWN_REPORT_NAME].encode("utf-8")).hexdigest(),
+            },
+        },
     }
-    with tempfile.TemporaryDirectory(prefix=".p3_01_baseline_", dir=output_dir.parent) as raw_staging:
-        staging = Path(raw_staging)
-        staged = {name: staging / name for name in contents}
-        for name, content in contents.items():
-            staged[name].write_text(content, encoding="utf-8", newline="\n")
-        backups: dict[Path, Path] = {}
-        published: list[Path] = []
-        try:
-            for target in targets:
-                if target.exists() or target.is_symlink():
-                    backup = staging / f"previous-{target.name}"
-                    os.replace(target, backup)
-                    backups[target] = backup
-            for target in targets:
-                os.replace(staged[target.name], target)
-                published.append(target)
-        except OSError as exc:
-            for target in reversed(published):
-                if target.exists() and not target.is_dir():
-                    target.unlink()
-            for target, backup in backups.items():
-                if backup.exists():
-                    os.replace(backup, target)
-            raise BaselineInputError("unable to publish both reports") from exc
-    return json_path, markdown_path
+
+
+def resolve_published_report(output_dir: Path) -> tuple[Path, Path]:
+    publication_dir = output_dir / REPORT_STEM
+    manifest_path = publication_dir / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BaselineInputError("published report manifest is missing or invalid") from exc
+    release_id = manifest.get("active_release")
+    if (
+        manifest.get("publication_version") != PUBLICATION_VERSION
+        or not isinstance(release_id, str)
+        or RELEASE_ID_PATTERN.fullmatch(release_id) is None
+    ):
+        raise BaselineInputError("published report manifest is invalid")
+    files = manifest.get("files")
+    expected_names = {
+        "json": JSON_REPORT_NAME,
+        "markdown": MARKDOWN_REPORT_NAME,
+    }
+    if not isinstance(files, dict) or set(files) != set(expected_names):
+        raise BaselineInputError("published report manifest files are invalid")
+    release_dir = publication_dir / "releases" / release_id
+    resolved: dict[str, Path] = {}
+    for label, expected_name in expected_names.items():
+        entry = files.get(label)
+        if (
+            not isinstance(entry, dict)
+            or entry.get("name") != expected_name
+            or not isinstance(entry.get("sha256"), str)
+            or RELEASE_ID_PATTERN.fullmatch(entry["sha256"]) is None
+        ):
+            raise BaselineInputError("published report manifest files are invalid")
+        path = release_dir / expected_name
+        if not path.is_file() or path.is_symlink() or _file_digest(path) != entry["sha256"]:
+            raise BaselineInputError("published report release is missing or invalid")
+        resolved[label] = path
+    return resolved["json"], resolved["markdown"]
+
+
+def publish_report(output_dir: Path, report: dict[str, Any]) -> tuple[Path, Path]:
+    contents = {
+        JSON_REPORT_NAME: json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        MARKDOWN_REPORT_NAME: render_markdown(report),
+    }
+    release_hash = hashlib.sha256()
+    for name in (JSON_REPORT_NAME, MARKDOWN_REPORT_NAME):
+        release_hash.update(name.encode("utf-8"))
+        release_hash.update(b"\0")
+        release_hash.update(contents[name].encode("utf-8"))
+        release_hash.update(b"\0")
+    release_id = release_hash.hexdigest()
+    manifest = _publication_manifest(release_id, contents)
+    manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    publication_dir = output_dir / REPORT_STEM
+    releases_dir = publication_dir / "releases"
+    release_dir = releases_dir / release_id
+    manifest_path = publication_dir / "manifest.json"
+    staging: Path | None = None
+    manifest_staging: Path | None = None
+    try:
+        releases_dir.mkdir(parents=True, exist_ok=True)
+        if not release_dir.exists():
+            staging = Path(tempfile.mkdtemp(prefix=f".staging-{release_id}-", dir=releases_dir))
+            for name, content in contents.items():
+                _write_text_durable(staging / name, content)
+            os.replace(staging, release_dir)
+            staging = None
+        else:
+            expected_manifest = _publication_manifest(release_id, contents)
+            for entry in expected_manifest["files"].values():
+                existing = release_dir / entry["name"]
+                if not existing.is_file() or existing.is_symlink() or _file_digest(existing) != entry["sha256"]:
+                    raise BaselineInputError("existing report release is invalid")
+        descriptor, raw_manifest_staging = tempfile.mkstemp(
+            prefix=".manifest-", suffix=".json", dir=publication_dir
+        )
+        os.close(descriptor)
+        manifest_staging = Path(raw_manifest_staging)
+        _write_text_durable(manifest_staging, manifest_text)
+        os.replace(manifest_staging, manifest_path)
+        manifest_staging = None
+    except BaselineInputError:
+        raise
+    except OSError as exc:
+        raise BaselineInputError("unable to publish report release") from exc
+    finally:
+        if staging is not None and staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        if manifest_staging is not None and manifest_staging.exists():
+            manifest_staging.unlink(missing_ok=True)
+    return resolve_published_report(output_dir)
 
 
 def build_parser() -> argparse.ArgumentParser:
