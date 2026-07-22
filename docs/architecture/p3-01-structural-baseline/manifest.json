@@ -1,0 +1,14 @@
+{
+  "active_release": "67e2fc5671dc39bace5672b7eae02d867c1f8760ffb15648025b728970655f3c",
+  "files": {
+    "json": {
+      "name": "p3-01-structural-baseline.json",
+      "sha256": "21adde1195f5da93aaff67cf25ae625da075eb625aa26fa6631a534c90757a2a"
+    },
+    "markdown": {
+      "name": "p3-01-structural-baseline.md",
+      "sha256": "30adccb7081edd35923e68a1d713b47ebb6b888f188fbc50fbd1ceb4cf1cc32b"
+    }
+  },
+  "publication_version": 1
+}
