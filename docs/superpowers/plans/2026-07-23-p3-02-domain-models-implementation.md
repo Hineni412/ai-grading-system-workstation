@@ -14,14 +14,14 @@
 ## 昼夜交接
 
 **执行包：** P3-02
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** 0be58ab3187644e4012f874022fdfb29e4f2e337
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
 
 ## 任务边界（已冻结）
@@ -61,7 +61,7 @@
 - [x] 新增 P3-02 契约测试并取得 RED：新模块缺失、旧新身份尚不存在、反向导入仍存在。
 - [x] 最小创建领域模型模块，并把原定义改为兼容导入，使身份/字段/序列化测试 GREEN。
 - [x] 逐个切换生产类型调用方，保持行为类与 helper 原导入不动；运行 import/编译和聚焦回归。
-- [ ] 运行受影响回归、快速冒烟、双路独立复审、交接核验和真实两库指纹复核。
+- [x] 运行受影响回归、快速冒烟、双路独立复审、交接核验和真实两库指纹复核。
 
 ## 计划验证命令
 
@@ -82,3 +82,9 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - 第一条公共 import 测试先因新模块缺失得到 RED；反向依赖守卫随后先确认 `db_manager.py` 仍导入 `ai_grader` 得到 RED，再迁为领域模型 import 后转绿。
 - P3-02 新契约 3 项通过；grading、scanner、hybrid、objective、retry 和 secondary error 受影响回归 70 项通过；变更模块编译通过，快速冒烟通过（文档治理、514 个第一方 Python 文件编译、两库临时副本初始化幂等）。
 - 未运行全量 pytest；没有 Schema、数据库写入、真实模型或 `user_data/` 操作。当前剩余工作为同一冻结候选的 Spec/Standards 双路复审、必要时一次统一修复和交接核验。
+
+## 复审与收口
+
+- 同一冻结候选的 Standards 为 `0 Critical / 0 Important / 0 Suggestion`；Spec 为 `0 Critical / 0 Important / 2 Suggestion`。两条非阻塞建议是未来可补 `eq/repr` 显式守卫，以及给兼容 import 增加弃用说明；当前身份、字段、默认值、序列化、冻结属性和依赖边界均已验证，不扩大本包继续修改。
+- 初审无阻塞问题，按规则不再开展无目标最终复审。原始意见 2 条，去重后仍为 2 条 Suggestion；自动验证、独立复审和真实数据守卫通过，用户验收不适用。
+- P3-02 通过包级验收，可以进入 N3-01 临时 integration；P2-22 仍为 deferred，整个 P3 临时候选链不得进入 `main`。
