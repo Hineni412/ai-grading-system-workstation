@@ -35,7 +35,7 @@ function source(): ConfigSource {
 function job(overrides: Partial<JobResponse> = {}): JobResponse {
   return {
     id: 31, job_type: 'config_generation',
-    payload: { session_id: 7, mode: 'generate', generation_mode: 'per_question',
+    payload: { session_id: 7, mode: 'generate', generation_mode: 'batched',
       source_id: 'a'.repeat(32), source_revision: 'b'.repeat(64) },
     result: {}, status: 'running', progress: 0.4, stage: 'generating', detail: '',
     error: null, cancel_requested: false, created_at: '2026-07-15T00:00:00Z',
@@ -94,7 +94,7 @@ beforeEach(async () => {
 })
 
 describe('ConfigGenerationPanel', () => {
-  it('explains both modes and submits a write only once while disabled', async () => {
+  it('explains small batches and submits a write only once while disabled', async () => {
     const pending = deferred<JobResponse>()
     const submitter = vi.fn((_sessionId: number, _request: ConfigGenerationRequest) => {
       void _sessionId
@@ -103,19 +103,19 @@ describe('ConfigGenerationPanel', () => {
     })
     const mounted = await mountPanel({ submitter })
 
-    expect(mounted.host.textContent).toContain('逐题生成')
-    expect(mounted.host.textContent).toContain('整卷单次生成')
-    const whole = mounted.host.querySelector<HTMLInputElement>('[aria-label="整卷单次生成"]')!
-    whole.click()
+    expect(mounted.host.textContent).toContain('小批次生成')
+    expect(mounted.host.textContent).toContain('每批最多 3 题')
+    expect(mounted.host.textContent).toContain('全部批次成功后，再请求一次 AI 统一配置 100 分')
+    expect(mounted.host.textContent).not.toContain('整卷单次生成')
     const submit = mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!
     submit.click()
     submit.click()
     await nextTick()
 
     expect(submitter).toHaveBeenCalledOnce()
-    expect(submitter.mock.calls[0]?.[1]).toMatchObject({ generation_mode: 'whole_document' })
+    expect(submitter.mock.calls[0]?.[1]).toMatchObject({ generation_mode: 'batched' })
     expect(submit.disabled).toBe(true)
-    pending.resolve(job({ payload: { ...job().payload, generation_mode: 'whole_document' } }))
+    pending.resolve(job({ payload: { ...job().payload, generation_mode: 'batched' } }))
     await settle()
     expect(useConfigWorkspaceStore().jobId).toBe(31)
   })
@@ -146,7 +146,7 @@ describe('ConfigGenerationPanel', () => {
     mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!.click()
     await settle()
 
-    expect(useConfigWorkspaceStore().pendingGenerationMode).toBe('per_question')
+    expect(useConfigWorkspaceStore().pendingGenerationMode).toBe('batched')
     expect(localStorage.getItem('ai-grading:config-workspace:v1')).toContain('pendingGenerationMode')
     expect(mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')?.disabled).toBe(true)
     expect(mounted.host.querySelector('button[name="重新核对生成任务"]')).not.toBeNull()
@@ -259,7 +259,7 @@ describe('ConfigGenerationPanel', () => {
     expect(mounted.host.textContent).toContain('服务器确认未收到这次请求')
   })
 
-  it('retries only checked failed questions and preserves successful counts', async () => {
+  it('retries only checked failed batches and preserves successful counts', async () => {
     const retryer = vi.fn(async () => job({ id: 32, status: 'queued', progress: 0 }))
     const configStore = useConfigWorkspaceStore()
     const jobStore = useJobStore()
@@ -267,6 +267,11 @@ describe('ConfigGenerationPanel', () => {
       status: 'succeeded', progress: 1, result: {
         outcome: 'partial', total_questions: 5, generated_questions: 3,
         failed_count: 2, failed_question_ids: ['Q2', 'Q5'], retryable: true,
+        failed_batches: [
+          { batch_id: 'B001', question_ids: ['Q2'] },
+          { batch_id: 'B002', question_ids: ['Q5'] },
+        ],
+        score_allocation_pending: true,
       }, finished_at: '2026-07-15T00:01:00Z',
     }))
     configStore.attachJob(31, configStore.captureGenerationContext())
@@ -275,9 +280,10 @@ describe('ConfigGenerationPanel', () => {
     expect(mounted.host.textContent).toContain('已成功 3 题')
     expect(mounted.host.textContent).toContain('失败 2 题')
     expect(mounted.host.querySelectorAll('input[type="checkbox"]')).toHaveLength(2)
-    mounted.host.querySelector<HTMLInputElement>('[aria-label="选择失败题 Q5"]')!.click()
+    expect(mounted.host.querySelector('button[name="重新进行 AI 统一配分"]')).toBeNull()
+    mounted.host.querySelector<HTMLInputElement>('[aria-label="选择失败批次 B002"]')!.click()
     await nextTick()
-    mounted.host.querySelector<HTMLButtonElement>('button[name="重试所选题"]')!.click()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="重试所选批次"]')!.click()
     await settle()
 
     expect(retryer).toHaveBeenCalledExactlyOnceWith(
@@ -286,6 +292,100 @@ describe('ConfigGenerationPanel', () => {
     expect(configStore.jobId).toBe(32)
     expect(mounted.host.textContent).toContain('已成功 3 题')
     expect(mounted.host.textContent).toContain('当前恢复任务')
+  })
+
+  it.each(['failed', 'cancelled'] as const)(
+    'keeps the failed-batch retry entry for a %s checkpointed job',
+    async (status) => {
+      const retryer = vi.fn(async () => job({ id: 33, status: 'queued', progress: 0 }))
+      const configStore = useConfigWorkspaceStore()
+      useJobStore().track(job({
+        status, progress: 1, result: {
+          outcome: 'partial', total_questions: 3, generated_questions: 2,
+          failed_count: 1, failed_question_ids: ['Q3'],
+          failed_batches: [{ batch_id: 'B001', question_ids: ['Q3'] }],
+        }, finished_at: '2026-07-15T00:01:00Z',
+      }))
+      configStore.attachJob(31, configStore.captureGenerationContext())
+      const mounted = await mountPanel({ retryer })
+
+      expect(mounted.host.querySelector('button[name="重新分批生成"]')).toBeNull()
+      mounted.host.querySelector<HTMLInputElement>('[aria-label="选择失败批次 B001"]')!.click()
+      await nextTick()
+      mounted.host.querySelector<HTMLButtonElement>('button[name="重试所选批次"]')!.click()
+      await settle()
+
+      expect(retryer).toHaveBeenCalledWith(
+        7, 31, ['Q3'], expect.stringMatching(/^[0-9a-f]{32}$/),
+      )
+    },
+  )
+
+  it.each(['failed', 'cancelled'] as const)(
+    'resumes AI score allocation without question retries for a %s complete checkpoint',
+    async (status) => {
+      const retryer = vi.fn(async () => job({ id: 34, status: 'queued', progress: 0 }))
+      const configStore = useConfigWorkspaceStore()
+      useJobStore().track(job({
+        status, progress: 1, result: {
+          outcome: 'complete', total_questions: 3, generated_questions: 3,
+          failed_count: 0, failed_question_ids: [], failed_batches: [],
+        }, finished_at: '2026-07-15T00:01:00Z',
+      }))
+      configStore.attachJob(31, configStore.captureGenerationContext())
+      const mounted = await mountPanel({ retryer })
+
+      expect(mounted.host.textContent).toContain('将调用模型一次')
+      mounted.host.querySelector<HTMLButtonElement>('button[name="继续 AI 统一配分"]')!.click()
+      await settle()
+
+      expect(retryer).toHaveBeenCalledWith(
+        7, 31, [], expect.stringMatching(/^[0-9a-f]{32}$/),
+      )
+    },
+  )
+
+  it('resumes only AI score allocation after all batches were retained', async () => {
+    const retryer = vi.fn(async () => job({ id: 35, status: 'queued', progress: 0 }))
+    const configStore = useConfigWorkspaceStore()
+    useJobStore().track(job({
+      status: 'succeeded', progress: 1, result: {
+        outcome: 'partial', total_questions: 12, generated_questions: 12,
+        failed_count: 0, failed_question_ids: [], failed_batches: [],
+        score_allocation_pending: true, score_allocation_failed: true,
+        retryable: true,
+      }, finished_at: '2026-07-15T00:01:00Z',
+    }))
+    configStore.attachJob(31, configStore.captureGenerationContext())
+    const mounted = await mountPanel({ retryer })
+
+    expect(mounted.host.textContent).toContain('12 道题的批次结果已经保存在本机')
+    expect(mounted.host.textContent).toContain('没有使用本地分数替代')
+    expect(mounted.host.querySelectorAll('input[type="checkbox"]')).toHaveLength(0)
+    mounted.host.querySelector<HTMLButtonElement>('button[name="重新进行 AI 统一配分"]')!.click()
+    await settle()
+
+    expect(retryer).toHaveBeenCalledWith(
+      7, 31, [], expect.stringMatching(/^[0-9a-f]{32}$/),
+    )
+  })
+
+  it('shows batches repaired locally without exposing the model response', async () => {
+    const configStore = useConfigWorkspaceStore()
+    useJobStore().track(job({
+      status: 'succeeded', progress: 1, result: {
+        outcome: 'complete', total_questions: 3, generated_questions: 3,
+        failed_count: 0, failed_question_ids: [], failed_batches: [],
+        local_json_repairs: [
+          { batch_id: 'B001', question_ids: ['Q1', 'Q2', 'Q3'], operations: ['remove_trailing_comma'] },
+        ],
+      }, finished_at: '2026-07-15T00:01:00Z',
+    }))
+    configStore.attachJob(31, configStore.captureGenerationContext())
+    const mounted = await mountPanel()
+
+    expect(mounted.host.textContent).toContain('本地程序已修复 1 个批次的 JSON（B001）')
+    expect(mounted.host.textContent).toContain('未产生额外模型请求')
   })
 
   it('unlocks an ambiguous retry when its exact lookup confirms 404', async () => {
@@ -299,6 +399,10 @@ describe('ConfigGenerationPanel', () => {
       status: 'succeeded', progress: 1, result: {
         outcome: 'partial', total_questions: 5, generated_questions: 3,
         failed_count: 2, failed_question_ids: ['Q2', 'Q5'], retryable: true,
+        failed_batches: [
+          { batch_id: 'B001', question_ids: ['Q2'] },
+          { batch_id: 'B002', question_ids: ['Q5'] },
+        ],
       }, finished_at: '2026-07-15T00:01:00Z',
     }))
     configStore.attachJob(31, configStore.captureGenerationContext())
@@ -321,7 +425,7 @@ describe('ConfigGenerationPanel', () => {
     expect(mounted.host.querySelector<HTMLButtonElement>('.config-generation__partial button')?.disabled).toBe(false)
   })
 
-  it('uses a fresh whole-document generation after whole mode failure', async () => {
+  it('uses a fresh batched generation after a legacy whole mode failure', async () => {
     const submitter = vi.fn(async (_sessionId: number, _request: ConfigGenerationRequest) => {
       void _sessionId
       void _request
@@ -339,10 +443,35 @@ describe('ConfigGenerationPanel', () => {
 
     expect(mounted.host.textContent).toContain('应用重启后，本次生成已停止。')
     expect(mounted.host.textContent).not.toContain('private failure')
-    mounted.host.querySelector<HTMLButtonElement>('button[name="重新整卷生成"]')!.click()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="重新分批生成"]')!.click()
     await settle()
-    expect(submitter.mock.calls[0]?.[1]).toMatchObject({ generation_mode: 'whole_document' })
+    expect(submitter.mock.calls[0]?.[1]).toMatchObject({ generation_mode: 'batched' })
     expect(retryer).not.toHaveBeenCalled()
+  })
+
+  it('restarts a legacy truncated job only with the new batched mode', async () => {
+    const submitter = vi.fn(async (_sessionId: number, _request: ConfigGenerationRequest) => {
+      void _sessionId
+      void _request
+      return job({ id: 32, status: 'queued', progress: 0 })
+    })
+    const configStore = useConfigWorkspaceStore()
+    useJobStore().track(job({
+      status: 'failed', payload: { ...job().payload, generation_mode: 'whole_document' },
+      error: '模型因输出长度上限停止，返回结果不完整（响应摘要: private-hash）。',
+      finished_at: '2026-07-15T00:01:00Z',
+    }))
+    configStore.attachJob(31, configStore.captureGenerationContext())
+    const mounted = await mountPanel({ submitter })
+
+    expect(mounted.host.textContent).toContain('小批次生成')
+    expect(mounted.host.textContent).not.toContain('private-hash')
+    expect(mounted.host.querySelector('button[name="重新整卷生成"]')).toBeNull()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="重新分批生成"]')!.click()
+    await settle()
+
+    expect(submitter).toHaveBeenCalledOnce()
+    expect(submitter.mock.calls[0]?.[1]).toMatchObject({ generation_mode: 'batched' })
   })
 
   it('keeps refine failures in the editor workflow without offering generation retry', async () => {

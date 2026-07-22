@@ -4,9 +4,11 @@ export type WorkspaceRouteId =
   | 'students'
   | 'question-bank'
   | 'question-assembly'
+  | 'training'
   | 'knowledge-graph'
   | 'files'
   | 'grading'
+  | 'settings'
 
 export interface WorkspaceRouteDefinition {
   id: WorkspaceRouteId
@@ -62,6 +64,15 @@ export const questionAssemblyRouteDefinition: WorkspaceRouteDefinition = {
   breadcrumb: '组卷工作台',
 }
 
+export const trainingRouteDefinition: WorkspaceRouteDefinition = {
+  id: 'training',
+  label: '训练推荐',
+  path: '/training',
+  title: '训练推荐',
+  description: '核对薄弱证据、确认精确标签训练计划并生成训练材料',
+  breadcrumb: '训练推荐',
+}
+
 export const templateRegionRouteDefinition = {
   id: 'template-regions',
   path: '/sessions/:sessionId/regions',
@@ -105,13 +116,24 @@ export const filesRouteDefinition: WorkspaceRouteDefinition = {
   breadcrumb: '文件中心',
 }
 
+export const settingsRouteDefinition: WorkspaceRouteDefinition = {
+  id: 'settings',
+  label: '设置与运维',
+  path: '/settings',
+  title: '设置与运维',
+  description: '查看系统状态，并通过安全预检执行备份、恢复、迁移和数据转移',
+  breadcrumb: '设置与运维',
+}
+
 export const navigationItems = [
   workbenchRouteDefinition,
   sessionRouteDefinition,
   studentsRouteDefinition,
   questionBankRouteDefinition,
   questionAssemblyRouteDefinition,
+  trainingRouteDefinition,
   knowledgeGraphRouteDefinition,
   filesRouteDefinition,
   reviewRouteDefinition,
+  settingsRouteDefinition,
 ] as const

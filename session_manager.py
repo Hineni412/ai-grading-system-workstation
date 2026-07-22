@@ -36,6 +36,7 @@ from score_policy import (
 
 DEFAULT_CONFIG_GENERATION_TIMEOUT_SECONDS = 600.0
 DEFAULT_CONFIG_GENERATION_RETRY_DELAYS = (2.0, 6.0)
+DEFAULT_CONFIG_GENERATION_BATCH_SIZE = 3
 
 
 class _QuestionGenerationRequestError(RuntimeError):
@@ -595,6 +596,10 @@ def preview_question_blocks_from_docx_text(doc_text: str) -> list[dict[str, Any]
 
 
 _INLINE_IMAGE_MARKER = re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]")
+_INLINE_MAIN_QUESTION_MARKER = re.compile(
+    r"(?P<prefix>[。！？!?．.][ \t\r\n]*)"
+    r"(?P<number>\d{1,2})[ \t]*[.．、](?![ \t]*\d)[ \t]*"
+)
 
 
 class _ControlledDocxWriteError(RuntimeError):
@@ -667,7 +672,8 @@ def _extract_rich_question_blocks(
         write_created_file=(controlled_writer if write_created_file is not None else None),
     )
     content = map_rich_content_by_number(
-        extracted.rich_paragraphs, source_file=str(tmp_path)
+        _split_inline_main_question_paragraphs(extracted.rich_paragraphs),
+        source_file=str(tmp_path),
     )
 
     question_map = content.get("question") if isinstance(content, dict) else {}
@@ -697,6 +703,184 @@ def _extract_rich_question_blocks(
         if block:
             blocks.append(block)
     return blocks or None
+
+
+def _split_inline_main_question_paragraphs(
+    rich_paragraphs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Split only consecutive main-question markers embedded in DOCX paragraphs."""
+    normalized: list[dict[str, Any]] = []
+    current_number: int | None = None
+    in_answer_section = False
+    plain_paragraphs = [
+        _strip_inline_html(
+            _INLINE_IMAGE_MARKER.sub("", str(paragraph.get("text") or ""))
+        ).strip()
+        for paragraph in rich_paragraphs
+    ]
+
+    for index, paragraph in enumerate(rich_paragraphs):
+        text = str(paragraph.get("text") or "").strip()
+        plain_text = plain_paragraphs[index]
+        if _looks_like_answer_section_heading(plain_text):
+            in_answer_section = True
+        if in_answer_section or not text:
+            normalized.append(paragraph)
+            continue
+
+        leading_number = _extract_question_marker_number(plain_text)
+        if leading_number is not None:
+            current_number = leading_number
+        if current_number is None:
+            normalized.append(paragraph)
+            continue
+
+        text_without_images = _INLINE_IMAGE_MARKER.sub("", text).strip()
+        segments, final_number = _split_consecutive_inline_main_questions(
+            text_without_images,
+            current_number=current_number,
+            following_number=_next_leading_main_question_number(
+                plain_paragraphs,
+                after_index=index,
+            ),
+        )
+        if len(segments) == 1:
+            normalized.append(paragraph)
+            continue
+
+        segments = _attach_inline_images_to_source_segments(
+            paragraph,
+            segments=segments,
+            current_number=current_number,
+            final_number=final_number,
+        )
+        for segment in segments:
+            normalized.append({**paragraph, "text": segment})
+        current_number = final_number
+
+    return normalized
+
+
+def _split_consecutive_inline_main_questions(
+    text: str,
+    *,
+    current_number: int,
+    following_number: int | None,
+) -> tuple[list[str], int]:
+    split_offsets: list[int] = []
+    expected_number = current_number + 1
+    for marker in _INLINE_MAIN_QUESTION_MARKER.finditer(text):
+        marker_number = int(marker.group("number"))
+        if marker_number != expected_number:
+            continue
+        split_offsets.append(marker.start("number"))
+        expected_number += 1
+    if not split_offsets or expected_number != following_number:
+        return [text], current_number
+
+    boundaries = [0, *split_offsets, len(text)]
+    segments = [
+        text[start:end].strip()
+        for start, end in zip(boundaries, boundaries[1:])
+        if text[start:end].strip()
+    ]
+    return segments, expected_number - 1
+
+
+def _attach_inline_images_to_source_segments(
+    paragraph: dict[str, Any],
+    *,
+    segments: list[str],
+    current_number: int,
+    final_number: int,
+) -> list[str]:
+    fallback_paths = _image_paths_from_rich_text(
+        str(paragraph.get("text") or "")
+    )
+
+    def attach_to_last(paths: list[str]) -> list[str]:
+        assigned = list(segments)
+        for path in paths:
+            assigned[-1] = f"{assigned[-1].rstrip()}\n[[IMAGE:{path}]]"
+        return assigned
+
+    image_relationships = paragraph.get("image_relationships")
+    raw_xml = str(paragraph.get("xml") or "")
+    if not isinstance(image_relationships, dict) or not image_relationships or not raw_xml:
+        return attach_to_last(fallback_paths)
+
+    try:
+        root = ElementTree.fromstring(raw_xml)
+    except ElementTree.ParseError:
+        return attach_to_last(fallback_paths)
+
+    text_parts: list[str] = []
+    positioned_images: list[tuple[int, str]] = []
+    text_length = 0
+    for element in root.iter():
+        local_name = str(element.tag).split("}")[-1]
+        if local_name == "t":
+            value = str(element.text or "")
+            text_parts.append(value)
+            text_length += len(value)
+            continue
+        if local_name != "blip":
+            continue
+        relationship_id = next(
+            (
+                str(value)
+                for key, value in element.attrib.items()
+                if str(key).split("}")[-1] == "embed"
+            ),
+            "",
+        )
+        image_path = str(image_relationships.get(relationship_id) or "").strip()
+        if image_path:
+            positioned_images.append((text_length, image_path))
+
+    if not positioned_images:
+        return attach_to_last(fallback_paths)
+
+    source_text = "".join(text_parts)
+    expected_number = current_number + 1
+    split_offsets: list[int] = []
+    for marker in _INLINE_MAIN_QUESTION_MARKER.finditer(source_text):
+        marker_number = int(marker.group("number"))
+        if marker_number != expected_number:
+            continue
+        split_offsets.append(marker.start("number"))
+        expected_number += 1
+        if marker_number == final_number:
+            break
+    if len(split_offsets) != len(segments) - 1:
+        return attach_to_last(fallback_paths)
+
+    assigned = list(segments)
+    positioned_paths: set[str] = set()
+    for image_offset, image_path in positioned_images:
+        segment_index = sum(image_offset >= offset for offset in split_offsets)
+        assigned[segment_index] = (
+            f"{assigned[segment_index].rstrip()}\n[[IMAGE:{image_path}]]"
+        )
+        positioned_paths.add(image_path)
+    for image_path in fallback_paths:
+        if image_path not in positioned_paths:
+            assigned[-1] = f"{assigned[-1].rstrip()}\n[[IMAGE:{image_path}]]"
+    return assigned
+
+
+def _next_leading_main_question_number(
+    texts: list[str],
+    *,
+    after_index: int,
+) -> int | None:
+    for text in texts[after_index + 1 :]:
+        if _looks_like_answer_section_heading(text):
+            return None
+        number = _extract_question_marker_number(text)
+        if number is not None:
+            return number
+    return None
 
 
 def _flatten_answer_blocks(answer_map: Any) -> list[dict[str, Any]]:
@@ -914,6 +1098,750 @@ def generate_grading_config_from_confirmed_blocks(
         report=report,
         q_images=q_images,
     )
+
+
+class _BatchSchemaMismatch(ValueError):
+    pass
+
+
+def generate_grading_config_in_batches(
+    confirmed_blocks: list[dict[str, Any]],
+    doc_text: str,
+    llm_client: LLMClient,
+    model_name: str | None = None,
+    report: Any = None,
+    q_images: dict[str, Any] | None = None,
+    *,
+    batch_size: int = DEFAULT_CONFIG_GENERATION_BATCH_SIZE,
+    checkpoint: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Generate one rubric in small sequential batches with no hidden model calls."""
+    locked_blocks = [
+        {**block, "question_type_confirmed": True}
+        for block in confirmed_blocks
+    ]
+    if not locked_blocks:
+        raise ValueError("至少需要一道已确认题目。")
+    clean_size = max(1, min(20, int(batch_size)))
+    return _run_config_generation_batches(
+        existing_payload=None,
+        question_blocks=locked_blocks,
+        doc_text=doc_text,
+        llm_client=llm_client,
+        model_name=model_name,
+        report=report,
+        q_images=q_images,
+        batch_size=clean_size,
+        retry_question_ids=None,
+        checkpoint=checkpoint,
+    )
+
+
+def retry_failed_grading_config_batches(
+    existing_payload: dict[str, Any],
+    question_blocks: list[dict[str, Any]],
+    doc_text: str,
+    llm_client: LLMClient,
+    model_name: str | None = None,
+    report: Any = None,
+    q_images: dict[str, Any] | None = None,
+    *,
+    retry_question_ids: Sequence[str] | None = None,
+    checkpoint: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    meta = existing_payload.get("meta") if isinstance(existing_payload, dict) else None
+    failed_batches = meta.get("failed_batches") if isinstance(meta, dict) else None
+    if not isinstance(failed_batches, list) or not failed_batches:
+        return _score_completed_batch_draft_once(
+            existing_payload,
+            question_blocks,
+            doc_text,
+            llm_client,
+            model_name=model_name,
+            report=report,
+            q_images=q_images,
+            checkpoint=checkpoint,
+        )
+
+    failed_by_id: dict[str, list[str]] = {}
+    for item in failed_batches:
+        if not isinstance(item, dict):
+            continue
+        batch_id = str(item.get("batch_id") or "").strip()
+        raw_ids = item.get("question_ids")
+        ids = [str(qid).strip() for qid in raw_ids or [] if str(qid).strip()]
+        if batch_id and ids:
+            failed_by_id[batch_id] = ids
+    if not failed_by_id:
+        raise ValueError("失败批次记录已损坏，请重新开始分批生成。")
+
+    if retry_question_ids is None:
+        selected_question_ids = {
+            qid for ids in failed_by_id.values() for qid in ids
+        }
+    else:
+        selected_ids = list(
+            dict.fromkeys(str(qid).strip() for qid in retry_question_ids if str(qid).strip())
+        )
+        selected_set = set(selected_ids)
+        selected_batch_ids = [
+            batch_id
+            for batch_id, ids in failed_by_id.items()
+            if set(ids).issubset(selected_set)
+        ]
+        expected_set = {
+            qid for batch_id in selected_batch_ids for qid in failed_by_id[batch_id]
+        }
+        if not selected_set or selected_set != expected_set:
+            raise ValueError("只能按完整失败批次重试，不能只选择批次中的部分题目。")
+        selected_question_ids = expected_set
+
+    existing_size = meta.get("batch_size") if isinstance(meta, dict) else None
+    try:
+        batch_size = int(existing_size)
+    except (TypeError, ValueError):
+        batch_size = DEFAULT_CONFIG_GENERATION_BATCH_SIZE
+    locked_blocks = [
+        {**block, "question_type_confirmed": True}
+        for block in question_blocks
+    ]
+    return _run_config_generation_batches(
+        existing_payload=existing_payload,
+        question_blocks=locked_blocks,
+        doc_text=doc_text,
+        llm_client=llm_client,
+        model_name=model_name,
+        report=report,
+        q_images=q_images,
+        batch_size=batch_size,
+        retry_question_ids=selected_question_ids,
+        checkpoint=checkpoint,
+    )
+
+
+def failed_grading_config_batches(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    value = meta.get("failed_batches") if isinstance(meta, dict) else None
+    return copy.deepcopy(value) if isinstance(value, list) else []
+
+
+def _run_config_generation_batches(
+    *,
+    existing_payload: dict[str, Any] | None,
+    question_blocks: list[dict[str, Any]],
+    doc_text: str,
+    llm_client: LLMClient,
+    model_name: str | None,
+    report: Any,
+    q_images: dict[str, Any] | None,
+    batch_size: int,
+    retry_question_ids: set[str] | None,
+    checkpoint: Callable[[dict[str, Any]], None] | None,
+) -> dict[str, Any]:
+    _validate_unique_batch_question_ids(question_blocks)
+    _validate_image_semantic_inputs(question_blocks, q_images)
+    batch_groups: list[list[dict[str, Any]]] = []
+    objective_group: list[dict[str, Any]] = []
+    for block in question_blocks:
+        question_type = str(block.get("question_type") or "").strip().lower()
+        if question_type in {"choice", "fill_blank"}:
+            objective_group.append(block)
+            if len(objective_group) >= batch_size:
+                batch_groups.append(objective_group)
+                objective_group = []
+            continue
+        if objective_group:
+            batch_groups.append(objective_group)
+            objective_group = []
+        batch_groups.append([block])
+    if objective_group:
+        batch_groups.append(objective_group)
+
+    batches = [
+        {
+            "batch_id": f"B{index + 1:03d}",
+            "question_ids": [
+                str(block.get("question_id") or "").strip() for block in group
+            ],
+            "blocks": group,
+        }
+        for index, group in enumerate(batch_groups)
+    ]
+    merged = copy.deepcopy(existing_payload) if existing_payload is not None else {
+        "rubric": {"exam_title": "generated", "total_score": 100, "questions": []},
+        "answer_key": {"questions": []},
+        "meta": {"warnings": []},
+    }
+    states = _existing_batch_states(merged)
+    if retry_question_ids is None:
+        targets = list(batches)
+    else:
+        targets = [
+            batch
+            for batch in batches
+            if set(batch["question_ids"]).issubset(retry_question_ids)
+        ]
+        targeted_question_ids = {
+            qid for batch in targets for qid in batch["question_ids"]
+        }
+        if targeted_question_ids != retry_question_ids:
+            raise ValueError("旧草稿的失败题目不能安全映射到新的分批规则。")
+    total_targets = len(targets)
+    for completed, batch in enumerate(targets, start=1):
+        batch_id = str(batch["batch_id"])
+        question_ids = list(batch["question_ids"])
+        if report:
+            progress = 0.10 + 0.75 * ((completed - 1) / max(1, total_targets))
+            report(
+                progress,
+                "分批生成评分标准",
+                f"正在生成批次 {batch_id}（{', '.join(question_ids)}）",
+            )
+        try:
+            prompt, image_blobs = _build_config_batch_request(
+                list(batch["blocks"]), doc_text, q_images
+            )
+            if image_blobs:
+                batch_payload = llm_client.json_from_images_once(
+                    prompt,
+                    image_blobs,
+                    model=model_name,
+                    extra_kwargs=_config_generation_extra_kwargs(),
+                    use_config_client=True,
+                )
+            else:
+                batch_payload = llm_client.json_from_text_once(
+                    prompt,
+                    model=model_name,
+                    extra_kwargs=_config_generation_extra_kwargs(),
+                )
+            _validate_exact_batch_payload(
+                batch_payload,
+                question_ids,
+                require_canonical_answer=False,
+            )
+            normalize_generated_config_schema(batch_payload)
+            _validate_exact_batch_payload(batch_payload, question_ids)
+            _replace_retry_question_payloads(
+                merged,
+                batch_payload,
+                set(question_ids),
+                question_blocks,
+            )
+            batch_meta = batch_payload.get("meta") if isinstance(batch_payload, dict) else None
+            repair = batch_meta.get("local_json_repair") if isinstance(batch_meta, dict) else None
+            state: dict[str, Any] = {
+                "batch_id": batch_id,
+                "question_ids": question_ids,
+                "status": "succeeded",
+            }
+            if isinstance(repair, dict):
+                state["local_json_repair"] = {
+                    "repaired": bool(repair.get("repaired")),
+                    "operations": [str(item) for item in repair.get("operations") or []],
+                    "response_chars": int(repair.get("response_chars") or 0),
+                    "response_sha256": str(repair.get("response_sha256") or ""),
+                }
+            states[batch_id] = state
+        except Exception as exc:  # each explicit submission makes exactly one request
+            if isinstance(exc, _BatchSchemaMismatch):
+                category = "schema_mismatch"
+            elif "响应字符数" in str(exc) and "响应摘要" in str(exc):
+                category = "invalid_json"
+            elif _is_transient_config_generation_error(exc):
+                category = "transient_network"
+            else:
+                category = "model_request"
+            states[batch_id] = {
+                "batch_id": batch_id,
+                "question_ids": question_ids,
+                "status": "failed",
+                "category": category,
+                "error": _safe_batch_failure_message(exc),
+            }
+        _attach_batch_generation_meta(merged, batches, states, batch_size)
+        if checkpoint:
+            checkpoint(copy.deepcopy(merged))
+
+    _apply_local_question_facts(merged, question_blocks)
+    normalize_generated_config_schema(merged)
+    _attach_batch_generation_meta(merged, batches, states, batch_size)
+    failed = failed_grading_config_batches(merged)
+    meta = merged.setdefault("meta", {})
+    if failed:
+        meta["score_allocation_mode"] = "pending_failed_batches"
+        meta["score_allocation_ai_success"] = False
+        meta["score_allocation_pending"] = False
+        meta["score_allocation_failed"] = False
+        meta.pop("score_allocation_error", None)
+        meta.pop("score_allocation_failure_category", None)
+        _attach_reference_answer_images(merged, q_images)
+        refresh_generated_config_quality_warnings(merged)
+        return merged
+
+    merged = _score_completed_batch_draft_once(
+        merged,
+        question_blocks,
+        doc_text,
+        llm_client,
+        model_name=model_name,
+        report=report,
+        q_images=q_images,
+        checkpoint=checkpoint,
+    )
+    if report:
+        report(0.92, "分批生成完成", f"{len(batches)} 个批次和整卷 AI 统一配分均已完成。")
+    return merged
+
+
+def _score_completed_batch_draft_once(
+    existing_payload: dict[str, Any],
+    question_blocks: list[dict[str, Any]],
+    doc_text: str,
+    llm_client: LLMClient,
+    model_name: str | None = None,
+    report: Any = None,
+    q_images: dict[str, Any] | None = None,
+    checkpoint: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Allocate scores once after every generation batch has succeeded."""
+    if failed_grading_config_batches(existing_payload):
+        raise ValueError("仍有失败批次，不能进行整卷 AI 统一配分。")
+    payload = copy.deepcopy(existing_payload)
+    meta = payload.setdefault("meta", {})
+    if (
+        isinstance(meta, dict)
+        and bool(meta.get("score_allocation_ai_success"))
+        and not bool(meta.get("score_allocation_pending"))
+    ):
+        return payload
+    if not isinstance(meta, dict):
+        payload["meta"] = meta = {}
+    meta["score_allocation_mode"] = "dedicated_ai_scoring"
+    meta["score_allocation_ai_success"] = False
+    meta["score_allocation_pending"] = True
+    meta["score_allocation_failed"] = False
+    meta.pop("score_allocation_error", None)
+    meta.pop("score_allocation_failure_category", None)
+    if checkpoint:
+        checkpoint(copy.deepcopy(payload))
+
+    structure_summary = _score_allocation_structure_summary(payload)
+    question_ids = [str(item.get("question_id") or "") for item in structure_summary]
+    prompt = _build_score_allocation_prompt(
+        structure_summary,
+        doc_text,
+        include_document_text=not (
+            bool(q_images)
+            or any(
+                str(block.get("semantic_source") or "").strip() == "images"
+                for block in question_blocks
+            )
+        ),
+    )
+    prompt = (
+        f"SCORE_QUESTION_IDS_JSON={json.dumps(question_ids, ensure_ascii=False)}\n"
+        + prompt
+    )
+    if report:
+        report(
+            0.88,
+            "AI 统一配分",
+            f"正在根据 {len(question_ids)} 道题的完整评分步骤统一配置 100 分。",
+        )
+    score_repair: dict[str, Any] | None = None
+    try:
+        score_data = llm_client.json_from_text_once(
+            prompt,
+            model=model_name,
+            extra_kwargs=_config_generation_extra_kwargs(),
+        )
+        score_meta = score_data.get("meta") if isinstance(score_data, dict) else None
+        raw_score_repair = (
+            score_meta.get("local_json_repair")
+            if isinstance(score_meta, dict)
+            else None
+        )
+        if isinstance(raw_score_repair, dict):
+            score_repair = {
+                "repaired": bool(raw_score_repair.get("repaired")),
+                "operations": [
+                    str(item) for item in raw_score_repair.get("operations") or []
+                ],
+                "response_chars": int(raw_score_repair.get("response_chars") or 0),
+                "response_sha256": str(
+                    raw_score_repair.get("response_sha256") or ""
+                ),
+            }
+        _validate_exact_score_allocation_payload(score_data, structure_summary)
+        _apply_score_allocation(payload, score_data)
+    except Exception as exc:
+        meta["score_allocation_failed"] = True
+        meta["score_allocation_failure_category"] = (
+            "transient_network"
+            if _is_transient_config_generation_error(exc)
+            else "model_request"
+        )
+        meta["score_allocation_error"] = _safe_score_allocation_failure_message(exc)
+        if report:
+            report(
+                0.91,
+                "AI 统一配分失败",
+                "评分标准批次已保存在本机；没有自动重试，也没有使用本地分值替代。",
+            )
+        if checkpoint:
+            checkpoint(copy.deepcopy(payload))
+        return payload
+    payload = finalize_completed_grading_config_draft(
+        payload,
+        question_blocks,
+        q_images=q_images,
+    )
+    meta = payload.setdefault("meta", {})
+    meta["score_allocation_mode"] = "dedicated_ai_scoring"
+    meta["score_allocation_ai_success"] = True
+    meta["score_allocation_pending"] = False
+    meta["score_allocation_failed"] = False
+    meta.pop("score_allocation_error", None)
+    meta.pop("score_allocation_failure_category", None)
+    if score_repair is not None:
+        meta["score_allocation_local_json_repair"] = score_repair
+    else:
+        meta.pop("score_allocation_local_json_repair", None)
+    if checkpoint:
+        checkpoint(copy.deepcopy(payload))
+    return payload
+
+
+def _safe_score_allocation_failure_message(exc: Exception) -> str:
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int):
+        return f"AI 统一配分失败（HTTP {status_code}），未自动重试。"
+    return "AI 统一配分或本地校验失败，未自动重试。"
+
+
+def _validate_exact_score_allocation_payload(
+    score_data: dict[str, Any],
+    structure_summary: list[dict[str, Any]],
+) -> None:
+    if not isinstance(score_data, dict):
+        raise ValueError("AI 统一配分结果顶层不是 JSON 对象。")
+    raw_scores = score_data.get("question_scores")
+    if not isinstance(raw_scores, list):
+        raise ValueError("AI 统一配分缺少 question_scores。")
+    expected_ids = [str(item.get("question_id") or "") for item in structure_summary]
+    actual_ids = [
+        str(item.get("question_id") or "") if isinstance(item, dict) else ""
+        for item in raw_scores
+    ]
+    if actual_ids != expected_ids or len(set(actual_ids)) != len(actual_ids):
+        raise ValueError("AI 统一配分的题号缺失、重复、越界或顺序不一致。")
+
+    total_score = 0
+    objective_scores: dict[str, int] = {}
+    for expected, actual in zip(structure_summary, raw_scores):
+        if not isinstance(actual, dict):
+            raise ValueError("AI 统一配分的题目结构无效。")
+        question_score = _strict_positive_score(actual.get("max_score"))
+        if question_score > MAX_QUESTION_SCORE:
+            raise ValueError("AI 统一配分存在超过单题上限的分值。")
+        total_score += question_score
+        question_type = str(expected.get("question_type") or "").strip()
+        if question_type in {"choice", "fill_blank", "judgement", "true_false"}:
+            previous = objective_scores.setdefault(question_type, question_score)
+            if previous != question_score:
+                raise ValueError("AI 统一配分未保持同类型客观题同分。")
+
+        expected_parts = expected.get("parts")
+        actual_parts = actual.get("parts")
+        if not isinstance(expected_parts, list) or not isinstance(actual_parts, list):
+            raise ValueError("AI 统一配分的分问结构无效。")
+        expected_part_ids = [
+            str(item.get("part_id") or "") if isinstance(item, dict) else ""
+            for item in expected_parts
+        ]
+        actual_part_ids = [
+            str(item.get("part_id") or "") if isinstance(item, dict) else ""
+            for item in actual_parts
+        ]
+        if actual_part_ids != expected_part_ids:
+            raise ValueError("AI 统一配分改变了分问结构。")
+
+        part_total = 0
+        for expected_part, actual_part in zip(expected_parts, actual_parts):
+            if not isinstance(expected_part, dict) or not isinstance(actual_part, dict):
+                raise ValueError("AI 统一配分的分问结构无效。")
+            part_score = _strict_positive_score(actual_part.get("part_score"))
+            part_total += part_score
+            expected_steps = expected_part.get("steps")
+            actual_steps = actual_part.get("steps")
+            if not isinstance(expected_steps, list) or not isinstance(actual_steps, list):
+                raise ValueError("AI 统一配分的步骤结构无效。")
+            expected_step_ids = [
+                str(item.get("step_id") or "") if isinstance(item, dict) else ""
+                for item in expected_steps
+            ]
+            actual_step_ids = [
+                str(item.get("step_id") or "") if isinstance(item, dict) else ""
+                for item in actual_steps
+            ]
+            if actual_step_ids != expected_step_ids:
+                raise ValueError("AI 统一配分改变了评分步骤结构。")
+            step_total = sum(
+                _strict_positive_score(item.get("step_score"))
+                for item in actual_steps
+                if isinstance(item, dict)
+            )
+            if step_total != part_score:
+                raise ValueError("AI 统一配分的步骤分之和不等于分问分。")
+        if part_total != question_score:
+            raise ValueError("AI 统一配分的分问分之和不等于题目分。")
+    if total_score != 100:
+        raise ValueError("AI 统一配分总分不是 100。")
+
+
+def _strict_positive_score(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("AI 统一配分包含非整数分值。")
+    score = int(value)
+    if float(value) != float(score) or score <= 0:
+        raise ValueError("AI 统一配分包含非正整数分值。")
+    return score
+
+
+def _score_allocation_structure_summary(
+    payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rubric = payload.get("rubric") if isinstance(payload, dict) else None
+    questions = rubric.get("questions") if isinstance(rubric, dict) else None
+    summary: list[dict[str, Any]] = []
+    for question in questions or []:
+        if not isinstance(question, dict):
+            continue
+        parts: list[dict[str, Any]] = []
+        for part in question.get("parts") or []:
+            if not isinstance(part, dict):
+                continue
+            steps = [
+                {
+                    "step_id": str(step.get("step_id") or ""),
+                    "core_goal": str(step.get("core_goal") or ""),
+                    "required_elements": [
+                        str(item) for item in step.get("required_elements") or []
+                    ],
+                }
+                for step in part.get("steps") or []
+                if isinstance(step, dict)
+            ]
+            parts.append(
+                {
+                    "part_id": str(part.get("part_id") or ""),
+                    "response_mode": str(part.get("response_mode") or ""),
+                    "steps": steps,
+                }
+            )
+        summary.append(
+            {
+                "question_id": str(question.get("question_id") or ""),
+                "question_type": str(question.get("question_type") or ""),
+                "knowledge_name": str(question.get("knowledge_name") or ""),
+                "parts": parts,
+            }
+        )
+    return summary
+
+
+def finalize_completed_grading_config_draft(
+    existing_payload: dict[str, Any],
+    question_blocks: list[dict[str, Any]],
+    *,
+    q_images: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Finish an all-succeeded checkpoint locally without another model request."""
+    payload = copy.deepcopy(existing_payload)
+    if failed_grading_config_batches(payload):
+        raise ValueError("仍有失败批次，不能完成本地发布。")
+    _validate_unique_batch_question_ids(question_blocks)
+    _apply_local_question_facts(payload, question_blocks)
+    normalize_generated_config_schema(payload)
+    expected_ids = [str(block.get("question_id") or "").strip() for block in question_blocks]
+    _validate_exact_batch_payload(payload, expected_ids)
+    force_payload_total_score(payload, target_total=100.0)
+    meta = payload.setdefault("meta", {})
+    meta["score_allocation_mode"] = "local_normalization"
+    meta["score_allocation_ai_success"] = False
+    meta["score_allocation_pending"] = False
+    _attach_reference_answer_images(payload, q_images)
+    refresh_generated_config_quality_warnings(payload)
+    validate_generated_config(payload)
+    return payload
+
+
+def _validate_unique_batch_question_ids(question_blocks: list[dict[str, Any]]) -> None:
+    ids = [str(block.get("question_id") or "").strip() for block in question_blocks]
+    if any(not qid for qid in ids) or len(set(ids)) != len(ids):
+        raise ValueError("已确认题目必须包含唯一且非空的题号。")
+
+
+def _existing_batch_states(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    raw = meta.get("batches") if isinstance(meta, dict) else None
+    return {
+        str(item.get("batch_id")): copy.deepcopy(item)
+        for item in raw or []
+        if isinstance(item, dict) and str(item.get("batch_id") or "").strip()
+    }
+
+
+def _attach_batch_generation_meta(
+    payload: dict[str, Any],
+    batches: list[dict[str, Any]],
+    states: dict[str, dict[str, Any]],
+    batch_size: int,
+) -> None:
+    ordered_states: list[dict[str, Any]] = []
+    for batch in batches:
+        batch_id = str(batch["batch_id"])
+        ordered_states.append(
+            copy.deepcopy(
+                states.get(batch_id)
+                or {
+                    "batch_id": batch_id,
+                    "question_ids": list(batch["question_ids"]),
+                    "status": "pending",
+                }
+            )
+        )
+    failures = [
+        {
+            "batch_id": str(item["batch_id"]),
+            "question_ids": list(item["question_ids"]),
+            "category": str(item.get("category") or "failed"),
+            "error": str(item.get("error") or "批次生成失败"),
+        }
+        for item in ordered_states
+        if item.get("status") in {"failed", "pending"}
+    ]
+    meta = payload.setdefault("meta", {})
+    if not isinstance(meta, dict):
+        payload["meta"] = meta = {}
+    meta["generation_mode"] = "batched"
+    meta["batch_size"] = int(batch_size)
+    meta["batch_count"] = len(batches)
+    meta["batches"] = ordered_states
+    meta["failed_batches"] = failures
+    meta["failed_question_ids"] = [
+        qid for item in failures for qid in item["question_ids"]
+    ]
+
+
+def _validate_exact_batch_payload(
+    payload: dict[str, Any],
+    question_ids: list[str],
+    *,
+    require_canonical_answer: bool = True,
+) -> None:
+    if not isinstance(payload, dict):
+        raise _BatchSchemaMismatch("批次结果顶层不是 JSON 对象。")
+    rubric = payload.get("rubric")
+    answer_key = payload.get("answer_key")
+    questions = rubric.get("questions") if isinstance(rubric, dict) else None
+    answers = answer_key.get("questions") if isinstance(answer_key, dict) else None
+    if not isinstance(questions, list) or not isinstance(answers, list):
+        raise _BatchSchemaMismatch("批次结果缺少 rubric.questions 或 answer_key.questions。")
+    rubric_ids = [
+        str(item.get("question_id") or "").strip()
+        for item in questions if isinstance(item, dict)
+    ]
+    answer_ids = [
+        str(item.get("question_id") or "").strip()
+        for item in answers if isinstance(item, dict)
+    ]
+    if (
+        len(rubric_ids) != len(questions)
+        or len(answer_ids) != len(answers)
+        or rubric_ids != question_ids
+        or answer_ids != question_ids
+        or len(set(rubric_ids)) != len(rubric_ids)
+    ):
+        raise _BatchSchemaMismatch("批次结果题号缺失、重复、越界或顺序不一致。")
+    for question in questions:
+        if not isinstance(question.get("parts"), list) or not question["parts"]:
+            raise _BatchSchemaMismatch("批次评分结构不完整。")
+    for answer in answers:
+        if require_canonical_answer and "canonical_answer" not in answer:
+            raise _BatchSchemaMismatch("批次答案结构不完整。")
+
+
+def _safe_batch_failure_message(exc: Exception) -> str:
+    message = str(exc or "").strip()
+    if isinstance(exc, _BatchSchemaMismatch):
+        return message[:300]
+    if "响应字符数" in message and "响应摘要" in message:
+        return message[:500]
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int):
+        return f"模型请求失败（HTTP {status_code}），未自动重试。"
+    return "模型请求或本地解析失败，未自动重试。"
+
+
+def _build_config_batch_request(
+    blocks: list[dict[str, Any]],
+    doc_text: str,
+    q_images: dict[str, Any] | None,
+) -> tuple[str, list[bytes]]:
+    import base64
+
+    question_ids = [str(block.get("question_id") or "").strip() for block in blocks]
+    contexts: list[dict[str, Any]] = []
+    image_blobs: list[bytes] = []
+    image_map: list[str] = []
+    for block in blocks:
+        qid = str(block.get("question_id") or "").strip()
+        image_semantic_source = str(block.get("semantic_source") or "").strip() == "images"
+        contexts.append(
+            {
+                "question_id": qid,
+                "question_type": str(block.get("question_type") or ""),
+                "question_text": "" if image_semantic_source else str(
+                    block.get("text") or block.get("question_text") or ""
+                ),
+                "answer_text": "" if image_semantic_source else str(
+                    block.get("answer_text") or block.get("canonical_answer") or ""
+                ),
+                "analysis": "" if image_semantic_source else str(block.get("analysis") or ""),
+            }
+        )
+        image_data = q_images.get(qid) if isinstance(q_images, dict) else None
+        if isinstance(image_data, dict) and image_data.get("question"):
+            image_blobs.append(base64.b64decode(str(image_data["question"]), validate=True))
+            image_map.append(f"图片{len(image_blobs)}={qid}题目")
+            if image_data.get("answer"):
+                image_blobs.append(base64.b64decode(str(image_data["answer"]), validate=True))
+                image_map.append(f"图片{len(image_blobs)}={qid}答案解析")
+        elif not image_semantic_source:
+            for blob in _word_block_image_blobs(block, limit=4):
+                image_blobs.append(blob)
+                image_map.append(f"图片{len(image_blobs)}={qid}内嵌图")
+    fallback = str(doc_text or "")[:4000] if any(
+        str(block.get("semantic_source") or "").strip() != "images"
+        and not item["answer_text"] and not item["analysis"]
+        for block, item in zip(blocks, contexts)
+    ) else ""
+    prompt = (
+        "你正在为一个小批次的中学数学题生成可执行评分标准。仅返回一个完整、严格的 JSON 对象。\n"
+        f"BATCH_QUESTION_IDS_JSON={json.dumps(question_ids, ensure_ascii=False)}\n"
+        "必须完整且仅返回上述题号，并在 rubric.questions 与 answer_key.questions 中按同一顺序各出现一次；"
+        "不得遗漏、重复或增加题号。所有 max_score、part_score、step_score 暂设为1，最终总分由本地程序分配。\n"
+        "每题必须保留教师确认题型，输出具体 knowledge_id、knowledge_name、parts、steps；"
+        "每个 part 必须有 response_mode，每个 step 必须有可核验的 core_goal 和 required_elements。"
+        "选择/普通填空只核对最终答案；过程题保留必要过程；作图题输出 visual_requirements。\n"
+        "只允许字段 rubric、answer_key、meta 及其既有评分结构；不要 Markdown、解释或续写建议。\n"
+        f"图片顺序：{'; '.join(image_map) if image_map else '无'}\n"
+        f"本批次结构化内容：{json.dumps(contexts, ensure_ascii=False)}\n"
+        f"必要时参考的有限原文：{fallback}"
+    )
+    return prompt, image_blobs
 
 
 def failed_grading_config_question_ids(payload: dict[str, Any]) -> list[str]:
@@ -1362,7 +2290,10 @@ def _strip_leading_question_number(number: int, text: str) -> str:
 
 
 def _extract_local_question_blocks(doc_text: str) -> list[dict[str, Any]]:
-    inline_blocks = _parse_inline_answer_blocks(doc_text)
+    normalized_doc_text = "\n".join(
+        _normalize_inline_main_question_lines(doc_text)
+    )
+    inline_blocks = _parse_inline_answer_blocks(normalized_doc_text)
     if inline_blocks:
         return inline_blocks
 
@@ -1370,7 +2301,11 @@ def _extract_local_question_blocks(doc_text: str) -> list[dict[str, Any]]:
     try:
         from question_bank.importers.batch_importer import parse_paper_text
 
-        parsed = parse_paper_text(str(doc_text or ""), source_file="grading_config.docx", page_range="document")
+        parsed = parse_paper_text(
+            normalized_doc_text,
+            source_file="grading_config.docx",
+            page_range="document",
+        )
         parsed_questions = list(parsed.questions)
     except Exception:
         parsed_questions = []
@@ -1391,10 +2326,10 @@ def _extract_local_question_blocks(doc_text: str) -> list[dict[str, Any]]:
             last_number = number
         parsed_questions = truncated
 
-    answer_section = _local_answer_section_text(doc_text)
+    answer_section = _local_answer_section_text(normalized_doc_text)
     answer_blocks = _local_answer_blocks(answer_section)
     choice_answers = _extract_choice_answer_sequence(answer_section)
-    section_hints = _question_type_hints_from_section_headings(doc_text)
+    section_hints = _question_type_hints_from_section_headings(normalized_doc_text)
 
     blocks: list[dict[str, Any]] = []
     if parsed_questions:
@@ -1436,7 +2371,7 @@ def _extract_local_question_blocks(doc_text: str) -> list[dict[str, Any]]:
                 }
             )
     else:
-        for block in _split_doc_text_into_question_blocks(doc_text):
+        for block in _split_doc_text_into_question_blocks(normalized_doc_text):
             qid = str(block.get("question_id") or "")
             number = qid.removeprefix("Q")
             question_text = str(block.get("text") or "")
@@ -1823,6 +2758,15 @@ def _looks_like_serialized_answer_list(value: Any) -> bool:
     return bool(re.fullmatch(r"\s*\[[\s\S]*\]\s*", str(value or "")))
 
 
+def _looks_like_serialized_knowledge_sequence(value: Any) -> bool:
+    return bool(
+        re.fullmatch(
+            r"\s*(?:\[[\s\S]*\]|\([\s\S]*\))\s*",
+            str(value or ""),
+        )
+    )
+
+
 def _normalize_serialized_answer_list(value: Any) -> str:
     text = str(value or "").strip()
     if not _looks_like_serialized_answer_list(text):
@@ -1878,7 +2822,21 @@ def collect_generated_config_quality_warnings(payload: dict[str, Any]) -> list[s
         if not isinstance(answer_parts, list):
             answer_parts = []
 
-        text_fields: list[Any] = [stem, knowledge_name, *answer_texts]
+        knowledge_texts: list[Any] = [knowledge_id, knowledge_name]
+        knowledge_ids = question.get("knowledge_ids")
+        if isinstance(knowledge_ids, list):
+            knowledge_texts.extend(knowledge_ids)
+        knowledge_points = question.get("knowledge_points")
+        if isinstance(knowledge_points, list):
+            for point in knowledge_points:
+                if isinstance(point, dict):
+                    knowledge_texts.extend(
+                        (point.get("knowledge_id"), point.get("knowledge_name"))
+                    )
+                else:
+                    knowledge_texts.append(point)
+
+        text_fields: list[Any] = [stem, *knowledge_texts, *answer_texts]
         parts = question.get("parts")
         if not isinstance(parts, list):
             parts = []
@@ -1896,8 +2854,16 @@ def collect_generated_config_quality_warnings(payload: dict[str, Any]) -> list[s
             text_fields.extend(_quality_answer_texts(answer_part))
         if any(_looks_like_garbled_generated_text(value) for value in text_fields):
             warnings.append(f"[质量检查-阻断] {qid} 的题干、公式、答案或踩分点中存在疑似乱码")
-        if any(_looks_like_serialized_answer_list(value) for value in text_fields):
-            warnings.append(f"[质量检查-阻断] {qid} 的答案中混入列表字符串，无法作为合法等价答案")
+        if (
+            any(_looks_like_serialized_answer_list(value) for value in text_fields)
+            or any(
+                _looks_like_serialized_knowledge_sequence(value)
+                for value in knowledge_texts
+            )
+        ):
+            warnings.append(
+                f"[质量检查-阻断] {qid} 的知识点、答案或评分点中混入列表字符串或元组字符串"
+            )
 
         if qtype in {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}:
             if not answer_texts and not answer_image_present:
@@ -1985,7 +2951,7 @@ def _restore_precalibration_objective_answers(payload: dict[str, Any], previous_
 
 
 def _split_doc_text_into_question_blocks(doc_text: str) -> list[dict[str, str]]:
-    lines = [line.rstrip() for line in str(doc_text or "").splitlines()]
+    lines = _normalize_inline_main_question_lines(doc_text)
     markers: list[tuple[int, str]] = []
     last_number = 0
     for idx, line in enumerate(lines):
@@ -2005,6 +2971,35 @@ def _split_doc_text_into_question_blocks(doc_text: str) -> list[dict[str, str]]:
         if text:
             blocks.append({"question_id": qid, "text": text})
     return blocks
+
+
+def _normalize_inline_main_question_lines(doc_text: str) -> list[str]:
+    lines: list[str] = []
+    current_number: int | None = None
+    in_answer_section = False
+    raw_lines = [raw_line.rstrip() for raw_line in str(doc_text or "").splitlines()]
+    for index, line in enumerate(raw_lines):
+        if _looks_like_answer_section_heading(line) and current_number is not None:
+            in_answer_section = True
+        if in_answer_section:
+            lines.append(line)
+            continue
+        leading_number = _extract_question_marker_number(line)
+        if leading_number is not None:
+            current_number = leading_number
+        if current_number is None:
+            lines.append(line)
+            continue
+        segments, current_number = _split_consecutive_inline_main_questions(
+            line,
+            current_number=current_number,
+            following_number=_next_leading_main_question_number(
+                raw_lines,
+                after_index=index,
+            ),
+        )
+        lines.extend(segments)
+    return lines
 
 
 def _extract_question_marker_number(line: str) -> int | None:
@@ -2853,14 +3848,14 @@ def normalize_generated_config_schema(payload: dict[str, Any]) -> None:
             or question.get("points"),
             0.0,
         )
-        question["knowledge_id"] = str(question.get("knowledge_id") or question.get("knowledge") or "UNKNOWN")
-        question["knowledge_name"] = str(
+        question["knowledge_id"] = question.get("knowledge_id") or question.get("knowledge") or "UNKNOWN"
+        question["knowledge_name"] = (
             question.get("knowledge_name")
             or question.get("knowledge_text")
             or question.get("knowledge_label")
             or question.get("knowledge")
             or ""
-        ).strip()
+        )
         _normalize_question_knowledge_fields(question)
         question["stem_summary"] = str(question.get("stem_summary") or question.get("棰樺共鎽樿") or "").strip()
         question["grading_mode"] = str(
@@ -2910,7 +3905,117 @@ def _canonical_question_id(value: Any, fallback: str = "") -> str:
     return raw
 
 
+def _safe_knowledge_sequence(value: Any) -> list[str] | None:
+    candidate = value
+    if isinstance(value, str):
+        text = value.strip()
+        if not _looks_like_serialized_knowledge_sequence(text):
+            return None
+        try:
+            candidate = ast.literal_eval(text)
+        except (SyntaxError, ValueError):
+            return None
+    if not isinstance(candidate, (list, tuple)) or not candidate:
+        return None
+
+    values: list[str] = []
+    for item in candidate:
+        if isinstance(item, bool) or not isinstance(item, (str, int, float)):
+            return None
+        text = str(item).strip()
+        if not text:
+            return None
+        values.append(text)
+    return values
+
+
+def _redundant_knowledge_fields_match_pairs(
+    question: dict[str, Any],
+    paired_ids: list[str],
+    paired_names: list[str],
+) -> bool:
+    raw_ids = question.get("knowledge_ids")
+    if raw_ids not in (None, "", []):
+        ids_match = _safe_knowledge_sequence(raw_ids) == paired_ids
+        if (
+            not ids_match
+            and isinstance(raw_ids, (list, tuple))
+            and len(raw_ids) == 1
+        ):
+            ids_match = _safe_knowledge_sequence(raw_ids[0]) == paired_ids
+        if not ids_match:
+            return False
+
+    raw_points = question.get("knowledge_points")
+    if raw_points in (None, "", []):
+        return True
+    if not isinstance(raw_points, (list, tuple)):
+        return False
+
+    expected_names = dict(zip(paired_ids, paired_names))
+    canonical_ids: set[str] = set()
+    for point in raw_points:
+        if isinstance(point, dict):
+            raw_id = point.get("knowledge_id") or point.get("id") or ""
+            raw_name = (
+                point.get("knowledge_name")
+                or point.get("name")
+                or point.get("label")
+                or ""
+            )
+        else:
+            raw_id = point
+            raw_name = ""
+
+        point_ids = _safe_knowledge_sequence(raw_id)
+        if point_ids is not None:
+            if point_ids != paired_ids:
+                return False
+            if raw_name and _safe_knowledge_sequence(raw_name) != paired_names:
+                return False
+            continue
+        if _looks_like_serialized_knowledge_sequence(raw_id):
+            return False
+        if raw_name and _looks_like_serialized_knowledge_sequence(raw_name):
+            return False
+
+        kid = str(raw_id or "").strip()
+        name = str(raw_name or "").strip()
+        if not kid or kid not in expected_names:
+            return False
+        if name and name != expected_names[kid]:
+            return False
+        canonical_ids.add(kid)
+
+    return not canonical_ids or canonical_ids == set(paired_ids)
+
+
 def _normalize_question_knowledge_fields(question: dict[str, Any]) -> None:
+    raw_primary_id = question.get("knowledge_id") or "UNKNOWN"
+    raw_primary_name = question.get("knowledge_name") or ""
+    paired_ids = _safe_knowledge_sequence(raw_primary_id)
+    paired_names = _safe_knowledge_sequence(raw_primary_name)
+    if (
+        paired_ids is not None
+        and paired_names is not None
+        and len(paired_ids) == len(paired_names)
+        and len(set(paired_ids)) == len(paired_ids)
+        and _redundant_knowledge_fields_match_pairs(
+            question,
+            paired_ids,
+            paired_names,
+        )
+    ):
+        paired_points = [
+            {"knowledge_id": kid, "knowledge_name": name}
+            for kid, name in zip(paired_ids, paired_names)
+        ]
+        question["knowledge_points"] = paired_points
+        question["knowledge_ids"] = list(paired_ids)
+        question["knowledge_id"] = paired_ids[0]
+        question["knowledge_name"] = paired_names[0]
+        return
+
     raw_points = question.get("knowledge_points")
     points: list[dict[str, str]] = []
     if isinstance(raw_points, list):
@@ -2938,8 +4043,8 @@ def _normalize_question_knowledge_fields(question: dict[str, Any]) -> None:
             if kid:
                 points.append({"knowledge_id": kid, "knowledge_name": ""})
 
-    primary_id = str(question.get("knowledge_id") or "UNKNOWN").strip()
-    primary_name = str(question.get("knowledge_name") or "").strip()
+    primary_id = str(raw_primary_id).strip()
+    primary_name = str(raw_primary_name).strip()
     if primary_id:
         points.append({"knowledge_id": primary_id, "knowledge_name": primary_name})
 
@@ -2948,14 +4053,27 @@ def _normalize_question_knowledge_fields(question: dict[str, Any]) -> None:
         points = useful_points
 
     normalized: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
     for point in points:
         kid = point["knowledge_id"]
-        key = (kid, point.get("knowledge_name", ""))
-        if not kid or key in seen:
+        name = point.get("knowledge_name", "")
+        if not kid:
             continue
-        seen.add(key)
-        normalized.append(point)
+        same_id = [
+            index for index, existing in enumerate(normalized)
+            if existing["knowledge_id"] == kid
+        ]
+        if any(normalized[index].get("knowledge_name", "") == name for index in same_id):
+            continue
+        if not name and same_id:
+            continue
+        empty_index = next(
+            (index for index in same_id if not normalized[index].get("knowledge_name")),
+            None,
+        )
+        if name and empty_index is not None:
+            normalized[empty_index]["knowledge_name"] = name
+        else:
+            normalized.append({"knowledge_id": kid, "knowledge_name": name})
 
     if not normalized:
         normalized = [{"knowledge_id": "UNKNOWN", "knowledge_name": ""}]
@@ -2965,6 +4083,62 @@ def _normalize_question_knowledge_fields(question: dict[str, Any]) -> None:
     question["knowledge_id"] = normalized[0]["knowledge_id"]
     if normalized[0].get("knowledge_name"):
         question["knowledge_name"] = normalized[0]["knowledge_name"]
+
+
+def normalize_generated_config_knowledge_fields(payload: dict[str, Any]) -> bool:
+    """Normalize only rubric knowledge metadata and report whether it changed."""
+    rubric = payload.get("rubric") if isinstance(payload, dict) else None
+    questions = rubric.get("questions") if isinstance(rubric, dict) else None
+    if not isinstance(questions, list):
+        return False
+
+    changed = False
+    tracked = ("knowledge_id", "knowledge_name", "knowledge_ids", "knowledge_points")
+    for question in questions:
+        if not isinstance(question, dict):
+            continue
+        raw_points = question.get("knowledge_points")
+        point_ids = [
+            str(point.get("knowledge_id") or point.get("id") or "").strip()
+            for point in raw_points
+            if isinstance(point, dict)
+        ] if isinstance(raw_points, list) else []
+        sequence_values: list[Any] = [
+            question.get("knowledge_id"),
+            question.get("knowledge_name"),
+        ]
+        raw_ids = question.get("knowledge_ids")
+        if isinstance(raw_ids, list):
+            sequence_values.extend(raw_ids)
+        elif raw_ids is not None:
+            sequence_values.append(raw_ids)
+        if isinstance(raw_points, list):
+            for point in raw_points:
+                if isinstance(point, dict):
+                    sequence_values.extend(
+                        (point.get("knowledge_id"), point.get("knowledge_name"))
+                    )
+                else:
+                    sequence_values.append(point)
+        needs_compatibility = (
+            any(
+                isinstance(value, (list, tuple))
+                or (
+                    isinstance(value, str)
+                    and _looks_like_serialized_knowledge_sequence(value)
+                )
+                for value in sequence_values
+            )
+            or len([kid for kid in point_ids if kid])
+            != len(set(kid for kid in point_ids if kid))
+        )
+        if not needs_compatibility:
+            continue
+        before = {key: copy.deepcopy(question.get(key)) for key in tracked}
+        _normalize_question_knowledge_fields(question)
+        after = {key: question.get(key) for key in tracked}
+        changed = changed or before != after
+    return changed
 
 
 def iter_effective_rubric_items(

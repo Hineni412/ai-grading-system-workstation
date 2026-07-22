@@ -18,9 +18,11 @@ def test_recalibrated_shell_keeps_one_truthful_navigation_source_and_general_cli
         r"studentsRouteDefinition,\s*"
         r"questionBankRouteDefinition,\s*"
         r"questionAssemblyRouteDefinition,\s*"
+        r"trainingRouteDefinition,\s*"
         r"knowledgeGraphRouteDefinition,\s*"
         r"filesRouteDefinition,\s*"
         r"reviewRouteDefinition,\s*"
+        r"settingsRouteDefinition,\s*"
         r"\] as const",
         navigation,
     )

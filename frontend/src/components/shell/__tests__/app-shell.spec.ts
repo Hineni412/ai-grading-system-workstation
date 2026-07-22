@@ -104,9 +104,11 @@ describe('AppShell', () => {
       ['学生名单', '/students'],
       ['题库管理', '/question-bank'],
       ['组卷工作台', '/question-assembly'],
+      ['训练推荐', '/training'],
       ['知识图谱', '/knowledge-graph'],
       ['文件中心', '/files'],
       ['评分复核', '/grading'],
+      ['设置与运维', '/settings'],
     ])
     expect(
       host.querySelector('[data-testid="app-navigation"] a[href="/grading"]')?.getAttribute(
@@ -126,9 +128,11 @@ describe('AppShell', () => {
       '学生名单',
       '题库管理',
       '组卷工作台',
+      '训练推荐',
       '知识图谱',
       '文件中心',
       '评分复核',
+      '设置与运维',
     ])
     expect(host.querySelector('[data-testid="navigation-toggle"]')).toBeNull()
     expect(host.querySelector('[data-testid="inspector-toggle"]')).toBeNull()

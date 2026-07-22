@@ -36,7 +36,7 @@ const props = withDefaults(defineProps<{
 
 const configStore = useConfigWorkspaceStore()
 const jobStore = useJobStore()
-const mode = ref<GenerationMode>('per_question')
+const mode = ref<GenerationMode>('batched')
 const submitting = ref(false)
 const requestError = ref('')
 const editorError = ref('')
@@ -49,13 +49,44 @@ const job = computed(() => configStore.jobId === null ? null : jobStore.jobs[con
 const syncError = computed(() => configStore.jobId === null
   ? null : jobStore.syncErrors[configStore.jobId] ?? null)
 const progress = computed(() => Math.min(1, Math.max(0, job.value?.progress ?? 0)))
-const jobMode = computed<GenerationMode>(() => job.value?.payload.generation_mode === 'whole_document'
-  ? 'whole_document' : 'per_question')
 const outcome = computed(() => job.value?.result.outcome === 'partial'
   ? 'partial' : job.value?.result.outcome === 'complete' ? 'complete' : '')
-const failedIds = computed(() => Array.isArray(job.value?.result.failed_question_ids)
-  ? job.value.result.failed_question_ids.filter((item): item is string => typeof item === 'string')
-  : [])
+interface FailedBatch {
+  batch_id: string
+  question_ids: string[]
+}
+interface LocalJsonRepair {
+  batch_id: string
+  question_ids: string[]
+}
+const failedBatches = computed<FailedBatch[]>(() => {
+  const raw = job.value?.result.failed_batches
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((item) => {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) return []
+    const value = item as Record<string, unknown>
+    if (typeof value.batch_id !== 'string' || !Array.isArray(value.question_ids)) return []
+    const ids = value.question_ids.filter((qid): qid is string => typeof qid === 'string' && qid.length > 0)
+    return ids.length > 0 ? [{ batch_id: value.batch_id, question_ids: ids }] : []
+  })
+})
+const localJsonRepairs = computed<LocalJsonRepair[]>(() => {
+  const raw = job.value?.result.local_json_repairs
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((item) => {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) return []
+    const value = item as Record<string, unknown>
+    if (typeof value.batch_id !== 'string' || !Array.isArray(value.question_ids)) return []
+    const ids = value.question_ids.filter((qid): qid is string => typeof qid === 'string' && qid.length > 0)
+    return [{ batch_id: value.batch_id, question_ids: ids }]
+  })
+})
+const scoreAllocationPending = computed(
+  () => job.value?.result.score_allocation_pending === true,
+)
+const scoreAllocationFailed = computed(
+  () => job.value?.result.score_allocation_failed === true,
+)
 const generatedCount = computed(() => safeCount(job.value?.result.generated_questions))
 const failedCount = computed(() => safeCount(job.value?.result.failed_count))
 const active = computed(() => job.value !== null
@@ -189,13 +220,13 @@ async function reconcileUnknownSubmission(): Promise<void> {
   }
 }
 
-async function retrySelected(): Promise<void> {
+async function retrySelected(resumeComplete = false): Promise<void> {
   const current = job.value
   if (current === null || submitting.value || workspacePending.value
     || configStore.sessionId === null) return
-  const allowed = new Set(failedIds.value)
-  const ids = selectedFailed.value.filter((item) => allowed.has(item))
-  if (ids.length === 0) return
+  const selectedBatches = failedBatches.value.filter((item) => selectedFailed.value.includes(item.batch_id))
+  const ids = resumeComplete ? [] : [...new Set(selectedBatches.flatMap((item) => item.question_ids))]
+  if (!resumeComplete && ids.length === 0) return
   const context = configStore.captureGenerationContext()
   const retainedSummary: ConfigGenerationSummary = {
     totalQuestions: safeCount(current.result.total_questions),
@@ -263,21 +294,14 @@ watch(job, (current, previous) => {
     <header class="config-section-heading">
       <div>
         <h2 id="config-generation-title">生成评分依据</h2>
-        <p>确认生成方式后提交；写入失败不会自动重放。</p>
+        <p>系统每批处理 3 题；本地修复后仍失败的批次才需要手动重试。</p>
       </div>
     </header>
 
-    <fieldset class="config-generation__modes" :disabled="submitting || active || workspacePending">
-      <legend>生成方式</legend>
-      <label>
-        <input v-model="mode" type="radio" value="per_question" aria-label="逐题生成">
-        <span><strong>逐题生成</strong><small>逐题显示进度；部分失败后可只重试勾选题目。</small></span>
-      </label>
-      <label>
-        <input v-model="mode" type="radio" value="whole_document" aria-label="整卷单次生成">
-        <span><strong>整卷单次生成</strong><small>整卷只发起一次模型请求；失败后必须重新整卷生成。</small></span>
-      </label>
-    </fieldset>
+    <div class="config-generation__modes" role="note">
+      <strong>小批次生成</strong>
+      <small>按顺序每批最多 3 题，每批只请求一次；全部批次成功后，再请求一次 AI 统一配置 100 分。任何失败都不会自动重试。</small>
+    </div>
 
     <button
       v-if="job === null"
@@ -299,24 +323,44 @@ watch(job, (current, previous) => {
       </p>
       <p v-else-if="safeDetail">{{ safeDetail }}</p>
       <p v-if="mappingNotice" class="config-generation__mapping" role="status">{{ mappingNotice }}</p>
-
+      <p v-if="localJsonRepairs.length > 0" class="config-generation__retained" role="status">
+        本地程序已修复 {{ localJsonRepairs.length }} 个批次的 JSON（{{ localJsonRepairs.map((item) => item.batch_id).join('、') }}），未产生额外模型请求。
+      </p>
       <p v-if="configStore.generationSummary" class="config-generation__retained">
         <strong>上一轮已成功 {{ configStore.generationSummary.succeededQuestions }} 题</strong>
         / 共 {{ configStore.generationSummary.totalQuestions }} 题；
         当前恢复任务：{{ statusCopy(job) }}。
       </p>
 
-      <div v-if="job.status === 'succeeded' && outcome === 'partial'" class="config-generation__partial">
-        <p><strong>已成功 {{ generatedCount }} 题</strong>，失败 {{ failedCount }} 题。成功结果保持不变。</p>
+      <div v-if="['succeeded', 'failed', 'cancelled'].includes(job.status) && outcome === 'partial' && failedBatches.length > 0" class="config-generation__partial">
+        <p><strong>已成功 {{ generatedCount }} 题</strong>，失败 {{ failedCount }} 题。成功批次已保存，不会重复请求。</p>
         <fieldset>
-          <legend>选择要重试的失败题</legend>
-          <label v-for="questionId in failedIds" :key="questionId">
-            <input v-model="selectedFailed" type="checkbox" :value="questionId" :aria-label="`选择失败题 ${questionId}`">
-            {{ questionId }}
+          <legend>选择要重试的失败批次</legend>
+          <label v-for="batch in failedBatches" :key="batch.batch_id">
+            <input v-model="selectedFailed" type="checkbox" :value="batch.batch_id" :aria-label="`选择失败批次 ${batch.batch_id}`">
+            {{ batch.batch_id }}（{{ batch.question_ids.join('、') }}）
           </label>
         </fieldset>
-        <button type="button" name="重试所选题" :disabled="submitting || workspacePending || selectedFailed.length === 0" @click="retrySelected">
-          重试所选题
+        <button type="button" name="重试所选批次" :disabled="submitting || workspacePending || selectedFailed.length === 0" @click="retrySelected()">
+          重试所选批次
+        </button>
+      </div>
+
+      <div v-if="['succeeded', 'failed', 'cancelled'].includes(job.status) && outcome === 'partial' && failedBatches.length === 0 && scoreAllocationPending" class="config-generation__partial">
+        <p>
+          <strong>{{ generatedCount }} 道题的批次结果已经保存在本机。</strong>
+          <template v-if="scoreAllocationFailed">AI 统一配分没有成功；没有发布评分依据，也没有使用本地分数替代。</template>
+          <template v-else>尚未完成 AI 统一配分。</template>
+        </p>
+        <button type="button" name="重新进行 AI 统一配分" :disabled="submitting || workspacePending" @click="retrySelected(true)">
+          重新进行 AI 统一配分
+        </button>
+      </div>
+
+      <div v-if="['failed', 'cancelled'].includes(job.status) && outcome === 'complete'" class="config-generation__partial">
+        <p>全部批次已经保存在本机，只差 AI 统一配分；继续时将调用模型一次，不会重新生成题目批次。</p>
+        <button type="button" name="继续 AI 统一配分" :disabled="submitting || workspacePending" @click="retrySelected(true)">
+          继续 AI 统一配分
         </button>
       </div>
 
@@ -337,21 +381,13 @@ watch(job, (current, previous) => {
         </button>
       </div>
       <button
-        v-else-if="job.status === 'failed' && jobMode === 'whole_document'"
+        v-else-if="job.status === 'failed' && outcome !== 'partial' && outcome !== 'complete'"
         type="button"
-        name="重新整卷生成"
+        name="重新分批生成"
         class="config-generation__primary"
         :disabled="submitting || workspacePending"
-        @click="startGeneration('whole_document')"
-      >重新整卷生成</button>
-      <button
-        v-else-if="job.status === 'failed'"
-        type="button"
-        name="重新逐题生成"
-        class="config-generation__primary"
-        :disabled="submitting || workspacePending"
-        @click="startGeneration('per_question')"
-      >重新逐题生成</button>
+        @click="startGeneration('batched')"
+      >重新分批生成</button>
     </div>
 
     <div v-if="syncError" class="config-generation__warning" role="alert">
@@ -378,6 +414,7 @@ watch(job, (current, previous) => {
 <style scoped>
 .config-generation { min-width: 0; margin-block-start: var(--space-6); border-block-start: var(--border-width) solid var(--color-border-default); }
 .config-generation__modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); margin: 0 0 var(--space-3); padding: var(--space-4); border: var(--border-width) solid var(--color-border-default); background: var(--color-bg-subtle); }
+.config-generation__failure-actions { display: flex; flex-wrap: wrap; gap: var(--space-3); }
 .config-generation__modes legend { padding-inline: var(--space-1); font-weight: var(--font-weight-medium); }
 .config-generation__modes label { display: flex; align-items: flex-start; gap: var(--space-2); min-width: 0; }
 .config-generation__modes span { display: grid; gap: var(--space-1); }

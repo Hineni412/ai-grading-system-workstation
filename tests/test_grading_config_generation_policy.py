@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 import base64
 from types import SimpleNamespace
@@ -7,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend.llm.gateway import LLMGateway
+from backend.llm.trace import JsonlCallTraceSink, NullCallTraceSink
 from backend.llm.usage import JsonlUsageSink, NullUsageSink
 import score_policy
 import session_manager
@@ -87,6 +89,118 @@ D. 4
     assert answers["Q1"] == "C"
     assert answers["Q2"] == "B"
     assert answers["Q3"] == "4"
+
+
+def test_plain_text_preview_splits_consecutive_main_question_mid_line() -> None:
+    text = "\n".join(
+        [
+            "10. Tenth question.",
+            "Continuation of question ten. 11. Eleventh question.",
+            "12. Twelfth question.",
+        ]
+    )
+
+    blocks = session_manager.preview_question_blocks_from_docx_text(text)
+
+    assert [block["question_id"] for block in blocks] == ["Q10", "Q11", "Q12"]
+    by_id = {block["question_id"]: block["question_text"] for block in blocks}
+    assert "Eleventh question" not in by_id["Q10"]
+    assert "Eleventh question" in by_id["Q11"]
+
+
+def test_plain_text_preview_does_not_promote_nonconsecutive_inline_reference() -> None:
+    text = "\n".join(
+        [
+            "10. Tenth question.",
+            "The appendix reference 11. remains part of question ten.",
+            "13. Thirteenth question.",
+        ]
+    )
+
+    blocks = session_manager.preview_question_blocks_from_docx_text(text)
+
+    assert [block["question_id"] for block in blocks] == ["Q10", "Q13"]
+    assert "appendix reference 11." in blocks[0]["question_text"]
+
+
+def test_plain_text_preview_does_not_promote_consecutive_inline_prose_number() -> None:
+    text = "\n".join(
+        [
+            "10. Tenth question.",
+            "According to clause 11. this remains part of question ten.",
+            "12. Twelfth question.",
+        ]
+    )
+
+    blocks = session_manager.preview_question_blocks_from_docx_text(text)
+
+    assert [block["question_id"] for block in blocks] == ["Q10", "Q12"]
+    assert "clause 11." in blocks[0]["question_text"]
+
+
+def test_plain_text_inline_answers_still_split_consecutive_main_question() -> None:
+    text = "\n".join(
+        [
+            "10. Tenth question.",
+            "【答案】A",
+            "End of question ten. 11. Eleventh question.",
+            "【答案】B",
+            "12. Twelfth question.",
+            "【答案】C",
+        ]
+    )
+
+    blocks = session_manager.preview_question_blocks_from_docx_text(text)
+
+    assert [block["question_id"] for block in blocks] == ["Q10", "Q11", "Q12"]
+    by_id = {block["question_id"]: block for block in blocks}
+    assert "Eleventh question" in by_id["Q11"]["question_text"]
+    assert by_id["Q11"]["canonical_answer"] == "B"
+    assert by_id["Q12"]["canonical_answer"] == "C"
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    [
+        "The measured value is 11.5 units.",
+        "Subpart (11) remains part of question ten.",
+    ],
+)
+def test_plain_text_preview_does_not_split_decimal_or_subpart(
+    continuation: str,
+) -> None:
+    text = "\n".join(
+        [
+            "10. Tenth question.",
+            continuation,
+            "11. Eleventh question.",
+            "12. Twelfth question.",
+        ]
+    )
+
+    blocks = session_manager.preview_question_blocks_from_docx_text(text)
+
+    assert [block["question_id"] for block in blocks] == ["Q10", "Q11", "Q12"]
+    assert continuation in blocks[0]["question_text"]
+
+
+def test_plain_text_preview_splits_multiple_consecutive_markers_in_one_line() -> None:
+    text = "\n".join(
+        [
+            "10. Tenth question.",
+            "Continuation. 11. Eleventh question. 12. Twelfth question.",
+            "13. Thirteenth question.",
+        ]
+    )
+
+    blocks = session_manager.preview_question_blocks_from_docx_text(text)
+
+    assert [block["question_id"] for block in blocks] == [
+        "Q10",
+        "Q11",
+        "Q12",
+        "Q13",
+    ]
 
 
 def test_confirmed_question_type_is_sent_to_ai_and_restored_after_merge(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -813,6 +927,193 @@ def test_subjective_top_level_equivalents_do_not_absorb_part_answers_or_list_str
     assert answer["parts"][0]["answer"] == "6，2"
 
 
+def test_generated_config_normalization_recovers_paired_knowledge_list_strings_idempotently() -> None:
+    payload = {
+        "rubric": {
+            "total_score": 12,
+            "questions": [
+                {
+                    "question_id": "Q12",
+                    "question_type": "proof",
+                    "max_score": 12,
+                    "knowledge_id": "['K-CONGRUENCE', 'K-BISECTOR', 'K-PROOF']",
+                    "knowledge_name": "['全等三角形', '角平分线性质', '几何证明']",
+                    "knowledge_ids": ["['K-CONGRUENCE', 'K-BISECTOR', 'K-PROOF']"],
+                    "knowledge_points": [
+                        {
+                            "knowledge_id": "['K-CONGRUENCE', 'K-BISECTOR', 'K-PROOF']",
+                            "knowledge_name": "['全等三角形', '角平分线性质', '几何证明']",
+                        },
+                        {
+                            "knowledge_id": "['K-CONGRUENCE', 'K-BISECTOR', 'K-PROOF']",
+                            "knowledge_name": "",
+                        },
+                    ],
+                    "parts": [],
+                }
+            ],
+        },
+        "answer_key": {
+            "questions": [
+                {
+                    "question_id": "Q12",
+                    "canonical_answer": "证明结论成立",
+                    "accepted_forms": ["证明结论成立"],
+                }
+            ]
+        },
+    }
+    original_answer = copy.deepcopy(payload["answer_key"]["questions"][0])
+
+    session_manager.normalize_generated_config_schema(payload)
+    once = copy.deepcopy(payload["rubric"]["questions"][0])
+    changed_again = session_manager.normalize_generated_config_knowledge_fields(payload)
+
+    question = payload["rubric"]["questions"][0]
+    assert question["knowledge_id"] == "K-CONGRUENCE"
+    assert question["knowledge_name"] == "全等三角形"
+    assert question["knowledge_ids"] == ["K-CONGRUENCE", "K-BISECTOR", "K-PROOF"]
+    assert question["knowledge_points"] == [
+        {"knowledge_id": "K-CONGRUENCE", "knowledge_name": "全等三角形"},
+        {"knowledge_id": "K-BISECTOR", "knowledge_name": "角平分线性质"},
+        {"knowledge_id": "K-PROOF", "knowledge_name": "几何证明"},
+    ]
+    assert question == once
+    assert changed_again is False
+    answer = payload["answer_key"]["questions"][0]
+    assert answer["canonical_answer"] == original_answer["canonical_answer"]
+    assert answer["accepted_forms"] == original_answer["accepted_forms"]
+    assert question["max_score"] == 12
+    warnings = session_manager.collect_generated_config_quality_warnings(payload)
+    assert not any("列表字符串" in warning for warning in warnings)
+
+
+def test_generated_config_normalization_recovers_paired_knowledge_tuple_strings() -> None:
+    payload = {
+        "rubric": {
+            "total_score": 2,
+            "questions": [
+                {
+                    "question_id": "Q2",
+                    "question_type": "proof",
+                    "max_score": 2,
+                    "knowledge_id": "('K1', 'K2')",
+                    "knowledge_name": "('知识点一', '知识点二')",
+                    "parts": [],
+                }
+            ],
+        },
+        "answer_key": {
+            "questions": [
+                {
+                    "question_id": "Q2",
+                    "canonical_answer": "结论成立",
+                    "accepted_forms": ["结论成立"],
+                }
+            ]
+        },
+    }
+
+    session_manager.normalize_generated_config_schema(payload)
+
+    question = payload["rubric"]["questions"][0]
+    assert question["knowledge_id"] == "K1"
+    assert question["knowledge_name"] == "知识点一"
+    assert question["knowledge_ids"] == ["K1", "K2"]
+    assert question["knowledge_points"] == [
+        {"knowledge_id": "K1", "knowledge_name": "知识点一"},
+        {"knowledge_id": "K2", "knowledge_name": "知识点二"},
+    ]
+    warnings = session_manager.collect_generated_config_quality_warnings(payload)
+    assert not any("列表字符串" in warning for warning in warnings)
+
+
+def test_generated_config_normalization_blocks_conflicting_redundant_knowledge_fields() -> None:
+    payload = {
+        "rubric": {
+            "total_score": 2,
+            "questions": [
+                {
+                    "question_id": "Q2",
+                    "question_type": "proof",
+                    "max_score": 2,
+                    "knowledge_id": "['K1', 'K2']",
+                    "knowledge_name": "['知识点一', '知识点二']",
+                    "knowledge_ids": ["K3"],
+                    "knowledge_points": [
+                        {"knowledge_id": "K3", "knowledge_name": "已有合法知识点"},
+                    ],
+                    "parts": [],
+                }
+            ],
+        },
+        "answer_key": {
+            "questions": [
+                {
+                    "question_id": "Q2",
+                    "canonical_answer": "结论成立",
+                    "accepted_forms": ["结论成立"],
+                }
+            ]
+        },
+    }
+
+    session_manager.normalize_generated_config_schema(payload)
+
+    question = payload["rubric"]["questions"][0]
+    assert any(
+        point["knowledge_id"] == "K3"
+        and point["knowledge_name"] == "已有合法知识点"
+        for point in question["knowledge_points"]
+    )
+    warnings = session_manager.collect_generated_config_quality_warnings(payload)
+    assert any("Q2" in warning and "列表字符串" in warning for warning in warnings)
+
+
+@pytest.mark.parametrize(
+    ("knowledge_id", "knowledge_name"),
+    [
+        ("['K1', 'K2']", "单个知识点名称"),
+        ("['K1', 'K2']", "['名称一']"),
+        ("['K1', invalid]", "['名称一', '名称二']"),
+        ("['K1', 'K1']", "['名称一', '名称二']"),
+    ],
+)
+def test_generated_config_normalization_keeps_unsafe_knowledge_lists_blocked(
+    knowledge_id: str,
+    knowledge_name: str,
+) -> None:
+    payload = {
+        "rubric": {
+            "total_score": 1,
+            "questions": [
+                {
+                    "question_id": "Q1",
+                    "question_type": "proof",
+                    "max_score": 1,
+                    "knowledge_id": knowledge_id,
+                    "knowledge_name": knowledge_name,
+                    "parts": [],
+                }
+            ],
+        },
+        "answer_key": {
+            "questions": [
+                {
+                    "question_id": "Q1",
+                    "canonical_answer": "结论成立",
+                    "accepted_forms": ["结论成立"],
+                }
+            ]
+        },
+    }
+
+    session_manager.normalize_generated_config_schema(payload)
+
+    warnings = session_manager.collect_generated_config_quality_warnings(payload)
+    assert any("Q1" in warning and "列表字符串" in warning for warning in warnings)
+
+
 def test_quality_warnings_flag_overly_broad_knowledge_and_serialized_answer_lists() -> None:
     payload = {
         "rubric": {
@@ -1414,6 +1715,7 @@ def test_llm_single_request_json_methods_do_not_run_ai_repair(monkeypatch: pytes
     client = llm_client.LLMClient(
         settings,
         usage_sink_factory=NullUsageSink,
+        trace_sink_factory=NullCallTraceSink,
     )
     monkeypatch.setattr(
         client,
@@ -1426,7 +1728,7 @@ def test_llm_single_request_json_methods_do_not_run_ai_repair(monkeypatch: pytes
     assert completions.calls == 2
 
 
-def test_llm_single_request_method_does_not_retry_parameter_fallback(
+def test_llm_single_request_method_sends_explicit_output_limit_without_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeCompletions:
@@ -1437,8 +1739,6 @@ def test_llm_single_request_method_does_not_retry_parameter_fallback(
         def create(self, **kwargs):
             self.calls += 1
             self.last_kwargs = kwargs
-            if "max_tokens" in kwargs or "response_format" in kwargs:
-                raise RuntimeError("unsupported compatibility parameter")
             return type(
                 "Completion",
                 (),
@@ -1466,12 +1766,47 @@ def test_llm_single_request_method_does_not_retry_parameter_fallback(
     client = llm_client.LLMClient(
         settings,
         usage_sink_factory=NullUsageSink,
+        trace_sink_factory=NullCallTraceSink,
     )
 
     assert client.json_from_text_once("prompt") == {"ok": True}
     assert completions.calls == 1
-    assert "max_tokens" not in completions.last_kwargs
+    assert completions.last_kwargs["max_tokens"] == 32000
     assert "response_format" not in completions.last_kwargs
+
+
+def test_llm_single_request_does_not_retry_unsupported_output_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeCompletions:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            raise RuntimeError("unsupported compatibility parameter")
+
+    completions = FakeCompletions()
+    fake_openai = type("FakeOpenAI", (), {"chat": type("Chat", (), {"completions": completions})()})()
+    settings = llm_client.LLMSettings(
+        api_key="x",
+        base_url="https://example.invalid/v1",
+        ocr_model="model",
+        grading_model="model",
+        config_model="model",
+    )
+    monkeypatch.setattr(llm_client, "_create_openai_client", lambda *_args, **_kwargs: fake_openai)
+    client = llm_client.LLMClient(
+        settings,
+        usage_sink_factory=NullUsageSink,
+        trace_sink_factory=NullCallTraceSink,
+    )
+
+    with pytest.raises(RuntimeError, match="unsupported compatibility parameter"):
+        client.json_from_text_once("prompt")
+
+    assert len(completions.calls) == 1
+    assert completions.calls[0]["max_tokens"] == 32000
 
 
 class _GatewayTestCompletions:
@@ -1500,9 +1835,18 @@ class _GatewayTestPacer:
         return None
 
 
-def _gateway_json_completion(text: str) -> SimpleNamespace:
+def _gateway_json_completion(
+    text: str,
+    *,
+    finish_reason: str | None = None,
+) -> SimpleNamespace:
     return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=text))],
+        choices=[
+            SimpleNamespace(
+                finish_reason=finish_reason,
+                message=SimpleNamespace(content=text),
+            )
+        ],
         usage=SimpleNamespace(
             prompt_tokens=1,
             completion_tokens=1,
@@ -1511,11 +1855,131 @@ def _gateway_json_completion(text: str) -> SimpleNamespace:
     )
 
 
+def test_llm_single_request_reports_provider_length_stop_without_raw_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret_fragment = '{"rubric":{"student_answer":"private answer"'
+    client, completions, sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [_gateway_json_completion(secret_fragment, finish_reason="length")],
+    )
+
+    with pytest.raises(llm_client.LLMOutputTruncatedError) as raised:
+        client.json_from_text_once("prompt")
+
+    assert len(completions.calls) == 1
+    assert raised.value.finish_reason == "length"
+    assert raised.value.response_chars == len(secret_fragment)
+    assert len(raised.value.response_sha256) == 64
+    assert "输出长度上限" in str(raised.value)
+    assert "未自动重试" in str(raised.value)
+    assert "重试失败批次" in str(raised.value)
+    assert "private answer" not in str(raised.value)
+    assert sink.events[0].finish_reason == "length"
+    assert sink.events[0].output_truncated is True
+
+
+def test_llm_single_request_reports_length_stop_even_when_content_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, completions, _sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [_gateway_json_completion("", finish_reason="length")],
+    )
+
+    with pytest.raises(llm_client.LLMOutputTruncatedError) as raised:
+        client.json_from_text_once("prompt")
+
+    assert len(completions.calls) == 1
+    assert raised.value.finish_reason == "length"
+    assert raised.value.response_chars == 0
+
+
+def test_llm_single_request_reports_structural_truncation_without_finish_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, completions, sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [_gateway_json_completion('{"rubric":{"questions":[')],
+    )
+
+    with pytest.raises(llm_client.LLMOutputTruncatedError) as raised:
+        client.json_from_text_once("prompt")
+
+    assert len(completions.calls) == 1
+    assert raised.value.finish_reason == ""
+    assert "JSON 结构未闭合" in str(raised.value)
+    assert "未自动重试" in str(raised.value)
+    assert sink.events[0].output_truncated is True
+
+
+def test_llm_single_request_keeps_mismatched_json_distinct_from_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, completions, sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [_gateway_json_completion('{"a":1]', finish_reason="stop")],
+    )
+
+    with pytest.raises(ValueError) as raised:
+        client.json_from_text_once("prompt")
+
+    assert not isinstance(raised.value, llm_client.LLMOutputTruncatedError)
+    assert len(completions.calls) == 1
+    assert "模型返回非 JSON" in str(raised.value)
+    assert sink.events[0].output_truncated is False
+
+
+def test_llm_single_request_keeps_non_truncated_invalid_json_distinct_and_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalid = '{"student_answer": private_answer}'
+    client, completions, sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [_gateway_json_completion(invalid, finish_reason="stop")],
+    )
+
+    with pytest.raises(ValueError) as raised:
+        client.json_from_text_once("prompt")
+
+    assert not isinstance(raised.value, llm_client.LLMOutputTruncatedError)
+    assert len(completions.calls) == 1
+    assert "模型返回非 JSON" in str(raised.value)
+    assert "private_answer" not in str(raised.value)
+    assert "响应字符数" in str(raised.value)
+    assert sink.events[0].finish_reason == "stop"
+    assert sink.events[0].output_truncated is False
+
+
+def test_llm_single_request_repairs_json_locally_without_second_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, completions, sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [
+            _gateway_json_completion(
+                '{"rubric":{},"answer_key" {"questions":[]},"meta":{}}',
+                finish_reason="stop",
+            )
+        ],
+    )
+
+    result = client.json_from_text_once("prompt")
+
+    assert len(completions.calls) == 1
+    assert result["answer_key"] == {"questions": []}
+    repair = result["meta"]["local_json_repair"]
+    assert repair["operations"] == ["insert_missing_colon"]
+    assert len(repair["response_sha256"]) == 64
+    assert sink.events[0].finish_reason == "stop"
+
+
 def _gateway_client_factory(
     monkeypatch: pytest.MonkeyPatch,
     outcomes: list[object],
     *,
     policy_profile: dict[str, object] | None = None,
+    trace_sink: object | None = None,
 ):
     completions = _GatewayTestCompletions(outcomes)
     fake_openai = SimpleNamespace(
@@ -1551,6 +2015,11 @@ def _gateway_client_factory(
             settings,
             gateway_factory=gateway_factory,
             usage_sink_factory=lambda: sink,
+            trace_sink_factory=(
+                (lambda: trace_sink)
+                if trace_sink is not None
+                else NullCallTraceSink
+            ),
         ),
         completions,
         sink,
@@ -1568,7 +2037,9 @@ def test_llm_client_defaults_both_distinct_gateways_to_safe_jsonl_sink_without_w
         lambda *_args, **_kwargs: object(),
     )
     isolated_log = tmp_path / "logs" / "llm_usage.jsonl"
+    isolated_trace_log = tmp_path / "logs" / "llm_api_calls.jsonl"
     monkeypatch.setattr(llm_client, "LLM_USAGE_LOG_FILE", isolated_log)
+    monkeypatch.setattr(llm_client, "LLM_TRACE_LOG_FILE", isolated_trace_log)
     gateway_calls: list[dict[str, object]] = []
 
     def gateway_factory(**kwargs):
@@ -1594,8 +2065,18 @@ def test_llm_client_defaults_both_distinct_gateways_to_safe_jsonl_sink_without_w
         and call["usage_sink"].path == isolated_log
         for call in gateway_calls
     )
+    assert all(
+        isinstance(call["trace_sink"], JsonlCallTraceSink)
+        and call["trace_sink"].path == isolated_trace_log
+        for call in gateway_calls
+    )
+    assert [call["endpoint_host"] for call in gateway_calls] == [
+        "main.invalid",
+        "config.invalid",
+    ]
     assert usage_logger.LOG_FILE == Path("logs/llm_usage.jsonl")
     assert not isolated_log.exists()
+    assert not isolated_trace_log.exists()
 
 
 def test_llm_client_gateway_chat_uses_timeout_and_request_id(
@@ -1607,7 +2088,7 @@ def test_llm_client_gateway_chat_uses_timeout_and_request_id(
     )
 
     assert client.json_from_text("prompt") == {"ok": True}
-    assert completions.calls[0]["timeout"] == 120.0
+    assert completions.calls[0]["timeout"] == 600.0
     assert sink.events[0].request_kind == "config_generation"
     assert sink.events[0].request_id
     assert len(gateway_configs) == 1
@@ -1649,8 +2130,8 @@ def test_llm_client_gateway_maps_legacy_request_kinds_exactly(
     assert [call["timeout"] for call in completions.calls] == [
         60.0,
         300.0,
-        120.0,
-        120.0,
+        600.0,
+        600.0,
     ]
 
 
@@ -1745,6 +2226,33 @@ def test_parameter_fallback_is_bounded_and_not_counted_as_network_retry(
         "response_format",
     ]
     assert [event.attempt for event in sink.events] == [1, 2, 3]
+
+
+def test_parameter_fallback_trace_marks_each_planned_followup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trace_sink = _GatewayTestSink()
+    client, completions, _sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [
+            RuntimeError("unsupported parameter max_tokens"),
+            RuntimeError("unsupported parameter max_completion_tokens"),
+            _gateway_json_completion('{"ok": true}'),
+        ],
+        trace_sink=trace_sink,
+    )
+
+    assert client.json_from_text("prompt") == {"ok": True}
+
+    assert len(completions.calls) == 3
+    failed = [
+        event
+        for event in trace_sink.events
+        if event.event_type == "request_failed"
+    ]
+    assert [event.attempt for event in failed] == [1, 2]
+    assert [event.will_retry for event in failed] == [True, True]
+    assert [event.retry_delay_ms for event in failed] == [0, 0]
 
 
 def test_parameter_fallback_disables_nested_network_retry(
@@ -1845,6 +2353,8 @@ def test_llm_client_gateway_reuses_only_identical_client_configuration(
     shared = llm_client.LLMClient(
         shared_settings,
         gateway_factory=gateway_factory,
+        usage_sink_factory=NullUsageSink,
+        trace_sink_factory=NullCallTraceSink,
     )
     assert shared.config_gateway is shared.gateway
     assert len(gateway_calls) == 1
@@ -1861,6 +2371,8 @@ def test_llm_client_gateway_reuses_only_identical_client_configuration(
     distinct = llm_client.LLMClient(
         distinct_settings,
         gateway_factory=gateway_factory,
+        usage_sink_factory=NullUsageSink,
+        trace_sink_factory=NullCallTraceSink,
     )
     assert distinct.config_gateway is not distinct.gateway
     assert len(gateway_calls) == 3

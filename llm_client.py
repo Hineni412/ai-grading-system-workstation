@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 from itertools import count
 import json
@@ -11,12 +12,21 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from backend.llm import (
+    JsonlCallTraceSink,
     JsonlUsageSink,
     LLMErrorCategory,
     LLMGateway,
     LLMRequestKind,
     classify_llm_error,
+    is_truncation_finish_reason,
+    looks_like_truncated_json_object,
+    response_diagnostics,
 )
+from backend.llm.trace import (
+    safe_endpoint_host,
+    TRACE_LOG_FILE as LLM_TRACE_LOG_FILE,
+)
+from backend.llm.json_repair import parse_json_object_locally
 from backend.llm.transport import (
     create_openai_client as _shared_create_openai_client,
     gateway_config_key as _shared_gateway_config_key,
@@ -31,6 +41,10 @@ def _default_usage_sink() -> JsonlUsageSink:
     return JsonlUsageSink(LLM_USAGE_LOG_FILE)
 
 
+def _default_trace_sink() -> JsonlCallTraceSink:
+    return JsonlCallTraceSink(LLM_TRACE_LOG_FILE)
+
+
 @dataclass
 class LLMSettings:
     api_key: str
@@ -43,6 +57,31 @@ class LLMSettings:
     policy_profile: Mapping[str, object] | None = None
 
 
+class LLMOutputTruncatedError(ValueError):
+    def __init__(
+        self,
+        *,
+        finish_reason: str,
+        response_chars: int,
+        response_sha256: str,
+        provider_reported: bool,
+    ) -> None:
+        self.finish_reason = str(finish_reason or "")
+        self.response_chars = int(response_chars)
+        self.response_sha256 = str(response_sha256 or "")
+        reason = self.finish_reason or "服务未提供"
+        if provider_reported:
+            problem = "模型因输出长度上限停止，返回结果不完整"
+        else:
+            problem = "模型返回的 JSON 结构未闭合，疑似输出被截断"
+        super().__init__(
+            f"{problem}（停止原因: {reason}；响应字符数: {self.response_chars}；"
+            f"响应摘要: {self.response_sha256 or '无'}）。"
+            "未发布配置，也未自动重试。请手动重试失败批次；"
+            "已经成功的批次不会重复请求。"
+        )
+
+
 class LLMClient:
     def __init__(
         self,
@@ -50,6 +89,7 @@ class LLMClient:
         *,
         gateway_factory=LLMGateway,
         usage_sink_factory=_default_usage_sink,
+        trace_sink_factory=_default_trace_sink,
     ) -> None:
         self.settings = settings
         self.client = _create_openai_client(settings.api_key, settings.base_url)
@@ -60,6 +100,8 @@ class LLMClient:
             profile=gateway_profile,
             config_key=_gateway_config_key(settings.api_key, settings.base_url),
             usage_sink=usage_sink_factory(),
+            trace_sink=trace_sink_factory(),
+            endpoint_host=safe_endpoint_host(settings.base_url),
         )
         if config_api_key == settings.api_key and normalize_openai_base_url(config_base_url) == normalize_openai_base_url(settings.base_url):
             self.config_client = self.client
@@ -70,6 +112,8 @@ class LLMClient:
                 profile=gateway_profile,
                 config_key=_gateway_config_key(config_api_key, config_base_url),
                 usage_sink=usage_sink_factory(),
+                trace_sink=trace_sink_factory(),
+                endpoint_host=safe_endpoint_host(config_base_url),
             )
 
     def text_from_images(self, prompt: str, image_blobs: list[bytes], model: str | None = None, system_prompt: str | None = None) -> str:
@@ -235,7 +279,7 @@ class LLMClient:
     ) -> dict[str, Any]:
         """Make exactly one model request and parse JSON locally without AI repair."""
         strict_kwargs = dict(extra_kwargs or {})
-        strict_kwargs["omit_token_limit"] = True
+        strict_kwargs.pop("omit_token_limit", None)
         completion = self._create_chat_completion(
             self.config_client,
             model=model or self.settings.config_model,
@@ -246,7 +290,7 @@ class LLMClient:
             request_kind=LLMRequestKind.CONFIG_GENERATION,
             single_request=True,
         )
-        return _parse_json_text(_extract_text_from_completion(completion))
+        return _parse_single_request_json(completion)
 
     def json_from_images_once(
         self,
@@ -258,6 +302,7 @@ class LLMClient:
         use_config_client: bool = False,
         static_image_blobs: list[bytes] | None = None,
         dynamic_prompt: str | None = None,
+        usage_callback=None,
     ) -> dict[str, Any]:
         """Make exactly one visual model request and parse JSON locally without AI repair."""
         active_client = self.config_client if use_config_client else self.client
@@ -268,7 +313,7 @@ class LLMClient:
             else LLMRequestKind.GRADING
         )
         strict_kwargs = dict(extra_kwargs or {})
-        strict_kwargs["omit_token_limit"] = True
+        strict_kwargs.pop("omit_token_limit", None)
         
         content: list[dict[str, Any]] = []
         if prompt:
@@ -301,12 +346,13 @@ class LLMClient:
             model=model or default_model,
             messages=messages,
             expect_json=False,
+            usage_callback=usage_callback,
             extra_kwargs=strict_kwargs,
             allow_parameter_fallback=False,
             request_kind=request_kind,
             single_request=True,
         )
-        return _parse_json_text(_extract_text_from_completion(completion))
+        return _parse_single_request_json(completion)
 
     def _parse_or_repair_json(
         self,
@@ -411,6 +457,11 @@ class LLMClient:
             kwargs["max_tokens"] = 32000
         if extra_kwargs and "timeout" in extra_kwargs:
             kwargs["timeout"] = extra_kwargs.get("timeout")
+        timeout_override_seconds = (
+            extra_kwargs.get("timeout_override_seconds")
+            if extra_kwargs
+            else None
+        )
         if expect_json:
             kwargs["response_format"] = {"type": "json_object"}
             
@@ -441,6 +492,7 @@ class LLMClient:
             compatibility_fallback: str,
             *,
             allow_retry: bool,
+            planned_parameter_fallback: bool,
         ) -> Any:
             res = gateway.chat_completions(
                 request_kind=request_kind,
@@ -450,6 +502,8 @@ class LLMClient:
                 request_id=logical_request_id,
                 allow_retry=allow_retry,
                 compatibility_fallback=compatibility_fallback,
+                planned_parameter_fallback=planned_parameter_fallback,
+                timeout_override_seconds=timeout_override_seconds,
                 _next_attempt=next_attempt,
             )
             if usage_callback:
@@ -461,6 +515,10 @@ class LLMClient:
             return invoke(
                 "",
                 allow_retry=allow_gateway_retry and not single_request,
+                planned_parameter_fallback=(
+                    allow_parameter_fallback
+                    and ("max_tokens" in kwargs or expect_json)
+                ),
             )
         except Exception as exc:
             if not allow_parameter_fallback:
@@ -474,6 +532,7 @@ class LLMClient:
                     return invoke(
                         "max_completion_tokens",
                         allow_retry=False,
+                        planned_parameter_fallback=expect_json,
                     )
                 except Exception as retry_exc:
                     if not _is_parameter_fallback_error(retry_exc):
@@ -481,7 +540,11 @@ class LLMClient:
                     kwargs.pop("max_completion_tokens", None)
             if expect_json:
                 kwargs.pop("response_format", None)
-                return invoke("response_format", allow_retry=False)
+                return invoke(
+                    "response_format",
+                    allow_retry=False,
+                    planned_parameter_fallback=False,
+                )
             raise exc
 
 
@@ -660,7 +723,57 @@ def _parse_json_text(text: str) -> dict[str, Any]:
     detail = ""
     if last_error is not None:
         detail = f"解析位置 line {last_error.lineno}, col {last_error.colno}: {last_error.msg}。"
-    raise ValueError(f"模型返回非 JSON，无法解析。{detail}原始输出: {text[:3000]}")
+    response_chars, response_sha256 = _safe_output_summary(text)
+    raise ValueError(
+        f"模型返回非 JSON，无法解析。{detail}"
+        f"响应字符数: {response_chars}；响应摘要: {response_sha256 or '无'}。"
+    )
+
+
+def _parse_single_request_json(completion: Any) -> dict[str, Any]:
+    diagnostics = response_diagnostics(completion)
+    if diagnostics["output_truncated"]:
+        raise LLMOutputTruncatedError(
+            finish_reason=str(diagnostics["finish_reason"]),
+            response_chars=int(diagnostics["response_chars"]),
+            response_sha256=str(diagnostics["response_sha256"]),
+            provider_reported=is_truncation_finish_reason(
+                diagnostics["finish_reason"]
+            ),
+        )
+    text = _extract_text_from_completion(completion)
+    try:
+        parsed = parse_json_object_locally(text)
+    except ValueError as exc:
+        if not _looks_truncated_json(text):
+            raise
+        raise LLMOutputTruncatedError(
+            finish_reason=str(diagnostics["finish_reason"]),
+            response_chars=int(diagnostics["response_chars"]),
+            response_sha256=str(diagnostics["response_sha256"]),
+            provider_reported=False,
+        ) from exc
+    if parsed.report.repaired:
+        meta = parsed.payload.setdefault("meta", {})
+        if not isinstance(meta, dict):
+            raise ValueError("模型返回 JSON 的 meta 必须为对象")
+        meta["local_json_repair"] = {
+            "repaired": True,
+            "operations": list(parsed.report.operations),
+            "response_chars": parsed.report.response_chars,
+            "response_sha256": parsed.report.response_sha256,
+        }
+    return parsed.payload
+
+
+def _safe_output_summary(text: str) -> tuple[int, str]:
+    normalized = str(text or "")
+    return (
+        len(normalized),
+        hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        if normalized
+        else "",
+    )
 
 
 def _clean_json_text(text: str) -> str:
@@ -740,9 +853,4 @@ def _remove_trailing_commas(text: str) -> str:
 
 
 def _looks_truncated_json(text: str) -> bool:
-    cleaned = _clean_json_text(text)
-    if not cleaned:
-        return False
-    if _extract_first_json_object(cleaned):
-        return False
-    return "{" in cleaned and not cleaned.rstrip().endswith("}")
+    return looks_like_truncated_json_object(text)

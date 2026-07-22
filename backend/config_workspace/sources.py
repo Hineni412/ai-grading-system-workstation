@@ -898,10 +898,12 @@ class ConfigSourceService:
         generation_mode: str,
     ) -> PreparedGenerationInput:
         mode = str(generation_mode or "").strip()
-        if mode not in {"per_question", "whole_document"}:
+        if mode == "per_question":
+            mode = "batched"
+        if mode != "batched":
             raise ValueError("unsupported config generation mode")
         prepared = self.apply_teacher_decisions(record, decisions)
-        if mode == "per_question" and not prepared.confirmed_blocks:
+        if not prepared.confirmed_blocks:
             raise ValueError("at least one confirmed question is required")
         return prepared
 

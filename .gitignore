@@ -22,6 +22,7 @@ frontend/dist/
 frontend/coverage/
 frontend/playwright-report/
 frontend/test-results/
+output/playwright/
 
 # Temporary files
 *.tmp
