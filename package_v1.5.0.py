@@ -23,6 +23,7 @@ PYTHON_EMBED_URL = (
 GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 
 PRODUCTION_DIRS = {
+    "backend",
     "config",
     "docs",
     "integration",
@@ -204,8 +205,10 @@ def _should_copy_root_file(path: Path) -> bool:
 
 def copy_frontend_dist(src_dir: Path, pkg_dir: Path) -> int:
     src = src_dir / "frontend" / "dist"
-    if not src.is_dir():
-        return 0
+    if not (src / "index.html").is_file() or not (src / "assets").is_dir():
+        raise RuntimeError(
+            "frontend/dist is incomplete; run the verified frontend build before packaging"
+        )
 
     files = [path for path in src.rglob("*") if path.is_file()]
     _copy_tree_filtered(src, pkg_dir / "frontend" / "dist")
@@ -409,40 +412,11 @@ def copy_runtime(runtime_src: Path, pkg_dir: Path) -> None:
     _configure_embed_pth(dst)
 
 
-def write_launcher(pkg_dir: Path, version: str) -> None:
-    launcher = f"""@echo off
-chcp 65001 >nul
-setlocal
-cd /d "%~dp0"
-
-set "PYTHON_EXE=%~dp0runtime\\python\\python.exe"
-if not exist "%PYTHON_EXE%" (
-  echo 未找到便携 Python 运行时: %PYTHON_EXE%
-  echo 请确认 runtime\\python 目录完整。
-  pause
-  exit /b 1
-)
-
-set "AI_GRADING_DATA_DIR=%~dp0user_data"
-set "PYTHONUTF8=1"
-set "STREAMLIT_BROWSER_GATHER_USAGE_STATS=false"
-set "STREAMLIT_SERVER_HEADLESS=false"
-if "%PORT%"=="" set "PORT=8501"
-
-echo AI阅卷系统 工作机版 {version}
-echo 数据目录: %AI_GRADING_DATA_DIR%
-echo 启动地址: http://127.0.0.1:%PORT%
-start "" "http://127.0.0.1:%PORT%"
-
-"%PYTHON_EXE%" -m streamlit run web_app.py --server.address 127.0.0.1 --server.port %PORT%
-if errorlevel 1 (
-  echo.
-  echo 程序异常退出，请把窗口中的报错发给 Codex 排查。
-  pause
-)
-endlocal
-"""
-    (pkg_dir / "运行.bat").write_text(launcher, encoding="utf-8")
+def write_launcher(src_dir: Path, pkg_dir: Path) -> None:
+    launcher = src_dir / "运行.bat"
+    if not launcher.is_file():
+        raise RuntimeError("运行.bat is missing from the package source")
+    _copy_file(launcher, pkg_dir / "运行.bat")
 
 
 def write_core_test_launcher(pkg_dir: Path) -> None:
@@ -475,7 +449,9 @@ def write_private_readme(pkg_dir: Path, version: str) -> None:
 
 ## 启动
 
-双击 `运行.bat`。
+双击 `运行.bat`，默认打开 Vue 新界面与同源 FastAPI。
+
+如需在本版本临时回到旧 Streamlit 界面，请先设置 `USE_STREAMLIT=1` 再运行；回退模式下仍可用 `START_API=0` 跳过附带 API。
 
 新电脑不需要预装 Python，也不需要重新安装 `requirements.txt`。启动脚本会直接使用：
 
@@ -580,7 +556,7 @@ def build_package(args: argparse.Namespace) -> None:
         runtime = build_runtime(src_dir, cache_dir, rebuild=args.rebuild_runtime)
         copy_runtime(runtime, pkg_dir)
 
-    write_launcher(pkg_dir, version)
+    write_launcher(src_dir, pkg_dir)
     write_core_test_launcher(pkg_dir)
     write_private_readme(pkg_dir, version)
     clean_generated_artifacts(pkg_dir)
