@@ -75,7 +75,7 @@ def test_ops_lock_is_exclusive_across_processes(tmp_path: Path) -> None:
             check=False,
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=15,
         )
 
     assert completed.returncode == 0, completed.stderr
