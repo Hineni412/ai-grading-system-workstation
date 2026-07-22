@@ -1,0 +1,82 @@
+# P3-03：Repository 契约与事务边界
+
+**执行包：** P3-03
+**计划日期：** 2026-07-23
+**规划状态：** ready_for_execution
+**规划模型：** 当前连续作业模型
+**允许夜间执行：** yes
+**计划基线：** dae97291aedf190e6cd1dd40e88f8e410bf9a881
+**交接基线：** dae97291aedf190e6cd1dd40e88f8e410bf9a881
+**用户自测：** none
+**自测清单：** not_required
+
+<!-- HANDOFF_STATUS_START -->
+## 昼夜交接
+
+**执行包：** P3-03
+**交接状态：** in_progress
+**功能提交：** none
+**自动验证：** pending
+**独立复审：** pending
+**用户验收：** not_required
+**真实数据指纹：** unchanged
+**Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
+**夜间动作：** report_only
+<!-- HANDOFF_STATUS_END -->
+
+## 任务边界（已冻结）
+
+- **目标：** 提供后续领域 Repository 共用的 SQLite 连接所有权、只读/读写会话、显式事务、嵌套 savepoint、行映射与 Repository 协议，避免把 `DBManager` 复制成多个大文件。
+- **包含：** `backend/repositories/` 基础模块；每会话独立连接的 factory；同一会话内可共享的 `RepositorySession`；只读 `query_only`；外层 commit/rollback、嵌套 savepoint；线程归属守卫；明确的连接/事务错误；临时库契约测试。
+- **明确不包含：** 不移动任何 students/sessions/papers/results/review SQL；不切 API 或服务调用方；不引入 ORM、连接池、全局连接、跨线程连接或自动重试；不改变 SQLite/WAL、Schema、迁移、业务错误、评分规则或真实数据。
+- **验收条件：** 每个会话只拥有并关闭一条请求级连接；异常回滚、嵌套回滚且外层可继续、成功提交、只读拒写和线程隔离均由临时库证明；无隐式模块级连接；基础模块可供 P3-04/P3-05 注入同一 session。
+- **风险等级：** 高。虽然尚未切业务调用方，但事务/连接基础若定义错误会在后续包造成部分提交、锁冲突或跨线程误用。
+
+## 集中调查与冻结问题清单
+
+1. 当前没有 `backend/repositories`；`DBManager` 自有 `_connect()`，另有只读请求上下文和多个独立 Store，各自管理连接。
+2. `DBManager(external_connection=...)` 使用 `_BorrowedSQLiteConnection` 屏蔽 commit/rollback/close，证明后续需要“连接由请求/session 拥有、Repository 不自行关闭”的公共边界。
+3. 现有 API 只读上下文已按请求捕获临时快照连接；P3-03 不替换它，只提供后续领域 Repository 的最小公共契约。
+4. SQLite 写路径大量显式 `BEGIN`/commit/rollback；本包只建立可复用的事务原语，不提前迁移这些 SQL。
+5. 不建立连接池或线程共享：Windows 本机单用户并不需要额外并发基础，默认 SQLite `check_same_thread` 和显式 session 线程归属更保守。
+
+## 故障场景与预期
+
+| 场景 | 预期处理 |
+|---|---|
+| 重复操作 | 每次 `factory.session()` 创建、归还并关闭独立连接；不复用隐藏全局状态。 |
+| 同时操作 | 不同线程/请求获得不同连接；同一 session 跨线程使用明确拒绝。SQLite 锁错误不自动重试。 |
+| 中途退出/取消 | `BaseException` 离开事务时回滚；会话退出时关闭连接。 |
+| 重新启动 | 不保存进程状态；数据库提交结果只由 SQLite 事务决定。 |
+| 失败重试 | 上层可新建 session 重试；基础层不自动重放写操作。 |
+| 部分完成 | 外层异常回滚全部；嵌套异常只回滚 savepoint，调用方捕获后外层仍可继续。 |
+| 数据缺失 | 只读打开不存在文件时给稳定连接错误，不创建空库。 |
+| 数据冲突/锁占用 | 保留明确事务错误及原始异常链，不吞错、不自动覆盖。 |
+| 取消/强制异常 | 捕获 `BaseException` 执行回滚后原样传播；不把取消误报为成功。 |
+
+## 已确认测试 seam
+
+1. 公共 `SQLiteConnectionFactory.session(read_only=...)` 上下文和会话关闭后的行为。
+2. 公共 `RepositorySession.transaction(immediate=...)` 的提交、外层回滚和嵌套 savepoint 结果，使用临时 SQLite 文件从新会话读取验证。
+3. 公共 `RepositorySession.connection` 供后续 Repository 执行 SQL；跨线程访问通过公共异常观察。
+4. `Repository`/`RowMapper` Protocol 的静态公共形状，以及基础模块不存在模块级 `sqlite3.Connection`。
+
+## 实施步骤
+
+- [ ] 先写临时库公共契约测试并取得 RED：模块缺失、提交/回滚/嵌套/只读/线程隔离尚不存在。
+- [ ] 最小实现连接 factory、session、Protocol 和稳定异常，使单会话提交/关闭转 GREEN。
+- [ ] 逐个补齐外层回滚、嵌套 savepoint、只读拒写、跨线程拒绝和缺失只读库，每条保持行为测试。
+- [ ] 运行聚焦与 DBManager/请求连接受影响回归、快速冒烟、双路独立复审、交接与真实两库指纹门槛。
+
+## 计划验证命令
+
+```powershell
+runtime\python\python.exe -m pytest tests\test_p3_03_repository_contracts.py -q
+runtime\python\python.exe -m pytest tests\test_request_read_connections.py tests\test_db_manager.py -q
+runtime\python\python.exe tools\smoke_check.py --skip-tests
+runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\2026-07-23-p3-03-repository-contracts-implementation.md --repo . --expected-handoff-base dae97291aedf190e6cd1dd40e88f8e410bf9a881
+```
+
+## 回退
+
+本包只新增尚未接管生产 SQL 的基础模块和测试；回退对应提交即可，不涉及数据恢复、Schema 或业务调用方。
