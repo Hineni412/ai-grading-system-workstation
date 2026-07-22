@@ -59,7 +59,7 @@
 | P2-21 | `merged` | 已通过 PR #71 合入主线；默认 FastAPI/Vue 启动、显式 Streamlit 回退、缺失资源安全阻断和便携包完整性已交付，44 项关联验证、快速冒烟、两轮限定复审、交接核验和 2026-07-23 formal 用户验收均通过 |
 | P2-22 | `deferred` | 用户于 2026-07-23 明确要求暂时跳过；旧 UI、旧依赖删除与退役均未执行，后续若恢复仍须生成最新源码计划并按高风险门槛单独启动 |
 | P3-01 | `milestone_integrated` | 已进入 N3-01 临时 integration；57 项合入后受影响回归和快速冒烟通过，双路复审最终为 0 Critical / 0 Important / 0 Suggestion，真实两库指纹不变 |
-| P3-02 | `ready` | P3-01 已在 N3-01 完成逐包验证；下一步从 integration 精确 SHA 生成领域模型下沉即时计划并领取独立短分支 |
+| P3-02 | `in_progress` | 已从 N3-01 精确 SHA `5cd050a5b22b97f508aa78d84be7492335ec1710` 领取 `codex/p3-02-domain-models`；只移动共享 dataclass 和类型导入，不改变字段、序列化或业务行为 |
 | P3-03 至 P3-05 | `planned` | 已列入 2026-07-23 夜间串行目标；必须逐包等待前序进入临时 integration 并完成验证，且只允许临时数据库、按高风险门槛收口 |
 | P3-06 至 P3-19 | `planned` | 等待前置仓储边界稳定后放行 |
 | P4-01 至 P4-12 | `planned` | Phase 3 数据边界稳定后放行 |
@@ -109,7 +109,7 @@ M2-04 是 P2-21 单包高风险生产启动切换里程碑，从 PR #69 合并�
 | M2-02 | P2-13 → P2-16 → P2-17 | `merged` | `b3e67d36691a02e74e092873a7f021b7a13bae9d` | `codex/integration-m2-02` | `7c6afe311241a5e82c28b528eb61afb5f19b4c47` | 已通过 PR #56 合入主线；批次末前端 verify 628 passed，串行完整冒烟 2041 passed / 2 skipped；2 进程并行完整门槛仍不稳定，暂不设为默认 |
 | M2-03 | P2-18 → P2-19 → P2-20 | `merged` | `58c93e9c08fb91a8a8a4951b722905f44679f535` | `codex/integration-m2-03` | `e79e8958881da0733e1b2ae908967bf2d87d37a1` | 已通过 PR #69 合入主线；批次末前端 verify 716 passed，后端串行完整门槛 2195 passed / 2 skipped，文档治理、504 个第一方 Python 文件编译和两库副本初始化幂等通过，真实两库大小、时间与 SHA-256 前后不变 |
 | M2-04 | P2-21 | `merged` | `016c007b12a51754608f3d0c8f31a6add04cc175` | `codex/integration-m2-04` | `5fde1b6b534f71e4157eab7c46f04233cffdce24` | 已通过 PR #71 合入主线，主线合并提交为 `b023f5aa027d26c70321a55a948338795d7e0a0b`；代码 SHA 后只有验收与交接文档变化，formal 用户验收和关闭清理通过 |
-| N3-01 | P3-01 → P3-02 → P3-03 | `in_progress` | `6305a1442ecd7bd13c6122e43dac7d6d771e2aeb` | `codex/integration-p3-nightly-01` | `7c269bd3f7b3803ec8621ce03a5650205d0d6af9` | P3-01 已逐包验证并进入临时 integration；下一动作是从本行精确基线领取 P3-02，整批不进入 `main` |
+| N3-01 | P3-01 → P3-02 → P3-03 | `in_progress` | `6305a1442ecd7bd13c6122e43dac7d6d771e2aeb` | `codex/integration-p3-nightly-01` | `5cd050a5b22b97f508aa78d84be7492335ec1710` | P3-01 已逐包验证；P3-02 已从本行精确基线领取，整批不进入 `main` |
 | N3-02 | P3-04 | `planned` | N3-01 最终已验证 SHA | `codex/integration-p3-nightly-01` | N3-01 最终已验证 SHA | 学生与会话 Repository 高风险单包；只用临时库，等待 N3-01 完成 |
 | N3-03 | P3-05 | `planned` | N3-02 最终已验证 SHA | `codex/integration-p3-nightly-01` | N3-02 最终已验证 SHA | 评分数据最高风险单包；只用临时库，等待 P3-04 完成 |
 
