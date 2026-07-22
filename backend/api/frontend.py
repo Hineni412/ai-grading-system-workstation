@@ -18,7 +18,12 @@ class FrontendDistributionError(RuntimeError):
 
 def validate_frontend_dist(dist_dir: Path | str) -> Path:
     dist = Path(dist_dir)
-    if not (dist / "index.html").is_file() or not (dist / "assets").is_dir():
+    assets = dist / "assets"
+    if (
+        not (dist / "index.html").is_file()
+        or not assets.is_dir()
+        or not any(path.is_file() for path in assets.rglob("*"))
+    ):
         raise FrontendDistributionError(
             "frontend/dist is incomplete; rebuild or restore the packaged frontend"
         )

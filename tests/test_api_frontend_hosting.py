@@ -81,6 +81,21 @@ def test_missing_frontend_dist_has_safe_non_cached_message(tmp_path: Path) -> No
     assert client.get("/api/not-a-real-route").status_code == 404
 
 
+def test_empty_frontend_assets_are_treated_as_incomplete(tmp_path: Path) -> None:
+    dist = tmp_path / "frontend" / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<main>empty</main>", encoding="utf-8")
+
+    app = FastAPI()
+    mount_frontend(app, dist)
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 503
+    assert "前端文件缺失" in response.text
+
+
 def test_create_app_mounts_frontend_after_real_api_routes(tmp_path: Path) -> None:
     from backend.api.app import create_app
 
