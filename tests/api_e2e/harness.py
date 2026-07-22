@@ -93,7 +93,10 @@ class E2EPaths:
 
 
 class FakeLLM:
-    _QUESTION_ID = re.compile(r"题目 ID \(QUESTION_ID\):\s*(Q\d+)")
+    _BATCH_QUESTION_IDS = re.compile(
+        r"^BATCH_QUESTION_IDS_JSON=(\[.*\])$",
+        re.MULTILINE,
+    )
 
     def __init__(self, controls: E2EControls) -> None:
         self.controls = controls
@@ -110,15 +113,42 @@ class FakeLLM:
         **_kwargs: Any,
     ) -> dict[str, Any]:
         del model
-        if "待分值结构" in prompt:
+        if "SCORE_QUESTION_IDS_JSON=" in prompt:
             self.controls.record_fake_llm_call("score_allocation")
             return _fake_score_allocation()
-        match = self._QUESTION_ID.search(prompt)
+        match = self._BATCH_QUESTION_IDS.search(prompt)
         if match is None:
             raise AssertionError("unexpected synthetic config-generation prompt")
-        question_id = match.group(1)
-        self.controls.record_fake_llm_call(f"question:{question_id}")
-        return _fake_single_question_payload(question_id)
+        question_ids = json.loads(match.group(1))
+        if (
+            not isinstance(question_ids, list)
+            or not question_ids
+            or any(
+                not isinstance(question_id, str)
+                or re.fullmatch(r"Q\d+", question_id) is None
+                for question_id in question_ids
+            )
+        ):
+            raise AssertionError("unexpected synthetic config-generation question ids")
+        for question_id in question_ids:
+            self.controls.record_fake_llm_call(f"question:{question_id}")
+        payloads = [_fake_single_question_payload(question_id) for question_id in question_ids]
+        return {
+            "rubric": {
+                "questions": [
+                    question
+                    for payload in payloads
+                    for question in payload["rubric"]["questions"]
+                ]
+            },
+            "answer_key": {
+                "questions": [
+                    question
+                    for payload in payloads
+                    for question in payload["answer_key"]["questions"]
+                ]
+            },
+        }
 
     def json_from_text_once(
         self,
