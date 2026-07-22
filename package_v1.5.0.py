@@ -205,7 +205,12 @@ def _should_copy_root_file(path: Path) -> bool:
 
 def copy_frontend_dist(src_dir: Path, pkg_dir: Path) -> int:
     src = src_dir / "frontend" / "dist"
-    if not (src / "index.html").is_file() or not (src / "assets").is_dir():
+    assets = src / "assets"
+    if (
+        not (src / "index.html").is_file()
+        or not assets.is_dir()
+        or not any(path.is_file() for path in assets.rglob("*"))
+    ):
         raise RuntimeError(
             "frontend/dist is incomplete; run the verified frontend build before packaging"
         )
