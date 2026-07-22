@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys
+import types
+from pathlib import Path
+from types import SimpleNamespace
+
 
 class _Server:
     started = False
@@ -67,3 +72,38 @@ def test_browser_is_not_opened_when_server_exits_during_startup() -> None:
 
     assert opened is False
     assert opened_urls == []
+
+
+def test_launcher_returns_failure_when_server_never_starts(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from backend.api import launcher
+
+    class FailingServer:
+        started = False
+        should_exit = True
+
+        def run(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        launcher,
+        "get_path_manager",
+        lambda: SimpleNamespace(project_root=tmp_path),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "validate_frontend_dist",
+        lambda _path: tmp_path / "frontend" / "dist",
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "uvicorn",
+        types.SimpleNamespace(
+            Config=lambda *_args, **_kwargs: object(),
+            Server=lambda _config: FailingServer(),
+        ),
+    )
+
+    assert launcher.main(["--no-browser"]) == 1

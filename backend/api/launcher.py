@@ -96,6 +96,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     server.run()
     if browser_thread is not None:
         browser_thread.join(timeout=0.2)
+    if not bool(getattr(server, "started", False)):
+        print(
+            "FastAPI 未能成功监听，请确认端口未被占用。",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
