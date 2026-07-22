@@ -372,6 +372,12 @@
   "dynamic_imports": [
     {
       "kind": "importlib.import_module",
+      "line": 201,
+      "module": "question_bank.services.rich_content_backfill_service",
+      "source": "pages/题库管理.py"
+    },
+    {
+      "kind": "importlib.import_module",
       "line": 714,
       "module": "<nonliteral>",
       "source": "tools/p1_29_acceptance.py"
@@ -1511,7 +1517,7 @@
     },
     {
       "path": "tools/build_p3_01_baseline.py",
-      "sha256": "bef267fa9d64f324ded628a73d51c9e2254fa3617867b74803a5b4eb5dd0bce2"
+      "sha256": "894db728b3c6216b4fd4ec23d7b8c242935a83db2e80a168dc5cac0251ace850"
     },
     {
       "path": "tools/check_documentation.py",
@@ -1658,7 +1664,7 @@
       "sha256": "7027987f136fd4ab2728ca90caac2cb3c2fb42f5a629d3f8b764894e02731150"
     }
   ],
-  "source_revision": "cae3be997ef7d19ca061535146e3eba6b4d0cded",
+  "source_revision": "5e03980e0c94a74c858f827caff698cb0c29346b",
   "static_imports": [
     {
       "kind": "from",
