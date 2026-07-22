@@ -116,18 +116,19 @@
 - 首轮复审：冻结候选 `f3c03c67846aec8fcd2c52fc9a5ac4587372b7a0` 发现 3 项 Important，已统一修复为 `9866401f4c13149351b9977161375374afd951be`；其中空资源、监听失败与 formal 清单缺失均已关闭。
 - 首次终审：候选 `f5b5f4995623352b8cca9d243c484f28478b5032` 仍发现便携打包接受空 `assets/` 的 Important。用户于 2026-07-22 明确授权建立限定后续修复，不扩大 P2-21 范围。
 - 后续修复：`030d58fffbda2c8d548075d8ce1284bc8e746d3d` 在复制前拒绝空资源目录；20 项关联测试和快速冒烟通过，限定 Spec/Standards 复审均为 Critical 0 / Important 0 / Suggestion 0。
-- 当前候选等待用户按 `docs/user-testing/checkpoints/P2-21-v1.5.0-fastapi-startup-cutover-formal.md` 完成 formal 验收；验收前不得进入 `main`。
+- 用户于 2026-07-23 在只含空白隔离双库的干净便携副本中完成 formal 清单：默认 Vue/FastAPI、同源 API、根/深路由、未知 API、重启、端口占用、缺失 `dist`、Streamlit 回退与关闭清理均通过，并明确回复“P2-21 正式验收通过”。验收辅助批处理首次因非 Windows 换行闪退，不属于候选文件；修正辅助文件后回退入口约 26 秒开始监听，用户复验通过。最终 8000、8501 均释放，隔离副本相关进程为 0，真实模型调用为 0，真实 `user_data/` 未读取、复制或写入。
+- P2-21 自动验证、独立复审和 formal 用户验收均已通过，可以完成 integration 收口并进入单包里程碑 PR；P2-22 仍须等待 P2-21 稳定运行一个人工验收周期，不因本次交接自动开始删除或退役。
 
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
 
 **执行包：** P2-21
-**交接状态：** waiting_user
-**功能提交：** 030d58fffbda2c8d548075d8ce1284bc8e746d3d
+**交接状态：** verified_pending_integration
+**功能提交：** 60b3c931627f350f9b8d1bbbdf8c74c47bee6754
 **自动验证：** passed
 **独立复审：** passed
-**用户验收：** pending
+**用户验收：** passed
 **真实数据指纹：** not_touched
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
