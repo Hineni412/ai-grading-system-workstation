@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend.llm.gateway import LLMGateway
+from backend.llm.trace import JsonlCallTraceSink, NullCallTraceSink
 from backend.llm.usage import JsonlUsageSink, NullUsageSink
 import score_policy
 import session_manager
@@ -1714,6 +1715,7 @@ def test_llm_single_request_json_methods_do_not_run_ai_repair(monkeypatch: pytes
     client = llm_client.LLMClient(
         settings,
         usage_sink_factory=NullUsageSink,
+        trace_sink_factory=NullCallTraceSink,
     )
     monkeypatch.setattr(
         client,
@@ -1764,6 +1766,7 @@ def test_llm_single_request_method_sends_explicit_output_limit_without_fallback(
     client = llm_client.LLMClient(
         settings,
         usage_sink_factory=NullUsageSink,
+        trace_sink_factory=NullCallTraceSink,
     )
 
     assert client.json_from_text_once("prompt") == {"ok": True}
@@ -1796,6 +1799,7 @@ def test_llm_single_request_does_not_retry_unsupported_output_limit(
     client = llm_client.LLMClient(
         settings,
         usage_sink_factory=NullUsageSink,
+        trace_sink_factory=NullCallTraceSink,
     )
 
     with pytest.raises(RuntimeError, match="unsupported compatibility parameter"):
@@ -1975,6 +1979,7 @@ def _gateway_client_factory(
     outcomes: list[object],
     *,
     policy_profile: dict[str, object] | None = None,
+    trace_sink: object | None = None,
 ):
     completions = _GatewayTestCompletions(outcomes)
     fake_openai = SimpleNamespace(
@@ -2010,6 +2015,11 @@ def _gateway_client_factory(
             settings,
             gateway_factory=gateway_factory,
             usage_sink_factory=lambda: sink,
+            trace_sink_factory=(
+                (lambda: trace_sink)
+                if trace_sink is not None
+                else NullCallTraceSink
+            ),
         ),
         completions,
         sink,
@@ -2027,7 +2037,9 @@ def test_llm_client_defaults_both_distinct_gateways_to_safe_jsonl_sink_without_w
         lambda *_args, **_kwargs: object(),
     )
     isolated_log = tmp_path / "logs" / "llm_usage.jsonl"
+    isolated_trace_log = tmp_path / "logs" / "llm_api_calls.jsonl"
     monkeypatch.setattr(llm_client, "LLM_USAGE_LOG_FILE", isolated_log)
+    monkeypatch.setattr(llm_client, "LLM_TRACE_LOG_FILE", isolated_trace_log)
     gateway_calls: list[dict[str, object]] = []
 
     def gateway_factory(**kwargs):
@@ -2053,8 +2065,18 @@ def test_llm_client_defaults_both_distinct_gateways_to_safe_jsonl_sink_without_w
         and call["usage_sink"].path == isolated_log
         for call in gateway_calls
     )
+    assert all(
+        isinstance(call["trace_sink"], JsonlCallTraceSink)
+        and call["trace_sink"].path == isolated_trace_log
+        for call in gateway_calls
+    )
+    assert [call["endpoint_host"] for call in gateway_calls] == [
+        "main.invalid",
+        "config.invalid",
+    ]
     assert usage_logger.LOG_FILE == Path("logs/llm_usage.jsonl")
     assert not isolated_log.exists()
+    assert not isolated_trace_log.exists()
 
 
 def test_llm_client_gateway_chat_uses_timeout_and_request_id(
@@ -2206,6 +2228,33 @@ def test_parameter_fallback_is_bounded_and_not_counted_as_network_retry(
     assert [event.attempt for event in sink.events] == [1, 2, 3]
 
 
+def test_parameter_fallback_trace_marks_each_planned_followup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trace_sink = _GatewayTestSink()
+    client, completions, _sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [
+            RuntimeError("unsupported parameter max_tokens"),
+            RuntimeError("unsupported parameter max_completion_tokens"),
+            _gateway_json_completion('{"ok": true}'),
+        ],
+        trace_sink=trace_sink,
+    )
+
+    assert client.json_from_text("prompt") == {"ok": True}
+
+    assert len(completions.calls) == 3
+    failed = [
+        event
+        for event in trace_sink.events
+        if event.event_type == "request_failed"
+    ]
+    assert [event.attempt for event in failed] == [1, 2]
+    assert [event.will_retry for event in failed] == [True, True]
+    assert [event.retry_delay_ms for event in failed] == [0, 0]
+
+
 def test_parameter_fallback_disables_nested_network_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2304,6 +2353,8 @@ def test_llm_client_gateway_reuses_only_identical_client_configuration(
     shared = llm_client.LLMClient(
         shared_settings,
         gateway_factory=gateway_factory,
+        usage_sink_factory=NullUsageSink,
+        trace_sink_factory=NullCallTraceSink,
     )
     assert shared.config_gateway is shared.gateway
     assert len(gateway_calls) == 1
@@ -2320,6 +2371,8 @@ def test_llm_client_gateway_reuses_only_identical_client_configuration(
     distinct = llm_client.LLMClient(
         distinct_settings,
         gateway_factory=gateway_factory,
+        usage_sink_factory=NullUsageSink,
+        trace_sink_factory=NullCallTraceSink,
     )
     assert distinct.config_gateway is not distinct.gateway
     assert len(gateway_calls) == 3

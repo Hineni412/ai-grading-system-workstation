@@ -103,6 +103,7 @@ def test_choice_recognition_routes_existing_request_through_recognition_gateway(
                 policy_profile=policy_profile,
                 client=fake_client,
                 usage_sink_factory=backend_llm.NullUsageSink,
+                trace_sink_factory=backend_llm.NullCallTraceSink,
             )
 
         def chat_completions(self, **kwargs: object) -> object:
@@ -273,6 +274,7 @@ def test_choice_recognition_defaults_production_config_max_tokens_to_100(
                 policy_profile=policy_profile,
                 client=fake_client,
                 usage_sink_factory=backend_llm.NullUsageSink,
+                trace_sink_factory=backend_llm.NullCallTraceSink,
             )
 
         def chat_completions(self, **kwargs: object) -> object:

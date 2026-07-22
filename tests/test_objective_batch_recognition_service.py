@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from PIL import Image
 
+from backend.llm import NullCallTraceSink
 from objective_batch_recognition_service import ObjectivePaperEntry, crop_objective_region, run_objective_batch_recognition
 from objective_batch_recognition_service import ObjectiveBatchRecognitionClient, build_objective_question_specs
 from scanner import ExamPaperGroup
@@ -848,6 +849,7 @@ def test_objective_fallback_root_client_retries_two_503s_then_scores(
         ),
         gateway_factory=gateway_factory,
         usage_sink_factory=RecordingUsageSink,
+        trace_sink_factory=NullCallTraceSink,
     )
     primary = FakeBatchClient(
         confidence=0.50,
@@ -919,6 +921,7 @@ def test_objective_batches_can_run_concurrently_with_rate_limit(tmp_path: Path) 
 )
 def test_objective_batch_client_uses_recognition_gateway_contract(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     thinking_type: str,
     expected_extra_body: dict[str, Any] | None,
 ) -> None:
@@ -936,6 +939,12 @@ def test_objective_batch_client_uses_recognition_gateway_contract(
 
     import api_profiles
     import backend.llm.transport as llm_transport
+
+    monkeypatch.setattr(
+        llm_transport,
+        "TRACE_LOG_FILE",
+        tmp_path / "llm_api_calls.jsonl",
+    )
 
     policy_profile = {
         "llm_recognition_timeout_seconds": 60.0,
@@ -1011,6 +1020,7 @@ def test_objective_batch_client_uses_recognition_gateway_contract(
 
 def test_objective_batch_client_gateway_retries_two_503s_then_succeeds(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     provider_calls = 0
 
@@ -1037,6 +1047,13 @@ def test_objective_batch_client_gateway_retries_two_503s_then_succeeds(
             self.chat = type("Chat", (), {"completions": FakeCompletions()})()
 
     import api_profiles
+    import backend.llm.transport as llm_transport
+
+    monkeypatch.setattr(
+        llm_transport,
+        "TRACE_LOG_FILE",
+        tmp_path / "llm_api_calls.jsonl",
+    )
 
     monkeypatch.setattr(
         api_profiles,
