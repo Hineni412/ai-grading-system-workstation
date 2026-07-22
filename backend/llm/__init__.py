@@ -24,10 +24,17 @@ from .transport import (
     gateway_config_key,
     normalize_openai_base_url,
 )
+from .trace import (
+    JsonlCallTraceSink,
+    LLMCallTraceEvent,
+    NullCallTraceSink,
+    TRACE_LOG_FILE,
+)
 
 
 __all__ = [
     "JsonlUsageSink",
+    "JsonlCallTraceSink",
     "LLMErrorCategory",
     "LLMGateway",
     "LLMPacerRegistry",
@@ -37,7 +44,10 @@ __all__ = [
     "LLMRequestKind",
     "LLMRequestPolicy",
     "LLMUsageEvent",
+    "LLMCallTraceEvent",
+    "NullCallTraceSink",
     "NullUsageSink",
+    "TRACE_LOG_FILE",
     "classify_llm_error",
     "create_openai_client",
     "gateway_config_key",

@@ -72,3 +72,4 @@
 | 阶段 | 测试/复审 | 原始意见 | 去重结果 | 当前状态 |
 |---|---|---:|---|---|
 | 集中调查与边界冻结 | 现有 Gateway、usage sink、adapter、调用方与测试只读核对；GitHub Issue #66 和本计划 | 0 | 现有第一方物理调用均经 Gateway；主要缺口是只有终态、无最终 timeout/请求规模/网络阶段，旧通用 logger 不是严格白名单 | 准备第一个 RED |
+| TDD 稳定候选 | 8 个 RED→GREEN 切片；Gateway/JSONL/Adapter/LLMClient/静态边界及全部受影响调用方共 201 项通过；快速冒烟通过（文档、506 文件编译、两库副本幂等） | 3 | 实现期只读核对发现失败字段提取异常时缺终态、Mapping 响应实际模型取值不准、包装超时未优先显示 `ReadTimeout`；均已完成 RED→GREEN | 候选可冻结复审；测试日志已隔离且工作树无 trace 文件，真实模型调用 0，真实 `user_data/` 未触碰 |

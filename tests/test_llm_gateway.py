@@ -26,6 +26,10 @@ class StatusError(Exception):
         )
 
 
+class ReadTimeout(TimeoutError):
+    pass
+
+
 class FakeCreate:
     def __init__(self, outcomes: list[object], order: list[str] | None = None) -> None:
         self._outcomes = list(outcomes)
@@ -66,6 +70,22 @@ class RecordingSink:
         self.events.append(event)
 
 
+class RecordingTraceSink:
+    def __init__(self, order: list[str] | None = None) -> None:
+        self.events = []
+        self.order = order
+
+    def write(self, event: object) -> None:
+        self.events.append(event)
+        if self.order is not None:
+            self.order.append(f"trace:{event.event_type}")
+
+
+class FailingTraceSink:
+    def write(self, _event: object) -> None:
+        raise RuntimeError("trace sink failed")
+
+
 class StepClock:
     def __init__(self, step: float = 0.025) -> None:
         self.value = 0.0
@@ -99,6 +119,7 @@ def _gateway(
     *,
     profile: dict[str, object] | None = None,
     sink: object | None = None,
+    trace_sink: object | None = None,
     pacer: RecordingPacer | None = None,
     sleeper=lambda _seconds: None,
 ) -> LLMGateway:
@@ -107,9 +128,364 @@ def _gateway(
         config_key="profile-a",
         pacers=pacer or RecordingPacer(),
         usage_sink=sink or RecordingSink(),
+        trace_sink=trace_sink or RecordingTraceSink(),
         clock=StepClock(),
         sleeper=sleeper,
     )
+
+
+def test_call_trace_brackets_sdk_success_with_safe_request_shape():
+    order: list[str] = []
+    response = _response(
+        prompt_tokens=11,
+        completion_tokens=5,
+        total_tokens=16,
+    )
+    operation = FakeCreate([response], order)
+    trace_sink = RecordingTraceSink(order)
+    gateway = _gateway(
+        profile={"llm_config_generation_timeout_seconds": 45},
+        trace_sink=trace_sink,
+        pacer=RecordingPacer(order),
+    )
+
+    actual = gateway.chat_completions(
+        request_kind=LLMRequestKind.CONFIG_GENERATION,
+        client=_client_for("chat", operation),
+        model="config-model",
+        kwargs={
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "hello"},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": "data:image/png;base64,QUJD",
+                            },
+                        },
+                    ],
+                }
+            ]
+        },
+        allow_retry=False,
+    )
+
+    assert actual is response
+    assert order == [
+        "pace",
+        "trace:request_started",
+        "call",
+        "trace:request_succeeded",
+    ]
+    assert [event.event_type for event in trace_sink.events] == [
+        "request_started",
+        "request_succeeded",
+    ]
+    started, succeeded = trace_sink.events
+    assert started.request_id == succeeded.request_id
+    assert started.attempt == succeeded.attempt == 1
+    assert started.request_kind == "config_generation"
+    assert started.protocol == "chat_completions"
+    assert started.model == "config-model"
+    assert started.timeout_seconds == 45.0
+    assert started.retry_limit == 0
+    assert started.text_chars == 5
+    assert started.image_count == 1
+    assert started.image_bytes_estimate == 3
+    assert started.request_bytes_estimate > 5
+    assert succeeded.elapsed_ms == 25
+    assert succeeded.outcome == "success"
+    assert succeeded.prompt_tokens == 11
+    assert succeeded.completion_tokens == 5
+    assert succeeded.total_tokens == 16
+
+
+def test_call_trace_links_sanitized_timeout_failure_to_the_retry():
+    secret = "student answer C:\\private\\paper.png api_key=secret"
+    operation = FakeCreate([ReadTimeout(secret), _response()])
+    trace_sink = RecordingTraceSink()
+    sleeper_calls: list[float] = []
+    gateway = _gateway(
+        profile={"llm_grading_max_retries": 1},
+        trace_sink=trace_sink,
+        sleeper=sleeper_calls.append,
+    )
+
+    gateway.chat_completions(
+        request_kind=LLMRequestKind.GRADING,
+        client=_client_for("chat", operation),
+        model="grading-model",
+        kwargs={"messages": []},
+        request_id="logical-request",
+    )
+
+    assert [event.event_type for event in trace_sink.events] == [
+        "request_started",
+        "request_failed",
+        "request_started",
+        "request_succeeded",
+    ]
+    first_started, failed, second_started, _succeeded = trace_sink.events
+    assert first_started.request_id == failed.request_id == "logical-request"
+    assert second_started.request_id == "logical-request"
+    assert [event.attempt for event in trace_sink.events] == [1, 1, 2, 2]
+    assert failed.outcome == "failure"
+    assert failed.error_category == "timeout"
+    assert failed.exception_type == "ReadTimeout"
+    assert failed.network_phase == "read"
+    assert failed.http_status_code == 0
+    assert failed.will_retry is True
+    assert failed.retry_delay_ms == 500
+    assert sleeper_calls == [0.5]
+    serialized = repr(trace_sink.events)
+    assert secret not in serialized
+    assert "student answer" not in serialized
+    assert "api_key" not in serialized
+    assert "C:\\private" not in serialized
+
+
+def test_call_trace_records_safe_http_status_and_provider_request_id():
+    error = StatusError(
+        503,
+        "secret student answer",
+        headers={
+            "X-Request-ID": "provider-request_123",
+            "Authorization": "Bearer secret-token",
+        },
+    )
+    operation = FakeCreate([error])
+    trace_sink = RecordingTraceSink()
+    gateway = _gateway(trace_sink=trace_sink)
+
+    with pytest.raises(StatusError) as raised:
+        gateway.responses(
+            request_kind=LLMRequestKind.TAGGING,
+            client=_client_for("responses", operation),
+            model="tag-model",
+            kwargs={"input": "private prompt"},
+            allow_retry=False,
+        )
+
+    assert raised.value is error
+    failed = trace_sink.events[-1]
+    assert failed.event_type == "request_failed"
+    assert failed.http_status_code == 503
+    assert failed.error_category == "server_transient"
+    assert failed.exception_type == "other"
+    assert failed.network_phase == "http"
+    assert failed.provider_request_id == "provider-request_123"
+    assert failed.will_retry is False
+    assert failed.retry_delay_ms == 0
+    serialized = repr(failed)
+    assert "secret student answer" not in serialized
+    assert "Bearer secret-token" not in serialized
+    assert "private prompt" not in serialized
+
+
+def test_call_trace_records_success_provider_id_and_utf8_response_bytes():
+    content = "答案好"
+    response = SimpleNamespace(
+        _request_id="provider-success_123",
+        model="actual-model",
+        choices=[
+            SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content=content),
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=2,
+            completion_tokens=3,
+            total_tokens=5,
+        ),
+    )
+    trace_sink = RecordingTraceSink()
+    gateway = _gateway(trace_sink=trace_sink)
+
+    actual = gateway.chat_completions(
+        request_kind=LLMRequestKind.GRADING,
+        client=_client_for("chat", FakeCreate([response])),
+        model="requested-model",
+        kwargs={"messages": []},
+        allow_retry=False,
+    )
+
+    assert actual is response
+    succeeded = trace_sink.events[-1]
+    assert succeeded.event_type == "request_succeeded"
+    assert succeeded.provider_request_id == "provider-success_123"
+    assert succeeded.actual_model == "actual-model"
+    assert succeeded.response_chars == len(content)
+    assert succeeded.response_bytes_estimate == len(content.encode("utf-8"))
+
+
+def test_call_trace_reads_actual_model_and_provider_id_from_mapping_response():
+    response = {
+        "_request_id": "provider-mapping_123",
+        "model": "actual-mapping-model",
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {"content": "ok"},
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 2,
+            "completion_tokens": 1,
+            "total_tokens": 3,
+        },
+    }
+    trace_sink = RecordingTraceSink()
+
+    actual = _gateway(trace_sink=trace_sink).chat_completions(
+        request_kind=LLMRequestKind.GRADING,
+        client=_client_for("chat", FakeCreate([response])),
+        model="requested-model",
+        kwargs={"messages": []},
+        allow_retry=False,
+    )
+
+    assert actual is response
+    succeeded = trace_sink.events[-1]
+    assert succeeded.actual_model == "actual-mapping-model"
+    assert succeeded.provider_request_id == "provider-mapping_123"
+
+
+def test_trace_shape_extraction_cannot_change_a_successful_call():
+    response = _response()
+    operation = FakeCreate([response])
+    trace_sink = RecordingTraceSink()
+    gateway = _gateway(trace_sink=trace_sink)
+
+    actual = gateway.responses(
+        request_kind=LLMRequestKind.TAGGING,
+        client=_client_for("responses", operation),
+        model="tag-model",
+        kwargs={"input": "private prompt", "temperature": float("nan")},
+        allow_retry=False,
+    )
+
+    assert actual is response
+    assert len(operation.calls) == 1
+    assert [event.event_type for event in trace_sink.events] == [
+        "request_started",
+        "request_succeeded",
+    ]
+    assert trace_sink.events[0].request_bytes_estimate == 0
+
+
+def test_trace_metadata_and_warning_failures_cannot_change_a_successful_call(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    response = _response()
+    operation = FakeCreate([response])
+
+    class HostileLogger:
+        def warning(self, _message: str) -> None:
+            raise RuntimeError("logger failed")
+
+    monkeypatch.setattr(
+        "backend.llm.gateway.utc_timestamp",
+        lambda: (_ for _ in ()).throw(RuntimeError("timestamp failed")),
+    )
+    monkeypatch.setattr("backend.llm.gateway.logger", HostileLogger())
+
+    actual = _gateway().chat_completions(
+        request_kind=LLMRequestKind.GRADING,
+        client=_client_for("chat", operation),
+        model="grading-model",
+        kwargs={"messages": []},
+        allow_retry=False,
+    )
+
+    assert actual is response
+    assert len(operation.calls) == 1
+
+
+def test_trace_sink_failure_preserves_success_and_original_sdk_error():
+    successful_response = _response()
+    successful_operation = FakeCreate([successful_response])
+
+    actual = _gateway(trace_sink=FailingTraceSink()).chat_completions(
+        request_kind=LLMRequestKind.GRADING,
+        client=_client_for("chat", successful_operation),
+        model="grading-model",
+        kwargs={"messages": []},
+        allow_retry=False,
+    )
+
+    assert actual is successful_response
+    assert len(successful_operation.calls) == 1
+
+    original_error = StatusError(400, "private answer")
+    failing_operation = FakeCreate([original_error])
+    with pytest.raises(StatusError) as raised:
+        _gateway(trace_sink=FailingTraceSink()).chat_completions(
+            request_kind=LLMRequestKind.GRADING,
+            client=_client_for("chat", failing_operation),
+            model="grading-model",
+            kwargs={"messages": []},
+            allow_retry=False,
+        )
+
+    assert raised.value is original_error
+    assert len(failing_operation.calls) == 1
+
+
+def test_trace_error_metadata_failure_still_records_the_failure_terminal():
+    class HostileTimeout(TimeoutError):
+        @property
+        def status_code(self):
+            raise RuntimeError("status lookup failed")
+
+    original_error = HostileTimeout("private answer")
+    trace_sink = RecordingTraceSink()
+
+    with pytest.raises(HostileTimeout) as raised:
+        _gateway(trace_sink=trace_sink).chat_completions(
+            request_kind=LLMRequestKind.GRADING,
+            client=_client_for("chat", FakeCreate([original_error])),
+            model="grading-model",
+            kwargs={"messages": []},
+            allow_retry=False,
+        )
+
+    assert raised.value is original_error
+    assert [event.event_type for event in trace_sink.events] == [
+        "request_started",
+        "request_failed",
+    ]
+    failed = trace_sink.events[-1]
+    assert failed.error_category == "timeout"
+    assert failed.http_status_code == 0
+    assert failed.provider_request_id == ""
+
+
+def test_call_trace_prefers_wrapped_network_timeout_type():
+    class APITimeoutError(TimeoutError):
+        pass
+
+    wrapped = APITimeoutError("outer private message")
+    wrapped.__cause__ = ReadTimeout("inner private message")
+    trace_sink = RecordingTraceSink()
+
+    with pytest.raises(APITimeoutError) as raised:
+        _gateway(trace_sink=trace_sink).chat_completions(
+            request_kind=LLMRequestKind.GRADING,
+            client=_client_for("chat", FakeCreate([wrapped])),
+            model="grading-model",
+            kwargs={"messages": []},
+            allow_retry=False,
+        )
+
+    assert raised.value is wrapped
+    failed = trace_sink.events[-1]
+    assert failed.error_category == "timeout"
+    assert failed.exception_type == "ReadTimeout"
+    assert failed.network_phase == "read"
+    assert "private message" not in repr(failed)
 
 
 def test_chat_and_responses_receive_explicit_timeout_and_preserve_kwargs():
