@@ -87,6 +87,7 @@ def _run_fill_blank_recognition(
                 policy_profile=policy_profile,
                 client=fake_client,
                 usage_sink_factory=backend_llm.NullUsageSink,
+                trace_sink_factory=backend_llm.NullCallTraceSink,
             )
 
         def chat_completions(self, **kwargs: object) -> object:

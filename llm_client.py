@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from backend.llm import (
+    JsonlCallTraceSink,
     JsonlUsageSink,
     LLMErrorCategory,
     LLMGateway,
@@ -20,6 +21,10 @@ from backend.llm import (
     is_truncation_finish_reason,
     looks_like_truncated_json_object,
     response_diagnostics,
+)
+from backend.llm.trace import (
+    safe_endpoint_host,
+    TRACE_LOG_FILE as LLM_TRACE_LOG_FILE,
 )
 from backend.llm.json_repair import parse_json_object_locally
 from backend.llm.transport import (
@@ -34,6 +39,10 @@ from usage_logger import LOG_FILE as LLM_USAGE_LOG_FILE
 
 def _default_usage_sink() -> JsonlUsageSink:
     return JsonlUsageSink(LLM_USAGE_LOG_FILE)
+
+
+def _default_trace_sink() -> JsonlCallTraceSink:
+    return JsonlCallTraceSink(LLM_TRACE_LOG_FILE)
 
 
 @dataclass
@@ -80,6 +89,7 @@ class LLMClient:
         *,
         gateway_factory=LLMGateway,
         usage_sink_factory=_default_usage_sink,
+        trace_sink_factory=_default_trace_sink,
     ) -> None:
         self.settings = settings
         self.client = _create_openai_client(settings.api_key, settings.base_url)
@@ -90,6 +100,8 @@ class LLMClient:
             profile=gateway_profile,
             config_key=_gateway_config_key(settings.api_key, settings.base_url),
             usage_sink=usage_sink_factory(),
+            trace_sink=trace_sink_factory(),
+            endpoint_host=safe_endpoint_host(settings.base_url),
         )
         if config_api_key == settings.api_key and normalize_openai_base_url(config_base_url) == normalize_openai_base_url(settings.base_url):
             self.config_client = self.client
@@ -100,6 +112,8 @@ class LLMClient:
                 profile=gateway_profile,
                 config_key=_gateway_config_key(config_api_key, config_base_url),
                 usage_sink=usage_sink_factory(),
+                trace_sink=trace_sink_factory(),
+                endpoint_host=safe_endpoint_host(config_base_url),
             )
 
     def text_from_images(self, prompt: str, image_blobs: list[bytes], model: str | None = None, system_prompt: str | None = None) -> str:
@@ -478,6 +492,7 @@ class LLMClient:
             compatibility_fallback: str,
             *,
             allow_retry: bool,
+            planned_parameter_fallback: bool,
         ) -> Any:
             res = gateway.chat_completions(
                 request_kind=request_kind,
@@ -487,6 +502,7 @@ class LLMClient:
                 request_id=logical_request_id,
                 allow_retry=allow_retry,
                 compatibility_fallback=compatibility_fallback,
+                planned_parameter_fallback=planned_parameter_fallback,
                 timeout_override_seconds=timeout_override_seconds,
                 _next_attempt=next_attempt,
             )
@@ -499,6 +515,10 @@ class LLMClient:
             return invoke(
                 "",
                 allow_retry=allow_gateway_retry and not single_request,
+                planned_parameter_fallback=(
+                    allow_parameter_fallback
+                    and ("max_tokens" in kwargs or expect_json)
+                ),
             )
         except Exception as exc:
             if not allow_parameter_fallback:
@@ -512,6 +532,7 @@ class LLMClient:
                     return invoke(
                         "max_completion_tokens",
                         allow_retry=False,
+                        planned_parameter_fallback=expect_json,
                     )
                 except Exception as retry_exc:
                     if not _is_parameter_fallback_error(retry_exc):
@@ -519,7 +540,11 @@ class LLMClient:
                     kwargs.pop("max_completion_tokens", None)
             if expect_json:
                 kwargs.pop("response_format", None)
-                return invoke("response_format", allow_retry=False)
+                return invoke(
+                    "response_format",
+                    allow_retry=False,
+                    planned_parameter_fallback=False,
+                )
             raise exc
 
 

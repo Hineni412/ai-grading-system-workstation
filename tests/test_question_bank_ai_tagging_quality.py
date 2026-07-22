@@ -76,6 +76,7 @@ def _install_isolated_real_adapter(monkeypatch, *, init_calls, adapter_calls) ->
                 policy_profile=policy_profile,
                 client=client,
                 usage_sink_factory=backend_llm.NullUsageSink,
+                trace_sink_factory=backend_llm.NullCallTraceSink,
             )
 
         def responses(self, **kwargs):

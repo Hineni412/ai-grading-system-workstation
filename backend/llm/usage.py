@@ -215,6 +215,11 @@ def response_diagnostics(response: object) -> dict[str, object]:
     }
 
 
+def response_content_bytes(response: object) -> int:
+    """Return the UTF-8 size of normalized response text without exposing it."""
+    return len(_normalized_response_text(response).encode("utf-8"))
+
+
 class JsonlUsageSink:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)

@@ -12,7 +12,7 @@ from PIL import Image
 import grading_service
 import llm_client
 from ai_grader import AIGrader
-from backend.llm import NullUsageSink
+from backend.llm import NullCallTraceSink, NullUsageSink
 from request_pacer import RequestPacer
 from scanner import ExamPaperGroup
 
@@ -169,6 +169,7 @@ def test_full_paper_timeout_reaches_sdk_without_changing_shared_grading_default(
             config_model="config-model",
         ),
         usage_sink_factory=NullUsageSink,
+        trace_sink_factory=NullCallTraceSink,
     )
 
     result = AIGrader(rubric, client).grade(_paper(tmp_path))

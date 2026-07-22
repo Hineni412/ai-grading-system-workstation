@@ -7,14 +7,26 @@ import uuid
 from itertools import count
 from typing import Callable, Mapping
 
-from .errors import classify_llm_error, is_retryable_error
+from .errors import LLMErrorCategory, classify_llm_error, is_retryable_error
 from .pacing import LLMPacerRegistry
 from .policy import LLMPolicyError, LLMProtocol, LLMRequestKind, policy_from_profile
 from .usage import (
     LLMUsageEvent,
     NullUsageSink,
+    response_content_bytes,
     response_diagnostics,
     usage_fields,
+)
+from .trace import (
+    actual_model_label,
+    error_diagnostics,
+    LLMCallTraceEvent,
+    NullCallTraceSink,
+    provider_request_id,
+    request_diagnostics,
+    safe_host_label,
+    safe_trace_label,
+    utc_timestamp,
 )
 
 
@@ -61,6 +73,8 @@ class LLMGateway:
         config_key: str = "default",
         pacers: object | None = None,
         usage_sink: object | None = None,
+        trace_sink: object | None = None,
+        endpoint_host: str = "",
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -68,6 +82,10 @@ class LLMGateway:
         self.config_key = str(config_key)
         self.pacers = pacers if pacers is not None else _DEFAULT_PACERS
         self.usage_sink = usage_sink if usage_sink is not None else NullUsageSink()
+        self.trace_sink = (
+            trace_sink if trace_sink is not None else NullCallTraceSink()
+        )
+        self.endpoint_host = safe_host_label(endpoint_host)
         self.clock = clock
         self.sleeper = sleeper
 
@@ -81,6 +99,7 @@ class LLMGateway:
         request_id: object | None = None,
         allow_retry: bool = True,
         compatibility_fallback: str = "",
+        planned_parameter_fallback: bool = False,
         timeout_override_seconds: float | None = None,
         _next_attempt: Callable[[], int] | None = None,
     ) -> object:
@@ -93,6 +112,7 @@ class LLMGateway:
             request_id=request_id,
             allow_retry=allow_retry,
             compatibility_fallback=compatibility_fallback,
+            planned_parameter_fallback=planned_parameter_fallback,
             timeout_override_seconds=timeout_override_seconds,
             next_attempt=_next_attempt,
         )
@@ -107,6 +127,7 @@ class LLMGateway:
         request_id: object | None = None,
         allow_retry: bool = True,
         compatibility_fallback: str = "",
+        planned_parameter_fallback: bool = False,
         timeout_override_seconds: float | None = None,
         _next_attempt: Callable[[], int] | None = None,
     ) -> object:
@@ -119,6 +140,7 @@ class LLMGateway:
             request_id=request_id,
             allow_retry=allow_retry,
             compatibility_fallback=compatibility_fallback,
+            planned_parameter_fallback=planned_parameter_fallback,
             timeout_override_seconds=timeout_override_seconds,
             next_attempt=_next_attempt,
         )
@@ -134,6 +156,7 @@ class LLMGateway:
         request_id: object | None,
         allow_retry: bool,
         compatibility_fallback: str,
+        planned_parameter_fallback: bool,
         timeout_override_seconds: float | None,
         next_attempt: Callable[[], int] | None,
     ) -> object:
@@ -154,22 +177,62 @@ class LLMGateway:
             policy.timeout_seconds,
             timeout_override_seconds,
         )
+        try:
+            request_shape = request_diagnostics(kwargs)
+        except Exception:
+            _warn_safely("Failed to normalize LLM request trace metadata")
+            request_shape = {
+                "request_bytes_estimate": 0,
+                "text_chars": 0,
+                "image_count": 0,
+                "image_bytes_estimate": 0,
+            }
 
         for retry_index in range(retry_limit + 1):
             attempt = attempt_counter()
+            pacing_started = self.clock()
             self.pacers.acquire(
                 self.config_key,
                 kind,
                 policy.requests_per_minute,
             )
+            pacer_wait_ms = self._latency_ms(pacing_started)
+            payload = dict(kwargs)
+            payload["model"] = model
+            payload["timeout"] = request_timeout_seconds
+            self._record_trace_started(
+                request_id=logical_request_id,
+                attempt=attempt,
+                request_kind=kind,
+                protocol=protocol,
+                model=model,
+                timeout_seconds=request_timeout_seconds,
+                retry_limit=retry_limit,
+                retry_index=retry_index,
+                pacer_wait_ms=pacer_wait_ms,
+                request_shape=request_shape,
+            )
             started = self.clock()
             try:
-                payload = dict(kwargs)
-                payload["model"] = model
-                payload["timeout"] = request_timeout_seconds
                 response = self._invoke(protocol, client, payload)
             except Exception as exc:
                 latency_ms = self._latency_ms(started)
+                should_retry = (
+                    retry_index < retry_limit and is_retryable_error(exc)
+                )
+                retry_delay = (
+                    self._retry_delay(exc, policy.retry_delays[retry_index])
+                    if should_retry
+                    else 0.0
+                )
+                try:
+                    will_use_parameter_fallback = bool(
+                        planned_parameter_fallback
+                        and classify_llm_error(exc)
+                        is LLMErrorCategory.PARAMETER_INCOMPATIBLE
+                    )
+                except Exception:
+                    will_use_parameter_fallback = False
                 self._record_failure(
                     request_id=logical_request_id,
                     attempt=attempt,
@@ -180,10 +243,27 @@ class LLMGateway:
                     error=exc,
                     compatibility_fallback=fallback,
                 )
-                if retry_index >= retry_limit or not is_retryable_error(exc):
+                self._record_trace_failure(
+                    request_id=logical_request_id,
+                    attempt=attempt,
+                    request_kind=kind,
+                    protocol=protocol,
+                    model=model,
+                    timeout_seconds=request_timeout_seconds,
+                    retry_limit=retry_limit,
+                    retry_index=retry_index,
+                    pacer_wait_ms=pacer_wait_ms,
+                    request_shape=request_shape,
+                    latency_ms=latency_ms,
+                    error=exc,
+                    will_retry=(
+                        should_retry or will_use_parameter_fallback
+                    ),
+                    retry_delay=retry_delay,
+                )
+                if not should_retry:
                     raise
-                deterministic_delay = policy.retry_delays[retry_index]
-                self.sleeper(self._retry_delay(exc, deterministic_delay))
+                self.sleeper(retry_delay)
                 continue
 
             latency_ms = self._latency_ms(started)
@@ -196,6 +276,20 @@ class LLMGateway:
                 latency_ms=latency_ms,
                 response=response,
                 compatibility_fallback=fallback,
+            )
+            self._record_trace_success(
+                request_id=logical_request_id,
+                attempt=attempt,
+                request_kind=kind,
+                protocol=protocol,
+                model=model,
+                timeout_seconds=request_timeout_seconds,
+                retry_limit=retry_limit,
+                retry_index=retry_index,
+                pacer_wait_ms=pacer_wait_ms,
+                request_shape=request_shape,
+                latency_ms=latency_ms,
+                response=response,
             )
             return response
 
@@ -317,3 +411,171 @@ class LLMGateway:
             self.usage_sink.write(event)
         except Exception:
             _warn_safely("Failed to record LLM usage metadata")
+
+    def _record_trace_started(
+        self,
+        *,
+        request_id: str,
+        attempt: int,
+        request_kind: LLMRequestKind,
+        protocol: LLMProtocol,
+        model: str,
+        timeout_seconds: float,
+        retry_limit: int,
+        retry_index: int,
+        pacer_wait_ms: int,
+        request_shape: Mapping[str, int],
+    ) -> None:
+        try:
+            event = LLMCallTraceEvent(
+                event_type="request_started",
+                timestamp_utc=utc_timestamp(),
+                request_id=safe_trace_label(request_id),
+                attempt=attempt,
+                request_kind=request_kind.value,
+                protocol=protocol.value,
+                model=safe_trace_label(model),
+                endpoint_host=self.endpoint_host,
+                timeout_seconds=timeout_seconds,
+                retry_limit=retry_limit,
+                retry_index=retry_index,
+                pacer_wait_ms=pacer_wait_ms,
+                **request_shape,
+            )
+        except Exception:
+            _warn_safely("Failed to normalize LLM call trace metadata")
+            return
+        self._safe_trace(event)
+
+    def _record_trace_success(
+        self,
+        *,
+        request_id: str,
+        attempt: int,
+        request_kind: LLMRequestKind,
+        protocol: LLMProtocol,
+        model: str,
+        timeout_seconds: float,
+        retry_limit: int,
+        retry_index: int,
+        pacer_wait_ms: int,
+        request_shape: Mapping[str, int],
+        latency_ms: int,
+        response: object,
+    ) -> None:
+        try:
+            normalized_usage = usage_fields(response)
+            diagnostics = response_diagnostics(response)
+            actual_model = actual_model_label(response, model)
+            event = LLMCallTraceEvent(
+                event_type="request_succeeded",
+                timestamp_utc=utc_timestamp(),
+                request_id=safe_trace_label(request_id),
+                attempt=attempt,
+                request_kind=request_kind.value,
+                protocol=protocol.value,
+                model=safe_trace_label(model),
+                endpoint_host=self.endpoint_host,
+                timeout_seconds=timeout_seconds,
+                retry_limit=retry_limit,
+                retry_index=retry_index,
+                pacer_wait_ms=pacer_wait_ms,
+                elapsed_ms=latency_ms,
+                outcome="success",
+                response_bytes_estimate=response_content_bytes(response),
+                actual_model=actual_model,
+                provider_request_id=provider_request_id(response),
+                **request_shape,
+                **normalized_usage,
+                **diagnostics,
+            )
+        except Exception:
+            _warn_safely("Failed to normalize LLM call trace metadata")
+            try:
+                event = LLMCallTraceEvent(
+                    event_type="request_succeeded",
+                    timestamp_utc=utc_timestamp(),
+                    request_id=safe_trace_label(request_id),
+                    attempt=attempt,
+                    request_kind=request_kind.value,
+                    protocol=protocol.value,
+                    model=safe_trace_label(model),
+                    endpoint_host=self.endpoint_host,
+                    timeout_seconds=timeout_seconds,
+                    retry_limit=retry_limit,
+                    retry_index=retry_index,
+                    pacer_wait_ms=pacer_wait_ms,
+                    elapsed_ms=latency_ms,
+                    outcome="success",
+                    **request_shape,
+                )
+            except Exception:
+                _warn_safely("Failed to normalize LLM call trace metadata")
+                return
+        self._safe_trace(event)
+
+    def _record_trace_failure(
+        self,
+        *,
+        request_id: str,
+        attempt: int,
+        request_kind: LLMRequestKind,
+        protocol: LLMProtocol,
+        model: str,
+        timeout_seconds: float,
+        retry_limit: int,
+        retry_index: int,
+        pacer_wait_ms: int,
+        request_shape: Mapping[str, int],
+        latency_ms: int,
+        error: BaseException,
+        will_retry: bool,
+        retry_delay: float,
+    ) -> None:
+        try:
+            error_category = classify_llm_error(error).value
+        except Exception:
+            _warn_safely("Failed to normalize LLM call trace metadata")
+            error_category = "unknown"
+        try:
+            diagnostics = error_diagnostics(error)
+        except Exception:
+            _warn_safely("Failed to normalize LLM call trace metadata")
+            diagnostics = {
+                "http_status_code": 0,
+                "exception_type": "other",
+                "network_phase": "unknown",
+                "provider_request_id": "",
+            }
+        try:
+            event = LLMCallTraceEvent(
+                event_type="request_failed",
+                timestamp_utc=utc_timestamp(),
+                request_id=safe_trace_label(request_id),
+                attempt=attempt,
+                request_kind=request_kind.value,
+                protocol=protocol.value,
+                model=safe_trace_label(model),
+                endpoint_host=self.endpoint_host,
+                timeout_seconds=timeout_seconds,
+                retry_limit=retry_limit,
+                retry_index=retry_index,
+                pacer_wait_ms=pacer_wait_ms,
+                elapsed_ms=latency_ms,
+                outcome="failure",
+                error_category=error_category,
+                will_retry=will_retry,
+                retry_delay_ms=int(round(max(0.0, retry_delay) * 1000.0)),
+                **request_shape,
+                **diagnostics,
+            )
+        except Exception:
+            _warn_safely("Failed to normalize LLM call trace metadata")
+            return
+        self._safe_trace(event)
+
+    def _safe_trace(self, event: LLMCallTraceEvent) -> None:
+        try:
+            self.trace_sink.write(event)
+        except Exception:
+            _warn_safely("Failed to record LLM call trace metadata")
