@@ -9,7 +9,8 @@ from typing import Any
 from PIL import Image, ImageDraw
 
 from answer_region_geometry import scaled_region_bbox
-from scanner import ExamPaperGroup, STUDENT_NAME_REGION_ALIASES
+from backend.domain_models import ExamPaperGroup
+from scanner import STUDENT_NAME_REGION_ALIASES
 
 
 @dataclass(frozen=True)
