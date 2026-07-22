@@ -358,6 +358,12 @@ def _run_config_generation_job_impl(
         source_job = context.store.get_job(source_job_id)
         source_outcome = source_job.result.get("outcome") if source_job is not None else None
         retry_failed_batches = source_outcome == "partial"
+        retry_score_allocation = (
+            source_outcome == "partial"
+            and source_job is not None
+            and bool(source_job.result.get("score_allocation_pending"))
+            and not bool(source_job.result.get("failed_batches"))
+        )
         resume_complete_draft = (
             source_outcome == "complete"
             and source_job is not None
@@ -367,7 +373,11 @@ def _run_config_generation_job_impl(
             source_job is None
             or source_job.job_type != "config_generation"
             or source_job.status not in {"succeeded", "failed", "cancelled"}
-            or not (retry_failed_batches or resume_complete_draft)
+            or not (
+                retry_failed_batches
+                or retry_score_allocation
+                or resume_complete_draft
+            )
             or _required_int(source_job.payload, "session_id") != session_id
             or str(source_job.payload.get("generation_mode") or "batched")
             not in {"batched", "per_question"}
@@ -524,6 +534,7 @@ def _run_config_generation_job_impl(
         )
     context.raise_if_cancelled()
     failed_ids = failed_grading_config_question_ids(payload)
+    score_allocation = _score_allocation_summary(payload)
     total_questions = _question_count(payload, confirmed_blocks)
     summary = _summary(
         session_id,
@@ -531,9 +542,10 @@ def _run_config_generation_job_impl(
         failed_ids,
         failed_batches=failed_grading_config_batches(payload),
         local_json_repairs=_local_json_repairs(payload),
+        **score_allocation,
         retryable_mode=True,
     )
-    if failed_ids:
+    if failed_ids or bool(score_allocation["score_allocation_pending"]):
         with session_config_lock(Path(upload_config_dir), session_id):
             current_session = db.get_grading_session(session_id)
             if (
@@ -887,13 +899,17 @@ def _summary(
     *,
     failed_batches: list[dict[str, Any]] | None = None,
     local_json_repairs: list[dict[str, Any]] | None = None,
+    score_allocation_pending: bool = False,
+    score_allocation_failed: bool = False,
+    score_allocation_error: str = "",
     retryable_mode: bool = True,
 ) -> dict[str, object]:
     failed_count = len(failed_ids)
     clean_batches = list(failed_batches or [])
+    is_partial = bool(failed_count or score_allocation_pending)
     return {
         "session_id": session_id,
-        "outcome": "partial" if failed_count else "complete",
+        "outcome": "partial" if is_partial else "complete",
         "total_questions": total_questions,
         "generated_questions": max(0, total_questions - failed_count),
         "failed_count": failed_count,
@@ -901,7 +917,25 @@ def _summary(
         "failed_batch_count": len(clean_batches),
         "failed_batches": clean_batches,
         "local_json_repairs": list(local_json_repairs or []),
-        "retryable": bool(failed_count and retryable_mode),
+        "score_allocation_pending": bool(score_allocation_pending),
+        "score_allocation_failed": bool(score_allocation_failed),
+        "score_allocation_error": str(score_allocation_error or "")[:300],
+        "retryable": bool(is_partial and retryable_mode),
+    }
+
+
+def _score_allocation_summary(payload: dict[str, Any]) -> dict[str, object]:
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    if not isinstance(meta, dict):
+        return {
+            "score_allocation_pending": False,
+            "score_allocation_failed": False,
+            "score_allocation_error": "",
+        }
+    return {
+        "score_allocation_pending": bool(meta.get("score_allocation_pending")),
+        "score_allocation_failed": bool(meta.get("score_allocation_failed")),
+        "score_allocation_error": str(meta.get("score_allocation_error") or ""),
     }
 
 
@@ -944,6 +978,7 @@ def _summary_from_batch_draft(
         failed_ids,
         failed_batches=failed_grading_config_batches(payload),
         local_json_repairs=_local_json_repairs(payload),
+        **_score_allocation_summary(payload),
         retryable_mode=True,
     )
 
