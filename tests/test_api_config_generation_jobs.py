@@ -854,6 +854,45 @@ def test_config_generation_retry_route_accepts_partial_source_job(tmp_path: Path
     assert "input_id" not in response.json()["payload"]
 
 
+def test_config_generation_retry_accepts_score_allocation_pending_without_batch_ids(
+    tmp_path: Path,
+) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = manager.store.create_job(
+        "config_generation",
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": "a" * 32,
+        },
+    )
+    manager.store.finish(
+        source.id,
+        "succeeded",
+        result={
+            "session_id": session_id,
+            "outcome": "partial",
+            "failed_question_ids": [],
+            "failed_batches": [],
+            "score_allocation_pending": True,
+            "score_allocation_failed": True,
+            "retryable": True,
+        },
+    )
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate/retry",
+        json={"source_job_id": source.id},
+    )
+
+    assert response.status_code == 202
+    stored = manager.get(response.json()["id"])
+    assert stored is not None
+    assert "retry_question_ids" not in stored.payload
+
+
 def test_config_generation_retry_rejects_part_of_a_failed_batch(tmp_path: Path) -> None:
     client, db, manager = _client(tmp_path)
     session_id = _session(db, tmp_path)

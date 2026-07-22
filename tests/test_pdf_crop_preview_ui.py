@@ -39,14 +39,16 @@ def test_pdf_crop_state_is_captured_before_background_generation() -> None:
     assert 'st.session_state.get("pending_q_images")' in section[retry_start:retry_worker_start]
     assert 'st.session_state.get("pending_q_images")' not in section[retry_worker_start:retry_worker_end]
 
-def test_split_generation_ui_retries_only_failed_batches_and_scores_locally() -> None:
+def test_split_generation_ui_retries_failed_batches_then_scores_once_with_ai() -> None:
     page = WEB_APP.read_text(encoding="utf-8")
 
     assert "pending_confirmed_blocks" in page
     assert "retry_failed_grading_config_batches" in page
     assert "仅重试失败批次" in page
     assert "retry_grading_config_score_allocation" not in page
-    assert "总分已由本地程序统一分配" in page
+    assert "进行 AI 统一配分" in page
+    assert "没有使用本地分数替代" in page
+    assert "总分已由本地程序统一分配" not in page
 
 
 def test_streamlit_batch_draft_is_reloaded_by_document_digest_and_reports_local_repair() -> None:
