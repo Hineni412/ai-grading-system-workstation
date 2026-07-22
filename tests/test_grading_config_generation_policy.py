@@ -1979,6 +1979,7 @@ def _gateway_client_factory(
     outcomes: list[object],
     *,
     policy_profile: dict[str, object] | None = None,
+    trace_sink: object | None = None,
 ):
     completions = _GatewayTestCompletions(outcomes)
     fake_openai = SimpleNamespace(
@@ -2014,7 +2015,11 @@ def _gateway_client_factory(
             settings,
             gateway_factory=gateway_factory,
             usage_sink_factory=lambda: sink,
-            trace_sink_factory=NullCallTraceSink,
+            trace_sink_factory=(
+                (lambda: trace_sink)
+                if trace_sink is not None
+                else NullCallTraceSink
+            ),
         ),
         completions,
         sink,
@@ -2221,6 +2226,33 @@ def test_parameter_fallback_is_bounded_and_not_counted_as_network_retry(
         "response_format",
     ]
     assert [event.attempt for event in sink.events] == [1, 2, 3]
+
+
+def test_parameter_fallback_trace_marks_each_planned_followup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trace_sink = _GatewayTestSink()
+    client, completions, _sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [
+            RuntimeError("unsupported parameter max_tokens"),
+            RuntimeError("unsupported parameter max_completion_tokens"),
+            _gateway_json_completion('{"ok": true}'),
+        ],
+        trace_sink=trace_sink,
+    )
+
+    assert client.json_from_text("prompt") == {"ok": True}
+
+    assert len(completions.calls) == 3
+    failed = [
+        event
+        for event in trace_sink.events
+        if event.event_type == "request_failed"
+    ]
+    assert [event.attempt for event in failed] == [1, 2]
+    assert [event.will_retry for event in failed] == [True, True]
+    assert [event.retry_delay_ms for event in failed] == [0, 0]
 
 
 def test_parameter_fallback_disables_nested_network_retry(
