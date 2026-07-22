@@ -172,6 +172,72 @@ def test_ops_online_job_rejects_resource_changed_after_submission(tmp_path: Path
         run_ops_transfer_export_job(context=_Context(payload), paths=paths)
 
 
+def test_ops_transfer_export_still_rejects_business_database_changes(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    service = _service(paths)
+    payload = _payload(service, "transfer_export", scope="lean")
+    with sqlite3.connect(paths.db_path) as connection:
+        connection.execute("UPDATE sample SET value = 'changed'")
+        connection.commit()
+
+    with pytest.raises(ValueError, match="preflight resource changed"):
+        run_ops_transfer_export_job(context=_Context(payload), paths=paths)
+
+
+def test_ops_transfer_export_rejects_question_bank_wal_changes(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    connection = sqlite3.connect(paths.qb_db_path)
+    try:
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA wal_autocheckpoint = 0")
+        payload = _payload(_service(paths), "transfer_export", scope="lean")
+        connection.execute("UPDATE sample SET value = 'changed-in-wal'")
+        connection.commit()
+        assert Path(f"{paths.qb_db_path}-wal").is_file()
+
+        with pytest.raises(ValueError, match="preflight resource changed"):
+            run_ops_transfer_export_job(context=_Context(payload), paths=paths)
+    finally:
+        connection.close()
+
+
+def test_ops_transfer_export_snapshots_latest_question_bank_wal_state(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    connection = sqlite3.connect(paths.qb_db_path)
+    try:
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA wal_autocheckpoint = 0")
+        connection.execute("UPDATE sample SET value = 'latest-committed'")
+        connection.commit()
+        assert Path(f"{paths.qb_db_path}-wal").is_file()
+        context = _Context(
+            _payload(_service(paths), "transfer_export", scope="lean")
+        )
+
+        result = run_ops_transfer_export_job(context=context, paths=paths)
+
+        published = paths.outputs_dir / "ops" / str(result["filename"])
+        extracted = tmp_path / "exported-question-bank.db"
+        with zipfile.ZipFile(published, "r") as archive:
+            extracted.write_bytes(
+                archive.read("user_data/databases/question_bank.db")
+            )
+        with sqlite3.connect(extracted) as exported:
+            assert exported.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            assert (
+                exported.execute("SELECT value FROM sample").fetchone()[0]
+                == "latest-committed"
+            )
+    finally:
+        connection.close()
+
+
 def test_register_ops_job_handlers_registers_online_types(tmp_path: Path) -> None:
     from backend.jobs.manager import JobManager
     from backend.jobs.store import JobStore
@@ -188,6 +254,35 @@ def test_register_ops_job_handlers_registers_online_types(tmp_path: Path) -> Non
         loaded = manager.get(job.id)
         assert loaded is not None
         assert loaded.status == "succeeded"
+    finally:
+        manager.shutdown()
+
+
+def test_ops_transfer_export_allows_job_store_updates_inside_data_root(
+    tmp_path: Path,
+) -> None:
+    from backend.jobs.manager import JobManager
+    from backend.jobs.store import JobStore
+
+    paths = _paths(tmp_path)
+    manager = JobManager(
+        JobStore(paths.db_path),
+        max_workers=1,
+    )
+    register_ops_job_handlers(manager, paths=paths)
+    try:
+        payload = _payload(_service(paths), "transfer_export", scope="lean")
+
+        job = manager.submit("ops_transfer_export", payload)
+        manager.wait(job.id, timeout=5)
+        loaded = manager.get(job.id)
+
+        assert loaded is not None
+        assert loaded.status == "succeeded", loaded.error
+        assert loaded.error is None
+        published = paths.outputs_dir / "ops" / str(loaded.result["filename"])
+        assert published.is_file()
+        assert zipfile.is_zipfile(published)
     finally:
         manager.shutdown()
 

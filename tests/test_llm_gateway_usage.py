@@ -7,6 +7,7 @@ from backend.llm.usage import (
     JsonlUsageSink,
     LLMUsageEvent,
     NullUsageSink,
+    response_diagnostics,
     usage_fields,
 )
 from usage_logger import log_llm_usage
@@ -74,6 +75,73 @@ def test_usage_fields_supports_nested_mapping_responses_usage_and_details():
         "reasoning_tokens": 3,
         "total_tokens": 21,
     }
+
+
+def test_response_diagnostics_records_length_stop_without_retaining_content():
+    response = {
+        "choices": [
+            {
+                "finish_reason": "length",
+                "message": {"content": '{"ok":true}'},
+            }
+        ]
+    }
+
+    diagnostics = response_diagnostics(response)
+
+    assert diagnostics == {
+        "finish_reason": "length",
+        "output_truncated": True,
+        "response_chars": 11,
+        "response_sha256": (
+            "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93"
+        ),
+    }
+    assert '{"ok":true}' not in repr(diagnostics)
+
+
+def test_response_diagnostics_sanitizes_untrusted_finish_reason():
+    response = {
+        "choices": [
+            {
+                "finish_reason": "length\nstudent answer C:\\private",
+                "message": {"content": "{}"},
+            }
+        ]
+    }
+
+    diagnostics = response_diagnostics(response)
+
+    assert diagnostics["finish_reason"] == "unknown"
+    assert diagnostics["output_truncated"] is False
+    assert "student answer" not in repr(diagnostics)
+    assert "C:\\" not in repr(diagnostics)
+
+
+def test_response_diagnostics_distinguishes_unclosed_from_mismatched_json():
+    unclosed = response_diagnostics(
+        {
+            "choices": [
+                {
+                    "finish_reason": None,
+                    "message": {"content": '{"rubric":{"questions":['},
+                }
+            ]
+        }
+    )
+    mismatched = response_diagnostics(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": '{"a":1]'},
+                }
+            ]
+        }
+    )
+
+    assert unclosed["output_truncated"] is True
+    assert mismatched["output_truncated"] is False
 
 
 def test_failed_request_event_defaults_to_zero_usage():

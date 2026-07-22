@@ -6,7 +6,7 @@ export const QUESTION_TYPES = [
   'choice', 'fill_blank', 'calculation', 'proof', 'comprehensive',
 ] as const
 export type QuestionType = (typeof QUESTION_TYPES)[number]
-export type GenerationMode = 'per_question' | 'whole_document'
+export type GenerationMode = 'batched'
 
 export interface QuestionDecision {
   question_id: string
@@ -53,7 +53,7 @@ export interface ConfigGenerationRequest {
 
 export interface ConfigGenerationRetryRequest {
   source_job_id: number
-  retry_question_ids: string[]
+  retry_question_ids?: string[]
   client_request_token?: string
 }
 
@@ -342,7 +342,7 @@ export async function fetchLatestConfigGenerationJob(
   const id = requireSessionId(sessionId)
   const sourceId = requireSourceId(request.source_id)
   if (!/^[0-9a-f]{64}$/.test(request.source_revision)
-    || !['per_question', 'whole_document'].includes(request.generation_mode)) {
+    || request.generation_mode !== 'batched') {
     throw new Error('Invalid generation lookup')
   }
   const query = new URLSearchParams({
@@ -393,13 +393,14 @@ export async function retryConfigGeneration(
   const id = requireSessionId(sessionId)
   if (!isPositiveInteger(sourceJobId)) throw new Error('Invalid source Job id')
   const questionIds = [...new Set(retryQuestionIds.map((item) => item.trim()))]
-  if (questionIds.length === 0 || questionIds.some((item) => !item || item.length > 100)) {
+  if ((retryQuestionIds.length > 0 && questionIds.length === 0)
+    || questionIds.some((item) => !item || item.length > 100)) {
     throw new Error('Invalid retry question ids')
   }
   const request: ConfigGenerationRetryRequest = {
     source_job_id: sourceJobId,
-    retry_question_ids: questionIds,
   }
+  if (questionIds.length > 0) request.retry_question_ids = questionIds
   if (requestToken) request.client_request_token = requireRequestToken(requestToken)
   return apiClient.request(`/api/sessions/${id}/config/generate/retry`, {
     method: 'POST', body: request, decode: decodeStrictJob,

@@ -6,12 +6,14 @@ import {
   studentsRouteDefinition,
   questionBankRouteDefinition,
   questionAssemblyRouteDefinition,
+  trainingRouteDefinition,
   filesRouteDefinition,
   templateRegionRouteDefinition,
   gradingRunRouteDefinition,
   knowledgeGraphRouteDefinition,
   reviewRouteDefinition,
   workbenchRouteDefinition,
+  settingsRouteDefinition,
 } from '../navigation'
 
 const routes: RouteRecordRaw[] = [
@@ -75,6 +77,16 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: trainingRouteDefinition.path,
+    name: trainingRouteDefinition.id,
+    component: () => import('../views/TrainingRecommendationsView.vue'),
+    meta: {
+      title: trainingRouteDefinition.title,
+      description: trainingRouteDefinition.description,
+      breadcrumb: trainingRouteDefinition.breadcrumb,
+    },
+  },
+  {
     path: templateRegionRouteDefinition.path,
     name: templateRegionRouteDefinition.id,
     component: () => import('../views/TemplateRegionView.vue'),
@@ -122,6 +134,16 @@ const routes: RouteRecordRaw[] = [
       title: reviewRouteDefinition.title,
       description: reviewRouteDefinition.description,
       breadcrumb: reviewRouteDefinition.breadcrumb,
+    },
+  },
+  {
+    path: settingsRouteDefinition.path,
+    name: settingsRouteDefinition.id,
+    component: () => import('../views/SettingsOpsView.vue'),
+    meta: {
+      title: settingsRouteDefinition.title,
+      description: settingsRouteDefinition.description,
+      breadcrumb: settingsRouteDefinition.breadcrumb,
     },
   },
   {

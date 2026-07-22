@@ -1,0 +1,85 @@
+# Issue #61：配置生成默认超时调整
+
+**关联执行包：** P1-24（已合并模型策略的独立行为调整）
+**阻塞：** P2-20 formal 用户验收
+**状态：** completed
+**基线：** `252b768e3b29ec4a80853a6f3a0cf6165e9dba2d`
+**分支：** `codex/issue-61-config-timeout`
+**用户自测：** none（修复进入 M2-03 后恢复 P2-20 的既有 formal 清单）
+**通道登记：** 临时第二功能通道 `.worktrees/issue-61-config-timeout`；本任务独占 `backend/llm/policy.py`、LLM 聚焦测试、本计划、`ARCHITECTURE.md` 与 Index 中的 Issue #61 登记。
+
+## 冻结边界
+
+- **目标：** 把配置生成的默认模型请求超时从 120 秒调整为 600 秒，使整卷单次生成在基础连通与鉴权正常时不会被两分钟默认值提前截断。
+- **包含：** `config_generation` 默认策略；API profile 合法覆盖；公共 `LLMProtocolAdapter` 到假 SDK 的超时传递回归；当前架构事实和 Issue 状态记录。
+- **明确不包含：** grading/recognition/tagging 默认值；重试次数与退避；模型、Base URL、prompt、评分规则、API、数据库 Schema；P2-20 验收工具；真实模型调用或真实 `user_data/`。
+- **公开测试接缝：** `LLMProtocolAdapter.chat_completions()` 使用真实 `LLMGateway` 和假 SDK 客户端，观察最终 SDK `create()` 收到的 `timeout`。该接缝是 P1-24 已公开并有既有契约测试的模型适配器接口。
+- **验收条件：**
+  1. 无 profile 覆盖时，配置生成经公共适配器传给 SDK 的 timeout 为 600 秒。
+  2. profile 显式设置合法短超时时，该值仍优先。
+  3. grading=300、recognition=60、tagging=120 的默认值和有限重试行为保持不变。
+  4. 聚焦测试、受影响 LLM/config 回归与快速冒烟通过；不调用真实模型，不触碰真实数据。
+  5. 稳定候选由 Spec/Standards 两名评审者检查同一 SHA，当前范围 `Critical`/`Important` 为零。
+- **风险等级：** 中。公共模型策略默认值发生变化，但只影响配置生成的最长等待时间；失败语义、调用次数、费用上限和数据写入时序不变。
+
+## 集中调查结论
+
+1. P1-24 设计和 `backend/llm/policy.py` 都明确把配置生成默认值设为 120 秒；Gateway 是当前统一超时权威。
+2. `session_manager` 保留的 600 秒调用参数会被统一策略替换，但这符合原设计，不能按“意外覆盖”修复。
+3. 当前机器活动 API profile 未设置 `llm_config_generation_timeout_seconds`，因此 P2-20 第六副本实际使用默认 120 秒；验收工具没有丢失一个已存在的 600 秒覆盖值。
+4. 用户于 2026-07-19 明确同意启动调整；Issue #61 已据此更正为“配置生成默认超时从 120 秒调整为 600 秒”。
+
+## 故障场景
+
+| 场景 | 预期结果 |
+|---|---|
+| 重复操作 | 本修复不增加提交或重试；同一业务请求的物理调用次数保持既有契约。 |
+| 同时操作 | 只改变每个配置请求的超时预算，不改变 worker、节流、Job 锁或并发裁决。 |
+| 中途退出/取消 | 继续沿用协作式取消；不强杀已在途模型请求，不发布部分配置。 |
+| 重新启动 | 默认策略随进程启动稳定生效；Job 恢复语义不变。 |
+| 失败重试 | 默认和 profile 重试次数不变；single-request 仍只发一次。 |
+| 部分完成 | 完整成功前不绑定配置；延长等待不允许半发布。 |
+| 数据缺失或冲突 | 沿用配置生成现有 fail-closed、revision 和原子绑定规则。 |
+| 显式短超时 | API profile 的 1–600 秒合法覆盖继续优先，便于用户主动收紧。 |
+
+## 实施切片
+
+- [x] 创建并更正 GitHub Issue #61，冻结边界与用户决定。
+- [x] 从 M2-03 精确 SHA 创建独立修复 worktree/分支并登记文件所有权。
+- [x] 在公共适配器接缝加入默认 600 秒回归并确认 RED。
+- [x] 最小调整 `config_generation` 默认策略并确认 GREEN。
+- [x] 更新既有策略期望和当前架构事实。
+- [x] 运行聚焦测试、受影响 LLM/config 回归与快速冒烟。
+- [x] 冻结候选并进行 Spec/Standards 双路复审。
+- [x] 合入 M2-03 integration，逐包验证并恢复 P2-20。
+
+## 数据守卫
+
+- 本任务不读取、复制或修改真实 `user_data/`。
+- 测试只使用假客户端、假时钟、内存对象和 pytest 临时目录，不访问真实 API profile 或模型。
+- 领取前共享 stash 基线：`85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2`。
+- 分支不得新增 `user_data/` 项，不得提交密钥、模型正文、验收副本或本机绝对路径。
+
+## 阶段记录
+
+| 阶段 | 耗时 | 测试/复审 | 原始问题 | 去重结果 | 剩余工作 | 修复验收 | 版本可发布 |
+|---|---:|---|---:|---|---|---|---|
+| 调查与边界冻结 | 约 20 分钟 | P1-24 设计、Gateway/Policy/LLMClient、活动 profile 安全字段、P2-20 第六副本证据、Issue #61 | 1 | 1 Important：默认 120 秒不足以支持本次整卷生成；原“600 秒被意外覆盖”假设已按权威设计纠正 | RED→GREEN、回归、双路复审、integration | 否 | 否 |
+| RED→GREEN | 约 5 分钟 | 公共 `LLMProtocolAdapter` → 真实 Gateway → 假 SDK：RED 收到 120 秒；最小策略修改后 3 项聚焦测试通过 | 0 | 0 | 受影响回归、快速冒烟、双路复审、integration | 局部通过 | 否 |
+| 稳定候选 | 约 25 分钟 | 受影响 LLM/config 回归 196 passed；`smoke_check.py --skip-tests` 通过，编译 495 个文件并在临时副本验证两库初始化幂等 | 2 | 0：两项均为旧测试的 120 秒期望，已按冻结需求统一更新 | 双路初审、integration | 自动验收通过 | 否 |
+| 双路初审 | 约 3 分钟 | 同一冻结候选 `fb3d642`；Spec 0/0/0，Standards 0 Critical / 1 Important / 0 Suggestion | 1 | 1 Important：Issue 已创建但未登记负责人，存在被其他窗口重复领取的风险 | 补登记负责人、限定终审、integration | 否 | 否 |
+| 统一修复与限定终审 | 约 2 分钟 | 确认仓库归属后把 Issue #61 负责人登记为 `Hineni412`；原 Standards 评审者只复核该问题 | 1 | 0 Critical / 0 Important / 0 Suggestion；候选代码 SHA 未变化 | integration | 通过 | 否 |
+| M2-03 逐包集成 | 约 10 分钟 | fast-forward 至 `8218d44`；受影响 LLM/config 回归 196 passed；快速冒烟通过，编译 496 个文件并在临时副本验证两库初始化幂等 | 0 | 0 | 用户另行授权一次新的整卷模型请求后继续 P2-20 | 通过 | 否：P2-20 formal 尚未完成 |
+
+## 假设排序与结论
+
+1. **确认：默认超时不足。** `/models` 1.365 秒返回 200，而整卷请求在产品 120 秒边界失败；活动 profile 没有覆盖值。
+2. **排除：Base URL 或鉴权整体不可用。** 同一地址和密钥的只读模型列表请求成功。
+3. **排除：验收工具丢失已有 600 秒覆盖。** 源 profile 与运行 profile 均没有该字段；问题发生在默认策略选择。
+4. **不扩大：供应商单次波动。** 外部延迟可能参与触发，但本 Issue 只落实用户已批准的默认等待时间调整，不承诺供应商 SLA。
+
+## 回退与停机
+
+- 修复保持为独立提交，可整体 revert；回退后配置生成恢复 120 秒默认值，P2-20 继续阻塞。
+- 若实现需要改变重试、并发、取消、费用额度、其他请求类型或真实数据，立即停止并重新裁定边界。
+- 若初审出现当前范围 `Critical`/`Important`，只统一修复一次并限定终审；终审仍有阻塞则停止，不开启第三轮。

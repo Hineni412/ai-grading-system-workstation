@@ -72,6 +72,9 @@ const editorIssues = computed(() => [
 ])
 const blockingIssues = computed(() => editorIssues.value
   .some((issue) => issue.severity === 'error'))
+const knowledgeNormalizationPending = computed(() => configStore.editor?.issues
+  .some((issue) => issue.code === 'knowledge_normalization_pending') ?? false)
+const saveNeeded = computed(() => configStore.hasDirtyEditor || knowledgeNormalizationPending.value)
 const saveBlocked = computed(() => configStore.effectiveTotalScore !== 100
   || blockingIssues.value || !rubricInputValid.value)
 const scoringQuestions = computed(() => [...new Set(
@@ -127,6 +130,9 @@ function editorReflectsRequest(
   response: ConfigEditorResponse,
   request: ConfigEditorSaveRequest,
 ): boolean {
+  if (request.edits.length === 0 && request.commands.length === 0) {
+    return !response.issues.some((issue) => issue.code === 'knowledge_normalization_pending')
+  }
   if (response.revision === request.revision || request.commands.length > 0) return false
   const rows = new Map(response.rows.map((row) => [row.row_id, row]))
   return request.edits.every((edit) => {
@@ -138,7 +144,7 @@ function editorReflectsRequest(
 }
 
 async function saveEditor(): Promise<void> {
-  if (configStore.sessionId === null || !configStore.hasDirtyEditor || saveBlocked.value
+  if (configStore.sessionId === null || !saveNeeded.value || saveBlocked.value
     || configJobActive.value || !configStore.beginSave()) return
   const sessionId = configStore.sessionId
   const request = configStore.buildSaveRequest()
@@ -324,15 +330,17 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
 
           <div class="config-editor__save-bar">
             <div>
-              <strong>{{ configStore.hasDirtyEditor ? '有未保存修改' : '已与服务器版本同步' }}</strong>
+              <strong>{{ configStore.hasDirtyEditor ? '有未保存修改'
+                : knowledgeNormalizationPending ? '有待保存的兼容更新' : '已与服务器版本同步' }}</strong>
               <span v-if="saveBlocked">需处理阻断问题并使总分为 100 后保存。</span>
+              <span v-else-if="knowledgeNormalizationPending">保存会在本地更新旧知识点格式，不会调用 AI。</span>
               <span v-else>保存时会一次提交全部行修改与评分单元命令。</span>
             </div>
             <button
               type="button"
               name="保存评分依据"
               class="config-editor__save-primary"
-              :disabled="!configStore.hasDirtyEditor || saveBlocked || saving || saveUnknown || refining || configJobActive || submissionPending"
+              :disabled="!saveNeeded || saveBlocked || saving || saveUnknown || refining || configJobActive || submissionPending"
               @click="saveEditor"
             >{{ saving ? '正在保存…' : '保存评分依据' }}</button>
           </div>

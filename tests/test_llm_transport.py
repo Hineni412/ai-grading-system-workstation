@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import importlib
+from types import SimpleNamespace
 
 import llm_client
-from backend.llm import LLMRequestKind, NullUsageSink
+from backend.llm import LLMRequestKind, NullCallTraceSink, NullUsageSink
 
 
 def _transport():
@@ -90,6 +91,7 @@ def test_adapter_forwards_request_kind_client_and_a_fresh_kwargs_copy() -> None:
         client=fake_client,
         gateway_factory=_RecordingGateway,
         usage_sink_factory=NullUsageSink,
+        trace_sink_factory=NullCallTraceSink,
     )
     result = adapter.chat_completions(
         request_kind=LLMRequestKind.RECOGNITION,
@@ -119,6 +121,88 @@ def test_adapter_forwards_request_kind_client_and_a_fresh_kwargs_copy() -> None:
     }
 
 
+def test_adapter_injects_trace_sink_and_only_the_endpoint_host() -> None:
+    transport = _transport()
+    _RecordingGateway.instances.clear()
+    trace_sink = object()
+
+    transport.LLMProtocolAdapter(
+        api_key="secret",
+        base_url="https://api.example.test/private?token=secret",
+        client=object(),
+        gateway_factory=_RecordingGateway,
+        usage_sink_factory=NullUsageSink,
+        trace_sink_factory=lambda: trace_sink,
+    )
+
+    gateway = _RecordingGateway.instances[0]
+    assert gateway.config["trace_sink"] is trace_sink
+    assert gateway.config["endpoint_host"] == "api.example.test"
+    serialized = repr(gateway.config)
+    assert "/private" not in serialized
+    assert "token=secret" not in serialized
+
+
+def test_adapter_defaults_to_the_independent_trace_log_without_writing(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    transport = _transport()
+    _RecordingGateway.instances.clear()
+    isolated_trace_log = tmp_path / "logs" / "llm_api_calls.jsonl"
+    monkeypatch.setattr(transport, "TRACE_LOG_FILE", isolated_trace_log)
+
+    transport.LLMProtocolAdapter(
+        api_key="secret",
+        base_url="https://api.example.test/v1",
+        client=object(),
+        gateway_factory=_RecordingGateway,
+        usage_sink_factory=NullUsageSink,
+    )
+
+    gateway = _RecordingGateway.instances[0]
+    assert isinstance(gateway.config["trace_sink"], transport.JsonlCallTraceSink)
+    assert gateway.config["trace_sink"].path == isolated_trace_log
+    assert gateway.config["endpoint_host"] == "api.example.test"
+    assert not isolated_trace_log.exists()
+
+
+def test_config_generation_default_timeout_reaches_sdk_through_public_adapter() -> None:
+    transport = _transport()
+    sdk_calls: list[dict[str, object]] = []
+
+    class FakeCreate:
+        def create(self, **kwargs: object) -> object:
+            sdk_calls.append(kwargs)
+            return SimpleNamespace(usage=None)
+
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=FakeCreate())
+    )
+    adapter = transport.LLMProtocolAdapter(
+        api_key="secret",
+        base_url="https://example.test/v1",
+        client=fake_client,
+        usage_sink_factory=NullUsageSink,
+        trace_sink_factory=NullCallTraceSink,
+    )
+
+    adapter.chat_completions(
+        request_kind=LLMRequestKind.CONFIG_GENERATION,
+        model="config-model",
+        kwargs={"messages": []},
+        allow_retry=False,
+    )
+
+    assert sdk_calls == [
+        {
+            "messages": [],
+            "model": "config-model",
+            "timeout": 600.0,
+        }
+    ]
+
+
 def test_adapter_owns_one_created_client_and_one_gateway_for_both_protocols(
     monkeypatch,
 ) -> None:
@@ -137,6 +221,7 @@ def test_adapter_owns_one_created_client_and_one_gateway_for_both_protocols(
         base_url="https://example.test",
         gateway_factory=_RecordingGateway,
         usage_sink_factory=NullUsageSink,
+        trace_sink_factory=NullCallTraceSink,
     )
 
     assert adapter.chat_completions(

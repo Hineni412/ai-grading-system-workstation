@@ -141,6 +141,7 @@ def test_batch_gateway_retry_does_not_multiply_logical_request_events(
                     sleeper=lambda _seconds: None,
                 ),
                 usage_sink_factory=backend_llm.NullUsageSink,
+                trace_sink_factory=backend_llm.NullCallTraceSink,
             )
 
         def responses(self, **kwargs):

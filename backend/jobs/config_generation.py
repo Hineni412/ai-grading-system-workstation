@@ -42,15 +42,20 @@ from question_bank.services.source_paper_archive_service import (
     source_archive_sha_lock,
 )
 from session_manager import (
+    failed_grading_config_batches,
     failed_grading_config_question_ids,
-    generate_grading_config_from_confirmed_blocks,
-    generate_grading_config_from_images,
-    generate_grading_config_from_text,
-    retry_failed_grading_config_questions,
+    generate_grading_config_in_batches,
+    retry_failed_grading_config_batches,
     refine_grading_config_from_manual_structure,
 )
 
 from .manager import JobCancellationRequested, JobContext
+
+
+# Compatibility names for older callers/tests. Both execute the new batched
+# implementation; no per-question request behavior remains.
+generate_grading_config_from_confirmed_blocks = generate_grading_config_in_batches
+retry_failed_grading_config_questions = retry_failed_grading_config_batches
 
 if TYPE_CHECKING:
     from .store import JobStore
@@ -253,6 +258,23 @@ def run_config_generation_job(
             data_root=data_root,
             mapping_output_dir=mapping_output_dir,
         )
+    except JobCancellationRequested:
+        draft = _draft_path(upload_config_dir, context.job_id)
+        if draft.is_file():
+            try:
+                payload = _read_json_object(draft)
+                context.store.finish(
+                    context.job_id,
+                    "cancelled",
+                    result=_summary_from_batch_draft(
+                        int(context.payload.get("session_id") or 0), payload
+                    ),
+                )
+            except Exception:
+                pass
+        elif input_id and mode != "retry":
+            discard_config_generation_input(upload_config_dir, input_id)
+        raise
     except BaseException as exc:
         if input_id and mode != "retry":
             discard_config_generation_input(upload_config_dir, input_id)
@@ -274,6 +296,41 @@ def run_config_generation_job(
             session_id=int(context.payload.get("session_id") or 0),
         )
     return result
+
+
+def preserve_interrupted_config_generation_checkpoints(
+    upload_config_dir: Path,
+    store: "JobStore",
+) -> set[str]:
+    """Mark interrupted checkpointed jobs retryable before generic restart cleanup."""
+    jobs, _total = store.list_jobs(
+        job_types=("config_generation",),
+        statuses=("queued", "running"),
+        limit=10_000,
+        offset=0,
+    )
+    protected_inputs: set[str] = set()
+    for job in jobs:
+        draft = _draft_path(upload_config_dir, job.id)
+        if not draft.is_file():
+            continue
+        try:
+            payload = _read_json_object(draft)
+            summary = _summary_from_batch_draft(
+                int(job.payload.get("session_id") or 0), payload
+            )
+        except Exception:
+            continue
+        store.finish(
+            job.id,
+            "failed",
+            error="interrupted by process restart; completed batches were preserved",
+            result=summary,
+        )
+        input_id = str(job.payload.get("input_id") or "").strip()
+        if input_id:
+            protected_inputs.add(input_id)
+    return protected_inputs
 
 
 def _run_config_generation_job_impl(
@@ -299,14 +356,31 @@ def _run_config_generation_job_impl(
     else:
         source_job_id = _required_int(context.payload, "source_job_id")
         source_job = context.store.get_job(source_job_id)
+        source_outcome = source_job.result.get("outcome") if source_job is not None else None
+        retry_failed_batches = source_outcome == "partial"
+        retry_score_allocation = (
+            source_outcome == "partial"
+            and source_job is not None
+            and bool(source_job.result.get("score_allocation_pending"))
+            and not bool(source_job.result.get("failed_batches"))
+        )
+        resume_complete_draft = (
+            source_outcome == "complete"
+            and source_job is not None
+            and source_job.status in {"failed", "cancelled"}
+        )
         if (
             source_job is None
             or source_job.job_type != "config_generation"
-            or source_job.status != "succeeded"
-            or source_job.result.get("outcome") != "partial"
+            or source_job.status not in {"succeeded", "failed", "cancelled"}
+            or not (
+                retry_failed_batches
+                or retry_score_allocation
+                or resume_complete_draft
+            )
             or _required_int(source_job.payload, "session_id") != session_id
-            or str(source_job.payload.get("generation_mode") or "per_question")
-            != "per_question"
+            or str(source_job.payload.get("generation_mode") or "batched")
+            not in {"batched", "per_question"}
         ):
             raise ValueError("config generation source job is not retryable")
         input_id = str(source_job.payload.get("input_id") or "")
@@ -337,14 +411,17 @@ def _run_config_generation_job_impl(
     generation_mode = str(
         context.payload.get("generation_mode")
         or inputs.get("generation_mode")
-        or "per_question"
+        or "batched"
     ).strip()
-    if generation_mode not in {"per_question", "whole_document"}:
+    if generation_mode == "per_question":
+        generation_mode = "batched"
+    if generation_mode != "batched":
         raise ValueError("unsupported config generation mode")
-    if mode == "retry" and generation_mode != "per_question":
-        raise ValueError("whole-document config generation is not retryable")
     staged_generation_mode = inputs.get("generation_mode")
-    if staged_generation_mode is not None and str(staged_generation_mode) != generation_mode:
+    staged_mode = str(staged_generation_mode or "").strip()
+    if staged_mode == "per_question":
+        staged_mode = "batched"
+    if staged_generation_mode is not None and staged_mode != generation_mode:
         raise ValueError("config generation mode changed")
 
     source_record: ConfigSourceRecord | None = None
@@ -395,9 +472,7 @@ def _run_config_generation_job_impl(
         document_text = str(inputs.get("document_text") or "")
         whole_page_images = _decode_whole_page_images(inputs.get("whole_page_images"))
         source_suffix = str(inputs.get("source_suffix") or "")
-    if not isinstance(confirmed_blocks, list) or (
-        generation_mode == "per_question" and not confirmed_blocks
-    ):
+    if not isinstance(confirmed_blocks, list) or not confirmed_blocks:
         raise ValueError("confirmed_blocks must be a non-empty list")
     if question_images is not None and not isinstance(question_images, dict):
         raise ValueError("question_images must be an object")
@@ -408,6 +483,25 @@ def _run_config_generation_job_impl(
 
     def report(progress: float, stage: str, detail: str = "") -> None:
         context.report(progress, stage, detail)
+
+    def checkpoint(value: dict[str, Any]) -> None:
+        with session_config_lock(Path(upload_config_dir), session_id):
+            current_session = db.get_grading_session(session_id)
+            if (
+                current_session is None
+                or bool(int(current_session.get("is_deleted") or 0))
+                or str(current_session.get("rubric_path") or "") != expected_rubric_path
+                or str(current_session.get("answer_key_path") or "")
+                != expected_answer_key_path
+            ):
+                raise ValueError("session config changed while generation was running")
+            if source_service is not None:
+                source_service.load_for_generation(
+                    session_id=session_id,
+                    source_id=source_id,
+                    source_revision=source_revision,
+                )
+            _write_json_atomic(_draft_path(upload_config_dir, context.job_id), value)
         context.raise_if_cancelled()
 
     if existing_payload is not None:
@@ -426,8 +520,9 @@ def _run_config_generation_job_impl(
             report=report,
             q_images=question_images or None,
             retry_question_ids=retry_ids,
+            checkpoint=checkpoint,
         )
-    elif generation_mode == "per_question":
+    else:
         payload = generate_grading_config_from_confirmed_blocks(
             confirmed_blocks,
             document_text,
@@ -435,34 +530,22 @@ def _run_config_generation_job_impl(
             model_name=_config_model(client),
             report=report,
             q_images=question_images or None,
-        )
-    elif source_suffix == ".docx":
-        payload = generate_grading_config_from_text(
-            document_text,
-            llm_client=client,
-            model_name=_config_model(client),
-            report=report,
-        )
-    else:
-        payload = generate_grading_config_from_images(
-            whole_page_images,
-            "",
-            llm_client=client,
-            model_name=_config_model(client),
-            report=report,
+            checkpoint=checkpoint,
         )
     context.raise_if_cancelled()
     failed_ids = failed_grading_config_question_ids(payload)
+    score_allocation = _score_allocation_summary(payload)
     total_questions = _question_count(payload, confirmed_blocks)
     summary = _summary(
         session_id,
         total_questions,
         failed_ids,
-        retryable_mode=generation_mode == "per_question",
+        failed_batches=failed_grading_config_batches(payload),
+        local_json_repairs=_local_json_repairs(payload),
+        **score_allocation,
+        retryable_mode=True,
     )
-    if failed_ids:
-        if generation_mode != "per_question":
-            raise ValueError("whole-document generation returned an incomplete result")
+    if failed_ids or bool(score_allocation["score_allocation_pending"]):
         with session_config_lock(Path(upload_config_dir), session_id):
             current_session = db.get_grading_session(session_id)
             if (
@@ -814,18 +897,90 @@ def _summary(
     total_questions: int,
     failed_ids: list[str],
     *,
+    failed_batches: list[dict[str, Any]] | None = None,
+    local_json_repairs: list[dict[str, Any]] | None = None,
+    score_allocation_pending: bool = False,
+    score_allocation_failed: bool = False,
+    score_allocation_error: str = "",
     retryable_mode: bool = True,
 ) -> dict[str, object]:
     failed_count = len(failed_ids)
+    clean_batches = list(failed_batches or [])
+    is_partial = bool(failed_count or score_allocation_pending)
     return {
         "session_id": session_id,
-        "outcome": "partial" if failed_count else "complete",
+        "outcome": "partial" if is_partial else "complete",
         "total_questions": total_questions,
         "generated_questions": max(0, total_questions - failed_count),
         "failed_count": failed_count,
         "failed_question_ids": failed_ids,
-        "retryable": bool(failed_count and retryable_mode),
+        "failed_batch_count": len(clean_batches),
+        "failed_batches": clean_batches,
+        "local_json_repairs": list(local_json_repairs or []),
+        "score_allocation_pending": bool(score_allocation_pending),
+        "score_allocation_failed": bool(score_allocation_failed),
+        "score_allocation_error": str(score_allocation_error or "")[:300],
+        "retryable": bool(is_partial and retryable_mode),
     }
+
+
+def _score_allocation_summary(payload: dict[str, Any]) -> dict[str, object]:
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    if not isinstance(meta, dict):
+        return {
+            "score_allocation_pending": False,
+            "score_allocation_failed": False,
+            "score_allocation_error": "",
+        }
+    return {
+        "score_allocation_pending": bool(meta.get("score_allocation_pending")),
+        "score_allocation_failed": bool(meta.get("score_allocation_failed")),
+        "score_allocation_error": str(meta.get("score_allocation_error") or ""),
+    }
+
+
+def _local_json_repairs(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    batches = meta.get("batches") if isinstance(meta, dict) else None
+    reports: list[dict[str, Any]] = []
+    for batch in batches or []:
+        if not isinstance(batch, dict):
+            continue
+        repair = batch.get("local_json_repair")
+        if not isinstance(repair, dict) or not bool(repair.get("repaired")):
+            continue
+        reports.append(
+            {
+                "batch_id": str(batch.get("batch_id") or ""),
+                "question_ids": [str(qid) for qid in batch.get("question_ids") or []],
+                "operations": [str(item) for item in repair.get("operations") or []],
+            }
+        )
+    return reports
+
+
+def _summary_from_batch_draft(
+    session_id: int,
+    payload: dict[str, Any],
+) -> dict[str, object]:
+    batches = payload.get("meta", {}).get("batches", []) if isinstance(payload, dict) else []
+    all_ids = [
+        str(qid)
+        for batch in batches
+        if isinstance(batch, dict)
+        for qid in batch.get("question_ids") or []
+        if str(qid).strip()
+    ]
+    failed_ids = failed_grading_config_question_ids(payload)
+    return _summary(
+        session_id,
+        len(all_ids) or _question_count(payload, []),
+        failed_ids,
+        failed_batches=failed_grading_config_batches(payload),
+        local_json_repairs=_local_json_repairs(payload),
+        **_score_allocation_summary(payload),
+        retryable_mode=True,
+    )
 
 
 def _decode_whole_page_images(value: Any) -> list[bytes]:

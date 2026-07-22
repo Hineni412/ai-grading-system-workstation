@@ -14,10 +14,13 @@ import { useSessionStore } from '../../../stores/session'
 import SessionConfigView from '../../../views/SessionConfigView.vue'
 import ConfigSaveResult from '../ConfigSaveResult.vue'
 
-function editor(answer = '旧答案', revision = 'a'): ConfigEditorResponse {
+function editor(answer = '旧答案', revision = 'a', normalizationPending = false): ConfigEditorResponse {
   return {
     session_id: 7, configured: true, revision: revision.repeat(64), total_score: 100,
-    source: null, issues: [], rows: [{
+    source: null, issues: normalizationPending ? [{
+      code: 'knowledge_normalization_pending', severity: 'warning', row_id: null,
+      field: 'knowledge', message: '检测到可安全兼容的旧知识点格式',
+    }] : [], rows: [{
       row_id: 'row-q12-p1-s1', question_id: 'Q12', part_id: 'P1', step_id: 'S1',
       part_label: '第 1 问', question_type: 'proof', core_goal: '证明', score: 100,
       standard_answer: answer, accepted_answers: [], match_rule: '按要素', knowledge: '',
@@ -49,6 +52,7 @@ async function mountView(options: {
   saver: (sessionId: number, request: ConfigEditorSaveRequest) => Promise<ConfigEditorSaveResponse>
   loader?: (sessionId: number) => Promise<ConfigEditorResponse>
   refiner?: (sessionId: number, request: { revision: string; commands: unknown[] }) => Promise<JobResponse>
+  initialEditor?: ConfigEditorResponse
 }) {
   const pinia = createPinia()
   setActivePinia(pinia)
@@ -65,7 +69,7 @@ async function mountView(options: {
     parse_state: 'ready', questions: [{ question_id: 'Q12', question_type: 'proof',
       question_preview: '证明题', answer_preview: '', answer_present: false, needs_review: false,
       local_answer_trusted: false, has_question_asset: false, has_answer_asset: false }] })
-  workspace.setEditor(editor())
+  workspace.setEditor(options.initialEditor ?? editor())
   const host = document.createElement('div')
   document.body.append(host)
   const app = createApp(SessionConfigView, { editorSaver: options.saver, editorLoader: options.loader,
@@ -142,6 +146,44 @@ describe('ConfigSaveResult', () => {
     expect(mounted.workspace.hasDirtyEditor).toBe(false)
     expect(mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 标准答案"]')?.value).toBe('服务器权威答案')
     expect(mounted.host.textContent).toContain('样卷映射已刷新')
+  })
+
+  it('publishes a pending knowledge compatibility update without teacher edits', async () => {
+    const saver = vi.fn(async () => saved())
+    const mounted = await mountView({
+      saver,
+      initialEditor: editor('旧答案', 'a', true),
+    })
+    const save = mounted.host.querySelector<HTMLButtonElement>('button[name="保存评分依据"]')!
+
+    expect(save.disabled).toBe(false)
+    expect(mounted.host.textContent).toContain('兼容')
+    save.click()
+    await settle()
+
+    expect(saver).toHaveBeenCalledExactlyOnceWith(7, {
+      revision: 'a'.repeat(64), edits: [], commands: [],
+    })
+    expect(mounted.workspace.hasDirtyEditor).toBe(false)
+    expect(mounted.host.textContent).toContain('样卷映射已刷新')
+  })
+
+  it('reconciles a lost compatibility-save response even when content revision is unchanged', async () => {
+    const timeout = new ApiError({ kind: 'timeout', status: null, code: 'request_timeout',
+      message: 'timeout', details: {}, requestId: 'safe', retryable: false })
+    const loader = vi.fn(async () => editor('旧答案', 'a', false))
+    const mounted = await mountView({
+      saver: vi.fn(async () => { throw timeout }),
+      loader,
+      initialEditor: editor('旧答案', 'a', true),
+    })
+
+    mounted.host.querySelector<HTMLButtonElement>('button[name="保存评分依据"]')!.click()
+    await settle()
+
+    expect(loader).toHaveBeenCalledExactlyOnceWith(7)
+    expect(mounted.workspace.saveStatus).toBe('success')
+    expect(mounted.host.textContent).not.toContain('有待保存的兼容更新')
   })
 
   it('retains local edits after a 409 and reloads only after the second confirmation', async () => {

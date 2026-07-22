@@ -40,6 +40,17 @@ _SOURCE_CONFIG_PUBLIC_DETAILS = {
     "旧版整卷修复": "Generating grading configuration.",
     "PDF 整卷视觉单次请求": "Generating grading configuration.",
 }
+_CONFIG_TRUNCATION_PUBLIC_ERRORS = {
+    "模型因输出长度上限停止": (
+        "模型因输出长度上限停止，当前批次结果不完整；未发布配置，也未自动重试。"
+        "请手动重试失败批次；已经成功的批次不会重复请求。"
+    ),
+    "模型返回的 JSON 结构未闭合": (
+        "模型返回的 JSON 结构未闭合，当前批次结果疑似被截断；"
+        "未发布配置，也未自动重试。请手动重试失败批次；"
+        "已经成功的批次不会重复请求。"
+    ),
+}
 
 def _job_response(job: JobRecord) -> JobResponse:
     return JobResponse(
@@ -176,6 +187,12 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
             "generated_questions",
             "failed_count",
             "failed_question_ids",
+            "failed_batch_count",
+            "failed_batches",
+            "local_json_repairs",
+            "score_allocation_pending",
+            "score_allocation_failed",
+            "score_allocation_error",
             "retryable",
             "mapping_status",
             "mapping_message",
@@ -205,6 +222,10 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
 def public_job_error(job: JobRecord) -> str | None:
     if not job.error:
         return None
+    if job.job_type == "config_generation" and job.status == "failed":
+        for prefix, public_error in _CONFIG_TRUNCATION_PUBLIC_ERRORS.items():
+            if job.error.startswith(prefix):
+                return public_error
     if job.status == "failed":
         return "Job failed; see local logs for details."
     return "Job ended with an internal error; see local logs for details."

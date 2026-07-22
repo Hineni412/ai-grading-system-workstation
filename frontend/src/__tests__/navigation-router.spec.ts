@@ -9,9 +9,11 @@ import {
   studentsRouteDefinition,
   questionBankRouteDefinition,
   questionAssemblyRouteDefinition,
+  trainingRouteDefinition,
   templateRegionRouteDefinition,
   gradingRunRouteDefinition,
   knowledgeGraphRouteDefinition,
+  settingsRouteDefinition,
   workbenchRouteDefinition,
 } from '../navigation'
 import { createAppRouter } from '../router'
@@ -22,9 +24,11 @@ const topLevelDefinitions = [
   studentsRouteDefinition,
   questionBankRouteDefinition,
   questionAssemblyRouteDefinition,
+  trainingRouteDefinition,
   knowledgeGraphRouteDefinition,
   filesRouteDefinition,
   reviewRouteDefinition,
+  settingsRouteDefinition,
 ] as const
 
 describe('source-recalibrated navigation', () => {
@@ -36,9 +40,11 @@ describe('source-recalibrated navigation', () => {
       ['students', '/students'],
       ['question-bank', '/question-bank'],
       ['question-assembly', '/question-assembly'],
+      ['training', '/training'],
       ['knowledge-graph', '/knowledge-graph'],
       ['files', '/files'],
       ['grading', '/grading'],
+      ['settings', '/settings'],
     ])
   })
 
@@ -64,11 +70,13 @@ describe('source-recalibrated navigation', () => {
     ['/students', '/students'],
     ['/question-bank', '/question-bank'],
     ['/question-assembly', '/question-assembly'],
+    ['/training', '/training'],
     ['/sessions/7/regions', '/sessions/7/regions'],
     ['/sessions/7/grading-run', '/sessions/7/grading-run'],
     ['/knowledge-graph?session=7&class=七年级一班', '/knowledge-graph?session=7&class=七年级一班'],
     ['/files', '/files'],
     ['/grading', '/grading'],
+    ['/settings', '/settings'],
     ['/design-system', '/design-system'],
     ['/missing/deep/path', '/missing/deep/path'],
   ])(
@@ -85,7 +93,7 @@ describe('source-recalibrated navigation', () => {
     10_000,
   )
 
-  it.each(['/settings', '/analytics'])(
+  it.each(['/analytics'])(
     'does not present the former placeholder route %s as a business page',
     async (target) => {
       const router = createAppRouter(createMemoryHistory())
@@ -103,8 +111,10 @@ describe('source-recalibrated navigation', () => {
     ['/students', 'students', 'StudentsView'],
     ['/question-bank', 'question-bank', 'QuestionBankView'],
     ['/question-assembly', 'question-assembly', 'QuestionAssemblyView'],
+    ['/training', 'training', 'TrainingRecommendationsView'],
     ['/knowledge-graph', 'knowledge-graph', 'KnowledgeGraphView'],
     ['/files', 'files', 'FileCenterView'],
+    ['/settings', 'settings', 'SettingsOpsView'],
   ])(
     'loads %s as %s',
     async (path, routeName, componentName) => {

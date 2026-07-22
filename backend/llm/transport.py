@@ -10,6 +10,11 @@ from openai import OpenAI
 from .gateway import LLMGateway
 from .policy import LLMRequestKind
 from .usage import JsonlUsageSink
+from .trace import (
+    JsonlCallTraceSink,
+    safe_endpoint_host,
+    TRACE_LOG_FILE,
+)
 
 
 _GATEWAY_CONFIG_SALT = "ai-grading-llm-gateway-config-v1"
@@ -59,6 +64,10 @@ def _default_usage_sink() -> JsonlUsageSink:
     return JsonlUsageSink(usage_logger.LOG_FILE)
 
 
+def _default_trace_sink() -> JsonlCallTraceSink:
+    return JsonlCallTraceSink(TRACE_LOG_FILE)
+
+
 class LLMProtocolAdapter:
     def __init__(
         self,
@@ -68,6 +77,7 @@ class LLMProtocolAdapter:
         client: object | None = None,
         gateway_factory=LLMGateway,
         usage_sink_factory=_default_usage_sink,
+        trace_sink_factory=_default_trace_sink,
     ) -> None:
         self.client = (
             client
@@ -78,6 +88,8 @@ class LLMProtocolAdapter:
             profile=dict(policy_profile or {}),
             config_key=gateway_config_key(api_key, base_url),
             usage_sink=usage_sink_factory(),
+            trace_sink=trace_sink_factory(),
+            endpoint_host=safe_endpoint_host(base_url),
         )
 
     def chat_completions(
@@ -88,6 +100,7 @@ class LLMProtocolAdapter:
         kwargs: Mapping[str, object],
         request_id: object | None = None,
         allow_retry: bool = True,
+        timeout_override_seconds: float | None = None,
     ) -> object:
         return self.gateway.chat_completions(
             request_kind=request_kind,
@@ -96,6 +109,7 @@ class LLMProtocolAdapter:
             kwargs=dict(kwargs),
             request_id=request_id,
             allow_retry=allow_retry,
+            timeout_override_seconds=timeout_override_seconds,
         )
 
     def responses(
@@ -106,6 +120,7 @@ class LLMProtocolAdapter:
         kwargs: Mapping[str, object],
         request_id: object | None = None,
         allow_retry: bool = True,
+        timeout_override_seconds: float | None = None,
     ) -> object:
         return self.gateway.responses(
             request_kind=request_kind,
@@ -114,4 +129,5 @@ class LLMProtocolAdapter:
             kwargs=dict(kwargs),
             request_id=request_id,
             allow_retry=allow_retry,
+            timeout_override_seconds=timeout_override_seconds,
         )

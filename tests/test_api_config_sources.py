@@ -16,6 +16,9 @@ warnings.filterwarnings(
 
 from fastapi.testclient import TestClient
 import pytest
+from docx import Document
+from docx.shared import Inches
+from PIL import Image
 
 from backend.api.app import create_app
 from backend.api.dependencies import (
@@ -42,6 +45,63 @@ def _pdf_bytes() -> bytes:
     payload = document.tobytes()
     document.close()
     return payload
+
+
+def _docx_with_inline_main_question_marker_bytes() -> bytes:
+    document = Document()
+    document.add_paragraph("10. Tenth question.")
+    document.add_paragraph(
+        "Continuation of question ten. 11. Eleventh question."
+    )
+    document.add_paragraph("12. Twelfth question.")
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+def _docx_with_inline_question_after_breaks_bytes() -> bytes:
+    document = Document()
+    document.add_paragraph("10. Tenth question.")
+    paragraph = document.add_paragraph("Continuation of question ten.")
+    breaks = paragraph.add_run()
+    for _index in range(4):
+        breaks.add_break()
+    paragraph.add_run("11. Eleventh question.")
+    document.add_paragraph("12. Twelfth question.")
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+def _docx_with_inline_question_media_bytes() -> bytes:
+    image = io.BytesIO()
+    Image.new("RGB", (24, 18), "navy").save(image, format="PNG")
+    document = Document()
+    document.add_paragraph("10. Tenth question.")
+    paragraph = document.add_paragraph(
+        "Continuation of question ten. 11. Eleventh question x"
+    )
+    exponent = paragraph.add_run("2")
+    exponent.font.superscript = True
+    paragraph.add_run().add_picture(io.BytesIO(image.getvalue()), width=Inches(0.25))
+    document.add_paragraph("12. Twelfth question.")
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+def _docx_with_image_before_inline_question_marker_bytes() -> bytes:
+    image = io.BytesIO()
+    Image.new("RGB", (24, 18), "maroon").save(image, format="PNG")
+    document = Document()
+    document.add_paragraph("10. Tenth question.")
+    paragraph = document.add_paragraph("Continuation of question ten.")
+    paragraph.add_run().add_picture(io.BytesIO(image.getvalue()), width=Inches(0.25))
+    paragraph.add_run(" 11. Eleventh question.")
+    document.add_paragraph("12. Twelfth question.")
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
 
 
 def _client(tmp_path: Path) -> tuple[TestClient, DBManager, Path]:
@@ -149,6 +209,116 @@ def test_upload_and_restart_get_return_only_bounded_public_projection(tmp_path: 
     )
     assert reloaded.status_code == 200
     assert reloaded.json() == body
+
+
+def test_docx_upload_splits_consecutive_main_question_marker_mid_paragraph(
+    tmp_path: Path,
+) -> None:
+    client, db, _upload_root = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+
+    uploaded = client.post(
+        f"/api/sessions/{session_id}/config/sources",
+        content=_docx_with_inline_main_question_marker_bytes(),
+        headers={
+            "content-type": "application/octet-stream",
+            "x-upload-filename": quote("inline-question.docx"),
+        },
+    )
+
+    assert uploaded.status_code == 201
+    questions = uploaded.json()["questions"]
+    assert [question["question_id"] for question in questions] == [
+        "Q10",
+        "Q11",
+        "Q12",
+    ]
+    previews = {
+        question["question_id"]: question["question_preview"]
+        for question in questions
+    }
+    assert "Eleventh question" not in previews["Q10"]
+    assert "Eleventh question" in previews["Q11"]
+
+
+def test_docx_upload_splits_inline_question_after_same_paragraph_breaks(
+    tmp_path: Path,
+) -> None:
+    client, db, _upload_root = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+
+    uploaded = client.post(
+        f"/api/sessions/{session_id}/config/sources",
+        content=_docx_with_inline_question_after_breaks_bytes(),
+        headers={
+            "content-type": "application/octet-stream",
+            "x-upload-filename": quote("inline-question-after-breaks.docx"),
+        },
+    )
+
+    assert uploaded.status_code == 201
+    questions = uploaded.json()["questions"]
+    assert [question["question_id"] for question in questions] == [
+        "Q10",
+        "Q11",
+        "Q12",
+    ]
+    previews = {
+        question["question_id"]: question["question_preview"]
+        for question in questions
+    }
+    assert "Eleventh question" not in previews["Q10"]
+    assert "Eleventh question" in previews["Q11"]
+
+
+def test_docx_inline_question_keeps_following_formula_and_image_with_new_block(
+    tmp_path: Path,
+) -> None:
+    client, db, _upload_root = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+
+    uploaded = client.post(
+        f"/api/sessions/{session_id}/config/sources",
+        content=_docx_with_inline_question_media_bytes(),
+        headers={
+            "content-type": "application/octet-stream",
+            "x-upload-filename": quote("inline-question-media.docx"),
+        },
+    )
+
+    assert uploaded.status_code == 201
+    questions = {
+        question["question_id"]: question
+        for question in uploaded.json()["questions"]
+    }
+    assert questions["Q10"]["has_question_asset"] is False
+    assert questions["Q11"]["has_question_asset"] is True
+    assert "Eleventh question x" in questions["Q11"]["question_preview"]
+    assert questions["Q11"]["question_preview"].endswith("2")
+
+
+def test_docx_inline_question_keeps_preceding_image_with_current_block(
+    tmp_path: Path,
+) -> None:
+    client, db, _upload_root = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+
+    uploaded = client.post(
+        f"/api/sessions/{session_id}/config/sources",
+        content=_docx_with_image_before_inline_question_marker_bytes(),
+        headers={
+            "content-type": "application/octet-stream",
+            "x-upload-filename": quote("inline-question-preceding-image.docx"),
+        },
+    )
+
+    assert uploaded.status_code == 201
+    questions = {
+        question["question_id"]: question
+        for question in uploaded.json()["questions"]
+    }
+    assert questions["Q10"]["has_question_asset"] is True
+    assert questions["Q11"]["has_question_asset"] is False
 
 
 def test_active_source_endpoint_returns_replacement_without_old_source_id(
