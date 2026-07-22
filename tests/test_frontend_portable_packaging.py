@@ -53,7 +53,7 @@ def test_copy_sources_carries_only_built_frontend_assets(tmp_path: Path) -> None
     assert not (package / "frontend" / "node_modules").exists()
 
 
-@pytest.mark.parametrize("missing", ["dist", "index", "assets"])
+@pytest.mark.parametrize("missing", ["dist", "index", "assets", "empty_assets"])
 def test_copy_sources_rejects_incomplete_frontend_dist(
     tmp_path: Path,
     missing: str,
