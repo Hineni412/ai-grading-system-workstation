@@ -14,9 +14,9 @@
 ## 昼夜交接
 
 **执行包：** P3-01
-**交接状态：** waiting_review
-**功能提交：** branch_head
-**自动验证：** passed
+**交接状态：** in_progress
+**功能提交：** none
+**自动验证：** pending
 **独立复审：** pending
 **用户验收：** not_required
 **真实数据指纹：** not_touched
@@ -158,3 +158,11 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - 新增 4 个直接修复场景及 1 个 Git 换行转换场景；P3-01 与 Schema/性能证据受影响回归共 55 项通过（72.71 秒，1 条既有 Starlette/httpx 弃用警告），快速冒烟再次通过（文档治理、512 个第一方 Python 文件编译、两库临时副本初始化幂等）。
 - 更新后的活动 evidence release 为 `e3e751e8dcee0cbfa3a238987a0198f2927b0415a2dfc9aa6c0f5855295a5cd2`，绑定统一修正提交，记录 289 个第一方 Python 文件、2,792 条静态导入和 4 条动态导入线索；旧的非活动 evidence release 从版本化证据中移除。
 - 当前剩余工作：由首轮原 Spec/Standards 复审者仅核对四条登记问题及直接修改区域；若仍有当前范围 `Critical`/`Important`，按规则立即停止，不再自动修复。
+
+### 第 1 次独立修复最终复审与第 2 次授权
+
+- 最终限定复审关闭了 release ID 内容复核和嵌套 reparse 写入绕过，但仍登记 2 条 `Important`，因此第 1 次独立修复按规则停止，未宣称通过。
+- `Important 1｜本次修改直接引入`：旧格式迁移只确认 JSON 可解析、Markdown 可读取，没有证明 Markdown 正是由同一 JSON 渲染；旧故障留下“新 JSON + 旧 Markdown”时会把不匹配文件对固化为活动 release。
+- `Important 2｜当前任务原本遗漏`：两份文件已 fsync，release 改名后也同步了 `releases` 父目录，但改名前没有同步 staging 目录本身；掉电时文件名目录项仍可能未持久化。
+- 用户此前授予同类问题最多两次自动授权，本任务现启用第 2 次、也是最后一次授权。新修复只允许：用公开渲染结果证明旧 JSON/Markdown 匹配；在 release 改名前同步 staging 目录。不得修改其他行为或扩大范围。
+- 第 2 次修复仍执行一次 Spec/Standards 初审、必要时一次统一修正和一次最终限定复审；如果最终仍有当前范围 `Critical`/`Important`，立即停止 P3-01 和后续依赖包，不再自动建立第三个修复任务。
