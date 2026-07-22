@@ -1517,7 +1517,7 @@
     },
     {
       "path": "tools/build_p3_01_baseline.py",
-      "sha256": "894db728b3c6216b4fd4ec23d7b8c242935a83db2e80a168dc5cac0251ace850"
+      "sha256": "2d4b76592ead6b91a9385bc24122eca97645e686b0eddd1a73a42965b8759253"
     },
     {
       "path": "tools/check_documentation.py",
@@ -1664,7 +1664,7 @@
       "sha256": "7027987f136fd4ab2728ca90caac2cb3c2fb42f5a629d3f8b764894e02731150"
     }
   ],
-  "source_revision": "5e03980e0c94a74c858f827caff698cb0c29346b",
+  "source_revision": "36825741f995a94f54c7fba14062bc7073f59a2b",
   "static_imports": [
     {
       "kind": "from",
@@ -19070,27 +19070,41 @@
     {
       "kind": "import",
       "line": 15,
-      "module": "subprocess",
+      "module": "re",
       "name": null,
       "source": "tools/build_p3_01_baseline.py"
     },
     {
       "kind": "import",
       "line": 16,
-      "module": "sys",
+      "module": "shutil",
       "name": null,
       "source": "tools/build_p3_01_baseline.py"
     },
     {
       "kind": "import",
       "line": 17,
+      "module": "subprocess",
+      "name": null,
+      "source": "tools/build_p3_01_baseline.py"
+    },
+    {
+      "kind": "import",
+      "line": 18,
+      "module": "sys",
+      "name": null,
+      "source": "tools/build_p3_01_baseline.py"
+    },
+    {
+      "kind": "import",
+      "line": 19,
       "module": "tempfile",
       "name": null,
       "source": "tools/build_p3_01_baseline.py"
     },
     {
       "kind": "from",
-      "line": 18,
+      "line": 20,
       "module": "collections",
       "name": "defaultdict",
       "relative_level": 0,
@@ -19098,7 +19112,7 @@
     },
     {
       "kind": "from",
-      "line": 19,
+      "line": 21,
       "module": "pathlib",
       "name": "Path",
       "relative_level": 0,
@@ -19106,7 +19120,7 @@
     },
     {
       "kind": "from",
-      "line": 20,
+      "line": 22,
       "module": "typing",
       "name": "Any,Iterable",
       "relative_level": 0,

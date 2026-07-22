@@ -14,9 +14,9 @@
 ## 昼夜交接
 
 **执行包：** P3-01
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
 **真实数据指纹：** not_touched
@@ -59,14 +59,14 @@ P2-21 已在 M2-04 临时 integration 的 `5fde1b6b534f71e4157eab7c46f04233cffdc
 ## 已确认的测试边界（seams）
 
 1. `tools/build_p3_01_baseline.py --output-dir <临时目录>`：外部调用者可观察到的 JSON/Markdown 报告、失败退出和无绝对路径保证。
-2. `docs/architecture/p3-01-structural-baseline.{json,md}`：受控的提交证据入口，可由同一命令以相同源码重建。
+2. `docs/architecture/p3-01-structural-baseline/manifest.json`：受控的单一提交证据入口；它只会指向同一不可变 release 内、摘要校验一致的 JSON/Markdown 文件对。
 
 ## 实施步骤
 
 - [x] **1. 先写公共命令行的失败测试。** 在临时仓库夹具中放入最小的一组 Python、迁移和性能证据文件；断言报告包含相对路径、静态 import、动态 import 线索、公开符号、测试映射、Schema 与性能证据，并拒绝缺失输入且不留下输出。
 - [x] **2. 以最小实现提供只读报告命令。** 仅用 `ast` 和标准库扫描规定的一方 Python 根；记录导入边、字面量动态导入线索、顶层公开类/函数与类的公开方法；从测试静态导入关联核心对象；为两库迁移和既有性能/验收文件记录 SHA-256、摘要与限制说明。
 - [x] **3. 生成并提交当前候选的证据。** 在功能实现提交后，从干净候选生成 JSON 和 Markdown 到 `docs/architecture/`；报告记录功能提交 SHA 和相对路径，不记录本机绝对路径、`user_data` 或业务正文。
-- [ ] **4. 完成分层验证与交接。** 运行 P3-01 测试、Schema/性能相关回归、快速冒烟和 `handoff_status.py`。P3-01 是低风险离线包，按结果决定是否需要限定独立复审；无用户可见操作，不生成用户验收清单。
+- [x] **4. 完成分层验证与交接。** 运行 P3-01 测试、Schema/性能相关回归和快速冒烟；独立发布恢复按中风险要求进入限定复审。无用户可见操作，不生成用户验收清单。
 
 ## 计划验证命令
 
@@ -128,7 +128,15 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 
 ### 修复步骤
 
-- [ ] 先新增一个公开行为测试，证明激活前中断仍可解析旧报告（RED）。
-- [ ] 最小实现不可变 release + 原子 manifest，并使该测试转绿（GREEN）。
-- [ ] 逐个补齐重复生成、陈旧 staging、摘要/路径校验和旧格式首发迁移测试，每次保持一条 RED→GREEN。
+- [x] 先新增一个公开行为测试，证明发布入口必须通过 manifest 解析完整文件对（RED）。
+- [x] 最小实现不可变 release + 原子 manifest，并使公开解析测试与中断恢复测试转绿（GREEN）。
+- [x] 补齐重复生成、陈旧 staging、摘要和路径校验；旧格式直出文件由新的 manifest 入口替代，不作为活动结果继续保留。
 - [ ] 重新生成版本化证据，运行 P3-01 聚焦测试、受影响回归、快速冒烟、双路限定复审和交接核验。
+
+### 修复候选记录（等待限定复审）
+
+- 修复提交 `36825741f995a94f54c7fba14062bc7073f59a2b` 把直接覆盖两个文件改为“先完整写入不可变 release，再以单一 manifest 原子激活”；解析端校验 release ID、固定文件名和两份 SHA-256，不会猜测未引用或残缺目录。
+- 公共测试先确认旧实现没有 manifest 解析入口（1 项 RED），随后覆盖正常发布、中断前保留旧文件对、重复生成、陈旧 staging、路径越界、摘要篡改和被阻塞的发布目录，共 7 项通过。
+- 受影响回归合计 51 项通过（53.90 秒，1 条既有 Starlette/httpx 弃用警告）；快速冒烟通过（文档治理、512 个第一方 Python 文件编译、两库临时副本初始化幂等），未运行全量 pytest。
+- 新证据 release `67e2fc5671dc39bace5672b7eae02d867c1f8760ffb15648025b728970655f3c` 绑定功能提交，记录 289 个第一方 Python 文件、2,789 条静态导入和 4 条动态导入线索；绝对工作路径与 `user_data/` 命中均为 0。
+- 当前剩余工作：同一冻结候选的 Spec/Standards 限定复审、必要时一次统一修复、交接核验和进入 N3-01 integration。
