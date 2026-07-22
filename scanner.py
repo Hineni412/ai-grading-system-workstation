@@ -17,26 +17,13 @@ from typing import Any, List
 from PIL import Image
 
 from answer_region_geometry import scaled_region_bbox
+from backend.domain_models import ExamPaperGroup
 from grading_limits import PRECHECK_WORKERS_MAX, PRECHECK_WORKERS_MIN, bounded_int
 from image_preprocessor import ENHANCER_VERSION, enhance_for_ai, enhance_image_file
 from llm_client import LLMClient
 
 STUDENT_NAME_REGION_ID = "__student_name__"
 STUDENT_NAME_REGION_ALIASES = {STUDENT_NAME_REGION_ID, "student_name", "name", "姓名", "姓名区域"}
-
-
-@dataclass
-class ExamPaperGroup:
-    front_image: Path
-    back_image: Path
-    student_name: str
-    student_id: int | None = None
-    detected_name: str | None = None
-    source_label: str = ""
-    enhanced_front_image: Path | None = None
-    enhanced_back_image: Path | None = None
-    match_method: str = "exact"
-    match_score: float = 1.0
 
 
 @dataclass

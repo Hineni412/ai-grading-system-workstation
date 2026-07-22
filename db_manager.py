@@ -11,11 +11,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from ai_grader import GradingResult, QuestionGradingDetail
+from backend.domain_models import ExamPaperGroup, GradingResult, QuestionGradingDetail
 from backend.performance.metrics import instrument_sqlite_connection
 from grading_completeness import audit_grading_details, major_question_id
 from path_manager import resolve_stored_file_path
-from scanner import ExamPaperGroup
 try:
     from question_bank.taxonomy.registry import canonicalize_knowledge as _registry_canonicalize
 except Exception:
