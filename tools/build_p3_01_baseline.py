@@ -46,8 +46,6 @@ CORE_TARGETS = (
 SOURCE_DIRECTORIES = (
     "backend",
     "integration",
-    "pages",
-    "pages_shared",
     "question_bank",
     "tools",
     "update_tools",
