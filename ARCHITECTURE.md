@@ -12,6 +12,7 @@
 - **历史增量说明：** 下列 P1/P2 条目保留各包交付当时的边界；其中“生产 UI 尚未切换”“Streamlit 保持兼容”等历史措辞，已由 P2-21/P2-22 的当前事实取代。
 - **P2-21/P2-22 当前边界：** `运行.bat` 只启动 FastAPI 同源托管的 Vue SPA（默认 `127.0.0.1:8000`）。旧 `web_app.py`、`pages/`、`pages_shared/`、旧 Streamlit 桌面启动器和 `streamlit-drawable-canvas` 已退役；Vue 仍直接复用的 `components/answer_region_editor/` 核心资产保留。Streamlit 核心依赖暂仅服务 P3-15 明确处理的客观题准入向导和历史 P1-29 验收工具，不再处于生产启动或导航调用链。
 - **P3-01 至 P3-07 当前边界：** `tools/build_p3_01_baseline.py` 可从当前源码、Schema 和受控历史证据生成内容寻址的结构基线；共享评分结果与试卷组类型已移入 `backend/domain_models.py`。`backend/repositories/` 提供 SQLite 连接所有权、事务和只读会话契约，并已抽取学生、考试会话、答卷、评分结果/明细、复核、模板、答题区与应用设置仓储；正式 FastAPI、Job、评分、复核、报告、分析、媒体和工作台调用方统一接收 `GradingRepositoryAccess`，只读请求继续借用同一快照连接。`DBManager` 只从 `backend/repositories/compat.py` 的单一兼容组装点创建，保留一个版本承接初始化、备份、跨域兼容编排、运行时 DDL 与尚未迁移的聚合 SQL；旧入口和兼容测试仍可直接使用它。`AnswerRegionCommitService` 的数据库操作已走模板/答题区仓储，数据库提交后的文件快照、workflow 与草稿补偿协议保持不变。该批次不改变数据库 Schema、API 契约、业务结果或真实数据。
+- **P3-08 当前边界：** `backend/document_parsing/` 以窄接口承接 DOCX/PDF 文字提取、纯文本题目/答案解析和富文本 DOCX 题块装配；正式配置来源服务显式传入临时根、资产根、文件登记与受控写回调，解析包不依赖模型客户端。`session_manager` 与 `rubric_auto_cropper` 保留一个版本的兼容 import，PDF 页面渲染/题图裁切、prompt、生成编排、题号/答案/题型推断、100 分约束与质量告警语义均未改变。
 - **既有题库语义边界：** 在隔离分支把题库当前 `question_tags` 设为批改上下文、知识图谱和训练推荐的唯一活动语义来源；旧技能目录、概念映射和相关表保留一个版本作为只读回退，不再参与活动图谱/推荐
 - **P1-15 增量边界：** FastAPI 只公开试卷、题目分页/详情、当前标签、富文本/预览元数据和受控图片 GET；源题库通过有界 M1-W1-W2-M2 临时快照读取，SQLite 不打开源 main/WAL/SHM，持续变化以脱敏 503 fail closed
 - **P1-16 增量边界：** FastAPI 增加教师确认标签、带 revision 的题目软删除/恢复、受控 DOCX/PDF 流式暂存和 pending 导入请求；不执行长导入、不调用 AI、不写旧技能表，写入冲突以 409 fail closed
