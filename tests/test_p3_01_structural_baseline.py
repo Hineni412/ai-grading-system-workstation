@@ -111,6 +111,19 @@ def test_p3_01_command_rejects_missing_controlled_evidence_without_publication(
     assert not output_dir.exists()
 
 
+def test_p3_01_required_input_rejects_parent_traversal(tmp_path: Path) -> None:
+    repository_root = tmp_path / "repository"
+    repository_root.mkdir()
+    outside_report = tmp_path / "outside.json"
+    outside_report.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(
+        TOOL_MODULE.BaselineInputError,
+        match="inside the repository",
+    ):
+        TOOL_MODULE._require_file(repository_root, "../outside.json")
+
+
 def test_p3_01_command_rejects_user_data_output_before_scanning(
     tmp_path: Path,
 ) -> None:
