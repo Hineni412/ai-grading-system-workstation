@@ -66,7 +66,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     except FrontendDistributionError:
         print(
             "前端文件缺失：请重新解压完整工作机包，"
-            "或设置 USE_STREAMLIT=1 临时使用旧入口。",
+            "确认 frontend/dist 目录完整后重试。",
             file=sys.stderr,
         )
         return 2
