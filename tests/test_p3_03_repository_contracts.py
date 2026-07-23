@@ -136,6 +136,35 @@ def test_repository_connection_does_not_expose_transaction_lifecycle_methods(
         assert verification.execute("SELECT value FROM items").fetchall() == []
 
 
+def test_repository_sql_and_cursor_cannot_bypass_session_transaction(
+    tmp_path: Path,
+) -> None:
+    from backend.repositories import RepositoryTransactionError, SQLiteConnectionFactory
+
+    database = tmp_path / "repository.db"
+    _create_database(database)
+
+    with pytest.raises(ValueError, match="abort outer transaction"):
+        with SQLiteConnectionFactory(database).session() as session:
+            with session.transaction():
+                session.connection.execute("INSERT INTO items(value) VALUES ('partial')")
+                for statement in (
+                    "COMMIT",
+                    "  END",
+                    "-- repository comment\nROLLBACK",
+                    "/* repository comment */ SAVEPOINT caller_owned",
+                ):
+                    with pytest.raises(RepositoryTransactionError, match="transaction control"):
+                        session.connection.execute(statement)
+                cursor = session.connection.execute("SELECT COUNT(*) FROM items")
+                assert cursor.fetchone()[0] == 1
+                assert not hasattr(cursor, "connection")
+                raise ValueError("abort outer transaction")
+
+    with sqlite3.connect(database) as verification:
+        assert verification.execute("SELECT value FROM items").fetchall() == []
+
+
 def test_sessions_are_thread_bound_and_factory_creates_distinct_thread_connections(
     tmp_path: Path,
 ) -> None:
@@ -365,22 +394,29 @@ def test_commit_and_rollback_failures_are_both_preserved() -> None:
     from backend.repositories import RepositorySession, RepositoryTransactionError
 
     class BrokenCommitConnection:
+        def __init__(self) -> None:
+            self.commit_error = sqlite3.OperationalError("commit failed: disk full")
+            self.rollback_error = sqlite3.OperationalError("rollback failed: I/O error")
+
         def execute(self, _statement: str) -> None:
             return None
 
         def commit(self) -> None:
-            raise sqlite3.OperationalError("commit failed")
+            raise self.commit_error
 
         def rollback(self) -> None:
-            raise sqlite3.OperationalError("rollback failed")
+            raise self.rollback_error
 
-    session = RepositorySession(BrokenCommitConnection(), read_only=False)  # type: ignore[arg-type]
+    connection = BrokenCommitConnection()
+    session = RepositorySession(connection, read_only=False)  # type: ignore[arg-type]
     with pytest.raises(RepositoryTransactionError) as raised:
         with session.transaction():
             pass
-    assert isinstance(raised.value.__cause__, RepositoryTransactionError)
-    assert isinstance(raised.value.__cause__.__cause__, sqlite3.OperationalError)
-    assert any("commit also failed" in note for note in raised.value.__notes__)
+    assert isinstance(raised.value.__cause__, ExceptionGroup)
+    assert raised.value.__cause__.exceptions == (
+        connection.commit_error,
+        connection.rollback_error,
+    )
 
 
 def test_connection_initialization_failure_closes_the_opened_connection(
