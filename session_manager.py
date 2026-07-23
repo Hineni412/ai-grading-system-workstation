@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import copy
 import io
 import json
@@ -18,19 +17,12 @@ from docx import Document
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
-from answer_normalizer import complete_answer_set_values
 from equivalence_engine import merge_equivalent_forms
 from llm_client import LLMClient
 from question_bank.services.ai_tagging_service import KNOWLEDGE_POINT_OPTIONS
 from question_bank.models.skill_catalog import (
     SkillResolutionRequest,
     SkillRole,
-)
-from score_policy import (
-    enforce_integer_scores_by_type,
-    MAX_QUESTION_SCORE,
-    OBJECTIVE_TYPES,
-    _normalize_type,
 )
 
 
@@ -619,21 +611,20 @@ def preview_question_blocks_from_docx_bytes(
 
     解析失败时回退到纯文本拆题（preview_question_blocks_from_docx_text）。
     """
-    try:
-        rich_blocks = _extract_rich_question_blocks(
-            file_bytes,
-            temporary_root=temporary_root,
-            asset_root=asset_root,
-            register_created_file=register_created_file,
-            write_created_file=write_created_file,
-        )
-    except _ControlledDocxWriteError:
-        raise
-    except Exception:
-        rich_blocks = None
-    if rich_blocks:
-        return rich_blocks
-    return preview_question_blocks_from_docx_text(fallback_doc_text or "")
+    from backend.document_parsing import parse_docx_question_blocks
+
+    return parse_docx_question_blocks(
+        file_bytes,
+        fallback_doc_text=fallback_doc_text,
+        temporary_root=(
+            temporary_root
+            if temporary_root is not None
+            else _resolve_upload_config_dir()
+        ),
+        asset_root=asset_root,
+        register_created_file=register_created_file,
+        write_created_file=write_created_file,
+    )
 
 
 def _extract_rich_question_blocks(
@@ -1520,135 +1511,10 @@ def _safe_score_allocation_failure_message(exc: Exception) -> str:
     return "AI 统一配分或本地校验失败，未自动重试。"
 
 
-def _validate_exact_score_allocation_payload(
-    score_data: dict[str, Any],
-    structure_summary: list[dict[str, Any]],
-) -> None:
-    if not isinstance(score_data, dict):
-        raise ValueError("AI 统一配分结果顶层不是 JSON 对象。")
-    raw_scores = score_data.get("question_scores")
-    if not isinstance(raw_scores, list):
-        raise ValueError("AI 统一配分缺少 question_scores。")
-    expected_ids = [str(item.get("question_id") or "") for item in structure_summary]
-    actual_ids = [
-        str(item.get("question_id") or "") if isinstance(item, dict) else ""
-        for item in raw_scores
-    ]
-    if actual_ids != expected_ids or len(set(actual_ids)) != len(actual_ids):
-        raise ValueError("AI 统一配分的题号缺失、重复、越界或顺序不一致。")
-
-    total_score = 0
-    objective_scores: dict[str, int] = {}
-    for expected, actual in zip(structure_summary, raw_scores):
-        if not isinstance(actual, dict):
-            raise ValueError("AI 统一配分的题目结构无效。")
-        question_score = _strict_positive_score(actual.get("max_score"))
-        if question_score > MAX_QUESTION_SCORE:
-            raise ValueError("AI 统一配分存在超过单题上限的分值。")
-        total_score += question_score
-        question_type = str(expected.get("question_type") or "").strip()
-        if question_type in {"choice", "fill_blank", "judgement", "true_false"}:
-            previous = objective_scores.setdefault(question_type, question_score)
-            if previous != question_score:
-                raise ValueError("AI 统一配分未保持同类型客观题同分。")
-
-        expected_parts = expected.get("parts")
-        actual_parts = actual.get("parts")
-        if not isinstance(expected_parts, list) or not isinstance(actual_parts, list):
-            raise ValueError("AI 统一配分的分问结构无效。")
-        expected_part_ids = [
-            str(item.get("part_id") or "") if isinstance(item, dict) else ""
-            for item in expected_parts
-        ]
-        actual_part_ids = [
-            str(item.get("part_id") or "") if isinstance(item, dict) else ""
-            for item in actual_parts
-        ]
-        if actual_part_ids != expected_part_ids:
-            raise ValueError("AI 统一配分改变了分问结构。")
-
-        part_total = 0
-        for expected_part, actual_part in zip(expected_parts, actual_parts):
-            if not isinstance(expected_part, dict) or not isinstance(actual_part, dict):
-                raise ValueError("AI 统一配分的分问结构无效。")
-            part_score = _strict_positive_score(actual_part.get("part_score"))
-            part_total += part_score
-            expected_steps = expected_part.get("steps")
-            actual_steps = actual_part.get("steps")
-            if not isinstance(expected_steps, list) or not isinstance(actual_steps, list):
-                raise ValueError("AI 统一配分的步骤结构无效。")
-            expected_step_ids = [
-                str(item.get("step_id") or "") if isinstance(item, dict) else ""
-                for item in expected_steps
-            ]
-            actual_step_ids = [
-                str(item.get("step_id") or "") if isinstance(item, dict) else ""
-                for item in actual_steps
-            ]
-            if actual_step_ids != expected_step_ids:
-                raise ValueError("AI 统一配分改变了评分步骤结构。")
-            step_total = sum(
-                _strict_positive_score(item.get("step_score"))
-                for item in actual_steps
-                if isinstance(item, dict)
-            )
-            if step_total != part_score:
-                raise ValueError("AI 统一配分的步骤分之和不等于分问分。")
-        if part_total != question_score:
-            raise ValueError("AI 统一配分的分问分之和不等于题目分。")
-    if total_score != 100:
-        raise ValueError("AI 统一配分总分不是 100。")
 
 
-def _strict_positive_score(value: Any) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("AI 统一配分包含非整数分值。")
-    score = int(value)
-    if float(value) != float(score) or score <= 0:
-        raise ValueError("AI 统一配分包含非正整数分值。")
-    return score
 
 
-def _score_allocation_structure_summary(
-    payload: dict[str, Any],
-) -> list[dict[str, Any]]:
-    rubric = payload.get("rubric") if isinstance(payload, dict) else None
-    questions = rubric.get("questions") if isinstance(rubric, dict) else None
-    summary: list[dict[str, Any]] = []
-    for question in questions or []:
-        if not isinstance(question, dict):
-            continue
-        parts: list[dict[str, Any]] = []
-        for part in question.get("parts") or []:
-            if not isinstance(part, dict):
-                continue
-            steps = [
-                {
-                    "step_id": str(step.get("step_id") or ""),
-                    "core_goal": str(step.get("core_goal") or ""),
-                    "required_elements": [
-                        str(item) for item in step.get("required_elements") or []
-                    ],
-                }
-                for step in part.get("steps") or []
-                if isinstance(step, dict)
-            ]
-            parts.append(
-                {
-                    "part_id": str(part.get("part_id") or ""),
-                    "response_mode": str(part.get("response_mode") or ""),
-                    "steps": steps,
-                }
-            )
-        summary.append(
-            {
-                "question_id": str(question.get("question_id") or ""),
-                "question_type": str(question.get("question_type") or ""),
-                "knowledge_name": str(question.get("knowledge_name") or ""),
-                "parts": parts,
-            }
-        )
-    return summary
 
 
 def finalize_completed_grading_config_draft(
@@ -2626,290 +2492,22 @@ def _local_accepted_forms(canonical: str, qtype: str) -> list[str]:
     return merge_equivalent_forms([], *candidates, max_forms=16)
 
 
-def _apply_local_question_facts(payload: dict[str, Any], question_blocks: list[dict[str, Any]]) -> None:
-    if not isinstance(payload, dict):
-        return
-    rubric = payload.setdefault("rubric", {})
-    answer_key = payload.setdefault("answer_key", {})
-    if not isinstance(rubric, dict) or not isinstance(answer_key, dict):
-        return
-    questions = rubric.setdefault("questions", [])
-    answers = answer_key.setdefault("questions", [])
-    if not isinstance(questions, list) or not isinstance(answers, list):
-        return
-
-    facts = {
-        str(block.get("question_id") or "").strip(): block
-        for block in question_blocks
-        if str(block.get("question_id") or "").strip()
-    }
-    answer_map = {
-        str(answer.get("question_id") or "").strip(): answer
-        for answer in answers
-        if isinstance(answer, dict)
-    }
-
-    for question in questions:
-        if not isinstance(question, dict):
-            continue
-        qid = str(question.get("question_id") or "").strip()
-        fact = facts.get(qid)
-        if not fact:
-            continue
-        local_type = str(fact.get("question_type") or "").strip()
-        type_confirmed = bool(fact.get("question_type_confirmed"))
-        if local_type in {"choice", "fill_blank"} or (
-            type_confirmed and local_type in {"calculation", "proof", "comprehensive"}
-        ):
-            question["question_type"] = local_type
-            question["grading_mode"] = (
-                "direct_answer"
-                if local_type in {"choice", "fill_blank"}
-                else "deductive_obligation"
-            )
-        if type_confirmed:
-            question["question_type_confirmed"] = True
-        image_semantic_source = str(fact.get("semantic_source") or "").strip() == "images"
-        if (
-            not image_semantic_source
-            and str(fact.get("question_text") or "").strip()
-            and not str(question.get("stem_summary") or "").strip()
-        ):
-            question["stem_summary"] = str(fact.get("question_text") or "").strip().splitlines()[0][:120]
-
-        answer = answer_map.get(qid)
-        if answer is None:
-            answer = {"question_id": qid, "canonical_answer": "", "accepted_forms": [], "method_variants": [], "parts": []}
-            answers.append(answer)
-            answer_map[qid] = answer
-        canonical = str(fact.get("canonical_answer") or "").strip()
-        accepted = [str(item).strip() for item in fact.get("accepted_forms") or [] if str(item).strip()]
-        if canonical and not image_semantic_source:
-            current_canonical = str(answer.get("canonical_answer") or "").strip()
-            if bool(fact.get("local_answer_trusted")) or not current_canonical:
-                answer["canonical_answer"] = canonical
-                base_answer = canonical
-            else:
-                base_answer = current_canonical
-            answer["accepted_forms"] = merge_equivalent_forms(answer.get("accepted_forms"), *accepted, base_answer, max_forms=32)
-            parts = answer.get("parts")
-            if not isinstance(parts, list) or not parts:
-                answer["parts"] = [{"part_id": qid, "answer": base_answer, "analysis": str(fact.get("answer_text") or ""), "step_milestones": []}]
-            else:
-                for part in parts:
-                    if isinstance(part, dict) and not str(part.get("answer") or "").strip():
-                        part["answer"] = base_answer
 
 
-def _attach_reference_answer_images(
-    payload: dict[str, Any],
-    q_images: dict[str, Any] | None,
-) -> None:
-    """Persist clean PDF answer and question stem crops for image-aware grading."""
-    if not q_images:
-        return
-    answer_key = payload.get("answer_key") if isinstance(payload, dict) else None
-    answer_questions = answer_key.get("questions") if isinstance(answer_key, dict) else None
-    rubric = payload.get("rubric") if isinstance(payload, dict) else None
-    rubric_questions = rubric.get("questions") if isinstance(rubric, dict) else None
-    
-    answer_map = {
-        str(item.get("question_id") or ""): item
-        for item in answer_questions
-        if isinstance(item, dict)
-    } if isinstance(answer_questions, list) else {}
-    
-    rubric_map = {
-        str(item.get("question_id") or ""): item
-        for item in rubric_questions
-        if isinstance(item, dict)
-    } if isinstance(rubric_questions, list) else {}
-
-    for qid, image_data in q_images.items():
-        if not isinstance(image_data, dict):
-            continue
-        answer_image = str(image_data.get("answer") or "").strip()
-        answer_item = answer_map.get(str(qid))
-        if answer_image and isinstance(answer_item, dict):
-            answer_item["answer_image_base64"] = answer_image
-            answer_item["answer_image_role"] = "perfect_standard_answer"
-            
-        question_image = str(image_data.get("question") or "").strip()
-        rubric_item = rubric_map.get(str(qid))
-        if question_image and isinstance(rubric_item, dict):
-            rubric_item["question_image_base64"] = question_image
 
 
-def _quality_answer_texts(node: Any) -> list[str]:
-    if not isinstance(node, dict):
-        return []
-    values: list[str] = []
-    for key in ("answer", "canonical_answer", "standard_answer", "correct_answer"):
-        value = str(node.get(key) or "").strip()
-        if value:
-            values.append(value)
-    accepted = node.get("accepted_forms")
-    if isinstance(accepted, list):
-        values.extend(str(item).strip() for item in accepted if str(item).strip())
-    return values
 
 
-def _looks_like_serialized_answer_list(value: Any) -> bool:
-    return bool(re.fullmatch(r"\s*\[[\s\S]*\]\s*", str(value or "")))
 
 
-def _looks_like_serialized_knowledge_sequence(value: Any) -> bool:
-    return bool(
-        re.fullmatch(
-            r"\s*(?:\[[\s\S]*\]|\([\s\S]*\))\s*",
-            str(value or ""),
-        )
-    )
 
 
-def _normalize_serialized_answer_list(value: Any) -> str:
-    text = str(value or "").strip()
-    if not _looks_like_serialized_answer_list(text):
-        return text
-    try:
-        parsed = ast.literal_eval(text)
-    except (SyntaxError, ValueError):
-        return text
-    if not isinstance(parsed, (list, tuple)) or not parsed:
-        return text
-    values = [str(item).strip() for item in parsed if str(item).strip()]
-    return "、".join(values) if values else text
 
 
-def _looks_like_garbled_generated_text(value: Any) -> bool:
-    text = str(value or "")
-    return "\ufffd" in text or "锟" in text or "��" in text
 
 
-def collect_generated_config_quality_warnings(payload: dict[str, Any]) -> list[str]:
-    rubric = payload.get("rubric") if isinstance(payload, dict) else None
-    answer_key = payload.get("answer_key") if isinstance(payload, dict) else None
-    rubric_questions = rubric.get("questions") if isinstance(rubric, dict) else []
-    answer_questions = answer_key.get("questions") if isinstance(answer_key, dict) else []
-    if not isinstance(rubric_questions, list):
-        return ["[质量检查-阻断] rubric.questions 结构无效"]
-    answer_map = {
-        str(item.get("question_id") or ""): item
-        for item in answer_questions
-        if isinstance(item, dict)
-    } if isinstance(answer_questions, list) else {}
-
-    warnings: list[str] = []
-    for question in rubric_questions:
-        if not isinstance(question, dict):
-            continue
-        qid = str(question.get("question_id") or "未知题号")
-        qtype = str(question.get("question_type") or "")
-        stem = str(question.get("stem_summary") or "").strip()
-        knowledge_id = str(question.get("knowledge_id") or "").strip()
-        knowledge_name = str(question.get("knowledge_name") or "").strip()
-        if not knowledge_name or knowledge_id in {"", "UNKNOWN"}:
-            warnings.append(f"[质量检查-提醒] {qid} 缺少明确知识点")
-        if knowledge_name and stem and knowledge_name == stem:
-            warnings.append(f"[质量检查-提醒] {qid} 知识点疑似直接复制题干")
-        if knowledge_name in {"几何综合", "代数综合", "数学综合", "综合应用", "未知知识点"}:
-            warnings.append(f"[质量检查-提醒] {qid} 知识点过于宽泛，应写明具体考查概念")
-
-        answer_item = answer_map.get(qid, {})
-        answer_image_present = bool(isinstance(answer_item, dict) and answer_item.get("answer_image_base64"))
-        answer_texts = _quality_answer_texts(answer_item)
-        answer_parts = answer_item.get("parts") if isinstance(answer_item, dict) else []
-        if not isinstance(answer_parts, list):
-            answer_parts = []
-
-        knowledge_texts: list[Any] = [knowledge_id, knowledge_name]
-        knowledge_ids = question.get("knowledge_ids")
-        if isinstance(knowledge_ids, list):
-            knowledge_texts.extend(knowledge_ids)
-        knowledge_points = question.get("knowledge_points")
-        if isinstance(knowledge_points, list):
-            for point in knowledge_points:
-                if isinstance(point, dict):
-                    knowledge_texts.extend(
-                        (point.get("knowledge_id"), point.get("knowledge_name"))
-                    )
-                else:
-                    knowledge_texts.append(point)
-
-        text_fields: list[Any] = [stem, *knowledge_texts, *answer_texts]
-        parts = question.get("parts")
-        if not isinstance(parts, list):
-            parts = []
-        for part in parts:
-            if not isinstance(part, dict):
-                continue
-            for step in part.get("steps") or []:
-                if not isinstance(step, dict):
-                    continue
-                text_fields.append(step.get("core_goal"))
-                required = step.get("required_elements")
-                if isinstance(required, list):
-                    text_fields.extend(required)
-        for answer_part in answer_parts:
-            text_fields.extend(_quality_answer_texts(answer_part))
-        if any(_looks_like_garbled_generated_text(value) for value in text_fields):
-            warnings.append(f"[质量检查-阻断] {qid} 的题干、公式、答案或踩分点中存在疑似乱码")
-        if (
-            any(_looks_like_serialized_answer_list(value) for value in text_fields)
-            or any(
-                _looks_like_serialized_knowledge_sequence(value)
-                for value in knowledge_texts
-            )
-        ):
-            warnings.append(
-                f"[质量检查-阻断] {qid} 的知识点、答案或评分点中混入列表字符串或元组字符串"
-            )
-
-        if qtype in {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}:
-            if not answer_texts and not answer_image_present:
-                warnings.append(f"[质量检查-阻断] {qid} 缺少可评分的标准答案")
-
-        for index, part in enumerate(parts):
-            if not isinstance(part, dict):
-                continue
-            mode = str(part.get("response_mode") or "").strip() or _infer_part_response_mode(question, part)
-            steps = [step for step in part.get("steps") or [] if isinstance(step, dict)]
-            goals = [str(step.get("core_goal") or "").strip() for step in steps]
-            generic_goals = {
-                "完成必要的推理或计算步骤",
-                "合理的推理过程",
-                "正确的结论",
-            }
-            if qtype in {"choice", "fill_blank", "judgement", "true_false", "direct_answer"} and mode == "process_required":
-                warnings.append(f"[质量检查-阻断] {qid} 客观题被错误设置为过程评分")
-            if mode == "visual_construction":
-                visual_requirements = _string_list(part.get("visual_requirements"))
-                meaningful_goals = [goal for goal in goals if goal and goal not in generic_goals]
-                if not visual_requirements and not meaningful_goals:
-                    warnings.append(f"[质量检查-阻断] {qid} 作图题缺少具体作图要求")
-            if mode not in {"exact_objective", "short_answer_points", "visual_construction"}:
-                if qtype in {"proof", "calculation", "comprehensive"} and goals and all(goal in generic_goals for goal in goals):
-                    warnings.append(f"[质量检查-阻断] {qid} 评分点全部为通用描述，无法执行可靠批改")
-                continue
-            answer_part = answer_parts[index] if index < len(answer_parts) and isinstance(answer_parts[index], dict) else {}
-            if not _quality_answer_texts(answer_part) and not answer_texts and not answer_image_present:
-                part_id = str(part.get("part_id") or f"第{index + 1}问")
-                warnings.append(f"[质量检查-阻断] {qid}/{part_id} 缺少可评分的标准答案或答案图")
-
-    return list(dict.fromkeys(warnings))
 
 
-def refresh_generated_config_quality_warnings(payload: dict[str, Any]) -> list[str]:
-    meta = payload.setdefault("meta", {}) if isinstance(payload, dict) else {}
-    if not isinstance(meta, dict):
-        return []
-    warnings = meta.get("warnings")
-    if not isinstance(warnings, list):
-        warnings = []
-    warnings = [warning for warning in warnings if not str(warning).startswith("[质量检查-")]
-    quality_warnings = collect_generated_config_quality_warnings(payload)
-    meta["warnings"] = [*warnings, *quality_warnings]
-    return quality_warnings
 
 
 def _restore_precalibration_objective_answers(payload: dict[str, Any], previous_payload: dict[str, Any]) -> None:
@@ -3627,88 +3225,6 @@ def _build_score_allocation_prompt(
     )
 
 
-def _apply_score_allocation(merged: dict[str, Any], score_data: dict[str, Any]) -> None:
-    """Write AI-assigned scores from the scoring step back into the merged rubric."""
-    question_scores = score_data.get("question_scores")
-    if not isinstance(question_scores, list):
-        raise ValueError("score_data must contain a 'question_scores' list")
-
-    rubric_questions: list[Any] = merged.get("rubric", {}).get("questions", [])
-    if not isinstance(rubric_questions, list):
-        return
-
-    score_map: dict[str, dict[str, Any]] = {
-        str(qs.get("question_id") or "").strip(): qs
-        for qs in question_scores
-        if isinstance(qs, dict) and str(qs.get("question_id") or "").strip()
-    }
-
-    for q in rubric_questions:
-        if not isinstance(q, dict):
-            continue
-        qid = str(q.get("question_id") or "").strip()
-        score_entry = score_map.get(qid)
-        if not score_entry:
-            continue
-
-        # Apply max_score
-        raw_max = score_entry.get("max_score")
-        if raw_max is not None:
-            try:
-                q["max_score"] = max(1, int(round(float(raw_max))))
-            except (TypeError, ValueError):
-                pass
-
-        # Apply part and step scores
-        parts: list[Any] = q.get("parts") or []
-        score_parts: list[Any] = score_entry.get("parts") or []
-        if not isinstance(parts, list) or not score_parts:
-            continue
-
-        part_score_map: dict[str, dict[str, Any]] = {
-            str(sp.get("part_id") or "").strip(): sp
-            for sp in score_parts
-            if isinstance(sp, dict) and str(sp.get("part_id") or "").strip()
-        }
-
-        for part in parts:
-            if not isinstance(part, dict):
-                continue
-            pid = str(part.get("part_id") or "").strip()
-            sp = part_score_map.get(pid)
-            if not sp:
-                continue
-
-            raw_part = sp.get("part_score")
-            if raw_part is not None:
-                try:
-                    part["part_score"] = max(1, int(round(float(raw_part))))
-                except (TypeError, ValueError):
-                    pass
-
-            steps: list[Any] = part.get("steps") or []
-            score_steps: list[Any] = sp.get("steps") or []
-            if not isinstance(steps, list) or not score_steps:
-                continue
-
-            step_score_map: dict[str, dict[str, Any]] = {
-                str(ss.get("step_id") or "").strip(): ss
-                for ss in score_steps
-                if isinstance(ss, dict) and str(ss.get("step_id") or "").strip()
-            }
-
-            for step in steps:
-                if not isinstance(step, dict):
-                    continue
-                sid = str(step.get("step_id") or "").strip()
-                ss = step_score_map.get(sid)
-                if ss:
-                    raw_step = ss.get("step_score")
-                    if raw_step is not None:
-                        try:
-                            step["step_score"] = max(1, int(round(float(raw_step))))
-                        except (TypeError, ValueError):
-                            pass
 
 
 def _calibrate_merged_config(
@@ -3787,358 +3303,16 @@ def _dump_failed_generated_payload(payload: dict[str, Any]) -> None:
         pass
 
 
-def normalize_generated_config_schema(payload: dict[str, Any]) -> None:
-    """Convert common LLM shorthand fields into the strict internal schema."""
-    if not isinstance(payload, dict):
-        return
-
-    rubric = payload.setdefault("rubric", {})
-    answer_key = payload.setdefault("answer_key", {})
-    payload.setdefault("meta", {}).setdefault("warnings", [])
-    if not isinstance(rubric, dict) or not isinstance(answer_key, dict):
-        return
-
-    rubric_questions = rubric.setdefault("questions", [])
-    answer_questions = answer_key.setdefault("questions", [])
-    if not isinstance(rubric_questions, list):
-        rubric["questions"] = []
-        rubric_questions = rubric["questions"]
-    if not isinstance(answer_questions, list):
-        answer_key["questions"] = []
-        answer_questions = answer_key["questions"]
-
-    for answer in answer_questions:
-        if isinstance(answer, dict):
-            answer["question_id"] = _canonical_question_id(
-                answer.get("question_id")
-                or answer.get("id")
-                or answer.get("number")
-                or answer.get("棰樺彿")
-                or "",
-                "",
-            )
-            _coerce_answer_item_aliases(answer)
-
-    answer_map = {
-        _canonical_question_id(q.get("question_id") or q.get("id") or q.get("number") or "", ""): q
-        for q in answer_questions
-        if isinstance(q, dict)
-    }
-
-    for idx, question in enumerate(rubric_questions, start=1):
-        if not isinstance(question, dict):
-            continue
-        qid = _canonical_question_id(
-            question.get("question_id")
-            or question.get("id")
-            or question.get("number")
-            or f"Q{idx}",
-            f"Q{idx}",
-        )
-        question["question_id"] = qid
-        _promote_nested_question_knowledge(question)
-        qtype = _normalize_question_type(
-            question.get("question_type")
-            or question.get("type")
-        )
-        question["question_type"] = qtype
-        question["max_score"] = _safe_float(
-            question.get("max_score")
-            or question.get("score")
-            or question.get("points"),
-            0.0,
-        )
-        question["knowledge_id"] = question.get("knowledge_id") or question.get("knowledge") or "UNKNOWN"
-        question["knowledge_name"] = (
-            question.get("knowledge_name")
-            or question.get("knowledge_text")
-            or question.get("knowledge_label")
-            or question.get("knowledge")
-            or ""
-        )
-        _normalize_question_knowledge_fields(question)
-        question["stem_summary"] = str(question.get("stem_summary") or question.get("棰樺共鎽樿") or "").strip()
-        question["grading_mode"] = str(
-            question.get("grading_mode")
-            or ("deductive_obligation" if qtype in {"proof", "calculation", "comprehensive"} else "direct_answer")
-        )
-
-        answer_item = answer_map.get(qid)
-        if not isinstance(answer_item, dict):
-            answer_item = {"question_id": qid}
-            answer_questions.append(answer_item)
-            answer_map[qid] = answer_item
-        _normalize_answer_item(answer_item, question)
-        if (
-            not bool(question.get("question_type_confirmed"))
-            and _should_treat_as_direct_answer_question(qtype, question, answer_item)
-        ):
-            qtype = "fill_blank"
-            question["question_type"] = qtype
-            question["grading_mode"] = "direct_answer"
-        _augment_answer_equivalences(answer_item, qtype)
-        _normalize_rubric_question(question, answer_item)
-        _align_answer_parts_to_rubric_parts(question, answer_item)
-        _align_step_required_elements_with_answer_values(question, answer_item)
-        _enforce_objective_question_rules(question, answer_item)
-        _ensure_solution_hard_rules(question)
-
-    rubric["total_score"] = _safe_float(
-        rubric.get("total_score"),
-        sum(_safe_float(q.get("max_score"), 0.0) for q in rubric_questions if isinstance(q, dict)),
-    )
 
 
-def _canonical_question_id(value: Any, fallback: str = "") -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return str(fallback or "").strip()
-    match = re.match(r"^(?:Q|q)\s*(\d{1,2})$", raw)
-    if match:
-        return f"Q{int(match.group(1))}"
-    match = re.match(r"^(\d{1,2})$", raw)
-    if match:
-        return f"Q{int(match.group(1))}"
-    match = re.search(r"(\d{1,2})", raw)
-    if re.match(r"^\\D+\\d{1,2}", raw) and match:
-        return f"Q{int(match.group(1))}"
-    return raw
 
 
-def _safe_knowledge_sequence(value: Any) -> list[str] | None:
-    candidate = value
-    if isinstance(value, str):
-        text = value.strip()
-        if not _looks_like_serialized_knowledge_sequence(text):
-            return None
-        try:
-            candidate = ast.literal_eval(text)
-        except (SyntaxError, ValueError):
-            return None
-    if not isinstance(candidate, (list, tuple)) or not candidate:
-        return None
-
-    values: list[str] = []
-    for item in candidate:
-        if isinstance(item, bool) or not isinstance(item, (str, int, float)):
-            return None
-        text = str(item).strip()
-        if not text:
-            return None
-        values.append(text)
-    return values
 
 
-def _redundant_knowledge_fields_match_pairs(
-    question: dict[str, Any],
-    paired_ids: list[str],
-    paired_names: list[str],
-) -> bool:
-    raw_ids = question.get("knowledge_ids")
-    if raw_ids not in (None, "", []):
-        ids_match = _safe_knowledge_sequence(raw_ids) == paired_ids
-        if (
-            not ids_match
-            and isinstance(raw_ids, (list, tuple))
-            and len(raw_ids) == 1
-        ):
-            ids_match = _safe_knowledge_sequence(raw_ids[0]) == paired_ids
-        if not ids_match:
-            return False
-
-    raw_points = question.get("knowledge_points")
-    if raw_points in (None, "", []):
-        return True
-    if not isinstance(raw_points, (list, tuple)):
-        return False
-
-    expected_names = dict(zip(paired_ids, paired_names))
-    canonical_ids: set[str] = set()
-    for point in raw_points:
-        if isinstance(point, dict):
-            raw_id = point.get("knowledge_id") or point.get("id") or ""
-            raw_name = (
-                point.get("knowledge_name")
-                or point.get("name")
-                or point.get("label")
-                or ""
-            )
-        else:
-            raw_id = point
-            raw_name = ""
-
-        point_ids = _safe_knowledge_sequence(raw_id)
-        if point_ids is not None:
-            if point_ids != paired_ids:
-                return False
-            if raw_name and _safe_knowledge_sequence(raw_name) != paired_names:
-                return False
-            continue
-        if _looks_like_serialized_knowledge_sequence(raw_id):
-            return False
-        if raw_name and _looks_like_serialized_knowledge_sequence(raw_name):
-            return False
-
-        kid = str(raw_id or "").strip()
-        name = str(raw_name or "").strip()
-        if not kid or kid not in expected_names:
-            return False
-        if name and name != expected_names[kid]:
-            return False
-        canonical_ids.add(kid)
-
-    return not canonical_ids or canonical_ids == set(paired_ids)
 
 
-def _normalize_question_knowledge_fields(question: dict[str, Any]) -> None:
-    raw_primary_id = question.get("knowledge_id") or "UNKNOWN"
-    raw_primary_name = question.get("knowledge_name") or ""
-    paired_ids = _safe_knowledge_sequence(raw_primary_id)
-    paired_names = _safe_knowledge_sequence(raw_primary_name)
-    if (
-        paired_ids is not None
-        and paired_names is not None
-        and len(paired_ids) == len(paired_names)
-        and len(set(paired_ids)) == len(paired_ids)
-        and _redundant_knowledge_fields_match_pairs(
-            question,
-            paired_ids,
-            paired_names,
-        )
-    ):
-        paired_points = [
-            {"knowledge_id": kid, "knowledge_name": name}
-            for kid, name in zip(paired_ids, paired_names)
-        ]
-        question["knowledge_points"] = paired_points
-        question["knowledge_ids"] = list(paired_ids)
-        question["knowledge_id"] = paired_ids[0]
-        question["knowledge_name"] = paired_names[0]
-        return
-
-    raw_points = question.get("knowledge_points")
-    points: list[dict[str, str]] = []
-    if isinstance(raw_points, list):
-        for item in raw_points:
-            if isinstance(item, dict):
-                kid = str(item.get("knowledge_id") or item.get("id") or "").strip()
-                name = str(item.get("knowledge_name") or item.get("name") or item.get("label") or "").strip()
-            else:
-                kid = str(item or "").strip()
-                name = ""
-            if kid:
-                points.append({"knowledge_id": kid, "knowledge_name": name})
-    elif isinstance(raw_points, str) and raw_points.strip():
-        points.append(
-            {
-                "knowledge_id": str(question.get("knowledge_id") or question.get("knowledge_name") or "UNKNOWN").strip(),
-                "knowledge_name": raw_points.strip(),
-            }
-        )
-
-    raw_ids = question.get("knowledge_ids")
-    if isinstance(raw_ids, list):
-        for raw_id in raw_ids:
-            kid = str(raw_id or "").strip()
-            if kid:
-                points.append({"knowledge_id": kid, "knowledge_name": ""})
-
-    primary_id = str(raw_primary_id).strip()
-    primary_name = str(raw_primary_name).strip()
-    if primary_id:
-        points.append({"knowledge_id": primary_id, "knowledge_name": primary_name})
-
-    useful_points = [point for point in points if point["knowledge_id"] not in {"", "UNKNOWN"}]
-    if useful_points:
-        points = useful_points
-
-    normalized: list[dict[str, str]] = []
-    for point in points:
-        kid = point["knowledge_id"]
-        name = point.get("knowledge_name", "")
-        if not kid:
-            continue
-        same_id = [
-            index for index, existing in enumerate(normalized)
-            if existing["knowledge_id"] == kid
-        ]
-        if any(normalized[index].get("knowledge_name", "") == name for index in same_id):
-            continue
-        if not name and same_id:
-            continue
-        empty_index = next(
-            (index for index in same_id if not normalized[index].get("knowledge_name")),
-            None,
-        )
-        if name and empty_index is not None:
-            normalized[empty_index]["knowledge_name"] = name
-        else:
-            normalized.append({"knowledge_id": kid, "knowledge_name": name})
-
-    if not normalized:
-        normalized = [{"knowledge_id": "UNKNOWN", "knowledge_name": ""}]
-
-    question["knowledge_points"] = normalized
-    question["knowledge_ids"] = list(dict.fromkeys(point["knowledge_id"] for point in normalized))
-    question["knowledge_id"] = normalized[0]["knowledge_id"]
-    if normalized[0].get("knowledge_name"):
-        question["knowledge_name"] = normalized[0]["knowledge_name"]
 
 
-def normalize_generated_config_knowledge_fields(payload: dict[str, Any]) -> bool:
-    """Normalize only rubric knowledge metadata and report whether it changed."""
-    rubric = payload.get("rubric") if isinstance(payload, dict) else None
-    questions = rubric.get("questions") if isinstance(rubric, dict) else None
-    if not isinstance(questions, list):
-        return False
-
-    changed = False
-    tracked = ("knowledge_id", "knowledge_name", "knowledge_ids", "knowledge_points")
-    for question in questions:
-        if not isinstance(question, dict):
-            continue
-        raw_points = question.get("knowledge_points")
-        point_ids = [
-            str(point.get("knowledge_id") or point.get("id") or "").strip()
-            for point in raw_points
-            if isinstance(point, dict)
-        ] if isinstance(raw_points, list) else []
-        sequence_values: list[Any] = [
-            question.get("knowledge_id"),
-            question.get("knowledge_name"),
-        ]
-        raw_ids = question.get("knowledge_ids")
-        if isinstance(raw_ids, list):
-            sequence_values.extend(raw_ids)
-        elif raw_ids is not None:
-            sequence_values.append(raw_ids)
-        if isinstance(raw_points, list):
-            for point in raw_points:
-                if isinstance(point, dict):
-                    sequence_values.extend(
-                        (point.get("knowledge_id"), point.get("knowledge_name"))
-                    )
-                else:
-                    sequence_values.append(point)
-        needs_compatibility = (
-            any(
-                isinstance(value, (list, tuple))
-                or (
-                    isinstance(value, str)
-                    and _looks_like_serialized_knowledge_sequence(value)
-                )
-                for value in sequence_values
-            )
-            or len([kid for kid in point_ids if kid])
-            != len(set(kid for kid in point_ids if kid))
-        )
-        if not needs_compatibility:
-            continue
-        before = {key: copy.deepcopy(question.get(key)) for key in tracked}
-        _normalize_question_knowledge_fields(question)
-        after = {key: question.get(key) for key in tracked}
-        changed = changed or before != after
-    return changed
 
 
 def iter_effective_rubric_items(
@@ -4324,1018 +3498,80 @@ def _rubric_context_text(
     return "；".join(dict.fromkeys(values))
 
 
-def _promote_nested_question_knowledge(question: dict[str, Any]) -> None:
-    parts = question.get("parts")
-    if not isinstance(parts, list):
-        return
-
-    current_id = str(question.get("knowledge_id") or "").strip()
-    current_name = str(question.get("knowledge_name") or "").strip()
-    collected: list[dict[str, str]] = []
-    raw_top_points = question.get("knowledge_points")
-    if isinstance(raw_top_points, list):
-        collected.extend(item for item in raw_top_points if isinstance(item, dict))
-
-    for part in parts:
-        if not isinstance(part, dict):
-            continue
-        part_id = str(part.get("knowledge_id") or part.get("knowledge_name") or "").strip()
-        part_name = str(part.get("knowledge_name") or "").strip()
-        if part_id and part_name:
-            collected.append({"knowledge_id": part_id, "knowledge_name": part_name})
-        raw_points = part.get("knowledge_points")
-        if isinstance(raw_points, str) and raw_points.strip():
-            collected.append(
-                {
-                    "knowledge_id": part_id or part_name or "DETAIL",
-                    "knowledge_name": raw_points.strip(),
-                }
-            )
-        elif isinstance(raw_points, list):
-            for raw_point in raw_points:
-                if isinstance(raw_point, dict):
-                    collected.append(raw_point)
-                elif str(raw_point or "").strip():
-                    collected.append(
-                        {
-                            "knowledge_id": part_id or part_name or "DETAIL",
-                            "knowledge_name": str(raw_point).strip(),
-                        }
-                    )
-
-        if (not current_name or current_id in {"", "UNKNOWN"}) and part_name:
-            current_name = part_name
-            current_id = part_id or part_name
-
-    if current_name:
-        question["knowledge_name"] = current_name
-    if current_id:
-        question["knowledge_id"] = current_id
-    if collected:
-        question["knowledge_points"] = collected
-
-
-def force_payload_total_score(payload: dict[str, Any], target_total: float = 100.0) -> None:
-    rubric = payload.get("rubric") if isinstance(payload, dict) else None
-    if not isinstance(rubric, dict):
-        return
-    questions = rubric.get("questions")
-    if not isinstance(questions, list) or not questions:
-        rubric["total_score"] = target_total
-        return
-
-    current_total = sum(_safe_float(q.get("max_score"), 0.0) for q in questions if isinstance(q, dict))
-    if current_total <= 0:
-        each = round(target_total / len(questions), 2)
-        for question in questions:
-            if isinstance(question, dict):
-                _scale_question_to_score(question, each)
-        _fix_question_sum(questions, target_total)
-    elif abs(current_total - target_total) > 0.01:
-        ratio = target_total / current_total
-        for question in questions:
-            if isinstance(question, dict):
-                _scale_question_scores(question, ratio)
-        _fix_question_sum(questions, target_total)
-
-    enforce_integer_scores_by_type(
-        questions,
-        target_total=int(target_total),
-        max_question_score=MAX_QUESTION_SCORE,
-    )
-    # Second pass: fix any +-1 rounding drift produced by integer allocation
-    _fix_question_sum(questions, target_total)
-    for question in questions:
-        if isinstance(question, dict):
-            _ensure_solution_hard_rules(question)
-    rubric["total_score"] = target_total
-    payload.setdefault("meta", {}).setdefault("warnings", [])
-
-
-def _scale_question_scores(question: dict[str, Any], ratio: float) -> None:
-    new_score = round(_safe_float(question.get("max_score"), 0.0) * ratio, 2)
-    _scale_question_to_score(question, new_score)
-
-
-def _scale_question_to_score(question: dict[str, Any], new_score: float) -> None:
-    old_score = _safe_float(question.get("max_score"), 0.0)
-    question["max_score"] = round(float(new_score), 2)
-    parts = question.get("parts")
-    if not isinstance(parts, list) or not parts:
-        _normalize_rubric_question(question, {})
-        return
-
-    ratio = (float(new_score) / old_score) if old_score > 0 else (1.0 / len(parts))
-    for part in parts:
-        if not isinstance(part, dict):
-            continue
-        part["part_score"] = round(_safe_float(part.get("part_score"), 0.0) * ratio, 2)
-        steps = part.get("steps")
-        if isinstance(steps, list):
-            for step in steps:
-                if isinstance(step, dict):
-                    step["step_score"] = round(_safe_float(step.get("step_score"), 0.0) * ratio, 2)
-        _force_step_total(part)
-    _force_part_total(question)
-    _scale_deduction_policy(question, ratio)
-
-
-def _scale_deduction_policy(question: dict[str, Any], ratio: float) -> None:
-    policies = question.get("deduction_policy")
-    if isinstance(policies, list):
-        for policy in policies:
-            if isinstance(policy, dict) and "max_deduction" in policy:
-                policy["max_deduction"] = round(_safe_float(policy.get("max_deduction"), 0.0) * ratio, 2)
-
-
-def _fix_question_sum(questions: list[Any], target_total: float) -> None:
-    valid_questions = [q for q in questions if isinstance(q, dict)]
-    if not valid_questions:
-        return
-    total = sum(_safe_float(q.get("max_score"), 0.0) for q in valid_questions)
-    diff = round(target_total - total, 2)
-    if abs(diff) > 0.001:
-        last = valid_questions[-1]
-        last["max_score"] = round(_safe_float(last.get("max_score"), 0.0) + diff, 2)
-        _force_part_total(last)
-
-
-def _normalize_answer_item(answer_item: dict[str, Any], rubric_question: dict[str, Any]) -> None:
-    _coerce_answer_item_aliases(answer_item)
-    qid = str(rubric_question.get("question_id") or answer_item.get("question_id") or "")
-    answer_item["question_id"] = qid
-    direct_answers = _extract_direct_answer_values(answer_item)
-    canonical = (
-        answer_item.get("canonical_answer")
-        or answer_item.get("answer")
-        or answer_item.get("standard_answer")
-        or answer_item.get("correct_answer")
-        or answer_item.get("绛旀")
-        or (direct_answers[0] if direct_answers else "")
-        or rubric_question.get("canonical_answer")
-        or rubric_question.get("answer")
-        or rubric_question.get("correct_answer")
-        or ""
-    )
-    answer_item["canonical_answer"] = str(canonical)
-    if bool(answer_item.get("_manual_accepted_forms")):
-        answer_item["accepted_forms"] = _string_list(answer_item.get("accepted_forms"))
-    else:
-        answer_item["accepted_forms"] = _string_list(
-            answer_item.get("accepted_forms")
-            or answer_item.get("equivalent_answers")
-            or answer_item.get("aliases")
-            or direct_answers
-            or rubric_question.get("accepted_forms")
-            or rubric_question.get("equivalent_answers")
-            or [canonical]
-        )
-    answer_item["method_variants"] = _method_variants(
-        answer_item.get("method_variants") or rubric_question.get("method_variants") or []
-    )
-    if not isinstance(answer_item.get("parts"), list) or not answer_item["parts"]:
-        answer_item["parts"] = [
-            {
-                "part_id": qid,
-                "answer": str(canonical),
-                "analysis": str(answer_item.get("analysis") or rubric_question.get("analysis") or ""),
-                "step_milestones": _string_list(answer_item.get("step_milestones") or rubric_question.get("step_milestones")),
-            }
-        ]
-    else:
-        for idx, part in enumerate(answer_item["parts"], start=1):
-            if not isinstance(part, dict):
-                continue
-            _coerce_answer_part_aliases(part)
-            part_direct_answers = _extract_direct_answer_values(part)
-            part["answer_values"] = _string_list(part_direct_answers)
-            part.setdefault("part_id", qid if len(answer_item["parts"]) == 1 else f"{qid}({idx})")
-            part_answer = (
-                part.get("answer")
-                or part.get("canonical_answer")
-                or part.get("standard_answer")
-                or ("；".join(part["answer_values"]) if part["answer_values"] else "")
-                or canonical
-            )
-            part["answer"] = str(part_answer)
-            if len(part["answer_values"]) == 1 and not part.get("accepted_forms"):
-                part["accepted_forms"] = _string_list(part_direct_answers)
-            part.setdefault("analysis", "")
-            if not isinstance(part.get("step_milestones"), list):
-                part["step_milestones"] = _string_list(part.get("step_milestones"))
-
-    if not str(answer_item.get("canonical_answer") or "").strip():
-        qtype = str(rubric_question.get("question_type") or "").strip()
-        if qtype in {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}:
-            first_part_answer = next(
-                (
-                    str(part.get("answer") or "").strip()
-                    for part in answer_item.get("parts", [])
-                    if isinstance(part, dict) and str(part.get("answer") or "").strip()
-                ),
-                "",
-            )
-            if first_part_answer:
-                answer_item["canonical_answer"] = first_part_answer
-                answer_item["accepted_forms"] = _string_list(answer_item.get("accepted_forms")) or [first_part_answer]
-
-
-def _coerce_answer_item_aliases(answer_item: dict[str, Any]) -> None:
-    if not isinstance(answer_item.get("parts"), list) or not answer_item.get("parts"):
-        for key in ("answer_parts", "sub_answers", "subquestions"):
-            value = answer_item.get(key)
-            if isinstance(value, list) and value:
-                answer_item["parts"] = value
-                break
-
-
-def _coerce_answer_part_aliases(part: dict[str, Any]) -> None:
-    if not str(part.get("answer") or "").strip():
-        for key in ("answer_content", "standard_answer", "canonical_answer", "correct_answer"):
-            value = part.get(key)
-            if value is not None and str(value).strip():
-                part["answer"] = str(value).strip()
-                break
-
-
-def _extract_direct_answer_values(item: dict[str, Any]) -> list[Any]:
-    values: list[Any] = []
-    direct = item.get("direct_answer")
-    if isinstance(direct, dict):
-        for key in ["accepted_forms", "answers", "answer", "value", "values"]:
-            raw = direct.get(key)
-            if raw is None:
-                continue
-            if isinstance(raw, list):
-                values.extend(raw)
-            else:
-                values.append(raw)
-    elif isinstance(direct, list):
-        values.extend(direct)
-    elif direct is not None:
-        values.append(direct)
-    for key in ("answers", "values"):
-        raw = item.get(key)
-        if isinstance(raw, list):
-            for value in raw:
-                if isinstance(value, dict):
-                    nested = next(
-                        (
-                            value.get(alias)
-                            for alias in ("value", "answer", "answer_content", "standard_answer", "canonical_answer")
-                            if value.get(alias) is not None
-                        ),
-                        None,
-                    )
-                    if nested is not None:
-                        values.append(nested)
-                elif value is not None:
-                    values.append(value)
-        elif raw is not None:
-            values.append(raw)
-    answer_content = item.get("answer_content")
-    if answer_content is not None:
-        values.append(answer_content)
-    return values
-
-
-def _should_treat_as_direct_answer_question(
-    qtype: str,
-    question: dict[str, Any],
-    answer_item: dict[str, Any],
-) -> bool:
-    normalized_type = str(qtype or "").strip().lower()
-    if normalized_type in {"choice", "fill_blank", "judgement", "true_false"}:
-        return False
-    mode_text = " ".join(
-        str(question.get(key) or "")
-        for key in ["grading_mode", "scoring_type", "scoring_policy", "scoring_rule", "description"]
-    ).lower()
-    has_direct_mode = "direct_answer" in mode_text or "鍏ㄥ鍏ㄩ敊" in mode_text
-    has_direct_answer = bool(_extract_direct_answer_values(answer_item) or _string_list(answer_item.get("accepted_forms")))
-    has_solution_structure = bool(question.get("proof_obligations")) or any(
-        isinstance(part, dict) and len(part.get("steps") or []) > 1
-        for part in (question.get("parts") if isinstance(question.get("parts"), list) else [])
-    )
-    return has_direct_answer and has_direct_mode and not has_solution_structure
-
-
-def _augment_answer_equivalences(answer_item: dict[str, Any], qtype: str) -> None:
-    """Add deterministic local equivalents for objective/short-answer items."""
-    if qtype == "choice":
-        return
-
-    canonical = str(answer_item.get("canonical_answer") or "").strip()
-    top_level_manually_edited = bool(answer_item.get("_manual_accepted_forms"))
-    parts = answer_item.get("parts")
-    subjective_multi_part = (
-        qtype in {"proof", "calculation", "comprehensive"}
-        and isinstance(parts, list)
-        and len([part for part in parts if isinstance(part, dict)]) > 1
-    )
-    if isinstance(parts, list):
-        for part in parts:
-            if not isinstance(part, dict):
-                continue
-            part_answer = str(part.get("answer") or "").strip()
-            if part_answer:
-                normalized_part_answer = _normalize_serialized_answer_list(part_answer)
-                serialized_part_answer = normalized_part_answer != part_answer
-                if serialized_part_answer:
-                    part["answer"] = normalized_part_answer
-                    part_answer = normalized_part_answer
-                if not bool(part.get("_manual_accepted_forms")):
-                    existing_part_forms = [] if serialized_part_answer else [
-                        value
-                        for value in _string_list(part.get("accepted_forms"))
-                        if not _looks_like_serialized_answer_list(value)
-                    ]
-                    part["accepted_forms"] = merge_equivalent_forms(existing_part_forms, part_answer, max_forms=16)
-
-    if not top_level_manually_edited:
-        existing_top_forms = [] if subjective_multi_part else [
-            value
-            for value in _string_list(answer_item.get("accepted_forms"))
-            if not _looks_like_serialized_answer_list(value)
-        ]
-        answer_item["accepted_forms"] = merge_equivalent_forms(existing_top_forms, canonical, max_forms=32)
-
-
-def _record_complete_answer_set_rule(answer_item: dict[str, Any], qtype: str) -> None:
-    if qtype != "fill_blank":
-        return
-    canonical = str(answer_item.get("canonical_answer") or "").strip()
-    required_values = complete_answer_set_values(canonical)
-    if not required_values:
-        return
-    rule = {
-        "match_mode": "complete_set",
-        "required_values": required_values,
-        "order_sensitive": False,
-        "allow_extra_values": False,
-        "partial_credit": False,
-    }
-    answer_item.update(rule)
-    parts = answer_item.get("parts")
-    if isinstance(parts, list) and len(parts) == 1 and isinstance(parts[0], dict):
-        parts[0].update(rule)
-
-
-def _sanitize_choice_answer_forms(answer_item: dict[str, Any]) -> None:
-    canonical = str(answer_item.get("canonical_answer") or "").strip().upper()
-    if not re.fullmatch(r"[A-D]", canonical):
-        return
-    answer_item["canonical_answer"] = canonical
-    answer_item["accepted_forms"] = [canonical]
-    parts = answer_item.get("parts")
-    if not isinstance(parts, list):
-        return
-    for part in parts:
-        if not isinstance(part, dict):
-            continue
-        part_answer = str(part.get("answer") or canonical).strip().upper()
-        if not re.fullmatch(r"[A-D]", part_answer):
-            part_answer = canonical
-        part["answer"] = part_answer
-        part["accepted_forms"] = [part_answer]
-
-
-def _normalize_rubric_question(question: dict[str, Any], answer_item: dict[str, Any]) -> None:
-    qid = str(question.get("question_id") or "")
-    qtype = str(question.get("question_type") or "comprehensive")
-    max_score = _safe_float(question.get("max_score"), 0.0)
-    _align_solution_parts_with_answer_parts(question, answer_item, qtype, max_score)
-    if not isinstance(question.get("parts"), list) or not question["parts"]:
-        question["parts"] = [
-            {
-                "part_id": qid,
-                "part_score": max_score,
-                "steps": [
-                    {
-                        "step_id": "S1",
-                        "step_score": max_score,
-                        "core_goal": _default_core_goal(qtype, answer_item),
-                        "required_elements": _default_required_elements(qtype, answer_item),
-                        "allow_alternative_methods": qtype not in {"choice"},
-                    }
-                ],
-                "presentation_rules": [],
-            }
-        ]
-    else:
-        part_count = len(question["parts"])
-        for idx, part in enumerate(question["parts"], start=1):
-            if not isinstance(part, dict):
-                part = {"part_id": qid if part_count == 1 else f"{qid}({idx})", "answer": str(part)}
-                question["parts"][idx - 1] = part
-            part_score = _safe_float(
-                part.get("part_score")
-                or part.get("score")
-                or part.get("points"),
-                max_score / max(part_count, 1),
-            )
-            part["part_id"] = str(part.get("part_id") or (qid if part_count == 1 else f"{qid}({idx})"))
-            part["part_score"] = part_score
-            step_alias = _best_step_alias(part)
-            if step_alias is not part.get("steps"):
-                part["steps"] = step_alias
-
-            if not isinstance(part.get("steps"), list) or not part["steps"]:
-                part["steps"] = [
-                    {
-                        "step_id": "S1",
-                        "step_score": part_score,
-                        "core_goal": _default_core_goal(qtype, answer_item),
-                        "required_elements": _default_required_elements(qtype, answer_item),
-                        "allow_alternative_methods": qtype not in {"choice"},
-                    }
-                ]
-            else:
-                for sidx, step in enumerate(part["steps"], start=1):
-                    if not isinstance(step, dict):
-                        step = {"core_goal": str(step)}
-                        part["steps"][sidx - 1] = step
-                    step["step_id"] = str(step.get("step_id") or f"S{sidx}")
-                    # Avoid overriding explicit 0.0 with fallback by using explicit None checks
-                    raw_score = step.get("step_score")
-                    if raw_score is None:
-                        raw_score = step.get("score")
-                    if raw_score is None:
-                        raw_score = step.get("points")
-                    
-                    step["step_score"] = _safe_float(
-                        raw_score,
-                        part_score / max(len(part["steps"]), 1),
-                    )
-                    step["core_goal"] = _specific_step_goal(
-                        step,
-                        _default_core_goal(qtype, answer_item),
-                    )
-                    required_elements = _string_list(step.get("required_elements"))
-                    if not required_elements or all(value in _GENERIC_STEP_GOALS for value in required_elements):
-                        goal = str(step.get("core_goal") or "").strip()
-                        step["required_elements"] = (
-                            [goal]
-                            if goal and goal not in _GENERIC_STEP_GOALS
-                            else _default_required_elements(qtype, answer_item)
-                        )
-                    else:
-                        step["required_elements"] = required_elements
-                    step["allow_alternative_methods"] = bool(step.get("allow_alternative_methods", qtype not in {"choice"}))
-            if not isinstance(part.get("presentation_rules"), list):
-                part["presentation_rules"] = []
-            _force_step_total(part)
-    _force_part_total(question)
-
-
-def _first_list_value(node: dict[str, Any], *keys: str) -> list[Any]:
-    for key in keys:
-        value = node.get(key)
-        if isinstance(value, list) and value:
-            return value
-    return []
-
-
-def _best_step_alias(part: dict[str, Any]) -> list[Any]:
-    existing = _first_list_value(part, "steps")
-    candidates = [
-        value
-        for key in ("scoring_steps", "criteria", "rubric", "score_points", "points")
-        if isinstance((value := part.get(key)), list) and value
-    ]
-    visual_requirements = _string_list(part.get("visual_requirements"))
-    visual_steps = [
-        {"core_goal": value, "required_elements": [value]}
-        for value in visual_requirements
-    ]
-    if not existing:
-        return next(iter(candidates), visual_steps)
-    if not _steps_are_generic(existing):
-        return existing
-    for candidate in candidates:
-        if not _steps_are_generic(candidate):
-            return candidate
-    return visual_steps or existing
-
-
-def _steps_are_generic(steps: list[Any]) -> bool:
-    descriptions: list[str] = []
-    for step in steps:
-        if isinstance(step, dict):
-            descriptions.append(_specific_step_goal(step, ""))
-        else:
-            descriptions.append(str(step or "").strip())
-    return bool(descriptions) and all(description in _GENERIC_STEP_GOALS for description in descriptions)
-
-
-_GENERIC_STEP_GOALS = {
-    "",
-    "完成必要的推理或计算步骤",
-    "填写正确或等价的答案",
-    "选择正确的选项",
-    "合理的推理过程",
-    "正确的结论",
-}
-
-
-def _specific_step_goal(step: dict[str, Any], default: str) -> str:
-    values = [
-        str(step.get(key) or "").strip()
-        for key in ("core_goal", "goal", "criterion", "description", "step_description", "desc", "title", "requirement")
-    ]
-    return next((value for value in values if value and value not in _GENERIC_STEP_GOALS), None) or next(
-        (value for value in values if value),
-        default,
-    )
-
-
-def _enforce_objective_question_rules(question: dict[str, Any], answer_item: dict[str, Any]) -> None:
-    qtype = str(question.get("question_type") or "").strip().lower()
-    if qtype not in {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}:
-        return
-
-    if qtype == "choice":
-        _sanitize_choice_answer_forms(answer_item)
-    _record_complete_answer_set_rule(answer_item, qtype)
-
-    top_answers = _string_list(answer_item.get("accepted_forms"))
-    canonical = str(answer_item.get("canonical_answer") or "").strip()
-    if canonical and canonical not in top_answers:
-        top_answers.insert(0, canonical)
-    answer_parts = answer_item.get("parts")
-    if not isinstance(answer_parts, list):
-        answer_parts = []
-
-    parts = question.get("parts")
-    if not isinstance(parts, list):
-        return
-    for index, part in enumerate(parts):
-        if not isinstance(part, dict):
-            continue
-        explicit_mode = str(part.get("response_mode") or "").strip()
-        answer_part = answer_parts[index] if index < len(answer_parts) and isinstance(answer_parts[index], dict) else {}
-        independent_answer_values = _string_list(answer_part.get("answer_values"))
-        is_independent_fill = (
-            qtype == "fill_blank"
-            and explicit_mode == "short_answer_points"
-            and len(independent_answer_values) > 1
-        )
-        part["response_mode"] = "short_answer_points" if is_independent_fill else "exact_objective"
-        part["presentation_rules"] = []
-        part["require_final_answer"] = False
-        part["answer_only_max_score"] = int(round(_safe_float(part.get("part_score"), 0.0)))
-
-        part_answers: list[str] = []
-        if answer_part:
-            part_answers = _string_list(answer_part.get("accepted_forms"))
-            part_answer = str(answer_part.get("answer") or "").strip()
-            if part_answer and part_answer not in part_answers:
-                part_answers.insert(0, part_answer)
-        required_answers = list(dict.fromkeys([*part_answers, *top_answers]))
-
-        steps = part.get("steps")
-        if not isinstance(steps, list) or not steps:
-            continue
-        if not is_independent_fill:
-            first_step = next((step for step in steps if isinstance(step, dict)), {})
-            first_step["step_id"] = str(first_step.get("step_id") or "S1")
-            first_step["step_score"] = int(round(_safe_float(part.get("part_score"), 0.0)))
-            first_step["core_goal"] = _default_core_goal(qtype, answer_item)
-            first_step["required_elements"] = required_answers
-            first_step["allow_alternative_methods"] = qtype != "choice"
-            part["steps"] = [first_step]
-            continue
-        for step in steps:
-            if not isinstance(step, dict):
-                continue
-            goal = str(step.get("core_goal") or "").strip()
-            if not goal or goal == "完成必要的推理或计算步骤":
-                step["core_goal"] = _default_core_goal(qtype, answer_item)
-            if not _string_list(step.get("required_elements")):
-                step["required_elements"] = required_answers
-            step["allow_alternative_methods"] = qtype != "choice"
-
-    question["require_final_answer"] = False
-    question["answer_only_max_score"] = int(round(_safe_float(question.get("max_score"), 0.0)))
-    policies = question.get("deduction_policy")
-    if isinstance(policies, list):
-        question["deduction_policy"] = [
-            policy
-            for policy in policies
-            if not (
-                isinstance(policy, dict)
-                and str(policy.get("policy_id") or "") in {"answer_only_process_missing", "core_process_missing"}
-            )
-        ]
-    question["answer_presentation_policy"] = {
-        "require_final_answer": False,
-        "answer_only_max_score": question["answer_only_max_score"],
-        "note": "客观题仅按标准答案或等价答案判分，不要求过程证据。",
-    }
-
-
-def _align_answer_parts_to_rubric_parts(
-    question: dict[str, Any],
-    answer_item: dict[str, Any],
-) -> None:
-    rubric_parts = question.get("parts")
-    answer_parts = answer_item.get("parts")
-    if not isinstance(rubric_parts, list) or not isinstance(answer_parts, list):
-        return
-    valid_rubric_parts = [part for part in rubric_parts if isinstance(part, dict)]
-    valid_answer_parts = [part for part in answer_parts if isinstance(part, dict)]
-    if not valid_rubric_parts or len(valid_rubric_parts) != len(valid_answer_parts):
-        return
-
-    rubric_ids = [str(part.get("part_id") or "") for part in valid_rubric_parts]
-    answer_ids = [str(part.get("part_id") or "") for part in valid_answer_parts]
-    if rubric_ids == answer_ids:
-        return
-    if len(rubric_ids) > 1 and set(rubric_ids) & set(answer_ids):
-        return
-    for rubric_part, answer_part in zip(valid_rubric_parts, valid_answer_parts):
-        answer_part["part_id"] = str(rubric_part.get("part_id") or answer_part.get("part_id") or "")
-
-
-def _align_step_required_elements_with_answer_values(
-    question: dict[str, Any],
-    answer_item: dict[str, Any],
-) -> None:
-    rubric_parts = question.get("parts")
-    answer_parts = answer_item.get("parts")
-    if not isinstance(rubric_parts, list) or not isinstance(answer_parts, list):
-        return
-    answer_part_map = {
-        str(part.get("part_id") or ""): part
-        for part in answer_parts
-        if isinstance(part, dict)
-    }
-    for part_index, rubric_part in enumerate(rubric_parts):
-        if not isinstance(rubric_part, dict):
-            continue
-        answer_part = answer_part_map.get(str(rubric_part.get("part_id") or ""))
-        if not isinstance(answer_part, dict) and part_index < len(answer_parts):
-            candidate = answer_parts[part_index]
-            answer_part = candidate if isinstance(candidate, dict) else None
-        if not isinstance(answer_part, dict):
-            continue
-
-        raw_answers = answer_part.get("answers")
-        answer_values = _string_list(answer_part.get("answer_values"))
-        steps = rubric_part.get("steps")
-        if not answer_values or not isinstance(steps, list):
-            continue
-
-        values_by_id: dict[str, str] = {}
-        if isinstance(raw_answers, list):
-            for raw_answer in raw_answers:
-                if not isinstance(raw_answer, dict):
-                    continue
-                score_point_id = str(raw_answer.get("score_point_id") or raw_answer.get("step_id") or "").strip()
-                value = str(raw_answer.get("value") or raw_answer.get("answer") or "").strip()
-                if score_point_id and value:
-                    values_by_id[score_point_id] = value
-
-        for step_index, step in enumerate(steps):
-            if not isinstance(step, dict):
-                continue
-            step_key = str(step.get("score_point_id") or step.get("step_id") or "").strip()
-            value = values_by_id.get(step_key)
-            if not value and step_index < len(answer_values):
-                value = answer_values[step_index]
-            if value:
-                step["required_elements"] = merge_equivalent_forms([], value, max_forms=16)
-
-
-def _align_solution_parts_with_answer_parts(
-    question: dict[str, Any],
-    answer_item: dict[str, Any],
-    qtype: str,
-    max_score: float,
-) -> None:
-    if qtype not in {"calculation", "proof", "comprehensive"}:
-        return
-    answer_parts = answer_item.get("parts")
-    if not isinstance(answer_parts, list) or len(answer_parts) <= 1:
-        return
-    rubric_parts = question.get("parts")
-    if isinstance(rubric_parts, list) and len(rubric_parts) > 1:
-        return
-    part_scores = _allocate_scores(max_score, len(answer_parts))
-    next_parts: list[dict[str, Any]] = []
-    for idx, (answer_part, part_score) in enumerate(zip(answer_parts, part_scores), start=1):
-        if not isinstance(answer_part, dict):
-            continue
-        part_id = str(answer_part.get("part_id") or f"{question.get('question_id')}({idx})")
-        answer = str(answer_part.get("answer") or "").strip()
-        next_parts.append(
-            {
-                "part_id": part_id,
-                "part_score": part_score,
-                "steps": [
-                    {
-                        "step_id": "S1",
-                        "step_score": part_score,
-                        "core_goal": f"完成 {part_id} 的答题要求",
-                        "required_elements": [answer] if answer else ["合理的推理过程", "正确的结论"],
-                        "allow_alternative_methods": True,
-                    }
-                ],
-                "presentation_rules": [],
-            }
-        )
-    if next_parts:
-        question["parts"] = next_parts
-
-
-def _allocate_scores(total: float, count: int) -> list[float]:
-    if count <= 0:
-        return []
-    total_int = int(round(total))
-    base = total_int // count
-    remainder = total_int - base * count
-    return [base + (1 if idx < remainder else 0) for idx in range(count)]
-
-
-_VALID_RESPONSE_MODES = {
-    "exact_objective",
-    "short_answer_points",
-    "process_required",
-    "visual_construction",
-}
-_NON_PROCESS_RESPONSE_MODES = {
-    "exact_objective",
-    "short_answer_points",
-    "visual_construction",
-}
-
-
-def _infer_part_response_mode(question: dict[str, Any], part: dict[str, Any]) -> str:
-    explicit = str(part.get("response_mode") or "").strip().lower()
-    aliases = {
-        "direct_answer": "short_answer_points",
-        "answer_only": "short_answer_points",
-        "objective": "exact_objective",
-        "construction": "visual_construction",
-        "proof": "process_required",
-    }
-    explicit = aliases.get(explicit, explicit)
-    if explicit in _VALID_RESPONSE_MODES:
-        return explicit
-
-    qtype = str(question.get("question_type") or "").strip().lower()
-    if qtype in {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}:
-        return "exact_objective"
-
-    text_parts = [
-        str(part.get(key) or "")
-        for key in ("core_goal", "description", "part_title", "response_requirement", "answer_requirement")
-    ]
-    steps = part.get("steps")
-    if isinstance(steps, list):
-        for step in steps:
-            if not isinstance(step, dict):
-                continue
-            text_parts.extend(
-                str(step.get(key) or "")
-                for key in ("core_goal", "goal", "criterion", "description")
-            )
-            required = step.get("required_elements")
-            if isinstance(required, list):
-                text_parts.extend(str(item or "") for item in required)
-    text = " ".join(text_parts)
-    if re.search(r"尺规|作图|画出|绘制|保留.{0,6}(?:痕迹|过程)", text):
-        return "visual_construction"
-    if re.search(r"直接写出|只需.{0,6}答案|无需.{0,6}过程|填空|填写|选择|判断|写出.{0,8}(?:结果|关系|答案|数值)", text):
-        return "short_answer_points"
-    return "process_required"
-
-
-def _ensure_solution_hard_rules(question: dict[str, Any]) -> None:
-    """Persist process rules without applying them to direct-answer subquestions."""
-    qtype = str(question.get("question_type") or "")
-    if qtype not in {"proof", "calculation", "comprehensive"}:
-        return
-
-    max_score = _safe_float(question.get("max_score"), 0.0)
-    default_answer_only = max(1, int(round(max_score * 0.25))) if max_score > 0 else 1
-
-    if "require_final_answer" not in question:
-        # Proof and pure calculation questions usually do not need an extra "绛?;
-        # general comprehensive answers often do.
-        question["require_final_answer"] = qtype == "comprehensive"
-    question["require_final_answer"] = bool(question.get("require_final_answer"))
-
-    parts = question.get("parts")
-    part_answer_only_total = 0
-    has_process_part = False
-    if isinstance(parts, list):
-        for part in parts:
-            if not isinstance(part, dict):
-                continue
-
-            part_score = _safe_float(part.get("part_score") or part.get("max_score"), max_score)
-            response_mode = _infer_part_response_mode(question, part)
-            part["response_mode"] = response_mode
-
-            rules = part.get("presentation_rules")
-            if not isinstance(rules, list):
-                rules = []
-                part["presentation_rules"] = rules
-            _remove_rule_by_id(rules, "final_answer_required")
-
-            if response_mode in _NON_PROCESS_RESPONSE_MODES:
-                part["require_final_answer"] = False
-                part["answer_only_max_score"] = int(round(part_score))
-            else:
-                has_process_part = True
-                part_default_answer_only = max(1, int(round(part_score * 0.25))) if part_score > 0 else 1
-                if "require_final_answer" not in part:
-                    part["require_final_answer"] = question["require_final_answer"]
-                part["require_final_answer"] = bool(part.get("require_final_answer"))
-                if "answer_only_max_score" not in part:
-                    part["answer_only_max_score"] = part_default_answer_only
-                part["answer_only_max_score"] = max(
-                    0,
-                    min(
-                        int(round(_safe_float(part.get("answer_only_max_score"), part_default_answer_only))),
-                        int(round(part_score)),
-                    ),
-                )
-                if part["require_final_answer"]:
-                    rules.append(
-                        {
-                            "rule_id": "final_answer_required",
-                            "rule": "启用此策略时，必须包含最终答案或明确的结论；如果缺失或不完整则扣分。",
-                            "max_deduction": 1,
-                        }
-                    )
-            part_answer_only_total += int(part["answer_only_max_score"])
-
-    if isinstance(parts, list) and parts:
-        answer_only_max = part_answer_only_total
-    else:
-        answer_only_raw = question.get("answer_only_max_score")
-        answer_only_max = int(round(_safe_float(answer_only_raw, default_answer_only)))
-        has_process_part = True
-    if max_score > 0:
-        answer_only_max = max(0, min(answer_only_max, int(round(max_score))))
-    question["answer_only_max_score"] = answer_only_max
-
-    policies = question.get("deduction_policy")
-    if not isinstance(policies, list):
-        policies = []
-        question["deduction_policy"] = policies
-
-    policies[:] = [
-        policy
-        for policy in policies
-        if not (
-            isinstance(policy, dict)
-            and str(policy.get("policy_id") or "") in {"answer_only_process_missing", "core_process_missing"}
-        )
-    ]
-    if has_process_part:
-        _upsert_policy(
-            policies,
-            {
-                "policy_id": "answer_only_process_missing",
-                "issue": f"需要过程的小问仅有最终答案时，整题最高只给 {answer_only_max} 分",
-                "max_deduction": max(0, int(round(max_score)) - answer_only_max),
-                "severity": "major",
-            },
-        )
-        _upsert_policy(
-            policies,
-            {
-                "policy_id": "core_process_missing",
-                "issue": "需要过程的小问缺失关键步骤、证明逻辑或推理链条；扣除对应步骤分",
-                "max_deduction": int(round(max_score)),
-                "severity": "fatal",
-            },
-        )
-
-    question["answer_presentation_policy"] = {
-        "require_final_answer": question["require_final_answer"],
-        "answer_only_max_score": answer_only_max,
-        "note": "仅 response_mode=process_required 的小问需要过程证据；其他小问按正确答案项或图形要求给分。",
-    }
-
-
-def _upsert_policy(policies: list[Any], new_policy: dict[str, Any]) -> None:
-    policy_id = str(new_policy.get("policy_id") or "")
-    for idx, policy in enumerate(policies):
-        if isinstance(policy, dict) and str(policy.get("policy_id") or "") == policy_id:
-            policies[idx] = {**policy, **new_policy}
-            return
-    policies.append(new_policy)
-
-
-def _remove_rule_by_id(rules: list[Any], rule_id: str) -> None:
-    rules[:] = [
-        rule
-        for rule in rules
-        if not (isinstance(rule, dict) and str(rule.get("rule_id") or "") == rule_id)
-    ]
-
-
-def _default_core_goal(qtype: str, answer_item: dict[str, Any]) -> str:
-    if qtype == "choice":
-        return "选择正确的选项"
-    if qtype == "fill_blank":
-        return "填写正确或等价的答案"
-    return "完成必要的推理或计算步骤"
-
-
-def _default_required_elements(qtype: str, answer_item: dict[str, Any]) -> list[str]:
-    canonical = str(answer_item.get("canonical_answer") or "").strip()
-    if qtype in {"choice", "fill_blank"} and canonical:
-        return [canonical]
-    return ["合理的推理过程", "正确的结论"]
-
-
-def _force_step_total(part: dict[str, Any]) -> None:
-    steps = part.get("steps")
-    if not isinstance(steps, list) or not steps:
-        return
-    part_score = _safe_float(part.get("part_score"), 0.0)
-    step_sum = sum(_safe_float(step.get("step_score"), 0.0) for step in steps if isinstance(step, dict))
-    diff = round(part_score - step_sum, 2)
-    if abs(diff) > 0.01 and isinstance(steps[-1], dict):
-        steps[-1]["step_score"] = round(_safe_float(steps[-1].get("step_score"), 0.0) + diff, 2)
-
-
-def _force_part_total(question: dict[str, Any]) -> None:
-    parts = question.get("parts")
-    if not isinstance(parts, list) or not parts:
-        return
-    max_score = _safe_float(question.get("max_score"), 0.0)
-    part_sum = sum(_safe_float(part.get("part_score"), 0.0) for part in parts if isinstance(part, dict))
-    diff = round(max_score - part_sum, 2)
-    if abs(diff) > 0.01 and isinstance(parts[-1], dict):
-        parts[-1]["part_score"] = round(_safe_float(parts[-1].get("part_score"), 0.0) + diff, 2)
-        _force_step_total(parts[-1])
-
-
-def _safe_float(value: Any, default: float) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return float(default)
-
-
-def _string_list(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        if not value.strip():
-            return []
-        return [item.strip() for item in value.replace(",", ";").split(";") if item.strip()]
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    return [str(value).strip()] if str(value).strip() else []
-
-
-def _method_variants(value: Any) -> list[dict[str, str]]:
-    if not isinstance(value, list):
-        return []
-    result: list[dict[str, str]] = []
-    for idx, item in enumerate(value, start=1):
-        if isinstance(item, dict):
-            result.append(
-                {
-                    "name": str(item.get("name") or f"鏂规硶{idx}"),
-                    "outline": str(item.get("outline") or item.get("description") or ""),
-                }
-            )
-        elif str(item).strip():
-            result.append({"name": f"鏂规硶{idx}", "outline": str(item).strip()})
-    return result
-
-
-def _normalize_question_type(value: Any) -> str:
-    raw = str(value or "").strip().lower()
-    if not raw:
-        return "comprehensive"
-    if raw in {"fill_blank", "fill-in", "fill_in_blank", "blank", "short_answer", "short-answer"}:
-        return "fill_blank"
-    if raw in {"choice", "single_choice", "multiple_choice", "select", "option"}:
-        return "choice"
-    if raw in {"calculation", "calculate", "solve", "solution", "problem_solving"}:
-        return "calculation"
-    if raw in {"proof", "prove"}:
-        return "proof"
-    if raw in {"comprehensive", "subjective", "constructed_response"}:
-        return "comprehensive"
-    if any(token in raw for token in ["choice", "select", "option"]):
-        return "choice"
-    if any(token in raw for token in ["blank", "short_answer", "fill"]):
-        return "fill_blank"
-    if any(token in raw for token in ["proof", "prove"]):
-        return "proof"
-    if any(token in raw for token in ["calculation", "calculate", "solve", "solution"]):
-        return "calculation"
-    return "comprehensive"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def _needs_objective_repair(payload: dict[str, Any], doc_text: str) -> bool:
@@ -5386,127 +3622,6 @@ def _build_manual_structure_refinement_prompt(payload: dict[str, Any]) -> str:
     )
 
 
-def validate_generated_config(payload: dict[str, Any]) -> None:
-    normalize_generated_config_schema(payload)
-    force_payload_total_score(payload, target_total=100.0)
-    if not isinstance(payload, dict):
-        raise ValueError("Generated config must be a JSON object")
-    for top_key in ["rubric", "answer_key", "meta"]:
-        if top_key not in payload:
-            raise ValueError(f"Generated config is missing top-level field: {top_key}")
-
-    rubric = payload["rubric"]
-    answer_key = payload["answer_key"]
-    meta = payload["meta"]
-    if not isinstance(rubric, dict):
-        raise ValueError("rubric must be an object")
-    if not isinstance(answer_key, dict):
-        raise ValueError("answer_key must be an object")
-    if not isinstance(meta, dict):
-        raise ValueError("meta must be an object")
-
-    rubric_questions = rubric.get("questions")
-    answer_questions = answer_key.get("questions")
-    if not isinstance(rubric_questions, list) or not rubric_questions:
-        raise ValueError("rubric.questions must be a non-empty list")
-    if not isinstance(answer_questions, list) or not answer_questions:
-        raise ValueError("answer_key.questions must be a non-empty list")
-
-    rubric_q_map: dict[str, dict[str, Any]] = {}
-    scores_by_type: dict[str, float] = {}
-    for idx, item in enumerate(rubric_questions, start=1):
-        if not isinstance(item, dict):
-            raise ValueError(f"rubric.questions[{idx - 1}] must be an object, got {type(item).__name__}: {item!r}")
-        for key in ["question_id", "question_type", "max_score", "knowledge_id", "parts"]:
-            if key not in item:
-                raise ValueError(f"rubric.questions[{idx - 1}] is missing field: {key}")
-        qid = str(item["question_id"])
-        rubric_q_map[qid] = item
-        qtype = str(item.get("question_type") or "comprehensive")
-        max_score = float(item["max_score"])
-        if not max_score.is_integer():
-            raise ValueError(f"rubric.questions[{idx - 1}].max_score must be an integer")
-        if max_score > MAX_QUESTION_SCORE:
-            raise ValueError(
-                f"rubric.questions[{idx - 1}].max_score must not exceed {MAX_QUESTION_SCORE}"
-            )
-        # 同类同分仅约束客观题（choice/fill_blank/judgement/true_false）；
-        # 解答类大题（calculation/proof/comprehensive）允许各题分值不同。
-        if _normalize_type(qtype) in OBJECTIVE_TYPES:
-            if qtype in scores_by_type and abs(scores_by_type[qtype] - max_score) > 1e-6:
-                raise ValueError(f"All questions with question_type={qtype} must use the same max_score")
-            scores_by_type[qtype] = max_score
-
-        parts = item.get("parts")
-        if not isinstance(parts, list) or not parts:
-            raise ValueError(f"rubric.questions[{idx - 1}].parts must be a non-empty list")
-        part_total = 0.0
-        for pidx, part in enumerate(parts, start=1):
-            if not isinstance(part, dict):
-                raise ValueError(f"rubric.questions[{idx - 1}].parts[{pidx - 1}] must be an object")
-            for key in ["part_id", "part_score", "steps"]:
-                if key not in part:
-                    raise ValueError(f"rubric.questions[{idx - 1}].parts[{pidx - 1}] is missing field: {key}")
-            part_score = float(part["part_score"])
-            if not part_score.is_integer():
-                raise ValueError(f"rubric.questions[{idx - 1}].parts[{pidx - 1}].part_score must be an integer")
-            part_total += part_score
-            steps = part.get("steps")
-            if not isinstance(steps, list) or not steps:
-                raise ValueError(f"rubric.questions[{idx - 1}].parts[{pidx - 1}].steps must be a non-empty list")
-            step_total = 0.0
-            for sidx, step in enumerate(steps, start=1):
-                if not isinstance(step, dict):
-                    raise ValueError(f"rubric.questions[{idx - 1}].parts[{pidx - 1}].steps[{sidx - 1}] must be an object")
-                for key in ["step_id", "step_score", "core_goal", "required_elements", "allow_alternative_methods"]:
-                    if key not in step:
-                        raise ValueError(f"rubric.questions[{idx - 1}].parts[{pidx - 1}].steps[{sidx - 1}] is missing field: {key}")
-                step_score = float(step["step_score"])
-                if not step_score.is_integer():
-                    raise ValueError(f"rubric.questions[{idx - 1}].parts[{pidx - 1}].steps[{sidx - 1}].step_score must be an integer")
-                step_total += step_score
-            if abs(step_total - part_score) > 1e-6:
-                raise ValueError(f"rubric.questions[{idx - 1}].parts[{pidx - 1}] step total does not equal part_score")
-            if not isinstance(part.get("presentation_rules", []), list):
-                raise ValueError(f"rubric.questions[{idx - 1}].parts[{pidx - 1}].presentation_rules must be a list")
-        if abs(part_total - max_score) > 1e-6:
-            raise ValueError(f"rubric.questions[{idx - 1}] part total does not equal max_score")
-
-    answer_q_map: dict[str, dict[str, Any]] = {}
-    for idx, item in enumerate(answer_questions, start=1):
-        if not isinstance(item, dict):
-            raise ValueError(f"answer_key.questions[{idx - 1}] must be an object")
-        for key in ["question_id", "canonical_answer", "accepted_forms", "method_variants", "parts"]:
-            if key not in item:
-                raise ValueError(f"answer_key.questions[{idx - 1}] is missing field: {key}")
-        qid = str(item["question_id"])
-        answer_q_map[qid] = item
-        if not isinstance(item["accepted_forms"], list):
-            raise ValueError(f"answer_key.questions[{idx - 1}].accepted_forms must be a list")
-        if not isinstance(item["method_variants"], list):
-            raise ValueError(f"answer_key.questions[{idx - 1}].method_variants must be a list")
-        parts = item.get("parts")
-        if not isinstance(parts, list) or not parts:
-            raise ValueError(f"answer_key.questions[{idx - 1}].parts must be a non-empty list")
-        for pidx, part in enumerate(parts, start=1):
-            if not isinstance(part, dict):
-                raise ValueError(f"answer_key.questions[{idx - 1}].parts[{pidx - 1}] must be an object")
-            for key in ["part_id", "answer", "analysis", "step_milestones"]:
-                if key not in part:
-                    raise ValueError(f"answer_key.questions[{idx - 1}].parts[{pidx - 1}] is missing field: {key}")
-            if not isinstance(part["step_milestones"], list):
-                raise ValueError(f"answer_key.questions[{idx - 1}].parts[{pidx - 1}].step_milestones must be a list")
-
-    if set(rubric_q_map) != set(answer_q_map):
-        raise ValueError("rubric.questions and answer_key.questions must have identical question_id sets")
-    total_score = sum(float(item.get("max_score") or 0) for item in rubric_q_map.values())
-    if abs(total_score - 100.0) > 0.02:
-        raise ValueError(f"rubric question total must be 100, got {total_score:.2f}")
-    rubric["total_score"] = 100.0
-
-
-    if "warnings" not in meta or not isinstance(meta["warnings"], list):
-        raise ValueError("meta.warnings must exist and be a list")
 
 
 def save_generated_config(upload_dir: Path, payload: dict[str, Any], ts: str) -> tuple[Path, Path]:
@@ -5693,3 +3808,50 @@ def generate_grading_config_from_images(
     )
     return _finalize_whole_generation_payload(payload, "whole_pdf_visual_single_request")
 
+
+# P3-10 compatibility exports. The implementation lives in focused policy
+# modules; historical callers keep resolving the same session_manager names.
+from backend.config_generation import local_facts as _config_local_facts  # noqa: E402
+from backend.config_generation import normalization as _config_normalization  # noqa: E402
+from backend.config_generation import quality as _config_quality  # noqa: E402
+from backend.config_generation import score_allocation as _config_score_allocation  # noqa: E402
+
+for _compat_module in (
+    _config_normalization,
+    _config_score_allocation,
+    _config_local_facts,
+    _config_quality,
+):
+    for _compat_name in _compat_module.SESSION_MANAGER_COMPAT_EXPORTS:
+        globals()[_compat_name] = getattr(_compat_module, _compat_name)
+del _compat_module, _compat_name
+
+# P3-09 compatibility facade. Keep the historical names for callers while the
+# active batch workflow and score prompt live under backend.config_generation.
+from backend.config_generation.compat import (  # noqa: E402
+    failed_grading_config_batches as failed_grading_config_batches,
+    failed_grading_config_question_ids as failed_grading_config_question_ids,
+    generate_grading_config_in_batches as generate_grading_config_in_batches,
+    refine_grading_config_from_manual_structure as refine_grading_config_from_manual_structure,
+    retry_failed_grading_config_batches as retry_failed_grading_config_batches,
+)
+from backend.config_generation.gateway import (  # noqa: E402
+    config_generation_extra_kwargs as _config_generation_extra_kwargs,
+)
+from backend.config_generation.prompts import (  # noqa: E402
+    build_manual_structure_refinement_prompt as _build_manual_structure_refinement_prompt,
+    build_score_allocation_prompt as _build_score_allocation_prompt,
+)
+
+
+# P3-08 compatibility exports. Parsing now lives in backend.document_parsing;
+# callers that historically imported these names keep the same public surface.
+from backend.document_parsing import (  # noqa: E402
+    extract_docx_text as extract_docx_text,
+    image_paths_from_rich_text as _image_paths_from_rich_text,
+    infer_question_type_from_text as _infer_question_type_from_block_text,
+    parse_plain_question_blocks as preview_question_blocks_from_docx_text,
+)
+from backend.document_parsing.question_blocks import (  # noqa: E402
+    _parse_inline_answer_blocks as _parse_inline_answer_blocks,
+)
