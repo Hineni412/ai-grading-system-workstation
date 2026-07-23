@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.repositories.papers import PaperRepositoryGateway
+from backend.repositories.reporting import ReportRepositoryGateway
 from backend.repositories.results import ResultRepositoryGateway
 from backend.repositories.review import ReviewRepositoryGateway
 from backend.repositories.settings import SettingsRepositoryGateway
@@ -56,6 +57,9 @@ class GradingRepositoryAccess:
         self.settings: SettingsRepositoryGateway = (
             getattr(compatibility_source, "settings_repository", compatibility_source)
         )
+        self.reports: ReportRepositoryGateway = (
+            getattr(compatibility_source, "report_repository", compatibility_source)
+        )
         repositories = [
             self.students,
             self.sessions,
@@ -64,6 +68,7 @@ class GradingRepositoryAccess:
             self.reviews,
             self.templates,
             self.settings,
+            self.reports,
         ]
         self._named_repositories = tuple(
             repository
@@ -99,6 +104,10 @@ class GradingRepositoryAccess:
     def settings_repository(self) -> SettingsRepositoryGateway:
         return self.settings
 
+    @property
+    def report_repository(self) -> ReportRepositoryGateway:
+        return self.reports
+
     def __getattr__(self, name: str) -> Any:
         instance_overrides = getattr(self._compatibility_source, "__dict__", {})
         if name in instance_overrides:
@@ -133,7 +142,7 @@ def _log_compatibility_operation(name: str) -> None:
         if name in _LOGGED_COMPATIBILITY_OPERATIONS:
             return
         _LOGGED_COMPATIBILITY_OPERATIONS.add(name)
-    logger.debug(
+    logger.info(
         "grading repository compatibility operation used",
         extra={"repository_compatibility_operation": name},
     )

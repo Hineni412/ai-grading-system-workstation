@@ -66,6 +66,7 @@ def test_compatibility_source_is_exposed_as_named_repositories() -> None:
         review_repository=object(),
         template_repository=object(),
         settings_repository=object(),
+        report_repository=object(),
     )
 
     repositories = as_grading_repositories(source)
@@ -78,6 +79,7 @@ def test_compatibility_source_is_exposed_as_named_repositories() -> None:
     assert repositories.reviews is source.review_repository
     assert repositories.templates is source.template_repository
     assert repositories.settings is source.settings_repository
+    assert repositories.reports is source.report_repository
     assert as_grading_repositories(repositories) is repositories
 
 
@@ -110,3 +112,41 @@ def test_lightweight_compatibility_double_and_instance_override_still_work() -> 
 
     source.get_grading_session = lambda session_id: {"id": session_id, "patched": True}
     assert repositories.get_grading_session(4) == {"id": 4, "patched": True}
+
+
+def test_active_session_report_export_has_no_direct_sqlite_reads() -> None:
+    tree = ast.parse(
+        (REPO_ROOT / "report.py").read_text(encoding="utf-8"),
+        filename="report.py",
+    )
+    report_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "ReportGenerator"
+    )
+    export_session = next(
+        node
+        for node in report_class.body
+        if isinstance(node, ast.FunctionDef) and node.name == "export_session"
+    )
+
+    forbidden_calls = [
+        node
+        for node in ast.walk(export_session)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and (
+            (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "sqlite3"
+                and node.func.attr == "connect"
+            )
+            or (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "pd"
+                and node.func.attr == "read_sql_query"
+            )
+        )
+    ]
+
+    assert forbidden_calls == []
