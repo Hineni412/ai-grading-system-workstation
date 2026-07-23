@@ -63,15 +63,17 @@ def test_p3_01_command_emits_reproducible_redacted_structural_baseline(
     assert "db_manager.py" in payload["core_targets"]
     assert "session_manager.py" in payload["core_targets"]
     assert "backend/api/app.py" in payload["core_targets"]
+    assert "backend/api/launcher.py" in payload["core_targets"]
+    assert "web_app.py" not in payload["core_targets"]
     assert any(
         item["kind"] in {"importlib.import_module", "__import__"}
         for item in payload["dynamic_imports"]
     )
     assert {
-        "source": "pages/题库管理.py",
-        "kind": "importlib.import_module",
-        "line": 201,
-        "module": "question_bank.services.rich_content_backfill_service",
+        "source": "tools/storage_maintenance.py",
+        "kind": "__import__",
+        "line": 50,
+        "module": "datetime",
     } in payload["dynamic_imports"]
     assert any(
         item["target"] == "db_manager.py" for item in payload["test_coverage_map"]

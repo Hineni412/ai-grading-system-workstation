@@ -39,7 +39,7 @@ CORE_TARGETS = (
     "session_manager.py",
     "grading_service.py",
     "manual_review_service.py",
-    "web_app.py",
+    "backend/api/launcher.py",
     "backend/api/app.py",
     "question_bank/database/schema.py",
 )
