@@ -2,7 +2,7 @@
 
 **执行包：** P3-05
 **计划日期：** 2026-07-23
-**规划状态：** ready_for_execution
+**规划状态：** verified_pending_integration
 **规划模型：** 当前连续作业模型
 **允许夜间执行：** yes
 **计划基线：** 99d106c54ae1ea1e2beaf8cadddfec82ef56b9fe
@@ -15,14 +15,14 @@
 ## 昼夜交接
 
 **执行包：** P3-05
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
-**独立复审：** pending
+**交接状态：** verified_pending_integration
+**功能提交：** 43b779b775a3a04494009b98a63d65ad951bb561
+**自动验证：** passed
+**独立复审：** passed
 **用户验收：** not_required
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
 
 ## 任务边界（已冻结）
@@ -77,14 +77,14 @@
 
 ## 实施步骤
 
-- [ ] 新增 Repository 公共契约测试并取得 RED：模块/属性缺失，服务仍通过 `_connect()` 或兼容方法访问评分表。
-- [ ] 实现 `PaperRepository` 的答卷写入、条件状态、进度/失败读取、存储路径和运行清理切片，逐项转 GREEN。
-- [ ] 实现 `ResultRepository` 的结果/明细保存、当前归属发布、同学生替换、完整性源行与证据读取，故障注入证明整笔回滚。
-- [ ] 实现 `ReviewRepository` 的复核行、所有权调分、多结果总分与批注索引；跨结果故障注入证明零部分更新。
-- [ ] 把 `DBManager` 对应方法改为兼容委托；跨域方法在一个 `RepositorySession` 中组合，保留备份、Rubric/完整性和路径解释。
-- [ ] 让 `GradingService`、`ManualReviewService` 使用新 Repository；移除评分主服务三处 `_connect()` 直查，出勤复用既有 `SessionRepository`。
-- [ ] 运行包内聚焦、grading/review/report/API 受影响回归、快速冒烟、真实两库指纹与交接核验。
-- [ ] 冻结候选后在同一 SHA 并行完成需求符合性与代码质量复审；仅在存在阻塞问题时使用授权预算统一修正，最多 3 次。
+- [x] 新增 Repository 公共契约测试并取得 RED：模块/属性缺失，服务仍通过 `_connect()` 或兼容方法访问评分表。
+- [x] 实现 `PaperRepository` 的答卷写入、条件状态、进度/失败读取、存储路径和运行清理切片，逐项转 GREEN。
+- [x] 实现 `ResultRepository` 的结果/明细保存、当前归属发布、同学生替换、完整性源行与证据读取，故障注入证明整笔回滚。
+- [x] 实现 `ReviewRepository` 的复核行、所有权调分、多结果总分与批注索引；跨结果故障注入证明零部分更新。
+- [x] 把 `DBManager` 对应方法改为兼容委托；跨域方法在一个 `RepositorySession` 中组合，保留备份、Rubric/完整性和路径解释。
+- [x] 让 `GradingService`、`ManualReviewService` 使用新 Repository；移除评分主服务三处 `_connect()` 直查，出勤复用既有 `SessionRepository`。
+- [x] 运行包内聚焦、grading/review/report/API 受影响回归、快速冒烟、真实两库指纹与交接核验。
+- [x] 冻结候选后在同一 SHA 并行完成需求符合性与代码质量复审；仅在存在阻塞问题时使用授权预算统一修正，最多 3 次。
 
 ## 计划验证命令
 
@@ -100,7 +100,9 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - Phase map、最新 `ARCHITECTURE.md`、P3-03/P3-04 Repository 事实、当前 SQL 调用方和现有回归均已交叉核对。
 - 未发现需要改变评分含义、失败卷状态、API 契约或 Schema 的未决产品选择；无需中断询问。
 - 计划按“持久化事务进入 Repository、业务计算留在服务/兼容层”的 seam 限制范围，避免复制 `DBManager` 或提前实施 P3-07。
-- 当前剩余工作量为实现、受影响验证、双路复审、交接和 integration 逐包验证；真实模型调用与真实数据写入均为零。
+- 自动验证完成：Repository 三包 38 项、grading/review/report/API 受影响回归 82 项、快速冒烟均通过；静态编译覆盖 493 个第一方 Python 文件。
+- 双路初审完成：原始意见 4 条，去重后 4 条；阻塞项 1 条（测试临时锁文件）已按用户明确授权清理，另 3 条均为非阻塞 `Suggestion`，未启动无目标修正轮次，授权修正预算仍为 0/3。
+- 当前剩余工作量仅为 integration 逐包合入与验证、更新 Index；真实模型调用与根目录真实数据写入均为零，真实两库指纹不变。
 
 ## 回退
 
