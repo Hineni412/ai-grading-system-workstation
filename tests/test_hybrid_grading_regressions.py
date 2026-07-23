@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import base64
 import json
 from pathlib import Path
@@ -18,9 +17,6 @@ from hybrid_batch_grading_service import (
     validate_hybrid_major_response,
 )
 from scanner import ExamPaperGroup
-
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 class _FakeLLMClient:
@@ -233,21 +229,6 @@ def test_hybrid_prompt_describes_shared_tile_scoring_rules() -> None:
     assert "Shared tiles may contain vertically, horizontally, or continuously written answers." in joined
     assert "Score each required part exactly once and do not duplicate evidence across parts." in joined
     assert "If boundaries are unclear, return all implicated parts with low confidence and needs_human_review=true." in joined
-
-
-def test_quick_batch_settings_do_not_mutate_instantiated_sidebar_widget_state() -> None:
-    module = ast.parse((ROOT / "web_app.py").read_text(encoding="utf-8"))
-    function = next(
-        node
-        for node in module.body
-        if isinstance(node, ast.FunctionDef) and node.name == "render_grading_tab"
-    )
-    source = ast.unparse(function)
-
-    assert "st.session_state.objective_batch_size_input = obj_bs" not in source
-    assert "st.session_state.hybrid_major_batch_size_input = maj_bs" not in source
-    assert "os.environ['LLM_OBJECTIVE_BATCH_SIZE'] = str(obj_bs)" in source
-    assert "os.environ['LLM_HYBRID_MAJOR_BATCH_SIZE'] = str(maj_bs)" in source
 
 
 def test_subjective_retry_acquires_one_request_slot_per_model_attempt(

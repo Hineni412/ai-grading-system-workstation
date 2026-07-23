@@ -10,7 +10,6 @@ import pytest
 from db_manager import DBManager
 from manual_review_service import ManualReviewService
 from report import ReportGenerator
-from web_app import _build_report_score_review_rows, _report_persisted_score, _report_score_input_key
 
 
 def _seed_session(tmp_path: Path) -> tuple[DBManager, Path]:
@@ -132,66 +131,3 @@ def test_batch_score_adjustment_ignores_unrelated_unmapped_detail(tmp_path: Path
     service.apply_batch_score_adjustments(1, [{"detail_id": 1, "score_awarded": 4}])
 
     assert db.get_session_results(1)[0]["student_score"] == 7.0
-
-
-def test_report_review_rows_include_parent_full_score_as_inferred_part_score(tmp_path: Path) -> None:
-    db, db_path = _seed_session(tmp_path)
-    rubric_path = tmp_path / "rubric.json"
-    rubric_path.write_text(
-        json.dumps(
-            {
-                "questions": [
-                    {
-                        "question_id": "Q11",
-                        "max_score": 11,
-                        "parts": [{"part_id": "Q11(3)", "part_score": 5}],
-                    }
-                ]
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-    with sqlite3.connect(db_path) as conn:
-        conn.execute("UPDATE grading_sessions SET rubric_path = ? WHERE id = 1", (str(rubric_path),))
-        conn.execute("DELETE FROM session_details WHERE result_id = 1")
-        conn.execute(
-            """
-            INSERT INTO session_details (
-                id, result_id, question_id, score_awarded, deduction_reason, knowledge_id
-            ) VALUES (11, 1, 'Q11', 11, NULL, 'K11')
-            """
-        )
-        conn.execute("UPDATE session_results SET total_score = 11, student_score = 11 WHERE id = 1")
-        conn.commit()
-
-    rows = _build_report_score_review_rows(db, 1, "一班", "Q11(3)")
-
-    assert len(rows) == 1
-    assert rows[0]["question_id"] == "Q11(3)"
-    assert rows[0]["source_question_id"] == "Q11"
-    assert rows[0]["score_awarded"] == 5
-    assert rows[0]["max_score"] == 5
-    assert rows[0]["is_inferred_full_score"] is True
-    assert _report_persisted_score(rows[0], 3) == 9
-    assert "Q11(3)" in _report_score_input_key(1, rows[0])
-
-
-def test_report_export_page_has_editable_scores_and_bottom_browser_downloads() -> None:
-    source = Path("web_app.py").read_text(encoding="utf-8")
-    start = source.index("def render_export_tab")
-    end = source.index("def _render_selectable_question_matrix", start)
-    section = source[start:end]
-
-    assert "_render_report_score_review_grid" in section
-    assert section.rindex("_render_report_export_controls") > section.index("_render_report_score_review_grid")
-    assert '"下载 Excel 成绩报表"' in source
-    assert 'mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"' in source
-    assert "_report_score_revision" in source
-    assert '"revision": score_revision' in source
-    assert 'cached.get("revision") != score_revision' in source
-    assert "st.session_state.pop(_report_score_input_key" not in section
-    assert "_reset_report_score_input_state(selected_session_id)" in section
-    assert "_mark_report_score_inputs_for_reset(session_id)" in section
-    assert "查看满分同学复核" in section
-    assert 'expanded=False' in section

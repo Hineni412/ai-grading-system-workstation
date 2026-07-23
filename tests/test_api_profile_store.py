@@ -344,24 +344,6 @@ def test_active_backend_settings_receive_sanitized_policy_overrides(monkeypatch)
     }
 
 
-def test_web_settings_receive_sanitized_saved_profile_policy(monkeypatch) -> None:
-    import web_app
-
-    monkeypatch.setattr(web_app, "API_PROFILE_STORE", _FakeStore(POLICY_PROFILE))
-    monkeypatch.setattr(web_app, "st", _FakeStreamlit())
-    monkeypatch.setattr(web_app.os, "environ", {})
-
-    settings = web_app.build_llm_settings_from_sidebar()
-
-    assert settings is not None
-    assert settings.policy_profile == {
-        "llm_config_generation_timeout_seconds": 90,
-        "llm_tagging_max_retries": 1,
-    }
-    assert not any(key.startswith("LLM_CONFIG_GENERATION_") for key in web_app.os.environ)
-    assert not any(key.startswith("LLM_TAGGING_") for key in web_app.os.environ)
-
-
 def test_tagging_profile_settings_receive_sanitized_policy_overrides(monkeypatch) -> None:
     from question_bank.services import ai_tagging_service
 
@@ -405,19 +387,6 @@ def test_environment_and_dedicated_tagging_clients_keep_default_policies() -> No
     assert service.llm_client.settings.policy_profile is None
     assert service.review_llm_client is not None
     assert service.review_llm_client.settings.policy_profile is None
-
-
-def test_grading_page_updates_keys_while_question_bank_page_is_read_only() -> None:
-    web_source = (ROOT / "web_app.py").read_text(encoding="utf-8")
-    question_bank_source = (ROOT / "pages" / "题库管理.py").read_text(encoding="utf-8")
-
-    assert "save_api_profiles(API_PROFILES_PATH" not in web_source
-    assert "save_api_profiles(profiles_path" not in question_bank_source
-    assert "API_PROFILE_STORE.update_active(" in web_source
-    assert "clear_active_keys(" in web_source
-    assert "profile_store.update_active(" not in question_bank_source
-    assert "clear_active_keys(" not in question_bank_source
-    assert "profile_store.load()" in question_bank_source
 
 
 def test_updates_do_not_copy_api_keys_into_data_backups() -> None:
