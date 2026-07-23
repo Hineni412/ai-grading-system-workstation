@@ -102,6 +102,11 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - **不包含：** 不迁移任何业务 SQL，不改变 Repository 之外的调用方，不处理 P3-04/P3-05，不做 Schema、真实数据或模型调用。
 - **验收：** 事务绕过最小复现由 RED 转 GREEN，外层异常后临时库无部分写入；双重失败的 cause 同时包含原 commit 与 rollback 异常对象；受影响回归与快速冒烟通过。
 - **风险：** 高；修复只使用临时库与内存故障对象。
+- **首个候选：** `719bc95f58a94fbaf4b67a23aee4493cb523bdb1`；两个最小复现均先 RED 后 GREEN，63 项受影响测试与快速冒烟通过。
+- **限定初审：** Spec 与 Standards 各报告 1 条 Important，去重为同一根因：SQLite 接受开头 UTF-8 BOM，但关键词检查未跳过该不可见字符，仍可提交外层事务。
+- **统一修复：** `8bdc2aab77f34f72b7fe387c413f178252792a3d`；把 BOM 纳入 SQLite 前导可忽略字符，精确复现转 GREEN。
+- **修复验证：** 18 项 P3-03 契约测试与 45 项受影响回归共 63 项通过；快速冒烟再次通过，真实数据未参与。
+- **最终复审范围：** 只核对 BOM 绕过、原两项授权修复和直接回归。
 
 ## 回退
 
