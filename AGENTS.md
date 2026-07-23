@@ -40,9 +40,9 @@
 ## 当前产品边界
 
 - 版本以根目录 `VERSION` 为准。
-- 当前产品是 Windows 本机单用户应用。生产 UI 仍为 Streamlit，监听 `127.0.0.1:8501`。
-- FastAPI 与已有 API/JobManager 增量已经进入共同基线；Vue 3 SPA 尚未成为生产 UI。
-- 迁移期间，以现有 Streamlit 行为、服务实现、数据库契约和测试为业务事实来源；它们约束用户任务、业务能力、数据语义、业务结果、状态、权限、安全、持久化、危险操作保护、失败恢复、幂等性与审计，不要求新前端复刻旧页面结构或点击顺序。
+- 当前产品是 Windows 本机单用户应用。生产 UI 为 Vue 3 SPA，由 FastAPI 同源托管并监听 `127.0.0.1:8000`。
+- FastAPI、既有 API/JobManager 与 Vue 3 SPA 已进入共同生产基线；旧 Streamlit 日常 UI 不再作为生产入口。
+- 迁移期间留下的 Streamlit 行为证据、当前服务实现、数据库契约和测试共同作为业务事实来源；旧 Streamlit 日常入口已退役，但历史证据仍约束用户任务、业务能力、数据语义、业务结果、状态、权限、安全、持久化、危险操作保护、失败恢复、幂等性与审计。
 - 当前阶段、包状态和下一动作只在 `docs/superpowers/packages/EXECUTION_INDEX.md` 维护。
 
 ## 必读顺序
@@ -148,7 +148,7 @@ runtime\python\python.exe -m pytest tests\test_migration_tooling.py tests\test_s
 runtime\python\python.exe -m pytest tests\test_api_app.py tests\test_run_bat_api_entry.py -q
 runtime\python\python.exe tools\smoke_check.py
 runtime\python\python.exe tools\smoke_check.py --skip-tests
-runtime\python\python.exe -m streamlit run web_app.py --server.address 127.0.0.1 --server.port 8501
+runtime\python\python.exe -m backend.api.launcher --host 127.0.0.1 --port 8000
 ```
 
 日常启动可双击 `运行.bat`。

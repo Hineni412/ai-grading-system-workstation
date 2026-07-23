@@ -28,7 +28,6 @@ PRODUCTION_DIRS = {
     "docs",
     "integration",
     "migrations",
-    "pages",
     "question_bank",
     "update_tools",
 }
@@ -399,7 +398,7 @@ def build_runtime(src_dir: Path, cache_dir: Path, *, rebuild: bool = False) -> P
         [
             str(python_exe),
             "-c",
-            "import streamlit, cv2, fitz, tkinter; print('runtime ok', streamlit.__version__, tkinter.__file__)",
+            "import cv2, fitz, tkinter; print('runtime ok', cv2.__version__, tkinter.__file__)",
         ]
     )
     return runtime_dir
@@ -455,8 +454,6 @@ def write_private_readme(pkg_dir: Path, version: str) -> None:
 ## 启动
 
 双击 `运行.bat`，默认打开 Vue 新界面与同源 FastAPI。
-
-如需在本版本临时回到旧 Streamlit 界面，请先设置 `USE_STREAMLIT=1` 再运行；回退模式下仍可用 `START_API=0` 跳过附带 API。
 
 新电脑不需要预装 Python，也不需要重新安装 `requirements.txt`。启动脚本会直接使用：
 

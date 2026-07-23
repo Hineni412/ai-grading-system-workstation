@@ -120,26 +120,9 @@ def test_runtime_objective_config_ignores_legacy_fields_and_projects_safe_policy
     }
 
 
-def test_web_app_source_removes_deprecated_objective_widget_state_names() -> None:
-    source = (ROOT / "web_app.py").read_text(encoding="utf-8")
-
-    assert "objective_timeout_input" not in source
-    assert "objective_max_tokens_input" not in source
-    assert "objective_timeout" not in source
-    assert "objective_max_tokens" not in source
-
-
-def test_web_and_backend_reuse_shared_limit_constants() -> None:
-    web_source = (ROOT / "web_app.py").read_text(encoding="utf-8")
+def test_backend_reuses_shared_limit_constants() -> None:
     grading_source = (ROOT / "grading_service.py").read_text(encoding="utf-8")
     scanner_source = (ROOT / "scanner.py").read_text(encoding="utf-8")
-
-    assert "OBJECTIVE_BATCH_SIZE_MAX" in web_source
-    assert "SUBJECTIVE_MAJOR_BATCH_SIZE_MAX" in web_source
-    assert "PRECHECK_WORKERS_MAX" in web_source
-    assert "FULL_PAPER_WORKERS_MAX" in web_source
-    assert "HYBRID_INFLIGHT_WORKERS_MAX" in web_source
-    assert "GRADING_RPM_MAX" in web_source
 
     assert "OBJECTIVE_BATCH_SIZE_MAX" in grading_source
     assert "SUBJECTIVE_MAJOR_BATCH_SIZE_MAX" in grading_source

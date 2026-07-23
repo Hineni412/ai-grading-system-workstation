@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+"""Regression coverage for skill catalog service behavior."""
+
 import json
 from pathlib import Path
 
 from question_bank.database.schema import connect, initialize_database
 from question_bank.services.skill_catalog_service import SkillCatalogService
-
-
-PAGE_PATH = Path("pages/知识点整理（高级）.py")
 
 
 def _open_question_conflict(db_path: Path) -> tuple[SkillCatalogService, int, int]:
@@ -35,42 +34,6 @@ def _open_question_conflict(db_path: Path) -> tuple[SkillCatalogService, int, in
         )
         conflict_id = int(cursor.lastrowid)
     return service, conflict_id, int(skill["id"])
-
-
-def test_page_is_a_plain_skill_catalog_and_conflict_inbox() -> None:
-    source = PAGE_PATH.read_text(encoding="utf-8")
-
-    for text in ("技能目录与待处理问题", "技能目录", "待处理问题", "覆盖情况", "迁移记录"):
-        assert text in source
-    for text in (
-        "SkillConflictInboxService",
-        "必须处理",
-        "可选检查",
-        "历史记录",
-        "这里只统计整道题还没有可用训练技能的来源",
-    ):
-        assert text in source
-    assert "待处理问题 · {len(conflicts)}" not in source
-    for removed in (
-        "ConceptAlignmentService",
-        "AlignmentReviewService",
-        "ALIGNMENT_FOCUS_SESSION_KEY",
-        "焦点过滤",
-        "知识点关系管理",
-        "命名空间",
-        "置信度阈值",
-        "st.slider",
-    ):
-        assert removed not in source
-
-
-def test_conflict_choices_and_merge_are_explicit_and_in_chinese() -> None:
-    source = PAGE_PATH.read_text(encoding="utf-8")
-
-    for text in ("选择已有技能", "新建本校技能", "暂不处理", "确认合并", "合并依据预览"):
-        assert text in source
-    assert "技术详情" in source
-    assert "set_neighbor_enabled" in source
 
 
 def test_resolve_conflict_closes_inbox_and_creates_measured_link(tmp_path: Path) -> None:
@@ -124,11 +87,3 @@ def test_coverage_keeps_question_bank_and_rubric_counts_separate(tmp_path: Path)
     assert set(coverage) == {"question_bank", "assessment"}
     assert set(coverage["question_bank"]) >= {"total", "resolved", "conflicts"}
     assert set(coverage["assessment"]) >= {"total", "resolved", "conflicts"}
-
-
-def test_page_coverage_uses_source_level_severity_metrics() -> None:
-    source = PAGE_PATH.read_text(encoding="utf-8")
-
-    for label in ("总数", "已覆盖", "必须处理", "可选检查"):
-        assert label in source
-    assert 'summary.coverage' in source
