@@ -6,9 +6,9 @@ import math
 from dataclasses import dataclass
 from typing import Any, Literal, Sequence
 
-from session_manager import (
+from backend.config_generation.normalization import validate_generated_config
+from backend.config_generation.quality import (
     refresh_generated_config_quality_warnings,
-    validate_generated_config,
 )
 
 
