@@ -47,21 +47,62 @@ class Repository(Protocol):
     def session(self) -> "RepositorySession": ...
 
 
+class RepositoryCursor(Iterator[Any]):
+    """Restricted cursor results without a route back to the owned connection."""
+
+    def __init__(self, cursor: sqlite3.Cursor) -> None:
+        self.__cursor = cursor
+
+    def __iter__(self) -> "RepositoryCursor":
+        return self
+
+    def __next__(self) -> Any:
+        return next(self.__cursor)
+
+    def fetchone(self) -> Any:
+        return self.__cursor.fetchone()
+
+    def fetchmany(self, size: int | None = None) -> list[Any]:
+        if size is None:
+            return self.__cursor.fetchmany()
+        return self.__cursor.fetchmany(size)
+
+    def fetchall(self) -> list[Any]:
+        return self.__cursor.fetchall()
+
+    def close(self) -> None:
+        self.__cursor.close()
+
+    @property
+    def description(self) -> Any:
+        return self.__cursor.description
+
+    @property
+    def lastrowid(self) -> int | None:
+        return self.__cursor.lastrowid
+
+    @property
+    def rowcount(self) -> int:
+        return int(self.__cursor.rowcount)
+
+
 class RepositoryConnection:
     """Restricted SQL surface that keeps transaction ownership with the session."""
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self.__connection = connection
 
-    def execute(self, statement: str, parameters: Any = ()) -> sqlite3.Cursor:
-        return self.__connection.execute(statement, parameters)
+    def execute(self, statement: str, parameters: Any = ()) -> RepositoryCursor:
+        _reject_transaction_control(statement)
+        return RepositoryCursor(self.__connection.execute(statement, parameters))
 
     def executemany(
         self,
         statement: str,
         parameters: Iterable[Any],
-    ) -> sqlite3.Cursor:
-        return self.__connection.executemany(statement, parameters)
+    ) -> RepositoryCursor:
+        _reject_transaction_control(statement)
+        return RepositoryCursor(self.__connection.executemany(statement, parameters))
 
     @property
     def total_changes(self) -> int:
@@ -137,17 +178,14 @@ class RepositorySession:
             try:
                 self._connection.rollback()
             except sqlite3.Error as rollback_error:
-                rollback_failure = RepositoryTransactionError(
-                    "repository transaction could not roll back after commit failure"
-                )
-                rollback_failure.__cause__ = rollback_error
                 failure = RepositoryTransactionError(
                     "repository transaction could not commit and its rollback also failed"
                 )
-                failure.add_note(
-                    f"commit also failed with {type(commit_error).__name__}"
+                combined_failure = ExceptionGroup(
+                    "repository commit and rollback both failed",
+                    [commit_error, rollback_error],
                 )
-                raise failure from rollback_failure
+                raise failure from combined_failure
             raise RepositoryTransactionError(
                 "repository transaction could not commit"
             ) from commit_error
@@ -272,3 +310,42 @@ def map_rows(mapper: RowMapper[RowT], rows: list[sqlite3.Row]) -> list[RowT]:
     """Apply a typed mapper to a materialized SQLite row list."""
 
     return [mapper(row) for row in rows]
+
+
+_TRANSACTION_CONTROL_KEYWORDS = frozenset(
+    {"BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"}
+)
+
+
+def _reject_transaction_control(statement: str) -> None:
+    if _leading_sql_keyword(statement) in _TRANSACTION_CONTROL_KEYWORDS:
+        raise RepositoryTransactionError(
+            "repository SQL cannot contain transaction control statements"
+        )
+
+
+def _leading_sql_keyword(statement: str) -> str:
+    index = 0
+    length = len(statement)
+    while index < length:
+        while index < length and (statement[index].isspace() or statement[index] == ";"):
+            index += 1
+        if statement.startswith("--", index):
+            newline = statement.find("\n", index + 2)
+            if newline < 0:
+                return ""
+            index = newline + 1
+            continue
+        if statement.startswith("/*", index):
+            comment_end = statement.find("*/", index + 2)
+            if comment_end < 0:
+                return ""
+            index = comment_end + 2
+            continue
+        break
+    keyword_end = index
+    while keyword_end < length and (
+        statement[keyword_end].isalpha() or statement[keyword_end] == "_"
+    ):
+        keyword_end += 1
+    return statement[index:keyword_end].upper()
