@@ -6,7 +6,8 @@ import threading
 
 from fastapi import Depends, Request
 
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess
+from backend.repositories.compat import open_grading_repositories
 from backend.analytics import SessionAnalysisService
 from backend.api.read_connections import (
     RequestReadContext,
@@ -49,18 +50,19 @@ from question_bank.services.assembly_workspace_service import AssemblyWorkspaceS
 _TEMPLATE_UPLOAD_SERVICE_GUARD = threading.Lock()
 
 
-def get_grading_db() -> DBManager:
-    return DBManager(get_path_manager().db_path)
+def get_grading_db() -> GradingRepositoryAccess:
+    """Compatibility dependency name; active callers receive repositories."""
+    return open_grading_repositories(get_path_manager().db_path)
 
 
 def get_student_repository(
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
 ) -> StudentRepositoryGateway:
     return db.student_repository
 
 
 def get_session_repository(
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
 ) -> SessionRepositoryGateway:
     return db.session_repository
 
@@ -72,7 +74,7 @@ def get_student_roster_module(
 
 
 def get_session_analysis_service(
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
 ) -> SessionAnalysisService:
     return SessionAnalysisService(db)
 
@@ -261,7 +263,7 @@ def get_job_file_service(
 
 
 def get_media_service(
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     data_root: Path = Depends(get_data_root),
     exams_dir: Path = Depends(get_exams_dir),
     templates_dir: Path = Depends(get_templates_dir),
@@ -277,14 +279,14 @@ def get_media_service(
 
 
 def get_manual_review_service(
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     annotated_dir: Path = Depends(get_annotated_dir),
 ) -> ManualReviewService:
     return ManualReviewService(db, annotated_dir)
 
 
 def get_review_application_service(
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     manual_review_service: ManualReviewService = Depends(get_manual_review_service),
 ) -> ReviewApplicationService:
     return ReviewApplicationService(db, manual_review_service)
@@ -337,7 +339,7 @@ def get_job_manager(request: Request) -> JobManager:
 
 
 def get_scan_grading_workspace(
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
     exams_dir: Path = Depends(get_exams_dir),
     templates_dir: Path = Depends(get_templates_dir),
@@ -360,7 +362,7 @@ def get_scan_grading_workspace(
 
 
 def get_workbench_service(
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     review_service: ReviewApplicationService = Depends(get_review_application_service),
     job_manager: JobManager = Depends(get_job_manager),
 ) -> WorkbenchService:

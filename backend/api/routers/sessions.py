@@ -26,7 +26,7 @@ from backend.api.schemas.sessions import (
 )
 from backend.config_workspace.drafts import create_session_draft
 from backend.repositories.sessions import SessionRepositoryGateway
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess
 
 
 router = APIRouter(prefix="/api", tags=["sessions"])
@@ -152,7 +152,7 @@ def get_session(
 @router.get("/sessions/{session_id}/progress", response_model=SessionProgress)
 def get_session_progress(
     session_id: int,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     sessions: SessionRepositoryGateway = Depends(get_session_repository),
 ) -> SessionProgress:
     _require_session(sessions, session_id)
@@ -162,7 +162,7 @@ def get_session_progress(
 @router.get("/sessions/{session_id}/template", response_model=SessionTemplateResponse)
 def get_session_template(
     session_id: int,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     sessions: SessionRepositoryGateway = Depends(get_session_repository),
 ) -> SessionTemplateResponse:
     _require_session(sessions, session_id)
@@ -180,7 +180,7 @@ def get_session_template(
 @router.get("/sessions/{session_id}/regions", response_model=AnswerRegionListResponse)
 def list_answer_regions(
     session_id: int,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     sessions: SessionRepositoryGateway = Depends(get_session_repository),
 ) -> AnswerRegionListResponse:
     _require_session(sessions, session_id)

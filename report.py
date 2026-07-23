@@ -7,15 +7,29 @@ from pathlib import Path
 
 import pandas as pd
 
-from db_manager import resolve_grading_completeness
+from backend.repositories.access import (
+    GradingRepositoryAccess,
+    as_grading_repositories,
+)
+from backend.repositories.compat import open_grading_repositories
 from export_names import session_export_path_name
+from grading_completeness import resolve_grading_completeness
 from path_manager import resolve_stored_file_path
 
 
 class ReportGenerator:
-    def __init__(self, db_path: Path, reports_dir: Path) -> None:
-        self.db_path = db_path
-        self.reports_dir = reports_dir
+    def __init__(
+        self,
+        db_path: GradingRepositoryAccess | Path,
+        reports_dir: Path,
+    ) -> None:
+        self.repositories = (
+            open_grading_repositories(Path(db_path))
+            if isinstance(db_path, Path)
+            else as_grading_repositories(db_path)
+        )
+        self.db_path = self.repositories.db_path
+        self.reports_dir = Path(reports_dir)
 
     def export(self) -> Path:
         self.reports_dir.mkdir(parents=True, exist_ok=True)
@@ -74,76 +88,61 @@ class ReportGenerator:
         self.reports_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        with sqlite3.connect(self.db_path) as conn:
-            session_row = conn.execute(
-                "SELECT session_name FROM grading_sessions WHERE id = ?",
-                (session_id,),
-            ).fetchone()
-            session_name = session_row[0] if session_row else f"考试批改_{session_id}"
-            output_path = self.reports_dir / session_export_path_name(session_name, "成绩报表", "xlsx", timestamp)
-
-            df_results = pd.read_sql_query(
-                """
-                SELECT
-                    sr.id AS result_id,
-                    s.student_code,
-                    s.name AS student_name,
-                    s.class_name,
-                    sr.total_score,
-                    sr.student_score,
-                    sr.needs_human_review,
-                    sr.graded_at,
-                    sr.raw_json
-                FROM session_results sr
-                JOIN students s ON s.id = sr.student_id
-                WHERE sr.session_id = ?
-                ORDER BY sr.id ASC
-                """,
-                conn,
-                params=(session_id,),
-            )
-
-            df_attendance = pd.read_sql_query(
-                """
-                SELECT
-                    s.student_code,
-                    s.name AS student_name,
-                    s.class_name,
-                    sa.attendance_status,
-                    sa.source_reason,
-                    sa.created_at
-                FROM session_attendance sa
-                JOIN students s ON s.id = sa.student_id
-                WHERE sa.session_id = ?
-                ORDER BY s.class_name ASC, s.student_code ASC, s.name ASC
-                """,
-                conn,
-                params=(session_id,),
-            )
-
-            df_details = pd.read_sql_query(
-                """
-                SELECT
-                    sr.id AS result_id,
-                    s.student_code,
-                    s.name AS student_name,
-                    s.class_name,
-                    sd.question_id,
-                    sd.score_awarded,
-                    sd.deduction_reason,
-                    sd.knowledge_id,
-                    sd.knowledge_ids,
-                    sd.error_category,
-                    sd.error_summary
-                FROM session_details sd
-                JOIN session_results sr ON sr.id = sd.result_id
-                JOIN students s ON s.id = sr.student_id
-                WHERE sr.session_id = ?
-                ORDER BY sr.id ASC, sd.id ASC
-                """,
-                conn,
-                params=(session_id,),
-            )
+        snapshot = self.repositories.reports.get_session_report_snapshot(
+            int(session_id)
+        )
+        session_name = (
+            str(snapshot.session.get("session_name") or "")
+            if snapshot.session is not None
+            else ""
+        ) or f"考试批改_{session_id}"
+        output_path = self.reports_dir / session_export_path_name(
+            session_name,
+            "成绩报表",
+            "xlsx",
+            timestamp,
+        )
+        df_results = pd.DataFrame(
+            snapshot.results,
+            columns=[
+                "result_id",
+                "student_code",
+                "student_name",
+                "class_name",
+                "total_score",
+                "student_score",
+                "needs_human_review",
+                "graded_at",
+                "raw_json",
+            ],
+        )
+        df_attendance = pd.DataFrame(
+            snapshot.attendance,
+            columns=[
+                "student_code",
+                "student_name",
+                "class_name",
+                "attendance_status",
+                "source_reason",
+                "created_at",
+            ],
+        )
+        df_details = pd.DataFrame(
+            snapshot.details,
+            columns=[
+                "result_id",
+                "student_code",
+                "student_name",
+                "class_name",
+                "question_id",
+                "score_awarded",
+                "deduction_reason",
+                "knowledge_id",
+                "knowledge_ids",
+                "error_category",
+                "error_summary",
+            ],
+        )
 
         if df_results.empty:
             raise ValueError("该会话暂无批改结果，无法导出报表。")
@@ -165,9 +164,9 @@ class ReportGenerator:
 
         df_details_filtered = df_details[df_details["result_id"].isin(valid_result_ids)].copy()
 
-        rubric = self._load_session_rubric(session_id)
-        score_map, type_map = self._load_session_question_maps(session_id)
-        knowledge_label_map = self._load_session_knowledge_label_map(session_id)
+        rubric = self._load_rubric_from_session(snapshot.session)
+        score_map, type_map = self._question_maps_from_rubric(rubric)
+        knowledge_label_map = self._knowledge_label_map_from_rubric(rubric)
         
         # summary uses full df_results
         score_summary = self._build_compact_session_report(df_results, df_details, score_map, rubric=rubric)
@@ -302,11 +301,20 @@ class ReportGenerator:
         return self._load_session_question_maps(session_id)[0]
 
     def _load_session_rubric(self, session_id: int) -> dict:
-        with sqlite3.connect(self.db_path) as conn:
-            row = conn.execute("SELECT rubric_path FROM grading_sessions WHERE id = ?", (session_id,)).fetchone()
-        if not row:
+        rubric_path = self.repositories.reports.get_session_rubric_path(
+            int(session_id)
+        )
+        return self._load_rubric_from_session(
+            {"rubric_path": rubric_path} if rubric_path else None
+        )
+
+    def _load_rubric_from_session(
+        self,
+        session: dict | None,
+    ) -> dict:
+        if session is None:
             return {}
-        rubric_path = self._resolve_stored_file_path(row[0])
+        rubric_path = self._resolve_stored_file_path(session.get("rubric_path"))
         if not rubric_path.exists():
             return {}
         try:
@@ -316,7 +324,14 @@ class ReportGenerator:
         return rubric if isinstance(rubric, dict) else {}
 
     def _load_session_question_maps(self, session_id: int) -> tuple[dict[str, float], dict[str, str]]:
-        rubric = self._load_session_rubric(session_id)
+        return self._question_maps_from_rubric(
+            self._load_session_rubric(session_id)
+        )
+
+    def _question_maps_from_rubric(
+        self,
+        rubric: dict,
+    ) -> tuple[dict[str, float], dict[str, str]]:
         if not rubric:
             return {}, {}
         score_map: dict[str, float] = {}
@@ -344,7 +359,14 @@ class ReportGenerator:
         return score_map, type_map
 
     def _load_session_knowledge_label_map(self, session_id: int) -> dict[str, str]:
-        rubric = self._load_session_rubric(session_id)
+        return self._knowledge_label_map_from_rubric(
+            self._load_session_rubric(session_id)
+        )
+
+    def _knowledge_label_map_from_rubric(
+        self,
+        rubric: dict,
+    ) -> dict[str, str]:
         if not rubric:
             return {}
 
