@@ -2,7 +2,7 @@
 
 **执行包：** P3-04
 **计划日期：** 2026-07-23
-**规划状态：** ready_for_execution
+**规划状态：** waiting_review
 **规划模型：** 当前连续作业模型
 **允许夜间执行：** yes
 **计划基线：** e502ea9c1056446f2b237e142a99b301c5a1ab7d
@@ -14,14 +14,14 @@
 ## 昼夜交接
 
 **执行包：** P3-04
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
-**独立复审：** pending
+**交接状态：** verified_pending_integration
+**功能提交：** 7e3eaf1db673d776602665b8deea72e57bb348be
+**自动验证：** passed
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
 
 ## 任务边界（已冻结）
@@ -67,11 +67,23 @@
 
 ## 实施步骤
 
-- [ ] 新增 Repository 公共契约测试并取得 RED：模块缺失、DBManager facade 未委托、服务/主路由仍直连 DBManager。
-- [ ] 迁移学生只读与 revision 写入，每个行为切片逐个转 GREEN；再迁安全删除并用故障注入证明整笔回滚和备份顺序。
-- [ ] 迁移会话核心 CRUD 与出勤；用临时库证明倒序/班级排序、软删恢复和出勤先删后插原子性。
-- [ ] 增加普通/借用连接 provider，切 StudentRosterModule、学生路由和会话核心路由依赖；保留未归属本包的 DBManager 调用。
-- [ ] 运行包内、API/StudentManager/请求连接受影响回归和快速冒烟；冻结候选后双路复审、必要时一次统一修复、交接核验与真实两库指纹守卫。
+- [x] 新增 Repository 公共契约测试并取得 RED：模块缺失、DBManager facade 未委托、服务/主路由仍直连 DBManager。
+- [x] 迁移学生只读与 revision 写入，每个行为切片逐个转 GREEN；再迁安全删除并用故障注入证明整笔回滚和备份顺序。
+- [x] 迁移会话核心 CRUD 与出勤；用临时库证明倒序/班级排序、软删恢复和出勤先删后插原子性。
+- [x] 增加普通/借用连接 provider，切 StudentRosterModule、学生路由和会话核心路由依赖；保留未归属本包的 DBManager 调用。
+- [x] 运行包内、API/StudentManager/请求连接受影响回归和快速冒烟；冻结候选后双路复审、必要时一次统一修复、交接核验与真实两库指纹守卫。
+
+## 稳定候选记录
+
+- **冻结实现提交：** `7e3eaf1db673d776602665b8deea72e57bb348be`
+- **测试优先切片：** 学生映射/revision、分页搜索与姓名缓存、安全删除、会话 CRUD/来源绑定、出勤原子替换、facade 无 SQL、借用连接不新增连接均先取得预期失败再实现通过。
+- **受影响回归：** 91 passed；覆盖阅卷人数限制、暂停/恢复、学生服务与 API、会话 API/草稿/清理、请求只读连接和 SQL 性能日志。
+- **快速冒烟：** 文档治理通过；518 个第一方 Python 文件编译通过；两类临时数据库初始化幂等且 integrity check 通过；按分层规则跳过全量测试。
+- **数据与费用：** 只写 pytest 临时数据库；真实 `user_data/` 无本地变化；真实模型调用 0。
+- **初审记录：** 同一冻结候选 `1dbdd3c2bfa06e28f0919f6d509d920bd461a520` 完成双路初审。需求符合性为 0 Critical / 0 Important / 0 Suggestion；代码质量为 0 Critical / 0 Important / 2 Suggestion。原始 2 条、去重后 2 条，均为防回归覆盖建议，无阻塞问题，因此不启动统一修复或无目标终审。
+- **非阻塞建议：** 后续可增加“备份发生在任何删除前”的显式顺序断言，以及借用只读连接零 commit/rollback/close 的 spy 断言；当前实现和既有测试未显示对应行为错误。
+- **数据守卫：** 真实两库 SHA-256、大小和 UTC 修改时间与 N3-01 门槛记录一致；stash 基线仍为两条既有提交；功能工作区及 `user_data/` 状态干净。
+- **当前剩余工作：** integration 逐包合入与验证、更新 Index；本包实现和独立复审已通过，无用户验收要求。
 
 ## 计划验证命令
 
