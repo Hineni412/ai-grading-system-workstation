@@ -67,7 +67,7 @@
 | 本地运行时 | `runtime/python` | Python 3.12.1、SQLite 3.43.1、Streamlit 1.58.0、OpenAI SDK 2.43.0 等实际版本 | 已核验 |
 | 自动化测试 | `tests/`、`tools/smoke_check.py` 与 `requirements-test.txt` | 业务回归、静态编译、迁移与数据库副本完整性；完整 pytest 默认串行，显式试点可把隔离测试交给 2 个进程并将数据库/端口/进程类测试留在串行车道 | 以最新里程碑稳定候选或共同基线的测试结果为准 |
 | Phase 1 收口 | `docs/performance/p1-29-phase1-closeout.md`、`docs/user-testing/checkpoints/P1-29-v1.5.0-phase1-formal.md` | P1-26/27/28 组合门槛、匿名双入口、已知限制和正式用户结论 | 稳定证据入口；详细交接见 Git/PR 历史，当前状态见执行 Index |
-| 浏览器验证 | Streamlit 本机页面、现有工作区数据 | 部分覆盖提示、标签诊断空态、学生选择交互、1366×768/1440×900/1920×1080 | 已核验；无横向溢出，浏览器控制台无应用错误 |
+| 浏览器验证 | FastAPI 同源托管的 Vue 本机页面、匿名隔离数据 | 根路由与业务深路由直达、刷新、空态和主要工作区交互 | 已核验；P2-22 隔离便携候选五个深路由可直达，浏览器控制台无应用错误 |
 | 数据库副本 | `grading_system.db`、`question_bank.db` 的临时副本 | 新字段、新索引和重复初始化幂等性 | 已核验；副本验证前后主工作区两库哈希均未变化 |
 | 运维文档 | `README_*.md`、`docs/maintenance/*.md`、发布清单 | 便携发布、备份、存储策略 | 已核验；存在版本漂移 |
 
@@ -308,7 +308,7 @@ AI阅卷系统_工作机版_v1.5.0/
 ```mermaid
 sequenceDiagram
     actor U as "教师"
-    participant UI as "Streamlit"
+    participant UI as "Vue SPA / FastAPI"
     participant CFG as "SessionManager"
     participant WF as "GradingPaperSkillWorkflowService"
     participant QB as "题库 SQLite"
@@ -388,7 +388,7 @@ sequenceDiagram
 | 题库导入/打标 Job | JobManager 线程池；导入为单个受控文件发布边界，打标按至多 20 题的顺序批次编排 | 通用 `jobs`、题库 `papers/questions/question_tags` 与受控导入暂存 | 导入/打标 payload 分离；失败分类和题目 ID 可查询；running 取消不强杀在途解析/模型请求，打标在安全保存边界停止后续批次；重试跳过重复来源和完整标签 |
 | 阅卷原卷标签入库 | 复用题库导入/打标；跨库串行编排 | `grading_sessions.question_bank_sync_*`、题目、标签、确认来源链接 | 五阶段进度；成功题目立即保留；失败后为 `partial/failed`，再次点击只补缺失项且完整题不重调 AI |
 | 答题区提交 | 会话内线程锁 + 文件锁 + SQLite 事务 | 正式区域、草稿、快照 token | 快照失败保留 pending，可重试发布 |
-| 训练导出 | Streamlit 仍可同步调用；FastAPI 通过 JobManager 线程池执行 | task/export 状态、`jobs`、job 专属输出目录与文件 | 复用现有错误/retry_count 记录；running 取消在 exporter 返回后、原子目录发布前确认；失败/取消 Job 可以原安全 payload 重试 |
+| 训练导出 | Vue 通过 FastAPI 提交，由 JobManager 线程池执行 | task/export 状态、`jobs`、job 专属输出目录与文件 | 复用现有错误/retry_count 记录；running 取消在 exporter 返回后、原子目录发布前确认；失败/取消 Job 可以原安全 payload 重试 |
 | FastAPI 真实 Job | 进程内 `ThreadPoolExecutor`，完成 future 自动回收 | `jobs` 通用状态；批改另用 `grading_runs` 明细账本 | queued/paused 立即取消；running 经 `JobContext.raise_if_cancelled()` 确认。报告只从 staging 原子发布到含 job ID 的独立文件，扫描 latest 用临时文件替换；配置生成的部分草稿不绑定会话、最终 JSON 原子发布；批改停止派发、等待单次在途调用返回并丢弃尚未发布结果 |
 
 进程被终止后没有后台任务续跑。下一次启动时，尚未由 handler 确认安全停止的 running cancel request 与其他旧 queued/running job 一样标为 failed，不伪装成 cancelled；未确认取消标记不覆盖已经完成的领域终态，也不阻止中断运行重新恢复。整卷批改另有批改运行账本（`grading_runs`）：新运行开始时把该会话遗留的 `running/pause_requested` 运行标为 `failed`；安全暂停把运行置 `paused` 并保存在途结果，协作式取消则停止新派发、等待已发出的单次请求返回但丢弃尚未发布的结果，再把账本置 `paused`。failed-only 取消恢复每份 paper 的取消前状态，避免破坏后续重试入口。用户点击“继续批改”后可经 `resume_run_id` 从断点恢复；指定既有 run 的继续或补批必须精确匹配 run ID、状态、模式和配置指纹，任何不一致都失败关闭且不得退化为新运行。普通新运行仍把账本视为附加层并保留既有兼容回退。`completed` 的业务含义已确认为“本次运行结束”，不保证所有答卷成功；成功与失败数量必须结合 `exam_papers.processing_status` 和进度统计判断。

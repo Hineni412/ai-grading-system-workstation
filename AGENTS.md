@@ -41,7 +41,7 @@
 
 - 版本以根目录 `VERSION` 为准。
 - 当前产品是 Windows 本机单用户应用。生产 UI 为 Vue 3 SPA，由 FastAPI 同源托管并监听 `127.0.0.1:8000`。
-- FastAPI 与已有 API/JobManager 增量已经进入共同基线；Vue 3 SPA 尚未成为生产 UI。
+- FastAPI、既有 API/JobManager 与 Vue 3 SPA 已进入共同生产基线；旧 Streamlit 日常 UI 不再作为生产入口。
 - 迁移期间留下的 Streamlit 行为证据、当前服务实现、数据库契约和测试共同作为业务事实来源；旧 Streamlit 日常入口已退役，但历史证据仍约束用户任务、业务能力、数据语义、业务结果、状态、权限、安全、持久化、危险操作保护、失败恢复、幂等性与审计。
 - 当前阶段、包状态和下一动作只在 `docs/superpowers/packages/EXECUTION_INDEX.md` 维护。
 
