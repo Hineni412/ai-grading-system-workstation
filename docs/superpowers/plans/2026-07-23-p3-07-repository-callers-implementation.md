@@ -2,27 +2,27 @@
 
 **执行包：** P3-07  
 **计划日期：** 2026-07-23  
-**计划状态：** waiting_review
+**计划状态：** verified_pending_integration
 **计划模型：** 当前连续作业模型  
 **允许夜间执行：** yes  
 **计划基线：** b07560a389b772e03ff5e7758f0d3031cd6a7131  
 **交接基线：** b07560a389b772e03ff5e7758f0d3031cd6a7131  
 **用户自测：** none  
 **自测清单：** not_required  
-**授权修正预算：** 1/3
+**授权修正预算：** 2/3
 
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
 
 **执行包：** P3-07  
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** 4fec9bf2ed58e7d5d93186fede7b52770ddba4aa
 **自动验证：** passed
-**独立复审：** pending  
+**独立复审：** passed
 **用户验收：** not_required  
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2  
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
 
 ## 任务边界（已冻结）
@@ -62,7 +62,7 @@
 - [x] 建立正式 Repository 组装接口，补齐必要的会话/跨仓储高层 gateway，保留 `DBManager` 兼容委托。
 - [x] 按服务、API/报告、Job 三个调用域切换，每个域只运行受影响测试。
 - [x] 运行 API E2E、组合回归、完整冒烟和 import guard，冻结候选。
-- [ ] 对同一冻结 SHA 并行完成需求符合性与代码质量复审；仅在存在阻塞问题时使用授权预算统一修正，最多 3 次。
+- [x] 对同一冻结 SHA 并行完成需求符合性与代码质量复审；仅在存在阻塞问题时使用授权预算统一修正，最多 3 次。
 
 ## 计划验证命令
 
@@ -78,9 +78,11 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - Phase map、P3-01 调用图、P3-04 至 P3-06 Repository 契约、最新 API 依赖与活跃调用方已交叉核对。
 - 未发现需要改变产品行为、Schema、评分语义或费用边界的未决选择；按最保守的“只换接线、保持结果等价”实施，无需中断询问。
 - 当前问题清单已冻结；修改前既有问题或相邻新需求只记录，不自动扩大本包。
-- 自动验证完成：import/组装守卫 4 项、Repository/只读快照 42 项、API/Job/服务定向组合回归 270 项以上、API E2E 6 项均通过；首次完整门槛发现同一兼容测试替身根因的 12 项失败，统一修正后 12 项全部复测通过，最终完整冒烟为 2181 passed / 2 skipped。
-- 快速与完整冒烟均确认 499 个第一方 Python 文件可编译，两库隔离副本初始化幂等且 `integrity_check=ok`；根目录真实两库大小、时间与 SHA-256 均和开工基线一致，功能工作区没有 `user_data/` 项。
-- 当前冻结候选等待同一 SHA 的需求符合性与代码质量双路复审；已使用 1/3 次范围内统一修正授权，剩余 2 次。
+- 自动验证完成：import/组装守卫、Repository/只读快照、API/Job/服务、报告/完整性与 API E2E 受影响回归均通过。首次完整门槛发现同一兼容测试替身根因的 12 项失败，第一次统一修正后全部复测通过；初审报告直连遗漏修正后，最终完整冒烟为 2182 passed / 2 skipped，500 个第一方 Python 文件可编译。
+- 初审原始意见 2 条，去重后 2 条：1 个 `Important`（正式成绩表仍直连 SQLite）和 1 个 `Suggestion`（兼容调用日志默认不可见）。第二次统一修正把成绩、考勤、明细和会话信息收敛到同一只读 Repository transaction，阻塞问题在限定终审中关闭；日志改为 INFO 但仍会被 Uvicorn 默认 WARNING 门槛过滤，作为非阻塞后续日志治理事项保留，不启动第三轮修改。
+- 最终限定复审结果为 0 `Critical` / 0 `Important` / 1 个既有非阻塞 `Suggestion`；需求符合性终审 0/0/0，代码质量终审未发现修正区域直接回归。授权修正预算共使用 2/3，剩余 1 次不再用于无阻塞优化。
+- 快速与完整冒烟均确认两库隔离副本初始化幂等且 `integrity_check=ok`；根目录真实两库大小、时间与 SHA-256 均和开工基线一致，功能工作区没有 `user_data/` 项。
+- 当前剩余工作仅为 integration 逐包合入、M3-02 批次门槛与 Index 收口；P3-07 工程验收通过，整个版本是否发布继续由里程碑合入与主线 PR 决定。
 
 ## 回退
 
