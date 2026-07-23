@@ -58,10 +58,10 @@
 | P2-20 | `merged` | 已随 M2-03 通过 PR #69 合入主线；用户批准的缩减范围已形成绑定已复审 SHA 的 formal 清单并明确 `passed`，三份真实批改、调分、报告及端到端结果一致性没有写成成功，延期到 P3 后 Issue #67；真实调用保持 4/6，剩余两次冻结不用 |
 | P2-21 | `merged` | 已通过 PR #71 合入主线；默认 FastAPI/Vue 启动、显式 Streamlit 回退、缺失资源安全阻断和便携包完整性已交付，44 项关联验证、快速冒烟、两轮限定复审、交接核验和 2026-07-23 formal 用户验收均通过 |
 | P2-22 | `merged` | 已通过 PR #73 合入主线；旧 Streamlit 日常入口、页面共享层、专用包装器和 drawable-canvas 按四个可独立回退批次退役，完整后端 2111 passed / 2 skipped、前端 716、integration 受影响 48 项、快速冒烟、双路复审、局部守卫修复和 2026-07-23 formal 用户验收均通过 |
-| P3-01 | `verified` | 临时候选已完成 57 项受影响回归、快速冒烟和双路复审；正在最新主线落地批次等待组合门槛 |
-| P3-02 | `verified` | 临时候选已完成 73 项受影响回归、快速冒烟和双路复审；正在最新主线落地批次等待组合门槛 |
-| P3-03 | `verified` | 临时候选的限定续修已关闭事务绕过与双失败异常丢失，63 项受影响回归、快速冒烟、双路终审和交接核验通过；正在等待最新主线组合门槛 |
-| P3-04 | `verified` | 临时候选已完成 91 项受影响回归、快速冒烟和双路初审；正在等待最新主线组合门槛 |
+| P3-01 | `milestone_integrated` | 已在 M3-01 落到最新主线基线；结构基线已按退役后的生产入口刷新，路径越界守卫及回归通过，等待 integration PR 合入主线 |
+| P3-02 | `milestone_integrated` | 已在 M3-01 落到最新主线基线；共享领域模型边界、组合门槛和限定终审通过，等待 integration PR 合入主线 |
+| P3-03 | `milestone_integrated` | 已在 M3-01 落到最新主线基线；事务边界、双失败异常保留、组合门槛和限定终审通过，等待 integration PR 合入主线 |
+| P3-04 | `milestone_integrated` | 已在 M3-01 落到最新主线基线；学生/会话 Repository、兼容错误映射、组合门槛和限定终审通过，等待 integration PR 合入主线 |
 | P3-05 | `planned` | P3-01 至 P3-04 进入最新主线后再放行；本次落地批次不启动评分数据 Repository |
 | P3-06 至 P3-19 | `planned` | 等待前置仓储边界稳定后放行 |
 | P4-01 至 P4-12 | `planned` | Phase 3 数据边界稳定后放行 |
@@ -118,7 +118,7 @@ M2-05 是 P2-22 单包最高风险旧界面退役里程碑，从 P2-21 已通过
 | M2-05 | P2-22 | `merged` | `6305a1442ecd7bd13c6122e43dac7d6d771e2aeb` | `codex/integration-p2-22` | `f39fb90237f7aedeb3be75bcd759c53246fe8566` | 已通过 PR #73 合入主线，主线合并提交为 `606d71d6e40e22ef7bbc316e91b4c5eb89360aab`；48 项 integration 验证、快速冒烟、formal 用户验收和真实两库指纹守卫通过 |
 | N3-01 | P3-01 → P3-02 → P3-03 | `completed` | `6305a1442ecd7bd13c6122e43dac7d6d771e2aeb` | `codex/integration-p3-nightly-01` | `e502ea9c1056446f2b237e142a99b301c5a1ab7d` | 三包逐包验证完成；批次末串行完整冒烟 2245 passed / 2 skipped，文档治理、515 个第一方 Python 文件编译、两库副本初始化幂等和真实两库指纹守卫通过；整批不进入 `main` |
 | N3-02 | P3-04 | `completed` | `e502ea9c1056446f2b237e142a99b301c5a1ab7d` | `codex/integration-p3-nightly-01` | `3e2ec73534eff322eea95eee15e92e11dcd00d6e` | 学生与会话 Repository 高风险单包完成；91 项受影响回归、快速冒烟、双路初审和真实数据指纹守卫通过，整包不进入 `main` |
-| M3-01 | P3-01 → P3-02 → P3-03 → P3-04 | `in_progress` | `ce46dcfd4f6f0ab179fda8f48583a5fcd13991e5` | `codex/integration-p3-01-04` | `ce46dcfd4f6f0ab179fda8f48583a5fcd13991e5` | 复用 N3-01/N3-02 已复审候选落到最新主线；业务代码无冲突，正在执行受影响回归、一次批次末完整门槛和真实两库指纹守卫 |
+| M3-01 | P3-01 → P3-02 → P3-03 → P3-04 | `completed` | `ce46dcfd4f6f0ab179fda8f48583a5fcd13991e5` | `codex/integration-p3-01-04` | `cea08ed82ffb5ad23fd56e5b0859d2e33ffc274b` | 最新主线落地完成：完整门槛 2156 passed / 2 skipped；复审统一修复后 99 项受影响回归、快速冒烟、489 个第一方 Python 文件编译、两库副本幂等和真实两库指纹守卫通过；初审 3 Important / 1 Suggestion，限定终审 0 Critical / 0 Important，等待 integration PR 合入主线 |
 
 P2-20 的不可变可信领取基线是 `c9662850bbd75a2ba062c0011a6762241818f4d8`，用于该包所有 `handoff_status.py --expected-handoff-base` 核验。该包领取后为解除现场阻塞，同步了已经独立复审并逐项进入 M2-03 的 Issue #60—#65，因此 M2-03 当前已验证且作为最终合入目标的 SHA 已前进到 `6ed4cd64ccab6aa2c51b602c7413c99ecf8d2781`。两者职责不同：不得把计划内冻结的领取基线改成后者，也不得用前者替代 integration 当前状态。
 
@@ -175,4 +175,4 @@ M2-02 是 Python 完整测试并行试点的第二个里程碑：批次末优先
 
 ## 下一动作
 
-M3-01 正在把已完成复审的 P3-01 至 P3-04 候选落到最新主线。下一动作是完成受影响回归、批次末完整门槛、快速冒烟与真实两库指纹守卫，随后通过 integration PR 合入并把四包同步为 `merged`；本批不启动 P3-05。P2-20 剩余两次真实调用继续冻结，Issue #67 的后续复验仍须用户重新确认网络、考试副本与费用上限。
+M3-01 已在精确候选 `cea08ed82ffb5ad23fd56e5b0859d2e33ffc274b` 完成组合门槛、统一修复和限定终审。下一动作是通过 integration PR 合入主线，再用纯状态同步把 P3-01 至 P3-04 标记为 `merged` 并放行 P3-05；本批不启动 P3-05。P2-20 剩余两次真实调用继续冻结，Issue #67 的后续复验仍须用户重新确认网络、考试副本与费用上限。
