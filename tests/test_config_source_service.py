@@ -782,14 +782,16 @@ def test_parser_failure_after_asset_write_removes_all_new_owned_files(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import rubric_auto_cropper
-    import session_manager
-
     import backend.config_workspace.sources as sources_module
 
-    monkeypatch.setattr(rubric_auto_cropper, "extract_pdf_text", lambda _payload: "text")
     monkeypatch.setattr(
-        session_manager,
-        "preview_question_blocks_from_docx_text",
+        sources_module,
+        "extract_pdf_text",
+        lambda _payload: "text",
+    )
+    monkeypatch.setattr(
+        sources_module,
+        "parse_plain_question_blocks",
         lambda _text: [
             {"question_id": "Q1", "question_type": "choice", "text": "one"},
             {"question_id": "Q2", "question_type": "choice", "text": "two"},

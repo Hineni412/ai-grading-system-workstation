@@ -619,21 +619,20 @@ def preview_question_blocks_from_docx_bytes(
 
     解析失败时回退到纯文本拆题（preview_question_blocks_from_docx_text）。
     """
-    try:
-        rich_blocks = _extract_rich_question_blocks(
-            file_bytes,
-            temporary_root=temporary_root,
-            asset_root=asset_root,
-            register_created_file=register_created_file,
-            write_created_file=write_created_file,
-        )
-    except _ControlledDocxWriteError:
-        raise
-    except Exception:
-        rich_blocks = None
-    if rich_blocks:
-        return rich_blocks
-    return preview_question_blocks_from_docx_text(fallback_doc_text or "")
+    from backend.document_parsing import parse_docx_question_blocks
+
+    return parse_docx_question_blocks(
+        file_bytes,
+        fallback_doc_text=fallback_doc_text,
+        temporary_root=(
+            temporary_root
+            if temporary_root is not None
+            else _resolve_upload_config_dir()
+        ),
+        asset_root=asset_root,
+        register_created_file=register_created_file,
+        write_created_file=write_created_file,
+    )
 
 
 def _extract_rich_question_blocks(
@@ -5692,4 +5691,17 @@ def generate_grading_config_from_images(
         use_config_client=True,
     )
     return _finalize_whole_generation_payload(payload, "whole_pdf_visual_single_request")
+
+
+# P3-08 compatibility exports. Parsing now lives in backend.document_parsing;
+# callers that historically imported these names keep the same public surface.
+from backend.document_parsing import (  # noqa: E402
+    extract_docx_text as extract_docx_text,
+    image_paths_from_rich_text as _image_paths_from_rich_text,
+    infer_question_type_from_text as _infer_question_type_from_block_text,
+    parse_plain_question_blocks as preview_question_blocks_from_docx_text,
+)
+from backend.document_parsing.question_blocks import (  # noqa: E402
+    _parse_inline_answer_blocks as _parse_inline_answer_blocks,
+)
 
