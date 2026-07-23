@@ -26,7 +26,11 @@ from .training_export import run_training_export_job
 
 
 class ReportGeneratorFactory(Protocol):
-    def __call__(self, db_path: Path, reports_dir: Path) -> ReportGenerator:
+    def __call__(
+        self,
+        db: GradingRepositoryAccess,
+        reports_dir: Path,
+    ) -> ReportGenerator:
         ...
 
 
@@ -280,7 +284,10 @@ def _build_report_export_handler(
             staging_dir = Path(staging_dir_value)
             if report_type == "score_excel":
                 staged_output = Path(
-                    report_generator_factory(db_path, staging_dir).export_session(session_id)
+                    report_generator_factory(
+                        open_grading_repositories(db_path),
+                        staging_dir,
+                    ).export_session(session_id)
                 )
             else:
                 staged_output = Path(
