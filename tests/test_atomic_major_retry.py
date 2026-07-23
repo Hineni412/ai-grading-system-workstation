@@ -479,7 +479,9 @@ def test_mixed_mappable_and_unmapped_invalid_retries_all_majors_and_removes_resi
     with (
         patch("grading_service.run_hybrid_batch_grading", return_value=batch_result) as run,
         patch.object(
-            db, "replace_result_details_atomic", wraps=db.replace_result_details_atomic
+            db.result_repository,
+            "replace_result_details_atomic",
+            wraps=db.result_repository.replace_result_details_atomic,
         ) as atomic_replace,
     ):
         events = list(
