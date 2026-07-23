@@ -2,7 +2,7 @@
 
 **执行包：** P2-22
 **计划日期：** 2026-07-23
-**规划状态：** ready_for_user
+**规划状态：** verified_pending_integration
 **规划模型：** 当前白天高风险删除模型
 **允许夜间执行：** no
 **计划基线：** 6305a1442ecd7bd13c6122e43dac7d6d771e2aeb
@@ -13,14 +13,14 @@
 ## 昼夜交接
 
 **执行包：** P2-22
-**交接状态：** waiting_user
-**功能提交：** 5b7217d318e3f84ee9d0a5f430a339b5ab7e9738
+**交接状态：** verified_pending_integration
+**功能提交：** 4c563cd7d1ad274fd160bf55057be1e07bccf661
 **自动验证：** passed
 **独立复审：** passed
-**用户验收：** pending
+**用户验收：** passed
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
 
 ## 任务边界（已冻结）
@@ -118,7 +118,7 @@
 - [x] 运行串行完整后端门槛、快速冒烟和真实两库指纹守卫；冻结稳定候选。
 - [x] 对同一冻结候选并行执行需求符合性和代码质量初审；4 个 `Important` 进入统一修复。限定终审确认其中 3 个解决，并发现守卫未覆盖构建/配置文件；用户授权新的局部测试修复后，已按低风险测试修改规则完成 RED/GREEN 与受影响自检。
 - [x] 创建只修改本计划的 `waiting_user` 锚点；版本化正式清单已准备，下一步交给用户完成五类流程验收。
-- [ ] 用户明确 `passed` 后只提交清单证据和最终交接；合入 `codex/integration-p2-22` 逐包验证，再 push、PR 合入 `main` 并同步状态。
+- [x] 用户于 2026-07-23 明确确认 formal 验收 `passed`；清单证据已作为独立提交记录，当前最终交接等待合入 `codex/integration-p2-22`。
 
 ## 预计验证命令
 
@@ -152,6 +152,7 @@ runtime\python\python.exe tools\smoke_check.py --skip-tests
 - 限定终审：需求复审 0 个阻塞；代码质量复审确认前三项解决，但登记 1 个 `Important`——`frontend/package.json`、`frontend/vite.config.ts` 与 `config/app_config.yaml` 未进入退役守卫。
 - 用户授权的局部测试修复：提交 `5b7217d318e3f84ee9d0a5f430a339b5ab7e9738` 只修改退役契约测试；新增覆盖先 1 failed，再扩展第一方构建/配置扫描并排除生成目录，最终单项 1 passed、P2-22 聚焦组 18 passed。按纯测试低风险规则只进行一次自检和受影响测试，不启动第三轮交叉复审。
 - 阶段耗时与轮次：自动验证包含一次因 600 秒工具上限中断、一次因对话切入中断；首个自然结束的完整门槛暴露 1 个实现期根因，收敛后仅补跑一次完整门槛。独立初审 1 轮、统一修复 1 次、限定终审 1 轮；终审遗留已转为用户明确授权的新局部测试修复并完成。
-- 当前剩余：formal 用户验收、integration/PR/main 收口。
-- 当前任务验收：自动门槛通过，用户验收待办。
+- formal 用户验收：步骤 1–5 全部通过；未打开 8501 或旧页面，五类 Vue 工作区可达，启动进程关闭后 8000 已释放。步骤 1 指引中的“左侧导航”已按实际顶部导航纠正，不属于产品缺陷。
+- 当前剩余：integration 逐包验证、PR/main 收口与 Index 状态同步。
+- 当前任务验收：自动门槛、独立复审和 formal 用户验收均通过。
 - 版本发布：尚不允许；需 formal 用户确认和 integration 门槛完成。
