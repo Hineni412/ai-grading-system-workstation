@@ -87,13 +87,13 @@ def _attach_reference_answer_images(
     answer_questions = answer_key.get("questions") if isinstance(answer_key, dict) else None
     rubric = payload.get("rubric") if isinstance(payload, dict) else None
     rubric_questions = rubric.get("questions") if isinstance(rubric, dict) else None
-    
+
     answer_map = {
         str(item.get("question_id") or ""): item
         for item in answer_questions
         if isinstance(item, dict)
     } if isinstance(answer_questions, list) else {}
-    
+
     rubric_map = {
         str(item.get("question_id") or ""): item
         for item in rubric_questions
@@ -108,7 +108,7 @@ def _attach_reference_answer_images(
         if answer_image and isinstance(answer_item, dict):
             answer_item["answer_image_base64"] = answer_image
             answer_item["answer_image_role"] = "perfect_standard_answer"
-            
+
         question_image = str(image_data.get("question") or "").strip()
         rubric_item = rubric_map.get(str(qid))
         if question_image and isinstance(rubric_item, dict):
