@@ -81,14 +81,15 @@ def _extract_docx_xml_text(file_bytes: bytes) -> list[str]:
     result: list[str] = []
     try:
         with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
-            archive_names = set(archive.namelist())
+            archive_names = archive.namelist()
+            archive_name_set = set(archive_names)
             xml_names.extend(
                 name
                 for name in archive_names
                 if re.match(r"word/(header|footer)\d+\.xml$", name)
             )
             for name in xml_names:
-                if name not in archive_names:
+                if name not in archive_name_set:
                     continue
                 root = ElementTree.fromstring(archive.read(name))
                 for formula in root.iter():
