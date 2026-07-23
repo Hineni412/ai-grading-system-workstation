@@ -9,7 +9,7 @@
 **交接基线：** 09f2df87c2fbc091281c427edc54126bc8b20bf6
 **用户自测：** none
 **自测清单：** not_required
-**授权修正预算：** 0/3
+**授权修正预算：** 1/3
 
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
@@ -80,6 +80,8 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - 一次性提取脚本按 AST 函数边界机械搬移 56 个规则函数和 3 组常量，成功后已删除且未进入候选；`session_manager.py` 净减少约 1,900 行，目标规则定义只保留在新模块。
 - 冻结候选的 P3-10、生成策略、P3-09 编排、配置编辑/发布、Job 和 API 合并受影响回归共 229 项通过；快速冒烟通过文档治理、517 个第一方 Python 文件编译和两库隔离副本初始化幂等。
 - 验证未调用真实模型，功能工作区 `user_data/` 无本地改动；根目录真实两库 SHA-256 与开工基线一致。
+- 首轮需求符合性与代码质量复审原始意见 2 条，去重后为 1 个 `Important`：`local_facts.py` 搬移了 `merge_equivalent_forms` 调用却遗漏其 import；带本地标准答案的正常批次会在模型请求后触发 `NameError`，属于本次修改直接引入。
+- 第 1/3 次统一修正先增加本地可信答案与等价形式合并用例并稳定取得 RED，再补回原依赖 import；P3-10 聚焦 5 项、生成策略/批次/P3-09/Job 147 项和快速冒烟通过，差异检查干净。最终复审只检查该登记问题、修正区域和直接回归。
 
 ## 回退
 

@@ -251,6 +251,55 @@ def test_score_allocation_structure_validation_and_application_are_exact() -> No
     assert question["parts"][0]["steps"][0]["step_score"] == 18
 
 
+def test_local_facts_merge_trusted_answer_and_equivalent_forms() -> None:
+    payload = {
+        "rubric": {
+            "questions": [
+                {
+                    "question_id": "Q1",
+                    "question_type": "choice",
+                    "stem_summary": "",
+                }
+            ]
+        },
+        "answer_key": {
+            "questions": [
+                {
+                    "question_id": "Q1",
+                    "canonical_answer": "",
+                    "accepted_forms": [],
+                    "parts": [],
+                }
+            ]
+        },
+    }
+    blocks = [
+        {
+            "question_id": "Q1",
+            "question_type": "choice",
+            "question_type_confirmed": True,
+            "canonical_answer": "A",
+            "accepted_forms": [" a ", "A"],
+            "local_answer_trusted": True,
+            "answer_text": "option A",
+        }
+    ]
+
+    local_facts.apply_local_question_facts(payload, blocks)
+
+    answer = payload["answer_key"]["questions"][0]
+    assert answer["canonical_answer"] == "A"
+    assert answer["accepted_forms"] == ["a"]
+    assert answer["parts"] == [
+        {
+            "part_id": "Q1",
+            "answer": "A",
+            "analysis": "option A",
+            "step_milestones": [],
+        }
+    ]
+
+
 def test_new_policy_modules_are_session_manager_free_and_facade_is_exact() -> None:
     import session_manager
 
