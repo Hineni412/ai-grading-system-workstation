@@ -225,15 +225,17 @@ def _source_revision(root: Path) -> str:
 
 
 def _require_file(root: Path, raw_path: str) -> Path:
+    resolved_root = root.resolve()
     candidate = Path(raw_path)
-    path = candidate if candidate.is_absolute() else root / candidate
-    _reject_user_data(path.resolve(), root, "input")
-    if not path.is_file():
-        raise BaselineInputError(f"missing required input: {raw_path}")
+    unresolved_path = candidate if candidate.is_absolute() else root / candidate
+    path = unresolved_path.resolve()
+    _reject_user_data(path, resolved_root, "input")
     try:
-        path.relative_to(root)
+        path.relative_to(resolved_root)
     except ValueError as exc:
         raise BaselineInputError("required input must be inside the repository") from exc
+    if not path.is_file():
+        raise BaselineInputError(f"missing required input: {raw_path}")
     return path
 
 

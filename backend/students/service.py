@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 import pandas as pd
 
+from backend.repositories import RepositoryError
 from backend.repositories.students import (
     StudentBackupFailedError,
     StudentCodeConflictError,
@@ -453,7 +454,7 @@ class StudentRosterModule:
             raise StudentGradingActive(
                 "Student cannot be deleted while grading is active"
             ) from exc
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, RepositoryError) as exc:
             raise StudentDeleteFailed(
                 "删除失败，学生和历史数据均未改变"
             ) from exc

@@ -11,6 +11,7 @@
 - **当前状态：** 本文只描述已进入共同基线的实现事实；动态执行进度见 `docs/superpowers/packages/EXECUTION_INDEX.md`
 - **历史增量说明：** 下列 P1/P2 条目保留各包交付当时的边界；其中“生产 UI 尚未切换”“Streamlit 保持兼容”等历史措辞，已由 P2-21/P2-22 的当前事实取代。
 - **P2-21/P2-22 当前边界：** `运行.bat` 只启动 FastAPI 同源托管的 Vue SPA（默认 `127.0.0.1:8000`）。旧 `web_app.py`、`pages/`、`pages_shared/`、旧 Streamlit 桌面启动器和 `streamlit-drawable-canvas` 已退役；Vue 仍直接复用的 `components/answer_region_editor/` 核心资产保留。Streamlit 核心依赖暂仅服务 P3-15 明确处理的客观题准入向导和历史 P1-29 验收工具，不再处于生产启动或导航调用链。
+- **P3-01 至 P3-04 当前边界：** `tools/build_p3_01_baseline.py` 可从当前源码、Schema 和受控历史证据生成内容寻址的结构基线；共享评分结果与试卷组类型已移入 `backend/domain_models.py`。`backend/repositories/` 提供 SQLite 连接所有权、事务和只读会话契约，并已抽取学生与考试会话仓储；`DBManager` 暂作为兼容门面把这些既有方法委托给仓储，其余聚合的 SQL 仍保留。该批次不改变数据库 Schema、API 契约、业务结果或真实数据。
 - **既有题库语义边界：** 在隔离分支把题库当前 `question_tags` 设为批改上下文、知识图谱和训练推荐的唯一活动语义来源；旧技能目录、概念映射和相关表保留一个版本作为只读回退，不再参与活动图谱/推荐
 - **P1-15 增量边界：** FastAPI 只公开试卷、题目分页/详情、当前标签、富文本/预览元数据和受控图片 GET；源题库通过有界 M1-W1-W2-M2 临时快照读取，SQLite 不打开源 main/WAL/SHM，持续变化以脱敏 503 fail closed
 - **P1-16 增量边界：** FastAPI 增加教师确认标签、带 revision 的题目软删除/恢复、受控 DOCX/PDF 流式暂存和 pending 导入请求；不执行长导入、不调用 AI、不写旧技能表，写入冲突以 409 fail closed
@@ -175,7 +176,7 @@ flowchart LR
 | 诊断与训练 | 跨库读取阅卷证据、按精确知识点标签聚合、精确标签候选推荐、训练任务和导出 | `integration/`、`question_bank/recommendation`、训练服务、`backend/jobs/training_export.py`、`backend/api/routers/training.py`、Vue 训练工作区 | FastAPI 复用现有服务提供 tag-only 诊断、推荐预览、幂等任务确认和可取消/重试的导出 Job；通过应用层同时访问两个数据库，无跨库事务和外键；真实训练结果回流尚未进入 API |
 | 原卷标签工作流 | 原卷归档、题库导入、受控 AI 打标、来源题确定性关联、状态重算和重试 | `integration/grading_paper_skill_workflow_service.py`、API/Vue 工作流、题库导入/链接服务 | 两库不能共享事务；每次运行后从实际题目、标签和链接重算 `ready/partial/failed` |
 | 旧技能与知识对齐（回退） | 统一技能目录、旧知识映射、技能链接、冲突和迁移 | `question_bank/models`、`taxonomy`、技能/对齐服务 | 保留读取与迁移工具；活动图谱/推荐不读写这些身份，题库标签保存也只在显式 `resolve_skills=True` 时双写 |
-| 数据与运维 | 路径、SQLite、备份、恢复、迁移、存储审计和数据包 | `path_manager.py`、`db_manager.py`、`question_bank/database`、`update_tools/`、`tools/` | 运行时建表与 SQL migrations 两套机制并存 |
+| 数据与运维 | 领域数据类型、仓储、路径、SQLite、备份、恢复、迁移、存储审计和数据包 | `backend/domain_models.py`、`backend/repositories/`、`path_manager.py`、`db_manager.py`、`question_bank/database`、`update_tools/`、`tools/` | 学生与考试会话已进入仓储边界，`DBManager` 保留兼容门面及其余 SQL；运行时建表与 SQL migrations 两套机制仍并存 |
 
 ### 主要依赖关系
 
@@ -183,10 +184,13 @@ flowchart LR
 flowchart TD
     UI["Vue UI"] --> API["FastAPI 路由"]
     API --> Workflow["工作流/领域服务"]
-    Workflow --> GradingData["DBManager"]
+    Workflow --> GradingFacade["DBManager 兼容门面"]
+    Workflow --> Repositories["学生/会话仓储"]
     Workflow --> BankData["question_bank.database"]
 
-    Workflow --> GradingData
+    GradingFacade --> Repositories
+    GradingFacade --> GradingData["阅卷 SQLite（其余 SQL）"]
+    Repositories --> GradingData
     Workflow --> BankServices["题库标签/推荐服务"]
     Workflow --> LLM["LLMClient 与识别适配"]
     Workflow --> Paths["PathManager/文件系统"]
@@ -195,11 +199,11 @@ flowchart TD
     BankServices --> LLM
     BankServices --> Paths
 
-    Integration["integration 诊断适配"] --> GradingData
+    Integration["integration 诊断适配"] --> GradingFacade
     Integration --> BankServices
     Integration --> BankData
 
-    PaperWorkflow["原卷标签工作流协调器"] --> GradingData
+    PaperWorkflow["原卷标签工作流协调器"] --> GradingFacade
     PaperWorkflow --> BankServices
     PaperWorkflow --> BankData
     PaperWorkflow --> Paths
@@ -208,7 +212,7 @@ flowchart TD
 实际边界偏差必须保留为事实：
 
 - 旧页面直接持有数据库路径的偏差已随 P2-22 退役；当前 Vue 页面只通过 FastAPI 使用业务能力。
-- `db_manager.py` 反向依赖 `ai_grader` 的结果模型和 `scanner.ExamPaperGroup`，数据访问层不是独立底层。
+- 评分结果、题目评分明细和试卷组共享类型已由 `backend/domain_models.py` 承接，`db_manager.py` 不再反向导入评分器或扫描器；但当前只抽取了学生与考试会话仓储，`DBManager` 仍承载 Schema、备份和其他聚合的 SQL。
 - 题库服务大多直接执行 SQL，`question_bank/database/schema.py` 只提供连接和建表，不是完整数据访问层。
 - 外部模型调用未完全收敛到 `LLMClient`：选择/填空/批量客观题识别和题库打标部分路径会直接实例化 OpenAI 客户端。
 - AST 静态导入图存在两组循环耦合：Schema 与技能目录服务、题目服务与题目频次服务。当前通过函数内延迟导入避免了直接初始化死循环，但仍增加演进风险。
@@ -230,6 +234,8 @@ AI阅卷系统_工作机版_v1.5.0/
 ├── backend/api/app.py             # FastAPI 本机 API 与 Vue 同源托管入口
 ├── backend/public_data.py         # API 公开 payload/result/复核元数据的共享敏感键与路径净化
 ├── backend/file_access.py         # 受控根、旧路径映射与扩展名白名单守卫
+├── backend/domain_models.py       # 跨服务共享的评分结果、评分明细与试卷组类型
+├── backend/repositories/          # SQLite 会话/事务契约与学生、考试会话仓储
 ├── backend/media/                 # review 原卷/批注页读取与内存裁剪服务
 ├── backend/files/                 # Job 导出文件下载服务
 ├── backend/config_workspace/      # P2-09 草稿、受控来源、Rubric 编辑投影与原子发布
@@ -241,7 +247,7 @@ AI阅卷系统_工作机版_v1.5.0/
 ├── hybrid_batch_grading_service.py # 混合批改批处理
 ├── session_manager.py             # 评分依据与答案生成/规范化
 ├── answer_region_*.py             # 答题区模型、草稿、锁和提交服务
-├── db_manager.py                  # 阅卷库 Schema 与查询/写入
+├── db_manager.py                  # 阅卷库兼容门面、Schema、备份与尚未抽取的查询/写入
 ├── question_bank/
 │   ├── database/                  # 题库连接与 Schema
 │   ├── models/                    # 题目、标签、知识、技能模型
@@ -557,7 +563,7 @@ Python 的运行依赖 `requirements.txt` 只给下限，没有完整运行时�
 | P1 | Schema 尚未收敛到已确认的权威来源 | 已确认迁移文件为权威，但运行时初始化与 SQL migrations 仍同时改 Schema；当前数据库无 `schema_migrations` | 定义漂移、升级路径不可审计、测试库与工作库来源不同 | 补基线迁移和迁移测试；分阶段把运行时 DDL 缩减为版本检查/最小引导 | 否 |
 | P1 | 便携运行时 SQLite 3.43.1 未包含上游 WAL-reset race 修复 | 上游修复位于 3.51.3+，并回移到部分后续旧分支；P1-15 临时快照不在源库建立 SQLite 连接，因此不新增源端 writer/checkpointer，但也不能修复既有并发写/checkpoint 风险 | 极低概率的源端 WAL reset/checkpoint 竞争可能损坏数据库；不能宣称任意并发 writer/checkpoint 下严格可靠 | 在独立运行时升级包验证并升级到含修复版本；保留备份、完整性检查和单机边界 | 否；P1-15 不新增触发参与者 |
 | P2 | P1-15 题库读快照每请求多遍读取 main/WAL 并执行 `quick_check` | 正确性边界要求 M1-W1-W2-M2、临时写入和候选校验；P1-26 已建立三个命名工作负载的优化前基线，P1-27 只减少五个目标接口的请求内重复连接/语句，不消除快照 I/O | 数据量增长后仍可能增加列表/详情延迟与临时 I/O；当前报告不是容量或 SLA 结论 | 按版本化基线监测并只在独立优化包决策；没有可靠失效协议前不跨请求缓存 | 否 |
-| P1 | 核心后端模块仍过大且跨域 | `session_manager.py`、`db_manager.py` 等仍承载多个职责 | 回归面大、难以独立测试、继续叠加易触发跨层调用 | 继续按 Phase 3 计划抽取服务与仓储边界 | 否 |
+| P1 | 核心后端模块仍过大且跨域 | 已抽取共享领域类型、仓储基础设施及学生/考试会话仓储，但 `session_manager.py`、`db_manager.py` 等仍承载多个职责 | 回归面大、难以独立测试、继续叠加易触发跨层调用 | 继续按 Phase 3 计划逐个聚合抽取，保留兼容门面并用契约测试守住行为 | 否 |
 | P1 | 跨库业务仍无统一事务 | 诊断、标签投影和训练服务同时访问两个库 | 跨库写链路可部分成功 | 维持明确的补偿、幂等键和状态重算；不做一次性大重写 | 否 |
 | P1 | P2-03 至 P2-08 的 Vue 原型可能被误读为业务权威或界面复刻模板 | 既有 Vue 仅是历史证据、审计输入和复用候选；业务基线来自现有行为、服务、数据库契约、测试及有范围的用户决定 | 误用旧页面为逐屏模板会固化低效布局或引入业务偏差 | 每包用“业务能力与 UX 设计溯源表”核验；保留业务能力，可按合理 UX 理由重构 | 否；长期控制已确定，动态门槛结果见执行 Index |
 | P2 | 部署边界漂移会绕过安全前提 | 已确认仅单用户/个别工作机/loopback，但代码无应用登录或权限 | 若监听地址或使用人数被扩大，会完整暴露敏感数据与破坏性操作 | 固化 loopback 配置并在运维文档标明边界；任何远程化或多用户化前重新设计认证、授权、CSRF 与审计 | 否 |
