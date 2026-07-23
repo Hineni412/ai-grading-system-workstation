@@ -178,6 +178,13 @@ class SessionRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def delete_session_attendance(self, session_id: int) -> int:
+        cursor = self.session.connection.execute(
+            "DELETE FROM session_attendance WHERE session_id = ?",
+            (int(session_id),),
+        )
+        return max(0, int(cursor.rowcount))
+
 
 class SessionRepositoryGateway:
     """Open one repository session per grading-session operation."""

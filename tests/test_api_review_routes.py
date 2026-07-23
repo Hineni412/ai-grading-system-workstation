@@ -20,7 +20,11 @@ from fastapi.testclient import TestClient
 
 def _seed_review_db(tmp_path: Path, *, result_count: int = 1):
     from backend.api.app import create_app
-    from backend.api.dependencies import get_grading_db, get_job_manager
+    from backend.api.dependencies import (
+        get_annotated_dir,
+        get_grading_db,
+        get_job_manager,
+    )
     from backend.jobs.manager import JobManager
     from backend.jobs.store import JobStore
     from db_manager import DBManager
@@ -141,6 +145,9 @@ def _seed_review_db(tmp_path: Path, *, result_count: int = 1):
 
     app = create_app()
     manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
+    app.dependency_overrides[get_annotated_dir] = (
+        lambda: tmp_path / "annotated"
+    )
     app.dependency_overrides[get_grading_db] = lambda: db
     app.dependency_overrides[get_job_manager] = lambda: manager
     return TestClient(app), db, session_id, result_id, q1_detail_id
@@ -337,7 +344,7 @@ def test_review_confirm_maps_atomic_ownership_revalidation_failure_to_not_found(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, db, session_id, result_id, detail_id = _seed_review_db(tmp_path)
-    original_apply = db.apply_session_review_adjustments
+    original_apply = db.review_repository.apply_session_review_adjustments
 
     def invalidate_then_apply(
         requested_session_id: int,
@@ -351,7 +358,11 @@ def test_review_confirm_maps_atomic_ownership_revalidation_failure_to_not_found(
             conn.commit()
         return original_apply(requested_session_id, adjustments)
 
-    monkeypatch.setattr(db, "apply_session_review_adjustments", invalidate_then_apply)
+    monkeypatch.setattr(
+        db.review_repository,
+        "apply_session_review_adjustments",
+        invalidate_then_apply,
+    )
 
     response = client.post(
         f"/api/sessions/{session_id}/review/questions/Q1/confirm",
