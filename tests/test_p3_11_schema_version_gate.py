@@ -109,6 +109,58 @@ def test_schema_gate_rejects_non_contiguous_migration_history(
         ensure_schema_current("grading", database, migrations_dir=migrations)
 
 
+def test_schema_gate_rejects_empty_migration_manifest(tmp_path: Path) -> None:
+    database = tmp_path / "grading.db"
+    migrations = tmp_path / "migrations"
+    migrations.mkdir()
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            CREATE TABLE schema_migrations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                migration_name TEXT NOT NULL UNIQUE,
+                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                checksum TEXT,
+                success INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO schema_migrations (migration_name, checksum, success)
+            VALUES ('999_future_schema', 'future', 1)
+            """
+        )
+
+    with pytest.raises(SchemaVersionError, match="manifest"):
+        ensure_schema_current("grading", database, migrations_dir=migrations)
+
+
+def test_schema_gate_rejects_incomplete_untracked_legacy_schema(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "grading.db"
+    migrations = PROJECT_ROOT / "migrations" / "grading"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            CREATE TABLE grading_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_name TEXT NOT NULL,
+                rubric_path TEXT NOT NULL,
+                answer_key_path TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'created',
+                is_deleted INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT
+            )
+            """
+        )
+
+    with pytest.raises(SchemaVersionError, match="schema differs"):
+        ensure_schema_current("grading", database, migrations_dir=migrations)
+
+
 def test_failed_migration_rolls_back_its_partial_schema(tmp_path: Path) -> None:
     database = tmp_path / "grading.db"
     migrations = tmp_path / "migrations"
@@ -305,6 +357,23 @@ def test_application_schema_gate_checks_both_databases(tmp_path: Path) -> None:
     )
 
 
+def test_application_schema_gate_uses_formal_backup_directory(
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "data"
+    paths = SimpleNamespace(
+        project_root=PROJECT_ROOT,
+        db_path=data_root / "databases" / "grading.db",
+        qb_db_path=data_root / "databases" / "question_bank.db",
+        backups_dir=data_root / "backups",
+    )
+
+    ensure_application_schema(paths)
+
+    assert list(paths.backups_dir.glob("*.db"))
+    assert not (paths.db_path.parent / "backups").exists()
+
+
 def test_fastapi_lifespan_checks_both_schema_versions(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
     paths = SimpleNamespace(
@@ -331,6 +400,37 @@ def test_fastapi_lifespan_checks_both_schema_versions(tmp_path: Path) -> None:
             "WHERE success = 1 ORDER BY id DESC LIMIT 1"
         ).fetchone()
     assert current == ("008_add_unified_skill_catalog",)
+
+
+def test_fastapi_lifespan_schema_failure_does_not_expose_local_path(
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "private-data"
+    paths = SimpleNamespace(
+        project_root=tmp_path / "missing-project",
+        version="test",
+        data_root=data_root,
+        db_path=data_root / "databases" / "grading.db",
+        qb_db_path=data_root / "databases" / "question_bank.db",
+        reports_dir=data_root / "reports",
+        exams_dir=data_root / "exams",
+        templates_dir=data_root / "templates",
+        upload_config_dir=data_root / "config" / "uploaded",
+        outputs_dir=data_root / "outputs",
+        backups_dir=data_root / "backups",
+        ops_state_dir=data_root / "ops",
+    )
+
+    with pytest.raises(SchemaVersionError) as exc_info:
+        with TestClient(create_app(path_manager=paths)):
+            pass
+
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err + caplog.text
+    assert str(tmp_path) not in combined
+    assert str(tmp_path) not in str(exc_info.value)
 
 
 def test_launcher_reports_safe_schema_version_failure(

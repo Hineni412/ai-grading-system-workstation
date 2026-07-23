@@ -22,6 +22,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 sys.path.insert(0, str(_PROJECT_ROOT / "update_tools"))
 
 from migrate_db import run_migrations  # noqa: E402
+from backend.schema_contracts import schema_signature  # noqa: E402
 
 
 @dataclass
@@ -169,21 +170,7 @@ def _normalized_schema_sql(db_path: Path) -> dict[tuple[str, str], str]:
 
 
 def _semantic_schema(db_path: Path) -> dict[str, object]:
-    conn = sqlite3.connect(db_path)
-    try:
-        tables = {
-            table: {
-                "columns": _column_snapshot(conn, table),
-                "foreign_keys": _foreign_key_snapshot(conn, table),
-            }
-            for table in _table_names(conn)
-        }
-    finally:
-        conn.close()
-    return {
-        "tables": tables,
-        "indexes_and_triggers": _normalized_schema_sql(db_path),
-    }
+    return schema_signature(db_path)
 
 
 def schemas_equivalent(left_db: Path, right_db: Path) -> bool:
