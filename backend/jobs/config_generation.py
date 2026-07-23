@@ -9,7 +9,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess
 from backend.config_workspace.locks import session_config_lock
 from backend.config_workspace.editor import (
     ManualPartInput,
@@ -241,7 +241,7 @@ def cleanup_consumed_config_retry_artifacts(
 def run_config_generation_job(
     *,
     context: JobContext,
-    db: DBManager,
+    db: GradingRepositoryAccess,
     upload_config_dir: Path,
     llm_client_factory: Callable[[], Any],
     data_root: Path | None = None,
@@ -336,7 +336,7 @@ def preserve_interrupted_config_generation_checkpoints(
 def _run_config_generation_job_impl(
     *,
     context: JobContext,
-    db: DBManager,
+    db: GradingRepositoryAccess,
     upload_config_dir: Path,
     llm_client_factory: Callable[[], Any],
     data_root: Path | None = None,
@@ -675,7 +675,7 @@ def _run_config_generation_job_impl(
 def _run_refine_config_job(
     *,
     context: JobContext,
-    db: DBManager,
+    db: GradingRepositoryAccess,
     upload_config_dir: Path,
     llm_client_factory: Callable[[], Any],
     inputs: dict[str, Any],
@@ -779,7 +779,7 @@ def _set_mapping_result(
 def _refresh_mapping_and_finalize_job(
     *,
     context: JobContext,
-    db: DBManager,
+    db: GradingRepositoryAccess,
     session_id: int,
     mapping_output_dir: Path,
     summary: dict[str, object],

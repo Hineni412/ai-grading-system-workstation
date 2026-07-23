@@ -22,7 +22,7 @@ from backend.review.service import (
     ReviewDetailNotFoundError,
     ReviewValidationError,
 )
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess
 
 
 router = APIRouter(prefix="/api", tags=["review"])
@@ -34,7 +34,7 @@ router = APIRouter(prefix="/api", tags=["review"])
 )
 def list_review_questions(
     session_id: int,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     review_service: ReviewApplicationService = Depends(get_review_application_service),
 ) -> ReviewQuestionListResponse:
     session = _require_session(db, session_id)
@@ -54,7 +54,7 @@ def list_review_question_items(
     session_id: int,
     question_id: str,
     needs_review_only: bool = True,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     review_service: ReviewApplicationService = Depends(get_review_application_service),
 ) -> ReviewItemListResponse:
     session = _require_session(db, session_id)
@@ -80,7 +80,7 @@ def confirm_review_question_items(
     session_id: int,
     question_id: str,
     request: ReviewConfirmRequest,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     review_service: ReviewApplicationService = Depends(get_review_application_service),
 ) -> ReviewConfirmResponse:
     session = _require_session(db, session_id)

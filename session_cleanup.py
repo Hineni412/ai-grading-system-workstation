@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 
 
 SESSION_STORAGE_DIR_NAMES = ("templates", "exams", "annotated")
@@ -61,7 +61,11 @@ def _collect_session_dirs(session_id: int, data_root: Path) -> set[Path]:
     return dirs
 
 
-def _collect_session_file_paths(db: DBManager, session_id: int, data_root: Path) -> set[Path]:
+def _collect_session_file_paths(
+    db: GradingRepositoryAccess,
+    session_id: int,
+    data_root: Path,
+) -> set[Path]:
     files: set[Path] = set()
     for raw_path in db.collect_session_storage_paths(session_id):
         resolved = _resolve_stored_candidate(raw_path, data_root)
@@ -70,7 +74,11 @@ def _collect_session_file_paths(db: DBManager, session_id: int, data_root: Path)
     return files
 
 
-def _collect_other_session_references(db: DBManager, session_id: int, data_root: Path) -> set[Path]:
+def _collect_other_session_references(
+    db: GradingRepositoryAccess,
+    session_id: int,
+    data_root: Path,
+) -> set[Path]:
     refs: set[Path] = set()
     for session in db.list_grading_sessions(include_deleted=True):
         other_id = int(session["id"])
@@ -146,11 +154,12 @@ def _delete_collected_storage(
 
 
 def hard_delete_session_from_recycle_bin(
-    db: DBManager,
+    db: GradingRepositoryAccess,
     session_id: int,
     *,
     data_root: Path,
 ) -> dict[str, Any]:
+    db = as_grading_repositories(db)
     session = db.get_grading_session(int(session_id))
     if session is None:
         raise ValueError(f"Session {session_id} does not exist.")

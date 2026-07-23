@@ -2,25 +2,25 @@
 
 **执行包：** P3-07  
 **计划日期：** 2026-07-23  
-**计划状态：** in_progress  
+**计划状态：** waiting_review
 **计划模型：** 当前连续作业模型  
 **允许夜间执行：** yes  
 **计划基线：** b07560a389b772e03ff5e7758f0d3031cd6a7131  
 **交接基线：** b07560a389b772e03ff5e7758f0d3031cd6a7131  
 **用户自测：** none  
 **自测清单：** not_required  
-**授权修正预算：** 0/3
+**授权修正预算：** 1/3
 
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
 
 **执行包：** P3-07  
-**交接状态：** in_progress  
-**功能提交：** none  
-**自动验证：** pending  
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending  
 **用户验收：** not_required  
-**真实数据指纹：** not_touched  
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2  
 **夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
@@ -58,10 +58,10 @@
 
 ## 实施步骤
 
-- [ ] 先写 import guard、仓储集合/只读快照与关键 API 接线测试，取得 RED。
-- [ ] 建立正式 Repository 组装接口，补齐必要的会话/跨仓储高层 gateway，保留 `DBManager` 兼容委托。
-- [ ] 按服务、API/报告、Job 三个调用域切换，每个域只运行受影响测试。
-- [ ] 运行 API E2E、组合回归、完整冒烟和 import guard，冻结候选。
+- [x] 先写 import guard、仓储集合/只读快照与关键 API 接线测试，取得 RED。
+- [x] 建立正式 Repository 组装接口，补齐必要的会话/跨仓储高层 gateway，保留 `DBManager` 兼容委托。
+- [x] 按服务、API/报告、Job 三个调用域切换，每个域只运行受影响测试。
+- [x] 运行 API E2E、组合回归、完整冒烟和 import guard，冻结候选。
 - [ ] 对同一冻结 SHA 并行完成需求符合性与代码质量复审；仅在存在阻塞问题时使用授权预算统一修正，最多 3 次。
 
 ## 计划验证命令
@@ -78,6 +78,9 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - Phase map、P3-01 调用图、P3-04 至 P3-06 Repository 契约、最新 API 依赖与活跃调用方已交叉核对。
 - 未发现需要改变产品行为、Schema、评分语义或费用边界的未决选择；按最保守的“只换接线、保持结果等价”实施，无需中断询问。
 - 当前问题清单已冻结；修改前既有问题或相邻新需求只记录，不自动扩大本包。
+- 自动验证完成：import/组装守卫 4 项、Repository/只读快照 42 项、API/Job/服务定向组合回归 270 项以上、API E2E 6 项均通过；首次完整门槛发现同一兼容测试替身根因的 12 项失败，统一修正后 12 项全部复测通过，最终完整冒烟为 2181 passed / 2 skipped。
+- 快速与完整冒烟均确认 499 个第一方 Python 文件可编译，两库隔离副本初始化幂等且 `integrity_check=ok`；根目录真实两库大小、时间与 SHA-256 均和开工基线一致，功能工作区没有 `user_data/` 项。
+- 当前冻结候选等待同一 SHA 的需求符合性与代码质量双路复审；已使用 1/3 次范围内统一修正授权，剩余 2 次。
 
 ## 回退
 
