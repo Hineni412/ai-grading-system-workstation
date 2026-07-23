@@ -171,7 +171,11 @@ def _get_targets() -> dict[str, dict[str, Any]]:
 
 # ── 核心迁移逻辑 ──────────────────────────────────────
 
-def _ensure_migrations_table(conn: sqlite3.Connection) -> None:
+def _ensure_migrations_table(
+    conn: sqlite3.Connection,
+    *,
+    commit: bool = True,
+) -> None:
     """确保 schema_migrations 表存在。"""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -182,7 +186,18 @@ def _ensure_migrations_table(conn: sqlite3.Connection) -> None:
             success     INTEGER NOT NULL DEFAULT 1
         )
     """)
-    conn.commit()
+    if commit:
+        conn.commit()
+
+
+def _migrations_table_exists(conn: sqlite3.Connection) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'schema_migrations'"
+        ).fetchone()
+        is not None
+    )
 
 
 def _get_applied_migrations(conn: sqlite3.Connection) -> set[str]:
@@ -375,13 +390,13 @@ def run_migrations(
     report = MigrationReport(target=target_name, db_path=str(db_path))
 
     if not migrations_dir.exists():
-        report.error = f"迁移目录不存在: {migrations_dir}"
+        report.error = "migration directory is unavailable"
         return report
 
     # 收集迁移文件
     sql_files = sorted(migrations_dir.glob("*.sql"))
     if not sql_files:
-        logger.info("[%s] 没有迁移文件", target_name)
+        report.error = "migration manifest is empty"
         return report
 
     migrations = [MigrationFile.from_path(f) for f in sql_files]
@@ -397,7 +412,6 @@ def run_migrations(
         except MigrationVersionError as exc:
             report.error = str(exc)
             return report
-        _ensure_migrations_table(conn)
         applied = _get_applied_migrations(conn)
 
         pending = [m for m in migrations if m.name not in applied]
@@ -426,7 +440,11 @@ def run_migrations(
                     "stamp_only",
                     backup_dir=effective_backup_dir,
                 )
-                logger.info("打标前备份: %s", stamp_backup)
+                logger.info(
+                    "打标前备份已创建: %s",
+                    stamp_backup.name if stamp_backup else "none",
+                )
+                _ensure_migrations_table(conn, commit=False)
                 for migration in current_pending:
                     _record_migration(
                         conn,
@@ -450,7 +468,11 @@ def run_migrations(
                 return report
             except Exception as exc:
                 conn.rollback()
-                report.error = f"迁移打标前备份或登记失败，数据库未变更: {exc}"
+                logger.error(
+                    "迁移打标前备份或登记失败: %s",
+                    type(exc).__name__,
+                )
+                report.error = "migration backup failed; database unchanged"
                 return report
 
         for mig in pending:
@@ -493,11 +515,19 @@ def run_migrations(
                 )
             except Exception as exc:
                 conn.rollback()
-                report.error = (
-                    f"迁移 {mig.name} 的执行前备份失败，数据库未变更: {exc}"
+                logger.error(
+                    "迁移 %s 的执行前备份失败: %s",
+                    mig.name,
+                    type(exc).__name__,
                 )
+                report.error = "migration backup failed; database unchanged"
                 break
-            logger.info("迁移前备份: %s", backup_path)
+            logger.info(
+                "迁移前备份已创建: %s",
+                backup_path.name if backup_path else "none",
+            )
+            tracking_existed_before = _migrations_table_exists(conn)
+            _ensure_migrations_table(conn, commit=False)
 
             # 执行迁移
             logger.info("执行迁移: %s", mig.name)
@@ -506,15 +536,19 @@ def run_migrations(
             if error:
                 conn.rollback()
                 logger.error("迁移失败 %s: %s", mig.name, error)
-                _record_migration(conn, mig.name, mig.checksum, success=False)
+                if tracking_existed_before:
+                    _record_migration(
+                        conn,
+                        mig.name,
+                        mig.checksum,
+                        success=False,
+                    )
                 report.results.append(MigrationResult(
                     name=mig.name, status="failed", message=error,
                     backup_path=str(backup_path) if backup_path else None,
                 ))
                 report.error = (
-                    f"迁移 {mig.name} 执行失败。数据库已在执行前备份。\n"
-                    f"备份文件: {backup_path}\n"
-                    f"错误: {error}"
+                    f"migration {mig.name} failed after backup"
                 )
                 break
             else:
