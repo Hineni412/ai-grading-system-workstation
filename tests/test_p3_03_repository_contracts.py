@@ -150,6 +150,7 @@ def test_repository_sql_and_cursor_cannot_bypass_session_transaction(
                 session.connection.execute("INSERT INTO items(value) VALUES ('partial')")
                 for statement in (
                     "COMMIT",
+                    "\ufeffCOMMIT",
                     "  END",
                     "-- repository comment\nROLLBACK",
                     "/* repository comment */ SAVEPOINT caller_owned",
