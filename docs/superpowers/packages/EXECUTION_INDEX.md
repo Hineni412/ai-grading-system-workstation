@@ -12,7 +12,7 @@
 | Phase 0 | 地基与防护网 | `merged` | 5 | 0 | 工程防护网与冻结基线 |
 | Phase 1 | API、任务、LLM、数据访问 | `merged` | 21 | 0 | 组合回归、完整冒烟、正式验收、模型请求超时与真实两库指纹门槛均已通过 |
 | Phase 2 | Vue SPA 与 Streamlit 切换 | `merged` | 22 | 0 | M2-01 至 M2-05 全部通过 PR 合入主线；P2-22 完成旧 Streamlit 日常 UI 退役、完整门槛、独立复审和 formal 用户验收，Issue #67 的 P3 后小批量真实模型复验不改变本阶段完成结论 |
-| Phase 3 | 后端拆分、Schema 收敛、瘦身 | `in_progress` | 4 | 15 | P3-01 至 P3-04 已通过 M3-01 合入最新主线；M3-02 已按 P3-05 → P3-06 → P3-07 的顺序启动，迁移、删除和 Schema 包仍按各自高风险门槛执行 |
+| Phase 3 | 后端拆分、Schema 收敛、瘦身 | `in_progress` | 4 | 15 | P3-01 至 P3-04 已通过 M3-01 合入最新主线；M3-02 的 P3-05 → P3-06 → P3-07 已完成逐包集成和批次末门槛，正等待 PR 合入主线；迁移、删除和 Schema 包仍按各自高风险门槛执行 |
 | Phase 4 | 图谱 2.0 与训练闭环 | `planned` | 0 | 12 | 新旧口径对照、闭环 E2E、评估达标 |
 | Phase 5 | 教师命题训练 | `planned` | 0 | 13 | 实验门槛通过后才冻结 Schema |
 | Phase 6 | 班主任学生画像 | `deferred` | 0 | 0 | 用户重启并确认合规与数据治理边界 |
@@ -64,7 +64,7 @@
 | P3-04 | `merged` | 已随 M3-01 通过 PR #75 合入主线；学生/会话 Repository、兼容错误映射、组合门槛和限定终审通过 |
 | P3-05 | `milestone_integrated` | 已进入 M3-02 integration；Repository 三包与 grading/review/report/API 共 120 项组合回归、快速冒烟、双路复审、交接核验和真实数据指纹守卫通过 |
 | P3-06 | `milestone_integrated` | 已进入 M3-02 integration；Repository P3-03 至 P3-06、region commit/concurrency/snapshot、session config、API 与清理共 110 项组合回归、快速冒烟、双路复审和真实数据指纹守卫通过 |
-| P3-07 | `ready_for_execution` | 已由 M3-02 当前验证 SHA `b07560a389b772e03ff5e7758f0d3031cd6a7131` 放行；下一步生成并复核服务、API 与报告调用方切换即时计划 |
+| P3-07 | `milestone_integrated` | 已进入 M3-02 integration；活动服务、API、任务与会话报告调用方已切换到 Repository，98 项集成受影响回归、快速冒烟、双路初审、一次统一修复、限定终审和真实数据指纹守卫通过；旧兼容日志默认不可见记为非阻塞后续项 |
 | P3-08 至 P3-19 | `planned` | 等待前置仓储边界稳定后放行 |
 | P4-01 至 P4-12 | `planned` | Phase 3 数据边界稳定后放行 |
 | P5-01 至 P5-13 | `planned` | 先实验与设计门，再进入正式实现 |
@@ -123,7 +123,7 @@ M2-05 是 P2-22 单包最高风险旧界面退役里程碑，从 P2-21 已通过
 | N3-01 | P3-01 → P3-02 → P3-03 | `completed` | `6305a1442ecd7bd13c6122e43dac7d6d771e2aeb` | `codex/integration-p3-nightly-01` | `e502ea9c1056446f2b237e142a99b301c5a1ab7d` | 三包逐包验证完成；批次末串行完整冒烟 2245 passed / 2 skipped，文档治理、515 个第一方 Python 文件编译、两库副本初始化幂等和真实两库指纹守卫通过；整批不进入 `main` |
 | N3-02 | P3-04 | `completed` | `e502ea9c1056446f2b237e142a99b301c5a1ab7d` | `codex/integration-p3-nightly-01` | `3e2ec73534eff322eea95eee15e92e11dcd00d6e` | 学生与会话 Repository 高风险单包完成；91 项受影响回归、快速冒烟、双路初审和真实数据指纹守卫通过，整包不进入 `main` |
 | M3-01 | P3-01 → P3-02 → P3-03 → P3-04 | `merged` | `ce46dcfd4f6f0ab179fda8f48583a5fcd13991e5` | `codex/integration-p3-01-04` | `cea08ed82ffb5ad23fd56e5b0859d2e33ffc274b` | 已通过 PR #75 合入主线，主线合并提交为 `609653e0ae3bd1c5fbd198d84425c713a523d5d3`；完整门槛 2156 passed / 2 skipped，统一修复后 99 项受影响回归、快速冒烟、两库副本幂等、真实两库指纹守卫和限定终审通过 |
-| M3-02 | P3-05 → P3-06 → P3-07 | `in_progress` | `99d106c54ae1ea1e2beaf8cadddfec82ef56b9fe` | `codex/integration-m3-02` | `b07560a389b772e03ff5e7758f0d3031cd6a7131` | P3-05、P3-06 已逐包合入并完成受影响回归与快速冒烟；P3-07 从该精确验证 SHA 放行，所有数据库写测试继续只使用临时库 |
+| M3-02 | P3-05 → P3-06 → P3-07 | `ready_for_pr` | `99d106c54ae1ea1e2beaf8cadddfec82ef56b9fe` | `codex/integration-m3-02` | `d24a242374a37719d4d0c734c1aa65c4d1b5b8cb` | 三包已逐包合入并完成受影响验证；批次末完整门槛 2182 passed / 2 skipped、文档治理、500 个第一方 Python 文件编译、两库副本初始化幂等、真实两库指纹守卫和规定复审均通过，下一步通过单一 PR 合入主线 |
 
 P2-20 的不可变可信领取基线是 `c9662850bbd75a2ba062c0011a6762241818f4d8`，用于该包所有 `handoff_status.py --expected-handoff-base` 核验。该包领取后为解除现场阻塞，同步了已经独立复审并逐项进入 M2-03 的 Issue #60—#65，因此 M2-03 当前已验证且作为最终合入目标的 SHA 已前进到 `6ed4cd64ccab6aa2c51b602c7413c99ecf8d2781`。两者职责不同：不得把计划内冻结的领取基线改成后者，也不得用前者替代 integration 当前状态。
 
@@ -180,4 +180,4 @@ M2-02 是 Python 完整测试并行试点的第二个里程碑：批次末优先
 
 ## 下一动作
 
-P3-01 至 P3-04 已通过 M3-01 和 PR #75 合入最新主线，P3-05、P3-06 已进入 M3-02 integration 并完成逐包验证。当前动作是从验证 SHA `b07560a389b772e03ff5e7758f0d3031cd6a7131` 为 P3-07 创建独立短分支，生成并复核服务、API 与报告调用方切换即时计划；完成后运行 M3-02 批次末组合门槛。P2-20 剩余两次真实调用继续冻结，Issue #67 的后续复验仍须用户重新确认网络、考试副本与费用上限。
+P3-05 至 P3-07 已全部进入 M3-02 integration，逐包验证和批次末完整门槛均已通过。当前动作是推送 `codex/integration-m3-02`，通过单一 PR 合入 `main` 并同步本地主线；随后才能从新的主线精确基线规划下一批 Phase 3 包。P2-20 剩余两次真实调用继续冻结，Issue #67 的后续复验仍须用户重新确认网络、考试副本与费用上限。
