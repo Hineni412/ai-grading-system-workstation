@@ -60,8 +60,9 @@
 | P2-22 | `deferred` | 用户于 2026-07-23 明确要求暂时跳过；旧 UI、旧依赖删除与退役均未执行，后续若恢复仍须生成最新源码计划并按高风险门槛单独启动 |
 | P3-01 | `milestone_integrated` | 已进入 N3-01 临时 integration；57 项合入后受影响回归和快速冒烟通过，双路复审最终为 0 Critical / 0 Important / 0 Suggestion，真实两库指纹不变 |
 | P3-02 | `milestone_integrated` | 已进入 N3-01 临时 integration；合入后 73 项受影响回归和快速冒烟通过，双路复审 0 Critical / 0 Important，真实两库指纹不变 |
-| P3-03 | `in_progress` | 已从 N3-01 精确 SHA `dae97291aedf190e6cd1dd40e88f8e410bf9a881` 领取 `codex/p3-03-repository-contracts`；只用临时库建立连接/事务基础，不迁移业务 SQL |
-| P3-04 至 P3-05 | `planned` | 已列入 2026-07-23 夜间串行目标；必须逐包等待前序进入临时 integration 并完成验证，且只允许临时数据库、按高风险门槛收口 |
+| P3-03 | `milestone_integrated` | 已进入 N3-01 临时 integration；限定续修关闭事务 SQL/游标绕过和双失败异常丢失，63 项合入后受影响回归、快速冒烟、双路最终复审与交接核验通过，真实两库指纹不变 |
+| P3-04 | `ready` | N3-01 已完成；下一步从精确 SHA `e502ea9c1056446f2b237e142a99b301c5a1ab7d` 领取学生与会话 Repository，只用临时数据库 |
+| P3-05 | `planned` | 等待 P3-04 以高风险单包完成并进入临时 integration；评分数据测试只用临时数据库 |
 | P3-06 至 P3-19 | `planned` | 等待前置仓储边界稳定后放行 |
 | P4-01 至 P4-12 | `planned` | Phase 3 数据边界稳定后放行 |
 | P5-01 至 P5-13 | `planned` | 先实验与设计门，再进入正式实现 |
@@ -110,8 +111,8 @@ M2-04 是 P2-21 单包高风险生产启动切换里程碑，从 PR #69 合并�
 | M2-02 | P2-13 → P2-16 → P2-17 | `merged` | `b3e67d36691a02e74e092873a7f021b7a13bae9d` | `codex/integration-m2-02` | `7c6afe311241a5e82c28b528eb61afb5f19b4c47` | 已通过 PR #56 合入主线；批次末前端 verify 628 passed，串行完整冒烟 2041 passed / 2 skipped；2 进程并行完整门槛仍不稳定，暂不设为默认 |
 | M2-03 | P2-18 → P2-19 → P2-20 | `merged` | `58c93e9c08fb91a8a8a4951b722905f44679f535` | `codex/integration-m2-03` | `e79e8958881da0733e1b2ae908967bf2d87d37a1` | 已通过 PR #69 合入主线；批次末前端 verify 716 passed，后端串行完整门槛 2195 passed / 2 skipped，文档治理、504 个第一方 Python 文件编译和两库副本初始化幂等通过，真实两库大小、时间与 SHA-256 前后不变 |
 | M2-04 | P2-21 | `merged` | `016c007b12a51754608f3d0c8f31a6add04cc175` | `codex/integration-m2-04` | `5fde1b6b534f71e4157eab7c46f04233cffdce24` | 已通过 PR #71 合入主线，主线合并提交为 `b023f5aa027d26c70321a55a948338795d7e0a0b`；代码 SHA 后只有验收与交接文档变化，formal 用户验收和关闭清理通过 |
-| N3-01 | P3-01 → P3-02 → P3-03 | `in_progress` | `6305a1442ecd7bd13c6122e43dac7d6d771e2aeb` | `codex/integration-p3-nightly-01` | `dae97291aedf190e6cd1dd40e88f8e410bf9a881` | P3-01/P3-02 已逐包验证；P3-03 已从本行精确基线领取，整批不进入 `main` |
-| N3-02 | P3-04 | `planned` | N3-01 最终已验证 SHA | `codex/integration-p3-nightly-01` | N3-01 最终已验证 SHA | 学生与会话 Repository 高风险单包；只用临时库，等待 N3-01 完成 |
+| N3-01 | P3-01 → P3-02 → P3-03 | `completed` | `6305a1442ecd7bd13c6122e43dac7d6d771e2aeb` | `codex/integration-p3-nightly-01` | `e502ea9c1056446f2b237e142a99b301c5a1ab7d` | 三包逐包验证完成；批次末串行完整冒烟 2245 passed / 2 skipped，文档治理、515 个第一方 Python 文件编译、两库副本初始化幂等和真实两库指纹守卫通过；整批不进入 `main` |
+| N3-02 | P3-04 | `ready` | `e502ea9c1056446f2b237e142a99b301c5a1ab7d` | `codex/integration-p3-nightly-01` | `e502ea9c1056446f2b237e142a99b301c5a1ab7d` | 学生与会话 Repository 高风险单包；只用临时库，下一步生成最新源码即时计划并领取 |
 | N3-03 | P3-05 | `planned` | N3-02 最终已验证 SHA | `codex/integration-p3-nightly-01` | N3-02 最终已验证 SHA | 评分数据最高风险单包；只用临时库，等待 P3-04 完成 |
 
 P2-20 的不可变可信领取基线是 `c9662850bbd75a2ba062c0011a6762241818f4d8`，用于该包所有 `handoff_status.py --expected-handoff-base` 核验。该包领取后为解除现场阻塞，同步了已经独立复审并逐项进入 M2-03 的 Issue #60—#65，因此 M2-03 当前已验证且作为最终合入目标的 SHA 已前进到 `6ed4cd64ccab6aa2c51b602c7413c99ecf8d2781`。两者职责不同：不得把计划内冻结的领取基线改成后者，也不得用前者替代 integration 当前状态。
@@ -169,4 +170,4 @@ M2-02 是 Python 完整测试并行试点的第二个里程碑：批次末优先
 
 ## 下一动作
 
-P2-22 已按用户 2026-07-23 指令暂时跳过，旧 UI、旧依赖删除与退役均未执行。P3-01/P3-02 已在 `codex/integration-p3-nightly-01` 完成逐包验证；当前从新的精确基线领取 P3-03。P3-04、P3-05 分别作为高风险单包收口。所有数据库测试只用临时库，真实两库只核对指纹；全程不得调用真实模型、触碰真实 `user_data/`，也不得把这些候选合入 `main`。凌晨 7 点目标是尽量形成 P3-05 稳定候选，质量门槛优先于时间目标。
+P2-22 已按用户 2026-07-23 指令暂时跳过，旧 UI、旧依赖删除与退役均未执行。P3-01 至 P3-03 已在 `codex/integration-p3-nightly-01` 完成逐包验证和 N3-01 批次完整门槛；下一步从精确 SHA `e502ea9c1056446f2b237e142a99b301c5a1ab7d` 为 P3-04 生成最新源码即时计划并领取。P3-04、P3-05 分别作为高风险单包收口。所有数据库测试只用临时库，真实两库只核对指纹；全程不得调用真实模型、触碰真实 `user_data/`，也不得把这些候选合入 `main`。原凌晨 7 点目标已因 P3-03 两轮限定修复和批次完整门槛超时重启而未达成，后续仍以质量门槛优先。
