@@ -1,13 +1,13 @@
 {
-  "active_release": "404e0059b73747b4c8c9df29087ff41d140987811c699ed26a316abb04c8371d",
+  "active_release": "a657e022d387c5fb0d9e3fde936e0c15c7199f292178b3237295e2ca5b2d93b0",
   "files": {
     "json": {
       "name": "p3-01-structural-baseline.json",
-      "sha256": "00d1c43fcef2e77213fd2da98b391fd3d6ff4f43e8c71c9537e415aace53bd76"
+      "sha256": "57cc2c5fc00118c17ff66bd2e9f50c3408634e3b31f2124474a97fa037cee74b"
     },
     "markdown": {
       "name": "p3-01-structural-baseline.md",
-      "sha256": "fe0063249dfc69a8632e2adc667803ea4e178aa344392391adfb8ab0e9f4f0b3"
+      "sha256": "0291ca8ca4cf0abd4603cf40d382863eaec25e628f20831cce3c16a1303e7572"
     }
   },
   "publication_version": 1
