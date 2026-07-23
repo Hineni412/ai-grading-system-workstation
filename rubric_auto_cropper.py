@@ -3,6 +3,7 @@ import os
 import tempfile
 import fitz  # PyMuPDF — module-level so helper functions can reference it
 from PIL import Image
+from backend.document_parsing import extract_pdf_text
 
 
 def convert_docx_to_pdf_images(docx_bytes: bytes) -> list[bytes]:
@@ -98,19 +99,6 @@ def extract_pdf_images(pdf_bytes: bytes) -> list[bytes]:
     finally:
         doc.close()
     return image_blobs
-
-def extract_pdf_text(pdf_bytes: bytes) -> str:
-    import fitz
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    text_blocks = []
-    try:
-        for page_idx in range(len(doc)):
-            page = doc[page_idx]
-            text_blocks.append(page.get_text())
-    finally:
-        doc.close()
-    return "\n".join(text_blocks)
-
 
 # ---------------------------------------------------------------------------
 # Plan B: per-question bbox cropping  (question + answer/solution)
