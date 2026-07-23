@@ -8,13 +8,15 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DIRECTORIES = (
     "backend",
     "components",
-    "frontend/src",
+    "config",
+    "frontend",
     "integration",
     "migrations",
     "question_bank",
     "tools",
     "update_tools",
 )
+EXCLUDED_SOURCE_PARTS = {"coverage", "dist", "node_modules"}
 SOURCE_SUFFIXES = {
     ".bat",
     ".css",
@@ -71,6 +73,7 @@ def _source_files() -> list[Path]:
             if path.is_file()
             and path.suffix.lower() in SOURCE_SUFFIXES
             and "__pycache__" not in path.parts
+            and not EXCLUDED_SOURCE_PARTS.intersection(path.parts)
         )
     return sorted(set(files))
 
@@ -107,6 +110,16 @@ def test_drawable_canvas_dependency_is_retired() -> None:
 
     assert "streamlit-drawable-canvas" not in requirements
     assert "streamlit-drawable-canvas" not in constraints
+
+
+def test_retirement_guard_covers_first_party_build_and_config_files() -> None:
+    covered = {path.relative_to(ROOT).as_posix() for path in _source_files()}
+
+    assert {
+        "config/app_config.yaml",
+        "frontend/package.json",
+        "frontend/vite.config.ts",
+    } <= covered
 
 
 def test_remaining_streamlit_entry_is_explicitly_deferred() -> None:
