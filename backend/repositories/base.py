@@ -328,7 +328,9 @@ def _leading_sql_keyword(statement: str) -> str:
     index = 0
     length = len(statement)
     while index < length:
-        while index < length and (statement[index].isspace() or statement[index] == ";"):
+        while index < length and (
+            statement[index].isspace() or statement[index] in ";\ufeff"
+        ):
             index += 1
         if statement.startswith("--", index):
             newline = statement.find("\n", index + 2)
