@@ -1,21 +1,21 @@
 # P3-01 结构基线
 
-- 源码提交：`1eec63b88b7c7b755c1b1ef55a47230f39d4f3f9`
-- 扫描源码文件：289
-- 静态导入：2792
-- 动态导入线索：4
+- 源码提交：`51805571c6c14f5b9a699586dea76c23566cd805`
+- 扫描源码文件：281
+- 静态导入：2586
+- 动态导入线索：3
 
 ## 后续拆分对象
 
 | 文件 | 公开类 | 公开函数 | 公开方法数 | 静态导入数 | 直接调用方 | 直接测试文件 |
 |---|---:|---:|---:|---:|---:|---:|
-| `db_manager.py` | 7 | 3 | 81 | 18 | 55 | 54 |
-| `session_manager.py` | 0 | 27 | 0 | 34 | 12 | 6 |
-| `grading_service.py` | 1 | 1 | 1 | 35 | 2 | 10 |
-| `manual_review_service.py` | 1 | 0 | 4 | 14 | 2 | 3 |
-| `web_app.py` | 0 | 14 | 0 | 85 | 1 | 7 |
+| `db_manager.py` | 2 | 2 | 83 | 18 | 50 | 55 |
+| `session_manager.py` | 0 | 27 | 0 | 34 | 11 | 6 |
+| `grading_service.py` | 1 | 1 | 1 | 36 | 1 | 10 |
+| `manual_review_service.py` | 1 | 0 | 4 | 14 | 1 | 3 |
+| `backend/api/launcher.py` | 0 | 2 | 0 | 11 | 0 | 1 |
 | `backend/api/app.py` | 4 | 1 | 0 | 19 | 28 | 35 |
-| `question_bank/database/schema.py` | 0 | 2 | 0 | 8 | 33 | 41 |
+| `question_bank/database/schema.py` | 0 | 2 | 0 | 8 | 32 | 41 |
 
 ## Schema 与性能证据
 
