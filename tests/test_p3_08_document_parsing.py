@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+import zipfile
 
 import fitz
 from docx import Document
@@ -30,6 +31,26 @@ def _two_page_pdf() -> bytes:
     return payload
 
 
+def _docx_with_ordered_header_footer_parts() -> bytes:
+    payload = io.BytesIO(_docx_with_duplicate_and_table())
+    namespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    with zipfile.ZipFile(payload, "a") as archive:
+        for name, text in [
+            ("word/header2.xml", "HEADER-2"),
+            ("word/footer2.xml", "FOOTER-2"),
+            ("word/header1.xml", "HEADER-1"),
+            ("word/footer1.xml", "FOOTER-1"),
+        ]:
+            archive.writestr(
+                name,
+                (
+                    f'<w:root xmlns:w="{namespace}"><w:p><w:r>'
+                    f"<w:t>{text}</w:t></w:r></w:p></w:root>"
+                ),
+            )
+    return payload.getvalue()
+
+
 def test_text_extractors_preserve_docx_order_deduplication_and_pdf_pages() -> None:
     from backend.document_parsing import extract_docx_text, extract_pdf_text
 
@@ -37,6 +58,19 @@ def test_text_extractors_preserve_docx_order_deduplication_and_pdf_pages() -> No
         "Question one\nLeft | Right\nLeft\nRight"
     )
     assert extract_pdf_text(_two_page_pdf()) == "Alpha page\n\nBeta page\n"
+
+
+def test_docx_header_and_footer_parts_keep_zip_member_order() -> None:
+    from backend.document_parsing import extract_docx_text
+
+    extracted = extract_docx_text(_docx_with_ordered_header_footer_parts())
+
+    assert extracted.splitlines()[-4:] == [
+        "HEADER-2",
+        "FOOTER-2",
+        "HEADER-1",
+        "FOOTER-1",
+    ]
 
 
 def test_plain_parser_preserves_inline_split_and_answer_mapping() -> None:
