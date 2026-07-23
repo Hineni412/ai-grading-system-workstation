@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from backend.api.frontend import FrontendDistributionError, validate_frontend_dist
+from backend.schema_migrations import SchemaVersionError, ensure_application_schema
 from path_manager import get_path_manager
 
 
@@ -73,6 +74,15 @@ def main(argv: Iterable[str] | None = None) -> int:
     if args.check_frontend:
         print("前端文件检查通过。")
         return 0
+    try:
+        ensure_application_schema(paths)
+    except SchemaVersionError:
+        print(
+            "数据库版本与当前程序不兼容，系统为保护数据已停止启动。"
+            "请保留当前数据和备份，交由维护人员处理后再重试。",
+            file=sys.stderr,
+        )
+        return 3
 
     import uvicorn
 

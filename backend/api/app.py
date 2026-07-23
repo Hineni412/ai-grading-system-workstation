@@ -80,10 +80,13 @@ async def _lifespan(api: FastAPI) -> AsyncIterator[None]:
         get_job_manager,
         get_ops_write_service,
     )
+    from backend.schema_migrations import ensure_application_schema
 
     owns_manager = get_job_manager not in api.dependency_overrides
     owns_ops_service = get_ops_write_service not in api.dependency_overrides
     paths = api.state.path_manager
+    if hasattr(paths, "db_path") and hasattr(paths, "qb_db_path"):
+        ensure_application_schema(paths)
     manager = create_job_manager(paths) if owns_manager else None
     ops_service = create_ops_write_service(paths) if owns_ops_service else None
     if manager is not None:

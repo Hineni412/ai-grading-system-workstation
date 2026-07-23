@@ -1,7 +1,6 @@
 """批改运行账本的 SQLite 访问：开始/恢复/暂停/记录明细/收尾的原子操作。
 
-与阅卷主库同库；``initialize`` 用 ``CREATE TABLE IF NOT EXISTS`` 兼容直接启动，
-发布迁移仍以 ``migrations/grading/002_add_grading_run_ledger.sql`` 为准。
+与阅卷主库同库；``initialize`` 只通过统一 migration 版本门确认 Schema。
 """
 
 from __future__ import annotations
@@ -10,6 +9,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
+
+from backend.schema_migrations import ensure_schema_current
 
 
 ITEM_STATUSES = (
@@ -41,53 +42,6 @@ class GradingRun:
     state: str
 
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS grading_runs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_token TEXT NOT NULL UNIQUE,
-    session_id INTEGER NOT NULL,
-    config_fingerprint TEXT NOT NULL,
-    grading_mode TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (
-        state IN ('running','pause_requested','paused','completed','failed')
-    ),
-    started_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-    finished_at TEXT,
-    FOREIGN KEY(session_id) REFERENCES grading_sessions(id)
-);
-CREATE TABLE IF NOT EXISTS grading_run_items (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id INTEGER NOT NULL,
-    paper_id INTEGER,
-    student_id INTEGER NOT NULL,
-    source_label TEXT NOT NULL,
-    paper_fingerprint TEXT NOT NULL,
-    config_fingerprint TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (
-        status IN (
-            'pending','grading','graded','failed',
-            'skipped_existing','skipped_duplicate','conflict'
-        )
-    ),
-    disposition_reason TEXT,
-    result_id INTEGER,
-    attempt_count INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-    UNIQUE(run_id, source_label),
-    FOREIGN KEY(run_id) REFERENCES grading_runs(id),
-    FOREIGN KEY(paper_id) REFERENCES exam_papers(id),
-    FOREIGN KEY(student_id) REFERENCES students(id),
-    FOREIGN KEY(result_id) REFERENCES session_results(id)
-);
-CREATE INDEX IF NOT EXISTS idx_grading_runs_session_state
-ON grading_runs(session_id, state, id);
-CREATE INDEX IF NOT EXISTS idx_grading_run_items_identity
-ON grading_run_items(student_id, paper_fingerprint, config_fingerprint, status);
-"""
-
-
 class GradingRunStore:
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
@@ -103,8 +57,7 @@ class GradingRunStore:
         return conn
 
     def initialize(self) -> None:
-        with self._connect() as conn:
-            conn.executescript(_SCHEMA)
+        ensure_schema_current("grading", self.db_path)
 
     # ---------- 运行生命周期 ----------
     def begin(self, session_id: int, config_fingerprint: str, grading_mode: str) -> GradingRun:
