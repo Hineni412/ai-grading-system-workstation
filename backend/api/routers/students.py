@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, Request
 
 from backend.api.app import ApiError, ErrorResponse
-from backend.api.dependencies import get_grading_db, get_student_roster_module
+from backend.api.dependencies import get_student_repository, get_student_roster_module
 from backend.api.schemas.students import (
     StudentDeleteResponse,
     StudentDeletionImpactResponse,
@@ -28,7 +28,7 @@ from backend.students import (
     StudentRosterModule,
     StudentRosterNotFound,
 )
-from db_manager import DBManager, StudentRecord
+from backend.repositories.students import StudentRecord, StudentRepositoryGateway
 
 
 router = APIRouter(prefix="/api", tags=["students"])
@@ -44,8 +44,10 @@ def _student_response(row: dict) -> StudentResponse:
     )
 
 @router.get("/students", response_model=StudentListResponse)
-def list_students(db: DBManager = Depends(get_grading_db)) -> StudentListResponse:
-    items = [_student_response(row) for row in db.list_students()]
+def list_students(
+    students: StudentRepositoryGateway = Depends(get_student_repository),
+) -> StudentListResponse:
+    items = [_student_response(row) for row in students.list_students()]
     return StudentListResponse(items=items, total=len(items))
 
 
@@ -161,9 +163,9 @@ def commit_student_import(
 @router.post("/students", response_model=StudentUpsertResponse, status_code=201)
 def upsert_students(
     request: StudentUpsertRequest,
-    db: DBManager = Depends(get_grading_db),
+    students: StudentRepositoryGateway = Depends(get_student_repository),
 ) -> StudentUpsertResponse:
-    result = db.upsert_students(
+    result = students.upsert_students(
         [
             StudentRecord(
                 student_code=item.student_code,
@@ -173,7 +175,7 @@ def upsert_students(
             for item in request.items
         ]
     )
-    items = [_student_response(row) for row in db.list_students()]
+    items = [_student_response(row) for row in students.list_students()]
     return StudentUpsertResponse(
         inserted=int(result["inserted"]),
         updated=int(result["updated"]),

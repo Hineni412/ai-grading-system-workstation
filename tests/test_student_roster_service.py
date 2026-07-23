@@ -8,6 +8,7 @@ from threading import Barrier
 import pytest
 from openpyxl import Workbook
 
+from backend.repositories import RepositoryTransactionError
 from backend.students import (
     StudentBackupFailed,
     StudentCodeConflict,
@@ -489,3 +490,33 @@ def test_delete_student_rolls_back_when_a_related_delete_fails(tmp_path) -> None
     assert len(db.list_students()) == 1
     assert roster.deletion_impact(int(student["id"])).counts == impact.counts
     assert run_store.counts(run.id)["graded"] == 1
+
+
+def test_delete_student_maps_repository_commit_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    roster, db = _roster(tmp_path)
+    db.upsert_students([StudentRecord("S001", "匿名学生甲", "一班")])
+    student = db.list_students()[0]
+    impact = roster.deletion_impact(int(student["id"]))
+
+    def fail_commit(
+        student_id: int,
+        *,
+        expected_revision: str | None = None,
+    ) -> dict[str, object]:
+        raise RepositoryTransactionError("injected commit failure")
+
+    monkeypatch.setattr(db, "delete_student_hard", fail_commit)
+
+    with pytest.raises(StudentDeleteFailed) as caught:
+        roster.delete_student(
+            int(student["id"]),
+            impact.roster_revision,
+            confirmed=True,
+        )
+
+    assert str(caught.value) == "删除失败，学生和历史数据均未改变"
+    assert isinstance(caught.value.__cause__, RepositoryTransactionError)
+    assert len(db.list_students()) == 1

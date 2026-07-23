@@ -25,6 +25,8 @@ from backend.ops.plan_store import OpsPlanStore
 from backend.ops.write_service import OpsWriteService
 from backend.review.service import ReviewApplicationService
 from backend.students import StudentRosterModule
+from backend.repositories.sessions import SessionRepositoryGateway
+from backend.repositories.students import StudentRepositoryGateway
 from backend.scan_grading.config_fingerprint import (
     session_grading_config_fingerprint,
 )
@@ -51,10 +53,22 @@ def get_grading_db() -> DBManager:
     return DBManager(get_path_manager().db_path)
 
 
-def get_student_roster_module(
+def get_student_repository(
     db: DBManager = Depends(get_grading_db),
+) -> StudentRepositoryGateway:
+    return db.student_repository
+
+
+def get_session_repository(
+    db: DBManager = Depends(get_grading_db),
+) -> SessionRepositoryGateway:
+    return db.session_repository
+
+
+def get_student_roster_module(
+    students: StudentRepositoryGateway = Depends(get_student_repository),
 ) -> StudentRosterModule:
-    return StudentRosterModule(db)
+    return StudentRosterModule(students)
 
 
 def get_session_analysis_service(
