@@ -2,7 +2,7 @@
 
 **执行包：** P3-06
 **计划日期：** 2026-07-23
-**规划状态：** verified_pending_integration
+**规划状态：** ready_for_execution
 **规划模型：** 当前连续作业模型
 **允许夜间执行：** yes
 **计划基线：** 999928f20eb69afba544f0cde43e300972c21172
@@ -15,14 +15,14 @@
 ## 昼夜交接
 
 **执行包：** P3-06
-**交接状态：** verified_pending_integration
-**功能提交：** 2284262c22c97f9b63854902a3f7b7483beb063a
-**自动验证：** passed
-**独立复审：** passed
+**交接状态：** in_progress
+**功能提交：** none
+**自动验证：** pending
+**独立复审：** pending
 **用户验收：** not_required
-**真实数据指纹：** unchanged
+**真实数据指纹：** not_touched
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** independent_candidate_allowed
+**夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
 
 ## 任务边界（已冻结）
@@ -65,12 +65,12 @@
 
 ## 实施步骤
 
-- [x] 新增模板、答题区、设置 Repository 公共契约与服务适配测试并取得 RED。
-- [x] 实现 session-bound `TemplateRepository`、`RegionRepository`、`SettingsRepository` 和 gateway，逐个 vertical slice 转 GREEN。
-- [x] 把 `DBManager` 对应方法改为兼容委托；存储路径与永久删除在一个 `RepositorySession` 中组合。
-- [x] 让 `AnswerRegionCommitService` 使用新 Repository，保留锁、验证、snapshot/workflow/草稿补偿语义。
-- [x] 运行包内、region commit/concurrency/snapshot、session config、API 受影响回归与快速冒烟。
-- [x] 冻结候选后在同一 SHA 并行完成需求符合性与代码质量复审；仅在存在阻塞问题时使用授权预算统一修正，最多 3 次。
+- [ ] 新增模板、答题区、设置 Repository 公共契约与服务适配测试并取得 RED。
+- [ ] 实现 session-bound `TemplateRepository`、`RegionRepository`、`SettingsRepository` 和 gateway，逐个 vertical slice 转 GREEN。
+- [ ] 把 `DBManager` 对应方法改为兼容委托；存储路径与永久删除在一个 `RepositorySession` 中组合。
+- [ ] 让 `AnswerRegionCommitService` 使用新 Repository，保留锁、验证、snapshot/workflow/草稿补偿语义。
+- [ ] 运行包内、region commit/concurrency/snapshot、session config、API 受影响回归与快速冒烟。
+- [ ] 冻结候选后在同一 SHA 并行完成需求符合性与代码质量复审；仅在存在阻塞问题时使用授权预算统一修正，最多 3 次。
 
 ## 计划验证命令
 
@@ -86,9 +86,7 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - Phase map、最新架构、P3-03 至 P3-05 Repository 事实、模板/答题区数据库方法、`AnswerRegionCommitService` 补偿流程和现有并发测试已交叉核对。
 - 未发现需要改变坐标、fingerprint、workflow、API 或 Schema 的未决产品选择；无需中断询问。
 - 计划按“数据库事务进入 Repository、文件补偿留在服务、跨域删除在同一 session 编排”限制范围，不提前实施 P3-07。
-- 自动验证完成：Repository P3-03 至 P3-06、region commit/concurrency/snapshot、session config、API 与清理共 110 项组合回归通过；扩展调用方回归另有 123 项通过；快速冒烟和 496 个第一方 Python 文件静态编译通过。
-- 双路初审完成：原始意见 1 条，去重后 1 条 `Suggestion`；已在交接文档提交中同步 `ARCHITECTURE.md` 当前结构事实，未改代码、未启动修正复审，授权修正预算仍为 0/3。
-- 当前剩余工作量仅为 integration 逐包合入与验证、更新 Index；真实模型调用与根目录真实数据写入均为零，真实两库指纹不变。
+- 当前剩余工作量为实现、受影响验证、双路复审、交接和 integration 逐包验证；真实模型调用与真实数据写入均为零。
 
 ## 回退
 
