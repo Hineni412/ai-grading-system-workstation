@@ -30,6 +30,7 @@
       "tools/p2_20_acceptance.py",
       "tools/performance/runner.py"
     ],
+    "backend/api/launcher.py": [],
     "db_manager.py": [
       "analytics.py",
       "backend/analytics/service.py",
@@ -42,10 +43,8 @@
       "backend/api/routers/review.py",
       "backend/api/routers/scan.py",
       "backend/api/routers/sessions.py",
-      "backend/api/routers/students.py",
       "backend/api/routers/templates.py",
       "backend/api/routers/workbench.py",
-      "backend/config_workspace/drafts.py",
       "backend/jobs/config_generation.py",
       "backend/jobs/default_handlers.py",
       "backend/jobs/grading_run.py",
@@ -54,7 +53,6 @@
       "backend/report_exports.py",
       "backend/review/service.py",
       "backend/scan_grading/config_fingerprint.py",
-      "backend/students/service.py",
       "backend/workbench/service.py",
       "fill_blank_recognition_chain.py",
       "grading_service.py",
@@ -65,7 +63,6 @@
       "manual_review_service.py",
       "objective_admission_wizard_ui.py",
       "original_paper_exporter.py",
-      "pages/训练推荐.py",
       "report.py",
       "session_cleanup.py",
       "student_manager.py",
@@ -84,16 +81,13 @@
       "tools/p2_19_browser_server.py",
       "tools/p2_20_acceptance.py",
       "tools/performance/dataset.py",
-      "tools/smoke_check.py",
-      "web_app.py"
+      "tools/smoke_check.py"
     ],
     "grading_service.py": [
-      "backend/jobs/grading_run.py",
-      "web_app.py"
+      "backend/jobs/grading_run.py"
     ],
     "manual_review_service.py": [
-      "backend/api/dependencies.py",
-      "web_app.py"
+      "backend/api/dependencies.py"
     ],
     "question_bank/database/schema.py": [
       "backend/jobs/question_import.py",
@@ -102,7 +96,6 @@
       "integration/grading_paper_skill_workflow_service.py",
       "integration/question_tag_projection_service.py",
       "integration/skill_conflict_inbox_service.py",
-      "pages/题库管理.py",
       "question_bank/importers/batch_importer.py",
       "question_bank/recommendation/practice_plan_service.py",
       "question_bank/services/concept_alignment_service.py",
@@ -141,11 +134,7 @@
       "integration/skill_conflict_inbox_service.py",
       "major_region_evidence.py",
       "question_bank/services/skill_link_service.py",
-      "question_bank/services/skill_migration_service.py",
-      "web_app.py"
-    ],
-    "web_app.py": [
-      "run_desktop.py"
+      "question_bank/services/skill_migration_service.py"
     ]
   },
   "core_targets": {
@@ -167,20 +156,23 @@
       },
       "static_import_count": 19
     },
+    "backend/api/launcher.py": {
+      "public_classes": [],
+      "public_functions": [
+        "main",
+        "open_browser_when_started"
+      ],
+      "public_methods": {},
+      "static_import_count": 11
+    },
     "db_manager.py": {
       "public_classes": [
         "DBManager",
-        "ReviewAdjustmentOwnershipError",
-        "StudentBackupFailedError",
-        "StudentCodeConflictError",
-        "StudentGradingActiveError",
-        "StudentRecord",
-        "StudentRosterRevisionConflict"
+        "ReviewAdjustmentOwnershipError"
       ],
       "public_functions": [
         "resolve_grading_completeness",
-        "sanitize_incomplete_failure_summary",
-        "student_roster_revision"
+        "sanitize_incomplete_failure_summary"
       ],
       "public_methods": {
         "DBManager": [
@@ -244,9 +236,11 @@
           "save_answer_regions",
           "save_result",
           "save_session_result",
+          "session_repository",
           "set_app_setting",
           "soft_delete_grading_session",
           "student_deletion_impact",
+          "student_repository",
           "student_roster_snapshot",
           "student_workspace_snapshot",
           "try_start_session_run",
@@ -266,12 +260,7 @@
           "upsert_students",
           "upsert_students_if_revision"
         ],
-        "ReviewAdjustmentOwnershipError": [],
-        "StudentBackupFailedError": [],
-        "StudentCodeConflictError": [],
-        "StudentGradingActiveError": [],
-        "StudentRecord": [],
-        "StudentRosterRevisionConflict": []
+        "ReviewAdjustmentOwnershipError": []
       },
       "static_import_count": 18
     },
@@ -287,7 +276,7 @@
           "run_session_grading"
         ]
       },
-      "static_import_count": 35
+      "static_import_count": 36
     },
     "manual_review_service.py": {
       "public_classes": [
@@ -346,36 +335,9 @@
       ],
       "public_methods": {},
       "static_import_count": 34
-    },
-    "web_app.py": {
-      "public_classes": [],
-      "public_functions": [
-        "build_llm_settings_from_sidebar",
-        "build_stage_progress_log_body",
-        "build_unified_rubric_rows",
-        "ensure_env_ready",
-        "main",
-        "render_config_and_session_tab",
-        "render_export_tab",
-        "render_global_weak_points_tab",
-        "render_grading_tab",
-        "render_header",
-        "render_review_tab",
-        "render_sidebar_grading_mode",
-        "render_sidebar_session_selector",
-        "render_student_import_section"
-      ],
-      "public_methods": {},
-      "static_import_count": 85
     }
   },
   "dynamic_imports": [
-    {
-      "kind": "importlib.import_module",
-      "line": 201,
-      "module": "question_bank.services.rich_content_backfill_service",
-      "source": "pages/题库管理.py"
-    },
     {
       "kind": "importlib.import_module",
       "line": 714,
@@ -440,7 +402,7 @@
     },
     "P2-20": {
       "path": "docs/user-testing/checkpoints/P2-20-v1.5.0-new-ui-five-flow-formal.md",
-      "sha256": "080bb879b6987d5d307b73986eab3fde39af849b37f375852e78ee22826601dd"
+      "sha256": "2f4949d2c8b432c547aa544efd9ade6348e845686720873bbb175aaed64ef901"
     }
   },
   "report_version": 1,
@@ -509,7 +471,7 @@
   "source_manifest": [
     {
       "path": "ai_grader.py",
-      "sha256": "ade53c2dd2c45db20e5b6be5b2633c5cc3dc2a455d749cbd329becf0fc372b8c"
+      "sha256": "fd5e817eabf9ad25443c152f95150b1025ec7c91f0a344ba0eb9e7824f298fe5"
     },
     {
       "path": "analytics.py",
@@ -534,14 +496,6 @@
     {
       "path": "answer_region_draft_service.py",
       "sha256": "f5220afcf63b00bbc5ca11eb01b95d2e095674ebe64be32385280c7e03333444"
-    },
-    {
-      "path": "answer_region_editor_component.py",
-      "sha256": "40eb9890cf170d02a50e8236599c86bcdd92b577c51fb333e0b83c021f457ade"
-    },
-    {
-      "path": "answer_region_focus_page.py",
-      "sha256": "719aa4e0edd4803b70d97f2df485d0b80f4b70899c1cf09d1b23b30ab1da2706"
     },
     {
       "path": "answer_region_geometry.py",
@@ -577,19 +531,19 @@
     },
     {
       "path": "backend/api/app.py",
-      "sha256": "780a92798b1ef6c2459a852ac8bfe1851cf2c74c6a1a1d39b57033d1fe8e8bef"
+      "sha256": "c331e94357273e6e8a20e902441a6a649709d6ef074fa887091b9fd1239726bd"
     },
     {
       "path": "backend/api/dependencies.py",
-      "sha256": "72416e81c8a366c642b3bedbc9ada53f0f533010064b071e5668ebc4a3014c17"
+      "sha256": "45c10e279978f6f91176b25021cefd82c4fb726797a630eeaaafec9a32c8f650"
     },
     {
       "path": "backend/api/frontend.py",
-      "sha256": "4a219b670bdf4de9bf08d009b435707d9810f3d7e232b1991af5079d596a94df"
+      "sha256": "d7bd5c3aa6712444b31f10aebdccb7b8af9d257f4135950cdbc6d366e2defdd3"
     },
     {
       "path": "backend/api/launcher.py",
-      "sha256": "d81dc3bfa9e6aeaf0586b21533b5a4c2f531112d22f310d6965b93a26012a3e6"
+      "sha256": "a27bb5ff1aeb3251972b6ecec34ddba64eb531580597698d3d13e27cb9814f59"
     },
     {
       "path": "backend/api/read_connections.py",
@@ -597,7 +551,7 @@
     },
     {
       "path": "backend/api/routers/__init__.py",
-      "sha256": "6c7aac2d20a94369b325b10cd7703a2c4f9bc5a7a6a98cefd5f284aaf11e5756"
+      "sha256": "63b42ab167789799bd97f0b819f708be73847ed9e171f58b82cbdf24ece77880"
     },
     {
       "path": "backend/api/routers/analytics.py",
@@ -605,11 +559,11 @@
     },
     {
       "path": "backend/api/routers/assembly.py",
-      "sha256": "393898f51f9f147c137534825d27699d54ad34f6b66b113b7e90919a9ea53fb9"
+      "sha256": "a60c129968b2c65dddea8945f6195a0f7e07bc51f99f95b7b6257a718699f5db"
     },
     {
       "path": "backend/api/routers/config.py",
-      "sha256": "f56402cfd79a5a34dd629b6163aa6edd5a8f867f64a1f6031fc0eeab9140fd52"
+      "sha256": "5445c7c3504bcf56884c864b2061f1c572da3910172ebff6ea99eca2f584386c"
     },
     {
       "path": "backend/api/routers/files.py",
@@ -625,7 +579,7 @@
     },
     {
       "path": "backend/api/routers/jobs.py",
-      "sha256": "a1284c727a6a26f3058ae4b56b0e62e64d8ece0f95abca7192454896c5885f71"
+      "sha256": "65f3c2d6d57916fa81220c8a48f7432d7ddeaf753f37d4b6750cf19c3bbdbd37"
     },
     {
       "path": "backend/api/routers/media.py",
@@ -653,11 +607,11 @@
     },
     {
       "path": "backend/api/routers/sessions.py",
-      "sha256": "b1986bb725071d7b7eb7c5daebacfe43400a154c70a1b2bf1f7d4c23997a2b71"
+      "sha256": "a088016fd2d27a341e755ea3fb66dd6cb82c1fc3752b256e74e2095f53afc239"
     },
     {
       "path": "backend/api/routers/students.py",
-      "sha256": "e1b17ed8a5be19e2415fced5193f2ce73df3493f147534897ba37d6fdb10c1be"
+      "sha256": "fb9a20d8c9e02014b5968f94dc2e25bedd32a7cb282ac359d3e20446e79f4a17"
     },
     {
       "path": "backend/api/routers/templates.py",
@@ -673,7 +627,7 @@
     },
     {
       "path": "backend/api/schemas/__init__.py",
-      "sha256": "820c9033779b83b55b0a85f14ef3175c8e3366ab0e297a9b4af791182dae84f1"
+      "sha256": "cfbc67721fd08cb213e34e42d4c71ce46c337613f1a2bf686cfe91df03a93a66"
     },
     {
       "path": "backend/api/schemas/analytics.py",
@@ -681,7 +635,7 @@
     },
     {
       "path": "backend/api/schemas/assembly.py",
-      "sha256": "59d5a00d15c29bc612a4d7b8522383d24445705968b1655cf3fd53996fabd2a5"
+      "sha256": "01b7d512f84b2a8c632c19f03b452365c81c67c016c5f793fcac27c76f973450"
     },
     {
       "path": "backend/api/schemas/config.py",
@@ -729,7 +683,7 @@
     },
     {
       "path": "backend/api/schemas/students.py",
-      "sha256": "7f256010f358fbb1013e0322a8ed44392841bb84f070e8292fc703e90e624547"
+      "sha256": "ccd62fd00a92fbcde383747d11a20f12711215ef789fded16865fa21c99ad4d2"
     },
     {
       "path": "backend/api/schemas/templates.py",
@@ -753,7 +707,7 @@
     },
     {
       "path": "backend/config_workspace/drafts.py",
-      "sha256": "2318e40e6439cebd1e5ee4a26db35fed4ac6139f81188a51fb00d8c641b91e1b"
+      "sha256": "6e66cfd0f62ac90f2d5e2e21756e25f9761a20ccb13f5a15e5818879a6a4ec03"
     },
     {
       "path": "backend/config_workspace/editor.py",
@@ -776,6 +730,10 @@
       "sha256": "d166922937254ccf631458700934598649499c9240c8b96fb2dd7356815879f6"
     },
     {
+      "path": "backend/domain_models.py",
+      "sha256": "4bd0e8e0d4ba685bd7ff1090abafa85b195b71552bdd16b7f8773aa5033b7037"
+    },
+    {
       "path": "backend/file_access.py",
       "sha256": "5b667b25033e1615943fd16ea1086d76bd79e25db7b53ae4a22712138df44774"
     },
@@ -785,7 +743,7 @@
     },
     {
       "path": "backend/files/service.py",
-      "sha256": "2fdb6c81a452d54474eef1ed7d828de3f403d1976a2b86ea455e4c03dca4f11e"
+      "sha256": "b26820320ca2eca4452b71aa794102016ea8d0e9504a44e8cbdfef9416b4931c"
     },
     {
       "path": "backend/jobs/__init__.py",
@@ -793,15 +751,15 @@
     },
     {
       "path": "backend/jobs/assembly_export.py",
-      "sha256": "f5e7be07e9eca80524a1926f0da2648db180ee654223c79680cc24af6a4a5d5f"
+      "sha256": "11ad82f78a8aa00548d9374eaf6ddb1e45187e427f010839e84b813273d09437"
     },
     {
       "path": "backend/jobs/config_generation.py",
-      "sha256": "74808b092aba5bdf514e6a39632593b9a13132884afade5177e86ab9053bf05a"
+      "sha256": "8c3d346e1de6f6d4bdcfd32acef181c7dd64622715765fb90964e9626ae70c53"
     },
     {
       "path": "backend/jobs/default_handlers.py",
-      "sha256": "9c17e058332d7c596718b9e162f33663bf8af0b65ea100858501806b85a95c6a"
+      "sha256": "6698cf74811b03507e22e8d393516cd2fd7e0bad722195281684a9ac607bf5f4"
     },
     {
       "path": "backend/jobs/execution_locks.py",
@@ -817,7 +775,7 @@
     },
     {
       "path": "backend/jobs/question_import.py",
-      "sha256": "56a7596ff95600b9c36f1ac8612b28c4bd0f1c97de3d1146523e09e417513a54"
+      "sha256": "5cb1cc6f03ca93e196808839b2050f786cbf72ed0f5a3a51b0d6e65bdbc01f16"
     },
     {
       "path": "backend/jobs/scan_analysis.py",
@@ -837,7 +795,7 @@
     },
     {
       "path": "backend/llm/__init__.py",
-      "sha256": "07481b2567a0b636f2af254dff2f2943e6e4555f3f1d8fdb2da58f7b4545be73"
+      "sha256": "5e8493bd90a22efd4cc7b54bd59b83c3fec0d7f482b36038d1f9467117d91771"
     },
     {
       "path": "backend/llm/errors.py",
@@ -845,7 +803,7 @@
     },
     {
       "path": "backend/llm/gateway.py",
-      "sha256": "30c648c694f50ebc35964fd6733e4bdb02ad2640952bac97ef6235584558e25f"
+      "sha256": "689605221469789ba71f600b6d883221d73ae9891c9cc1a073476d839f49f752"
     },
     {
       "path": "backend/llm/json_repair.py",
@@ -861,15 +819,15 @@
     },
     {
       "path": "backend/llm/trace.py",
-      "sha256": "f036c1389c058d55838cc19ee47b473ff4d853e2c49b036a986e8a8d4c7f3839"
+      "sha256": "90e58e1a8e0bc991fbb637364c4e0d3e37b942eb3fedb72e256b61a52b1f686f"
     },
     {
       "path": "backend/llm/transport.py",
-      "sha256": "7a6b3fb58f458f915d8fd4941a89e4ca43f5f1d5562c16286e9083456863a2c3"
+      "sha256": "2fd4da68fd1983b109c3d7ce0b9dc00e0aefb98ddb1229b7448e07a8cd38b550"
     },
     {
       "path": "backend/llm/usage.py",
-      "sha256": "80d1bc2a318127165b1697a4824db5960c4d887da73b8ba20891e9971bfa4526"
+      "sha256": "c8d5370220c8fd7aec47622b908f2d03cab2b259239eaa7a30bd0adac83e4775"
     },
     {
       "path": "backend/media/__init__.py",
@@ -940,6 +898,26 @@
       "sha256": "4be13bffcfd05fc0bb479df2a05192d2ebd71b95375a528c408a29fdd010bc1a"
     },
     {
+      "path": "backend/repositories/__init__.py",
+      "sha256": "21989389f020944059168521ac854d932feb2ca8813ad105a389d25eb7043f6b"
+    },
+    {
+      "path": "backend/repositories/base.py",
+      "sha256": "7bb0102b29c251dc825b337d7ef41c2d9c53415f4ee1e4a64714843c62ba2c27"
+    },
+    {
+      "path": "backend/repositories/providers.py",
+      "sha256": "cd8c5861720e0ddb123732bce847481d93e402cab17699910f03fdd54c4eaf7b"
+    },
+    {
+      "path": "backend/repositories/sessions.py",
+      "sha256": "9bbcc36e4351fe2c1ed770dee2a6b27adf5c399beca3e94dd2eebd7024c12e42"
+    },
+    {
+      "path": "backend/repositories/students.py",
+      "sha256": "84de639d3bdfd50ff22e9877dc60a39d453ab26cc5520a81e1f655c2ec813784"
+    },
+    {
       "path": "backend/review/__init__.py",
       "sha256": "bfc11663a25faa1448ce087a5546382f3396cca2bf8aa55f97b2cc6ee7147852"
     },
@@ -961,11 +939,11 @@
     },
     {
       "path": "backend/students/__init__.py",
-      "sha256": "c3bd590daadbefe1f48999eca922bdda8092e4eb3d343b2e397cb6493a582600"
+      "sha256": "63e46aa1694d270de60832fb8b0ec61f662a301fa62c7f5695a2b85ff7b844b6"
     },
     {
       "path": "backend/students/service.py",
-      "sha256": "80b4216203d25bae689f59e1e08d720d1f2b9e5a055c6c2341de726044d9faf8"
+      "sha256": "41254c694a3dbc3c5910f1a4b23801b2c3a381e59629e1fd4de487076b1d5512"
     },
     {
       "path": "backend/workbench/__init__.py",
@@ -985,7 +963,7 @@
     },
     {
       "path": "db_manager.py",
-      "sha256": "a6b9ef6c4671f1cfcdff8aab7bee99725afb621061a4774ce9870357efb06efa"
+      "sha256": "0aa0a2f16afea0675ef84370d16482a4f133a114ea62f146220548cf06e439e3"
     },
     {
       "path": "equivalence_engine.py",
@@ -993,7 +971,7 @@
     },
     {
       "path": "evidence_atlas.py",
-      "sha256": "2ad84b47f7e2423198df5351769c3c0dbc81709b91fd7704166d15ee8605fe17"
+      "sha256": "724e5066c1d945d022f6f70614e69667f30a45d7331754e5254749d7ebae1846"
     },
     {
       "path": "export_names.py",
@@ -1025,11 +1003,11 @@
     },
     {
       "path": "grading_service.py",
-      "sha256": "fbadc7b5916786832216bbcd5673966aebb58a096b44dbf8393c3f03f26ab829"
+      "sha256": "6385ce904ecd64cca893360ea5790e0b4b674602bec27c8fa040aa8da5b9a1d0"
     },
     {
       "path": "hybrid_batch_grading_service.py",
-      "sha256": "ede600af2b0ac711e2ef16eb8360920ab88755e1e653dd8375f0e9fcf2aa0a48"
+      "sha256": "46583bc550040c23d116c0478351779aef68d573f956d3c48f599205e44f07b9"
     },
     {
       "path": "image_preprocessor.py",
@@ -1077,7 +1055,7 @@
     },
     {
       "path": "llm_client.py",
-      "sha256": "4aa2f8e1084a81c5244759b27a83aaafc366770a011f07634647f7d60e813d53"
+      "sha256": "94948c4e687ea3cc4a5c5c45fb14c0ee3ea5384c3672e244859d193c3a22ecb7"
     },
     {
       "path": "main.py",
@@ -1105,7 +1083,7 @@
     },
     {
       "path": "objective_batch_recognition_service.py",
-      "sha256": "8f9df2ee0a8689b1f45f9a50043258d2aa5718c7128406d230cc7fd1eaafdcd1"
+      "sha256": "f685610cf60061f6ff80f46b3cbf9d4d4f240d1d77b1496888d8cf68b66190f4"
     },
     {
       "path": "objective_crop_calibration.py",
@@ -1121,47 +1099,7 @@
     },
     {
       "path": "package_v1.5.0.py",
-      "sha256": "22096da8569cd38a2a1aef75c9fa4a2d06088a4203b72ae1297837ae34db3232"
-    },
-    {
-      "path": "pages/知识点整理（高级）.py",
-      "sha256": "7d3e0c48b806ef05bbd34aea138d187b29ac74c0b7491fdfad6b04fe9dbc5e7b"
-    },
-    {
-      "path": "pages/系统自检.py",
-      "sha256": "295ee9738c31231d834fdf459cd7fc24189ff9feea7e5d8f189141c740e15087"
-    },
-    {
-      "path": "pages/组卷.py",
-      "sha256": "545a57bc53b22296b07b66ef9e0df174412d648a2034a200cc9917531cee2afc"
-    },
-    {
-      "path": "pages/训练推荐.py",
-      "sha256": "7ad1d5b79d5ecddf91764a1486ae07a815493929196ea7a4d490f8a98e4d8326"
-    },
-    {
-      "path": "pages/题库管理.py",
-      "sha256": "5b229b47297f4f1e2d725be889ea060a4b4f97a8fb260432855ca5853fa9a6f6"
-    },
-    {
-      "path": "pages_shared/grading_paper_skill_workflow_component.py",
-      "sha256": "127ee13e7b5ce8a9ac8f1747912b0d8f84dc8719b99d91ee69ffef08021f6738"
-    },
-    {
-      "path": "pages_shared/question_bank_import_state.py",
-      "sha256": "44b58e890a240f2a6df01574c8b44d62807c455c29b6ba5484edfaeb7ff742ab"
-    },
-    {
-      "path": "pages_shared/question_bank_tagging_config_state.py",
-      "sha256": "f1dcc6137e53d3350c4deab361673cce6890978b63b45833082983844f8f1c8c"
-    },
-    {
-      "path": "pages_shared/shared_components.py",
-      "sha256": "401c27912897779ae057d6de0044641d33d016035714488f641b9b1e82415860"
-    },
-    {
-      "path": "pages_shared/shared_styles.py",
-      "sha256": "5972766cf49f34473e510ac70056bcb35c990bae8f75172e52a23db4a2854c3e"
+      "sha256": "53a4348303845517fd09f558824d644597eca0070fab6ec60580897abc17b62f"
     },
     {
       "path": "path_manager.py",
@@ -1209,7 +1147,7 @@
     },
     {
       "path": "question_bank/exporters/paper_markdown_exporter.py",
-      "sha256": "3633afdb10a10ac099611d0c89cf291ab12b466b469468b961109efce16e453e"
+      "sha256": "76f13dad1eb033bdc12823f06a93a768453873b695ec4b3324b5348b1f9a3af0"
     },
     {
       "path": "question_bank/importers/__init__.py",
@@ -1297,7 +1235,7 @@
     },
     {
       "path": "question_bank/services/assembly_basket_state.py",
-      "sha256": "2659c3fc2aa4f656d89d98c7abd25e3f8cc08537b0376a51a83c7e832eed89d9"
+      "sha256": "fd5d002ce00ff00b84578265f29a409cfa357aff2148bde0bbff61da9ef9563e"
     },
     {
       "path": "question_bank/services/assembly_record_service.py",
@@ -1305,7 +1243,7 @@
     },
     {
       "path": "question_bank/services/assembly_workspace_service.py",
-      "sha256": "b26b356820c525b36e6d30957ac8b1cd7a980757cb2ea9fab015123b6c07799a"
+      "sha256": "e723f53a4a09d13042fe4ca90b0fc4567869fcdb67d46a026f50bc7bab54e38e"
     },
     {
       "path": "question_bank/services/asset_path_service.py",
@@ -1337,7 +1275,7 @@
     },
     {
       "path": "question_bank/services/question_read_service.py",
-      "sha256": "e20ea2fbd4d84f2058609fe4b61bf7769ad29ff8bcd5f460de1e1c08253e6585"
+      "sha256": "731ac51602d5e6346f2d5eb7c89242453c1a7807786bd3954c647f7b855c8393"
     },
     {
       "path": "question_bank/services/question_revision.py",
@@ -1440,16 +1378,12 @@
       "sha256": "a46b60dee98b93de568211c53bd52fca57c2f63cb4346ea6a73e22635e4c29bd"
     },
     {
-      "path": "run_desktop.py",
-      "sha256": "040c46adcf8fe0b679e3d18cc8564c7e5392105422e036283ad430dc64960440"
-    },
-    {
       "path": "run_objective_admission_wizard.py",
       "sha256": "02c0c502a09605118923a6b1d1b33a4a4a88ef127b95fc9324126f2efd449b26"
     },
     {
       "path": "scanner.py",
-      "sha256": "9675cbf3e863da54828b7eee743eae1b2b9890563008a6eab8cafe2bc0af9fb2"
+      "sha256": "135825719945d5c7f97dd996f6337cabf4c794c57c20176d5af04f111e2667dd"
     },
     {
       "path": "score_policy.py",
@@ -1517,7 +1451,7 @@
     },
     {
       "path": "tools/build_p3_01_baseline.py",
-      "sha256": "1f5091b8d3650fc1e512e296cdfd7208c2c31aec23020bedd492bfcbe9000e40"
+      "sha256": "f526a0a2ae05d1a8eb3743546981e7a507b50da9b4514a6790b1d6a00146ca52"
     },
     {
       "path": "tools/check_documentation.py",
@@ -1557,23 +1491,23 @@
     },
     {
       "path": "tools/p2_13_browser_server.py",
-      "sha256": "c8ea983a9c95e9d9b0acb52b102b2038744707d7adecf3a63f6e656623a91e5f"
+      "sha256": "553a3eb34814e191fb9c16d06ecde7dd7a79ee59185c76e22288e478cfc89d33"
     },
     {
       "path": "tools/p2_16_browser_server.py",
-      "sha256": "de2fb0a85ee59a543ed69053047e9aaa53acd52af1cb7c049c69eb2ffa67b2ee"
+      "sha256": "0c46b1ca1646369b880cce9a4059464fb2380ecbd82957fb03f3654d8145ad9c"
     },
     {
       "path": "tools/p2_17_browser_server.py",
-      "sha256": "09ef26ff95c27f82811d10a170ef4a4a3476d51b45e4bb496b46f6fff0ed1ecd"
+      "sha256": "fbc4142863628ac4e8216dfc4c16f77d661c9953ed835fc300c6cf04d09f5ff8"
     },
     {
       "path": "tools/p2_18_browser_server.py",
-      "sha256": "b901f8eefd09fdeb9f3da805444e38181e5530cda915f98906805c8fe3276688"
+      "sha256": "8e4f46c72c189babab2a3d994fac55ddd7d62b2a078dc2a4fd7642600c4716a5"
     },
     {
       "path": "tools/p2_19_browser_server.py",
-      "sha256": "95ad5e0fb7abc43877b70410a2fd5c46d9e7615f2541f44f4e3a939303586787"
+      "sha256": "0ecc36e91b05c66d97ed1cb0366cbd884f75cb086eb9b9a0ed17f43c7a0044e3"
     },
     {
       "path": "tools/p2_20_acceptance.py",
@@ -1625,7 +1559,7 @@
     },
     {
       "path": "update_tools/backup_core.py",
-      "sha256": "0df605c89f8d58a7bceb0c9ab5cc3b1f4172baaded70dbabd8f2054f24e6f4e8"
+      "sha256": "c70e8b734a690e57229d330afc6096323f6b42c99ead55ed381d0ab4be98ee2c"
     },
     {
       "path": "update_tools/backup_data.py",
@@ -1658,13 +1592,9 @@
     {
       "path": "usage_report.py",
       "sha256": "f8f338157be5afc4934792b759e2b56cb71bfc92e5cfc4b72e60f16e0fe3769b"
-    },
-    {
-      "path": "web_app.py",
-      "sha256": "7027987f136fd4ab2728ca90caac2cb3c2fb42f5a629d3f8b764894e02731150"
     }
   ],
-  "source_revision": "1eec63b88b7c7b755c1b1ef55a47230f39d4f3f9",
+  "source_revision": "51805571c6c14f5b9a699586dea76c23566cd805",
   "static_imports": [
     {
       "kind": "from",
@@ -1705,14 +1635,6 @@
     {
       "kind": "from",
       "line": 7,
-      "module": "dataclasses",
-      "name": "dataclass,field",
-      "relative_level": 0,
-      "source": "ai_grader.py"
-    },
-    {
-      "kind": "from",
-      "line": 8,
       "module": "pathlib",
       "name": "Path",
       "relative_level": 0,
@@ -1720,7 +1642,7 @@
     },
     {
       "kind": "from",
-      "line": 9,
+      "line": 8,
       "module": "typing",
       "name": "Any,Mapping,Sequence",
       "relative_level": 0,
@@ -1728,7 +1650,7 @@
     },
     {
       "kind": "from",
-      "line": 11,
+      "line": 10,
       "module": "PIL",
       "name": "Image",
       "relative_level": 0,
@@ -1736,7 +1658,7 @@
     },
     {
       "kind": "from",
-      "line": 13,
+      "line": 12,
       "module": "answer_key_utils",
       "name": "answer_forms_for_question",
       "relative_level": 0,
@@ -1744,9 +1666,17 @@
     },
     {
       "kind": "from",
-      "line": 14,
+      "line": 13,
       "module": "answer_normalizer",
       "name": "contains_prompt_injection_or_score_bait,match_fill_blank_answer",
+      "relative_level": 0,
+      "source": "ai_grader.py"
+    },
+    {
+      "kind": "from",
+      "line": 14,
+      "module": "backend.domain_models",
+      "name": "ExamPaperGroup,GradingResult,QuestionGradingDetail,SecondaryError",
       "relative_level": 0,
       "source": "ai_grader.py"
     },
@@ -1783,23 +1713,15 @@
       "source": "ai_grader.py"
     },
     {
-      "kind": "from",
-      "line": 25,
-      "module": "scanner",
-      "name": "ExamPaperGroup",
-      "relative_level": 0,
-      "source": "ai_grader.py"
-    },
-    {
       "kind": "import",
-      "line": 192,
+      "line": 161,
       "module": "datetime",
       "name": null,
       "source": "ai_grader.py"
     },
     {
       "kind": "from",
-      "line": 193,
+      "line": 162,
       "module": "usage_logger",
       "name": "extract_usage_fields,log_llm_usage",
       "relative_level": 0,
@@ -1807,21 +1729,21 @@
     },
     {
       "kind": "import",
-      "line": 194,
+      "line": 163,
       "module": "time",
       "name": null,
       "source": "ai_grader.py"
     },
     {
       "kind": "import",
-      "line": 284,
+      "line": 253,
       "module": "datetime",
       "name": null,
       "source": "ai_grader.py"
     },
     {
       "kind": "from",
-      "line": 285,
+      "line": 254,
       "module": "usage_logger",
       "name": "extract_usage_fields,log_llm_usage",
       "relative_level": 0,
@@ -1829,14 +1751,14 @@
     },
     {
       "kind": "import",
-      "line": 286,
+      "line": 255,
       "module": "time",
       "name": null,
       "source": "ai_grader.py"
     },
     {
       "kind": "from",
-      "line": 349,
+      "line": 318,
       "module": "reference_image_preparation",
       "name": "prepare_reference_image",
       "relative_level": 0,
@@ -1844,14 +1766,14 @@
     },
     {
       "kind": "import",
-      "line": 377,
+      "line": 346,
       "module": "json",
       "name": null,
       "source": "ai_grader.py"
     },
     {
       "kind": "import",
-      "line": 387,
+      "line": 356,
       "module": "json",
       "name": null,
       "source": "ai_grader.py"
@@ -2131,153 +2053,6 @@
       "name": "get_answer_region_session_lock",
       "relative_level": 0,
       "source": "answer_region_draft_service.py"
-    },
-    {
-      "kind": "from",
-      "line": 1,
-      "module": "__future__",
-      "name": "annotations",
-      "relative_level": 0,
-      "source": "answer_region_editor_component.py"
-    },
-    {
-      "kind": "import",
-      "line": 3,
-      "module": "base64",
-      "name": null,
-      "source": "answer_region_editor_component.py"
-    },
-    {
-      "kind": "import",
-      "line": 4,
-      "module": "json",
-      "name": null,
-      "source": "answer_region_editor_component.py"
-    },
-    {
-      "kind": "from",
-      "line": 5,
-      "module": "pathlib",
-      "name": "Path",
-      "relative_level": 0,
-      "source": "answer_region_editor_component.py"
-    },
-    {
-      "kind": "from",
-      "line": 6,
-      "module": "typing",
-      "name": "Any",
-      "relative_level": 0,
-      "source": "answer_region_editor_component.py"
-    },
-    {
-      "kind": "import",
-      "line": 8,
-      "module": "streamlit",
-      "name": "st",
-      "source": "answer_region_editor_component.py"
-    },
-    {
-      "kind": "import",
-      "line": 9,
-      "module": "streamlit.components.v2",
-      "name": "components_v2",
-      "source": "answer_region_editor_component.py"
-    },
-    {
-      "kind": "from",
-      "line": 1,
-      "module": "__future__",
-      "name": "annotations",
-      "relative_level": 0,
-      "source": "answer_region_focus_page.py"
-    },
-    {
-      "kind": "from",
-      "line": 3,
-      "module": "copy",
-      "name": "deepcopy",
-      "relative_level": 0,
-      "source": "answer_region_focus_page.py"
-    },
-    {
-      "kind": "from",
-      "line": 4,
-      "module": "dataclasses",
-      "name": "asdict,dataclass",
-      "relative_level": 0,
-      "source": "answer_region_focus_page.py"
-    },
-    {
-      "kind": "from",
-      "line": 5,
-      "module": "pathlib",
-      "name": "Path",
-      "relative_level": 0,
-      "source": "answer_region_focus_page.py"
-    },
-    {
-      "kind": "from",
-      "line": 6,
-      "module": "typing",
-      "name": "Any",
-      "relative_level": 0,
-      "source": "answer_region_focus_page.py"
-    },
-    {
-      "kind": "import",
-      "line": 8,
-      "module": "streamlit",
-      "name": "st",
-      "source": "answer_region_focus_page.py"
-    },
-    {
-      "kind": "from",
-      "line": 9,
-      "module": "PIL",
-      "name": "Image",
-      "relative_level": 0,
-      "source": "answer_region_focus_page.py"
-    },
-    {
-      "kind": "from",
-      "line": 11,
-      "module": "answer_region_commit_service",
-      "name": "AnswerRegionCommitService",
-      "relative_level": 0,
-      "source": "answer_region_focus_page.py"
-    },
-    {
-      "kind": "from",
-      "line": 12,
-      "module": "answer_region_draft_service",
-      "name": "AnswerRegionDraftService",
-      "relative_level": 0,
-      "source": "answer_region_focus_page.py"
-    },
-    {
-      "kind": "from",
-      "line": 13,
-      "module": "answer_region_editor_component",
-      "name": "build_answer_region_editor_data,load_template_image_data_url,render_answer_region_editor",
-      "relative_level": 0,
-      "source": "answer_region_focus_page.py"
-    },
-    {
-      "kind": "from",
-      "line": 18,
-      "module": "answer_region_models",
-      "name": "load_question_binding_catalog,normalize_regions,validate_regions",
-      "relative_level": 0,
-      "source": "answer_region_focus_page.py"
-    },
-    {
-      "kind": "from",
-      "line": 23,
-      "module": "path_manager",
-      "name": "resolve_stored_file_path",
-      "relative_level": 0,
-      "source": "answer_region_focus_page.py"
     },
     {
       "kind": "from",
@@ -2979,6 +2754,22 @@
     {
       "kind": "from",
       "line": 28,
+      "module": "backend.repositories.sessions",
+      "name": "SessionRepositoryGateway",
+      "relative_level": 0,
+      "source": "backend/api/dependencies.py"
+    },
+    {
+      "kind": "from",
+      "line": 29,
+      "module": "backend.repositories.students",
+      "name": "StudentRepositoryGateway",
+      "relative_level": 0,
+      "source": "backend/api/dependencies.py"
+    },
+    {
+      "kind": "from",
+      "line": 30,
       "module": "backend.scan_grading.config_fingerprint",
       "name": "session_grading_config_fingerprint",
       "relative_level": 0,
@@ -2986,7 +2777,7 @@
     },
     {
       "kind": "from",
-      "line": 31,
+      "line": 33,
       "module": "backend.scan_grading.workspace",
       "name": "ScanGradingWorkspace",
       "relative_level": 0,
@@ -2994,7 +2785,7 @@
     },
     {
       "kind": "from",
-      "line": 32,
+      "line": 34,
       "module": "backend.workbench.service",
       "name": "WorkbenchService",
       "relative_level": 0,
@@ -3002,7 +2793,7 @@
     },
     {
       "kind": "from",
-      "line": 33,
+      "line": 35,
       "module": "template_upload_service",
       "name": "TemplateUploadService",
       "relative_level": 0,
@@ -3010,7 +2801,7 @@
     },
     {
       "kind": "from",
-      "line": 34,
+      "line": 36,
       "module": "manual_review_service",
       "name": "ManualReviewService",
       "relative_level": 0,
@@ -3018,7 +2809,7 @@
     },
     {
       "kind": "from",
-      "line": 35,
+      "line": 37,
       "module": "path_manager",
       "name": "PathManager,get_path_manager",
       "relative_level": 0,
@@ -3026,7 +2817,7 @@
     },
     {
       "kind": "from",
-      "line": 36,
+      "line": 38,
       "module": "integration.diagnosis_profile_service",
       "name": "DiagnosisProfileService",
       "relative_level": 0,
@@ -3034,7 +2825,7 @@
     },
     {
       "kind": "from",
-      "line": 37,
+      "line": 39,
       "module": "question_bank.recommendation.practice_plan_service",
       "name": "PracticePlanService",
       "relative_level": 0,
@@ -3042,7 +2833,7 @@
     },
     {
       "kind": "from",
-      "line": 38,
+      "line": 40,
       "module": "question_bank.services.question_read_service",
       "name": "QuestionBankReadService",
       "relative_level": 0,
@@ -3050,7 +2841,7 @@
     },
     {
       "kind": "from",
-      "line": 39,
+      "line": 41,
       "module": "question_bank.services.question_read_service",
       "name": "QuestionBankSnapshotError",
       "relative_level": 0,
@@ -3058,7 +2849,7 @@
     },
     {
       "kind": "from",
-      "line": 42,
+      "line": 44,
       "module": "question_bank.services.training_task_service",
       "name": "TrainingTaskService",
       "relative_level": 0,
@@ -3066,7 +2857,7 @@
     },
     {
       "kind": "from",
-      "line": 43,
+      "line": 45,
       "module": "question_bank.services.question_write_service",
       "name": "QuestionBankWriteService",
       "relative_level": 0,
@@ -3074,7 +2865,7 @@
     },
     {
       "kind": "from",
-      "line": 44,
+      "line": 46,
       "module": "question_bank.services.assembly_workspace_service",
       "name": "AssemblyWorkspaceService",
       "relative_level": 0,
@@ -3082,7 +2873,7 @@
     },
     {
       "kind": "from",
-      "line": 182,
+      "line": 196,
       "module": "backend.api.app",
       "name": "ApiError",
       "relative_level": 0,
@@ -4792,13 +4583,13 @@
       "kind": "from",
       "line": 10,
       "module": "backend.api.dependencies",
-      "name": "get_grading_db,get_upload_config_dir",
+      "name": "get_grading_db,get_session_repository,get_upload_config_dir",
       "relative_level": 0,
       "source": "backend/api/routers/sessions.py"
     },
     {
       "kind": "from",
-      "line": 11,
+      "line": 15,
       "module": "backend.api.schemas.sessions",
       "name": "AnswerRegionListResponse,AnswerRegionResponse,CreateSessionDraftRequest,CreateSessionRequest,RenameSessionRequest,SessionDetail,SessionListResponse,SessionProgress,SessionSummary,SessionTemplateResponse",
       "relative_level": 0,
@@ -4806,7 +4597,7 @@
     },
     {
       "kind": "from",
-      "line": 23,
+      "line": 27,
       "module": "backend.config_workspace.drafts",
       "name": "create_session_draft",
       "relative_level": 0,
@@ -4814,7 +4605,15 @@
     },
     {
       "kind": "from",
-      "line": 24,
+      "line": 28,
+      "module": "backend.repositories.sessions",
+      "name": "SessionRepositoryGateway",
+      "relative_level": 0,
+      "source": "backend/api/routers/sessions.py"
+    },
+    {
+      "kind": "from",
+      "line": 29,
       "module": "db_manager",
       "name": "DBManager",
       "relative_level": 0,
@@ -4848,7 +4647,7 @@
       "kind": "from",
       "line": 6,
       "module": "backend.api.dependencies",
-      "name": "get_grading_db,get_student_roster_module",
+      "name": "get_student_repository,get_student_roster_module",
       "relative_level": 0,
       "source": "backend/api/routers/students.py"
     },
@@ -4871,8 +4670,8 @@
     {
       "kind": "from",
       "line": 31,
-      "module": "db_manager",
-      "name": "DBManager,StudentRecord",
+      "module": "backend.repositories.students",
+      "name": "StudentRecord,StudentRepositoryGateway",
       "relative_level": 0,
       "source": "backend/api/routers/students.py"
     },
@@ -5933,8 +5732,8 @@
     {
       "kind": "from",
       "line": 7,
-      "module": "db_manager",
-      "name": "DBManager",
+      "module": "backend.repositories.sessions",
+      "name": "SessionRepositoryGateway",
       "relative_level": 0,
       "source": "backend/config_workspace/drafts.py"
     },
@@ -6451,6 +6250,38 @@
       "name": "preview_question_blocks_from_docx_text",
       "relative_level": 0,
       "source": "backend/config_workspace/sources.py"
+    },
+    {
+      "kind": "from",
+      "line": 3,
+      "module": "__future__",
+      "name": "annotations",
+      "relative_level": 0,
+      "source": "backend/domain_models.py"
+    },
+    {
+      "kind": "from",
+      "line": 5,
+      "module": "dataclasses",
+      "name": "dataclass,field",
+      "relative_level": 0,
+      "source": "backend/domain_models.py"
+    },
+    {
+      "kind": "from",
+      "line": 6,
+      "module": "pathlib",
+      "name": "Path",
+      "relative_level": 0,
+      "source": "backend/domain_models.py"
+    },
+    {
+      "kind": "from",
+      "line": 7,
+      "module": "typing",
+      "name": "Any",
+      "relative_level": 0,
+      "source": "backend/domain_models.py"
     },
     {
       "kind": "from",
@@ -9338,6 +9169,215 @@
     {
       "kind": "from",
       "line": 3,
+      "module": "backend.repositories.base",
+      "name": "ReadOnlyRepositoryError,Repository,RepositoryClosedError,RepositoryConnection,RepositoryConnectionError,RepositoryCursor,RepositoryError,RepositorySession,RepositorySessionProvider,RepositoryThreadError,RepositoryTransactionError,RowMapper,SQLiteConnectionFactory,map_row,map_rows",
+      "relative_level": 0,
+      "source": "backend/repositories/__init__.py"
+    },
+    {
+      "kind": "from",
+      "line": 20,
+      "module": "backend.repositories.providers",
+      "name": "BorrowedReadOnlySessionProvider,InstrumentedSQLiteConnectionFactory",
+      "relative_level": 0,
+      "source": "backend/repositories/__init__.py"
+    },
+    {
+      "kind": "from",
+      "line": 3,
+      "module": "__future__",
+      "name": "annotations",
+      "relative_level": 0,
+      "source": "backend/repositories/base.py"
+    },
+    {
+      "kind": "import",
+      "line": 5,
+      "module": "sqlite3",
+      "name": null,
+      "source": "backend/repositories/base.py"
+    },
+    {
+      "kind": "import",
+      "line": 6,
+      "module": "threading",
+      "name": null,
+      "source": "backend/repositories/base.py"
+    },
+    {
+      "kind": "from",
+      "line": 7,
+      "module": "collections.abc",
+      "name": "Iterable,Iterator",
+      "relative_level": 0,
+      "source": "backend/repositories/base.py"
+    },
+    {
+      "kind": "from",
+      "line": 8,
+      "module": "contextlib",
+      "name": "AbstractContextManager,contextmanager",
+      "relative_level": 0,
+      "source": "backend/repositories/base.py"
+    },
+    {
+      "kind": "from",
+      "line": 9,
+      "module": "pathlib",
+      "name": "Path",
+      "relative_level": 0,
+      "source": "backend/repositories/base.py"
+    },
+    {
+      "kind": "from",
+      "line": 10,
+      "module": "typing",
+      "name": "Any,Protocol,TypeVar,runtime_checkable",
+      "relative_level": 0,
+      "source": "backend/repositories/base.py"
+    },
+    {
+      "kind": "from",
+      "line": 3,
+      "module": "__future__",
+      "name": "annotations",
+      "relative_level": 0,
+      "source": "backend/repositories/providers.py"
+    },
+    {
+      "kind": "import",
+      "line": 5,
+      "module": "sqlite3",
+      "name": null,
+      "source": "backend/repositories/providers.py"
+    },
+    {
+      "kind": "from",
+      "line": 6,
+      "module": "collections.abc",
+      "name": "Iterator",
+      "relative_level": 0,
+      "source": "backend/repositories/providers.py"
+    },
+    {
+      "kind": "from",
+      "line": 7,
+      "module": "contextlib",
+      "name": "contextmanager",
+      "relative_level": 0,
+      "source": "backend/repositories/providers.py"
+    },
+    {
+      "kind": "from",
+      "line": 9,
+      "module": "backend.performance.metrics",
+      "name": "instrument_sqlite_connection",
+      "relative_level": 0,
+      "source": "backend/repositories/providers.py"
+    },
+    {
+      "kind": "from",
+      "line": 10,
+      "module": "backend.repositories.base",
+      "name": "ReadOnlyRepositoryError,RepositorySession,SQLiteConnectionFactory",
+      "relative_level": 0,
+      "source": "backend/repositories/providers.py"
+    },
+    {
+      "kind": "from",
+      "line": 3,
+      "module": "__future__",
+      "name": "annotations",
+      "relative_level": 0,
+      "source": "backend/repositories/sessions.py"
+    },
+    {
+      "kind": "import",
+      "line": 5,
+      "module": "re",
+      "name": null,
+      "source": "backend/repositories/sessions.py"
+    },
+    {
+      "kind": "from",
+      "line": 6,
+      "module": "typing",
+      "name": "Any",
+      "relative_level": 0,
+      "source": "backend/repositories/sessions.py"
+    },
+    {
+      "kind": "from",
+      "line": 8,
+      "module": "backend.repositories.base",
+      "name": "RepositorySession,RepositorySessionProvider",
+      "relative_level": 0,
+      "source": "backend/repositories/sessions.py"
+    },
+    {
+      "kind": "from",
+      "line": 3,
+      "module": "__future__",
+      "name": "annotations",
+      "relative_level": 0,
+      "source": "backend/repositories/students.py"
+    },
+    {
+      "kind": "import",
+      "line": 5,
+      "module": "hashlib",
+      "name": null,
+      "source": "backend/repositories/students.py"
+    },
+    {
+      "kind": "import",
+      "line": 6,
+      "module": "json",
+      "name": null,
+      "source": "backend/repositories/students.py"
+    },
+    {
+      "kind": "import",
+      "line": 7,
+      "module": "sqlite3",
+      "name": null,
+      "source": "backend/repositories/students.py"
+    },
+    {
+      "kind": "from",
+      "line": 8,
+      "module": "dataclasses",
+      "name": "dataclass",
+      "relative_level": 0,
+      "source": "backend/repositories/students.py"
+    },
+    {
+      "kind": "from",
+      "line": 9,
+      "module": "collections.abc",
+      "name": "Callable",
+      "relative_level": 0,
+      "source": "backend/repositories/students.py"
+    },
+    {
+      "kind": "from",
+      "line": 10,
+      "module": "typing",
+      "name": "Any",
+      "relative_level": 0,
+      "source": "backend/repositories/students.py"
+    },
+    {
+      "kind": "from",
+      "line": 12,
+      "module": "backend.repositories.base",
+      "name": "RepositorySession,RepositorySessionProvider",
+      "relative_level": 0,
+      "source": "backend/repositories/students.py"
+    },
+    {
+      "kind": "from",
+      "line": 3,
       "module": "backend.review.service",
       "name": "ReviewApplicationService,ReviewItem,ReviewQuestion",
       "relative_level": 0,
@@ -9692,8 +9732,8 @@
     {
       "kind": "from",
       "line": 11,
-      "module": "db_manager",
-      "name": "DBManager,StudentBackupFailedError,StudentCodeConflictError,StudentGradingActiveError,StudentRecord,StudentRosterRevisionConflict,student_roster_revision",
+      "module": "backend.repositories.students",
+      "name": "StudentBackupFailedError,StudentCodeConflictError,StudentGradingActiveError,StudentRecord,StudentRepositoryGateway,StudentRosterRevisionConflict,student_roster_revision",
       "relative_level": 0,
       "source": "backend/students/service.py"
     },
@@ -9937,49 +9977,34 @@
     {
       "kind": "import",
       "line": 3,
-      "module": "hashlib",
-      "name": null,
-      "source": "db_manager.py"
-    },
-    {
-      "kind": "import",
-      "line": 4,
       "module": "json",
       "name": null,
       "source": "db_manager.py"
     },
     {
       "kind": "import",
-      "line": 5,
+      "line": 4,
       "module": "random",
       "name": null,
       "source": "db_manager.py"
     },
     {
       "kind": "import",
-      "line": 6,
+      "line": 5,
       "module": "re",
       "name": null,
       "source": "db_manager.py"
     },
     {
       "kind": "import",
-      "line": 7,
+      "line": 6,
       "module": "sqlite3",
       "name": null,
       "source": "db_manager.py"
     },
     {
       "kind": "from",
-      "line": 8,
-      "module": "dataclasses",
-      "name": "dataclass",
-      "relative_level": 0,
-      "source": "db_manager.py"
-    },
-    {
-      "kind": "from",
-      "line": 9,
+      "line": 7,
       "module": "datetime",
       "name": "datetime",
       "relative_level": 0,
@@ -9987,7 +10012,7 @@
     },
     {
       "kind": "from",
-      "line": 10,
+      "line": 8,
       "module": "pathlib",
       "name": "Path",
       "relative_level": 0,
@@ -9995,7 +10020,7 @@
     },
     {
       "kind": "from",
-      "line": 11,
+      "line": 9,
       "module": "typing",
       "name": "Any",
       "relative_level": 0,
@@ -10003,7 +10028,7 @@
     },
     {
       "kind": "from",
-      "line": 12,
+      "line": 10,
       "module": "uuid",
       "name": "uuid4",
       "relative_level": 0,
@@ -10011,15 +10036,15 @@
     },
     {
       "kind": "from",
-      "line": 14,
-      "module": "ai_grader",
-      "name": "GradingResult,QuestionGradingDetail",
+      "line": 12,
+      "module": "backend.domain_models",
+      "name": "ExamPaperGroup,GradingResult,QuestionGradingDetail",
       "relative_level": 0,
       "source": "db_manager.py"
     },
     {
       "kind": "from",
-      "line": 15,
+      "line": 13,
       "module": "backend.performance.metrics",
       "name": "instrument_sqlite_connection",
       "relative_level": 0,
@@ -10027,7 +10052,31 @@
     },
     {
       "kind": "from",
-      "line": 16,
+      "line": 14,
+      "module": "backend.repositories",
+      "name": "BorrowedReadOnlySessionProvider,InstrumentedSQLiteConnectionFactory,RepositorySessionProvider",
+      "relative_level": 0,
+      "source": "db_manager.py"
+    },
+    {
+      "kind": "from",
+      "line": 19,
+      "module": "backend.repositories.sessions",
+      "name": "SessionRepositoryGateway",
+      "relative_level": 0,
+      "source": "db_manager.py"
+    },
+    {
+      "kind": "from",
+      "line": 20,
+      "module": "backend.repositories.students",
+      "name": "StudentBackupFailedError,StudentCodeConflictError,StudentGradingActiveError,StudentRecord,StudentRepositoryGateway,StudentRosterRevisionConflict,student_roster_revision",
+      "relative_level": 0,
+      "source": "db_manager.py"
+    },
+    {
+      "kind": "from",
+      "line": 29,
       "module": "grading_completeness",
       "name": "audit_grading_details,major_question_id",
       "relative_level": 0,
@@ -10035,7 +10084,7 @@
     },
     {
       "kind": "from",
-      "line": 17,
+      "line": 30,
       "module": "path_manager",
       "name": "resolve_stored_file_path",
       "relative_level": 0,
@@ -10043,15 +10092,7 @@
     },
     {
       "kind": "from",
-      "line": 18,
-      "module": "scanner",
-      "name": "ExamPaperGroup",
-      "relative_level": 0,
-      "source": "db_manager.py"
-    },
-    {
-      "kind": "from",
-      "line": 20,
+      "line": 32,
       "module": "question_bank.taxonomy.registry",
       "name": "canonicalize_knowledge",
       "relative_level": 0,
@@ -10059,7 +10100,7 @@
     },
     {
       "kind": "from",
-      "line": 128,
+      "line": 111,
       "module": "path_manager",
       "name": "get_path_manager",
       "relative_level": 0,
@@ -10169,8 +10210,16 @@
     {
       "kind": "from",
       "line": 12,
+      "module": "backend.domain_models",
+      "name": "ExamPaperGroup",
+      "relative_level": 0,
+      "source": "evidence_atlas.py"
+    },
+    {
+      "kind": "from",
+      "line": 13,
       "module": "scanner",
-      "name": "ExamPaperGroup,STUDENT_NAME_REGION_ALIASES",
+      "name": "STUDENT_NAME_REGION_ALIASES",
       "relative_level": 0,
       "source": "evidence_atlas.py"
     },
@@ -10504,13 +10553,21 @@
       "kind": "from",
       "line": 12,
       "module": "ai_grader",
-      "name": "AIGrader,QuestionGradingDetail,SecondaryError",
+      "name": "AIGrader",
       "relative_level": 0,
       "source": "grading_service.py"
     },
     {
       "kind": "from",
       "line": 13,
+      "module": "backend.domain_models",
+      "name": "ExamPaperGroup,QuestionGradingDetail,SecondaryError",
+      "relative_level": 0,
+      "source": "grading_service.py"
+    },
+    {
+      "kind": "from",
+      "line": 14,
       "module": "db_manager",
       "name": "DBManager",
       "relative_level": 0,
@@ -10518,7 +10575,7 @@
     },
     {
       "kind": "from",
-      "line": 14,
+      "line": 15,
       "module": "evidence_atlas",
       "name": "EvidenceAtlasBuilder",
       "relative_level": 0,
@@ -10526,7 +10583,7 @@
     },
     {
       "kind": "from",
-      "line": 15,
+      "line": 16,
       "module": "grading_limits",
       "name": "FULL_PAPER_WORKERS_MAX,FULL_PAPER_WORKERS_MIN,GRADING_RPM_MAX,GRADING_RPM_MIN,HYBRID_INFLIGHT_WORKERS_MAX,HYBRID_INFLIGHT_WORKERS_MIN,LARGE_REQUEST_WORKERS_DEFAULT,LARGE_REQUEST_WORKERS_MAX,LARGE_REQUEST_WORKERS_MIN,OBJECTIVE_BATCH_SIZE_MAX,OBJECTIVE_BATCH_SIZE_MIN,SUBJECTIVE_MAJOR_BATCH_SIZE_MAX,SUBJECTIVE_MAJOR_BATCH_SIZE_MIN,bounded_int",
       "relative_level": 0,
@@ -10534,7 +10591,7 @@
     },
     {
       "kind": "from",
-      "line": 31,
+      "line": 32,
       "module": "grading_completeness",
       "name": "audit_grading_details,major_question_id,major_question_ids_for_issues",
       "relative_level": 0,
@@ -10542,7 +10599,7 @@
     },
     {
       "kind": "from",
-      "line": 32,
+      "line": 33,
       "module": "image_preprocessor",
       "name": "enhance_image_file",
       "relative_level": 0,
@@ -10550,7 +10607,7 @@
     },
     {
       "kind": "from",
-      "line": 33,
+      "line": 34,
       "module": "integration.question_tag_projection_service",
       "name": "QuestionTagProjectionService",
       "relative_level": 0,
@@ -10558,7 +10615,7 @@
     },
     {
       "kind": "from",
-      "line": 34,
+      "line": 35,
       "module": "llm_client",
       "name": "LLMClient",
       "relative_level": 0,
@@ -10566,7 +10623,7 @@
     },
     {
       "kind": "from",
-      "line": 35,
+      "line": 36,
       "module": "path_manager",
       "name": "get_path_manager",
       "relative_level": 0,
@@ -10574,7 +10631,7 @@
     },
     {
       "kind": "from",
-      "line": 36,
+      "line": 37,
       "module": "hybrid_batch_grading_service",
       "name": "run_hybrid_batch_grading",
       "relative_level": 0,
@@ -10582,7 +10639,7 @@
     },
     {
       "kind": "from",
-      "line": 37,
+      "line": 38,
       "module": "request_pacer",
       "name": "RequestPacer",
       "relative_level": 0,
@@ -10590,15 +10647,15 @@
     },
     {
       "kind": "from",
-      "line": 38,
+      "line": 39,
       "module": "scanner",
-      "name": "ExamPaperGroup,STUDENT_NAME_REGION_ALIASES,ScanAnalysis,Scanner,student_name_region_from_regions",
+      "name": "STUDENT_NAME_REGION_ALIASES,ScanAnalysis,Scanner,student_name_region_from_regions",
       "relative_level": 0,
       "source": "grading_service.py"
     },
     {
       "kind": "from",
-      "line": 161,
+      "line": 162,
       "module": "answer_region_geometry",
       "name": "answer_regions_with_template_source_sizes",
       "relative_level": 0,
@@ -10606,7 +10663,7 @@
     },
     {
       "kind": "from",
-      "line": 195,
+      "line": 196,
       "module": "grading_run_store",
       "name": "GradingRunResumeMismatchError",
       "relative_level": 0,
@@ -10614,7 +10671,7 @@
     },
     {
       "kind": "from",
-      "line": 198,
+      "line": 199,
       "module": "grading_run_store",
       "name": "GradingRunStore",
       "relative_level": 0,
@@ -10622,7 +10679,7 @@
     },
     {
       "kind": "from",
-      "line": 199,
+      "line": 200,
       "module": "grading_run_identity",
       "name": "grading_config_fingerprint",
       "relative_level": 0,
@@ -10630,7 +10687,7 @@
     },
     {
       "kind": "from",
-      "line": 378,
+      "line": 379,
       "module": "grading_run_identity",
       "name": "paper_fingerprint",
       "relative_level": 0,
@@ -10638,7 +10695,7 @@
     },
     {
       "kind": "from",
-      "line": 1152,
+      "line": 1153,
       "module": "grading_run_identity",
       "name": "paper_fingerprint",
       "relative_level": 0,
@@ -10646,7 +10703,7 @@
     },
     {
       "kind": "from",
-      "line": 1193,
+      "line": 1194,
       "module": "grading_run_identity",
       "name": "CandidatePaper,CompletedIdentity,classify_student_candidates,paper_fingerprint",
       "relative_level": 0,
@@ -10654,7 +10711,7 @@
     },
     {
       "kind": "from",
-      "line": 1341,
+      "line": 1342,
       "module": "question_id_contract",
       "name": "QuestionIdCatalog",
       "relative_level": 0,
@@ -10662,7 +10719,7 @@
     },
     {
       "kind": "from",
-      "line": 1415,
+      "line": 1416,
       "module": "question_id_contract",
       "name": "canonicalize_question_document",
       "relative_level": 0,
@@ -10670,7 +10727,7 @@
     },
     {
       "kind": "from",
-      "line": 1523,
+      "line": 1524,
       "module": "concurrent.futures",
       "name": "ThreadPoolExecutor,as_completed",
       "relative_level": 0,
@@ -10678,14 +10735,14 @@
     },
     {
       "kind": "import",
-      "line": 1524,
+      "line": 1525,
       "module": "os",
       "name": null,
       "source": "grading_service.py"
     },
     {
       "kind": "from",
-      "line": 1596,
+      "line": 1597,
       "module": "openai",
       "name": "APIConnectionError,APITimeoutError,RateLimitError",
       "relative_level": 0,
@@ -10693,7 +10750,7 @@
     },
     {
       "kind": "from",
-      "line": 1666,
+      "line": 1667,
       "module": "grading_router",
       "name": "route_grading_task",
       "relative_level": 0,
@@ -10701,7 +10758,7 @@
     },
     {
       "kind": "import",
-      "line": 1700,
+      "line": 1701,
       "module": "logging",
       "name": null,
       "source": "grading_service.py"
@@ -10772,13 +10829,21 @@
       "kind": "from",
       "line": 12,
       "module": "ai_grader",
-      "name": "GradingResult,QuestionGradingDetail,_normalize_grading_errors,_without_legacy_knowledge_fields",
+      "name": "_normalize_grading_errors,_without_legacy_knowledge_fields",
       "relative_level": 0,
       "source": "hybrid_batch_grading_service.py"
     },
     {
       "kind": "from",
-      "line": 18,
+      "line": 16,
+      "module": "backend.domain_models",
+      "name": "ExamPaperGroup,GradingResult,QuestionGradingDetail",
+      "relative_level": 0,
+      "source": "hybrid_batch_grading_service.py"
+    },
+    {
+      "kind": "from",
+      "line": 17,
       "module": "grading_completeness",
       "name": "audit_grading_details",
       "relative_level": 0,
@@ -10786,7 +10851,7 @@
     },
     {
       "kind": "from",
-      "line": 19,
+      "line": 18,
       "module": "major_region_evidence",
       "name": "build_major_evidence_groups",
       "relative_level": 0,
@@ -10794,7 +10859,7 @@
     },
     {
       "kind": "from",
-      "line": 20,
+      "line": 19,
       "module": "objective_batch_recognition_service",
       "name": "OBJECTIVE_AUTO_SCORE_MIN_CONFIDENCE,run_objective_batch_recognition",
       "relative_level": 0,
@@ -10802,7 +10867,7 @@
     },
     {
       "kind": "from",
-      "line": 21,
+      "line": 20,
       "module": "scoring_prompt_rules",
       "name": "SHARED_GRADING_RULES",
       "relative_level": 0,
@@ -10810,7 +10875,7 @@
     },
     {
       "kind": "from",
-      "line": 22,
+      "line": 21,
       "module": "solution_answer_guard",
       "name": "apply_solution_substance_rules,extract_observed_text,response_mode_requires_process,rubric_question_meta,rubric_response_mode",
       "relative_level": 0,
@@ -10818,15 +10883,7 @@
     },
     {
       "kind": "from",
-      "line": 29,
-      "module": "scanner",
-      "name": "ExamPaperGroup",
-      "relative_level": 0,
-      "source": "hybrid_batch_grading_service.py"
-    },
-    {
-      "kind": "from",
-      "line": 30,
+      "line": 28,
       "module": "usage_logger",
       "name": "extract_usage_fields",
       "relative_level": 0,
@@ -10834,7 +10891,7 @@
     },
     {
       "kind": "from",
-      "line": 31,
+      "line": 29,
       "module": "session_manager",
       "name": "_canonical_question_id",
       "relative_level": 0,
@@ -10842,35 +10899,35 @@
     },
     {
       "kind": "import",
-      "line": 353,
+      "line": 351,
       "module": "re",
       "name": null,
       "source": "hybrid_batch_grading_service.py"
     },
     {
       "kind": "import",
-      "line": 479,
+      "line": 477,
       "module": "base64",
       "name": null,
       "source": "hybrid_batch_grading_service.py"
     },
     {
       "kind": "import",
-      "line": 496,
+      "line": 494,
       "module": "base64",
       "name": null,
       "source": "hybrid_batch_grading_service.py"
     },
     {
       "kind": "import",
-      "line": 545,
+      "line": 543,
       "module": "time",
       "name": null,
       "source": "hybrid_batch_grading_service.py"
     },
     {
       "kind": "from",
-      "line": 816,
+      "line": 814,
       "module": "objective_shadow_service",
       "name": "run_objective_shadow_grading",
       "relative_level": 0,
@@ -10878,7 +10935,7 @@
     },
     {
       "kind": "from",
-      "line": 1151,
+      "line": 1149,
       "module": "answer_region_geometry",
       "name": "scaled_region_bbox",
       "relative_level": 0,
@@ -11993,8 +12050,8 @@
     {
       "kind": "from",
       "line": 14,
-      "module": "ai_grader",
-      "name": "QuestionGradingDetail",
+      "module": "backend.domain_models",
+      "name": "ExamPaperGroup,QuestionGradingDetail",
       "relative_level": 0,
       "source": "objective_batch_recognition_service.py"
     },
@@ -12041,14 +12098,6 @@
     {
       "kind": "from",
       "line": 20,
-      "module": "scanner",
-      "name": "ExamPaperGroup",
-      "relative_level": 0,
-      "source": "objective_batch_recognition_service.py"
-    },
-    {
-      "kind": "from",
-      "line": 21,
       "module": "usage_logger",
       "name": "extract_usage_fields",
       "relative_level": 0,
@@ -12056,7 +12105,7 @@
     },
     {
       "kind": "from",
-      "line": 214,
+      "line": 213,
       "module": "llm_client",
       "name": "LLMClient",
       "relative_level": 0,
@@ -12064,7 +12113,7 @@
     },
     {
       "kind": "from",
-      "line": 473,
+      "line": 472,
       "module": "objective_answer_loader",
       "name": "get_standard_answer_for_question,load_objective_answer_sources",
       "relative_level": 0,
@@ -12072,7 +12121,7 @@
     },
     {
       "kind": "from",
-      "line": 574,
+      "line": 573,
       "module": "api_profiles",
       "name": "get_objective_api_config",
       "relative_level": 0,
@@ -12080,7 +12129,7 @@
     },
     {
       "kind": "from",
-      "line": 878,
+      "line": 877,
       "module": "answer_region_geometry",
       "name": "scaled_region_bbox",
       "relative_level": 0,
@@ -12356,962 +12405,6 @@
       "name": "Iterable",
       "relative_level": 0,
       "source": "package_v1.5.0.py"
-    },
-    {
-      "kind": "from",
-      "line": 1,
-      "module": "__future__",
-      "name": "annotations",
-      "relative_level": 0,
-      "source": "pages/知识点整理（高级）.py"
-    },
-    {
-      "kind": "import",
-      "line": 3,
-      "module": "html",
-      "name": null,
-      "source": "pages/知识点整理（高级）.py"
-    },
-    {
-      "kind": "import",
-      "line": 4,
-      "module": "json",
-      "name": null,
-      "source": "pages/知识点整理（高级）.py"
-    },
-    {
-      "kind": "from",
-      "line": 5,
-      "module": "typing",
-      "name": "Any",
-      "relative_level": 0,
-      "source": "pages/知识点整理（高级）.py"
-    },
-    {
-      "kind": "import",
-      "line": 7,
-      "module": "pandas",
-      "name": "pd",
-      "source": "pages/知识点整理（高级）.py"
-    },
-    {
-      "kind": "import",
-      "line": 8,
-      "module": "streamlit",
-      "name": "st",
-      "source": "pages/知识点整理（高级）.py"
-    },
-    {
-      "kind": "from",
-      "line": 10,
-      "module": "integration.skill_conflict_inbox_service",
-      "name": "ConflictInboxSummary,ConflictSourceGroup,SkillConflictInboxService",
-      "relative_level": 0,
-      "source": "pages/知识点整理（高级）.py"
-    },
-    {
-      "kind": "from",
-      "line": 15,
-      "module": "path_manager",
-      "name": "get_path_manager",
-      "relative_level": 0,
-      "source": "pages/知识点整理（高级）.py"
-    },
-    {
-      "kind": "from",
-      "line": 16,
-      "module": "question_bank.services.skill_catalog_service",
-      "name": "SkillCatalogService",
-      "relative_level": 0,
-      "source": "pages/知识点整理（高级）.py"
-    },
-    {
-      "kind": "from",
-      "line": 3,
-      "module": "__future__",
-      "name": "annotations",
-      "relative_level": 0,
-      "source": "pages/系统自检.py"
-    },
-    {
-      "kind": "import",
-      "line": 5,
-      "module": "json",
-      "name": null,
-      "source": "pages/系统自检.py"
-    },
-    {
-      "kind": "import",
-      "line": 6,
-      "module": "os",
-      "name": null,
-      "source": "pages/系统自检.py"
-    },
-    {
-      "kind": "import",
-      "line": 7,
-      "module": "platform",
-      "name": null,
-      "source": "pages/系统自检.py"
-    },
-    {
-      "kind": "import",
-      "line": 8,
-      "module": "sys",
-      "name": null,
-      "source": "pages/系统自检.py"
-    },
-    {
-      "kind": "import",
-      "line": 9,
-      "module": "tempfile",
-      "name": null,
-      "source": "pages/系统自检.py"
-    },
-    {
-      "kind": "from",
-      "line": 10,
-      "module": "datetime",
-      "name": "datetime",
-      "relative_level": 0,
-      "source": "pages/系统自检.py"
-    },
-    {
-      "kind": "from",
-      "line": 11,
-      "module": "pathlib",
-      "name": "Path",
-      "relative_level": 0,
-      "source": "pages/系统自检.py"
-    },
-    {
-      "kind": "import",
-      "line": 13,
-      "module": "streamlit",
-      "name": "st",
-      "source": "pages/系统自检.py"
-    },
-    {
-      "kind": "import",
-      "line": 79,
-      "module": "importlib.metadata",
-      "name": null,
-      "source": "pages/系统自检.py"
-    },
-    {
-      "kind": "from",
-      "line": 88,
-      "module": "path_manager",
-      "name": "get_path_manager",
-      "relative_level": 0,
-      "source": "pages/系统自检.py"
-    },
-    {
-      "kind": "from",
-      "line": 167,
-      "module": "migrate_db",
-      "name": "get_migration_status",
-      "relative_level": 0,
-      "source": "pages/系统自检.py"
-    },
-    {
-      "kind": "from",
-      "line": 215,
-      "module": "migrate_db",
-      "name": "run_migrations",
-      "relative_level": 0,
-      "source": "pages/系统自检.py"
-    },
-    {
-      "kind": "from",
-      "line": 284,
-      "module": "backup_core",
-      "name": "create_backup",
-      "relative_level": 0,
-      "source": "pages/系统自检.py"
-    },
-    {
-      "kind": "from",
-      "line": 310,
-      "module": "backup_core",
-      "name": "list_backups",
-      "relative_level": 0,
-      "source": "pages/系统自检.py"
-    },
-    {
-      "kind": "from",
-      "line": 422,
-      "module": "migrate_data",
-      "name": "run_migration",
-      "relative_level": 0,
-      "source": "pages/系统自检.py"
-    },
-    {
-      "kind": "from",
-      "line": 1,
-      "module": "__future__",
-      "name": "annotations",
-      "relative_level": 0,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "import",
-      "line": 3,
-      "module": "html",
-      "name": null,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "import",
-      "line": 4,
-      "module": "json",
-      "name": null,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "import",
-      "line": 5,
-      "module": "logging",
-      "name": null,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "import",
-      "line": 6,
-      "module": "re",
-      "name": null,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "from",
-      "line": 7,
-      "module": "datetime",
-      "name": "datetime",
-      "relative_level": 0,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "from",
-      "line": 8,
-      "module": "pathlib",
-      "name": "Path",
-      "relative_level": 0,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "from",
-      "line": 9,
-      "module": "typing",
-      "name": "Any",
-      "relative_level": 0,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "import",
-      "line": 11,
-      "module": "streamlit",
-      "name": "st",
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "from",
-      "line": 15,
-      "module": "question_bank.database.paths",
-      "name": "project_data_root,question_bank_db_path",
-      "relative_level": 0,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "from",
-      "line": 16,
-      "module": "question_bank.exporters.paper_docx_exporter",
-      "name": "export_question_paper_docx",
-      "relative_level": 0,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "from",
-      "line": 17,
-      "module": "question_bank.services.assembly_record_service",
-      "name": "AssemblyRecordCreate,create_assembly_record,delete_assembly_record,get_assembly_record,list_assembly_records",
-      "relative_level": 0,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "from",
-      "line": 24,
-      "module": "question_bank.services.question_service",
-      "name": "QuestionService",
-      "relative_level": 0,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "from",
-      "line": 25,
-      "module": "question_bank.services.asset_path_service",
-      "name": "resolve_question_bank_asset_path",
-      "relative_level": 0,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "from",
-      "line": 26,
-      "module": "question_bank.services.question_frequency_service",
-      "name": "FrequencyMetrics,QuestionFrequencyService,frequency_summary",
-      "relative_level": 0,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "from",
-      "line": 31,
-      "module": "question_bank.services.ai_tagging_service",
-      "name": "CURRICULUM_CHAPTERS",
-      "relative_level": 0,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "from",
-      "line": 32,
-      "module": "question_bank.services.assembly_basket_state",
-      "name": "SectionSpec,load_basket_draft,merge_question_ids,normalize_question_ids,order_for_basket,parse_question_ids_csv,question_ids_to_csv,save_basket_draft",
-      "relative_level": 0,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "from",
-      "line": 42,
-      "module": "pages_shared.shared_styles",
-      "name": "inject_shared_css",
-      "relative_level": 0,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "import",
-      "line": 43,
-      "module": "importlib",
-      "name": null,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "import",
-      "line": 44,
-      "module": "pages_shared.shared_components",
-      "name": null,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "from",
-      "line": 46,
-      "module": "pages_shared.shared_components",
-      "name": "format_difficulty_badge,format_frequency_badge,format_type_badge,render_sortable_list,render_tag_panel_markdown",
-      "relative_level": 0,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "from",
-      "line": 53,
-      "module": "question_bank.exporters.export_config",
-      "name": "ExportConfig",
-      "relative_level": 0,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "from",
-      "line": 57,
-      "module": "question_bank.services.question_preview_display",
-      "name": "PreviewDensity,image_display_width,resolve_preview_density",
-      "relative_level": 0,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "from",
-      "line": 62,
-      "module": "export_names",
-      "name": "safe_filename_fragment",
-      "relative_level": 0,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "from",
-      "line": 652,
-      "module": "question_bank.services.ai_tagging_service",
-      "name": "AITaggingService",
-      "relative_level": 0,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "from",
-      "line": 715,
-      "module": "question_bank.services.ai_tagging_service",
-      "name": "_model_for_llm_client",
-      "relative_level": 0,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "import",
-      "line": 1365,
-      "module": "random",
-      "name": null,
-      "source": "pages/组卷.py"
-    },
-    {
-      "kind": "from",
-      "line": 1,
-      "module": "__future__",
-      "name": "annotations",
-      "relative_level": 0,
-      "source": "pages/训练推荐.py"
-    },
-    {
-      "kind": "import",
-      "line": 3,
-      "module": "html",
-      "name": null,
-      "source": "pages/训练推荐.py"
-    },
-    {
-      "kind": "import",
-      "line": 4,
-      "module": "json",
-      "name": null,
-      "source": "pages/训练推荐.py"
-    },
-    {
-      "kind": "import",
-      "line": 5,
-      "module": "re",
-      "name": null,
-      "source": "pages/训练推荐.py"
-    },
-    {
-      "kind": "from",
-      "line": 6,
-      "module": "pathlib",
-      "name": "Path",
-      "relative_level": 0,
-      "source": "pages/训练推荐.py"
-    },
-    {
-      "kind": "from",
-      "line": 7,
-      "module": "typing",
-      "name": "Any,Iterable,Mapping",
-      "relative_level": 0,
-      "source": "pages/训练推荐.py"
-    },
-    {
-      "kind": "import",
-      "line": 9,
-      "module": "pandas",
-      "name": "pd",
-      "source": "pages/训练推荐.py"
-    },
-    {
-      "kind": "import",
-      "line": 10,
-      "module": "streamlit",
-      "name": "st",
-      "source": "pages/训练推荐.py"
-    },
-    {
-      "kind": "from",
-      "line": 12,
-      "module": "db_manager",
-      "name": "DBManager",
-      "relative_level": 0,
-      "source": "pages/训练推荐.py"
-    },
-    {
-      "kind": "from",
-      "line": 13,
-      "module": "integration.diagnosis_profile_service",
-      "name": "DiagnosisProfileService",
-      "relative_level": 0,
-      "source": "pages/训练推荐.py"
-    },
-    {
-      "kind": "from",
-      "line": 14,
-      "module": "path_manager",
-      "name": "get_path_manager",
-      "relative_level": 0,
-      "source": "pages/训练推荐.py"
-    },
-    {
-      "kind": "from",
-      "line": 15,
-      "module": "question_bank.recommendation.practice_plan_service",
-      "name": "PracticePlanService",
-      "relative_level": 0,
-      "source": "pages/训练推荐.py"
-    },
-    {
-      "kind": "from",
-      "line": 16,
-      "module": "question_bank.services.training_export_service",
-      "name": "TrainingExportService",
-      "relative_level": 0,
-      "source": "pages/训练推荐.py"
-    },
-    {
-      "kind": "from",
-      "line": 17,
-      "module": "question_bank.services.training_task_service",
-      "name": "TrainingTaskService",
-      "relative_level": 0,
-      "source": "pages/训练推荐.py"
-    },
-    {
-      "kind": "from",
-      "line": 18,
-      "module": "question_bank.services.question_service",
-      "name": "QuestionService",
-      "relative_level": 0,
-      "source": "pages/训练推荐.py"
-    },
-    {
-      "kind": "import",
-      "line": 22,
-      "module": "importlib",
-      "name": null,
-      "source": "pages/训练推荐.py"
-    },
-    {
-      "kind": "import",
-      "line": 23,
-      "module": "pages_shared.shared_components",
-      "name": null,
-      "source": "pages/训练推荐.py"
-    },
-    {
-      "kind": "from",
-      "line": 25,
-      "module": "pages_shared.shared_components",
-      "name": "format_difficulty_badge",
-      "relative_level": 0,
-      "source": "pages/训练推荐.py"
-    },
-    {
-      "kind": "from",
-      "line": 576,
-      "module": "pages_shared.shared_styles",
-      "name": "inject_shared_css",
-      "relative_level": 0,
-      "source": "pages/训练推荐.py"
-    },
-    {
-      "kind": "from",
-      "line": 1,
-      "module": "__future__",
-      "name": "annotations",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "import",
-      "line": 3,
-      "module": "html",
-      "name": null,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "import",
-      "line": 4,
-      "module": "logging",
-      "name": null,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "import",
-      "line": 5,
-      "module": "re",
-      "name": null,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "import",
-      "line": 6,
-      "module": "textwrap",
-      "name": null,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 7,
-      "module": "pathlib",
-      "name": "Path",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 8,
-      "module": "typing",
-      "name": "Any",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "import",
-      "line": 10,
-      "module": "streamlit",
-      "name": "st",
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 12,
-      "module": "export_names",
-      "name": "safe_filename_fragment",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 13,
-      "module": "question_bank.database.paths",
-      "name": "project_data_root,question_bank_db_path",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 14,
-      "module": "question_bank.importers.batch_importer",
-      "name": "PaperMetadata,ScannedPaper,import_scanned_papers,scan_paper_folder",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 20,
-      "module": "question_bank.models.tag_schema",
-      "name": "TagAnalysis,TaggingContext",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 21,
-      "module": "question_bank.services.ai_tagging_service",
-      "name": "ABILITY_TAG_OPTIONS,AITaggingService,CURRICULUM_CHAPTERS,ERROR_PRONE_CATEGORIES,KNOWLEDGE_POINT_OPTIONS,MATH_MODEL_OPTIONS,METHOD_TAG_OPTIONS,STUDENT_LEVELS,SUB_SKILL_KEYWORD_HINTS,is_auto_saveable_result,is_valid_canonical_id",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 34,
-      "module": "question_bank.services.question_service",
-      "name": "QuestionService,has_complete_analysis_tags",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 35,
-      "module": "question_bank.services.asset_path_service",
-      "name": "resolve_question_bank_asset_path",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 36,
-      "module": "question_bank.services.question_frequency_service",
-      "name": "FrequencyMetrics,QuestionFrequencyService,frequency_summary",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 41,
-      "module": "pages_shared.shared_styles",
-      "name": "inject_shared_css",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 42,
-      "module": "pages_shared.shared_components",
-      "name": "format_difficulty_badge,format_frequency_badge,format_type_badge,render_tag_panel_markdown",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 43,
-      "module": "pages_shared.question_bank_import_state",
-      "name": "IMPORT_SUCCESS_MESSAGE_KEY,SCAN_ROWS_KEY,clear_import_dialog_state,replace_import_scan_rows",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 49,
-      "module": "pages_shared.question_bank_tagging_config_state",
-      "name": "missing_tagging_config_fields,replace_tagging_config_state,tagging_runtime_limits",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 54,
-      "module": "question_bank.services.assembly_basket_state",
-      "name": "ORDER_KEY,load_basket_draft,save_basket_draft",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 56,
-      "module": "question_bank.services.question_preview_display",
-      "name": "PreviewDensity,image_display_width,resolve_preview_density",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 61,
-      "module": "question_bank.services.rich_content_backfill_service",
-      "name": "backfill_missing_rich_content",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 62,
-      "module": "question_bank.services.similarity_service",
-      "name": "SimilarityPlan,build_ai_upload_similarity_plan",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 63,
-      "module": "question_bank.services.local_file_dialog",
-      "name": "get_local_file_dialog",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 64,
-      "module": "question_bank.parsers.type_detector",
-      "name": "detect_question_type",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 199,
-      "module": "importlib",
-      "name": "import_module,reload",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 232,
-      "module": "question_bank.importers.batch_importer",
-      "name": "ScannedPaper,infer_metadata_from_filename",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 511,
-      "module": "question_bank.database.schema",
-      "name": "connect",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 537,
-      "module": "question_bank.database.schema",
-      "name": "connect",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 867,
-      "module": "question_bank.models.question",
-      "name": "QuestionUpdate",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 901,
-      "module": "api_profiles",
-      "name": "get_api_profile_store",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "import",
-      "line": 915,
-      "module": "os",
-      "name": null,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 1824,
-      "module": "question_bank.database.schema",
-      "name": "connect",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 2701,
-      "module": "question_bank.taxonomy.registry",
-      "name": "CANONICAL_KNOWLEDGE",
-      "relative_level": 0,
-      "source": "pages/题库管理.py"
-    },
-    {
-      "kind": "from",
-      "line": 1,
-      "module": "__future__",
-      "name": "annotations",
-      "relative_level": 0,
-      "source": "pages_shared/grading_paper_skill_workflow_component.py"
-    },
-    {
-      "kind": "from",
-      "line": 3,
-      "module": "typing",
-      "name": "Any,Callable",
-      "relative_level": 0,
-      "source": "pages_shared/grading_paper_skill_workflow_component.py"
-    },
-    {
-      "kind": "import",
-      "line": 5,
-      "module": "streamlit",
-      "name": "st",
-      "source": "pages_shared/grading_paper_skill_workflow_component.py"
-    },
-    {
-      "kind": "from",
-      "line": 7,
-      "module": "integration.grading_paper_skill_workflow_service",
-      "name": "GradingPaperSkillWorkflowService,GradingPaperWorkflowStatus",
-      "relative_level": 0,
-      "source": "pages_shared/grading_paper_skill_workflow_component.py"
-    },
-    {
-      "kind": "from",
-      "line": 1,
-      "module": "__future__",
-      "name": "annotations",
-      "relative_level": 0,
-      "source": "pages_shared/question_bank_import_state.py"
-    },
-    {
-      "kind": "from",
-      "line": 3,
-      "module": "collections.abc",
-      "name": "Iterable,Mapping,MutableMapping",
-      "relative_level": 0,
-      "source": "pages_shared/question_bank_import_state.py"
-    },
-    {
-      "kind": "from",
-      "line": 4,
-      "module": "typing",
-      "name": "Any",
-      "relative_level": 0,
-      "source": "pages_shared/question_bank_import_state.py"
-    },
-    {
-      "kind": "from",
-      "line": 1,
-      "module": "__future__",
-      "name": "annotations",
-      "relative_level": 0,
-      "source": "pages_shared/question_bank_tagging_config_state.py"
-    },
-    {
-      "kind": "from",
-      "line": 3,
-      "module": "collections.abc",
-      "name": "Mapping,MutableMapping",
-      "relative_level": 0,
-      "source": "pages_shared/question_bank_tagging_config_state.py"
-    },
-    {
-      "kind": "from",
-      "line": 4,
-      "module": "typing",
-      "name": "Any",
-      "relative_level": 0,
-      "source": "pages_shared/question_bank_tagging_config_state.py"
-    },
-    {
-      "kind": "from",
-      "line": 1,
-      "module": "__future__",
-      "name": "annotations",
-      "relative_level": 0,
-      "source": "pages_shared/shared_components.py"
-    },
-    {
-      "kind": "import",
-      "line": 3,
-      "module": "html",
-      "name": null,
-      "source": "pages_shared/shared_components.py"
-    },
-    {
-      "kind": "from",
-      "line": 4,
-      "module": "typing",
-      "name": "Any",
-      "relative_level": 0,
-      "source": "pages_shared/shared_components.py"
-    },
-    {
-      "kind": "from",
-      "line": 5,
-      "module": "question_bank.services.question_frequency_service",
-      "name": "FrequencyMetrics,frequency_summary",
-      "relative_level": 0,
-      "source": "pages_shared/shared_components.py"
-    },
-    {
-      "kind": "from",
-      "line": 6,
-      "module": "question_bank.services.question_preview_display",
-      "name": "image_display_width",
-      "relative_level": 0,
-      "source": "pages_shared/shared_components.py"
-    },
-    {
-      "kind": "import",
-      "line": 139,
-      "module": "streamlit.components.v1",
-      "name": "components",
-      "source": "pages_shared/shared_components.py"
-    },
-    {
-      "kind": "import",
-      "line": 140,
-      "module": "os",
-      "name": null,
-      "source": "pages_shared/shared_components.py"
-    },
-    {
-      "kind": "from",
-      "line": 1,
-      "module": "__future__",
-      "name": "annotations",
-      "relative_level": 0,
-      "source": "pages_shared/shared_styles.py"
     },
     {
       "kind": "from",
@@ -17540,101 +16633,6 @@
       "source": "rubric_auto_cropper.py"
     },
     {
-      "kind": "from",
-      "line": 1,
-      "module": "__future__",
-      "name": "annotations",
-      "relative_level": 0,
-      "source": "run_desktop.py"
-    },
-    {
-      "kind": "import",
-      "line": 3,
-      "module": "os",
-      "name": null,
-      "source": "run_desktop.py"
-    },
-    {
-      "kind": "import",
-      "line": 4,
-      "module": "sys",
-      "name": null,
-      "source": "run_desktop.py"
-    },
-    {
-      "kind": "import",
-      "line": 5,
-      "module": "tempfile",
-      "name": null,
-      "source": "run_desktop.py"
-    },
-    {
-      "kind": "import",
-      "line": 6,
-      "module": "threading",
-      "name": null,
-      "source": "run_desktop.py"
-    },
-    {
-      "kind": "import",
-      "line": 7,
-      "module": "time",
-      "name": null,
-      "source": "run_desktop.py"
-    },
-    {
-      "kind": "import",
-      "line": 8,
-      "module": "traceback",
-      "name": null,
-      "source": "run_desktop.py"
-    },
-    {
-      "kind": "from",
-      "line": 9,
-      "module": "pathlib",
-      "name": "Path",
-      "relative_level": 0,
-      "source": "run_desktop.py"
-    },
-    {
-      "kind": "from",
-      "line": 10,
-      "module": "urllib.request",
-      "name": "urlopen",
-      "relative_level": 0,
-      "source": "run_desktop.py"
-    },
-    {
-      "kind": "import",
-      "line": 29,
-      "module": "streamlit.web.bootstrap",
-      "name": "bootstrap",
-      "source": "run_desktop.py"
-    },
-    {
-      "kind": "from",
-      "line": 35,
-      "module": "path_manager",
-      "name": "get_path_manager",
-      "relative_level": 0,
-      "source": "run_desktop.py"
-    },
-    {
-      "kind": "import",
-      "line": 59,
-      "module": "web_app",
-      "name": null,
-      "source": "run_desktop.py"
-    },
-    {
-      "kind": "import",
-      "line": 60,
-      "module": "streamlit.config",
-      "name": "streamlit_config",
-      "source": "run_desktop.py"
-    },
-    {
       "kind": "import",
       "line": 1,
       "module": "argparse",
@@ -17831,6 +16829,14 @@
     {
       "kind": "from",
       "line": 20,
+      "module": "backend.domain_models",
+      "name": "ExamPaperGroup",
+      "relative_level": 0,
+      "source": "scanner.py"
+    },
+    {
+      "kind": "from",
+      "line": 21,
       "module": "grading_limits",
       "name": "PRECHECK_WORKERS_MAX,PRECHECK_WORKERS_MIN,bounded_int",
       "relative_level": 0,
@@ -17838,7 +16844,7 @@
     },
     {
       "kind": "from",
-      "line": 21,
+      "line": 22,
       "module": "image_preprocessor",
       "name": "ENHANCER_VERSION,enhance_for_ai,enhance_image_file",
       "relative_level": 0,
@@ -17846,7 +16852,7 @@
     },
     {
       "kind": "from",
-      "line": 22,
+      "line": 23,
       "module": "llm_client",
       "name": "LLMClient",
       "relative_level": 0,
@@ -17854,28 +16860,28 @@
     },
     {
       "kind": "import",
-      "line": 137,
+      "line": 124,
       "module": "fitz",
       "name": null,
       "source": "scanner.py"
     },
     {
       "kind": "import",
-      "line": 227,
+      "line": 214,
       "module": "threading",
       "name": null,
       "source": "scanner.py"
     },
     {
       "kind": "import",
-      "line": 577,
+      "line": 564,
       "module": "threading",
       "name": null,
       "source": "scanner.py"
     },
     {
       "kind": "from",
-      "line": 580,
+      "line": 567,
       "module": "rapidocr_onnxruntime",
       "name": "RapidOCR",
       "relative_level": 0,
@@ -17883,14 +16889,14 @@
     },
     {
       "kind": "import",
-      "line": 584,
+      "line": 571,
       "module": "numpy",
       "name": "np",
       "source": "scanner.py"
     },
     {
       "kind": "import",
-      "line": 648,
+      "line": 635,
       "module": "json",
       "name": null,
       "source": "scanner.py"
@@ -21986,7 +20992,7 @@
     },
     {
       "kind": "from",
-      "line": 7,
+      "line": 6,
       "module": "__future__",
       "name": "annotations",
       "relative_level": 0,
@@ -21994,70 +21000,70 @@
     },
     {
       "kind": "import",
-      "line": 9,
+      "line": 8,
       "module": "logging",
       "name": null,
       "source": "update_tools/backup_core.py"
     },
     {
       "kind": "import",
-      "line": 10,
+      "line": 9,
       "module": "json",
       "name": null,
       "source": "update_tools/backup_core.py"
     },
     {
       "kind": "import",
-      "line": 11,
+      "line": 10,
       "module": "os",
       "name": null,
       "source": "update_tools/backup_core.py"
     },
     {
       "kind": "import",
-      "line": 12,
+      "line": 11,
       "module": "re",
       "name": null,
       "source": "update_tools/backup_core.py"
     },
     {
       "kind": "import",
-      "line": 13,
+      "line": 12,
       "module": "shutil",
       "name": null,
       "source": "update_tools/backup_core.py"
     },
     {
       "kind": "import",
-      "line": 14,
+      "line": 13,
       "module": "sqlite3",
       "name": null,
       "source": "update_tools/backup_core.py"
     },
     {
       "kind": "import",
-      "line": 15,
+      "line": 14,
       "module": "sys",
       "name": null,
       "source": "update_tools/backup_core.py"
     },
     {
       "kind": "import",
-      "line": 16,
+      "line": 15,
       "module": "tempfile",
       "name": null,
       "source": "update_tools/backup_core.py"
     },
     {
       "kind": "import",
-      "line": 17,
+      "line": 16,
       "module": "zipfile",
       "name": null,
       "source": "update_tools/backup_core.py"
     },
     {
       "kind": "from",
-      "line": 18,
+      "line": 17,
       "module": "contextlib",
       "name": "closing",
       "relative_level": 0,
@@ -22065,7 +21071,7 @@
     },
     {
       "kind": "from",
-      "line": 19,
+      "line": 18,
       "module": "datetime",
       "name": "datetime",
       "relative_level": 0,
@@ -22073,7 +21079,7 @@
     },
     {
       "kind": "from",
-      "line": 20,
+      "line": 19,
       "module": "pathlib",
       "name": "Path",
       "relative_level": 0,
@@ -22081,7 +21087,7 @@
     },
     {
       "kind": "from",
-      "line": 21,
+      "line": 20,
       "module": "typing",
       "name": "Any",
       "relative_level": 0,
@@ -22089,7 +21095,7 @@
     },
     {
       "kind": "from",
-      "line": 40,
+      "line": 39,
       "module": "path_manager",
       "name": "get_path_manager",
       "relative_level": 0,
@@ -22097,7 +21103,7 @@
     },
     {
       "kind": "from",
-      "line": 167,
+      "line": 166,
       "module": "path_manager",
       "name": "get_path_manager",
       "relative_level": 0,
@@ -22105,7 +21111,7 @@
     },
     {
       "kind": "from",
-      "line": 175,
+      "line": 174,
       "module": "path_manager",
       "name": "get_path_manager",
       "relative_level": 0,
@@ -22113,7 +21119,7 @@
     },
     {
       "kind": "from",
-      "line": 236,
+      "line": 235,
       "module": "data_transfer_service",
       "name": "ensure_controlled_path",
       "relative_level": 0,
@@ -22527,656 +21533,6 @@
       "name": "Path",
       "relative_level": 0,
       "source": "usage_report.py"
-    },
-    {
-      "kind": "from",
-      "line": 1,
-      "module": "__future__",
-      "name": "annotations",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 3,
-      "module": "json",
-      "name": null,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 4,
-      "module": "hashlib",
-      "name": null,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 5,
-      "module": "html",
-      "name": null,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 6,
-      "module": "inspect",
-      "name": null,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 7,
-      "module": "os",
-      "name": null,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 8,
-      "module": "queue",
-      "name": null,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 9,
-      "module": "re",
-      "name": null,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 10,
-      "module": "time",
-      "name": null,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 11,
-      "module": "concurrent.futures",
-      "name": "ThreadPoolExecutor",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 12,
-      "module": "datetime",
-      "name": "datetime",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 13,
-      "module": "pathlib",
-      "name": "Path",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 14,
-      "module": "typing",
-      "name": "Any,Literal",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 15,
-      "module": "urllib.parse",
-      "name": "quote,unquote",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 17,
-      "module": "pandas",
-      "name": "pd",
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 18,
-      "module": "streamlit",
-      "name": "st",
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 19,
-      "module": "PIL",
-      "name": "Image,ImageDraw,ImageFont",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 20,
-      "module": "objective_admission_wizard_ui",
-      "name": "render_objective_admission_wizard_tab",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 21,
-      "module": "session_manager",
-      "name": "_session_manager",
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 23,
-      "module": "analytics",
-      "name": "AnalyticsService",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 24,
-      "module": "answer_region_geometry",
-      "name": "answer_regions_with_template_source_sizes,scaled_region_bbox",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 25,
-      "module": "answer_region_focus_page",
-      "name": "render_answer_region_focus_page",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 26,
-      "module": "answer_region_session_lock",
-      "name": "get_answer_region_session_lock",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 27,
-      "module": "api_profiles",
-      "name": "get_api_profile_store,normalize_question_allowlist",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 28,
-      "module": "backend.config_workspace.editor",
-      "name": "ConfigEditorValidationError,ManualPartInput,ReplaceScoringUnitsCommand,SplitScoringUnitCommand,apply_config_editor_changes,editor_row_to_streamlit_dict,project_config_editor,streamlit_dataframe_to_editor_edits",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 38,
-      "module": "backend.config_workspace.publish",
-      "name": "publish_legacy_config_and_refresh_mapping,refresh_template_mapping_from_session",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 42,
-      "module": "backend.llm.policy",
-      "name": "policy_overrides_from_profile",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 43,
-      "module": "backend.analytics.service",
-      "name": "build_legacy_question_analysis,canonical_question_id_for_score,load_session_score_type_maps,merge_question_analysis_rows,normalize_question_analysis_details,question_parent_id,question_sort_key",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 52,
-      "module": "data_transfer_service",
-      "name": "EXPORT_SIZE_WARNING_MB,build_export_manifest,create_export_zip_bytes,default_export_sources,total_size_mb",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 59,
-      "module": "db_manager",
-      "name": "DBManager,sanitize_incomplete_failure_summary",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 60,
-      "module": "export_names",
-      "name": "safe_filename_fragment",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 61,
-      "module": "grading_limits",
-      "name": "FULL_PAPER_WORKERS_MAX,FULL_PAPER_WORKERS_MIN,GRADING_RPM_MAX,GRADING_RPM_MIN,HYBRID_INFLIGHT_WORKERS_MAX,HYBRID_INFLIGHT_WORKERS_MIN,LARGE_REQUEST_WORKERS_DEFAULT,LARGE_REQUEST_WORKERS_MAX,LARGE_REQUEST_WORKERS_MIN,OBJECTIVE_BATCH_SIZE_MAX,OBJECTIVE_BATCH_SIZE_MIN,PRECHECK_WORKERS_MAX,PRECHECK_WORKERS_MIN,SUBJECTIVE_MAJOR_BATCH_SIZE_MAX,SUBJECTIVE_MAJOR_BATCH_SIZE_MIN,bounded_int",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 79,
-      "module": "grading_service",
-      "name": "GradingService",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 80,
-      "module": "integration.diagnosis_profile_service",
-      "name": "DiagnosisProfileService",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 81,
-      "module": "integration.grading_paper_skill_workflow_service",
-      "name": "GradingPaperSkillWorkflowService",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 84,
-      "module": "integration.skill_graph_projection",
-      "name": "build_question_tag_graph_rows",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 85,
-      "module": "llm_client",
-      "name": "LLMClient,LLMSettings,normalize_openai_base_url",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 86,
-      "module": "manual_review_service",
-      "name": "ManualReviewService",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 87,
-      "module": "original_paper_exporter",
-      "name": "OriginalPaperExporter",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 88,
-      "module": "pages_shared.grading_paper_skill_workflow_component",
-      "name": "render_grading_paper_skill_workflow_card",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 91,
-      "module": "question_bank.database.paths",
-      "name": "question_bank_db_path",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 92,
-      "module": "question_bank.services.ai_tagging_service",
-      "name": "AITaggingService",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 93,
-      "module": "question_bank.services.grading_paper_intake_service",
-      "name": "archive_uploaded_grading_paper",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 96,
-      "module": "question_bank.services.question_service",
-      "name": "QuestionService",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 97,
-      "module": "report",
-      "name": "ReportGenerator",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 98,
-      "module": "score_policy",
-      "name": "MAX_QUESTION_SCORE,enforce_integer_scores_by_type",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 99,
-      "module": "scanner",
-      "name": "STUDENT_NAME_REGION_ID,ScanAnalysis,Scanner,refine_scan_analysis_matches,render_pdf_to_standard_pages,student_name_region_from_regions",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 100,
-      "module": "session_config_state",
-      "name": "clear_pending_config_for_new_session,remember_saved_config_for_new_session,restore_persistent_config_state",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 105,
-      "module": "session_cleanup",
-      "name": "hard_delete_session_from_recycle_bin",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 106,
-      "module": "session_manager",
-      "name": "extract_docx_text,failed_grading_config_batches,failed_grading_config_question_ids,force_payload_total_score,generate_grading_config_from_docx_text_legacy,generate_grading_config_in_batches,preview_question_blocks_from_docx_bytes,preview_question_blocks_from_docx_text,refine_grading_config_from_manual_structure,retry_failed_grading_config_batches,save_generated_config",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 119,
-      "module": "student_manager",
-      "name": "StudentManager",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 120,
-      "module": "template_analyzer",
-      "name": "create_template_mapping_package",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 123,
-      "module": "update_tools.backup_core",
-      "name": "_safe_restore_destination",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 129,
-      "module": "path_manager",
-      "name": "get_path_manager,resolve_stored_file_path",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 621,
-      "module": "re",
-      "name": "_re",
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 650,
-      "module": "re",
-      "name": "_re",
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 661,
-      "module": "re",
-      "name": "_re",
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 725,
-      "module": "datetime",
-      "name": "datetime",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 2378,
-      "module": "rubric_auto_cropper",
-      "name": null,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 2379,
-      "module": "importlib",
-      "name": null,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 2381,
-      "module": "rubric_auto_cropper",
-      "name": "extract_pdf_question_images,extract_pdf_text",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 2382,
-      "module": "base64",
-      "name": null,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 3086,
-      "module": "grading_run_store",
-      "name": "GradingRunStore",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 3450,
-      "module": "time",
-      "name": null,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 3600,
-      "module": "pypinyin",
-      "name": null,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 3664,
-      "module": "pypinyin",
-      "name": null,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 4033,
-      "module": "pandas",
-      "name": "pd",
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 4474,
-      "module": "re",
-      "name": null,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 4484,
-      "module": "question_bank.taxonomy.registry",
-      "name": "canonicalize_knowledge",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 5324,
-      "module": "re",
-      "name": null,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 6717,
-      "module": "fitz",
-      "name": null,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 6744,
-      "module": "fitz",
-      "name": null,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 6905,
-      "module": "streamlit.elements.image",
-      "name": "st_image",
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 6906,
-      "module": "streamlit.elements.lib",
-      "name": "image_utils",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 6907,
-      "module": "types",
-      "name": "SimpleNamespace",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 6935,
-      "module": "streamlit_drawable_canvas",
-      "name": "st_canvas",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 7576,
-      "module": "streamlit_drawable_canvas",
-      "name": "st_canvas",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 7887,
-      "module": "streamlit_drawable_canvas",
-      "name": "st_canvas",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 8301,
-      "module": "question_id_contract",
-      "name": "QuestionIdCatalog",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 8745,
-      "module": "io",
-      "name": null,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 8746,
-      "module": "zipfile",
-      "name": "_zf",
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 8825,
-      "module": "backup_core",
-      "name": "create_backup",
-      "relative_level": 0,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 8859,
-      "module": "io",
-      "name": null,
-      "source": "web_app.py"
-    },
-    {
-      "kind": "import",
-      "line": 8860,
-      "module": "zipfile",
-      "name": "_zf",
-      "source": "web_app.py"
-    },
-    {
-      "kind": "from",
-      "line": 8940,
-      "module": "backup_core",
-      "name": "create_backup",
-      "relative_level": 0,
-      "source": "web_app.py"
     }
   ],
   "test_coverage_map": [
@@ -23210,7 +21566,7 @@
         "tests/test_config_workspace_drafts.py",
         "tests/test_db_performance_instrumentation.py",
         "tests/test_diagnosis_profile_service.py",
-        "tests/test_grading_completeness_ui.py",
+        "tests/test_grading_completeness_db_regressions.py",
         "tests/test_grading_paper_skill_workflow.py",
         "tests/test_grading_paper_source_state.py",
         "tests/test_grading_pause_resume.py",
@@ -23218,8 +21574,10 @@
         "tests/test_grading_run_store.py",
         "tests/test_grading_tag_context_and_errors.py",
         "tests/test_knowledge_practice_end_to_end.py",
+        "tests/test_legacy_config_publish.py",
         "tests/test_manual_review_atomic.py",
         "tests/test_p2_20_acceptance.py",
+        "tests/test_p3_04_student_session_repositories.py",
         "tests/test_question_tag_diagnosis.py",
         "tests/test_report_score_adjustment.py",
         "tests/test_request_read_connections.py",
@@ -23234,7 +21592,6 @@
         "tests/test_session_config_state.py",
         "tests/test_skill_conflict_inbox_service.py",
         "tests/test_smoke_check.py",
-        "tests/test_streamlit_config_mapping_refresh.py",
         "tests/test_student_roster_service.py",
         "tests/test_template_upload_service.py"
       ]
@@ -23274,15 +21631,9 @@
       ]
     },
     {
-      "target": "web_app.py",
+      "target": "backend/api/launcher.py",
       "tests": [
-        "tests/test_api_profile_store.py",
-        "tests/test_grading_completeness_ui.py",
-        "tests/test_grading_paper_skill_workflow_ui.py",
-        "tests/test_report_score_adjustment.py",
-        "tests/test_session_analysis_service.py",
-        "tests/test_streamlit_config_mapping_refresh.py",
-        "tests/test_unified_rubric_rows.py"
+        "tests/test_api_frontend_launcher.py"
       ]
     },
     {
@@ -23357,7 +21708,7 @@
         "tests/test_schema_baseline.py",
         "tests/test_skill_catalog_schema.py",
         "tests/test_skill_catalog_seed.py",
-        "tests/test_skill_catalog_ui.py",
+        "tests/test_skill_catalog_service.py",
         "tests/test_skill_conflict_inbox_service.py",
         "tests/test_skill_link_service.py",
         "tests/test_skill_migration_service.py",
