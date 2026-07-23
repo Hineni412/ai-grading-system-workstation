@@ -2,7 +2,7 @@
 
 **执行包：** P3-08
 **计划日期：** 2026-07-23
-**计划状态：** waiting_review
+**计划状态：** verified_pending_integration
 **计划模型：** 当前连续作业模型
 **允许夜间执行：** yes
 **计划基线：** 7c4f7968be90e4304eba14b44945adf5d67d5747
@@ -15,14 +15,14 @@
 ## 昼夜交接
 
 **执行包：** P3-08
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** bea507c239b1e1e3c30f59368be05b6b66120423
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
 
 ## 任务边界（已冻结）
@@ -57,7 +57,7 @@
 - [x] 先写新模块接口、结构等价、兼容 import、PDF 文字和无模型依赖守卫，取得 RED。
 - [x] 建立 `backend/document_parsing/` 深模块并切换正式调用方，保留兼容导出。
 - [x] 运行解析、配置来源、生成策略与受影响 API 回归，再运行快速冒烟。
-- [ ] 对同一冻结 SHA 完成需求符合性与代码质量复审；阻塞问题统一修正，最多 3 次。
+- [x] 对同一冻结 SHA 完成需求符合性与代码质量复审；阻塞问题统一修正，最多 3 次。
 
 ## 计划验证命令
 
@@ -77,6 +77,8 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - 快速冒烟通过：文档治理、505 个第一方 Python 文件编译、两库隔离副本初始化幂等及 `integrity_check=ok`；未调用真实模型，`user_data/` 无本地改动。
 - 首轮双路复审原始意见 4 条，去重后为 1 个 `Important`、2 个 `Suggestion`：多页眉/页脚 ZIP 成员顺序被集合打乱属于本次直接引入的阻塞问题；旧 `session_manager` 死实现尚未删除、无模型依赖守卫未覆盖传递依赖为非阻塞瘦身/测试建议。
 - 第 1/3 次统一修正恢复按 `ZipFile.namelist()` 顺序迭代，只用集合做成员查询，并增加多页眉/页脚顺序 fixture。新测试先稳定复现 RED；修正后解析、生成策略与正式来源 136 项通过，快速冒烟再次通过。两个 Suggestion 不阻塞当前等价迁移，留作后续独立瘦身，不在修复阶段扩大范围。
+- 原两位评审者对相同修正代码树完成唯一一轮限定终审，两路均为 0 `Critical` / 0 `Important` / 0 `Suggestion`；首轮阻塞问题关闭，修正未造成直接回归。
+- 当前剩余工作仅为 integration 逐包合入、受影响验证和 Index 收口；P3-08 工程验收通过，整个版本是否发布继续由 M3-03 后续 P3-09/P3-10 和批次末门槛决定。
 
 ## 回退
 
