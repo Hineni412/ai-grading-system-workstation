@@ -7,7 +7,11 @@ from typing import Any
 from fastapi import APIRouter, Depends
 
 from backend.api.app import ApiError
-from backend.api.dependencies import get_grading_db, get_upload_config_dir
+from backend.api.dependencies import (
+    get_grading_db,
+    get_session_repository,
+    get_upload_config_dir,
+)
 from backend.api.schemas.sessions import (
     AnswerRegionListResponse,
     AnswerRegionResponse,
@@ -21,6 +25,7 @@ from backend.api.schemas.sessions import (
     SessionTemplateResponse,
 )
 from backend.config_workspace.drafts import create_session_draft
+from backend.repositories.sessions import SessionRepositoryGateway
 from db_manager import DBManager
 
 
@@ -43,8 +48,11 @@ def _json_object(value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _require_session(db: DBManager, session_id: int) -> dict[str, Any]:
-    session = db.get_grading_session(int(session_id))
+def _require_session(
+    sessions: SessionRepositoryGateway,
+    session_id: int,
+) -> dict[str, Any]:
+    session = sessions.get_grading_session(int(session_id))
     if session is None:
         raise ApiError(
             404,
@@ -124,26 +132,30 @@ def _region_response(row: dict[str, Any]) -> AnswerRegionResponse:
 @router.get("/sessions", response_model=SessionListResponse)
 def list_sessions(
     include_deleted: bool = False,
-    db: DBManager = Depends(get_grading_db),
+    sessions: SessionRepositoryGateway = Depends(get_session_repository),
 ) -> SessionListResponse:
-    items = [_session_summary(row) for row in db.list_grading_sessions(include_deleted)]
+    items = [
+        _session_summary(row)
+        for row in sessions.list_grading_sessions(include_deleted)
+    ]
     return SessionListResponse(items=items, total=len(items))
 
 
 @router.get("/sessions/{session_id}", response_model=SessionDetail)
 def get_session(
     session_id: int,
-    db: DBManager = Depends(get_grading_db),
+    sessions: SessionRepositoryGateway = Depends(get_session_repository),
 ) -> SessionDetail:
-    return _session_detail(_require_session(db, session_id))
+    return _session_detail(_require_session(sessions, session_id))
 
 
 @router.get("/sessions/{session_id}/progress", response_model=SessionProgress)
 def get_session_progress(
     session_id: int,
     db: DBManager = Depends(get_grading_db),
+    sessions: SessionRepositoryGateway = Depends(get_session_repository),
 ) -> SessionProgress:
-    _require_session(db, session_id)
+    _require_session(sessions, session_id)
     return SessionProgress(**db.get_session_progress(int(session_id)))
 
 
@@ -151,8 +163,9 @@ def get_session_progress(
 def get_session_template(
     session_id: int,
     db: DBManager = Depends(get_grading_db),
+    sessions: SessionRepositoryGateway = Depends(get_session_repository),
 ) -> SessionTemplateResponse:
-    _require_session(db, session_id)
+    _require_session(sessions, session_id)
     template = db.get_session_template(int(session_id))
     if template is None:
         raise ApiError(
@@ -168,8 +181,9 @@ def get_session_template(
 def list_answer_regions(
     session_id: int,
     db: DBManager = Depends(get_grading_db),
+    sessions: SessionRepositoryGateway = Depends(get_session_repository),
 ) -> AnswerRegionListResponse:
-    _require_session(db, session_id)
+    _require_session(sessions, session_id)
     items = [_region_response(row) for row in db.list_answer_regions(int(session_id))]
     return AnswerRegionListResponse(items=items, total=len(items))
 
@@ -177,10 +191,10 @@ def list_answer_regions(
 @router.post("/sessions", response_model=SessionDetail, status_code=201)
 def create_session(
     request: CreateSessionRequest,
-    db: DBManager = Depends(get_grading_db),
+    sessions: SessionRepositoryGateway = Depends(get_session_repository),
 ) -> SessionDetail:
     try:
-        session_id = db.create_grading_session(
+        session_id = sessions.create_grading_session(
             request.name,
             request.rubric_path,
             request.answer_key_path,
@@ -189,52 +203,52 @@ def create_session(
         )
     except ValueError as exc:
         raise ApiError(400, "invalid_session", str(exc)) from exc
-    return _session_detail(_require_session(db, session_id))
+    return _session_detail(_require_session(sessions, session_id))
 
 
 @router.post("/sessions/drafts", response_model=SessionSummary, status_code=201)
 def create_session_draft_route(
     request: CreateSessionDraftRequest,
-    db: DBManager = Depends(get_grading_db),
+    sessions: SessionRepositoryGateway = Depends(get_session_repository),
     upload_config_dir: Path = Depends(get_upload_config_dir),
 ) -> SessionSummary:
     try:
         session_id = create_session_draft(
-            db,
+            sessions,
             upload_config_dir,
             name=request.name,
         )
     except ValueError as exc:
         raise ApiError(400, "invalid_session_draft", str(exc)) from exc
-    return _session_summary(_require_session(db, session_id))
+    return _session_summary(_require_session(sessions, session_id))
 
 
 @router.patch("/sessions/{session_id}", response_model=SessionDetail)
 def rename_session(
     session_id: int,
     request: RenameSessionRequest,
-    db: DBManager = Depends(get_grading_db),
+    sessions: SessionRepositoryGateway = Depends(get_session_repository),
 ) -> SessionDetail:
-    _require_session(db, session_id)
-    db.rename_grading_session(int(session_id), request.name)
-    return _session_detail(_require_session(db, session_id))
+    _require_session(sessions, session_id)
+    sessions.rename_grading_session(int(session_id), request.name)
+    return _session_detail(_require_session(sessions, session_id))
 
 
 @router.delete("/sessions/{session_id}", response_model=SessionDetail)
 def soft_delete_session(
     session_id: int,
-    db: DBManager = Depends(get_grading_db),
+    sessions: SessionRepositoryGateway = Depends(get_session_repository),
 ) -> SessionDetail:
-    _require_session(db, session_id)
-    db.soft_delete_grading_session(int(session_id))
-    return _session_detail(_require_session(db, session_id))
+    _require_session(sessions, session_id)
+    sessions.soft_delete_grading_session(int(session_id))
+    return _session_detail(_require_session(sessions, session_id))
 
 
 @router.post("/sessions/{session_id}/restore", response_model=SessionDetail)
 def restore_session(
     session_id: int,
-    db: DBManager = Depends(get_grading_db),
+    sessions: SessionRepositoryGateway = Depends(get_session_repository),
 ) -> SessionDetail:
-    _require_session(db, session_id)
-    db.restore_grading_session(int(session_id))
-    return _session_detail(_require_session(db, session_id))
+    _require_session(sessions, session_id)
+    sessions.restore_grading_session(int(session_id))
+    return _session_detail(_require_session(sessions, session_id))

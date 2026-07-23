@@ -9,12 +9,17 @@ from backend.repositories.base import (
     RepositoryCursor,
     RepositoryError,
     RepositorySession,
+    RepositorySessionProvider,
     RepositoryThreadError,
     RepositoryTransactionError,
     RowMapper,
     SQLiteConnectionFactory,
     map_row,
     map_rows,
+)
+from backend.repositories.providers import (
+    BorrowedReadOnlySessionProvider,
+    InstrumentedSQLiteConnectionFactory,
 )
 
 __all__ = [
@@ -26,10 +31,13 @@ __all__ = [
     "RepositoryCursor",
     "RepositoryError",
     "RepositorySession",
+    "RepositorySessionProvider",
     "RepositoryThreadError",
     "RepositoryTransactionError",
     "RowMapper",
     "SQLiteConnectionFactory",
+    "BorrowedReadOnlySessionProvider",
+    "InstrumentedSQLiteConnectionFactory",
     "map_row",
     "map_rows",
 ]
