@@ -11,7 +11,7 @@
 |---|---|---|---:|---:|---|
 | Phase 0 | 地基与防护网 | `merged` | 5 | 0 | 工程防护网与冻结基线 |
 | Phase 1 | API、任务、LLM、数据访问 | `merged` | 21 | 0 | 组合回归、完整冒烟、正式验收、模型请求超时与真实两库指纹门槛均已通过 |
-| Phase 2 | Vue SPA 与 Streamlit 切换 | `in_progress` | 21 | 1 | M2-01 至 M2-04 已通过 PR 合入主线；用户接受的 P2-20 延期范围由 Issue #67 跟踪且不阻塞后续阶段，P2-21 已完成一个 formal 人工验收周期，P2-22 已按高风险删除包单独领取 |
+| Phase 2 | Vue SPA 与 Streamlit 切换 | `in_progress` | 21 | 1 | M2-01 至 M2-04 已通过 PR 合入主线；P2-22 已完成最高风险退役门槛并进入 M2-05 integration，等待单包 PR 合入主线；Issue #67 的 P3 后小批量真实模型复验不阻塞后续阶段 |
 | Phase 3 | 后端拆分、Schema 收敛、瘦身 | `planned` | 0 | 19 | 迁移预演、全量测试、删除可独立回退 |
 | Phase 4 | 图谱 2.0 与训练闭环 | `planned` | 0 | 12 | 新旧口径对照、闭环 E2E、评估达标 |
 | Phase 5 | 教师命题训练 | `planned` | 0 | 13 | 实验门槛通过后才冻结 Schema |
@@ -57,7 +57,7 @@
 | P2-19 | `merged` | 已随 M2-03 通过 PR #69 合入主线；交付设置、系统自检、脱敏诊断、备份清单与五类运维安全闸门，Issue #59 的 P1-23 导出修复已组合进入验收候选 |
 | P2-20 | `merged` | 已随 M2-03 通过 PR #69 合入主线；用户批准的缩减范围已形成绑定已复审 SHA 的 formal 清单并明确 `passed`，三份真实批改、调分、报告及端到端结果一致性没有写成成功，延期到 P3 后 Issue #67；真实调用保持 4/6，剩余两次冻结不用 |
 | P2-21 | `merged` | 已通过 PR #71 合入主线；默认 FastAPI/Vue 启动、显式 Streamlit 回退、缺失资源安全阻断和便携包完整性已交付，44 项关联验证、快速冒烟、两轮限定复审、交接核验和 2026-07-23 formal 用户验收均通过 |
-| P2-22 | `in_progress` | 用户于 2026-07-23 明确启动；即时计划已在独立功能分支形成，按高风险删除门槛实施，只使用隔离数据并保持真实 `user_data/` 只读 |
+| P2-22 | `milestone_integrated` | 旧 Streamlit 日常入口、页面共享层、专用包装器和 drawable-canvas 已按四个可独立回退批次退役；完整后端 2111 passed / 2 skipped、前端 716、integration 受影响 48 项、快速冒烟、双路复审、局部守卫修复和 2026-07-23 formal 用户验收均通过，等待 M2-05 PR 进入 `main` |
 | P3-01 至 P3-19 | `planned` | Phase 2 切换门满足后放行 |
 | P4-01 至 P4-12 | `planned` | Phase 3 数据边界稳定后放行 |
 | P5-01 至 P5-13 | `planned` | 先实验与设计门，再进入正式实现 |
@@ -106,7 +106,7 @@ M2-05 是 P2-22 单包最高风险旧界面退役里程碑，从 P2-21 已通过
 | M2-02 | P2-13 → P2-16 → P2-17 | `merged` | `b3e67d36691a02e74e092873a7f021b7a13bae9d` | `codex/integration-m2-02` | `7c6afe311241a5e82c28b528eb61afb5f19b4c47` | 已通过 PR #56 合入主线；批次末前端 verify 628 passed，串行完整冒烟 2041 passed / 2 skipped；2 进程并行完整门槛仍不稳定，暂不设为默认 |
 | M2-03 | P2-18 → P2-19 → P2-20 | `merged` | `58c93e9c08fb91a8a8a4951b722905f44679f535` | `codex/integration-m2-03` | `e79e8958881da0733e1b2ae908967bf2d87d37a1` | 已通过 PR #69 合入主线；批次末前端 verify 716 passed，后端串行完整门槛 2195 passed / 2 skipped，文档治理、504 个第一方 Python 文件编译和两库副本初始化幂等通过，真实两库大小、时间与 SHA-256 前后不变 |
 | M2-04 | P2-21 | `merged` | `016c007b12a51754608f3d0c8f31a6add04cc175` | `codex/integration-m2-04` | `5fde1b6b534f71e4157eab7c46f04233cffdce24` | 已通过 PR #71 合入主线，主线合并提交为 `b023f5aa027d26c70321a55a948338795d7e0a0b`；代码 SHA 后只有验收与交接文档变化，formal 用户验收和关闭清理通过 |
-| M2-05 | P2-22 | `in_progress` | `6305a1442ecd7bd13c6122e43dac7d6d771e2aeb` | `codex/integration-p2-22` | `6305a1442ecd7bd13c6122e43dac7d6d771e2aeb` | 已由用户明确启动；功能分支 `codex/p2-22-streamlit-retirement` 与即时计划已建立，正在实施退役约束与可独立回退的删除批次 |
+| M2-05 | P2-22 | `verified` | `6305a1442ecd7bd13c6122e43dac7d6d771e2aeb` | `codex/integration-p2-22` | `f39fb90237f7aedeb3be75bcd759c53246fe8566` | 功能与 formal 验收交接已合入 integration；48 项受影响验证、前端资源检查和快速冒烟通过，真实两库指纹不变，下一步推送并创建单包 PR |
 
 P2-20 的不可变可信领取基线是 `c9662850bbd75a2ba062c0011a6762241818f4d8`，用于该包所有 `handoff_status.py --expected-handoff-base` 核验。该包领取后为解除现场阻塞，同步了已经独立复审并逐项进入 M2-03 的 Issue #60—#65，因此 M2-03 当前已验证且作为最终合入目标的 SHA 已前进到 `6ed4cd64ccab6aa2c51b602c7413c99ecf8d2781`。两者职责不同：不得把计划内冻结的领取基线改成后者，也不得用前者替代 integration 当前状态。
 
@@ -163,4 +163,4 @@ M2-02 是 Python 完整测试并行试点的第二个里程碑：批次末优先
 
 ## 下一动作
 
-M2-05/P2-22 已由用户明确启动，基于 `6305a1442ecd7bd13c6122e43dac7d6d771e2aeb` 独立实施。当前动作是按已冻结即时计划完成退役约束、旧 Streamlit 日常入口与专用 UI 的可回退删除、启动和便携包收敛，以及隔离数据验证；稳定候选通过同一 SHA 的双路复审后交由用户执行 formal 验收。P3-01 的临时候选及其独立修复继续保持在主线之外，等待 P2-22 正式收口；P2-20 剩余两次真实调用继续冻结。全程不得调用真实模型或触碰真实 `user_data/`。
+M2-05/P2-22 已完成可回退退役、完整门槛、双路复审、用户授权的局部守卫修复、formal 用户验收和 integration 逐包验证。当前动作是推送 `codex/integration-p2-22`，通过单个 PR 合入主线并同步 Phase 2 完成状态；主线合入前 P3-01 的临时候选及其独立修复继续保持在主线之外。P2-20 剩余两次真实调用继续冻结，Issue #67 的后续复验仍须用户重新确认网络、考试副本与费用上限。
