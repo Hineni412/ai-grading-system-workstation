@@ -943,7 +943,7 @@
     },
     {
       "path": "backend/students/service.py",
-      "sha256": "41254c694a3dbc3c5910f1a4b23801b2c3a381e59629e1fd4de487076b1d5512"
+      "sha256": "721a73216c1d9d23022f0a8b32b83fe722730b1b1e5bc34f17c16e609d39aaa2"
     },
     {
       "path": "backend/workbench/__init__.py",
@@ -1451,7 +1451,7 @@
     },
     {
       "path": "tools/build_p3_01_baseline.py",
-      "sha256": "6a9155ca9f4fae9c269f9e6025c0185bc5bf84cc0f1ca8968cf3243155a2a371"
+      "sha256": "0c072f1e83c29756d907ce33045acace4f6eb585d57779438681e98fa556b10d"
     },
     {
       "path": "tools/check_documentation.py",
@@ -1594,7 +1594,7 @@
       "sha256": "f8f338157be5afc4934792b759e2b56cb71bfc92e5cfc4b72e60f16e0fe3769b"
     }
   ],
-  "source_revision": "0b488552d53213e5cc46afc2e0b18b7102423000",
+  "source_revision": "d6b98b40b5710d2632095b459a18d211ab9c5726",
   "static_imports": [
     {
       "kind": "from",
@@ -9732,6 +9732,14 @@
     {
       "kind": "from",
       "line": 11,
+      "module": "backend.repositories",
+      "name": "RepositoryError",
+      "relative_level": 0,
+      "source": "backend/students/service.py"
+    },
+    {
+      "kind": "from",
+      "line": 12,
       "module": "backend.repositories.students",
       "name": "StudentBackupFailedError,StudentCodeConflictError,StudentGradingActiveError,StudentRecord,StudentRepositoryGateway,StudentRosterRevisionConflict,student_roster_revision",
       "relative_level": 0,
