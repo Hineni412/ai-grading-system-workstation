@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from backend.review.service import ReviewApplicationService
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from path_manager import resolve_stored_file_path
 
 
@@ -42,10 +42,10 @@ class StudentAnalysisRow:
 class SessionAnalysisService:
     def __init__(
         self,
-        db: DBManager,
+        db: GradingRepositoryAccess,
         review_service: ReviewApplicationService | None = None,
     ) -> None:
-        self.db = db
+        self.db = as_grading_repositories(db)
         self.review_service = review_service or ReviewApplicationService(db)
 
     def list_questions(
@@ -289,7 +289,10 @@ class SessionAnalysisService:
         return {"rows": rows, "classes": classes}
 
 
-def build_legacy_question_analysis(db: DBManager, session_id: int) -> dict[str, Any]:
+def build_legacy_question_analysis(
+    db: GradingRepositoryAccess,
+    session_id: int,
+) -> dict[str, Any]:
     """Compatibility adapter for the Streamlit analysis view."""
     return SessionAnalysisService(db)._build_legacy_question_analysis(session_id)
 
@@ -548,7 +551,7 @@ def _public_question_row(
     )
 
 
-def _data_root(db: DBManager) -> Path | None:
+def _data_root(db: GradingRepositoryAccess) -> Path | None:
     return db.db_path.parent.parent if db.db_path.parent.name == "databases" else None
 
 

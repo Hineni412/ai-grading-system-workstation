@@ -10,15 +10,19 @@ from PIL import Image
 
 from annotation_renderer import render_annotated_paper
 from answer_region_geometry import answer_regions_with_template_source_sizes
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from export_names import safe_filename_fragment, session_export_path_name
 from image_preprocessor import _enhanced_name
 from path_manager import resolve_stored_file_path
 
 
 class OriginalPaperExporter:
-    def __init__(self, db: DBManager, output_dir: Path) -> None:
-        self.db = db
+    def __init__(
+        self,
+        db: GradingRepositoryAccess,
+        output_dir: Path,
+    ) -> None:
+        self.db = as_grading_repositories(db)
         self.output_dir = output_dir
 
     def export_session_originals(self, session_id: int) -> Path:

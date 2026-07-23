@@ -21,7 +21,7 @@ from backend.scan_grading.workspace import (
     UploadBatchRevisionError,
 )
 from backend.jobs.manager import ActiveJobExistsError, JobManager, UnsupportedJobTypeError
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess
 
 
 router = APIRouter(prefix="/api", tags=["grading"])
@@ -34,7 +34,7 @@ router = APIRouter(prefix="/api", tags=["grading"])
 def pause_session_grading(
     session_id: int,
     run_id: int,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> GradingRunSummaryResponse:
     _require_session(db, session_id)
@@ -79,7 +79,7 @@ def _submit_controlled_grading_job(
 def resume_session_grading(
     session_id: int,
     run_id: int,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> JobResponse:
     _require_session(db, session_id)
@@ -116,7 +116,7 @@ def resume_session_grading(
 def retry_failed_session_grading(
     session_id: int,
     run_id: int,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> JobResponse:
     _require_session(db, session_id)
@@ -147,7 +147,7 @@ def retry_failed_session_grading(
 def supplement_session_grading(
     session_id: int,
     run_id: int,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> JobResponse:
     _require_session(db, session_id)
@@ -188,7 +188,7 @@ def cancel_session_grading(
     session_id: int,
     run_id: int,
     request: GradingRunCancelRequest,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> GradingRunSummaryResponse:
@@ -233,7 +233,7 @@ def cancel_session_grading(
 def run_session_grading(
     session_id: int,
     request: GradingRunRequest | None = None,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> JobResponse:

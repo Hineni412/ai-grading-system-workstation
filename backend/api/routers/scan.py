@@ -34,7 +34,7 @@ from backend.scan_grading.workspace import (
     UploadBatchRevisionError,
 )
 from backend.jobs.manager import ActiveJobExistsError, UnsupportedJobTypeError
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess
 
 
 router = APIRouter(prefix="/api", tags=["scan"])
@@ -46,7 +46,7 @@ router = APIRouter(prefix="/api", tags=["scan"])
 )
 def get_grading_workspace(
     session_id: int,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanGradingWorkspaceResponse:
     _require_session(db, session_id)
@@ -86,7 +86,7 @@ async def upload_session_scan(
     session_id: int,
     request: Request,
     response: Response,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanUploadResponse:
     _require_session(db, session_id)
@@ -147,7 +147,7 @@ def remove_session_scan_upload(
     session_id: int,
     upload_id: str,
     expected_revision: int,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanUploadBatchResponse:
     _require_session(db, session_id)
@@ -167,7 +167,7 @@ def remove_session_scan_upload(
 def clear_session_scan_uploads(
     session_id: int,
     expected_revision: int,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanUploadBatchResponse:
     _require_session(db, session_id)
@@ -186,7 +186,7 @@ def clear_session_scan_uploads(
 def freeze_session_scan_uploads(
     session_id: int,
     request: ScanUploadFreezeRequest,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanUploadBatchResponse:
     _require_session(db, session_id)
@@ -210,7 +210,7 @@ def freeze_session_scan_uploads(
 )
 def start_new_session_scan_batch(
     session_id: int,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanUploadBatchResponse:
     _require_session(db, session_id)
@@ -233,7 +233,7 @@ def start_new_session_scan_batch(
 )
 def get_session_scan_preflight(
     session_id: int,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanPreflightResponse:
     _require_session(db, session_id)
@@ -251,7 +251,7 @@ def get_session_scan_preflight(
 def save_session_scan_decisions(
     session_id: int,
     request: ScanDecisionRequest,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanDecisionResponse:
     _require_session(db, session_id)
@@ -278,7 +278,7 @@ def save_session_scan_decisions(
 def get_session_scan_preflight_media(
     session_id: int,
     media_ref: str,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> FileResponse:
     _require_session(db, session_id)
@@ -301,7 +301,7 @@ def get_session_scan_preflight_media(
 def analyze_session_scans(
     session_id: int,
     request: ScanAnalyzeRequest | None = None,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> JobResponse:
     _require_session(db, session_id)

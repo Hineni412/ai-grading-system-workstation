@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import re
 from dataclasses import dataclass
@@ -131,6 +132,38 @@ def major_question_ids_for_issues(audit: dict) -> list[str]:
     return result
 
 
+def resolve_grading_completeness(
+    raw_json: Any,
+    rubric: dict[str, Any] | None = None,
+    details: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    completeness = _normalized_completeness_dict(raw_json)
+    if completeness is not None:
+        return completeness
+
+    parsed = _safe_json_loads(raw_json)
+    if isinstance(parsed, dict):
+        completeness = _normalized_completeness_dict(
+            parsed.get("grading_completeness")
+        )
+        if completeness is not None:
+            return completeness
+
+    if isinstance(rubric, dict):
+        normalized = _normalized_completeness_dict(
+            audit_grading_details(rubric, details or [])
+        )
+        if normalized is not None:
+            return normalized
+
+    if isinstance(parsed, dict):
+        return _legacy_fallback_completeness(
+            parsed.get("hybrid_batch_fallback"),
+            rubric or {},
+        )
+    return None
+
+
 def rubric_exact_question_id(rubric: dict, question_id: str) -> str | None:
     normalized = _normalize_question_id(str(question_id or "").strip())
     for item in _expected_questions(rubric):
@@ -165,6 +198,91 @@ def _expected_questions(rubric: dict) -> list[_ExpectedQuestion]:
                     max_score=_score_value(question, ("max_score", "score")),
                 )
             )
+    return result
+
+
+def _safe_json_loads(value: Any) -> Any:
+    if value is None or isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
+def _normalized_completeness_dict(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    status = str(value.get("status") or "").strip()
+    if status not in {"complete", "incomplete", "invalid"}:
+        return None
+    raw_score_issues = value.get("score_out_of_range")
+    score_out_of_range = (
+        [dict(item) for item in raw_score_issues if isinstance(item, dict)]
+        if isinstance(raw_score_issues, list)
+        else []
+    )
+    return {
+        "status": status,
+        "missing_question_ids": _unique_text_list(
+            value.get("missing_question_ids")
+        ),
+        "duplicate_question_ids": _unique_text_list(
+            value.get("duplicate_question_ids")
+        ),
+        "unexpected_question_ids": _unique_text_list(
+            value.get("unexpected_question_ids")
+        ),
+        "score_out_of_range": score_out_of_range,
+        "affected_major_question_ids": _unique_text_list(
+            value.get("affected_major_question_ids")
+        ),
+    }
+
+
+def _legacy_fallback_completeness(
+    value: Any,
+    rubric: dict[str, Any],
+) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        items = value.get("items") if isinstance(value.get("items"), list) else []
+    elif isinstance(value, list):
+        items = value
+    elif value:
+        items = []
+    else:
+        return None
+
+    affected_major_question_ids: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        question_id = str(item.get("question_id") or "").strip()
+        if not question_id:
+            continue
+        major_id = major_question_id(rubric, question_id) or question_id
+        if major_id not in affected_major_question_ids:
+            affected_major_question_ids.append(major_id)
+    return {
+        "status": "incomplete",
+        "missing_question_ids": [],
+        "duplicate_question_ids": [],
+        "unexpected_question_ids": [],
+        "score_out_of_range": [],
+        "affected_major_question_ids": affected_major_question_ids,
+    }
+
+
+def _unique_text_list(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in result:
+            result.append(text)
     return result
 
 
