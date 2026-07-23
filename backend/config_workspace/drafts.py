@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 
 from backend.config_workspace.atomic import remove_exact_files, write_json_atomic
-from db_manager import DBManager
+from backend.repositories.sessions import SessionRepositoryGateway
 
 
 EMPTY_RUBRIC = {"draft": True, "total_score": 0, "questions": []}
@@ -13,7 +13,7 @@ DRAFT_MARKER_KEY = "_config_draft_id"
 
 
 def create_session_draft(
-    db: DBManager,
+    sessions: SessionRepositoryGateway,
     upload_config_dir: Path,
     *,
     name: str,
@@ -42,7 +42,7 @@ def create_session_draft(
             {**EMPTY_ANSWER_KEY, DRAFT_MARKER_KEY: token},
         )
         created.append(answer_path)
-        return db.create_grading_session(
+        return sessions.create_grading_session(
             clean_name,
             str(rubric_path),
             str(answer_path),

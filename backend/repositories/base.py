@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from collections.abc import Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from typing import Any, Protocol, TypeVar, runtime_checkable
 
@@ -45,6 +45,14 @@ class RowMapper(Protocol[RowT]):
 class Repository(Protocol):
     @property
     def session(self) -> "RepositorySession": ...
+
+
+class RepositorySessionProvider(Protocol):
+    def session(
+        self,
+        *,
+        read_only: bool = False,
+    ) -> AbstractContextManager["RepositorySession"]: ...
 
 
 class RepositoryCursor(Iterator[Any]):
