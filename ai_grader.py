@@ -4,7 +4,6 @@ import base64
 import io
 import json
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -12,6 +11,7 @@ from PIL import Image
 
 from answer_key_utils import answer_forms_for_question
 from answer_normalizer import contains_prompt_injection_or_score_bait, match_fill_blank_answer
+from backend.domain_models import ExamPaperGroup, GradingResult, QuestionGradingDetail, SecondaryError
 from grading_completeness import audit_grading_details, rubric_exact_question_id
 from solution_answer_guard import (
     apply_solution_substance_rules,
@@ -22,7 +22,6 @@ from solution_answer_guard import (
 )
 from llm_client import LLMClient
 from scoring_prompt_rules import SHARED_GRADING_RULES
-from scanner import ExamPaperGroup
 
 
 def _without_embedded_image_data(value: Any) -> Any:
@@ -94,36 +93,6 @@ def _normalize_question_tag_context(
         if tags:
             result[question_id] = tags
     return result
-
-
-@dataclass
-class QuestionGradingDetail:
-    question_id: str
-    score_awarded: float
-    deduction_reason: str | None
-    knowledge_id: str = "UNKNOWN"
-    error_category: str | None = None
-    error_summary: str | None = None
-    confidence_score: float | None = None
-    knowledge_ids: list[str] = field(default_factory=list)
-    secondary_errors: list["SecondaryError"] = field(default_factory=list)
-
-
-@dataclass(frozen=True, slots=True)
-class SecondaryError:
-    category: str
-    summary: str
-    evidence: str = ""
-
-
-@dataclass
-class GradingResult:
-    student_name: str
-    total_score: float
-    student_score: float
-    needs_human_review: bool
-    grading_details: list[QuestionGradingDetail]
-    raw_json: dict[str, Any]
 
 
 class AIGrader:
