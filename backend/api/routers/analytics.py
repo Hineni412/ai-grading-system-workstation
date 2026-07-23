@@ -15,7 +15,7 @@ from backend.api.schemas.analytics import (
     StudentAnalysisItem,
     StudentAnalysisListResponse,
 )
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess
 
 
 router = APIRouter(prefix="/api", tags=["analytics"])
@@ -36,7 +36,7 @@ def list_question_analysis(
     question_id: OptionalTextQuery = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     service: SessionAnalysisService = Depends(get_session_analysis_service),
 ) -> QuestionAnalysisListResponse:
     _require_session(db, session_id)
@@ -75,7 +75,7 @@ def list_student_analysis(
     class_name: OptionalTextQuery = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     service: SessionAnalysisService = Depends(get_session_analysis_service),
 ) -> StudentAnalysisListResponse:
     _require_session(db, session_id)
@@ -110,7 +110,10 @@ def list_student_analysis(
     )
 
 
-def _session_classes(db: DBManager, session_id: int) -> list[str]:
+def _session_classes(
+    db: GradingRepositoryAccess,
+    session_id: int,
+) -> list[str]:
     return sorted(
         {
             str(row.get("class_name") or "未分班")

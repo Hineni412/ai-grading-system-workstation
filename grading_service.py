@@ -11,7 +11,7 @@ from typing import Any, Iterable
 
 from ai_grader import AIGrader
 from backend.domain_models import ExamPaperGroup, QuestionGradingDetail, SecondaryError
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from evidence_atlas import EvidenceAtlasBuilder
 from grading_limits import (
     FULL_PAPER_WORKERS_MAX,
@@ -109,11 +109,14 @@ def _rubric_major_question_ids(rubric: dict) -> set[str]:
 class GradingService:
     def __init__(
         self,
-        db_manager: DBManager,
+        db_manager: GradingRepositoryAccess,
         llm_client: LLMClient,
         question_bank_db_path: Path | None = None,
     ) -> None:
-        self.db = db_manager
+        self.db = as_grading_repositories(db_manager)
+        self.papers = self.db.papers
+        self.results = self.db.results
+        self.attendance = self.db.sessions
         self.llm_client = llm_client
         self.question_bank_db_path = Path(question_bank_db_path) if question_bank_db_path else None
 
@@ -277,7 +280,7 @@ class GradingService:
                 paper_id,
                 ("pending", None),
             )
-            self.db.update_exam_paper_status(
+            self.papers.update_exam_paper_status(
                 paper_id,
                 restore_status,
                 restore_error,
@@ -319,13 +322,9 @@ class GradingService:
                 if item.get("paper_id") is not None
             ]
             if failed_paper_ids:
-                placeholders = ",".join("?" for _ in failed_paper_ids)
-                with self.db._connect() as conn:
-                    original_rows = conn.execute(
-                        "SELECT id, processing_status, error_message "
-                        f"FROM exam_papers WHERE id IN ({placeholders})",
-                        failed_paper_ids,
-                    ).fetchall()
+                original_rows = self.papers.get_paper_statuses(
+                    failed_paper_ids
+                )
                 paper_cancel_restore_state.update(
                     {
                         int(row["id"]): (
@@ -392,7 +391,7 @@ class GradingService:
                         continue
                 student = {"id": group.student_id, "name": group.student_name} if group.student_id else self.db.find_student_by_name(group.student_name)
                 if student is None:
-                    paper_id = self.db.create_exam_paper(
+                    paper_id = self.papers.create_exam_paper(
                         session_id=session_id,
                         front_image=str(group.front_image),
                         back_image=str(group.back_image),
@@ -424,7 +423,7 @@ class GradingService:
                     }
                     continue
 
-                paper_id = self.db.create_exam_paper(
+                paper_id = self.papers.create_exam_paper(
                     session_id=session_id,
                     front_image=str(group.front_image),
                     back_image=str(group.back_image),
@@ -506,50 +505,68 @@ class GradingService:
             skipped_questions_by_student = {}
             if failed_only:
                 for paper_id, group, student_id in matched_records:
-                    with self.db._connect() as conn:
-                        row = conn.execute(
-                            "SELECT id, total_score, student_score, needs_human_review, raw_json FROM session_results WHERE session_id = ? AND student_id = ?",
-                            (session_id, student_id)
-                        ).fetchone()
-                        if row:
-                            res_id = row["id"]
-                            details_rows = self.db.get_result_details(res_id)
-                            existing_results_by_student[student_id] = {
-                                "result_id": res_id,
-                                "total_score": row["total_score"],
-                                "student_score": row["student_score"],
-                                "needs_human_review": bool(row["needs_human_review"]),
-                                "raw_json": json.loads(row["raw_json"]) if row["raw_json"] else {},
-                                "details": details_rows
+                    stored_result = self.results.get_student_result_for_retry(
+                        session_id,
+                        student_id,
+                    )
+                    if stored_result:
+                        existing_results_by_student[student_id] = stored_result
+                        details_rows = stored_result["details"]
+                        completeness = audit_grading_details(
+                            grader.rubric,
+                            details_rows,
+                        )
+                        affected_major_ids = set(
+                            major_question_ids_for_issues(completeness)
+                        )
+                        raw_completeness = existing_results_by_student[
+                            student_id
+                        ]["raw_json"].get("grading_completeness")
+                        has_structured_audit = isinstance(
+                            raw_completeness,
+                            dict,
+                        )
+                        has_unmapped_unexpected = (
+                            has_structured_audit
+                            and any(
+                                major_question_id(
+                                    grader.rubric,
+                                    question_id,
+                                )
+                                is None
+                                for question_id in completeness[
+                                    "unexpected_question_ids"
+                                ]
+                            )
+                        )
+                        replace_all_details = has_unmapped_unexpected or (
+                            has_structured_audit and not affected_major_ids
+                        )
+                        if replace_all_details:
+                            affected_major_ids = (
+                                _rubric_major_question_ids(grader.rubric)
+                            )
+                        stored_result["affected_major_ids"] = (
+                            affected_major_ids
+                        )
+                        stored_result["atomic_retry"] = bool(
+                            affected_major_ids or has_structured_audit
+                        )
+                        stored_result["replace_all_details"] = (
+                            replace_all_details
+                        )
+                        if replace_all_details:
+                            skipped_questions_by_student[student_id] = set()
+                        else:
+                            skipped_questions_by_student[student_id] = {
+                                detail["question_id"]
+                                for detail in details_rows
+                                if major_question_id(
+                                    grader.rubric,
+                                    detail["question_id"],
+                                )
+                                not in affected_major_ids
                             }
-                            completeness = audit_grading_details(grader.rubric, details_rows)
-                            affected_major_ids = set(major_question_ids_for_issues(completeness))
-                            raw_completeness = existing_results_by_student[student_id]["raw_json"].get(
-                                "grading_completeness"
-                            )
-                            has_structured_audit = isinstance(raw_completeness, dict)
-                            has_unmapped_unexpected = has_structured_audit and any(
-                                major_question_id(grader.rubric, question_id) is None
-                                for question_id in completeness["unexpected_question_ids"]
-                            )
-                            replace_all_details = has_unmapped_unexpected or (
-                                has_structured_audit and not affected_major_ids
-                            )
-                            if replace_all_details:
-                                affected_major_ids = _rubric_major_question_ids(grader.rubric)
-                            existing_results_by_student[student_id]["affected_major_ids"] = affected_major_ids
-                            existing_results_by_student[student_id]["atomic_retry"] = bool(
-                                affected_major_ids or has_structured_audit
-                            )
-                            existing_results_by_student[student_id]["replace_all_details"] = replace_all_details
-                            if replace_all_details:
-                                skipped_questions_by_student[student_id] = set()
-                            else:
-                                skipped_questions_by_student[student_id] = {
-                                    d["question_id"]
-                                    for d in details_rows
-                                    if major_question_id(grader.rubric, d["question_id"]) not in affected_major_ids
-                                }
 
             hybrid_marked_paper_ids: list[int] = []
             for idx, (paper_id, group, student_id) in enumerate(matched_records, start=1):
@@ -561,7 +578,7 @@ class GradingService:
                         )
                     yield _finish_cancelled_run(release_session=True)
                     return
-                self.db.update_exam_paper_status(paper_id, "grading")
+                self.papers.update_exam_paper_status(paper_id, "grading")
                 if paper_id in hybrid_run_item_by_paper:
                     run_store.mark_grading(hybrid_run_item_by_paper[paper_id])
                 hybrid_marked_paper_ids.append(paper_id)
@@ -671,12 +688,12 @@ class GradingService:
                     completed += 1
                     retry_existing = existing_results_by_student.get(student_id) if failed_only else None
                     if retry_existing and retry_existing.get("atomic_retry"):
-                        self.db.record_result_retry_failure(
+                        self.results.record_result_retry_failure(
                             retry_existing["result_id"],
                             _failed_retry_attempt(exc, retry_existing["affected_major_ids"]),
                         )
                     assignment_is_current = (
-                        self.db.update_exam_paper_status_if_current_assignment(
+                        self.papers.update_exam_paper_status_if_current_assignment(
                             paper_id,
                             student_id,
                             "failed",
@@ -827,7 +844,7 @@ class GradingService:
                             in retry_existing["affected_major_ids"]
                         ]
                         result_id = retry_existing["result_id"]
-                        self.db.replace_result_details_atomic(
+                        self.results.replace_result_details_atomic(
                             result_id,
                             remove_question_ids,
                             replacement_details,
@@ -837,7 +854,7 @@ class GradingService:
                             raw_json=result.raw_json,
                         )
                         assignment_is_current = (
-                            self.db.update_exam_paper_status_if_current_assignment(
+                            self.papers.update_exam_paper_status_if_current_assignment(
                                 paper_id,
                                 student_id,
                                 "graded",
@@ -845,7 +862,7 @@ class GradingService:
                         )
                     else:
                         result_id = (
-                            self.db.publish_session_result_if_current_assignment(
+                            self.results.publish_session_result_if_current_assignment(
                                 session_id,
                                 student_id,
                                 paper_id,
@@ -881,12 +898,12 @@ class GradingService:
                     }
                 except Exception as exc:  # noqa: BLE001
                     if retry_existing and retry_existing.get("atomic_retry"):
-                        self.db.record_result_retry_failure(
+                        self.results.record_result_retry_failure(
                             retry_existing["result_id"],
                             _failed_retry_attempt(exc, retry_existing["affected_major_ids"]),
                         )
                     assignment_is_current = (
-                        self.db.update_exam_paper_status_if_current_assignment(
+                        self.papers.update_exam_paper_status_if_current_assignment(
                             paper_id,
                             student_id,
                             "failed",
@@ -972,7 +989,7 @@ class GradingService:
                     except StopIteration:
                         dispatch_exhausted = True
                         break
-                    self.db.update_exam_paper_status(paper_id, "grading")
+                    self.papers.update_exam_paper_status(paper_id, "grading")
                     if run_store is not None and paper_id in run_item_by_paper:
                         try:
                             run_store.mark_grading(run_item_by_paper[paper_id])
@@ -1048,7 +1065,7 @@ class GradingService:
                             )
                             continue
                         result_id = (
-                            self.db.publish_session_result_if_current_assignment(
+                            self.results.publish_session_result_if_current_assignment(
                                 session_id,
                                 student_id,
                                 paper_id,
@@ -1082,7 +1099,7 @@ class GradingService:
                         }
                     except Exception as exc:  # noqa: BLE001
                         assignment_is_current = (
-                            self.db.update_exam_paper_status_if_current_assignment(
+                            self.papers.update_exam_paper_status_if_current_assignment(
                                 paper_id,
                                 student_id,
                                 "failed",
@@ -1152,12 +1169,7 @@ class GradingService:
     ) -> tuple[set[str], set[int]]:
         from grading_run_identity import paper_fingerprint
 
-        with self.db._connect() as conn:
-            rows = conn.execute(
-                "SELECT front_image, back_image, student_id FROM exam_papers "
-                "WHERE session_id = ?",
-                (int(session_id),),
-            ).fetchall()
+        rows = self.papers.get_session_paper_identities(session_id)
         fingerprints = {
             paper_fingerprint(
                 row["front_image"],
@@ -1266,7 +1278,7 @@ class GradingService:
                 pass
 
             if action == "conflict":
-                self.db.update_exam_paper_status(paper_id, "skipped", reason or "同学生多份不同答卷冲突")
+                self.papers.update_exam_paper_status(paper_id, "skipped", reason or "同学生多份不同答卷冲突")
                 yield {
                     "event": "paper_conflict",
                     "paper_id": paper_id,
@@ -1275,7 +1287,7 @@ class GradingService:
                     "fingerprint": fp[:8],
                 }
             elif action == "skipped_duplicate":
-                self.db.update_exam_paper_status(paper_id, "skipped", "本批次重复答卷")
+                self.papers.update_exam_paper_status(paper_id, "skipped", "本批次重复答卷")
                 yield {
                     "event": "paper_skipped",
                     "paper_id": paper_id,

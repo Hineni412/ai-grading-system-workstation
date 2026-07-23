@@ -5,7 +5,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from grading_service import GradingService
 from path_manager import resolve_stored_file_path
 
@@ -13,7 +13,7 @@ from path_manager import resolve_stored_file_path
 class GradingServiceFactory(Protocol):
     def __call__(
         self,
-        db_manager: DBManager,
+        db_manager: GradingRepositoryAccess,
         llm_client: Any,
         question_bank_db_path: Path | None = None,
     ) -> GradingService:
@@ -22,7 +22,7 @@ class GradingServiceFactory(Protocol):
 
 def run_grading_job(
     *,
-    db: DBManager,
+    db: GradingRepositoryAccess,
     session_id: int,
     exams_dir: Path,
     session_work_dir: Path,
@@ -42,6 +42,7 @@ def run_grading_job(
     raise_if_cancelled: Callable[[], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, object]:
+    db = as_grading_repositories(db)
     session_id = int(session_id)
     _check_cancelled(raise_if_cancelled)
     session = db.get_grading_session(session_id)

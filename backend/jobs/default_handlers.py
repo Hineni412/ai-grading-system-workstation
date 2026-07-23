@@ -7,7 +7,8 @@ from typing import Any, Callable, Protocol
 
 from api_profiles import active_api_profile, get_api_profile_store
 from backend.llm.policy import policy_overrides_from_profile
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess
+from backend.repositories.compat import open_grading_repositories
 from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
 from original_paper_exporter import OriginalPaperExporter
 from report import ReportGenerator
@@ -25,12 +26,20 @@ from .training_export import run_training_export_job
 
 
 class ReportGeneratorFactory(Protocol):
-    def __call__(self, db_path: Path, reports_dir: Path) -> ReportGenerator:
+    def __call__(
+        self,
+        db: GradingRepositoryAccess,
+        reports_dir: Path,
+    ) -> ReportGenerator:
         ...
 
 
 class OriginalPaperExporterFactory(Protocol):
-    def __call__(self, db: DBManager, output_dir: Path) -> OriginalPaperExporter:
+    def __call__(
+        self,
+        db: GradingRepositoryAccess,
+        output_dir: Path,
+    ) -> OriginalPaperExporter:
         ...
 
 
@@ -233,7 +242,7 @@ def _build_config_generation_handler(
     def handler(context: JobContext) -> dict[str, object]:
         return config_generation_runner(
             context=context,
-            db=DBManager(db_path),
+            db=open_grading_repositories(db_path),
             data_root=data_root,
             mapping_output_dir=mapping_output_dir,
             upload_config_dir=upload_config_dir,
@@ -275,12 +284,15 @@ def _build_report_export_handler(
             staging_dir = Path(staging_dir_value)
             if report_type == "score_excel":
                 staged_output = Path(
-                    report_generator_factory(db_path, staging_dir).export_session(session_id)
+                    report_generator_factory(
+                        open_grading_repositories(db_path),
+                        staging_dir,
+                    ).export_session(session_id)
                 )
             else:
                 staged_output = Path(
                     original_paper_exporter_factory(
-                        DBManager(db_path),
+                        open_grading_repositories(db_path),
                         staging_dir,
                     ).export_session_originals(session_id)
                 )
@@ -330,7 +342,7 @@ def _build_grading_run_handler(
         resume_run_id = context.payload.get("resume_run_id")
         supplement_run_id = context.payload.get("supplement_run_id")
         result = grading_runner(
-            db=DBManager(db_path),
+            db=open_grading_repositories(db_path),
             session_id=session_id,
             exams_dir=job_exams_dir,
             session_work_dir=templates_dir / f"session_{session_id}",
@@ -378,7 +390,7 @@ def _build_scan_analysis_handler(
         ocr_workers = context.payload.get("ocr_workers")
         context.report(0.05, "scan_analysis", "starting")
         scan_kwargs: dict[str, Any] = {
-            "db": DBManager(db_path),
+            "db": open_grading_repositories(db_path),
             "session_id": session_id,
             "exams_dir": job_exams_dir,
             "session_work_dir": templates_dir / f"session_{session_id}",

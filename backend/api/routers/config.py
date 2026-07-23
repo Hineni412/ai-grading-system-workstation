@@ -65,7 +65,7 @@ from backend.public_data import (
     contains_path_key,
     contains_sensitive_key,
 )
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess
 from path_manager import resolve_stored_file_path
 from session_manager import save_generated_config
 from backend.config_workspace.editor import (
@@ -147,7 +147,7 @@ def _source_api_error(exc: ConfigSourceError) -> ApiError:
 async def upload_config_source(
     session_id: int,
     request: Request,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     source_service: ConfigSourceService = Depends(get_config_source_service),
     manager: JobManager = Depends(get_job_manager),
 ) -> dict[str, Any]:
@@ -264,7 +264,7 @@ async def upload_config_source(
 def get_config_source_submission(
     session_id: int,
     request_token: str,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     source_service: ConfigSourceService = Depends(get_config_source_service),
 ) -> dict[str, Any]:
     _require_session(db, session_id)
@@ -284,7 +284,7 @@ def get_config_source_submission(
 def abandon_config_source_submission(
     session_id: int,
     request_token: str,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     source_service: ConfigSourceService = Depends(get_config_source_service),
 ) -> dict[str, str]:
     _require_active_session(db, session_id)
@@ -305,7 +305,7 @@ def abandon_config_source_submission(
 )
 def get_active_config_source(
     session_id: int,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     source_service: ConfigSourceService = Depends(get_config_source_service),
 ) -> dict[str, Any]:
     _require_session(db, session_id)
@@ -323,7 +323,7 @@ def get_active_config_source(
 def get_config_source(
     session_id: int,
     source_id: str,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     source_service: ConfigSourceService = Depends(get_config_source_service),
 ) -> dict[str, Any]:
     _require_session(db, session_id)
@@ -345,7 +345,7 @@ def get_config_source_asset(
     source_id: str,
     question_id: str,
     asset_kind: str,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     source_service: ConfigSourceService = Depends(get_config_source_service),
 ) -> Response:
     _require_session(db, session_id)
@@ -419,7 +419,7 @@ def _config_response(session: dict[str, Any]) -> SessionConfigResponse:
 @router.get("/sessions/{session_id}/config", response_model=SessionConfigResponse)
 def get_session_config(
     session_id: int,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
 ) -> SessionConfigResponse:
     return _config_response(_require_session(db, session_id))
 
@@ -428,7 +428,7 @@ def get_session_config(
 def save_session_config(
     session_id: int,
     request: SessionConfigRequest,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
     upload_config_dir: Path = Depends(get_upload_config_dir),
 ) -> SessionConfigResponse:
@@ -521,7 +521,7 @@ def _editor_api_error(exc: Exception) -> ApiError:
 )
 def get_config_editor(
     session_id: int,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
 ) -> dict[str, Any]:
     _require_active_session(db, session_id)
     try:
@@ -542,7 +542,7 @@ def get_config_editor(
 def save_config_editor(
     session_id: int,
     request: ConfigEditorSaveRequest,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
     upload_config_dir: Path = Depends(get_upload_config_dir),
     templates_dir: Path = Depends(get_config_mapping_output_dir),
@@ -590,7 +590,7 @@ def save_config_editor(
 def refine_config_editor(
     session_id: int,
     request: ConfigEditorRefineRequest,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
     upload_config_dir: Path = Depends(get_upload_config_dir),
 ) -> JobResponse:
@@ -640,7 +640,10 @@ def refine_config_editor(
         raise
 
 
-def _require_active_session(db: DBManager, session_id: int) -> dict[str, Any]:
+def _require_active_session(
+    db: GradingRepositoryAccess,
+    session_id: int,
+) -> dict[str, Any]:
     session = _require_session(db, session_id)
     if bool(int(session.get("is_deleted") or 0)):
         raise ApiError(
@@ -768,7 +771,7 @@ def get_latest_config_generation_job(
     source_id: str,
     source_revision: str,
     generation_mode: str,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
 ) -> JobResponse:
     _require_active_session(db, session_id)
@@ -795,7 +798,7 @@ def get_latest_config_generation_job(
 def get_config_generation_job_by_request_token(
     session_id: int,
     request_token: str,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
 ) -> JobResponse:
     _require_active_session(db, session_id)
@@ -822,7 +825,7 @@ def get_config_generation_job_by_request_token(
 def abandon_config_generation_request(
     session_id: int,
     request_token: str,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
     upload_config_dir: Path = Depends(get_upload_config_dir),
 ) -> dict[str, str]:
@@ -851,7 +854,7 @@ def abandon_config_generation_request(
 def generate_session_config(
     session_id: int,
     request: ConfigGenerationRequest,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
     upload_config_dir: Path = Depends(get_upload_config_dir),
 ) -> JobResponse:
@@ -905,7 +908,7 @@ def generate_session_config(
 def generate_session_config_from_source(
     session_id: int,
     request: ConfigSourceGenerationRequest,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
     upload_config_dir: Path = Depends(get_upload_config_dir),
     source_service: ConfigSourceService = Depends(get_config_source_service),
@@ -974,7 +977,7 @@ def generate_session_config_from_source(
 def retry_session_config_generation(
     session_id: int,
     request: ConfigGenerationRetryRequest,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
 ) -> JobResponse:
     _require_active_session(db, session_id)

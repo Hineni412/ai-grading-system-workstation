@@ -13,7 +13,7 @@ from backend.file_access import (
     ResolvedFile,
     resolve_controlled_file,
 )
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 
 
 IMAGE_SUFFIXES = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".webp"})
@@ -30,14 +30,14 @@ class ReviewMediaUnreadable(ValueError):
 class ReviewMediaService:
     def __init__(
         self,
-        db: DBManager,
+        db: GradingRepositoryAccess,
         *,
         data_root: Path,
         exams_dir: Path,
         templates_dir: Path,
         annotated_dir: Path,
     ) -> None:
-        self.db = db
+        self.db = as_grading_repositories(db)
         self.data_root = Path(data_root)
         self.exams_dir = Path(exams_dir)
         self.templates_dir = Path(templates_dir)

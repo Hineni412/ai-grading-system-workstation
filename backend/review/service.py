@@ -7,7 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from db_manager import DBManager, ReviewAdjustmentOwnershipError
+from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
+from backend.repositories.review import ReviewAdjustmentOwnershipError
 from backend.public_data import sanitize_public_mapping
 from path_manager import resolve_stored_file_path
 
@@ -92,8 +93,12 @@ class ReviewConfirmationResult:
 
 
 class ReviewApplicationService:
-    def __init__(self, db: DBManager, manual_review_service: Any | None = None) -> None:
-        self.db = db
+    def __init__(
+        self,
+        db: GradingRepositoryAccess,
+        manual_review_service: Any | None = None,
+    ) -> None:
+        self.db = as_grading_repositories(db)
         self.manual_review_service = manual_review_service
 
     def list_items(
@@ -310,7 +315,7 @@ class ReviewApplicationService:
         )
 
 
-def _data_root(db: DBManager) -> Path | None:
+def _data_root(db: GradingRepositoryAccess) -> Path | None:
     return db.db_path.parent.parent if db.db_path.parent.name == "databases" else None
 
 
@@ -338,7 +343,10 @@ def _clean_confidence(value: Any) -> float | None:
     return confidence if math.isfinite(confidence) else None
 
 
-def _load_score_map(session: dict[str, Any], db: DBManager) -> dict[str, float]:
+def _load_score_map(
+    session: dict[str, Any],
+    db: GradingRepositoryAccess,
+) -> dict[str, float]:
     rubric_path = resolve_stored_file_path(
         session.get("rubric_path"),
         data_root=_data_root(db),

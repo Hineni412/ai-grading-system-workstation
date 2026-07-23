@@ -16,7 +16,16 @@ from backend.repositories import (
     InstrumentedSQLiteConnectionFactory,
     RepositorySessionProvider,
 )
-from backend.repositories.sessions import SessionRepositoryGateway
+from backend.repositories.papers import PaperRepository, PaperRepositoryGateway
+from backend.repositories.reporting import ReportRepositoryGateway
+from backend.repositories.results import ResultRepository, ResultRepositoryGateway
+from backend.repositories.review import (
+    ReviewAdjustmentOwnershipError,
+    ReviewRepository,
+    ReviewRepositoryGateway,
+)
+from backend.repositories.settings import SettingsRepositoryGateway
+from backend.repositories.sessions import SessionRepository, SessionRepositoryGateway
 from backend.repositories.students import (
     StudentBackupFailedError,
     StudentCodeConflictError,
@@ -26,7 +35,12 @@ from backend.repositories.students import (
     StudentRosterRevisionConflict,
     student_roster_revision,
 )
-from grading_completeness import audit_grading_details, major_question_id
+from backend.repositories.templates import (
+    RegionRepository,
+    TemplateRegionRepositoryGateway,
+    TemplateRepository,
+)
+from grading_completeness import resolve_grading_completeness
 from path_manager import resolve_stored_file_path
 try:
     from question_bank.taxonomy.registry import canonicalize_knowledge as _registry_canonicalize
@@ -35,25 +49,6 @@ except Exception:
 
 
 QUESTION_BANK_SYNC_STATES = {"not_started", "running", "ready", "partial", "failed"}
-
-
-class ReviewAdjustmentOwnershipError(ValueError):
-    def __init__(
-        self,
-        *,
-        session_id: int,
-        result_id: int,
-        question_id: str,
-        detail_id: int,
-    ) -> None:
-        self.session_id = int(session_id)
-        self.result_id = int(result_id)
-        self.question_id = str(question_id)
-        self.detail_id = int(detail_id)
-        super().__init__(
-            f"Review detail {self.detail_id} does not belong to the requested "
-            "session, result, and question."
-        )
 
 
 class _BorrowedSQLiteConnection:
@@ -107,6 +102,24 @@ class DBManager:
         self._session_repository = SessionRepositoryGateway(
             self._repository_sessions
         )
+        self._paper_repository = PaperRepositoryGateway(
+            self._repository_sessions
+        )
+        self._result_repository = ResultRepositoryGateway(
+            self._repository_sessions
+        )
+        self._review_repository = ReviewRepositoryGateway(
+            self._repository_sessions
+        )
+        self._template_repository = TemplateRegionRepositoryGateway(
+            self._repository_sessions
+        )
+        self._settings_repository = SettingsRepositoryGateway(
+            self._repository_sessions
+        )
+        self._report_repository = ReportRepositoryGateway(
+            self._repository_sessions
+        )
         try:
             from path_manager import get_path_manager
             pm = get_path_manager()
@@ -124,6 +137,30 @@ class DBManager:
     @property
     def session_repository(self) -> SessionRepositoryGateway:
         return self._session_repository
+
+    @property
+    def paper_repository(self) -> PaperRepositoryGateway:
+        return self._paper_repository
+
+    @property
+    def result_repository(self) -> ResultRepositoryGateway:
+        return self._result_repository
+
+    @property
+    def review_repository(self) -> ReviewRepositoryGateway:
+        return self._review_repository
+
+    @property
+    def template_repository(self) -> TemplateRegionRepositoryGateway:
+        return self._template_repository
+
+    @property
+    def settings_repository(self) -> SettingsRepositoryGateway:
+        return self._settings_repository
+
+    @property
+    def report_repository(self) -> ReportRepositoryGateway:
+        return self._report_repository
 
     def _connect(self) -> sqlite3.Connection | _BorrowedSQLiteConnection:
         if self._external_connection is not None:
@@ -631,26 +668,10 @@ class DBManager:
 
     # ---------- Session ----------
     def set_app_setting(self, key: str, value: str) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO app_settings (setting_key, setting_value, updated_at)
-                VALUES (?, ?, datetime('now','localtime'))
-                ON CONFLICT(setting_key) DO UPDATE SET
-                    setting_value = excluded.setting_value,
-                    updated_at = datetime('now','localtime')
-                """,
-                (str(key), str(value)),
-            )
-            conn.commit()
+        self.settings_repository.set_app_setting(key, value)
 
     def get_app_setting(self, key: str, default: str | None = None) -> str | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT setting_value FROM app_settings WHERE setting_key = ?",
-                (str(key),),
-            ).fetchone()
-        return str(row["setting_value"]) if row else default
+        return self.settings_repository.get_app_setting(key, default)
 
     def create_grading_session(
         self,
@@ -893,7 +914,7 @@ class DBManager:
     def collect_session_storage_paths(self, session_id: int) -> list[str]:
         paths: list[str] = []
 
-        def add_values(row: sqlite3.Row | None, fields: list[str]) -> None:
+        def add_values(row: Any, fields: list[str]) -> None:
             if row is None:
                 return
             for field in fields:
@@ -913,45 +934,24 @@ class DBManager:
                 ).fetchone(),
                 ["rubric_path", "answer_key_path", "template_config_path"],
             )
-            add_values(
-                conn.execute(
-                    """
-                    SELECT front_template_path, back_template_path, ai_analysis_path,
-                           template_config_path, regions_path
-                    FROM session_templates
-                    WHERE session_id = ?
-                    """,
-                    (session_id,),
-                ).fetchone(),
-                [
-                    "front_template_path",
-                    "back_template_path",
-                    "ai_analysis_path",
-                    "template_config_path",
-                    "regions_path",
-                ],
-            )
-            rows = conn.execute(
-                """
-                SELECT front_image, back_image
-                FROM exam_papers
-                WHERE session_id = ?
-                """,
-                (session_id,),
-            ).fetchall()
-            for row in rows:
-                add_values(row, ["front_image", "back_image"])
-
-            rows = conn.execute(
-                """
-                SELECT annotated_front_path, annotated_back_path
-                FROM annotated_results
-                WHERE session_id = ?
-                """,
-                (session_id,),
-            ).fetchall()
-            for row in rows:
-                add_values(row, ["annotated_front_path", "annotated_back_path"])
+        add_values(
+            self.template_repository.get_session_storage_path_row(session_id),
+            [
+                "front_template_path",
+                "back_template_path",
+                "ai_analysis_path",
+                "template_config_path",
+                "regions_path",
+            ],
+        )
+        for row in self.paper_repository.get_session_storage_path_rows(
+            session_id
+        ):
+            add_values(row, ["front_image", "back_image"])
+        for row in self.review_repository.get_session_annotation_path_rows(
+            session_id
+        ):
+            add_values(row, ["annotated_front_path", "annotated_back_path"])
 
         return paths
 
@@ -973,100 +973,115 @@ class DBManager:
             "grading_sessions": 0,
         }
 
-        with self._connect() as conn:
-            result_rows = conn.execute("SELECT id FROM session_results WHERE session_id = ?", (session_id,)).fetchall()
-            result_ids = [int(row["id"]) for row in result_rows]
-
-            if result_ids:
-                placeholders = ",".join(["?"] * len(result_ids))
-                counts["session_details"] += int(
-                    conn.execute(f"DELETE FROM session_details WHERE result_id IN ({placeholders})", result_ids).rowcount
-                    or 0
+        with self._repository_sessions.session() as repository_session:
+            with repository_session.transaction(immediate=True):
+                results = ResultRepository(repository_session)
+                reviews = ReviewRepository(repository_session)
+                papers = PaperRepository(repository_session)
+                sessions = SessionRepository(repository_session)
+                regions = RegionRepository(repository_session)
+                templates = TemplateRepository(repository_session)
+                result_ids = results.get_session_result_ids(session_id)
+                counts["session_details"] = results.delete_result_details(
+                    result_ids
                 )
-                counts["annotated_results"] += int(
-                    conn.execute(f"DELETE FROM annotated_results WHERE result_id IN ({placeholders})", result_ids).rowcount
-                    or 0
+                counts["annotated_results"] = (
+                    reviews.delete_session_annotations(
+                        session_id,
+                        result_ids,
+                    )
                 )
-
-            counts["annotated_results"] += int(
-                conn.execute("DELETE FROM annotated_results WHERE session_id = ?", (session_id,)).rowcount or 0
-            )
-            counts["session_attendance"] += int(
-                conn.execute("DELETE FROM session_attendance WHERE session_id = ?", (session_id,)).rowcount or 0
-            )
-            counts["session_results"] += int(
-                conn.execute("DELETE FROM session_results WHERE session_id = ?", (session_id,)).rowcount or 0
-            )
-            counts["exam_papers"] += int(
-                conn.execute("DELETE FROM exam_papers WHERE session_id = ?", (session_id,)).rowcount or 0
-            )
-            counts["answer_regions"] += int(
-                conn.execute("DELETE FROM answer_regions WHERE session_id = ?", (session_id,)).rowcount or 0
-            )
-            counts["session_templates"] += int(
-                conn.execute("DELETE FROM session_templates WHERE session_id = ?", (session_id,)).rowcount or 0
-            )
-            counts["grading_sessions"] += int(
-                conn.execute(
-                    "DELETE FROM grading_sessions WHERE id = ? AND is_deleted = 1",
-                    (session_id,),
-                ).rowcount
-                or 0
-            )
-            conn.commit()
+                counts["session_attendance"] = (
+                    sessions.delete_session_attendance(session_id)
+                )
+                counts["session_results"] = results.delete_session_results(
+                    session_id
+                )
+                counts["exam_papers"] = papers.delete_session_papers(
+                    session_id
+                )
+                counts["answer_regions"] = regions.delete_session_regions(
+                    session_id
+                )
+                counts["session_templates"] = (
+                    templates.delete_session_templates(session_id)
+                )
+                counts["grading_sessions"] = max(
+                    0,
+                    int(
+                        repository_session.connection.execute(
+                            """
+                            DELETE FROM grading_sessions
+                            WHERE id = ? AND is_deleted = 1
+                            """,
+                            (session_id,),
+                        ).rowcount
+                    ),
+                )
 
         return counts
 
     def update_session_status(self, session_id: int, status: str) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE grading_sessions SET status = ?, updated_at = datetime('now','localtime') WHERE id = ?",
-                (status, session_id),
-            )
-            if status != "running":
-                conn.execute(
-                    "UPDATE exam_papers SET processing_status = 'failed', error_message = '批改中途被终止或强制重置' WHERE session_id = ? AND processing_status = 'grading'",
-                    (session_id,),
+        with self._repository_sessions.session() as repository_session:
+            with repository_session.transaction():
+                repository_session.connection.execute(
+                    """
+                    UPDATE grading_sessions
+                    SET status = ?, updated_at = datetime('now','localtime')
+                    WHERE id = ?
+                    """,
+                    (status, session_id),
                 )
-            conn.commit()
+                if status != "running":
+                    PaperRepository(
+                        repository_session
+                    ).mark_grading_papers_failed(
+                        session_id,
+                        "批改中途被终止或强制重置",
+                    )
 
     def try_start_session_run(self, session_id: int) -> bool:
-        with self._connect() as conn:
-            cursor = conn.execute(
-                """
-                UPDATE grading_sessions
-                SET status = 'running', updated_at = datetime('now','localtime')
-                WHERE id = ? AND COALESCE(status, '') <> 'running'
-                """,
-                (session_id,),
-            )
-            success = int(cursor.rowcount or 0) == 1
-            if success:
-                conn.execute(
-                    "UPDATE exam_papers SET processing_status = 'failed', error_message = '批改中途被异常中断，请重试' WHERE session_id = ? AND processing_status = 'grading'",
+        with self._repository_sessions.session() as repository_session:
+            with repository_session.transaction(immediate=True):
+                cursor = repository_session.connection.execute(
+                    """
+                    UPDATE grading_sessions
+                    SET status = 'running',
+                        updated_at = datetime('now','localtime')
+                    WHERE id = ? AND COALESCE(status, '') <> 'running'
+                    """,
                     (session_id,),
                 )
-            conn.commit()
-            return success
+                success = int(cursor.rowcount or 0) == 1
+                if success:
+                    PaperRepository(
+                        repository_session
+                    ).mark_grading_papers_failed(
+                        session_id,
+                        "批改中途被异常中断，请重试",
+                    )
+                return success
 
     def finish_session_run(self, session_id: int, status: str = "completed") -> None:
         self.update_session_status(session_id, status)
 
     def clear_session_run_data(self, session_id: int) -> None:
         self.create_backup("clear_session")
-        with self._connect() as conn:
-            result_rows = conn.execute("SELECT id FROM session_results WHERE session_id = ?", (session_id,)).fetchall()
-            result_ids = [row["id"] for row in result_rows]
-
-            if result_ids:
-                placeholders = ",".join(["?"] * len(result_ids))
-                conn.execute(f"DELETE FROM session_details WHERE result_id IN ({placeholders})", result_ids)
-                conn.execute(f"DELETE FROM annotated_results WHERE result_id IN ({placeholders})", result_ids)
-
-            conn.execute("DELETE FROM session_attendance WHERE session_id = ?", (session_id,))
-            conn.execute("DELETE FROM session_results WHERE session_id = ?", (session_id,))
-            conn.execute("DELETE FROM exam_papers WHERE session_id = ?", (session_id,))
-            conn.commit()
+        with self._repository_sessions.session() as repository_session:
+            with repository_session.transaction(immediate=True):
+                results = ResultRepository(repository_session)
+                result_ids = results.get_session_result_ids(session_id)
+                results.delete_result_details(result_ids)
+                ReviewRepository(
+                    repository_session
+                ).delete_session_annotations(session_id, result_ids)
+                SessionRepository(
+                    repository_session
+                ).delete_session_attendance(session_id)
+                results.delete_session_results(session_id)
+                PaperRepository(repository_session).delete_session_papers(
+                    session_id
+                )
 
     def replace_session_attendance(self, session_id: int, rows: list[dict[str, Any]]) -> None:
         self.session_repository.replace_session_attendance(session_id, rows)
@@ -1076,40 +1091,11 @@ class DBManager:
 
     # ---------- Template & regions ----------
     def upsert_session_template(self, session_id: int, front_template_path: str, back_template_path: str) -> int:
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            existing = cursor.execute(
-                "SELECT id FROM session_templates WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-
-            if existing:
-                template_id = int(existing["id"])
-                cursor.execute(
-                    """
-                    UPDATE session_templates
-                    SET front_template_path = ?,
-                        back_template_path = ?,
-                        is_confirmed = 0,
-                        regions_snapshot_pending = 0,
-                        regions_snapshot_token = NULL,
-                        updated_at = datetime('now','localtime')
-                    WHERE id = ?
-                    """,
-                    (front_template_path, back_template_path, template_id),
-                )
-            else:
-                cursor.execute(
-                    """
-                    INSERT INTO session_templates (session_id, front_template_path, back_template_path, is_confirmed)
-                    VALUES (?, ?, ?, 0)
-                    """,
-                    (session_id, front_template_path, back_template_path),
-                )
-                template_id = int(cursor.lastrowid)
-
-            conn.commit()
-            return template_id
+        return self.template_repository.upsert_session_template(
+            session_id,
+            front_template_path,
+            back_template_path,
+        )
 
     def activate_session_template(
         self,
@@ -1122,71 +1108,17 @@ class DBManager:
         regions_path: str,
     ) -> int:
         """Atomically activate one generated template package for a session."""
-        with self._connect() as conn:
-            existing = conn.execute(
-                "SELECT id FROM session_templates WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-            if existing:
-                template_id = int(existing["id"])
-                conn.execute(
-                    """
-                    UPDATE session_templates
-                    SET front_template_path = ?,
-                        back_template_path = ?,
-                        ai_analysis_path = ?,
-                        template_config_path = ?,
-                        regions_path = ?,
-                        is_confirmed = 0,
-                        regions_snapshot_pending = 0,
-                        regions_snapshot_token = NULL,
-                        updated_at = datetime('now','localtime')
-                    WHERE id = ?
-                    """,
-                    (
-                        front_template_path,
-                        back_template_path,
-                        ai_analysis_path,
-                        template_config_path,
-                        regions_path,
-                        template_id,
-                    ),
-                )
-            else:
-                cursor = conn.execute(
-                    """
-                    INSERT INTO session_templates (
-                        session_id, front_template_path, back_template_path,
-                        ai_analysis_path, template_config_path, regions_path, is_confirmed
-                    ) VALUES (?, ?, ?, ?, ?, ?, 0)
-                    """,
-                    (
-                        session_id,
-                        front_template_path,
-                        back_template_path,
-                        ai_analysis_path,
-                        template_config_path,
-                        regions_path,
-                    ),
-                )
-                template_id = int(cursor.lastrowid)
-            conn.commit()
-            return template_id
+        return self.template_repository.activate_session_template(
+            session_id,
+            front_template_path=front_template_path,
+            back_template_path=back_template_path,
+            ai_analysis_path=ai_analysis_path,
+            template_config_path=template_config_path,
+            regions_path=regions_path,
+        )
 
     def get_session_template(self, session_id: int) -> dict[str, Any] | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT id, session_id, front_template_path, back_template_path,
-                       ai_analysis_path, template_config_path, regions_path,
-                       is_confirmed, regions_snapshot_pending, regions_snapshot_token,
-                       created_at, updated_at
-                FROM session_templates
-                WHERE session_id = ?
-                """,
-                (session_id,),
-            ).fetchone()
-            return dict(row) if row else None
+        return self.template_repository.get_session_template(session_id)
 
     def update_session_template_analysis(
         self,
@@ -1196,129 +1128,36 @@ class DBManager:
         template_config_path: str | None,
         regions_path: str | None,
     ) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE session_templates
-                SET ai_analysis_path = ?,
-                    template_config_path = ?,
-                    regions_path = ?,
-                    is_confirmed = 0,
-                    regions_snapshot_pending = 0,
-                    regions_snapshot_token = NULL,
-                    updated_at = datetime('now','localtime')
-                WHERE session_id = ?
-                """,
-                (ai_analysis_path, template_config_path, regions_path, session_id),
-            )
-            conn.commit()
-
-    def _insert_answer_region_conn(
-        self,
-        conn: sqlite3.Connection,
-        session_id: int,
-        template_id: int,
-        region: dict[str, Any],
-    ) -> int:
-        raw_region_uuid = region.get("region_uuid")
-        region_uuid = (
-            str(raw_region_uuid)
-            if raw_region_uuid is not None and str(raw_region_uuid).strip()
-            else str(uuid4())
+        self.template_repository.update_session_template_analysis(
+            session_id,
+            ai_analysis_path=ai_analysis_path,
+            template_config_path=template_config_path,
+            regions_path=regions_path,
         )
-        mapped_question_id = region.get("mapped_question_id")
-        raw_mapping_status = region.get("mapping_status")
-        mapping_status = (
-            str(raw_mapping_status)
-            if raw_mapping_status is not None and str(raw_mapping_status).strip()
-            else ("manual" if mapped_question_id is not None and str(mapped_question_id).strip() else "unbound")
-        )
-        cursor = conn.execute(
-            """
-            INSERT INTO answer_regions (
-                region_uuid, session_id, template_id, page, region_order, x, y, w, h,
-                detected_question_id, mapped_question_id, confidence, is_confirmed,
-                mapping_status, multi_region_confirmed, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
-            """,
-            (
-                region_uuid,
-                session_id,
-                template_id,
-                region.get("page", "front"),
-                int(region.get("region_order", 0)),
-                int(region.get("x", 0)),
-                int(region.get("y", 0)),
-                int(region.get("w", 0)),
-                int(region.get("h", 0)),
-                region.get("detected_question_id"),
-                mapped_question_id,
-                float(region.get("confidence", 0.0)),
-                1 if region.get("is_confirmed") else 0,
-                mapping_status,
-                1 if region.get("multi_region_confirmed") else 0,
-            ),
-        )
-        return int(cursor.lastrowid)
 
     def save_answer_regions(self, session_id: int, template_id: int, regions: list[dict[str, Any]]) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM answer_regions WHERE session_id = ?", (session_id,))
-            for region in regions:
-                self._insert_answer_region_conn(conn, session_id, template_id, region)
-            conn.commit()
+        self.template_repository.save_answer_regions(
+            session_id,
+            template_id,
+            regions,
+        )
 
     def list_answer_regions(self, session_id: int) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, region_uuid, session_id, template_id, page, region_order, x, y, w, h,
-                       detected_question_id, mapped_question_id, confidence, is_confirmed,
-                       mapping_status, multi_region_confirmed, created_at, updated_at
-                FROM answer_regions
-                WHERE session_id = ?
-                ORDER BY CASE page WHEN 'front' THEN 1 ELSE 2 END, region_order ASC
-                """,
-                (session_id,),
-            ).fetchall()
-            return [dict(row) for row in rows]
+        return self.template_repository.list_answer_regions(session_id)
 
     def bulk_update_answer_region_mapping(self, session_id: int, rows: list[dict[str, Any]]) -> None:
-        with self._connect() as conn:
-            for row in rows:
-                mapped_question_id = row.get("mapped_question_id")
-                mapping_status = row.get("mapping_status")
-                if mapping_status not in {"auto", "manual", "unbound"}:
-                    mapping_status = (
-                        "manual"
-                        if mapped_question_id is not None and str(mapped_question_id).strip()
-                        else "unbound"
-                    )
-                conn.execute(
-                    """
-                    UPDATE answer_regions
-                    SET mapped_question_id = ?,
-                        mapping_status = ?,
-                        is_confirmed = ?,
-                        updated_at = datetime('now','localtime')
-                    WHERE id = ? AND session_id = ?
-                    """,
-                    (
-                        mapped_question_id,
-                        mapping_status,
-                        1 if row.get("is_confirmed") else 0,
-                        int(row.get("id")),
-                        session_id,
-                    ),
-                )
-            conn.commit()
+        self.template_repository.bulk_update_answer_region_mapping(
+            session_id,
+            rows,
+        )
 
     def add_answer_region(self, session_id: int, template_id: int, region: dict[str, Any]) -> int:
         """Insert a single region and return its new id."""
-        with self._connect() as conn:
-            region_id = self._insert_answer_region_conn(conn, session_id, template_id, region)
-            conn.commit()
-            return region_id
+        return self.template_repository.add_answer_region(
+            session_id,
+            template_id,
+            region,
+        )
 
     def replace_answer_regions_atomic(
         self,
@@ -1328,36 +1167,12 @@ class DBManager:
         *,
         confirmed: bool,
     ) -> str:
-        snapshot_token = uuid4().hex
-        with self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            template = conn.execute(
-                "SELECT 1 FROM session_templates WHERE id = ? AND session_id = ?",
-                (template_id, session_id),
-            ).fetchone()
-            if template is None:
-                raise sqlite3.IntegrityError(
-                    f"template_id {template_id} does not belong to session_id {session_id}"
-                )
-            conn.execute("DELETE FROM answer_regions WHERE session_id = ?", (session_id,))
-            for region in regions:
-                if confirmed:
-                    region = dict(region)
-                    region["is_confirmed"] = True
-                self._insert_answer_region_conn(conn, session_id, template_id, region)
-            conn.execute(
-                """
-                UPDATE session_templates
-                SET is_confirmed = ?,
-                    regions_snapshot_pending = 1,
-                    regions_snapshot_token = ?,
-                    updated_at = datetime('now','localtime')
-                WHERE session_id = ?
-                """,
-                (1 if confirmed else 0, snapshot_token, session_id),
-            )
-            conn.commit()
-        return snapshot_token
+        return self.template_repository.replace_answer_regions_atomic(
+            session_id,
+            template_id,
+            regions,
+            confirmed=confirmed,
+        )
 
     def mark_region_snapshot_complete(
         self,
@@ -1365,28 +1180,13 @@ class DBManager:
         *,
         expected_token: str,
     ) -> bool:
-        if not isinstance(expected_token, str) or not expected_token.strip():
-            raise ValueError("expected_token must be nonblank")
-        with self._connect() as conn:
-            cursor = conn.execute(
-                """
-                UPDATE session_templates
-                SET regions_snapshot_pending = 0,
-                    regions_snapshot_token = NULL,
-                    updated_at = datetime('now','localtime')
-                WHERE session_id = ?
-                  AND regions_snapshot_pending = 1
-                  AND regions_snapshot_token = ?
-                """,
-                (session_id, expected_token),
-            )
-            conn.commit()
-            return cursor.rowcount > 0
+        return self.template_repository.mark_region_snapshot_complete(
+            session_id,
+            expected_token=expected_token,
+        )
 
     def delete_answer_region(self, region_id: int) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM answer_regions WHERE id = ?", (region_id,))
-            conn.commit()
+        self.template_repository.delete_answer_region(region_id)
 
     def update_answer_region_bbox(
         self,
@@ -1396,54 +1196,22 @@ class DBManager:
         w: int,
         h: int,
     ) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE answer_regions
-                SET x = ?, y = ?, w = ?, h = ?, updated_at = datetime('now','localtime')
-                WHERE id = ?
-                """,
-                (x, y, w, h, region_id),
-            )
-            conn.commit()
+        self.template_repository.update_answer_region_bbox(
+            region_id,
+            x,
+            y,
+            w,
+            h,
+        )
 
     def mark_template_confirmed(self, session_id: int, confirmed: bool = True) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE session_templates
-                SET is_confirmed = ?, updated_at = datetime('now','localtime')
-                WHERE session_id = ?
-                """,
-                (1 if confirmed else 0, session_id),
-            )
-            conn.commit()
+        self.template_repository.mark_template_confirmed(
+            session_id,
+            confirmed,
+        )
 
     def is_template_ready(self, session_id: int) -> bool:
-        with self._connect() as conn:
-            tpl = conn.execute(
-                "SELECT id, is_confirmed FROM session_templates WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-            if tpl is None or int(tpl["is_confirmed"]) != 1:
-                return False
-
-            total = conn.execute(
-                "SELECT COUNT(*) AS c FROM answer_regions WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()["c"]
-            confirmed = conn.execute(
-                """
-                SELECT COUNT(*) AS c
-                FROM answer_regions
-                WHERE session_id = ?
-                  AND is_confirmed = 1
-                  AND COALESCE(mapped_question_id, '') <> ''
-                """,
-                (session_id,),
-            ).fetchone()["c"]
-
-            return total > 0 and total == confirmed
+        return self.template_repository.is_template_ready(session_id)
 
     # ---------- Paper/result persistence ----------
     def create_exam_paper(
@@ -1457,36 +1225,23 @@ class DBManager:
         processing_status: str,
         error_message: str | None = None,
     ) -> int:
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO exam_papers (
-                    session_id, front_image, back_image, ocr_name, student_id,
-                    match_status, processing_status, error_message
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    session_id,
-                    front_image,
-                    back_image,
-                    ocr_name,
-                    student_id,
-                    match_status,
-                    processing_status,
-                    error_message,
-                ),
-            )
-            conn.commit()
-            return int(cursor.lastrowid)
+        return self.paper_repository.create_exam_paper(
+            session_id,
+            front_image,
+            back_image,
+            ocr_name,
+            student_id,
+            match_status,
+            processing_status,
+            error_message,
+        )
 
     def update_exam_paper_status(self, paper_id: int, processing_status: str, error_message: str | None = None) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE exam_papers SET processing_status = ?, error_message = ? WHERE id = ?",
-                (processing_status, error_message, paper_id),
-            )
-            conn.commit()
+        self.paper_repository.update_exam_paper_status(
+            paper_id,
+            processing_status,
+            error_message,
+        )
 
     def update_exam_paper_status_if_current_assignment(
         self,
@@ -1495,84 +1250,12 @@ class DBManager:
         processing_status: str,
         error_message: str | None = None,
     ) -> bool:
-        with self._connect() as conn:
-            cursor = conn.execute(
-                """
-                UPDATE exam_papers
-                SET processing_status = ?, error_message = ?
-                WHERE id = ?
-                  AND student_id = ?
-                  AND match_status = 'matched'
-                """,
-                (processing_status, error_message, paper_id, student_id),
-            )
-            conn.commit()
-            return cursor.rowcount == 1
-
-    def _save_session_result_in_connection(
-        self,
-        conn: sqlite3.Connection,
-        session_id: int,
-        student_id: int,
-        paper_id: int,
-        grading_result: GradingResult,
-    ) -> int:
-        cursor = conn.cursor()
-
-        # Remove old results for this student in this session
-        cursor.execute(
-            "SELECT id FROM session_results WHERE session_id = ? AND student_id = ?",
-            (session_id, student_id),
+        return self.paper_repository.update_exam_paper_status_if_current_assignment(
+            paper_id,
+            student_id,
+            processing_status,
+            error_message,
         )
-        old_rows = cursor.fetchall()
-        for old_row in old_rows:
-            old_id = old_row[0]
-            cursor.execute("DELETE FROM annotated_results WHERE result_id = ?", (old_id,))
-            cursor.execute("DELETE FROM session_details WHERE result_id = ?", (old_id,))
-            cursor.execute("DELETE FROM session_results WHERE id = ?", (old_id,))
-
-        cursor.execute(
-            """
-            INSERT INTO session_results (
-                session_id, student_id, paper_id, total_score, student_score,
-                needs_human_review, raw_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                session_id,
-                student_id,
-                paper_id,
-                grading_result.total_score,
-                grading_result.student_score,
-                1 if grading_result.needs_human_review else 0,
-                json.dumps(grading_result.raw_json, ensure_ascii=False),
-            ),
-        )
-
-        result_id = int(cursor.lastrowid)
-        for detail in grading_result.grading_details:
-            cursor.execute(
-                """
-                INSERT INTO session_details (
-                    result_id, question_id, score_awarded, deduction_reason,
-                    knowledge_id, knowledge_ids, error_category, error_summary,
-                    confidence_score, secondary_errors_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    result_id,
-                    detail.question_id,
-                    detail.score_awarded,
-                    detail.deduction_reason,
-                    detail.knowledge_id,
-                    json.dumps(_detail_knowledge_ids(detail), ensure_ascii=False),
-                    getattr(detail, "error_category", None),
-                    getattr(detail, "error_summary", None),
-                    getattr(detail, "confidence_score", None),
-                    _serialize_secondary_errors(getattr(detail, "secondary_errors", [])),
-                ),
-            )
-        return result_id
 
     def save_session_result(
         self,
@@ -1581,16 +1264,12 @@ class DBManager:
         paper_id: int,
         grading_result: GradingResult,
     ) -> int:
-        with self._connect() as conn:
-            result_id = self._save_session_result_in_connection(
-                conn,
-                session_id,
-                student_id,
-                paper_id,
-                grading_result,
-            )
-            conn.commit()
-            return result_id
+        return self.result_repository.save_session_result(
+            session_id,
+            student_id,
+            paper_id,
+            grading_result,
+        )
 
     def publish_session_result_if_current_assignment(
         self,
@@ -1599,73 +1278,23 @@ class DBManager:
         paper_id: int,
         grading_result: GradingResult,
     ) -> int | None:
-        with self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            current = conn.execute(
-                """
-                SELECT 1
-                FROM exam_papers
-                WHERE id = ?
-                  AND session_id = ?
-                  AND student_id = ?
-                  AND match_status = 'matched'
-                """,
-                (paper_id, session_id, student_id),
-            ).fetchone()
-            if current is None:
-                conn.rollback()
-                return None
-            result_id = self._save_session_result_in_connection(
-                conn,
-                session_id,
-                student_id,
-                paper_id,
-                grading_result,
-            )
-            conn.execute(
-                """
-                UPDATE exam_papers
-                SET processing_status = 'graded', error_message = NULL
-                WHERE id = ?
-                """,
-                (paper_id,),
-            )
-            conn.commit()
-            return result_id
+        return self.result_repository.publish_session_result_if_current_assignment(
+            session_id,
+            student_id,
+            paper_id,
+            grading_result,
+        )
 
     def get_session_progress(self, session_id: int) -> dict[str, int | float]:
-        with self._connect() as conn:
-            counts = conn.execute("""
-                SELECT 
-                    COUNT(*) AS total,
-                    SUM(CASE WHEN match_status = 'matched' THEN 1 ELSE 0 END) AS matched,
-                    SUM(CASE WHEN match_status <> 'matched' THEN 1 ELSE 0 END) AS unmatched,
-                    SUM(CASE WHEN processing_status = 'graded' THEN 1 ELSE 0 END) AS graded,
-                    SUM(CASE WHEN processing_status = 'failed' THEN 1 ELSE 0 END) AS failed,
-                    SUM(CASE WHEN processing_status = 'grading' THEN 1 ELSE 0 END) AS in_progress
-                FROM exam_papers WHERE session_id = ?
-            """, (session_id,)).fetchone()
-            
-            review_count = conn.execute(
-                "SELECT COUNT(*) AS c FROM session_results WHERE session_id = ? AND needs_human_review = 1",
-                (session_id,)
-            ).fetchone()["c"]
-            
-            att = conn.execute("""
-                SELECT 
-                    SUM(CASE WHEN attendance_status = 'absent' THEN 1 ELSE 0 END) AS absent,
-                    SUM(CASE WHEN attendance_status = 'scan_issue' THEN 1 ELSE 0 END) AS scan_issue
-                FROM session_attendance WHERE session_id = ?
-            """, (session_id,)).fetchone()
-
-        total = counts["total"] or 0
-        matched = counts["matched"] or 0
-        unmatched = counts["unmatched"] or 0
-        graded = counts["graded"] or 0
-        failed = counts["failed"] or 0
-        in_progress = counts["in_progress"] or 0
-        absent = att["absent"] or 0
-        scan_issue = att["scan_issue"] or 0
+        source = self.paper_repository.get_session_progress_source(session_id)
+        total = source["total"]
+        matched = source["matched"]
+        unmatched = source["unmatched"]
+        graded = source["graded"]
+        failed = source["failed"]
+        in_progress = source["in_progress"]
+        absent = source["absent"]
+        scan_issue = source["scan_issue"]
 
         done = graded + failed
         progress_percent = round((done / matched) * 100, 2) if matched else 0.0
@@ -1676,7 +1305,7 @@ class DBManager:
             "graded_papers": int(graded),
             "failed_papers": int(failed),
             "grading_papers": int(in_progress),
-            "needs_human_review": int(review_count),
+            "needs_human_review": int(source["review_count"]),
             "absent_students": int(absent),
             "scan_issue_students": int(scan_issue),
             "progress_percent": progress_percent,
@@ -1684,41 +1313,7 @@ class DBManager:
 
     def list_session_anomalies(self, session_id: int) -> list[dict[str, Any]]:
         """Return unmatched papers, scan issues, and failed papers without paths."""
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    'unmatched_paper:' || printf('%020d', ep.id) AS anomaly_id,
-                    'unmatched_paper' AS anomaly_type,
-                    '未匹配试卷 #' || ep.id AS display_name,
-                    NULL AS student_code,
-                    NULL AS class_name,
-                    ep.match_status AS status,
-                    NULL AS detail,
-                    ep.created_at AS created_at
-                FROM exam_papers ep
-                WHERE ep.session_id = ? AND ep.match_status <> 'matched'
-
-                UNION ALL
-
-                SELECT
-                    'scan_issue:' || printf('%020d', sa.id) AS anomaly_id,
-                    'scan_issue' AS anomaly_type,
-                    '扫描异常记录 #' || sa.id AS display_name,
-                    s.student_code AS student_code,
-                    s.class_name AS class_name,
-                    sa.attendance_status AS status,
-                    sa.source_reason AS detail,
-                    sa.created_at AS created_at
-                FROM session_attendance sa
-                JOIN students s ON s.id = sa.student_id
-                WHERE sa.session_id = ? AND sa.attendance_status = 'scan_issue'
-
-                ORDER BY anomaly_type, anomaly_id
-                """,
-                (int(session_id), int(session_id)),
-            ).fetchall()
-        items = [dict(row) for row in rows]
+        items = self.paper_repository.get_session_anomaly_rows(session_id)
         for row in self.list_failed_papers(int(session_id)):
             paper_id = int(row["paper_id"])
             items.append(
@@ -1737,53 +1332,7 @@ class DBManager:
 
     def list_failed_papers(self, session_id: int) -> list[dict[str, Any]]:
         """返回本场次中批改失败（processing_status='failed'、'grading'（非运行状态下）或含有局部失败降级）的所有试卷，含学生姓名与错误信息。"""
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    ep.id AS paper_id,
-                    ep.ocr_name,
-                    COALESCE(s.name, ep.ocr_name, '未知') AS student_name,
-                    s.student_code,
-                    s.class_name,
-                    ep.processing_status,
-                    CASE 
-                        WHEN ep.processing_status = 'failed' THEN ep.error_message 
-                        WHEN ep.processing_status = 'grading' THEN '批改任务异常中断，需重新批改'
-                        ELSE 'AI批改部分大题缺失，需重新发AI批改' 
-                    END AS error_message,
-                    ep.created_at
-                FROM exam_papers ep
-                LEFT JOIN students s ON s.id = ep.student_id
-                LEFT JOIN grading_sessions gs ON gs.id = ep.session_id
-                WHERE ep.session_id = ?
-                  AND (
-                    ep.processing_status = 'failed'
-                    OR (
-                      ep.processing_status = 'grading'
-                      AND COALESCE(gs.status, '') <> 'running'
-                    )
-                    OR (
-                      ep.processing_status = 'graded'
-                      AND EXISTS (
-                        SELECT 1
-                        FROM session_results sr
-                        WHERE sr.paper_id = ep.id
-                          AND (
-                            sr.raw_json LIKE '%"hybrid_batch_fallback"%'
-                            OR CASE
-                              WHEN json_valid(sr.raw_json)
-                              THEN json_extract(sr.raw_json, '$.grading_completeness.status')
-                            END IN ('incomplete', 'invalid')
-                          )
-                      )
-                    )
-                  )
-                ORDER BY ep.id ASC
-                """,
-                (session_id,),
-            ).fetchall()
-        items = [dict(row) for row in rows]
+        items = self.paper_repository.get_failed_paper_rows(session_id)
         for item in items:
             item["error_message"] = sanitize_incomplete_failure_summary(item.get("error_message"))
         existing_paper_ids = {int(item["paper_id"]) for item in items if item.get("paper_id") is not None}
@@ -1808,46 +1357,7 @@ class DBManager:
 
     def list_failed_papers_detailed(self, session_id: int) -> list[dict[str, Any]]:
         """返回本场次中批改失败（processing_status='failed'、'grading'（非运行状态下）或含有局部失败降级）的所有试卷的详细信息，用于增量重试。"""
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    ep.id AS paper_id,
-                    ep.front_image,
-                    ep.back_image,
-                    ep.ocr_name,
-                    ep.student_id,
-                    ep.match_status
-                FROM exam_papers ep
-                LEFT JOIN grading_sessions gs ON gs.id = ep.session_id
-                WHERE ep.session_id = ?
-                  AND (
-                    ep.processing_status = 'failed'
-                    OR (
-                      ep.processing_status = 'grading'
-                      AND COALESCE(gs.status, '') <> 'running'
-                    )
-                    OR (
-                      ep.processing_status = 'graded'
-                      AND EXISTS (
-                        SELECT 1
-                        FROM session_results sr
-                        WHERE sr.paper_id = ep.id
-                          AND (
-                            sr.raw_json LIKE '%"hybrid_batch_fallback"%'
-                            OR CASE
-                              WHEN json_valid(sr.raw_json)
-                              THEN json_extract(sr.raw_json, '$.grading_completeness.status')
-                            END IN ('incomplete', 'invalid')
-                          )
-                      )
-                    )
-                  )
-                ORDER BY ep.id ASC
-                """,
-                (session_id,),
-            ).fetchall()
-        items = [dict(row) for row in rows]
+        items = self.paper_repository.get_failed_paper_detail_rows(session_id)
         existing_paper_ids = {int(item["paper_id"]) for item in items if item.get("paper_id") is not None}
         for row in self.list_incomplete_results(session_id):
             paper_id = int(row["paper_id"])
@@ -1868,58 +1378,11 @@ class DBManager:
 
     def list_incomplete_results(self, session_id: int) -> list[dict[str, Any]]:
         rubric = self._load_session_rubric(session_id)
-        with self._connect() as conn:
-            result_rows = conn.execute(
-                """
-                SELECT
-                    sr.id AS result_id,
-                    sr.student_id,
-                    sr.paper_id,
-                    sr.raw_json,
-                    ep.front_image,
-                    ep.back_image,
-                    ep.ocr_name,
-                    ep.match_status,
-                    ep.processing_status,
-                    ep.error_message,
-                    s.student_code,
-                    s.name AS student_name,
-                    s.class_name
-                FROM session_results sr
-                JOIN exam_papers ep ON ep.id = sr.paper_id
-                JOIN students s ON s.id = sr.student_id
-                WHERE sr.session_id = ?
-                ORDER BY sr.id ASC
-                """,
-                (session_id,),
-            ).fetchall()
-            if not result_rows:
-                return []
-            result_ids = [int(row["result_id"]) for row in result_rows]
-            placeholders = ",".join("?" for _ in result_ids)
-            detail_rows = conn.execute(
-                f"""
-                SELECT
-                    result_id,
-                    question_id,
-                    score_awarded,
-                    deduction_reason,
-                    knowledge_id,
-                    knowledge_ids,
-                    error_category,
-                    error_summary,
-                    confidence_score,
-                    secondary_errors_json
-                FROM session_details
-                WHERE result_id IN ({placeholders})
-                ORDER BY id ASC
-                """,
-                result_ids,
-            ).fetchall()
-
-        details_by_result: dict[int, list[dict[str, Any]]] = {}
-        for row in detail_rows:
-            details_by_result.setdefault(int(row["result_id"]), []).append(dict(row))
+        result_rows, details_by_result = (
+            self.result_repository.get_session_completeness_source(session_id)
+        )
+        if not result_rows:
+            return []
 
         items: list[dict[str, Any]] = []
         for row in result_rows:
@@ -1961,75 +1424,10 @@ class DBManager:
         return items
 
     def get_session_results(self, session_id: int) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    sr.id AS result_id,
-                    sr.student_id,
-                    s.student_code,
-                    s.name AS student_name,
-                    s.class_name,
-                    ep.ocr_name,
-                    ep.front_image,
-                    ep.back_image,
-                    sr.total_score,
-                    sr.student_score,
-                    sr.needs_human_review,
-                    sr.graded_at,
-                    sr.raw_json
-                FROM session_results sr
-                JOIN students s ON s.id = sr.student_id
-                JOIN exam_papers ep ON ep.id = sr.paper_id
-                WHERE sr.session_id = ?
-                ORDER BY sr.id ASC
-                """,
-                (session_id,),
-            ).fetchall()
-
-        results = [dict(row) for row in rows]
-        for item in results:
-            item["raw_json"] = _safe_json_loads(item.get("raw_json"))
-        return results
+        return self.result_repository.get_session_results(session_id)
 
     def get_session_review_rows(self, session_id: int) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    sr.id AS result_id,
-                    s.student_code,
-                    s.name AS student_name,
-                    s.class_name,
-                    ep.ocr_name,
-                    sr.raw_json,
-                    sd.id AS detail_id,
-                    sd.question_id,
-                    sd.score_awarded,
-                    sd.deduction_reason,
-                    sd.error_category,
-                    sd.error_summary,
-                    sd.confidence_score
-                FROM session_results sr
-                JOIN students s ON s.id = sr.student_id
-                JOIN exam_papers ep ON ep.id = sr.paper_id
-                JOIN session_details sd ON sd.result_id = sr.id
-                WHERE sr.session_id = ?
-                ORDER BY sr.id, sd.id
-                """,
-                (session_id,),
-            ).fetchall()
-
-        parsed_raw_json: dict[int, Any] = {}
-        review_rows: list[dict[str, Any]] = []
-        for row in rows:
-            item = dict(row)
-            result_id = int(item.get("result_id") or 0)
-            if result_id not in parsed_raw_json:
-                parsed_raw_json[result_id] = _safe_json_loads(item.get("raw_json"))
-            item["raw_json"] = parsed_raw_json[result_id]
-            review_rows.append(item)
-        return review_rows
+        return self.review_repository.get_session_review_rows(session_id)
 
     def get_review_media_context(
         self,
@@ -2037,68 +1435,17 @@ class DBManager:
         result_id: int,
         detail_id: int,
     ) -> dict[str, Any] | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT
-                    sr.session_id,
-                    sr.id AS result_id,
-                    sd.id AS detail_id,
-                    sd.question_id,
-                    ep.front_image,
-                    ep.back_image
-                FROM session_details sd
-                JOIN session_results sr ON sr.id = sd.result_id
-                JOIN exam_papers ep ON ep.id = sr.paper_id
-                WHERE sr.session_id = ?
-                  AND sr.id = ?
-                  AND sd.id = ?
-                """,
-                (int(session_id), int(result_id), int(detail_id)),
-            ).fetchone()
-            return dict(row) if row else None
+        return self.review_repository.get_review_media_context(
+            session_id,
+            result_id,
+            detail_id,
+        )
 
     def get_result_context(self, result_id: int) -> dict[str, Any] | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT
-                    sr.id AS result_id,
-                    sr.session_id,
-                    sr.student_id,
-                    sr.paper_id,
-                    ep.front_image,
-                    ep.back_image
-                FROM session_results sr
-                JOIN exam_papers ep ON ep.id = sr.paper_id
-                WHERE sr.id = ?
-                """,
-                (result_id,),
-            ).fetchone()
-            return dict(row) if row else None
+        return self.result_repository.get_result_context(result_id)
 
     def get_result_details(self, result_id: int) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    id AS detail_id,
-                    question_id,
-                    score_awarded,
-                    deduction_reason,
-                    knowledge_id,
-                    knowledge_ids,
-                    error_category,
-                    error_summary,
-                    confidence_score,
-                    secondary_errors_json
-                FROM session_details
-                WHERE result_id = ?
-                ORDER BY id ASC
-                """,
-                (result_id,),
-            ).fetchall()
-            return [_detail_row_with_secondary_errors(dict(row)) for row in rows]
+        return self.result_repository.get_result_details(result_id)
 
     def replace_result_details_atomic(
         self,
@@ -2112,93 +1459,22 @@ class DBManager:
         rubric: dict | None = None,
     ) -> None:
         """Replace one or more question details without replacing the parent result row."""
-        with self._connect() as conn:
-            if conn.execute("SELECT 1 FROM session_results WHERE id = ?", (result_id,)).fetchone() is None:
-                raise ValueError(f"Unknown session result: {result_id}")
-            question_ids = list(dict.fromkeys(str(value) for value in remove_question_ids))
-            if question_ids:
-                placeholders = ",".join("?" for _ in question_ids)
-                conn.execute(
-                    f"DELETE FROM session_details WHERE result_id = ? AND question_id IN ({placeholders})",
-                    (result_id, *question_ids),
-                )
-            for detail in replacement_details:
-                conn.execute(
-                    """
-                    INSERT INTO session_details (
-                        result_id, question_id, score_awarded, deduction_reason,
-                        knowledge_id, knowledge_ids, error_category, error_summary,
-                        confidence_score, secondary_errors_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        result_id,
-                        detail.question_id,
-                        detail.score_awarded,
-                        detail.deduction_reason,
-                        detail.knowledge_id,
-                        json.dumps(_detail_knowledge_ids(detail), ensure_ascii=False),
-                        getattr(detail, "error_category", None),
-                        getattr(detail, "error_summary", None),
-                        getattr(detail, "confidence_score", None),
-                        _serialize_secondary_errors(getattr(detail, "secondary_errors", [])),
-                    ),
-                )
-            stored_details = [
-                dict(row)
-                for row in conn.execute(
-                    """
-                    SELECT question_id, score_awarded, deduction_reason, knowledge_id,
-                           knowledge_ids, error_category, error_summary, confidence_score,
-                           secondary_errors_json
-                    FROM session_details
-                    WHERE result_id = ?
-                    ORDER BY id ASC
-                    """,
-                    (result_id,),
-                ).fetchall()
-            ]
-            recalculated_score = sum(float(detail["score_awarded"]) for detail in stored_details)
-            persisted_raw_json = dict(raw_json) if isinstance(raw_json, dict) else {}
-            if rubric is not None:
-                completeness = audit_grading_details(rubric, stored_details)
-                if completeness["status"] != "complete":
-                    raise ValueError(
-                        "Atomic replacement must leave a complete grading result; "
-                        f"got {completeness['status']}"
-                    )
-                persisted_raw_json["grading_completeness"] = completeness
-            conn.execute(
-                """
-                UPDATE session_results
-                SET student_score = ?, needs_human_review = ?, raw_json = ?
-                WHERE id = ?
-                """,
-                (
-                    float(recalculated_score),
-                    1 if needs_human_review else 0,
-                    json.dumps(persisted_raw_json, ensure_ascii=False),
-                    result_id,
-                ),
-            )
+        self.result_repository.replace_result_details_atomic(
+            result_id,
+            remove_question_ids,
+            replacement_details,
+            student_score=student_score,
+            needs_human_review=needs_human_review,
+            raw_json=raw_json,
+            rubric=rubric,
+        )
 
     def record_result_retry_failure(self, result_id: int, attempt: dict[str, Any]) -> None:
         """Append an uncapped structured retry attempt while preserving completeness state."""
-        with self._connect() as conn:
-            row = conn.execute("SELECT raw_json FROM session_results WHERE id = ?", (result_id,)).fetchone()
-            if row is None:
-                return
-            loaded_raw_json = _safe_json_loads(row["raw_json"])
-            raw_json = loaded_raw_json if isinstance(loaded_raw_json, dict) else {}
-            attempts = raw_json.get("grading_retry_attempts")
-            if not isinstance(attempts, list):
-                attempts = []
-            attempts.append(dict(attempt))
-            raw_json["grading_retry_attempts"] = attempts
-            conn.execute(
-                "UPDATE session_results SET needs_human_review = 1, raw_json = ? WHERE id = ?",
-                (json.dumps(raw_json, ensure_ascii=False), result_id),
-            )
+        self.result_repository.record_result_retry_failure(
+            result_id,
+            attempt,
+        )
 
     def update_result_detail(
         self,
@@ -2208,171 +1484,36 @@ class DBManager:
         error_category: str | None = None,
         error_summary: str | None = None,
     ) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE session_details
-                SET score_awarded = ?, deduction_reason = ?, error_category = ?, error_summary = ?
-                WHERE id = ?
-                """,
-                (float(score_awarded), deduction_reason, error_category, error_summary, detail_id),
-            )
-            conn.commit()
+        self.review_repository.update_result_detail(
+            detail_id,
+            score_awarded,
+            deduction_reason,
+            error_category,
+            error_summary,
+        )
 
     def recalculate_result_score(self, result_id: int) -> None:
-        with self._connect() as conn:
-            total = conn.execute(
-                "SELECT COALESCE(SUM(score_awarded),0) AS s FROM session_details WHERE result_id = ?",
-                (result_id,),
-            ).fetchone()["s"]
-            conn.execute(
-                "UPDATE session_results SET student_score = ? WHERE id = ?",
-                (float(total), result_id),
-            )
-            conn.commit()
+        self.review_repository.recalculate_result_score(result_id)
 
     def update_session_detail_scores(
         self,
         session_id: int,
         adjustments: list[dict[str, Any]],
     ) -> dict[str, int]:
-        if not adjustments:
-            return {"updated_details": 0, "updated_results": 0}
-
-        detail_ids = [int(item["detail_id"]) for item in adjustments]
-        if len(detail_ids) != len(set(detail_ids)):
-            raise ValueError("同一评分明细不能重复调整。")
-
-        placeholders = ",".join(["?"] * len(detail_ids))
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT sd.id AS detail_id, sd.result_id
-                FROM session_details sd
-                JOIN session_results sr ON sr.id = sd.result_id
-                WHERE sr.session_id = ? AND sd.id IN ({placeholders})
-                """,
-                [int(session_id), *detail_ids],
-            ).fetchall()
-            result_by_detail = {int(row["detail_id"]): int(row["result_id"]) for row in rows}
-            missing_ids = [detail_id for detail_id in detail_ids if detail_id not in result_by_detail]
-            if missing_ids:
-                raise ValueError(f"评分明细不属于当前考试：{missing_ids}")
-
-            for item in adjustments:
-                conn.execute(
-                    "UPDATE session_details SET score_awarded = ? WHERE id = ?",
-                    (float(item["score_awarded"]), int(item["detail_id"])),
-                )
-
-            result_ids = sorted(set(result_by_detail.values()))
-            for result_id in result_ids:
-                total = conn.execute(
-                    "SELECT COALESCE(SUM(score_awarded),0) AS s FROM session_details WHERE result_id = ?",
-                    (result_id,),
-                ).fetchone()["s"]
-                conn.execute(
-                    "UPDATE session_results SET student_score = ? WHERE id = ?",
-                    (float(total), result_id),
-                )
-            conn.commit()
-
-        return {"updated_details": len(adjustments), "updated_results": len(result_ids)}
+        return self.review_repository.update_session_detail_scores(
+            session_id,
+            adjustments,
+        )
 
     def apply_session_review_adjustments(
         self,
         session_id: int,
         adjustments: list[dict[str, Any]],
     ) -> dict[str, int]:
-        if not adjustments:
-            return {"updated_details": 0, "updated_results": 0}
-
-        requested_session_id = int(session_id)
-        conn = self._connect()
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            validated: list[tuple[dict[str, Any], int]] = []
-            seen_detail_ids: set[int] = set()
-            for item in adjustments:
-                detail_id = int(item["detail_id"])
-                if detail_id in seen_detail_ids:
-                    raise ValueError(f"Duplicate review detail_id: {detail_id}")
-                seen_detail_ids.add(detail_id)
-
-                expected_session_id = int(item["session_id"])
-                expected_result_id = int(item["result_id"])
-                expected_question_id = str(item["question_id"] or "").strip()
-                row = conn.execute(
-                    """
-                    SELECT
-                        sd.id AS detail_id,
-                        sd.result_id,
-                        sd.question_id,
-                        sr.session_id
-                    FROM session_details sd
-                    JOIN session_results sr ON sr.id = sd.result_id
-                    WHERE sd.id = ?
-                    """,
-                    (detail_id,),
-                ).fetchone()
-                if (
-                    expected_session_id != requested_session_id
-                    or row is None
-                    or int(row["session_id"]) != requested_session_id
-                    or int(row["result_id"]) != expected_result_id
-                    or str(row["question_id"] or "").strip() != expected_question_id
-                ):
-                    raise ReviewAdjustmentOwnershipError(
-                        session_id=requested_session_id,
-                        result_id=expected_result_id,
-                        question_id=expected_question_id,
-                        detail_id=detail_id,
-                    )
-                validated.append((item, expected_result_id))
-
-            for item, _result_id in validated:
-                cursor = conn.execute(
-                    """
-                    UPDATE session_details
-                    SET score_awarded = ?, deduction_reason = ?, error_category = ?, error_summary = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        float(item["score_awarded"]),
-                        item.get("deduction_reason"),
-                        item.get("error_category"),
-                        item.get("error_summary"),
-                        int(item["detail_id"]),
-                    ),
-                )
-                if cursor.rowcount != 1:
-                    raise RuntimeError(
-                        f"Review detail update affected {cursor.rowcount} rows."
-                    )
-
-            result_ids = sorted({result_id for _item, result_id in validated})
-            for result_id in result_ids:
-                total = conn.execute(
-                    "SELECT COALESCE(SUM(score_awarded), 0) AS total FROM session_details WHERE result_id = ?",
-                    (result_id,),
-                ).fetchone()["total"]
-                cursor = conn.execute(
-                    "UPDATE session_results SET student_score = ? WHERE id = ? AND session_id = ?",
-                    (float(total), result_id, requested_session_id),
-                )
-                if cursor.rowcount != 1:
-                    raise RuntimeError(
-                        f"Review result update affected {cursor.rowcount} rows."
-                    )
-
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-
-        return {"updated_details": len(validated), "updated_results": len(result_ids)}
+        return self.review_repository.apply_session_review_adjustments(
+            session_id,
+            adjustments,
+        )
 
     def upsert_annotated_result(
         self,
@@ -2381,150 +1522,38 @@ class DBManager:
         annotated_front_path: str,
         annotated_back_path: str,
     ) -> dict[str, Any] | None:
-        requested_session_id = int(session_id)
-        requested_result_id = int(result_id)
-        with self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            owner = conn.execute(
-                "SELECT session_id FROM session_results WHERE id = ?",
-                (requested_result_id,),
-            ).fetchone()
-            if owner is None or int(owner["session_id"]) != requested_session_id:
-                raise ValueError("Annotated result must belong to the requested session.")
-
-            existing = conn.execute(
-                """
-                SELECT id, session_id, result_id, annotated_front_path, annotated_back_path
-                FROM annotated_results
-                WHERE result_id = ?
-                """,
-                (requested_result_id,),
-            ).fetchone()
-            if existing:
-                conn.execute(
-                    """
-                    UPDATE annotated_results
-                    SET session_id = ?, annotated_front_path = ?, annotated_back_path = ?, updated_at = datetime('now','localtime')
-                    WHERE result_id = ?
-                    """,
-                    (
-                        requested_session_id,
-                        annotated_front_path,
-                        annotated_back_path,
-                        requested_result_id,
-                    ),
-                )
-            else:
-                conn.execute(
-                    """
-                    INSERT INTO annotated_results (session_id, result_id, annotated_front_path, annotated_back_path)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (
-                        requested_session_id,
-                        requested_result_id,
-                        annotated_front_path,
-                        annotated_back_path,
-                    ),
-                )
-            conn.commit()
-            return dict(existing) if existing else None
+        return self.review_repository.upsert_annotated_result(
+            session_id,
+            result_id,
+            annotated_front_path,
+            annotated_back_path,
+        )
 
     def is_annotated_result_path_referenced(self, path_value: str) -> bool:
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT 1
-                FROM annotated_results
-                WHERE annotated_front_path = ? OR annotated_back_path = ?
-                LIMIT 1
-                """,
-                (str(path_value), str(path_value)),
-            ).fetchone()
-        return row is not None
+        return self.review_repository.is_annotated_result_path_referenced(
+            path_value
+        )
 
     def get_annotated_result(self, result_id: int) -> dict[str, Any] | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT id, session_id, result_id, annotated_front_path, annotated_back_path, updated_at
-                FROM annotated_results
-                WHERE result_id = ?
-                """,
-                (result_id,),
-            ).fetchone()
-            return dict(row) if row else None
+        return self.review_repository.get_annotated_result(result_id)
 
     def get_session_weak_points(self, session_id: int, student_id: int | None = None) -> list[dict[str, Any]]:
-        query = """
-            SELECT
-                sr.session_id,
-                s.id AS student_id,
-                s.student_code,
-                s.name AS student_name,
-                s.class_name,
-                sd.question_id,
-                    sd.knowledge_id,
-                    sd.knowledge_ids,
-                    sd.score_awarded,
-                    sd.deduction_reason,
-                    sd.error_category,
-                    sd.error_summary
-            FROM session_details sd
-            JOIN session_results sr ON sr.id = sd.result_id
-            JOIN students s ON s.id = sr.student_id
-            WHERE sr.session_id = ?
-        """
-        params: list[Any] = [session_id]
-        if student_id is not None:
-            query += " AND s.id = ?"
-            params.append(student_id)
-
-        query += " ORDER BY s.id ASC, sd.knowledge_id ASC, sd.id ASC"
-
-        with self._connect() as conn:
-            rows = conn.execute(query, params).fetchall()
-            return self._build_weak_point_rows([dict(row) for row in rows])
+        rows = self.result_repository.get_session_weak_point_rows(
+            session_id,
+            student_id,
+        )
+        return self._build_weak_point_rows(rows)
 
     def get_active_global_weak_points(
         self,
         student_id: int | None = None,
         session_ids: list[int] | None = None,
     ) -> list[dict[str, Any]]:
-        query = """
-            SELECT
-                sr.session_id,
-                s.id AS student_id,
-                s.student_code,
-                s.name AS student_name,
-                s.class_name,
-                sd.question_id,
-                    sd.knowledge_id,
-                    sd.knowledge_ids,
-                    sd.score_awarded,
-                    sd.deduction_reason,
-                    sd.error_category,
-                    sd.error_summary
-            FROM session_details sd
-            JOIN session_results sr ON sr.id = sd.result_id
-            JOIN grading_sessions gs ON gs.id = sr.session_id
-            JOIN students s ON s.id = sr.student_id
-            WHERE COALESCE(gs.is_deleted, 0) = 0
-        """
-        params: list[Any] = []
-        if student_id is not None:
-            query += " AND s.id = ?"
-            params.append(student_id)
-        if session_ids:
-            placeholders = ",".join(["?"] * len(session_ids))
-            query += f" AND sr.session_id IN ({placeholders})"
-            params.extend(int(value) for value in session_ids)
-
-        query += " ORDER BY s.id ASC, sd.knowledge_id ASC, sd.id ASC"
-
-        with self._connect() as conn:
-            rows = conn.execute(query, params).fetchall()
-            return self._build_weak_point_rows([dict(row) for row in rows])
+        rows = self.result_repository.get_active_weak_point_rows(
+            student_id,
+            session_ids,
+        )
+        return self._build_weak_point_rows(rows)
 
     def get_active_assessment_evidence(
         self,
@@ -2532,50 +1561,12 @@ class DBManager:
         student_ids: list[str] | tuple[str, ...] = (),
         session_ids: list[int] | tuple[int, ...] = (),
     ) -> list[dict[str, Any]]:
-        query = """
-            SELECT
-                sr.session_id,
-                gs.session_name,
-                sr.id AS result_id,
-                sr.student_id,
-                s.student_code,
-                s.name AS student_name,
-                s.class_name,
-                ep.front_image,
-                ep.back_image,
-                sd.question_id,
-                sd.knowledge_id,
-                sd.knowledge_ids,
-                sd.score_awarded,
-                sd.deduction_reason,
-                sd.error_category,
-                sd.error_summary,
-                sd.secondary_errors_json,
-                sr.graded_at
-            FROM session_details sd
-            JOIN session_results sr ON sr.id = sd.result_id
-            JOIN grading_sessions gs ON gs.id = sr.session_id
-            JOIN students s ON s.id = sr.student_id
-            JOIN exam_papers ep ON ep.id = sr.paper_id
-            WHERE COALESCE(gs.is_deleted, 0) = 0
-        """
-        params: list[Any] = []
         normalized_students = [int(value) for value in student_ids]
-        if normalized_students:
-            placeholders = ",".join("?" for _ in normalized_students)
-            query += f" AND sr.student_id IN ({placeholders})"
-            params.extend(normalized_students)
         normalized_sessions = [int(value) for value in session_ids]
-        if normalized_sessions:
-            placeholders = ",".join("?" for _ in normalized_sessions)
-            query += f" AND sr.session_id IN ({placeholders})"
-            params.extend(normalized_sessions)
-        query += " ORDER BY sr.session_id, sr.student_id, sd.id"
-        with self._connect() as conn:
-            rows = [
-                _detail_row_with_secondary_errors(dict(row))
-                for row in conn.execute(query, params).fetchall()
-            ]
+        rows = self.result_repository.get_active_assessment_rows(
+            student_ids=normalized_students,
+            session_ids=normalized_sessions,
+        )
         enriched = self._enrich_detail_rows(rows)
         for row in enriched:
             row["full_score"] = _safe_float(row.get("max_score"), 0.0)
@@ -2586,58 +1577,14 @@ class DBManager:
         student_id: int | None = None,
         session_ids: list[int] | None = None,
     ) -> list[dict[str, Any]]:
-        query = """
-            SELECT
-                sr.session_id,
-                s.id AS student_id,
-                s.student_code,
-                s.name AS student_name,
-                s.class_name,
-                sd.question_id,
-                sd.score_awarded,
-                sd.deduction_reason,
-                sd.error_category,
-                sd.error_summary
-            FROM session_details sd
-            JOIN session_results sr ON sr.id = sd.result_id
-            JOIN grading_sessions gs ON gs.id = sr.session_id
-            JOIN students s ON s.id = sr.student_id
-            WHERE COALESCE(gs.is_deleted, 0) = 0
-        """
-        params: list[Any] = []
-        if student_id is not None:
-            query += " AND s.id = ?"
-            params.append(student_id)
-        if session_ids:
-            placeholders = ",".join(["?"] * len(session_ids))
-            query += f" AND sr.session_id IN ({placeholders})"
-            params.extend(int(value) for value in session_ids)
-        query += " ORDER BY s.id ASC, sd.id ASC"
-
-        with self._connect() as conn:
-            rows = [dict(row) for row in conn.execute(query, params).fetchall()]
+        rows = self.result_repository.get_active_error_point_rows(
+            student_id,
+            session_ids,
+        )
         return self._build_error_point_rows(rows)
 
     def get_active_student_score_rates(self) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    s.id AS student_id,
-                    s.student_code,
-                    s.name AS student_name,
-                    s.class_name,
-                    ROUND(AVG(CASE WHEN sr.total_score > 0 THEN sr.student_score * 100.0 / sr.total_score ELSE 0 END), 2) AS avg_score_rate,
-                    COUNT(DISTINCT sr.session_id) AS exam_count
-                FROM session_results sr
-                JOIN grading_sessions gs ON gs.id = sr.session_id
-                JOIN students s ON s.id = sr.student_id
-                WHERE COALESCE(gs.is_deleted, 0) = 0
-                GROUP BY s.id, s.student_code, s.name, s.class_name
-                ORDER BY s.student_code ASC, s.name ASC
-                """
-            ).fetchall()
-            return [dict(row) for row in rows]
+        return self.result_repository.get_active_student_score_rates()
 
     def get_active_wrong_items_for_knowledge(self, student_id: int, knowledge_id: str) -> list[dict[str, Any]]:
         return [
@@ -2646,41 +1593,13 @@ class DBManager:
         ]
 
     def get_active_items_for_knowledge(self, student_id: int, knowledge_id: str) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    sr.session_id,
-                    gs.session_name,
-                    sr.id AS result_id,
-                    sr.student_id,
-                    s.student_code,
-                    s.name AS student_name,
-                    ep.front_image,
-                    ep.back_image,
-                    sd.question_id,
-                    sd.knowledge_id,
-                    sd.knowledge_ids,
-                    sd.score_awarded,
-                    sd.deduction_reason,
-                    sd.error_category,
-                    sd.error_summary,
-                    sr.graded_at
-                FROM session_details sd
-                JOIN session_results sr ON sr.id = sd.result_id
-                JOIN grading_sessions gs ON gs.id = sr.session_id
-                JOIN students s ON s.id = sr.student_id
-                JOIN exam_papers ep ON ep.id = sr.paper_id
-                WHERE COALESCE(gs.is_deleted, 0) = 0
-                  AND sr.student_id = ?
-                ORDER BY sr.graded_at DESC, sd.id ASC
-                """,
-                (student_id,),
-            ).fetchall()
+        rows = self.result_repository.get_active_detail_rows(
+            student_id=student_id
+        )
 
         result: list[dict[str, Any]] = []
         rubric_cache: dict[int, dict[str, dict[str, Any]]] = {}
-        for row in [dict(item) for item in rows]:
+        for row in rows:
             session_id = int(row.get("session_id") or 0)
             if session_id not in rubric_cache:
                 rubric_cache[session_id] = self._load_rubric_maps_for_session(session_id)
@@ -2762,42 +1681,10 @@ class DBManager:
         student_id: int | None = None,
         session_ids: list[int] | None = None,
     ) -> list[dict[str, Any]]:
-        query = """
-            SELECT
-                sr.session_id,
-                gs.session_name,
-                sr.id AS result_id,
-                sr.student_id,
-                s.student_code,
-                s.name AS student_name,
-                ep.front_image,
-                ep.back_image,
-                sd.question_id,
-                sd.knowledge_id,
-                sd.knowledge_ids,
-                sd.score_awarded,
-                sd.deduction_reason,
-                sd.error_category,
-                sd.error_summary,
-                sr.graded_at
-            FROM session_details sd
-            JOIN session_results sr ON sr.id = sd.result_id
-            JOIN grading_sessions gs ON gs.id = sr.session_id
-            JOIN students s ON s.id = sr.student_id
-            JOIN exam_papers ep ON ep.id = sr.paper_id
-            WHERE COALESCE(gs.is_deleted, 0) = 0
-        """
-        params: list[Any] = []
-        if student_id is not None:
-            query += " AND sr.student_id = ?"
-            params.append(int(student_id))
-        if session_ids:
-            placeholders = ",".join(["?"] * len(session_ids))
-            query += f" AND sr.session_id IN ({placeholders})"
-            params.extend(int(value) for value in session_ids)
-        query += " ORDER BY sr.graded_at DESC, sd.id ASC"
-        with self._connect() as conn:
-            return [dict(row) for row in conn.execute(query, params).fetchall()]
+        return self.result_repository.get_active_detail_rows(
+            student_id=student_id,
+            session_ids=session_ids,
+        )
 
     def _enrich_detail_rows(
         self,
@@ -3105,83 +1992,6 @@ def _safe_json_loads(value: Any) -> Any:
     return value
 
 
-def resolve_grading_completeness(
-    raw_json: Any,
-    rubric: dict[str, Any] | None = None,
-    details: list[dict[str, Any]] | None = None,
-) -> dict[str, Any] | None:
-    completeness = _normalized_completeness_dict(raw_json)
-    if completeness is not None:
-        return completeness
-
-    parsed = _safe_json_loads(raw_json)
-    if isinstance(parsed, dict):
-        completeness = _normalized_completeness_dict(parsed.get("grading_completeness"))
-        if completeness is not None:
-            return completeness
-
-    if isinstance(rubric, dict):
-        audited = audit_grading_details(rubric, details or [])
-        normalized = _normalized_completeness_dict(audited)
-        if normalized is not None:
-            return normalized
-
-    if isinstance(parsed, dict):
-        legacy = _legacy_fallback_completeness(parsed.get("hybrid_batch_fallback"), rubric or {})
-        if legacy is not None:
-            return legacy
-    return None
-
-
-def _normalized_completeness_dict(value: Any) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-    status = str(value.get("status") or "").strip()
-    if status not in {"complete", "incomplete", "invalid"}:
-        return None
-    raw_score_issues = value.get("score_out_of_range")
-    score_out_of_range = [dict(item) for item in raw_score_issues if isinstance(item, dict)] if isinstance(raw_score_issues, list) else []
-    return {
-        "status": status,
-        "missing_question_ids": _unique_text_list(value.get("missing_question_ids")),
-        "duplicate_question_ids": _unique_text_list(value.get("duplicate_question_ids")),
-        "unexpected_question_ids": _unique_text_list(value.get("unexpected_question_ids")),
-        "score_out_of_range": score_out_of_range,
-        "affected_major_question_ids": _unique_text_list(value.get("affected_major_question_ids")),
-    }
-
-
-def _legacy_fallback_completeness(value: Any, rubric: dict[str, Any]) -> dict[str, Any] | None:
-    items = []
-    if isinstance(value, dict):
-        items = value.get("items") if isinstance(value.get("items"), list) else []
-    elif isinstance(value, list):
-        items = value
-    elif value:
-        items = []
-    else:
-        return None
-
-    affected_major_question_ids: list[str] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        question_id = str(item.get("question_id") or "").strip()
-        if not question_id:
-            continue
-        major_id = major_question_id(rubric, question_id) or question_id
-        if major_id not in affected_major_question_ids:
-            affected_major_question_ids.append(major_id)
-    return {
-        "status": "incomplete",
-        "missing_question_ids": [],
-        "duplicate_question_ids": [],
-        "unexpected_question_ids": [],
-        "score_out_of_range": [],
-        "affected_major_question_ids": affected_major_question_ids,
-    }
-
-
 def _grading_retry_attempts(raw_json: Any) -> list[dict[str, Any]]:
     parsed = _safe_json_loads(raw_json)
     attempts = parsed.get("grading_retry_attempts") if isinstance(parsed, dict) else None
@@ -3282,59 +2092,6 @@ def _detail_knowledge_ids(detail: Any) -> list[str]:
     fallback = getattr(detail, "knowledge_id", None)
     result = _normalize_knowledge_ids(values, fallback)
     return result or ["UNKNOWN"]
-
-
-def _serialize_secondary_errors(errors: Any) -> str:
-    payload: list[dict[str, str]] = []
-    for raw_error in errors if isinstance(errors, (list, tuple)) else []:
-        if isinstance(raw_error, dict):
-            category = str(raw_error.get("category") or "").strip()
-            summary = str(raw_error.get("summary") or "").strip()
-            evidence = str(raw_error.get("evidence") or "").strip()
-        else:
-            category = str(getattr(raw_error, "category", "") or "").strip()
-            summary = str(getattr(raw_error, "summary", "") or "").strip()
-            evidence = str(getattr(raw_error, "evidence", "") or "").strip()
-        if not category or not summary:
-            continue
-        payload.append(
-            {"category": category, "summary": summary, "evidence": evidence}
-        )
-        if len(payload) == 2:
-            break
-    return json.dumps(payload, ensure_ascii=False)
-
-
-def _parse_secondary_errors(raw: Any) -> list[dict[str, str]]:
-    if isinstance(raw, str):
-        try:
-            raw = json.loads(raw)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return []
-    if not isinstance(raw, list):
-        return []
-    result: list[dict[str, str]] = []
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        category = str(item.get("category") or "").strip()
-        summary = str(item.get("summary") or "").strip()
-        evidence = str(item.get("evidence") or "").strip()
-        if not category or not summary:
-            continue
-        result.append(
-            {"category": category, "summary": summary, "evidence": evidence}
-        )
-        if len(result) == 2:
-            break
-    return result
-
-
-def _detail_row_with_secondary_errors(row: dict[str, Any]) -> dict[str, Any]:
-    row["secondary_errors"] = _parse_secondary_errors(
-        row.get("secondary_errors_json")
-    )
-    return row
 
 
 def _knowledge_ids_from_row(row: dict[str, Any]) -> list[str]:

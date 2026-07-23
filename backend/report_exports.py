@@ -8,13 +8,13 @@ from backend.file_access import ControlledFileError
 from backend.files.service import JobFileService
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobRecord
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess
 
 
 _submit_lock = threading.RLock()
 
 
-def score_revision(db: DBManager, session_id: int) -> str:
+def score_revision(db: GradingRepositoryAccess, session_id: int) -> str:
     rows: list[dict[str, object]] = []
     for result in db.get_session_results(int(session_id)):
         result_id = int(result["result_id"])

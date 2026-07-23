@@ -39,7 +39,7 @@ from backend.api.schemas.templates import (
     TemplateUploadSubmissionResponse,
     TemplateUploadResponse,
 )
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess
 from path_manager import resolve_stored_file_path
 from template_upload_service import (
     TemplateUploadError,
@@ -54,7 +54,10 @@ router = APIRouter(prefix="/api", tags=["templates"])
 LOGGER = logging.getLogger("ai_grading.api.templates")
 
 
-def _scoring_configured(db: DBManager, session_id: int) -> bool:
+def _scoring_configured(
+    db: GradingRepositoryAccess,
+    session_id: int,
+) -> bool:
     try:
         return bool(load_editor_config(db, int(session_id)).configured)
     except (KeyError, OSError, ValueError):
@@ -171,7 +174,7 @@ async def upload_session_template(
     session_id: int,
     request: Request,
     first_page_role: Literal["front", "back"],
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     service: TemplateUploadService = Depends(get_template_upload_service),
 ) -> TemplateUploadResponse:
     _require_session(db, session_id)
@@ -278,7 +281,7 @@ async def upload_session_template(
 )
 def get_region_readiness(
     session_id: int,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
 ) -> RegionReadinessResponse:
     _require_session(db, session_id)
     return RegionReadinessResponse(
@@ -296,7 +299,7 @@ def get_region_readiness(
 def get_template_upload_submission(
     session_id: int,
     request_token: str,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     service: TemplateUploadService = Depends(get_template_upload_service),
 ) -> dict[str, object]:
     _require_session(db, session_id)
@@ -316,7 +319,7 @@ def get_template_upload_submission(
 def abandon_template_upload_submission(
     session_id: int,
     request_token: str,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     service: TemplateUploadService = Depends(get_template_upload_service),
 ) -> dict[str, str]:
     _require_session(db, session_id)
@@ -341,7 +344,7 @@ def abandon_template_upload_submission(
 )
 def get_region_workspace(
     session_id: int,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     templates_dir: Path = Depends(get_templates_dir),
     upload_service: TemplateUploadService = Depends(get_template_upload_service),
 ) -> RegionWorkspaceResponse:
@@ -410,7 +413,7 @@ def get_region_workspace(
 def get_session_template_page(
     session_id: int,
     page: Literal["front", "back"],
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     templates_dir: Path = Depends(get_templates_dir),
 ) -> FileResponse:
     template = _require_template(db, session_id)
@@ -427,7 +430,10 @@ def _session_dir(templates_dir: Path, session_id: int) -> Path:
     return path
 
 
-def _require_template(db: DBManager, session_id: int) -> dict[str, Any]:
+def _require_template(
+    db: GradingRepositoryAccess,
+    session_id: int,
+) -> dict[str, Any]:
     _require_session(db, session_id)
     template = db.get_session_template(int(session_id))
     if template is None:
@@ -519,7 +525,7 @@ def _commit_response(result: AnswerRegionCommitResult, region_count: int) -> Reg
 def update_session_template(
     session_id: int,
     request: TemplateUpdateRequest,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
 ) -> SessionTemplateResponse:
     _require_session(db, session_id)
     db.upsert_session_template(
@@ -544,7 +550,7 @@ def update_session_template(
 @router.get("/sessions/{session_id}/regions/draft", response_model=RegionDraftResponse)
 def get_answer_region_draft(
     session_id: int,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     templates_dir: Path = Depends(get_templates_dir),
 ) -> RegionDraftResponse:
     template = _require_template(db, session_id)
@@ -564,7 +570,7 @@ def get_answer_region_draft(
 def save_answer_region_draft(
     session_id: int,
     request: RegionDraftRequest,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     templates_dir: Path = Depends(get_templates_dir),
 ) -> RegionDraftResponse:
     template = _require_template(db, session_id)
@@ -620,7 +626,7 @@ def save_answer_region_draft(
 @router.delete("/sessions/{session_id}/regions/draft")
 def discard_answer_region_draft(
     session_id: int,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     templates_dir: Path = Depends(get_templates_dir),
 ) -> dict[str, str]:
     _require_template(db, session_id)
@@ -632,7 +638,7 @@ def discard_answer_region_draft(
 def commit_answer_regions(
     session_id: int,
     request: RegionCommitRequest,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     templates_dir: Path = Depends(get_templates_dir),
 ) -> RegionCommitResponse:
     template = _require_template(db, session_id)
@@ -665,7 +671,7 @@ def commit_answer_regions(
 def retry_answer_region_snapshot(
     session_id: int,
     request: RegionSnapshotRetryRequest,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     templates_dir: Path = Depends(get_templates_dir),
 ) -> RegionCommitResponse:
     template = _require_template(db, session_id)

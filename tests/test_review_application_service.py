@@ -246,18 +246,22 @@ def _confirmation_state(db: DBManager) -> tuple[list[tuple[Any, ...]], list[tupl
 def test_large_review_class_uses_one_join_query(tmp_path: Path, monkeypatch) -> None:
     db, session_id, session, result_ids = _seed_large_review_class(tmp_path)
     service = ReviewApplicationService(db)
-    original_connect = db._connect
-    connect_count = 0
+    original_query = db.review_repository.get_session_review_rows
+    query_count = 0
 
-    def counted_connect():
-        nonlocal connect_count
-        connect_count += 1
-        return original_connect()
+    def counted_query(requested_session_id: int):
+        nonlocal query_count
+        query_count += 1
+        return original_query(requested_session_id)
 
     def fail_old_path(*_args, **_kwargs):
         raise AssertionError("review service must not use the result-by-result query path")
 
-    monkeypatch.setattr(db, "_connect", counted_connect)
+    monkeypatch.setattr(
+        db.review_repository,
+        "get_session_review_rows",
+        counted_query,
+    )
     monkeypatch.setattr(db, "get_session_results", fail_old_path)
     monkeypatch.setattr(db, "get_result_details", fail_old_path)
 
@@ -265,7 +269,7 @@ def test_large_review_class_uses_one_join_query(tmp_path: Path, monkeypatch) -> 
 
     assert len(rows) == 120
     assert len([row for row in rows if row.question_id == "Q1"]) == 60
-    assert connect_count == 1
+    assert query_count == 1
 
     q1_by_result = {row.result_id: row for row in rows if row.question_id == "Q1"}
     assert q1_by_result[result_ids[0]].needs_review is True
