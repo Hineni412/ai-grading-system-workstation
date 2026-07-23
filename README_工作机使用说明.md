@@ -6,14 +6,14 @@
 
 1. 将完整便携包整体拷贝到工作机任意位置。
 2. 双击 `运行.bat` 启动系统。
-3. 浏览器打开 <http://localhost:8501>。
+3. 浏览器会自动打开 <http://127.0.0.1:8000/>；如未自动打开，可手动访问该地址。
 
 完整便携包已经包含 `runtime\python\python.exe` 和运行依赖，无需预装 Python，也不需要首次联网安装。开发、排查和维护命令优先使用项目自带运行时。
 
 ### 日常使用
 
 - 双击 `运行.bat` 即可启动
-- 在主窗口按 Ctrl+C 停止 Streamlit，并关闭标题为“AI阅卷系统 API”的窗口，才能完整停止两个本机服务
+- 关闭启动窗口或在窗口按 Ctrl+C，即可停止本机服务
 
 ### 原始试卷入库与知识图谱（可选）
 
@@ -52,7 +52,7 @@ runtime\python\python.exe update_tools/backup_data.py --reason before_exam
 runtime\python\python.exe update_tools/list_backups.py
 ```
 
-也可以在"系统自检"页面点击"立即备份"按钮。
+也可以在“设置与运维”页面点击“立即备份”。
 
 ## 如何恢复
 
@@ -82,13 +82,13 @@ runtime\python\python.exe update_tools/restore_backup.py <备份文件名>
 
 1. **不要删除 `user_data/`** — 所有考试数据都在这里
 2. **不要手动修改 `user_data/databases/` 中的 .db 文件**
-3. 更新代码时只替换 .py 文件和 pages/ 等代码目录，不要覆盖 user_data/
-4. 如需修改 API Key，请在批改页或题库管理页保存；配置位于 `%LOCALAPPDATA%/AIGradingSystem/config/api_profiles.json`
+3. 更新代码时不要覆盖 `user_data/`
+4. 如需修改 API Key，请在“设置与运维”页面保存；配置位于 `%LOCALAPPDATA%/AIGradingSystem/config/api_profiles.json`
 5. 定期备份，尤其在重要考试前
 
 ## 系统自检
 
-启动系统后，在左侧导航栏点击"系统自检"，可以查看：
+启动系统后，在左侧导航栏点击“设置与运维”，可以查看：
 - 系统环境状态
 - 数据库状态与 Schema 版本
 - API 配置状态
