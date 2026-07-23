@@ -5693,6 +5693,24 @@ def generate_grading_config_from_images(
     return _finalize_whole_generation_payload(payload, "whole_pdf_visual_single_request")
 
 
+# P3-09 compatibility facade. Keep the historical names for callers while the
+# active batch workflow and score prompt live under backend.config_generation.
+from backend.config_generation.compat import (  # noqa: E402
+    failed_grading_config_batches as failed_grading_config_batches,
+    failed_grading_config_question_ids as failed_grading_config_question_ids,
+    generate_grading_config_in_batches as generate_grading_config_in_batches,
+    refine_grading_config_from_manual_structure as refine_grading_config_from_manual_structure,
+    retry_failed_grading_config_batches as retry_failed_grading_config_batches,
+)
+from backend.config_generation.gateway import (  # noqa: E402
+    config_generation_extra_kwargs as _config_generation_extra_kwargs,
+)
+from backend.config_generation.prompts import (  # noqa: E402
+    build_manual_structure_refinement_prompt as _build_manual_structure_refinement_prompt,
+    build_score_allocation_prompt as _build_score_allocation_prompt,
+)
+
+
 # P3-08 compatibility exports. Parsing now lives in backend.document_parsing;
 # callers that historically imported these names keep the same public surface.
 from backend.document_parsing import (  # noqa: E402

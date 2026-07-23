@@ -2,7 +2,7 @@
 
 **执行包：** P3-09
 **计划日期：** 2026-07-23
-**计划状态：** in_progress
+**计划状态：** waiting_review
 **计划模型：** 当前连续作业模型
 **允许夜间执行：** yes
 **计划基线：** 7a9aef6a2311308ec7253a588f9585c227e44af6
@@ -15,9 +15,9 @@
 ## 昼夜交接
 
 **执行包：** P3-09
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
 **真实数据指纹：** unchanged
@@ -57,10 +57,10 @@
 
 ## 实施步骤
 
-- [ ] 固定活动批次 Prompt、配分 Prompt、请求顺序/次数和部分失败重试快照，取得 RED。
-- [ ] 建立 `backend/config_generation/` Prompt、Gateway adapter、显式 policy callbacks 与 orchestration service。
-- [ ] 把正式配置 Job 切到新 facade，并让 `session_manager` 兼容入口委托新实现；保持现有模块级测试接缝。
-- [ ] 运行 P3-09 聚焦测试、批次/策略/Job/API 受影响回归和快速冒烟。
+- [x] 固定活动批次 Prompt、配分 Prompt、请求顺序/次数和部分失败重试快照，取得 RED。
+- [x] 建立 `backend/config_generation/` Prompt、Gateway adapter、显式 policy callbacks 与 orchestration service。
+- [x] 把正式配置 Job 切到新 facade，并让 `session_manager` 兼容入口委托新实现；保持现有模块级测试接缝。
+- [x] 运行 P3-09 聚焦测试、批次/策略/Job/API 受影响回归和快速冒烟。
 - [ ] 冻结同一功能 SHA，完成需求符合性与代码质量双路复审；阻塞问题统一修正，最多 3 次。
 
 ## 计划验证命令
@@ -77,6 +77,9 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - Phase map、M3-03 精确基线、正式 Job、批次生成、失败批次重试、Prompt 构建与现有测试接缝已交叉核对。
 - 没有需要用户决定的产品方案：采用最保守的“流程迁移、规则回调、字节/请求/结果等价”，真实模型调用保持为零。
 - 问题清单已冻结；P3-10 的归一化、评分规则和质量告警实现不进入本包。
+- RED 阶段因 `backend.config_generation` 尚不存在而按预期在收集期失败；实现后 6 项新契约测试通过。
+- 冻结候选的 Prompt/Gateway/批次、生成策略、正式 Job 和 API 合并受影响回归共 188 项通过；快速冒烟通过文档治理、511 个第一方 Python 文件编译和两库隔离副本初始化幂等。
+- 验证未调用真实模型，功能工作区 `user_data/` 无本地改动；根目录真实两库 SHA-256 与开工基线一致。
 
 ## 回退
 
