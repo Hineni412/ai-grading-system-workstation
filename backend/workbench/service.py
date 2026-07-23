@@ -6,17 +6,17 @@ from typing import Any
 from backend.jobs.manager import JobManager
 from backend.public_data import sanitize_public_diagnostic_text
 from backend.review.service import ReviewApplicationService
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 
 
 class WorkbenchService:
     def __init__(
         self,
-        db: DBManager,
+        db: GradingRepositoryAccess,
         review_service: ReviewApplicationService,
         job_manager: JobManager,
     ) -> None:
-        self.db = db
+        self.db = as_grading_repositories(db)
         self.review_service = review_service
         self.job_manager = job_manager
 

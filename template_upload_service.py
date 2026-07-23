@@ -22,7 +22,7 @@ from PIL import Image
 
 from answer_region_draft_service import AnswerRegionDraftService
 from answer_region_session_lock import get_answer_region_session_lock
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess
 from path_manager import resolve_stored_file_path
 from template_analyzer import create_template_mapping_package
 
@@ -75,7 +75,7 @@ class TemplateUploadService:
     def upload(
         self,
         *,
-        db: DBManager,
+        db: GradingRepositoryAccess,
         session_id: int,
         pdf_bytes: bytes,
         first_page_role: TemplatePageRole,
@@ -207,7 +207,12 @@ class TemplateUploadService:
                 regions_snapshot_pending=bool(template.get("regions_snapshot_pending")),
             )
 
-    def load_current(self, *, db: DBManager, session_id: int) -> TemplateUploadResult:
+    def load_current(
+        self,
+        *,
+        db: GradingRepositoryAccess,
+        session_id: int,
+    ) -> TemplateUploadResult:
         session_dir = self.templates_dir / f"session_{int(session_id)}"
         with get_answer_region_session_lock(session_dir):
             template = db.get_session_template(int(session_id))
@@ -259,7 +264,7 @@ class TemplateUploadService:
         content_length: int | None,
         first_page_role: TemplatePageRole,
         content_sha256: str,
-        db: DBManager | None = None,
+        db: GradingRepositoryAccess | None = None,
     ) -> str:
         token = _request_token(request_token)
         session_dir = self.templates_dir / f"session_{int(session_id)}"
@@ -344,7 +349,7 @@ class TemplateUploadService:
         *,
         session_id: int,
         request_token: str,
-        db: DBManager | None = None,
+        db: GradingRepositoryAccess | None = None,
     ) -> None:
         token = _request_token(request_token)
         session_dir = self.templates_dir / f"session_{int(session_id)}"
@@ -418,7 +423,7 @@ class TemplateUploadService:
         *,
         session_id: int,
         request_token: str,
-        db: DBManager | None = None,
+        db: GradingRepositoryAccess | None = None,
     ) -> dict[str, object]:
         token = _request_token(request_token)
         session_dir = self.templates_dir / f"session_{int(session_id)}"
@@ -590,7 +595,7 @@ def _has_reliable_activation_receipt(session_dir: Path, request_token: str) -> b
 
 
 def _current_activation_token(
-    db: DBManager,
+    db: GradingRepositoryAccess,
     session_dir: Path,
     session_id: int,
 ) -> str | None:
@@ -622,7 +627,7 @@ def _current_activation_token(
 def _recover_activated_submission(
     session_dir: Path,
     request_token: str,
-    db: DBManager,
+    db: GradingRepositoryAccess,
     session_id: int,
 ) -> dict[str, object]:
     current = TemplateUploadService(session_dir.parent).load_current(

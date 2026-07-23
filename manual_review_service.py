@@ -10,7 +10,7 @@ from uuid import uuid4
 from annotation_renderer import render_annotated_paper
 from answer_region_session_lock import get_answer_region_session_lock
 from answer_region_geometry import answer_regions_with_template_source_sizes
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from path_manager import resolve_stored_file_path
 
 
@@ -19,10 +19,14 @@ _ANNOTATED_IMAGE_SUFFIXES = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 
 
 class ManualReviewService:
-    def __init__(self, db: DBManager, annotated_dir: Path) -> None:
-        self.db = db
-        self.results = getattr(db, "result_repository", db)
-        self.review = getattr(db, "review_repository", db)
+    def __init__(
+        self,
+        db: GradingRepositoryAccess,
+        annotated_dir: Path,
+    ) -> None:
+        self.db = as_grading_repositories(db)
+        self.results = self.db.results
+        self.review = self.db.reviews
         self.annotated_dir = annotated_dir
 
     def render_result_annotation(

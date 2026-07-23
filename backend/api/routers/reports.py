@@ -26,7 +26,7 @@ from backend.file_access import (
 from backend.files.service import JobFileNotFound, JobFileService, JobFileUnavailable
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from backend.report_exports import score_revision, submit_report_export
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess
 
 
 router = APIRouter(prefix="/api", tags=["reports"])
@@ -40,7 +40,7 @@ router = APIRouter(prefix="/api", tags=["reports"])
 def export_session_report(
     session_id: int,
     request: ReportExportRequest | None = None,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
     file_service: JobFileService = Depends(get_job_file_service),
 ) -> JobResponse:
@@ -81,7 +81,7 @@ def get_session_report_context(
     session_id: int,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=100),
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
     file_service: JobFileService = Depends(get_job_file_service),
 ) -> ReportExportContextResponse:

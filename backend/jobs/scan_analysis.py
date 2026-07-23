@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from answer_region_geometry import answer_regions_with_template_source_sizes
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess
 from scanner import ScanAnalysis, Scanner, student_name_region_from_regions
 
 
@@ -18,7 +18,7 @@ class ScannerFactory(Protocol):
 
 def run_scan_analysis(
     *,
-    db: DBManager,
+    db: GradingRepositoryAccess,
     session_id: int,
     exams_dir: Path,
     session_work_dir: Path,

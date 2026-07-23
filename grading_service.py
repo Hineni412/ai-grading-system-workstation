@@ -11,7 +11,7 @@ from typing import Any, Iterable
 
 from ai_grader import AIGrader
 from backend.domain_models import ExamPaperGroup, QuestionGradingDetail, SecondaryError
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from evidence_atlas import EvidenceAtlasBuilder
 from grading_limits import (
     FULL_PAPER_WORKERS_MAX,
@@ -109,14 +109,14 @@ def _rubric_major_question_ids(rubric: dict) -> set[str]:
 class GradingService:
     def __init__(
         self,
-        db_manager: DBManager,
+        db_manager: GradingRepositoryAccess,
         llm_client: LLMClient,
         question_bank_db_path: Path | None = None,
     ) -> None:
-        self.db = db_manager
-        self.papers = getattr(db_manager, "paper_repository", db_manager)
-        self.results = getattr(db_manager, "result_repository", db_manager)
-        self.attendance = getattr(db_manager, "session_repository", db_manager)
+        self.db = as_grading_repositories(db_manager)
+        self.papers = self.db.papers
+        self.results = self.db.results
+        self.attendance = self.db.sessions
         self.llm_client = llm_client
         self.question_bank_db_path = Path(question_bank_db_path) if question_bank_db_path else None
 

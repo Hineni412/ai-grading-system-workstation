@@ -1357,7 +1357,9 @@ def test_default_handlers_register_config_generation_with_controlled_dependencie
     assert loaded is not None
     assert loaded.status == "succeeded"
     assert loaded.result == {"session_id": 7, "outcome": "complete"}
-    assert isinstance(captured["db"], DBManager)
+    from backend.repositories.access import GradingRepositoryAccess
+
+    assert isinstance(captured["db"], GradingRepositoryAccess)
     assert captured["upload_config_dir"] == tmp_path / "uploaded"
     assert captured["llm_client_factory"]() == "fake-client"
 

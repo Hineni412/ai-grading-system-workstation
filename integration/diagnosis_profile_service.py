@@ -5,7 +5,8 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Iterable, Mapping
 
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
+from backend.repositories.compat import open_grading_repositories
 from integration.knowledge_term_identity import build_grading_knowledge_term
 from integration.question_tag_projection_service import (
     QuestionTagProjection,
@@ -31,10 +32,14 @@ class DiagnosisProfileService:
         grading_db_path: str | Path,
         question_bank_db_path: str | Path,
         *,
-        grading_db: DBManager | None = None,
+        grading_db: GradingRepositoryAccess | None = None,
         question_bank_connection: sqlite3.Connection | None = None,
     ) -> None:
-        self.db = grading_db or DBManager(Path(grading_db_path))
+        self.db = (
+            as_grading_repositories(grading_db)
+            if grading_db is not None
+            else open_grading_repositories(Path(grading_db_path))
+        )
         self.question_bank_db_path = Path(question_bank_db_path)
         self.question_bank_connection = question_bank_connection
         self.alignment = ConceptAlignmentService(self.question_bank_db_path)
