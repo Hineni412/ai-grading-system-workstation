@@ -23,6 +23,7 @@ from backend.repositories.review import (
     ReviewRepository,
     ReviewRepositoryGateway,
 )
+from backend.repositories.settings import SettingsRepositoryGateway
 from backend.repositories.sessions import SessionRepository, SessionRepositoryGateway
 from backend.repositories.students import (
     StudentBackupFailedError,
@@ -32,6 +33,11 @@ from backend.repositories.students import (
     StudentRepositoryGateway,
     StudentRosterRevisionConflict,
     student_roster_revision,
+)
+from backend.repositories.templates import (
+    RegionRepository,
+    TemplateRegionRepositoryGateway,
+    TemplateRepository,
 )
 from grading_completeness import audit_grading_details, major_question_id
 from path_manager import resolve_stored_file_path
@@ -104,6 +110,12 @@ class DBManager:
         self._review_repository = ReviewRepositoryGateway(
             self._repository_sessions
         )
+        self._template_repository = TemplateRegionRepositoryGateway(
+            self._repository_sessions
+        )
+        self._settings_repository = SettingsRepositoryGateway(
+            self._repository_sessions
+        )
         try:
             from path_manager import get_path_manager
             pm = get_path_manager()
@@ -133,6 +145,14 @@ class DBManager:
     @property
     def review_repository(self) -> ReviewRepositoryGateway:
         return self._review_repository
+
+    @property
+    def template_repository(self) -> TemplateRegionRepositoryGateway:
+        return self._template_repository
+
+    @property
+    def settings_repository(self) -> SettingsRepositoryGateway:
+        return self._settings_repository
 
     def _connect(self) -> sqlite3.Connection | _BorrowedSQLiteConnection:
         if self._external_connection is not None:
@@ -640,26 +660,10 @@ class DBManager:
 
     # ---------- Session ----------
     def set_app_setting(self, key: str, value: str) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO app_settings (setting_key, setting_value, updated_at)
-                VALUES (?, ?, datetime('now','localtime'))
-                ON CONFLICT(setting_key) DO UPDATE SET
-                    setting_value = excluded.setting_value,
-                    updated_at = datetime('now','localtime')
-                """,
-                (str(key), str(value)),
-            )
-            conn.commit()
+        self.settings_repository.set_app_setting(key, value)
 
     def get_app_setting(self, key: str, default: str | None = None) -> str | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT setting_value FROM app_settings WHERE setting_key = ?",
-                (str(key),),
-            ).fetchone()
-        return str(row["setting_value"]) if row else default
+        return self.settings_repository.get_app_setting(key, default)
 
     def create_grading_session(
         self,
@@ -922,24 +926,16 @@ class DBManager:
                 ).fetchone(),
                 ["rubric_path", "answer_key_path", "template_config_path"],
             )
-            add_values(
-                conn.execute(
-                    """
-                    SELECT front_template_path, back_template_path, ai_analysis_path,
-                           template_config_path, regions_path
-                    FROM session_templates
-                    WHERE session_id = ?
-                    """,
-                    (session_id,),
-                ).fetchone(),
-                [
-                    "front_template_path",
-                    "back_template_path",
-                    "ai_analysis_path",
-                    "template_config_path",
-                    "regions_path",
-                ],
-            )
+        add_values(
+            self.template_repository.get_session_storage_path_row(session_id),
+            [
+                "front_template_path",
+                "back_template_path",
+                "ai_analysis_path",
+                "template_config_path",
+                "regions_path",
+            ],
+        )
         for row in self.paper_repository.get_session_storage_path_rows(
             session_id
         ):
@@ -975,6 +971,8 @@ class DBManager:
                 reviews = ReviewRepository(repository_session)
                 papers = PaperRepository(repository_session)
                 sessions = SessionRepository(repository_session)
+                regions = RegionRepository(repository_session)
+                templates = TemplateRepository(repository_session)
                 result_ids = results.get_session_result_ids(session_id)
                 counts["session_details"] = results.delete_result_details(
                     result_ids
@@ -994,23 +992,11 @@ class DBManager:
                 counts["exam_papers"] = papers.delete_session_papers(
                     session_id
                 )
-                counts["answer_regions"] = max(
-                    0,
-                    int(
-                        repository_session.connection.execute(
-                            "DELETE FROM answer_regions WHERE session_id = ?",
-                            (session_id,),
-                        ).rowcount
-                    ),
+                counts["answer_regions"] = regions.delete_session_regions(
+                    session_id
                 )
-                counts["session_templates"] = max(
-                    0,
-                    int(
-                        repository_session.connection.execute(
-                            "DELETE FROM session_templates WHERE session_id = ?",
-                            (session_id,),
-                        ).rowcount
-                    ),
+                counts["session_templates"] = (
+                    templates.delete_session_templates(session_id)
                 )
                 counts["grading_sessions"] = max(
                     0,
@@ -1097,40 +1083,11 @@ class DBManager:
 
     # ---------- Template & regions ----------
     def upsert_session_template(self, session_id: int, front_template_path: str, back_template_path: str) -> int:
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            existing = cursor.execute(
-                "SELECT id FROM session_templates WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-
-            if existing:
-                template_id = int(existing["id"])
-                cursor.execute(
-                    """
-                    UPDATE session_templates
-                    SET front_template_path = ?,
-                        back_template_path = ?,
-                        is_confirmed = 0,
-                        regions_snapshot_pending = 0,
-                        regions_snapshot_token = NULL,
-                        updated_at = datetime('now','localtime')
-                    WHERE id = ?
-                    """,
-                    (front_template_path, back_template_path, template_id),
-                )
-            else:
-                cursor.execute(
-                    """
-                    INSERT INTO session_templates (session_id, front_template_path, back_template_path, is_confirmed)
-                    VALUES (?, ?, ?, 0)
-                    """,
-                    (session_id, front_template_path, back_template_path),
-                )
-                template_id = int(cursor.lastrowid)
-
-            conn.commit()
-            return template_id
+        return self.template_repository.upsert_session_template(
+            session_id,
+            front_template_path,
+            back_template_path,
+        )
 
     def activate_session_template(
         self,
@@ -1143,71 +1100,17 @@ class DBManager:
         regions_path: str,
     ) -> int:
         """Atomically activate one generated template package for a session."""
-        with self._connect() as conn:
-            existing = conn.execute(
-                "SELECT id FROM session_templates WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-            if existing:
-                template_id = int(existing["id"])
-                conn.execute(
-                    """
-                    UPDATE session_templates
-                    SET front_template_path = ?,
-                        back_template_path = ?,
-                        ai_analysis_path = ?,
-                        template_config_path = ?,
-                        regions_path = ?,
-                        is_confirmed = 0,
-                        regions_snapshot_pending = 0,
-                        regions_snapshot_token = NULL,
-                        updated_at = datetime('now','localtime')
-                    WHERE id = ?
-                    """,
-                    (
-                        front_template_path,
-                        back_template_path,
-                        ai_analysis_path,
-                        template_config_path,
-                        regions_path,
-                        template_id,
-                    ),
-                )
-            else:
-                cursor = conn.execute(
-                    """
-                    INSERT INTO session_templates (
-                        session_id, front_template_path, back_template_path,
-                        ai_analysis_path, template_config_path, regions_path, is_confirmed
-                    ) VALUES (?, ?, ?, ?, ?, ?, 0)
-                    """,
-                    (
-                        session_id,
-                        front_template_path,
-                        back_template_path,
-                        ai_analysis_path,
-                        template_config_path,
-                        regions_path,
-                    ),
-                )
-                template_id = int(cursor.lastrowid)
-            conn.commit()
-            return template_id
+        return self.template_repository.activate_session_template(
+            session_id,
+            front_template_path=front_template_path,
+            back_template_path=back_template_path,
+            ai_analysis_path=ai_analysis_path,
+            template_config_path=template_config_path,
+            regions_path=regions_path,
+        )
 
     def get_session_template(self, session_id: int) -> dict[str, Any] | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT id, session_id, front_template_path, back_template_path,
-                       ai_analysis_path, template_config_path, regions_path,
-                       is_confirmed, regions_snapshot_pending, regions_snapshot_token,
-                       created_at, updated_at
-                FROM session_templates
-                WHERE session_id = ?
-                """,
-                (session_id,),
-            ).fetchone()
-            return dict(row) if row else None
+        return self.template_repository.get_session_template(session_id)
 
     def update_session_template_analysis(
         self,
@@ -1217,129 +1120,36 @@ class DBManager:
         template_config_path: str | None,
         regions_path: str | None,
     ) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE session_templates
-                SET ai_analysis_path = ?,
-                    template_config_path = ?,
-                    regions_path = ?,
-                    is_confirmed = 0,
-                    regions_snapshot_pending = 0,
-                    regions_snapshot_token = NULL,
-                    updated_at = datetime('now','localtime')
-                WHERE session_id = ?
-                """,
-                (ai_analysis_path, template_config_path, regions_path, session_id),
-            )
-            conn.commit()
-
-    def _insert_answer_region_conn(
-        self,
-        conn: sqlite3.Connection,
-        session_id: int,
-        template_id: int,
-        region: dict[str, Any],
-    ) -> int:
-        raw_region_uuid = region.get("region_uuid")
-        region_uuid = (
-            str(raw_region_uuid)
-            if raw_region_uuid is not None and str(raw_region_uuid).strip()
-            else str(uuid4())
+        self.template_repository.update_session_template_analysis(
+            session_id,
+            ai_analysis_path=ai_analysis_path,
+            template_config_path=template_config_path,
+            regions_path=regions_path,
         )
-        mapped_question_id = region.get("mapped_question_id")
-        raw_mapping_status = region.get("mapping_status")
-        mapping_status = (
-            str(raw_mapping_status)
-            if raw_mapping_status is not None and str(raw_mapping_status).strip()
-            else ("manual" if mapped_question_id is not None and str(mapped_question_id).strip() else "unbound")
-        )
-        cursor = conn.execute(
-            """
-            INSERT INTO answer_regions (
-                region_uuid, session_id, template_id, page, region_order, x, y, w, h,
-                detected_question_id, mapped_question_id, confidence, is_confirmed,
-                mapping_status, multi_region_confirmed, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
-            """,
-            (
-                region_uuid,
-                session_id,
-                template_id,
-                region.get("page", "front"),
-                int(region.get("region_order", 0)),
-                int(region.get("x", 0)),
-                int(region.get("y", 0)),
-                int(region.get("w", 0)),
-                int(region.get("h", 0)),
-                region.get("detected_question_id"),
-                mapped_question_id,
-                float(region.get("confidence", 0.0)),
-                1 if region.get("is_confirmed") else 0,
-                mapping_status,
-                1 if region.get("multi_region_confirmed") else 0,
-            ),
-        )
-        return int(cursor.lastrowid)
 
     def save_answer_regions(self, session_id: int, template_id: int, regions: list[dict[str, Any]]) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM answer_regions WHERE session_id = ?", (session_id,))
-            for region in regions:
-                self._insert_answer_region_conn(conn, session_id, template_id, region)
-            conn.commit()
+        self.template_repository.save_answer_regions(
+            session_id,
+            template_id,
+            regions,
+        )
 
     def list_answer_regions(self, session_id: int) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, region_uuid, session_id, template_id, page, region_order, x, y, w, h,
-                       detected_question_id, mapped_question_id, confidence, is_confirmed,
-                       mapping_status, multi_region_confirmed, created_at, updated_at
-                FROM answer_regions
-                WHERE session_id = ?
-                ORDER BY CASE page WHEN 'front' THEN 1 ELSE 2 END, region_order ASC
-                """,
-                (session_id,),
-            ).fetchall()
-            return [dict(row) for row in rows]
+        return self.template_repository.list_answer_regions(session_id)
 
     def bulk_update_answer_region_mapping(self, session_id: int, rows: list[dict[str, Any]]) -> None:
-        with self._connect() as conn:
-            for row in rows:
-                mapped_question_id = row.get("mapped_question_id")
-                mapping_status = row.get("mapping_status")
-                if mapping_status not in {"auto", "manual", "unbound"}:
-                    mapping_status = (
-                        "manual"
-                        if mapped_question_id is not None and str(mapped_question_id).strip()
-                        else "unbound"
-                    )
-                conn.execute(
-                    """
-                    UPDATE answer_regions
-                    SET mapped_question_id = ?,
-                        mapping_status = ?,
-                        is_confirmed = ?,
-                        updated_at = datetime('now','localtime')
-                    WHERE id = ? AND session_id = ?
-                    """,
-                    (
-                        mapped_question_id,
-                        mapping_status,
-                        1 if row.get("is_confirmed") else 0,
-                        int(row.get("id")),
-                        session_id,
-                    ),
-                )
-            conn.commit()
+        self.template_repository.bulk_update_answer_region_mapping(
+            session_id,
+            rows,
+        )
 
     def add_answer_region(self, session_id: int, template_id: int, region: dict[str, Any]) -> int:
         """Insert a single region and return its new id."""
-        with self._connect() as conn:
-            region_id = self._insert_answer_region_conn(conn, session_id, template_id, region)
-            conn.commit()
-            return region_id
+        return self.template_repository.add_answer_region(
+            session_id,
+            template_id,
+            region,
+        )
 
     def replace_answer_regions_atomic(
         self,
@@ -1349,36 +1159,12 @@ class DBManager:
         *,
         confirmed: bool,
     ) -> str:
-        snapshot_token = uuid4().hex
-        with self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            template = conn.execute(
-                "SELECT 1 FROM session_templates WHERE id = ? AND session_id = ?",
-                (template_id, session_id),
-            ).fetchone()
-            if template is None:
-                raise sqlite3.IntegrityError(
-                    f"template_id {template_id} does not belong to session_id {session_id}"
-                )
-            conn.execute("DELETE FROM answer_regions WHERE session_id = ?", (session_id,))
-            for region in regions:
-                if confirmed:
-                    region = dict(region)
-                    region["is_confirmed"] = True
-                self._insert_answer_region_conn(conn, session_id, template_id, region)
-            conn.execute(
-                """
-                UPDATE session_templates
-                SET is_confirmed = ?,
-                    regions_snapshot_pending = 1,
-                    regions_snapshot_token = ?,
-                    updated_at = datetime('now','localtime')
-                WHERE session_id = ?
-                """,
-                (1 if confirmed else 0, snapshot_token, session_id),
-            )
-            conn.commit()
-        return snapshot_token
+        return self.template_repository.replace_answer_regions_atomic(
+            session_id,
+            template_id,
+            regions,
+            confirmed=confirmed,
+        )
 
     def mark_region_snapshot_complete(
         self,
@@ -1386,28 +1172,13 @@ class DBManager:
         *,
         expected_token: str,
     ) -> bool:
-        if not isinstance(expected_token, str) or not expected_token.strip():
-            raise ValueError("expected_token must be nonblank")
-        with self._connect() as conn:
-            cursor = conn.execute(
-                """
-                UPDATE session_templates
-                SET regions_snapshot_pending = 0,
-                    regions_snapshot_token = NULL,
-                    updated_at = datetime('now','localtime')
-                WHERE session_id = ?
-                  AND regions_snapshot_pending = 1
-                  AND regions_snapshot_token = ?
-                """,
-                (session_id, expected_token),
-            )
-            conn.commit()
-            return cursor.rowcount > 0
+        return self.template_repository.mark_region_snapshot_complete(
+            session_id,
+            expected_token=expected_token,
+        )
 
     def delete_answer_region(self, region_id: int) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM answer_regions WHERE id = ?", (region_id,))
-            conn.commit()
+        self.template_repository.delete_answer_region(region_id)
 
     def update_answer_region_bbox(
         self,
@@ -1417,54 +1188,22 @@ class DBManager:
         w: int,
         h: int,
     ) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE answer_regions
-                SET x = ?, y = ?, w = ?, h = ?, updated_at = datetime('now','localtime')
-                WHERE id = ?
-                """,
-                (x, y, w, h, region_id),
-            )
-            conn.commit()
+        self.template_repository.update_answer_region_bbox(
+            region_id,
+            x,
+            y,
+            w,
+            h,
+        )
 
     def mark_template_confirmed(self, session_id: int, confirmed: bool = True) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE session_templates
-                SET is_confirmed = ?, updated_at = datetime('now','localtime')
-                WHERE session_id = ?
-                """,
-                (1 if confirmed else 0, session_id),
-            )
-            conn.commit()
+        self.template_repository.mark_template_confirmed(
+            session_id,
+            confirmed,
+        )
 
     def is_template_ready(self, session_id: int) -> bool:
-        with self._connect() as conn:
-            tpl = conn.execute(
-                "SELECT id, is_confirmed FROM session_templates WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-            if tpl is None or int(tpl["is_confirmed"]) != 1:
-                return False
-
-            total = conn.execute(
-                "SELECT COUNT(*) AS c FROM answer_regions WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()["c"]
-            confirmed = conn.execute(
-                """
-                SELECT COUNT(*) AS c
-                FROM answer_regions
-                WHERE session_id = ?
-                  AND is_confirmed = 1
-                  AND COALESCE(mapped_question_id, '') <> ''
-                """,
-                (session_id,),
-            ).fetchone()["c"]
-
-            return total > 0 and total == confirmed
+        return self.template_repository.is_template_ready(session_id)
 
     # ---------- Paper/result persistence ----------
     def create_exam_paper(

@@ -40,6 +40,7 @@ class AnswerRegionCommitService:
         if resolved_session_dir != resolved_draft_session_dir:
             raise ValueError("draft service session directory must match session_dir")
         self._db = db
+        self._templates = getattr(db, "template_repository", db)
         self._session_dir = resolved_session_dir
         self._draft_service = draft_service
         self._lock = get_answer_region_session_lock(self._session_dir)
@@ -82,7 +83,7 @@ class AnswerRegionCommitService:
                 )
 
             try:
-                snapshot_token = self._db.replace_answer_regions_atomic(
+                snapshot_token = self._templates.replace_answer_regions_atomic(
                     session_id,
                     template_id,
                     normalized,
@@ -112,7 +113,7 @@ class AnswerRegionCommitService:
         expected_template_fingerprint: str,
     ) -> bool:
         try:
-            template = self._db.get_session_template(session_id)
+            template = self._templates.get_session_template(session_id)
             if template is None or int(template.get("id")) != template_id:
                 return False
             paths = [
@@ -136,7 +137,7 @@ class AnswerRegionCommitService:
         with self._lock:
             validation = RegionValidationResult(())
             try:
-                template = self._db.get_session_template(session_id)
+                template = self._templates.get_session_template(session_id)
             except Exception:
                 logger.exception("Failed to read pending answer-region snapshot state")
                 return AnswerRegionCommitResult(
@@ -200,7 +201,7 @@ class AnswerRegionCommitService:
         try:
             if not self._generation_is_current(session_id, snapshot_token):
                 return self._stale_result(validation)
-            formal_regions = self._db.list_answer_regions(session_id)
+            formal_regions = self._templates.list_answer_regions(session_id)
             if not self._generation_is_current(session_id, snapshot_token):
                 return self._stale_result(validation)
         except Exception:
@@ -239,6 +240,7 @@ class AnswerRegionCommitService:
             previous_workflow = _read_json_safely(workflow_path)
             workflow_state = _build_workflow_state(
                 self._db,
+                self._templates,
                 session_id=session_id,
                 formal_regions=formal_regions,
                 snapshot_path=snapshot_path,
@@ -293,7 +295,7 @@ class AnswerRegionCommitService:
                     previous_workflow,
                     previous_workflow_exists,
                 )
-            cleared = self._db.mark_region_snapshot_complete(
+            cleared = self._templates.mark_region_snapshot_complete(
                 session_id,
                 expected_token=snapshot_token,
             )
@@ -332,7 +334,7 @@ class AnswerRegionCommitService:
         )
 
     def _generation_is_current(self, session_id: int, snapshot_token: str) -> bool:
-        template = self._db.get_session_template(session_id)
+        template = self._templates.get_session_template(session_id)
         return bool(
             template
             and template.get("regions_snapshot_pending")
@@ -389,7 +391,7 @@ class AnswerRegionCommitService:
     ) -> AnswerRegionCommitResult:
         return AnswerRegionCommitResult(
             True,
-            _snapshot_is_pending(self._db, session_id),
+            _snapshot_is_pending(self._templates, session_id),
             validation,
             snapshot_path=snapshot_path,
             error=error,
@@ -454,6 +456,7 @@ def _read_json_safely(path: Path) -> dict[str, Any]:
 
 def _build_workflow_state(
     db: Any,
+    templates: Any,
     *,
     session_id: int,
     formal_regions: list[dict[str, Any]],
@@ -464,7 +467,7 @@ def _build_workflow_state(
     session = db.get_grading_session(session_id)
     if session is None:
         raise ValueError(f"grading session {session_id} does not exist")
-    template = db.get_session_template(session_id)
+    template = templates.get_session_template(session_id)
     previous_extra = previous.get("extra")
     merged_extra = dict(previous_extra) if isinstance(previous_extra, dict) else {}
     merged_extra["regions_path"] = str(snapshot_path)
@@ -484,7 +487,7 @@ def _build_workflow_state(
             "template_mapping_path": template.get("template_config_path") if template else None,
             "regions_path": template.get("regions_path") if template else None,
         },
-        "template_ready": db.is_template_ready(session_id),
+        "template_ready": templates.is_template_ready(session_id),
         "region_count": len(formal_regions),
         "progress": db.get_session_progress(session_id),
         "extra": merged_extra,

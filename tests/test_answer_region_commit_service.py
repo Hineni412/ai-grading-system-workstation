@@ -38,10 +38,18 @@ class _ReportingDBManager(DBManager):
     def __init__(self, db_path: Path, events: object) -> None:
         super().__init__(db_path)
         self._events = events
+        real_replace = self.template_repository.replace_answer_regions_atomic
 
-    def replace_answer_regions_atomic(self, *args: object, **kwargs: object) -> str:
-        self._events.put(("newer_commit", "entered"))
-        return super().replace_answer_regions_atomic(*args, **kwargs)
+        def reported_replace(
+            *args: object,
+            **kwargs: object,
+        ) -> str:
+            self._events.put(("newer_commit", "entered"))
+            return real_replace(*args, **kwargs)
+
+        self.template_repository.replace_answer_regions_atomic = (
+            reported_replace
+        )
 
 
 def _older_completion_in_process(
@@ -365,7 +373,11 @@ def test_database_failure_leaves_formal_regions_and_draft_untouched(
     def fail_replace(*args: object, **kwargs: object) -> None:
         raise RuntimeError("database unavailable")
 
-    monkeypatch.setattr(db, "replace_answer_regions_atomic", fail_replace)
+    monkeypatch.setattr(
+        db.template_repository,
+        "replace_answer_regions_atomic",
+        fail_replace,
+    )
 
     result = service.commit(
         session_id=session_id,
@@ -614,7 +626,7 @@ def test_shared_session_lock_serializes_concurrent_commits(
     first_in_replace = threading.Event()
     release_first = threading.Event()
     second_entered_replace = threading.Event()
-    real_replace = db.replace_answer_regions_atomic
+    real_replace = db.template_repository.replace_answer_regions_atomic
     call_count = 0
 
     def controlled_replace(*args: object, **kwargs: object) -> str:
@@ -627,7 +639,11 @@ def test_shared_session_lock_serializes_concurrent_commits(
             second_entered_replace.set()
         return real_replace(*args, **kwargs)
 
-    monkeypatch.setattr(db, "replace_answer_regions_atomic", controlled_replace)
+    monkeypatch.setattr(
+        db.template_repository,
+        "replace_answer_regions_atomic",
+        controlled_replace,
+    )
     results: list[AnswerRegionCommitResult] = []
     first_thread = threading.Thread(
         target=lambda: results.append(
@@ -817,7 +833,11 @@ def test_repeated_completion_failures_reuse_one_snapshot_and_remain_pending(
     db, session_id, template_id, session_dir, draft_service = _setup(tmp_path)
     _seed_formal(db, session_id, template_id, pending=True)
     service = AnswerRegionCommitService(db, session_dir, draft_service)
-    monkeypatch.setattr(db, "mark_region_snapshot_complete", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        db.template_repository,
+        "mark_region_snapshot_complete",
+        lambda *args, **kwargs: False,
+    )
 
     first = service.retry_pending_snapshot(session_id=session_id)
     second = service.retry_pending_snapshot(session_id=session_id)
@@ -1001,7 +1021,11 @@ def test_errors_are_stable_and_do_not_leak_absolute_paths(
     def fail_replace(*args: object, **kwargs: object) -> str:
         raise OSError(f"database path leaked: {tmp_path / 'secret.db'}")
 
-    monkeypatch.setattr(db, "replace_answer_regions_atomic", fail_replace)
+    monkeypatch.setattr(
+        db.template_repository,
+        "replace_answer_regions_atomic",
+        fail_replace,
+    )
 
     result = service.commit(
         session_id=session_id,
