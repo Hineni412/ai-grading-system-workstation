@@ -2,7 +2,7 @@
 
 **执行包：** P3-10
 **计划日期：** 2026-07-23
-**计划状态：** waiting_review
+**计划状态：** verified_pending_integration
 **计划模型：** 当前连续作业模型
 **允许夜间执行：** yes
 **计划基线：** 09f2df87c2fbc091281c427edc54126bc8b20bf6
@@ -15,14 +15,14 @@
 ## 昼夜交接
 
 **执行包：** P3-10
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** 31d45ed255bf47f3f6093ee9a76075a11a0a2770
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
 
 ## 任务边界（已冻结）
@@ -60,7 +60,7 @@
 - [x] 按功能族机械迁移规则函数，复用 `score_policy.py`，建立窄公开接口和兼容导出。
 - [x] 切换 P3-09 policy adapter、配置编辑/发布及 `session_manager` facade，消除新模块循环依赖和重复 helper。
 - [x] 运行 P3-10 聚焦测试、生成策略、批次/Job/API、配置编辑/发布受影响回归和快速冒烟。
-- [ ] 冻结同一功能 SHA，完成需求符合性与代码质量双路复审；阻塞问题统一修正，最多 3 次。
+- [x] 冻结同一功能 SHA，完成需求符合性与代码质量双路复审；阻塞问题统一修正，最多 3 次。
 
 ## 计划验证命令
 
@@ -82,6 +82,8 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - 验证未调用真实模型，功能工作区 `user_data/` 无本地改动；根目录真实两库 SHA-256 与开工基线一致。
 - 首轮需求符合性与代码质量复审原始意见 2 条，去重后为 1 个 `Important`：`local_facts.py` 搬移了 `merge_equivalent_forms` 调用却遗漏其 import；带本地标准答案的正常批次会在模型请求后触发 `NameError`，属于本次修改直接引入。
 - 第 1/3 次统一修正先增加本地可信答案与等价形式合并用例并稳定取得 RED，再补回原依赖 import；P3-10 聚焦 5 项、生成策略/批次/P3-09/Job 147 项和快速冒烟通过，差异检查干净。最终复审只检查该登记问题、修正区域和直接回归。
+- 原两位评审者对修正 SHA `31d45ed255bf47f3f6093ee9a76075a11a0a2770` 完成唯一一轮限定终审，两路均为 0 `Critical` / 0 `Important` / 0 `Suggestion`；漏导入问题关闭，两种导入顺序和本地答案合并路径无直接回归。
+- 只读 AST 对照确认 56/56 个迁移函数与基线函数体完全一致、3/3 组常量完全一致。调查/RED/实现与分层验证约 6 分钟，首轮与限定终审约 6 分钟；当前剩余工作仅为 integration 逐包合入、M3-03 批次末完整门槛、PR 和主线同步。P3-10 工程验收通过，整个版本是否发布仍由批次末门槛决定。
 
 ## 回退
 
