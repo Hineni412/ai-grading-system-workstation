@@ -12,7 +12,7 @@ from backend.api.schemas.workbench import (
     WorkbenchOverviewResponse,
 )
 from backend.workbench.service import WorkbenchService
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess
 
 
 router = APIRouter(prefix="/api", tags=["workbench"])
@@ -22,7 +22,7 @@ router = APIRouter(prefix="/api", tags=["workbench"])
 def get_workbench_overview(
     session_id: int | None = Query(None, gt=0),
     recent_limit: int = Query(5, ge=1, le=20),
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     service: WorkbenchService = Depends(get_workbench_service),
 ) -> WorkbenchOverviewResponse:
     if session_id is not None:
@@ -44,7 +44,7 @@ def list_session_anomalies(
         "grading_failed",
     ]
     | None = None,
-    db: DBManager = Depends(get_grading_db),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
     service: WorkbenchService = Depends(get_workbench_service),
 ) -> SessionAnomalyListResponse:
     _require_session(db, session_id)

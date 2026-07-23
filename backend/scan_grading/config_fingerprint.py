@@ -6,7 +6,7 @@ from pathlib import Path
 
 from api_profiles import active_api_profile, get_api_profile_store
 from answer_region_geometry import answer_regions_with_template_source_sizes
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from grading_run_identity import grading_config_fingerprint
 from path_manager import resolve_stored_file_path
 
@@ -22,12 +22,13 @@ def active_grading_model() -> str:
 
 def session_grading_config_fingerprint(
     *,
-    db: DBManager,
+    db: GradingRepositoryAccess,
     data_root: Path,
     session_id: int,
     grading_mode: str,
     grading_model: str | None = None,
 ) -> str:
+    db = as_grading_repositories(db)
     session = db.get_grading_session(int(session_id))
     if session is None:
         raise ValueError("grading session was not found")

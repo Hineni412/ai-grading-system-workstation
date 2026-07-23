@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess
+from backend.repositories.compat import open_grading_repositories
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from question_bank.recommendation.practice_plan_service import PracticePlanService
 from question_bank.services.question_read_service import (
@@ -49,7 +50,7 @@ class RequestReadContext:
     question_bank_candidate: Path
     grading_connection: sqlite3.Connection
     question_bank_connection: sqlite3.Connection
-    grading_db: DBManager
+    grading_db: GradingRepositoryAccess
     diagnosis_service: DiagnosisProfileService
     practice_service: PracticePlanService
 
@@ -77,7 +78,7 @@ def request_read_context(paths: _ReadPaths) -> Iterator[RequestReadContext]:
         )
         question_bank_candidate = _main_candidate_path(question_bank_connection)
 
-        grading_db = DBManager(
+        grading_db = open_grading_repositories(
             grading_candidate,
             external_connection=grading_connection,
         )

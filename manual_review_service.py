@@ -10,7 +10,7 @@ from uuid import uuid4
 from annotation_renderer import render_annotated_paper
 from answer_region_session_lock import get_answer_region_session_lock
 from answer_region_geometry import answer_regions_with_template_source_sizes
-from db_manager import DBManager
+from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from path_manager import resolve_stored_file_path
 
 
@@ -19,8 +19,14 @@ _ANNOTATED_IMAGE_SUFFIXES = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 
 
 class ManualReviewService:
-    def __init__(self, db: DBManager, annotated_dir: Path) -> None:
-        self.db = db
+    def __init__(
+        self,
+        db: GradingRepositoryAccess,
+        annotated_dir: Path,
+    ) -> None:
+        self.db = as_grading_repositories(db)
+        self.results = self.db.results
+        self.review = self.db.reviews
         self.annotated_dir = annotated_dir
 
     def render_result_annotation(
@@ -28,7 +34,7 @@ class ManualReviewService:
         result_id: int,
         highlight_qids: list[str] | None = None,
     ) -> dict[str, str] | None:
-        context = self.db.get_result_context(int(result_id))
+        context = self.results.get_result_context(int(result_id))
         if not context:
             return None
         session_id = int(context["session_id"])
@@ -41,7 +47,7 @@ class ManualReviewService:
         result_id: int,
         highlight_qids: list[str] | None = None,
     ) -> dict[str, str] | None:
-        context = self.db.get_result_context(result_id)
+        context = self.results.get_result_context(result_id)
         if not context:
             return None
 
@@ -51,7 +57,7 @@ class ManualReviewService:
             session_id,
             data_root=self._data_root(),
         )
-        details = self.db.get_result_details(result_id)
+        details = self.results.get_result_details(result_id)
 
         detail_map = {str(item.get("question_id")): item for item in details}
         question_scores: dict[str, dict[str, Any]] = {}
@@ -137,7 +143,7 @@ class ManualReviewService:
                 output_front=front_out,
                 output_back=back_out,
             )
-            previous = self.db.upsert_annotated_result(
+            previous = self.review.upsert_annotated_result(
                 session_id,
                 result_id,
                 str(front_path),
@@ -180,7 +186,7 @@ class ManualReviewService:
                 continue
             if candidate.suffix.lower() not in _ANNOTATED_IMAGE_SUFFIXES:
                 continue
-            if self.db.is_annotated_result_path_referenced(value):
+            if self.review.is_annotated_result_path_referenced(value):
                 continue
             try:
                 candidate.unlink(missing_ok=True)
@@ -200,7 +206,7 @@ class ManualReviewService:
             detail_id = row.get("detail_id")
             if detail_id is None:
                 continue
-            self.db.update_result_detail(
+            self.review.update_result_detail(
                 detail_id=int(detail_id),
                 score_awarded=float(row.get("score_awarded", 0)),
                 deduction_reason=sanitize_val(row.get("deduction_reason")),
@@ -209,7 +215,7 @@ class ManualReviewService:
             )
             changed += 1
 
-        self.db.recalculate_result_score(result_id)
+        self.review.recalculate_result_score(result_id)
         paths = self.render_result_annotation(result_id, highlight_qids=highlight_qids)
         return {"updated_details": changed, "annotated_paths": paths}
 
@@ -219,7 +225,10 @@ class ManualReviewService:
         adjustments: list[dict[str, Any]],
         highlight_qids: list[str] | None = None,
     ) -> dict[str, Any]:
-        result = self.db.apply_session_review_adjustments(session_id, adjustments)
+        result = self.review.apply_session_review_adjustments(
+            session_id,
+            adjustments,
+        )
         result_ids = sorted({int(item["result_id"]) for item in adjustments})
         annotation_outcomes: list[dict[str, Any]] = []
         for result_id in result_ids:
@@ -253,12 +262,12 @@ class ManualReviewService:
             return {"updated_details": 0, "updated_results": 0}
 
         score_map = self._load_max_score_map(session_id)
-        results = self.db.get_session_results(session_id)
+        results = self.results.get_session_results(session_id)
         details_by_result: dict[int, list[dict[str, Any]]] = {}
         detail_lookup: dict[int, dict[str, Any]] = {}
         for result in results:
             result_id = int(result["result_id"])
-            details = self.db.get_result_details(result_id)
+            details = self.results.get_result_details(result_id)
             details_by_result[result_id] = details
             for detail in details:
                 detail_lookup[int(detail["detail_id"])] = {**detail, "result_id": result_id}
@@ -310,7 +319,10 @@ class ManualReviewService:
                     raise ValueError(f"{bucket_id} 得分 {score_sum:g} 超过满分 {max_score:g}。")
 
         self.db.create_backup("manual_score_adjustment")
-        return self.db.update_session_detail_scores(session_id, normalized_adjustments)
+        return self.review.update_session_detail_scores(
+            session_id,
+            normalized_adjustments,
+        )
 
     def _load_max_score_map(self, session_id: int) -> dict[str, float]:
         session = self.db.get_grading_session(session_id)

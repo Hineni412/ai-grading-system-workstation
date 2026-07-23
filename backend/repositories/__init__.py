@@ -1,5 +1,10 @@
 """Public repository contracts and SQLite transaction boundaries."""
 
+from backend.repositories.access import (
+    GradingRepositoryAccess,
+    as_grading_repositories,
+)
+
 from backend.repositories.base import (
     ReadOnlyRepositoryError,
     Repository,
@@ -23,6 +28,8 @@ from backend.repositories.providers import (
 )
 
 __all__ = [
+    "GradingRepositoryAccess",
+    "as_grading_repositories",
     "ReadOnlyRepositoryError",
     "Repository",
     "RepositoryClosedError",
