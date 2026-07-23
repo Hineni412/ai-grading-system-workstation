@@ -11,7 +11,7 @@
 - **当前状态：** 本文只描述已进入共同基线的实现事实；动态执行进度见 `docs/superpowers/packages/EXECUTION_INDEX.md`
 - **历史增量说明：** 下列 P1/P2 条目保留各包交付当时的边界；其中“生产 UI 尚未切换”“Streamlit 保持兼容”等历史措辞，已由 P2-21/P2-22 的当前事实取代。
 - **P2-21/P2-22 当前边界：** `运行.bat` 只启动 FastAPI 同源托管的 Vue SPA（默认 `127.0.0.1:8000`）。旧 `web_app.py`、`pages/`、`pages_shared/`、旧 Streamlit 桌面启动器和 `streamlit-drawable-canvas` 已退役；Vue 仍直接复用的 `components/answer_region_editor/` 核心资产保留。Streamlit 核心依赖暂仅服务 P3-15 明确处理的客观题准入向导和历史 P1-29 验收工具，不再处于生产启动或导航调用链。
-- **P3-01 至 P3-06 当前边界：** `tools/build_p3_01_baseline.py` 可从当前源码、Schema 和受控历史证据生成内容寻址的结构基线；共享评分结果与试卷组类型已移入 `backend/domain_models.py`。`backend/repositories/` 提供 SQLite 连接所有权、事务和只读会话契约，并已抽取学生、考试会话、答卷、评分结果/明细、复核、模板、答题区与应用设置仓储；`DBManager` 暂作为兼容门面委托这些既有方法，跨域清理在同一 Repository session 编排，运行时 DDL 与尚未迁移的聚合 SQL 仍保留。`AnswerRegionCommitService` 的数据库操作已走模板/答题区仓储，数据库提交后的文件快照、workflow 与草稿补偿协议保持不变。该批次不改变数据库 Schema、API 契约、业务结果或真实数据。
+- **P3-01 至 P3-04 当前边界：** `tools/build_p3_01_baseline.py` 可从当前源码、Schema 和受控历史证据生成内容寻址的结构基线；共享评分结果与试卷组类型已移入 `backend/domain_models.py`。`backend/repositories/` 提供 SQLite 连接所有权、事务和只读会话契约，并已抽取学生与考试会话仓储；`DBManager` 暂作为兼容门面把这些既有方法委托给仓储，其余聚合的 SQL 仍保留。该批次不改变数据库 Schema、API 契约、业务结果或真实数据。
 - **既有题库语义边界：** 在隔离分支把题库当前 `question_tags` 设为批改上下文、知识图谱和训练推荐的唯一活动语义来源；旧技能目录、概念映射和相关表保留一个版本作为只读回退，不再参与活动图谱/推荐
 - **P1-15 增量边界：** FastAPI 只公开试卷、题目分页/详情、当前标签、富文本/预览元数据和受控图片 GET；源题库通过有界 M1-W1-W2-M2 临时快照读取，SQLite 不打开源 main/WAL/SHM，持续变化以脱敏 503 fail closed
 - **P1-16 增量边界：** FastAPI 增加教师确认标签、带 revision 的题目软删除/恢复、受控 DOCX/PDF 流式暂存和 pending 导入请求；不执行长导入、不调用 AI、不写旧技能表，写入冲突以 409 fail closed
@@ -168,7 +168,7 @@ flowchart LR
 |---|---|---|---|
 | UI 与工作流编排 | 页面状态、上传、进度、确认、复核、导出 | `frontend/src/`、`backend/api/`、`components/answer_region_editor/` | Vue 通过 API 使用服务；浏览器不直接访问数据库或本机任意路径 |
 | 考试配置 | 解析 Word/PDF、生成/规范化 rubric 与 answer key、质量检查 | `backend/config_workspace/`、`backend/api/routers/config.py`、`backend/jobs/config_generation.py`、`session_manager.py`、`rubric_auto_cropper.py`、`score_policy.py` | FastAPI 通过受控来源 manifest、服务器编辑投影、revision 冲突保护和原子发布复用既有规则 |
-| 模板与答题区 | 模板分析、坐标模型、草稿、提交、快照和编辑器 | `backend/repositories/templates.py`、`template_analyzer.py`、`answer_region_*`、JS 编辑器 | 数据库读写已进入模板/答题区仓储；提交服务采用数据库+文件快照补偿流程，pending/token 支持失败恢复与并发代次保护 |
+| 模板与答题区 | 模板分析、坐标模型、草稿、提交、快照和编辑器 | `template_analyzer.py`、`answer_region_*`、JS 编辑器 | 已形成相对独立子域；提交采用数据库+文件快照补偿流程 |
 | 扫描与阅卷 | PDF 标准页、姓名 OCR/匹配、整卷/混合批改、完整性检查和重试 | `scanner.py`、`grading_service.py`、`ai_grader.py`、`hybrid_batch_grading_service.py`、客观题识别链 | 服务层直接依赖数据库管理器、文件和模型客户端 |
 | 人工复核与报告 | 调分、批注、分析、Excel/PDF/原卷导出 | `backend/review/service.py`、`backend/media/service.py`、`backend/files/service.py`、`manual_review_service.py`、`annotation_renderer.py`、`analytics.py`、`report.py`、`original_paper_exporter.py` | FastAPI 复核由应用服务集中判定/校验，单 JOIN 读取，跨 result 调整在一个 SQLite 事务提交；批注是事务后可重试补偿。媒体/下载只接受语义化 ID，在受控根与扩展名白名单内解析 |
 | 题库 | 试卷导入、题目 CRUD、标签、频次、预览、富文本和组卷 | `question_bank/importers`、`services`、`exporters`、`backend/api/routers/question_bank.py`、Vue 题库与组卷工作区 | `QuestionBankReadService` 通过稳定文件捕获提供零源写入读投影；`QuestionBankWriteService` 承担教师确认标签、乐观软删除/恢复和受控导入请求准备，长导入由 API Job 执行 |
@@ -176,7 +176,7 @@ flowchart LR
 | 诊断与训练 | 跨库读取阅卷证据、按精确知识点标签聚合、精确标签候选推荐、训练任务和导出 | `integration/`、`question_bank/recommendation`、训练服务、`backend/jobs/training_export.py`、`backend/api/routers/training.py`、Vue 训练工作区 | FastAPI 复用现有服务提供 tag-only 诊断、推荐预览、幂等任务确认和可取消/重试的导出 Job；通过应用层同时访问两个数据库，无跨库事务和外键；真实训练结果回流尚未进入 API |
 | 原卷标签工作流 | 原卷归档、题库导入、受控 AI 打标、来源题确定性关联、状态重算和重试 | `integration/grading_paper_skill_workflow_service.py`、API/Vue 工作流、题库导入/链接服务 | 两库不能共享事务；每次运行后从实际题目、标签和链接重算 `ready/partial/failed` |
 | 旧技能与知识对齐（回退） | 统一技能目录、旧知识映射、技能链接、冲突和迁移 | `question_bank/models`、`taxonomy`、技能/对齐服务 | 保留读取与迁移工具；活动图谱/推荐不读写这些身份，题库标签保存也只在显式 `resolve_skills=True` 时双写 |
-| 数据与运维 | 领域数据类型、仓储、路径、SQLite、备份、恢复、迁移、存储审计和数据包 | `backend/domain_models.py`、`backend/repositories/`、`path_manager.py`、`db_manager.py`、`question_bank/database`、`update_tools/`、`tools/` | 学生、会话、答卷、结果/复核、模板/答题区与应用设置已进入仓储边界；`DBManager` 保留兼容门面、运行时 DDL及尚未迁移的聚合 SQL |
+| 数据与运维 | 领域数据类型、仓储、路径、SQLite、备份、恢复、迁移、存储审计和数据包 | `backend/domain_models.py`、`backend/repositories/`、`path_manager.py`、`db_manager.py`、`question_bank/database`、`update_tools/`、`tools/` | 学生与考试会话已进入仓储边界，`DBManager` 保留兼容门面及其余 SQL；运行时建表与 SQL migrations 两套机制仍并存 |
 
 ### 主要依赖关系
 
@@ -185,7 +185,7 @@ flowchart TD
     UI["Vue UI"] --> API["FastAPI 路由"]
     API --> Workflow["工作流/领域服务"]
     Workflow --> GradingFacade["DBManager 兼容门面"]
-    Workflow --> Repositories["学生/会话/评分/模板仓储"]
+    Workflow --> Repositories["学生/会话仓储"]
     Workflow --> BankData["question_bank.database"]
 
     GradingFacade --> Repositories
@@ -212,7 +212,7 @@ flowchart TD
 实际边界偏差必须保留为事实：
 
 - 旧页面直接持有数据库路径的偏差已随 P2-22 退役；当前 Vue 页面只通过 FastAPI 使用业务能力。
-- 评分结果、题目评分明细和试卷组共享类型已由 `backend/domain_models.py` 承接，`db_manager.py` 不再反向导入评分器或扫描器；学生、会话、评分数据、复核、模板、答题区和应用设置已抽取仓储，`DBManager` 仍承载 Schema、备份、跨域兼容编排和其他尚未迁移的聚合 SQL。
+- 评分结果、题目评分明细和试卷组共享类型已由 `backend/domain_models.py` 承接，`db_manager.py` 不再反向导入评分器或扫描器；但当前只抽取了学生与考试会话仓储，`DBManager` 仍承载 Schema、备份和其他聚合的 SQL。
 - 题库服务大多直接执行 SQL，`question_bank/database/schema.py` 只提供连接和建表，不是完整数据访问层。
 - 外部模型调用未完全收敛到 `LLMClient`：选择/填空/批量客观题识别和题库打标部分路径会直接实例化 OpenAI 客户端。
 - AST 静态导入图存在两组循环耦合：Schema 与技能目录服务、题目服务与题目频次服务。当前通过函数内延迟导入避免了直接初始化死循环，但仍增加演进风险。
@@ -235,7 +235,7 @@ AI阅卷系统_工作机版_v1.5.0/
 ├── backend/public_data.py         # API 公开 payload/result/复核元数据的共享敏感键与路径净化
 ├── backend/file_access.py         # 受控根、旧路径映射与扩展名白名单守卫
 ├── backend/domain_models.py       # 跨服务共享的评分结果、评分明细与试卷组类型
-├── backend/repositories/          # SQLite 会话/事务契约及学生、会话、评分、模板/答题区与设置仓储
+├── backend/repositories/          # SQLite 会话/事务契约与学生、考试会话仓储
 ├── backend/media/                 # review 原卷/批注页读取与内存裁剪服务
 ├── backend/files/                 # Job 导出文件下载服务
 ├── backend/config_workspace/      # P2-09 草稿、受控来源、Rubric 编辑投影与原子发布
