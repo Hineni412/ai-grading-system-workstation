@@ -2421,12 +2421,10 @@ def test_all_generation_paths_use_the_shared_18_point_limit() -> None:
     root = Path(__file__).resolve().parents[1]
     session_source = (root / "session_manager.py").read_text(encoding="utf-8")
     template_source = (root / "template_analyzer.py").read_text(encoding="utf-8")
-    web_source = (root / "web_app.py").read_text(encoding="utf-8")
 
     assert score_policy.MAX_QUESTION_SCORE == 18
     assert "max_question_score=12" not in session_source
     assert "max_question_score=12" not in template_source
-    assert "max_question_score=12" not in web_source
     assert "must not exceed 12" not in session_source
     assert "必须小于或等于 12" not in session_source
     assert "必须小于或等于 12" not in template_source

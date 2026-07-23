@@ -51,6 +51,7 @@ def test_copy_sources_carries_only_built_frontend_assets(tmp_path: Path) -> None
     assert (package / "backend" / "api" / "app.py").is_file()
     assert not (package / "frontend" / "src").exists()
     assert not (package / "frontend" / "node_modules").exists()
+    assert not (package / "pages").exists()
 
 
 @pytest.mark.parametrize("missing", ["dist", "index", "assets", "empty_assets"])
@@ -89,3 +90,25 @@ def test_packaged_launcher_is_copied_from_the_single_source_launcher(
     packager.write_launcher(source, package)
 
     assert (package / "运行.bat").read_bytes() == launcher
+
+
+def test_portable_manifest_excludes_retired_streamlit_ui() -> None:
+    packager = _load_packager()
+
+    assert "pages" not in packager.PRODUCTION_DIRS
+    assert "pages_shared" not in packager.PRODUCTION_DIRS
+
+
+def test_private_readme_does_not_offer_retired_streamlit_fallback(
+    tmp_path: Path,
+) -> None:
+    packager = _load_packager()
+
+    packager.write_private_readme(tmp_path, "v1.5.0")
+    readmes = list(tmp_path.glob("README_*.md"))
+    assert len(readmes) == 1
+    content = readmes[0].read_text(encoding="utf-8")
+
+    assert "USE_STREAMLIT" not in content
+    assert "START_API" not in content
+    assert "Streamlit" not in content

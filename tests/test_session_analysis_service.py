@@ -8,7 +8,6 @@ import pytest
 
 from backend.analytics import SessionAnalysisService
 from db_manager import DBManager
-from web_app import _build_session_question_analysis
 
 
 def _insert_result(
@@ -253,18 +252,18 @@ def seed_parent_parts(tmp_path: Path) -> tuple[DBManager, int]:
     return db, 1
 
 
-def test_service_matches_streamlit_question_analysis_for_supported_rows(seed_analysis):
+def test_service_keeps_the_frozen_question_analysis_contract(seed_analysis):
     db, session_id = seed_analysis
-    legacy = _build_session_question_analysis(db, session_id)
 
     actual = SessionAnalysisService(db).list_questions(
         session_id,
         class_name="七年级一班",
     )
-    legacy_class = [row for row in legacy["rows"] if row["班级"] == "七年级一班"]
 
     assert [(row.class_name, row.question_id) for row in actual] == [
-        (row["班级"], row["题号"]) for row in legacy_class
+        ("七年级一班", "Q1"),
+        ("七年级一班", "Q2(1)"),
+        ("七年级一班", "Q2(2)"),
     ]
     assert actual[0].question_id == "Q1"
     assert actual[0].score_rate == 90.0

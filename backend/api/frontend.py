@@ -46,7 +46,7 @@ def _missing_frontend_response() -> HTMLResponse:
             "<!doctype html><html lang='zh-CN'><meta charset='utf-8'>"
             "<title>AI阅卷系统暂时无法启动</title>"
             "<main><h1>前端文件缺失</h1>"
-            "<p>请重新解压完整工作机包，或设置 USE_STREAMLIT=1 临时使用旧入口。</p>"
+            "<p>请重新解压完整工作机包，确认 frontend/dist 目录完整后重试。</p>"
             "</main></html>"
         ),
     )
