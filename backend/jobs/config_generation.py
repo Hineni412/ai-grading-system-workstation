@@ -41,7 +41,7 @@ from question_bank.services.source_paper_archive_service import (
     archive_source_bytes,
     source_archive_sha_lock,
 )
-from session_manager import (
+from backend.config_generation.compat import (
     failed_grading_config_batches,
     failed_grading_config_question_ids,
     generate_grading_config_in_batches,
