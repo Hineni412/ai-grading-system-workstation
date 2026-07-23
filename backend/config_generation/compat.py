@@ -11,11 +11,12 @@ from .gateway import (
 from .orchestration import (
     DEFAULT_CONFIG_GENERATION_BATCH_SIZE,
     ConfigGenerationOrchestrator,
-    ConfigGenerationPolicy,
     failed_grading_config_batches,
     failed_grading_config_question_ids,
 )
+from .policy import build_config_generation_policy
 from .prompts import build_manual_structure_refinement_prompt
+from .normalization import validate_generated_config
 
 
 def _session_manager() -> Any:
@@ -23,27 +24,15 @@ def _session_manager() -> Any:
     return importlib.import_module("session_manager")
 
 
-def _policy() -> ConfigGenerationPolicy:
+def _policy():
     module = _session_manager()
-    return ConfigGenerationPolicy(
+    return build_config_generation_policy(
         validate_image_inputs=module._validate_image_semantic_inputs,
-        normalize_payload=module.normalize_generated_config_schema,
-        apply_local_question_facts=module._apply_local_question_facts,
-        attach_reference_answer_images=module._attach_reference_answer_images,
-        refresh_quality_warnings=module.refresh_generated_config_quality_warnings,
-        validate_final_payload=module.validate_generated_config,
-        force_total_score=lambda payload, target: module.force_payload_total_score(
-            payload,
-            target_total=target,
-        ),
         word_block_image_blobs=lambda block, limit: module._word_block_image_blobs(
             block,
             limit=limit,
         ),
         is_transient_error=module._is_transient_config_generation_error,
-        score_structure_summary=module._score_allocation_structure_summary,
-        validate_score_payload=module._validate_exact_score_allocation_payload,
-        apply_score_allocation=module._apply_score_allocation,
     )
 
 
@@ -134,11 +123,11 @@ def refine_grading_config_from_manual_structure(
 ) -> dict[str, Any]:
     module = _session_manager()
     working_payload = json.loads(json.dumps(payload, ensure_ascii=False))
-    module.validate_generated_config(working_payload)
+    validate_generated_config(working_payload)
     prompt = build_manual_structure_refinement_prompt(working_payload)
     refined = llm_client.json_from_text(prompt, model=model_name)
     try:
-        module.validate_generated_config(refined)
+        validate_generated_config(refined)
     except Exception:
         module._dump_failed_generated_payload(refined)
         raise

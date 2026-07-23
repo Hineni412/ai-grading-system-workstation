@@ -2,7 +2,7 @@
 
 **执行包：** P3-10
 **计划日期：** 2026-07-23
-**计划状态：** in_progress
+**计划状态：** waiting_review
 **计划模型：** 当前连续作业模型
 **允许夜间执行：** yes
 **计划基线：** 09f2df87c2fbc091281c427edc54126bc8b20bf6
@@ -15,9 +15,9 @@
 ## 昼夜交接
 
 **执行包：** P3-10
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
 **真实数据指纹：** unchanged
@@ -56,17 +56,17 @@
 
 ## 实施步骤
 
-- [ ] 先固定完整逐次 golden payload、配分、质量告警、既有幂等范围和依赖边界测试，取得 RED。
-- [ ] 按功能族机械迁移规则函数，复用 `score_policy.py`，建立窄公开接口和兼容导出。
-- [ ] 切换 P3-09 policy adapter、配置编辑/发布及 `session_manager` facade，消除新模块循环依赖和重复 helper。
-- [ ] 运行 P3-10 聚焦测试、生成策略、批次/Job/API、配置编辑/发布受影响回归和快速冒烟。
+- [x] 先固定完整逐次 golden payload、配分、质量告警、既有幂等范围和依赖边界测试，取得 RED。
+- [x] 按功能族机械迁移规则函数，复用 `score_policy.py`，建立窄公开接口和兼容导出。
+- [x] 切换 P3-09 policy adapter、配置编辑/发布及 `session_manager` facade，消除新模块循环依赖和重复 helper。
+- [x] 运行 P3-10 聚焦测试、生成策略、批次/Job/API、配置编辑/发布受影响回归和快速冒烟。
 - [ ] 冻结同一功能 SHA，完成需求符合性与代码质量双路复审；阻塞问题统一修正，最多 3 次。
 
 ## 计划验证命令
 
 ```powershell
 runtime\python\python.exe -m pytest tests\test_p3_10_config_normalization.py -q
-runtime\python\python.exe -m pytest tests\test_grading_config_generation_policy.py tests\test_batched_config_generation.py tests\test_p3_09_config_generation_orchestration.py tests\test_config_workspace_editor.py tests\test_config_generation_job.py tests\test_api_config_generation_jobs.py -q
+runtime\python\python.exe -m pytest tests\test_grading_config_generation_policy.py tests\test_batched_config_generation.py tests\test_p3_09_config_generation_orchestration.py tests\test_config_editor_service.py tests\test_config_editor_nullable_policy.py tests\test_api_config_editor.py tests\test_config_workspace_drafts.py tests\test_legacy_config_publish.py tests\test_config_generation_job.py tests\test_api_config_generation_jobs.py -q
 runtime\python\python.exe tools\smoke_check.py --skip-tests
 runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\2026-07-23-p3-10-config-normalization-implementation.md --repo . --expected-handoff-base 09f2df87c2fbc091281c427edc54126bc8b20bf6
 ```
@@ -76,6 +76,10 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - Phase map、M3-03 精确基线、P3-09 policy adapter、配置编辑/发布、`score_policy.py` 和现有生成策略测试已交叉核对。
 - 没有需要用户决定的评分方案：采用“函数体与常量机械迁移、完整 payload/文案/顺序等价”，不改变任何规则或费用边界。
 - 问题清单已冻结；Prompt/编排、API/Job、数据库和历史 per-question 流程不进入本包。
+- RED 阶段因四个新规则模块尚不存在而按预期在收集期失败；实现后 4 项逐次 golden、告警顺序/文案、配分和依赖边界测试通过。
+- 一次性提取脚本按 AST 函数边界机械搬移 56 个规则函数和 3 组常量，成功后已删除且未进入候选；`session_manager.py` 净减少约 1,900 行，目标规则定义只保留在新模块。
+- 冻结候选的 P3-10、生成策略、P3-09 编排、配置编辑/发布、Job 和 API 合并受影响回归共 229 项通过；快速冒烟通过文档治理、517 个第一方 Python 文件编译和两库隔离副本初始化幂等。
+- 验证未调用真实模型，功能工作区 `user_data/` 无本地改动；根目录真实两库 SHA-256 与开工基线一致。
 
 ## 回退
 
