@@ -14,14 +14,14 @@
 ## 昼夜交接
 
 **执行包：** P3-03
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** eabf29afd226b6f6000b3e6c09bd3fb650680dbc
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
 
 ## 任务边界（已冻结）
@@ -66,7 +66,7 @@
 - [x] 先写临时库公共契约测试并取得 RED：模块缺失、提交/回滚/嵌套/只读/线程隔离尚不存在。
 - [x] 最小实现连接 factory、session、Protocol 和稳定异常，使单会话提交/关闭转 GREEN。
 - [x] 逐个补齐外层回滚、嵌套 savepoint、只读拒写、跨线程拒绝和缺失只读库，每条保持行为测试。
-- [ ] 运行聚焦与 DBManager/请求连接受影响回归、快速冒烟、双路独立复审、交接与真实两库指纹门槛。
+- [x] 运行聚焦与 DBManager/请求连接受影响回归、快速冒烟、双路独立复审、交接与真实两库指纹门槛。
 
 ## 计划验证命令
 
@@ -107,6 +107,13 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - **统一修复：** `8bdc2aab77f34f72b7fe387c413f178252792a3d`；把 BOM 纳入 SQLite 前导可忽略字符，精确复现转 GREEN。
 - **修复验证：** 18 项 P3-03 契约测试与 45 项受影响回归共 63 项通过；快速冒烟再次通过，真实数据未参与。
 - **最终复审范围：** 只核对 BOM 绕过、原两项授权修复和直接回归。
+
+## 限定续修最终复审与收口
+
+- 原 Spec 与 Standards 评审者在同一最终候选 `eabf29afd226b6f6000b3e6c09bd3fb650680dbc` 完成限定终审，两路均为 `0 Critical / 0 Important / 0 Suggestion`。
+- BOM 前缀事务绕过、SQL/游标事务权限绕过和双失败原异常丢失均已关闭；未发现直接回归。
+- 全过程使用临时数据库和内存故障对象，真实两库大小、时间与 SHA-256 不变，Stash 基线不变；未调用真实模型。
+- P3-03 通过包级验收，可以进入 N3-01 临时 integration；P2-22 仍为 deferred，整条 P3 候选不得进入 `main`。
 
 ## 回退
 
