@@ -1,7 +1,6 @@
 """备份与恢复系统 — 核心逻辑模块。
 
-被 backup_data.py / restore_backup.py / list_backups.py 共用，
-也被 pages/系统自检.py 的 Streamlit 按钮调用。
+被 backup_data.py / restore_backup.py / list_backups.py 与当前运维服务共用。
 """
 
 from __future__ import annotations

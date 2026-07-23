@@ -7,8 +7,10 @@
 - **适用版本：** `VERSION` = `v1.5.0`
 - **核验基线：** 最新 `origin/main`
 - **最后核验日期：** 以本文件最近一次 Git 变更为准
-- **核验方式：** Codex 静态代码/配置/测试调查、Python AST 导入图分析、便携运行时版本查询、SQLite 数据库副本 Schema/幂等初始化验证、全量与定向自动化测试、真实 Streamlit 浏览器流程验证
+- **核验方式：** Codex 静态代码/配置/测试调查、Python 导入边界分析、便携运行时版本查询、SQLite 数据库副本 Schema/幂等初始化验证、全量与定向自动化测试、FastAPI/Vue 本机浏览器流程验证
 - **当前状态：** 本文只描述已进入共同基线的实现事实；动态执行进度见 `docs/superpowers/packages/EXECUTION_INDEX.md`
+- **历史增量说明：** 下列 P1/P2 条目保留各包交付当时的边界；其中“生产 UI 尚未切换”“Streamlit 保持兼容”等历史措辞，已由 P2-21/P2-22 的当前事实取代。
+- **P2-21/P2-22 当前边界：** `运行.bat` 只启动 FastAPI 同源托管的 Vue SPA（默认 `127.0.0.1:8000`）。旧 `web_app.py`、`pages/`、`pages_shared/`、旧 Streamlit 桌面启动器和 `streamlit-drawable-canvas` 已退役；Vue 仍直接复用的 `components/answer_region_editor/` 核心资产保留。Streamlit 核心依赖暂仅服务 P3-15 明确处理的客观题准入向导和历史 P1-29 验收工具，不再处于生产启动或导航调用链。
 - **既有题库语义边界：** 在隔离分支把题库当前 `question_tags` 设为批改上下文、知识图谱和训练推荐的唯一活动语义来源；旧技能目录、概念映射和相关表保留一个版本作为只读回退，不再参与活动图谱/推荐
 - **P1-15 增量边界：** FastAPI 只公开试卷、题目分页/详情、当前标签、富文本/预览元数据和受控图片 GET；源题库通过有界 M1-W1-W2-M2 临时快照读取，SQLite 不打开源 main/WAL/SHM，持续变化以脱敏 503 fail closed
 - **P1-16 增量边界：** FastAPI 增加教师确认标签、带 revision 的题目软删除/恢复、受控 DOCX/PDF 流式暂存和 pending 导入请求；不执行长导入、不调用 AI、不写旧技能表，写入冲突以 409 fail closed
@@ -56,16 +58,16 @@
 | 类型 | 证据 | 用途 | 状态 |
 |---|---|---|---|
 | 工程规范 | `AGENTS.md`（`CLAUDE.md` 为兼容指针） | 分层、数据、安全、验证、文档与前端设计要求（当前 AI 协作入口） | 已核验 |
-| 启动与运行 | `运行.bat`、`run_desktop.py`、`web_app.py`、`main.py` | 主入口、监听地址、运行进程和兼容入口 | 已核验 |
+| 启动与运行 | `运行.bat`、`backend/api/launcher.py`、`backend/api/app.py`、`frontend/dist` | 主入口、监听地址、运行进程和静态资源门槛 | 已核验 |
 | 路径与配置 | `path_manager.py`、`config/app_config.yaml`、`VERSION` | 数据目录、日志目录、版本来源 | 已核验 |
 | 阅卷代码 | `grading_service.py`、`hybrid_batch_grading_service.py`、`scanner.py`、`ai_grader.py`、`session_manager.py` | 阅卷主流程、并发、失败和重试 | 已核验 |
 | 数据访问 | `db_manager.py`、`question_bank/database/schema.py`、`migrations/` | SQLite 表、约束、事务与迁移 | 已核验 |
-| 题库与训练 | `question_bank/`、`integration/`、`pages/题库管理.py`、`pages/训练推荐.py`、`pages/组卷.py` | 题库标签、诊断投影、精确标签推荐和导出 | 已核验 |
+| 题库与训练 | `question_bank/`、`integration/`、`backend/api/routers/`、`frontend/src/` | 题库标签、诊断投影、精确标签推荐和导出 | 已核验 |
 | 外部集成 | `backend/llm/`、`llm_client.py`、`api_profiles.py`、客观题识别链、题库 AI 打标服务 | 模型协议、策略、密钥来源、超时、节流、用量与降级 | 已核验代码和假客户端；未调用真实 API |
 | 本地运行时 | `runtime/python` | Python 3.12.1、SQLite 3.43.1、Streamlit 1.58.0、OpenAI SDK 2.43.0 等实际版本 | 已核验 |
 | 自动化测试 | `tests/`、`tools/smoke_check.py` 与 `requirements-test.txt` | 业务回归、静态编译、迁移与数据库副本完整性；完整 pytest 默认串行，显式试点可把隔离测试交给 2 个进程并将数据库/端口/进程类测试留在串行车道 | 以最新里程碑稳定候选或共同基线的测试结果为准 |
 | Phase 1 收口 | `docs/performance/p1-29-phase1-closeout.md`、`docs/user-testing/checkpoints/P1-29-v1.5.0-phase1-formal.md` | P1-26/27/28 组合门槛、匿名双入口、已知限制和正式用户结论 | 稳定证据入口；详细交接见 Git/PR 历史，当前状态见执行 Index |
-| 浏览器验证 | Streamlit 本机页面、现有工作区数据 | 部分覆盖提示、标签诊断空态、学生选择交互、1366×768/1440×900/1920×1080 | 已核验；无横向溢出，浏览器控制台无应用错误 |
+| 浏览器验证 | FastAPI 同源托管的 Vue 本机页面、匿名隔离数据 | 根路由与业务深路由直达、刷新、空态和主要工作区交互 | 已核验；P2-22 隔离便携候选五个深路由可直达，浏览器控制台无应用错误 |
 | 数据库副本 | `grading_system.db`、`question_bank.db` 的临时副本 | 新字段、新索引和重复初始化幂等性 | 已核验；副本验证前后主工作区两库哈希均未变化 |
 | 运维文档 | `README_*.md`、`docs/maintenance/*.md`、发布清单 | 便携发布、备份、存储策略 | 已核验；存在版本漂移 |
 
@@ -94,8 +96,8 @@
 
 ### 当前实现边界
 
-- 这是仅供单用户在个别受信任 Windows 工作机运行的本地应用，不存在独立部署的生产前端或远程数据库；Streamlit 与增量 FastAPI 均只监听 loopback。`frontend/` 已提供可重复构建的 Vue 工程基础、设计 Token、基础控件、App Shell、路由、当前考试上下文、连续考试配置与样卷题框工作流、工作台、题库、组卷、训练推荐、文件中心、只读知识图谱，以及带答卷证据查看器和教师评分确认的复核页，但 Vue 尚未成为生产 UI。
-- 主入口是 `运行.bat`：默认并行启动 `python -m streamlit run web_app.py`（8501）和增量 FastAPI 本机 API（8000，包含健康检查、基础 sessions/students/config/template/regions、JobManager、config-generation/report/scan/grading/review/media/files/question-bank 路由，可用 `START_API=0` 跳过）；`run_desktop.py` 是另一套桌面/冻结构建启动器，`main.py` 是较早的命令行批改入口。
+- 这是仅供单用户在个别受信任 Windows 工作机运行的本地应用，不存在远程数据库；FastAPI 只监听 loopback，并同源托管已构建的 Vue SPA。`frontend/` 提供设计 Token、基础控件、App Shell、路由、当前考试上下文、连续考试配置与样卷题框工作流、工作台、题库、组卷、训练推荐、文件中心、只读知识图谱，以及带答卷证据查看器和教师评分确认的复核页。
+- 主入口是 `运行.bat`：先检查 `frontend/dist`，再应用待重启运维操作，最后启动 `backend.api.launcher`（默认 8000）。旧 Streamlit 日常入口和桌面启动器已退役；`main.py` 仍是较早的命令行批改入口。
 - 核心状态保存在两个 SQLite 数据库和 `user_data/` 文件树中。
 - AI 能力依赖可配置的 OpenAI 兼容 HTTP 接口；当前代码路径使用 OpenAI Python SDK 的 Chat Completions 和 Responses API。
 - 公网访问、多用户/多租户、集中式账号体系、跨机器共享写入和无人值守任务队列不在当前范围内。
@@ -106,15 +108,15 @@
 | 规则 | 实现/证据 | 状态 |
 |---|---|---|
 | 正式批改前必须确认样卷模板和答题区映射 | `GradingService.run_session_grading()` 调用 `DBManager.is_template_ready()` | 已核验 |
-| 评分依据来自 Word/PDF 生成配置，样卷阶段只负责版面和题框 | `web_app.py`、`template_analyzer.py` 页面与注释 | 已核验 |
+| 评分依据来自 Word/PDF 生成配置，样卷阶段只负责版面和题框 | `backend/config_workspace/`、`template_analyzer.py`、Vue 考试配置与题框流程 | 已核验 |
 | 未匹配名单的答卷保存为 `unmatched/skipped`，不进入正式批改 | `grading_service.py` | 已核验 |
 | 试卷处理状态至少包含 `pending/grading/graded/failed/skipped` | `grading_service.py`、`db_manager.py` | 已核验；数据库无枚举约束 |
 | 批改结果必须经过完整性审计；局部失败可保留为需复核结果 | `grading_completeness.py`、混合批改与失败重试测试 | 已核验 |
 | 旧技能目录的 `legacy/shadow/skill` 切换只保留为一版本回退能力，不控制活动图谱或推荐 | 显式 `build_legacy_profiles()` / `build_skill_profiles()` 与迁移工具 | 已核验 |
 | AI 题库标签只有质量状态为 `complete` 才自动保存 | `is_auto_saveable_result()` | 已核验 |
 | 题库标签保存默认只更新 `question_tags`，不运行旧技能 AI 消歧或写 `question_skill_links`；旧双写仅允许显式启用 | `QuestionService.save_tag_analysis(resolve_skills=False)`、旧双写兼容测试 | 已核验 |
-| 保存评分依据时先本地归档原始 DOCX/PDF，但题库导入与 AI 打标签只在教师点击按钮后执行 | `web_app.py`、`source_paper_archive_service.py`、`grading_paper_skill_workflow_component.py` | 已核验 |
-| 题库入库不是批改前置条件；未处理、部分完成或失败状态不阻断批改、复核和导出 | `web_app.py`、工作流 UI 契约测试 | 已核验 |
+| 保存评分依据时先本地归档原始 DOCX/PDF，但题库导入与 AI 打标签只在教师点击按钮后执行 | `source_paper_archive_service.py`、`GradingPaperSkillWorkflowService`、Vue 工作流 | 已核验 |
+| 题库入库不是批改前置条件；未处理、部分完成或失败状态不阻断批改、复核和导出 | 工作流服务、API 与 Vue 契约测试 | 已核验 |
 | 活动知识图谱与训练推荐只读取确认来源链接所指题目的当前精确 `knowledge_point` 标签，不提交 AI 做二次匹配 | `QuestionTagProjectionService`、`build_tag_profiles()`、`build_question_tag_graph_rows()`、标签推荐测试 | 已核验 |
 | 批改模型接收题库标签上下文，只返回主错因和最多两个次要错因，不生成知识点/技能身份 | `grading_service.py`、`ai_grader.py`、`hybrid_batch_grading_service.py` | 已核验 |
 | 会话 `completed` 表示本次批改运行已经结束，允许同时存在失败答卷 | 用户于 2026-06-28 确认；失败答卷由 `exam_papers.processing_status` 单独记录 | 已确认 |
@@ -124,10 +126,8 @@
 ```mermaid
 flowchart LR
     User["单用户教师/维护者"] --> Browser["受信任工作机浏览器"]
-    Browser --> Streamlit["Streamlit 生产 UI"]
-    Browser --> API["增量 FastAPI 本机 API"]
-
-    Streamlit --> App["现有应用服务"]
+    Browser --> Vue["Vue 生产 UI"]
+    Vue --> API["FastAPI 本机 API"]
     API --> App
 
     App --> Grading["阅卷与复核服务"]
@@ -153,7 +153,7 @@ flowchart LR
 
 | 对象 | 作用 | 数据方向 | 认证/边界 | 证据 |
 |---|---|---|---|---|
-| 单用户教师/维护者 | 在个别受信任工作机上配置、批改、复核、导出和运维 | 浏览器与本机应用双向 | 无应用登录；依赖工作机账户和 loopback 边界 | 用户确认、Streamlit 页面、README |
+| 单用户教师/维护者 | 在个别受信任工作机上配置、批改、复核、导出和运维 | 浏览器与本机应用双向 | 无应用登录；依赖工作机账户和 loopback 边界 | 用户确认、Vue 页面、README |
 | OpenAI 兼容模型服务 | 评分依据生成、视觉/OCR、主客观题批改和题库打标 | 试卷文本/图片发出，结构化结果返回 | API Key；Base URL 可配置 | `llm_client.py`、识别链、打标服务 |
 | Microsoft Word | DOCX 转 PDF、部分预览/公式保真 | 本地文件与 COM | Windows 本机权限 | `docx2pdf.ps1`、`rubric_auto_cropper.py`、`preview_service.py` |
 | LibreOffice | DOCX 预览转换的可选替代 | 本地文件与子进程 | 本机可执行文件 | `preview_service.py` |
@@ -165,15 +165,15 @@ flowchart LR
 
 | 领域 | 主要职责 | 主要实现 | 当前边界情况 |
 |---|---|---|---|
-| UI 与工作流编排 | 页面状态、上传、进度、确认、复核、导出 | `web_app.py`、`pages/`、`pages_shared/`、`components/` | 直接访问数据库和部分文件系统，未形成纯 UI 层 |
-| 考试配置 | 解析 Word/PDF、生成/规范化 rubric 与 answer key、质量检查 | `backend/config_workspace/`、`backend/api/routers/config.py`、`backend/jobs/config_generation.py`、`session_manager.py`、`rubric_auto_cropper.py`、`score_policy.py` | FastAPI 通过受控来源 manifest、服务器编辑投影、revision 冲突保护和原子发布复用既有规则；旧 Streamlit 入口继续兼容 |
+| UI 与工作流编排 | 页面状态、上传、进度、确认、复核、导出 | `frontend/src/`、`backend/api/`、`components/answer_region_editor/` | Vue 通过 API 使用服务；浏览器不直接访问数据库或本机任意路径 |
+| 考试配置 | 解析 Word/PDF、生成/规范化 rubric 与 answer key、质量检查 | `backend/config_workspace/`、`backend/api/routers/config.py`、`backend/jobs/config_generation.py`、`session_manager.py`、`rubric_auto_cropper.py`、`score_policy.py` | FastAPI 通过受控来源 manifest、服务器编辑投影、revision 冲突保护和原子发布复用既有规则 |
 | 模板与答题区 | 模板分析、坐标模型、草稿、提交、快照和编辑器 | `template_analyzer.py`、`answer_region_*`、JS 编辑器 | 已形成相对独立子域；提交采用数据库+文件快照补偿流程 |
 | 扫描与阅卷 | PDF 标准页、姓名 OCR/匹配、整卷/混合批改、完整性检查和重试 | `scanner.py`、`grading_service.py`、`ai_grader.py`、`hybrid_batch_grading_service.py`、客观题识别链 | 服务层直接依赖数据库管理器、文件和模型客户端 |
-| 人工复核与报告 | 调分、批注、分析、Excel/PDF/原卷导出 | `backend/review/service.py`、`backend/media/service.py`、`backend/files/service.py`、`manual_review_service.py`、`annotation_renderer.py`、`analytics.py`、`report.py`、`original_paper_exporter.py` | FastAPI 复核由应用服务集中判定/校验，单 JOIN 读取，跨 result 调整在一个 SQLite 事务提交；批注是事务后可重试补偿。媒体/下载只接受语义化 ID，在受控根与扩展名白名单内解析；报告查询与 Streamlit UI 编排仍有部分留在 `web_app.py` |
-| 题库 | 试卷导入、题目 CRUD、标签、频次、预览、富文本和组卷 | `question_bank/importers`、`services`、`exporters`、`pages/题库管理.py`、`pages/组卷.py` | P1-15 的 `QuestionBankReadService` 通过稳定文件捕获提供零源写入读投影；P1-16 的 `QuestionBankWriteService` 只承担教师确认标签、乐观软删除/恢复和受控导入请求准备。既有 Streamlit 写服务保持兼容，长导入仍未迁入 API Job |
+| 人工复核与报告 | 调分、批注、分析、Excel/PDF/原卷导出 | `backend/review/service.py`、`backend/media/service.py`、`backend/files/service.py`、`manual_review_service.py`、`annotation_renderer.py`、`analytics.py`、`report.py`、`original_paper_exporter.py` | FastAPI 复核由应用服务集中判定/校验，单 JOIN 读取，跨 result 调整在一个 SQLite 事务提交；批注是事务后可重试补偿。媒体/下载只接受语义化 ID，在受控根与扩展名白名单内解析 |
+| 题库 | 试卷导入、题目 CRUD、标签、频次、预览、富文本和组卷 | `question_bank/importers`、`services`、`exporters`、`backend/api/routers/question_bank.py`、Vue 题库与组卷工作区 | `QuestionBankReadService` 通过稳定文件捕获提供零源写入读投影；`QuestionBankWriteService` 承担教师确认标签、乐观软删除/恢复和受控导入请求准备，长导入由 API Job 执行 |
 | 标签投影 | 确认来源题关联、子题继承父题关联、读取题库当前标签 | `integration/question_tag_projection_service.py`、`SourceQuestionLinkService` | 只接受显式或题号唯一对应，不做语义匹配；每次查询实时读取标签 |
-| 诊断与训练 | 跨库读取阅卷证据、按精确知识点标签聚合、精确标签候选推荐、训练任务和导出 | `integration/`、`question_bank/recommendation`、训练服务、`backend/jobs/training_export.py`、`backend/api/routers/training.py`、`pages/训练推荐.py` | FastAPI 复用现有服务提供 tag-only 诊断、推荐预览、幂等任务确认和可取消/重试的导出 Job；通过应用层同时访问两个数据库，无跨库事务和外键；真实训练结果回流尚未进入 API |
-| 原卷标签工作流 | 原卷归档、题库导入、受控 AI 打标、来源题确定性关联、状态重算和重试 | `integration/grading_paper_skill_workflow_service.py`、共享 Streamlit 组件、题库导入/链接服务 | 两库不能共享事务；每次运行后从实际题目、标签和链接重算 `ready/partial/failed` |
+| 诊断与训练 | 跨库读取阅卷证据、按精确知识点标签聚合、精确标签候选推荐、训练任务和导出 | `integration/`、`question_bank/recommendation`、训练服务、`backend/jobs/training_export.py`、`backend/api/routers/training.py`、Vue 训练工作区 | FastAPI 复用现有服务提供 tag-only 诊断、推荐预览、幂等任务确认和可取消/重试的导出 Job；通过应用层同时访问两个数据库，无跨库事务和外键；真实训练结果回流尚未进入 API |
+| 原卷标签工作流 | 原卷归档、题库导入、受控 AI 打标、来源题确定性关联、状态重算和重试 | `integration/grading_paper_skill_workflow_service.py`、API/Vue 工作流、题库导入/链接服务 | 两库不能共享事务；每次运行后从实际题目、标签和链接重算 `ready/partial/failed` |
 | 旧技能与知识对齐（回退） | 统一技能目录、旧知识映射、技能链接、冲突和迁移 | `question_bank/models`、`taxonomy`、技能/对齐服务 | 保留读取与迁移工具；活动图谱/推荐不读写这些身份，题库标签保存也只在显式 `resolve_skills=True` 时双写 |
 | 数据与运维 | 路径、SQLite、备份、恢复、迁移、存储审计和数据包 | `path_manager.py`、`db_manager.py`、`question_bank/database`、`update_tools/`、`tools/` | 运行时建表与 SQL migrations 两套机制并存 |
 
@@ -181,9 +181,10 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    UI["Streamlit UI"] --> Workflow["工作流/领域服务"]
-    UI --> GradingData["DBManager"]
-    UI --> BankData["question_bank.database"]
+    UI["Vue UI"] --> API["FastAPI 路由"]
+    API --> Workflow["工作流/领域服务"]
+    Workflow --> GradingData["DBManager"]
+    Workflow --> BankData["question_bank.database"]
 
     Workflow --> GradingData
     Workflow --> BankServices["题库标签/推荐服务"]
@@ -206,7 +207,7 @@ flowchart TD
 
 实际边界偏差必须保留为事实：
 
-- `web_app.py` 直接导入 `DBManager` 和题库数据库路径；`pages/训练推荐.py` 直接使用两个数据库；题库和组卷页面也直接持有数据库路径。
+- 旧页面直接持有数据库路径的偏差已随 P2-22 退役；当前 Vue 页面只通过 FastAPI 使用业务能力。
 - `db_manager.py` 反向依赖 `ai_grader` 的结果模型和 `scanner.ExamPaperGroup`，数据访问层不是独立底层。
 - 题库服务大多直接执行 SQL，`question_bank/database/schema.py` 只提供连接和建表，不是完整数据访问层。
 - 外部模型调用未完全收敛到 `LLMClient`：选择/填空/批量客观题识别和题库打标部分路径会直接实例化 OpenAI 客户端。
@@ -214,8 +215,8 @@ flowchart TD
 
 ### 当前应维持的边界
 
-1. 页面层可调用工作流/领域服务；新增复杂业务规则不应继续写进页面。
-2. 新服务不应依赖 Streamlit、DOM 或具体组件。
+1. Vue 页面层只调用 FastAPI；新增复杂业务规则不应写进浏览器。
+2. 新服务不应依赖 DOM 或具体组件；Streamlit 依赖仅允许出现在已登记的历史/延期清理范围。
 3. 数据库连接、SQL 和文件路径解析不应进一步散落到新页面。
 4. 两个 SQLite 数据库之间只通过应用层 ID/快照关联；任何跨库更新都必须显式处理部分成功。
 5. 答题区正式数据以数据库为主，JSON 快照是可恢复的发布产物；不得绕过提交服务同时手写两者。
@@ -225,23 +226,21 @@ flowchart TD
 
 ```text
 AI阅卷系统_工作机版_v1.5.0/
-├── web_app.py                     # Streamlit 主页面和主工作流编排
-├── backend/api/app.py             # 增量 FastAPI 本机 API，统一错误体、同步/媒体/下载/question-bank 路由和 JobManager 入口
+├── 运行.bat                       # 唯一生产启动入口
+├── backend/api/app.py             # FastAPI 本机 API 与 Vue 同源托管入口
 ├── backend/public_data.py         # API 公开 payload/result/复核元数据的共享敏感键与路径净化
 ├── backend/file_access.py         # 受控根、旧路径映射与扩展名白名单守卫
 ├── backend/media/                 # review 原卷/批注页读取与内存裁剪服务
 ├── backend/files/                 # Job 导出文件下载服务
 ├── backend/config_workspace/      # P2-09 草稿、受控来源、Rubric 编辑投影与原子发布
-├── pages/                         # 题库、组卷、训练推荐、技能管理、系统自检
-├── pages_shared/                  # 多页面共享样式与组件
-├── components/answer_region_editor/ # 答题区自定义前端组件
-├── frontend/                       # Vue 工程、设计 Token、App Shell、统一 Client、考试配置、样卷题框、工作台、只读知识图谱、复核页与匿名浏览器验证；生产切换前仅开发构建使用
+├── components/answer_region_editor/ # Vue 直接复用的答题区编辑器核心
+├── frontend/                      # Vue 生产 UI、设计 Token、App Shell、统一 Client、业务工作区与浏览器验证
 ├── grading_service.py             # 阅卷会话主编排
 ├── scanner.py                     # 扫描页标准化、姓名识别与配对
 ├── ai_grader.py                   # 单份答卷评分模型与校验
 ├── hybrid_batch_grading_service.py # 混合批改批处理
 ├── session_manager.py             # 评分依据与答案生成/规范化
-├── answer_region_*.py             # 答题区模型、草稿、锁、提交和 UI
+├── answer_region_*.py             # 答题区模型、草稿、锁和提交服务
 ├── db_manager.py                  # 阅卷库 Schema 与查询/写入
 ├── question_bank/
 │   ├── database/                  # 题库连接与 Schema
@@ -262,15 +261,12 @@ AI阅卷系统_工作机版_v1.5.0/
 └── docs/                          # 设计、计划、维护与操作文档
 ```
 
-### 维护热点（2026-06-28 实测行数）
+### 维护热点
 
 | 文件 | 约行数 | 混合职责 |
 |---|---:|---|
-| `web_app.py` | 9,581 | UI、流程编排、上传、数据传输、复核和导出 |
 | `session_manager.py` | 4,422 | 文档解析、模型提示、重试、规范化、评分分配和文件写入 |
 | `db_manager.py` | 2,983 | Schema、迁移兼容、备份、多个聚合根的查询与写入 |
-| `pages/题库管理.py` | 2,761 | 题库导入、打标、筛选、批处理和管理 UI |
-| `pages/组卷.py` | 1,802 | 候选查询、试题篮、预览、导出和历史记录 UI |
 | `question_bank/recommendation/practice_plan_service.py` | 1,323 | 新旧推荐模式、分组、选题和解释数据 |
 | `hybrid_batch_grading_service.py` | 1,219 | 图像切片、并发请求、客观/主观合并和结果组装 |
 | `scanner.py` | 1,205 | PDF 渲染、OCR、姓名匹配、页配对和序列化 |
@@ -279,10 +275,10 @@ AI阅卷系统_工作机版_v1.5.0/
 
 ### 5.1 启动
 
-1. `运行.bat` 选取 `runtime/python/python.exe`，设置 `AI_GRADING_DATA_DIR=user_data`，默认监听 Streamlit `127.0.0.1:8501`。
-2. 当 `START_API` 未设为 `0` 时，`运行.bat` 同时用 uvicorn 启动 `backend.api.app:app`，监听 `127.0.0.1:8000`；FastAPI lifespan 创建 app-owned JobManager、把旧 queued/running 任务标为 failed，并清理普通生成/完善任务独占的中断输入，retry 共享输入继续保留；随后在退出时关闭线程池。JobManager 的 queued/paused 取消可立即终止，running 只记录请求，必须由 handler 在安全边界确认 cancelled；包括 `CancelledError` 在内的 handler 退出都必须落入终态，完成 future 通过锁外 callback 按对象 identity 回收。当前 API 已提供健康检查、sessions/students/config/template/regions、JobManager、report/scan/grading/review/media/files/question-bank/training/graph/ops 等增量路由。
-3. Streamlit 导入 `web_app.py`；模块加载时 `PathManager` 根据 `config/app_config.yaml -> AI_GRADING_DATA_DIR -> user_data` 的顺序解析路径。
-4. `main()` 调用 `ensure_env_ready()`：创建目录、对已存在阅卷库执行每日一次启动备份、运行 `DBManager.initialize()` 的幂等建表/补列逻辑。
+1. `运行.bat` 选取 `runtime/python/python.exe`，设置 `AI_GRADING_DATA_DIR=user_data`，检查 `frontend/dist` 后应用待重启运维操作。
+2. `运行.bat` 启动 `backend.api.launcher`，默认监听 `127.0.0.1:8000` 并打开同源 Vue SPA；FastAPI lifespan 创建 app-owned JobManager、把旧 queued/running 任务标为 failed，并清理普通生成/完善任务独占的中断输入，retry 共享输入继续保留；随后在退出时关闭线程池。JobManager 的 queued/paused 取消可立即终止，running 只记录请求，必须由 handler 在安全边界确认 cancelled；包括 `CancelledError` 在内的 handler 退出都必须落入终态，完成 future 通过锁外 callback 按对象 identity 回收。当前 API 已提供健康检查、sessions/students/config/template/regions、JobManager、report/scan/grading/review/media/files/question-bank/training/graph/ops 等路由。
+3. `PathManager` 根据 `config/app_config.yaml -> AI_GRADING_DATA_DIR -> user_data` 的顺序解析路径；API 启动流程创建必要目录并初始化服务。
+4. 阅卷库初始化继续执行幂等建表/补列逻辑，并按既有规则处理启动备份。
 5. 题库数据库不是主页面启动时统一初始化，而是在题库、组卷、诊断或导入服务使用时由 `initialize_database()` 初始化并播种内置技能目录。
 6. P1-15 的 Question Bank GET 不调用 `initialize_database()`，也不触发元数据、指纹、考频或技能播种写入。每次请求把源 main 与可选 WAL 按 M1-W1-W2-M2 捕获到系统临时目录，经 `quick_check`/必要表校验后只打开候选；源变化最多重试 4 次/5 秒，持续变化返回 503。P1-16 的轻写 API 使用题目状态与当前标签生成不透明 revision，在 `BEGIN IMMEDIATE` 内比较后精确保存教师标签或切换软删除状态；相同目标重试幂等，冲突返回 409。
 7. P1-16 的导入准备只把 `.docx/.pdf` 以 200 MiB 上限流式写入数据根内受控暂存目录，并按内容哈希验证后发布确定性 pending 请求。路径经过 canonical root 与 junction/symlink 守卫；本阶段不解析、导入或 AI 打标。
@@ -305,14 +301,14 @@ AI阅卷系统_工作机版_v1.5.0/
 24. P2-16 的 `/question-bank` Vue 路由把 papers、题目分页、详情、标签轻写、受控导入与导入/打标 Job 组合成一个教师工作区。前端 decoder 对题目、试卷、富文本、素材 URL、写结果、上传和请求清单使用精确公开字段；分页响应必须与请求页码和每页数量一致，旧列表/详情响应不能覆盖新范围。跨页选择只保存去重题目 ID，最多 500；标签保存提交当前完整集合和 revision，冲突保留内存草稿；软删除成功后只在当前页面内保存可立即恢复的纯数据快照。导入按文件逐个完成上传、清单和 Job 提交，浏览器不持久化文件字节或路径；AI 不自动启动，重试也必须重新确认费用。真实 Chromium 门槛只使用每次重建的 2005 道匿名临时题库、匿名 DOCX 和假打标处理器，验证长公式、受控图片、跨页选择、部分失败下载、刷新恢复和五档桌面宽度。
 25. P2-18 的 `/training` Vue 路由组合现有诊断、计划、任务、导出与通用 Job API。Training Store 以规范化范围键、请求世代和 AbortController 隔离选择变化与迟到响应；预览保存当前 plan revision 和稳定 confirmation UUID，确认写请求不自动重放，409 保留旧预览供核对但禁用再次确认。任务与导出状态以服务器为真相，刷新后从任务历史和浏览器已记录的 Job ID 恢复；下载只读取受控同源响应。匿名真实浏览器门槛每次重建临时双库，验证空证据、精确标签缺题、候选变化冲突、幂等确认、刷新历史、ZIP 下载和五档桌面宽度。
 26. P2-19 的 `/settings` Vue 路由组合现有 Ops 自检、备份清单、上传、预检、Job 与 operation API。Ops Store 分开刷新只读账本并保留同范围最后成功值，危险写入使用单一当前流程、AbortController 和一次性确认令牌；浏览器不持久化令牌、上传字节、路径或业务正文。在线 Job 可刷新恢复并受控下载；离线 Job 终态继续查询 Journal 公开投影，明确区分等待重启、应用中、已应用、已回退、失败和已撤销。真实浏览器门槛只在受控临时数据根生成双库、备份、输出和本机状态，覆盖五类预检、备份下载、恢复准备/撤销、诊断复制和五档桌面宽度。
-26. Streamlit 页面与业务服务仍运行在同一 Python 进程中；FastAPI 目前是增量本机 API 外壳，JobManager 仍为进程内线程池而非独立 Worker。测试通过 dependency override 注入的 manager 由测试自身关闭，不归应用 lifespan 所有。
+27. Vue 静态资源与 FastAPI 同源提供；JobManager 仍为 API 进程内线程池而非独立 Worker。测试通过 dependency override 注入的 manager 由测试自身关闭，不归应用 lifespan 所有。
 
 ### 5.2 考试配置与批改
 
 ```mermaid
 sequenceDiagram
     actor U as "教师"
-    participant UI as "Streamlit"
+    participant UI as "Vue SPA / FastAPI"
     participant CFG as "SessionManager"
     participant WF as "GradingPaperSkillWorkflowService"
     participant QB as "题库 SQLite"
@@ -392,7 +388,7 @@ sequenceDiagram
 | 题库导入/打标 Job | JobManager 线程池；导入为单个受控文件发布边界，打标按至多 20 题的顺序批次编排 | 通用 `jobs`、题库 `papers/questions/question_tags` 与受控导入暂存 | 导入/打标 payload 分离；失败分类和题目 ID 可查询；running 取消不强杀在途解析/模型请求，打标在安全保存边界停止后续批次；重试跳过重复来源和完整标签 |
 | 阅卷原卷标签入库 | 复用题库导入/打标；跨库串行编排 | `grading_sessions.question_bank_sync_*`、题目、标签、确认来源链接 | 五阶段进度；成功题目立即保留；失败后为 `partial/failed`，再次点击只补缺失项且完整题不重调 AI |
 | 答题区提交 | 会话内线程锁 + 文件锁 + SQLite 事务 | 正式区域、草稿、快照 token | 快照失败保留 pending，可重试发布 |
-| 训练导出 | Streamlit 仍可同步调用；FastAPI 通过 JobManager 线程池执行 | task/export 状态、`jobs`、job 专属输出目录与文件 | 复用现有错误/retry_count 记录；running 取消在 exporter 返回后、原子目录发布前确认；失败/取消 Job 可以原安全 payload 重试 |
+| 训练导出 | Vue 通过 FastAPI 提交，由 JobManager 线程池执行 | task/export 状态、`jobs`、job 专属输出目录与文件 | 复用现有错误/retry_count 记录；running 取消在 exporter 返回后、原子目录发布前确认；失败/取消 Job 可以原安全 payload 重试 |
 | FastAPI 真实 Job | 进程内 `ThreadPoolExecutor`，完成 future 自动回收 | `jobs` 通用状态；批改另用 `grading_runs` 明细账本 | queued/paused 立即取消；running 经 `JobContext.raise_if_cancelled()` 确认。报告只从 staging 原子发布到含 job ID 的独立文件，扫描 latest 用临时文件替换；配置生成的部分草稿不绑定会话、最终 JSON 原子发布；批改停止派发、等待单次在途调用返回并丢弃尚未发布结果 |
 
 进程被终止后没有后台任务续跑。下一次启动时，尚未由 handler 确认安全停止的 running cancel request 与其他旧 queued/running job 一样标为 failed，不伪装成 cancelled；未确认取消标记不覆盖已经完成的领域终态，也不阻止中断运行重新恢复。整卷批改另有批改运行账本（`grading_runs`）：新运行开始时把该会话遗留的 `running/pause_requested` 运行标为 `failed`；安全暂停把运行置 `paused` 并保存在途结果，协作式取消则停止新派发、等待已发出的单次请求返回但丢弃尚未发布的结果，再把账本置 `paused`。failed-only 取消恢复每份 paper 的取消前状态，避免破坏后续重试入口。用户点击“继续批改”后可经 `resume_run_id` 从断点恢复；指定既有 run 的继续或补批必须精确匹配 run ID、状态、模式和配置指纹，任何不一致都失败关闭且不得退化为新运行。普通新运行仍把账本视为附加层并保留既有兼容回退。`completed` 的业务含义已确认为“本次运行结束”，不保证所有答卷成功；成功与失败数量必须结合 `exam_papers.processing_status` 和进度统计判断。
@@ -473,8 +469,8 @@ flowchart LR
 
 | 接口/服务 | 调用方 | 协议/定义 | 超时与重试 | 降级/失败策略 |
 |---|---|---|---|---|
-| Streamlit 页面 | 本机浏览器 | Streamlit HTTP/WebSocket；无公开 REST API | 由 Streamlit 会话控制 | 页面显示错误；部分长任务在同进程线程中执行 |
-| FastAPI 本机 API | 后续 Vue 前端/运维探活 | HTTP JSON/二进制流；健康检查、基础 sessions/students/config/template/regions、JobManager、config-generation/report/scan/grading/review/media/files/question-bank/training/graph/ops 增量路由，统一错误体、`x-request-id` 和 OpenAPI 422 `ErrorResponse`；二进制 200 明确声明 XLSX/图片/DOCX/Markdown/ZIP 媒体类型；Question Bank 提供 papers、分页 questions、detail/current tags/rich/preview metadata、受控图片 GET，以及教师标签确认、软删除/恢复、上传暂存和 pending 导入请求；Training 提供 tag-only 诊断、精确标签推荐预览、任务确认、分页/详情及导出 Job；Graph 提供 tag-only profiles、确定性 rows/聚合节点、固定空关系边和分页证据下钻；Ops 提供路径无关的自检快照、有界备份清单，以及受保护的备份/恢复/迁移/数据包导入导出预检与独立 Job | uvicorn 进程级控制；lifespan 所有唯一 JobManager；running cancel 为请求/确认两阶段；配置生成使用活动 API profile、服务器输入 ID 和原子文件发布；题库源快照 4 次/5 秒有界重试，busy/unavailable 为统一 503；题库轻写使用 revision 冲突保护和原子文件发布；Training 预览/确认以计划 revision 防止旧预览写入，导出以 job 专属目录原子发布并在发布前确认取消；Graph 对阅卷库和题库分别使用同一有界稳定文件捕获，只在临时候选上运行现有服务；每请求只构建一次 tag profile，再在内存投影 rows/nodes/evidence；Ops 只在稳定临时候选上检查数据库，写操作使用单次确认令牌、进程内/跨进程锁和本机 Journal；恢复/迁移/导入在双服务启动前离线应用，失败时使用应用时备份回退 | 可用 `START_API=0` 跳过；配置生成请求递归拒绝密钥、客户端路径和富文本图片文件引用，公开 Job 摘要不返回试卷正文、输入 ID 或内部路径；敏感 Job payload 在持久化前拒绝，公开 payload/result 与历史 review/题库/Training/Ops 元数据使用显式允许列表和路径/marker 脱敏；review 原子写失败整批回滚；媒体/下载越界、过期或类型不支持时返回稳定错误且 `no-store`；题库 JSON 不公开存储路径，图片仅以题目 ID + asset index/preview type 访问固定受控根；Training 不公开源文件/导出路径、不接受客户端目标路径或 created_by/broad/legacy/skill 控制；Graph 与 Ops 读预检不以 SQLite 打开真实源库；Ops 写接口不接受客户端路径、命令、SQL 或迁移目录，回退失败会阻止启动；P1-16 不执行长导入或 AI |
+| Vue 生产页面 | 本机浏览器 | FastAPI 同源托管的静态资源；通过同源 HTTP JSON/二进制 API 工作 | 浏览器写请求不自动重放，服务器状态为真相 | 构建资源缺失时启动前失败关闭；页面分区显示脱敏错误并允许安全重试 |
+| FastAPI 本机 API | Vue 前端/运维探活 | HTTP JSON/二进制流；健康检查、sessions/students/config/template/regions、JobManager、config-generation/report/scan/grading/review/media/files/question-bank/training/graph/ops 路由，统一错误体、`x-request-id` 和 OpenAPI 422 `ErrorResponse`；二进制 200 明确声明 XLSX/图片/DOCX/Markdown/ZIP 媒体类型 | uvicorn 进程级控制；lifespan 所有唯一 JobManager；running cancel 为请求/确认两阶段；配置生成使用活动 API profile、服务器输入 ID 和原子文件发布；题库源快照 4 次/5 秒有界重试；写入使用 revision、原子发布、锁或确认令牌保护 | 配置生成请求递归拒绝密钥、客户端路径和富文本图片文件引用；公开数据使用显式允许列表和脱敏；媒体/下载越界、过期或类型不支持时失败关闭；Ops 写接口不接受客户端路径、命令、SQL 或迁移目录 |
 | 通用模型客户端 | 配置生成、整卷批改、OCR 等 | `LLMClient` 兼容入口委托 `LLMGateway` 的 Chat Completions；Gateway 同时提供 Responses 适配 | 按 grading/recognition/config-generation/tagging 分别使用显式策略预算；配置生成默认 600 秒，其余默认值不变，API profile 的合法短超时通常优先；Issue #65 的生产整卷入口是唯一已登记例外，它使用校验为 1—600 秒的单请求覆盖并固定为 600 秒，混合批改仍使用 grading 默认 300 秒。SDK 自动重试关闭；直接 Gateway 调用可对集中分类的临时错误做有限重试。保留旧外层循环的 `LLMClient` 调用方默认仍只发一次普通请求；P1-25 客观题备用路径显式把原三次尝试交给 Gateway，参数兼容和 JSON 修复/截断仍维持既有有限行为 | 每次物理请求共享逻辑请求 ID、连续 attempt 并默认写入既有脱敏 JSONL usage 日志；同键 RPM 在进程内只收紧且保留节流状态；最终抛错、单卷失败或转人工复核 |
 | 客观题识别链 | 混合批改 | 选择、填空与批量识别通过 `LLMGateway` 的 OpenAI 兼容 Chat Completions | recognition 策略提供有限显式超时与最多三次物理尝试；批量外层每个逻辑请求只调用一次，既有 RPM/worker 限制不变 | 规则校验、升级主模型或人工复核；fallback、评分和复核合并不变 |
 | 题库 AI 打标 | 题库导入/批处理 | 直接 Responses 分支通过 tagging Gateway；专用密钥与保存 profile 的兼容路径仍可使用 `LLMClient` | tagging 默认 120 秒并有限重试；请求控制器仍只统计逻辑批量、回退、质量重试和复核请求，Gateway 物理重试不放大业务事件 | 非 complete 不保存；保存原始标签后不再自动追加旧技能 AI 消歧；阅卷入库关闭批次扇出和复核二次请求 |
@@ -495,8 +491,8 @@ flowchart LR
 
 ## 8. 安全、隐私与权限
 
-- **网络边界：** 已确认仅在个别受信任 Windows 工作机上供单用户使用；当前两个启动器都绑定 `127.0.0.1` 或 `localhost`。若未来改为局域网/公网或多用户访问，必须先重新设计认证、授权和数据隔离。
-- **身份与权限：** 当前范围内接受依赖工作机账户和 loopback 隔离，不设置应用级认证、授权或角色。任何能访问本机 Streamlit 地址的人都具有完整操作能力。
+- **网络边界：** 已确认仅在个别受信任 Windows 工作机上供单用户使用；生产启动器绑定 `127.0.0.1`。若未来改为局域网/公网或多用户访问，必须先重新设计认证、授权和数据隔离。
+- **身份与权限：** 当前范围内接受依赖工作机账户和 loopback 隔离，不设置应用级认证、授权或角色。任何能访问本机 FastAPI/Vue 地址的人都具有完整操作能力。
 - **敏感数据：** 学生姓名、班级、答卷、成绩、错因、报告和题库原卷均在本地文件/SQLite 中。
 - **密钥：** API Key 由环境变量或 `%LOCALAPPDATA%/AIGradingSystem/config/api_profiles.json` 读取；保存文件仍是明文 JSON，但通过原子替换、文件锁和上一版本备份保护完整性。
 - **数据导出：** 轻量/完整数据包和私人便携包均显式排除 `api_profiles.json`；新电脑首次使用需要重新配置 API。
@@ -511,13 +507,13 @@ flowchart LR
 |---|---|---|---|
 | 部署形态 | Windows 私人便携源码+运行时目录 | `manifest.json`、私人版 README | 已核验 |
 | Python | 便携 CPython 3.12.1 | `runtime/python/python.exe` | 已核验 |
-| UI/服务 | Streamlit 1.58.0；FastAPI 0.139.0 增量本机 API | 运行时查询、启动脚本 | 已核验 |
-| 前端构建 | Vue 3.5.39、TypeScript 6.0.3、Vite 8.1.4、npm 11.8.0；Chromium e2e | `frontend/package.json`、`package-lock.json`、质量命令 | 已核验；尚未切入生产 UI |
+| UI/服务 | Vue 3 SPA；FastAPI 0.139.0 本机 API 与静态资源托管 | 运行时查询、启动脚本 | 已核验 |
+| 前端构建 | Vue 3.5.39、TypeScript 6.0.3、Vite 8.1.4、npm 11.8.0；Chromium e2e | `frontend/package.json`、`package-lock.json`、质量命令 | 已核验；生产 UI |
 | 数据库 | SQLite 3.43.1，两个本地文件，WAL | 运行时查询、Schema 代码 | 已核验 |
 | 主 AI SDK | OpenAI 2.43.0 | 运行时查询 | 已核验 |
 | 文档/图像依赖 | python-docx 1.2.0、PyMuPDF 1.27.2.3、Pillow 12.2.0、OpenCV 4.13.0 | 运行时查询 | 已核验 |
 | 表格依赖 | pandas 3.0.3、openpyxl 3.1.5 | 运行时查询 | 已核验 |
-| 监听地址 | Streamlit `127.0.0.1:8501`（`PORT` 可改）；API `127.0.0.1:8000`（`API_PORT` 可改，`START_API=0` 可跳过） | `运行.bat` | 已核验 |
+| 监听地址 | FastAPI/Vue `127.0.0.1:8000`（`API_PORT` 可改） | `运行.bat` | 已核验 |
 | 数据根 | 默认项目内 `user_data/`；配置文件优先于环境变量 | `path_manager.py` | 已核验 |
 | 备份 | 启动日备份、手工/更新/迁移前备份 | `DBManager`、`update_tools` | 已核验实现；恢复演练待确认 |
 | 监控告警 | 页面进度、日志和系统自检；无外部监控 | 代码与页面 | 已核验 |
@@ -529,7 +525,7 @@ Python 的运行依赖 `requirements.txt` 只给下限，没有完整运行时�
 | 决策 | 状态 | 依据 | 影响/回退 |
 |---|---|---|---|
 | 仅在个别受信任 Windows 工作机上供单用户使用 | 已确认并已实施 | 用户确认、loopback 启动配置 | 当前不建设应用登录；部署范围变化前必须重新评审安全架构 |
-| 使用本机 Streamlit 单体应用 | 已实施 | `运行.bat`、`web_app.py` | 部署简单；UI、任务和数据访问同进程耦合 |
+| 使用 FastAPI 同源托管 Vue 生产 UI | 已实施 | `运行.bat`、`backend.api.launcher`、`frontend/dist` | 单一 loopback 入口；旧 Streamlit 日常入口已退役 |
 | 代码与持久化数据分离到 `user_data/` | 已实施 | `PathManager` | 便于更新代码；当前 Git 跟踪策略破坏了隔离目标 |
 | 继续由 Git 跟踪完整 `user_data` | 已确认保留，风险接受 | 用户于 2026-06-28 确认 | 与密钥/敏感数据安全规范冲突；仓库和副本必须按高敏数据管理 |
 | 阅卷与题库使用独立 SQLite | 已实施 | 两套 Schema | 领域隔离较清楚；跨库一致性由应用负责 |
@@ -561,8 +557,8 @@ Python 的运行依赖 `requirements.txt` 只给下限，没有完整运行时�
 | P1 | Schema 尚未收敛到已确认的权威来源 | 已确认迁移文件为权威，但运行时初始化与 SQL migrations 仍同时改 Schema；当前数据库无 `schema_migrations` | 定义漂移、升级路径不可审计、测试库与工作库来源不同 | 补基线迁移和迁移测试；分阶段把运行时 DDL 缩减为版本检查/最小引导 | 否 |
 | P1 | 便携运行时 SQLite 3.43.1 未包含上游 WAL-reset race 修复 | 上游修复位于 3.51.3+，并回移到部分后续旧分支；P1-15 临时快照不在源库建立 SQLite 连接，因此不新增源端 writer/checkpointer，但也不能修复既有并发写/checkpoint 风险 | 极低概率的源端 WAL reset/checkpoint 竞争可能损坏数据库；不能宣称任意并发 writer/checkpoint 下严格可靠 | 在独立运行时升级包验证并升级到含修复版本；保留备份、完整性检查和单机边界 | 否；P1-15 不新增触发参与者 |
 | P2 | P1-15 题库读快照每请求多遍读取 main/WAL 并执行 `quick_check` | 正确性边界要求 M1-W1-W2-M2、临时写入和候选校验；P1-26 已建立三个命名工作负载的优化前基线，P1-27 只减少五个目标接口的请求内重复连接/语句，不消除快照 I/O | 数据量增长后仍可能增加列表/详情延迟与临时 I/O；当前报告不是容量或 SLA 结论 | 按版本化基线监测并只在独立优化包决策；没有可靠失效协议前不跨请求缓存 | 否 |
-| P1 | 核心模块过大且跨域 | `web_app.py` 9,581 行、`session_manager.py` 4,428 行、`db_manager.py` 3,107 行 | 回归面大、难以独立测试、继续叠加易触发跨层调用 | 先加特征测试，再按工作流/仓储逐步抽取，保留兼容门面至少一个版本 | 否 |
-| P1 | UI 与数据层直接耦合，跨库无事务 | 多个页面直接导入 DB 模块；诊断同时访问两个库 | 页面修改容易带入业务/SQL，训练链路可部分写入 | 新增应用服务门面和明确的跨库补偿/幂等键；不做一次性大重写 | 否 |
+| P1 | 核心后端模块仍过大且跨域 | `session_manager.py`、`db_manager.py` 等仍承载多个职责 | 回归面大、难以独立测试、继续叠加易触发跨层调用 | 继续按 Phase 3 计划抽取服务与仓储边界 | 否 |
+| P1 | 跨库业务仍无统一事务 | 诊断、标签投影和训练服务同时访问两个库 | 跨库写链路可部分成功 | 维持明确的补偿、幂等键和状态重算；不做一次性大重写 | 否 |
 | P1 | P2-03 至 P2-08 的 Vue 原型可能被误读为业务权威或界面复刻模板 | 既有 Vue 仅是历史证据、审计输入和复用候选；业务基线来自现有行为、服务、数据库契约、测试及有范围的用户决定 | 误用旧页面为逐屏模板会固化低效布局或引入业务偏差 | 每包用“业务能力与 UX 设计溯源表”核验；保留业务能力，可按合理 UX 理由重构 | 否；长期控制已确定，动态门槛结果见执行 Index |
 | P2 | 部署边界漂移会绕过安全前提 | 已确认仅单用户/个别工作机/loopback，但代码无应用登录或权限 | 若监听地址或使用人数被扩大，会完整暴露敏感数据与破坏性操作 | 固化 loopback 配置并在运维文档标明边界；任何远程化或多用户化前重新设计认证、授权、CSRF 与审计 | 否 |
 | P2 | `completed` 可能被展示层误读 | 已确认其含义是“运行结束”，允许部分答卷失败；失败数另存于 paper 状态 | 只读取 session 状态的页面或导出可能误报全成功 | 所有完成提示和报表必须同时展示 `graded/failed/skipped` 统计，并增加契约测试 | 否 |
