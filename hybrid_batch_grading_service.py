@@ -10,11 +10,10 @@ from typing import Any, Mapping, Sequence
 from PIL import Image, ImageDraw
 
 from ai_grader import (
-    GradingResult,
-    QuestionGradingDetail,
     _normalize_grading_errors,
     _without_legacy_knowledge_fields,
 )
+from backend.domain_models import ExamPaperGroup, GradingResult, QuestionGradingDetail
 from grading_completeness import audit_grading_details
 from major_region_evidence import build_major_evidence_groups
 from objective_batch_recognition_service import OBJECTIVE_AUTO_SCORE_MIN_CONFIDENCE, run_objective_batch_recognition
@@ -26,7 +25,6 @@ from solution_answer_guard import (
     rubric_question_meta,
     rubric_response_mode,
 )
-from scanner import ExamPaperGroup
 from usage_logger import extract_usage_fields
 from session_manager import _canonical_question_id
 OBJECTIVE_TYPES = {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}

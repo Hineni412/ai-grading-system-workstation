@@ -1,21 +1,33 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import random
 import re
 import sqlite3
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from ai_grader import GradingResult, QuestionGradingDetail
+from backend.domain_models import ExamPaperGroup, GradingResult, QuestionGradingDetail
 from backend.performance.metrics import instrument_sqlite_connection
+from backend.repositories import (
+    BorrowedReadOnlySessionProvider,
+    InstrumentedSQLiteConnectionFactory,
+    RepositorySessionProvider,
+)
+from backend.repositories.sessions import SessionRepositoryGateway
+from backend.repositories.students import (
+    StudentBackupFailedError,
+    StudentCodeConflictError,
+    StudentGradingActiveError,
+    StudentRecord,
+    StudentRepositoryGateway,
+    StudentRosterRevisionConflict,
+    student_roster_revision,
+)
 from grading_completeness import audit_grading_details, major_question_id
 from path_manager import resolve_stored_file_path
-from scanner import ExamPaperGroup
 try:
     from question_bank.taxonomy.registry import canonicalize_knowledge as _registry_canonicalize
 except Exception:
@@ -23,49 +35,6 @@ except Exception:
 
 
 QUESTION_BANK_SYNC_STATES = {"not_started", "running", "ready", "partial", "failed"}
-
-
-@dataclass
-class StudentRecord:
-    student_code: str
-    name: str
-    class_name: str | None = None
-
-
-class StudentRosterRevisionConflict(ValueError):
-    pass
-
-
-class StudentCodeConflictError(ValueError):
-    pass
-
-
-class StudentBackupFailedError(RuntimeError):
-    pass
-
-
-class StudentGradingActiveError(RuntimeError):
-    pass
-
-
-def student_roster_revision(rows: list[dict[str, Any]]) -> str:
-    payload = [
-        {
-            "id": int(row["id"]),
-            "student_code": str(row["student_code"]),
-            "name": str(row["name"]),
-            "class_name": row.get("class_name"),
-            "created_at": row.get("created_at"),
-        }
-        for row in sorted(rows, key=lambda item: int(item["id"]))
-    ]
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 class ReviewAdjustmentOwnershipError(ValueError):
@@ -124,6 +93,20 @@ class DBManager:
     ) -> None:
         self.db_path = db_path
         self._external_connection = external_connection
+        self._repository_sessions: RepositorySessionProvider
+        if external_connection is None:
+            self._repository_sessions = InstrumentedSQLiteConnectionFactory(db_path)
+        else:
+            self._repository_sessions = BorrowedReadOnlySessionProvider(
+                external_connection
+            )
+        self._student_repository = StudentRepositoryGateway(
+            self._repository_sessions,
+            create_backup=lambda reason: self.create_backup(reason),
+        )
+        self._session_repository = SessionRepositoryGateway(
+            self._repository_sessions
+        )
         try:
             from path_manager import get_path_manager
             pm = get_path_manager()
@@ -133,6 +116,14 @@ class DBManager:
                 self.backup_dir = self.db_path.parent / "backups"
         except Exception:
             self.backup_dir = self.db_path.parent / "backups"
+
+    @property
+    def student_repository(self) -> StudentRepositoryGateway:
+        return self._student_repository
+
+    @property
+    def session_repository(self) -> SessionRepositoryGateway:
+        return self._session_repository
 
     def _connect(self) -> sqlite3.Connection | _BorrowedSQLiteConnection:
         if self._external_connection is not None:
@@ -562,87 +553,10 @@ class DBManager:
 
     # ---------- Student ----------
     def upsert_students(self, students: list[StudentRecord]) -> dict[str, int]:
-        if not students:
-            return {"inserted": 0, "updated": 0, "total": 0}
-
-        if hasattr(self, "_cached_students_for_find"):
-            delattr(self, "_cached_students_for_find")
-
-        with self._connect() as conn:
-            result = self._upsert_students_in_connection(conn, students)
-            conn.commit()
-        return result
-
-    @staticmethod
-    def _student_rows_in_connection(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-        rows = conn.execute(
-            """
-            SELECT id, student_code, name, class_name, created_at
-            FROM students
-            ORDER BY class_name ASC, name ASC, id ASC
-            """
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-    @staticmethod
-    def _upsert_students_in_connection(
-        conn: sqlite3.Connection,
-        students: list[StudentRecord],
-    ) -> dict[str, int]:
-        cursor = conn.cursor()
-        codes = [student.student_code for student in students]
-        placeholders = ",".join(["?"] * len(codes))
-        existing_rows = cursor.execute(
-            f"""
-            SELECT id, student_code, name, class_name
-            FROM students
-            WHERE student_code IN ({placeholders})
-            """,
-            codes,
-        ).fetchall()
-        existing_map = {row["student_code"]: row for row in existing_rows}
-        to_insert: list[tuple[str, str, str | None]] = []
-        to_update: list[tuple[str, str | None, int]] = []
-        for student in students:
-            existing = existing_map.get(student.student_code)
-            if existing is None:
-                to_insert.append(
-                    (student.student_code, student.name, student.class_name)
-                )
-            elif (
-                existing["name"] != student.name
-                or (existing["class_name"] or "") != (student.class_name or "")
-            ):
-                to_update.append(
-                    (student.name, student.class_name, int(existing["id"]))
-                )
-        if to_insert:
-            cursor.executemany(
-                """
-                INSERT INTO students (student_code, name, class_name)
-                VALUES (?, ?, ?)
-                """,
-                to_insert,
-            )
-        if to_update:
-            cursor.executemany(
-                """
-                UPDATE students
-                SET name = ?, class_name = ?
-                WHERE id = ?
-                """,
-                to_update,
-            )
-        return {
-            "inserted": len(to_insert),
-            "updated": len(to_update),
-            "total": len(to_insert) + len(to_update),
-        }
+        return self.student_repository.upsert_students(students)
 
     def student_roster_snapshot(self) -> tuple[list[dict[str, Any]], str]:
-        with self._connect() as conn:
-            rows = self._student_rows_in_connection(conn)
-        return rows, student_roster_revision(rows)
+        return self.student_repository.student_roster_snapshot()
 
     def student_workspace_snapshot(
         self,
@@ -652,64 +566,12 @@ class DBManager:
         page: int,
         page_size: int,
     ) -> dict[str, Any]:
-        clauses: list[str] = []
-        parameters: list[Any] = []
-        if search:
-            escaped = (
-                search.replace("\\", "\\\\")
-                .replace("%", "\\%")
-                .replace("_", "\\_")
-            )
-            pattern = f"%{escaped}%"
-            clauses.append(
-                """
-                (
-                    student_code LIKE ? ESCAPE '\\'
-                    OR name LIKE ? ESCAPE '\\'
-                    OR COALESCE(class_name, '') LIKE ? ESCAPE '\\'
-                )
-                """
-            )
-            parameters.extend([pattern, pattern, pattern])
-        if class_name:
-            clauses.append("COALESCE(class_name, '') = ?")
-            parameters.append(class_name)
-        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        offset = (page - 1) * page_size
-        with self._connect() as conn:
-            conn.execute("BEGIN")
-            all_rows = self._student_rows_in_connection(conn)
-            total = int(
-                conn.execute(
-                    f"SELECT COUNT(*) FROM students {where_sql}",
-                    parameters,
-                ).fetchone()[0]
-            )
-            page_rows = conn.execute(
-                f"""
-                SELECT id, student_code, name, class_name, created_at
-                FROM students
-                {where_sql}
-                ORDER BY class_name ASC, name ASC, id ASC
-                LIMIT ? OFFSET ?
-                """,
-                [*parameters, page_size, offset],
-            ).fetchall()
-            class_rows = conn.execute(
-                """
-                SELECT DISTINCT class_name
-                FROM students
-                WHERE COALESCE(class_name, '') <> ''
-                ORDER BY class_name ASC
-                """
-            ).fetchall()
-            conn.rollback()
-        return {
-            "items": [dict(row) for row in page_rows],
-            "total": total,
-            "class_names": [str(row["class_name"]) for row in class_rows],
-            "roster_revision": student_roster_revision(all_rows),
-        }
+        return self.student_repository.student_workspace_snapshot(
+            search=search,
+            class_name=class_name,
+            page=page,
+            page_size=page_size,
+        )
 
     def upsert_students_if_revision(
         self,
@@ -717,68 +579,21 @@ class DBManager:
         *,
         expected_revision: str,
     ) -> dict[str, int | str]:
-        if hasattr(self, "_cached_students_for_find"):
-            delattr(self, "_cached_students_for_find")
-        with self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            current_rows = self._student_rows_in_connection(conn)
-            if student_roster_revision(current_rows) != str(expected_revision):
-                conn.rollback()
-                raise StudentRosterRevisionConflict(
-                    "Student roster changed after preview"
-                )
-            result = self._upsert_students_in_connection(conn, students)
-            next_rows = self._student_rows_in_connection(conn)
-            next_revision = student_roster_revision(next_rows)
-            conn.commit()
-        return {**result, "roster_revision": next_revision}
+        return self.student_repository.upsert_students_if_revision(
+            students,
+            expected_revision=expected_revision,
+        )
 
     def list_students(self) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            return self._student_rows_in_connection(conn)
+        return self.student_repository.list_students()
 
     def update_student(self, student_id: int, student_code: str, name: str, class_name: str | None) -> None:
-        if hasattr(self, "_cached_students_for_find"):
-            delattr(self, "_cached_students_for_find")
-        try:
-            with self._connect() as conn:
-                self._update_student_in_connection(
-                    conn,
-                    student_id,
-                    student_code,
-                    name,
-                    class_name,
-                )
-                conn.commit()
-        except sqlite3.IntegrityError as exc:
-            clean_code = str(student_code or "").strip()
-            raise ValueError(f"学号已存在，无法保存: {clean_code}") from exc
-
-    @staticmethod
-    def _update_student_in_connection(
-        conn: sqlite3.Connection,
-        student_id: int,
-        student_code: str,
-        name: str,
-        class_name: str | None,
-    ) -> None:
-        clean_code = str(student_code or "").strip()
-        clean_name = str(name or "").strip()
-        clean_class_name = str(class_name or "").strip() or None
-        if not clean_code:
-            raise ValueError("学生学号不能为空")
-        if not clean_name:
-            raise ValueError("学生姓名不能为空")
-        cursor = conn.execute(
-            """
-            UPDATE students
-            SET student_code = ?, name = ?, class_name = ?
-            WHERE id = ?
-            """,
-            (clean_code, clean_name, clean_class_name, int(student_id)),
+        self.student_repository.update_student(
+            student_id,
+            student_code,
+            name,
+            class_name,
         )
-        if cursor.rowcount != 1:
-            raise ValueError(f"未找到学生记录: {student_id}")
 
     def update_student_if_revision(
         self,
@@ -789,124 +604,16 @@ class DBManager:
         *,
         expected_revision: str,
     ) -> dict[str, Any]:
-        if hasattr(self, "_cached_students_for_find"):
-            delattr(self, "_cached_students_for_find")
-        with self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            current_rows = self._student_rows_in_connection(conn)
-            if student_roster_revision(current_rows) != str(expected_revision):
-                conn.rollback()
-                raise StudentRosterRevisionConflict(
-                    "Student roster changed before update"
-                )
-            try:
-                self._update_student_in_connection(
-                    conn,
-                    student_id,
-                    student_code,
-                    name,
-                    class_name,
-                )
-            except sqlite3.IntegrityError as exc:
-                conn.rollback()
-                raise StudentCodeConflictError(
-                    "Student code already exists"
-                ) from exc
-            next_rows = self._student_rows_in_connection(conn)
-            student = next(
-                (
-                    row
-                    for row in next_rows
-                    if int(row["id"]) == int(student_id)
-                ),
-                None,
-            )
-            if student is None:
-                conn.rollback()
-                raise ValueError(f"未找到学生记录: {student_id}")
-            next_revision = student_roster_revision(next_rows)
-            conn.commit()
-        return {
-            "student": student,
-            "roster_revision": next_revision,
-        }
-
-    @staticmethod
-    def _student_deletion_impact_in_connection(
-        conn: sqlite3.Connection,
-        student_id: int,
-    ) -> dict[str, int]:
-        return {
-            "deleted_students": int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM students WHERE id = ?",
-                    (int(student_id),),
-                ).fetchone()[0]
-            ),
-            "deleted_results": int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM session_results WHERE student_id = ?",
-                    (int(student_id),),
-                ).fetchone()[0]
-            ),
-            "deleted_details": int(
-                conn.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM session_details detail
-                    JOIN session_results result ON result.id = detail.result_id
-                    WHERE result.student_id = ?
-                    """,
-                    (int(student_id),),
-                ).fetchone()[0]
-            ),
-            "deleted_annotations": int(
-                conn.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM annotated_results annotation
-                    JOIN session_results result ON result.id = annotation.result_id
-                    WHERE result.student_id = ?
-                    """,
-                    (int(student_id),),
-                ).fetchone()[0]
-            ),
-            "deleted_attendance": int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM session_attendance WHERE student_id = ?",
-                    (int(student_id),),
-                ).fetchone()[0]
-            ),
-            "unlinked_papers": int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM exam_papers WHERE student_id = ?",
-                    (int(student_id),),
-                ).fetchone()[0]
-            ),
-        }
+        return self.student_repository.update_student_if_revision(
+            student_id,
+            student_code,
+            name,
+            class_name,
+            expected_revision=expected_revision,
+        )
 
     def student_deletion_impact(self, student_id: int) -> dict[str, Any]:
-        with self._connect() as conn:
-            conn.execute("BEGIN")
-            rows = self._student_rows_in_connection(conn)
-            student = next(
-                (row for row in rows if int(row["id"]) == int(student_id)),
-                None,
-            )
-            if student is None:
-                conn.rollback()
-                raise ValueError(f"未找到学生记录: {student_id}")
-            counts = self._student_deletion_impact_in_connection(
-                conn,
-                int(student_id),
-            )
-            revision = student_roster_revision(rows)
-            conn.rollback()
-        return {
-            "student": student,
-            "counts": counts,
-            "roster_revision": revision,
-        }
+        return self.student_repository.student_deletion_impact(student_id)
 
     def delete_student_hard(
         self,
@@ -914,151 +621,13 @@ class DBManager:
         *,
         expected_revision: str | None = None,
     ) -> dict[str, Any]:
-        if hasattr(self, "_cached_students_for_find"):
-            delattr(self, "_cached_students_for_find")
-        with self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            current_rows = self._student_rows_in_connection(conn)
-            student = next(
-                (
-                    row
-                    for row in current_rows
-                    if int(row["id"]) == int(student_id)
-                ),
-                None,
-            )
-            if student is None:
-                conn.rollback()
-                raise ValueError(f"未找到学生记录: {student_id}")
-            if (
-                expected_revision is not None
-                and student_roster_revision(current_rows) != str(expected_revision)
-            ):
-                conn.rollback()
-                raise StudentRosterRevisionConflict(
-                    "Student roster changed before delete"
-                )
-            active_grading = conn.execute(
-                """
-                SELECT 1
-                FROM grading_sessions
-                WHERE status = 'running'
-                LIMIT 1
-                """
-            ).fetchone()
-            has_grading_runs = conn.execute(
-                """
-                SELECT 1
-                FROM sqlite_master
-                WHERE type = 'table' AND name = 'grading_runs'
-                """
-            ).fetchone() is not None
-            if active_grading is None and has_grading_runs:
-                active_grading = conn.execute(
-                    """
-                    SELECT 1
-                    FROM grading_runs
-                    WHERE state IN ('running', 'pause_requested', 'paused')
-                    LIMIT 1
-                    """
-                ).fetchone()
-            if active_grading is not None:
-                conn.rollback()
-                raise StudentGradingActiveError(
-                    "Student has an active grading run"
-                )
-            try:
-                backup_path = self.create_backup("delete_student")
-            except Exception as exc:
-                conn.rollback()
-                raise StudentBackupFailedError(
-                    "Student backup failed before delete"
-                ) from exc
-            if backup_path is None:
-                conn.rollback()
-                raise StudentBackupFailedError(
-                    "Student backup was not created before delete"
-                )
-            has_grading_run_items = conn.execute(
-                """
-                SELECT 1
-                FROM sqlite_master
-                WHERE type = 'table' AND name = 'grading_run_items'
-                """
-            ).fetchone() is not None
-            if has_grading_run_items:
-                conn.execute(
-                    "DELETE FROM grading_run_items WHERE student_id = ?",
-                    (int(student_id),),
-                )
-            result_rows = conn.execute(
-                "SELECT id FROM session_results WHERE student_id = ?",
-                (int(student_id),),
-            ).fetchall()
-            result_ids = [int(row["id"]) for row in result_rows]
-            deleted_details = 0
-            deleted_annotations = 0
-            if result_ids:
-                placeholders = ",".join(["?"] * len(result_ids))
-                deleted_details = conn.execute(
-                    f"DELETE FROM session_details WHERE result_id IN ({placeholders})",
-                    result_ids,
-                ).rowcount
-                deleted_annotations = conn.execute(
-                    f"DELETE FROM annotated_results WHERE result_id IN ({placeholders})",
-                    result_ids,
-                ).rowcount
-
-            deleted_attendance = conn.execute(
-                "DELETE FROM session_attendance WHERE student_id = ?",
-                (int(student_id),),
-            ).rowcount
-            deleted_results = conn.execute(
-                "DELETE FROM session_results WHERE student_id = ?",
-                (int(student_id),),
-            ).rowcount
-            unlinked_papers = conn.execute(
-                """
-                UPDATE exam_papers
-                SET student_id = NULL,
-                    match_status = 'student_deleted',
-                    processing_status = 'pending',
-                    error_message = NULL
-                WHERE student_id = ?
-                """,
-                (int(student_id),),
-            ).rowcount
-            deleted_students = conn.execute(
-                "DELETE FROM students WHERE id = ?",
-                (int(student_id),),
-            ).rowcount
-            next_rows = self._student_rows_in_connection(conn)
-            next_revision = student_roster_revision(next_rows)
-            conn.commit()
-            return {
-                "deleted_students": int(deleted_students),
-                "deleted_results": int(deleted_results),
-                "deleted_details": int(deleted_details),
-                "deleted_annotations": int(deleted_annotations),
-                "deleted_attendance": int(deleted_attendance),
-                "unlinked_papers": int(unlinked_papers),
-                "backup_created": True,
-                "roster_revision": next_revision,
-            }
+        return self.student_repository.delete_student_hard(
+            student_id,
+            expected_revision=expected_revision,
+        )
 
     def find_student_by_name(self, name: str) -> dict[str, Any] | None:
-        normalized_target = _normalize_name(name)
-        if not normalized_target:
-            return None
-
-        if not hasattr(self, "_cached_students_for_find"):
-            with self._connect() as conn:
-                self._cached_students_for_find = [dict(row) for row in conn.execute("SELECT id, student_code, name, class_name FROM students").fetchall()]
-
-        for row in self._cached_students_for_find:
-            if _normalize_name(row["name"]) == normalized_target:
-                return row
-        return None
+        return self.student_repository.find_student_by_name(name)
 
     # ---------- Session ----------
     def set_app_setting(self, key: str, value: str) -> None:
@@ -1092,24 +661,13 @@ class DBManager:
         source_paper_path: str = "",
         source_paper_sha256: str = "",
     ) -> int:
-        source_path, source_sha256 = _validated_source_binding(
-            source_paper_path,
-            source_paper_sha256,
+        return self.session_repository.create_grading_session(
+            session_name,
+            rubric_path,
+            answer_key_path,
+            source_paper_path=source_paper_path,
+            source_paper_sha256=source_paper_sha256,
         )
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO grading_sessions (
-                    session_name, rubric_path, answer_key_path, status, is_deleted,
-                    source_paper_path, source_paper_sha256, updated_at
-                )
-                VALUES (?, ?, ?, 'created', 0, ?, ?, datetime('now','localtime'))
-                """,
-                (session_name, rubric_path, answer_key_path, source_path or None, source_sha256 or None),
-            )
-            conn.commit()
-            return int(cursor.lastrowid)
 
     def bind_grading_session_source(
         self,
@@ -1186,16 +744,7 @@ class DBManager:
             conn.commit()
 
     def rename_grading_session(self, session_id: int, new_name: str) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE grading_sessions
-                SET session_name = ?, updated_at = datetime('now','localtime')
-                WHERE id = ?
-                """,
-                (new_name, session_id),
-            )
-            conn.commit()
+        self.session_repository.rename_grading_session(session_id, new_name)
 
     def update_grading_session_config(
         self,
@@ -1330,65 +879,16 @@ class DBManager:
         return True
 
     def soft_delete_grading_session(self, session_id: int) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE grading_sessions
-                SET is_deleted = 1,
-                    deleted_at = datetime('now','localtime'),
-                    updated_at = datetime('now','localtime')
-                WHERE id = ?
-                """,
-                (session_id,),
-            )
-            conn.commit()
+        self.session_repository.soft_delete_grading_session(session_id)
 
     def restore_grading_session(self, session_id: int) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE grading_sessions
-                SET is_deleted = 0,
-                    deleted_at = NULL,
-                    updated_at = datetime('now','localtime')
-                WHERE id = ?
-                """,
-                (session_id,),
-            )
-            conn.commit()
+        self.session_repository.restore_grading_session(session_id)
 
     def list_grading_sessions(self, include_deleted: bool = False) -> list[dict[str, Any]]:
-        query = """
-            SELECT id, session_name, rubric_path, answer_key_path, template_config_path,
-                   status, is_deleted, deleted_at, source_paper_path, source_paper_sha256,
-                   question_bank_sync_state, question_bank_sync_details_json,
-                   question_bank_sync_error, question_bank_sync_updated_at,
-                   created_at, updated_at
-            FROM grading_sessions
-        """
-        if not include_deleted:
-            query += " WHERE is_deleted = 0"
-        query += " ORDER BY id DESC"
-
-        with self._connect() as conn:
-            rows = conn.execute(query).fetchall()
-            return [dict(row) for row in rows]
+        return self.session_repository.list_grading_sessions(include_deleted)
 
     def get_grading_session(self, session_id: int) -> dict[str, Any] | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT id, session_name, rubric_path, answer_key_path, template_config_path,
-                       status, is_deleted, deleted_at, source_paper_path, source_paper_sha256,
-                       question_bank_sync_state, question_bank_sync_details_json,
-                       question_bank_sync_error, question_bank_sync_updated_at,
-                       created_at, updated_at
-                FROM grading_sessions
-                WHERE id = ?
-                """,
-                (session_id,),
-            ).fetchone()
-            return dict(row) if row else None
+        return self.session_repository.get_grading_session(session_id)
 
     def collect_session_storage_paths(self, session_id: int) -> list[str]:
         paths: list[str] = []
@@ -1569,48 +1069,10 @@ class DBManager:
             conn.commit()
 
     def replace_session_attendance(self, session_id: int, rows: list[dict[str, Any]]) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM session_attendance WHERE session_id = ?", (session_id,))
-            for row in rows:
-                conn.execute(
-                    """
-                    INSERT INTO session_attendance (
-                        session_id, student_id, attendance_status, source_reason, matched_paper_id
-                    ) VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        session_id,
-                        int(row["student_id"]),
-                        str(row["attendance_status"]),
-                        row.get("source_reason"),
-                        row.get("matched_paper_id"),
-                    ),
-                )
-            conn.commit()
+        self.session_repository.replace_session_attendance(session_id, rows)
 
     def get_session_attendance(self, session_id: int) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    sa.id,
-                    sa.session_id,
-                    sa.student_id,
-                    s.student_code,
-                    s.name AS student_name,
-                    s.class_name,
-                    sa.attendance_status,
-                    sa.source_reason,
-                    sa.matched_paper_id,
-                    sa.created_at
-                FROM session_attendance sa
-                JOIN students s ON s.id = sa.student_id
-                WHERE sa.session_id = ?
-                ORDER BY s.class_name ASC, s.student_code ASC, s.name ASC
-                """,
-                (session_id,),
-            ).fetchall()
-            return [dict(row) for row in rows]
+        return self.session_repository.get_session_attendance(session_id)
 
     # ---------- Template & regions ----------
     def upsert_session_template(self, session_id: int, front_template_path: str, back_template_path: str) -> int:
