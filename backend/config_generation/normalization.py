@@ -810,7 +810,7 @@ def _normalize_rubric_question(question: dict[str, Any], answer_item: dict[str, 
                         raw_score = step.get("score")
                     if raw_score is None:
                         raw_score = step.get("points")
-                    
+
                     step["step_score"] = _safe_float(
                         raw_score,
                         part_score / max(len(part["steps"]), 1),
