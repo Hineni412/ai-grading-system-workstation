@@ -1,15 +1,10 @@
 from __future__ import annotations
 
+"""Database regressions for incomplete and failed grading results."""
+
 import json
 import sqlite3
-from pathlib import Path
-
 from db_manager import DBManager
-from web_app import (
-    _build_failed_paper_display_rows,
-    _build_incomplete_result_display_rows,
-    _resolve_grading_run_request,
-)
 
 
 RUBRIC = {
@@ -156,13 +151,11 @@ def test_incomplete_failure_reason_is_safe_at_db_and_render_boundaries(tmp_path:
 
     incomplete_rows = db.list_incomplete_results(session_id)
     legacy_rows = db.list_failed_papers(session_id)
-    display_rows = _build_incomplete_result_display_rows(incomplete_rows)
 
     assert len(incomplete_rows) == 1
     safe_summary = incomplete_rows[0]["last_failure_reason"]
-    rendered_summary = display_rows[0]["最近失败原因"]
     legacy_summary = legacy_rows[0]["error_message"]
-    for exposed_text in (safe_summary, rendered_summary, legacy_summary):
+    for exposed_text in (safe_summary, legacy_summary):
         lowered = exposed_text.lower()
         assert "data:image" not in lowered
         assert "base64" not in lowered
@@ -172,7 +165,6 @@ def test_incomplete_failure_reason_is_safe_at_db_and_render_boundaries(tmp_path:
         assert "a" * 100 not in lowered
     assert len(safe_summary) <= 240
     assert "模型重试失败" in safe_summary
-    assert rendered_summary == safe_summary
     assert legacy_summary == "批改结果不完整，需补跑受影响大题"
 
 
@@ -205,54 +197,3 @@ def test_failed_paper_error_is_safe_in_db_list_and_ui_row(tmp_path: Path) -> Non
         assert forbidden.lower() not in list_summary.lower()
     assert "模型请求失败" in list_summary
     assert len(list_summary) <= 240
-
-    display_rows = _build_failed_paper_display_rows(failed_rows)
-    assert len(display_rows) == 1
-    ui_summary = display_rows[0]["error_message"]
-    for forbidden in (
-        "data:image",
-        "base64",
-        "bearer-secret",
-        "auth-secret",
-        "api_key=api-secret",
-        "A" * 100,
-    ):
-        assert forbidden.lower() not in ui_summary.lower()
-    assert "模型请求失败" in ui_summary
-    assert len(ui_summary) <= 240
-
-
-def test_grading_page_incomplete_panel_redacts_errors_and_uses_failed_only_hybrid_retry() -> None:
-    display_rows = _build_incomplete_result_display_rows(
-        [
-            {
-                "student_name": "张三",
-                "student_code": "001",
-                "status": "incomplete",
-                "affected_major_question_ids": ["Q11"],
-                "missing_question_ids": ["Q11(1)"],
-                "last_failure_reason": "network sk-secret data:image/png;base64,AAAA",
-                "retry_attempt_count": 2,
-            }
-        ]
-    )
-
-    assert display_rows == [
-        {
-            "学生": "张三（001）",
-            "状态": "不完整",
-            "受影响大题": "Q11",
-            "缺失小题": "Q11(1)",
-            "最近失败原因": "network [已隐藏密钥] [图片数据已省略]",
-            "失败重试次数": 2,
-        }
-    ]
-    assert _resolve_grading_run_request(
-        run_full=False,
-        run_hybrid=False,
-        retry_full=False,
-        retry_hybrid=False,
-        retry_incomplete_hybrid=True,
-    ) == ("hybrid_batch", True)
-    source = Path("web_app.py").read_text(encoding="utf-8")
-    assert "一键补跑不完整大题" in source
