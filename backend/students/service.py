@@ -8,12 +8,13 @@ from typing import Any, Literal
 
 import pandas as pd
 
-from db_manager import (
-    DBManager,
+from backend.repositories import RepositoryError
+from backend.repositories.students import (
     StudentBackupFailedError,
     StudentCodeConflictError,
     StudentGradingActiveError,
     StudentRecord,
+    StudentRepositoryGateway,
     StudentRosterRevisionConflict,
     student_roster_revision,
 )
@@ -206,8 +207,13 @@ def _public_student(row: dict[str, Any]) -> dict[str, Any]:
 
 
 class StudentRosterModule:
-    def __init__(self, db: DBManager, *, max_upload_bytes: int = 10 * 1024 * 1024):
-        self._db = db
+    def __init__(
+        self,
+        students: StudentRepositoryGateway,
+        *,
+        max_upload_bytes: int = 10 * 1024 * 1024,
+    ):
+        self._students = students
         self.max_upload_bytes = int(max_upload_bytes)
 
     def workspace(
@@ -220,7 +226,7 @@ class StudentRosterModule:
     ) -> StudentWorkspace:
         if page < 1 or page_size < 1 or page_size > 200:
             raise StudentRosterError("学生名单分页参数无效")
-        snapshot = self._db.student_workspace_snapshot(
+        snapshot = self._students.student_workspace_snapshot(
             search=_clean_text(search),
             class_name=_clean_text(class_name),
             page=int(page),
@@ -258,7 +264,7 @@ class StudentRosterModule:
 
         columns = tuple(str(column).strip() for column in frame.columns)
         resolved_mapping = self._resolve_mapping(columns, mapping)
-        existing_rows = self._db.list_students()
+        existing_rows = self._students.list_students()
         if not resolved_mapping["student_code"] or not resolved_mapping["name"]:
             return StudentImportPreview(
                 filename=clean_filename,
@@ -367,7 +373,7 @@ class StudentRosterModule:
                 )
             )
         try:
-            result = self._db.upsert_students_if_revision(
+            result = self._students.upsert_students_if_revision(
                 records,
                 expected_revision=expected_revision,
             )
@@ -394,7 +400,7 @@ class StudentRosterModule:
         if not student_code or not name:
             raise StudentRosterError("学号和姓名不能为空")
         try:
-            result = self._db.update_student_if_revision(
+            result = self._students.update_student_if_revision(
                 int(student_id),
                 student_code,
                 name,
@@ -414,7 +420,7 @@ class StudentRosterModule:
 
     def deletion_impact(self, student_id: int) -> StudentDeletionImpact:
         try:
-            impact = self._db.student_deletion_impact(int(student_id))
+            impact = self._students.student_deletion_impact(int(student_id))
         except ValueError as exc:
             raise StudentRosterNotFound("未找到学生记录") from exc
         return StudentDeletionImpact(
@@ -436,7 +442,7 @@ class StudentRosterModule:
         if not confirmed:
             raise StudentRosterError("请先确认不可恢复删除")
         try:
-            result = self._db.delete_student_hard(
+            result = self._students.delete_student_hard(
                 int(student_id),
                 expected_revision=expected_revision,
             )
@@ -448,7 +454,7 @@ class StudentRosterModule:
             raise StudentGradingActive(
                 "Student cannot be deleted while grading is active"
             ) from exc
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, RepositoryError) as exc:
             raise StudentDeleteFailed(
                 "删除失败，学生和历史数据均未改变"
             ) from exc

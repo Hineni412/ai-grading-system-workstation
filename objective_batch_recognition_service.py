@@ -11,13 +11,12 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
-from ai_grader import QuestionGradingDetail
+from backend.domain_models import ExamPaperGroup, QuestionGradingDetail
 from answer_key_utils import answer_forms_map
 from answer_normalizer import contains_prompt_injection_or_score_bait, normalize_answer_text
 from backend.llm import LLMProtocolAdapter, LLMRequestKind
 from choice_recognition_chain import score_choice_by_program
 from fill_blank_recognition_chain import score_fill_blank_by_program
-from scanner import ExamPaperGroup
 from usage_logger import extract_usage_fields
 
 

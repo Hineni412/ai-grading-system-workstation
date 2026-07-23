@@ -9,7 +9,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COM
 from pathlib import Path
 from typing import Any, Iterable
 
-from ai_grader import AIGrader, QuestionGradingDetail, SecondaryError
+from ai_grader import AIGrader
+from backend.domain_models import ExamPaperGroup, QuestionGradingDetail, SecondaryError
 from db_manager import DBManager
 from evidence_atlas import EvidenceAtlasBuilder
 from grading_limits import (
@@ -35,7 +36,7 @@ from llm_client import LLMClient
 from path_manager import get_path_manager
 from hybrid_batch_grading_service import run_hybrid_batch_grading
 from request_pacer import RequestPacer
-from scanner import STUDENT_NAME_REGION_ALIASES, ExamPaperGroup, ScanAnalysis, Scanner, student_name_region_from_regions
+from scanner import STUDENT_NAME_REGION_ALIASES, ScanAnalysis, Scanner, student_name_region_from_regions
 
 
 def _detail_from_row(row: dict[str, Any]) -> QuestionGradingDetail:
