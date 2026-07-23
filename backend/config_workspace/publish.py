@@ -27,11 +27,11 @@ from backend.config_workspace.editor import (
     project_config_editor,
 )
 from backend.config_workspace.locks import session_config_lock
-from path_manager import resolve_stored_file_path
-from session_manager import (
+from backend.config_generation.normalization import (
     normalize_generated_config_knowledge_fields,
     validate_generated_config,
 )
+from path_manager import resolve_stored_file_path
 
 if TYPE_CHECKING:
     from backend.jobs.store import JobStore

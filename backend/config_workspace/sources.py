@@ -26,6 +26,12 @@ from backend.config_workspace.secure_fs import (
     SecureFilesystemError,
     SecureRootFilesystem,
 )
+from backend.document_parsing import (
+    extract_docx_text,
+    extract_pdf_text,
+    parse_docx_question_blocks,
+    parse_plain_question_blocks,
+)
 
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
@@ -1036,10 +1042,8 @@ class ConfigSourceService:
             self._files.atomic_write_bytes(path, content)
 
         try:
-            import session_manager
-
-            document_text = session_manager.extract_docx_text(file_bytes)
-            blocks = session_manager.preview_question_blocks_from_docx_bytes(
+            document_text = extract_docx_text(file_bytes)
+            blocks = parse_docx_question_blocks(
                 file_bytes,
                 fallback_doc_text=document_text,
                 temporary_root=parser_io_root,
@@ -1088,12 +1092,10 @@ class ConfigSourceService:
         from rubric_auto_cropper import (
             extract_pdf_images,
             extract_pdf_question_images,
-            extract_pdf_text,
         )
-        from session_manager import preview_question_blocks_from_docx_text
 
         document_text = extract_pdf_text(file_bytes)
-        blocks = preview_question_blocks_from_docx_text(document_text)
+        blocks = parse_plain_question_blocks(document_text)
         raw_assets = extract_pdf_question_images(file_bytes, blocks) if blocks else {}
         raw_pages = extract_pdf_images(file_bytes)
         asset_files: dict[str, dict[str, str | None]] = {}
