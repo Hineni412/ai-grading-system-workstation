@@ -97,6 +97,7 @@ def test_launcher_returns_failure_when_server_never_starts(
         "validate_frontend_dist",
         lambda _path: tmp_path / "frontend" / "dist",
     )
+    monkeypatch.setattr(launcher, "ensure_application_schema", lambda _paths: {})
     monkeypatch.setitem(
         sys.modules,
         "uvicorn",

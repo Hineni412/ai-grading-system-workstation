@@ -194,28 +194,18 @@ def test_job_store_schema_matches_migration_sql(tmp_path) -> None:
         assert json.dumps(runtime_cols, default=str) == json.dumps(migrated_cols, default=str)
 
 
-def test_job_store_executes_configured_jobs_migration(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from backend.jobs import store as store_module
+def test_job_store_records_current_grading_migration(tmp_path: Path) -> None:
+    from backend.jobs.store import JobStore
 
-    canonical = Path.cwd() / "migrations" / "grading" / "003_add_jobs.sql"
-    custom = tmp_path / "custom_jobs.sql"
-    custom.write_text(
-        canonical.read_text(encoding="utf-8")
-        + "\nCREATE TABLE runtime_schema_probe (id INTEGER PRIMARY KEY);\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(store_module, "_JOBS_SCHEMA_MIGRATION_PATH", custom)
+    database = tmp_path / "jobs.db"
+    JobStore(database)
 
-    store_module.JobStore(tmp_path / "jobs.db")
-
-    with sqlite3.connect(tmp_path / "jobs.db") as conn:
-        assert conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
-            "AND name = 'runtime_schema_probe'"
-        ).fetchone() is not None
+    with sqlite3.connect(database) as conn:
+        current = conn.execute(
+            "SELECT migration_name FROM schema_migrations "
+            "WHERE success = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert current == ("004_add_jobs_result_json",)
 
 
 def test_job_store_preserves_legacy_rows_when_adding_result_json(tmp_path: Path) -> None:

@@ -25,6 +25,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import threading
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -42,26 +43,28 @@ from backend.performance.metrics import instrument_sqlite_connection
 # ── 日志 ──────────────────────────────────────────────
 
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
+_LOGGER_INIT_LOCK = threading.Lock()
 
 
 def _get_logger() -> logging.Logger:
     logger = logging.getLogger("db_migration")
-    if not logger.handlers:
-        logger.setLevel(logging.DEBUG)
-        try:
-            from path_manager import get_path_manager
-            log_dir = get_path_manager().logs_dir
-        except Exception:
-            log_dir = _PROJECT_ROOT / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(log_dir / "backup.log", encoding="utf-8")
-        fh.setLevel(logging.DEBUG)
-        fh.setFormatter(logging.Formatter(_LOG_FORMAT))
-        logger.addHandler(fh)
-        ch = logging.StreamHandler()
-        ch.setLevel(logging.INFO)
-        ch.setFormatter(logging.Formatter(_LOG_FORMAT))
-        logger.addHandler(ch)
+    with _LOGGER_INIT_LOCK:
+        if not logger.handlers:
+            logger.setLevel(logging.DEBUG)
+            try:
+                from path_manager import get_path_manager
+                log_dir = get_path_manager().logs_dir
+            except Exception:
+                log_dir = _PROJECT_ROOT / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            fh = logging.FileHandler(log_dir / "backup.log", encoding="utf-8")
+            fh.setLevel(logging.DEBUG)
+            fh.setFormatter(logging.Formatter(_LOG_FORMAT))
+            logger.addHandler(fh)
+            ch = logging.StreamHandler()
+            ch.setLevel(logging.INFO)
+            ch.setFormatter(logging.Formatter(_LOG_FORMAT))
+            logger.addHandler(ch)
     return logger
 
 
@@ -132,6 +135,10 @@ class MigrationReport:
     error: str | None = None
 
 
+class MigrationVersionError(RuntimeError):
+    """The recorded migration history cannot be handled by this application."""
+
+
 # ── 迁移目标配置 ──────────────────────────────────────
 
 def _get_targets() -> dict[str, dict[str, Any]]:
@@ -164,7 +171,11 @@ def _get_targets() -> dict[str, dict[str, Any]]:
 
 # ── 核心迁移逻辑 ──────────────────────────────────────
 
-def _ensure_migrations_table(conn: sqlite3.Connection) -> None:
+def _ensure_migrations_table(
+    conn: sqlite3.Connection,
+    *,
+    commit: bool = True,
+) -> None:
     """确保 schema_migrations 表存在。"""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -175,7 +186,18 @@ def _ensure_migrations_table(conn: sqlite3.Connection) -> None:
             success     INTEGER NOT NULL DEFAULT 1
         )
     """)
-    conn.commit()
+    if commit:
+        conn.commit()
+
+
+def _migrations_table_exists(conn: sqlite3.Connection) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'schema_migrations'"
+        ).fetchone()
+        is not None
+    )
 
 
 def _get_applied_migrations(conn: sqlite3.Connection) -> set[str]:
@@ -189,7 +211,49 @@ def _get_applied_migrations(conn: sqlite3.Connection) -> set[str]:
         return set()
 
 
-def _record_migration(conn: sqlite3.Connection, name: str, checksum: str, success: bool) -> None:
+def _validate_migration_history(
+    conn: sqlite3.Connection,
+    migrations: list[MigrationFile],
+) -> None:
+    known = {migration.name: migration for migration in migrations}
+    try:
+        rows = conn.execute(
+            """
+            SELECT migration_name, checksum
+            FROM schema_migrations
+            WHERE success = 1
+            ORDER BY id
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return
+
+    for raw_name, raw_checksum in rows:
+        name = str(raw_name)
+        migration = known.get(name)
+        if migration is None:
+            raise MigrationVersionError(
+                "database schema is newer than this application"
+            )
+        checksum = str(raw_checksum or "").strip()
+        if checksum and checksum != migration.checksum:
+            raise MigrationVersionError(
+                f"recorded migration checksum does not match: {name}"
+            )
+    recorded_names = [str(row[0]) for row in rows]
+    expected_prefix = [migration.name for migration in migrations[: len(rows)]]
+    if recorded_names != expected_prefix:
+        raise MigrationVersionError("recorded migration history has a gap")
+
+
+def _record_migration(
+    conn: sqlite3.Connection,
+    name: str,
+    checksum: str,
+    success: bool,
+    *,
+    commit: bool = True,
+) -> None:
     """记录迁移结果。"""
     conn.execute(
         """
@@ -198,7 +262,8 @@ def _record_migration(conn: sqlite3.Connection, name: str, checksum: str, succes
         """,
         (name, checksum, 1 if success else 0),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def _backup_database(db_path: Path, reason: str, *, backup_dir: Path | None = None) -> Path | None:
@@ -212,10 +277,13 @@ def _backup_database(db_path: Path, reason: str, *, backup_dir: Path | None = No
         except Exception:
             backup_dir = db_path.parent / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     db_stem = db_path.stem
     backup_path = backup_dir / f"{db_stem}_before_{reason}_{ts}.db"
-    shutil.copy2(db_path, backup_path)
+    source_uri = db_path.resolve().as_uri() + "?mode=ro"
+    with closing(sqlite3.connect(source_uri, uri=True)) as source:
+        with closing(sqlite3.connect(backup_path)) as destination:
+            source.backup(destination)
     return backup_path
 
 
@@ -279,7 +347,6 @@ def _execute_sql_safe(conn: sqlite3.Connection, sql: str) -> str | None:
         except Exception as exc:
             return f"SQL 执行失败: {exc}\n语句: {stmt[:200]}"
 
-    conn.commit()
     return None
 
 
@@ -299,7 +366,6 @@ def run_migrations(
     - ``stamp_only``：把待执行迁移记录为已应用但不执行 SQL（基线打标用，
       适用于 Schema 已由运行时初始化建成、且旧迁移含不可盲目重放的数据语句的库）。
     """
-    logger = logger_override or _get_logger()
     targets = _get_targets()
 
     if target_name not in targets:
@@ -323,47 +389,101 @@ def run_migrations(
     report = MigrationReport(target=target_name, db_path=str(db_path))
 
     if not migrations_dir.exists():
-        report.error = f"迁移目录不存在: {migrations_dir}"
+        report.error = "migration directory is unavailable"
         return report
 
     # 收集迁移文件
     sql_files = sorted(migrations_dir.glob("*.sql"))
     if not sql_files:
-        logger.info("[%s] 没有迁移文件", target_name)
+        report.error = "migration manifest is empty"
         return report
 
     migrations = [MigrationFile.from_path(f) for f in sql_files]
     migrations.sort(key=lambda m: m.order)
 
     # 连接数据库
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    if dry_run and not db_path.exists():
+        conn = sqlite3.connect(":memory:")
+    else:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA busy_timeout = 5000")
     try:
-        _ensure_migrations_table(conn)
+        try:
+            _validate_migration_history(conn, migrations)
+        except MigrationVersionError as exc:
+            report.error = str(exc)
+            return report
         applied = _get_applied_migrations(conn)
 
         pending = [m for m in migrations if m.name not in applied]
         if not pending:
-            logger.info("[%s] 所有 %d 个迁移已是最新", target_name, len(migrations))
+            if logger_override is not None:
+                logger_override.info(
+                    "[%s] 所有 %d 个迁移已是最新",
+                    target_name,
+                    len(migrations),
+                )
             return report
 
+        logger = logger_override or _get_logger()
         logger.info("[%s] 待执行 %d 个迁移 (共 %d 个)", target_name, len(pending), len(migrations))
 
         if stamp_only and not dry_run:
-            # 打标不执行 SQL，但仍在动作前做一次整体备份（只会新增 schema_migrations 行）。
-            stamp_backup = _backup_database(db_path, "stamp_only", backup_dir=effective_backup_dir)
-            logger.info("打标前备份: %s", stamp_backup)
+            # 打标不执行 SQL。写锁内重读历史，避免并发启动重复备份或重复登记。
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                _validate_migration_history(conn, migrations)
+                current_applied = _get_applied_migrations(conn)
+                current_pending = [
+                    migration
+                    for migration in migrations
+                    if migration.name not in current_applied
+                ]
+                if not current_pending:
+                    conn.commit()
+                    return report
+                stamp_backup = _backup_database(
+                    db_path,
+                    "stamp_only",
+                    backup_dir=effective_backup_dir,
+                )
+                logger.info(
+                    "打标前备份已创建: %s",
+                    stamp_backup.name if stamp_backup else "none",
+                )
+                _ensure_migrations_table(conn, commit=False)
+                for migration in current_pending:
+                    _record_migration(
+                        conn,
+                        migration.name,
+                        migration.checksum,
+                        success=True,
+                        commit=False,
+                    )
+                    logger.info("打标（未执行）: %s", migration.name)
+                    report.results.append(
+                        MigrationResult(
+                            name=migration.name,
+                            status="stamped",
+                            message="记录为已应用，未执行 SQL",
+                            backup_path=(
+                                str(stamp_backup) if stamp_backup else None
+                            ),
+                        )
+                    )
+                conn.commit()
+                return report
+            except Exception as exc:
+                conn.rollback()
+                logger.error(
+                    "迁移打标前备份或登记失败: %s",
+                    type(exc).__name__,
+                )
+                report.error = "migration backup failed; database unchanged"
+                return report
 
         for mig in pending:
-            if stamp_only and not dry_run:
-                # 仅记录，不执行：破坏性检查针对"将被执行的 SQL"，此处不适用。
-                _record_migration(conn, mig.name, mig.checksum, success=True)
-                logger.info("打标（未执行）: %s", mig.name)
-                report.results.append(MigrationResult(
-                    name=mig.name, status="stamped", message="记录为已应用，未执行 SQL"
-                ))
-                continue
-
             # 检查破坏性操作
             warnings = _check_destructive(mig.sql)
             if warnings:
@@ -382,33 +502,72 @@ def run_migrations(
                 ))
                 continue
 
-            # 备份数据库
-            backup_path = _backup_database(
-                db_path,
-                f"migration_{mig.name}",
-                backup_dir=effective_backup_dir,
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                _validate_migration_history(conn, migrations)
+            except MigrationVersionError as exc:
+                conn.rollback()
+                report.error = str(exc)
+                break
+            if mig.name in _get_applied_migrations(conn):
+                conn.commit()
+                report.results.append(
+                    MigrationResult(name=mig.name, status="skipped")
+                )
+                continue
+            try:
+                backup_path = _backup_database(
+                    db_path,
+                    f"migration_{mig.name}",
+                    backup_dir=effective_backup_dir,
+                )
+            except Exception as exc:
+                conn.rollback()
+                logger.error(
+                    "迁移 %s 的执行前备份失败: %s",
+                    mig.name,
+                    type(exc).__name__,
+                )
+                report.error = "migration backup failed; database unchanged"
+                break
+            logger.info(
+                "迁移前备份已创建: %s",
+                backup_path.name if backup_path else "none",
             )
-            logger.info("迁移前备份: %s", backup_path)
+            tracking_existed_before = _migrations_table_exists(conn)
+            _ensure_migrations_table(conn, commit=False)
 
             # 执行迁移
             logger.info("执行迁移: %s", mig.name)
             error = _execute_sql_safe(conn, mig.sql)
 
             if error:
+                conn.rollback()
                 logger.error("迁移失败 %s: %s", mig.name, error)
-                _record_migration(conn, mig.name, mig.checksum, success=False)
+                if tracking_existed_before:
+                    _record_migration(
+                        conn,
+                        mig.name,
+                        mig.checksum,
+                        success=False,
+                    )
                 report.results.append(MigrationResult(
                     name=mig.name, status="failed", message=error,
                     backup_path=str(backup_path) if backup_path else None,
                 ))
                 report.error = (
-                    f"迁移 {mig.name} 执行失败。数据库已在执行前备份。\n"
-                    f"备份文件: {backup_path}\n"
-                    f"错误: {error}"
+                    f"migration {mig.name} failed after backup"
                 )
                 break
             else:
-                _record_migration(conn, mig.name, mig.checksum, success=True)
+                _record_migration(
+                    conn,
+                    mig.name,
+                    mig.checksum,
+                    success=True,
+                    commit=False,
+                )
+                conn.commit()
                 logger.info("迁移成功: %s", mig.name)
                 report.results.append(MigrationResult(
                     name=mig.name, status="applied",

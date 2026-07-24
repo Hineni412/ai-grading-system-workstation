@@ -22,6 +22,7 @@ def test_legacy_publish_binds_config_and_source_atomically(tmp_path: Path) -> No
     old_rubric.write_text("{}", encoding="utf-8")
     old_answer.write_text("{}", encoding="utf-8")
     session_id = db.create_grading_session("Exam", str(old_rubric), str(old_answer))
+    store = JobStore(db.db_path)
 
     with db._connect() as connection:
         connection.execute(
@@ -45,6 +46,7 @@ def test_legacy_publish_binds_config_and_source_atomically(tmp_path: Path) -> No
             source_paper_path="papers/new.docx",
             source_paper_sha256="a" * 64,
             mapping_output_dir=tmp_path / "templates",
+            job_store=store,
         )
 
     current = db.get_grading_session(session_id)
