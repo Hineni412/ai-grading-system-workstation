@@ -18,6 +18,7 @@
 - **P3-11 当前边界：** `migrations/` 是两库 Schema 的唯一权威来源。统一版本门槛在 FastAPI lifespan、Windows 启动器和四个历史初始化入口执行连续版本、checksum 与未来版本校验，并以逐迁移原子事务和 SQLite 写锁处理失败与并发启动；不兼容数据库会在服务启动前以不含本机路径的提示失败关闭。`DBManager`、`JobStore`、`GradingRunStore` 和题库初始化已移除建表、补列、索引与触发器 DDL，但保留既有非 DDL 数据维护和题库内置技能播种。阅卷库新增 `004_add_jobs_result_json.sql` 承接旧 `JobStore` 补列兼容；历史 000 基线生成器已停用，迁移演练只以干净空库执行当前迁移作为 Schema 参照。该包不改业务接口、状态语义、评分规则或真实业务数据。
 - **P3-12 当前边界：** 阅卷库 `005_add_status_constraints.sql` 以单事务重建 `grading_sessions`、`exam_papers` 与 `answer_regions`，为会话状态、答卷匹配/处理状态和答题区映射状态增加与现有业务值一致的 `CHECK` 约束，并恢复既有外键、索引和 UUID 触发器。`backend/status_contracts.py` 是四列共享合法值与写入校验入口，`tools/audit_status_values.py` 只读汇总值和数量；迁移器只对该 005 和声明的三张表开放 `DROP TABLE`，其他破坏性 SQL 继续拒绝。该包不改变状态语义、不约束其他领域状态，也不直接迁移真实业务库。
 - **P3-13 当前边界：** 阅卷库 `006_knowledge_ids_primary.sql` 以单事务重建 `session_details`：`knowledge_ids` 成为非空、合法且保序的 JSON 列表真值，旧 `knowledge_id` 改为由列表首项生成的只读兼容列。迁移对缺失列表按旧单值无损回填，并在冲突、非法 JSON、空列表、非文本或空白元素时整笔失败；历史库缺失的 `secondary_errors_json` 会先以空列表安全补齐。活动结果仓储、报表快照、评分重试模型和掌握度/诊断 SQLite 读取只写或主读列表，兼容输出仍派生单值；旧 `grading_details`、`DBManager.save_result()`、题库标签与 Rubric 兼容字段不在本包范围。该包只在隔离副本上预演，不直接迁移真实业务库。
+- **P3-14 当前边界：** 用户确认 P3-13 兼容期结束后，阅卷库 `007_drop_legacy_knowledge_id.sql` 以单事务再次重建 `session_details`，删除已经没有活动 SQL 调用的生成列 `knowledge_id`，保留 `knowledge_ids` 真值、主键、自增序号、外键、索引、约束和全列表触发器；领域模型、报告与接口仍可从列表首项派生兼容单值。容量和查询计划测量未发现把题库同步状态拆表的收益，因此四列继续归属 `grading_sessions`，决定记录于 ADR-0001；同步工作流、会话 API/UI、旧 `grading_details` 和 `session_results.raw_json` 均不改变。该包只在隔离副本上预演，不直接迁移真实业务库。
 - **既有题库语义边界：** 在隔离分支把题库当前 `question_tags` 设为批改上下文、知识图谱和训练推荐的唯一活动语义来源；旧技能目录、概念映射和相关表保留一个版本作为只读回退，不再参与活动图谱/推荐
 - **P1-15 增量边界：** FastAPI 只公开试卷、题目分页/详情、当前标签、富文本/预览元数据和受控图片 GET；源题库通过有界 M1-W1-W2-M2 临时快照读取，SQLite 不打开源 main/WAL/SHM，持续变化以脱敏 503 fail closed
 - **P1-16 增量边界：** FastAPI 增加教师确认标签、带 revision 的题目软删除/恢复、受控 DOCX/PDF 流式暂存和 pending 导入请求；不执行长导入、不调用 AI、不写旧技能表，写入冲突以 409 fail closed
@@ -475,6 +476,8 @@ flowchart LR
 阅卷库 005 因 SQLite 不能原地增加列级 `CHECK`，在一个迁移事务内复制并重建三张表。迁移器的表重建放行是固定清单：仅 `005_add_status_constraints` 可删除声明的 `grading_sessions`、`exam_papers`、`answer_regions`；带引号、范围外或无法识别的目标，以及 `DELETE FROM`、`TRUNCATE`、`DROP COLUMN`、`DROP INDEX` 仍会被拦截。遇到 NULL、空白或未知历史状态时，数据复制在删除旧表前失败，整笔回滚并保留迁移前备份。
 
 阅卷库 006 同样使用固定清单，只允许重建 `session_details`。迁移保留主键、自增序号、外键和既有索引，数据库约束与触发器共同拒绝非法知识点列表；旧 `knowledge_id` 的生成列标记进入 Schema 签名，防止兼容列被误改回普通可写列。历史副本如果缺少 `secondary_errors_json`，006 在同一事务内补列后再重建；任一步失败都会回滚到升级前结构和数据。
+
+阅卷库 007 只允许再次重建 `session_details`，并在复制前重新验证每行 `knowledge_ids` 的数组形态与全部元素；迁移删除 006 的只读生成列，但不删除领域或接口的兼容输出。新表恢复同一列表约束、全元素触发器、主外键、两个索引和自增序号；非法列表、结构漂移或任一步失败都会回滚到完整 006 结构，升级前备份保留。
 
 `backend/schema_migrations.py` 为生产启动和历史初始化入口提供统一版本门槛。空库会完整 bootstrap，受支持的旧库按顺序升级，当前库重复启动不再生成备份或执行 DDL。`DBManager.initialize()` 与题库初始化仍保留数据回填、UUID 修复和内置技能播种等非 DDL 兼容行为。历史 `000_baseline_schema.sql` 不再允许重新生成；后续 Schema 变化必须新增 forward migration。
 
