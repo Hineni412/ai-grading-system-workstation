@@ -120,7 +120,16 @@ def test_initialize_backfills_stable_unique_region_uuid_and_mapping_defaults(tmp
             """,
             (session_id, template_id),
         )
-        conn.execute("DROP TABLE schema_migrations")
+        conn.execute(
+            """
+            CREATE TRIGGER answer_regions_region_uuid_required_insert
+            BEFORE INSERT ON answer_regions
+            WHEN NEW.region_uuid IS NULL OR TRIM(NEW.region_uuid) = ''
+            BEGIN
+                SELECT RAISE(ABORT, 'answer_regions.region_uuid must be nonblank');
+            END
+            """
+        )
         conn.commit()
 
     db.initialize()
