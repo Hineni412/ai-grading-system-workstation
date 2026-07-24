@@ -122,9 +122,9 @@ def _seed_review_db(tmp_path: Path, *, result_count: int = 1):
                 conn.execute(
                     """
                     INSERT INTO session_details (
-                        result_id, question_id, score_awarded, deduction_reason, knowledge_id,
+                        result_id, question_id, score_awarded, deduction_reason, knowledge_ids,
                         error_category, error_summary, confidence_score
-                    ) VALUES (?, 'Q1', 8, '需复核：字迹不清', 'K1', '需复核', 'unclear', 55)
+                    ) VALUES (?, 'Q1', 8, '需复核：字迹不清', '["K1"]', '需复核', 'unclear', 55)
                     """,
                     (current_result_id,),
                 ).lastrowid
@@ -132,9 +132,9 @@ def _seed_review_db(tmp_path: Path, *, result_count: int = 1):
             conn.execute(
                 """
                 INSERT INTO session_details (
-                    result_id, question_id, score_awarded, deduction_reason, knowledge_id,
+                    result_id, question_id, score_awarded, deduction_reason, knowledge_ids,
                     error_category, error_summary, confidence_score
-                ) VALUES (?, 'Q2', 2, '计算错误', 'K2', '计算错误', 'wrong', 92)
+                ) VALUES (?, 'Q2', 2, '计算错误', '["K2"]', '计算错误', 'wrong', 92)
                 """,
                 (current_result_id,),
             )

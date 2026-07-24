@@ -74,16 +74,15 @@ class ResultRepository:
                 """
                 INSERT INTO session_details (
                     result_id, question_id, score_awarded, deduction_reason,
-                    knowledge_id, knowledge_ids, error_category, error_summary,
+                    knowledge_ids, error_category, error_summary,
                     confidence_score, secondary_errors_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     result_id,
                     detail.question_id,
                     detail.score_awarded,
                     detail.deduction_reason,
-                    detail.knowledge_id,
                     json.dumps(_detail_knowledge_ids(detail), ensure_ascii=False),
                     getattr(detail, "error_category", None),
                     getattr(detail, "error_summary", None),
@@ -152,7 +151,6 @@ class ResultRepository:
                 question_id,
                 score_awarded,
                 deduction_reason,
-                knowledge_id,
                 knowledge_ids,
                 error_category,
                 error_summary,
@@ -228,7 +226,6 @@ class ResultRepository:
                 question_id,
                 score_awarded,
                 deduction_reason,
-                knowledge_id,
                 knowledge_ids,
                 error_category,
                 error_summary,
@@ -245,7 +242,7 @@ class ResultRepository:
             details_by_result.setdefault(
                 int(row["result_id"]),
                 [],
-            ).append(dict(row))
+            ).append(_detail_row_with_knowledge_ids(dict(row)))
         return results, details_by_result
 
     def get_session_weak_point_rows(
@@ -261,7 +258,6 @@ class ResultRepository:
                 s.name AS student_name,
                 s.class_name,
                 sd.question_id,
-                sd.knowledge_id,
                 sd.knowledge_ids,
                 sd.score_awarded,
                 sd.deduction_reason,
@@ -276,9 +272,12 @@ class ResultRepository:
         if student_id is not None:
             query += " AND s.id = ?"
             params.append(int(student_id))
-        query += " ORDER BY s.id ASC, sd.knowledge_id ASC, sd.id ASC"
+        query += (
+            " ORDER BY s.id ASC, "
+            "json_extract(sd.knowledge_ids, '$[0]') ASC, sd.id ASC"
+        )
         rows = self.session.connection.execute(query, params).fetchall()
-        return [dict(row) for row in rows]
+        return [_detail_row_with_knowledge_ids(dict(row)) for row in rows]
 
     def get_active_weak_point_rows(
         self,
@@ -293,7 +292,6 @@ class ResultRepository:
                 s.name AS student_name,
                 s.class_name,
                 sd.question_id,
-                sd.knowledge_id,
                 sd.knowledge_ids,
                 sd.score_awarded,
                 sd.deduction_reason,
@@ -313,9 +311,12 @@ class ResultRepository:
             placeholders = ",".join("?" for _ in session_ids)
             query += f" AND sr.session_id IN ({placeholders})"
             params.extend(int(value) for value in session_ids)
-        query += " ORDER BY s.id ASC, sd.knowledge_id ASC, sd.id ASC"
+        query += (
+            " ORDER BY s.id ASC, "
+            "json_extract(sd.knowledge_ids, '$[0]') ASC, sd.id ASC"
+        )
         rows = self.session.connection.execute(query, params).fetchall()
-        return [dict(row) for row in rows]
+        return [_detail_row_with_knowledge_ids(dict(row)) for row in rows]
 
     def get_active_assessment_rows(
         self,
@@ -335,7 +336,6 @@ class ResultRepository:
                 ep.front_image,
                 ep.back_image,
                 sd.question_id,
-                sd.knowledge_id,
                 sd.knowledge_ids,
                 sd.score_awarded,
                 sd.deduction_reason,
@@ -444,7 +444,6 @@ class ResultRepository:
                 ep.front_image,
                 ep.back_image,
                 sd.question_id,
-                sd.knowledge_id,
                 sd.knowledge_ids,
                 sd.score_awarded,
                 sd.deduction_reason,
@@ -468,7 +467,7 @@ class ResultRepository:
             params.extend(int(value) for value in session_ids)
         query += " ORDER BY sr.graded_at DESC, sd.id ASC"
         rows = self.session.connection.execute(query, params).fetchall()
-        return [dict(row) for row in rows]
+        return [_detail_row_with_knowledge_ids(dict(row)) for row in rows]
 
     def get_session_result_ids(self, session_id: int) -> list[int]:
         rows = self.session.connection.execute(
@@ -530,11 +529,11 @@ class ResultRepository:
             self._insert_detail(result_id, detail)
 
         stored_details = [
-            dict(row)
+            _detail_row_with_knowledge_ids(dict(row))
             for row in self.session.connection.execute(
                 """
                 SELECT
-                    question_id, score_awarded, deduction_reason, knowledge_id,
+                    question_id, score_awarded, deduction_reason,
                     knowledge_ids, error_category, error_summary,
                     confidence_score, secondary_errors_json
                 FROM session_details
@@ -608,16 +607,15 @@ class ResultRepository:
             """
             INSERT INTO session_details (
                 result_id, question_id, score_awarded, deduction_reason,
-                knowledge_id, knowledge_ids, error_category, error_summary,
+                knowledge_ids, error_category, error_summary,
                 confidence_score, secondary_errors_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result_id,
                 detail.question_id,
                 detail.score_awarded,
                 detail.deduction_reason,
-                detail.knowledge_id,
                 json.dumps(_detail_knowledge_ids(detail), ensure_ascii=False),
                 getattr(detail, "error_category", None),
                 getattr(detail, "error_summary", None),
@@ -863,15 +861,15 @@ def _detail_knowledge_ids(detail: Any) -> list[str]:
             values.extend(parsed)
         else:
             values.extend(raw_values.replace("|", ",").split(","))
-    fallback = getattr(detail, "knowledge_id", None)
-    if fallback:
-        values.append(fallback)
     normalized: list[str] = []
     for value in values:
         text = str(value or "").strip()
         if text and text not in normalized:
             normalized.append(text)
-    return normalized or ["UNKNOWN"]
+    if normalized:
+        return normalized
+    fallback = str(getattr(detail, "knowledge_id", None) or "").strip()
+    return [fallback] if fallback else ["UNKNOWN"]
 
 
 def _serialize_secondary_errors(errors: Any) -> str:
@@ -923,7 +921,33 @@ def _parse_secondary_errors(raw: Any) -> list[dict[str, str]]:
 def _detail_row_with_secondary_errors(
     row: dict[str, Any],
 ) -> dict[str, Any]:
+    _detail_row_with_knowledge_ids(row)
     row["secondary_errors"] = _parse_secondary_errors(
         row.get("secondary_errors_json")
     )
     return row
+
+
+def _detail_row_with_knowledge_ids(
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    knowledge_ids = _knowledge_ids_from_row(row)
+    row["knowledge_ids"] = knowledge_ids
+    row["knowledge_id"] = knowledge_ids[0]
+    return row
+
+
+def _knowledge_ids_from_row(row: dict[str, Any]) -> list[str]:
+    raw_values = row.get("knowledge_ids")
+    if isinstance(raw_values, str):
+        parsed = _safe_json_loads(raw_values)
+        raw_values = parsed if isinstance(parsed, list) else []
+    normalized: list[str] = []
+    for value in raw_values if isinstance(raw_values, (list, tuple)) else []:
+        text = str(value or "").strip()
+        if text and text not in normalized:
+            normalized.append(text)
+    if normalized:
+        return normalized
+    fallback = str(row.get("knowledge_id") or "").strip()
+    return [fallback] if fallback else ["UNKNOWN"]

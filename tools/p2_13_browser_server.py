@@ -118,8 +118,8 @@ def _seed(paths) -> None:
         conn.execute(
             """
             INSERT INTO session_details (
-                result_id, question_id, score_awarded, knowledge_id
-            ) VALUES (?, 'Q1', 8, '')
+                result_id, question_id, score_awarded, knowledge_ids
+            ) VALUES (?, 'Q1', 8, '["UNKNOWN"]')
             """,
             (result_id,),
         )

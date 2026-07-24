@@ -54,8 +54,8 @@ def _insert_result(
         """
         INSERT INTO session_details (
             id, result_id, question_id, score_awarded, deduction_reason,
-            knowledge_id
-        ) VALUES (?, ?, ?, ?, ?, 'K')
+            knowledge_ids
+        ) VALUES (?, ?, ?, ?, ?, '["K"]')
         """,
         [
             (detail_id, result_id, question_id, score, reason)
