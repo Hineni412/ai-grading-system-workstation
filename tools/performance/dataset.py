@@ -467,7 +467,7 @@ def _paper_rows(scale: ScaleDefinition) -> Iterator[tuple[object, ...]]:
                 f"GEN-{student_id:05d}",
                 student_id,
                 "matched",
-                "completed",
+                "graded",
                 _GENERATED_TIME,
             )
 

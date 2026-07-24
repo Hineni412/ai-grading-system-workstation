@@ -25,6 +25,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 GRADING_MIGRATIONS = PROJECT_ROOT / "migrations" / "grading"
 
 
+def test_pytest_default_data_root_is_isolated_from_repository_user_data() -> None:
+    from path_manager import get_path_manager
+
+    data_root = get_path_manager().data_root.resolve()
+
+    assert not data_root.is_relative_to(PROJECT_ROOT.resolve())
+
+
 def _create_status_audit_fixture(database: Path) -> None:
     with sqlite3.connect(database) as connection:
         connection.executescript(
