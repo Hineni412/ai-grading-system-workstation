@@ -16,6 +16,7 @@
 - **P3-09 当前边界：** `backend/config_generation/` 承接活动小批次 Prompt、教师结构精修 Prompt、整卷 AI 配分 Prompt、单次请求 Gateway 适配器，以及顺序分批、失败批次选择性重试、合并、进度与检查点编排；正式配置 Job 通过兼容 facade 使用新服务，`session_manager` 的旧名称继续可用。P3-10 负责的 Schema 归一、题型/答案本地事实、100 分约束和质量告警仍以显式 policy callbacks 注入，模型、超时、请求参数、批次、重试、发布事务、API 和真实数据语义均未改变。
 - **P3-10 当前边界：** `backend/config_generation/normalization.py`、`score_allocation.py`、`local_facts.py`、`quality.py` 与 `policy.py` 分别承接生成配置 Schema/知识点/客观题与解答题硬规则、AI 配分结构校验与写回、本地题块事实、质量告警和 P3-09 回调组装；配置编辑/发布直接依赖新模块，`session_manager` 只以一个兼容导出块保留旧名称。迁移保留逐次 golden payload、100 分整数分配、单题 18 分上限、同类客观题同分、答案等价、告警顺序/文案和严格失败语义，不修改 Prompt、模型调用、API、数据库 Schema、发布事务或真实数据。
 - **P3-11 当前边界：** `migrations/` 是两库 Schema 的唯一权威来源。统一版本门槛在 FastAPI lifespan、Windows 启动器和四个历史初始化入口执行连续版本、checksum 与未来版本校验，并以逐迁移原子事务和 SQLite 写锁处理失败与并发启动；不兼容数据库会在服务启动前以不含本机路径的提示失败关闭。`DBManager`、`JobStore`、`GradingRunStore` 和题库初始化已移除建表、补列、索引与触发器 DDL，但保留既有非 DDL 数据维护和题库内置技能播种。阅卷库新增 `004_add_jobs_result_json.sql` 承接旧 `JobStore` 补列兼容；历史 000 基线生成器已停用，迁移演练只以干净空库执行当前迁移作为 Schema 参照。该包不改业务接口、状态语义、评分规则或真实业务数据。
+- **P3-12 当前边界：** 阅卷库 `005_add_status_constraints.sql` 以单事务重建 `grading_sessions`、`exam_papers` 与 `answer_regions`，为会话状态、答卷匹配/处理状态和答题区映射状态增加与现有业务值一致的 `CHECK` 约束，并恢复既有外键、索引和 UUID 触发器。`backend/status_contracts.py` 是四列共享合法值与写入校验入口，`tools/audit_status_values.py` 只读汇总值和数量；迁移器只对该 005 和声明的三张表开放 `DROP TABLE`，其他破坏性 SQL 继续拒绝。该包不改变状态语义、不约束其他领域状态，也不直接迁移真实业务库。
 - **既有题库语义边界：** 在隔离分支把题库当前 `question_tags` 设为批改上下文、知识图谱和训练推荐的唯一活动语义来源；旧技能目录、概念映射和相关表保留一个版本作为只读回退，不再参与活动图谱/推荐
 - **P1-15 增量边界：** FastAPI 只公开试卷、题目分页/详情、当前标签、富文本/预览元数据和受控图片 GET；源题库通过有界 M1-W1-W2-M2 临时快照读取，SQLite 不打开源 main/WAL/SHM，持续变化以脱敏 503 fail closed
 - **P1-16 增量边界：** FastAPI 增加教师确认标签、带 revision 的题目软删除/恢复、受控 DOCX/PDF 流式暂存和 pending 导入请求；不执行长导入、不调用 AI、不写旧技能表，写入冲突以 409 fail closed
@@ -115,7 +116,7 @@
 | 正式批改前必须确认样卷模板和答题区映射 | `GradingService.run_session_grading()` 通过 `GradingRepositoryAccess` 调用模板仓储 readiness | 已核验 |
 | 评分依据来自 Word/PDF 生成配置，样卷阶段只负责版面和题框 | `backend/config_workspace/`、`template_analyzer.py`、Vue 考试配置与题框流程 | 已核验 |
 | 未匹配名单的答卷保存为 `unmatched/skipped`，不进入正式批改 | `grading_service.py` | 已核验 |
-| 试卷处理状态至少包含 `pending/grading/graded/failed/skipped` | `grading_service.py`、`db_manager.py` | 已核验；数据库无枚举约束 |
+| 试卷处理状态为 `pending/grading/graded/failed/skipped` | `backend/status_contracts.py`、`grading_service.py`、`005_add_status_constraints.sql` | 已核验；应用边界和数据库双层约束 |
 | 批改结果必须经过完整性审计；局部失败可保留为需复核结果 | `grading_completeness.py`、混合批改与失败重试测试 | 已核验 |
 | 旧技能目录的 `legacy/shadow/skill` 切换只保留为一版本回退能力，不控制活动图谱或推荐 | 显式 `build_legacy_profiles()` / `build_skill_profiles()` 与迁移工具 | 已核验 |
 | AI 题库标签只有质量状态为 `complete` 才自动保存 | `is_auto_saveable_result()` | 已核验 |
@@ -470,6 +471,8 @@ flowchart LR
 
 两库 Schema 只由 `migrations/` 下的顺序 SQL 迁移管理。`update_tools/migrate_db.py` 在每个迁移前自动备份，以单迁移原子事务执行并记录 `schema_migrations`；已登记历史必须是当前迁移清单的连续前缀且 checksum 一致，未知未来版本、历史缺口或文件漂移都会拒绝启动。
 
+阅卷库 005 因 SQLite 不能原地增加列级 `CHECK`，在一个迁移事务内复制并重建三张表。迁移器的表重建放行是固定清单：仅 `005_add_status_constraints` 可删除声明的 `grading_sessions`、`exam_papers`、`answer_regions`；带引号、范围外或无法识别的目标，以及 `DELETE FROM`、`TRUNCATE`、`DROP COLUMN`、`DROP INDEX` 仍会被拦截。遇到 NULL、空白或未知历史状态时，数据复制在删除旧表前失败，整笔回滚并保留迁移前备份。
+
 `backend/schema_migrations.py` 为生产启动和历史初始化入口提供统一版本门槛。空库会完整 bootstrap，受支持的旧库按顺序升级，当前库重复启动不再生成备份或执行 DDL。`DBManager.initialize()` 与题库初始化仍保留数据回填、UUID 修复和内置技能播种等非 DDL 兼容行为。历史 `000_baseline_schema.sql` 不再允许重新生成；后续 Schema 变化必须新增 forward migration。
 
 ## 7. 接口与集成
@@ -569,7 +572,7 @@ Python 的运行依赖 `requirements.txt` 只给下限，没有完整运行时�
 | P2 | 部署边界漂移会绕过安全前提 | 已确认仅单用户/个别工作机/loopback，但代码无应用登录或权限 | 若监听地址或使用人数被扩大，会完整暴露敏感数据与破坏性操作 | 固化 loopback 配置并在运维文档标明边界；任何远程化或多用户化前重新设计认证、授权、CSRF 与审计 | 否 |
 | P2 | `completed` 可能被展示层误读 | 已确认其含义是“运行结束”，允许部分答卷失败；失败数另存于 paper 状态 | 只读取 session 状态的页面或导出可能误报全成功 | 所有完成提示和报表必须同时展示 `graded/failed/skipped` 统计，并增加契约测试 | 否 |
 | P2 | 静态循环依赖由延迟导入维持 | Schema↔技能目录、题目服务↔频次服务 | 初始化顺序脆弱，重构时易出现运行时导入故障 | 抽取常量/端口接口，令 Schema 不依赖服务，频次服务不反向依赖题目服务 | 否 |
-| P2 | 状态字段缺少数据库约束 | 阅卷 session/paper 等状态是自由文本，写方法接受任意字符串 | 拼写或新旧状态不一致会污染查询 | 集中枚举和迁移 CHECK 约束；先统计现有值 | 否 |
+| P3 | 状态集合扩展需要显式迁移 | P3-12 已约束四个核心持久状态列；新增合法状态不能再只改调用方字符串 | 未同步应用契约和数据库迁移会在写入时明确失败 | 任何新状态先更新领域决定、共享契约和新的 forward migration，并在副本库预演 | 否 |
 | P2 | 依赖不可复现 | `requirements.txt` 仅最低版本，便携运行时已远高于下限；存在未见直接导入的依赖 | 新机器安装结果随时间漂移，兼容性难复现 | 从已验收运行时生成约束/锁文件，区分运行与打包依赖 | 否 |
 | P2 | 文档和版本元数据漂移 | 工作机 README 仍为 v1.3.0/`run.bat`；配置写 v1.4.0-RC；ownership 行数过期 | 运维人员可能使用错误入口或误判版本/规模 | 以 `VERSION` 为唯一版本源并在发布时校验文档 | 否 |
 | P2 | 已停用的客观题准入向导仍留有失效代码 | 用户确认不再使用；`run_objective_admission_wizard.py` 仍引用 5 个仓库不存在的脚本 | 误触入口会失败，维护者可能误判其为受支持能力 | 在独立、可回退变更中移除入口、导入和死代码，不恢复无需求的辅助脚本 | 否 |

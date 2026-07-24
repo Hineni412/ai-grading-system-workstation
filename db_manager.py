@@ -36,6 +36,7 @@ from backend.repositories.students import (
     student_roster_revision,
 )
 from backend.schema_migrations import ensure_schema_current
+from backend.status_contracts import validate_status
 from backend.repositories.templates import (
     RegionRepository,
     TemplateRegionRepositoryGateway,
@@ -736,6 +737,7 @@ class DBManager:
         return counts
 
     def update_session_status(self, session_id: int, status: str) -> None:
+        status = validate_status("grading_sessions.status", status)
         with self._repository_sessions.session() as repository_session:
             with repository_session.transaction():
                 repository_session.connection.execute(

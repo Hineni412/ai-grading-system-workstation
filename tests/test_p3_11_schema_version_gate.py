@@ -39,13 +39,14 @@ def test_schema_gate_bootstraps_empty_grading_database(tmp_path: Path) -> None:
         migrations_dir=PROJECT_ROOT / "migrations" / "grading",
     )
 
-    assert result.current_version == "004_add_jobs_result_json"
+    assert result.current_version == "005_add_status_constraints"
     assert result.applied == (
         "000_baseline_schema",
         "001_init_migration_tracking",
         "002_add_grading_run_ledger",
         "003_add_jobs",
         "004_add_jobs_result_json",
+        "005_add_status_constraints",
     )
     with sqlite3.connect(database) as connection:
         tables = {
@@ -157,7 +158,10 @@ def test_schema_gate_rejects_incomplete_untracked_legacy_schema(
             """
         )
 
-    with pytest.raises(SchemaVersionError, match="schema differs"):
+    with pytest.raises(
+        SchemaVersionError,
+        match="schema differs|migration 005_add_status_constraints failed",
+    ):
         ensure_schema_current("grading", database, migrations_dir=migrations)
 
 
@@ -207,7 +211,7 @@ def test_schema_gate_serializes_concurrent_bootstrap(tmp_path: Path) -> None:
         )
 
     assert {result.current_version for result in results} == {
-        "004_add_jobs_result_json"
+        "005_add_status_constraints"
     }
     with sqlite3.connect(database) as connection:
         rows = connection.execute(
@@ -225,8 +229,9 @@ def test_schema_gate_serializes_concurrent_bootstrap(tmp_path: Path) -> None:
         ("002_add_grading_run_ledger", 1),
         ("003_add_jobs", 1),
         ("004_add_jobs_result_json", 1),
+        ("005_add_status_constraints", 1),
     ]
-    assert len(list((tmp_path / "backups").glob("*.db"))) == 5
+    assert len(list((tmp_path / "backups").glob("*.db"))) == 6
 
 
 def test_migration_backup_includes_committed_wal_content(tmp_path: Path) -> None:
@@ -286,6 +291,7 @@ def test_db_manager_initialize_uses_current_grading_migrations(
         "002_add_grading_run_ledger",
         "003_add_jobs",
         "004_add_jobs_result_json",
+        "005_add_status_constraints",
     ]
 
 
@@ -308,7 +314,7 @@ def test_grading_store_initializers_use_current_migrations(
             LIMIT 1
             """
         ).fetchone()
-    assert current == ("004_add_jobs_result_json",)
+    assert current == ("005_add_status_constraints",)
 
 
 def test_question_bank_initializer_uses_current_migrations(
@@ -350,7 +356,7 @@ def test_application_schema_gate_checks_both_databases(tmp_path: Path) -> None:
 
     results = ensure_application_schema(paths)
 
-    assert results["grading"].current_version == "004_add_jobs_result_json"
+    assert results["grading"].current_version == "005_add_status_constraints"
     assert (
         results["question_bank"].current_version
         == "008_add_unified_skill_catalog"
