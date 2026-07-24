@@ -1,7 +1,7 @@
 """数据库迁移预演工具。
 
 对真实库或指定源库做只读预演：复制到临时目录，在副本上执行迁移或 stamp-only，
-再检查 integrity、业务表行数和运行时 schema 等价性。
+再检查 integrity、业务表行数和当前迁移 schema 等价性。
 """
 
 from __future__ import annotations
@@ -9,10 +9,10 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import shutil
 import sqlite3
 import sys
 import tempfile
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,6 +22,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 sys.path.insert(0, str(_PROJECT_ROOT / "update_tools"))
 
 from migrate_db import run_migrations  # noqa: E402
+from backend.schema_contracts import schema_signature  # noqa: E402
 
 
 @dataclass
@@ -97,6 +98,22 @@ def _integrity_ok(db_path: Path) -> bool:
         conn.close()
 
 
+def _copy_database_snapshot(source_db: Path, copy_db: Path) -> None:
+    """Create a transactionally consistent copy, including committed WAL data."""
+    from question_bank.services.question_read_service import (
+        captured_sqlite_snapshot_path,
+    )
+
+    copy_db.unlink(missing_ok=True)
+    with captured_sqlite_snapshot_path(
+        source_db,
+        required_tables=frozenset(),
+    ) as candidate:
+        with closing(sqlite3.connect(candidate)) as source:
+            with closing(sqlite3.connect(copy_db)) as destination:
+                source.backup(destination)
+
+
 def _normalized_sql(sql: object) -> str:
     return re.sub(r"\s+", " ", str(sql)).strip().lower().replace("if not exists ", "")
 
@@ -153,21 +170,7 @@ def _normalized_schema_sql(db_path: Path) -> dict[tuple[str, str], str]:
 
 
 def _semantic_schema(db_path: Path) -> dict[str, object]:
-    conn = sqlite3.connect(db_path)
-    try:
-        tables = {
-            table: {
-                "columns": _column_snapshot(conn, table),
-                "foreign_keys": _foreign_key_snapshot(conn, table),
-            }
-            for table in _table_names(conn)
-        }
-    finally:
-        conn.close()
-    return {
-        "tables": tables,
-        "indexes_and_triggers": _normalized_schema_sql(db_path),
-    }
+    return schema_signature(db_path)
 
 
 def schemas_equivalent(left_db: Path, right_db: Path) -> bool:
@@ -180,27 +183,28 @@ def schemas_equivalent(left_db: Path, right_db: Path) -> bool:
     return _semantic_schema(left_db) == _semantic_schema(right_db)
 
 
-def _build_runtime_reference(target: str, output_db: Path) -> None:
-    if target == "grading":
-        from backend.jobs.store import JobStore
-        from db_manager import DBManager
-        from grading_run_store import GradingRunStore
-
-        DBManager(output_db).initialize()
-        GradingRunStore(output_db).initialize()
-        JobStore(output_db).initialize()
-        return
-    if target == "question_bank":
-        from question_bank.database.schema import initialize_database
-
-        initialize_database(output_db)
-        return
-    raise ValueError(f"unknown target: {target}")
+def _build_current_migration_reference(
+    target: str,
+    output_db: Path,
+    migrations_dir: Path,
+) -> None:
+    report = run_migrations(
+        target,
+        db_path=output_db,
+        migrations_dir=migrations_dir,
+    )
+    if report.error:
+        raise RuntimeError(report.error)
 
 
-def _schema_matches_runtime(target: str, migrated_db: Path, work_dir: Path) -> bool:
-    reference_db = work_dir / f"{target}_runtime_reference.db"
-    _build_runtime_reference(target, reference_db)
+def _schema_matches_current_migrations(
+    target: str,
+    migrated_db: Path,
+    work_dir: Path,
+    migrations_dir: Path,
+) -> bool:
+    reference_db = work_dir / f"{target}_migration_reference.db"
+    _build_current_migration_reference(target, reference_db, migrations_dir)
     return schemas_equivalent(reference_db, migrated_db)
 
 
@@ -226,7 +230,7 @@ def rehearse_database(
 
     work_dir.mkdir(parents=True, exist_ok=True)
     copy_db = work_dir / f"{target}_{mode}.db"
-    shutil.copy2(source_db, copy_db)
+    _copy_database_snapshot(source_db, copy_db)
 
     before_counts = _business_row_counts(copy_db)
     paper_snapshot = _paper_field_snapshot(copy_db) if target == "question_bank" and mode == "execute" else {}
@@ -245,7 +249,12 @@ def rehearse_database(
     }
 
     integrity_ok = _integrity_ok(copy_db)
-    schema_matches = _schema_matches_runtime(target, copy_db, work_dir)
+    schema_matches = _schema_matches_current_migrations(
+        target,
+        copy_db,
+        work_dir,
+        migrations_dir,
+    )
     qb_005_changed = (
         _changed_paper_rows(paper_snapshot, copy_db)
         if target == "question_bank" and mode == "execute"
@@ -258,7 +267,7 @@ def rehearse_database(
     if not integrity_ok:
         messages.append("PRAGMA integrity_check failed")
     if not schema_matches:
-        messages.append("schema differs from runtime initialization")
+        messages.append("schema differs from current migrations")
     if count_changes:
         messages.append(f"business row count changes: {count_changes}")
 

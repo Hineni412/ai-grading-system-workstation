@@ -1,7 +1,7 @@
-"""Schema 漂移守卫：空库+全部迁移 ≡ 空库+运行时初始化（两库各验证）。
+"""Migration-authoritative schema guards for both application databases.
 
-此后任何"只改运行时 DDL 不补迁移"（或反之）的改动都会让本测试失败。
-基线由 tools/generate_schema_baseline.py 生成；漂移时先重跑生成器或补增量迁移。
+Historical migration files are immutable. Runtime compatibility initializers
+must reach the current migration version without adding schema of their own.
 """
 
 from __future__ import annotations
@@ -16,6 +16,28 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "update_tools"))
 from migrate_db import run_migrations  # noqa: E402
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_historical_baseline_generator_refuses_to_rewrite_migrations(
+) -> None:
+    import hashlib
+
+    import tools.generate_schema_baseline as generator
+
+    baselines = [
+        _PROJECT_ROOT / "migrations" / target / "000_baseline_schema.sql"
+        for target in ("grading", "question_bank")
+    ]
+    before = {
+        path: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in baselines
+    }
+
+    assert generator.main() == 2
+    assert {
+        path: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in baselines
+    } == before
 
 
 def _normalized_schema(db_path: Path) -> dict[tuple[str, str], str]:
@@ -57,7 +79,7 @@ def _assert_equivalent(runtime_db: Path, migrated_db: Path) -> None:
     )
 
 
-def test_grading_migrations_match_runtime_schema(tmp_path: Path) -> None:
+def test_grading_initializers_match_current_migration_schema(tmp_path: Path) -> None:
     from backend.jobs.store import JobStore
     from db_manager import DBManager
     from grading_run_store import GradingRunStore
@@ -124,7 +146,7 @@ def test_jobs_schema_is_introduced_only_by_003(tmp_path: Path) -> None:
     }
 
 
-def test_question_bank_migrations_match_runtime_schema(tmp_path: Path) -> None:
+def test_question_bank_initializer_matches_current_migration_schema(tmp_path: Path) -> None:
     from question_bank.database.schema import initialize_database
 
     runtime_db = tmp_path / "runtime.db"
