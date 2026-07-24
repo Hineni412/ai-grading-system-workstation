@@ -2,7 +2,7 @@
 
 **执行包：** P3-15
 **计划日期：** 2026-07-25
-**计划状态：** waiting_review
+**计划状态：** verified_pending_integration
 **计划模型：** 当前连续作业模型
 **允许夜间执行：** no
 **计划基线：** 24be1c3e264f50b0e97613aacf8489ca44ecbef5
@@ -14,14 +14,14 @@
 ## 昼夜交接
 
 **执行包：** P3-15
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** e7f883cedf3f66544268cf9190ebcb2d4cdb72bd
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
 
 ## 任务边界（已冻结）
@@ -55,7 +55,7 @@
 - [x] 新增并通过活动 `crop_choice_region()` 校准链行为测试，证明保留模块仍可用。
 - [x] 运行 P2-22、客观题识别与依赖相关的受影响回归。
 - [x] 更新架构事实与执行状态，运行快速冒烟和真实两库指纹守卫。
-- [ ] 冻结候选后并行进行需求符合性与代码质量复审；如有阻塞问题，统一修复一次并只做限定终审。
+- [x] 冻结候选后并行进行需求符合性与代码质量复审；首轮 1 `Important`、3 `Suggestion` 已统一修复，原评审者限定终审为 0 `Critical` / 0 `Important` / 0 `Suggestion`。
 - [ ] 通过独立删除提交进入 M3-08 integration，完成受影响验证、PR、主线同步和状态收口。
 
 ## 计划验证命令
@@ -74,7 +74,9 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - 实现与自动验证约 15 分钟：退役守卫先以 1 项失败确认 RED，最小删除后包级/P2-22/客观题识别受影响回归 42 项通过；快速冒烟通过，包含文档治理、525 个第一方 Python 文件编译及两库隔离副本初始化幂等。
 - 静态复核确认活动第一方 Python 调用方为零；客观题公开裁剪入口在系统临时目录生成 30×20 裁剪图并保留 `recognition_box` 来源。根目录真实两库 SHA-256 与 P3-15 开工前一致。
 - 初审约 10 分钟：需求符合性与代码质量两路共 4 条原始意见，去重后为 1 `Important`、3 `Suggestion`。阻塞项为调查遗漏 P1-29 动态启动 Streamlit；统一修复保留依赖、补入两个退役名称的源码/配置扫描，并用触边墨迹证明质量检查实际执行；同时清理计划文件尾随空格。
-- 当前剩余工作为双路独立复审、必要时一次统一修复、M3-08 integration 与主线收口；自动验收已通过，版本仍须完成复审和主线流程后才允许把 P3-15 记为 merged。
+- 修复后受影响复测共 77 项：76 项在受限环境直接通过，P1-29 内部种子流程因 Windows 安全文件系统错误 5 被阻断，按正常权限在系统临时副本重跑后通过；快速冒烟再次通过。
+- 限定终审约 5 分钟：原两名评审者只核对首轮登记问题、修复区及直接回归，两路均为 0 `Critical` / 0 `Important` / 0 `Suggestion`。功能候选 `e7f883cedf3f66544268cf9190ebcb2d4cdb72bd` 通过需求和质量验收。
+- 当前剩余工作为 M3-08 integration、受影响验证、PR 与主线收口；功能分支已通过验收，P3-15 尚未进入主线，整个版本暂不因该候选单独允许发布。
 
 ## 回退
 
