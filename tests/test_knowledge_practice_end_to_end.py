@@ -315,7 +315,7 @@ def _insert_result(
         """
         INSERT INTO exam_papers (
             id, session_id, front_image, back_image, student_id, match_status, processing_status
-        ) VALUES (?, ?, '', '', ?, 'matched', 'completed')
+        ) VALUES (?, ?, '', '', ?, 'matched', 'graded')
         """,
         (paper_id, session_id, student_id),
     )

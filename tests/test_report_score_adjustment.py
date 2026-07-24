@@ -45,7 +45,7 @@ def _seed_session(tmp_path: Path) -> tuple[DBManager, Path]:
             """
             INSERT INTO exam_papers (
                 id, session_id, front_image, back_image, student_id, match_status, processing_status
-            ) VALUES (1, 1, 'front.jpg', 'back.jpg', 1, 'matched', 'completed')
+            ) VALUES (1, 1, 'front.jpg', 'back.jpg', 1, 'matched', 'graded')
             """
         )
         conn.execute(
