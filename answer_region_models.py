@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
+from backend.status_contracts import validate_status
+
 
 MIN_REGION_SIZE = 12
 EDGE_SNAP_TOLERANCE = 8
@@ -62,6 +64,11 @@ def normalize_regions(regions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         mapped_question_id = _optional_text(region.get("mapped_question_id"))
         region["mapped_question_id"] = mapped_question_id
         raw_status = str(region.get("mapping_status") or "").strip()
+        if raw_status:
+            raw_status = validate_status(
+                "answer_regions.mapping_status",
+                raw_status,
+            )
         if mapped_question_id is None:
             region["mapping_status"] = "unbound"
         elif raw_status in _VALID_MAPPING_STATUSES - {"unbound"}:

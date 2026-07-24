@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from backend.repositories.base import RepositorySession, RepositorySessionProvider
+from backend.status_contracts import validate_status
 
 
 class PaperRepository:
@@ -28,6 +29,14 @@ class PaperRepository:
         processing_status: str,
         error_message: str | None = None,
     ) -> int:
+        match_status = validate_status(
+            "exam_papers.match_status",
+            match_status,
+        )
+        processing_status = validate_status(
+            "exam_papers.processing_status",
+            processing_status,
+        )
         cursor = self.session.connection.execute(
             """
             INSERT INTO exam_papers (
@@ -54,6 +63,10 @@ class PaperRepository:
         processing_status: str,
         error_message: str | None = None,
     ) -> None:
+        processing_status = validate_status(
+            "exam_papers.processing_status",
+            processing_status,
+        )
         self.session.connection.execute(
             """
             UPDATE exam_papers
@@ -70,6 +83,10 @@ class PaperRepository:
         processing_status: str,
         error_message: str | None = None,
     ) -> bool:
+        processing_status = validate_status(
+            "exam_papers.processing_status",
+            processing_status,
+        )
         cursor = self.session.connection.execute(
             """
             UPDATE exam_papers
