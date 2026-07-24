@@ -92,17 +92,25 @@ def ensure_schema_current(
         if migrations_dir is not None
         else Path(__file__).resolve().parents[1] / "migrations" / target
     )
+    database = Path(db_path)
+    effective_backup_dir = (
+        Path(backup_dir)
+        if backup_dir is not None
+        else (
+            database.parent.parent / "backups"
+            if database.parent.name.casefold() == "databases"
+            else database.parent / "backups"
+        )
+    )
     report = run_migrations(
         target,
-        db_path=Path(db_path),
+        db_path=database,
         migrations_dir=migration_root,
-        backup_dir_override=(
-            Path(backup_dir) if backup_dir is not None else None
-        ),
+        backup_dir_override=effective_backup_dir,
     )
     if report.error:
         raise SchemaVersionError(report.error)
-    if schema_signature(Path(db_path)) != _expected_schema_signature(
+    if schema_signature(database) != _expected_schema_signature(
         target,
         migration_root,
     ):
@@ -111,7 +119,7 @@ def ensure_schema_current(
         )
     status = get_migration_status(
         target,
-        db_path_override=Path(db_path),
+        db_path_override=database,
         migrations_dir_override=migration_root,
     )
     applied = tuple(str(item) for item in status.get("applied") or ())

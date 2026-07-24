@@ -149,6 +149,29 @@ def test_dry_run_does_not_create_migration_tracking_table(
         ).fetchone() is None
 
 
+def test_dry_run_does_not_create_missing_database_or_parent(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "new-data" / "grading.db"
+    migrations_dir = tmp_path / "migs"
+    _write_migration(
+        migrations_dir,
+        "001_create_table.sql",
+        "CREATE TABLE should_not_exist (id INTEGER PRIMARY KEY);",
+    )
+
+    report = run_migrations(
+        "grading",
+        db_path=db_path,
+        migrations_dir=migrations_dir,
+        dry_run=True,
+    )
+
+    assert report.error is None, report.error
+    assert not db_path.exists()
+    assert not db_path.parent.exists()
+
+
 def test_first_backup_failure_leaves_untracked_legacy_database_unchanged(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

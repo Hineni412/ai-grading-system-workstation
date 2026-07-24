@@ -374,6 +374,34 @@ def test_application_schema_gate_uses_formal_backup_directory(
     assert not (paths.db_path.parent / "backups").exists()
 
 
+@pytest.mark.parametrize(
+    "entrypoint",
+    ("db_manager", "job_store", "grading_run_store", "question_bank"),
+)
+def test_compatibility_initializer_uses_formal_backup_directory(
+    entrypoint: str,
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / entrypoint
+    database = data_root / "databases" / (
+        "question_bank.db"
+        if entrypoint == "question_bank"
+        else "grading_system.db"
+    )
+
+    if entrypoint == "db_manager":
+        DBManager(database).initialize()
+    elif entrypoint == "job_store":
+        JobStore(database)
+    elif entrypoint == "grading_run_store":
+        GradingRunStore(database)
+    else:
+        initialize_database(database)
+
+    assert list((data_root / "backups").glob("*.db"))
+    assert not (database.parent / "backups").exists()
+
+
 def test_fastapi_lifespan_checks_both_schema_versions(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
     paths = SimpleNamespace(

@@ -403,8 +403,11 @@ def run_migrations(
     migrations.sort(key=lambda m: m.order)
 
     # 连接数据库
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    if dry_run and not db_path.exists():
+        conn = sqlite3.connect(":memory:")
+    else:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA busy_timeout = 5000")
     try:
         try:
