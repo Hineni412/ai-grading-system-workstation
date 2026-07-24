@@ -366,7 +366,6 @@ def run_migrations(
     - ``stamp_only``：把待执行迁移记录为已应用但不执行 SQL（基线打标用，
       适用于 Schema 已由运行时初始化建成、且旧迁移含不可盲目重放的数据语句的库）。
     """
-    logger = logger_override or _get_logger()
     targets = _get_targets()
 
     if target_name not in targets:
@@ -419,9 +418,15 @@ def run_migrations(
 
         pending = [m for m in migrations if m.name not in applied]
         if not pending:
-            logger.info("[%s] 所有 %d 个迁移已是最新", target_name, len(migrations))
+            if logger_override is not None:
+                logger_override.info(
+                    "[%s] 所有 %d 个迁移已是最新",
+                    target_name,
+                    len(migrations),
+                )
             return report
 
+        logger = logger_override or _get_logger()
         logger.info("[%s] 待执行 %d 个迁移 (共 %d 个)", target_name, len(pending), len(migrations))
 
         if stamp_only and not dry_run:

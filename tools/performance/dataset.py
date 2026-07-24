@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import sqlite3
+import tempfile
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -11,6 +12,7 @@ from pathlib import Path
 from types import FunctionType
 
 from backend.performance.metrics import instrument_sqlite_connection
+from backend.schema_migrations import ensure_schema_current
 from db_manager import DBManager
 from question_bank.database.schema import initialize_database
 
@@ -22,6 +24,14 @@ _PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUB"
     "AScY42YAAAAASUVORK5CYII="
 )
+
+
+class _QuietMigrationLogger:
+    def info(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    def error(self, *_args: object, **_kwargs: object) -> None:
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +75,10 @@ class BenchmarkPaths:
     @property
     def data_root(self) -> Path:
         return self.project_root / "generated-data"
+
+    @property
+    def migration_project_root(self) -> Path:
+        return Path(__file__).resolve().parents[2]
 
     @property
     def databases_dir(self) -> Path:
@@ -295,6 +309,7 @@ def _explicit_path_manager(paths: BenchmarkPaths) -> Iterator[None]:
 
 
 def _initialize_grading_database(db_path: Path) -> None:
+    _prepare_generated_schema("grading", db_path)
     manager = DBManager(db_path)
 
     def configured_connection() -> object:
@@ -305,6 +320,7 @@ def _initialize_grading_database(db_path: Path) -> None:
 
 
 def _initialize_question_bank_database(db_path: Path) -> None:
+    _prepare_generated_schema("question_bank", db_path)
     isolated_globals = dict(initialize_database.__globals__)
     isolated_globals["connect"] = _configured_sqlite_connection
     isolated_initialize = FunctionType(
@@ -316,6 +332,18 @@ def _initialize_question_bank_database(db_path: Path) -> None:
     )
     isolated_initialize.__kwdefaults__ = initialize_database.__kwdefaults__
     isolated_initialize(db_path, seed_skills=False)
+
+
+def _prepare_generated_schema(target: str, db_path: Path) -> None:
+    with tempfile.TemporaryDirectory(
+        prefix=f"benchmark_{target}_migration_"
+    ) as raw:
+        ensure_schema_current(
+            target,
+            db_path,
+            backup_dir=Path(raw),
+            logger_override=_QuietMigrationLogger(),
+        )
 
 
 @contextmanager
