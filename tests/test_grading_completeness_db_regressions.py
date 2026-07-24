@@ -61,12 +61,12 @@ def _seed_session(tmp_path: Path, raw_json: dict | None = None) -> tuple[DBManag
         conn.executemany(
             """
             INSERT INTO session_details (
-                result_id, question_id, score_awarded, deduction_reason, knowledge_id
+                result_id, question_id, score_awarded, deduction_reason, knowledge_ids
             ) VALUES (?, ?, ?, '', ?)
             """,
             [
-                (1, "Q11(2)", 4, "K11-2"),
-                (1, "Q12", 5, "K12"),
+                (1, "Q11(2)", 4, '["K11-2"]'),
+                (1, "Q12", 5, '["K12"]'),
             ],
         )
         conn.commit()

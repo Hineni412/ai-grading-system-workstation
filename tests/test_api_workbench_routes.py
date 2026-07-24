@@ -162,8 +162,8 @@ def workbench_client(tmp_path: Path):
             """
             INSERT INTO session_details (
                 result_id, question_id, score_awarded, deduction_reason,
-                knowledge_id, error_category, error_summary, confidence_score
-            ) VALUES (?, 'Q1', 8, '需复核：字迹不清', 'K1', '需复核', 'unclear', 55)
+                knowledge_ids, error_category, error_summary, confidence_score
+            ) VALUES (?, 'Q1', 8, '需复核：字迹不清', '["K1"]', '需复核', 'unclear', 55)
             """,
             (result_id,),
         )

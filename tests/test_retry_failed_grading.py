@@ -220,8 +220,8 @@ def test_grading_service_incremental_retry_merge(tmp_path):
         
         # Insert details
         conn.execute(
-            "INSERT INTO session_details (result_id, question_id, score_awarded, deduction_reason, knowledge_id, error_category, confidence_score) "
-            "VALUES (?, 'Q1', 5.0, '', 'K-1', '', 99.0)",
+            "INSERT INTO session_details (result_id, question_id, score_awarded, deduction_reason, knowledge_ids, error_category, confidence_score) "
+            "VALUES (?, 'Q1', 5.0, '', '[\"K-1\"]', '', 99.0)",
             (result_id,)
         )
         conn.commit()

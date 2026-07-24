@@ -65,8 +65,8 @@ def _seed_two_review_results(tmp_path: Path) -> tuple[DBManager, int, dict[str, 
                     """
                     INSERT INTO session_details (
                         result_id, question_id, score_awarded, deduction_reason,
-                        knowledge_id, error_category, error_summary
-                    ) VALUES (?, 'Q1', ?, ?, 'K1', ?, ?)
+                        knowledge_ids, error_category, error_summary
+                    ) VALUES (?, 'Q1', ?, ?, '["K1"]', ?, ?)
                     """,
                     (
                         result_id,
@@ -81,8 +81,8 @@ def _seed_two_review_results(tmp_path: Path) -> tuple[DBManager, int, dict[str, 
                 """
                 INSERT INTO session_details (
                     result_id, question_id, score_awarded, deduction_reason,
-                    knowledge_id, error_category, error_summary
-                ) VALUES (?, 'Q2', ?, 'untouched reason', 'K2', 'untouched category', 'untouched summary')
+                    knowledge_ids, error_category, error_summary
+                ) VALUES (?, 'Q2', ?, 'untouched reason', '["K2"]', 'untouched category', 'untouched summary')
                 """,
                 (result_id, other_score),
             )

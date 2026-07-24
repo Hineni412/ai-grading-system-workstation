@@ -70,8 +70,8 @@ def review_system(tmp_path: Path):
             """
             INSERT INTO session_details (
                 result_id, question_id, score_awarded, deduction_reason,
-                knowledge_id, knowledge_ids
-            ) VALUES (14001, 'Q1', 0, '需要巩固', 'K_UNKNOWN', '["K_UNKNOWN"]')
+                knowledge_ids
+            ) VALUES (14001, 'Q1', 0, '需要巩固', '["K_UNKNOWN"]')
             """
         )
     review = AlignmentReviewService(grading_db, question_bank_db)

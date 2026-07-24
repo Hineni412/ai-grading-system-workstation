@@ -119,14 +119,14 @@ def _seed_session(tmp_path: Path) -> Path:
         conn.executemany(
             """
             INSERT INTO session_details (
-                result_id, question_id, score_awarded, deduction_reason, knowledge_id,
+                result_id, question_id, score_awarded, deduction_reason,
                 knowledge_ids, error_category, error_summary
-            ) VALUES (?, ?, ?, '', ?, '[]', '', '')
+            ) VALUES (?, ?, ?, '', ?, '', '')
             """,
             [
-                (1, "Q11(2)", 6, "K11-2"),
-                (2, "Q11(1)", 4, "K11-1"),
-                (2, "Q11(2)", 6, "K11-2"),
+                (1, "Q11(2)", 6, '["K11-2"]'),
+                (2, "Q11(1)", 4, '["K11-1"]'),
+                (2, "Q11(2)", 6, '["K11-2"]'),
             ],
         )
         conn.commit()

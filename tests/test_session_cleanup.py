@@ -104,8 +104,8 @@ def _make_deleted_session(db: DBManager, data_root: Path) -> tuple[int, list[Pat
         ).lastrowid
         conn.execute(
             """
-            INSERT INTO session_details (result_id, question_id, score_awarded, deduction_reason, knowledge_id)
-            VALUES (?, '1', 90, '', 'k1')
+            INSERT INTO session_details (result_id, question_id, score_awarded, deduction_reason, knowledge_ids)
+            VALUES (?, '1', 90, '', '["k1"]')
             """,
             (result_id,),
         )
