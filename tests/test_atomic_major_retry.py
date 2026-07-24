@@ -101,9 +101,9 @@ def _seed_retry_case(tmp_path: Path) -> tuple[DBManager, int, int, int, Path, Pa
             (session_id, student_id, paper_id, json.dumps(incomplete)),
         ).lastrowid
         conn.executemany(
-            "INSERT INTO session_details (result_id, question_id, score_awarded, deduction_reason, knowledge_id, confidence_score) "
+            "INSERT INTO session_details (result_id, question_id, score_awarded, deduction_reason, knowledge_ids, confidence_score) "
             "VALUES (?, ?, ?, '', ?, 99)",
-            [(result_id, "Q1", 5, "K1"), (result_id, "10-1", 3, "old-K10")],
+            [(result_id, "Q1", 5, '["K1"]'), (result_id, "10-1", 3, '["old-K10"]')],
         )
         conn.execute(
             "INSERT INTO annotated_results (session_id, result_id, annotated_front_path) VALUES (?, ?, 'annotated.png')",
@@ -118,7 +118,7 @@ def test_replace_result_details_atomic_rolls_back_delete_and_result_update(tmp_p
     original = db.get_session_results(session_id)[0]
     result_id = original["result_id"]
     invalid_detail = _detail("10-2", 6)
-    invalid_detail.knowledge_id = None  # type: ignore[assignment]
+    invalid_detail.question_id = None  # type: ignore[assignment]
 
     with pytest.raises(sqlite3.IntegrityError):
         db.replace_result_details_atomic(
@@ -355,13 +355,13 @@ def test_unmapped_structured_invalid_retries_all_majors_without_legacy_save(tmp_
     with db._connect() as conn:
         conn.execute("DELETE FROM session_details WHERE result_id = ?", (result_id,))
         conn.executemany(
-            "INSERT INTO session_details (result_id, question_id, score_awarded, deduction_reason, knowledge_id, confidence_score) "
+            "INSERT INTO session_details (result_id, question_id, score_awarded, deduction_reason, knowledge_ids, confidence_score) "
             "VALUES (?, ?, ?, '', ?, 99)",
             [
-                (result_id, "Q1", 5, "K1"),
-                (result_id, "10-1", 4, "K10-1"),
-                (result_id, "10-2", 6, "K10-2"),
-                (result_id, "Q99", 1, "K99"),
+                (result_id, "Q1", 5, '["K1"]'),
+                (result_id, "10-1", 4, '["K10-1"]'),
+                (result_id, "10-2", 6, '["K10-2"]'),
+                (result_id, "Q99", 1, '["K99"]'),
             ],
         )
         conn.execute(
@@ -428,8 +428,8 @@ def test_mixed_mappable_and_unmapped_invalid_retries_all_majors_and_removes_resi
     result_id = db.get_session_results(session_id)[0]["result_id"]
     with db._connect() as conn:
         conn.execute(
-            "INSERT INTO session_details (result_id, question_id, score_awarded, deduction_reason, knowledge_id, confidence_score) "
-            "VALUES (?, 'Q99', 1, '', 'K99', 99)",
+            "INSERT INTO session_details (result_id, question_id, score_awarded, deduction_reason, knowledge_ids, confidence_score) "
+            "VALUES (?, 'Q99', 1, '', '[\"K99\"]', 99)",
             (result_id,),
         )
         conn.execute(

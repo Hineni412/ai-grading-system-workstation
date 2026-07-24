@@ -143,8 +143,8 @@ def _seed_media(tmp_path: Path) -> SeededMedia:
                 """
                 INSERT INTO session_details (
                     result_id, question_id, score_awarded, deduction_reason,
-                    knowledge_id, error_category, error_summary, confidence_score
-                ) VALUES (?, 'Q1', 8, '需复核', 'K1', '需复核', 'unclear', 55)
+                    knowledge_ids, error_category, error_summary, confidence_score
+                ) VALUES (?, 'Q1', 8, '需复核', '["K1"]', '需复核', 'unclear', 55)
                 """,
                 (result_id,),
             ).lastrowid
@@ -534,8 +534,8 @@ def test_review_media_rejects_detail_without_matching_region(tmp_path: Path) -> 
             conn.execute(
                 """
                 INSERT INTO session_details (
-                    result_id, question_id, score_awarded, deduction_reason, knowledge_id
-                ) VALUES (?, 'Q9', 0, 'missing', 'K9')
+                    result_id, question_id, score_awarded, deduction_reason, knowledge_ids
+                ) VALUES (?, 'Q9', 0, 'missing', '["K9"]')
                 """,
                 (seed.result_id,),
             ).lastrowid

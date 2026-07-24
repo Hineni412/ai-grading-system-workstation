@@ -425,11 +425,11 @@ def _insert_result(
     conn.executemany(
         """
         INSERT INTO session_details (
-            result_id, question_id, score_awarded, deduction_reason, knowledge_id, knowledge_ids
-        ) VALUES (?, ?, ?, '需要巩固', ?, ?)
+            result_id, question_id, score_awarded, deduction_reason, knowledge_ids
+        ) VALUES (?, ?, ?, '需要巩固', ?)
         """,
         [
-            (result_id, question_id, score, knowledge_id, json.dumps([knowledge_id]))
+            (result_id, question_id, score, json.dumps([knowledge_id]))
             for question_id, score, knowledge_id in details
         ],
     )

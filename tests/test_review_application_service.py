@@ -119,9 +119,9 @@ def _seed_large_review_class(
             conn.execute(
                 """
                 INSERT INTO session_details (
-                    result_id, question_id, score_awarded, deduction_reason, knowledge_id,
+                    result_id, question_id, score_awarded, deduction_reason, knowledge_ids,
                     error_category, error_summary, confidence_score
-                ) VALUES (?, 'Q1', 8, ?, 'K1', ?, ?, ?)
+                ) VALUES (?, 'Q1', 8, ?, '["K1"]', ?, ?, ?)
                 """,
                 (result_id, deduction_reason, error_category, error_summary, confidence),
             )
@@ -129,9 +129,9 @@ def _seed_large_review_class(
             conn.execute(
                 """
                 INSERT INTO session_details (
-                    result_id, question_id, score_awarded, deduction_reason, knowledge_id,
+                    result_id, question_id, score_awarded, deduction_reason, knowledge_ids,
                     error_category, error_summary, confidence_score
-                ) VALUES (?, ?, 3, 'calculation error', 'K2', 'ordinary', 'summary', 95)
+                ) VALUES (?, ?, 3, 'calculation error', '["K2"]', 'ordinary', 'summary', 95)
                 """,
                 (result_id, second_question_id),
             )
@@ -213,8 +213,8 @@ def _seed_review_confirmation(
                     """
                     INSERT INTO session_details (
                         result_id, question_id, score_awarded, deduction_reason,
-                        knowledge_id, error_category, error_summary
-                    ) VALUES (?, 'Q1', ?, 'original reason', 'K1', 'original category', 'original summary')
+                        knowledge_ids, error_category, error_summary
+                    ) VALUES (?, 'Q1', ?, 'original reason', '["K1"]', 'original category', 'original summary')
                     """,
                     (result_id, score),
                 ).lastrowid

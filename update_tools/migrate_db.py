@@ -91,6 +91,7 @@ _APPROVED_TABLE_REBUILDS = {
     "005_add_status_constraints": frozenset(
         {"grading_sessions", "exam_papers", "answer_regions"}
     ),
+    "006_knowledge_ids_primary": frozenset({"session_details"}),
 }
 
 # "duplicate column" 错误消息模式
