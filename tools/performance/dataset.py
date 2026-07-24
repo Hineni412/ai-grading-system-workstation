@@ -424,9 +424,9 @@ def _populate_grading_database(db_path: Path, scale: ScaleDefinition) -> None:
         _insert_batches(
             conn,
             "INSERT INTO session_details ("
-            "id, result_id, question_id, score_awarded, deduction_reason, knowledge_id, "
+            "id, result_id, question_id, score_awarded, deduction_reason, "
             "knowledge_ids, error_category, error_summary, confidence_score, secondary_errors_json"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             _detail_rows(scale, result_count),
         )
 
@@ -508,7 +508,6 @@ def _detail_rows(
             question_id,
             score,
             "generated-deduction",
-            knowledge_label,
             json.dumps([knowledge_label]),
             "generated-error",
             "generated-summary",

@@ -210,8 +210,8 @@ def test_hard_delete_rolls_back_p3_05_and_p3_06_data_together(
             """
             INSERT INTO session_details (
                 result_id, question_id, score_awarded,
-                deduction_reason, knowledge_id
-            ) VALUES (?, 'Q1', 8, '', 'K1')
+                deduction_reason, knowledge_ids
+            ) VALUES (?, 'Q1', 8, '', '["K1"]')
             """,
             (result_id,),
         )

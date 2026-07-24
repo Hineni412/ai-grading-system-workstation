@@ -341,8 +341,8 @@ def _seed_student_history(db: DBManager, student_id: int) -> None:
         conn.execute(
             """
             INSERT INTO session_details (
-                result_id, question_id, score_awarded, knowledge_id
-            ) VALUES (?, 'Q1', 10, '')
+                result_id, question_id, score_awarded, knowledge_ids
+            ) VALUES (?, 'Q1', 10, '["UNKNOWN"]')
             """,
             (result_id,),
         )

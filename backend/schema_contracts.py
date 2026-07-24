@@ -28,10 +28,10 @@ def _table_names(connection: sqlite3.Connection) -> list[str]:
 def _column_snapshot(
     connection: sqlite3.Connection,
     table_name: str,
-) -> dict[str, tuple[str, int, str, int]]:
-    columns: dict[str, tuple[str, int, str, int]] = {}
+) -> dict[str, tuple[str, int, str, int, int]]:
+    columns: dict[str, tuple[str, int, str, int, int]] = {}
     for row in connection.execute(
-        f'PRAGMA table_info("{table_name}")'
+        f'PRAGMA table_xinfo("{table_name}")'
     ).fetchall():
         column_name = str(row[1])
         notnull = int(row[3])
@@ -44,6 +44,7 @@ def _column_snapshot(
             notnull,
             _normalized_sql(row[4]),
             int(row[5]),
+            int(row[6]),
         )
     return columns
 

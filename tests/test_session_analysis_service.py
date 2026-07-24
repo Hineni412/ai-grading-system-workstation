@@ -46,8 +46,8 @@ def _insert_result(
     conn.executemany(
         """
         INSERT INTO session_details (
-            id, result_id, question_id, score_awarded, deduction_reason, knowledge_id
-        ) VALUES (?, ?, ?, ?, ?, 'K')
+            id, result_id, question_id, score_awarded, deduction_reason, knowledge_ids
+        ) VALUES (?, ?, ?, ?, ?, '["K"]')
         """,
         [
             (detail_id, result_id, qid, score, reason)

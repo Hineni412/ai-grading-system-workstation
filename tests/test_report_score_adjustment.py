@@ -59,10 +59,10 @@ def _seed_session(tmp_path: Path) -> tuple[DBManager, Path]:
         conn.execute(
             """
             INSERT INTO session_details (
-                id, result_id, question_id, score_awarded, deduction_reason, knowledge_id
+                id, result_id, question_id, score_awarded, deduction_reason, knowledge_ids
             ) VALUES
-                (1, 1, 'Q1', 2, '过程不完整', 'K1'),
-                (2, 1, 'Q2', 3, '计算错误', 'K2')
+                (1, 1, 'Q1', 2, '过程不完整', '["K1"]'),
+                (2, 1, 'Q2', 3, '计算错误', '["K2"]')
             """
         )
         conn.commit()
@@ -121,8 +121,8 @@ def test_batch_score_adjustment_ignores_unrelated_unmapped_detail(tmp_path: Path
         conn.execute(
             """
             INSERT INTO session_details (
-                id, result_id, question_id, score_awarded, deduction_reason, knowledge_id
-            ) VALUES (3, 1, 'UNKNOWN', 0, NULL, 'UNKNOWN')
+                id, result_id, question_id, score_awarded, deduction_reason, knowledge_ids
+            ) VALUES (3, 1, 'UNKNOWN', 0, NULL, '["UNKNOWN"]')
             """
         )
         conn.commit()

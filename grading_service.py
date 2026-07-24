@@ -76,7 +76,7 @@ def _detail_from_row(row: dict[str, Any]) -> QuestionGradingDetail:
         question_id=row["question_id"],
         score_awarded=row["score_awarded"],
         deduction_reason=row.get("deduction_reason"),
-        knowledge_id=row.get("knowledge_id") or "",
+        knowledge_id=knowledge_ids[0] if knowledge_ids else "",
         error_category=row.get("error_category"),
         error_summary=row.get("error_summary"),
         confidence_score=row.get("confidence_score"),
