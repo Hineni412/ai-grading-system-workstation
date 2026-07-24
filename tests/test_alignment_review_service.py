@@ -55,7 +55,7 @@ def review_system(tmp_path: Path):
             INSERT INTO exam_papers (
                 id, session_id, front_image, back_image, student_id,
                 match_status, processing_status
-            ) VALUES (1401, 14, '', '', 12, 'matched', 'completed')
+            ) VALUES (1401, 14, '', '', 12, 'matched', 'graded')
             """
         )
         conn.execute(
