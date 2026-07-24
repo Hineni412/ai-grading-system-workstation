@@ -21,10 +21,20 @@ from backend.ops.jobs import (
 from backend.ops.journal import OpsOperationJournal
 from backend.ops.plan_store import OpsPlanStore
 from backend.ops.write_service import OpsWriteService
+from backend.schema_migrations import ensure_schema_current
 
 
-def _create_database(path: Path, value: str) -> None:
+def _create_database(
+    path: Path,
+    value: str,
+    *,
+    migration_current: bool = False,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if migration_current:
+        target = "grading" if path.name == "grading_system.db" else "question_bank"
+        ensure_schema_current(target, path)
+        return
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE sample (value TEXT)")
         connection.execute("INSERT INTO sample(value) VALUES (?)", (value,))
@@ -38,7 +48,11 @@ def _create_database(path: Path, value: str) -> None:
         connection.commit()
 
 
-def _paths(tmp_path: Path) -> SimpleNamespace:
+def _paths(
+    tmp_path: Path,
+    *,
+    migration_current: bool = False,
+) -> SimpleNamespace:
     project_root = tmp_path / "project"
     data_root = project_root / "user_data"
     paths = SimpleNamespace(
@@ -59,8 +73,16 @@ def _paths(tmp_path: Path) -> SimpleNamespace:
         logs_dir=project_root / "logs",
         ops_state_dir=tmp_path / "local" / "ops",
     )
-    _create_database(paths.db_path, "grading")
-    _create_database(paths.qb_db_path, "question-bank")
+    _create_database(
+        paths.db_path,
+        "grading",
+        migration_current=migration_current,
+    )
+    _create_database(
+        paths.qb_db_path,
+        "question-bank",
+        migration_current=migration_current,
+    )
     paths.config_dir.mkdir(parents=True)
     (paths.config_dir / "safe.json").write_text('{"ok": true}', encoding="utf-8")
     (paths.config_dir / "api_profiles.json").write_text('{"api_key": "secret"}', encoding="utf-8")
@@ -264,7 +286,7 @@ def test_ops_transfer_export_allows_job_store_updates_inside_data_root(
     from backend.jobs.manager import JobManager
     from backend.jobs.store import JobStore
 
-    paths = _paths(tmp_path)
+    paths = _paths(tmp_path, migration_current=True)
     manager = JobManager(
         JobStore(paths.db_path),
         max_workers=1,
