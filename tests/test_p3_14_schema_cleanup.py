@@ -211,6 +211,54 @@ def test_007_rejects_invalid_list_without_partial_rebuild(
         ).fetchone() == (0,)
 
 
+def test_007_rejects_unexpected_schema_column_without_data_loss(
+    tmp_path: Path,
+) -> None:
+    database = _bootstrap_through_006(tmp_path)
+    _seed_details(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "ALTER TABLE session_details ADD COLUMN unexpected_payload TEXT"
+        )
+        connection.execute(
+            """
+            UPDATE session_details
+            SET unexpected_payload = 'valuable'
+            WHERE id = 6
+            """
+        )
+
+    report = run_migrations(
+        "grading",
+        db_path=database,
+        migrations_dir=GRADING_MIGRATIONS,
+    )
+
+    assert report.error is not None
+    with sqlite3.connect(database) as connection:
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_xinfo(session_details)")
+        }
+        assert "knowledge_id" in columns
+        assert "unexpected_payload" in columns
+        assert connection.execute(
+            """
+            SELECT knowledge_ids, unexpected_payload
+            FROM session_details
+            WHERE id = 6
+            """
+        ).fetchone() == ('["K_PRIMARY", "K_SECONDARY"]', "valuable")
+        assert connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM schema_migrations
+            WHERE migration_name = '007_drop_legacy_knowledge_id'
+              AND success = 1
+            """
+        ).fetchone() == (0,)
+
+
 def test_007_is_idempotent_and_keeps_sync_state_columns(
     tmp_path: Path,
 ) -> None:
