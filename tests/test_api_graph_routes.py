@@ -193,9 +193,9 @@ def graph_service(tmp_path: Path) -> CountingDiagnosisService:
             """
             INSERT INTO session_details (
                 result_id, question_id, score_awarded, deduction_reason,
-                knowledge_id, knowledge_ids, error_category, error_summary,
+                knowledge_ids, error_category, error_summary,
                 secondary_errors_json
-            ) VALUES (?, 'Q1', ?, ?, 'UNKNOWN', '[]', ?, ?, ?)
+            ) VALUES (?, 'Q1', ?, ?, '["UNKNOWN"]', ?, ?, ?)
             """,
             [
                 (

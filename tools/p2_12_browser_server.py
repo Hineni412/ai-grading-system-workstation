@@ -112,8 +112,8 @@ def _seed_business_data(paths) -> tuple[int, int]:
             """
             INSERT INTO session_details (
                 result_id, question_id, score_awarded, deduction_reason,
-                knowledge_id, knowledge_ids, error_category, error_summary
-            ) VALUES (?, 'Q1', 8, '计算步骤需补充', 'K1', '["K1"]', 'calculation', '符号检查')
+                knowledge_ids, error_category, error_summary
+            ) VALUES (?, 'Q1', 8, '计算步骤需补充', '["K1"]', 'calculation', '符号检查')
             """,
             (result_id,),
         )
