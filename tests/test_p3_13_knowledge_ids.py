@@ -12,6 +12,7 @@ from backend.repositories import SQLiteConnectionFactory
 from backend.repositories.reporting import ReportRepositoryGateway
 from backend.repositories.results import ResultRepositoryGateway
 from backend.schema_contracts import schema_signature
+from db_manager import DBManager
 from grading_service import _detail_from_row
 from update_tools.migrate_db import run_migrations
 
@@ -403,3 +404,35 @@ def test_006_backfills_missing_historical_secondary_errors_column(
             ORDER BY id
             """
         ).fetchall() == [("[]",), ("[]",)]
+
+
+def test_diagnosis_prefers_stored_list_when_rubric_value_conflicts(
+    tmp_path: Path,
+) -> None:
+    manager = DBManager(tmp_path / "unused.db")
+    manager._load_rubric_maps_for_session = lambda _session_id: {  # type: ignore[method-assign]
+        "knowledge": {"Q1": ["K_RUBRIC"]},
+        "score": {"Q1": 10},
+        "label": {},
+    }
+    row = {
+        "session_id": 1,
+        "student_id": 2,
+        "question_id": "Q1",
+        "score_awarded": 5,
+        "deduction_reason": "reason",
+        "knowledge_id": "K_STORED",
+        "knowledge_ids": ["K_STORED", "K_SECONDARY"],
+    }
+
+    weak_points = manager._build_weak_point_rows([dict(row)])
+    enriched = manager._enrich_detail_rows(
+        [dict(row)],
+        knowledge_id="K_SECONDARY",
+    )
+
+    assert {item["knowledge_id"] for item in weak_points} == {
+        "K_STORED",
+        "K_SECONDARY",
+    }
+    assert len(enriched) == 1
