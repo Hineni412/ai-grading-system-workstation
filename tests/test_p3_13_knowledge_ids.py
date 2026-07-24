@@ -26,7 +26,7 @@ def _bootstrap_through_005(tmp_path: Path) -> Path:
     migrations = tmp_path / "pre-006-migrations"
     migrations.mkdir()
     for source in sorted(GRADING_MIGRATIONS.glob("*.sql")):
-        if source.name.startswith("006_"):
+        if int(source.name.split("_", 1)[0]) > 5:
             continue
         shutil.copy2(source, migrations / source.name)
     report = run_migrations(
@@ -36,6 +36,15 @@ def _bootstrap_through_005(tmp_path: Path) -> Path:
     )
     assert report.error is None, report.error
     return database
+
+
+def _migrations_through_006(tmp_path: Path) -> Path:
+    migrations = tmp_path / "through-006-migrations"
+    migrations.mkdir(exist_ok=True)
+    for source in sorted(GRADING_MIGRATIONS.glob("*.sql")):
+        if int(source.name.split("_", 1)[0]) <= 6:
+            shutil.copy2(source, migrations / source.name)
+    return migrations
 
 
 def _seed_result_details(database: Path) -> None:
@@ -101,7 +110,7 @@ def test_006_backfills_lists_and_makes_legacy_value_generated(
     report = run_migrations(
         "grading",
         db_path=database,
-        migrations_dir=GRADING_MIGRATIONS,
+        migrations_dir=_migrations_through_006(tmp_path),
     )
 
     assert report.error is None, report.error
@@ -161,7 +170,7 @@ def test_006_rejects_invalid_items_in_new_list(
     report = run_migrations(
         "grading",
         db_path=database,
-        migrations_dir=GRADING_MIGRATIONS,
+        migrations_dir=_migrations_through_006(tmp_path),
     )
     assert report.error is None, report.error
 
@@ -185,7 +194,7 @@ def test_result_repository_writes_only_list_truth_and_derives_legacy_value(
     report = run_migrations(
         "grading",
         db_path=database,
-        migrations_dir=GRADING_MIGRATIONS,
+        migrations_dir=_migrations_through_006(tmp_path),
     )
     assert report.error is None, report.error
     repository = ResultRepositoryGateway(SQLiteConnectionFactory(database))
@@ -232,7 +241,7 @@ def test_schema_signature_includes_generated_legacy_column(
     report = run_migrations(
         "grading",
         db_path=database,
-        migrations_dir=GRADING_MIGRATIONS,
+        migrations_dir=_migrations_through_006(tmp_path),
     )
     assert report.error is None, report.error
 
@@ -249,7 +258,7 @@ def test_report_snapshot_reads_list_truth_and_derives_legacy_value(
     report = run_migrations(
         "grading",
         db_path=database,
-        migrations_dir=GRADING_MIGRATIONS,
+        migrations_dir=_migrations_through_006(tmp_path),
     )
     assert report.error is None, report.error
 
@@ -307,7 +316,7 @@ def test_006_rejects_invalid_historical_rows_without_partial_change(
     report = run_migrations(
         "grading",
         db_path=database,
-        migrations_dir=GRADING_MIGRATIONS,
+        migrations_dir=_migrations_through_006(tmp_path),
     )
 
     assert report.error is not None
@@ -345,12 +354,12 @@ def test_006_preserves_sequence_indexes_and_is_idempotent(
     first = run_migrations(
         "grading",
         db_path=database,
-        migrations_dir=GRADING_MIGRATIONS,
+        migrations_dir=_migrations_through_006(tmp_path),
     )
     second = run_migrations(
         "grading",
         db_path=database,
-        migrations_dir=GRADING_MIGRATIONS,
+        migrations_dir=_migrations_through_006(tmp_path),
     )
 
     assert first.error is None, first.error
@@ -392,7 +401,7 @@ def test_006_backfills_missing_historical_secondary_errors_column(
     report = run_migrations(
         "grading",
         db_path=database,
-        migrations_dir=GRADING_MIGRATIONS,
+        migrations_dir=_migrations_through_006(tmp_path),
     )
 
     assert report.error is None, report.error
