@@ -12,7 +12,7 @@
 | Phase 0 | 地基与防护网 | `merged` | 5 | 0 | 工程防护网与冻结基线 |
 | Phase 1 | API、任务、LLM、数据访问 | `merged` | 21 | 0 | 组合回归、完整冒烟、正式验收、模型请求超时与真实两库指纹门槛均已通过 |
 | Phase 2 | Vue SPA 与 Streamlit 切换 | `merged` | 22 | 0 | M2-01 至 M2-05 全部通过 PR 合入主线；P2-22 完成旧 Streamlit 日常 UI 退役、完整门槛、独立复审和 formal 用户验收，Issue #67 的 P3 后小批量真实模型复验不改变本阶段完成结论 |
-| Phase 3 | 后端拆分、Schema 收敛、瘦身 | `in_progress` | 13 | 6 | P3-01 至 P3-13 已通过 M3-01 至 M3-06 合入最新主线；P3-14 已作为 M3-07 单包高风险里程碑启动，后续删除和 Schema 包仍按各自高风险门槛执行 |
+| Phase 3 | 后端拆分、Schema 收敛、瘦身 | `in_progress` | 13 | 6 | P3-01 至 P3-13 已通过 M3-01 至 M3-06 合入最新主线；P3-14 已进入 M3-07 integration 并通过高风险完整门槛，等待 PR 合入主线后才计为第 14 个 merged 包 |
 | Phase 4 | 图谱 2.0 与训练闭环 | `planned` | 0 | 12 | 新旧口径对照、闭环 E2E、评估达标 |
 | Phase 5 | 教师命题训练 | `planned` | 0 | 13 | 实验门槛通过后才冻结 Schema |
 | Phase 6 | 班主任学生画像 | `deferred` | 0 | 0 | 用户重启并确认合规与数据治理边界 |
@@ -71,7 +71,7 @@
 | P3-11 | `merged` | 已随 M3-04 通过 PR #82 合入主线，主线合并提交为 `c722ede952be5ae399eef5f6d3eeb11b759c1bca`；migration 已成为两库 Schema 唯一权威，残缺/漂移/未来版本明确拒绝且不再 runtime DDL 修补，规定复审、隔离副本预演、完整门槛 2233 passed / 2 skipped 和真实两库指纹守卫均通过 |
 | P3-12 | `merged` | 已通过 PR #84 合入主线，主线合并提交为 `9c7883513025005d41e2dffff663ed618997cfef`；状态列约束、应用层同源验证、隔离副本迁移、完整门槛 2257 passed / 2 skipped、双路限定终审和真实两库指纹守卫均通过 |
 | P3-13 | `merged` | 已通过 PR #86 合入主线，主线合并提交为 `33a7187c04e94731ffe02c2b69587424d586bca4`；知识点列表成为唯一写入与计算依据，旧单值列改为数据库生成的只读兼容投影；历史副本迁移预演、完整门槛 2271 passed / 2 skipped、双路限定终审和真实两库指纹守卫均通过 |
-| P3-14 | `ready` | 用户于 2026-07-24 明确授权启动并确认 P3-13 兼容期结束；M3-07 放行旧 `session_details.knowledge_id` 列清理、题库同步四列收益测量、最小 forward migration 和隔离副本预演，真实库 migration 与真实数据修改仍未获授权 |
+| P3-14 | `milestone_integrated` | 已进入 M3-07 integration：migration 007 删除旧生成列并在重建前拒绝结构漂移；题库同步四列经容量/查询测量后决定继续保留在 `grading_sessions`。4 类隔离副本预演、双路初审与一次统一修复、限定终审、最终完整门槛 2276 passed / 2 skipped、快速冒烟和真实两库 SHA-256 守卫通过；未执行真实库 migration |
 | P3-15 至 P3-19 | `planned` | 等待各自前置包和高风险门槛放行 |
 | P4-01 至 P4-12 | `planned` | Phase 3 数据边界稳定后放行 |
 | P5-01 至 P5-13 | `planned` | 先实验与设计门，再进入正式实现 |
@@ -139,7 +139,7 @@ M2-05 是 P2-22 单包最高风险旧界面退役里程碑，从 P2-21 已通过
 | M3-04 | P3-11 | `merged` | `3510dc1ea5706db1d73211ef6f73b8a058edfd94` | `codex/integration-m3-04` | `0aab4e6601bd8229fd2b7a9863ed51512395a566` | 已通过 PR #82 合入主线，主线合并提交为 `c722ede952be5ae399eef5f6d3eeb11b759c1bca`；文档治理、520 个第一方 Python 文件编译、完整门槛 2233 passed / 2 skipped、两库副本初始化幂等、规定复审、交接核验和真实两库指纹守卫通过 |
 | M3-05 | P3-12 | `merged` | `86f10c67d47b41ad79eb70e1580f8eb85a6e0b79` | `codex/integration-m3-05` | `fd934397854d16235117d5374d35f0863a0f30a6` | 已通过 PR #84 合入主线，主线合并提交为 `9c7883513025005d41e2dffff663ed618997cfef`；完整门槛 2257 passed / 2 skipped、隔离副本 migration 005、快速冒烟、交接校验、双路限定终审与真实两库 SHA-256 守卫通过 |
 | M3-06 | P3-13 | `merged` | `8cc462623ac840286ae3dc8a7534dc6bc504f87f` | `codex/integration-m3-06` | `5fa25a7df7b46f61737d1f7d8bc3269425b7c44c` | 已通过 PR #86 合入主线，主线合并提交为 `33a7187c04e94731ffe02c2b69587424d586bca4`；完整门槛 2271 passed / 2 skipped、历史副本 migration 006、数据库副本幂等与完整性、快速冒烟、交接校验、双路限定终审与真实两库 SHA-256 守卫通过 |
-| M3-07 | P3-14 | `in_progress` | `fd9edcab4acbcd2b270f9da2004bca7239cf4540` | `codex/integration-m3-07` | `fd9edcab4acbcd2b270f9da2004bca7239cf4540` | P3-14 按删列高风险单包启动；当前先测量旧列调用和题库同步四列的表宽、查询及写入收益，冻结保留/迁移决定与恢复边界，再只在临时库和隔离副本实施，不执行真实库 migration |
+| M3-07 | P3-14 | `in_progress` | `fd9edcab4acbcd2b270f9da2004bca7239cf4540` | `codex/integration-m3-07` | `0394b46170f0acf7f1edc5b234fd7cec7ab64684` | P3-14 已逐包合入并完成门槛：完整测试首次暴露 2 处随删列过时的测试夹具，低风险同步后定向通过；第二轮仅出现 1 次修改前既有并发时序波动，单项连续 10 次通过；最终完整门槛 2276 passed / 2 skipped，快速冒烟、迁移副本完整性和真实两库指纹守卫通过。当前可 push 并创建 M3-07 PR，不执行真实库 migration |
 
 P2-20 的不可变可信领取基线是 `c9662850bbd75a2ba062c0011a6762241818f4d8`，用于该包所有 `handoff_status.py --expected-handoff-base` 核验。该包领取后为解除现场阻塞，同步了已经独立复审并逐项进入 M2-03 的 Issue #60—#65，因此 M2-03 当前已验证且作为最终合入目标的 SHA 已前进到 `6ed4cd64ccab6aa2c51b602c7413c99ecf8d2781`。两者职责不同：不得把计划内冻结的领取基线改成后者，也不得用前者替代 integration 当前状态。
 
@@ -196,4 +196,4 @@ M2-02 是 Python 完整测试并行试点的第二个里程碑：批次末优先
 
 ## 下一动作
 
-M3-07 已声明为 P3-14 单包高风险里程碑，起始主线和可信领取 SHA 均为 `fd9edcab4acbcd2b270f9da2004bca7239cf4540`。当前动作是在 `codex/p3-14-schema-cleanup` 完成旧 `session_details.knowledge_id` 调用为零的静态与运行证据、题库同步四列收益测量、保留/迁移 ADR、最小 forward migration 和恢复预演计划；实现和写验证只允许使用临时库与隔离副本，不执行真实库 migration，不修改真实字段值。P2-20 剩余两次真实调用继续冻结，Issue #67 的后续复验仍须用户重新确认网络、考试副本与费用上限。
+M3-07 的 P3-14 已在 `codex/integration-m3-07` 完成逐包合入、完整门槛和真实数据守卫；下一动作是推送该 integration 分支、创建并合并单包 PR，再同步 `origin/main`、本地 `main` 和活动 worktree，将 P3-14/M3-07 改记为 `merged`。整个过程仍不执行真实库 migration；P2-20 剩余两次真实调用继续冻结，Issue #67 的后续复验仍须用户重新确认网络、考试副本与费用上限。
