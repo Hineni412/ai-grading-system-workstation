@@ -72,7 +72,7 @@
 | P3-12 | `merged` | 已通过 PR #84 合入主线，主线合并提交为 `9c7883513025005d41e2dffff663ed618997cfef`；状态列约束、应用层同源验证、隔离副本迁移、完整门槛 2257 passed / 2 skipped、双路限定终审和真实两库指纹守卫均通过 |
 | P3-13 | `merged` | 已通过 PR #86 合入主线，主线合并提交为 `33a7187c04e94731ffe02c2b69587424d586bca4`；知识点列表成为唯一写入与计算依据，旧单值列改为数据库生成的只读兼容投影；历史副本迁移预演、完整门槛 2271 passed / 2 skipped、双路限定终审和真实两库指纹守卫均通过 |
 | P3-14 | `merged` | 已通过 PR #88 合入主线，主线合并提交为 `ea9d9e820f2637881cd36aa230c95bbbfc6137ce`；migration 007 删除旧生成列并在重建前拒绝结构漂移，题库同步四列经容量/查询测量后决定继续保留在 `grading_sessions`。4 类隔离副本预演、双路初审与一次统一修复、限定终审、最终完整门槛 2276 passed / 2 skipped、快速冒烟和真实两库 SHA-256 守卫通过；未执行真实库 migration |
-| P3-15 | `in_progress` | 已从最新主线 `24be1c3e264f50b0e97613aacf8489ca44ecbef5` 领取；冻结边界为删除断链的 objective admission UI/runner 及其独占 Streamlit 依赖，保留活动 `objective_crop_calibration.py` 和客观题识别链 |
+| P3-15 | `verified` | 已从最新主线 `24be1c3e264f50b0e97613aacf8489ca44ecbef5` 领取；断链的 objective admission UI/runner 及其独占 Streamlit 依赖已删除，活动 `objective_crop_calibration.py` 和客观题识别链保留。退役守卫 RED→GREEN、42 项受影响回归、快速冒烟及真实两库指纹守卫通过，等待双路独立复审 |
 | P3-16 至 P3-19 | `planned` | 等待各自前置包和高风险门槛放行 |
 | P4-01 至 P4-12 | `planned` | Phase 3 数据边界稳定后放行 |
 | P5-01 至 P5-13 | `planned` | 先实验与设计门，再进入正式实现 |
@@ -198,4 +198,4 @@ M2-02 是 Python 完整测试并行试点的第二个里程碑：批次末优先
 
 ## 下一动作
 
-P3-15 已在独立安全 worktree 从最新主线领取，集中调查、即时计划、源码状态、`user_data/` 变更与 Windows reparse point 核验均已完成；下一动作是按 RED→GREEN 删除断链向导/runner 和独占 Streamlit 依赖，同时以活动 `crop_choice_region()` 行为测试保护裁剪校准链。P2-20 剩余两次真实调用继续冻结，Issue #67 的后续复验仍须用户重新确认网络、考试副本与费用上限。
+P3-15 已完成断链向导/runner 与独占 Streamlit 依赖删除，42 项受影响回归、快速冒烟和真实数据守卫通过；下一动作是冻结功能候选并在同一 SHA 上并行完成需求符合性与代码质量复审。P2-20 剩余两次真实调用继续冻结，Issue #67 的后续复验仍须用户重新确认网络、考试副本与费用上限。
