@@ -106,7 +106,7 @@ def _assert_generated_content(dataset: BenchmarkDataset) -> None:
             "SELECT session_name, rubric_path, answer_key_path FROM grading_sessions ORDER BY id"
         ).fetchall()
         details = conn.execute(
-            "SELECT knowledge_id, knowledge_ids FROM session_details ORDER BY id"
+            "SELECT knowledge_ids FROM session_details ORDER BY id"
         ).fetchall()
 
     assert students
@@ -119,9 +119,9 @@ def _assert_generated_content(dataset: BenchmarkDataset) -> None:
         for name, rubric, answer in sessions
     )
     assert all(
-        knowledge_id.startswith("knowledge-")
+        str(json.loads(knowledge_ids)[0]).startswith("knowledge-")
         and knowledge_ids.startswith('["knowledge-')
-        for knowledge_id, knowledge_ids in details
+        for (knowledge_ids,) in details
     )
 
     with sqlite3.connect(dataset.paths.qb_db_path) as conn:

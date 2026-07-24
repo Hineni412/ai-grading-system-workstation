@@ -39,7 +39,7 @@ def test_schema_gate_bootstraps_empty_grading_database(tmp_path: Path) -> None:
         migrations_dir=PROJECT_ROOT / "migrations" / "grading",
     )
 
-    assert result.current_version == "006_knowledge_ids_primary"
+    assert result.current_version == "007_drop_legacy_knowledge_id"
     assert result.applied == (
         "000_baseline_schema",
         "001_init_migration_tracking",
@@ -48,6 +48,7 @@ def test_schema_gate_bootstraps_empty_grading_database(tmp_path: Path) -> None:
         "004_add_jobs_result_json",
         "005_add_status_constraints",
         "006_knowledge_ids_primary",
+        "007_drop_legacy_knowledge_id",
     )
     with sqlite3.connect(database) as connection:
         tables = {
@@ -212,7 +213,7 @@ def test_schema_gate_serializes_concurrent_bootstrap(tmp_path: Path) -> None:
         )
 
     assert {result.current_version for result in results} == {
-        "006_knowledge_ids_primary"
+        "007_drop_legacy_knowledge_id"
     }
     with sqlite3.connect(database) as connection:
         rows = connection.execute(
@@ -232,8 +233,9 @@ def test_schema_gate_serializes_concurrent_bootstrap(tmp_path: Path) -> None:
         ("004_add_jobs_result_json", 1),
         ("005_add_status_constraints", 1),
         ("006_knowledge_ids_primary", 1),
+        ("007_drop_legacy_knowledge_id", 1),
     ]
-    assert len(list((tmp_path / "backups").glob("*.db"))) == 7
+    assert len(list((tmp_path / "backups").glob("*.db"))) == 8
 
 
 def test_migration_backup_includes_committed_wal_content(tmp_path: Path) -> None:
@@ -295,6 +297,7 @@ def test_db_manager_initialize_uses_current_grading_migrations(
         "004_add_jobs_result_json",
         "005_add_status_constraints",
         "006_knowledge_ids_primary",
+        "007_drop_legacy_knowledge_id",
     ]
 
 
@@ -317,7 +320,7 @@ def test_grading_store_initializers_use_current_migrations(
             LIMIT 1
             """
         ).fetchone()
-    assert current == ("006_knowledge_ids_primary",)
+    assert current == ("007_drop_legacy_knowledge_id",)
 
 
 def test_question_bank_initializer_uses_current_migrations(
@@ -359,7 +362,7 @@ def test_application_schema_gate_checks_both_databases(tmp_path: Path) -> None:
 
     results = ensure_application_schema(paths)
 
-    assert results["grading"].current_version == "006_knowledge_ids_primary"
+    assert results["grading"].current_version == "007_drop_legacy_knowledge_id"
     assert (
         results["question_bank"].current_version
         == "008_add_unified_skill_catalog"
