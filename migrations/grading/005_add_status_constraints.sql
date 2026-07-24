@@ -14,6 +14,16 @@ ALTER TABLE grading_sessions ADD COLUMN question_bank_sync_details_json
 ALTER TABLE grading_sessions ADD COLUMN question_bank_sync_error TEXT;
 ALTER TABLE grading_sessions ADD COLUMN question_bank_sync_updated_at TEXT;
 
+CREATE TEMP TABLE p3_12_sequence_guard (
+    name TEXT PRIMARY KEY,
+    seq INTEGER NOT NULL
+);
+
+INSERT INTO p3_12_sequence_guard (name, seq)
+SELECT name, seq
+FROM sqlite_sequence
+WHERE name IN ('grading_sessions', 'exam_papers', 'answer_regions');
+
 CREATE TABLE grading_sessions_p3_12_new (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_name TEXT NOT NULL,
@@ -123,6 +133,29 @@ DROP TABLE grading_sessions;
 ALTER TABLE grading_sessions_p3_12_new RENAME TO grading_sessions;
 ALTER TABLE exam_papers_p3_12_new RENAME TO exam_papers;
 ALTER TABLE answer_regions_p3_12_new RENAME TO answer_regions;
+
+UPDATE sqlite_sequence
+SET seq = MAX(
+    seq,
+    COALESCE(
+        (
+            SELECT preserved.seq
+            FROM p3_12_sequence_guard AS preserved
+            WHERE preserved.name = sqlite_sequence.name
+        ),
+        seq
+    )
+)
+WHERE name IN ('grading_sessions', 'exam_papers', 'answer_regions');
+
+INSERT INTO sqlite_sequence (name, seq)
+SELECT preserved.name, preserved.seq
+FROM p3_12_sequence_guard AS preserved
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM sqlite_sequence AS current
+    WHERE current.name = preserved.name
+);
 
 CREATE INDEX idx_grading_sessions_active
 ON grading_sessions(is_deleted, status, updated_at);

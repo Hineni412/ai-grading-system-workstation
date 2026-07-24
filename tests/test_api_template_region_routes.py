@@ -653,6 +653,36 @@ def test_answer_region_commit_route_commits_regions_and_snapshot(tmp_path) -> No
     assert saved[0]["is_confirmed"] == 1
 
 
+def test_answer_region_commit_route_rejects_illegal_mapping_status(
+    tmp_path,
+) -> None:
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+    front, back = _template_files(tmp_path)
+    _bind_template(client, session_id, front, back)
+    invalid_region = _region()
+    invalid_region["mapping_status"] = "confirmed"
+
+    response = client.post(
+        f"/api/sessions/{session_id}/regions/commit",
+        json={
+            "regions": [invalid_region],
+            "image_sizes": {
+                "front": [1000, 1000],
+                "back": [1000, 1000],
+            },
+            "template_matches": True,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == (
+        "answer_region_status_invalid"
+    )
+    assert db.list_answer_regions(session_id) == []
+    assert str(tmp_path) not in response.text
+
+
 def test_pending_snapshot_can_be_retried_without_recommitting_regions(
     tmp_path, monkeypatch
 ) -> None:

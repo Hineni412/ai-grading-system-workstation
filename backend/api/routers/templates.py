@@ -658,6 +658,12 @@ def commit_answer_regions(
             template_matches=request.template_matches,
             expected_template_fingerprint=request.expected_template_fingerprint,
         )
+    except ValueError as exc:
+        raise ApiError(
+            400,
+            "answer_region_status_invalid",
+            str(exc),
+        ) from None
     except TimeoutError:
         raise _region_lock_timeout_error(session_id) from None
     region_count = len(db.list_answer_regions(int(session_id))) if result.committed else 0

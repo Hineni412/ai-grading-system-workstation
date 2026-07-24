@@ -366,18 +366,22 @@ class RegionRepository:
     ) -> None:
         for row in rows:
             mapped_question_id = row.get("mapped_question_id")
-            mapping_status = row.get("mapping_status")
-            if mapping_status not in {"auto", "manual", "unbound"}:
+            raw_mapping_status = row.get("mapping_status")
+            if (
+                raw_mapping_status is None
+                or not str(raw_mapping_status).strip()
+            ):
                 mapping_status = (
                     "manual"
                     if mapped_question_id is not None
                     and str(mapped_question_id).strip()
                     else "unbound"
                 )
-            mapping_status = validate_status(
-                "answer_regions.mapping_status",
-                mapping_status,
-            )
+            else:
+                mapping_status = validate_status(
+                    "answer_regions.mapping_status",
+                    str(raw_mapping_status),
+                )
             self.session.connection.execute(
                 """
                 UPDATE answer_regions
