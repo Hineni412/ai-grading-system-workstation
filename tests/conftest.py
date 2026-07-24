@@ -18,6 +18,9 @@ def pytest_configure() -> None:
     global _ORIGINAL_PATH_MANAGER
     global _TEMPORARY_ROOT
 
+    _ORIGINAL_PATH_MANAGER = path_manager_module._instance
+    _ORIGINAL_DATA_DIR = os.environ.get("AI_GRADING_DATA_DIR")
+
     _TEMPORARY_ROOT = tempfile.TemporaryDirectory(
         prefix="ai_grading_pytest_",
         ignore_cleanup_errors=True,
@@ -30,8 +33,6 @@ def pytest_configure() -> None:
     isolated_paths._ops_state_dir = temporary_root / "ops"
     isolated_paths.ensure_directories()
 
-    _ORIGINAL_PATH_MANAGER = path_manager_module._instance
-    _ORIGINAL_DATA_DIR = os.environ.get("AI_GRADING_DATA_DIR")
     path_manager_module._instance = isolated_paths
     os.environ["AI_GRADING_DATA_DIR"] = str(isolated_paths.data_root)
 
