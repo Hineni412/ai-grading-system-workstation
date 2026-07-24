@@ -2,26 +2,26 @@
 
 **执行包：** P3-12
 **计划日期：** 2026-07-24
-**计划状态：** verified_pending_integration
+**计划状态：** waiting_review
 **计划模型：** 当前连续作业模型
 **允许夜间执行：** no
 **计划基线：** 86f10c67d47b41ad79eb70e1580f8eb85a6e0b79
 **用户自测：** none
 **自测清单：** not_required
-**授权修正预算：** 1/3
+**授权修正预算：** 2/3
 
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
 
 **执行包：** P3-12
-**交接状态：** verified_pending_integration
-**功能提交：** af9fead398f900859966dfb65a8071f19a9605aa
+**交接状态：** waiting_review
+**功能提交：** branch_head
 **自动验证：** passed
-**独立复审：** passed
+**独立复审：** pending
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** independent_candidate_allowed
+**夜间动作：** report_only
 <!-- HANDOFF_STATUS_END -->
 
 ## 任务边界（已冻结）
@@ -77,6 +77,9 @@ Phase map 和 Master Plan 已把公开边界固定为数据审计、migration、
 - [ ] 合入 M3-05 integration，运行单包完整门槛和真实数据指纹守卫，再通过 PR 合入主线并同步正式状态。
 
 ## 实现与验证证据（稳定候选前）
+- 2026-07-24 用户确认：旧测试中 `exam_papers.processing_status='completed'` 属于过期测试数据，应修正为生产契约中的 `graded`；不把 `completed` 扩充为试卷处理状态。
+- integration 首次完整门槛暴露两项直接原因：6 处共享测试夹具和性能合成数据仍写入过期状态 `completed`；pytest 默认数据目录指向 worktree 内的 `user_data/`，应用启动门槛会迁移仓库历史快照。已统一修正测试数据，并新增收集前临时数据根隔离，禁止测试默认路径触碰仓库 `user_data/`。
+- 修正后受影响验证共 319 项通过（62 + 181 + 76）；新增隔离守卫先红后绿。快速冒烟使用根目录真实两库的只读一致性副本通过文档治理、静态编译和两库初始化幂等，源库 SHA-256 前后不变。worktree 自带旧历史快照的 `session_details` 漂移仍作为修改前、范围外问题单独记录。
 
 - TDD 聚焦测试：`tests/test_p3_12_state_constraints.py` 16 项通过；覆盖只读审计、稳定安全输出、四列应用边界、窄表重建授权、合法数据保持、未知值原子失败、历史运行时缺列补齐和数据库原生 `CHECK`。
 - 迁移与版本门槛回归：迁移器、迁移预演、Schema 基线、P3-11 统一版本门槛和 Job Store 共 57 项通过；会话仓储 9 项通过。
