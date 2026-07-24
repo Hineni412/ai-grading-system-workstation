@@ -33,6 +33,33 @@ def test_pytest_default_data_root_is_isolated_from_repository_user_data() -> Non
     assert not data_root.is_relative_to(PROJECT_ROOT.resolve())
 
 
+def test_pytest_data_isolation_restores_an_unset_environment() -> None:
+    script = """
+import importlib.util
+import os
+from pathlib import Path
+
+os.environ.pop("AI_GRADING_DATA_DIR", None)
+module_path = Path("tests/conftest.py").resolve()
+spec = importlib.util.spec_from_file_location("p3_12_conftest_probe", module_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.pytest_configure()
+module.pytest_unconfigure()
+assert "AI_GRADING_DATA_DIR" not in os.environ
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def _create_status_audit_fixture(database: Path) -> None:
     with sqlite3.connect(database) as connection:
         connection.executescript(
