@@ -12,7 +12,7 @@
 | Phase 0 | 地基与防护网 | `merged` | 5 | 0 | 工程防护网与冻结基线 |
 | Phase 1 | API、任务、LLM、数据访问 | `merged` | 21 | 0 | 组合回归、完整冒烟、正式验收、模型请求超时与真实两库指纹门槛均已通过 |
 | Phase 2 | Vue SPA 与 Streamlit 切换 | `merged` | 22 | 0 | M2-01 至 M2-05 全部通过 PR 合入主线；P2-22 完成旧 Streamlit 日常 UI 退役、完整门槛、独立复审和 formal 用户验收，Issue #67 的 P3 后小批量真实模型复验不改变本阶段完成结论 |
-| Phase 3 | 后端拆分、Schema 收敛、瘦身 | `in_progress` | 11 | 8 | P3-01 至 P3-11 已通过 M3-01 至 M3-04 合入最新主线；P3-12 成为下一可领取包，后续迁移、删除和 Schema 包仍按各自高风险门槛执行 |
+| Phase 3 | 后端拆分、Schema 收敛、瘦身 | `in_progress` | 12 | 7 | P3-01 至 P3-12 已通过 M3-01 至 M3-05 合入最新主线；P3-13 成为下一可规划包，后续迁移、删除和 Schema 包仍按各自高风险门槛执行 |
 | Phase 4 | 图谱 2.0 与训练闭环 | `planned` | 0 | 12 | 新旧口径对照、闭环 E2E、评估达标 |
 | Phase 5 | 教师命题训练 | `planned` | 0 | 13 | 实验门槛通过后才冻结 Schema |
 | Phase 6 | 班主任学生画像 | `deferred` | 0 | 0 | 用户重启并确认合规与数据治理边界 |
@@ -69,8 +69,9 @@
 | P3-09 | `merged` | 已随 M3-03 通过 PR #79 合入主线；活动批次/精修/配分 Prompt、单次请求 Gateway 和失败批次重试编排已迁入独立模块，规定复审与组合门槛通过；旧活动批次死实现记为非阻塞后续瘦身 |
 | P3-10 | `merged` | 已随 M3-03 通过 PR #79 合入主线；配置归一化、评分约束、质量告警和本地事实提取已迁入独立策略模块，修复遗漏的等价答案依赖后，规定复审与组合门槛通过 |
 | P3-11 | `merged` | 已随 M3-04 通过 PR #82 合入主线，主线合并提交为 `c722ede952be5ae399eef5f6d3eeb11b759c1bca`；migration 已成为两库 Schema 唯一权威，残缺/漂移/未来版本明确拒绝且不再 runtime DDL 修补，规定复审、隔离副本预演、完整门槛 2233 passed / 2 skipped 和真实两库指纹守卫均通过 |
-| P3-12 | `milestone_integrated` | 已进入 M3-05 integration 精确 SHA `ad534f390c7bfa23fd06fd308a4831295d32f5da`；状态列约束、应用层同源验证、隔离副本迁移、完整门槛 2257 passed / 2 skipped、双路限定终审和真实两库指纹守卫均通过，等待 PR 合入主线 |
-| P3-13 至 P3-19 | `planned` | 等待各自前置包和高风险门槛放行 |
+| P3-12 | `merged` | 已通过 PR #84 合入主线，主线合并提交为 `9c7883513025005d41e2dffff663ed618997cfef`；状态列约束、应用层同源验证、隔离副本迁移、完整门槛 2257 passed / 2 skipped、双路限定终审和真实两库指纹守卫均通过 |
+| P3-13 | `planned` | P3-12 已合入最新主线；下一步先按包定义完成集中调查、即时计划和高风险边界冻结，未领取前不实施 |
+| P3-14 至 P3-19 | `planned` | 等待各自前置包和高风险门槛放行 |
 | P4-01 至 P4-12 | `planned` | Phase 3 数据边界稳定后放行 |
 | P5-01 至 P5-13 | `planned` | 先实验与设计门，再进入正式实现 |
 
@@ -135,7 +136,7 @@ M2-05 是 P2-22 单包最高风险旧界面退役里程碑，从 P2-21 已通过
 | M3-02 | P3-05 → P3-06 → P3-07 | `merged` | `99d106c54ae1ea1e2beaf8cadddfec82ef56b9fe` | `codex/integration-m3-02` | `d24a242374a37719d4d0c734c1aa65c4d1b5b8cb` | 已通过 PR #77 合入主线，主线合并提交为 `6f956a92375e22b7d59937ddd1f4869eb07ee05c`；批次末完整门槛 2182 passed / 2 skipped、文档治理、500 个第一方 Python 文件编译、两库副本幂等、真实两库指纹守卫和规定复审通过 |
 | M3-03 | P3-08 → P3-09 → P3-10 | `merged` | `7c4f7968be90e4304eba14b44945adf5d67d5747` | `codex/integration-m3-03` | `3b64f11741ad59e283242bbca40e2c3abda1e396` | 已通过 PR #79 合入主线，主线合并提交为 `33777b7a70d0fac237c8992ea4a9ac1dc1ba88d9`；批次末完整门槛 2199 passed / 2 skipped、文档治理、517 个第一方 Python 文件编译、两库副本幂等、真实两库指纹守卫和规定复审通过，真实模型调用为零 |
 | M3-04 | P3-11 | `merged` | `3510dc1ea5706db1d73211ef6f73b8a058edfd94` | `codex/integration-m3-04` | `0aab4e6601bd8229fd2b7a9863ed51512395a566` | 已通过 PR #82 合入主线，主线合并提交为 `c722ede952be5ae399eef5f6d3eeb11b759c1bca`；文档治理、520 个第一方 Python 文件编译、完整门槛 2233 passed / 2 skipped、两库副本初始化幂等、规定复审、交接核验和真实两库指纹守卫通过 |
-| M3-05 | P3-12 | `milestone_integrated` | `86f10c67d47b41ad79eb70e1580f8eb85a6e0b79` | `codex/integration-m3-05` | `ad534f390c7bfa23fd06fd308a4831295d32f5da` | P3-12 已逐包验证：完整门槛 2257 passed / 2 skipped；隔离副本 migration 005、快速冒烟、交接校验、双路限定终审与真实两库 SHA-256 守卫通过。受限环境一次完整测试因 Windows 错误 5 失效，正常权限重跑全部通过；等待 push、PR 和主线同步 |
+| M3-05 | P3-12 | `merged` | `86f10c67d47b41ad79eb70e1580f8eb85a6e0b79` | `codex/integration-m3-05` | `fd934397854d16235117d5374d35f0863a0f30a6` | 已通过 PR #84 合入主线，主线合并提交为 `9c7883513025005d41e2dffff663ed618997cfef`；完整门槛 2257 passed / 2 skipped、隔离副本 migration 005、快速冒烟、交接校验、双路限定终审与真实两库 SHA-256 守卫通过 |
 
 P2-20 的不可变可信领取基线是 `c9662850bbd75a2ba062c0011a6762241818f4d8`，用于该包所有 `handoff_status.py --expected-handoff-base` 核验。该包领取后为解除现场阻塞，同步了已经独立复审并逐项进入 M2-03 的 Issue #60—#65，因此 M2-03 当前已验证且作为最终合入目标的 SHA 已前进到 `6ed4cd64ccab6aa2c51b602c7413c99ecf8d2781`。两者职责不同：不得把计划内冻结的领取基线改成后者，也不得用前者替代 integration 当前状态。
 
@@ -192,4 +193,4 @@ M2-02 是 Python 完整测试并行试点的第二个里程碑：批次末优先
 
 ## 下一动作
 
-M3-05 的 P3-12 已在 integration 精确 SHA `ad534f390c7bfa23fd06fd308a4831295d32f5da` 完成最高风险门槛，当前动作是推送 `codex/integration-m3-05`、创建并合并 PR，再同步 `origin/main`、本地 `main` 和活动 worktree。全程未迁移或修正真实业务数据；P2-20 剩余两次真实调用继续冻结，Issue #67 的后续复验仍须用户重新确认网络、考试副本与费用上限。
+P3-12 已通过 PR #84 合入主线并完成真实两库指纹守卫。当前动作是以最新 `origin/main` 精确 SHA `9c7883513025005d41e2dffff663ed618997cfef` 调查 P3-13 的包定义、依赖、故障场景和即时计划；在新里程碑与边界写入本 Index 前不得领取或实施。P2-20 剩余两次真实调用继续冻结，Issue #67 的后续复验仍须用户重新确认网络、考试副本与费用上限。
