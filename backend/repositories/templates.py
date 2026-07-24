@@ -10,6 +10,7 @@ from backend.repositories.base import (
     RepositorySession,
     RepositorySessionProvider,
 )
+from backend.status_contracts import validate_status
 
 
 class TemplateRepository:
@@ -283,6 +284,10 @@ class RegionRepository:
                 else "unbound"
             )
         )
+        mapping_status = validate_status(
+            "answer_regions.mapping_status",
+            mapping_status,
+        )
         cursor = self.session.connection.execute(
             """
             INSERT INTO answer_regions (
@@ -369,6 +374,10 @@ class RegionRepository:
                     and str(mapped_question_id).strip()
                     else "unbound"
                 )
+            mapping_status = validate_status(
+                "answer_regions.mapping_status",
+                mapping_status,
+            )
             self.session.connection.execute(
                 """
                 UPDATE answer_regions

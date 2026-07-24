@@ -78,18 +78,52 @@ _DESTRUCTIVE_PATTERNS = [
     re.compile(r"\bDROP\s+COLUMN\b", re.IGNORECASE),
 ]
 
+_REBUILD_POLICY_RE = re.compile(
+    r"^\s*--\s*migration-policy:\s*rebuild-tables\s+"
+    r"([A-Za-z0-9_, ]+)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_DROP_TABLE_TARGET_RE = re.compile(
+    r"\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)",
+    re.IGNORECASE,
+)
+_APPROVED_TABLE_REBUILDS = {
+    "005_add_status_constraints": frozenset(
+        {"grading_sessions", "exam_papers", "answer_regions"}
+    ),
+}
+
 # "duplicate column" 错误消息模式
 _DUPLICATE_COLUMN_RE = re.compile(r"duplicate column name", re.IGNORECASE)
 
 
-def _check_destructive(sql: str) -> list[str]:
+def _check_destructive(migration: "MigrationFile") -> list[str]:
     """检查 SQL 中的破坏性操作，返回警告列表。"""
     warnings = []
     # 去掉注释后检查
-    clean = re.sub(r"--.*$", "", sql, flags=re.MULTILINE)
+    clean = re.sub(r"--.*$", "", migration.sql, flags=re.MULTILINE)
     clean = re.sub(r"/\*.*?\*/", "", clean, flags=re.DOTALL)
+    approved_targets = _APPROVED_TABLE_REBUILDS.get(migration.name)
+    rebuild_is_approved = (
+        approved_targets is not None
+        and migration.rebuild_tables == approved_targets
+    )
     for pattern in _DESTRUCTIVE_PATTERNS:
         matches = pattern.findall(clean)
+        if (
+            matches
+            and pattern.pattern == r"\bDROP\s+TABLE\b"
+            and rebuild_is_approved
+        ):
+            dropped_tables = {
+                match.lower()
+                for match in _DROP_TABLE_TARGET_RE.findall(clean)
+            }
+            if (
+                len(dropped_tables) == len(matches)
+                and dropped_tables <= approved_targets
+            ):
+                continue
         if matches:
             warnings.append(f"检测到破坏性操作: {matches[0]}")
     return warnings
@@ -104,6 +138,7 @@ class MigrationFile:
     path: Path
     sql: str
     checksum: str
+    rebuild_tables: frozenset[str]
     order: int      # 从文件名解析的序号
 
     @classmethod
@@ -114,7 +149,24 @@ class MigrationFile:
         # 解析序号
         match = re.match(r"^(\d+)", stem)
         order = int(match.group(1)) if match else 0
-        return cls(name=stem, path=path, sql=sql, checksum=checksum, order=order)
+        policy_match = _REBUILD_POLICY_RE.search(sql)
+        rebuild_tables = (
+            frozenset(
+                item.strip().lower()
+                for item in policy_match.group(1).split(",")
+                if item.strip()
+            )
+            if policy_match
+            else frozenset()
+        )
+        return cls(
+            name=stem,
+            path=path,
+            sql=sql,
+            checksum=checksum,
+            rebuild_tables=rebuild_tables,
+            order=order,
+        )
 
 
 @dataclass
@@ -485,7 +537,7 @@ def run_migrations(
 
         for mig in pending:
             # 检查破坏性操作
-            warnings = _check_destructive(mig.sql)
+            warnings = _check_destructive(mig)
             if warnings:
                 msg = f"迁移 {mig.name} 包含破坏性操作，已拒绝执行: {'; '.join(warnings)}"
                 logger.error(msg)
