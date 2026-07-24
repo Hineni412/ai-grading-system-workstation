@@ -2,7 +2,7 @@
 
 **执行包：** P3-12
 **计划日期：** 2026-07-24
-**计划状态：** implementation_complete_pending_review
+**计划状态：** verified_pending_integration
 **计划模型：** 当前连续作业模型
 **允许夜间执行：** no
 **计划基线：** 86f10c67d47b41ad79eb70e1580f8eb85a6e0b79
@@ -14,14 +14,14 @@
 ## 昼夜交接
 
 **执行包：** P3-12
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
-**独立复审：** pending
+**交接状态：** verified_pending_integration
+**功能提交：** af9fead398f900859966dfb65a8071f19a9605aa
+**自动验证：** passed
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
 
 ## 任务边界（已冻结）
@@ -83,6 +83,7 @@ Phase map 和 Master Plan 已把公开边界固定为数据审计、migration、
 - 直接影响业务回归：答题区、模板区、答卷/结果/复核仓储、暂停恢复、失败重试和相关 API 共 130 项通过。
 - 当前真实阅卷库只读一致性副本升级成功：`integrity_check=ok`、业务表行数不变、最终 Schema 与干净迁移库等价；三类受支持历史阅卷库副本同样通过。所有源库及根目录真实两库 SHA-256 前后不变。
 - 快速冒烟使用根目录当前两库的一致性副本通过文档治理、静态编译、两库重复初始化与完整性检查。工作区自带的旧历史快照另有 `session_details` 结构漂移，属于 P3-11 之前已存在且不在本包三表范围内的问题；不阻塞当前真实库或 P3-12，后续应独立清理该仓库历史快照。
+- 冻结候选 `af9fead398f900859966dfb65a8071f19a9605aa` 完成同版本双路初审：需求符合性 0 项；代码质量原始 2 项，去重后 1 Important（交接记录未及时前进）和 1 Suggestion（状态契约键可进一步类型化）。Important 已通过本次仅改计划的最终交接记录统一关闭；Suggestion 不影响功能、数据安全或验收，转为后续独立优化，不扩大本包。需求评审另补跑 23 项无缓存聚焦验证，全部通过且工作区保持干净。
 
 ## 计划验证命令
 
