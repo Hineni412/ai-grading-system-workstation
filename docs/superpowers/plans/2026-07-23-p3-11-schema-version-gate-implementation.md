@@ -8,14 +8,14 @@
 **计划基线：** efc1739f12d6619fb5fc6aa7316dab79adaad7b9
 **用户自测：** none
 **自测清单：** not_required
-**授权修正预算：** 3/3
+**授权修正预算：** 3/3；另有 1 次用户单独授权的测试契约对齐
 
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
 
 **执行包：** P3-11
 **交接状态：** verified_pending_integration
-**功能提交：** cdd43c149a652d8f6df9d2ac7db0d4178cd61b00
+**功能提交：** c0370a078f7bbb9ef94afec9fa3e873b68d6786e
 **自动验证：** passed
 **独立复审：** passed
 **用户验收：** not_required
@@ -112,6 +112,10 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - 性能失败被最小化为本包直接回归：基准数据空库迁移产生的 14 份自动备份混入预期只含人工样本的备份目录（实际 16、预期 2），最新版检查又长期持有 `backup.log`，且 FastAPI lifespan 把生成数据根误作 migration 代码根。第 3/3 次统一修正仅隔离性能工具的迁移备份/日志并显式提供 migration 代码根，不改变生产备份行为。
 - 第 3 次修正后性能相关 57 项和 P3-11 全部受影响合并集 127 项通过；根目录两库隔离副本预演 3/3 通过，快速冒烟通过文档治理、520 个第一方 Python 文件编译和两库副本初始化幂等，真实两库指纹不变。尚余本次修正的双路复审、重新合入 integration、单包完整门槛和 PR 收口。当前任务尚未合入主线，版本暂不因本包允许发布。
 - 第 3 次修正冻结提交 `cdd43c149a652d8f6df9d2ac7db0d4178cd61b00` 的需求符合性与代码质量限定复审均通过：两路原始意见均为 Critical 0 / Important 0 / Suggestion 0，确认性能备份/日志隔离、migration 代码根、生产行为与真实数据保护均无残留阻塞。候选可重新进入 integration；尚余完整门槛和 PR 收口。
+- 第 3 次修正重新合入 integration 后，首次完整门槛暴露 4 个旧测试夹具仍期待 runtime DDL 修补残缺 Schema 或通过额外触发器注入失败；这与已冻结的“migration 唯一权威、残缺/漂移 Schema 拒绝启动”契约冲突。用户在 3/3 修正预算用尽后单独授权一次“历史测试契约对齐”，范围冻结为只改测试和测试夹具、不削弱门槛、不恢复运行时 DDL。
+- 额外授权的测试提交 `c0370a078f7bbb9ef94afec9fa3e873b68d6786e` 把残缺未登记旧库改为验证拒绝且零修补，保留对受支持未登记旧库的 UUID 非 DDL 数据补齐验证，在原子发布测试中复用门槛通过后的 JobStore，并让运维 Job 测试使用 migration 生成的当前 Schema；未修改生产代码。4 项最小复现和 3 个受影响测试文件共 29 项均通过。
+- integration 完整门槛在正常 Windows 编码环境最终通过：文档治理通过、520 个第一方 Python 文件编译、2233 passed / 2 skipped、两库副本初始化幂等且 integrity_check=ok。一次无效门槛因临时设置 `PYTHONIOENCODING=utf-8` 触发旧验收脚本的 GBK 子进程解码异常，正常环境单项 1/1 通过后按原环境重跑完整门槛成功；该环境干扰未产生代码修正。
+- 本包累计完成一轮双路初审、三次预算内统一修正及限定终审；额外授权批次为纯测试契约对齐，按项目低风险测试修改规则完成自检和受影响回归，不重新启动开放式复审。最终阻塞问题 0，用户验收 `not_required`，根目录真实两库指纹不变；P3-11 已通过 M3-04 integration 单包门槛，剩余工作仅为 PR 合入主线和正式状态同步，合入前版本仍不因本包允许发布。
 
 ## 回退
 
