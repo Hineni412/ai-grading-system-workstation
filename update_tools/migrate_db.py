@@ -92,6 +92,7 @@ _APPROVED_TABLE_REBUILDS = {
         {"grading_sessions", "exam_papers", "answer_regions"}
     ),
     "006_knowledge_ids_primary": frozenset({"session_details"}),
+    "007_drop_legacy_knowledge_id": frozenset({"session_details"}),
 }
 
 # "duplicate column" 错误消息模式
