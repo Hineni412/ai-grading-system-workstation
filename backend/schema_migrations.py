@@ -86,6 +86,7 @@ def ensure_schema_current(
     *,
     migrations_dir: Path | None = None,
     backup_dir: Path | None = None,
+    logger_override: Any | None = None,
 ) -> SchemaGateResult:
     migration_root = (
         Path(migrations_dir)
@@ -107,6 +108,7 @@ def ensure_schema_current(
         db_path=database,
         migrations_dir=migration_root,
         backup_dir_override=effective_backup_dir,
+        logger_override=logger_override,
     )
     if report.error:
         raise SchemaVersionError(report.error)
@@ -134,6 +136,9 @@ def ensure_application_schema(paths: Any) -> dict[str, SchemaGateResult]:
     project_root = Path(
         getattr(paths, "project_root", Path(__file__).resolve().parents[1])
     )
+    migration_project_root = Path(
+        getattr(paths, "migration_project_root", project_root)
+    )
     backup_dir = Path(
         getattr(paths, "backups_dir", Path(paths.db_path).parent / "backups")
     )
@@ -141,13 +146,15 @@ def ensure_application_schema(paths: Any) -> dict[str, SchemaGateResult]:
         "grading": ensure_schema_current(
             "grading",
             Path(paths.db_path),
-            migrations_dir=project_root / "migrations" / "grading",
+            migrations_dir=migration_project_root / "migrations" / "grading",
             backup_dir=backup_dir,
         ),
         "question_bank": ensure_schema_current(
             "question_bank",
             Path(paths.qb_db_path),
-            migrations_dir=project_root / "migrations" / "question_bank",
+            migrations_dir=(
+                migration_project_root / "migrations" / "question_bank"
+            ),
             backup_dir=backup_dir,
         ),
     }
