@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from backend.schema_migrations import ensure_schema_current
+
 
 JOB_STATUSES = ("queued", "running", "paused", "succeeded", "failed", "cancelled")
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
@@ -54,18 +56,6 @@ class JobRecord:
     finished_at: str | None
 
 
-_JOBS_SCHEMA_MIGRATION_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "migrations"
-    / "grading"
-    / "003_add_jobs.sql"
-)
-
-
-def _load_jobs_schema_sql() -> str:
-    return _JOBS_SCHEMA_MIGRATION_PATH.read_text(encoding="utf-8")
-
-
 class JobStore:
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
@@ -86,16 +76,7 @@ class JobStore:
 
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
-            conn.executescript(_load_jobs_schema_sql())
-            columns = {
-                str(row["name"])
-                for row in conn.execute("PRAGMA table_info(jobs)").fetchall()
-            }
-            if "result_json" not in columns:
-                conn.execute(
-                    "ALTER TABLE jobs ADD COLUMN result_json TEXT NOT NULL DEFAULT '{}'"
-                )
+        ensure_schema_current("grading", self.db_path)
 
     def create_job(self, job_type: str, payload: dict[str, Any] | None) -> JobRecord:
         clean_type = str(job_type or "").strip()
