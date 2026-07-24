@@ -2,7 +2,7 @@
 
 **执行包：** P3-12
 **计划日期：** 2026-07-24
-**计划状态：** waiting_review
+**计划状态：** verified_pending_integration
 **计划模型：** 当前连续作业模型
 **允许夜间执行：** no
 **计划基线：** 86f10c67d47b41ad79eb70e1580f8eb85a6e0b79
@@ -14,14 +14,14 @@
 ## 昼夜交接
 
 **执行包：** P3-12
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** 264c6a887903aa6c139110e24387439e9e309a18
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
 
 ## 任务边界（已冻结）
@@ -81,6 +81,7 @@ Phase map 和 Master Plan 已把公开边界固定为数据审计、migration、
 - integration 首次完整门槛暴露两项直接原因：6 处共享测试夹具和性能合成数据仍写入过期状态 `completed`；pytest 默认数据目录指向 worktree 内的 `user_data/`，应用启动门槛会迁移仓库历史快照。已统一修正测试数据，并新增收集前临时数据根隔离，禁止测试默认路径触碰仓库 `user_data/`。
 - 修正后受影响验证共 319 项通过（62 + 181 + 76）；新增隔离守卫先红后绿。快速冒烟使用根目录真实两库的只读一致性副本通过文档治理、静态编译和两库初始化幂等，源库 SHA-256 前后不变。worktree 自带旧历史快照的 `session_details` 漂移仍作为修改前、范围外问题单独记录。
 - 本轮限定初审：需求 0 项；代码质量原始 1 项、去重后 1 Important，来源为本次修改直接引入。触发原因是创建隔离 `PathManager` 前未保存原环境变量，测试结束时可能把未设置的变量错误恢复为仓库路径。统一修复阶段先新增失败回归，再调整保存顺序；修后 P3-12 与代表性 API 共 35 项通过。剩余工作为原评审者限定终审和 integration 完整门槛。
+- 唯一一轮限定终审：需求与代码质量均为 0 Critical / 0 Important / 0 Suggestion；首轮 1 Important 已关闭。两位原评审者仅核对登记问题、修复区域与直接回归，功能提交 `264c6a887903aa6c139110e24387439e9e309a18` 通过交接校验。功能分支当前已通过验收，整个版本仍需完成 integration 完整门槛和主线合并后才允许发布。
 
 - TDD 聚焦测试：`tests/test_p3_12_state_constraints.py` 16 项通过；覆盖只读审计、稳定安全输出、四列应用边界、窄表重建授权、合法数据保持、未知值原子失败、历史运行时缺列补齐和数据库原生 `CHECK`。
 - 迁移与版本门槛回归：迁移器、迁移预演、Schema 基线、P3-11 统一版本门槛和 Job Store 共 57 项通过；会话仓储 9 项通过。
