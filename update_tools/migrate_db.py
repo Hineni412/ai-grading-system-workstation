@@ -593,6 +593,21 @@ def run_migrations(
             logger.info("执行迁移: %s", mig.name)
             error = _execute_sql_safe(conn, mig.sql)
 
+            if error is None and mig.rebuild_tables:
+                integrity_rows = conn.execute(
+                    "PRAGMA integrity_check"
+                ).fetchall()
+                if integrity_rows != [("ok",)]:
+                    error = "database integrity check failed after migration"
+                else:
+                    foreign_key_rows = conn.execute(
+                        "PRAGMA foreign_key_check"
+                    ).fetchall()
+                    if foreign_key_rows:
+                        error = (
+                            "foreign key check failed after migration"
+                        )
+
             if error:
                 conn.rollback()
                 logger.error("迁移失败 %s: %s", mig.name, error)

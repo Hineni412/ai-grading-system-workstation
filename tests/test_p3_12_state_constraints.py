@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from answer_region_models import normalize_regions
 from backend.repositories.papers import PaperRepository
 from backend.repositories.templates import RegionRepository
 from backend.schema_contracts import schema_signature
@@ -124,6 +127,32 @@ def test_status_audit_cli_emits_data_only_json(
         "null_rows": 1,
         "unknown_rows": 1,
     }
+    assert payload["safe_to_migrate"] is False
+
+
+def test_status_audit_cli_runs_directly_outside_project_root(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "private-location" / "grading.db"
+    database.parent.mkdir()
+    _create_status_audit_fixture(database)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(PROJECT_ROOT / "tools" / "audit_status_values.py"),
+            str(database),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert completed.stderr == ""
+    payload = json.loads(completed.stdout)
+    assert str(tmp_path) not in json.dumps(payload)
     assert payload["safe_to_migrate"] is False
 
 
@@ -263,6 +292,42 @@ def test_answer_region_insert_boundary_rejects_before_sql() -> None:
             1,
             2,
             {"mapping_status": "confirmed"},
+        )
+
+
+def test_answer_region_normalization_rejects_illegal_explicit_status() -> None:
+    with pytest.raises(
+        ValueError,
+        match="invalid answer_regions.mapping_status",
+    ):
+        normalize_regions(
+            [
+                {
+                    "mapped_question_id": "Q1",
+                    "mapping_status": "confirmed",
+                }
+            ]
+        )
+
+
+def test_answer_region_bulk_update_rejects_illegal_status_before_sql() -> None:
+    repository = RegionRepository(
+        SimpleNamespace(connection=_UnexpectedConnection())
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="invalid answer_regions.mapping_status",
+    ):
+        repository.bulk_update_answer_region_mapping(
+            1,
+            [
+                {
+                    "id": 2,
+                    "mapped_question_id": "Q1",
+                    "mapping_status": "confirmed",
+                }
+            ],
         )
 
 
@@ -409,6 +474,98 @@ def test_005_rebuild_preserves_legal_rows_and_restores_schema_objects(
     )
     assert repeated.error is None
     assert repeated.results == []
+
+
+def test_005_rebuild_preserves_autoincrement_sequences(
+    tmp_path: Path,
+) -> None:
+    database, _ = _bootstrap_through_004(tmp_path)
+    _seed_legal_status_rows(database)
+    expected_sequences = {
+        "grading_sessions": 99,
+        "exam_papers": 199,
+        "answer_regions": 299,
+    }
+    with sqlite3.connect(database) as connection:
+        for table_name, sequence in expected_sequences.items():
+            connection.execute(
+                "UPDATE sqlite_sequence SET seq = ? WHERE name = ?",
+                (sequence, table_name),
+            )
+
+    report = run_migrations(
+        "grading",
+        db_path=database,
+        migrations_dir=GRADING_MIGRATIONS,
+    )
+
+    assert report.error is None, report.error
+    with sqlite3.connect(database) as connection:
+        actual_sequences = {
+            str(name): int(sequence)
+            for name, sequence in connection.execute(
+                """
+                SELECT name, seq
+                FROM sqlite_sequence
+                WHERE name IN (
+                    'grading_sessions',
+                    'exam_papers',
+                    'answer_regions'
+                )
+                """
+            )
+        }
+    assert actual_sequences == expected_sequences
+
+
+def test_005_foreign_key_failure_rolls_back_before_registration(
+    tmp_path: Path,
+) -> None:
+    database, _ = _bootstrap_through_004(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            INSERT INTO exam_papers (
+                id, session_id, front_image, back_image,
+                match_status, processing_status
+            ) VALUES (
+                30, 999, 'front.png', 'back.png',
+                'unmatched', 'pending'
+            )
+            """
+        )
+
+    report = run_migrations(
+        "grading",
+        db_path=database,
+        migrations_dir=GRADING_MIGRATIONS,
+    )
+
+    assert report.error == (
+        "migration 005_add_status_constraints failed after backup"
+    )
+    assert report.results[0].status == "failed"
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT session_id FROM exam_papers WHERE id = 30"
+        ).fetchone() == (999,)
+        assert connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM schema_migrations
+            WHERE migration_name = '005_add_status_constraints'
+              AND success = 1
+            """
+        ).fetchone() == (0,)
+        table_sql = str(
+            connection.execute(
+                """
+                SELECT sql FROM sqlite_master
+                WHERE type = 'table' AND name = 'exam_papers'
+                """
+            ).fetchone()[0]
+        )
+        assert "CHECK" not in table_sql.upper()
 
 
 def test_005_unknown_status_fails_atomically_after_backup(
