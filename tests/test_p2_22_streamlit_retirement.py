@@ -37,6 +37,8 @@ RETIRED_FILES = (
     "answer_region_editor_component.py",
     "answer_region_focus_page.py",
     "run_desktop.py",
+    "objective_admission_wizard_ui.py",
+    "run_objective_admission_wizard.py",
 )
 RETIRED_DIRECTORIES = ("pages", "pages_shared")
 RETIRED_RUNTIME_MARKERS = (
@@ -54,9 +56,11 @@ RETIRED_RUNTIME_MARKERS = (
     "run_desktop.py",
     "USE_STREAMLIT",
     "streamlit-drawable-canvas",
+    "objective_admission_wizard_ui",
+    "run_objective_admission_wizard",
 )
 HISTORICAL_RUNTIME_ALLOWLIST = {"tools/p1_29_acceptance.py"}
-STREAMLIT_IMPORT_ALLOWLIST = {"objective_admission_wizard_ui.py"}
+STREAMLIT_IMPORT_ALLOWLIST: set[str] = set()
 
 
 def _source_files() -> list[Path]:
