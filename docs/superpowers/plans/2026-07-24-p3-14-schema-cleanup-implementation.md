@@ -2,7 +2,7 @@
 
 **执行包：** P3-14
 **计划日期：** 2026-07-24
-**计划状态：** waiting_review
+**计划状态：** verified_pending_integration
 **计划模型：** 当前连续作业模型
 **允许夜间执行：** no
 **计划基线：** fd9edcab4acbcd2b270f9da2004bca7239cf4540
@@ -14,14 +14,14 @@
 ## 昼夜交接
 
 **执行包：** P3-14
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** d22d0bdb75467a46438d01d6f5c7176547e321b2
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
-**真实数据指纹：** not_touched
+**真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
 
 ## 任务边界（已冻结）
@@ -90,7 +90,8 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 - 完成 4 类隔离副本专项预演（当前真实库只读副本、缺少次要错误列的历史库、已有次要错误列的历史库、当前数据量历史库）以及正式迁移演练；全部保持行数、主外键、索引、触发器、序号与列表数据，源库未修改。快速冒烟通过。
 - 初审约 10 分钟：需求符合性与代码质量两路原始意见各 1 条，去重后为同一根因 1 个 `Critical`、0 个 `Important`、0 个 `Suggestion`。问题属于“当前任务原本遗漏”：意外附加列会在固定清单复制后静默丢失。
 - 统一修复 1 次：007 在删表前精确核对 006 的列属性、外键、索引和触发器集合；新增回归先复现“迁移成功但数据丢失”，修复后改为整笔失败并保留附加列和值。修复后聚焦迁移/Schema 测试 92 项通过，正式迁移演练和快速冒烟再次通过。
-- 当前剩余工作量：由原两名复审代理进行一次限定终审、integration 专项完整门槛、PR 与主线同步。当前任务尚未通过最终验收，整个版本暂不因 P3-14 候选允许发布。
+- 限定终审约 5 分钟：由首轮原两名复审代理只检查登记问题、修复区域及直接回归，结果 0 `Critical`、0 `Important`、0 `Suggestion`；功能候选通过需求与质量复审。
+- 当前剩余工作量：integration 专项完整门槛、PR 与主线同步。功能分支候选已经通过验收，P3-14 尚未完成 integration/主线收口；整个版本暂不因该候选单独允许发布。
 
 ## 回退
 
