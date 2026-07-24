@@ -56,6 +56,8 @@ RETIRED_RUNTIME_MARKERS = (
     "run_desktop.py",
     "USE_STREAMLIT",
     "streamlit-drawable-canvas",
+    "objective_admission_wizard_ui",
+    "run_objective_admission_wizard",
 )
 HISTORICAL_RUNTIME_ALLOWLIST = {"tools/p1_29_acceptance.py"}
 STREAMLIT_IMPORT_ALLOWLIST: set[str] = set()

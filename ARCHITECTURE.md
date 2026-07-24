@@ -10,8 +10,8 @@
 - **核验方式：** Codex 静态代码/配置/测试调查、Python 导入边界分析、便携运行时版本查询、SQLite 数据库副本 Schema/幂等初始化验证、全量与定向自动化测试、FastAPI/Vue 本机浏览器流程验证
 - **当前状态：** 本文只描述已进入共同基线的实现事实；动态执行进度见 `docs/superpowers/packages/EXECUTION_INDEX.md`
 - **历史增量说明：** 下列 P1/P2 条目保留各包交付当时的边界；其中“生产 UI 尚未切换”“Streamlit 保持兼容”等历史措辞，已由 P2-21/P2-22 的当前事实取代。
-- **P2-21/P2-22 当前边界：** `运行.bat` 只启动 FastAPI 同源托管的 Vue SPA（默认 `127.0.0.1:8000`）。旧 `web_app.py`、`pages/`、`pages_shared/`、旧 Streamlit 桌面启动器和 `streamlit-drawable-canvas` 已退役；Vue 仍直接复用的 `components/answer_region_editor/` 核心资产保留。Streamlit 不再处于生产启动、导航或第一方运行依赖。
-- **P3-15 增量边界：** 已删除无生产调用且引用 5 个缺失辅助脚本的 `objective_admission_wizard_ui.py` 与 `run_objective_admission_wizard.py`，并移除其独占的 Streamlit 安装依赖；没有恢复断链脚本。活动 `objective_crop_calibration.py` 及 `choice_recognition_chain.crop_choice_region()` 识别链保留，客观题裁剪坐标、质量检查、识别与评分行为不变。
+- **P2-21/P2-22 当前边界：** `运行.bat` 只启动 FastAPI 同源托管的 Vue SPA（默认 `127.0.0.1:8000`）。旧 `web_app.py`、`pages/`、`pages_shared/`、旧 Streamlit 桌面启动器和 `streamlit-drawable-canvas` 已退役；Vue 仍直接复用的 `components/answer_region_editor/` 核心资产保留。Streamlit 不再处于生产启动或导航调用链，但历史 P1-29 正式验收工具仍通过隔离副本动态启动它，因此安装依赖继续保留。
+- **P3-15 增量边界：** 已删除无生产调用且引用 5 个缺失辅助脚本的 `objective_admission_wizard_ui.py` 与 `run_objective_admission_wizard.py`；没有恢复断链脚本。活动 `objective_crop_calibration.py` 及 `choice_recognition_chain.crop_choice_region()` 识别链保留，客观题裁剪坐标、质量检查、识别与评分行为不变；Streamlit 依赖经复审核实仍由 P1-29 历史正式验收工具使用，未在本包删除。
 - **P3-01 至 P3-07 当前边界：** `tools/build_p3_01_baseline.py` 可从当前源码、Schema 和受控历史证据生成内容寻址的结构基线；共享评分结果与试卷组类型已移入 `backend/domain_models.py`。`backend/repositories/` 提供 SQLite 连接所有权、事务和只读会话契约，并已抽取学生、考试会话、答卷、评分结果/明细、复核、模板、答题区与应用设置仓储；正式 FastAPI、Job、评分、复核、报告、分析、媒体和工作台调用方统一接收 `GradingRepositoryAccess`，只读请求继续借用同一快照连接。`DBManager` 只从 `backend/repositories/compat.py` 的单一兼容组装点创建，保留一个版本承接初始化、备份、跨域兼容编排与尚未迁移的聚合 SQL；旧入口和兼容测试仍可直接使用它。`AnswerRegionCommitService` 的数据库操作已走模板/答题区仓储，数据库提交后的文件快照、workflow 与草稿补偿协议保持不变。该批次不改变数据库 Schema、API 契约、业务结果或真实数据。
 - **P3-08 当前边界：** `backend/document_parsing/` 以窄接口承接 DOCX/PDF 文字提取、纯文本题目/答案解析和富文本 DOCX 题块装配；正式配置来源服务显式传入临时根、资产根、文件登记与受控写回调，解析包不依赖模型客户端。`session_manager` 与 `rubric_auto_cropper` 保留一个版本的兼容 import，PDF 页面渲染/题图裁切、prompt、生成编排、题号/答案/题型推断、100 分约束与质量告警语义均未改变。
 - **P3-09 当前边界：** `backend/config_generation/` 承接活动小批次 Prompt、教师结构精修 Prompt、整卷 AI 配分 Prompt、单次请求 Gateway 适配器，以及顺序分批、失败批次选择性重试、合并、进度与检查点编排；正式配置 Job 通过兼容 facade 使用新服务，`session_manager` 的旧名称继续可用。P3-10 负责的 Schema 归一、题型/答案本地事实、100 分约束和质量告警仍以显式 policy callbacks 注入，模型、超时、请求参数、批次、重试、发布事务、API 和真实数据语义均未改变。
@@ -228,7 +228,7 @@ flowchart TD
 ### 当前应维持的边界
 
 1. Vue 页面层只调用 FastAPI；新增复杂业务规则不应写进浏览器。
-2. 新服务不应依赖 DOM 或具体组件；第一方生产与工具依赖不再引入 Streamlit。
+2. 新服务不应依赖 DOM 或具体组件；生产代码不再引入 Streamlit，历史 P1-29 隔离验收工具的现有依赖在其单独退役前保留。
 3. 数据库连接、SQL 和文件路径解析不应进一步散落到新页面。
 4. 两个 SQLite 数据库之间只通过应用层 ID/快照关联；任何跨库更新都必须显式处理部分成功。
 5. 答题区正式数据以数据库为主，JSON 快照是可恢复的发布产物；不得绕过提交服务同时手写两者。

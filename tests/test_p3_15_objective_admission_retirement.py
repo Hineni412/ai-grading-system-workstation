@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 import objective_crop_calibration
 from choice_recognition_chain import crop_choice_region
@@ -16,12 +16,8 @@ RETIRED_ENTRYPOINTS = (
 )
 
 
-def test_objective_admission_entrypoints_and_dependencies_are_retired() -> None:
+def test_objective_admission_entrypoints_are_retired() -> None:
     assert [name for name in RETIRED_ENTRYPOINTS if (ROOT / name).exists()] == []
-
-    for dependency_file in ("requirements.txt", "constraints.txt"):
-        dependencies = (ROOT / dependency_file).read_text(encoding="utf-8").lower()
-        assert "streamlit" not in dependencies
 
 
 def test_active_choice_crop_still_uses_calibration_box(
@@ -35,7 +31,9 @@ def test_active_choice_crop_still_uses_calibration_box(
         lambda: SimpleNamespace(data_root=data_root),
     )
     front_image = tmp_path / "front.png"
-    Image.new("RGB", (80, 60), "white").save(front_image)
+    image = Image.new("RGB", (80, 60), "white")
+    ImageDraw.Draw(image).line((10, 12, 39, 12), fill="black", width=3)
+    image.save(front_image)
 
     output_path, contaminated, edge_touched, source = crop_choice_region(
         front_image,
@@ -61,4 +59,4 @@ def test_active_choice_crop_still_uses_calibration_box(
     assert Image.open(output_path).size == (30, 20)
     assert source == "recognition_box"
     assert contaminated is False
-    assert edge_touched is False
+    assert edge_touched is True
