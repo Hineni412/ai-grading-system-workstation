@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from backend.schema_migrations import SchemaVersionError
 from db_manager import DBManager
 
 
@@ -32,7 +33,9 @@ def _region(region_uuid: str, order: int, question_id: str) -> dict[str, object]
     }
 
 
-def test_initialize_upgrades_true_legacy_answer_region_schema(tmp_path: Path) -> None:
+def test_initialize_rejects_incomplete_unregistered_answer_region_schema(
+    tmp_path: Path,
+) -> None:
     db_path = tmp_path / "legacy.db"
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
@@ -78,73 +81,26 @@ def test_initialize_upgrades_true_legacy_answer_region_schema(tmp_path: Path) ->
         )
 
     db = DBManager(db_path)
-    db.initialize()
+    with pytest.raises(
+        SchemaVersionError,
+        match="migration 000_baseline_schema failed after backup",
+    ):
+        db.initialize()
 
-    with db._connect() as conn:
+    with sqlite3.connect(db_path) as conn:
         answer_columns = {
-            row["name"]: row for row in conn.execute("PRAGMA table_info(answer_regions)").fetchall()
+            row[1] for row in conn.execute("PRAGMA table_info(answer_regions)")
         }
-        template_columns = {
-            row["name"]: row for row in conn.execute("PRAGMA table_info(session_templates)").fetchall()
-        }
-        rows = conn.execute(
-            """
-            SELECT region_uuid, mapping_status, multi_region_confirmed
-            FROM answer_regions
-            ORDER BY id
-            """
-        ).fetchall()
-        index_rows = conn.execute("PRAGMA index_list(answer_regions)").fetchall()
-        trigger_names = {
-            row["name"]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'answer_regions'"
-            ).fetchall()
-        }
-
-        assert {"region_uuid", "mapping_status", "multi_region_confirmed"} <= set(answer_columns)
-        assert "regions_snapshot_pending" in template_columns
-        assert "regions_snapshot_token" in template_columns
-        assert answer_columns["mapping_status"]["dflt_value"] == "'unbound'"
-        assert answer_columns["multi_region_confirmed"]["dflt_value"] == "0"
-        assert template_columns["regions_snapshot_pending"]["dflt_value"] == "0"
-        assert template_columns["regions_snapshot_token"]["dflt_value"] is None
-        assert all(str(row["region_uuid"]).strip() for row in rows)
-        assert len({row["region_uuid"] for row in rows}) == 2
-        assert [row["mapping_status"] for row in rows] == ["unbound", "manual"]
-        assert [row["multi_region_confirmed"] for row in rows] == [0, 0]
-        assert any(
-            row["name"] == "idx_answer_regions_region_uuid_unique" and row["unique"] == 1
-            for row in index_rows
+        assert "region_uuid" not in answer_columns
+        assert conn.execute("SELECT COUNT(*) FROM answer_regions").fetchone()[0] == 2
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'schema_migrations'"
+            ).fetchone()[0]
+            == 0
         )
-        assert {
-            "answer_regions_region_uuid_required_insert",
-            "answer_regions_region_uuid_required_update",
-        } <= trigger_names
-
-        with pytest.raises(sqlite3.IntegrityError):
-            conn.execute(
-                """
-                INSERT INTO answer_regions (
-                    region_uuid, session_id, template_id, page, region_order, x, y, w, h
-                ) VALUES (' ', 9, 7, 'front', 3, 0, 0, 1, 1)
-                """
-            )
-        with pytest.raises(sqlite3.IntegrityError):
-            conn.execute(
-                """
-                INSERT INTO answer_regions (
-                    region_uuid, session_id, template_id, page, region_order, x, y, w, h
-                ) VALUES (?, 9, 7, 'front', 3, 0, 0, 1, 1)
-                """,
-                (rows[0]["region_uuid"],),
-            )
-        with pytest.raises(sqlite3.IntegrityError):
-            conn.execute("UPDATE answer_regions SET region_uuid = NULL WHERE id = 1")
-
-    first_uuids = [row["region_uuid"] for row in db.list_answer_regions(9)]
-    db.initialize()
-    assert [row["region_uuid"] for row in db.list_answer_regions(9)] == first_uuids
+    assert len(list((tmp_path / "backups").glob("legacy_before_migration_*.db"))) == 1
 
 
 def test_initialize_backfills_stable_unique_region_uuid_and_mapping_defaults(tmp_path: Path) -> None:
@@ -164,6 +120,7 @@ def test_initialize_backfills_stable_unique_region_uuid_and_mapping_defaults(tmp
             """,
             (session_id, template_id),
         )
+        conn.execute("DROP TABLE schema_migrations")
         conn.commit()
 
     db.initialize()

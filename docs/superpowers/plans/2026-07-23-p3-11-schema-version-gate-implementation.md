@@ -1,0 +1,122 @@
+# P3-11 迁移版本门槛与运行时 DDL 退役
+
+**执行包：** P3-11
+**计划日期：** 2026-07-23
+**计划状态：** verified_pending_integration
+**计划模型：** 当前连续作业模型
+**允许夜间执行：** no
+**计划基线：** efc1739f12d6619fb5fc6aa7316dab79adaad7b9
+**用户自测：** none
+**自测清单：** not_required
+**授权修正预算：** 3/3；另有 1 次用户单独授权的测试契约对齐
+
+<!-- HANDOFF_STATUS_START -->
+## 昼夜交接
+
+**执行包：** P3-11
+**交接状态：** verified_pending_integration
+**功能提交：** c0370a078f7bbb9ef94afec9fa3e873b68d6786e
+**自动验证：** passed
+**独立复审：** passed
+**用户验收：** not_required
+**真实数据指纹：** unchanged
+**Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
+**夜间动作：** independent_candidate_allowed
+<!-- HANDOFF_STATUS_END -->
+
+## 任务边界（已冻结）
+
+- **目标：** 让两库 Schema 只由版本化 migration 管理；生产启动、`DBManager`、`JobStore`、`GradingRunStore` 和题库兼容初始化接口只通过统一迁移版本门检查或执行受控迁移，不再各自保存 `CREATE/ALTER/INDEX/TRIGGER` 字面 DDL。
+- **包含：** 迁移清单与已登记版本/校验和核验；未知未来版本、历史缺口和迁移文件漂移拒绝；单个 migration 原子执行和并发重复启动保护；空库 bootstrap、旧库升级、当前库幂等启动；FastAPI lifespan 与 Windows 启动器的安全提示；四个兼容初始化接口接线；迁移预演/Schema 守卫去除“运行时 DDL 自证”；真实两库隔离副本预演、自动备份与完整性检查。
+- **明确不包含：** 不删除或改写历史 migration；除补齐本包调查直接发现的旧 `jobs.result_json` runtime 兜底外，不新增业务字段或其他 migration；不为 P3-12 猜测或增加状态 CHECK；不切换/删除 `knowledge_id`；不改变业务数据、Repository/API/Job 状态语义、评分规则或模型调用；不运行真实库 migration，不暂存/提交真实 `user_data/`；不清理工作区、分支或历史副本。
+- **验收条件：** 空库经 migration 得到当前完整 Schema；grading 旧快照从 002 升到 004、question-bank 旧快照升级到 008 后与干净当前库 Schema 完全等价且业务行数不变；当前库和重复/并发启动幂等；未知未来 migration、已登记 checksum 漂移、历史登记缺口明确拒绝并给出不含绝对路径的启动提示；故障 migration 不留下本 migration 的部分 DDL；四个兼容初始化入口与 FastAPI lifespan 不含散落 DDL；聚焦测试、迁移/Schema/Job/API 受影响回归、快速冒烟、完整门槛、双路复审和交接核验通过。
+- **风险等级：** 最高。错误会导致应用无法启动、Schema 部分升级或真实库额外写入；实现与测试只写临时库和真实库的隔离副本，根目录真实两库只做指纹核对。
+
+## 已确认测试边界
+
+Phase map 已把公开边界固定为 migration runner、四个兼容初始化接口和生产启动；现有调用方与测试进一步确认以下三个 seam，不需要新增产品选择：
+
+1. `run_migrations`/统一 Schema gate：观察版本拒绝、备份、原子升级和最终 migration 状态。
+2. `DBManager.initialize()`、`JobStore`、`GradingRunStore`、`initialize_database()`：观察旧兼容入口能否得到同一个 migration 权威 Schema，并保留既有非 DDL 数据维护/题库种子行为。
+3. FastAPI lifespan 与 `backend.api.launcher.main()`：观察两库在创建 JobManager 前完成门槛检查，失败时拒绝启动并输出安全提示。
+
+## 集中调查与冻结问题清单
+
+1. `migrations/grading/000`—`003` 与 `migrations/question_bank/000`—`008` 覆盖主要运行时 DDL；受影响回归进一步证明旧 `jobs` 表缺少 `result_json` 时，003 的 `CREATE TABLE IF NOT EXISTS` 不会补列，过去依赖 `JobStore` runtime `ALTER`。本包新增 forward migration 004 承接该遗漏，不改写历史 SQL。
+2. `db_manager.py`、`backend/jobs/store.py`、`grading_run_store.py` 和 `question_bank/database/schema.py` 仍分别保存建表、补列、索引和触发器 DDL；同一 Schema 有两套权威来源。
+3. `run_migrations` 只按 migration 名称判断已应用，不拒绝未知未来版本、已登记 checksum 漂移或有缺口的历史；单个 migration 失败后，失败登记的 commit 可能连同此前已执行语句一起提交，存在部分完成风险。
+4. FastAPI lifespan 当前先构造 `JobStore`，没有先检查 grading/question-bank 两库的整体版本；Windows 启动器也没有面向普通用户的数据库版本失败提示。
+5. `tools/generate_schema_baseline.py` 和 `tests/test_schema_baseline.py` 仍以运行时 DDL为对照。运行时 DDL 退役后该对照会变成 migration 自证，基线生成器若继续运行还可能错误重写历史 `000`。
+6. 只读临时副本核对确认：当前 grading 库已登记 `000`—`002` 且 checksum 与仓库一致，`003_add_jobs` 尚未登记但其表由旧运行时初始化创建；下一次受控升级会先备份，再幂等登记 003，并由 004 对已存在的 `result_json` 安全跳过后登记，不能改变业务行数。当前 question-bank 已登记 `000`—`008` 且 checksum 全部一致。
+7. `DBManager.initialize()` 与题库初始化除 DDL 外仍有既有数据补齐、答题区 UUID 修复和内置技能种子逻辑。本包只退役 DDL，保留这些已存在的非 DDL 行为，避免借 Schema 收敛改变业务数据语义。
+
+## 故障场景与预期
+
+| 场景 | 预期处理 |
+|---|---|
+| 重复操作 | 已是当前版本时零 migration、零额外备份；四个初始化入口和 FastAPI 重复启动得到相同 Schema。 |
+| 同时操作 | 同一进程按数据库路径串行；SQLite 写锁内重新核对 migration，跨入口竞争只允许一个执行者登记，每个 migration 只出现一条成功记录。 |
+| 中途退出 | 当前 migration 在同一事务/保存点内回滚，不留下该 migration 的部分表、列、索引或成功登记；此前完整成功的 migration 保留。 |
+| 重新启动 | 从最后一条连续成功 migration 继续；已成功项校验 checksum 后跳过。 |
+| 失败重试 | 已知失败项允许在原因修复后重试；重试前仍自动备份，未知未来版本、checksum 冲突或历史缺口不得自动重试。 |
+| 取消 | 启动 Schema gate 没有可交互取消阶段；启动失败即退出，离线运维 Job 的既有取消/Journal 规则不变。 |
+| 部分完成 | runner 必须明确失败并拒绝启动；不得用 runtime `CREATE/ALTER` 偷补成“看似可用”的半升级库。 |
+| 数据缺失或冲突 | 空库允许 bootstrap；无登记表的受支持旧库走现有幂等 migration；已登记未来名称、非连续历史或非空 checksum 不一致视为不兼容并拒绝。 |
+
+## 终审阻塞收尾边界（2026-07-24 用户已授权）
+
+- **目标：** 只关闭最终限定复审确认的两个残留：四个兼容初始化入口使用正式 `data_root/backups`，以及不存在目标上的 dry-run 保持目录和数据库文件均不创建。
+- **包含：** `ensure_schema_current` 的默认备份目录解析；`run_migrations(..., dry_run=True)` 在目标不存在时的只读检查；两条公开 seam 回归测试。
+- **明确不包含：** 不重开其他 Schema、迁移、CLI 或运维行为审查；不改变 migration SQL、业务数据或运行时初始化语义；不操作真实数据库和历史工作区数据副本。
+- **验收条件：** 四个兼容初始化入口的临时数据库升级备份只出现在同级正式数据根备份目录；dry-run 对不存在的父目录和数据库零写入；原 65 项受影响测试、根目录两库隔离预演及快速冒烟不回归。
+- **风险等级：** 高。目录解析错误会使恢复入口找不到备份；dry-run 仍产生文件会违反只读承诺。所有写验证只使用 pytest 临时目录。
+
+## 实施步骤
+
+- [x] RED：在新 P3-11 契约测试中固定空库/旧库/当前库、重复与并发、未来版本/checksum/缺口拒绝、失败 migration 原子回滚和安全启动提示。
+- [x] GREEN：增强 `update_tools/migrate_db.py` 的清单校验、事务、并发重读和稳定错误分类；建立统一的 `backend/schema_migrations.py` 深模块。
+- [x] GREEN：把四个兼容初始化入口与 FastAPI/launcher 接到统一门槛，删除散落 DDL但保留既有非 DDL维护和题库种子；让启动错误不泄露绝对路径。
+- [x] GREEN：把迁移预演的参考库改为“干净空库 + 当前 migrations”，退役会重写历史 000 的基线生成路径，更新 Schema/无 runtime DDL 守卫和 `ARCHITECTURE.md`。
+- [x] 验证：运行聚焦测试、迁移/Schema/Job/API/启动受影响回归、快速冒烟；只在临时目录对真实两库副本执行完整迁移预演，并复核根目录两库 SHA-256 不变。
+- [x] 收尾修复：不存在目标的 dry-run 改用内存连接，四个兼容初始化入口按 `data_root/databases/*.db` 推导正式 `data_root/backups`；新增两个公开 seam 回归。
+- [x] 冻结同一功能 SHA，完成需求符合性与代码质量双路复审；阻塞项统一修正，最多 3 次，修后只做一次限定终审。
+- [ ] 合入 M3-04 integration，运行单包完整门槛和真实数据指纹守卫，再通过 PR 合入主线并同步正式状态。
+
+## 计划验证命令
+
+```powershell
+runtime\python\python.exe -m pytest tests\test_p3_11_schema_version_gate.py -q
+runtime\python\python.exe -m pytest tests\test_migration_tooling.py tests\test_migration_rehearsal.py tests\test_schema_baseline.py tests\test_job_store.py tests\test_api_app.py tests\test_run_bat_api_entry.py -q
+runtime\python\python.exe tools\migration_rehearsal.py
+runtime\python\python.exe tools\smoke_check.py --skip-tests
+runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\2026-07-23-p3-11-schema-version-gate-implementation.md --repo .
+```
+
+## 规划复核结论
+
+- 计划与 P3-11 Phase map、Master Plan 的“migration 唯一权威 + 版本检查/拒绝启动”、M3-04 单包边界、现有 offline Ops 自动备份/Journal 和四处初始化调用方一致。
+- 没有需要用户决定的 Schema 或业务口径；P3-12 状态枚举、P3-13 知识点字段切换和真实库实际迁移动作均明确留在包外。
+- 新版本门只接受仓库已知、连续且 checksum 一致的历史；无 migration 表的旧库仍可按现有幂等 migration 升级，避免把“未登记”误判为未来版本。
+- 现有 grading 真库在未来首次启动新版本时将对 003/004 做自动备份和幂等登记；本包只在副本证明业务行数和 Schema 不变，不在开发期间执行真实迁移。
+- 问题清单和测试 seam 已冻结。实现阶段只处理上述同一根因，不扫描或修复 P3-12/P3-13、旧死代码和其他数据库问题。
+- TDD 依次固定并通过空库 bootstrap、未来版本/checksum/历史缺口拒绝、单迁移原子回滚、并发启动、四个兼容入口、FastAPI/launcher 安全失败和无 runtime DDL 守卫；旧 `jobs` 表缺列用例直接证明需要新增 forward migration 004。
+- 并发测试进一步固定“每个 migration 仅一份备份”，WAL 用例固定“备份与演练副本必须包含已提交 WAL 数据且不触碰源库”；runner 改为写锁内重读并使用 SQLite 在线备份，演练工具复用既有稳定 M1-W1-W2-M2 快照。
+- 冻结候选的迁移/Schema/Job/API/启动与 Ops 受影响回归先后 142 项、139 项题库兼容回归及最终 47 项聚焦复核通过；快速冒烟通过文档治理、519 个第一方 Python 文件编译和两库隔离副本初始化幂等。
+- 根目录真实两库只作为稳定快照源在系统临时目录预演：grading execute、question-bank execute 与 stamp-only 均通过 integrity、当前 migration Schema 等价和业务表行数不变检查，题库 005 改动行数为 0；真实两库 SHA-256 与开工基线一致。
+- 首轮双路复审基于同一冻结提交 `bc4789f3e7691748d63c24e9ce5bc6e70b655b7d`：需求复审原始 4 条（3 Important、1 Suggestion），质量复审原始 4 条 Important；主代理去重为 6 个 Important 根因：不完整未登记旧库误放行、备份目录未接正式运维目录、日志/启动错误可能泄露绝对路径、空迁移清单误放行、Schema 比较遗漏 CHECK/UNIQUE、首次备份前写入迁移登记表。另将 dry-run 写库归入最后一项统一修正。
+- 第 1 次统一修正已补齐上述 6 个根因，并新增旧库字段缺失、空清单、正式备份目录、安全错误、dry-run 零写入、首次备份失败零写入、CHECK/UNIQUE 漂移和等价唯一索引回归。修正后 65 项聚焦与受影响测试通过；根目录两库隔离副本三种预演均通过，业务行数不变、题库 005 改动 0 行；快速冒烟在显式根目录数据源的临时副本上通过文档治理、520 个第一方 Python 文件编译和两库初始化幂等。功能工作区内遗留旧数据副本缺 7 个历史字段，默认冒烟被版本门正确拒绝，未修改或删除该历史副本。
+- 第 1 次修正后的限定终审核验提交 `e13363a016e4963b0ddedc7d3084cba8db302a88`。两路均确认 5 个根因关闭；需求复审保留“不存在目标的 dry-run 创建空文件”1 个 Important，质量复审保留“四个兼容初始化入口未使用正式备份目录”1 个 Important，并把 dry-run 残留判为 1 个 Suggestion。主代理按更保守口径将两个事实都作为阻塞项停止自动修正，用户于 2026-07-24 授权建立本收尾修复批次。
+- 第 2 次授权修正采用两个公开 seam 的 TDD：不存在目标的 dry-run 测试先失败后通过，四个兼容初始化入口备份目录参数化测试 4/4 先失败后通过。修正后 70 项 P3-11 聚焦与受影响测试通过；根目录两库隔离副本三种预演 3/3 通过、业务行数不变、题库 005 改动 0 行；快速冒烟通过文档治理、520 个第一方 Python 文件编译和两库临时副本初始化幂等。
+- 收尾修复冻结提交 `3c7866ea233094b1b164ca16cd354f1a6a019392` 的需求符合性与代码质量复审均通过：两路原始意见均为 Critical 0 / Important 0 / Suggestion 0，确认两个残留关闭、无范围扩张、无真实数据修改。
+- 收尾候选首次合入 integration 后，完整门槛暴露两个测试数据准备问题：工作区历史数据库副本缺字段会被新门槛正确拒绝；空测试数据根又使依赖现有快照的 API 测试级联失败。使用根目录两库稳定快照预置 integration 测试副本后，2193 项通过且两库幂等通过，但 16 失败与 24 错误集中在性能基准工具。
+- 性能失败被最小化为本包直接回归：基准数据空库迁移产生的 14 份自动备份混入预期只含人工样本的备份目录（实际 16、预期 2），最新版检查又长期持有 `backup.log`，且 FastAPI lifespan 把生成数据根误作 migration 代码根。第 3/3 次统一修正仅隔离性能工具的迁移备份/日志并显式提供 migration 代码根，不改变生产备份行为。
+- 第 3 次修正后性能相关 57 项和 P3-11 全部受影响合并集 127 项通过；根目录两库隔离副本预演 3/3 通过，快速冒烟通过文档治理、520 个第一方 Python 文件编译和两库副本初始化幂等，真实两库指纹不变。尚余本次修正的双路复审、重新合入 integration、单包完整门槛和 PR 收口。当前任务尚未合入主线，版本暂不因本包允许发布。
+- 第 3 次修正冻结提交 `cdd43c149a652d8f6df9d2ac7db0d4178cd61b00` 的需求符合性与代码质量限定复审均通过：两路原始意见均为 Critical 0 / Important 0 / Suggestion 0，确认性能备份/日志隔离、migration 代码根、生产行为与真实数据保护均无残留阻塞。候选可重新进入 integration；尚余完整门槛和 PR 收口。
+- 第 3 次修正重新合入 integration 后，首次完整门槛暴露 4 个旧测试夹具仍期待 runtime DDL 修补残缺 Schema 或通过额外触发器注入失败；这与已冻结的“migration 唯一权威、残缺/漂移 Schema 拒绝启动”契约冲突。用户在 3/3 修正预算用尽后单独授权一次“历史测试契约对齐”，范围冻结为只改测试和测试夹具、不削弱门槛、不恢复运行时 DDL。
+- 额外授权的测试提交 `c0370a078f7bbb9ef94afec9fa3e873b68d6786e` 把残缺未登记旧库改为验证拒绝且零修补，保留对受支持未登记旧库的 UUID 非 DDL 数据补齐验证，在原子发布测试中复用门槛通过后的 JobStore，并让运维 Job 测试使用 migration 生成的当前 Schema；未修改生产代码。4 项最小复现和 3 个受影响测试文件共 29 项均通过。
+- integration 完整门槛在正常 Windows 编码环境最终通过：文档治理通过、520 个第一方 Python 文件编译、2233 passed / 2 skipped、两库副本初始化幂等且 integrity_check=ok。一次无效门槛因临时设置 `PYTHONIOENCODING=utf-8` 触发旧验收脚本的 GBK 子进程解码异常，正常环境单项 1/1 通过后按原环境重跑完整门槛成功；该环境干扰未产生代码修正。
+- 本包累计完成一轮双路初审、三次预算内统一修正及限定终审；额外授权批次为纯测试契约对齐，按项目低风险测试修改规则完成自检和受影响回归，不重新启动开放式复审。最终阻塞问题 0，用户验收 `not_required`，根目录真实两库指纹不变；P3-11 已通过 M3-04 integration 单包门槛，剩余工作仅为 PR 合入主线和正式状态同步，合入前版本仍不因本包允许发布。
+
+## 回退
+
+代码可整体回退到四个兼容初始化入口的旧 runtime DDL。任何已由现有 forward migration 成功登记的版本不删除、不倒退；若受控升级失败，使用该 migration 自动生成的升级前备份恢复，并在版本冲突原因修复前保持拒绝启动。

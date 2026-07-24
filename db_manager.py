@@ -35,6 +35,7 @@ from backend.repositories.students import (
     StudentRosterRevisionConflict,
     student_roster_revision,
 )
+from backend.schema_migrations import ensure_schema_current
 from backend.repositories.templates import (
     RegionRepository,
     TemplateRegionRepositoryGateway,
@@ -172,12 +173,6 @@ class DBManager:
         conn.execute("PRAGMA journal_mode = WAL")
         return conn
 
-    def _ensure_column(self, conn: sqlite3.Connection, table_name: str, column_name: str, ddl: str) -> None:
-        cols = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-        exists = any(row["name"] == column_name for row in cols)
-        if not exists:
-            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl}")
-
     def create_backup(self, reason: str, *, once_per_day: bool = False) -> Path | None:
         if not self.db_path.exists():
             return None
@@ -195,216 +190,14 @@ class DBManager:
         return backup_path
 
     def initialize(self) -> None:
+        ensure_schema_current("grading", self.db_path)
         with self._connect() as conn:
-            # Legacy tables
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS exam_results (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    student_name TEXT NOT NULL,
-                    front_image TEXT NOT NULL,
-                    back_image TEXT NOT NULL,
-                    total_score REAL NOT NULL,
-                    student_score REAL NOT NULL,
-                    needs_human_review INTEGER NOT NULL,
-                    raw_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS grading_details (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    exam_result_id INTEGER NOT NULL,
-                    question_id TEXT NOT NULL,
-                    score_awarded REAL NOT NULL,
-                    deduction_reason TEXT,
-                    knowledge_id TEXT NOT NULL,
-                    knowledge_ids TEXT,
-                    error_category TEXT,
-                    error_summary TEXT,
-                    FOREIGN KEY(exam_result_id) REFERENCES exam_results(id)
-                )
-                """
-            )
-            self._ensure_column(conn, "grading_details", "knowledge_ids", "TEXT")
-            self._ensure_column(conn, "grading_details", "error_category", "TEXT")
-            self._ensure_column(conn, "grading_details", "error_summary", "TEXT")
-            self._ensure_column(conn, "grading_details", "confidence_score", "REAL")
-
-            # Core web tables
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS students (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    student_code TEXT NOT NULL UNIQUE,
-                    name TEXT NOT NULL,
-                    class_name TEXT,
-                    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-                )
-                """
-            )
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS grading_sessions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_name TEXT NOT NULL,
-                    rubric_path TEXT NOT NULL,
-                    answer_key_path TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'created',
-                    is_deleted INTEGER NOT NULL DEFAULT 0,
-                    deleted_at TEXT,
-                    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-                    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS app_settings (
-                    setting_key TEXT PRIMARY KEY,
-                    setting_value TEXT NOT NULL,
-                    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-                )
-                """
-            )
-            self._ensure_column(conn, "grading_sessions", "is_deleted", "INTEGER NOT NULL DEFAULT 0")
-            self._ensure_column(conn, "grading_sessions", "deleted_at", "TEXT")
-            self._ensure_column(conn, "grading_sessions", "updated_at", "TEXT")
-            self._ensure_column(conn, "grading_sessions", "template_config_path", "TEXT")
-            self._ensure_column(conn, "grading_sessions", "source_paper_path", "TEXT")
-            self._ensure_column(conn, "grading_sessions", "source_paper_sha256", "TEXT")
-            self._ensure_column(
-                conn,
-                "grading_sessions",
-                "question_bank_sync_state",
-                "TEXT NOT NULL DEFAULT 'not_started'",
-            )
-            self._ensure_column(
-                conn,
-                "grading_sessions",
-                "question_bank_sync_details_json",
-                "TEXT NOT NULL DEFAULT '{}'",
-            )
-            self._ensure_column(conn, "grading_sessions", "question_bank_sync_error", "TEXT")
-            self._ensure_column(conn, "grading_sessions", "question_bank_sync_updated_at", "TEXT")
             conn.execute(
                 """
                 UPDATE grading_sessions
                 SET updated_at = COALESCE(updated_at, datetime('now','localtime'))
                 """
             )
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS exam_papers (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id INTEGER NOT NULL,
-                    front_image TEXT NOT NULL,
-                    back_image TEXT NOT NULL,
-                    ocr_name TEXT,
-                    student_id INTEGER,
-                    match_status TEXT NOT NULL,
-                    processing_status TEXT NOT NULL DEFAULT 'pending',
-                    error_message TEXT,
-                    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-                    FOREIGN KEY(session_id) REFERENCES grading_sessions(id),
-                    FOREIGN KEY(student_id) REFERENCES students(id)
-                )
-                """
-            )
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS session_results (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id INTEGER NOT NULL,
-                    student_id INTEGER NOT NULL,
-                    paper_id INTEGER NOT NULL,
-                    total_score REAL NOT NULL,
-                    student_score REAL NOT NULL,
-                    needs_human_review INTEGER NOT NULL,
-                    raw_json TEXT NOT NULL,
-                    graded_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-                    FOREIGN KEY(session_id) REFERENCES grading_sessions(id),
-                    FOREIGN KEY(student_id) REFERENCES students(id),
-                    FOREIGN KEY(paper_id) REFERENCES exam_papers(id)
-                )
-                """
-            )
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS session_attendance (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id INTEGER NOT NULL,
-                    student_id INTEGER NOT NULL,
-                    attendance_status TEXT NOT NULL,
-                    source_reason TEXT,
-                    matched_paper_id INTEGER,
-                    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-                    UNIQUE(session_id, student_id),
-                    FOREIGN KEY(session_id) REFERENCES grading_sessions(id),
-                    FOREIGN KEY(student_id) REFERENCES students(id),
-                    FOREIGN KEY(matched_paper_id) REFERENCES exam_papers(id)
-                )
-                """
-            )
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS session_details (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    result_id INTEGER NOT NULL,
-                    question_id TEXT NOT NULL,
-                    score_awarded REAL NOT NULL,
-                    deduction_reason TEXT,
-                    knowledge_id TEXT NOT NULL,
-                    knowledge_ids TEXT,
-                    error_category TEXT,
-                    error_summary TEXT,
-                    FOREIGN KEY(result_id) REFERENCES session_results(id)
-                )
-                """
-            )
-            self._ensure_column(conn, "session_details", "knowledge_ids", "TEXT")
-            self._ensure_column(conn, "session_details", "error_category", "TEXT")
-            self._ensure_column(conn, "session_details", "error_summary", "TEXT")
-            self._ensure_column(conn, "session_details", "confidence_score", "REAL")
-            self._ensure_column(
-                conn,
-                "session_details",
-                "secondary_errors_json",
-                "TEXT NOT NULL DEFAULT '[]'",
-            )
-
-            # Template + annotation tables
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS session_templates (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id INTEGER NOT NULL UNIQUE,
-                    front_template_path TEXT NOT NULL,
-                    back_template_path TEXT NOT NULL,
-                    ai_analysis_path TEXT,
-                    template_config_path TEXT,
-                    regions_path TEXT,
-                    is_confirmed INTEGER NOT NULL DEFAULT 0,
-                    regions_snapshot_pending INTEGER NOT NULL DEFAULT 0,
-                    regions_snapshot_token TEXT,
-                    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-                    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-                    FOREIGN KEY(session_id) REFERENCES grading_sessions(id)
-                )
-                """
-            )
-            self._ensure_column(conn, "session_templates", "ai_analysis_path", "TEXT")
-            self._ensure_column(conn, "session_templates", "template_config_path", "TEXT")
-            self._ensure_column(conn, "session_templates", "regions_path", "TEXT")
-            self._ensure_column(conn, "session_templates", "regions_snapshot_pending", "INTEGER NOT NULL DEFAULT 0")
-            self._ensure_column(conn, "session_templates", "regions_snapshot_token", "TEXT")
             conn.execute(
                 """
                 UPDATE session_templates
@@ -420,36 +213,6 @@ class DBManager:
                 WHERE regions_snapshot_pending = 0
                 """
             )
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS answer_regions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    region_uuid TEXT NOT NULL UNIQUE,
-                    session_id INTEGER NOT NULL,
-                    template_id INTEGER NOT NULL,
-                    page TEXT NOT NULL,
-                    region_order INTEGER NOT NULL,
-                    x INTEGER NOT NULL,
-                    y INTEGER NOT NULL,
-                    w INTEGER NOT NULL,
-                    h INTEGER NOT NULL,
-                    detected_question_id TEXT,
-                    mapped_question_id TEXT,
-                    confidence REAL NOT NULL DEFAULT 0,
-                    is_confirmed INTEGER NOT NULL DEFAULT 0,
-                    mapping_status TEXT NOT NULL DEFAULT 'unbound',
-                    multi_region_confirmed INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-                    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-                    FOREIGN KEY(session_id) REFERENCES grading_sessions(id),
-                    FOREIGN KEY(template_id) REFERENCES session_templates(id)
-                )
-                """
-            )
-            self._ensure_column(conn, "answer_regions", "region_uuid", "TEXT")
-            self._ensure_column(conn, "answer_regions", "mapping_status", "TEXT NOT NULL DEFAULT 'unbound'")
-            self._ensure_column(conn, "answer_regions", "multi_region_confirmed", "INTEGER NOT NULL DEFAULT 0")
 
             seen_region_uuids: set[str] = set()
             region_identity_rows = conn.execute(
@@ -484,55 +247,6 @@ class DBManager:
                    )
                 """
             )
-            conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_answer_regions_region_uuid_unique ON answer_regions(region_uuid)"
-            )
-            conn.execute(
-                """
-                CREATE TRIGGER IF NOT EXISTS answer_regions_region_uuid_required_insert
-                BEFORE INSERT ON answer_regions
-                WHEN NEW.region_uuid IS NULL OR TRIM(NEW.region_uuid) = ''
-                BEGIN
-                    SELECT RAISE(ABORT, 'answer_regions.region_uuid must be nonblank');
-                END
-                """
-            )
-            conn.execute(
-                """
-                CREATE TRIGGER IF NOT EXISTS answer_regions_region_uuid_required_update
-                BEFORE UPDATE OF region_uuid ON answer_regions
-                WHEN NEW.region_uuid IS NULL OR TRIM(NEW.region_uuid) = ''
-                BEGIN
-                    SELECT RAISE(ABORT, 'answer_regions.region_uuid must be nonblank');
-                END
-                """
-            )
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS annotated_results (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id INTEGER NOT NULL,
-                    result_id INTEGER NOT NULL UNIQUE,
-                    annotated_front_path TEXT,
-                    annotated_back_path TEXT,
-                    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-                    FOREIGN KEY(session_id) REFERENCES grading_sessions(id),
-                    FOREIGN KEY(result_id) REFERENCES session_results(id)
-                )
-                """
-            )
-
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_students_class_name ON students(class_name)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_grading_sessions_active ON grading_sessions(is_deleted, status, updated_at)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_exam_papers_session_status ON exam_papers(session_id, processing_status)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_exam_papers_student ON exam_papers(student_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_session_results_session_student ON session_results(session_id, student_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_session_results_paper ON session_results(paper_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_session_attendance_session_status ON session_attendance(session_id, attendance_status)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_session_details_result ON session_details(result_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_session_details_question ON session_details(question_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_grading_details_exam_result ON grading_details(exam_result_id)")
 
             conn.commit()
 

@@ -11,10 +11,11 @@
 - **当前状态：** 本文只描述已进入共同基线的实现事实；动态执行进度见 `docs/superpowers/packages/EXECUTION_INDEX.md`
 - **历史增量说明：** 下列 P1/P2 条目保留各包交付当时的边界；其中“生产 UI 尚未切换”“Streamlit 保持兼容”等历史措辞，已由 P2-21/P2-22 的当前事实取代。
 - **P2-21/P2-22 当前边界：** `运行.bat` 只启动 FastAPI 同源托管的 Vue SPA（默认 `127.0.0.1:8000`）。旧 `web_app.py`、`pages/`、`pages_shared/`、旧 Streamlit 桌面启动器和 `streamlit-drawable-canvas` 已退役；Vue 仍直接复用的 `components/answer_region_editor/` 核心资产保留。Streamlit 核心依赖暂仅服务 P3-15 明确处理的客观题准入向导和历史 P1-29 验收工具，不再处于生产启动或导航调用链。
-- **P3-01 至 P3-07 当前边界：** `tools/build_p3_01_baseline.py` 可从当前源码、Schema 和受控历史证据生成内容寻址的结构基线；共享评分结果与试卷组类型已移入 `backend/domain_models.py`。`backend/repositories/` 提供 SQLite 连接所有权、事务和只读会话契约，并已抽取学生、考试会话、答卷、评分结果/明细、复核、模板、答题区与应用设置仓储；正式 FastAPI、Job、评分、复核、报告、分析、媒体和工作台调用方统一接收 `GradingRepositoryAccess`，只读请求继续借用同一快照连接。`DBManager` 只从 `backend/repositories/compat.py` 的单一兼容组装点创建，保留一个版本承接初始化、备份、跨域兼容编排、运行时 DDL 与尚未迁移的聚合 SQL；旧入口和兼容测试仍可直接使用它。`AnswerRegionCommitService` 的数据库操作已走模板/答题区仓储，数据库提交后的文件快照、workflow 与草稿补偿协议保持不变。该批次不改变数据库 Schema、API 契约、业务结果或真实数据。
+- **P3-01 至 P3-07 当前边界：** `tools/build_p3_01_baseline.py` 可从当前源码、Schema 和受控历史证据生成内容寻址的结构基线；共享评分结果与试卷组类型已移入 `backend/domain_models.py`。`backend/repositories/` 提供 SQLite 连接所有权、事务和只读会话契约，并已抽取学生、考试会话、答卷、评分结果/明细、复核、模板、答题区与应用设置仓储；正式 FastAPI、Job、评分、复核、报告、分析、媒体和工作台调用方统一接收 `GradingRepositoryAccess`，只读请求继续借用同一快照连接。`DBManager` 只从 `backend/repositories/compat.py` 的单一兼容组装点创建，保留一个版本承接初始化、备份、跨域兼容编排与尚未迁移的聚合 SQL；旧入口和兼容测试仍可直接使用它。`AnswerRegionCommitService` 的数据库操作已走模板/答题区仓储，数据库提交后的文件快照、workflow 与草稿补偿协议保持不变。该批次不改变数据库 Schema、API 契约、业务结果或真实数据。
 - **P3-08 当前边界：** `backend/document_parsing/` 以窄接口承接 DOCX/PDF 文字提取、纯文本题目/答案解析和富文本 DOCX 题块装配；正式配置来源服务显式传入临时根、资产根、文件登记与受控写回调，解析包不依赖模型客户端。`session_manager` 与 `rubric_auto_cropper` 保留一个版本的兼容 import，PDF 页面渲染/题图裁切、prompt、生成编排、题号/答案/题型推断、100 分约束与质量告警语义均未改变。
 - **P3-09 当前边界：** `backend/config_generation/` 承接活动小批次 Prompt、教师结构精修 Prompt、整卷 AI 配分 Prompt、单次请求 Gateway 适配器，以及顺序分批、失败批次选择性重试、合并、进度与检查点编排；正式配置 Job 通过兼容 facade 使用新服务，`session_manager` 的旧名称继续可用。P3-10 负责的 Schema 归一、题型/答案本地事实、100 分约束和质量告警仍以显式 policy callbacks 注入，模型、超时、请求参数、批次、重试、发布事务、API 和真实数据语义均未改变。
 - **P3-10 当前边界：** `backend/config_generation/normalization.py`、`score_allocation.py`、`local_facts.py`、`quality.py` 与 `policy.py` 分别承接生成配置 Schema/知识点/客观题与解答题硬规则、AI 配分结构校验与写回、本地题块事实、质量告警和 P3-09 回调组装；配置编辑/发布直接依赖新模块，`session_manager` 只以一个兼容导出块保留旧名称。迁移保留逐次 golden payload、100 分整数分配、单题 18 分上限、同类客观题同分、答案等价、告警顺序/文案和严格失败语义，不修改 Prompt、模型调用、API、数据库 Schema、发布事务或真实数据。
+- **P3-11 当前边界：** `migrations/` 是两库 Schema 的唯一权威来源。统一版本门槛在 FastAPI lifespan、Windows 启动器和四个历史初始化入口执行连续版本、checksum 与未来版本校验，并以逐迁移原子事务和 SQLite 写锁处理失败与并发启动；不兼容数据库会在服务启动前以不含本机路径的提示失败关闭。`DBManager`、`JobStore`、`GradingRunStore` 和题库初始化已移除建表、补列、索引与触发器 DDL，但保留既有非 DDL 数据维护和题库内置技能播种。阅卷库新增 `004_add_jobs_result_json.sql` 承接旧 `JobStore` 补列兼容；历史 000 基线生成器已停用，迁移演练只以干净空库执行当前迁移作为 Schema 参照。该包不改业务接口、状态语义、评分规则或真实业务数据。
 - **既有题库语义边界：** 在隔离分支把题库当前 `question_tags` 设为批改上下文、知识图谱和训练推荐的唯一活动语义来源；旧技能目录、概念映射和相关表保留一个版本作为只读回退，不再参与活动图谱/推荐
 - **P1-15 增量边界：** FastAPI 只公开试卷、题目分页/详情、当前标签、富文本/预览元数据和受控图片 GET；源题库通过有界 M1-W1-W2-M2 临时快照读取，SQLite 不打开源 main/WAL/SHM，持续变化以脱敏 503 fail closed
 - **P1-16 增量边界：** FastAPI 增加教师确认标签、带 revision 的题目软删除/恢复、受控 DOCX/PDF 流式暂存和 pending 导入请求；不执行长导入、不调用 AI、不写旧技能表，写入冲突以 409 fail closed
@@ -179,7 +180,7 @@ flowchart LR
 | 诊断与训练 | 跨库读取阅卷证据、按精确知识点标签聚合、精确标签候选推荐、训练任务和导出 | `integration/`、`question_bank/recommendation`、训练服务、`backend/jobs/training_export.py`、`backend/api/routers/training.py`、Vue 训练工作区 | FastAPI 复用现有服务提供 tag-only 诊断、推荐预览、幂等任务确认和可取消/重试的导出 Job；通过应用层同时访问两个数据库，无跨库事务和外键；真实训练结果回流尚未进入 API |
 | 原卷标签工作流 | 原卷归档、题库导入、受控 AI 打标、来源题确定性关联、状态重算和重试 | `integration/grading_paper_skill_workflow_service.py`、API/Vue 工作流、题库导入/链接服务 | 两库不能共享事务；每次运行后从实际题目、标签和链接重算 `ready/partial/failed` |
 | 旧技能与知识对齐（回退） | 统一技能目录、旧知识映射、技能链接、冲突和迁移 | `question_bank/models`、`taxonomy`、技能/对齐服务 | 保留读取与迁移工具；活动图谱/推荐不读写这些身份，题库标签保存也只在显式 `resolve_skills=True` 时双写 |
-| 数据与运维 | 领域数据类型、仓储、路径、SQLite、备份、恢复、迁移、存储审计和数据包 | `backend/domain_models.py`、`backend/repositories/`、`path_manager.py`、`db_manager.py`、`question_bank/database`、`update_tools/`、`tools/` | 活跃调用方统一依赖 `GradingRepositoryAccess` 的命名仓储；`DBManager` 只保留单一兼容组装点、旧入口、运行时 DDL及尚未迁移的聚合 SQL |
+| 数据与运维 | 领域数据类型、仓储、路径、SQLite、备份、恢复、迁移、存储审计和数据包 | `backend/domain_models.py`、`backend/repositories/`、`path_manager.py`、`db_manager.py`、`question_bank/database`、`update_tools/`、`tools/` | 活跃调用方统一依赖 `GradingRepositoryAccess` 的命名仓储；两库 Schema 统一由顺序迁移管理，`DBManager` 只保留单一兼容组装点、旧入口、非 DDL 维护及尚未迁移的聚合 SQL |
 
 ### 主要依赖关系
 
@@ -215,8 +216,8 @@ flowchart TD
 实际边界偏差必须保留为事实：
 
 - 旧页面直接持有数据库路径的偏差已随 P2-22 退役；当前 Vue 页面只通过 FastAPI 使用业务能力。
-- 评分结果、题目评分明细和试卷组共享类型已由 `backend/domain_models.py` 承接，`db_manager.py` 不再反向导入评分器或扫描器；学生、会话、评分数据、复核、模板、答题区和应用设置已抽取仓储，正式调用方经 `GradingRepositoryAccess` 使用命名仓储；`DBManager` 仅由单一兼容组装点、旧入口和兼容测试直接持有，仍承载 Schema、备份、跨域兼容编排和其他尚未迁移的聚合 SQL。
-- 题库服务大多直接执行 SQL，`question_bank/database/schema.py` 只提供连接和建表，不是完整数据访问层。
+- 评分结果、题目评分明细和试卷组共享类型已由 `backend/domain_models.py` 承接，`db_manager.py` 不再反向导入评分器或扫描器；学生、会话、评分数据、复核、模板、答题区和应用设置已抽取仓储，正式调用方经 `GradingRepositoryAccess` 使用命名仓储；`DBManager` 仅由单一兼容组装点、旧入口和兼容测试直接持有，仍承载备份、跨域兼容编排、非 DDL 数据维护和其他尚未迁移的聚合 SQL。
+- 题库服务大多直接执行 SQL，`question_bank/database/schema.py` 只提供连接、统一迁移门槛、兼容数据回填和内置技能播种，不是完整数据访问层。
 - 外部模型调用未完全收敛到 `LLMClient`：选择/填空/批量客观题识别和题库打标部分路径会直接实例化 OpenAI 客户端。
 - AST 静态导入图存在两组循环耦合：Schema 与技能目录服务、题目服务与题目频次服务。当前通过函数内延迟导入避免了直接初始化死循环，但仍增加演进风险。
 
@@ -250,7 +251,7 @@ AI阅卷系统_工作机版_v1.5.0/
 ├── hybrid_batch_grading_service.py # 混合批改批处理
 ├── session_manager.py             # 评分依据与答案生成/规范化
 ├── answer_region_*.py             # 答题区模型、草稿、锁和提交服务
-├── db_manager.py                  # 阅卷库兼容门面、Schema、备份与尚未抽取的查询/写入
+├── db_manager.py                  # 阅卷库兼容门面、备份、数据维护与尚未抽取的查询/写入
 ├── question_bank/
 │   ├── database/                  # 题库连接与 Schema
 │   ├── models/                    # 题目、标签、知识、技能模型
@@ -275,7 +276,7 @@ AI阅卷系统_工作机版_v1.5.0/
 | 文件 | 约行数 | 混合职责 |
 |---|---:|---|
 | `session_manager.py` | 4,422 | 文档解析、模型提示、重试、规范化、评分分配和文件写入 |
-| `db_manager.py` | 2,983 | Schema、迁移兼容、备份、多个聚合根的查询与写入 |
+| `db_manager.py` | 2,089 | 迁移兼容、备份、数据维护、多个聚合根的查询与写入 |
 | `question_bank/recommendation/practice_plan_service.py` | 1,323 | 新旧推荐模式、分组、选题和解释数据 |
 | `hybrid_batch_grading_service.py` | 1,219 | 图像切片、并发请求、客观/主观合并和结果组装 |
 | `scanner.py` | 1,205 | PDF 渲染、OCR、姓名匹配、页配对和序列化 |
@@ -467,12 +468,9 @@ flowchart LR
 
 ### 6.3 Schema 变更机制
 
-当前有两套并行机制：
+两库 Schema 只由 `migrations/` 下的顺序 SQL 迁移管理。`update_tools/migrate_db.py` 在每个迁移前自动备份，以单迁移原子事务执行并记录 `schema_migrations`；已登记历史必须是当前迁移清单的连续前缀且 checksum 一致，未知未来版本、历史缺口或文件漂移都会拒绝启动。
 
-1. 应用运行时：`DBManager.initialize()` 和 `question_bank.database.initialize_database()` 执行 `CREATE TABLE IF NOT EXISTS`、补列、索引、触发器、数据回填和技能播种。
-2. 运维迁移：`update_tools/migrate_db.py` 按 `migrations/` 执行 SQL、备份并记录 `schema_migrations`。
-
-当前数据库没有 `schema_migrations` 表，说明实际 Schema 主要由运行时初始化形成，迁移记录不能还原其来源。迁移工具会容忍重复列/表，但两套定义仍可能漂移。用户已于 2026-06-28 确认：**后续以 `migrations/` 中的迁移文件为 Schema 权威来源**；这一目标尚未在业务代码中完成收敛，当前运行时初始化仍是事实上的并行来源。
+`backend/schema_migrations.py` 为生产启动和历史初始化入口提供统一版本门槛。空库会完整 bootstrap，受支持的旧库按顺序升级，当前库重复启动不再生成备份或执行 DDL。`DBManager.initialize()` 与题库初始化仍保留数据回填、UUID 修复和内置技能播种等非 DDL 兼容行为。历史 `000_baseline_schema.sql` 不再允许重新生成；后续 Schema 变化必须新增 forward migration。
 
 ## 7. 接口与集成
 
@@ -552,7 +550,7 @@ Python 的运行依赖 `requirements.txt` 只给下限，没有完整运行时�
 | 推荐只接受精确共享知识点标签 | 已实施 | `PracticePlanService` 标签分支 | 支持标签、难度、频次和多样性只影响排序；缺题不模糊补足 |
 | 会话 `completed` 表示运行结束，允许存在失败答卷 | 已确认且符合当前实现 | 用户确认、`grading_service.py` | 所有运营展示必须同时读取失败答卷统计 |
 | running job 采用协作式、两阶段取消 | 已实施于现有 report/scan/grading handlers | `JobStore.request_cancel()`、`JobContext.raise_if_cancelled()`、三类 handler 安全发布边界 | 不强杀线程或单次外部请求；取消只有在未发布结果仍可安全丢弃时确认，已跨过发布边界的正常完成可在竞态中胜出 |
-| 以 SQL 迁移文件作为 Schema 权威来源 | 已确认，待实施收敛 | 用户于 2026-06-28 确认 | 需先补基线和迁移测试，再缩减运行时 DDL；可在收敛前保留现有初始化作为兼容回退 |
+| 以 SQL 迁移文件作为 Schema 权威来源 | 已实施 | `migrations/`、统一版本门槛与四个兼容初始化入口 | 后续 Schema 变化只能新增 forward migration；历史迁移不得改写 |
 | 当前模型数据政策满足学校要求 | 用户确认 | 用户于 2026-06-28 确认 | 供应商或合同变化时重新评估；本次未独立核验 |
 | 停用客观题准入向导 | 已确认，代码待清理 | 用户于 2026-06-28 确认 | 不恢复缺失辅助脚本；后续可在独立变更中移除入口和死代码 |
 
@@ -563,7 +561,6 @@ Python 的运行依赖 `requirements.txt` 只给下限，没有完整运行时�
 | P0 | 敏感运行数据仍被 Git 跟踪 | `api_profiles.json` 已从当前索引移除，但两个数据库、学生数据和历史备份仍被跟踪；历史提交仍可能包含旧 API Key | 学生信息、成绩、原卷以及历史密钥仍可能存在于远端和仓库历史 | 轮换现有 API Key；后续单独评估数据库/原卷的历史清理与白名单策略 | 否；API 当前传播路径已切断，历史风险未消除 |
 | P0 | 数据包导入不是事务且备份失败不阻塞 | 当前实现捕获备份异常后继续逐文件覆盖数据库和配置 | 导入中断可形成跨文件/跨库不一致，原数据可能无法恢复 | 先验证备份成功，再解压到暂存区、校验清单并原子切换；提供回滚日志 | 否 |
 | P1 | API Key 仍为本机明文存储 | 配置已移到 Windows 用户目录并排除出 Git、导出、更新备份和便携包，但尚未接入 Windows 凭据库 | 同一 Windows 账户下能读取该文件的进程仍可获得密钥 | 后续可迁移到 Windows Credential Manager；当前至少限制文件所在账户和机器访问 | 否 |
-| P1 | Schema 尚未收敛到已确认的权威来源 | 已确认迁移文件为权威，但运行时初始化与 SQL migrations 仍同时改 Schema；当前数据库无 `schema_migrations` | 定义漂移、升级路径不可审计、测试库与工作库来源不同 | 补基线迁移和迁移测试；分阶段把运行时 DDL 缩减为版本检查/最小引导 | 否 |
 | P1 | 便携运行时 SQLite 3.43.1 未包含上游 WAL-reset race 修复 | 上游修复位于 3.51.3+，并回移到部分后续旧分支；P1-15 临时快照不在源库建立 SQLite 连接，因此不新增源端 writer/checkpointer，但也不能修复既有并发写/checkpoint 风险 | 极低概率的源端 WAL reset/checkpoint 竞争可能损坏数据库；不能宣称任意并发 writer/checkpoint 下严格可靠 | 在独立运行时升级包验证并升级到含修复版本；保留备份、完整性检查和单机边界 | 否；P1-15 不新增触发参与者 |
 | P2 | P1-15 题库读快照每请求多遍读取 main/WAL 并执行 `quick_check` | 正确性边界要求 M1-W1-W2-M2、临时写入和候选校验；P1-26 已建立三个命名工作负载的优化前基线，P1-27 只减少五个目标接口的请求内重复连接/语句，不消除快照 I/O | 数据量增长后仍可能增加列表/详情延迟与临时 I/O；当前报告不是容量或 SLA 结论 | 按版本化基线监测并只在独立优化包决策；没有可靠失效协议前不跨请求缓存 | 否 |
 | P1 | 核心后端模块仍过大且跨域 | 已抽取共享领域类型、仓储基础设施及学生/考试会话仓储，但 `session_manager.py`、`db_manager.py` 等仍承载多个职责 | 回归面大、难以独立测试、继续叠加易触发跨层调用 | 继续按 Phase 3 计划逐个聚合抽取，保留兼容门面并用契约测试守住行为 | 否 |
