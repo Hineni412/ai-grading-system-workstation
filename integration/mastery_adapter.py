@@ -43,7 +43,6 @@ def read_mastery_sqlite(
             s.name AS student_name,
             s.class_name,
             sd.question_id,
-            sd.knowledge_id,
             sd.knowledge_ids,
             sd.score_awarded,
             sd.deduction_reason,

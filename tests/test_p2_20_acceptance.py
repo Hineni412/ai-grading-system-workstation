@@ -367,12 +367,12 @@ def _seed_complete_grading(
                 """
                 INSERT INTO session_details (
                     result_id, question_id, score_awarded,
-                    deduction_reason, knowledge_id, confidence_score
+                    deduction_reason, knowledge_ids, confidence_score
                 ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 [
-                    (result_id, "Q1", 30, "", "K1", 95),
-                    (result_id, "Q2", 40, "", "K2", 95),
+                    (result_id, "Q1", 30, "", '["K1"]', 95),
+                    (result_id, "Q2", 40, "", '["K2"]', 95),
                 ],
             )
         connection.commit()

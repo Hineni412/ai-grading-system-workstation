@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -86,7 +87,6 @@ class ReportRepository:
                 sd.question_id,
                 sd.score_awarded,
                 sd.deduction_reason,
-                sd.knowledge_id,
                 sd.knowledge_ids,
                 sd.error_category,
                 sd.error_summary
@@ -102,8 +102,17 @@ class ReportRepository:
             session=dict(session_row) if session_row is not None else None,
             results=[dict(row) for row in result_rows],
             attendance=[dict(row) for row in attendance_rows],
-            details=[dict(row) for row in detail_rows],
+            details=[_detail_with_knowledge_ids(row) for row in detail_rows],
         )
+
+
+def _detail_with_knowledge_ids(row: Any) -> dict[str, Any]:
+    detail = dict(row)
+    raw_ids = detail.get("knowledge_ids")
+    knowledge_ids = json.loads(raw_ids) if isinstance(raw_ids, str) else list(raw_ids)
+    detail["knowledge_ids"] = knowledge_ids
+    detail["knowledge_id"] = knowledge_ids[0]
+    return detail
 
 
 class ReportRepositoryGateway:

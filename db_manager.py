@@ -1320,7 +1320,7 @@ class DBManager:
             if session_id not in rubric_cache:
                 rubric_cache[session_id] = self._load_rubric_maps_for_session(session_id)
             qid = str(row.get("question_id") or "")
-            row_knowledge_ids = rubric_cache[session_id].get("knowledge", {}).get(qid) or _knowledge_ids_from_row(row)
+            row_knowledge_ids = _knowledge_ids_from_row(row)
             if not _knowledge_id_matches(knowledge_id, row_knowledge_ids):
                 continue
             full_score = rubric_cache[session_id]["score"].get(qid)
@@ -1415,7 +1415,7 @@ class DBManager:
             if session_id not in rubric_cache:
                 rubric_cache[session_id] = self._load_rubric_maps_for_session(session_id)
             qid = str(row.get("question_id") or "")
-            row_knowledge_ids = rubric_cache[session_id].get("knowledge", {}).get(qid) or _knowledge_ids_from_row(row)
+            row_knowledge_ids = _knowledge_ids_from_row(row)
             if knowledge_id is not None and not _knowledge_id_matches(knowledge_id, row_knowledge_ids):
                 continue
             full_score = rubric_cache[session_id]["score"].get(qid)
@@ -1445,7 +1445,7 @@ class DBManager:
                 rubric_cache[session_id] = self._load_rubric_maps_for_session(session_id)
             maps = rubric_cache[session_id]
             qid = str(row.get("question_id") or "")
-            knowledge_ids = maps.get("knowledge", {}).get(qid) or _knowledge_ids_from_row(row)
+            knowledge_ids = _knowledge_ids_from_row(row)
             full_score = maps["score"].get(qid)
             awarded = _safe_float(row.get("score_awarded"), 0.0)
             full_score_value = _safe_float(full_score, 0.0)

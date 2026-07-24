@@ -371,7 +371,7 @@ def _bootstrap_through_004(tmp_path: Path) -> tuple[Path, Path]:
     migrations = tmp_path / "pre-005-migrations"
     migrations.mkdir()
     for source in sorted(GRADING_MIGRATIONS.glob("*.sql")):
-        if source.name.startswith("005_"):
+        if source.name.startswith(("005_", "006_")):
             continue
         shutil.copy2(source, migrations / source.name)
     report = run_migrations(
@@ -438,7 +438,8 @@ def test_005_rebuild_preserves_legal_rows_and_restores_schema_objects(
 
     assert report.error is None, report.error
     assert [(item.name, item.status) for item in report.results] == [
-        ("005_add_status_constraints", "applied")
+        ("005_add_status_constraints", "applied"),
+        ("006_knowledge_ids_primary", "applied"),
     ]
     assert Path(report.results[0].backup_path or "").is_file()
     with sqlite3.connect(database) as connection:
