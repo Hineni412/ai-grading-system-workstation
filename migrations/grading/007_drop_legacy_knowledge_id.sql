@@ -1,6 +1,111 @@
 -- migration-policy: rebuild-tables session_details
 -- P3-14: remove the retired generated knowledge_id compatibility column.
 
+CREATE TEMP TABLE p3_14_schema_guard (
+    token INTEGER NOT NULL UNIQUE
+);
+
+INSERT INTO p3_14_schema_guard (token) VALUES (1);
+
+WITH expected_columns (
+    cid, name, type, not_null, default_value, primary_key, hidden
+) AS (
+    VALUES
+        (0, 'id', 'INTEGER', 0, NULL, 1, 0),
+        (1, 'result_id', 'INTEGER', 1, NULL, 0, 0),
+        (2, 'question_id', 'TEXT', 1, NULL, 0, 0),
+        (3, 'score_awarded', 'REAL', 1, NULL, 0, 0),
+        (4, 'deduction_reason', 'TEXT', 0, NULL, 0, 0),
+        (5, 'knowledge_ids', 'TEXT', 1, NULL, 0, 0),
+        (6, 'knowledge_id', 'TEXT', 1, NULL, 0, 3),
+        (7, 'error_category', 'TEXT', 0, NULL, 0, 0),
+        (8, 'error_summary', 'TEXT', 0, NULL, 0, 0),
+        (9, 'confidence_score', 'REAL', 0, NULL, 0, 0),
+        (10, 'secondary_errors_json', 'TEXT', 1, '''[]''', 0, 0)
+)
+INSERT INTO p3_14_schema_guard (token)
+SELECT 1
+WHERE
+    (
+        SELECT COUNT(*)
+        FROM pragma_table_xinfo('session_details')
+    ) <> (
+        SELECT COUNT(*)
+        FROM expected_columns
+    )
+    OR EXISTS (
+        SELECT 1
+        FROM expected_columns AS expected
+        LEFT JOIN pragma_table_xinfo('session_details') AS actual
+          ON actual.cid = expected.cid
+        WHERE
+            actual.name IS NOT expected.name
+            OR actual.type IS NOT expected.type
+            OR actual."notnull" IS NOT expected.not_null
+            OR actual.dflt_value IS NOT expected.default_value
+            OR actual.pk IS NOT expected.primary_key
+            OR actual.hidden IS NOT expected.hidden
+    )
+    OR (
+        SELECT COUNT(*)
+        FROM pragma_foreign_key_list('session_details')
+    ) <> 1
+    OR NOT EXISTS (
+        SELECT 1
+        FROM pragma_foreign_key_list('session_details')
+        WHERE
+            "table" = 'session_results'
+            AND "from" = 'result_id'
+            AND "to" = 'id'
+            AND on_update = 'NO ACTION'
+            AND on_delete = 'NO ACTION'
+            AND match = 'NONE'
+    )
+    OR (
+        SELECT COUNT(*)
+        FROM pragma_index_list('session_details')
+    ) <> 2
+    OR NOT EXISTS (
+        SELECT 1
+        FROM pragma_index_list('session_details')
+        WHERE
+            name = 'idx_session_details_question'
+            AND "unique" = 0
+            AND origin = 'c'
+            AND partial = 0
+    )
+    OR NOT EXISTS (
+        SELECT 1
+        FROM pragma_index_list('session_details')
+        WHERE
+            name = 'idx_session_details_result'
+            AND "unique" = 0
+            AND origin = 'c'
+            AND partial = 0
+    )
+    OR (
+        SELECT COUNT(*)
+        FROM sqlite_schema
+        WHERE type = 'trigger' AND tbl_name = 'session_details'
+    ) <> 2
+    OR NOT EXISTS (
+        SELECT 1
+        FROM sqlite_schema
+        WHERE
+            type = 'trigger'
+            AND tbl_name = 'session_details'
+            AND name = 'session_details_knowledge_ids_valid_insert'
+    )
+    OR NOT EXISTS (
+        SELECT 1
+        FROM sqlite_schema
+        WHERE
+            type = 'trigger'
+            AND tbl_name = 'session_details'
+            AND name = 'session_details_knowledge_ids_valid_update'
+    )
+LIMIT 1;
+
 CREATE TEMP TABLE p3_14_validation_guard (
     token INTEGER NOT NULL UNIQUE
 );
