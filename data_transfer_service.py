@@ -42,6 +42,10 @@ SENSITIVE_FILE_NAMES = {
     "api_profiles.json",
 }
 
+REGENERABLE_USER_DATA_TOP_LEVEL = {
+    "cache",
+}
+
 LEAN_SKIP_USER_DATA_TOP_LEVEL = {
     "annotated",
     "archives",
@@ -93,11 +97,18 @@ def should_include_export_path(path: Path, source_root: Path, arc_root: str, sco
     if path.name.lower() in SENSITIVE_FILE_NAMES:
         return False
 
+    lower_parts = tuple(part.lower() for part in rel_parts)
+    if (
+        arc_root == "user_data"
+        and lower_parts
+        and lower_parts[0] in REGENERABLE_USER_DATA_TOP_LEVEL
+    ):
+        return False
+
     if scope == "full":
         return True
 
     if arc_root == "user_data":
-        lower_parts = tuple(part.lower() for part in rel_parts)
         if lower_parts and lower_parts[0] in LEAN_SKIP_USER_DATA_TOP_LEVEL:
             return False
         if any(part in LEAN_SKIP_ANY_DIR for part in lower_parts[:-1]):
