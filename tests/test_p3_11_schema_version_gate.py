@@ -331,7 +331,7 @@ def test_question_bank_initializer_uses_current_migrations(
 ) -> None:
     database = tmp_path / "question_bank.db"
 
-    initialize_database(database, seed_skills=False)
+    initialize_database(database)
 
     with sqlite3.connect(database) as connection:
         current = connection.execute(
@@ -343,7 +343,7 @@ def test_question_bank_initializer_uses_current_migrations(
             LIMIT 1
             """
         ).fetchone()
-    assert current == ("008_add_unified_skill_catalog",)
+    assert current == ("009_drop_legacy_skill_semantics",)
 
 
 @pytest.mark.parametrize("source_path", RUNTIME_SCHEMA_OWNERS)
@@ -368,7 +368,7 @@ def test_application_schema_gate_checks_both_databases(tmp_path: Path) -> None:
     assert results["grading"].current_version == "008_drop_legacy_cli_tables"
     assert (
         results["question_bank"].current_version
-        == "008_add_unified_skill_catalog"
+        == "009_drop_legacy_skill_semantics"
     )
 
 
@@ -442,7 +442,7 @@ def test_fastapi_lifespan_checks_both_schema_versions(tmp_path: Path) -> None:
             "SELECT migration_name FROM schema_migrations "
             "WHERE success = 1 ORDER BY id DESC LIMIT 1"
         ).fetchone()
-    assert current == ("008_add_unified_skill_catalog",)
+    assert current == ("009_drop_legacy_skill_semantics",)
 
 
 def test_fastapi_lifespan_schema_failure_does_not_expose_local_path(

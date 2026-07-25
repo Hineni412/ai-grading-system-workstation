@@ -186,14 +186,11 @@ def test_replace_tags_rejects_missing_or_deleted_question(write_seed) -> None:
         service.replace_tags(999, expected_revision=revision, tags=[])
 
 
-def test_replace_tags_rolls_back_and_does_not_write_legacy_skills(
+def test_replace_tags_rolls_back_after_insert_failure(
     write_seed,
 ) -> None:
     service, question_id, revision = write_seed
     with sqlite3.connect(service.db_path) as conn:
-        skill_count = conn.execute(
-            "SELECT COUNT(*) FROM question_skill_links"
-        ).fetchone()[0]
         conn.execute(
             """
             CREATE TRIGGER reject_manual_tag
@@ -214,8 +211,6 @@ def test_replace_tags_rolls_back_and_does_not_write_legacy_skills(
         )
 
     assert _load_tags(service.db_path, question_id)[0]["tag_value"] == "旧标签"
-    with sqlite3.connect(service.db_path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM question_skill_links").fetchone()[0] == skill_count
 
 
 def test_soft_delete_and_restore_preserve_question_tags(write_seed) -> None:

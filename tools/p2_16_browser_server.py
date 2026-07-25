@@ -159,7 +159,7 @@ def _seed_question_bank(paths) -> None:
     from question_bank.database.schema import initialize_database
 
     DBManager(paths.db_path).initialize()
-    initialize_database(paths.qb_db_path, seed_skills=False)
+    initialize_database(paths.qb_db_path)
     asset_root = paths.data_root / "question_bank" / "extracted_images"
     preview_root = paths.data_root / "question_bank" / "previews"
     rich_root = paths.data_root / "question_bank" / "rich_content"

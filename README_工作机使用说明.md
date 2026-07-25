@@ -117,7 +117,13 @@ runtime\python\python.exe update_tools/restore_backup.py <备份文件名>
 - **任务快照**：已经保存的训练任务和导出仍保持当时的题目快照，不随之后的标签修改而改写。
 - **结果边界**：训练作答结果自动回流尚未启用，不会自动更新学生掌握度。
 
-旧技能目录、概念映射和技能链接表只用于一个版本的只读回退，请勿手工删除或直接修改；活动知识图谱和推荐不会读取它们。
+旧技能目录、概念映射和技能链接已经退役。升级前如需留档，可先运行：
+
+```powershell
+runtime\python\python.exe tools\export_legacy_skill_data.py --database user_data\databases\question_bank.db --output legacy-skills.json
+```
+
+该命令只读源数据库并生成带完整性校验的 JSON；正式升级还会在删除旧表前自动创建整库备份。
 
 ## 技术支持
 
