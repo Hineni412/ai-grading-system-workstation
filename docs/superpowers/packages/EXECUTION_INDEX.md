@@ -76,7 +76,7 @@
 | P3-16 | `merged` | 已通过 PR #93 合入主线，主线合并提交为 `6fb2c93e759011ad95746340153323f961c508c0`；`main.py`、Legacy API/旧报告入口和专属两表已退役，迁移前只读导出、精确删表白名单、自动备份与恢复演练通过。双路初审的 2 个 `Important` 经一次统一修复和限定终审关闭；最终完整门槛 2286 passed / 2 skipped、快速冒烟和真实两库指纹守卫通过，未执行真实库 migration |
 | P3-17 | `merged` | 已通过 PR #96 合入主线，主线合并提交为 `359d9f3d0ae798504ecb776c7ececf3b409bfb7f`；旧模型/服务/显式双写和精确 11 表已退役，归档通过主库/WAL 稳定指纹复制后读取临时快照，不写源目录且保持 WAL 已提交数据可见。初审唯一 `Important` 经一次统一修复和限定终审关闭；integration 18 项回归、快速冒烟、最终完整门禁 2180 passed / 2 skipped、隔离副本迁移/恢复和真实两库指纹守卫通过。Issue #95 单独跟踪范围外旧训练集，未执行真实库 migration |
 | P3-18 | `merged` | 已通过 PR #99 合入主线，主线合并提交为 `5da6de6d1633e1b7459b061753090ada6f6bfebd`。review crop 与图片 memo 分别达到 p50/p95 改善 93.496%/93.483% 和 63.368%/63.379%，输出一致，选择 2/4；标签与 SQL 候选保持拒绝。初审 Spec 0/0/0、Standards 0/1/1，经一次统一修复后限定终审两路 0/0/0；111 项受影响回归、最终完整门槛 2193 passed / 2 skipped、快速冒烟和真实两库指纹守卫通过。修改前既有的随机 PDF 测试夹具由独立 Issue #98 以测试专用修复关闭；未修改生产行为、真实数据或真实模型 |
-| P3-19 | `waiting_review` | 稳定候选的 import guard、五流程、当前真实副本只读、删除回退、性能对照与完整 smoke 已通过；初审去重后 3 个 `Important` 进入一次统一修正，其中逐版本矩阵已补齐为阅卷 10/10、题库 11/11，交接字段和 Index 同步一并修正，待受影响复测与原复审者限定终审 |
+| P3-19 | `waiting_review` | 初审去重后 3 个 `Important` 已统一修正；逐版本矩阵阅卷 10/10、题库 11/11，127 项受影响回归、交接校验、修正后完整 smoke 2198 passed / 2 skipped 和真实两库指纹守卫均通过，待两名原复审者限定终审 |
 | P4-01 至 P4-12 | `planned` | Phase 3 数据边界稳定后放行 |
 | P5-01 至 P5-13 | `planned` | 先实验与设计门，再进入正式实现 |
 
@@ -148,7 +148,7 @@ M2-05 是 P2-22 单包最高风险旧界面退役里程碑，从 P2-21 已通过
 | M3-09 | P3-16 | `merged` | `39ca9361be4e36889ca13818fbd6815d7a485463` | `codex/integration-m3-09` | `6beba42e2aa384fb4145a7b67f43d9cb1432f4a8` | 已通过 PR #93 合入主线，主线合并提交为 `6fb2c93e759011ad95746340153323f961c508c0`。首次完整门槛因修改前既有的 P2-20 随机令牌缺陷出现 1 次失败，受控复现和 10/10 单项复测后登记 Issue #92；未混入范围外修复。最终完整门槛 2286 passed / 2 skipped，快速冒烟、双路限定终审、交接校验和真实两库指纹守卫通过 |
 | M3-10 | P3-17 | `merged` | `92030e1089a92835b61accf449ced2812d84d569` | `codex/integration-m3-10` | `7e8a241041f2522d7372506e58702ed215233b53` | 已通过 PR #96 合入主线，主线合并提交为 `359d9f3d0ae798504ecb776c7ececf3b409bfb7f`。初审 0/1 Important，经一次统一修复和限定终审关闭；18 项受影响回归、快速冒烟、最终完整门禁 2180 passed / 2 skipped、交接校验和真实两库指纹守卫通过。首次受限沙箱完整测试因 Windows 安全文件句柄权限批量失败，正常权限下同版本全量通过，确认不是代码回归 |
 | M3-11 | P3-18 | `merged` | `ae25583b6c02be1f04d59585b489ce27c0718169` | `codex/integration-m3-11` | `fb364050a57399d3252d215f7c70b7968bc016a7` | 已通过 PR #99 合入主线，主线合并提交为 `5da6de6d1633e1b7459b061753090ada6f6bfebd`。正式报告选择 review crop 与图片 memo 2/4；111 项逐包回归、最终完整门槛 2193 passed / 2 skipped、快速冒烟、临时目录清理、限定终审与真实两库指纹守卫通过；独立 Issue #98 已按 completed 关闭 |
-| M3-12 | P3-19 | `in_progress` | `c75323959bbd60ebc9e57a1546ac475afe3e9659` | `codex/integration-m3-12` | `c75323959bbd60ebc9e57a1546ac475afe3e9659` | 单包 Phase 3 总门槛；功能分支 `codex/p3-19-phase3-gate` 已形成统一修正候选，逐版本矩阵为阅卷 10/10、题库 11/11；待受影响回归、完整 smoke、交接校验和限定终审后进入 integration |
+| M3-12 | P3-19 | `in_progress` | `c75323959bbd60ebc9e57a1546ac475afe3e9659` | `codex/integration-m3-12` | `c75323959bbd60ebc9e57a1546ac475afe3e9659` | 单包 Phase 3 总门槛；功能分支 `codex/p3-19-phase3-gate` 的统一修正候选已通过 127 项受影响回归、交接校验、完整 smoke 2198 passed / 2 skipped 和真实两库指纹守卫，待限定终审后进入 integration |
 
 P2-20 的不可变可信领取基线是 `c9662850bbd75a2ba062c0011a6762241818f4d8`，用于该包所有 `handoff_status.py --expected-handoff-base` 核验。该包领取后为解除现场阻塞，同步了已经独立复审并逐项进入 M2-03 的 Issue #60—#65，因此 M2-03 当前已验证且作为最终合入目标的 SHA 已前进到 `6ed4cd64ccab6aa2c51b602c7413c99ecf8d2781`。两者职责不同：不得把计划内冻结的领取基线改成后者，也不得用前者替代 integration 当前状态。
 
@@ -205,4 +205,4 @@ M2-02 是 Python 完整测试并行试点的第二个里程碑：批次末优先
 
 ## 下一动作
 
-P3-19/M3-12 的首轮双复审去重后发现 3 个 `Important`，已进入唯一一次统一修正：补齐两库全部迁移前缀到当前版本的 21 起点矩阵，修正交接字段，并同步本 Index。下一动作是完成受影响回归、当前候选完整 smoke、真实两库指纹守卫和两名原复审者限定终审；通过后形成 `verified_pending_integration` 交接并逐包合入 `codex/integration-m3-12`。不得启动第三轮开放式复审，不得执行真实 migration、真实模型调用或真实 `user_data/` 写入。
+P3-19/M3-12 的首轮双复审去重后 3 个 `Important` 已统一修正；21 起点迁移矩阵、127 项受影响回归、交接校验、修正后完整 smoke 2198 passed / 2 skipped 和真实两库指纹守卫均通过。下一动作仅限两名原复审者核对首轮问题、修正区域和直接回归；通过后形成 `verified_pending_integration` 交接并逐包合入 `codex/integration-m3-12`。不得启动第三轮开放式复审，不得执行真实 migration、真实模型调用或真实 `user_data/` 写入。
