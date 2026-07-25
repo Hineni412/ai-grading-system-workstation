@@ -83,6 +83,11 @@ _REBUILD_POLICY_RE = re.compile(
     r"([A-Za-z0-9_, ]+)\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
+_DROP_POLICY_RE = re.compile(
+    r"^\s*--\s*migration-policy:\s*drop-tables\s+"
+    r"([A-Za-z0-9_, ]+)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 _DROP_TABLE_TARGET_RE = re.compile(
     r"\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)",
     re.IGNORECASE,
@@ -93,6 +98,11 @@ _APPROVED_TABLE_REBUILDS = {
     ),
     "006_knowledge_ids_primary": frozenset({"session_details"}),
     "007_drop_legacy_knowledge_id": frozenset({"session_details"}),
+}
+_APPROVED_TABLE_DROPS = {
+    "008_drop_legacy_cli_tables": frozenset(
+        {"exam_results", "grading_details"}
+    ),
 }
 
 # "duplicate column" 错误消息模式
@@ -105,25 +115,40 @@ def _check_destructive(migration: "MigrationFile") -> list[str]:
     # 去掉注释后检查
     clean = re.sub(r"--.*$", "", migration.sql, flags=re.MULTILINE)
     clean = re.sub(r"/\*.*?\*/", "", clean, flags=re.DOTALL)
-    approved_targets = _APPROVED_TABLE_REBUILDS.get(migration.name)
-    rebuild_is_approved = (
-        approved_targets is not None
-        and migration.rebuild_tables == approved_targets
+    approved_rebuild_targets = _APPROVED_TABLE_REBUILDS.get(migration.name)
+    approved_drop_targets = _APPROVED_TABLE_DROPS.get(migration.name)
+    approved_targets = approved_rebuild_targets or approved_drop_targets
+    table_drop_is_approved = (
+        (
+            approved_rebuild_targets is not None
+            and migration.rebuild_tables == approved_rebuild_targets
+            and not migration.drop_tables
+        )
+        or (
+            approved_drop_targets is not None
+            and migration.drop_tables == approved_drop_targets
+            and not migration.rebuild_tables
+        )
     )
     for pattern in _DESTRUCTIVE_PATTERNS:
         matches = pattern.findall(clean)
         if (
             matches
             and pattern.pattern == r"\bDROP\s+TABLE\b"
-            and rebuild_is_approved
+            and table_drop_is_approved
         ):
             dropped_tables = {
                 match.lower()
                 for match in _DROP_TABLE_TARGET_RE.findall(clean)
             }
+            targets_match_policy = (
+                dropped_tables == approved_targets
+                if migration.drop_tables
+                else dropped_tables <= approved_targets
+            )
             if (
                 len(dropped_tables) == len(matches)
-                and dropped_tables <= approved_targets
+                and targets_match_policy
             ):
                 continue
         if matches:
@@ -141,6 +166,7 @@ class MigrationFile:
     sql: str
     checksum: str
     rebuild_tables: frozenset[str]
+    drop_tables: frozenset[str]
     order: int      # 从文件名解析的序号
 
     @classmethod
@@ -152,6 +178,7 @@ class MigrationFile:
         match = re.match(r"^(\d+)", stem)
         order = int(match.group(1)) if match else 0
         policy_match = _REBUILD_POLICY_RE.search(sql)
+        drop_policy_match = _DROP_POLICY_RE.search(sql)
         rebuild_tables = (
             frozenset(
                 item.strip().lower()
@@ -161,12 +188,22 @@ class MigrationFile:
             if policy_match
             else frozenset()
         )
+        drop_tables = (
+            frozenset(
+                item.strip().lower()
+                for item in drop_policy_match.group(1).split(",")
+                if item.strip()
+            )
+            if drop_policy_match
+            else frozenset()
+        )
         return cls(
             name=stem,
             path=path,
             sql=sql,
             checksum=checksum,
             rebuild_tables=rebuild_tables,
+            drop_tables=drop_tables,
             order=order,
         )
 
@@ -595,7 +632,7 @@ def run_migrations(
             logger.info("执行迁移: %s", mig.name)
             error = _execute_sql_safe(conn, mig.sql)
 
-            if error is None and mig.rebuild_tables:
+            if error is None and (mig.rebuild_tables or mig.drop_tables):
                 integrity_rows = conn.execute(
                     "PRAGMA integrity_check"
                 ).fetchall()

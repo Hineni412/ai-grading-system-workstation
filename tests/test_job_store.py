@@ -205,7 +205,7 @@ def test_job_store_records_current_grading_migration(tmp_path: Path) -> None:
             "SELECT migration_name FROM schema_migrations "
             "WHERE success = 1 ORDER BY id DESC LIMIT 1"
         ).fetchone()
-    assert current == ("007_drop_legacy_knowledge_id",)
+    assert current == ("008_drop_legacy_cli_tables",)
 
 
 def test_job_store_preserves_legacy_rows_when_adding_result_json(tmp_path: Path) -> None:
