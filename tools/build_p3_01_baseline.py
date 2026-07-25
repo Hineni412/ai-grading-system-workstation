@@ -58,8 +58,17 @@ SCHEMA_DIRECTORIES = {
 DEFAULT_P1_26_REPORT = "docs/performance/p1-26-api-db-baseline.json"
 DEFAULT_P1_27_REPORT = "docs/performance/p1-27-request-connection-comparison.json"
 PROCESS_EVIDENCE = {
-    "P1-29": "docs/user-testing/checkpoints/P1-29-v1.5.0-phase1-formal.md",
-    "P2-20": "docs/user-testing/checkpoints/P2-20-v1.5.0-new-ui-five-flow-formal.md",
+    # The original checkpoint documents were retired during the P3.5
+    # documentation cleanup.  Their immutable P3-01 path/hash evidence remains
+    # embedded here and in the content-addressed published baseline.
+    "P1-29": {
+        "path": "docs/user-testing/checkpoints/P1-29-v1.5.0-phase1-formal.md",
+        "sha256": "60ae435f4c439a8d83952e287a8705bcaca72e4683ba4f962ff1a50ae787cf72",
+    },
+    "P2-20": {
+        "path": "docs/user-testing/checkpoints/P2-20-v1.5.0-new-ui-five-flow-formal.md",
+        "sha256": "2f4949d2c8b432c547aa544efd9ade6348e845686720873bbb175aaed64ef901",
+    },
 }
 
 
@@ -303,13 +312,10 @@ def build_report(root: Path, *, p1_26_report: str, p1_27_report: str) -> dict[st
         "p1_26": _performance_input(root, p1_26_report, expected_package="P1-26"),
         "p1_27": _performance_input(root, p1_27_report, expected_package="P1-27"),
     }
-    process_evidence: dict[str, dict[str, str]] = {}
-    for label, relative in PROCESS_EVIDENCE.items():
-        path = _require_file(root, relative)
-        process_evidence[label] = {
-            "path": _relative(path, root),
-            "sha256": _sha256(path),
-        }
+    process_evidence = {
+        label: dict(evidence)
+        for label, evidence in PROCESS_EVIDENCE.items()
+    }
 
     paths = _python_paths(root)
     source_imports: list[dict[str, Any]] = []
