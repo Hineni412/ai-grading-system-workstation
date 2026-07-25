@@ -53,6 +53,7 @@ export interface QuestionBankListItem {
   textbook_version: string | null
   tags: QuestionBankTag[]
   asset_urls: string[]
+  rich_content: QuestionBankRichContent
 }
 
 export interface QuestionBankListResponse {
@@ -79,6 +80,8 @@ export interface QuestionBankPaper {
   updated_at: string
   question_count: number
   tagged_question_count: number
+  tagged_any_question_count: number
+  source_type: 'docx' | 'pdf' | 'other'
 }
 
 export interface QuestionBankPaperListResponse {
@@ -115,8 +118,27 @@ export interface QuestionBankAssetLink {
   url: string
 }
 
-export interface QuestionBankRichBlock {
+export interface QuestionBankRichInlineSegment {
   text: string
+  superscript: boolean
+  subscript: boolean
+  underline: boolean
+  line_break: boolean
+}
+
+export interface QuestionBankRichTableCell {
+  segments: QuestionBankRichInlineSegment[]
+}
+
+export interface QuestionBankRichTableRow {
+  cells: QuestionBankRichTableCell[]
+}
+
+export interface QuestionBankRichBlock {
+  kind: 'paragraph' | 'table'
+  text: string
+  segments: QuestionBankRichInlineSegment[]
+  rows: QuestionBankRichTableRow[]
   asset_indexes: number[]
   asset_urls: string[]
 }
@@ -127,6 +149,30 @@ export interface QuestionBankRichContent {
   answer_block_count: number
   question_blocks: QuestionBankRichBlock[]
   answer_blocks: QuestionBankRichBlock[]
+}
+
+export interface QuestionBankFacet {
+  value: string
+  count: number
+}
+
+export interface QuestionBankFacets {
+  exam_scopes: QuestionBankFacet[]
+  knowledge_points: QuestionBankFacet[]
+  question_types: QuestionBankFacet[]
+  years: QuestionBankFacet[]
+  exam_types: QuestionBankFacet[]
+  grades: QuestionBankFacet[]
+}
+
+export interface SimilarQuestionItem extends QuestionBankListItem {
+  similarity_score: number
+  similarity_reasons: string[]
+}
+
+export interface SimilarQuestionResponse {
+  question_id: number
+  items: SimilarQuestionItem[]
 }
 
 export interface QuestionBankPreview {
@@ -210,6 +256,7 @@ const QUESTION_LIST_KEYS = [
   'textbook_version',
   'tags',
   'asset_urls',
+  'rich_content',
 ] as const
 
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
@@ -297,7 +344,8 @@ function hasQuestionBankListFields(value: Record<string, unknown>): boolean {
     Array.isArray(value.tags) &&
     value.tags.every(isQuestionBankTag) &&
     isStringArray(value.asset_urls) &&
-    value.asset_urls.every((url) => url.startsWith('/api/question-bank/'))
+    value.asset_urls.every((url) => url.startsWith('/api/question-bank/')) &&
+    isQuestionBankRichContent(value.rich_content)
   )
 }
 
@@ -318,11 +366,59 @@ function isAssetLink(value: unknown): value is QuestionBankAssetLink {
   )
 }
 
+function isRichInlineSegment(value: unknown): value is QuestionBankRichInlineSegment {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      'text',
+      'superscript',
+      'subscript',
+      'underline',
+      'line_break',
+    ]) &&
+    typeof value.text === 'string' &&
+    typeof value.superscript === 'boolean' &&
+    typeof value.subscript === 'boolean' &&
+    typeof value.underline === 'boolean' &&
+    typeof value.line_break === 'boolean'
+  )
+}
+
+function isRichTableCell(value: unknown): value is QuestionBankRichTableCell {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['segments']) &&
+    Array.isArray(value.segments) &&
+    value.segments.every(isRichInlineSegment)
+  )
+}
+
+function isRichTableRow(value: unknown): value is QuestionBankRichTableRow {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['cells']) &&
+    Array.isArray(value.cells) &&
+    value.cells.every(isRichTableCell)
+  )
+}
+
 function isRichBlock(value: unknown): value is QuestionBankRichBlock {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ['text', 'asset_indexes', 'asset_urls']) &&
+    hasExactKeys(value, [
+      'kind',
+      'text',
+      'segments',
+      'rows',
+      'asset_indexes',
+      'asset_urls',
+    ]) &&
+    (value.kind === 'paragraph' || value.kind === 'table') &&
     typeof value.text === 'string' &&
+    Array.isArray(value.segments) &&
+    value.segments.every(isRichInlineSegment) &&
+    Array.isArray(value.rows) &&
+    value.rows.every(isRichTableRow) &&
     Array.isArray(value.asset_indexes) &&
     value.asset_indexes.every(isNonnegativeInteger) &&
     Array.isArray(value.asset_urls) &&
@@ -330,7 +426,7 @@ function isRichBlock(value: unknown): value is QuestionBankRichBlock {
   )
 }
 
-function isRichContent(value: unknown): value is QuestionBankRichContent {
+export function isQuestionBankRichContent(value: unknown): value is QuestionBankRichContent {
   return (
     isRecord(value) &&
     hasExactKeys(value, [
@@ -422,6 +518,8 @@ function isQuestionBankPaper(value: unknown): value is QuestionBankPaper {
       'updated_at',
       'question_count',
       'tagged_question_count',
+      'tagged_any_question_count',
+      'source_type',
     ]) &&
     isPositiveInteger(value.id) &&
     isNullableString(value.title) &&
@@ -438,8 +536,74 @@ function isQuestionBankPaper(value: unknown): value is QuestionBankPaper {
     typeof value.updated_at === 'string' &&
     isNonnegativeInteger(value.question_count) &&
     isNonnegativeInteger(value.tagged_question_count) &&
-    Number(value.tagged_question_count) <= Number(value.question_count)
+    Number(value.tagged_question_count) <= Number(value.question_count) &&
+    isNonnegativeInteger(value.tagged_any_question_count) &&
+    Number(value.tagged_any_question_count) <= Number(value.question_count) &&
+    Number(value.tagged_question_count) <= Number(value.tagged_any_question_count) &&
+    (value.source_type === 'docx' || value.source_type === 'pdf' || value.source_type === 'other')
   )
+}
+
+function isFacet(value: unknown): value is QuestionBankFacet {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['value', 'count']) &&
+    typeof value.value === 'string' &&
+    value.value.trim().length > 0 &&
+    isNonnegativeInteger(value.count)
+  )
+}
+
+export function decodeQuestionBankFacets(value: unknown): QuestionBankFacets {
+  const keys = [
+    'exam_scopes',
+    'knowledge_points',
+    'question_types',
+    'years',
+    'exam_types',
+    'grades',
+  ] as const
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, keys) ||
+    !keys.every((key) => Array.isArray(value[key]) && value[key].every(isFacet))
+  ) {
+    throw new Error('Invalid question bank facets')
+  }
+  return value as unknown as QuestionBankFacets
+}
+
+function isSimilarQuestion(value: unknown): value is SimilarQuestionItem {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      ...QUESTION_LIST_KEYS,
+      'similarity_score',
+      'similarity_reasons',
+    ]) ||
+    !hasQuestionBankListFields(value) ||
+    typeof value.similarity_score !== 'number' ||
+    !Number.isFinite(value.similarity_score) ||
+    value.similarity_score < 0 ||
+    value.similarity_score > 1 ||
+    !isStringArray(value.similarity_reasons)
+  ) {
+    return false
+  }
+  return true
+}
+
+export function decodeSimilarQuestionResponse(value: unknown): SimilarQuestionResponse {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['question_id', 'items']) ||
+    !isPositiveInteger(value.question_id) ||
+    !Array.isArray(value.items) ||
+    !value.items.every(isSimilarQuestion)
+  ) {
+    throw new Error('Invalid similar question response')
+  }
+  return value as unknown as SimilarQuestionResponse
 }
 
 export function decodeQuestionPaperListResponse(
@@ -465,14 +629,13 @@ export function decodeQuestionDetailResponse(value: unknown): QuestionBankDetail
       ...QUESTION_LIST_KEYS,
       'page_range',
       'assets',
-      'rich_content',
       'previews',
     ]) ||
     !hasQuestionBankListFields(value) ||
     !isNullableString(value.page_range) ||
     !Array.isArray(value.assets) ||
     !value.assets.every(isAssetLink) ||
-    !isRichContent(value.rich_content) ||
+    !isQuestionBankRichContent(value.rich_content) ||
     !Array.isArray(value.previews) ||
     !value.previews.every(isPreview)
   ) {
@@ -608,6 +771,15 @@ function questionListPath(filters: QuestionBankFilters): string {
   return `/api/question-bank/questions?${parameters.toString()}`
 }
 
+function questionFacetPath(filters: QuestionBankFilters): string {
+  const query = questionListPath({ ...filters, page: 1, pageSize: 20 }).split('?')[1] ?? ''
+  const parameters = new URLSearchParams(query)
+  parameters.delete('page')
+  parameters.delete('page_size')
+  parameters.delete('sort')
+  return `/api/question-bank/facets?${parameters.toString()}`
+}
+
 function normalizedQuestionIds(values: readonly number[]): number[] {
   const result: number[] = []
   const seen = new Set<number>()
@@ -707,6 +879,16 @@ export const questionBankApi = {
     })
   },
 
+  listFacets(
+    filters: QuestionBankFilters = {},
+    signal?: AbortSignal,
+  ): Promise<QuestionBankFacets> {
+    return apiClient.request(questionFacetPath(filters), {
+      decode: decodeQuestionBankFacets,
+      signal,
+    })
+  },
+
   getQuestion(
     questionId: number,
     signal?: AbortSignal,
@@ -716,6 +898,27 @@ export const questionBankApi = {
       decode: decodeQuestionDetailResponse,
       signal,
     })
+  },
+
+  listSimilar(
+    questionId: number,
+    limit = 6,
+    signal?: AbortSignal,
+  ): Promise<SimilarQuestionResponse> {
+    if (
+      !isPositiveInteger(questionId) ||
+      !isPositiveInteger(limit) ||
+      limit > 20
+    ) {
+      throw new Error('Invalid similar question request')
+    }
+    return apiClient.request(
+      `/api/question-bank/questions/${questionId}/similar?limit=${limit}`,
+      {
+        decode: decodeSimilarQuestionResponse,
+        signal,
+      },
+    )
   },
 
   replaceTags(

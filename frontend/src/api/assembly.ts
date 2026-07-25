@@ -1,6 +1,10 @@
 import { apiClient } from './client'
 import { decodeJobResponse, type JobResponse } from './jobs'
-import type { QuestionBankTag } from './question-bank'
+import {
+  isQuestionBankRichContent,
+  type QuestionBankRichContent,
+  type QuestionBankTag,
+} from './question-bank'
 import { isRecord } from './validation'
 
 export type AssemblyLayoutMode = 'sequential' | 'grouped_by_type' | 'sections'
@@ -36,6 +40,7 @@ export interface AssemblyQuestion {
   paper_title: string | null
   tags: QuestionBankTag[]
   asset_urls: string[]
+  rich_content: QuestionBankRichContent
   score_value: number | null
 }
 
@@ -162,6 +167,7 @@ function isAssemblyQuestion(value: unknown): value is AssemblyQuestion {
       'paper_title',
       'tags',
       'asset_urls',
+      'rich_content',
       'score_value',
     ]) &&
     isPositiveInteger(value.id) &&
@@ -175,6 +181,7 @@ function isAssemblyQuestion(value: unknown): value is AssemblyQuestion {
     Array.isArray(value.tags) &&
     Array.isArray(value.asset_urls) &&
     value.asset_urls.every((url) => typeof url === 'string' && url.startsWith('/api/question-bank/')) &&
+    isQuestionBankRichContent(value.rich_content) &&
     (
       value.score_value === null ||
       (Number.isSafeInteger(value.score_value) && Number(value.score_value) >= 0)
