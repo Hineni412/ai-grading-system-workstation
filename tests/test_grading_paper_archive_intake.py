@@ -115,6 +115,6 @@ def test_intake_source_saves_tags_without_skill_resolution() -> None:
 
     assert "SkillResolutionService" not in source
     assert "build_skill_context_ranker" not in source
-    assert "resolve_skills=False" in source
+    assert "resolve_skills" not in source
     assert "allow_batch_fallback=False" in source
     assert "request_callback=" in source

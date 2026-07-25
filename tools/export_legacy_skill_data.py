@@ -1,4 +1,4 @@
-"""Export the retired legacy CLI tables without modifying the source database."""
+"""Export retired skill-semantics tables without modifying the source database."""
 
 from __future__ import annotations
 
@@ -12,12 +12,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from legacy_table_archive import LegacyArchiveError, export_table_archive
 
 
-ARCHIVE_FORMAT = "ai-grading-legacy-cli-export"
-LEGACY_TABLES = ("exam_results", "grading_details")
-LegacyExportError = LegacyArchiveError
+ARCHIVE_FORMAT = "ai-grading-legacy-skill-export"
+LEGACY_TABLES = (
+    "knowledge_concepts",
+    "knowledge_relations",
+    "knowledge_source_mappings",
+    "skill_topics",
+    "skills",
+    "assessment_item_skills",
+    "question_skill_links",
+    "skill_resolution_conflicts",
+    "skill_neighbors",
+    "skill_system_settings",
+    "skill_migration_runs",
+)
 
 
-def export_legacy_cli_data(
+def export_legacy_skill_data(
     database: Path,
     output: Path,
     *,
@@ -29,12 +40,13 @@ def export_legacy_cli_data(
         tables=LEGACY_TABLES,
         archive_format=ARCHIVE_FORMAT,
         overwrite=overwrite,
+        allow_missing_tables=True,
     )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Export retired main.py result tables to a JSON archive.",
+        description="Export retired legacy skill-semantics tables.",
     )
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -42,18 +54,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        summary = export_legacy_cli_data(
+        summary = export_legacy_skill_data(
             args.database,
             args.output,
             overwrite=bool(args.overwrite),
         )
     except (LegacyArchiveError, OSError, sqlite3.Error) as exc:
-        parser.exit(1, f"legacy export failed: {exc}\n")
+        parser.exit(1, f"legacy skill export failed: {exc}\n")
 
     print(
-        "legacy export complete: "
-        f"exam_results={summary['exam_results']}, "
-        f"grading_details={summary['grading_details']}"
+        "legacy skill export complete: "
+        f"tables={len(summary)}, rows={sum(summary.values())}"
     )
     return 0
 

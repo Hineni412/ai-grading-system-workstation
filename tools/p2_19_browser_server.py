@@ -57,7 +57,7 @@ def _seed_data(paths) -> None:
     from question_bank.database.schema import initialize_database
 
     DBManager(paths.db_path).initialize()
-    initialize_database(paths.qb_db_path, seed_skills=False)
+    initialize_database(paths.qb_db_path)
     (paths.config_dir / "p2-19-public-settings.json").write_text(
         '{"purpose":"isolated browser verification"}',
         encoding="utf-8",
