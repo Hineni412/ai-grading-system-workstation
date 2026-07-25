@@ -14,14 +14,14 @@
 ## 昼夜交接
 
 **执行包：** P3-18
-**交接状态：** waiting_review
-**功能提交：** branch_head
+**交接状态：** verified_pending_integration
+**功能提交：** fa4063ee5815ee78766e6ad2ac2230526b69d395
 **自动验证：** passed
-**独立复审：** pending
+**独立复审：** passed
 **用户验收：** not_required
 **真实数据指纹：** unchanged
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
-**夜间动作：** report_only
+**夜间动作：** independent_candidate_allowed
 <!-- HANDOFF_STATUS_END -->
 
 ## 冻结边界
