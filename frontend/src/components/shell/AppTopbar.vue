@@ -1,15 +1,25 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { useRoute } from 'vue-router'
 
-import { navigationItems } from '../../navigation'
+import AppButton from '../design-system/AppButton.vue'
+import AppIconButton from '../design-system/AppIconButton.vue'
 import { useConfigWorkspaceStore } from '../../stores/config-workspace'
 import { useSessionStore } from '../../stores/session'
+
+const props = defineProps<{
+  navigationOpen: boolean
+}>()
+
+const emit = defineEmits<{
+  toggleNavigation: []
+}>()
 
 const route = useRoute()
 const sessionStore = useSessionStore()
 const configStore = useConfigWorkspaceStore()
-const pageTitle = computed(() => String(route.meta.title ?? ''))
+const pageTitle = computed(() => String(route.meta.title ?? '工作台'))
+const pageDescription = computed(() => String(route.meta.description ?? ''))
 
 function selectSession(event: Event): void {
   const selector = event.currentTarget as HTMLSelectElement
@@ -47,21 +57,21 @@ function retrySessions(): void {
   <header class="app-topbar" data-testid="app-topbar">
     <a class="app-topbar__skip-link" href="#main-workspace">跳到主要工作区</a>
 
-    <div class="app-topbar__identity">
-      <span>AI 阅卷系统</span>
-      <strong>{{ pageTitle }}</strong>
+    <div class="app-topbar__page">
+      <AppIconButton
+        class="app-topbar__navigation-toggle"
+        :label="props.navigationOpen ? '收起导航' : '展开导航'"
+        :icon="props.navigationOpen ? 'close' : 'menu'"
+        variant="secondary"
+        :aria-expanded="props.navigationOpen"
+        aria-controls="application-sidebar"
+        @click="emit('toggleNavigation')"
+      />
+      <div class="app-topbar__page-copy">
+        <strong>{{ pageTitle }}</strong>
+        <span v-if="pageDescription">{{ pageDescription }}</span>
+      </div>
     </div>
-
-    <nav class="app-topbar__navigation" data-testid="app-navigation" aria-label="主要导航">
-      <RouterLink
-        v-for="item in navigationItems"
-        :key="item.id"
-        :to="item.path"
-        :aria-current="route.name === item.id ? 'page' : undefined"
-      >
-        {{ item.label }}
-      </RouterLink>
-    </nav>
 
     <div class="app-topbar__session">
       <label for="current-session">当前考试</label>
@@ -83,7 +93,7 @@ function retrySessions(): void {
     </div>
     <div v-else-if="sessionStore.loadState === 'error'" class="app-topbar__status" role="alert">
       <span>考试列表加载失败。</span>
-      <button type="button" @click="retrySessions">重新加载考试列表</button>
+      <AppButton variant="secondary" @click="retrySessions">重新加载</AppButton>
     </div>
   </header>
 </template>

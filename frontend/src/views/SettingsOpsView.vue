@@ -136,11 +136,6 @@ function bytes(value: number): string {
   return `${(value / 1024 / 1024).toFixed(1)} MB`
 }
 
-function dateTime(value: string): string {
-  const parsed = new Date(value)
-  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString('zh-CN')
-}
-
 function isOfflineJob(jobType: string): boolean {
   return jobType.endsWith('_prepare')
 }
@@ -157,7 +152,7 @@ function jobTitle(status: string, jobType: string): string {
 
 function jobDetail(status: string, detail: string, jobType: string): string {
   if (status === 'failed' && isOfflineJob(jobType)) {
-    return '业务数据尚未应用；准备阶段可能已经创建安全备份。请刷新并查看备份清单，确认现状后再重新预检。'
+    return '业务数据尚未应用；准备阶段可能已经创建安全备份。请刷新状态，并在“恢复备份”中确认可用备份后再重新预检。'
   }
   if (status === 'failed') {
     return '本次任务没有生成可下载结果，也不会自动重试。请刷新状态后重新预检。'
@@ -346,33 +341,6 @@ onMounted(async () => {
           </template>
         </section>
 
-        <section class="ops-section" aria-labelledby="backup-ledger-title">
-          <div class="ops-section__heading">
-            <div>
-              <p class="settings-ops__eyebrow">Recovery inventory</p>
-              <h2 id="backup-ledger-title">备份清单</h2>
-            </div>
-            <span>{{ ops.backups.length }} 项</span>
-          </div>
-          <p v-if="ops.backupsError" class="ops-feedback is-warning" role="alert">
-            {{ ops.backupsError.message }}；{{ ops.backupsError.impact }}
-          </p>
-          <div class="ops-table-wrap">
-            <table>
-              <thead><tr><th>类型</th><th>文件</th><th>原因</th><th>时间</th><th>大小</th></tr></thead>
-              <tbody>
-                <tr v-for="item in ops.backups" :key="`${item.kind}:${item.filename}`">
-                  <td>{{ item.kind === 'zip' ? '完整备份' : '数据库快照' }}</td>
-                  <td>{{ item.filename }}</td>
-                  <td>{{ BACKUP_REASON_LABELS[item.reason] ?? item.reason }}</td>
-                  <td>{{ dateTime(item.created_at) }}</td>
-                  <td>{{ bytes(item.size_bytes) }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
         <section class="ops-section" aria-labelledby="operations-title">
           <div class="ops-section__heading">
             <div>
@@ -405,6 +373,12 @@ onMounted(async () => {
                 <span>{{ item.filename }}</span>
               </label>
             </fieldset>
+            <p v-if="ops.backupsError" class="ops-feedback is-warning" role="alert">
+              可用备份暂时无法读取：{{ ops.backupsError.message }}
+            </p>
+            <p v-else-if="zipBackups.length === 0" class="ops-feedback is-warning">
+              当前没有可恢复的完整备份。
+            </p>
             <button class="ops-button is-danger" type="button" data-testid="preflight-restore" :disabled="!selectedBackup || ops.hasBlockingOperation" @click="preflightRestore">检查恢复影响</button>
           </article>
 

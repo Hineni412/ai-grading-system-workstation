@@ -165,6 +165,7 @@
   font-size: var(--font-size-body);
 }
 
+.workbench-primary-button,
 .workbench-secondary-button,
 .workbench-link-button,
 .recent-session,
@@ -172,6 +173,21 @@
 .tag-node {
   font: inherit;
   cursor: pointer;
+}
+
+.workbench-primary-button {
+  min-height: var(--control-height-default);
+  padding: var(--space-2) var(--space-4);
+  border: var(--border-width) solid var(--color-accent);
+  border-radius: var(--radius-control);
+  background: var(--color-accent);
+  color: var(--color-bg-surface);
+  font-weight: var(--font-weight-semibold);
+}
+
+.workbench-primary-button:hover {
+  border-color: var(--color-accent-hover);
+  background: var(--color-accent-hover);
 }
 
 .workbench-secondary-button {
@@ -204,6 +220,7 @@
   color: var(--color-accent-hover);
 }
 
+.workbench-primary-button:focus-visible,
 .workbench-secondary-button:focus-visible,
 .workbench-link-button:focus-visible,
 .workbench-field select:focus-visible,
