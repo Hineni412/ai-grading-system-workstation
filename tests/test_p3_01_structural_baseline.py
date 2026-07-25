@@ -78,7 +78,10 @@ def test_p3_01_command_emits_reproducible_redacted_structural_baseline(
     assert any(
         item["target"] == "db_manager.py" for item in payload["test_coverage_map"]
     )
-    assert "main.py" in payload["core_callers"]["db_manager.py"]
+    assert "main.py" not in {
+        item["path"] for item in payload["source_manifest"]
+    }
+    assert "main.py" not in payload["core_callers"]["db_manager.py"]
     assert set(payload["schema_inputs"]) == {"grading", "question_bank"}
     assert payload["performance_evidence"]["p1_26"]["package"] == "P1-26"
     assert payload["performance_evidence"]["p1_27"]["p1_26_provenance_code_sha"]

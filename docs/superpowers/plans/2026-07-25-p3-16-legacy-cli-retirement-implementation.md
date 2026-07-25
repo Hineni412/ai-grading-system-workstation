@@ -2,7 +2,7 @@
 
 **执行包：** P3-16
 **计划日期：** 2026-07-25
-**计划状态：** in_progress
+**计划状态：** waiting_review
 **计划模型：** 当前连续作业模型
 **允许夜间执行：** no
 **计划基线：** 39ca9361be4e36889ca13818fbd6815d7a485463
@@ -14,9 +14,9 @@
 ## 昼夜交接
 
 **执行包：** P3-16
-**交接状态：** in_progress
-**功能提交：** none
-**自动验证：** pending
+**交接状态：** waiting_review
+**功能提交：** branch_head
+**自动验证：** passed
 **独立复审：** pending
 **用户验收：** not_required
 **真实数据指纹：** not_touched
@@ -67,11 +67,11 @@
 
 ## TDD 步骤
 
-- [ ] RED 1：新增导出 CLI 行为测试，先因工具不存在失败；最小实现只读一致快照与原子 JSON 归档后转 GREEN。
-- [ ] RED 2：新增 008 迁移、精确破坏性白名单、备份恢复与漂移回滚测试，先因迁移缺失/被拒绝失败；最小实现迁移和白名单后转 GREEN。
-- [ ] RED 3：新增退役守卫，先证明 `main.py`、Legacy API、旧报告和当前结构基线断言仍存在；最小删除并更新当前行为断言后转 GREEN。
-- [ ] 运行迁移、结果仓储、报告、启动/打包、P3-01 当前结构扫描和 P3-11 至 P3-14 Schema 受影响回归。
-- [ ] 更新使用说明、架构事实与 Index，运行功能分支快速冒烟、专项完整测试和真实两库指纹守卫。
+- [x] RED 1：新增导出 CLI 行为测试，先因工具不存在失败；最小实现只读一致快照与原子 JSON 归档后转 GREEN。
+- [x] RED 2：新增 008 迁移、精确破坏性白名单、备份恢复与漂移回滚测试，先因迁移缺失/被拒绝失败；最小实现迁移和白名单后转 GREEN。
+- [x] RED 3：新增退役守卫，先证明 `main.py`、Legacy API、旧报告和当前结构基线断言仍存在；最小删除并更新当前行为断言后转 GREEN。
+- [x] 运行迁移、结果仓储、报告、启动/打包、P3-01 当前结构扫描和 P3-11 至 P3-14 Schema 受影响回归。
+- [x] 更新使用说明、架构事实与 Index，运行功能分支快速冒烟、专项完整测试和真实两库指纹守卫。
 - [ ] 冻结同一功能 SHA，并行进行一次需求符合性复审和一次代码质量复审；统一处理范围内 `Critical/Important`，最多一次限定终审。
 - [ ] 形成 `verified_pending_integration` 交接，进入 M3-09 integration，逐包验证后通过 PR 合入主线并收口状态。
 
@@ -79,7 +79,7 @@
 
 ```powershell
 runtime\python\python.exe -m pytest tests\test_p3_16_legacy_cli_retirement.py -q
-runtime\python\python.exe -m pytest tests\test_migration_tooling.py tests\test_schema_baseline.py tests\test_p3_11_schema_version_gate.py tests\test_p3_12_status_constraints.py tests\test_p3_13_knowledge_ids.py tests\test_p3_14_schema_cleanup.py -q
+runtime\python\python.exe -m pytest tests\test_migration_tooling.py tests\test_schema_baseline.py tests\test_p3_11_schema_version_gate.py tests\test_p3_12_state_constraints.py tests\test_p3_13_knowledge_ids.py tests\test_p3_14_schema_cleanup.py -q
 runtime\python\python.exe -m pytest tests\test_report_score_adjustment.py tests\test_report_completeness.py tests\test_report_export_job.py tests\test_p3_01_structural_baseline.py -q
 runtime\python\python.exe tools\smoke_check.py --skip-tests
 runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\2026-07-25-p3-16-legacy-cli-retirement-implementation.md --repo .
@@ -88,8 +88,12 @@ runtime\python\python.exe tools\handoff_status.py --plan docs\superpowers\plans\
 ## 阶段记录
 
 - 集中调查约 20 分钟：完成权威范围、旧 CLI/Legacy API/旧报告静态调用、迁移白名单、备份机制、真实库只读行数、现行报告入口、结构基线和安全 worktree 核验。
-- 原始发现 7 条，按根因去重为 3 组；用户已明确确认停用旧 CLI，其他产品选择为零。当前剩余工作为三个 RED→GREEN 纵切片、受影响回归、双路复审、integration、完整门槛与主线收口。
-- 测试与复审轮次：尚未开始。当前任务尚未通过验收，版本不因本计划单独允许发布。
+- 原始发现 7 条，按根因去重为 3 组；用户已明确确认停用旧 CLI，其他产品选择为零。三个 RED→GREEN 纵切片和受影响回归已经完成，当前剩余工作为一次统一复审修复、限定终审、integration、完整门槛与主线收口。
+- 实现与测试约 45 分钟：三组 RED→GREEN 全部完成；迁移白名单测试额外发现并修复了“只删除声明表集的一部分仍会被放行”的安全缺口。
+- 受影响验证：P3-16 与迁移工具 14 项、迁移与 Schema 79 项、报告与结构 27 项、启动与便携 24 项均通过；真实阅卷库只读副本迁移预演通过，结构、完整性与预期行数变化均符合要求。
+- 完整测试共运行三次：首轮 2283 项通过、2 项跳过并发现 1 条过时版本断言；修正后第二轮 2284 项通过、2 项跳过；安全白名单加固后的最终候选为 2285 项通过、2 项跳过、2 条既有非阻塞警告，用时 15 分 20 秒。
+- 最终快速冒烟 7.06 秒通过：文档治理、526 个第一方 Python 文件编译、两库隔离副本初始化幂等全部正常。
+- 真实两库 SHA-256 与开工基线一致，未执行真实数据库迁移。双路初审约 4 分钟，原始意见 3 条，去重为 2 个 `Important` 和 1 个 `Suggestion`：同名并发导出覆盖风险与文档泄露真实业务状态统一修复；测试辅助代码重复为非阻塞建议且不扩大范围。当前剩余工作为受影响复测、限定终审、integration 门槛、PR 合并和主线收口；当前任务尚未最终验收，版本暂不允许发布。
 
 ## 回退
 
