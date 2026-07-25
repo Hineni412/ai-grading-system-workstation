@@ -46,6 +46,9 @@ const jobStore = useJobStore()
 const submissionUnknown = computed(() => configStore.pendingUploadRequestToken !== null)
 const selectedFileInvalid = computed(() => selectedFile.value === null
   || validateFile(selectedFile.value) !== '')
+const selectedFileDescription = computed(() => selectedFile.value === null
+  ? '尚未选择文件'
+  : `${selectedFile.value.name} · ${formatBytes(selectedFile.value.size)}`)
 const activeGeneration = computed(() => {
   const current = configStore.jobId === null ? null : jobStore.jobs[configStore.jobId]
   return current?.job_type === 'config_generation'
@@ -110,6 +113,11 @@ function onFileChange(event: Event): void {
   errorMessage.value = file === null ? '' : validateFile(file)
 }
 
+function chooseFile(): void {
+  if (uploading.value || workspaceLocked.value) return
+  fileInput.value?.click()
+}
+
 async function submit(): Promise<void> {
   const file = selectedFile.value
   if (file === null || uploading.value || workspaceLocked.value) return
@@ -158,17 +166,36 @@ function formatBytes(bytes: number): string {
     </header>
 
     <form class="config-source__form" @submit.prevent="submit">
-      <label class="config-source__picker">
-        <span>选择 DOCX 或 PDF</span>
+      <div class="config-source__picker">
+        <span id="config-source-file-label">选择 DOCX 或 PDF</span>
         <input
           ref="fileInput"
+          class="config-source__native-input"
           type="file"
           accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          aria-labelledby="config-source-file-label"
           :disabled="uploading || workspaceLocked"
           @change="onFileChange"
         >
-      </label>
-      <button type="submit" :disabled="uploading || workspaceLocked || selectedFileInvalid">
+        <div class="config-source__file-control">
+          <button
+            type="button"
+            class="config-source__choose"
+            :disabled="uploading || workspaceLocked"
+            @click="chooseFile"
+          >选择文件</button>
+          <span
+            class="config-source__file-name"
+            :class="{ 'has-file': selectedFile !== null }"
+            :title="selectedFile?.name ?? ''"
+          >{{ selectedFileDescription }}</span>
+        </div>
+      </div>
+      <button
+        type="submit"
+        class="config-source__submit"
+        :disabled="uploading || workspaceLocked || selectedFileInvalid"
+      >
         上传并拆题
       </button>
     </form>

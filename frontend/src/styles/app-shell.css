@@ -4,7 +4,7 @@
   height: 100vh;
   min-height: 100vh;
   overflow: hidden;
-  grid-template-columns: var(--shell-navigation-width) minmax(0, 1fr);
+  grid-template-columns: var(--shell-navigation-collapsed-width) minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   grid-template-areas:
     "sidebar topbar"
@@ -263,7 +263,7 @@
 .app-topbar__skip-link {
   position: fixed;
   inset-block-start: var(--space-2);
-  inset-inline-start: calc(var(--shell-navigation-width) + var(--space-2));
+  inset-inline-start: calc(var(--shell-navigation-collapsed-width) + var(--space-2));
   z-index: var(--shell-skip-link-z-index);
   padding: var(--space-2) var(--space-3);
   border: var(--border-width) solid var(--color-accent);
@@ -391,6 +391,86 @@
   font-size: var(--font-size-h1);
   font-weight: var(--font-weight-semibold);
   line-height: var(--line-height-tight);
+}
+
+@media (min-width: 901px) {
+  .app-sidebar {
+    position: relative;
+    z-index: calc(var(--shell-topbar-z-index) + 1);
+    width: var(--shell-navigation-collapsed-width);
+    transition:
+      width var(--duration-base),
+      box-shadow var(--duration-base);
+  }
+
+  .app-sidebar__brand,
+  .app-sidebar__link,
+  .app-sidebar__settings-toggle {
+    justify-content: center;
+    padding-inline: 0;
+  }
+
+  .app-sidebar__brand-copy,
+  .app-sidebar__link > span,
+  .app-sidebar__settings-toggle > span,
+  .app-sidebar__settings-chevron,
+  .app-sidebar__group > p {
+    width: 0;
+    max-width: 0;
+    opacity: 0;
+    overflow: hidden;
+    pointer-events: none;
+    visibility: hidden;
+  }
+
+  .app-sidebar__group > p {
+    height: 0;
+    padding: 0;
+  }
+
+  .app-sidebar:hover,
+  .app-sidebar:focus-within {
+    width: var(--shell-navigation-width);
+    box-shadow: var(--shadow-overlay);
+  }
+
+  .app-sidebar:hover .app-sidebar__brand,
+  .app-sidebar:hover .app-sidebar__link,
+  .app-sidebar:hover .app-sidebar__settings-toggle,
+  .app-sidebar:focus-within .app-sidebar__brand,
+  .app-sidebar:focus-within .app-sidebar__link,
+  .app-sidebar:focus-within .app-sidebar__settings-toggle {
+    justify-content: flex-start;
+    padding-inline: 10px;
+  }
+
+  .app-sidebar:hover .app-sidebar__brand-copy,
+  .app-sidebar:hover .app-sidebar__link > span,
+  .app-sidebar:hover .app-sidebar__settings-toggle > span,
+  .app-sidebar:hover .app-sidebar__settings-chevron,
+  .app-sidebar:hover .app-sidebar__group > p,
+  .app-sidebar:focus-within .app-sidebar__brand-copy,
+  .app-sidebar:focus-within .app-sidebar__link > span,
+  .app-sidebar:focus-within .app-sidebar__settings-toggle > span,
+  .app-sidebar:focus-within .app-sidebar__settings-chevron,
+  .app-sidebar:focus-within .app-sidebar__group > p {
+    width: auto;
+    max-width: 100%;
+    opacity: 1;
+    pointer-events: auto;
+    visibility: visible;
+  }
+
+  .app-sidebar:hover .app-sidebar__group > p,
+  .app-sidebar:focus-within .app-sidebar__group > p {
+    height: auto;
+    padding: 2px 10px 4px;
+  }
+
+  .app-sidebar:hover .app-sidebar__settings-chevron,
+  .app-sidebar:focus-within .app-sidebar__settings-chevron {
+    margin-inline-start: auto;
+  }
 }
 
 @media (max-width: 900px) {

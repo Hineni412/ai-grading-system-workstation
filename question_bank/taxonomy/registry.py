@@ -17,7 +17,7 @@ CANONICAL_KNOWLEDGE: tuple[CanonicalKnowledge, ...] = (
     CanonicalKnowledge(
         canonical_id="KP_ALG_REAL_NUMBERS",
         canonical_name="实数",
-        aliases=("有理数", "无理数", "相反数", "绝对值", "平方根", "算术平方根", "立方根", "数轴", "整数的概念", "整数"),
+        aliases=("有理数", "有理数运算", "无理数", "相反数", "绝对值", "平方根", "算术平方根", "立方根", "数轴", "整数的概念", "整数"),
     ),
     CanonicalKnowledge(
         canonical_id="KP_ALG_LETTER_NUMBER",
@@ -188,7 +188,7 @@ CANONICAL_KNOWLEDGE: tuple[CanonicalKnowledge, ...] = (
     CanonicalKnowledge(
         canonical_id="KP_GEO_TRIANGLE_CONGRUENCE",
         canonical_name="三角形全等",
-        aliases=("三角形全等", "全等三角形", "全等三角形的判定", "全等三角形的性质", "C_CONGRUENT_TRIANGLES"),
+        aliases=("三角形全等", "三角形的全等", "全等三角形", "全等三角形的判定", "全等三角形的性质", "C_CONGRUENT_TRIANGLES"),
     ),
     CanonicalKnowledge(
         canonical_id="KP_GEO_ISOSCELES_TRIANGLE",
@@ -238,7 +238,7 @@ CANONICAL_KNOWLEDGE: tuple[CanonicalKnowledge, ...] = (
     CanonicalKnowledge(
         canonical_id="KP_GEO_TRANSFORMATION",
         canonical_name="图形变换",
-        aliases=("图形变换", "平移", "旋转", "中心对称", "平移的性质", "旋转的性质"),
+        aliases=("图形变换", "图形的平移与旋转", "平移", "旋转", "中心对称", "平移的性质", "旋转的性质"),
     ),
     CanonicalKnowledge(
         canonical_id="KP_GEO_SIMILARITY",
@@ -410,6 +410,19 @@ def canonicalize_knowledge(value: object) -> CanonicalKnowledge | None:
         if alias and alias in normalized:
             return item
     return None
+
+
+def canonicalize_knowledge_exact(value: object) -> CanonicalKnowledge | None:
+    """只接受词表中的规范名、编码或已登记别名。
+
+    AI 新标签入库前使用严格匹配，避免 substring 启发式把未登记的新词
+    静默归到错误的筛选标签。旧调用继续使用 canonicalize_knowledge 的
+    兼容性回退，不改写历史行为或历史数据。
+    """
+    text = _text(value)
+    if not text:
+        return None
+    return _ALIAS_INDEX.get(_normalize(text))
 
 
 def canonicalize_knowledge_values(values: Iterable[object]) -> CanonicalKnowledge | None:

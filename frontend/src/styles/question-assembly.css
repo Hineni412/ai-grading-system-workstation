@@ -323,7 +323,47 @@
 }
 
 .assembly-filter-panel {
-  padding: 5px 14px;
+  padding: 0 14px;
+}
+
+.assembly-filter-panel__heading {
+  align-items: flex-start;
+  border-bottom: 1px solid #edf0f1;
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+  padding: 14px 0 12px;
+}
+
+.assembly-filter-panel__heading h2 {
+  font-size: 16px;
+  letter-spacing: -.02em;
+  margin: 0;
+}
+
+.assembly-filter-panel__heading p:last-child {
+  color: var(--color-text-secondary, #5c6672);
+  font-size: 11px;
+  margin: 4px 0 0;
+}
+
+.assembly-filter-panel__heading > strong {
+  background: rgb(19 94 107 / 10%);
+  border-radius: 999px;
+  color: var(--color-accent, #135e6b);
+  flex: 0 0 auto;
+  font-size: 10px;
+  padding: 5px 8px;
+}
+
+.assembly-filter-state {
+  align-items: center;
+  color: var(--color-text-secondary, #5c6672);
+  display: flex;
+  font-size: 11px;
+  gap: 8px;
+  justify-content: center;
+  min-height: 82px;
 }
 
 .assembly-filter-row {
@@ -331,22 +371,22 @@
   border-bottom: 1px solid #edf0f1;
   display: grid;
   gap: 12px;
-  grid-template-columns: 52px minmax(0, 1fr);
+  grid-template-columns: 68px minmax(0, 1fr);
   min-height: 48px;
   padding: 8px 0;
 }
 
-.assembly-filter-row:last-child {
+.assembly-filter-panel > .assembly-filter-row:last-child {
   border: 0;
 }
 
 .assembly-filter-label {
   color: var(--color-text-tertiary, #6b7684);
   font-size: 11px;
+  font-weight: 650;
 }
 
-.assembly-filter-chips,
-.assembly-filter-selects {
+.assembly-filter-chips {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
@@ -354,32 +394,114 @@
 }
 
 .assembly-filter-chips button {
-  background: transparent;
-  border: 0;
+  background: #f7f8f8;
+  border: 1px solid #e6e9ea;
   border-radius: 7px;
   color: var(--color-text-secondary, #5c6672);
   cursor: pointer;
   font: inherit;
   font-size: 11px;
-  padding: 6px 8px;
+  min-height: 30px;
+  padding: 5px 8px;
 }
 
 .assembly-filter-chips button:hover {
-  background: #f4f5f6;
+  background: #f1f4f4;
+  border-color: #c9d0d2;
 }
 
 .assembly-filter-chips button.is-active {
   background: rgb(19 94 107 / 10%);
+  border-color: rgb(19 94 107 / 20%);
   color: var(--color-accent, #135e6b);
   font-weight: 650;
 }
 
 .assembly-filter-chips small {
+  color: var(--color-text-tertiary, #6b7684);
   font-size: 9px;
-  opacity: .75;
+  margin-inline-start: 2px;
 }
 
-.assembly-filter-selects select,
+.assembly-filter-empty {
+  color: var(--color-text-tertiary, #6b7684);
+  font-size: 11px;
+}
+
+.assembly-filter-more {
+  flex: 1 0 100%;
+}
+
+.assembly-filter-more summary {
+  color: var(--color-accent, #135e6b);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+  list-style-position: inside;
+  padding: 4px 2px;
+  width: max-content;
+}
+
+.assembly-filter-more > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 6px 0 2px;
+}
+
+.assembly-active-filters {
+  align-items: center;
+  background: #f5f8f8;
+  border-bottom: 1px solid #e3eaea;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-inline: -14px;
+  padding: 9px 14px;
+}
+
+.assembly-active-filters > span {
+  color: var(--color-text-tertiary, #6b7684);
+  font-size: 10px;
+  font-weight: 650;
+  margin-inline-end: 2px;
+}
+
+.assembly-active-filters button {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #ced9da;
+  border-radius: 7px;
+  color: var(--color-accent, #135e6b);
+  display: inline-flex;
+  font-size: 10px;
+  gap: 4px;
+  min-height: 28px;
+  padding: 4px 7px;
+}
+
+.assembly-active-filters button:hover {
+  background: #edf4f3;
+  border-color: rgb(19 94 107 / 35%);
+}
+
+.assembly-active-filters button small {
+  color: var(--color-text-tertiary, #6b7684);
+  font-size: 9px;
+}
+
+.assembly-active-filters button b {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.assembly-active-filters .assembly-active-filters__clear {
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-text-secondary, #5c6672);
+}
+
 .assembly-filter-row input,
 .assembly-filter-row.is-search select,
 .assembly-settings input,
@@ -397,7 +519,6 @@
   padding: 0 9px;
 }
 
-.assembly-filter-selects select:focus,
 .assembly-filter-row input:focus,
 .assembly-filter-row.is-search select:focus,
 .assembly-settings input:focus,
@@ -410,7 +531,7 @@
 }
 
 .assembly-filter-row.is-search {
-  grid-template-columns: 52px minmax(180px, 1fr) 130px auto auto;
+  grid-template-columns: 68px minmax(180px, 1fr) 150px auto;
 }
 
 .assembly-results-heading {
@@ -661,6 +782,8 @@
   font: inherit;
   height: 25px;
   justify-content: center;
+  min-height: 25px;
+  padding: 0;
   width: 25px;
 }
 
@@ -1224,12 +1347,7 @@
   }
 
   .assembly-filter-row.is-search {
-    grid-template-columns: 52px minmax(150px, 1fr) 120px auto;
-  }
-
-  .assembly-filter-row.is-search .assembly-button:last-child {
-    grid-column: 2 / -1;
-    justify-self: start;
+    grid-template-columns: 68px minmax(150px, 1fr) 130px auto;
   }
 
   .assembly-editor__workspace {
@@ -1319,8 +1437,14 @@
     font-weight: 650;
   }
 
-  .assembly-filter-row.is-search .assembly-button:last-child {
-    grid-column: auto;
+  .assembly-filter-panel__heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .assembly-filter-panel__heading > strong {
+    align-self: flex-start;
   }
 
   .assembly-result-card > header,

@@ -278,7 +278,7 @@ async function deleteRecord(recordId: string): Promise<void> {
                     （{{ question.score_value }} 分）
                   </span>
                   <QuestionContentRenderer
-                    :blocks="question.rich_content.question_blocks"
+                    :blocks="question.rich_content?.question_blocks"
                     :fallback="question.question_text"
                     image-alt="试卷题目配图"
                   />
@@ -289,7 +289,7 @@ async function deleteRecord(recordId: string): Promise<void> {
                 >
                   <strong>答案与解析</strong>
                   <QuestionContentRenderer
-                    :blocks="question.rich_content.answer_blocks"
+                    :blocks="question.rich_content?.answer_blocks"
                     :fallback="question.answer_text"
                     empty-label="暂未录入答案"
                     image-alt="试卷答案配图"

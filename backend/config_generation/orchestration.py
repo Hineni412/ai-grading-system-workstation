@@ -6,6 +6,8 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
+from backend.document_parsing.question_blocks import rich_text_for_model
+
 from .gateway import ConfigGenerationGateway
 from .prompts import (
     build_batch_generation_prompt,
@@ -77,10 +79,7 @@ class ConfigGenerationOrchestrator:
         q_images: dict[str, Any] | None = None,
         checkpoint: CheckpointWriter | None = None,
     ) -> dict[str, Any]:
-        locked_blocks = [
-            {**block, "question_type_confirmed": True}
-            for block in confirmed_blocks
-        ]
+        locked_blocks = [copy.deepcopy(block) for block in confirmed_blocks]
         if not locked_blocks:
             raise ValueError("至少需要一道已确认题目。")
         return self._run_batches(
@@ -111,10 +110,7 @@ class ConfigGenerationOrchestrator:
         failed_batches = (
             meta.get("failed_batches") if isinstance(meta, dict) else None
         )
-        locked_blocks = [
-            {**block, "question_type_confirmed": True}
-            for block in question_blocks
-        ]
+        locked_blocks = [copy.deepcopy(block) for block in question_blocks]
         if not isinstance(failed_batches, list) or not failed_batches:
             return self._score_completed_draft_once(
                 existing_payload,
@@ -531,6 +527,9 @@ class ConfigGenerationOrchestrator:
                     "question_type": str(
                         block.get("question_type") or ""
                     ),
+                    "question_type_confirmed": (
+                        block.get("question_type_confirmed") is True
+                    ),
                     "question_text": (
                         ""
                         if image_semantic_source
@@ -549,10 +548,31 @@ class ConfigGenerationOrchestrator:
                             or ""
                         )
                     ),
+                    "question_rich_text": (
+                        ""
+                        if image_semantic_source
+                        else rich_text_for_model(block.get("question_html") or "")[
+                            :50_000
+                        ]
+                    ),
+                    "answer_rich_text": (
+                        ""
+                        if image_semantic_source
+                        else rich_text_for_model(block.get("answer_html") or "")[
+                            :50_000
+                        ]
+                    ),
                     "analysis": (
                         ""
                         if image_semantic_source
                         else str(block.get("analysis") or "")
+                    ),
+                    "analysis_rich_text": (
+                        ""
+                        if image_semantic_source
+                        else rich_text_for_model(block.get("analysis_html") or "")[
+                            :50_000
+                        ]
                     ),
                 }
             )

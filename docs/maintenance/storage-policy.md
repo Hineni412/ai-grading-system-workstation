@@ -14,6 +14,7 @@ This document describes local data storage for the AI grading system.
 | Backups | `user_data/backups/` | Manual and automatic backups | No, but old copies can be expired |
 | Question bank assets | `user_data/question_bank/` | Raw papers, extracted images, rich content | Partly |
 | Development outputs | `user_data/outputs/` | Benchmarks and comparison artifacts | Yes |
+| AI diagnostic journal | `logs/llm_diagnostics.jsonl*` | Local text request/response debugging; image bodies are excluded | No; bounded retention |
 
 ## Retention Defaults
 
@@ -25,6 +26,7 @@ This document describes local data storage for the AI grading system.
 - Archive benchmark outputs older than 7 days.
 - Archive comparison outputs older than 14 days.
 - Remove temporary files older than 1 day after a dry-run report.
+- Rotate the AI diagnostic journal at about 32 MiB and keep the current file plus the latest 3 rotated files.
 
 ## Deduplication Defaults
 

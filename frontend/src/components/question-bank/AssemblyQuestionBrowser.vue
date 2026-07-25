@@ -46,16 +46,57 @@ const filters = reactive({
   sort: 'newest' as QuestionBankFilters['sort'],
 })
 
-const activeFilterCount = computed(() => [
-  filters.keyword,
-  filters.examScope,
-  filters.knowledgePoint,
-  filters.questionType,
-  filters.year,
-  filters.examType,
-  filters.grade,
-  filters.tagStatus === 'all' ? '' : filters.tagStatus,
-].filter(Boolean).length)
+type TextFilterKey =
+  | 'keyword'
+  | 'examScope'
+  | 'knowledgePoint'
+  | 'questionType'
+  | 'year'
+  | 'examType'
+  | 'grade'
+
+type ActiveFilterKey = TextFilterKey | 'tagStatus'
+
+interface ActiveFilter {
+  key: ActiveFilterKey
+  label: string
+  value: string
+}
+
+const activeFilters = computed<ActiveFilter[]>(() => {
+  const result: ActiveFilter[] = []
+  if (filters.keyword.trim()) {
+    result.push({ key: 'keyword', label: '关键词', value: filters.keyword.trim() })
+  }
+  if (filters.examScope) {
+    result.push({ key: 'examScope', label: '章节', value: filters.examScope })
+  }
+  if (filters.questionType) {
+    result.push({ key: 'questionType', label: '题型', value: filters.questionType })
+  }
+  if (filters.knowledgePoint) {
+    result.push({ key: 'knowledgePoint', label: '知识点', value: filters.knowledgePoint })
+  }
+  if (filters.year) {
+    result.push({ key: 'year', label: '年份', value: filters.year })
+  }
+  if (filters.examType) {
+    result.push({ key: 'examType', label: '试卷类型', value: filters.examType })
+  }
+  if (filters.grade) {
+    result.push({ key: 'grade', label: '年级', value: filters.grade })
+  }
+  if (filters.tagStatus !== 'all') {
+    result.push({
+      key: 'tagStatus',
+      label: '标签状态',
+      value: filters.tagStatus === 'tagged' ? '核心标签完整' : '标签待完善',
+    })
+  }
+  return result
+})
+
+const activeFilterCount = computed(() => activeFilters.value.length)
 
 onMounted(() => {
   void Promise.all([
@@ -110,8 +151,19 @@ function chooseChapter(value: string): void {
   void loadQuestions(true)
 }
 
-function chooseQuestionType(value: string): void {
-  filters.questionType = filters.questionType === value ? '' : value
+function chooseTextFilter(key: Exclude<TextFilterKey, 'keyword' | 'examScope'>, value: string): void {
+  filters[key] = filters[key] === value ? '' : value
+  void loadQuestions(true)
+}
+
+function chooseTagStatus(value: 'all' | 'tagged' | 'untagged'): void {
+  filters.tagStatus = value
+  void loadQuestions(true)
+}
+
+function clearActiveFilter(key: ActiveFilterKey): void {
+  if (key === 'tagStatus') filters.tagStatus = 'all'
+  else filters[key] = ''
   void loadQuestions(true)
 }
 
@@ -231,45 +283,212 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
 
     <main class="assembly-browser__main">
       <section class="assembly-filter-panel" aria-label="试题筛选">
-        <div class="assembly-filter-row">
-          <span class="assembly-filter-label">题型</span>
-          <div class="assembly-filter-chips">
-            <button type="button" :class="{ 'is-active': !filters.questionType }" @click="chooseQuestionType(filters.questionType)">
-              全部
-            </button>
-            <button
-              v-for="item in facets.question_types.slice(0, 8)"
-              :key="item.value"
-              type="button"
-              :class="{ 'is-active': filters.questionType === item.value }"
-              @click="chooseQuestionType(item.value)"
-            >
-              {{ item.value }} <small>{{ item.count }}</small>
-            </button>
+        <header class="assembly-filter-panel__heading">
+          <div>
+            <p class="assembly-kicker">QUESTION LABELS</p>
+            <h2>按标签筛题</h2>
+            <p>点击标签立即筛选；每个数字表示当前题库中带有该标签的题目数量。</p>
           </div>
+          <strong v-if="activeFilterCount">{{ activeFilterCount }} 项已选</strong>
+        </header>
+
+        <div v-if="facetsState === 'loading'" class="assembly-filter-state" role="status">
+          正在读取筛选标签…
         </div>
-        <div class="assembly-filter-row">
-          <span class="assembly-filter-label">常用</span>
-          <div class="assembly-filter-selects">
-            <select v-model="filters.year" aria-label="年份" @change="loadQuestions(true)">
-              <option value="">全部年份</option>
-              <option v-for="item in facets.years" :key="item.value" :value="item.value">{{ item.value }}（{{ item.count }}）</option>
-            </select>
-            <select v-model="filters.examType" aria-label="试卷类型" @change="loadQuestions(true)">
-              <option value="">全部试卷类型</option>
-              <option v-for="item in facets.exam_types" :key="item.value" :value="item.value">{{ item.value }}（{{ item.count }}）</option>
-            </select>
-            <select v-model="filters.grade" aria-label="年级" @change="loadQuestions(true)">
-              <option value="">全部年级</option>
-              <option v-for="item in facets.grades" :key="item.value" :value="item.value">{{ item.value }}（{{ item.count }}）</option>
-            </select>
-            <select v-model="filters.tagStatus" aria-label="标签状态" @change="loadQuestions(true)">
-              <option value="all">全部标签状态</option>
-              <option value="tagged">核心标签完整</option>
-              <option value="untagged">标签待完善</option>
-            </select>
+        <div v-else-if="facetsState === 'error'" class="assembly-filter-state" role="alert">
+          <span>筛选标签暂时无法读取。</span>
+          <button type="button" class="assembly-link" @click="loadFacets">重新读取</button>
+        </div>
+        <template v-else>
+          <div class="assembly-filter-row">
+            <span class="assembly-filter-label">题型</span>
+            <div class="assembly-filter-chips">
+              <button
+                type="button"
+                :class="{ 'is-active': !filters.questionType }"
+                :aria-pressed="!filters.questionType"
+                @click="chooseTextFilter('questionType', '')"
+              >
+                全部
+              </button>
+              <button
+                v-for="item in facets.question_types"
+                :key="item.value"
+                type="button"
+                :class="{ 'is-active': filters.questionType === item.value }"
+                :aria-pressed="filters.questionType === item.value"
+                @click="chooseTextFilter('questionType', item.value)"
+              >
+                {{ item.value }} <small>{{ item.count }}</small>
+              </button>
+              <span v-if="facets.question_types.length === 0" class="assembly-filter-empty">暂无题型标签</span>
+            </div>
           </div>
+
+          <div class="assembly-filter-row">
+            <span class="assembly-filter-label">知识点</span>
+            <div class="assembly-filter-chips">
+              <button
+                type="button"
+                :class="{ 'is-active': !filters.knowledgePoint }"
+                :aria-pressed="!filters.knowledgePoint"
+                @click="chooseTextFilter('knowledgePoint', '')"
+              >
+                全部
+              </button>
+              <button
+                v-for="item in facets.knowledge_points.slice(0, 12)"
+                :key="item.value"
+                type="button"
+                :class="{ 'is-active': filters.knowledgePoint === item.value }"
+                :aria-pressed="filters.knowledgePoint === item.value"
+                @click="chooseTextFilter('knowledgePoint', item.value)"
+              >
+                {{ item.value }} <small>{{ item.count }}</small>
+              </button>
+              <details v-if="facets.knowledge_points.length > 12" class="assembly-filter-more">
+                <summary>更多知识点（{{ facets.knowledge_points.length - 12 }}）</summary>
+                <div>
+                  <button
+                    v-for="item in facets.knowledge_points.slice(12)"
+                    :key="item.value"
+                    type="button"
+                    :class="{ 'is-active': filters.knowledgePoint === item.value }"
+                    :aria-pressed="filters.knowledgePoint === item.value"
+                    @click="chooseTextFilter('knowledgePoint', item.value)"
+                  >
+                    {{ item.value }} <small>{{ item.count }}</small>
+                  </button>
+                </div>
+              </details>
+              <span v-if="facets.knowledge_points.length === 0" class="assembly-filter-empty">暂无知识点标签</span>
+            </div>
+          </div>
+
+          <div class="assembly-filter-row">
+            <span class="assembly-filter-label">年份</span>
+            <div class="assembly-filter-chips">
+              <button
+                type="button"
+                :class="{ 'is-active': !filters.year }"
+                :aria-pressed="!filters.year"
+                @click="chooseTextFilter('year', '')"
+              >
+                全部
+              </button>
+              <button
+                v-for="item in facets.years"
+                :key="item.value"
+                type="button"
+                :class="{ 'is-active': filters.year === item.value }"
+                :aria-pressed="filters.year === item.value"
+                @click="chooseTextFilter('year', item.value)"
+              >
+                {{ item.value }} <small>{{ item.count }}</small>
+              </button>
+              <span v-if="facets.years.length === 0" class="assembly-filter-empty">暂无年份标签</span>
+            </div>
+          </div>
+
+          <div class="assembly-filter-row">
+            <span class="assembly-filter-label">试卷</span>
+            <div class="assembly-filter-chips">
+              <button
+                type="button"
+                :class="{ 'is-active': !filters.examType }"
+                :aria-pressed="!filters.examType"
+                @click="chooseTextFilter('examType', '')"
+              >
+                全部
+              </button>
+              <button
+                v-for="item in facets.exam_types"
+                :key="item.value"
+                type="button"
+                :class="{ 'is-active': filters.examType === item.value }"
+                :aria-pressed="filters.examType === item.value"
+                @click="chooseTextFilter('examType', item.value)"
+              >
+                {{ item.value }} <small>{{ item.count }}</small>
+              </button>
+              <span v-if="facets.exam_types.length === 0" class="assembly-filter-empty">暂无试卷类型标签</span>
+            </div>
+          </div>
+
+          <div class="assembly-filter-row">
+            <span class="assembly-filter-label">年级</span>
+            <div class="assembly-filter-chips">
+              <button
+                type="button"
+                :class="{ 'is-active': !filters.grade }"
+                :aria-pressed="!filters.grade"
+                @click="chooseTextFilter('grade', '')"
+              >
+                全部
+              </button>
+              <button
+                v-for="item in facets.grades"
+                :key="item.value"
+                type="button"
+                :class="{ 'is-active': filters.grade === item.value }"
+                :aria-pressed="filters.grade === item.value"
+                @click="chooseTextFilter('grade', item.value)"
+              >
+                {{ item.value }} <small>{{ item.count }}</small>
+              </button>
+              <span v-if="facets.grades.length === 0" class="assembly-filter-empty">暂无年级标签</span>
+            </div>
+          </div>
+
+          <div class="assembly-filter-row">
+            <span class="assembly-filter-label">标注</span>
+            <div class="assembly-filter-chips">
+              <button
+                type="button"
+                :class="{ 'is-active': filters.tagStatus === 'all' }"
+                :aria-pressed="filters.tagStatus === 'all'"
+                @click="chooseTagStatus('all')"
+              >
+                全部
+              </button>
+              <button
+                type="button"
+                :class="{ 'is-active': filters.tagStatus === 'tagged' }"
+                :aria-pressed="filters.tagStatus === 'tagged'"
+                @click="chooseTagStatus('tagged')"
+              >
+                核心标签完整
+              </button>
+              <button
+                type="button"
+                :class="{ 'is-active': filters.tagStatus === 'untagged' }"
+                :aria-pressed="filters.tagStatus === 'untagged'"
+                @click="chooseTagStatus('untagged')"
+              >
+                标签待完善
+              </button>
+            </div>
+          </div>
+        </template>
+
+        <div v-if="activeFilters.length" class="assembly-active-filters" aria-label="已选筛选条件">
+          <span>已选条件</span>
+          <button
+            v-for="filter in activeFilters"
+            :key="filter.key"
+            type="button"
+            :aria-label="`清除${filter.label}：${filter.value}`"
+            @click="clearActiveFilter(filter.key)"
+          >
+            <small>{{ filter.label }}</small>
+            {{ filter.value }}
+            <b aria-hidden="true">×</b>
+          </button>
+          <button type="button" class="assembly-active-filters__clear" @click="resetFilters">
+            清除全部
+          </button>
         </div>
+
         <div class="assembly-filter-row is-search">
           <span class="assembly-filter-label">搜索</span>
           <input v-model="filters.keyword" type="search" placeholder="输入试题关键词" @keyup.enter="loadQuestions(true)">
@@ -281,9 +500,6 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
             <option value="frequency_zhongkao">中考常见</option>
           </select>
           <button type="button" class="assembly-button is-primary" @click="loadQuestions(true)">搜索</button>
-          <button v-if="activeFilterCount" type="button" class="assembly-button" @click="resetFilters">
-            清除 {{ activeFilterCount }} 项
-          </button>
         </div>
       </section>
 
@@ -320,7 +536,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
 
           <div class="assembly-result-card__content">
             <QuestionContentRenderer
-              :blocks="question.rich_content.question_blocks"
+              :blocks="question.rich_content?.question_blocks"
               :fallback="question.question_text"
               image-alt="题目配图"
             />
@@ -335,7 +551,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
           <div v-if="expandedAnswers.has(question.id)" class="assembly-result-card__answer">
             <strong>答案与解析</strong>
             <QuestionContentRenderer
-              :blocks="question.rich_content.answer_blocks"
+              :blocks="question.rich_content?.answer_blocks"
               :fallback="question.answer_text"
               empty-label="暂未录入答案或解析"
               image-alt="答案配图"
@@ -437,7 +653,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
               <span>{{ item.similarity_reasons.join(' · ') || '内容相近' }}</span>
             </div>
             <QuestionContentRenderer
-              :blocks="item.rich_content.question_blocks"
+              :blocks="item.rich_content?.question_blocks"
               :fallback="item.question_text"
               image-alt="相似题配图"
             />

@@ -256,16 +256,24 @@ class LLMClient:
             _next_attempt=next_attempt,
         )
 
-    def json_from_text(self, prompt: str, model: str | None = None, extra_kwargs: dict[str, Any] | None = None) -> dict[str, Any]:
+    def json_from_text(
+        self,
+        prompt: str,
+        model: str | None = None,
+        extra_kwargs: dict[str, Any] | None = None,
+        *,
+        request_kind: LLMRequestKind = LLMRequestKind.CONFIG_GENERATION,
+    ) -> dict[str, Any]:
         request_id = str(uuid.uuid4())
         next_attempt = count(1).__next__
+        effective_request_kind = LLMRequestKind(request_kind)
         completion = self._create_chat_completion(
             self.config_client,
             model=model or self.settings.config_model,
             messages=[{"role": "user", "content": prompt}],
             expect_json=True,
             extra_kwargs=extra_kwargs,
-            request_kind=LLMRequestKind.CONFIG_GENERATION,
+            request_kind=effective_request_kind,
             request_id=request_id,
             _next_attempt=next_attempt,
         )
@@ -277,7 +285,7 @@ class LLMClient:
             retry_messages=retry_messages,
             client=self.config_client,
             extra_kwargs=extra_kwargs,
-            request_kind=LLMRequestKind.CONFIG_GENERATION,
+            request_kind=effective_request_kind,
             request_id=request_id,
             _next_attempt=next_attempt,
         )

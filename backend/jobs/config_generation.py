@@ -48,6 +48,10 @@ from backend.config_generation.compat import (
     retry_failed_grading_config_batches,
     refine_grading_config_from_manual_structure,
 )
+from session_manager import (
+    generate_grading_config_from_images,
+    generate_grading_config_from_text,
+)
 
 from .manager import JobCancellationRequested, JobContext
 
@@ -415,8 +419,10 @@ def _run_config_generation_job_impl(
     ).strip()
     if generation_mode == "per_question":
         generation_mode = "batched"
-    if generation_mode != "batched":
+    if generation_mode not in {"batched", "whole_document"}:
         raise ValueError("unsupported config generation mode")
+    if mode == "retry" and generation_mode != "batched":
+        raise ValueError("whole-document config generation is not retryable")
     staged_generation_mode = inputs.get("generation_mode")
     staged_mode = str(staged_generation_mode or "").strip()
     if staged_mode == "per_question":
@@ -472,7 +478,9 @@ def _run_config_generation_job_impl(
         document_text = str(inputs.get("document_text") or "")
         whole_page_images = _decode_whole_page_images(inputs.get("whole_page_images"))
         source_suffix = str(inputs.get("source_suffix") or "")
-    if not isinstance(confirmed_blocks, list) or not confirmed_blocks:
+    if not isinstance(confirmed_blocks, list) or (
+        generation_mode == "batched" and not confirmed_blocks
+    ):
         raise ValueError("confirmed_blocks must be a non-empty list")
     if question_images is not None and not isinstance(question_images, dict):
         raise ValueError("question_images must be an object")
@@ -522,7 +530,7 @@ def _run_config_generation_job_impl(
             retry_question_ids=retry_ids,
             checkpoint=checkpoint,
         )
-    else:
+    elif generation_mode == "batched":
         payload = generate_grading_config_from_confirmed_blocks(
             confirmed_blocks,
             document_text,
@@ -531,6 +539,21 @@ def _run_config_generation_job_impl(
             report=report,
             q_images=question_images or None,
             checkpoint=checkpoint,
+        )
+    elif source_suffix == ".docx":
+        payload = generate_grading_config_from_text(
+            document_text,
+            llm_client=client,
+            model_name=_config_model(client),
+            report=report,
+        )
+    else:
+        payload = generate_grading_config_from_images(
+            whole_page_images,
+            "",
+            llm_client=client,
+            model_name=_config_model(client),
+            report=report,
         )
     context.raise_if_cancelled()
     failed_ids = failed_grading_config_question_ids(payload)
@@ -543,8 +566,14 @@ def _run_config_generation_job_impl(
         failed_batches=failed_grading_config_batches(payload),
         local_json_repairs=_local_json_repairs(payload),
         **score_allocation,
-        retryable_mode=True,
+        retryable_mode=generation_mode == "batched",
     )
+    if generation_mode == "whole_document" and (
+        failed_ids or bool(score_allocation["score_allocation_pending"])
+    ):
+        raise ValueError(
+            "whole-document generation returned an incomplete result; nothing was published"
+        )
     if failed_ids or bool(score_allocation["score_allocation_pending"]):
         with session_config_lock(Path(upload_config_dir), session_id):
             current_session = db.get_grading_session(session_id)

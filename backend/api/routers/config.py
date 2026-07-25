@@ -367,6 +367,39 @@ def get_config_source_asset(
     )
 
 
+@router.get(
+    "/sessions/{session_id}/config/sources/{source_id}/questions/{question_id}/assets/{asset_kind}/{asset_index}",
+    responses=CONFIG_SOURCE_ERROR_RESPONSES,
+)
+def get_indexed_config_source_asset(
+    session_id: int,
+    source_id: str,
+    question_id: str,
+    asset_kind: str,
+    asset_index: int,
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    source_service: ConfigSourceService = Depends(get_config_source_service),
+) -> Response:
+    _require_session(db, session_id)
+    if asset_kind not in {"question", "answer"} or asset_index < 0:
+        raise ApiError(404, "config_asset_not_found", "Config asset not found")
+    try:
+        content, media_type = source_service.read_asset(
+            session_id=session_id,
+            source_id=source_id,
+            question_id=question_id,
+            asset_kind=asset_kind,
+            asset_index=asset_index,
+        )
+    except ConfigSourceError as exc:
+        raise _source_api_error(exc) from None
+    return Response(
+        content,
+        media_type=media_type,
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
 def _read_json_config(path_value: Any, *, field_name: str) -> dict[str, Any]:
     raw_path = str(path_value or "").strip()
     if not raw_path:

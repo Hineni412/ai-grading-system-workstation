@@ -53,7 +53,11 @@ export interface QuestionBankListItem {
   textbook_version: string | null
   tags: QuestionBankTag[]
   asset_urls: string[]
-  rich_content: QuestionBankRichContent
+  /**
+   * Older in-memory fixtures and cached caller objects may not include the
+   * structured preview yet. Network responses remain strict at decode time.
+   */
+  rich_content?: QuestionBankRichContent
 }
 
 export interface QuestionBankListResponse {
@@ -135,10 +139,14 @@ export interface QuestionBankRichTableRow {
 }
 
 export interface QuestionBankRichBlock {
-  kind: 'paragraph' | 'table'
+  /**
+   * Optional only for legacy caller-owned objects. API decoders still require
+   * the complete structured shape before accepting a server response.
+   */
+  kind?: 'paragraph' | 'table'
   text: string
-  segments: QuestionBankRichInlineSegment[]
-  rows: QuestionBankRichTableRow[]
+  segments?: QuestionBankRichInlineSegment[]
+  rows?: QuestionBankRichTableRow[]
   asset_indexes: number[]
   asset_urls: string[]
 }
