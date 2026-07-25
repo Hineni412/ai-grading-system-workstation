@@ -1,6 +1,6 @@
 # 依赖锁定文件（constraints）
 # 来源：便携运行时 runtime/python pip freeze（pip 26.1.2 / CPython 3.12.1）
-# 生成日期：2026-07-03（WP0.3，见 docs/superpowers/plans/2026-07-03-wp0-3-dependency-lock-implementation.md）
+# 生成日期：2026-07-03（来源与更新方式以本文件头和 Git 历史为准）
 # 用法：pip install -r requirements.txt -c constraints.txt
 # 重新生成：runtime\python\python.exe -m pip freeze
 
