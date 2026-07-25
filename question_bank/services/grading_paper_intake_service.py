@@ -178,7 +178,6 @@ def intake_grading_paper_to_question_bank(
                     result.analysis,
                     model_name=result.model_name,
                     confidence=result.analysis.confidence,
-                    resolve_skills=False,
                 ):
                     tagged_questions += 1
                 else:

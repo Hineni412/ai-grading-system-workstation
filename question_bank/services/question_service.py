@@ -8,12 +8,6 @@ from typing import Any, Mapping
 from question_bank.database.schema import connect, initialize_database
 from question_bank.models.question import ALLOWED_TAG_TYPES, QuestionCreate, QuestionUpdate, TagCreate
 from question_bank.models.tag_schema import TagAnalysis
-from question_bank.models.skill_catalog import (
-    ResolvedSkillLink,
-    ResolutionOutcome,
-    SkillResolutionRequest,
-    SkillRole,
-)
 from question_bank.taxonomy.registry import CANONICAL_KNOWLEDGE, canonicalize_knowledge_values
 from question_bank.parsers.type_detector import detect_question_type
 
@@ -897,8 +891,6 @@ class QuestionService:
         edited_fields: set[str] | None = None,
         model_name: str | None = None,
         confidence: float | None = None,
-        skill_resolver: Any | None = None,
-        resolve_skills: bool = False,
     ) -> bool:
         self.initialize_database()
         with connect(self.db_path) as conn:
@@ -954,101 +946,7 @@ class QuestionService:
             conn.commit()
         from question_bank.services.question_frequency_service import QuestionFrequencyService
         QuestionFrequencyService(self.db_path).invalidate_frequency_cache_for_question(int(question_id))
-        # Current graph and recommendation flows read question_tags directly.
-        # Keep the legacy skill-link projection available only to explicit callers.
-        if resolve_skills:
-            self._sync_question_skill_links(
-                int(question_id),
-                analysis,
-                skill_resolver=skill_resolver,
-            )
         return True
-
-    def _sync_question_skill_links(
-        self,
-        question_id: int,
-        analysis: TagAnalysis,
-        *,
-        skill_resolver: Any | None,
-    ) -> None:
-        from question_bank.services.skill_link_service import SkillLinkService
-        from question_bank.services.skill_resolution_service import SkillResolutionService
-
-        link_service = SkillLinkService(self.db_path)
-        measured_names = list(analysis.measured_skills)
-        supporting_names = list(analysis.supporting_skills)
-        if not measured_names:
-            link_service.clear_question_links(question_id)
-            return
-        with connect(self.db_path) as conn:
-            question = conn.execute(
-                """
-                SELECT q.question_text, q.answer_text, p.grade
-                FROM questions q LEFT JOIN papers p ON p.id = q.paper_id
-                WHERE q.id = ? AND q.is_deleted = 0
-                """,
-                (int(question_id),),
-            ).fetchone()
-        if question is None:
-            link_service.clear_question_links(question_id)
-            return
-        resolver = skill_resolver or SkillResolutionService(self.db_path)
-        existing_tags = tuple(
-            dict.fromkeys(
-                [
-                    *analysis.knowledge_points,
-                    *analysis.sub_skills,
-                    *analysis.method_tags,
-                    *analysis.math_model_tags,
-                ]
-            )
-        )
-        resolved_links: list[ResolvedSkillLink] = []
-        identities: set[tuple[int, str]] = set()
-        for role, names in (
-            (SkillRole.MEASURED, measured_names),
-            (SkillRole.SUPPORTING, supporting_names),
-        ):
-            for name in names:
-                resolution = resolver.resolve(
-                    SkillResolutionRequest(
-                        source_type="question_bank_item",
-                        source_ref=str(question_id),
-                        raw_label=name,
-                        grade=str(question["grade"] or ""),
-                        question_text=str(question["question_text"] or ""),
-                        answer_text=str(question["answer_text"] or ""),
-                        existing_tags=existing_tags,
-                    )
-                )
-                if (
-                    resolution.outcome is ResolutionOutcome.CONFLICT
-                    or resolution.skill_id is None
-                ):
-                    continue
-                identity = (int(resolution.skill_id), role.value)
-                if identity in identities:
-                    continue
-                identities.add(identity)
-                resolved_links.append(
-                    ResolvedSkillLink(
-                        skill_id=int(resolution.skill_id),
-                        role=role,
-                        raw_knowledge_id=analysis.canonical_knowledge_id,
-                        raw_knowledge_label=name,
-                        source="question_tagging",
-                        confidence=resolution.confidence,
-                        evidence={
-                            "question_id": int(question_id),
-                            "resolution_reason": resolution.reason,
-                            "knowledge_points": list(analysis.knowledge_points),
-                        },
-                    )
-                )
-        if any(link.role is SkillRole.MEASURED for link in resolved_links):
-            link_service.replace_question_links(question_id, resolved_links)
-        else:
-            link_service.clear_question_links(question_id)
 
     def _insert_tags(self, conn, question_id: int, tags: list[TagCreate]) -> None:
         rows: list[tuple[Any, ...]] = []

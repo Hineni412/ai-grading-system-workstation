@@ -29,6 +29,7 @@ def service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PracticePlanServ
 @pytest.fixture
 def profile_set() -> dict:
     return {
+        "diagnosis_identity": "question_tag",
         "scope": {"mode": "selected", "student_ids": ["12", "15", "18"]},
         "exam_scope": {"mode": "manual", "session_ids": [12, 14]},
         "students": [
@@ -49,7 +50,7 @@ def test_individual_mode_creates_one_variant_per_student(
     assert all(item["variant_type"] == "individual" for item in plan["variants"])
 
 
-def test_auto_group_mode_groups_students_with_similar_confirmed_concepts(
+def test_auto_group_mode_groups_students_with_the_same_question_tags(
     service: PracticePlanService,
     profile_set: dict,
 ) -> None:
@@ -58,7 +59,10 @@ def test_auto_group_mode_groups_students_with_similar_confirmed_concepts(
     assert len(plan["variants"]) == 2
     assert sorted(len(item["student_ids"]) for item in plan["variants"]) == [1, 2]
     grouped = next(item for item in plan["variants"] if len(item["student_ids"]) == 2)
-    assert grouped["grouping_reason"]["covered_concept_ids"] == [1, 2]
+    assert grouped["grouping_reason"]["covered_knowledge_points"] == [
+        "knowledge-1",
+        "knowledge-2",
+    ]
 
 
 def test_unconfirmed_terms_never_drive_automatic_grouping(
@@ -67,9 +71,7 @@ def test_unconfirmed_terms_never_drive_automatic_grouping(
 ) -> None:
     profile_set["students"][2]["weak_points"] = [
         {
-            "source_term": "待确认词",
-            "concept_id": 1,
-            "mapping_status": "suggested",
+            "knowledge_point": "unconfirmed",
             "eligible_for_recommendation": False,
             "mastery": 0.2,
         }
@@ -117,9 +119,7 @@ def _student(student_id: str, score_rate: float, concepts: list[tuple[int, float
         "score_rate": score_rate,
         "weak_points": [
             {
-                "source_term": f"知识点{concept_id}",
-                "concept_id": concept_id,
-                "mapping_status": "confirmed",
+                "knowledge_point": f"knowledge-{concept_id}",
                 "eligible_for_recommendation": True,
                 "mastery": mastery,
             }

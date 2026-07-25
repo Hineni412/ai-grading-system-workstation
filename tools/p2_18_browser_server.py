@@ -63,7 +63,7 @@ def _seed_training_data(paths) -> None:
 
     grading_db = DBManager(paths.db_path)
     grading_db.initialize()
-    initialize_database(paths.qb_db_path, seed_skills=False)
+    initialize_database(paths.qb_db_path)
 
     rubric_path = paths.upload_config_dir / "p2-18-rubric.json"
     answer_path = paths.upload_config_dir / "p2-18-answer-key.json"
