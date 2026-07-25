@@ -289,3 +289,55 @@ def test_subjective_retry_acquires_one_request_slot_per_model_attempt(
     assert len(result["accepted"]) == 1
     assert client.calls == 3
     assert limiter.calls == 3
+
+
+def test_subjective_retry_reuses_one_bounded_image_memo_for_all_attempts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    atlas_path = tmp_path / "atlas.jpg"
+    Image.new("RGB", (20, 20), "white").save(atlas_path)
+    manifest = _manifest()
+
+    class FakeBuilder:
+        def build(self, **kwargs):
+            return {"atlas_path": atlas_path, "manifest": manifest}
+
+    class RetryingClient:
+        def __init__(self) -> None:
+            self.memos: list[dict[str, bytes]] = []
+
+        def json_from_images_with_options(self, *args, **kwargs):
+            self.memos.append(kwargs["image_compression_memo"])
+            if len(self.memos) < 3:
+                raise RuntimeError("transient")
+            return {
+                "question_id": "Q10",
+                "items": [
+                    {
+                        "paper_key": "paper-1",
+                        "student_id": 1,
+                        "grading_details": [_detail("10-1"), _detail("10-2")],
+                    }
+                ],
+            }
+
+    client = RetryingClient()
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+
+    result = grade_major_question_batch(
+        session_id=1,
+        spec=_multipart_spec(),
+        paper_entries=[],
+        answer_regions=[],
+        llm_client=client,
+        grading_model="test-model",
+        output_root=tmp_path,
+        batch_index=1,
+        builder=FakeBuilder(),
+    )
+
+    assert len(result["accepted"]) == 1
+    assert len(client.memos) == 3
+    assert client.memos[0] is client.memos[1] is client.memos[2]
+    assert client.memos[0] == {}

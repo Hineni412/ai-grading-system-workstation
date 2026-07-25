@@ -178,6 +178,7 @@ class LLMClient:
         dynamic_prompt: str | None = None,
         allow_gateway_retry: bool = False,
         request_kind: LLMRequestKind | None = None,
+        image_compression_memo: dict[str, bytes] | None = None,
     ) -> dict[str, Any]:
         active_client = self.config_client if use_config_client else self.client
         default_model = self.settings.config_model if use_config_client else self.settings.grading_model
@@ -195,7 +196,12 @@ class LLMClient:
                 content.append(
                     {
                         "type": "image_url",
-                        "image_url": {"url": _to_data_url(blob)},
+                        "image_url": {
+                            "url": _to_data_url(
+                                blob,
+                                compression_memo=image_compression_memo,
+                            )
+                        },
                     }
                 )
         if dynamic_prompt:
@@ -205,7 +211,12 @@ class LLMClient:
                 content.append(
                     {
                         "type": "image_url",
-                        "image_url": {"url": _to_data_url(blob)},
+                        "image_url": {
+                            "url": _to_data_url(
+                                blob,
+                                compression_memo=image_compression_memo,
+                            )
+                        },
                     }
                 )
 
@@ -560,9 +571,21 @@ def _gateway_config_key(api_key: str, base_url: str) -> str:
     return _shared_gateway_config_key(api_key, base_url)
 
 
-def _to_data_url(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
-    image_bytes = _compress_image_for_api(image_bytes)
-    encoded = base64.b64encode(image_bytes).decode("utf-8")
+def _to_data_url(
+    image_bytes: bytes,
+    mime_type: str = "image/jpeg",
+    *,
+    compression_memo: dict[str, bytes] | None = None,
+) -> str:
+    if compression_memo is None:
+        compressed = _compress_image_for_api(image_bytes)
+    else:
+        cache_key = hashlib.sha256(image_bytes).hexdigest()
+        compressed = compression_memo.get(cache_key)
+        if compressed is None:
+            compressed = _compress_image_for_api(image_bytes)
+            compression_memo[cache_key] = compressed
+    encoded = base64.b64encode(compressed).decode("utf-8")
     return f"data:{mime_type};base64,{encoded}"
 
 
