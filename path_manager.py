@@ -4,9 +4,10 @@ Provides a single source of truth for all data-related paths so that
 program code (replaceable) and user data (persistent) stay separated.
 
 Resolution order:
-1. ``config/app_config.yaml`` – DATA_DIR / LOGS_DIR keys
-2. ``AI_GRADING_DATA_DIR`` environment variable (legacy compat)
-3. Default: ``<project_root>/user_data``
+1. ``AI_GRADING_WORKTREE_DATA_DIR`` for an explicitly isolated worktree
+2. ``config/app_config.yaml`` – DATA_DIR / LOGS_DIR keys
+3. ``AI_GRADING_DATA_DIR`` environment variable (legacy compat)
+4. Default: ``<project_root>/user_data``
 """
 
 from __future__ import annotations
@@ -55,8 +56,11 @@ class PathManager:
         self._cfg = _load_yaml_simple(self._project_root / "config" / "app_config.yaml")
 
         # --- resolve data root ---
+        worktree_data_override = os.getenv("AI_GRADING_WORKTREE_DATA_DIR")
         configured_data = self._cfg.get("DATA_DIR")
-        if configured_data:
+        if worktree_data_override:
+            self._data_root = Path(worktree_data_override).expanduser().resolve()
+        elif configured_data:
             p = Path(configured_data)
             self._data_root = p if p.is_absolute() else (self._project_root / p).resolve()
         else:
