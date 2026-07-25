@@ -373,6 +373,11 @@
   background: var(--color-bg-app);
 }
 
+.main-workspace h1[tabindex='-1']:focus {
+  box-shadow: none;
+  outline: none;
+}
+
 .not-found-view {
   max-width: var(--content-max-width);
   margin-inline: auto;

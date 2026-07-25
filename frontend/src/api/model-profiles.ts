@@ -110,6 +110,8 @@ function isHttpUrl(value: string, allowBlank: boolean): boolean {
     return (parsed.protocol === 'http:' || parsed.protocol === 'https:')
       && parsed.username === ''
       && parsed.password === ''
+      && parsed.search === ''
+      && parsed.hash === ''
   } catch {
     return false
   }
@@ -119,11 +121,11 @@ function isModelProfile(value: unknown): value is ModelProfile {
   if (!isRecord(value) || !hasExactKeys(value, PROFILE_KEYS)) return false
   return (
     isBoundedText(value.name, 1, MODEL_PROFILE_LIMITS.name)
-    && isBoundedText(value.base_url, 1, MODEL_PROFILE_LIMITS.url)
-    && isHttpUrl(value.base_url, false)
+    && isBoundedText(value.base_url, 0, MODEL_PROFILE_LIMITS.url)
+    && isHttpUrl(value.base_url, true)
     && typeof value.has_api_key === 'boolean'
-    && isBoundedText(value.ocr_model, 1, MODEL_PROFILE_LIMITS.model)
-    && isBoundedText(value.grading_model, 1, MODEL_PROFILE_LIMITS.model)
+    && isBoundedText(value.ocr_model, 0, MODEL_PROFILE_LIMITS.model)
+    && isBoundedText(value.grading_model, 0, MODEL_PROFILE_LIMITS.model)
     && isBoundedText(value.config_base_url, 0, MODEL_PROFILE_LIMITS.url)
     && isHttpUrl(value.config_base_url, true)
     && typeof value.has_config_api_key === 'boolean'
@@ -281,11 +283,15 @@ export function normalizeModelProfileInput(
 }
 
 function requireProfilePathName(name: string): string {
-  return encodeURIComponent(normalizeBoundedText(
+  const normalized = normalizeBoundedText(
     name,
     '配置名称',
     MODEL_PROFILE_LIMITS.name,
-  ))
+  )
+  if (/[\\/]/.test(normalized)) {
+    throw new ModelProfileInputError('配置名称不能包含斜杠。')
+  }
+  return encodeURIComponent(normalized)
 }
 
 export const modelProfilesApi = {
@@ -302,9 +308,11 @@ export const modelProfilesApi = {
     options: ModelProfileSaveOptions = {},
   ): Promise<ModelProfilesState> {
     const pathName = requireProfilePathName(profileName)
+    const normalized = normalizeModelProfileInput(input, options.requireApiKey)
+    const { name: _profileName, ...body } = normalized
     return apiClient.request(`/api/model-profiles/${pathName}`, {
       method: 'PUT',
-      body: normalizeModelProfileInput(input, options.requireApiKey),
+      body,
       decode: decodeModelProfilesState,
       signal: options.signal,
     })
