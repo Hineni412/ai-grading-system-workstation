@@ -103,6 +103,21 @@ _APPROVED_TABLE_DROPS = {
     "008_drop_legacy_cli_tables": frozenset(
         {"exam_results", "grading_details"}
     ),
+    "009_drop_legacy_skill_semantics": frozenset(
+        {
+            "knowledge_concepts",
+            "knowledge_relations",
+            "knowledge_source_mappings",
+            "skill_topics",
+            "skills",
+            "assessment_item_skills",
+            "question_skill_links",
+            "skill_resolution_conflicts",
+            "skill_neighbors",
+            "skill_system_settings",
+            "skill_migration_runs",
+        }
+    ),
 }
 
 # "duplicate column" 错误消息模式

@@ -34,8 +34,8 @@ def connect(
         conn.close()
 
 
-def initialize_database(db_path: Path, *, seed_skills: bool = True) -> None:
-    """Bring the question bank to the current migration version and seed defaults."""
+def initialize_database(db_path: Path) -> None:
+    """Bring the question bank to the current migration version."""
     ensure_schema_current("question_bank", db_path)
     with connect(db_path) as conn:
         conn.execute(
@@ -61,20 +61,4 @@ def initialize_database(db_path: Path, *, seed_skills: bool = True) -> None:
             WHERE COALESCE(semester, '') = ''
             """
         )
-        if seed_skills:
-            from question_bank.services.skill_catalog_service import (
-                seed_builtin_catalog_connection,
-            )
-            from question_bank.taxonomy.skill_catalog_seed import (
-                load_builtin_catalog,
-                validate_builtin_catalog,
-            )
-
-            catalog = load_builtin_catalog()
-            errors = validate_builtin_catalog(catalog)
-            if errors:
-                raise ValueError(
-                    "invalid built-in skill catalog: " + "; ".join(errors)
-                )
-            seed_builtin_catalog_connection(conn, catalog)
         conn.commit()

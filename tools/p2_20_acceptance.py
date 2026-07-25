@@ -3149,7 +3149,7 @@ def create_acceptance_app(
     from question_bank.database.schema import initialize_database
 
     DBManager(paths.db_path).initialize()
-    initialize_database(paths.qb_db_path, seed_skills=False)
+    initialize_database(paths.qb_db_path)
 
     from backend.api.app import create_app
     from fastapi import HTTPException

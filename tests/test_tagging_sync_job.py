@@ -122,9 +122,7 @@ def test_tagging_sync_skips_complete_questions_and_retries_only_missing(
     db_path = tmp_path / "qb.db"
     ids = _seed(db_path, 2)
     service = QuestionService(db_path)
-    assert service.save_tag_analysis(
-        ids[0], _analysis(), model_name="existing", resolve_skills=False
-    )
+    assert service.save_tag_analysis(ids[0], _analysis(), model_name="existing")
     fake_ai = FakeAI({ids[1]: _complete()})
     context, _store = _context(tmp_path, {"question_ids": ids})
 
