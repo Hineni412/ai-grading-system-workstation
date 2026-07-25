@@ -1,25 +1,25 @@
 :root {
   color-scheme: light;
 
-  --color-bg-app: #f6f7f8;
-  --color-bg-sidebar: #f2f3f4;
+  --color-bg-app: #f4f5f6;
+  --color-bg-sidebar: #ffffff;
   --color-bg-surface: #ffffff;
-  --color-bg-subtle: #f8f9fa;
-  --color-bg-selected: #eef2f6;
-  --color-overlay-mask: rgba(32, 36, 42, 0.42);
+  --color-bg-subtle: #f7f8f8;
+  --color-bg-selected: #e8f1f1;
+  --color-overlay-mask: rgba(28, 39, 51, 0.42);
 
-  --color-border-subtle: #e7e9ec;
-  --color-border-default: #d9dde2;
-  --color-border-strong: #b9c0c9;
+  --color-border-subtle: #eceeef;
+  --color-border-default: #e2e4e7;
+  --color-border-strong: #c6cbd0;
 
-  --color-text-primary: #20242a;
-  --color-text-secondary: #5c6470;
-  --color-text-muted: #8a929d;
+  --color-text-primary: #1c2733;
+  --color-text-secondary: #5c6672;
+  --color-text-muted: #87909b;
 
-  --color-accent: #2563eb;
-  --color-accent-hover: #1d4ed8;
-  --color-accent-active: #1e40af;
-  --color-accent-subtle: #eff6ff;
+  --color-accent: #135e6b;
+  --color-accent-hover: #0e4a54;
+  --color-accent-active: #0b3f47;
+  --color-accent-subtle: #e8f2f2;
 
   --color-success: #2f7a55;
   --color-success-subtle: #eaf5ef;
@@ -62,28 +62,28 @@
   --space-9: 48px;
 
   --radius-tag: 4px;
-  --radius-control: 6px;
-  --radius-panel: 8px;
-  --radius-overlay: 12px;
+  --radius-control: 8px;
+  --radius-panel: 12px;
+  --radius-overlay: 14px;
   --radius-circle: 50%;
   --border-width: 1px;
   --border-selected-width: 4px;
 
-  --control-height-small: 32px;
-  --control-height-default: 36px;
-  --control-height-large: 40px;
+  --control-height-small: 30px;
+  --control-height-default: 34px;
+  --control-height-large: 38px;
   --content-max-width: 1180px;
 
-  --shell-topbar-height: 60px;
-  --shell-navigation-width: 232px;
-  --shell-navigation-collapsed-width: 60px;
+  --shell-topbar-height: 68px;
+  --shell-navigation-width: 180px;
+  --shell-navigation-collapsed-width: 56px;
   --shell-inspector-width: 360px;
   --shell-inspector-compact-width: 320px;
   --shell-topbar-z-index: 32;
   --shell-skip-link-z-index: 33;
 
-  --shadow-overlay: 0 8px 24px rgba(32, 36, 42, 0.14);
-  --focus-ring: 0 0 0 3px var(--color-accent-subtle);
+  --shadow-overlay: 0 10px 28px rgba(28, 39, 51, 0.14);
+  --focus-ring: 0 0 0 3px rgba(19, 94, 107, 0.18);
   --focus-offset: 2px;
   --opacity-disabled: 0.54;
 
