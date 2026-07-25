@@ -15,6 +15,7 @@ from backend.api.routers.jobs import _job_response
 from backend.api.schemas.jobs import JobResponse
 from backend.api.schemas.question_bank import (
     QuestionDetailResponse,
+    QuestionFacetsResponse,
     QuestionListItem,
     QuestionListResponse,
     QuestionPaperListItem,
@@ -27,6 +28,8 @@ from backend.api.schemas.question_bank import (
     QuestionTagWriteRequest,
     QuestionTaggingJobRequest,
     QuestionWriteResponse,
+    SimilarQuestionItem,
+    SimilarQuestionListResponse,
 )
 from backend.file_access import (
     ControlledFileExpired,
@@ -486,6 +489,49 @@ def list_papers(
 
 
 @router.get(
+    "/facets",
+    response_model=QuestionFacetsResponse,
+    responses=QUESTION_SNAPSHOT_ERROR_RESPONSES,
+)
+def list_question_facets(
+    question_number: str | None = None,
+    keyword: str | None = None,
+    knowledge_point: str | None = None,
+    difficulty_min: Annotated[int | None, Query(ge=1, le=10)] = None,
+    difficulty_max: Annotated[int | None, Query(ge=1, le=10)] = None,
+    question_types: Annotated[list[str] | None, Query()] = None,
+    paper_ids: Annotated[list[int] | None, Query()] = None,
+    years: Annotated[list[str] | None, Query()] = None,
+    exam_types: Annotated[list[str] | None, Query()] = None,
+    grades: Annotated[list[str] | None, Query()] = None,
+    exam_scopes: Annotated[list[str] | None, Query()] = None,
+    tag_status: Literal["all", "tagged", "untagged"] = "all",
+    service: QuestionBankReadService = Depends(get_question_bank_read_service),
+) -> QuestionFacetsResponse:
+    _validate_difficulty_range(difficulty_min, difficulty_max)
+    try:
+        facets = service.list_facets(
+            QuestionReadFilters(
+                question_number=question_number,
+                keyword=keyword,
+                knowledge_point=knowledge_point,
+                difficulty_min=difficulty_min,
+                difficulty_max=difficulty_max,
+                question_types=tuple(question_types or ()),
+                paper_ids=tuple(paper_ids or ()),
+                years=tuple(years or ()),
+                exam_types=tuple(exam_types or ()),
+                grades=tuple(grades or ()),
+                exam_scopes=tuple(exam_scopes or ()),
+                tag_status=tag_status,
+            )
+        )
+    except QuestionBankSnapshotError as exc:
+        _raise_question_snapshot_api_error(exc)
+    return QuestionFacetsResponse(**facets)
+
+
+@router.get(
     "/questions",
     response_model=QuestionListResponse,
     responses=QUESTION_SNAPSHOT_ERROR_RESPONSES,
@@ -515,22 +561,7 @@ def list_questions(
     ] = "newest",
     service: QuestionBankReadService = Depends(get_question_bank_read_service),
 ) -> QuestionListResponse:
-    if (difficulty_min is None) != (difficulty_max is None):
-        raise ApiError(
-            422,
-            "invalid_difficulty_range",
-            "Both difficulty_min and difficulty_max are required",
-        )
-    if (
-        difficulty_min is not None
-        and difficulty_max is not None
-        and difficulty_min > difficulty_max
-    ):
-        raise ApiError(
-            422,
-            "invalid_difficulty_range",
-            "difficulty_min must not exceed difficulty_max",
-        )
+    _validate_difficulty_range(difficulty_min, difficulty_max)
 
     try:
         result = service.list_questions(
@@ -560,6 +591,36 @@ def list_questions(
         page=result.page,
         page_size=result.page_size,
         total_pages=result.total_pages,
+    )
+
+
+@router.get(
+    "/questions/{question_id}/similar",
+    response_model=SimilarQuestionListResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "Question not found"},
+        **QUESTION_SNAPSHOT_ERROR_RESPONSES,
+    },
+)
+def list_similar_questions(
+    question_id: int,
+    limit: Annotated[int, Query(ge=1, le=20)] = 6,
+    service: QuestionBankReadService = Depends(get_question_bank_read_service),
+) -> SimilarQuestionListResponse:
+    try:
+        items = service.find_similar_questions(question_id, limit=limit)
+    except QuestionBankSnapshotError as exc:
+        _raise_question_snapshot_api_error(exc)
+    if items is None:
+        raise ApiError(
+            404,
+            "question_not_found",
+            "Question not found",
+            {"question_id": int(question_id)},
+        )
+    return SimilarQuestionListResponse(
+        question_id=int(question_id),
+        items=[SimilarQuestionItem(**item) for item in items],
     )
 
 
@@ -672,6 +733,28 @@ def _raise_question_snapshot_api_error(
         "Question bank snapshot is unavailable",
         headers=NO_STORE_HEADERS,
     ) from exc
+
+
+def _validate_difficulty_range(
+    difficulty_min: int | None,
+    difficulty_max: int | None,
+) -> None:
+    if (difficulty_min is None) != (difficulty_max is None):
+        raise ApiError(
+            422,
+            "invalid_difficulty_range",
+            "Both difficulty_min and difficulty_max are required",
+        )
+    if (
+        difficulty_min is not None
+        and difficulty_max is not None
+        and difficulty_min > difficulty_max
+    ):
+        raise ApiError(
+            422,
+            "invalid_difficulty_range",
+            "difficulty_min must not exceed difficulty_max",
+        )
 
 
 def _question_write_response(result: QuestionWriteResult) -> QuestionWriteResponse:
