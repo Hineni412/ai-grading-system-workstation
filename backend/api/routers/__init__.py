@@ -1,3 +1,4 @@
+from .ai_diagnostics import router as ai_diagnostics_router
 from .analytics import router as analytics_router
 from .assembly import router as assembly_router
 from .config import router as config_router
@@ -19,6 +20,7 @@ from .training import router as training_router
 from .workbench import router as workbench_router
 
 __all__ = [
+    "ai_diagnostics_router",
     "analytics_router",
     "assembly_router",
     "config_router",

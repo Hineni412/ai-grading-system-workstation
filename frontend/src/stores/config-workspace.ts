@@ -130,8 +130,7 @@ function parsePersisted(raw: string | null): PersistedConfigWorkspace | null {
       || ('generationSummary' in item && !validGenerationSummary(item.generationSummary))) return null
     if (('pendingJobRequestToken' in item) !== ('pendingJobRequestKind' in item)) return null
     if ((item.sourceId === null) !== (item.sourceRevision === null)) return null
-    if (item.pendingGenerationMode === 'per_question'
-      || item.pendingGenerationMode === 'whole_document') item.pendingGenerationMode = 'batched'
+    if (item.pendingGenerationMode === 'per_question') item.pendingGenerationMode = 'batched'
     return item as unknown as PersistedConfigWorkspace
   } catch {
     return null
@@ -232,6 +231,8 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       .map((item) => item.question_id))
     return source.value.questions.some((question) => !excluded.has(question.question_id))
   })
+  const canGenerateWholeDocument = computed(() => sessionId.value !== null
+    && source.value !== null && sourceId.value !== null && sourceRevision.value !== null)
 
   function derivePhase(): ConfigPhase {
     if (editor.value?.configured) return 'editor'
@@ -544,14 +545,17 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   }
 
   function sourceRequest(mode: GenerationMode): ConfigGenerationRequest {
-    if (!canGenerate.value || sourceId.value === null || sourceRevision.value === null) {
+    const ready = mode === 'whole_document' ? canGenerateWholeDocument.value : canGenerate.value
+    if (!ready || sourceId.value === null || sourceRevision.value === null) {
       throw new Error('Config source is not ready')
     }
     return {
       source_id: sourceId.value,
       source_revision: sourceRevision.value,
       generation_mode: mode,
-      decisions: decisions.value.map((item) => ({ ...item })),
+      decisions: mode === 'whole_document'
+        ? []
+        : decisions.value.map((item) => ({ ...item })),
     }
   }
 
@@ -847,7 +851,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     pendingUploadRequestToken, sourceLoading, sourceError,
     saveStatus, mappingStatus, hasDirtyEditor, hasPendingSubmission,
     effectiveEditorRows, effectiveTotalScore,
-    canGenerate, hydrateSafeIndex, persistSafeIndex, clearWorkspace,
+    canGenerate, canGenerateWholeDocument, hydrateSafeIndex, persistSafeIndex, clearWorkspace,
     selectSession, selectSource, discardEditorDraft, setSource, acceptUploadedSource,
     updateDecisions, loadSource,
     setEditor, captureGenerationContext, attachJob, detachJob, sourceRequest,

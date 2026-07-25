@@ -218,6 +218,7 @@ def create_app(
         return HealthResponse(version=app_version)
 
     from backend.api.routers import (
+        ai_diagnostics_router,
         analytics_router,
         assembly_router,
         config_router,
@@ -239,6 +240,7 @@ def create_app(
         workbench_router,
     )
 
+    api.include_router(ai_diagnostics_router)
     api.include_router(analytics_router)
     api.include_router(assembly_router)
     api.include_router(config_router)

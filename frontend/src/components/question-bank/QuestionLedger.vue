@@ -157,7 +157,7 @@ function closeSimilar(): void {
 
         <div class="qb-question-card__content">
           <QuestionContentRenderer
-            :blocks="question.rich_content.question_blocks"
+            :blocks="question.rich_content?.question_blocks"
             :fallback="question.question_text"
             image-alt="题目配图"
           />
@@ -232,7 +232,7 @@ function closeSimilar(): void {
               <span>{{ item.similarity_reasons.join(' · ') || '内容相近' }}</span>
             </div>
             <QuestionContentRenderer
-              :blocks="item.rich_content.question_blocks"
+              :blocks="item.rich_content?.question_blocks"
               :fallback="item.question_text"
               image-alt="相似题配图"
               compact

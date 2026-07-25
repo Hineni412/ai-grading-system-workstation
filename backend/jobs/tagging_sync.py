@@ -201,7 +201,7 @@ def _load_tagging_candidates(
         rows = conn.execute(
             f"""
             SELECT q.id, q.question_text, q.answer_text, q.question_number,
-                   q.question_type, q.is_deleted,
+                   q.question_type, q.has_images, q.is_deleted,
                    p.grade, p.semester, p.exam_type, p.district
             FROM questions q
             LEFT JOIN papers p ON p.id = q.paper_id
@@ -211,18 +211,23 @@ def _load_tagging_candidates(
         ).fetchall()
         tag_rows = conn.execute(
             f"""
-            SELECT question_id, tag_type FROM question_tags
+            SELECT question_id, tag_type, tag_value FROM question_tags
             WHERE question_id IN ({placeholders})
               AND COALESCE(tag_value, '') <> ''
+            ORDER BY question_id ASC, id ASC
             """,
             question_ids,
         ).fetchall()
     rows_by_id = {int(row["id"]): row for row in rows}
     tag_types: dict[int, set[str]] = {}
+    tag_values: dict[int, list[str]] = {}
     for row in tag_rows:
-        tag_types.setdefault(int(row["question_id"]), set()).add(
-            str(row["tag_type"])
-        )
+        question_id = int(row["question_id"])
+        tag_types.setdefault(question_id, set()).add(str(row["tag_type"]))
+        value = str(row["tag_value"] or "").strip()
+        values = tag_values.setdefault(question_id, [])
+        if value and value not in values:
+            values.append(value)
     required = set(CORE_ANALYSIS_TAG_TYPES)
     contexts: dict[int, TaggingContext] = {}
     complete: list[int] = []
@@ -243,6 +248,8 @@ def _load_tagging_candidates(
                 semester=str(row["semester"] or ""),
                 exam_type=str(row["exam_type"] or ""),
                 district=str(row["district"] or ""),
+                has_images=bool(row["has_images"]),
+                existing_tags=tag_values.get(question_id, []),
             )
     return contexts, complete, unavailable
 

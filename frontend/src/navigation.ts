@@ -172,7 +172,7 @@ export const settingsRouteDefinition = {
   icon: 'settings',
 } as const satisfies WorkspaceRouteDefinition
 
-export const navigationGroups = [
+export const navigationGroups: readonly WorkspaceNavigationGroup[] = [
   {
     id: 'exam',
     label: '考试与阅卷',
@@ -198,15 +198,15 @@ export const navigationGroups = [
       trainingRouteDefinition,
     ],
   },
-] as const satisfies readonly WorkspaceNavigationGroup[]
+] as const
 
-export const settingsNavigationItems = [
+export const settingsNavigationItems: readonly WorkspaceRouteDefinition[] = [
   studentsRouteDefinition,
   modelProfilesRouteDefinition,
   settingsRouteDefinition,
 ] as const
 
-export const navigationItems = [
+export const navigationItems: readonly WorkspaceRouteDefinition[] = [
   workbenchRouteDefinition,
   ...navigationGroups.flatMap((group) => group.items),
   ...settingsNavigationItems,

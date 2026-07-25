@@ -40,7 +40,11 @@ export interface AssemblyQuestion {
   paper_title: string | null
   tags: QuestionBankTag[]
   asset_urls: string[]
-  rich_content: QuestionBankRichContent
+  /**
+   * Optional for legacy caller-owned drafts. The response decoder below still
+   * rejects server payloads that omit the structured preview.
+   */
+  rich_content?: QuestionBankRichContent
   score_value: number | null
 }
 

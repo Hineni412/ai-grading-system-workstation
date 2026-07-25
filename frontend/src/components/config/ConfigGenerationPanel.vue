@@ -44,6 +44,9 @@ const selectedFailed = ref<string[]>([])
 const editorLoads = new Set<number>()
 const submissionUnknown = computed(() => configStore.pendingJobRequestToken !== null)
 const workspacePending = computed(() => configStore.hasPendingSubmission)
+const generationAvailable = computed(() => mode.value === 'whole_document'
+  ? configStore.canGenerateWholeDocument
+  : configStore.canGenerate)
 
 const job = computed(() => configStore.jobId === null ? null : jobStore.jobs[configStore.jobId] ?? null)
 const syncError = computed(() => configStore.jobId === null
@@ -153,7 +156,10 @@ async function abandonMissingRequest(
 }
 
 async function startGeneration(requestedMode: GenerationMode = mode.value): Promise<void> {
-  if (!configStore.canGenerate || submitting.value || active.value || workspacePending.value
+  const ready = requestedMode === 'whole_document'
+    ? configStore.canGenerateWholeDocument
+    : configStore.canGenerate
+  if (!ready || submitting.value || active.value || workspacePending.value
     || configStore.sessionId === null) return
   const context = configStore.captureGenerationContext()
   const sessionId = configStore.sessionId
@@ -294,13 +300,25 @@ watch(job, (current, previous) => {
     <header class="config-section-heading">
       <div>
         <h2 id="config-generation-title">生成评分依据</h2>
-        <p>系统每批处理 3 题；本地修复后仍失败的批次才需要手动重试。</p>
+        <p>可按拆题结果分批生成，也可让 AI 直接阅读整卷并一次生成完整评分标准。</p>
       </div>
     </header>
 
-    <div class="config-generation__modes" role="note">
-      <strong>小批次生成</strong>
-      <small>按顺序每批最多 3 题，每批只请求一次；全部批次成功后，再请求一次 AI 统一配置 100 分。任何失败都不会自动重试。</small>
+    <div v-if="job === null" class="config-generation__modes" role="radiogroup" aria-label="评分依据生成方式">
+      <label :class="{ 'is-selected': mode === 'batched' }">
+        <input v-model="mode" type="radio" value="batched">
+        <span>
+          <strong>按拆题结果生成</strong>
+          <small>适合拆题准确时使用。每批最多 3 题，失败批次可单独重试。</small>
+        </span>
+      </label>
+      <label :class="{ 'is-selected': mode === 'whole_document' }">
+        <input v-model="mode" type="radio" value="whole_document">
+        <span>
+          <strong>整卷生成评分标准</strong>
+          <small>不依赖当前拆题和答案片段。整份 Word 文本或 PDF 页面只发送一次；失败不自动重试，也不会发布半成品。</small>
+        </span>
+      </label>
     </div>
 
     <button
@@ -308,9 +326,9 @@ watch(job, (current, previous) => {
       type="button"
       name="开始生成"
       class="config-generation__primary"
-      :disabled="!configStore.canGenerate || submitting || workspacePending"
+      :disabled="!generationAvailable || submitting || workspacePending"
       @click="startGeneration()"
-    >{{ submitting ? '正在提交…' : '开始生成' }}</button>
+    >{{ submitting ? '正在提交…' : mode === 'whole_document' ? '整卷生成评分标准' : '开始分批生成' }}</button>
 
     <div v-else class="config-generation__job" aria-live="polite">
       <div class="config-generation__status-line">
@@ -383,11 +401,11 @@ watch(job, (current, previous) => {
       <button
         v-else-if="job.status === 'failed' && outcome !== 'partial' && outcome !== 'complete'"
         type="button"
-        name="重新分批生成"
+        name="重新生成"
         class="config-generation__primary"
         :disabled="submitting || workspacePending"
-        @click="startGeneration('batched')"
-      >重新分批生成</button>
+        @click="startGeneration(job.payload.generation_mode === 'whole_document' ? 'whole_document' : 'batched')"
+      >{{ job.payload.generation_mode === 'whole_document' ? '重新整卷生成' : '重新分批生成' }}</button>
     </div>
 
     <div v-if="syncError" class="config-generation__warning" role="alert">
@@ -416,7 +434,10 @@ watch(job, (current, previous) => {
 .config-generation__modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); margin: 0 0 var(--space-3); padding: var(--space-4); border: var(--border-width) solid var(--color-border-default); background: var(--color-bg-subtle); }
 .config-generation__failure-actions { display: flex; flex-wrap: wrap; gap: var(--space-3); }
 .config-generation__modes legend { padding-inline: var(--space-1); font-weight: var(--font-weight-medium); }
-.config-generation__modes label { display: flex; align-items: flex-start; gap: var(--space-2); min-width: 0; }
+.config-generation__modes label { display: flex; align-items: flex-start; min-width: 0; gap: var(--space-3); padding: var(--space-3); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); cursor: pointer; }
+.config-generation__modes label.is-selected { border-color: var(--color-accent); box-shadow: inset var(--border-selected-width) 0 0 var(--color-accent); }
+.config-generation__modes label:focus-within { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.config-generation__modes input { flex: 0 0 auto; margin-block-start: 3px; accent-color: var(--color-accent); }
 .config-generation__modes span { display: grid; gap: var(--space-1); }
 .config-generation__modes small { color: var(--color-text-secondary); line-height: var(--line-height-relaxed); }
 .config-generation__primary,

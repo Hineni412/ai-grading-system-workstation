@@ -8,6 +8,7 @@ import {
   type QuestionDecision,
   type QuestionType,
 } from '../../api/config-workspace'
+import QuestionContentRenderer from '../question-bank/QuestionContentRenderer.vue'
 
 const props = withDefaults(defineProps<{
   source: ConfigSource
@@ -23,6 +24,17 @@ const emit = defineEmits<{
 const selectedTypes = reactive<Record<string, QuestionType>>({})
 const exclusions = reactive<Record<string, boolean>>({})
 const expanded = reactive<Record<string, boolean>>({})
+const emptyRichContent: NonNullable<ConfigQuestionPreview['rich_content']> = {
+  available: false,
+  question_block_count: 0,
+  answer_block_count: 0,
+  question_blocks: [],
+  answer_blocks: [],
+}
+
+function richContent(question: ConfigQuestionPreview): NonNullable<ConfigQuestionPreview['rich_content']> {
+  return question.rich_content ?? emptyRichContent
+}
 
 function knownType(value: string): value is QuestionType {
   return (QUESTION_TYPES as readonly string[]).includes(value)
@@ -76,11 +88,34 @@ function toggle(questionId: string): void {
 
 function isLong(question: ConfigQuestionPreview): boolean {
   return question.question_preview.length > 180 || question.answer_preview.length > 180
+    || richContent(question).question_block_count > 3
+    || richContent(question).answer_block_count > 2
+    || question.has_question_asset || question.has_answer_asset
+}
+
+function answerStatus(question: ConfigQuestionPreview): string {
+  if (question.local_answer_trusted) return '答案已匹配'
+  if (question.answer_present) return '识别到答案片段，需核对'
+  return '未识别到答案'
 }
 
 function assetUrl(questionId: string, assetKind: 'question' | 'answer'): string {
   return `/api/sessions/${props.source.session_id}/config/sources/${encodeURIComponent(props.source.source_id)}`
     + `/questions/${encodeURIComponent(questionId)}/assets/${assetKind}`
+}
+
+function supplementalAssetUrls(
+  question: ConfigQuestionPreview,
+  assetKind: 'question' | 'answer',
+): string[] {
+  const blocks = assetKind === 'question'
+    ? richContent(question).question_blocks
+    : richContent(question).answer_blocks
+  if (blocks.some((block) => block.asset_urls.length > 0)) return []
+  const hasAsset = assetKind === 'question'
+    ? question.has_question_asset
+    : question.has_answer_asset
+  return hasAsset ? [assetUrl(question.question_id, assetKind)] : []
 }
 
 watch(() => props.source.source_revision, (_revision, previous) => {
@@ -132,29 +167,35 @@ watch(() => props.source.source_revision, (_revision, previous) => {
         </label>
 
         <div class="question-review__content">
-          <p
+          <div
             :class="['question-review__preview', {
               'question-review__preview--clamped': isLong(question) && !expanded[question.question_id],
             }]"
             :data-question-content="question.question_id"
           >
-            {{ question.question_preview || '题目文字未提供预览。' }}
-          </p>
-          <div class="question-review__answer-fact">
-            <strong>{{ question.answer_present ? '已识别答案' : '未识别答案' }}</strong>
-            <span v-if="question.answer_present && question.answer_preview">{{ question.answer_preview }}</span>
+            <QuestionContentRenderer
+              :blocks="richContent(question).question_blocks"
+              :fallback="question.question_preview"
+              empty-label="题目文字未提供预览。"
+              :image-alt="`${question.question_id} 题目图`"
+              :supplemental-image-urls="supplementalAssetUrls(question, 'question')"
+              compact
+            />
           </div>
-          <div v-if="question.has_question_asset || question.has_answer_asset" class="question-review__assets">
-            <img
-              v-if="question.has_question_asset"
-              :src="assetUrl(question.question_id, 'question')"
-              :alt="`${question.question_id} 题目图`"
-            >
-            <img
-              v-if="question.has_answer_asset"
-              :src="assetUrl(question.question_id, 'answer')"
-              :alt="`${question.question_id} 答案图`"
-            >
+          <div class="question-review__answer-fact">
+            <strong :class="{ 'is-untrusted': question.answer_present && !question.local_answer_trusted }">
+              {{ answerStatus(question) }}
+            </strong>
+            <QuestionContentRenderer
+              v-if="question.answer_present || richContent(question).answer_blocks.length || question.has_answer_asset"
+              class="question-review__answer-content"
+              :blocks="richContent(question).answer_blocks"
+              :fallback="question.answer_preview"
+              empty-label="答案内容暂未识别。"
+              :image-alt="`${question.question_id} 答案图`"
+              :supplemental-image-urls="supplementalAssetUrls(question, 'answer')"
+              compact
+            />
           </div>
         </div>
 

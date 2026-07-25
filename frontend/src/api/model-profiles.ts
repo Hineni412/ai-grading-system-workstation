@@ -84,7 +84,7 @@ function assertNoReturnedSecrets(value: unknown): void {
   if (!isRecord(value)) return
   for (const [key, child] of Object.entries(value)) {
     const normalized = normalizeKeyName(key)
-    const compact = normalized.replaceAll('_', '')
+    const compact = normalized.replace(/_/g, '')
     if (compact === 'apikey' || compact === 'configapikey') {
       throw new Error('Model profile response exposed a secret field')
     }

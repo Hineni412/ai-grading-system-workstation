@@ -531,7 +531,7 @@ class JobStore:
             clean_session_id <= 0
             or not _SOURCE_ID.fullmatch(clean_source_id)
             or not _SHA256.fullmatch(clean_revision)
-            or clean_mode not in {"batched", "per_question"}
+            or clean_mode not in {"batched", "per_question", "whole_document"}
         ):
             return None
         with self._connect() as conn:

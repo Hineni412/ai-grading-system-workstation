@@ -1,3 +1,10 @@
+from .ai_diagnostics import (
+    AiDiagnosticAttachment,
+    AiDiagnosticDetail,
+    AiDiagnosticError,
+    AiDiagnosticListResponse,
+    AiDiagnosticSummary,
+)
 from .config import (
     ConfigGenerationRequest,
     ConfigGenerationRetryRequest,
@@ -115,6 +122,11 @@ from .training import (
 )
 
 __all__ = [
+    "AiDiagnosticAttachment",
+    "AiDiagnosticDetail",
+    "AiDiagnosticError",
+    "AiDiagnosticListResponse",
+    "AiDiagnosticSummary",
     "AnswerRegionListResponse",
     "AnswerRegionResponse",
     "CreateSessionRequest",

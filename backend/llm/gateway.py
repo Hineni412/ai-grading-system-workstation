@@ -7,6 +7,7 @@ import uuid
 from itertools import count
 from typing import Callable, Mapping
 
+from .diagnostics import JsonlDiagnosticJournal
 from .errors import LLMErrorCategory, classify_llm_error, is_retryable_error
 from .pacing import LLMPacerRegistry
 from .policy import LLMPolicyError, LLMProtocol, LLMRequestKind, policy_from_profile
@@ -74,6 +75,7 @@ class LLMGateway:
         pacers: object | None = None,
         usage_sink: object | None = None,
         trace_sink: object | None = None,
+        diagnostic_sink: object | None = None,
         endpoint_host: str = "",
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
@@ -84,6 +86,11 @@ class LLMGateway:
         self.usage_sink = usage_sink if usage_sink is not None else NullUsageSink()
         self.trace_sink = (
             trace_sink if trace_sink is not None else NullCallTraceSink()
+        )
+        self.diagnostic_sink = (
+            diagnostic_sink
+            if diagnostic_sink is not None
+            else JsonlDiagnosticJournal()
         )
         self.endpoint_host = safe_host_label(endpoint_host)
         self.clock = clock
@@ -97,6 +104,7 @@ class LLMGateway:
         model: str,
         kwargs: Mapping[str, object],
         request_id: object | None = None,
+        operation_id: object | None = None,
         allow_retry: bool = True,
         compatibility_fallback: str = "",
         planned_parameter_fallback: bool = False,
@@ -110,6 +118,7 @@ class LLMGateway:
             model=model,
             kwargs=kwargs,
             request_id=request_id,
+            operation_id=operation_id,
             allow_retry=allow_retry,
             compatibility_fallback=compatibility_fallback,
             planned_parameter_fallback=planned_parameter_fallback,
@@ -125,6 +134,7 @@ class LLMGateway:
         model: str,
         kwargs: Mapping[str, object],
         request_id: object | None = None,
+        operation_id: object | None = None,
         allow_retry: bool = True,
         compatibility_fallback: str = "",
         planned_parameter_fallback: bool = False,
@@ -138,6 +148,7 @@ class LLMGateway:
             model=model,
             kwargs=kwargs,
             request_id=request_id,
+            operation_id=operation_id,
             allow_retry=allow_retry,
             compatibility_fallback=compatibility_fallback,
             planned_parameter_fallback=planned_parameter_fallback,
@@ -154,6 +165,7 @@ class LLMGateway:
         model: str,
         kwargs: Mapping[str, object],
         request_id: object | None,
+        operation_id: object | None,
         allow_retry: bool,
         compatibility_fallback: str,
         planned_parameter_fallback: bool,
@@ -163,6 +175,9 @@ class LLMGateway:
         kind = LLMRequestKind(request_kind)
         logical_request_id = str(
             uuid.uuid4() if request_id is None else request_id
+        )
+        logical_operation_id = str(
+            logical_request_id if operation_id is None else operation_id
         )
         policy = policy_from_profile(kind, self.profile)
         retry_limit = policy.max_retries if allow_retry else 0
@@ -211,6 +226,18 @@ class LLMGateway:
                 retry_index=retry_index,
                 pacer_wait_ms=pacer_wait_ms,
                 request_shape=request_shape,
+            )
+            self._record_diagnostic_request(
+                operation_id=logical_operation_id,
+                request_id=logical_request_id,
+                attempt=attempt,
+                request_kind=kind,
+                protocol=protocol,
+                model=model,
+                payload=payload,
+                retry_limit=retry_limit,
+                retry_index=retry_index,
+                timeout_seconds=request_timeout_seconds,
             )
             started = self.clock()
             try:
@@ -261,6 +288,20 @@ class LLMGateway:
                     ),
                     retry_delay=retry_delay,
                 )
+                self._record_diagnostic_failure(
+                    operation_id=logical_operation_id,
+                    request_id=logical_request_id,
+                    attempt=attempt,
+                    request_kind=kind,
+                    protocol=protocol,
+                    model=model,
+                    latency_ms=latency_ms,
+                    error=exc,
+                    will_retry=(
+                        should_retry or will_use_parameter_fallback
+                    ),
+                    retry_delay=retry_delay,
+                )
                 if not should_retry:
                     raise
                 self.sleeper(retry_delay)
@@ -288,6 +329,16 @@ class LLMGateway:
                 retry_index=retry_index,
                 pacer_wait_ms=pacer_wait_ms,
                 request_shape=request_shape,
+                latency_ms=latency_ms,
+                response=response,
+            )
+            self._record_diagnostic_response(
+                operation_id=logical_operation_id,
+                request_id=logical_request_id,
+                attempt=attempt,
+                request_kind=kind,
+                protocol=protocol,
+                model=model,
                 latency_ms=latency_ms,
                 response=response,
             )
@@ -411,6 +462,111 @@ class LLMGateway:
             self.usage_sink.write(event)
         except Exception:
             _warn_safely("Failed to record LLM usage metadata")
+
+    def _record_diagnostic_request(
+        self,
+        *,
+        operation_id: str,
+        request_id: str,
+        attempt: int,
+        request_kind: LLMRequestKind,
+        protocol: LLMProtocol,
+        model: str,
+        payload: Mapping[str, object],
+        retry_limit: int,
+        retry_index: int,
+        timeout_seconds: float,
+    ) -> None:
+        try:
+            self.diagnostic_sink.record_request(
+                operation_id=operation_id,
+                request_id=request_id,
+                attempt=attempt,
+                request_kind=request_kind.value,
+                protocol=protocol.value,
+                model=str(model),
+                endpoint_host=self.endpoint_host,
+                kwargs=payload,
+                retry_limit=retry_limit,
+                retry_index=retry_index,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception:
+            _warn_safely("Failed to record LLM diagnostic request")
+
+    def _record_diagnostic_response(
+        self,
+        *,
+        operation_id: str,
+        request_id: str,
+        attempt: int,
+        request_kind: LLMRequestKind,
+        protocol: LLMProtocol,
+        model: str,
+        latency_ms: int,
+        response: object,
+    ) -> None:
+        try:
+            self.diagnostic_sink.record_response(
+                operation_id=operation_id,
+                request_id=request_id,
+                attempt=attempt,
+                request_kind=request_kind.value,
+                protocol=protocol.value,
+                model=str(model),
+                endpoint_host=self.endpoint_host,
+                response=response,
+                elapsed_ms=latency_ms,
+            )
+        except Exception:
+            _warn_safely("Failed to record LLM diagnostic response")
+
+    def _record_diagnostic_failure(
+        self,
+        *,
+        operation_id: str,
+        request_id: str,
+        attempt: int,
+        request_kind: LLMRequestKind,
+        protocol: LLMProtocol,
+        model: str,
+        latency_ms: int,
+        error: BaseException,
+        will_retry: bool,
+        retry_delay: float,
+    ) -> None:
+        try:
+            diagnostics = error_diagnostics(error)
+        except Exception:
+            diagnostics = {
+                "http_status_code": 0,
+                "exception_type": "other",
+            }
+        try:
+            category = classify_llm_error(error).value
+        except Exception:
+            category = "unknown"
+        try:
+            self.diagnostic_sink.record_failure(
+                operation_id=operation_id,
+                request_id=request_id,
+                attempt=attempt,
+                request_kind=request_kind.value,
+                protocol=protocol.value,
+                model=str(model),
+                endpoint_host=self.endpoint_host,
+                elapsed_ms=latency_ms,
+                error_category=category,
+                exception_type=diagnostics.get("exception_type", "other"),
+                http_status_code=diagnostics.get("http_status_code", 0),
+                error_message=str(error),
+                will_retry=will_retry,
+                retry_delay_ms=int(
+                    round(max(0.0, retry_delay) * 1000.0)
+                ),
+            )
+        except Exception:
+            _warn_safely("Failed to record LLM diagnostic failure")
 
     def _record_trace_started(
         self,

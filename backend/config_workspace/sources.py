@@ -52,6 +52,16 @@ _QUESTION_ID = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
 _IMAGE_MARKER = re.compile(r"\[\[IMAGE:.+?\]\]", re.IGNORECASE)
 _IMAGE_PATH_MARKER = re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]", re.IGNORECASE)
 _HTML_TAG = re.compile(r"<[^>]*>")
+_RICH_TABLE_PATTERN = re.compile(r"<table\b[^>]*>.*?</table>", re.IGNORECASE | re.DOTALL)
+_RICH_TABLE_ROW_PATTERN = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.IGNORECASE | re.DOTALL)
+_RICH_TABLE_CELL_PATTERN = re.compile(
+    r"<(?:td|th)\b[^>]*>(.*?)</(?:td|th)>",
+    re.IGNORECASE | re.DOTALL,
+)
+_RICH_INLINE_TOKEN_PATTERN = re.compile(
+    r"<br\b[^>]*>|</?(?:sup|sub|u)>",
+    re.IGNORECASE,
+)
 _ALLOWED_QUESTION_TYPES = {
     "choice",
     "fill_blank",
@@ -153,7 +163,12 @@ class ConfigSourceRecord:
             "size_bytes": self.size_bytes,
             "sha256_prefix": self.sha256[:12],
             "parse_state": "ready",
-            "questions": [asdict(question) for question in self.questions],
+            "questions": _public_questions_with_rich_content(
+                self.questions,
+                self.private_blocks,
+                session_id=self.session_id,
+                source_id=self.source_id,
+            ),
         }
 
 
@@ -186,7 +201,12 @@ class _ConfigSourceMetadata:
             "size_bytes": self.size_bytes,
             "sha256_prefix": self.sha256[:12],
             "parse_state": "ready",
-            "questions": [asdict(question) for question in self.questions],
+            "questions": _public_questions_with_rich_content(
+                self.questions,
+                self.private_blocks,
+                session_id=self.session_id,
+                source_id=self.source_id,
+            ),
         }
 
 
@@ -831,6 +851,7 @@ class ConfigSourceService:
         source_id: str,
         question_id: str,
         asset_kind: str,
+        asset_index: int | None = None,
     ) -> tuple[bytes, str]:
         kind = str(asset_kind or "").strip()
         clean_question_id = str(question_id or "").strip()
@@ -844,13 +865,43 @@ class ConfigSourceService:
             require_active=True,
         )
         entry = metadata.asset_files.get(clean_question_id)
-        filename = entry.get(kind) if isinstance(entry, dict) else None
+        legacy_filename = entry.get(kind) if isinstance(entry, dict) else None
+        if asset_index is None:
+            filename = legacy_filename
+        else:
+            if (
+                not isinstance(asset_index, int)
+                or isinstance(asset_index, bool)
+                or asset_index < 0
+            ):
+                raise ConfigAssetNotFoundError()
+            try:
+                filenames = _question_asset_filenames(
+                    metadata,
+                    question_id=clean_question_id,
+                    asset_kind=kind,
+                )
+            except Exception:
+                raise ConfigAssetNotFoundError() from None
+            filename = (
+                filenames[asset_index]
+                if asset_index < len(filenames)
+                else None
+            )
         if not isinstance(filename, str) or not filename:
             raise ConfigAssetNotFoundError()
         try:
             path = self._owned_path(metadata.manifest_path.parent, filename)
             content = self._files.read_bytes(path)
             self._validate_inventory_content(metadata, filename, content)
+            inventory_entry = metadata.file_inventory.get(filename)
+            if (
+                not isinstance(inventory_entry, dict)
+                or inventory_entry.get("role") != "question_asset"
+                or inventory_entry.get("question_id") != clean_question_id
+                or inventory_entry.get("asset_kind") != kind
+            ):
+                raise ConfigSourceInvalidError()
             _suffix, media_type = _image_type(content)
         except Exception:
             raise ConfigAssetNotFoundError() from None
@@ -883,7 +934,9 @@ class ConfigSourceService:
                 continue
             if decision is not None:
                 block["question_type"] = decision.question_type
-            block["question_type_confirmed"] = True
+                block["question_type_confirmed"] = True
+            else:
+                block["question_type_confirmed"] = False
             confirmed.append(block)
             included_ids.add(question_id)
         return PreparedGenerationInput(
@@ -906,6 +959,21 @@ class ConfigSourceService:
         mode = str(generation_mode or "").strip()
         if mode == "per_question":
             mode = "batched"
+        if mode == "whole_document":
+            if decisions:
+                raise ValueError(
+                    "whole-document generation does not accept per-question decisions"
+                )
+            if record.suffix == ".docx" and not record.private_document_text.strip():
+                raise ValueError("whole-document DOCX source has no readable text")
+            if record.suffix == ".pdf" and not record.private_whole_page_images:
+                raise ValueError("whole-document PDF source has no readable pages")
+            return PreparedGenerationInput(
+                confirmed_blocks=(),
+                document_text=record.private_document_text,
+                question_images={},
+                whole_page_images=record.private_whole_page_images,
+            )
         if mode != "batched":
             raise ValueError("unsupported config generation mode")
         prepared = self.apply_teacher_decisions(record, decisions)
@@ -1794,6 +1862,33 @@ def _block_image_paths(block: dict[str, Any], kind: str) -> list[str]:
     return list(dict.fromkeys(value for value in values if value))
 
 
+def _question_asset_filenames(
+    metadata: _ConfigSourceMetadata,
+    *,
+    question_id: str,
+    asset_kind: str,
+) -> list[str]:
+    block = next(
+        (
+            item
+            for item in metadata.private_blocks
+            if str(item.get("question_id") or "").strip() == question_id
+        ),
+        None,
+    )
+    filenames: list[str] = []
+    if isinstance(block, dict):
+        filenames.extend(
+            _semantic_owned_name(raw_path, metadata.manifest_path.parent)
+            for raw_path in _block_image_paths(block, asset_kind)
+        )
+    entry = metadata.asset_files.get(question_id)
+    legacy_filename = entry.get(asset_kind) if isinstance(entry, dict) else None
+    if isinstance(legacy_filename, str) and legacy_filename:
+        filenames.append(legacy_filename)
+    return list(dict.fromkeys(filenames))
+
+
 def _replace_block_paths(block: dict[str, Any], replacements: dict[str, str]) -> None:
     raw_paths = block.get("image_paths")
     if isinstance(raw_paths, list):
@@ -1813,6 +1908,243 @@ def _replace_block_paths(block: dict[str, Any], replacements: dict[str, str]) ->
             text,
         )
         block[field] = text
+
+
+def _public_questions_with_rich_content(
+    questions: Sequence[ConfigQuestionPreview],
+    private_blocks: Sequence[dict[str, Any]],
+    *,
+    session_id: int,
+    source_id: str,
+) -> list[dict[str, Any]]:
+    blocks_by_id = {
+        str(block.get("question_id") or "").strip(): block
+        for block in private_blocks
+        if str(block.get("question_id") or "").strip()
+    }
+    result: list[dict[str, Any]] = []
+    for question in questions:
+        payload = asdict(question)
+        payload["rich_content"] = _config_rich_content(
+            blocks_by_id.get(question.question_id),
+            session_id=session_id,
+            source_id=source_id,
+            question_id=question.question_id,
+            has_question_asset=question.has_question_asset,
+            has_answer_asset=question.has_answer_asset,
+        )
+        result.append(payload)
+    return result
+
+
+def _config_rich_content(
+    block: dict[str, Any] | None,
+    *,
+    session_id: int,
+    source_id: str,
+    question_id: str,
+    has_question_asset: bool,
+    has_answer_asset: bool,
+) -> dict[str, Any]:
+    if not isinstance(block, dict):
+        question_blocks: list[dict[str, Any]] = []
+        answer_blocks: list[dict[str, Any]] = []
+    else:
+        question_blocks = _project_config_rich_blocks(
+            block.get("question_html")
+            or block.get("question_text")
+            or block.get("text")
+            or ""
+        )
+        answer_blocks = _project_config_rich_blocks(
+            block.get("answer_html")
+            or block.get("answer_text")
+            or block.get("canonical_answer")
+            or ""
+        )
+    question_blocks = _append_config_asset_block(
+        question_blocks,
+        _config_asset_urls(
+            block,
+            session_id=session_id,
+            source_id=source_id,
+            question_id=question_id,
+            asset_kind="question",
+            has_legacy_asset=has_question_asset,
+        ),
+    )
+    answer_blocks = _append_config_asset_block(
+        answer_blocks,
+        _config_asset_urls(
+            block,
+            session_id=session_id,
+            source_id=source_id,
+            question_id=question_id,
+            asset_kind="answer",
+            has_legacy_asset=has_answer_asset,
+        ),
+    )
+    return {
+        "available": bool(question_blocks or answer_blocks),
+        "question_block_count": len(question_blocks),
+        "answer_block_count": len(answer_blocks),
+        "question_blocks": question_blocks,
+        "answer_blocks": answer_blocks,
+    }
+
+
+def _config_asset_urls(
+    block: dict[str, Any] | None,
+    *,
+    session_id: int,
+    source_id: str,
+    question_id: str,
+    asset_kind: Literal["question", "answer"],
+    has_legacy_asset: bool,
+) -> list[str]:
+    marker_count = (
+        len(_block_image_paths(block, asset_kind))
+        if isinstance(block, dict)
+        else 0
+    )
+    asset_count = marker_count or int(has_legacy_asset)
+    base = (
+        f"/api/sessions/{session_id}/config/sources/{source_id}"
+        f"/questions/{question_id}/assets/{asset_kind}"
+    )
+    return [f"{base}/{asset_index}" for asset_index in range(asset_count)]
+
+
+def _append_config_asset_block(
+    blocks: list[dict[str, Any]],
+    asset_urls: Sequence[str],
+) -> list[dict[str, Any]]:
+    if not asset_urls:
+        return blocks
+    result = list(blocks)
+    result.append(
+        {
+            "kind": "paragraph",
+            "text": "",
+            "segments": [],
+            "rows": [],
+            "asset_indexes": list(range(len(asset_urls))),
+            "asset_urls": list(asset_urls),
+        }
+    )
+    return result
+
+
+def _project_config_rich_blocks(value: Any) -> list[dict[str, Any]]:
+    source = _IMAGE_PATH_MARKER.sub("", str(value or ""))
+    if not source.strip():
+        return []
+    chunks: list[str] = []
+    cursor = 0
+    for match in _RICH_TABLE_PATTERN.finditer(source):
+        chunks.extend(
+            line
+            for line in source[cursor : match.start()].splitlines()
+            if line.strip()
+        )
+        chunks.append(match.group(0))
+        cursor = match.end()
+    chunks.extend(line for line in source[cursor:].splitlines() if line.strip())
+    if not chunks and source.strip():
+        chunks.append(source)
+
+    result: list[dict[str, Any]] = []
+    for raw_chunk in chunks:
+        chunk = str(raw_chunk or "").strip()
+        if not chunk:
+            continue
+        structured = _structured_config_rich_text(chunk)
+        result.append(
+            {
+                "kind": structured["kind"],
+                "text": chunk,
+                "segments": structured["segments"],
+                "rows": structured["rows"],
+                "asset_indexes": [],
+                "asset_urls": [],
+            }
+        )
+    return result
+
+
+def _structured_config_rich_text(text: str) -> dict[str, Any]:
+    normalized = str(text or "")
+    if normalized.casefold().startswith("<table"):
+        rows: list[dict[str, Any]] = []
+        for row_match in _RICH_TABLE_ROW_PATTERN.finditer(normalized):
+            cells = [
+                {"segments": _config_rich_inline_segments(cell_match.group(1))}
+                for cell_match in _RICH_TABLE_CELL_PATTERN.finditer(
+                    row_match.group(1)
+                )
+            ]
+            if cells:
+                rows.append({"cells": cells})
+        if rows:
+            return {"kind": "table", "segments": [], "rows": rows}
+    return {
+        "kind": "paragraph",
+        "segments": _config_rich_inline_segments(normalized),
+        "rows": [],
+    }
+
+
+def _config_rich_inline_segments(text: str) -> list[dict[str, Any]]:
+    segments: list[dict[str, Any]] = []
+    superscript_depth = 0
+    subscript_depth = 0
+    underline_depth = 0
+
+    def append_segment(value: str, *, line_break: bool = False) -> None:
+        decoded = html.unescape(value)
+        if not decoded and not line_break:
+            return
+        segment = {
+            "text": decoded,
+            "superscript": superscript_depth > 0,
+            "subscript": subscript_depth > 0,
+            "underline": underline_depth > 0,
+            "line_break": line_break,
+        }
+        if (
+            segments
+            and not line_break
+            and not segments[-1]["line_break"]
+            and all(
+                segments[-1][key] == segment[key]
+                for key in ("superscript", "subscript", "underline")
+            )
+        ):
+            segments[-1]["text"] += decoded
+        else:
+            segments.append(segment)
+
+    cursor = 0
+    for match in _RICH_INLINE_TOKEN_PATTERN.finditer(str(text or "")):
+        append_segment(text[cursor : match.start()])
+        token = match.group(0).casefold()
+        if token.startswith("<br"):
+            append_segment("", line_break=True)
+        elif token == "<sup>":
+            superscript_depth += 1
+        elif token == "</sup>":
+            superscript_depth = max(0, superscript_depth - 1)
+        elif token == "<sub>":
+            subscript_depth += 1
+        elif token == "</sub>":
+            subscript_depth = max(0, subscript_depth - 1)
+        elif token == "<u>":
+            underline_depth += 1
+        elif token == "</u>":
+            underline_depth = max(0, underline_depth - 1)
+        cursor = match.end()
+    append_segment(text[cursor:])
+    return segments
 
 
 def _question_previews(

@@ -14,7 +14,11 @@ from api_profiles import get_api_profile_store
 from backend.llm import LLMProtocolAdapter, LLMRequestKind, policy_overrides_from_profile
 from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
 from question_bank.models.tag_schema import ERROR_PRONE_CATEGORIES, SUB_SKILL_DIMENSIONS, SUB_SKILL_KEYWORD_HINTS, TagAnalysis, TaggingContext
-from question_bank.taxonomy.registry import CANONICAL_KNOWLEDGE, canonical_knowledge_seed_rows
+from question_bank.taxonomy.registry import (
+    CANONICAL_KNOWLEDGE,
+    canonical_knowledge_seed_rows,
+    canonicalize_knowledge_exact,
+)
 
 
 DEFAULT_TAGGING_MODEL = "gpt-4o"
@@ -160,6 +164,29 @@ CURRICULUM_CHAPTERS = (
     "九年级下册 第二章 二次函数",
     "九年级下册 第三章 圆",
 )
+
+ABILITY_TAG_ALIASES = {
+    "计算能力": "运算能力",
+    "数学推理": "推理能力",
+    "逻辑推理": "推理能力",
+    "空间想象": "空间观念",
+    "数学建模": "模型观念",
+}
+METHOD_TAG_ALIASES = {
+    "数形结合法": "数形结合",
+    "分类讨论思想": "分类讨论",
+    "转化化归": "转化与化归",
+    "化归思想": "转化与化归",
+    "整体法": "整体思想",
+    "配方": "配方法",
+    "换元": "换元法",
+    "辅助线": "构造辅助线",
+    "添加辅助线": "构造辅助线",
+    "全等构造": "构造全等",
+    "相似构造": "构造相似",
+    "角度转换": "角度转化",
+    "反证": "反证法",
+}
 
 
 @dataclass(frozen=True)
@@ -477,7 +504,7 @@ def _mock_analysis(context: TaggingContext) -> TagAnalysis:
     payload = {
         "knowledge_points": context.existing_tags[:2] or ["几何综合"],
         "method_tags": ["角度转化"] if "角" in context.question_text else ["方程思想"],
-        "ability_tags": ["数学推理"] if context.has_answer else ["信息提取"],
+        "ability_tags": ["推理能力"] if context.has_answer else ["阅读理解"],
         "math_model_tags": ["平行线角度模型"] if "平行" in context.question_text else [],
         "difficulty": 3 if context.has_answer else 2,
         "error_prone_points": ["条件转化不完整"],
@@ -594,6 +621,8 @@ def _system_prompt() -> str:
     Choose textbook_chapter from the provided 北师大版2024 初中数学教材章节候选 when possible.
     Choose the smallest accurate primary knowledge point. Do not overgeneralize 三角形三边关系 as 三角形全等, or 科学记数法 as 整式运算.
     Difficulty must be a number from 1 to 10 (allow 1 decimal place, e.g., 4.5, 6.2, 8.0).
+    input.has_images is metadata only: it tells you the stored question contains images, but no image body is included in this tagging request.
+    input.existing_tags contains previously saved tag values for reference. Keep compatible useful context, but do not copy values that conflict with the question or the controlled options above.
     confidence must be a number from 0 to 1 for your overall confidence in the tag set. Lower it when the image is essential, the answer is missing, or the core knowledge point is uncertain.
     suitable_student_level must be one of: 入门补缺, 基础巩固, 中档提升, 综合突破, 压轴拔高.
     """.strip()
@@ -738,14 +767,29 @@ def _json_from_text_compat(
     model: str | None = None,
     extra_kwargs: dict[str, Any] | None = None,
 ) -> Any:
-    if extra_kwargs is None:
-        return llm_client.json_from_text(prompt, model=model)
+    call_kwargs: dict[str, Any] = {
+        "model": model,
+        "request_kind": LLMRequestKind.TAGGING,
+    }
+    if extra_kwargs is not None:
+        call_kwargs["extra_kwargs"] = extra_kwargs
     try:
-        return llm_client.json_from_text(prompt, model=model, extra_kwargs=extra_kwargs)
+        return llm_client.json_from_text(prompt, **call_kwargs)
+    except TypeError as exc:
+        message = str(exc)
+        if "request_kind" in message:
+            call_kwargs.pop("request_kind", None)
+        elif "extra_kwargs" in message:
+            call_kwargs.pop("extra_kwargs", None)
+        else:
+            raise
+    try:
+        return llm_client.json_from_text(prompt, **call_kwargs)
     except TypeError as exc:
         if "extra_kwargs" not in str(exc):
             raise
-        return llm_client.json_from_text(prompt, model=model)
+        call_kwargs.pop("extra_kwargs", None)
+        return llm_client.json_from_text(prompt, **call_kwargs)
 
 
 def _analyze_one_question(service: AITaggingService, context: TaggingContext, rate_limiter: "_RateLimiter") -> AITaggingResult:
@@ -1094,8 +1138,13 @@ def _with_quality(result: AITaggingResult, context: TaggingContext) -> AITagging
             quality_status="invalid",
             quality_notes=notes,
         )
-    status, notes, confidence = _evaluate_analysis_quality(result.analysis, context)
-    payload = result.analysis.to_dict()
+    normalized_analysis, vocabulary_conflicts = _normalize_controlled_analysis(result.analysis)
+    status, notes, confidence = _evaluate_analysis_quality(
+        normalized_analysis,
+        context,
+        vocabulary_conflicts=vocabulary_conflicts,
+    )
+    payload = normalized_analysis.to_dict()
     payload["confidence"] = confidence
     return AITaggingResult(
         ok=True,
@@ -1108,7 +1157,12 @@ def _with_quality(result: AITaggingResult, context: TaggingContext) -> AITagging
     )
 
 
-def _evaluate_analysis_quality(analysis: TagAnalysis, context: TaggingContext) -> tuple[str, list[str], float]:
+def _evaluate_analysis_quality(
+    analysis: TagAnalysis,
+    context: TaggingContext,
+    *,
+    vocabulary_conflicts: list[str] | None = None,
+) -> tuple[str, list[str], float]:
     notes: list[str] = []
     missing = []
     if not analysis.knowledge_points:
@@ -1121,11 +1175,10 @@ def _evaluate_analysis_quality(analysis: TagAnalysis, context: TaggingContext) -
         missing.append("缺少适合学生层级")
     if not analysis.measured_skills:
         missing.append("缺少具体训练技能")
+    conflict_notes = list(vocabulary_conflicts or [])
     # canonical_knowledge_id 受控校验：若 AI 给了值但不在 registry 中，记为冲突
     if analysis.canonical_knowledge_id and not is_valid_canonical_id(analysis.canonical_knowledge_id):
-        conflict_notes = [f"AI 给出的 canonical_knowledge_id 不在标准词表中: {analysis.canonical_knowledge_id}"]
-    else:
-        conflict_notes = []
+        conflict_notes.append(f"AI 给出的 canonical_knowledge_id 不在标准词表中: {analysis.canonical_knowledge_id}")
     confidence = float(analysis.confidence)
     if context.has_images or "[[IMAGE:" in str(context.question_text or ""):
         confidence *= 0.95
@@ -1145,6 +1198,113 @@ def _evaluate_analysis_quality(analysis: TagAnalysis, context: TaggingContext) -
         notes.append("置信度低，需复核或人工确认")
         return "low_confidence", notes, round(confidence, 4)
     return "complete", notes, round(min(1.0, confidence), 4)
+
+
+def _normalize_controlled_analysis(analysis: TagAnalysis) -> tuple[TagAnalysis, list[str]]:
+    """规范化新 AI 产出的可筛选标签，并报告所有未收敛值。
+
+    未知值保留在返回结果中供教师查看，但会被质量门槛标记为 conflict，
+    因而不能走自动保存；这里不改写历史标签。
+    """
+    payload = analysis.to_dict()
+    conflicts: list[str] = []
+    payload["knowledge_points"] = _normalize_knowledge_tags(
+        analysis.knowledge_points,
+        conflicts=conflicts,
+    )
+    payload["ability_tags"] = _normalize_option_tags(
+        analysis.ability_tags,
+        options=ABILITY_TAG_OPTIONS,
+        aliases=ABILITY_TAG_ALIASES,
+        field_label="能力标签",
+        conflicts=conflicts,
+    )
+    payload["method_tags"] = _normalize_option_tags(
+        analysis.method_tags,
+        options=METHOD_TAG_OPTIONS,
+        aliases=METHOD_TAG_ALIASES,
+        field_label="方法标签",
+        conflicts=conflicts,
+    )
+    payload["math_model_tags"] = _normalize_option_tags(
+        analysis.math_model_tags,
+        options=MATH_MODEL_OPTIONS,
+        aliases={
+            option.removesuffix("模型"): option
+            for option in MATH_MODEL_OPTIONS
+            if option.endswith("模型")
+        },
+        field_label="数学模型标签",
+        conflicts=conflicts,
+    )
+    payload["textbook_chapter"] = _normalize_chapter(
+        analysis.textbook_chapter,
+        conflicts=conflicts,
+    )
+    return TagAnalysis.from_dict(payload), _ordered_unique(conflicts)
+
+
+def _normalize_knowledge_tags(values: list[str], *, conflicts: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for value in values:
+        item = canonicalize_knowledge_exact(value)
+        if item is None:
+            text = str(value or "").strip()
+            if text:
+                normalized.append(text)
+                conflicts.append(f"知识点不在标准词表或别名表中，需人工确认: {text}")
+            continue
+        normalized.append(item.canonical_name)
+    return _ordered_unique(normalized)
+
+
+def _normalize_option_tags(
+    values: list[str],
+    *,
+    options: tuple[str, ...],
+    aliases: Mapping[str, str],
+    field_label: str,
+    conflicts: list[str],
+) -> list[str]:
+    option_index = {_compact(option): option for option in options}
+    alias_index = {
+        _compact(alias): canonical
+        for alias, canonical in aliases.items()
+        if canonical in options
+    }
+    normalized: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        canonical = option_index.get(_compact(text)) or alias_index.get(_compact(text))
+        if canonical is None:
+            normalized.append(text)
+            conflicts.append(f"{field_label}不在候选词表或别名表中，需人工确认: {text}")
+            continue
+        normalized.append(canonical)
+    return _ordered_unique(normalized)
+
+
+def _normalize_chapter(value: str, *, conflicts: list[str]) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    chapter_index = {_chapter_key(option): option for option in CURRICULUM_CHAPTERS}
+    canonical = chapter_index.get(_chapter_key(text))
+    if canonical is not None:
+        return canonical
+    conflicts.append(f"教材章节不在候选词表中，需人工确认: {text}")
+    return text
+
+
+def _chapter_key(value: object) -> str:
+    normalized = _compact(value)
+    for prefix in ("北师大版2024年", "北师大版2024", "北师大版"):
+        compact_prefix = _compact(prefix)
+        if normalized.startswith(compact_prefix):
+            return normalized[len(compact_prefix):]
+    return normalized
 
 
 def _rule_conflict_notes(context: TaggingContext, analysis: TagAnalysis) -> list[str]:
@@ -1185,13 +1345,28 @@ def _review_low_confidence_result(
         )
     if _analyses_agree(primary.analysis, review.analysis):
         merged = _merge_agreed_analyses(primary.analysis, review.analysis)
+        merged_result = _with_quality(
+            AITaggingResult(
+                ok=True,
+                mock_mode=primary.mock_mode,
+                analysis=merged,
+                model_name="+".join(item for item in (primary.model_name, review.model_name) if item),
+            ),
+            context,
+        )
         return AITaggingResult(
             ok=True,
             mock_mode=primary.mock_mode,
-            analysis=merged,
-            model_name="+".join(item for item in (primary.model_name, review.model_name) if item),
-            quality_status="complete",
-            quality_notes=[*primary.quality_notes, "复核模型与主模型核心标签一致"],
+            analysis=merged_result.analysis,
+            model_name=merged_result.model_name,
+            quality_status=merged_result.quality_status,
+            quality_notes=_ordered_unique(
+                [
+                    *primary.quality_notes,
+                    *merged_result.quality_notes,
+                    "复核模型与主模型核心标签一致",
+                ]
+            ),
         )
     return AITaggingResult(
         ok=True,
