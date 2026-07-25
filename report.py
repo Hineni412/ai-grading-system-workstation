@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 import json
 from datetime import datetime
 from pathlib import Path
@@ -30,59 +29,6 @@ class ReportGenerator:
         )
         self.db_path = self.repositories.db_path
         self.reports_dir = Path(reports_dir)
-
-    def export(self) -> Path:
-        self.reports_dir.mkdir(parents=True, exist_ok=True)
-        output_path = self.reports_dir / f"grading_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-
-        with sqlite3.connect(self.db_path) as conn:
-            df_results = pd.read_sql_query(
-                """
-                SELECT
-                    id,
-                    student_name,
-                    front_image,
-                    back_image,
-                    total_score,
-                    student_score,
-                    needs_human_review,
-                    created_at
-                FROM exam_results
-                ORDER BY id ASC
-                """,
-                conn,
-            )
-
-            df_details = pd.read_sql_query(
-                """
-                SELECT
-                    gd.exam_result_id,
-                    er.student_name,
-                    gd.question_id,
-                    gd.score_awarded,
-                    gd.deduction_reason,
-                    gd.knowledge_id
-                FROM grading_details gd
-                JOIN exam_results er ON er.id = gd.exam_result_id
-                ORDER BY gd.exam_result_id ASC, gd.id ASC
-                """,
-                conn,
-            )
-
-        if df_results.empty:
-            raise ValueError("数据库中暂无批改结果，无法导出报表。")
-
-        score_summary = self._build_score_summary(df_results)
-        knowledge_summary = self._build_knowledge_summary(df_details)
-        review_list = df_results[df_results["needs_human_review"] == 1].copy()
-
-        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-            score_summary.to_excel(writer, sheet_name="成绩总表", index=False)
-            df_details.to_excel(writer, sheet_name="题目明细", index=False)
-            knowledge_summary.to_excel(writer, sheet_name="知识点统计", index=False)
-            review_list.to_excel(writer, sheet_name="待人工复核", index=False)
-
-        return output_path
 
     def export_session(self, session_id: int) -> Path:
         self.reports_dir.mkdir(parents=True, exist_ok=True)
