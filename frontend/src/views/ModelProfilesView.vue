@@ -380,8 +380,10 @@ onBeforeUnmount(() => {
               :maxlength="MODEL_PROFILE_LIMITS.name"
               placeholder="例如：校内批改模型"
               :disabled="isBusy"
+              :readonly="!isNew"
               required
             >
+            <small v-if="!isNew">已保存配置的名称固定；需要新名称时请新建一套配置。</small>
             <small>用于区分不同服务商、校内代理或模型组合。</small>
           </label>
 
