@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from backend.domain_models import ExamPaperGroup, GradingResult, QuestionGradingDetail
+from backend.domain_models import GradingResult, QuestionGradingDetail
 from backend.performance.metrics import instrument_sqlite_connection
 from backend.repositories import (
     BorrowedReadOnlySessionProvider,
@@ -250,58 +250,6 @@ class DBManager:
             )
 
             conn.commit()
-
-    # ---------- Legacy API ----------
-    def save_result(self, paper_group: ExamPaperGroup, grading_result: GradingResult) -> int:
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO exam_results (
-                    student_name,
-                    front_image,
-                    back_image,
-                    total_score,
-                    student_score,
-                    needs_human_review,
-                    raw_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    grading_result.student_name,
-                    str(paper_group.front_image),
-                    str(paper_group.back_image),
-                    grading_result.total_score,
-                    grading_result.student_score,
-                    1 if grading_result.needs_human_review else 0,
-                    json.dumps(grading_result.raw_json, ensure_ascii=False),
-                ),
-            )
-
-            exam_result_id = int(cursor.lastrowid)
-            for detail in grading_result.grading_details:
-                cursor.execute(
-                    """
-                    INSERT INTO grading_details (
-                        exam_result_id,
-                        question_id,
-                        score_awarded,
-                        deduction_reason,
-                        knowledge_id,
-                        knowledge_ids
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        exam_result_id,
-                        detail.question_id,
-                        detail.score_awarded,
-                        detail.deduction_reason,
-                        detail.knowledge_id,
-                        json.dumps(_detail_knowledge_ids(detail), ensure_ascii=False),
-                    ),
-                )
-            conn.commit()
-            return exam_result_id
 
     # ---------- Student ----------
     def upsert_students(self, students: list[StudentRecord]) -> dict[str, int]:
@@ -1801,13 +1749,6 @@ def _unique_text_list(values: Any) -> list[str]:
             seen.add(text)
             result.append(text)
     return result
-
-
-def _detail_knowledge_ids(detail: Any) -> list[str]:
-    values = getattr(detail, "knowledge_ids", None)
-    fallback = getattr(detail, "knowledge_id", None)
-    result = _normalize_knowledge_ids(values, fallback)
-    return result or ["UNKNOWN"]
 
 
 def _knowledge_ids_from_row(row: dict[str, Any]) -> list[str]:

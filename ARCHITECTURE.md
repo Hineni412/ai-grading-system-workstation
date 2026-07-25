@@ -12,7 +12,8 @@
 - **历史增量说明：** 下列 P1/P2 条目保留各包交付当时的边界；其中“生产 UI 尚未切换”“Streamlit 保持兼容”等历史措辞，已由 P2-21/P2-22 的当前事实取代。
 - **P2-21/P2-22 当前边界：** `运行.bat` 只启动 FastAPI 同源托管的 Vue SPA（默认 `127.0.0.1:8000`）。旧 `web_app.py`、`pages/`、`pages_shared/`、旧 Streamlit 桌面启动器和 `streamlit-drawable-canvas` 已退役；Vue 仍直接复用的 `components/answer_region_editor/` 核心资产保留。Streamlit 不再处于生产启动或导航调用链，但历史 P1-29 正式验收工具仍通过隔离副本动态启动它，因此安装依赖继续保留。
 - **P3-15 增量边界：** 已删除无生产调用且引用 5 个缺失辅助脚本的 `objective_admission_wizard_ui.py` 与 `run_objective_admission_wizard.py`；没有恢复断链脚本。活动 `objective_crop_calibration.py` 及 `choice_recognition_chain.crop_choice_region()` 识别链保留，客观题裁剪坐标、质量检查、识别与评分行为不变；Streamlit 依赖经复审核实仍由 P1-29 历史正式验收工具使用，未在本包删除。
-- **P3-01 至 P3-07 当前边界：** `tools/build_p3_01_baseline.py` 可从当前源码、Schema 和受控历史证据生成内容寻址的结构基线；共享评分结果与试卷组类型已移入 `backend/domain_models.py`。`backend/repositories/` 提供 SQLite 连接所有权、事务和只读会话契约，并已抽取学生、考试会话、答卷、评分结果/明细、复核、模板、答题区与应用设置仓储；正式 FastAPI、Job、评分、复核、报告、分析、媒体和工作台调用方统一接收 `GradingRepositoryAccess`，只读请求继续借用同一快照连接。`DBManager` 只从 `backend/repositories/compat.py` 的单一兼容组装点创建，保留一个版本承接初始化、备份、跨域兼容编排与尚未迁移的聚合 SQL；旧入口和兼容测试仍可直接使用它。`AnswerRegionCommitService` 的数据库操作已走模板/答题区仓储，数据库提交后的文件快照、workflow 与草稿补偿协议保持不变。该批次不改变数据库 Schema、API 契约、业务结果或真实数据。
+- **P3-16 当前边界：** 用户于 2026-07-25 确认不再使用旧 CLI 后，`main.py`、`DBManager.save_result()` 和只读旧表的 `ReportGenerator.export()` 已退役；现行 `session_results/session_details`、`ReportGenerator.export_session()`、FastAPI/Vue 和评分/报告语义不变。`tools/export_legacy_cli_data.py` 可在迁移前以只读一致快照原子导出旧两表的完整 JSON；阅卷库 `008_drop_legacy_cli_tables.sql` 只在结构守卫、精确删表白名单、自动整库备份和事务完整性检查下删除 `grading_details/exam_results`。本包仅在隔离副本预演，不直接迁移真实业务库。
+- **P3-01 至 P3-07 已实现边界：** `tools/build_p3_01_baseline.py` 可从当前源码、Schema 和受控历史证据生成内容寻址的结构基线；共享评分结果与试卷组类型已移入 `backend/domain_models.py`。`backend/repositories/` 提供 SQLite 连接所有权、事务和只读会话契约，并已抽取学生、考试会话、答卷、评分结果/明细、复核、模板、答题区与应用设置仓储；正式 FastAPI、Job、评分、复核、报告、分析、媒体和工作台调用方统一接收 `GradingRepositoryAccess`，只读请求继续借用同一快照连接。`DBManager` 只从 `backend/repositories/compat.py` 的单一兼容组装点创建，承接初始化、备份、跨域兼容编排与尚未迁移的聚合 SQL；P3-16 已移除旧 CLI 对它的直接持有和专属 Legacy API。`AnswerRegionCommitService` 的数据库操作已走模板/答题区仓储，数据库提交后的文件快照、workflow 与草稿补偿协议保持不变。
 - **P3-08 当前边界：** `backend/document_parsing/` 以窄接口承接 DOCX/PDF 文字提取、纯文本题目/答案解析和富文本 DOCX 题块装配；正式配置来源服务显式传入临时根、资产根、文件登记与受控写回调，解析包不依赖模型客户端。`session_manager` 与 `rubric_auto_cropper` 保留一个版本的兼容 import，PDF 页面渲染/题图裁切、prompt、生成编排、题号/答案/题型推断、100 分约束与质量告警语义均未改变。
 - **P3-09 当前边界：** `backend/config_generation/` 承接活动小批次 Prompt、教师结构精修 Prompt、整卷 AI 配分 Prompt、单次请求 Gateway 适配器，以及顺序分批、失败批次选择性重试、合并、进度与检查点编排；正式配置 Job 通过兼容 facade 使用新服务，`session_manager` 的旧名称继续可用。P3-10 负责的 Schema 归一、题型/答案本地事实、100 分约束和质量告警仍以显式 policy callbacks 注入，模型、超时、请求参数、批次、重试、发布事务、API 和真实数据语义均未改变。
 - **P3-10 当前边界：** `backend/config_generation/normalization.py`、`score_allocation.py`、`local_facts.py`、`quality.py` 与 `policy.py` 分别承接生成配置 Schema/知识点/客观题与解答题硬规则、AI 配分结构校验与写回、本地题块事实、质量告警和 P3-09 回调组装；配置编辑/发布直接依赖新模块，`session_manager` 只以一个兼容导出块保留旧名称。迁移保留逐次 golden payload、100 分整数分配、单题 18 分上限、同类客观题同分、答案等价、告警顺序/文案和严格失败语义，不修改 Prompt、模型调用、API、数据库 Schema、发布事务或真实数据。
@@ -106,7 +107,7 @@
 ### 当前实现边界
 
 - 这是仅供单用户在个别受信任 Windows 工作机运行的本地应用，不存在远程数据库；FastAPI 只监听 loopback，并同源托管已构建的 Vue SPA。`frontend/` 提供设计 Token、基础控件、App Shell、路由、当前考试上下文、连续考试配置与样卷题框工作流、工作台、题库、组卷、训练推荐、文件中心、只读知识图谱，以及带答卷证据查看器和教师评分确认的复核页。
-- 主入口是 `运行.bat`：先检查 `frontend/dist`，再应用待重启运维操作，最后启动 `backend.api.launcher`（默认 8000）。旧 Streamlit 日常入口和桌面启动器已退役；`main.py` 仍是较早的命令行批改入口。
+- 唯一日常入口是 `运行.bat`：先检查 `frontend/dist`，再应用待重启运维操作，最后启动 `backend.api.launcher`（默认 8000）。旧 Streamlit 日常入口、桌面启动器和 `main.py` 命令行批改入口均已退役。
 - 核心状态保存在两个 SQLite 数据库和 `user_data/` 文件树中。
 - AI 能力依赖可配置的 OpenAI 兼容 HTTP 接口；当前代码路径使用 OpenAI Python SDK 的 Chat Completions 和 Responses API。
 - 公网访问、多用户/多租户、集中式账号体系、跨机器共享写入和无人值守任务队列不在当前范围内。
@@ -184,7 +185,7 @@ flowchart LR
 | 诊断与训练 | 跨库读取阅卷证据、按精确知识点标签聚合、精确标签候选推荐、训练任务和导出 | `integration/`、`question_bank/recommendation`、训练服务、`backend/jobs/training_export.py`、`backend/api/routers/training.py`、Vue 训练工作区 | FastAPI 复用现有服务提供 tag-only 诊断、推荐预览、幂等任务确认和可取消/重试的导出 Job；通过应用层同时访问两个数据库，无跨库事务和外键；真实训练结果回流尚未进入 API |
 | 原卷标签工作流 | 原卷归档、题库导入、受控 AI 打标、来源题确定性关联、状态重算和重试 | `integration/grading_paper_skill_workflow_service.py`、API/Vue 工作流、题库导入/链接服务 | 两库不能共享事务；每次运行后从实际题目、标签和链接重算 `ready/partial/failed` |
 | 旧技能与知识对齐（回退） | 统一技能目录、旧知识映射、技能链接、冲突和迁移 | `question_bank/models`、`taxonomy`、技能/对齐服务 | 保留读取与迁移工具；活动图谱/推荐不读写这些身份，题库标签保存也只在显式 `resolve_skills=True` 时双写 |
-| 数据与运维 | 领域数据类型、仓储、路径、SQLite、备份、恢复、迁移、存储审计和数据包 | `backend/domain_models.py`、`backend/repositories/`、`path_manager.py`、`db_manager.py`、`question_bank/database`、`update_tools/`、`tools/` | 活跃调用方统一依赖 `GradingRepositoryAccess` 的命名仓储；两库 Schema 统一由顺序迁移管理，`DBManager` 只保留单一兼容组装点、旧入口、非 DDL 维护及尚未迁移的聚合 SQL |
+| 数据与运维 | 领域数据类型、仓储、路径、SQLite、备份、恢复、迁移、存储审计和数据包 | `backend/domain_models.py`、`backend/repositories/`、`path_manager.py`、`db_manager.py`、`question_bank/database`、`update_tools/`、`tools/` | 活跃调用方统一依赖 `GradingRepositoryAccess` 的命名仓储；两库 Schema 统一由顺序迁移管理，`DBManager` 只保留单一兼容组装点、非 DDL 维护及尚未迁移的聚合 SQL，旧 CLI 专属 API 已退役 |
 
 ### 主要依赖关系
 
@@ -220,7 +221,7 @@ flowchart TD
 实际边界偏差必须保留为事实：
 
 - 旧页面直接持有数据库路径的偏差已随 P2-22 退役；当前 Vue 页面只通过 FastAPI 使用业务能力。
-- 评分结果、题目评分明细和试卷组共享类型已由 `backend/domain_models.py` 承接，`db_manager.py` 不再反向导入评分器或扫描器；学生、会话、评分数据、复核、模板、答题区和应用设置已抽取仓储，正式调用方经 `GradingRepositoryAccess` 使用命名仓储；`DBManager` 仅由单一兼容组装点、旧入口和兼容测试直接持有，仍承载备份、跨域兼容编排、非 DDL 数据维护和其他尚未迁移的聚合 SQL。
+- 评分结果、题目评分明细和试卷组共享类型已由 `backend/domain_models.py` 承接，`db_manager.py` 不再反向导入评分器或扫描器；学生、会话、评分数据、复核、模板、答题区和应用设置已抽取仓储，正式调用方经 `GradingRepositoryAccess` 使用命名仓储；`DBManager` 仅由单一兼容组装点和少量兼容测试直接持有，仍承载备份、跨域兼容编排、非 DDL 数据维护和其他尚未迁移的聚合 SQL，旧 CLI 及其 `save_result()` 已删除。
 - 题库服务大多直接执行 SQL，`question_bank/database/schema.py` 只提供连接、统一迁移门槛、兼容数据回填和内置技能播种，不是完整数据访问层。
 - 外部模型调用未完全收敛到 `LLMClient`：选择/填空/批量客观题识别和题库打标部分路径会直接实例化 OpenAI 客户端。
 - AST 静态导入图存在两组循环耦合：Schema 与技能目录服务、题目服务与题目频次服务。当前通过函数内延迟导入避免了直接初始化死循环，但仍增加演进风险。
@@ -415,7 +416,6 @@ sequenceDiagram
 
 | 数据库/表组 | 表 | 主要关系与用途 |
 |---|---|---|
-| 阅卷库：旧版兼容 | `exam_results`、`grading_details` | `main.py` 旧入口的结果与题目明细 |
 | 阅卷库：人员与会话 | `students`、`grading_sessions`、`app_settings` | 学生唯一编码、考试配置路径、原卷相对路径/SHA-256、题库同步状态与明细 |
 | 阅卷库：答卷与结果 | `exam_papers`、`session_results`、`session_details`、`session_attendance` | 会话答卷、学生匹配、分数、逐题证据、主错因、`secondary_errors_json` 和出勤 |
 | 阅卷库：模板与批注 | `session_templates`、`answer_regions`、`annotated_results` | 样卷、答题区、快照发布状态和批注文件索引 |
@@ -502,7 +502,7 @@ flowchart LR
 ### 兼容约束
 
 - 数据库存储路径可能来自旧机器，读取时通过 `resolve_stored_file_path()` 重映射；不要直接改变已存路径格式。
-- `main.py` 的旧表和 `DBManager` 旧 API 仍保留，删除前需确认没有外部脚本消费者。
+- 旧 CLI 数据如需留存，必须在应用 008 前用只读导出工具归档；迁移器还会在删表前自动生成整库备份，唯一受支持的结构回退是恢复该备份并运行旧版本代码。
 - 旧统一技能目录和知识映射仅保留一个版本的只读回退与迁移工具；活动页面不得由 `skill_system_settings` 切回或混入旧身份。
 - OpenAI 兼容供应商对 `max_tokens`、`max_completion_tokens` 和 `response_format` 支持不同，`LLMClient` 已包含参数回退；新增调用不应绕过兼容策略。
 
