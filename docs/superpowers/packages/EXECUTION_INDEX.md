@@ -74,7 +74,8 @@
 | P3-14 | `merged` | 已通过 PR #88 合入主线，主线合并提交为 `ea9d9e820f2637881cd36aa230c95bbbfc6137ce`；migration 007 删除旧生成列并在重建前拒绝结构漂移，题库同步四列经容量/查询测量后决定继续保留在 `grading_sessions`。4 类隔离副本预演、双路初审与一次统一修复、限定终审、最终完整门槛 2276 passed / 2 skipped、快速冒烟和真实两库 SHA-256 守卫通过；未执行真实库 migration |
 | P3-15 | `merged` | 已通过 PR #90 合入主线，主线合并提交为 `f882465a24b4bbb2f6ef176d53556b1952c1393d`；断链的 objective admission UI/runner 已删除，活动 `objective_crop_calibration.py` 和客观题识别链保留；Streamlit 依赖经复审核实仍由 P1-29 历史正式验收工具使用，未删除。初审 1 `Important` / 3 `Suggestion` 经一次统一修复全部关闭，限定终审 0/0/0；integration 受影响回归 77 passed、快速冒烟和真实两库指纹守卫通过 |
 | P3-16 | `merged` | 已通过 PR #93 合入主线，主线合并提交为 `6fb2c93e759011ad95746340153323f961c508c0`；`main.py`、Legacy API/旧报告入口和专属两表已退役，迁移前只读导出、精确删表白名单、自动备份与恢复演练通过。双路初审的 2 个 `Important` 经一次统一修复和限定终审关闭；最终完整门槛 2286 passed / 2 skipped、快速冒烟和真实两库指纹守卫通过，未执行真实库 migration |
-| P3-17 至 P3-19 | `planned` | 等待各自前置包和高风险门槛放行 |
+| P3-17 | `milestone_integrated` | 旧模型/服务/显式双写和精确 11 表已在 M3-10 integration 退役；初审需求轴 0 条、质量轴 1 `Important`，经一次统一修复和原评审者限定终审关闭。归档通过主库/WAL 稳定指纹复制后读取临时快照，不写源目录且保持 WAL 已提交数据可见；integration 18 项回归、快速冒烟、最终完整门禁 2180 passed / 2 skipped、隔离副本迁移/恢复和真实两库指纹守卫通过。Issue #95 单独跟踪范围外旧训练集，未执行真实库 migration |
+| P3-18 至 P3-19 | `planned` | 等待各自前置包和高风险门槛放行 |
 | P4-01 至 P4-12 | `planned` | Phase 3 数据边界稳定后放行 |
 | P5-01 至 P5-13 | `planned` | 先实验与设计门，再进入正式实现 |
 
@@ -144,6 +145,7 @@ M2-05 是 P2-22 单包最高风险旧界面退役里程碑，从 P2-21 已通过
 | M3-07 | P3-14 | `merged` | `fd9edcab4acbcd2b270f9da2004bca7239cf4540` | `codex/integration-m3-07` | `0394b46170f0acf7f1edc5b234fd7cec7ab64684` | 已通过 PR #88 合入主线，主线合并提交为 `ea9d9e820f2637881cd36aa230c95bbbfc6137ce`。完整测试首次暴露 2 处随删列过时的测试夹具，低风险同步后定向通过；第二轮仅出现 1 次修改前既有并发时序波动，单项连续 10 次通过；最终完整门槛 2276 passed / 2 skipped，快速冒烟、迁移副本完整性和真实两库指纹守卫通过；未执行真实库 migration |
 | M3-08 | P3-15 | `merged` | `24be1c3e264f50b0e97613aacf8489ca44ecbef5` | `codex/integration-m3-08` | `f72a55aaaef625ed06c8b7972da1f4fff6954a2e` | 已通过 PR #90 合入主线，主线合并提交为 `f882465a24b4bbb2f6ef176d53556b1952c1393d`。integration 受影响回归 77 passed，快速冒烟通过文档治理、525 个第一方 Python 文件编译和两库副本幂等；`git diff --check`、交接校验、双路限定终审和真实两库指纹守卫通过 |
 | M3-09 | P3-16 | `merged` | `39ca9361be4e36889ca13818fbd6815d7a485463` | `codex/integration-m3-09` | `6beba42e2aa384fb4145a7b67f43d9cb1432f4a8` | 已通过 PR #93 合入主线，主线合并提交为 `6fb2c93e759011ad95746340153323f961c508c0`。首次完整门槛因修改前既有的 P2-20 随机令牌缺陷出现 1 次失败，受控复现和 10/10 单项复测后登记 Issue #92；未混入范围外修复。最终完整门槛 2286 passed / 2 skipped，快速冒烟、双路限定终审、交接校验和真实两库指纹守卫通过 |
+| M3-10 | P3-17 | `ready_for_pr` | `92030e1089a92835b61accf449ced2812d84d569` | `codex/integration-m3-10` | `d7ec386de891a6840f8bed13862237e7bbaad374` | 单包里程碑已完成 integration：初审 0/1 Important，经一次统一修复和限定终审关闭；18 项受影响回归、快速冒烟、最终完整门禁 2180 passed / 2 skipped、交接校验和真实两库指纹守卫通过。首次受限沙箱完整测试因 Windows 安全文件句柄权限批量失败，正常权限下同版本全量通过，确认不是代码回归 |
 
 P2-20 的不可变可信领取基线是 `c9662850bbd75a2ba062c0011a6762241818f4d8`，用于该包所有 `handoff_status.py --expected-handoff-base` 核验。该包领取后为解除现场阻塞，同步了已经独立复审并逐项进入 M2-03 的 Issue #60—#65，因此 M2-03 当前已验证且作为最终合入目标的 SHA 已前进到 `6ed4cd64ccab6aa2c51b602c7413c99ecf8d2781`。两者职责不同：不得把计划内冻结的领取基线改成后者，也不得用前者替代 integration 当前状态。
 
@@ -200,4 +202,4 @@ M2-02 是 Python 完整测试并行试点的第二个里程碑：批次末优先
 
 ## 下一动作
 
-P3-16/M3-09 已通过 PR #93 合入主线；下一动作是同步 `origin/main`、本地 `main` 与滚动功能 worktree，然后按依赖领取 P3-17，先完成旧技能语义数据只读调查和用户确认，再冻结删除边界。Issue #92 是修改前既有的 P2-20 验收辅助服务随机令牌缺陷，必须作为独立任务处理，不得混入后续 Phase 3 包。不得对根目录真实库执行 migration；P2-20 剩余两次真实调用继续冻结，Issue #67 的后续复验仍须用户重新确认网络、考试副本与费用上限。
+M3-10 已完成 P3-17 integration、限定终审、18 项受影响回归、快速冒烟和最终完整门禁 2180 passed / 2 skipped；下一动作是推送 `codex/integration-m3-10`、通过一个 PR 合入主线并同步基线，然后按依赖领取 P3-18。Issue #95 单独跟踪范围外的 `training_sets/training_set_items`；Issue #92 是修改前既有的 P2-20 验收辅助服务随机令牌缺陷，两者均不得混入后续 Phase 3 包。不得对根目录真实库执行 migration；P2-20 剩余两次真实调用继续冻结，Issue #67 的后续复验仍须用户重新确认网络、考试副本与费用上限。

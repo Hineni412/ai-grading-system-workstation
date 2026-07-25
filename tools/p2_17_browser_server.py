@@ -59,7 +59,7 @@ def _seed_question_bank(paths) -> None:
     from question_bank.database.schema import initialize_database
 
     DBManager(paths.db_path).initialize()
-    initialize_database(paths.qb_db_path, seed_skills=False)
+    initialize_database(paths.qb_db_path)
 
     with sqlite3.connect(paths.qb_db_path) as conn:
         conn.execute(

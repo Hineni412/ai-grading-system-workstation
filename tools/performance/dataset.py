@@ -331,7 +331,7 @@ def _initialize_question_bank_database(db_path: Path) -> None:
         initialize_database.__closure__,
     )
     isolated_initialize.__kwdefaults__ = initialize_database.__kwdefaults__
-    isolated_initialize(db_path, seed_skills=False)
+    isolated_initialize(db_path)
 
 
 def _prepare_generated_schema(target: str, db_path: Path) -> None:

@@ -139,7 +139,6 @@ def _run_tagging_sync_job_locked(
                     result.analysis,
                     model_name=result.model_name,
                     confidence=result.analysis.confidence,
-                    resolve_skills=False,
                 )
             except Exception:  # noqa: BLE001
                 saved = False
