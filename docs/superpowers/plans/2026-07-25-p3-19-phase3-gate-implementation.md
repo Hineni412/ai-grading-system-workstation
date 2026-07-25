@@ -9,7 +9,7 @@
 **交接基线：** c75323959bbd60ebc9e57a1546ac475afe3e9659
 **用户自测：** none
 **自测清单：** not_required
-**累计授权使用：** 3/5
+**累计授权使用：** 4/5
 
 <!-- HANDOFF_STATUS_START -->
 ## 昼夜交接
@@ -68,7 +68,7 @@
 - [x] 在同一稳定候选上运行一次完整 `tools/smoke_check.py`，复核真实两库大小、UTC 修改时间、SHA-256、功能 worktree `user_data/` 和 stash 基线。
 - [x] 生成 P3-19 阶段报告并同步 `ARCHITECTURE.md`/执行 Index；发现问题只登记独立 Issue，P3-19 保持无生产修复。
 - [x] 冻结同一候选，并行进行需求符合性与代码质量复审；若存在本包报告/门槛遗漏，只允许一次统一修正和一次限定终审。
-- [ ] 形成合法交接，进入 M3-12 integration，通过 PR 合入主线并把 Phase 3 状态收口为 `merged`。
+- [x] 形成合法交接，进入 M3-12 integration，通过 PR 合入主线并把 Phase 3 状态收口为 `merged`。
 
 ## 阶段记录
 
@@ -77,3 +77,4 @@
 - 并行初审约 9 分钟：需求复审原始 3 个 `Important`，代码质量复审原始 2 个 `Important`；去重后为 3 个 `Important`、0 `Critical`、0 `Suggestion`。根因分别是逐版本历史迁移矩阵证据不足、`waiting_review` 交接字段格式不合法、唯一执行 Index 未同步。三项均属于本次任务直接引入或当前任务原本遗漏，使用第 4/5 次授权进入唯一一次统一修正；没有生产代码问题。
 - 统一修正约 44 分钟：新增空库及两库每个迁移前缀到当前版本的 21 个起点矩阵，阅卷库 10/10、题库 11/11 通过；临时目录使用短逻辑段避免 Windows 长路径影响。交接块改为协议要求的 `branch_head / passed / pending / not_required / unchanged / report_only`，并同步主线已存在的 M3-12 状态声明。受影响回归 127 passed；交接校验通过；修正后完整 smoke 2198 passed、2 skipped，文档治理、503 个第一方 Python 文件编译和两库副本幂等初始化均通过。真实两库大小、UTC 修改时间和 SHA-256 与开工值一致，功能 worktree `user_data/` 为空，stash 基线未变。当前只剩两名原复审者限定终审和 integration/PR/主线收口。
 - 限定终审约 14 分钟：两名首轮原复审者只核对 3 个登记问题、修正区域和直接回归，均确认逐版本矩阵、交接字段/历史和 Index 同步已关闭；两路剩余均为 0 `Critical` / 0 `Important` / 0 `Suggestion`，未发现修正直接回归。当前候选通过自动化验收和独立复审，用户自测不适用；允许进入 M3-12 integration，但 Phase 3 仍须在 PR 合入主线并同步基线后才正式 `merged`。
+- integration 与主线收口约 12 分钟：冲突只涉及执行 Index 的进度记录，保留证据更完整的一侧后，23 项直接受影响测试和快速冒烟通过，真实两库指纹未变；integration 提交 `9b9da1ec5c9991b416bf7c4099e28cac1375f595` 已通过 PR #102 合入主线，主线合并提交为 `c05d0f5105914ca1cffe4e7e8a54a4e9693df963`。P3-19 与 Phase 3 均通过验收，Phase 3 范围允许发布；Issue #67 仍为需要新的数据与费用授权的独立任务。
