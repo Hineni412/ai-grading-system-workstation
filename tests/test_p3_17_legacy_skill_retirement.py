@@ -252,6 +252,96 @@ def test_export_archives_all_legacy_skill_tables_without_writing_source(
     ).hexdigest()
 
 
+def test_export_does_not_create_sidecars_for_wal_mode_source(
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "source"
+    output_dir = tmp_path / "output"
+    source_dir.mkdir()
+    output_dir.mkdir()
+    database = source_dir / "question-bank.db"
+    archive = output_dir / "legacy-skills.json"
+    _seed_legacy_skill_database(database)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+
+    source_files_before = tuple(sorted(path.name for path in source_dir.iterdir()))
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(EXPORT_TOOL),
+            "--database",
+            str(database),
+            "--output",
+            str(archive),
+        ],
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert tuple(sorted(path.name for path in source_dir.iterdir())) == (
+        source_files_before
+    )
+
+
+def test_export_reads_committed_wal_without_touching_source_files(
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "source"
+    output_dir = tmp_path / "output"
+    source_dir.mkdir()
+    output_dir.mkdir()
+    database = source_dir / "question-bank.db"
+    archive = output_dir / "legacy-skills.json"
+    _seed_legacy_skill_database(database)
+
+    with sqlite3.connect(database) as writer:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute(
+            """
+            INSERT INTO skill_system_settings (key, value)
+            VALUES ('committed_in_wal', 'visible')
+            """
+        )
+        writer.commit()
+        source_state_before = {
+            path.name: (path.stat().st_size, path.stat().st_mtime_ns, _sha256(path))
+            for path in source_dir.iterdir()
+            if path.is_file()
+        }
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(EXPORT_TOOL),
+                "--database",
+                str(database),
+                "--output",
+                str(archive),
+            ],
+            cwd=PROJECT_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        assert completed.returncode == 0, completed.stderr
+        payload = json.loads(archive.read_text(encoding="utf-8"))
+        assert any(
+            row["key"] == "committed_in_wal" and row["value"] == "visible"
+            for row in payload["tables"]["skill_system_settings"]["rows"]
+        )
+        assert {
+            path.name: (path.stat().st_size, path.stat().st_mtime_ns, _sha256(path))
+            for path in source_dir.iterdir()
+            if path.is_file()
+        } == source_state_before
+
+
 def test_export_records_legacy_tables_that_were_never_present(
     tmp_path: Path,
 ) -> None:

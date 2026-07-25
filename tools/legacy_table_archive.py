@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 from contextlib import contextmanager
@@ -17,6 +18,49 @@ ARCHIVE_VERSION = 1
 
 class LegacyArchiveError(RuntimeError):
     """Raised when a complete legacy archive cannot be produced."""
+
+
+def _file_fingerprint(path: Path) -> tuple[int, str] | None:
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return path.stat().st_size, digest.hexdigest()
+
+
+@contextmanager
+def _stable_database_snapshot(database: Path) -> Iterator[Path]:
+    source_wal = database.with_name(f"{database.name}-wal")
+    source_files = (database, source_wal)
+    with tempfile.TemporaryDirectory(prefix="legacy-table-archive-") as temp_dir:
+        snapshot = Path(temp_dir) / database.name
+        snapshot_wal = snapshot.with_name(f"{snapshot.name}-wal")
+        for _attempt in range(3):
+            before = {
+                source.name: _file_fingerprint(source)
+                for source in source_files
+            }
+            shutil.copyfile(database, snapshot)
+            if source_wal.is_file():
+                shutil.copyfile(source_wal, snapshot_wal)
+            elif snapshot_wal.exists():
+                snapshot_wal.unlink()
+            after = {
+                source.name: _file_fingerprint(source)
+                for source in source_files
+            }
+            copied = {
+                database.name: _file_fingerprint(snapshot),
+                source_wal.name: _file_fingerprint(snapshot_wal),
+            }
+            if before == after == copied:
+                yield snapshot
+                return
+        raise LegacyArchiveError(
+            "source database changed while creating a read-only snapshot"
+        )
 
 
 @contextmanager
@@ -113,27 +157,28 @@ def export_table_archive(
                 "output already exists; use --overwrite to replace it"
             )
 
-        connection = sqlite3.connect(
-            f"{database.as_uri()}?mode=ro",
-            uri=True,
-        )
-        connection.row_factory = sqlite3.Row
-        try:
-            connection.execute("BEGIN")
-            archived_tables = {
-                table_name: _read_table(
-                    connection,
-                    table_name,
-                    allow_missing=allow_missing_tables,
-                )
-                for table_name in normalized_tables
-            }
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+        with _stable_database_snapshot(database) as snapshot:
+            connection = sqlite3.connect(
+                f"{snapshot.as_uri()}?mode=ro",
+                uri=True,
+            )
+            connection.row_factory = sqlite3.Row
+            try:
+                connection.execute("BEGIN")
+                archived_tables = {
+                    table_name: _read_table(
+                        connection,
+                        table_name,
+                        allow_missing=allow_missing_tables,
+                    )
+                    for table_name in normalized_tables
+                }
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
 
         summary = {
             table_name: len(archived_tables[table_name]["rows"])
