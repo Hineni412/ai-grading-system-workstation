@@ -366,15 +366,16 @@ def test_upload_submission_token_is_queryable_and_repeated_post_is_rejected(
         "x-upload-filename": quote("token-paper.pdf"),
         "x-client-request-token": token,
     }
+    content = _pdf_bytes()
 
     first = client.post(
         f"/api/sessions/{session_id}/config/sources",
-        content=_pdf_bytes(),
+        content=content,
         headers=headers,
     )
     replay = client.post(
         f"/api/sessions/{session_id}/config/sources",
-        content=_pdf_bytes(),
+        content=content,
         headers=headers,
     )
     queried = client.get(

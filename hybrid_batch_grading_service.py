@@ -537,6 +537,7 @@ def grade_major_question_batch(
     dynamic_images = [image_bytes]
     
     json_from_images = getattr(llm_client, "json_from_images_with_options", None)
+    image_compression_memo: dict[str, bytes] = {}
     
     max_retries = 3
     last_err = None
@@ -555,6 +556,7 @@ def grade_major_question_batch(
                     extra_kwargs={"omit_token_limit": True, "timeout": None},
                     static_image_blobs=static_images,
                     dynamic_prompt=dynamic_prompt,
+                    image_compression_memo=image_compression_memo,
                 )
             else:
                 combined_prompt = f"{static_prompt}\n\n{dynamic_prompt}"

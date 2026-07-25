@@ -157,6 +157,7 @@ def _seed_media(tmp_path: Path) -> SeededMedia:
         exams_dir=exams_dir,
         templates_dir=templates_dir,
         annotated_dir=annotated_dir,
+        crop_cache_dir=data_root / "cache" / "review_crops",
     )
     return SeededMedia(
         service=service,
@@ -206,6 +207,243 @@ def test_review_media_crop_uses_owned_detail_and_existing_region(tmp_path: Path)
             if r > 150 and g < 100 and b < 100
         )
         assert red_pixels > 50
+
+
+def test_review_media_crop_cache_is_exact_clearable_and_rebuildable(
+    tmp_path: Path,
+) -> None:
+    seed = _seed_media(tmp_path)
+    cache_dir = seed.data_root / "cache" / "review_crops"
+
+    first = seed.service.render_detail_crop(
+        seed.session_id,
+        seed.result_id,
+        seed.detail_id,
+    )
+    second = seed.service.render_detail_crop(
+        seed.session_id,
+        seed.result_id,
+        seed.detail_id,
+    )
+
+    assert second == first
+    assert len(list(cache_dir.glob("*.jpg"))) == 1
+    assert not list(cache_dir.glob("*.tmp"))
+
+    assert seed.service.clear_detail_crop_cache() == 1
+    assert not list(cache_dir.iterdir())
+    rebuilt = seed.service.render_detail_crop(
+        seed.session_id,
+        seed.result_id,
+        seed.detail_id,
+    )
+    assert rebuilt == first
+    assert len(list(cache_dir.glob("*.jpg"))) == 1
+
+
+def test_review_media_crop_cache_invalidates_when_source_bytes_change(
+    tmp_path: Path,
+) -> None:
+    seed = _seed_media(tmp_path)
+    first = seed.service.render_detail_crop(
+        seed.session_id,
+        seed.result_id,
+        seed.detail_id,
+    )
+
+    _image(seed.front_path, color=(30, 90, 170))
+    changed = seed.service.render_detail_crop(
+        seed.session_id,
+        seed.result_id,
+        seed.detail_id,
+    )
+
+    assert changed != first
+
+
+def test_review_media_crop_cache_recovers_from_corrupt_entry(tmp_path: Path) -> None:
+    seed = _seed_media(tmp_path)
+    expected = seed.service.render_detail_crop(
+        seed.session_id,
+        seed.result_id,
+        seed.detail_id,
+    )
+    cache_file = next(
+        (seed.data_root / "cache" / "review_crops").glob("*.jpg")
+    )
+    cache_file.write_bytes(b"not-a-jpeg")
+
+    rebuilt = seed.service.render_detail_crop(
+        seed.session_id,
+        seed.result_id,
+        seed.detail_id,
+    )
+
+    assert rebuilt == expected
+    assert cache_file.read_bytes() == expected
+
+
+def test_review_media_crop_cache_concurrent_callers_get_one_complete_entry(
+    tmp_path: Path,
+) -> None:
+    seed = _seed_media(tmp_path)
+    barrier = threading.Barrier(8)
+    payloads: list[bytes] = []
+    errors: list[BaseException] = []
+
+    def render() -> None:
+        try:
+            barrier.wait(timeout=5)
+            payloads.append(
+                seed.service.render_detail_crop(
+                    seed.session_id,
+                    seed.result_id,
+                    seed.detail_id,
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    workers = [threading.Thread(target=render) for _ in range(8)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=10)
+
+    cache_dir = seed.data_root / "cache" / "review_crops"
+    assert not errors
+    assert len(payloads) == 8
+    assert len(set(payloads)) == 1
+    assert len(list(cache_dir.glob("*.jpg"))) == 1
+    assert not list(cache_dir.glob("*.tmp"))
+
+
+def test_review_media_crop_cache_matches_uncached_public_service(
+    tmp_path: Path,
+) -> None:
+    from backend.media.service import ReviewMediaService
+
+    seed = _seed_media(tmp_path)
+    uncached = ReviewMediaService(
+        seed.db,
+        data_root=seed.data_root,
+        exams_dir=seed.exams_dir,
+        templates_dir=seed.templates_dir,
+        annotated_dir=seed.annotated_dir,
+        enable_crop_cache=False,
+    )
+
+    expected = uncached.render_detail_crop(
+        seed.session_id,
+        seed.result_id,
+        seed.detail_id,
+    )
+    actual = seed.service.render_detail_crop(
+        seed.session_id,
+        seed.result_id,
+        seed.detail_id,
+    )
+
+    assert actual == expected
+
+
+def test_review_media_crop_cache_skips_entry_larger_than_bound(
+    tmp_path: Path,
+) -> None:
+    from backend.media.service import ReviewMediaService
+
+    seed = _seed_media(tmp_path)
+    bounded = ReviewMediaService(
+        seed.db,
+        data_root=seed.data_root,
+        exams_dir=seed.exams_dir,
+        templates_dir=seed.templates_dir,
+        annotated_dir=seed.annotated_dir,
+        crop_cache_dir=seed.data_root / "tiny-cache",
+        max_crop_cache_bytes=1,
+    )
+
+    payload = bounded.render_detail_crop(
+        seed.session_id,
+        seed.result_id,
+        seed.detail_id,
+    )
+
+    assert payload.startswith(b"\xff\xd8")
+    assert not (seed.data_root / "tiny-cache").exists()
+
+
+def test_review_media_crop_cache_write_failure_keeps_uncached_result(
+    tmp_path: Path,
+) -> None:
+    from backend.media.service import ReviewMediaService
+
+    seed = _seed_media(tmp_path)
+    blocked_cache_path = seed.data_root / "blocked-cache"
+    blocked_cache_path.write_text("not a directory", encoding="utf-8")
+    service = ReviewMediaService(
+        seed.db,
+        data_root=seed.data_root,
+        exams_dir=seed.exams_dir,
+        templates_dir=seed.templates_dir,
+        annotated_dir=seed.annotated_dir,
+        crop_cache_dir=blocked_cache_path,
+    )
+
+    payload = service.render_detail_crop(
+        seed.session_id,
+        seed.result_id,
+        seed.detail_id,
+    )
+
+    assert payload.startswith(b"\xff\xd8")
+
+
+def test_review_media_crop_cache_restart_removes_orphans_and_reapplies_bound(
+    tmp_path: Path,
+) -> None:
+    from backend.media.service import ReviewMediaService
+
+    seed = _seed_media(tmp_path)
+    uncached = ReviewMediaService(
+        seed.db,
+        data_root=seed.data_root,
+        exams_dir=seed.exams_dir,
+        templates_dir=seed.templates_dir,
+        annotated_dir=seed.annotated_dir,
+        enable_crop_cache=False,
+    )
+    expected = uncached.render_detail_crop(
+        seed.session_id,
+        seed.result_id,
+        seed.detail_id,
+    )
+    cache_dir = seed.data_root / "restart-cache"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / ".interrupted.tmp").write_bytes(expected)
+    (cache_dir / ("a" * 64 + ".jpg")).write_bytes(expected)
+    (cache_dir / ("b" * 64 + ".jpg")).write_bytes(expected)
+    bounded = ReviewMediaService(
+        seed.db,
+        data_root=seed.data_root,
+        exams_dir=seed.exams_dir,
+        templates_dir=seed.templates_dir,
+        annotated_dir=seed.annotated_dir,
+        crop_cache_dir=cache_dir,
+        max_crop_cache_bytes=len(expected) + 256,
+    )
+
+    actual = bounded.render_detail_crop(
+        seed.session_id,
+        seed.result_id,
+        seed.detail_id,
+    )
+
+    assert actual == expected
+    assert not list(cache_dir.glob("*.tmp"))
+    assert sum(path.stat().st_size for path in cache_dir.glob("*.jpg")) <= (
+        len(expected) + 256
+    )
 
 
 def test_review_media_resolves_original_and_annotated_pages(tmp_path: Path) -> None:
