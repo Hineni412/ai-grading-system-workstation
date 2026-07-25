@@ -441,6 +441,7 @@ def test_005_rebuild_preserves_legal_rows_and_restores_schema_objects(
         ("005_add_status_constraints", "applied"),
         ("006_knowledge_ids_primary", "applied"),
         ("007_drop_legacy_knowledge_id", "applied"),
+        ("008_drop_legacy_cli_tables", "applied"),
     ]
     assert Path(report.results[0].backup_path or "").is_file()
     with sqlite3.connect(database) as connection:
