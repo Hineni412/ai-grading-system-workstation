@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import re
+import threading
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from PIL import Image, ImageDraw, UnidentifiedImageError
 
@@ -17,6 +22,11 @@ from backend.repositories.access import GradingRepositoryAccess, as_grading_repo
 
 
 IMAGE_SUFFIXES = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".webp"})
+_CROP_RENDER_VERSION = "review-crop-v1"
+_DEFAULT_CROP_CACHE_BYTES = 256 * 1024 * 1024
+_CACHE_LOCKS_GUARD = threading.Lock()
+_CACHE_LOCKS: dict[Path, threading.RLock] = {}
+_MAINTAINED_CACHE_DIRS: set[Path] = set()
 
 
 class ReviewMediaNotFound(LookupError):
@@ -36,12 +46,23 @@ class ReviewMediaService:
         exams_dir: Path,
         templates_dir: Path,
         annotated_dir: Path,
+        crop_cache_dir: Path | None = None,
+        max_crop_cache_bytes: int = _DEFAULT_CROP_CACHE_BYTES,
+        enable_crop_cache: bool = True,
     ) -> None:
         self.db = as_grading_repositories(db)
         self.data_root = Path(data_root)
         self.exams_dir = Path(exams_dir)
         self.templates_dir = Path(templates_dir)
         self.annotated_dir = Path(annotated_dir)
+        self.crop_cache_dir = Path(
+            crop_cache_dir or self.data_root / "cache" / "review_crops"
+        )
+        if int(max_crop_cache_bytes) <= 0:
+            raise ValueError("max_crop_cache_bytes must be positive")
+        self.max_crop_cache_bytes = int(max_crop_cache_bytes)
+        self.enable_crop_cache = bool(enable_crop_cache)
+        self._crop_cache_lock = _cache_lock(self.crop_cache_dir)
 
     def resolve_result_page(
         self,
@@ -112,45 +133,89 @@ class ReviewMediaService:
             allowed_suffixes=IMAGE_SUFFIXES,
         )
         try:
-            with Image.open(source.path) as opened:
-                image = opened.convert("RGB")
-        except (OSError, UnidentifiedImageError) as exc:
+            source_bytes = source.path.read_bytes()
+        except OSError as exc:
             raise ReviewMediaUnreadable(
                 "Review media resource could not be decoded."
             ) from exc
+        if not self.enable_crop_cache:
+            return _render_crop_jpeg(source_bytes, region)
+        cache_key = _crop_cache_key(source_bytes, region, page)
+        cache_path = self.crop_cache_dir / f"{cache_key}.jpg"
+        with self._crop_cache_lock:
+            self._prepare_crop_cache()
+            cached = _read_valid_jpeg(cache_path)
+            if cached is not None:
+                return cached
 
-        try:
-            x, y, region_right, region_bottom = scaled_region_bbox(
-                region,
-                image.width,
-                image.height,
-            )
-            pad = max(18, min(image.width, image.height) // 70)
-            left = max(0, x - pad)
-            top = max(0, y - pad)
-            right = min(image.width, region_right + pad)
-            bottom = min(image.height, region_bottom + pad)
-            crop = image.crop((left, top, right, bottom))
+            rendered = _render_crop_jpeg(source_bytes, region)
+            self._publish_crop_cache(cache_path, rendered)
+            return rendered
+
+    def clear_detail_crop_cache(self) -> int:
+        """Remove only rebuildable review crop derivatives."""
+        with self._crop_cache_lock:
+            if not self.crop_cache_dir.exists():
+                return 0
+            removed = 0
+            for path in self.crop_cache_dir.iterdir():
+                if path.is_file() and (
+                    path.suffix.lower() == ".jpg" or path.name.endswith(".tmp")
+                ):
+                    try:
+                        path.unlink()
+                    except FileNotFoundError:
+                        continue
+                    removed += 1
+            return removed
+
+    def _prepare_crop_cache(self) -> None:
+        """Repair bounded derivative-cache state once per process start."""
+        key = self.crop_cache_dir.resolve()
+        with _CACHE_LOCKS_GUARD:
+            if key in _MAINTAINED_CACHE_DIRS:
+                return
+        if self.crop_cache_dir.exists():
             try:
-                draw = ImageDraw.Draw(crop)
-                line_width = max(3, crop.width // 220)
-                draw.rectangle(
-                    [
-                        x - left,
-                        y - top,
-                        min(crop.width - 1, region_right - left),
-                        min(crop.height - 1, region_bottom - top),
-                    ],
-                    outline=(220, 38, 38),
-                    width=line_width,
-                )
-                output = BytesIO()
-                crop.save(output, format="JPEG", quality=90)
-                return output.getvalue()
-            finally:
-                crop.close()
+                candidates = tuple(self.crop_cache_dir.iterdir())
+            except OSError:
+                candidates = ()
+            for path in candidates:
+                if path.is_file() and path.name.endswith(".tmp"):
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
+            _trim_cache(
+                self.crop_cache_dir,
+                max_bytes=self.max_crop_cache_bytes,
+                keep=None,
+            )
+        with _CACHE_LOCKS_GUARD:
+            _MAINTAINED_CACHE_DIRS.add(key)
+
+    def _publish_crop_cache(self, cache_path: Path, payload: bytes) -> None:
+        if len(payload) > self.max_crop_cache_bytes:
+            return
+        temp_path = cache_path.with_name(
+            f".{cache_path.stem}.{uuid4().hex}.tmp"
+        )
+        try:
+            self.crop_cache_dir.mkdir(parents=True, exist_ok=True)
+            temp_path.write_bytes(payload)
+            os.replace(temp_path, cache_path)
+        except OSError:
+            return
         finally:
-            image.close()
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        _trim_cache(
+            self.crop_cache_dir,
+            max_bytes=self.max_crop_cache_bytes,
+            keep=cache_path,
+        )
 
     def _find_region(
         self,
@@ -200,3 +265,122 @@ def _region_question_id(region: dict[str, Any]) -> str:
         or region.get("detected_question_id")
         or ""
     )
+
+
+def _cache_lock(cache_dir: Path) -> threading.RLock:
+    key = Path(cache_dir).resolve()
+    with _CACHE_LOCKS_GUARD:
+        lock = _CACHE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _CACHE_LOCKS[key] = lock
+        return lock
+
+
+def _crop_cache_key(
+    source_bytes: bytes,
+    region: dict[str, Any],
+    page: str,
+) -> str:
+    source_digest = hashlib.sha256(source_bytes).hexdigest()
+    geometry = json.dumps(
+        {
+            "page": page,
+            "region": region,
+            "render_version": _CROP_RENDER_VERSION,
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(
+        source_digest.encode("ascii") + b"\0" + geometry.encode("utf-8")
+    ).hexdigest()
+
+
+def _read_valid_jpeg(path: Path) -> bytes | None:
+    try:
+        payload = path.read_bytes()
+        with Image.open(BytesIO(payload)) as image:
+            if image.format != "JPEG":
+                return None
+            image.verify()
+        return payload
+    except (FileNotFoundError, OSError, UnidentifiedImageError):
+        return None
+
+
+def _render_crop_jpeg(
+    source_bytes: bytes,
+    region: dict[str, Any],
+) -> bytes:
+    try:
+        with Image.open(BytesIO(source_bytes)) as opened:
+            image = opened.convert("RGB")
+    except (OSError, UnidentifiedImageError) as exc:
+        raise ReviewMediaUnreadable(
+            "Review media resource could not be decoded."
+        ) from exc
+
+    try:
+        x, y, region_right, region_bottom = scaled_region_bbox(
+            region,
+            image.width,
+            image.height,
+        )
+        pad = max(18, min(image.width, image.height) // 70)
+        left = max(0, x - pad)
+        top = max(0, y - pad)
+        right = min(image.width, region_right + pad)
+        bottom = min(image.height, region_bottom + pad)
+        crop = image.crop((left, top, right, bottom))
+        try:
+            draw = ImageDraw.Draw(crop)
+            line_width = max(3, crop.width // 220)
+            draw.rectangle(
+                [
+                    x - left,
+                    y - top,
+                    min(crop.width - 1, region_right - left),
+                    min(crop.height - 1, region_bottom - top),
+                ],
+                outline=(220, 38, 38),
+                width=line_width,
+            )
+            output = BytesIO()
+            crop.save(output, format="JPEG", quality=90)
+            return output.getvalue()
+        finally:
+            crop.close()
+    finally:
+        image.close()
+
+
+def _trim_cache(cache_dir: Path, *, max_bytes: int, keep: Path | None) -> None:
+    entries: list[tuple[int, Path]] = []
+    total = 0
+    try:
+        candidates = tuple(cache_dir.glob("*.jpg"))
+    except OSError:
+        return
+    for path in candidates:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        total += int(stat.st_size)
+        entries.append((int(stat.st_mtime_ns), path))
+    if total <= max_bytes:
+        return
+    for _modified, path in sorted(entries):
+        if path == keep:
+            continue
+        try:
+            size = path.stat().st_size
+            path.unlink()
+        except OSError:
+            continue
+        total -= int(size)
+        if total <= max_bytes:
+            break
