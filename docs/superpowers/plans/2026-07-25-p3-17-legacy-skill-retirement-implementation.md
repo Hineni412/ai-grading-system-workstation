@@ -2,7 +2,7 @@
 
 **执行包：** P3-17
 **计划日期：** 2026-07-25
-**计划状态：** in_progress
+**计划状态：** waiting_user
 **计划模型：** 当前连续作业模型
 **允许夜间执行：** no
 **计划基线：** 92030e1089a92835b61accf449ced2812d84d569
@@ -18,7 +18,7 @@
 **功能提交：** none
 **自动验证：** pending
 **独立复审：** pending
-**用户验收：** pending
+**用户验收：** not_required
 **真实数据指纹：** not_touched
 **Stash 基线：** 85726b3b9863575c9aebe4ff12916e96d4bb08ba,67edf9783a70b42878c44ae05eea25528b51ddf2
 **夜间动作：** report_only
