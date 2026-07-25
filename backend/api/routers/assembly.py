@@ -221,6 +221,7 @@ def resolve_assembly_questions(
             "paper_title": row["paper_title"],
             "tags": row["tags"],
             "asset_urls": row["asset_urls"],
+            "rich_content": row["rich_content"],
             "score_value": _score_value(row["question_text"]),
         }
         for row in rows

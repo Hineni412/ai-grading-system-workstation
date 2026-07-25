@@ -6,6 +6,7 @@ import threading
 
 from fastapi import Depends, Request
 
+from api_profiles import get_api_profile_store
 from backend.repositories.access import GradingRepositoryAccess
 from backend.repositories.compat import open_grading_repositories
 from backend.analytics import SessionAnalysisService
@@ -21,6 +22,7 @@ from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
 from backend.ops.jobs import register_ops_job_handlers
 from backend.media.service import ReviewMediaService
+from backend.model_profiles import ModelProfileService
 from backend.ops.service import OpsSelfCheckService
 from backend.ops.plan_store import OpsPlanStore
 from backend.ops.write_service import OpsWriteService
@@ -83,6 +85,10 @@ def get_ops_self_check_service(
     paths: PathManager = Depends(get_path_manager),
 ) -> OpsSelfCheckService:
     return OpsSelfCheckService(paths)
+
+
+def get_model_profile_service() -> ModelProfileService:
+    return ModelProfileService(get_api_profile_store())
 
 
 def create_ops_write_service(

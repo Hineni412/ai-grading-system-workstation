@@ -12,6 +12,7 @@ class _QuestionBankModel(BaseModel):
 class QuestionPaperListItem(_QuestionBankModel):
     id: int
     title: str | None = None
+    source_type: Literal["docx", "pdf", "other"]
     year: str | None = None
     province: str | None = None
     city: str | None = None
@@ -25,6 +26,7 @@ class QuestionPaperListItem(_QuestionBankModel):
     updated_at: str
     question_count: int
     tagged_question_count: int
+    tagged_any_question_count: int
 
 
 class QuestionPaperListResponse(_QuestionBankModel):
@@ -50,6 +52,60 @@ class QuestionTagResponse(_QuestionBankModel):
     ]
     tag_value: str
     confidence: float | None = None
+
+
+class QuestionAssetLink(_QuestionBankModel):
+    index: int
+    url: str
+
+
+class QuestionPreviewBox(_QuestionBankModel):
+    x0: float | None = None
+    y0: float | None = None
+    x1: float | None = None
+    y1: float | None = None
+
+
+class QuestionPreviewMetadata(_QuestionBankModel):
+    preview_type: Literal["question", "answer"]
+    status: str
+    page_number: int | None = None
+    bbox: QuestionPreviewBox | None = None
+    updated_at: str
+    url: str | None = None
+
+
+class QuestionRichInlineSegment(_QuestionBankModel):
+    text: str
+    superscript: bool = False
+    subscript: bool = False
+    underline: bool = False
+    line_break: bool = False
+
+
+class QuestionRichTableCell(_QuestionBankModel):
+    segments: list[QuestionRichInlineSegment]
+
+
+class QuestionRichTableRow(_QuestionBankModel):
+    cells: list[QuestionRichTableCell]
+
+
+class QuestionRichTextBlock(_QuestionBankModel):
+    kind: Literal["paragraph", "table"]
+    text: str
+    segments: list[QuestionRichInlineSegment]
+    rows: list[QuestionRichTableRow]
+    asset_indexes: list[int]
+    asset_urls: list[str]
+
+
+class QuestionRichContentMetadata(_QuestionBankModel):
+    available: bool
+    question_block_count: int
+    answer_block_count: int
+    question_blocks: list[QuestionRichTextBlock]
+    answer_blocks: list[QuestionRichTextBlock]
 
 
 class QuestionListItem(_QuestionBankModel):
@@ -79,6 +135,7 @@ class QuestionListItem(_QuestionBankModel):
     textbook_version: str | None = None
     tags: list[QuestionTagResponse]
     asset_urls: list[str]
+    rich_content: QuestionRichContentMetadata
 
 
 class QuestionListResponse(_QuestionBankModel):
@@ -89,46 +146,34 @@ class QuestionListResponse(_QuestionBankModel):
     total_pages: int
 
 
-class QuestionAssetLink(_QuestionBankModel):
-    index: int
-    url: str
-
-
-class QuestionPreviewBox(_QuestionBankModel):
-    x0: float | None = None
-    y0: float | None = None
-    x1: float | None = None
-    y1: float | None = None
-
-
-class QuestionPreviewMetadata(_QuestionBankModel):
-    preview_type: Literal["question", "answer"]
-    status: str
-    page_number: int | None = None
-    bbox: QuestionPreviewBox | None = None
-    updated_at: str
-    url: str | None = None
-
-
-class QuestionRichTextBlock(_QuestionBankModel):
-    text: str
-    asset_indexes: list[int]
-    asset_urls: list[str]
-
-
-class QuestionRichContentMetadata(_QuestionBankModel):
-    available: bool
-    question_block_count: int
-    answer_block_count: int
-    question_blocks: list[QuestionRichTextBlock]
-    answer_blocks: list[QuestionRichTextBlock]
-
-
 class QuestionDetailResponse(QuestionListItem):
     page_range: str | None = None
     assets: list[QuestionAssetLink]
-    rich_content: QuestionRichContentMetadata
     previews: list[QuestionPreviewMetadata]
+
+
+class QuestionFacetItem(_QuestionBankModel):
+    value: str
+    count: int = Field(ge=1)
+
+
+class QuestionFacetsResponse(_QuestionBankModel):
+    exam_scopes: list[QuestionFacetItem]
+    knowledge_points: list[QuestionFacetItem]
+    question_types: list[QuestionFacetItem]
+    years: list[QuestionFacetItem]
+    exam_types: list[QuestionFacetItem]
+    grades: list[QuestionFacetItem]
+
+
+class SimilarQuestionItem(QuestionListItem):
+    similarity_score: float = Field(ge=0.0, le=1.0)
+    similarity_reasons: list[str]
+
+
+class SimilarQuestionListResponse(_QuestionBankModel):
+    question_id: int
+    items: list[SimilarQuestionItem]
 
 
 class QuestionTagWriteRequest(_QuestionBankModel):
