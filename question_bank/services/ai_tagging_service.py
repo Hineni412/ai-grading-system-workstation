@@ -304,13 +304,6 @@ class AITaggingService:
             or self._protocol_adapter_instance
         )
 
-    def build_skill_context_ranker(self):
-        if self.llm_client is None:
-            return None
-        from question_bank.services.skill_context_ranker import LLMSkillContextRanker
-
-        return LLMSkillContextRanker(self.llm_client)
-
     def analyze_question(self, context: TaggingContext) -> AITaggingResult:
         if self.mock_mode:
             return AITaggingResult(ok=True, mock_mode=True, analysis=_mock_analysis(context))
