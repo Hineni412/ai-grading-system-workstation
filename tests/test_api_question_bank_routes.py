@@ -80,7 +80,8 @@ def test_read_service_lists_active_papers_without_paths_or_writes(question_bank_
 
     assert [item["title"] for item in papers] == ["Newest", "Empty"]
     assert papers[0]["question_count"] == 1
-    assert papers[0]["tagged_question_count"] == 1
+    assert papers[0]["tagged_question_count"] == 0
+    assert papers[0]["tagged_any_question_count"] == 1
     assert papers[1]["question_count"] == 0
     assert papers[1]["tagged_question_count"] == 0
     assert "source_file" not in repr(papers)
@@ -1216,30 +1217,36 @@ def test_question_detail_preserves_long_text_and_redacts_rich_preview_paths(
         for index in range(6)
     ]
     assert payload["asset_urls"] == [item["url"] for item in payload["assets"]]
-    assert payload["rich_content"] == {
-        "available": True,
-        "question_block_count": 2,
-        "answer_block_count": 1,
-        "question_blocks": [
-            {
-                "text": "Rich question  after image",
-                "asset_indexes": [4],
-                "asset_urls": ["/api/question-bank/questions/10/assets/4"],
-            },
-            {
-                "text": "Second rich question block",
-                "asset_indexes": [],
-                "asset_urls": [],
-            },
-        ],
-        "answer_blocks": [
-            {
-                "text": "Rich answer  after image",
-                "asset_indexes": [5],
-                "asset_urls": ["/api/question-bank/questions/10/assets/5"],
-            }
-        ],
-    }
+    rich_content = payload["rich_content"]
+    assert rich_content["available"] is True
+    assert rich_content["question_block_count"] == 2
+    assert rich_content["answer_block_count"] == 1
+    assert [
+        {key: block[key] for key in ("text", "asset_indexes", "asset_urls")}
+        for block in rich_content["question_blocks"]
+    ] == [
+        {
+            "text": "Rich question  after image",
+            "asset_indexes": [4],
+            "asset_urls": ["/api/question-bank/questions/10/assets/4"],
+        },
+        {
+            "text": "Second rich question block",
+            "asset_indexes": [],
+            "asset_urls": [],
+        },
+    ]
+    assert [
+        {key: block[key] for key in ("text", "asset_indexes", "asset_urls")}
+        for block in rich_content["answer_blocks"]
+    ] == [
+        {
+            "text": "Rich answer  after image",
+            "asset_indexes": [5],
+            "asset_urls": ["/api/question-bank/questions/10/assets/5"],
+        }
+    ]
+    assert all("kind" in block for block in rich_content["question_blocks"])
     assert payload["previews"] == [
         {
             "preview_type": "question",

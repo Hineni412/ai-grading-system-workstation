@@ -339,7 +339,7 @@ def test_batch_accepts_answer_aliases_through_local_normalization() -> None:
     assert payload["meta"]["score_allocation_ai_success"] is True
 
 
-def test_batched_generation_preserves_multi_knowledge_fields_without_extra_model_calls() -> None:
+def test_batched_generation_strips_knowledge_fields_without_extra_model_calls() -> None:
     class MultiKnowledgeClient(FakeBatchClient):
         def json_from_text_once(self, prompt: str, **_kwargs):
             payload = super().json_from_text_once(prompt, **_kwargs)
@@ -367,16 +367,9 @@ def test_batched_generation_preserves_multi_knowledge_fields_without_extra_model
         item for item in payload["rubric"]["questions"]
         if item["question_id"] == "Q12"
     )
-    assert question["knowledge_id"] == "K-CONGRUENCE"
-    assert question["knowledge_name"] == "全等三角形"
-    assert question["knowledge_ids"] == ["K-CONGRUENCE", "K-BISECTOR", "K-PROOF"]
-    assert question["knowledge_points"] == [
-        {"knowledge_id": "K-CONGRUENCE", "knowledge_name": "全等三角形"},
-        {"knowledge_id": "K-BISECTOR", "knowledge_name": "角平分线性质"},
-        {"knowledge_id": "K-PROOF", "knowledge_name": "几何证明"},
-    ]
+    assert not any(key.startswith("knowledge") for key in question)
     warnings = session_manager.collect_generated_config_quality_warnings(payload)
-    assert not any("Q12" in warning and "列表字符串" in warning for warning in warnings)
+    assert not any("knowledge" in warning.lower() for warning in warnings)
 
 
 def test_failed_batch_is_retained_and_retry_only_calls_that_complete_batch() -> None:
@@ -415,10 +408,11 @@ def test_failed_batch_is_retained_and_retry_only_calls_that_complete_batch() -> 
     before_map = {item["question_id"]: item for item in successful_before}
     after_map = {item["question_id"]: item for item in completed["rubric"]["questions"]}
     for qid, item in before_map.items():
-        assert after_map[qid]["knowledge_id"] == item["knowledge_id"]
-        assert after_map[qid]["knowledge_name"] == item["knowledge_name"]
+        assert after_map[qid]["question_type"] == item["question_type"]
+        assert not any(key.startswith("knowledge") for key in after_map[qid])
     assert completed["meta"]["failed_batches"] == []
     assert completed["meta"]["failed_question_ids"] == []
+
 
 
 def test_legacy_failed_big_question_batch_resumes_as_three_single_question_batches() -> None:
@@ -489,9 +483,10 @@ def test_legacy_failed_big_question_batch_resumes_as_three_single_question_batch
         item["question_id"]: item for item in completed["rubric"]["questions"]
     }
     for question_id, question in before.items():
-        assert after[question_id]["knowledge_id"] == question["knowledge_id"]
-        assert after[question_id]["knowledge_name"] == question["knowledge_name"]
+        assert after[question_id]["question_type"] == question["question_type"]
+        assert not any(key.startswith("knowledge") for key in after[question_id])
     assert completed["meta"]["failed_batches"] == []
+
 
 
 def test_already_ai_scored_checkpoint_resumes_without_another_model_call() -> None:

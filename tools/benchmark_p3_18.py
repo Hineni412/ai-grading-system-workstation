@@ -400,9 +400,21 @@ class _GeneratedHybridClient:
     def json_from_images_with_options(self, *args: Any, **kwargs: Any) -> Any:
         if not self.use_memo:
             kwargs.pop("image_compression_memo", None)
+        # This synthetic benchmark explicitly repeats the request so it can
+        # measure compression reuse. Production grading does not hide retries.
+        kwargs["allow_gateway_retry"] = False
         memo = kwargs.get("image_compression_memo")
         try:
-            return self.delegate.json_from_images_with_options(*args, **kwargs)
+            for attempt in range(3):
+                try:
+                    return self.delegate.json_from_images_with_options(
+                        *args,
+                        **kwargs,
+                    )
+                except TimeoutError:
+                    if attempt == 2:
+                        raise
+            raise AssertionError("synthetic retry loop did not return")
         finally:
             if isinstance(memo, dict):
                 self.maximum_memo_entries = max(

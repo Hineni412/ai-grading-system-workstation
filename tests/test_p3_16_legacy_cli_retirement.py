@@ -286,7 +286,8 @@ def test_008_drops_only_legacy_tables_and_backup_restores_rows(
 
     assert report.error is None, report.error
     assert [(item.name, item.status) for item in report.results] == [
-        ("008_drop_legacy_cli_tables", "applied")
+        ("008_drop_legacy_cli_tables", "applied"),
+        ("009_add_teacher_score_locks", "applied"),
     ]
     backup = Path(report.results[0].backup_path or "")
     assert backup.is_file()
