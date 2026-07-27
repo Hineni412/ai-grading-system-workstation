@@ -67,6 +67,7 @@ class JobManager:
         max_workers: int = 2,
         cleanup_interrupted: bool = True,
         interrupted_input_root: Path | None = None,
+        question_bank_db_path: Path | None = None,
     ) -> None:
         self.store = store
         self._handlers: dict[str, JobHandler] = {}
@@ -80,6 +81,19 @@ class JobManager:
             else None
         )
         if cleanup_interrupted:
+            interrupted_sync_owners = (
+                self.store.interrupted_question_bank_sync_owners()
+            )
+            if question_bank_db_path is not None and interrupted_sync_owners:
+                from question_bank.services.source_question_link_service import (
+                    SourceQuestionLinkService,
+                )
+
+                SourceQuestionLinkService(
+                    Path(question_bank_db_path)
+                ).discard_automatic_links_for_interrupted_syncs(
+                    interrupted_sync_owners
+                )
             owned_input_ids = (
                 self.store.interrupted_owned_config_input_ids()
                 if interrupted_input_root is not None

@@ -309,9 +309,15 @@ def create_job_manager(path_manager: PathManager | None = None) -> JobManager:
         "upload_config_dir",
         Path(paths.data_root) / "config" / "uploaded",
     )
+    question_bank_db_path = getattr(
+        paths,
+        "qb_db_path",
+        Path(paths.data_root) / "databases" / "question_bank.db",
+    )
     manager = JobManager(
         JobStore(paths.db_path),
         interrupted_input_root=Path(upload_config_dir),
+        question_bank_db_path=Path(question_bank_db_path),
     )
     try:
         register_default_job_handlers(
@@ -321,11 +327,7 @@ def create_job_manager(path_manager: PathManager | None = None) -> JobManager:
             exams_dir=paths.exams_dir,
             templates_dir=paths.templates_dir,
             data_root=paths.data_root,
-            question_bank_db_path=getattr(
-                paths,
-                "qb_db_path",
-                Path(paths.data_root) / "databases" / "question_bank.db",
-            ),
+            question_bank_db_path=question_bank_db_path,
             upload_config_dir=upload_config_dir,
             training_output_root=getattr(
                 paths,

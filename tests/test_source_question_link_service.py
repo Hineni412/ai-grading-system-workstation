@@ -24,6 +24,7 @@ def link_service(tmp_path: Path) -> SourceQuestionLinkService:
             [
                 (201, "17", "已知二次函数 y=x²-2x-3，求其顶点坐标。"),
                 (202, "18", "如图，在三角形 ABC 中，证明角平分线的性质。"),
+                (301, "17", "新版试卷中的第 17 题。"),
             ],
         )
     return SourceQuestionLinkService(db_path)
@@ -158,7 +159,7 @@ def test_imported_question_linking_uses_only_explicit_id_or_unique_number(
     assert links[0]["link_method"] == "source_metadata"
 
 
-def test_new_sync_adopts_automatic_link_before_stale_owner_rolls_back(
+def test_new_sync_replaces_stale_automatic_link_and_does_not_restore_it_on_rollback(
     link_service: SourceQuestionLinkService,
 ) -> None:
     first = link_service.confirm_imported_questions_for_session(
@@ -170,8 +171,8 @@ def test_new_sync_adopts_automatic_link_before_stale_owner_rolls_back(
     )
     second = link_service.confirm_imported_questions_for_session(
         grading_session_id=18,
-        source_questions=[{"question_id": "Q17", "bank_question_id": 201}],
-        imported_bank_questions=[{"id": 201, "question_number": "17"}],
+        source_questions=[{"question_id": "Q17", "bank_question_id": 301}],
+        imported_bank_questions=[{"id": 301, "question_number": "17"}],
         sync_job_id=42,
         sync_config_revision="b" * 64,
     )
@@ -184,8 +185,17 @@ def test_new_sync_adopts_automatic_link_before_stale_owner_rolls_back(
 
     links = link_service.list_links(18)
     assert len(links) == 1
+    assert links[0]["bank_question_id"] == 301
     assert links[0]["evidence"]["sync_job_id"] == 42
     assert second["confirmed"] == 1
+
+    link_service.rollback_imported_question_links(
+        grading_session_id=18,
+        sync_job_id=42,
+        changes=second["_rollback_changes"],
+    )
+
+    assert link_service.list_links(18) == []
 
 
 def test_suggestion_never_overwrites_teacher_confirmed_link(
