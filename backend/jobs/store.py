@@ -1187,6 +1187,32 @@ class JobStore:
             ).fetchone()
         return bool(row and int(row["cancel_requested"]))
 
+    def interrupted_question_bank_sync_owners(self) -> list[tuple[int, int]]:
+        """Return (session_id, job_id) pairs that require cross-database cleanup."""
+
+        owners: list[tuple[int, int]] = []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, payload_json
+                FROM jobs
+                WHERE job_type = 'question_bank_sync'
+                  AND status IN ('queued','running')
+                ORDER BY id
+                """
+            ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"] or "{}"))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            session_id = _positive_int_or_zero(payload.get("session_id"))
+            if session_id > 0:
+                owners.append((session_id, int(row["id"])))
+        return owners
+
     def fail_interrupted_jobs(self) -> int:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")

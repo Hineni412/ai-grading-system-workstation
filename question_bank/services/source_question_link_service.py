@@ -270,20 +270,13 @@ class SourceQuestionLinkService:
                         and existing_owner is not None
                         and existing_owner != int(sync_job_id)
                     ):
-                        changes.append({"source_question_id": source_id, "before": existing})
-                        evidence = dict(existing.get("evidence") or {})
-                        evidence.update(
-                            _sync_evidence(sync_job_id, sync_config_revision)
+                        self.discard_automatic_links_for_interrupted_syncs(
+                            [(grading_session_id, existing_owner)]
                         )
-                        self.confirm_link(
-                            grading_session_id=grading_session_id,
-                            source_question_id=source_id,
-                            bank_question_id=int(existing["bank_question_id"]),
-                            link_method=str(existing["link_method"]),
-                            evidence=evidence,
-                        )
-                    confirmed += 1
-                    continue
+                        existing = None
+                    else:
+                        confirmed += 1
+                        continue
                 if existing is not None and existing["status"] == "rejected":
                     unresolved_ids.append(source_id)
                     continue
@@ -372,7 +365,10 @@ class SourceQuestionLinkService:
                 if current is None or _sync_owner(_link_from_row(current)) != int(sync_job_id):
                     continue
                 before = change.get("before")
-                if not isinstance(before, Mapping):
+                if (
+                    not isinstance(before, Mapping)
+                    or _sync_owner(before) is not None
+                ):
                     conn.execute(
                         """
                         DELETE FROM grading_question_links
@@ -405,6 +401,41 @@ class SourceQuestionLinkService:
                         source_id,
                     ),
                 )
+
+    def discard_automatic_links_for_interrupted_syncs(
+        self,
+        sync_owners: Iterable[tuple[str | int, int]],
+    ) -> int:
+        """Delete only automatic links still owned by interrupted sync jobs."""
+
+        owners = {
+            (
+                _required_text(session_id, "grading_session_id"),
+                int(job_id),
+            )
+            for session_id, job_id in sync_owners
+            if _optional_int(job_id) is not None and int(job_id) > 0
+        }
+        if not owners:
+            return 0
+        self.initialize_database()
+        deleted = 0
+        with connect(self.db_path) as conn:
+            for session_id, job_id in owners:
+                cursor = conn.execute(
+                    """
+                    DELETE FROM grading_question_links
+                    WHERE grading_session_id = ?
+                      AND json_valid(evidence_json) = 1
+                      AND CAST(
+                            json_extract(evidence_json, '$.sync_job_id')
+                            AS INTEGER
+                          ) = ?
+                    """,
+                    (session_id, job_id),
+                )
+                deleted += int(cursor.rowcount)
+        return deleted
 
     def _active_bank_questions(self) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
