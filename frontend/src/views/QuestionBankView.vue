@@ -106,6 +106,9 @@ function openTaxonomyReview(): void {
             <span :style="{ width: `${activeProgress}%` }" />
           </div>
           <small>{{ activeProgress }}% 完整</small>
+          <button type="button" class="paper-button is-primary" @click="showImport = true">
+            上传与 AI 标注
+          </button>
         </div>
       </header>
 

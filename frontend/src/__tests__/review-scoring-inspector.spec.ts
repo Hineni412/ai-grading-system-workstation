@@ -76,6 +76,7 @@ async function mountInspector(items: ReviewItem[] = [item]) {
 
 describe('review scoring inspector', () => {
   beforeEach(() => {
+    document.body.innerHTML = ''
     vi.clearAllMocks()
     vi.mocked(fetchReviewRubric).mockResolvedValue({
       questionId: 'Q1',
@@ -148,13 +149,13 @@ describe('review scoring inspector', () => {
     expect(toast.textContent).not.toContain('private server detail')
     expect(host.querySelector('[data-testid="scoring-scroll-region"]')?.contains(toast)).toBe(false)
     expect(host.querySelector('.review-scoring-feedback')).toBeNull()
-    expect(useReviewDraftStore(pinia).drafts['7:Q1:21']?.scoreText).toBe('4')
+    expect(useReviewDraftStore(pinia).drafts['review-item:7:Q1:21']?.scoreText).toBe('4')
     expect(useReviewQueueStore(pinia).selectedDetailId).toBe(21)
 
     toast.querySelector<HTMLButtonElement>('[aria-label="关闭通知"]')!.click()
     await nextTick()
     expect(document.body.querySelector('[data-testid="review-feedback-toast"]')).toBeNull()
-    expect(useReviewDraftStore(pinia).drafts['7:Q1:21']?.scoreText).toBe('4')
+    expect(useReviewDraftStore(pinia).drafts['review-item:7:Q1:21']?.scoreText).toBe('4')
     app.unmount()
   })
 
@@ -180,18 +181,25 @@ describe('review scoring inspector', () => {
 
     await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
     await vi.waitFor(() => expect(confirmed).toHaveBeenCalledWith({
-      detailId: 21,
+      reviewItemId: '7:Q1:21',
       annotationRetry: true,
     }))
     expect(annotationRetry).toHaveBeenCalledWith({
-      input: { result_id: 11, detail_id: 21, score_awarded: 4 },
-      item,
+      input: {
+        review_item_id: '7:Q1:21',
+        expected_revision: 0,
+        student_id: 11,
+        result_id: 11,
+        detail_id: 21,
+        score_awarded: 4,
+      },
+      item: expect.objectContaining(item),
     })
-    expect(useReviewQueueStore(pinia).questions[0]?.needs_review_count).toBe(1)
+    expect(useReviewQueueStore(pinia).questions[0]?.needs_review_count).toBe(2)
     await vi.waitFor(() => expect(
       document.body.querySelector('[data-testid="review-feedback-toast"]')?.textContent,
     ).toContain('分数已确认，标注图需要稍后刷新'))
-    expect(useReviewDraftStore(pinia).drafts['7:Q1:21']).toBeUndefined()
+    expect(useReviewDraftStore(pinia).drafts['review-item:7:Q1:21']).toBeUndefined()
     app.unmount()
   })
 
@@ -286,15 +294,20 @@ describe('review scoring inspector', () => {
 
     await vi.waitFor(() => expect(
       document.body.querySelector('[data-testid="review-feedback-toast"]')?.textContent,
-    ).toContain(
-      '先前记录的分数已确认，标注图需要稍后刷新；当前选择未更改',
-    ))
-    expect(useReviewDraftStore(pinia).drafts['7:Q1:21']).toBeUndefined()
+    ).toContain('分数已确认，标注图需要稍后刷新'))
+    expect(useReviewDraftStore(pinia).drafts['review-item:7:Q1:21']).toBeUndefined()
     expect(queue.selectedDetailId).toBe(22)
     expect(fetchReviewItems).not.toHaveBeenCalled()
     expect(annotationRetry).toHaveBeenCalledWith({
-      input: { result_id: 11, detail_id: 21, score_awarded: 4 },
-      item,
+      input: {
+        review_item_id: '7:Q1:21',
+        expected_revision: 0,
+        student_id: 11,
+        result_id: 11,
+        detail_id: 21,
+        score_awarded: 4,
+      },
+      item: expect.objectContaining(item),
     })
     app.unmount()
   })
@@ -328,8 +341,8 @@ describe('review scoring inspector', () => {
 
     await vi.waitFor(() => expect(
       document.body.querySelector('[data-testid="review-feedback-toast"]')?.textContent,
-    ).toContain('先前记录的教师最终分已确认'))
-    expect(useReviewDraftStore(pinia).drafts['7:Q1:21']).toBeUndefined()
+    ).toContain('教师最终分已确认'))
+    expect(useReviewDraftStore(pinia).drafts['review-item:7:Q1:21']).toBeUndefined()
     expect(queue.currentItem).toMatchObject({
       session_id: 8,
       question_id: 'Q2',
@@ -341,7 +354,7 @@ describe('review scoring inspector', () => {
     app.unmount()
   })
 
-  it('keeps the confirmed result when the queue refresh fails', async () => {
+  it('emits confirmation without depending on a queue refresh', async () => {
     vi.mocked(fetchReviewItems).mockRejectedValue(new Error('refresh unavailable'))
     const { app, host, pinia } = await mountInspector()
     const input = host.querySelector<HTMLInputElement>('[data-testid="teacher-score"]')!
@@ -353,13 +366,13 @@ describe('review scoring inspector', () => {
     await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
     await vi.waitFor(() => expect(
       document.body.querySelector('[data-testid="review-feedback-toast"]')?.textContent,
-    ).toContain('分数已确认，队列刷新失败'))
-    expect(useReviewDraftStore(pinia).drafts['7:Q1:21']).toBeUndefined()
-    expect(host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')).toBeNull()
+    ).toContain('教师最终分已确认'))
+    expect(useReviewDraftStore(pinia).drafts['review-item:7:Q1:21']).toBeUndefined()
+    expect(fetchReviewItems).not.toHaveBeenCalled()
     expect(useReviewQueueStore(pinia).items[0]).toMatchObject({
       detail_id: 21,
-      score_awarded: 4,
-      needs_review: false,
+      score_awarded: 3,
+      needs_review: true,
     })
     app.unmount()
   })

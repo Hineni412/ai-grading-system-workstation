@@ -13,6 +13,7 @@ import {
   templateRegionRouteDefinition,
   gradingRunRouteDefinition,
   knowledgeGraphRouteDefinition,
+  modelProfilesRouteDefinition,
   settingsRouteDefinition,
   workbenchRouteDefinition,
 } from '../navigation'
@@ -21,13 +22,14 @@ import { createAppRouter } from '../router'
 const topLevelDefinitions = [
   workbenchRouteDefinition,
   sessionRouteDefinition,
-  studentsRouteDefinition,
+  reviewRouteDefinition,
+  filesRouteDefinition,
   questionBankRouteDefinition,
   questionAssemblyRouteDefinition,
-  trainingRouteDefinition,
   knowledgeGraphRouteDefinition,
-  filesRouteDefinition,
-  reviewRouteDefinition,
+  trainingRouteDefinition,
+  studentsRouteDefinition,
+  modelProfilesRouteDefinition,
   settingsRouteDefinition,
 ] as const
 
@@ -37,13 +39,14 @@ describe('source-recalibrated navigation', () => {
     expect(navigationItems.map(({ id, path }) => [id, path])).toEqual([
       ['workbench', '/workbench'],
       ['sessions', '/sessions'],
-      ['students', '/students'],
+      ['grading', '/grading'],
+      ['files', '/files'],
       ['question-bank', '/question-bank'],
       ['question-assembly', '/question-assembly'],
-      ['training', '/training'],
       ['knowledge-graph', '/knowledge-graph'],
-      ['files', '/files'],
-      ['grading', '/grading'],
+      ['training', '/training'],
+      ['students', '/students'],
+      ['model-profiles', '/model-profiles'],
       ['settings', '/settings'],
     ])
   })
@@ -76,6 +79,7 @@ describe('source-recalibrated navigation', () => {
     ['/knowledge-graph?session=7&class=七年级一班', '/knowledge-graph?session=7&class=七年级一班'],
     ['/files', '/files'],
     ['/grading', '/grading'],
+    ['/model-profiles', '/model-profiles'],
     ['/settings', '/settings'],
     ['/design-system', '/design-system'],
     ['/missing/deep/path', '/missing/deep/path'],
@@ -114,6 +118,7 @@ describe('source-recalibrated navigation', () => {
     ['/training', 'training', 'TrainingRecommendationsView'],
     ['/knowledge-graph', 'knowledge-graph', 'KnowledgeGraphView'],
     ['/files', 'files', 'FileCenterView'],
+    ['/model-profiles', 'model-profiles', 'ModelProfilesView'],
     ['/settings', 'settings', 'SettingsOpsView'],
   ])(
     'loads %s as %s',

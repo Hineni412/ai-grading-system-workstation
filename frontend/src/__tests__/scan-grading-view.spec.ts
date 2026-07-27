@@ -5,7 +5,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from '../api/scan-grading'
 import type { JobResponse } from '../api/jobs'
-import { fetchStudents } from '../api/students'
 import { createAppRouter } from '../router'
 import ScanGradingView from '../views/ScanGradingView.vue'
 
@@ -13,10 +12,10 @@ vi.mock('../api/scan-grading', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/scan-grading')>(),
   fetchGradingWorkspace: vi.fn(), uploadScan: vi.fn(), removeScan: vi.fn(), clearScans: vi.fn(),
   freezeScans: vi.fn(), startPreflight: vi.fn(), fetchPreflight: vi.fn(),
+  fetchScanStudentOptions: vi.fn(), fetchGradingPlan: vi.fn(),
   saveScanDecisions: vi.fn(), startGrading: vi.fn(), controlGrading: vi.fn(), cancelGrading: vi.fn(),
   supplementGrading: vi.fn(), startNewScanBatch: vi.fn(),
 }))
-vi.mock('../api/students', () => ({ fetchStudents: vi.fn() }))
 
 function workspace(): api.GradingWorkspace {
   return {
@@ -45,6 +44,33 @@ async function mountView() {
   return { app, host }
 }
 
+async function chooseStudent(host: HTMLElement, ariaLabel: string): Promise<void> {
+  const input = host.querySelector<HTMLInputElement>(`input[aria-label="${ariaLabel}"]`)!
+  input.dispatchEvent(new FocusEvent('focus'))
+  input.value = 'xsj'
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  await nextTick()
+  input.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'Enter',
+    bubbles: true,
+    cancelable: true,
+  }))
+  await nextTick()
+}
+
+async function confirmGradingPlan(
+  host: HTMLElement,
+  mode: 'full_paper' | 'hybrid_batch',
+): Promise<void> {
+  host.querySelector<HTMLButtonElement>(`[data-grading-mode="${mode}"]`)!.click()
+  await vi.waitFor(() => {
+    expect(host.querySelector<HTMLButtonElement>('[data-confirm-grading-plan]')?.disabled)
+      .toBe(false)
+  })
+  host.querySelector<HTMLButtonElement>('[data-confirm-grading-plan]')!.click()
+  await nextTick()
+}
+
 beforeEach(() => {
   document.body.innerHTML = ''; localStorage.clear(); vi.clearAllMocks()
   Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
@@ -66,9 +92,25 @@ beforeEach(() => {
     ], absent_students: [], warnings: [],
     decisions: [], pending_issue_count: 2,
   })
-  vi.mocked(fetchStudents).mockResolvedValue([
-    { id: 11, student_code: 'S011', name: '学生甲', class_name: '一班', created_at: null },
+  vi.mocked(api.fetchScanStudentOptions).mockResolvedValue([
+    {
+      id: 11,
+      student_code: 'S011',
+      name: '学生甲',
+      class_name: '一班',
+      pinyin_initials: 'xsj',
+      pinyin_full: 'xueshengjia',
+    },
   ])
+  vi.mocked(api.fetchGradingPlan).mockImplementation(async (_sessionId, mode) => ({
+    mode,
+    status: 'ready',
+    counts: { ready_to_grade: 28, pending_items: 28, teacher_final_items: 0 },
+    requests: { full_paper: 28, objective_sheet: 28, subjective_batches: 10 },
+    batching: { subjective_group_min: 2, subjective_group_max: 3 },
+    warnings: [],
+    blockers: [],
+  }))
   vi.mocked(api.saveScanDecisions).mockResolvedValue({
     revision: 3, decisions: [{ target_type: 'issue', target_id: 'i1', action: 'invalid' }],
     pending_issue_count: 1, ready_to_grade: 28,
@@ -83,7 +125,7 @@ describe('scan grading workspace', () => {
       expect(host.textContent).toContain(label)
     }
     expect(host.querySelector('input[type="file"]')?.hasAttribute('multiple')).toBe(true)
-    expect(host.querySelectorAll('[data-grading-mode]')).toHaveLength(2)
+    expect(host.querySelectorAll('[data-grading-mode]')).toHaveLength(3)
     expect(host.textContent).toContain('仍有 2 份异常答卷待处理')
     expect(host.querySelector<HTMLInputElement>('[data-confirm-pending]')?.checked).toBe(false)
     app.unmount()
@@ -99,10 +141,7 @@ describe('scan grading workspace', () => {
     confirmation.checked = true
     confirmation.dispatchEvent(new Event('change', { bubbles: true }))
     await nextTick()
-    const start = host.querySelector<HTMLButtonElement>('[data-grading-mode="full_paper"]')!
-
-    start.click()
-    await nextTick()
+    await confirmGradingPlan(host, 'full_paper')
 
     expect(host.querySelector('[data-grading-submit-status]')?.textContent).toContain(
       '批改任务已提交，正在后台启动',
@@ -110,7 +149,7 @@ describe('scan grading workspace', () => {
     expect(host.querySelector('[data-grading-starting]')).not.toBeNull()
     expect([...host.querySelectorAll<HTMLButtonElement>('[data-grading-mode]')]
       .every((button) => button.disabled)).toBe(true)
-    start.click()
+    host.querySelector<HTMLButtonElement>('[data-confirm-grading-plan]')?.click()
     expect(api.startGrading).toHaveBeenCalledTimes(1)
     expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalledTimes(1)
     expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalledWith({ block: 'start' })
@@ -164,7 +203,7 @@ describe('scan grading workspace', () => {
     confirmation.dispatchEvent(new Event('change', { bubbles: true }))
     await nextTick()
 
-    host.querySelector<HTMLButtonElement>('[data-grading-mode="full_paper"]')!.click()
+    await confirmGradingPlan(host, 'full_paper')
     for (let index = 0; index < 10; index += 1) {
       await Promise.resolve(); await nextTick()
     }
@@ -260,10 +299,7 @@ describe('scan grading workspace', () => {
       ready_to_grade: 29,
     })
     const { app, host } = await mountView()
-    const select = host.querySelector<HTMLSelectElement>('select[aria-label="选择学生"]')!
-    select.value = '11'
-    select.dispatchEvent(new Event('change', { bubbles: true }))
-    await nextTick()
+    await chooseStudent(host, '选择学生')
     host.querySelector<HTMLButtonElement>('.scan-issue-list button.secondary')!.click()
     for (let index = 0; index < 4; index += 1) {
       await Promise.resolve(); await nextTick()
@@ -287,9 +323,7 @@ describe('scan grading workspace', () => {
       pending_issue_count: 0, ready_to_grade: 1,
     })
     const { app, host } = await mountView()
-    const select = host.querySelector<HTMLSelectElement>('select[aria-label="重新选择学生"]')!
-    select.value = '11'; select.dispatchEvent(new Event('change', { bubbles: true }))
-    await nextTick()
+    await chooseStudent(host, '重新选择学生')
     host.querySelector<HTMLButtonElement>('.scan-issue-list button.secondary')!.click()
     await Promise.resolve(); await nextTick()
 

@@ -8,7 +8,7 @@ describe('ReviewShortcutGuide', () => {
     const host = document.createElement('div')
     const app = createApp(ReviewShortcutGuide)
     app.mount(host)
-    const guide = host.querySelector<HTMLElement>('[aria-label="批量复核快捷键"]')
+    const guide = host.querySelector<HTMLElement>('[aria-label="人工评分快捷键"]')
 
     expect(guide).not.toBeNull()
     expect(guide?.querySelectorAll('dt')).toHaveLength(2)

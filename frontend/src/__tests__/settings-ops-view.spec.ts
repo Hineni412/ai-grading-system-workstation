@@ -281,7 +281,7 @@ describe('settings and Ops view', () => {
     await vi.waitFor(() => expect(host.textContent).toContain('离线准备失败'))
     expect(host.textContent).toContain('业务数据尚未应用')
     expect(host.textContent).toContain('可能已经创建安全备份')
-    expect(host.textContent).toContain('查看备份清单')
+    expect(host.textContent).toContain('“恢复备份”中确认可用备份')
     expect(host.textContent).not.toContain('操作已经应用')
   })
 

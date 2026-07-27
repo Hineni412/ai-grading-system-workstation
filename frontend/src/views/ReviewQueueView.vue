@@ -316,7 +316,14 @@ async function updateScope(scope: ReviewScope): Promise<void> {
     syncValidatedQuery()
     return
   }
-  await loadQuestion(sessionId, questionId, null, null, true, generation)
+  await loadQuestion(sessionId, questionId, null, null, false, generation)
+  if (reviewStore.itemLoadState === 'error') {
+    reviewStore.setScope(previousScope)
+    await reviewStore.loadQuestions(sessionId)
+    feedbackTone.value = 'warning'
+    feedback.value = '显示范围切换失败，已恢复原来的评分范围。'
+    syncValidatedQuery()
+  }
 }
 
 async function refreshServerState(
@@ -559,8 +566,16 @@ async function handleDeepConfirmed(payload: {
 }): Promise<void> {
   const sessionId = sessionStore.selectedSessionId
   const questionId = reviewStore.selectedQuestionId
+  const selectedReviewItemId = reviewStore.selectedReviewItemId
+  const selectionChanged =
+    selectedReviewItemId !== null
+    && selectedReviewItemId !== payload.reviewItemId
   if (sessionId !== null && questionId !== null) {
-    await refreshServerState(sessionId, questionId, payload.reviewItemId)
+    await refreshServerState(
+      sessionId,
+      questionId,
+      selectionChanged ? selectedReviewItemId : payload.reviewItemId,
+    )
   }
   feedbackTone.value = payload.annotationRetry ? 'warning' : 'success'
   feedback.value = payload.annotationRetry
@@ -568,7 +583,7 @@ async function handleDeepConfirmed(payload: {
     : reviewStore.itemLoadState === 'error'
       ? '此份评分已确认，但页面刷新失败；可安全重新加载。'
       : '此份评分已确认。'
-  await closeDeepReview()
+  if (!selectionChanged) await closeDeepReview()
 }
 
 function handleDeepAnnotationRetry(entry: AnnotationRetryEntry): void {

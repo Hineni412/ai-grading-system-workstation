@@ -138,7 +138,7 @@ describe('TemplateRegionView', () => {
 
     expect(host.textContent).toContain('当前样卷')
     expect(host.textContent).toContain('PDF 第 1 页 → 正面')
-    expect(host.textContent).toContain('替换新 PDF 时')
+    expect(host.textContent).toContain('该选择只作用于这次新上传的 PDF')
     const replacementBack = host.querySelector<HTMLInputElement>(
       '.template-upload__form input[type="radio"][value="back"]',
     )
