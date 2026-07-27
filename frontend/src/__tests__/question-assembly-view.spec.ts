@@ -3,7 +3,7 @@ import { createPinia } from 'pinia'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import QuestionAssemblyView from '../views/QuestionAssemblyView.vue'
-import { useQuestionBankStore } from '../stores/question-bank'
+import { useAssemblyStore } from '../stores/assembly'
 
 const revisionA = 'a'.repeat(64)
 const revisionB = 'b'.repeat(64)
@@ -65,7 +65,16 @@ describe('question assembly view', () => {
         return json(draft())
       }
       if (url === '/api/question-assembly/draft' && init?.method === 'PUT') {
-        return json(draft([17, 18], revisionB))
+        return json(draft([17], revisionB))
+      }
+      if (url.startsWith('/api/question-bank/questions?')) {
+        return json({
+          items: [bankQuestion(17, '一次函数图像题')],
+          total: 1,
+          page: 1,
+          page_size: 12,
+          total_pages: 1,
+        })
       }
       if (url.startsWith('/api/question-assembly/questions?')) {
         return json({
@@ -106,26 +115,30 @@ describe('question assembly view', () => {
     const app = createApp(QuestionAssemblyView)
     const pinia = createPinia()
     app.use(pinia)
-    const bank = useQuestionBankStore(pinia)
-    bank.selectedQuestionIds = [17, 18]
     app.mount(host)
     mounted.push(app)
     await settle()
 
-    expect(host.textContent).toContain('题库已选择 2 道')
+    await vi.waitFor(() => expect(host.textContent).toContain('一次函数图像题'))
+    await vi.waitFor(() => expect(useAssemblyStore(pinia).loadState).not.toBe('loading'))
     const add = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('加入组卷篮'))!
+      .find((button) => button.textContent?.trim() === '加入试卷篮')!
     await vi.waitFor(() => expect(add.disabled).toBe(false))
     add.click()
+    await vi.waitFor(() => expect(useAssemblyStore(pinia).selectedQuestionCount).toBe(1))
     await vi.waitFor(() => expect(host.textContent).toContain('一次函数图像题'))
     const saveCall = fetchSpy.mock.calls.find(
       ([input, init]) => String(input) === '/api/question-assembly/draft' && init?.method === 'PUT',
     )
     expect(JSON.parse(String(saveCall?.[1]?.body))).toMatchObject({
       expected_revision: revisionA,
-      draft: { basket_ids: [17, 18], order_ids: [17, 18] },
+      draft: { basket_ids: [17], order_ids: [17] },
     })
-    expect(host.textContent).toContain('答案：A')
+    const openEditor = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('进入编辑与导出'))!
+    openEditor.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('一次函数图像题'))
+    expect(host.textContent).toContain('A')
     expect(host.textContent).toContain('paper.md')
 
     const exportWord = [...host.querySelectorAll<HTMLButtonElement>('button')]
@@ -186,6 +199,10 @@ describe('question assembly view', () => {
     mounted.push(app)
     await settle()
 
+    await vi.waitFor(() => expect(host.textContent).toContain('第 17 题'))
+    const openEditor = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('进入编辑与导出'))!
+    openEditor.click()
     await vi.waitFor(() => expect(host.textContent).toContain('question 17'))
     const addSection = [...host.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent?.includes('添加分节'))!
@@ -236,7 +253,52 @@ function question(id: number, text: string, score: number) {
     paper_title: '匿名试卷',
     tags: [],
     asset_urls: [],
+    rich_content: {
+      available: true,
+      question_block_count: 0,
+      answer_block_count: 0,
+      question_blocks: [],
+      answer_blocks: [],
+    },
     score_value: score,
+  }
+}
+
+function bankQuestion(id: number, text: string) {
+  return {
+    id,
+    revision: revisionA,
+    paper_id: 4,
+    question_number: String(id),
+    question_type: '选择题',
+    question_text: text,
+    answer_text: 'A',
+    difficulty: '5',
+    typicality: null,
+    reason: null,
+    needs_review: false,
+    has_images: false,
+    needs_image_review: false,
+    created_at: '2026-07-18T08:00:00Z',
+    updated_at: '2026-07-18T09:00:00Z',
+    paper_title: '匿名试卷',
+    year: '2025',
+    province: null,
+    city: null,
+    district: null,
+    exam_type: '期末',
+    grade: '七年级',
+    semester: '上学期',
+    textbook_version: null,
+    tags: [],
+    asset_urls: [],
+    rich_content: {
+      available: true,
+      question_block_count: 0,
+      answer_block_count: 0,
+      question_blocks: [],
+      answer_blocks: [],
+    },
   }
 }
 

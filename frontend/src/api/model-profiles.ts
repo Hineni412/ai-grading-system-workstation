@@ -309,7 +309,17 @@ export const modelProfilesApi = {
   ): Promise<ModelProfilesState> {
     const pathName = requireProfilePathName(profileName)
     const normalized = normalizeModelProfileInput(input, options.requireApiKey)
-    const { name: _profileName, ...body } = normalized
+    const body: Record<string, string> = {
+      base_url: normalized.base_url,
+      ocr_model: normalized.ocr_model,
+      grading_model: normalized.grading_model,
+      config_base_url: normalized.config_base_url,
+      config_model: normalized.config_model,
+    }
+    if (normalized.api_key !== undefined) body.api_key = normalized.api_key
+    if (normalized.config_api_key !== undefined) {
+      body.config_api_key = normalized.config_api_key
+    }
     return apiClient.request(`/api/model-profiles/${pathName}`, {
       method: 'PUT',
       body,

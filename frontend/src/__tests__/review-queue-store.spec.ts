@@ -61,7 +61,7 @@ describe('review queue store', () => {
   it('defaults to pending-only batches of 24 records', () => {
     const store = useReviewQueueStore()
     expect(REVIEW_PAGE_SIZE).toBe(24)
-    expect(store.scope).toBe('needs_review')
+    expect(store.scope).toBe('teacher_pending')
   })
 
   it('sorts risk deterministically and searches only identity fields', () => {
@@ -306,8 +306,9 @@ describe('review queue store', () => {
       errorMessage: '',
       selectedQuestionId: null,
       selectedDetailId: null,
+      selectedReviewItemId: null,
       search: '',
-      scope: 'needs_review',
+      scope: 'teacher_pending',
       sort: 'risk',
       page: 1,
     })
