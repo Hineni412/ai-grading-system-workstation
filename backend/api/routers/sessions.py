@@ -531,62 +531,65 @@ def get_session_deletion_impact(
     data_root: Path = Depends(get_data_root),
     question_bank_db_path: Path = Depends(get_question_bank_db_path),
 ) -> SessionDeletionImpactResponse:
-    try:
-        impact = sessions.session_deletion_impact(int(session_id))
-    except ValueError as exc:
-        raise ApiError(
-            404,
-            "session_not_found",
-            "Session not found",
-            {"session_id": int(session_id)},
-        ) from exc
-    session = _session_summary(impact["session"])
-    active_jobs = int(impact["active_jobs"])
-    active_grading_runs = int(impact["active_grading_runs"])
-    storage_counts = preview_session_permanent_deletion(
-        db,
-        int(session_id),
-        data_root=data_root,
-    )
-    question_bank_impact = question_bank_session_reference_impact(
-        question_bank_db_path,
-        int(session_id),
-    )
-    blocking_training_tasks = [
-        str(value)
-        for value in question_bank_impact.pop("blocking_training_tasks", [])
-    ]
-    can_archive = (
-        not session.is_deleted
-        and active_jobs == 0
-        and active_grading_runs == 0
-    )
-    can_permanently_delete = (
-        session.is_deleted
-        and active_jobs == 0
-        and active_grading_runs == 0
-        and not blocking_training_tasks
-    )
-    return SessionDeletionImpactResponse(
-        session=session,
-        revision=str(impact["revision"]),
-        active_jobs=active_jobs,
-        active_grading_runs=active_grading_runs,
-        can_archive=can_archive,
-        can_permanently_delete=can_permanently_delete,
-        permanent_delete_phrase=f"永久删除 {session.name}",
-        permanent_counts={
-            str(key): max(0, int(value))
-            for key, value in impact["permanent_counts"].items()
-        },
-        storage_counts=storage_counts,
-        question_bank_counts={
-            str(key): max(0, int(value))
-            for key, value in question_bank_impact.items()
-        },
-        blocking_training_tasks=blocking_training_tasks,
-        can_delete=can_archive,
-    )
+    # Preview can restore storage left by an interrupted delete. It must not
+    # run while the same exam is between staging and database commit.
+    with session_lifecycle_guard(int(session_id)):
+        try:
+            impact = sessions.session_deletion_impact(int(session_id))
+        except ValueError as exc:
+            raise ApiError(
+                404,
+                "session_not_found",
+                "Session not found",
+                {"session_id": int(session_id)},
+            ) from exc
+        session = _session_summary(impact["session"])
+        active_jobs = int(impact["active_jobs"])
+        active_grading_runs = int(impact["active_grading_runs"])
+        storage_counts = preview_session_permanent_deletion(
+            db,
+            int(session_id),
+            data_root=data_root,
+        )
+        question_bank_impact = question_bank_session_reference_impact(
+            question_bank_db_path,
+            int(session_id),
+        )
+        blocking_training_tasks = [
+            str(value)
+            for value in question_bank_impact.pop("blocking_training_tasks", [])
+        ]
+        can_archive = (
+            not session.is_deleted
+            and active_jobs == 0
+            and active_grading_runs == 0
+        )
+        can_permanently_delete = (
+            session.is_deleted
+            and active_jobs == 0
+            and active_grading_runs == 0
+            and not blocking_training_tasks
+        )
+        return SessionDeletionImpactResponse(
+            session=session,
+            revision=str(impact["revision"]),
+            active_jobs=active_jobs,
+            active_grading_runs=active_grading_runs,
+            can_archive=can_archive,
+            can_permanently_delete=can_permanently_delete,
+            permanent_delete_phrase=f"永久删除 {session.name}",
+            permanent_counts={
+                str(key): max(0, int(value))
+                for key, value in impact["permanent_counts"].items()
+            },
+            storage_counts=storage_counts,
+            question_bank_counts={
+                str(key): max(0, int(value))
+                for key, value in question_bank_impact.items()
+            },
+            blocking_training_tasks=blocking_training_tasks,
+            can_delete=can_archive,
+        )
 
 
 @router.delete("/sessions/{session_id}", response_model=SessionDetail)
