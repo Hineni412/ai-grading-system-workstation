@@ -332,11 +332,10 @@ def publish_legacy_config_and_refresh_mapping(
     else:
         store = job_store
     with session_config_lock(Path(upload_config_dir), int(session_id)):
-        store.assert_config_session_idle(session_id)
         current = db.get_grading_session(int(session_id))
         if current is None or bool(int(current.get("is_deleted") or 0)):
             raise ConfigRevisionConflict("session is unavailable")
-        bound = db.publish_grading_session_config_with_source(
+        bound = store.update_session_config_with_source_if_idle(
             int(session_id),
             rubric_path=str(rubric_path),
             answer_key_path=str(answer_key_path),
@@ -347,6 +346,8 @@ def publish_legacy_config_and_refresh_mapping(
         )
         if not bound:
             raise ConfigRevisionConflict("config binding changed")
+        if hasattr(db, "_rubric_map_cache"):
+            db._rubric_map_cache.pop(int(session_id), None)
         refresher = mapping_refresher or (
             lambda: refresh_template_mapping_from_session(
                 db,

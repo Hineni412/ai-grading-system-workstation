@@ -10,7 +10,10 @@ import pytest
 
 from backend.config_workspace.publish import load_editor_config
 from backend.jobs.manager import JobCancellationRequested, JobContext, JobManager
-from backend.jobs.question_bank_sync import run_session_question_bank_sync_job
+from backend.jobs.question_bank_sync import (
+    StaleQuestionBankSyncError,
+    run_session_question_bank_sync_job,
+)
 from backend.jobs.store import (
     JobStore,
     QuestionBankSyncRequestTokenConflictError,
@@ -464,6 +467,88 @@ def test_sync_runs_import_then_governed_tagging_and_links_without_touching_confi
     assert result["review_count"] == 1
     assert db.get_grading_session(session_id)["question_bank_sync_state"] == "ready"
     assert Path(db.get_grading_session(session_id)["rubric_path"]).read_bytes() == rubric_before
+
+
+def test_sync_that_loses_final_ownership_removes_its_automatic_links(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, _source, source_sha256, revision = _configured_session(tmp_path)
+    question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
+    initialize_database(question_bank_db)
+    store = JobStore(db.db_path)
+    job = store.create_job(
+        "question_bank_sync",
+        {
+            "session_id": session_id,
+            "mode": "sync",
+            "config_revision": revision,
+            "source_paper_sha256": source_sha256,
+        },
+    )
+    assert store.mark_running(job.id)
+    context = JobContext(
+        job_id=job.id,
+        job_type=job.job_type,
+        payload=job.payload,
+        store=store,
+    )
+
+    def import_runner(**_kwargs: Any) -> dict[str, object]:
+        with connect(question_bank_db) as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO questions (
+                    question_number, question_type, question_text, answer_text
+                ) VALUES ('1', 'choice', '1 + 1 = ?', 'B')
+                """
+            )
+            question_id = int(cursor.lastrowid)
+        return {
+            "outcome": "complete",
+            "successful_question_ids": [question_id],
+            "failed_question_ids": [],
+            "failed_count": 0,
+            "retryable": False,
+        }
+
+    monkeypatch.setattr(
+        store,
+        "transition_question_bank_sync_state_if_owned",
+        lambda **_kwargs: False,
+    )
+    with pytest.raises(StaleQuestionBankSyncError):
+        run_session_question_bank_sync_job(
+            context=context,
+            grading_db=db,
+            question_bank_db_path=question_bank_db,
+            data_root=tmp_path / "data",
+            write_service=QuestionBankWriteService(
+                question_bank_db,
+                data_root=tmp_path / "data",
+            ),
+            question_import_runner=import_runner,
+            tagging_sync_runner=lambda **_kwargs: {
+                "outcome": "complete",
+                "requested_count": 1,
+                "tagged_count": 1,
+                "successful_question_ids": [1],
+                "failed_question_ids": [],
+                "failed_count": 0,
+                "review_count": 0,
+                "proposal_ids": [],
+                "retryable": False,
+            },
+            ai_service_factory=lambda: object(),
+            taxonomy_governance=object(),
+        )
+
+    with connect(question_bank_db) as conn:
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM grading_question_links WHERE grading_session_id = ?",
+            (str(session_id),),
+        ).fetchone()[0]
+    assert remaining == 0
 
 
 def test_tag_retry_skips_import_and_failure_stays_in_the_sync_state(

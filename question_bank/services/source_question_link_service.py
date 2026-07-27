@@ -241,6 +241,8 @@ class SourceQuestionLinkService:
         grading_session_id: str | int,
         source_questions: Iterable[Mapping[str, Any]],
         imported_bank_questions: Iterable[Mapping[str, Any]],
+        sync_job_id: int | None = None,
+        sync_config_revision: str | None = None,
     ) -> dict[str, object]:
         """Confirm only relationships proven by import metadata or a unique paper-local number."""
         self.initialize_database()
@@ -252,57 +254,157 @@ class SourceQuestionLinkService:
         }
         confirmed = 0
         unresolved_ids: list[str] = []
-        for source in source_questions:
-            source_id = _source_question_id(source)
-            if not source_id:
-                unresolved_ids.append("")
-                continue
+        changes: list[dict[str, Any]] = []
+        try:
+            for source in source_questions:
+                source_id = _source_question_id(source)
+                if not source_id:
+                    unresolved_ids.append("")
+                    continue
 
-            existing = self._link_for_source(grading_session_id, source_id)
-            if existing is not None and existing["status"] == "confirmed":
-                confirmed += 1
-                continue
-            if existing is not None and existing["status"] == "rejected":
+                existing = self._link_for_source(grading_session_id, source_id)
+                if existing is not None and existing["status"] == "confirmed":
+                    existing_owner = _sync_owner(existing)
+                    if (
+                        sync_job_id is not None
+                        and existing_owner is not None
+                        and existing_owner != int(sync_job_id)
+                    ):
+                        changes.append({"source_question_id": source_id, "before": existing})
+                        evidence = dict(existing.get("evidence") or {})
+                        evidence.update(
+                            _sync_evidence(sync_job_id, sync_config_revision)
+                        )
+                        self.confirm_link(
+                            grading_session_id=grading_session_id,
+                            source_question_id=source_id,
+                            bank_question_id=int(existing["bank_question_id"]),
+                            link_method=str(existing["link_method"]),
+                            evidence=evidence,
+                        )
+                    confirmed += 1
+                    continue
+                if existing is not None and existing["status"] == "rejected":
+                    unresolved_ids.append(source_id)
+                    continue
+
+                explicit_bank_id = _optional_int(source.get("bank_question_id"))
+                if explicit_bank_id in valid_ids:
+                    changes.append({"source_question_id": source_id, "before": existing})
+                    self.confirm_link(
+                        grading_session_id=grading_session_id,
+                        source_question_id=source_id,
+                        bank_question_id=int(explicit_bank_id),
+                        link_method="source_metadata",
+                        evidence={
+                            "source_question_id": source_id,
+                            **_sync_evidence(sync_job_id, sync_config_revision),
+                        },
+                    )
+                    confirmed += 1
+                    continue
+
+                source_number = _normalize_question_number(source_id)
+                number_matches = [
+                    item
+                    for item in candidates
+                    if source_number
+                    and _normalize_question_number(item.get("question_number")) == source_number
+                ]
+                if len(number_matches) == 1:
+                    changes.append({"source_question_id": source_id, "before": existing})
+                    self.confirm_link(
+                        grading_session_id=grading_session_id,
+                        source_question_id=source_id,
+                        bank_question_id=int(number_matches[0]["id"]),
+                        link_method="paper_question_number",
+                        evidence={
+                            "normalized_question_number": source_number,
+                            **_sync_evidence(sync_job_id, sync_config_revision),
+                        },
+                    )
+                    confirmed += 1
+                    continue
+
                 unresolved_ids.append(source_id)
-                continue
-
-            explicit_bank_id = _optional_int(source.get("bank_question_id"))
-            if explicit_bank_id in valid_ids:
-                self.confirm_link(
+        except BaseException:
+            if sync_job_id is not None and changes:
+                self.rollback_imported_question_links(
                     grading_session_id=grading_session_id,
-                    source_question_id=source_id,
-                    bank_question_id=int(explicit_bank_id),
-                    link_method="source_metadata",
-                    evidence={"source_question_id": source_id},
+                    sync_job_id=sync_job_id,
+                    changes=changes,
                 )
-                confirmed += 1
-                continue
+            raise
 
-            source_number = _normalize_question_number(source_id)
-            number_matches = [
-                item
-                for item in candidates
-                if source_number
-                and _normalize_question_number(item.get("question_number")) == source_number
-            ]
-            if len(number_matches) == 1:
-                self.confirm_link(
-                    grading_session_id=grading_session_id,
-                    source_question_id=source_id,
-                    bank_question_id=int(number_matches[0]["id"]),
-                    link_method="paper_question_number",
-                    evidence={"normalized_question_number": source_number},
-                )
-                confirmed += 1
-                continue
-
-            unresolved_ids.append(source_id)
-
-        return {
+        result: dict[str, object] = {
             "confirmed": confirmed,
             "unresolved": len(unresolved_ids),
             "unresolved_question_ids": unresolved_ids,
         }
+        if sync_job_id is not None:
+            result["_rollback_changes"] = changes
+        return result
+
+    def rollback_imported_question_links(
+        self,
+        *,
+        grading_session_id: str | int,
+        sync_job_id: int,
+        changes: Iterable[Mapping[str, Any]],
+    ) -> None:
+        """Undo only link rows that are still owned by the stale sync job."""
+
+        self.initialize_database()
+        session_id = _required_text(grading_session_id, "grading_session_id")
+        with connect(self.db_path) as conn:
+            for change in reversed([dict(item) for item in changes]):
+                source_id = _required_text(
+                    change.get("source_question_id"),
+                    "source_question_id",
+                )
+                current = conn.execute(
+                    """
+                    SELECT * FROM grading_question_links
+                    WHERE grading_session_id = ? AND source_question_id = ?
+                    """,
+                    (session_id, source_id),
+                ).fetchone()
+                if current is None or _sync_owner(_link_from_row(current)) != int(sync_job_id):
+                    continue
+                before = change.get("before")
+                if not isinstance(before, Mapping):
+                    conn.execute(
+                        """
+                        DELETE FROM grading_question_links
+                        WHERE grading_session_id = ? AND source_question_id = ?
+                        """,
+                        (session_id, source_id),
+                    )
+                    continue
+                conn.execute(
+                    """
+                    UPDATE grading_question_links
+                    SET bank_question_id = ?, link_method = ?, confidence = ?,
+                        status = ?, evidence_json = ?, reviewed_by = ?,
+                        reviewed_at = ?, updated_at = datetime('now','localtime')
+                    WHERE grading_session_id = ? AND source_question_id = ?
+                    """,
+                    (
+                        int(before["bank_question_id"]),
+                        str(before["link_method"]),
+                        float(before["confidence"]),
+                        str(before["status"]),
+                        json.dumps(
+                            dict(before.get("evidence") or {}),
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                        _optional_text(before.get("reviewed_by")),
+                        before.get("reviewed_at"),
+                        session_id,
+                        source_id,
+                    ),
+                )
 
     def _active_bank_questions(self) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
@@ -401,6 +503,26 @@ def _link_from_row(row: sqlite3.Row) -> dict[str, Any]:
     except json.JSONDecodeError:
         item["evidence"] = {}
     return item
+
+
+def _sync_evidence(
+    sync_job_id: int | None,
+    sync_config_revision: str | None,
+) -> dict[str, Any]:
+    if sync_job_id is None:
+        return {}
+    evidence: dict[str, Any] = {"sync_job_id": int(sync_job_id)}
+    revision = str(sync_config_revision or "").strip()
+    if revision:
+        evidence["sync_config_revision"] = revision
+    return evidence
+
+
+def _sync_owner(link: Mapping[str, Any]) -> int | None:
+    evidence = link.get("evidence")
+    if not isinstance(evidence, Mapping):
+        return None
+    return _optional_int(evidence.get("sync_job_id"))
 
 
 def _source_question_id(source: Mapping[str, Any]) -> str:

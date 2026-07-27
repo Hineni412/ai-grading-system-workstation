@@ -167,6 +167,18 @@ class SessionPermanentDeletionResponse(BaseModel):
     recovered_interrupted_delete: bool = False
 
 
+class SessionPendingCleanup(BaseModel):
+    session_id: int = Field(gt=0)
+    deleted_files: int = Field(ge=0)
+    deleted_dirs: int = Field(ge=0)
+    skipped_shared: int = Field(ge=0)
+
+
+class SessionPendingCleanupListResponse(BaseModel):
+    items: list[SessionPendingCleanup]
+    total: int = Field(ge=0)
+
+
 class SessionProgress(BaseModel):
     total_papers: int
     matched_papers: int
