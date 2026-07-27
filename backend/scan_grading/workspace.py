@@ -523,11 +523,31 @@ class ScanGradingWorkspace:
             if int(upload_revision) != int(manifest["revision"]):
                 raise UploadBatchRevisionError("scan upload batch revision changed")
             preflight = self.get_preflight(session_id)
-            self._require_current_preflight_template(session_id)
+            analysis, _identity = self._read_analysis(session_id)
+            current_template = self._require_current_preflight_template(
+                session_id,
+                analysis=analysis,
+            )
             if int(decision_revision) != int(preflight["revision"]):
                 raise UploadBatchRevisionError("preflight decision revision changed")
             if int(preflight["pending_issue_count"]) > 0 and not confirm_pending_issues:
                 raise PendingScanIssuesError("pending scan issues require confirmation")
+            if self.grading_db_path is None:
+                raise GradingConfigChangedError(
+                    "grading configuration binding cannot be verified"
+                )
+            from backend.repositories.compat import open_grading_repositories
+
+            current_session = open_grading_repositories(
+                self.grading_db_path
+            ).get_grading_session(int(session_id))
+            config_revision = str(
+                analysis.get("config_revision") or ""
+            ).strip()
+            if current_session is None or not config_revision:
+                raise GradingConfigChangedError(
+                    "grading configuration binding cannot be verified"
+                )
             payload: dict[str, Any] = {
                 "session_id": int(session_id),
                 "grading_mode": (
@@ -535,6 +555,20 @@ class ScanGradingWorkspace:
                 ),
                 "failed_only": False,
                 "enhance_images": bool(enhance_images),
+                "config_revision": config_revision,
+                "expected_rubric_path": str(
+                    current_session.get("rubric_path") or ""
+                ),
+                "expected_answer_key_path": str(
+                    current_session.get("answer_key_path") or ""
+                ),
+                "expected_template_id": int(current_template.template_id),
+                "expected_front_template_path": str(
+                    current_template.front.path
+                ),
+                "expected_back_template_path": str(
+                    current_template.back.path
+                ),
             }
             if max_workers is not None:
                 payload["max_workers"] = int(max_workers)
@@ -576,7 +610,16 @@ class ScanGradingWorkspace:
                 manifest = self._load_or_create_manifest(session_id)
                 payload["scan_batch_id"] = str(manifest["batch_id"])
                 payload["exams_dir"] = str(self.frozen_scan_dir(session_id))
-                job, created = self.job_manager.submit_idempotent_scan_start(payload)
+                from backend.jobs.store import GradingSubmissionChangedError
+
+                try:
+                    job, created = self.job_manager.submit_idempotent_scan_start(
+                        payload
+                    )
+                except GradingSubmissionChangedError as exc:
+                    raise GradingConfigChangedError(
+                        "grading configuration or template changed"
+                    ) from exc
                 if not created:
                     raise ScanGradingWorkspaceError(
                         "grading submission was already accepted"
@@ -869,7 +912,7 @@ class ScanGradingWorkspace:
         session_id: int,
         *,
         analysis: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> Any:
         if self.grading_db_path is None:
             raise GradingConfigChangedError(
                 "session template binding cannot be verified"
@@ -918,6 +961,7 @@ class ScanGradingWorkspace:
             raise GradingConfigChangedError(
                 "scan preflight template changed"
             )
+        return current
 
     def get_preflight(self, session_id: int) -> dict[str, Any]:
         with self._lock(session_id):

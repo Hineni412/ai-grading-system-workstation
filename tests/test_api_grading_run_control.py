@@ -9,6 +9,59 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+def _configure_preflight_binding(db, tmp_path, session_id: int) -> dict:
+    from PIL import Image
+
+    from backend.config_workspace.publish import load_editor_config
+    from backend.repositories.compat import open_grading_repositories
+    from template_upload_service import TemplateUploadService
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    rubric_path = config_dir / f"rubric-{session_id}.json"
+    answer_path = config_dir / f"answer-{session_id}.json"
+    rubric_path.write_text(
+        json.dumps({"total_score": 0, "questions": []}),
+        encoding="utf-8",
+    )
+    answer_path.write_text(
+        json.dumps({"questions": []}),
+        encoding="utf-8",
+    )
+    db.update_grading_session_config(
+        session_id,
+        rubric_path=str(rubric_path),
+        answer_key_path=str(answer_path),
+    )
+    session_dir = tmp_path / "templates" / f"session_{session_id}"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    front_path = session_dir / "front.png"
+    back_path = session_dir / "back.png"
+    Image.new("RGB", (16, 16), "white").save(front_path)
+    Image.new("RGB", (16, 16), "black").save(back_path)
+    template_id = db.upsert_session_template(
+        session_id,
+        str(front_path),
+        str(back_path),
+    )
+    db.mark_template_confirmed(session_id, True)
+    current = TemplateUploadService(tmp_path / "templates").load_current(
+        db=open_grading_repositories(db.db_path),
+        session_id=session_id,
+    )
+    return {
+        "config_revision": load_editor_config(db, session_id).revision,
+        "template_id": template_id,
+        "template_fingerprint": current.template_fingerprint,
+        "template_first_page_role": current.first_page_role,
+        "expected_rubric_path": str(rubric_path),
+        "expected_answer_key_path": str(answer_path),
+        "expected_template_id": template_id,
+        "expected_front_template_path": str(front_path),
+        "expected_back_template_path": str(back_path),
+    }
+
+
 def _system(tmp_path, *, config_fingerprint_resolver=None):
     from backend.api.app import create_app
     from backend.api.dependencies import (
@@ -23,7 +76,7 @@ def _system(tmp_path, *, config_fingerprint_resolver=None):
 
     db = DBManager(tmp_path / "grading.db")
     db.initialize()
-    manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
+    manager = JobManager(JobStore(db.db_path), max_workers=1)
     app = create_app()
     app.dependency_overrides[get_grading_db] = lambda: db
     app.dependency_overrides[get_job_manager] = lambda: manager
@@ -44,7 +97,8 @@ def _system(tmp_path, *, config_fingerprint_resolver=None):
     return TestClient(app), db, manager
 
 
-def _prepare_ready_scan_batch(client, tmp_path, session_id: int) -> dict:
+def _prepare_ready_scan_batch(client, db, tmp_path, session_id: int) -> dict:
+    binding = _configure_preflight_binding(db, tmp_path, session_id)
     content = b"\xff\xd8\xffready scan"
     uploaded = client.post(
         f"/api/sessions/{session_id}/scan-uploads",
@@ -84,11 +138,19 @@ def _prepare_ready_scan_batch(client, tmp_path, session_id: int) -> dict:
                 "absent_students": [],
                 "warnings": [],
                 "total_pages": 1,
+                "config_revision": binding["config_revision"],
+                "template_id": binding["template_id"],
+                "template_fingerprint": binding["template_fingerprint"],
+                "template_first_page_role": binding[
+                    "template_first_page_role"
+                ],
             }
         ),
         encoding="utf-8",
     )
-    return frozen.json()
+    result = frozen.json()
+    result["_binding"] = binding
+    return result
 
 
 def test_workspace_projects_run_counts_and_requests_safe_pause(tmp_path) -> None:
@@ -278,6 +340,7 @@ def test_student_can_be_deleted_after_grading_cancel_is_confirmed(tmp_path) -> N
 def test_concurrent_start_requests_create_only_one_grading_job(tmp_path) -> None:
     client, db, manager = _system(tmp_path)
     session_id = db.create_grading_session("并发启动测试", "rubric.json", "answer.json")
+    binding = _configure_preflight_binding(db, tmp_path, session_id)
     content = b"\xff\xd8\xfffront"
     client.post(
         f"/api/sessions/{session_id}/scan-uploads",
@@ -315,6 +378,12 @@ def test_concurrent_start_requests_create_only_one_grading_job(tmp_path) -> None
                 "absent_students": [],
                 "warnings": [],
                 "total_pages": 1,
+                "config_revision": binding["config_revision"],
+                "template_id": binding["template_id"],
+                "template_fingerprint": binding["template_fingerprint"],
+                "template_first_page_role": binding[
+                    "template_first_page_role"
+                ],
             }
         ),
         encoding="utf-8",
@@ -424,6 +493,7 @@ def test_new_batch_rejects_retry_from_the_previous_batch(tmp_path) -> None:
 def test_restart_can_submit_when_manifest_has_orphaned_reservation(tmp_path) -> None:
     client, db, manager = _system(tmp_path)
     session_id = db.create_grading_session("启动中断恢复", "rubric.json", "answer.json")
+    binding = _configure_preflight_binding(db, tmp_path, session_id)
     content = b"\xff\xd8\xfffront"
     client.post(
         f"/api/sessions/{session_id}/scan-uploads",
@@ -457,6 +527,12 @@ def test_restart_can_submit_when_manifest_has_orphaned_reservation(tmp_path) -> 
                 "absent_students": [],
                 "warnings": [],
                 "total_pages": 1,
+                "config_revision": binding["config_revision"],
+                "template_id": binding["template_id"],
+                "template_fingerprint": binding["template_fingerprint"],
+                "template_first_page_role": binding[
+                    "template_first_page_role"
+                ],
             }
         ),
         encoding="utf-8",
@@ -478,6 +554,7 @@ def test_restart_can_submit_when_manifest_has_orphaned_reservation(tmp_path) -> 
             "failed_only": False,
             "enhance_images": True,
             "exams_dir": str(scan_file.parent),
+            **binding,
         }
     )
     assert created is True
@@ -525,7 +602,7 @@ def test_terminal_run_blocks_fresh_start_for_the_same_scan_batch(
         "rubric.json",
         "answer.json",
     )
-    frozen = _prepare_ready_scan_batch(client, tmp_path, session_id)
+    frozen = _prepare_ready_scan_batch(client, db, tmp_path, session_id)
     store = GradingRunStore(db.db_path)
     run = store.begin(session_id, "a" * 64, "full_paper")
     prior_job, created = manager.store.create_idempotent_scan_grading_start(
@@ -536,6 +613,7 @@ def test_terminal_run_blocks_fresh_start_for_the_same_scan_batch(
             "failed_only": False,
             "enhance_images": True,
             "exams_dir": str(next((tmp_path / "exams").rglob("*.jpg")).parent),
+            **frozen["_binding"],
         }
     )
     assert created is True
@@ -580,6 +658,7 @@ def test_terminal_run_blocks_fresh_start_for_the_same_scan_batch(
 def test_start_requires_current_frozen_preflight_and_pending_issue_confirmation(tmp_path) -> None:
     client, db, manager = _system(tmp_path)
     session_id = db.create_grading_session("匿名期末", "rubric.json", "answer.json")
+    binding = _configure_preflight_binding(db, tmp_path, session_id)
     manager.register("grading_run", lambda context: {"state": "completed"})
     content = b"\xff\xd8\xfffront"
     try:
@@ -616,6 +695,12 @@ def test_start_requires_current_frozen_preflight_and_pending_issue_confirmation(
                     "absent_students": [],
                     "warnings": [],
                     "total_pages": 1,
+                    "config_revision": binding["config_revision"],
+                    "template_id": binding["template_id"],
+                    "template_fingerprint": binding["template_fingerprint"],
+                    "template_first_page_role": binding[
+                        "template_first_page_role"
+                    ],
                 }
             ),
             encoding="utf-8",
@@ -864,7 +949,7 @@ def test_terminal_run_can_submit_separate_original_mode_supplement(
         config_fingerprint_resolver=lambda _session_id, _mode: "a" * 64,
     )
     session_id = db.create_grading_session("异常卷补批", "rubric.json", "answer.json")
-    frozen = _prepare_ready_scan_batch(client, tmp_path, session_id)
+    frozen = _prepare_ready_scan_batch(client, db, tmp_path, session_id)
     store = GradingRunStore(db.db_path)
     run = store.begin(session_id, "a" * 64, grading_mode)
     store.finish(run.run_token, "completed")

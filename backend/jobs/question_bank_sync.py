@@ -101,10 +101,15 @@ def run_session_question_bank_sync_job(
         config_revision=config_revision,
         data_root=Path(data_root),
     )
-    _update_sync_state(
-        grading_db,
-        session_id,
-        state="running",
+    if not context.store.claim_question_bank_sync_state_if_current(
+        session_id=session_id,
+        job_id=context.job_id,
+        source_paper_sha256=source_sha256,
+        config_revision=config_revision,
+        expected_rubric_path=str(loaded.session.get("rubric_path") or ""),
+        expected_answer_key_path=str(
+            loaded.session.get("answer_key_path") or ""
+        ),
         details=_versioned_sync_details(
             context=context,
             source_sha256=source_sha256,
@@ -112,7 +117,10 @@ def run_session_question_bank_sync_job(
             stage="tagging" if mode == "tag_retry" else "importing",
             mode=mode,
         ),
-    )
+    ):
+        raise StaleQuestionBankSyncError(
+            "question-bank sync ownership changed"
+        )
 
     try:
         context.raise_if_cancelled()
@@ -425,22 +433,6 @@ def _result(
             )
         ),
     }
-
-
-def _update_sync_state(
-    grading_db: Any,
-    session_id: int,
-    *,
-    state: str,
-    details: dict[str, object],
-    error: str | None = None,
-) -> None:
-    grading_db.update_question_bank_sync_state(
-        session_id,
-        state=state,
-        details=details,
-        error=error,
-    )
 
 
 def _transition_owned_sync_state(

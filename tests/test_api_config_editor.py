@@ -572,6 +572,15 @@ def test_db_conditional_publish_requires_both_old_paths_and_preserves_source(tmp
         [],
         confirmed=True,
     )
+    db.update_question_bank_sync_state(
+        session_id,
+        state="ready",
+        details={
+            "config_revision": "e" * 64,
+            "source_paper_sha256": "d" * 64,
+        },
+        error="old sync",
+    )
 
     assert db.publish_grading_session_config(
         session_id,
@@ -601,3 +610,8 @@ def test_db_conditional_publish_requires_both_old_paths_and_preserves_source(tmp
     assert template["is_confirmed"] == 0
     assert template["regions_snapshot_pending"] == 0
     assert template["regions_snapshot_token"] is None
+    current = db.get_grading_session(session_id)
+    assert current["question_bank_sync_state"] == "not_started"
+    assert json.loads(current["question_bank_sync_details_json"]) == {}
+    assert current["question_bank_sync_error"] is None
+    assert current["question_bank_sync_updated_at"] is None

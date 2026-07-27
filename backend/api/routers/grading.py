@@ -373,6 +373,12 @@ def run_session_grading(
             ) from exc
         except UploadBatchRevisionError as exc:
             raise ApiError(409, "grading_input_changed", "Grading input changed") from exc
+        except GradingConfigChangedError as exc:
+            raise ApiError(
+                409,
+                "grading_preflight_stale",
+                "The grading configuration changed; run scan preflight again",
+            ) from exc
         except ScanGradingWorkspaceError as exc:
             raise ApiError(409, "grading_input_not_ready", "Grading input is not ready") from exc
         except ActiveJobExistsError as exc:

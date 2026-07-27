@@ -228,6 +228,50 @@ def test_stale_job_cannot_overwrite_a_newer_sync_owner(
     }
 
 
+def test_stale_job_cannot_claim_running_after_config_binding_changes(
+    tmp_path: Path,
+) -> None:
+    db, session_id, _source, source_sha256, revision = _configured_session(
+        tmp_path
+    )
+    session = db.get_grading_session(session_id)
+    assert session is not None
+    old_rubric = str(session["rubric_path"])
+    old_answer = str(session["answer_key_path"])
+    store = JobStore(db.db_path)
+    job = store.create_job(
+        "question_bank_sync",
+        {
+            "session_id": session_id,
+            "source_paper_sha256": source_sha256,
+            "config_revision": revision,
+        },
+    )
+    assert store.mark_running(job.id)
+    replacement_rubric = str(Path(old_rubric).with_name("new-rubric.json"))
+    replacement_answer = str(Path(old_answer).with_name("new-answer.json"))
+    assert db.publish_grading_session_config(
+        session_id,
+        rubric_path=replacement_rubric,
+        answer_key_path=replacement_answer,
+        expected_rubric_path=old_rubric,
+        expected_answer_key_path=old_answer,
+    )
+
+    assert store.claim_question_bank_sync_state_if_current(
+        session_id=session_id,
+        job_id=job.id,
+        source_paper_sha256=source_sha256,
+        config_revision=revision,
+        expected_rubric_path=old_rubric,
+        expected_answer_key_path=old_answer,
+        details={"stage": "importing", "mode": "sync"},
+    ) is False
+    current = db.get_grading_session(session_id)
+    assert current is not None
+    assert current["question_bank_sync_state"] == "not_started"
+
+
 def _configured_session(
     tmp_path: Path,
 ) -> tuple[DBManager, int, Path, str, str]:
