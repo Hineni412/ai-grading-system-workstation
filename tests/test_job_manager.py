@@ -34,6 +34,7 @@ def test_job_manager_restart_removes_only_interrupted_automatic_question_links(
 ) -> None:
     from backend.jobs.manager import JobManager
     from backend.jobs.store import JobStore
+    from db_manager import DBManager
     from question_bank.database.schema import connect, initialize_database
     from question_bank.services.source_question_link_service import (
         SourceQuestionLinkService,
@@ -41,16 +42,33 @@ def test_job_manager_restart_removes_only_interrupted_automatic_question_links(
 
     grading_db_path = tmp_path / "grading.db"
     question_bank_db_path = tmp_path / "question-bank.db"
+    grading_db = DBManager(grading_db_path)
+    grading_db.initialize()
+    session_id = grading_db.create_grading_session(
+        "Exam",
+        "rubric.json",
+        "answer.json",
+    )
     store = JobStore(grading_db_path)
     job = store.create_job(
         "question_bank_sync",
         {
-            "session_id": 18,
+            "session_id": session_id,
             "source_paper_sha256": "a" * 64,
             "config_revision": "b" * 64,
         },
     )
     assert store.mark_running(job.id)
+    grading_db.update_question_bank_sync_state(
+        session_id,
+        state="running",
+        details={
+            "job_id": job.id,
+            "source_paper_sha256": "a" * 64,
+            "config_revision": "b" * 64,
+            "stage": "linking",
+        },
+    )
 
     initialize_database(question_bank_db_path)
     with connect(question_bank_db_path) as conn:
@@ -63,14 +81,14 @@ def test_job_manager_restart_removes_only_interrupted_automatic_question_links(
         )
     links = SourceQuestionLinkService(question_bank_db_path)
     links.confirm_link(
-        grading_session_id=18,
+        grading_session_id=session_id,
         source_question_id="Q17",
         bank_question_id=201,
         link_method="source_metadata",
         evidence={"sync_job_id": job.id, "sync_config_revision": "b" * 64},
     )
     links.confirm_link(
-        grading_session_id=18,
+        grading_session_id=session_id,
         source_question_id="Q18",
         bank_question_id=202,
         link_method="manual",
@@ -84,11 +102,166 @@ def test_job_manager_restart_removes_only_interrupted_automatic_question_links(
     )
     try:
         assert store.get_job(job.id).status == "failed"
-        remaining = links.list_links(18)
+        remaining = links.list_links(session_id)
         assert [
             (item["source_question_id"], item["bank_question_id"])
             for item in remaining
         ] == [("Q18", 202)]
+        assert (
+            grading_db.get_grading_session(session_id)[
+                "question_bank_sync_state"
+            ]
+            == "failed"
+        )
+    finally:
+        manager.shutdown()
+
+
+def test_job_manager_restart_keeps_committed_question_links(tmp_path) -> None:
+    from backend.jobs.manager import JobManager
+    from backend.jobs.store import JobStore
+    from db_manager import DBManager
+    from question_bank.database.schema import connect, initialize_database
+    from question_bank.services.source_question_link_service import (
+        SourceQuestionLinkService,
+    )
+
+    grading_db_path = tmp_path / "grading.db"
+    question_bank_db_path = tmp_path / "question-bank.db"
+    grading_db = DBManager(grading_db_path)
+    grading_db.initialize()
+    session_id = grading_db.create_grading_session(
+        "Exam",
+        "rubric.json",
+        "answer.json",
+    )
+    store = JobStore(grading_db_path)
+    job = store.create_job(
+        "question_bank_sync",
+        {
+            "session_id": session_id,
+            "source_paper_sha256": "a" * 64,
+            "config_revision": "b" * 64,
+        },
+    )
+    assert store.mark_running(job.id)
+    grading_db.update_question_bank_sync_state(
+        session_id,
+        state="ready",
+        details={
+            "job_id": job.id,
+            "source_paper_sha256": "a" * 64,
+            "config_revision": "b" * 64,
+            "outcome": "complete",
+        },
+    )
+
+    initialize_database(question_bank_db_path)
+    with connect(question_bank_db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO questions (id, question_number, question_text)
+            VALUES (201, '17', 'committed')
+            """
+        )
+    links = SourceQuestionLinkService(question_bank_db_path)
+    links.confirm_link(
+        grading_session_id=session_id,
+        source_question_id="Q17",
+        bank_question_id=201,
+        link_method="source_metadata",
+        evidence={"sync_job_id": job.id, "sync_config_revision": "b" * 64},
+    )
+
+    manager = JobManager(
+        store,
+        max_workers=1,
+        question_bank_db_path=question_bank_db_path,
+    )
+    try:
+        assert links.confirmed_bank_question_ids(session_id) == {201}
+        assert (
+            grading_db.get_grading_session(session_id)[
+                "question_bank_sync_state"
+            ]
+            == "ready"
+        )
+    finally:
+        manager.shutdown()
+
+
+def test_job_manager_restart_recovers_failed_job_left_owning_running_state(
+    tmp_path,
+) -> None:
+    from backend.jobs.manager import JobManager
+    from backend.jobs.store import JobStore
+    from db_manager import DBManager
+    from question_bank.database.schema import connect, initialize_database
+    from question_bank.services.source_question_link_service import (
+        SourceQuestionLinkService,
+    )
+
+    grading_db_path = tmp_path / "grading.db"
+    question_bank_db_path = tmp_path / "question-bank.db"
+    grading_db = DBManager(grading_db_path)
+    grading_db.initialize()
+    session_id = grading_db.create_grading_session(
+        "Exam",
+        "rubric.json",
+        "answer.json",
+    )
+    store = JobStore(grading_db_path)
+    job = store.create_job(
+        "question_bank_sync",
+        {
+            "session_id": session_id,
+            "source_paper_sha256": "a" * 64,
+            "config_revision": "b" * 64,
+        },
+    )
+    assert store.mark_running(job.id)
+    grading_db.update_question_bank_sync_state(
+        session_id,
+        state="running",
+        details={
+            "job_id": job.id,
+            "source_paper_sha256": "a" * 64,
+            "config_revision": "b" * 64,
+            "stage": "linking",
+        },
+    )
+    store.finish(job.id, "failed", error="rollback failed")
+
+    initialize_database(question_bank_db_path)
+    with connect(question_bank_db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO questions (id, question_number, question_text)
+            VALUES (201, '17', 'stale')
+            """
+        )
+    links = SourceQuestionLinkService(question_bank_db_path)
+    links.confirm_link(
+        grading_session_id=session_id,
+        source_question_id="Q17",
+        bank_question_id=201,
+        link_method="source_metadata",
+        evidence={"sync_job_id": job.id, "sync_config_revision": "b" * 64},
+    )
+
+    manager = JobManager(
+        store,
+        max_workers=1,
+        question_bank_db_path=question_bank_db_path,
+    )
+    try:
+        assert links.list_links(session_id) == []
+        assert (
+            grading_db.get_grading_session(session_id)[
+                "question_bank_sync_state"
+            ]
+            == "failed"
+        )
     finally:
         manager.shutdown()
 
