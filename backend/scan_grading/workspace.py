@@ -523,6 +523,7 @@ class ScanGradingWorkspace:
             if int(upload_revision) != int(manifest["revision"]):
                 raise UploadBatchRevisionError("scan upload batch revision changed")
             preflight = self.get_preflight(session_id)
+            self._require_current_preflight_template(session_id)
             if int(decision_revision) != int(preflight["revision"]):
                 raise UploadBatchRevisionError("preflight decision revision changed")
             if int(preflight["pending_issue_count"]) > 0 and not confirm_pending_issues:
@@ -558,24 +559,29 @@ class ScanGradingWorkspace:
         """Validate the current batch and create its only active job atomically."""
         if self.job_manager is None:
             raise ScanGradingWorkspaceError("grading job manager is unavailable")
+        from answer_region_session_lock import get_answer_region_session_lock
+
         with self._lock(session_id):
-            payload = self.prepare_start(
-                session_id,
-                grading_mode=grading_mode,
-                upload_revision=upload_revision,
-                decision_revision=decision_revision,
-                confirm_pending_issues=confirm_pending_issues,
-                enhance_images=enhance_images,
-                max_workers=max_workers,
-                requests_per_minute=requests_per_minute,
-            )
-            manifest = self._load_or_create_manifest(session_id)
-            payload["scan_batch_id"] = str(manifest["batch_id"])
-            payload["exams_dir"] = str(self.frozen_scan_dir(session_id))
-            job, created = self.job_manager.submit_idempotent_scan_start(payload)
-            if not created:
-                raise ScanGradingWorkspaceError("grading submission was already accepted")
-            return job
+            with get_answer_region_session_lock(self._session_dir(session_id)):
+                payload = self.prepare_start(
+                    session_id,
+                    grading_mode=grading_mode,
+                    upload_revision=upload_revision,
+                    decision_revision=decision_revision,
+                    confirm_pending_issues=confirm_pending_issues,
+                    enhance_images=enhance_images,
+                    max_workers=max_workers,
+                    requests_per_minute=requests_per_minute,
+                )
+                manifest = self._load_or_create_manifest(session_id)
+                payload["scan_batch_id"] = str(manifest["batch_id"])
+                payload["exams_dir"] = str(self.frozen_scan_dir(session_id))
+                job, created = self.job_manager.submit_idempotent_scan_start(payload)
+                if not created:
+                    raise ScanGradingWorkspaceError(
+                        "grading submission was already accepted"
+                    )
+                return job
 
     def start_new_upload_batch(self, session_id: int) -> dict[str, Any]:
         with self._lock(session_id):
@@ -853,6 +859,65 @@ class ScanGradingWorkspace:
                 raise GradingConfigChangedError(
                     "scan preflight grading configuration changed"
                 )
+            self._require_current_preflight_template(
+                session_id,
+                analysis=analysis,
+            )
+
+    def _require_current_preflight_template(
+        self,
+        session_id: int,
+        *,
+        analysis: dict[str, Any] | None = None,
+    ) -> None:
+        if self.grading_db_path is None:
+            raise GradingConfigChangedError(
+                "session template binding cannot be verified"
+            )
+        if analysis is None:
+            analysis, _identity = self._read_analysis(session_id)
+        expected_fingerprint = str(
+            analysis.get("template_fingerprint") or ""
+        ).strip()
+        expected_role = str(
+            analysis.get("template_first_page_role") or ""
+        ).strip()
+        try:
+            expected_template_id = int(analysis.get("template_id"))
+        except (TypeError, ValueError) as exc:
+            raise GradingConfigChangedError(
+                "scan preflight template binding is unavailable"
+            ) from exc
+        if (
+            not expected_fingerprint
+            or expected_role not in {"front", "back"}
+        ):
+            raise GradingConfigChangedError(
+                "scan preflight template binding is unavailable"
+            )
+
+        from backend.repositories.compat import open_grading_repositories
+        from template_upload_service import TemplateUploadError, TemplateUploadService
+
+        try:
+            current = TemplateUploadService(self.templates_root).load_current(
+                db=open_grading_repositories(self.grading_db_path),
+                session_id=int(session_id),
+            )
+        except (FileNotFoundError, OSError, TemplateUploadError) as exc:
+            raise GradingConfigChangedError(
+                "session template binding cannot be verified"
+            ) from exc
+        if (
+            not current.is_confirmed
+            or current.regions_snapshot_pending
+            or current.template_id != expected_template_id
+            or current.template_fingerprint != expected_fingerprint
+            or current.first_page_role != expected_role
+        ):
+            raise GradingConfigChangedError(
+                "scan preflight template changed"
+            )
 
     def get_preflight(self, session_id: int) -> dict[str, Any]:
         with self._lock(session_id):

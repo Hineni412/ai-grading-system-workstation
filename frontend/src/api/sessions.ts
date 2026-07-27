@@ -44,6 +44,8 @@ export interface SessionPermanentDeletionResponse {
   deleted_files: number
   deleted_dirs: number
   skipped_shared: number
+  storage_cleanup_pending: boolean
+  recovered_interrupted_delete: boolean
 }
 
 export class SessionReadError extends Error {
@@ -294,6 +296,8 @@ export async function permanentlyDeleteSession(
           'deleted_files',
           'deleted_dirs',
           'skipped_shared',
+          'storage_cleanup_pending',
+          'recovered_interrupted_delete',
         ])
         || !Number.isSafeInteger(value.session_id)
         || Number(value.session_id) <= 0
@@ -305,6 +309,8 @@ export async function permanentlyDeleteSession(
         || Number(value.deleted_dirs) < 0
         || !Number.isSafeInteger(value.skipped_shared)
         || Number(value.skipped_shared) < 0
+        || typeof value.storage_cleanup_pending !== 'boolean'
+        || typeof value.recovered_interrupted_delete !== 'boolean'
       ) throw new Error('invalid permanent deletion response')
       return value as unknown as SessionPermanentDeletionResponse
     },

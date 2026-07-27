@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+from answer_region_session_lock import get_answer_region_session_lock
 from answer_region_geometry import answer_regions_with_template_source_sizes
 from backend.config_workspace.publish import load_editor_config
 from backend.repositories.access import GradingRepositoryAccess
@@ -144,11 +145,32 @@ def run_scan_analysis(
             temporary.write("\n")
             temporary.flush()
         _check_cancelled(raise_if_cancelled)
-        if load_editor_config(db, session_id).revision != expected_config_revision:
-            raise ValueError("grading configuration changed during scan analysis")
-        _require_current_scan_batch(session_work_dir, scan_batch_id)
-        os.replace(temporary_path, output_path)
-        temporary_path = None
+        with get_answer_region_session_lock(session_work_dir):
+            if load_editor_config(db, session_id).revision != expected_config_revision:
+                raise ValueError("grading configuration changed during scan analysis")
+            if bound_template:
+                try:
+                    current_template = TemplateUploadService(
+                        session_work_dir.parent
+                    ).load_current(
+                        db=db,
+                        session_id=session_id,
+                    )
+                except (FileNotFoundError, TemplateUploadError) as exc:
+                    raise ValueError("session template is unavailable") from exc
+                if (
+                    not current_template.is_confirmed
+                    or current_template.regions_snapshot_pending
+                    or current_template.template_id != int(template_id)
+                    or current_template.template_fingerprint
+                    != str(template_fingerprint)
+                    or current_template.first_page_role
+                    != template_first_page_role
+                ):
+                    raise ValueError("session template changed during scan analysis")
+            _require_current_scan_batch(session_work_dir, scan_batch_id)
+            os.replace(temporary_path, output_path)
+            temporary_path = None
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)

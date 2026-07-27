@@ -49,7 +49,9 @@ from backend.config_generation.compat import (
     refine_grading_config_from_manual_structure,
 )
 from backend.config_generation.normalization import (
+    normalize_generated_config_schema,
     normalize_new_generated_config_payload,
+    strip_generated_config_knowledge_fields,
 )
 from session_manager import (
     generate_grading_config_from_images,
@@ -746,7 +748,13 @@ def _run_refine_config_job(
         llm_client=client,
         model_name=_config_model(client),
     )
-    normalize_new_generated_config_payload(payload)
+    # Teacher-created scoring-unit identities are stable references used by
+    # the editor and answer-region mapping.  Refine repairs the schema and
+    # removes forbidden knowledge metadata, but must not canonicalise part IDs
+    # as if this were a newly generated rubric.
+    strip_generated_config_knowledge_fields(payload)
+    normalize_generated_config_schema(payload)
+    strip_generated_config_knowledge_fields(payload)
     context.raise_if_cancelled()
     if editor_identity_signature(payload) != expected_identity:
         raise ValueError("refined config changed teacher scoring-unit identities")

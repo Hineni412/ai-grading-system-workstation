@@ -491,6 +491,17 @@ class DBManager:
                 if cursor.rowcount != 1:
                     conn.rollback()
                     return False
+                conn.execute(
+                    """
+                    UPDATE session_templates
+                    SET is_confirmed = 0,
+                        regions_snapshot_pending = 0,
+                        regions_snapshot_token = NULL,
+                        updated_at = datetime('now','localtime')
+                    WHERE session_id = ?
+                    """,
+                    (int(session_id),),
+                )
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -560,6 +571,17 @@ class DBManager:
                 if cursor.rowcount != 1:
                     conn.rollback()
                     return False
+                conn.execute(
+                    """
+                    UPDATE session_templates
+                    SET is_confirmed = 0,
+                        regions_snapshot_pending = 0,
+                        regions_snapshot_token = NULL,
+                        updated_at = datetime('now','localtime')
+                    WHERE session_id = ?
+                    """,
+                    (int(session_id),),
+                )
                 conn.commit()
             except Exception:
                 conn.rollback()

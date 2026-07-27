@@ -105,11 +105,13 @@ def run_session_question_bank_sync_job(
         grading_db,
         session_id,
         state="running",
-        details={
-            "job_id": context.job_id,
-            "stage": "tagging" if mode == "tag_retry" else "importing",
-            "mode": mode,
-        },
+        details=_versioned_sync_details(
+            context=context,
+            source_sha256=source_sha256,
+            config_revision=config_revision,
+            stage="tagging" if mode == "tag_retry" else "importing",
+            mode=mode,
+        ),
     )
 
     try:
@@ -223,50 +225,82 @@ def run_session_question_bank_sync_job(
             "partial": "partial",
             "failed": "failed",
         }[str(result["outcome"])]
-        _update_sync_state(
-            grading_db,
-            session_id,
+        if not _transition_owned_sync_state(
+            context=context,
+            session_id=session_id,
+            source_sha256=source_sha256,
+            config_revision=config_revision,
             state=state,
-            details={
-                "job_id": context.job_id,
-                "outcome": result["outcome"],
-                "imported_count": result["imported_count"],
-                "tagged_count": result["tagged_count"],
-                "linked_count": result["linked_count"],
-                "failed_count": result["failed_count"],
-                "review_count": result["review_count"],
-            },
+            details=_versioned_sync_details(
+                context=context,
+                source_sha256=source_sha256,
+                config_revision=config_revision,
+                outcome=result["outcome"],
+                imported_count=result["imported_count"],
+                tagged_count=result["tagged_count"],
+                linked_count=result["linked_count"],
+                failed_count=result["failed_count"],
+                review_count=result["review_count"],
+            ),
             error=(
                 "Question-bank import or tagging needs attention."
                 if state == "failed"
                 else None
             ),
-        )
+        ):
+            raise StaleQuestionBankSyncError(
+                "question-bank sync ownership changed"
+            )
         context.report(1.0, "question_bank_sync", str(result["outcome"]))
         return result
-    except StaleQuestionBankSyncError:
-        # A newer source/config version owns the session state.  Never let this
-        # stale job overwrite it.
+    except StaleQuestionBankSyncError as exc:
+        _transition_owned_sync_state(
+            context=context,
+            session_id=session_id,
+            source_sha256=source_sha256,
+            config_revision=config_revision,
+            state="not_started",
+            details=_versioned_sync_details(
+                context=context,
+                source_sha256=source_sha256,
+                config_revision=config_revision,
+                stage="stale",
+                reason=_stale_reason(exc),
+                retryable=False,
+            ),
+        )
         raise
     except JobCancellationRequested:
-        _update_sync_state(
-            grading_db,
-            session_id,
+        _transition_owned_sync_state(
+            context=context,
+            session_id=session_id,
+            source_sha256=source_sha256,
+            config_revision=config_revision,
             state="partial",
-            details={
-                "job_id": context.job_id,
-                "stage": "cancelled",
-                "retryable": True,
-            },
+            details=_versioned_sync_details(
+                context=context,
+                source_sha256=source_sha256,
+                config_revision=config_revision,
+                stage="cancelled",
+                retryable=True,
+            ),
             error=None,
         )
         raise
     except Exception as exc:
-        _update_sync_state(
-            grading_db,
-            session_id,
+        _transition_owned_sync_state(
+            context=context,
+            session_id=session_id,
+            source_sha256=source_sha256,
+            config_revision=config_revision,
             state="failed",
-            details={"job_id": context.job_id, "stage": "failed"},
+            details=_versioned_sync_details(
+                context=context,
+                source_sha256=source_sha256,
+                config_revision=config_revision,
+                stage="failed",
+                retryable=True,
+            ),
             error="Question-bank import or tagging failed.",
         )
         raise RuntimeError("session question-bank sync failed") from exc
@@ -407,6 +441,52 @@ def _update_sync_state(
         details=details,
         error=error,
     )
+
+
+def _transition_owned_sync_state(
+    *,
+    context: JobContext,
+    session_id: int,
+    source_sha256: str,
+    config_revision: str,
+    state: str,
+    details: dict[str, object],
+    error: str | None = None,
+) -> bool:
+    return context.store.transition_question_bank_sync_state_if_owned(
+        session_id=session_id,
+        job_id=context.job_id,
+        source_paper_sha256=source_sha256,
+        config_revision=config_revision,
+        state=state,
+        details=details,
+        error=error,
+    )
+
+
+def _versioned_sync_details(
+    *,
+    context: JobContext,
+    source_sha256: str,
+    config_revision: str,
+    **details: object,
+) -> dict[str, object]:
+    return {
+        "job_id": context.job_id,
+        "source_paper_sha256": source_sha256,
+        "config_revision": config_revision,
+        **details,
+    }
+
+
+def _stale_reason(exc: StaleQuestionBankSyncError) -> str:
+    return {
+        "grading configuration changed": "grading_configuration_changed",
+        "source paper binding changed": "source_binding_changed",
+        "archived source paper changed": "archived_source_changed",
+        "source paper changed before question-bank import": "source_content_changed",
+        "question-bank sync ownership changed": "sync_ownership_changed",
+    }.get(str(exc), "sync_inputs_changed")
 
 
 def _question_ids(value: object, *, allow_empty: bool = False) -> list[int]:

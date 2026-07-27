@@ -53,10 +53,12 @@ from backend.repositories.sessions import (
 from backend.repositories.access import GradingRepositoryAccess
 from session_cleanup import (
     SessionDerivedTrainingDataExists,
+    SessionPermanentDeletionRecoveryFailed,
     SessionStorageDeletionIncomplete,
     hard_delete_session_from_archive,
     preview_session_permanent_deletion,
     question_bank_session_reference_impact,
+    recover_interrupted_session_permanent_deletion,
     session_lifecycle_guard,
 )
 
@@ -632,18 +634,25 @@ def permanently_delete_session(
 ) -> SessionPermanentDeletionResponse:
     try:
         with session_lifecycle_guard(int(session_id)):
-            sessions.assert_permanent_deletion_ready(
-                int(session_id),
-                expected_revision=request.expected_revision,
-                confirmation_phrase=request.confirmation_phrase,
-            )
-            result = hard_delete_session_from_archive(
+            result = recover_interrupted_session_permanent_deletion(
                 db,
                 int(session_id),
                 data_root=data_root,
                 question_bank_db_path=question_bank_db_path,
-                expected_revision=request.expected_revision,
             )
+            if result is None:
+                sessions.assert_permanent_deletion_ready(
+                    int(session_id),
+                    expected_revision=request.expected_revision,
+                    confirmation_phrase=request.confirmation_phrase,
+                )
+                result = hard_delete_session_from_archive(
+                    db,
+                    int(session_id),
+                    data_root=data_root,
+                    question_bank_db_path=question_bank_db_path,
+                    expected_revision=request.expected_revision,
+                )
     except SessionDeletionConfirmationMismatch as exc:
         raise ApiError(
             422,
@@ -694,6 +703,22 @@ def permanently_delete_session(
             {
                 "session_id": int(session_id),
                 "failed_path_count": len(exc.failed_paths),
+            },
+        ) from exc
+    except SessionPermanentDeletionRecoveryFailed as exc:
+        raise ApiError(
+            409,
+            "session_permanent_delete_recovery_incomplete",
+            (
+                "The exam was deleted, but cleanup still needs to be retried"
+                if exc.deletion_committed
+                else "The delete was stopped because its files could not be restored"
+            ),
+            {
+                "session_id": int(session_id),
+                "deletion_committed": exc.deletion_committed,
+                "recovery_phase": exc.phase,
+                "retryable": True,
             },
         ) from exc
     except ValueError as exc:

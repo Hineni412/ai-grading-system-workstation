@@ -163,6 +163,8 @@ class SessionPermanentDeletionResponse(BaseModel):
     deleted_files: int = Field(ge=0)
     deleted_dirs: int = Field(ge=0)
     skipped_shared: int = Field(ge=0)
+    storage_cleanup_pending: bool = False
+    recovered_interrupted_delete: bool = False
 
 
 class SessionProgress(BaseModel):
