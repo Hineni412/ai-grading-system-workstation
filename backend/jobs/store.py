@@ -53,6 +53,10 @@ class GradingSessionBusyError(RuntimeError):
     pass
 
 
+class GradingSubmissionChangedError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class JobRecord:
     id: int
@@ -121,10 +125,63 @@ class JobStore:
         batch_id = str(clean_payload.get("scan_batch_id") or "").strip().lower()
         if not _SCAN_BATCH_ID.fullmatch(batch_id):
             raise ValueError("scan_batch_id must be 32 lowercase hex characters")
+        config_revision = str(
+            clean_payload.get("config_revision") or ""
+        ).strip().casefold()
+        if not _SHA256.fullmatch(config_revision):
+            raise ValueError("config_revision must be sha256")
+        expected_rubric_path = _nonblank_text(
+            clean_payload.get("expected_rubric_path"),
+            "expected_rubric_path",
+        )
+        expected_answer_key_path = _nonblank_text(
+            clean_payload.get("expected_answer_key_path"),
+            "expected_answer_key_path",
+        )
+        expected_template_id = _positive_int(
+            clean_payload.get("expected_template_id")
+        )
+        expected_front_template_path = _nonblank_text(
+            clean_payload.get("expected_front_template_path"),
+            "expected_front_template_path",
+        )
+        expected_back_template_path = _nonblank_text(
+            clean_payload.get("expected_back_template_path"),
+            "expected_back_template_path",
+        )
         payload_json = json.dumps(clean_payload, ensure_ascii=False, sort_keys=True)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                binding = conn.execute(
+                    """
+                    SELECT s.rubric_path, s.answer_key_path,
+                           t.id AS template_id,
+                           t.front_template_path, t.back_template_path,
+                           t.is_confirmed, t.regions_snapshot_pending
+                    FROM grading_sessions AS s
+                    LEFT JOIN session_templates AS t ON t.session_id = s.id
+                    WHERE s.id = ? AND s.is_deleted = 0
+                    """,
+                    (session_id,),
+                ).fetchone()
+                if (
+                    binding is None
+                    or str(binding["rubric_path"] or "") != expected_rubric_path
+                    or str(binding["answer_key_path"] or "")
+                    != expected_answer_key_path
+                    or _positive_int_or_zero(binding["template_id"])
+                    != expected_template_id
+                    or str(binding["front_template_path"] or "")
+                    != expected_front_template_path
+                    or str(binding["back_template_path"] or "")
+                    != expected_back_template_path
+                    or int(binding["is_confirmed"] or 0) != 1
+                    or int(binding["regions_snapshot_pending"] or 0) != 0
+                ):
+                    raise GradingSubmissionChangedError(
+                        "grading configuration or template changed before job creation"
+                    )
                 existing = conn.execute(
                     "SELECT * FROM jobs WHERE job_type = 'grading_run' "
                     "AND status IN ('queued','running','paused','succeeded') "
@@ -507,6 +564,142 @@ class JobStore:
                         str(error).strip() if error else None,
                         clean_session_id,
                     ),
+                )
+                if cursor.rowcount != 1:
+                    conn.rollback()
+                    return False
+                conn.commit()
+                return True
+            except BaseException:
+                conn.rollback()
+                raise
+
+    def claim_question_bank_sync_state_if_current(
+        self,
+        *,
+        session_id: int,
+        job_id: int,
+        source_paper_sha256: str,
+        config_revision: str,
+        expected_rubric_path: str,
+        expected_answer_key_path: str,
+        details: dict[str, object],
+    ) -> bool:
+        """Claim running state only while the job and config binding are current."""
+
+        clean_session_id = _positive_int(session_id)
+        clean_job_id = _positive_int(job_id)
+        clean_source_sha256 = str(source_paper_sha256 or "").strip().casefold()
+        clean_config_revision = str(config_revision or "").strip().casefold()
+        if not _SHA256.fullmatch(clean_source_sha256):
+            raise ValueError("source_paper_sha256 must be sha256")
+        if not _SHA256.fullmatch(clean_config_revision):
+            raise ValueError("config_revision must be sha256")
+        clean_rubric_path = _nonblank_text(
+            expected_rubric_path,
+            "expected_rubric_path",
+        )
+        clean_answer_path = _nonblank_text(
+            expected_answer_key_path,
+            "expected_answer_key_path",
+        )
+        running_details = {
+            **dict(details),
+            "job_id": clean_job_id,
+            "source_paper_sha256": clean_source_sha256,
+            "config_revision": clean_config_revision,
+        }
+        details_json = json.dumps(
+            running_details,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                job = conn.execute(
+                    """
+                    SELECT payload_json, status
+                    FROM jobs
+                    WHERE id = ? AND job_type = 'question_bank_sync'
+                    """,
+                    (clean_job_id,),
+                ).fetchone()
+                if job is None or str(job["status"]) != "running":
+                    conn.rollback()
+                    return False
+                try:
+                    job_payload = json.loads(str(job["payload_json"] or "{}"))
+                except json.JSONDecodeError:
+                    job_payload = {}
+                if (
+                    not isinstance(job_payload, dict)
+                    or _positive_int_or_zero(job_payload.get("session_id"))
+                    != clean_session_id
+                    or str(
+                        job_payload.get("source_paper_sha256") or ""
+                    ).casefold()
+                    != clean_source_sha256
+                    or str(job_payload.get("config_revision") or "").casefold()
+                    != clean_config_revision
+                ):
+                    conn.rollback()
+                    return False
+                session = conn.execute(
+                    """
+                    SELECT rubric_path, answer_key_path, source_paper_sha256,
+                           question_bank_sync_state,
+                           question_bank_sync_details_json
+                    FROM grading_sessions
+                    WHERE id = ? AND is_deleted = 0
+                    """,
+                    (clean_session_id,),
+                ).fetchone()
+                if (
+                    session is None
+                    or str(session["rubric_path"] or "") != clean_rubric_path
+                    or str(session["answer_key_path"] or "") != clean_answer_path
+                    or str(
+                        session["source_paper_sha256"] or ""
+                    ).casefold()
+                    != clean_source_sha256
+                ):
+                    conn.rollback()
+                    return False
+                if str(session["question_bank_sync_state"]) == "running":
+                    try:
+                        owner = json.loads(
+                            str(
+                                session["question_bank_sync_details_json"]
+                                or "{}"
+                            )
+                        )
+                    except json.JSONDecodeError:
+                        owner = {}
+                    if (
+                        not isinstance(owner, dict)
+                        or _positive_int_or_zero(owner.get("job_id"))
+                        != clean_job_id
+                        or str(
+                            owner.get("source_paper_sha256") or ""
+                        ).casefold()
+                        != clean_source_sha256
+                        or str(owner.get("config_revision") or "").casefold()
+                        != clean_config_revision
+                    ):
+                        conn.rollback()
+                        return False
+                cursor = conn.execute(
+                    """
+                    UPDATE grading_sessions
+                    SET question_bank_sync_state = 'running',
+                        question_bank_sync_details_json = ?,
+                        question_bank_sync_error = NULL,
+                        question_bank_sync_updated_at = datetime('now','localtime'),
+                        updated_at = datetime('now','localtime')
+                    WHERE id = ? AND is_deleted = 0
+                    """,
+                    (details_json, clean_session_id),
                 )
                 if cursor.rowcount != 1:
                     conn.rollback()
@@ -996,6 +1189,15 @@ class JobStore:
 
     def fail_interrupted_jobs(self) -> int:
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            interrupted_syncs = conn.execute(
+                """
+                SELECT id, payload_json
+                FROM jobs
+                WHERE job_type = 'question_bank_sync'
+                  AND status IN ('queued','running')
+                """
+            ).fetchall()
             recovered = conn.execute(
                 """
                 UPDATE jobs
@@ -1018,6 +1220,89 @@ class JobStore:
                 WHERE status IN ('queued','running')
                 """
             )
+            for interrupted in interrupted_syncs:
+                try:
+                    payload = json.loads(
+                        str(interrupted["payload_json"] or "{}")
+                    )
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                session_id = _positive_int_or_zero(payload.get("session_id"))
+                source_sha256 = str(
+                    payload.get("source_paper_sha256") or ""
+                ).strip().casefold()
+                config_revision = str(
+                    payload.get("config_revision") or ""
+                ).strip().casefold()
+                if (
+                    session_id <= 0
+                    or not _SHA256.fullmatch(source_sha256)
+                    or not _SHA256.fullmatch(config_revision)
+                ):
+                    continue
+                current = conn.execute(
+                    """
+                    SELECT question_bank_sync_state,
+                           question_bank_sync_details_json
+                    FROM grading_sessions
+                    WHERE id = ? AND is_deleted = 0
+                    """,
+                    (session_id,),
+                ).fetchone()
+                if current is None or str(
+                    current["question_bank_sync_state"]
+                ) != "running":
+                    continue
+                current_details_json = str(
+                    current["question_bank_sync_details_json"] or "{}"
+                )
+                try:
+                    owner = json.loads(current_details_json)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    not isinstance(owner, dict)
+                    or _positive_int_or_zero(owner.get("job_id"))
+                    != int(interrupted["id"])
+                    or str(
+                        owner.get("source_paper_sha256") or ""
+                    ).casefold()
+                    != source_sha256
+                    or str(owner.get("config_revision") or "").casefold()
+                    != config_revision
+                ):
+                    continue
+                failed_details = json.dumps(
+                    {
+                        "job_id": int(interrupted["id"]),
+                        "source_paper_sha256": source_sha256,
+                        "config_revision": config_revision,
+                        "stage": "interrupted",
+                        "reason": "process_restart",
+                        "retryable": True,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                conn.execute(
+                    """
+                    UPDATE grading_sessions
+                    SET question_bank_sync_state = 'failed',
+                        question_bank_sync_details_json = ?,
+                        question_bank_sync_error =
+                            'interrupted by process restart',
+                        question_bank_sync_updated_at =
+                            datetime('now','localtime'),
+                        updated_at = datetime('now','localtime')
+                    WHERE id = ? AND is_deleted = 0
+                      AND question_bank_sync_state = 'running'
+                      AND question_bank_sync_details_json = ?
+                    """,
+                    (failed_details, session_id, current_details_json),
+                )
+            conn.commit()
             return int(recovered.rowcount) + int(cursor.rowcount)
 
     def assert_config_session_idle(self, session_id: int) -> None:
@@ -1625,3 +1910,10 @@ def _positive_int_or_zero(value: object) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _nonblank_text(value: object, field: str) -> str:
+    clean = str(value or "").strip()
+    if not clean:
+        raise ValueError(f"{field} must be nonblank")
+    return clean

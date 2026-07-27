@@ -469,6 +469,10 @@ class DBManager:
         expected_rubric_path: str,
         expected_answer_key_path: str,
     ) -> bool:
+        config_changed = (
+            str(rubric_path) != str(expected_rubric_path)
+            or str(answer_key_path) != str(expected_answer_key_path)
+        )
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -476,6 +480,14 @@ class DBManager:
                     """
                     UPDATE grading_sessions
                     SET rubric_path = ?, answer_key_path = ?,
+                        question_bank_sync_state = CASE
+                            WHEN ? THEN 'not_started' ELSE question_bank_sync_state END,
+                        question_bank_sync_details_json = CASE
+                            WHEN ? THEN '{}' ELSE question_bank_sync_details_json END,
+                        question_bank_sync_error = CASE
+                            WHEN ? THEN NULL ELSE question_bank_sync_error END,
+                        question_bank_sync_updated_at = CASE
+                            WHEN ? THEN NULL ELSE question_bank_sync_updated_at END,
                         updated_at = datetime('now','localtime')
                     WHERE id = ? AND is_deleted = 0
                       AND rubric_path = ? AND answer_key_path = ?
@@ -483,6 +495,10 @@ class DBManager:
                     (
                         str(rubric_path),
                         str(answer_key_path),
+                        config_changed,
+                        config_changed,
+                        config_changed,
+                        config_changed,
                         int(session_id),
                         str(expected_rubric_path),
                         str(expected_answer_key_path),
@@ -529,14 +545,19 @@ class DBManager:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 current = conn.execute(
-                    "SELECT source_paper_sha256 FROM grading_sessions "
+                    "SELECT rubric_path, answer_key_path, source_paper_sha256 "
+                    "FROM grading_sessions "
                     "WHERE id = ? AND is_deleted = 0",
                     (int(session_id),),
                 ).fetchone()
                 if current is None:
                     conn.rollback()
                     return False
-                changed = str(current["source_paper_sha256"] or "") != source_sha256
+                changed = (
+                    str(current["source_paper_sha256"] or "") != source_sha256
+                    or str(current["rubric_path"] or "") != str(rubric_path)
+                    or str(current["answer_key_path"] or "") != str(answer_key_path)
+                )
                 cursor = conn.execute(
                     """
                     UPDATE grading_sessions

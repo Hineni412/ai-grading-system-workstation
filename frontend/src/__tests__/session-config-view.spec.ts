@@ -178,7 +178,7 @@ describe('SessionConfigView source replacement guard', () => {
       issues: [], source: null,
       rows: [{ row_id: 'row-q1-p1-s1', question_id: 'Q1', part_id: 'P1', step_id: 'S1',
         part_label: '第 1 问', question_type: 'calculation', core_goal: '计算', score: 100,
-        standard_answer: '1', accepted_answers: ['1'], match_rule: 'exact', knowledge: '',
+        standard_answer: '1', accepted_answers: ['1'], match_rule: 'exact',
         answer_only_max_score: null, require_final_answer: true, required_elements: [],
         deduction_rules: [], final_answer_rule: '' }],
     })
@@ -198,7 +198,7 @@ describe('SessionConfigView source replacement guard', () => {
     app.mount(host)
     await nextTick()
 
-    expect(host.querySelectorAll('.rubric-question-card')).toHaveLength(1)
+    expect(host.querySelectorAll('.rubric-unit-card')).toHaveLength(1)
     expect(host.querySelector('.rubric-ledger table')).toBeNull()
     host.querySelector<HTMLButtonElement>('button[name="AI 完善评分单元"]')!.click()
     await settle()

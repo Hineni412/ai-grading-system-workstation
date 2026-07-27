@@ -71,6 +71,55 @@ def test_legacy_publish_binds_config_and_source_atomically(tmp_path: Path) -> No
     assert template["regions_snapshot_token"] == snapshot_token
 
 
+def test_legacy_publish_invalidates_ready_sync_when_only_config_changes(
+    tmp_path: Path,
+) -> None:
+    db = DBManager(tmp_path / "grading.db")
+    db.initialize()
+    old_rubric = tmp_path / "old-rubric.json"
+    old_answer = tmp_path / "old-answer.json"
+    old_rubric.write_text("{}", encoding="utf-8")
+    old_answer.write_text("{}", encoding="utf-8")
+    source_path = "papers/source.docx"
+    source_sha256 = "a" * 64
+    session_id = db.create_grading_session(
+        "Exam",
+        str(old_rubric),
+        str(old_answer),
+        source_paper_path=source_path,
+        source_paper_sha256=source_sha256,
+    )
+    db.update_question_bank_sync_state(
+        session_id,
+        state="ready",
+        details={
+            "config_revision": "b" * 64,
+            "source_paper_sha256": source_sha256,
+        },
+        error="old sync",
+    )
+
+    publish_legacy_config_and_refresh_mapping(
+        db,
+        tmp_path / "uploaded",
+        session_id=session_id,
+        rubric_path=str(tmp_path / "new-rubric.json"),
+        answer_key_path=str(tmp_path / "new-answer.json"),
+        source_paper_path=source_path,
+        source_paper_sha256=source_sha256,
+        mapping_output_dir=tmp_path / "templates",
+        mapping_refresher=lambda: "not_present",
+    )
+
+    current = db.get_grading_session(session_id)
+    assert current is not None
+    assert current["source_paper_sha256"] == source_sha256
+    assert current["question_bank_sync_state"] == "not_started"
+    assert json.loads(current["question_bank_sync_details_json"]) == {}
+    assert current["question_bank_sync_error"] is None
+    assert current["question_bank_sync_updated_at"] is None
+
+
 def test_legacy_mapping_blocks_new_config_job_submission(tmp_path: Path) -> None:
     db = DBManager(tmp_path / "grading.db")
     db.initialize()

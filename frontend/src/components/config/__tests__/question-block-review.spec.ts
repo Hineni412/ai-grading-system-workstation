@@ -94,7 +94,10 @@ describe('QuestionBlockReview', () => {
   })
 
   it('shows answer facts and builds assets only from semantic identifiers', async () => {
-    const mounted = await mountReview()
+    const mounted = await mountReview({ value: source({
+      safe_filename: '七年级数学.docx',
+      suffix: '.docx',
+    }) })
     expect(mounted.host.textContent).toContain('答案已匹配')
     expect(mounted.host.textContent).toContain('未识别到答案')
     const images = [...mounted.host.querySelectorAll<HTMLImageElement>('img')]
@@ -110,6 +113,8 @@ describe('QuestionBlockReview', () => {
     const longQuestion = '完整题干不能折叠。'.repeat(30)
     const completeSolution = '完整解答第一步：由已知条件得到中间结论。'
     const reviewSource = source({
+      safe_filename: '七年级数学.docx',
+      suffix: '.docx',
       questions: [{
         ...source().questions[0]!,
         question_preview: longQuestion,

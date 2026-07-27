@@ -167,6 +167,94 @@ def test_restart_marks_unconfirmed_running_cancel_request_failed(tmp_path) -> No
     assert loaded.finished_at is not None
 
 
+def test_restart_reconciles_owned_question_bank_sync_running_state(
+    tmp_path: Path,
+) -> None:
+    from backend.jobs.store import JobStore
+    from db_manager import DBManager
+
+    db_path = tmp_path / "jobs.db"
+    db = DBManager(db_path)
+    db.initialize()
+    session_id = db.create_grading_session("Exam", "rubric.json", "answer.json")
+    store = JobStore(db_path)
+    source_sha256 = "a" * 64
+    config_revision = "b" * 64
+    job = store.create_job(
+        "question_bank_sync",
+        {
+            "session_id": session_id,
+            "source_paper_sha256": source_sha256,
+            "config_revision": config_revision,
+        },
+    )
+    assert store.mark_running(job.id)
+    db.update_question_bank_sync_state(
+        session_id,
+        state="running",
+        details={
+            "job_id": job.id,
+            "source_paper_sha256": source_sha256,
+            "config_revision": config_revision,
+            "stage": "importing",
+        },
+    )
+
+    assert store.fail_interrupted_jobs() == 1
+
+    current = db.get_grading_session(session_id)
+    assert current is not None
+    assert current["question_bank_sync_state"] == "failed"
+    assert current["question_bank_sync_error"] == "interrupted by process restart"
+    assert json.loads(current["question_bank_sync_details_json"]) == {
+        "config_revision": config_revision,
+        "job_id": job.id,
+        "reason": "process_restart",
+        "retryable": True,
+        "source_paper_sha256": source_sha256,
+        "stage": "interrupted",
+    }
+
+
+def test_scan_grading_job_insert_rejects_a_changed_config_binding(
+    tmp_path: Path,
+) -> None:
+    from backend.jobs.store import JobStore
+    from db_manager import DBManager
+
+    db_path = tmp_path / "jobs.db"
+    db = DBManager(db_path)
+    db.initialize()
+    session_id = db.create_grading_session("Exam", "rubric-old.json", "answer-old.json")
+    template_id = db.upsert_session_template(
+        session_id,
+        "template-front.png",
+        "template-back.png",
+    )
+    db.mark_template_confirmed(session_id, True)
+    store = JobStore(db_path)
+    payload = {
+        "session_id": session_id,
+        "scan_batch_id": "c" * 32,
+        "config_revision": "d" * 64,
+        "expected_rubric_path": "rubric-old.json",
+        "expected_answer_key_path": "answer-old.json",
+        "expected_template_id": template_id,
+        "expected_front_template_path": "template-front.png",
+        "expected_back_template_path": "template-back.png",
+    }
+    assert db.publish_grading_session_config(
+        session_id,
+        rubric_path="rubric-new.json",
+        answer_key_path="answer-new.json",
+        expected_rubric_path="rubric-old.json",
+        expected_answer_key_path="answer-old.json",
+    )
+
+    with pytest.raises(RuntimeError, match="changed"):
+        store.create_idempotent_scan_grading_start(payload)
+
+
 def test_job_store_rejects_invalid_finish_status(tmp_path) -> None:
     from backend.jobs.store import JobStore
 
@@ -205,7 +293,7 @@ def test_job_store_records_current_grading_migration(tmp_path: Path) -> None:
             "SELECT migration_name FROM schema_migrations "
             "WHERE success = 1 ORDER BY id DESC LIMIT 1"
         ).fetchone()
-    assert current == ("008_drop_legacy_cli_tables",)
+    assert current == ("009_add_teacher_score_locks",)
 
 
 def test_job_store_preserves_legacy_rows_when_adding_result_json(tmp_path: Path) -> None:

@@ -9,7 +9,7 @@ function row(overrides: Partial<ConfigEditorRow> = {}): ConfigEditorRow {
     row_id: 'row-q12-p1-s1', question_id: 'Q12', part_id: 'P1', step_id: 'S1',
     part_label: '第 1 问', question_type: 'proof', core_goal: '完整证明'.repeat(40), score: 3,
     standard_answer: '标准答案'.repeat(80), accepted_answers: ['等价答案 A'], match_rule: '按关键要素匹配',
-    knowledge: '', answer_only_max_score: null, require_final_answer: true,
+    answer_only_max_score: null, require_final_answer: true,
     required_elements: [], deduction_rules: [], final_answer_rule: '', ...overrides,
   }
 }
@@ -34,13 +34,15 @@ async function mountTable(options: {
 }
 
 describe('RubricEditorTable', () => {
-  it('groups scoring units into compact question cards', async () => {
+  it('renders every scoring point as a compact editable card', async () => {
     const mounted = await mountTable()
 
-    expect(mounted.host.querySelectorAll('.rubric-question-card')).toHaveLength(1)
     expect(mounted.host.querySelectorAll('.rubric-unit-card')).toHaveLength(2)
-    expect(mounted.host.querySelector('.rubric-question-card__header')?.textContent).toContain('Q12')
-    expect(mounted.host.querySelector('.rubric-question-card__header')?.textContent).toContain('100 分')
+    expect(mounted.host.querySelectorAll('.rubric-unit-card__preview')).toHaveLength(2)
+    expect(mounted.host.querySelectorAll('.rubric-unit-card__score-badge')[0]?.textContent)
+      .toContain('3 分')
+    expect(mounted.host.querySelectorAll('.rubric-unit-card__score-badge')[1]?.textContent)
+      .toContain('97 分')
   })
 
   it('addresses score, standard answer and accepted answers by hidden row id', async () => {
@@ -89,7 +91,7 @@ describe('RubricEditorTable', () => {
       { row_id: 'row-q12-p1-s1', final_answer_rule: '单位必须完整' },
     ]))
     expect(mounted.host.querySelectorAll('[aria-label="Q12 P1 要求最终答案"]')).toHaveLength(1)
-    expect(mounted.host.textContent).toContain('本评分单元策略沿用同一小问的首个评分点')
+    expect(mounted.host.textContent).toContain('本评分点沿用同一小问首个评分点的评分策略')
   })
 
   it('renders and edits policy controls on the first row of every part', async () => {
@@ -134,6 +136,7 @@ describe('RubricEditorTable', () => {
     ] })
     expect(mounted.host.querySelector('[role="alert"]')?.textContent).toContain('核对整题策略')
     mounted.host.querySelector<HTMLButtonElement>('[data-issue-field="required_elements"]')!.click()
+    await nextTick()
     expect(document.activeElement?.getAttribute('aria-label')).toBe('Q12 P1 S1 证据要求/关键步骤')
   })
 
@@ -156,11 +159,11 @@ describe('RubricEditorTable', () => {
     const mounted = await mountTable()
     expect(mounted.host.querySelector('.rubric-ledger__viewport')).toBeNull()
     expect(mounted.host.querySelector('.rubric-ledger__cards')?.getAttribute('aria-label'))
-      .toBe('评分依据题目卡片')
+      .toBe('评分依据评分点卡片')
     expect(mounted.host.textContent).toContain('完整证明'.repeat(40))
   })
 
-  it('uses one-line objective fields and two-line process fields without removing edits', async () => {
+  it('distinguishes objective previews without removing any scoring-point editors', async () => {
     const mounted = await mountTable({ rows: [
       row({
         row_id: 'row-q1-p1-s1',
@@ -179,12 +182,14 @@ describe('RubricEditorTable', () => {
 
     const objective = mounted.host.querySelector<HTMLElement>('[data-row-id="row-q1-p1-s1"]')!
     const proof = mounted.host.querySelector<HTMLElement>('[data-row-id="row-q12-p1-s1"]')!
-    expect(objective.classList.contains('is-objective')).toBe(true)
-    expect(proof.classList.contains('is-process')).toBe(true)
+    expect(objective.classList.contains('rubric-unit-card--objective')).toBe(true)
+    expect(proof.classList.contains('rubric-unit-card--objective')).toBe(false)
+    expect(objective.querySelector('.rubric-unit-card__preview')).not.toBeNull()
+    expect(proof.querySelector('.rubric-unit-card__preview')).not.toBeNull()
     expect(objective.querySelector<HTMLTextAreaElement>('[data-edit-field="standard_answer"]')
-      ?.getAttribute('rows')).toBe('1')
+      ?.getAttribute('rows')).toBe('3')
     expect(proof.querySelector<HTMLTextAreaElement>('[data-edit-field="standard_answer"]')
-      ?.getAttribute('rows')).toBe('2')
+      ?.getAttribute('rows')).toBe('3')
     for (const field of ['standard_answer', 'required_elements', 'deduction_rules', 'accepted_answers']) {
       expect(objective.querySelector(`[data-edit-field="${field}"]`)).not.toBeNull()
       expect(proof.querySelector(`[data-edit-field="${field}"]`)).not.toBeNull()

@@ -28,6 +28,12 @@ const permanentState = ref<ActionState>('idle')
 const permanentImpact = ref<SessionDeletionImpact | null>(null)
 const permanentConfirmation = ref('')
 const permanentMessage = ref('')
+const pendingCleanup = ref<{
+  sessionId: number
+  revision: string
+  confirmationPhrase: string
+  sessionName: string
+} | null>(null)
 
 const selectedArchived = computed(() => (
   archivedSessions.value.find((session) => session.id === selectedArchivedId.value) ?? null
@@ -203,11 +209,26 @@ async function submitPermanentDeletion(): Promise<void> {
   permanentState.value = 'working'
   permanentMessage.value = ''
   try {
-    await permanentlyDeleteSession(
+    const result = await permanentlyDeleteSession(
       reviewed.session.id,
       reviewed.revision,
       permanentConfirmation.value,
     )
+    await loadArchivedSessions()
+    permanentState.value = 'done'
+    if (result.storage_cleanup_pending) {
+      pendingCleanup.value = {
+        sessionId: reviewed.session.id,
+        revision: reviewed.revision,
+        confirmationPhrase: permanentConfirmation.value,
+        sessionName: reviewed.session.name,
+      }
+      permanentMessage.value = `“${reviewed.session.name}”的主要数据已永久删除，但文件清理尚未完成。关闭占用文件后可只重试文件清理。`
+    } else {
+      pendingCleanup.value = null
+      permanentMessage.value = `“${reviewed.session.name}”的答卷、批改结果和知识图谱贡献已永久删除。`
+    }
+    return
   } catch (error) {
     if (isAmbiguousWriteError(error)) {
       try {
@@ -216,7 +237,13 @@ async function submitPermanentDeletion(): Promise<void> {
           archivedSessions.value = latest
           selectedArchivedId.value = latest[0]?.id ?? null
           permanentState.value = 'done'
-          permanentMessage.value = `“${reviewed.session.name}”已永久删除。`
+          pendingCleanup.value = {
+            sessionId: reviewed.session.id,
+            revision: reviewed.revision,
+            confirmationPhrase: permanentConfirmation.value,
+            sessionName: reviewed.session.name,
+          }
+          permanentMessage.value = `“${reviewed.session.name}”的主要数据已永久删除；文件清理结果尚未确认，可安全地只重试文件清理。`
           return
         }
       } catch {
@@ -229,9 +256,32 @@ async function submitPermanentDeletion(): Promise<void> {
     permanentMessage.value = actionErrorMessage(error, true)
     return
   }
-  await loadArchivedSessions()
-  permanentState.value = 'done'
-  permanentMessage.value = `“${reviewed.session.name}”的答卷、批改结果和知识图谱贡献已永久删除。`
+}
+
+async function retryPendingCleanup(): Promise<void> {
+  const pending = pendingCleanup.value
+  if (pending === null || permanentState.value === 'working') return
+  permanentState.value = 'working'
+  permanentMessage.value = ''
+  try {
+    const result = await permanentlyDeleteSession(
+      pending.sessionId,
+      pending.revision,
+      pending.confirmationPhrase,
+    )
+    permanentState.value = 'done'
+    if (result.storage_cleanup_pending) {
+      permanentMessage.value = `“${pending.sessionName}”的主要数据已永久删除，但文件清理尚未完成。请关闭占用文件后再次重试。`
+      return
+    }
+    pendingCleanup.value = null
+    permanentMessage.value = `“${pending.sessionName}”的遗留文件清理已完成。`
+  } catch (error) {
+    permanentState.value = isAmbiguousWriteError(error) ? 'unknown' : 'error'
+    permanentMessage.value = isAmbiguousWriteError(error)
+      ? '文件清理结果暂时无法确认。恢复连接后可再次安全重试文件清理。'
+      : '遗留文件尚未清理完成。关闭占用文件后可再次重试。'
+  }
 }
 
 async function restoreSelectedArchive(): Promise<void> {
@@ -352,6 +402,13 @@ async function restoreSelectedArchive(): Promise<void> {
           @click="submitPermanentDeletion"
         >{{ permanentState === 'working' ? '正在永久删除…' : '永久删除这场考试' }}</button>
       </div>
+      <button
+        v-if="pendingCleanup"
+        type="button"
+        class="session-lifecycle__danger-outline"
+        :disabled="permanentState === 'working'"
+        @click="retryPendingCleanup"
+      >{{ permanentState === 'working' ? '正在重试文件清理…' : '重试文件清理' }}</button>
       <p v-if="permanentMessage" class="session-lifecycle__message" role="status">{{ permanentMessage }}</p>
     </article>
   </section>
