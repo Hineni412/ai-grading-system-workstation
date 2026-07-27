@@ -122,6 +122,8 @@ def run_session_question_bank_sync_job(
             "question-bank sync ownership changed"
         )
 
+    link_service = SourceQuestionLinkService(Path(question_bank_db_path))
+    link_rollback_changes: list[dict[str, Any]] = []
     try:
         context.raise_if_cancelled()
         if mode == "tag_retry":
@@ -211,15 +213,21 @@ def run_session_question_bank_sync_job(
         source_questions = current.payload.get("rubric", {}).get("questions", [])
         if not isinstance(source_questions, list):
             source_questions = []
-        link_result = SourceQuestionLinkService(
-            Path(question_bank_db_path)
-        ).confirm_imported_questions_for_session(
+        link_result = link_service.confirm_imported_questions_for_session(
             grading_session_id=session_id,
             source_questions=[
                 item for item in source_questions if isinstance(item, dict)
             ],
             imported_bank_questions=candidates,
+            sync_job_id=context.job_id,
+            sync_config_revision=config_revision,
         )
+        raw_rollback_changes = link_result.pop("_rollback_changes", [])
+        link_rollback_changes = [
+            dict(item)
+            for item in raw_rollback_changes
+            if isinstance(item, dict)
+        ]
 
         result = _result(
             session_id=session_id,
@@ -256,12 +264,26 @@ def run_session_question_bank_sync_job(
                 else None
             ),
         ):
+            link_service.rollback_imported_question_links(
+                grading_session_id=session_id,
+                sync_job_id=context.job_id,
+                changes=link_rollback_changes,
+            )
+            link_rollback_changes = []
             raise StaleQuestionBankSyncError(
                 "question-bank sync ownership changed"
             )
+        link_rollback_changes = []
         context.report(1.0, "question_bank_sync", str(result["outcome"]))
         return result
     except StaleQuestionBankSyncError as exc:
+        if link_rollback_changes:
+            link_service.rollback_imported_question_links(
+                grading_session_id=session_id,
+                sync_job_id=context.job_id,
+                changes=link_rollback_changes,
+            )
+            link_rollback_changes = []
         _transition_owned_sync_state(
             context=context,
             session_id=session_id,
@@ -279,6 +301,13 @@ def run_session_question_bank_sync_job(
         )
         raise
     except JobCancellationRequested:
+        if link_rollback_changes:
+            link_service.rollback_imported_question_links(
+                grading_session_id=session_id,
+                sync_job_id=context.job_id,
+                changes=link_rollback_changes,
+            )
+            link_rollback_changes = []
         _transition_owned_sync_state(
             context=context,
             session_id=session_id,
@@ -296,6 +325,13 @@ def run_session_question_bank_sync_job(
         )
         raise
     except Exception as exc:
+        if link_rollback_changes:
+            link_service.rollback_imported_question_links(
+                grading_session_id=session_id,
+                sync_job_id=context.job_id,
+                changes=link_rollback_changes,
+            )
+            link_rollback_changes = []
         _transition_owned_sync_state(
             context=context,
             session_id=session_id,

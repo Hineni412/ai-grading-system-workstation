@@ -19,6 +19,7 @@ from session_cleanup import (
     SessionStorageDeletionIncomplete,
     hard_delete_session_from_archive,
     hard_delete_session_from_recycle_bin,
+    list_pending_session_permanent_deletions,
     preview_session_permanent_deletion,
     recover_interrupted_session_permanent_deletion,
 )
@@ -351,6 +352,14 @@ def test_success_with_pending_storage_cleanup_is_idempotently_recoverable(
     assert (
         data_root / ".session-delete-staging" / f"session_{session_id}"
     ).is_dir()
+    assert list_pending_session_permanent_deletions(db, data_root=data_root) == [
+        {
+            "session_id": session_id,
+            "deleted_files": result["deleted_files"],
+            "deleted_dirs": result["deleted_dirs"],
+            "skipped_shared": result["skipped_shared"],
+        }
+    ]
 
     monkeypatch.undo()
     recovered = recover_interrupted_session_permanent_deletion(
@@ -366,6 +375,7 @@ def test_success_with_pending_storage_cleanup_is_idempotently_recoverable(
     assert not (
         data_root / ".session-delete-staging" / f"session_{session_id}"
     ).exists()
+    assert list_pending_session_permanent_deletions(db, data_root=data_root) == []
 
 
 def test_permanent_delete_endpoint_recovers_before_session_existence_check(

@@ -10,7 +10,7 @@ import pytest
 
 from backend.config_workspace.publish import publish_legacy_config_and_refresh_mapping
 from backend.jobs.manager import JobManager
-from backend.jobs.store import JobStore
+from backend.jobs.store import ConfigSessionBusyError, JobStore
 from db_manager import DBManager
 
 
@@ -118,6 +118,44 @@ def test_legacy_publish_invalidates_ready_sync_when_only_config_changes(
     assert json.loads(current["question_bank_sync_details_json"]) == {}
     assert current["question_bank_sync_error"] is None
     assert current["question_bank_sync_updated_at"] is None
+
+
+def test_legacy_publish_cannot_change_binding_after_grading_is_queued(
+    tmp_path: Path,
+) -> None:
+    db = DBManager(tmp_path / "grading.db")
+    db.initialize()
+    old_rubric = tmp_path / "old-rubric.json"
+    old_answer = tmp_path / "old-answer.json"
+    old_rubric.write_text("{}", encoding="utf-8")
+    old_answer.write_text("{}", encoding="utf-8")
+    session_id = db.create_grading_session(
+        "Exam",
+        str(old_rubric),
+        str(old_answer),
+    )
+    store = JobStore(db.db_path)
+    store.create_job("grading_run", {"session_id": session_id})
+
+    with pytest.raises(ConfigSessionBusyError):
+        publish_legacy_config_and_refresh_mapping(
+            db,
+            tmp_path / "uploaded",
+            session_id=session_id,
+            rubric_path=str(tmp_path / "new-rubric.json"),
+            answer_key_path=str(tmp_path / "new-answer.json"),
+            source_paper_path="papers/new.docx",
+            source_paper_sha256="b" * 64,
+            mapping_output_dir=tmp_path / "templates",
+            job_store=store,
+            mapping_refresher=lambda: pytest.fail("mapping must not run"),
+        )
+
+    current = db.get_grading_session(session_id)
+    assert current is not None
+    assert current["rubric_path"] == str(old_rubric)
+    assert current["answer_key_path"] == str(old_answer)
+    assert not current["source_paper_path"]
 
 
 def test_legacy_mapping_blocks_new_config_job_submission(tmp_path: Path) -> None:

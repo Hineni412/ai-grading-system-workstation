@@ -538,13 +538,19 @@ class ScanGradingWorkspace:
                 )
             from backend.repositories.compat import open_grading_repositories
 
-            current_session = open_grading_repositories(
-                self.grading_db_path
-            ).get_grading_session(int(session_id))
+            repositories = open_grading_repositories(self.grading_db_path)
+            current_session = repositories.get_grading_session(int(session_id))
+            stored_template = repositories.get_session_template(int(session_id))
             config_revision = str(
                 analysis.get("config_revision") or ""
             ).strip()
-            if current_session is None or not config_revision:
+            if (
+                current_session is None
+                or stored_template is None
+                or int(stored_template.get("id") or 0)
+                != int(current_template.template_id)
+                or not config_revision
+            ):
                 raise GradingConfigChangedError(
                     "grading configuration binding cannot be verified"
                 )
@@ -564,10 +570,10 @@ class ScanGradingWorkspace:
                 ),
                 "expected_template_id": int(current_template.template_id),
                 "expected_front_template_path": str(
-                    current_template.front.path
+                    stored_template.get("front_template_path") or ""
                 ),
                 "expected_back_template_path": str(
-                    current_template.back.path
+                    stored_template.get("back_template_path") or ""
                 ),
             }
             if max_workers is not None:

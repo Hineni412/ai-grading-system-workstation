@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import threading
 import json
@@ -414,6 +415,44 @@ def _purge_staged_storage(
         return False
     _remove_empty_staging_parent(staging_dir)
     return True
+
+
+def list_pending_session_permanent_deletions(
+    db: GradingRepositoryAccess,
+    *,
+    data_root: Path,
+) -> list[dict[str, int]]:
+    """Discover committed deletes whose staged files still need purging."""
+
+    db = as_grading_repositories(db)
+    data_root = Path(data_root).resolve()
+    staging_root = data_root / SESSION_DELETE_STAGING_DIR_NAME
+    if not staging_root.is_dir():
+        return []
+    resolved_staging_root = staging_root.resolve()
+    pending: list[dict[str, int]] = []
+    for candidate in staging_root.iterdir():
+        match = re.fullmatch(r"session_([1-9][0-9]*)", candidate.name)
+        if match is None or not candidate.is_dir():
+            continue
+        expected = resolved_staging_root / candidate.name
+        try:
+            if candidate.resolve() != expected:
+                continue
+        except OSError:
+            continue
+        session_id = int(match.group(1))
+        if db.get_grading_session(session_id) is not None:
+            continue
+        loaded = _read_staging_manifest(data_root, session_id)
+        if loaded is None:
+            continue
+        _staging_dir, payload = loaded
+        pending.append({
+            "session_id": session_id,
+            **_storage_counts_from_manifest(payload),
+        })
+    return sorted(pending, key=lambda item: item["session_id"])
 
 
 def preview_session_permanent_deletion(

@@ -4,10 +4,12 @@ import { computed, onMounted, ref, watch } from 'vue'
 import {
   archiveSession,
   fetchArchivedSessions,
+  fetchPendingSessionCleanups,
   fetchSessionDeletionImpact,
   permanentlyDeleteSession,
   restoreArchivedSession,
   type SessionDeletionImpact,
+  type SessionPendingCleanup,
   type SessionSummary,
 } from '../../api/sessions'
 import { ApiError, isAmbiguousWriteError } from '../../api/errors'
@@ -28,12 +30,10 @@ const permanentState = ref<ActionState>('idle')
 const permanentImpact = ref<SessionDeletionImpact | null>(null)
 const permanentConfirmation = ref('')
 const permanentMessage = ref('')
-const pendingCleanup = ref<{
-  sessionId: number
-  revision: string
-  confirmationPhrase: string
-  sessionName: string
-} | null>(null)
+interface PendingCleanupItem extends SessionPendingCleanup {
+  sessionName?: string
+}
+const pendingCleanups = ref<PendingCleanupItem[]>([])
 
 const selectedArchived = computed(() => (
   archivedSessions.value.find((session) => session.id === selectedArchivedId.value) ?? null
@@ -77,7 +77,16 @@ onMounted(() => {
 async function loadArchivedSessions(preferredId: number | null = null): Promise<void> {
   archivedState.value = 'loading'
   try {
-    archivedSessions.value = await fetchArchivedSessions()
+    const [archived, cleanups] = await Promise.all([
+      fetchArchivedSessions(),
+      fetchPendingSessionCleanups(),
+    ])
+    archivedSessions.value = archived
+    pendingCleanups.value = cleanups.map((item) => ({
+      ...item,
+      sessionName: pendingCleanups.value
+        .find((known) => known.session_id === item.session_id)?.sessionName,
+    }))
     const candidate = preferredId ?? selectedArchivedId.value
     selectedArchivedId.value = archivedSessions.value.some((item) => item.id === candidate)
       ? candidate
@@ -86,6 +95,17 @@ async function loadArchivedSessions(preferredId: number | null = null): Promise<
   } catch {
     archivedState.value = 'error'
   }
+}
+
+function rememberPendingCleanup(
+  cleanup: SessionPendingCleanup,
+  sessionName?: string,
+): void {
+  const next = pendingCleanups.value.filter(
+    (item) => item.session_id !== cleanup.session_id,
+  )
+  next.push({ ...cleanup, sessionName })
+  pendingCleanups.value = next.sort((left, right) => left.session_id - right.session_id)
 }
 
 async function reviewArchive(): Promise<void> {
@@ -217,15 +237,17 @@ async function submitPermanentDeletion(): Promise<void> {
     await loadArchivedSessions()
     permanentState.value = 'done'
     if (result.storage_cleanup_pending) {
-      pendingCleanup.value = {
-        sessionId: reviewed.session.id,
-        revision: reviewed.revision,
-        confirmationPhrase: permanentConfirmation.value,
-        sessionName: reviewed.session.name,
-      }
+      rememberPendingCleanup({
+        session_id: reviewed.session.id,
+        deleted_files: result.deleted_files,
+        deleted_dirs: result.deleted_dirs,
+        skipped_shared: result.skipped_shared,
+      }, reviewed.session.name)
       permanentMessage.value = `“${reviewed.session.name}”的主要数据已永久删除，但文件清理尚未完成。关闭占用文件后可只重试文件清理。`
     } else {
-      pendingCleanup.value = null
+      pendingCleanups.value = pendingCleanups.value.filter(
+        (item) => item.session_id !== reviewed.session.id,
+      )
       permanentMessage.value = `“${reviewed.session.name}”的答卷、批改结果和知识图谱贡献已永久删除。`
     }
     return
@@ -236,14 +258,18 @@ async function submitPermanentDeletion(): Promise<void> {
         if (!latest.some((session) => session.id === reviewed.session.id)) {
           archivedSessions.value = latest
           selectedArchivedId.value = latest[0]?.id ?? null
+          const discovered = await fetchPendingSessionCleanups()
           permanentState.value = 'done'
-          pendingCleanup.value = {
-            sessionId: reviewed.session.id,
-            revision: reviewed.revision,
-            confirmationPhrase: permanentConfirmation.value,
-            sessionName: reviewed.session.name,
+          const cleanup = discovered.find(
+            (item) => item.session_id === reviewed.session.id,
+          )
+          pendingCleanups.value = discovered
+          if (cleanup) {
+            rememberPendingCleanup(cleanup, reviewed.session.name)
+            permanentMessage.value = `“${reviewed.session.name}”的主要数据已永久删除；文件清理尚未完成，可安全地只重试文件清理。`
+          } else {
+            permanentMessage.value = `“${reviewed.session.name}”已永久删除，文件清理也已完成。`
           }
-          permanentMessage.value = `“${reviewed.session.name}”的主要数据已永久删除；文件清理结果尚未确认，可安全地只重试文件清理。`
           return
         }
       } catch {
@@ -258,24 +284,31 @@ async function submitPermanentDeletion(): Promise<void> {
   }
 }
 
-async function retryPendingCleanup(): Promise<void> {
-  const pending = pendingCleanup.value
-  if (pending === null || permanentState.value === 'working') return
+async function retryPendingCleanup(pending: PendingCleanupItem): Promise<void> {
+  if (permanentState.value === 'working') return
   permanentState.value = 'working'
   permanentMessage.value = ''
   try {
     const result = await permanentlyDeleteSession(
-      pending.sessionId,
-      pending.revision,
-      pending.confirmationPhrase,
+      pending.session_id,
+      '0'.repeat(64),
+      '恢复文件清理',
     )
     permanentState.value = 'done'
     if (result.storage_cleanup_pending) {
-      permanentMessage.value = `“${pending.sessionName}”的主要数据已永久删除，但文件清理尚未完成。请关闭占用文件后再次重试。`
+      rememberPendingCleanup({
+        session_id: pending.session_id,
+        deleted_files: result.deleted_files,
+        deleted_dirs: result.deleted_dirs,
+        skipped_shared: result.skipped_shared,
+      }, pending.sessionName)
+      permanentMessage.value = `${pending.sessionName ? `“${pending.sessionName}”` : `考试 #${pending.session_id}`}的主要数据已永久删除，但文件清理尚未完成。请关闭占用文件后再次重试。`
       return
     }
-    pendingCleanup.value = null
-    permanentMessage.value = `“${pending.sessionName}”的遗留文件清理已完成。`
+    pendingCleanups.value = pendingCleanups.value.filter(
+      (item) => item.session_id !== pending.session_id,
+    )
+    permanentMessage.value = `${pending.sessionName ? `“${pending.sessionName}”` : `考试 #${pending.session_id}`}的遗留文件清理已完成。`
   } catch (error) {
     permanentState.value = isAmbiguousWriteError(error) ? 'unknown' : 'error'
     permanentMessage.value = isAmbiguousWriteError(error)
@@ -402,13 +435,20 @@ async function restoreSelectedArchive(): Promise<void> {
           @click="submitPermanentDeletion"
         >{{ permanentState === 'working' ? '正在永久删除…' : '永久删除这场考试' }}</button>
       </div>
-      <button
-        v-if="pendingCleanup"
-        type="button"
-        class="session-lifecycle__danger-outline"
-        :disabled="permanentState === 'working'"
-        @click="retryPendingCleanup"
-      >{{ permanentState === 'working' ? '正在重试文件清理…' : '重试文件清理' }}</button>
+      <div v-if="pendingCleanups.length" class="session-lifecycle__cleanup-list">
+        <div v-for="pending in pendingCleanups" :key="pending.session_id">
+          <span>
+            {{ pending.sessionName ?? `考试 #${pending.session_id}` }}
+            · {{ pending.deleted_files }} 个文件待清理
+          </span>
+          <button
+            type="button"
+            class="session-lifecycle__danger-outline"
+            :disabled="permanentState === 'working'"
+            @click="retryPendingCleanup(pending)"
+          >{{ permanentState === 'working' ? '正在重试文件清理…' : '重试文件清理' }}</button>
+        </div>
+      </div>
       <p v-if="permanentMessage" class="session-lifecycle__message" role="status">{{ permanentMessage }}</p>
     </article>
   </section>

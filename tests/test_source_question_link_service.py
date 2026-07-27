@@ -158,6 +158,36 @@ def test_imported_question_linking_uses_only_explicit_id_or_unique_number(
     assert links[0]["link_method"] == "source_metadata"
 
 
+def test_new_sync_adopts_automatic_link_before_stale_owner_rolls_back(
+    link_service: SourceQuestionLinkService,
+) -> None:
+    first = link_service.confirm_imported_questions_for_session(
+        grading_session_id=18,
+        source_questions=[{"question_id": "Q17", "bank_question_id": 201}],
+        imported_bank_questions=[{"id": 201, "question_number": "17"}],
+        sync_job_id=41,
+        sync_config_revision="a" * 64,
+    )
+    second = link_service.confirm_imported_questions_for_session(
+        grading_session_id=18,
+        source_questions=[{"question_id": "Q17", "bank_question_id": 201}],
+        imported_bank_questions=[{"id": 201, "question_number": "17"}],
+        sync_job_id=42,
+        sync_config_revision="b" * 64,
+    )
+
+    link_service.rollback_imported_question_links(
+        grading_session_id=18,
+        sync_job_id=41,
+        changes=first["_rollback_changes"],
+    )
+
+    links = link_service.list_links(18)
+    assert len(links) == 1
+    assert links[0]["evidence"]["sync_job_id"] == 42
+    assert second["confirmed"] == 1
+
+
 def test_suggestion_never_overwrites_teacher_confirmed_link(
     link_service: SourceQuestionLinkService,
 ) -> None:

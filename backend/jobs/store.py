@@ -1478,6 +1478,113 @@ class JobStore:
                 conn.rollback()
                 raise
 
+    def update_session_config_with_source_if_idle(
+        self,
+        session_id: int,
+        *,
+        rubric_path: str,
+        answer_key_path: str,
+        source_paper_path: str,
+        source_paper_sha256: str,
+        expected_rubric_path: str,
+        expected_answer_key_path: str,
+    ) -> bool:
+        """Atomically bind legacy config/source only while grading is idle."""
+
+        clean_session_id = _positive_int(session_id)
+        clean_source_path = _nonblank_text(
+            source_paper_path,
+            "source_paper_path",
+        )
+        clean_source_sha256 = str(source_paper_sha256 or "").strip().lower()
+        if not _SHA256.fullmatch(clean_source_sha256):
+            raise ValueError("source_paper_sha256 must be sha256")
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                current = conn.execute(
+                    """
+                    SELECT rubric_path, answer_key_path, source_paper_sha256
+                    FROM grading_sessions
+                    WHERE id = ? AND is_deleted = 0
+                    """,
+                    (clean_session_id,),
+                ).fetchone()
+                if current is None:
+                    conn.rollback()
+                    return False
+                if self._find_active_config_session_row(
+                    conn,
+                    session_id=clean_session_id,
+                ) is not None:
+                    raise ConfigSessionBusyError(
+                        f"configuration work is already active for session {clean_session_id}"
+                    )
+                if self._has_active_grading_session(
+                    conn,
+                    session_id=clean_session_id,
+                ):
+                    raise ConfigSessionBusyError(
+                        f"grading work is already active for session {clean_session_id}"
+                    )
+                changed = (
+                    str(current["rubric_path"] or "") != str(rubric_path)
+                    or str(current["answer_key_path"] or "")
+                    != str(answer_key_path)
+                    or str(current["source_paper_sha256"] or "").casefold()
+                    != clean_source_sha256
+                )
+                cursor = conn.execute(
+                    """
+                    UPDATE grading_sessions
+                    SET rubric_path = ?, answer_key_path = ?,
+                        source_paper_path = ?, source_paper_sha256 = ?,
+                        question_bank_sync_state = CASE
+                            WHEN ? THEN 'not_started' ELSE question_bank_sync_state END,
+                        question_bank_sync_details_json = CASE
+                            WHEN ? THEN '{}' ELSE question_bank_sync_details_json END,
+                        question_bank_sync_error = CASE
+                            WHEN ? THEN NULL ELSE question_bank_sync_error END,
+                        question_bank_sync_updated_at = CASE
+                            WHEN ? THEN NULL ELSE question_bank_sync_updated_at END,
+                        updated_at = datetime('now','localtime')
+                    WHERE id = ? AND is_deleted = 0
+                      AND rubric_path = ? AND answer_key_path = ?
+                    """,
+                    (
+                        str(rubric_path),
+                        str(answer_key_path),
+                        clean_source_path,
+                        clean_source_sha256,
+                        changed,
+                        changed,
+                        changed,
+                        changed,
+                        clean_session_id,
+                        str(expected_rubric_path),
+                        str(expected_answer_key_path),
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    conn.rollback()
+                    return False
+                conn.execute(
+                    """
+                    UPDATE session_templates
+                    SET is_confirmed = 0,
+                        regions_snapshot_pending = 0,
+                        regions_snapshot_token = NULL,
+                        updated_at = datetime('now','localtime')
+                    WHERE session_id = ?
+                    """,
+                    (clean_session_id,),
+                )
+                conn.commit()
+                return True
+            except BaseException:
+                conn.rollback()
+                raise
+
     def interrupted_owned_config_input_ids(self) -> set[str]:
         input_ids: set[str] = set()
         with self._connect() as conn:

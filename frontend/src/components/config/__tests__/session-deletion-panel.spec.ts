@@ -12,6 +12,7 @@ import { useSessionStore } from '../../../stores/session'
 const api = vi.hoisted(() => ({
   archiveSession: vi.fn(),
   fetchArchivedSessions: vi.fn(),
+  fetchPendingSessionCleanups: vi.fn(),
   fetchSessionDeletionImpact: vi.fn(),
   permanentlyDeleteSession: vi.fn(),
   restoreArchivedSession: vi.fn(),
@@ -88,6 +89,7 @@ beforeEach(() => {
   api.fetchArchivedSessions
     .mockResolvedValueOnce([archived])
     .mockResolvedValue([])
+  api.fetchPendingSessionCleanups.mockResolvedValue([])
   api.fetchSessionDeletionImpact.mockResolvedValue(impact)
   api.permanentlyDeleteSession
     .mockResolvedValueOnce(deletionResult(true))
@@ -127,6 +129,38 @@ describe('SessionDeletionPanel', () => {
     expect(api.permanentlyDeleteSession).toHaveBeenCalledTimes(2)
     expect(host.textContent).toContain('遗留文件清理已完成')
     expect(host.textContent).not.toContain('文件清理尚未完成')
+    app.unmount()
+  })
+
+  it('rediscovers a pending cleanup after the panel is remounted', async () => {
+    api.fetchArchivedSessions.mockReset().mockResolvedValue([])
+    api.fetchPendingSessionCleanups.mockResolvedValueOnce([{
+      session_id: 7,
+      deleted_files: 3,
+      deleted_dirs: 1,
+      skipped_shared: 0,
+    }])
+    api.permanentlyDeleteSession.mockReset().mockResolvedValue(deletionResult(false))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(SessionDeletionPanel)
+    app.use(createPinia())
+    app.mount(host)
+    await settle()
+
+    const cleanup = host.querySelector('.session-lifecycle__cleanup-list')
+    expect(cleanup?.textContent).toContain('考试 #7')
+    const retry = cleanup?.querySelector('button')
+    expect(retry).toBeInstanceOf(HTMLButtonElement)
+    retry!.click()
+    await settle()
+
+    expect(api.permanentlyDeleteSession).toHaveBeenCalledWith(
+      7,
+      '0'.repeat(64),
+      '恢复文件清理',
+    )
+    expect(host.querySelector('.session-lifecycle__cleanup-list')).toBeNull()
     app.unmount()
   })
 })

@@ -48,6 +48,13 @@ export interface SessionPermanentDeletionResponse {
   recovered_interrupted_delete: boolean
 }
 
+export interface SessionPendingCleanup {
+  session_id: number
+  deleted_files: number
+  deleted_dirs: number
+  skipped_shared: number
+}
+
 export class SessionReadError extends Error {
   constructor() {
     super('无法读取考试列表')
@@ -196,6 +203,41 @@ export async function fetchSessions(): Promise<SessionSummary[]> {
 
 export async function fetchArchivedSessions(): Promise<SessionSummary[]> {
   return (await fetchSessionList(true)).filter((session) => session.is_deleted)
+}
+
+export async function fetchPendingSessionCleanups(): Promise<SessionPendingCleanup[]> {
+  return apiClient.request('/api/sessions/permanent-cleanups', {
+    decode: (value) => {
+      if (
+        !isRecord(value)
+        || !hasExactKeys(value, ['items', 'total'])
+        || !Array.isArray(value.items)
+        || !Number.isSafeInteger(value.total)
+        || Number(value.total) < 0
+      ) throw new Error('invalid pending cleanup response')
+      const items = value.items.map((item) => {
+        if (
+          !isRecord(item)
+          || !hasExactKeys(item, [
+            'session_id', 'deleted_files', 'deleted_dirs', 'skipped_shared',
+          ])
+          || !Number.isSafeInteger(item.session_id)
+          || Number(item.session_id) <= 0
+          || !Number.isSafeInteger(item.deleted_files)
+          || Number(item.deleted_files) < 0
+          || !Number.isSafeInteger(item.deleted_dirs)
+          || Number(item.deleted_dirs) < 0
+          || !Number.isSafeInteger(item.skipped_shared)
+          || Number(item.skipped_shared) < 0
+        ) throw new Error('invalid pending cleanup response')
+        return item as unknown as SessionPendingCleanup
+      })
+      if (items.length !== Number(value.total)) {
+        throw new Error('invalid pending cleanup response')
+      }
+      return items
+    },
+  })
 }
 
 function requireSessionId(id: number): number {

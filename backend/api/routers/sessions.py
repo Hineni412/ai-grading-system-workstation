@@ -30,6 +30,7 @@ from backend.api.schemas.sessions import (
     SessionDeletionImpactResponse,
     SessionDetail,
     SessionListResponse,
+    SessionPendingCleanupListResponse,
     SessionPermanentDeletionResponse,
     SessionProgress,
     SessionSummary,
@@ -56,6 +57,7 @@ from session_cleanup import (
     SessionPermanentDeletionRecoveryFailed,
     SessionStorageDeletionIncomplete,
     hard_delete_session_from_archive,
+    list_pending_session_permanent_deletions,
     preview_session_permanent_deletion,
     question_bank_session_reference_impact,
     recover_interrupted_session_permanent_deletion,
@@ -299,6 +301,21 @@ def list_sessions(
         for row in sessions.list_grading_sessions(include_deleted)
     ]
     return SessionListResponse(items=items, total=len(items))
+
+
+@router.get(
+    "/sessions/permanent-cleanups",
+    response_model=SessionPendingCleanupListResponse,
+)
+def list_pending_permanent_cleanups(
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    data_root: Path = Depends(get_data_root),
+) -> SessionPendingCleanupListResponse:
+    items = list_pending_session_permanent_deletions(
+        db,
+        data_root=data_root,
+    )
+    return SessionPendingCleanupListResponse(items=items, total=len(items))
 
 
 @router.get("/sessions/{session_id}", response_model=SessionDetail)
