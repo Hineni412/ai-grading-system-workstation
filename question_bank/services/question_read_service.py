@@ -8,6 +8,7 @@ import sqlite3
 import stat
 import tempfile
 import time
+import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -30,6 +31,10 @@ from question_bank.services.question_frequency_service import (
 from question_bank.services.question_service import build_question_filter_query
 from question_bank.services.question_revision import question_revision, question_revisions
 from question_bank.services.similarity_service import text_similarity
+from question_bank.taxonomy.curriculum_catalog import (
+    curriculum_chapter_exam_scope_values,
+)
+from question_bank.taxonomy.governance import get_taxonomy_governance
 
 
 ANALYSIS_TAG_TYPES = (
@@ -163,6 +168,13 @@ class QuestionReadFilters:
     question_number: str | None = None
     keyword: str | None = None
     knowledge_point: str | None = None
+    knowledge_points: tuple[str, ...] = ()
+    abilities: tuple[str, ...] = ()
+    methods: tuple[str, ...] = ()
+    models: tuple[str, ...] = ()
+    student_levels: tuple[str, ...] = ()
+    teaching_stages: tuple[str, ...] = ()
+    sub_skills: tuple[str, ...] = ()
     difficulty_min: int | None = None
     difficulty_max: int | None = None
     question_types: tuple[str, ...] = ()
@@ -718,6 +730,51 @@ class QuestionBankReadService:
                     filtered_sql,
                     params,
                     tag_type="knowledge_point",
+                    taxonomy_dimension="knowledge",
+                ),
+                "curriculum_chapters": _curriculum_chapter_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                ),
+                "abilities": _tag_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                    tag_type="ability",
+                    taxonomy_dimension="ability",
+                ),
+                "methods": _tag_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                    tag_type="method",
+                    taxonomy_dimension="method",
+                ),
+                "models": _tag_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                    tag_type="model",
+                    taxonomy_dimension="model",
+                ),
+                "student_levels": _tag_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                    tag_type="student_level",
+                ),
+                "teaching_stages": _tag_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                    tag_type="teaching_stage",
+                ),
+                "sub_skills": _tag_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                    tag_type="sub_skill",
                 ),
                 "question_types": _column_facet(
                     conn,
@@ -1109,6 +1166,7 @@ def _question_filter_parts(
     difficulty_range = None
     if filters.difficulty_min is not None and filters.difficulty_max is not None:
         difficulty_range = (filters.difficulty_min, filters.difficulty_max)
+    governance = get_taxonomy_governance()
     return build_question_filter_query(
         question_number=filters.question_number,
         keyword=filters.keyword,
@@ -1119,11 +1177,45 @@ def _question_filter_parts(
         years=list(filters.years),
         exam_types=list(filters.exam_types),
         grades=list(filters.grades),
-        tag_filters=(
-            {"exam_scope": list(filters.exam_scopes)}
-            if filters.exam_scopes
-            else None
-        ),
+        tag_filters={
+            tag_type: list(values)
+            for tag_type, values in (
+                (
+                    "exam_scope",
+                    governance.expand_filter_values(
+                        "curriculum", filters.exam_scopes
+                    ),
+                ),
+                (
+                    "knowledge_point",
+                    governance.expand_filter_values(
+                        "knowledge", filters.knowledge_points
+                    ),
+                ),
+                (
+                    "ability",
+                    governance.expand_filter_values(
+                        "ability", filters.abilities
+                    ),
+                ),
+                (
+                    "method",
+                    governance.expand_filter_values(
+                        "method", filters.methods
+                    ),
+                ),
+                (
+                    "model",
+                    governance.expand_filter_values(
+                        "model", filters.models
+                    ),
+                ),
+                ("student_level", filters.student_levels),
+                ("teaching_stage", filters.teaching_stages),
+                ("sub_skill", filters.sub_skills),
+            )
+            if values
+        },
         is_deleted=False,
         tag_status=_TAG_STATUS_MAP[filters.tag_status],
     )
@@ -1135,9 +1227,27 @@ def _tag_facet(
     params: list[Any],
     *,
     tag_type: str,
+    taxonomy_dimension: str | None = None,
 ) -> list[dict[str, Any]]:
-    if tag_type not in {"exam_scope", "knowledge_point"}:
+    if tag_type not in {
+        "ability",
+        "exam_scope",
+        "knowledge_point",
+        "method",
+        "model",
+        "student_level",
+        "sub_skill",
+        "teaching_stage",
+    }:
         raise ValueError("Unsupported question facet")
+    if taxonomy_dimension is not None:
+        return _controlled_taxonomy_facet(
+            conn,
+            filtered_sql,
+            params,
+            tag_type=tag_type,
+            dimension=taxonomy_dimension,
+        )
     rows = conn.execute(
         f"""
         WITH filtered_questions AS (
@@ -1155,6 +1265,118 @@ def _tag_facet(
         ORDER BY count DESC, value COLLATE NOCASE ASC
         """,
         params,
+    ).fetchall()
+    return _public_facet_items(rows)
+
+
+def _controlled_taxonomy_facet(
+    conn: sqlite3.Connection,
+    filtered_sql: str,
+    params: list[Any],
+    *,
+    tag_type: str,
+    dimension: str,
+) -> list[dict[str, Any]]:
+    snapshot = get_taxonomy_governance().snapshot()
+    terms = snapshot["terms_by_dimension"].get(dimension, [])
+    alias_index: dict[str, str] = {}
+    for term in terms:
+        canonical_name = str(term.get("name") or "").strip()
+        if not canonical_name:
+            continue
+        for value in (
+            term.get("id"),
+            canonical_name,
+            *term.get("aliases", []),
+        ):
+            key = _taxonomy_value_key(value)
+            if key:
+                alias_index[key] = canonical_name
+    rows = conn.execute(
+        f"""
+        WITH filtered_questions AS (
+            {filtered_sql}
+        )
+        SELECT DISTINCT
+            filtered_questions.id AS question_id,
+            facet.tag_value AS value
+        FROM filtered_questions
+        JOIN question_tags facet
+          ON facet.question_id = filtered_questions.id
+         AND facet.tag_type = '{tag_type}'
+        WHERE COALESCE(facet.tag_value, '') <> ''
+        """,
+        params,
+    ).fetchall()
+    questions_by_value: dict[str, set[int]] = {}
+    for row in rows:
+        raw_value = str(row["value"] or "").strip()
+        if not raw_value:
+            continue
+        public_value = alias_index.get(
+            _taxonomy_value_key(raw_value),
+            raw_value,
+        )
+        questions_by_value.setdefault(public_value, set()).add(
+            int(row["question_id"])
+        )
+    return [
+        {"value": value, "count": len(question_ids)}
+        for value, question_ids in sorted(
+            questions_by_value.items(),
+            key=lambda item: (-len(item[1]), item[0].casefold()),
+        )
+    ]
+
+
+def _taxonomy_value_key(value: object) -> str:
+    normalized = unicodedata.normalize(
+        "NFKC", str(value or "")
+    ).casefold()
+    return re.sub(r"[\s\W_]+", "", normalized)
+
+
+def _curriculum_chapter_facet(
+    conn: sqlite3.Connection,
+    filtered_sql: str,
+    params: list[Any],
+) -> list[dict[str, Any]]:
+    chapter_values = curriculum_chapter_exam_scope_values()
+    value_rows = [
+        (chapter_id, exam_scope)
+        for chapter_id, exam_scopes in chapter_values.items()
+        for exam_scope in exam_scopes
+    ]
+    value_placeholders = ", ".join("(?, ?)" for _ in value_rows)
+    rows = conn.execute(
+        f"""
+        WITH filtered_questions AS (
+            {filtered_sql}
+        ),
+        chapter_values(chapter_id, tag_value) AS (
+            VALUES {value_placeholders}
+        )
+        SELECT
+            chapter_values.chapter_id AS value,
+            COUNT(DISTINCT filtered_questions.id) AS count
+        FROM filtered_questions
+        JOIN question_tags facet
+          ON facet.question_id = filtered_questions.id
+         AND facet.tag_type = 'exam_scope'
+        JOIN chapter_values
+          ON chapter_values.tag_value = facet.tag_value
+        WHERE COALESCE(facet.tag_value, '') <> ''
+        GROUP BY chapter_values.chapter_id
+        ORDER BY count DESC, value COLLATE NOCASE ASC
+        """,
+        [
+            *params,
+            *(
+                value
+                for chapter_id, exam_scope in value_rows
+                for value in (chapter_id, exam_scope)
+            ),
+        ],
     ).fetchall()
     return _public_facet_items(rows)
 

@@ -36,6 +36,11 @@ export interface RegionCommitResponse {
 export interface TemplateSubmission {
   status: 'processing' | 'succeeded' | 'failed' | 'replaced' | 'abandoned'; template: TemplateSummary | null
 }
+export interface TemplatePageAssignment {
+  changed: boolean
+  draft_sync_pending: boolean
+  template: TemplateSummary
+}
 export interface RegionReadiness {
   session_id: number; scoring_configured: boolean; template_present: boolean; template_ready: boolean
 }
@@ -63,7 +68,15 @@ function decodeTemplate(value: unknown): TemplateSummary {
     || typeof value.is_confirmed !== 'boolean' || typeof value.regions_snapshot_pending !== 'boolean') {
     throw new Error('Invalid template response')
   }
-  return value as unknown as TemplateSummary
+  const summary = value as unknown as TemplateSummary
+  const version = encodeURIComponent(summary.template_fingerprint)
+  return {
+    ...summary,
+    pages: {
+      front: { ...summary.pages.front, url: `${summary.pages.front.url}?v=${version}` },
+      back: { ...summary.pages.back, url: `${summary.pages.back.url}?v=${version}` },
+    },
+  }
 }
 function region(value: unknown): value is Region {
   return isRecord(value) && exact(value, ['region_uuid', 'page', 'region_order', 'x', 'y', 'w', 'h',
@@ -118,6 +131,18 @@ function decodeCommit(value: unknown): RegionCommitResponse {
   }
   return value as unknown as RegionCommitResponse
 }
+function decodePageAssignment(value: unknown): TemplatePageAssignment {
+  assertNoPathLikeKeys(value)
+  if (!isRecord(value) || !exact(value, ['changed', 'draft_sync_pending', 'template'])
+    || typeof value.changed !== 'boolean' || typeof value.draft_sync_pending !== 'boolean') {
+    throw new Error('Invalid template page assignment response')
+  }
+  return {
+    changed: value.changed,
+    draft_sync_pending: value.draft_sync_pending,
+    template: decodeTemplate(value.template),
+  }
+}
 function sessionId(value: number): number { if (!positive(value)) throw new Error('Invalid session id'); return value }
 function token(value: string): string { if (!/^[0-9a-f]{32}$/.test(value)) throw new Error('Invalid request token'); return value }
 async function fileSha256(file: File): Promise<string> {
@@ -148,6 +173,21 @@ export async function uploadTemplate(id: number, file: File, firstPageRole: Page
     method: 'POST', rawBody: file, timeoutMs: 10 * 60_000, decode: decodeTemplate,
     headers: { 'content-type': 'application/pdf', 'x-upload-filename': encodeURIComponent(file.name),
       'x-client-request-token': token(requestToken), 'x-content-sha256': contentSha256 },
+  })
+}
+export function assignTemplatePageRole(
+  id: number,
+  firstPageRole: PageRole,
+  expectedTemplateFingerprint: string,
+): Promise<TemplatePageAssignment> {
+  if (!hash(expectedTemplateFingerprint)) throw new Error('Invalid template fingerprint')
+  return apiClient.request(`/api/sessions/${sessionId(id)}/template/page-assignment`, {
+    method: 'PUT',
+    body: {
+      first_page_role: firstPageRole,
+      expected_template_fingerprint: expectedTemplateFingerprint,
+    },
+    decode: decodePageAssignment,
   })
 }
 export function fetchTemplateSubmission(id: number, requestToken: string): Promise<TemplateSubmission> {

@@ -238,9 +238,15 @@ def _normalize_region_id(region: dict[str, Any]) -> str:
 
 def _normalize_part_id(value: str) -> str:
     text = str(value or "").strip()
-    match = re.match(r"^(?:Q|q)?\s*(\d+)\s*[-_]\s*(\d+)$", text)
+    match = re.match(
+        r"^(?:Q|q)?\s*(\d+)\s*[-_]\s*[Pp]?\s*(\d+)$",
+        text,
+    )
     if not match:
-        match = re.match(r"^(?:Q|q)?\s*(\d+)\s*\(\s*(\d+)\s*\)$", text)
+        match = re.match(
+            r"^(?:Q|q)?\s*(\d+)\s*[\(（]\s*[Pp]?\s*(\d+)\s*[\)）]$",
+            text,
+        )
     if match:
         return f"{int(match.group(1))}-{int(match.group(2))}"
     return _normalize_parent_id(text)
@@ -255,7 +261,16 @@ def _normalize_parent_id(value: str) -> str:
 
 def _looks_like_part_id(value: str) -> bool:
     text = str(value or "").strip()
-    return bool(re.match(r"^(?:Q|q)?\s*\d+\s*[-_]\s*\d+$", text) or re.match(r"^(?:Q|q)?\s*\d+\s*\(\s*\d+\s*\)$", text))
+    return bool(
+        re.match(
+            r"^(?:Q|q)?\s*\d+\s*[-_]\s*[Pp]?\s*\d+$",
+            text,
+        )
+        or re.match(
+            r"^(?:Q|q)?\s*\d+\s*[\(（]\s*[Pp]?\s*\d+\s*[\)）]$",
+            text,
+        )
+    )
 
 
 def _region_page(region: dict[str, Any]) -> str:

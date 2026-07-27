@@ -95,35 +95,74 @@ describe('QuestionBlockReview', () => {
 
   it('shows answer facts and builds assets only from semantic identifiers', async () => {
     const mounted = await mountReview()
-    expect(mounted.host.textContent).toContain('已识别答案')
-    expect(mounted.host.textContent).toContain('未识别答案')
+    expect(mounted.host.textContent).toContain('答案已匹配')
+    expect(mounted.host.textContent).toContain('未识别到答案')
     const images = [...mounted.host.querySelectorAll<HTMLImageElement>('img')]
     expect(images.map((image) => [image.alt, image.getAttribute('src')])).toEqual([
       ['Q1 题目图', `/api/sessions/7/config/sources/${'a'.repeat(32)}/questions/Q1/assets/question`],
-      ['Q1 答案图', `/api/sessions/7/config/sources/${'a'.repeat(32)}/questions/Q1/assets/answer`],
+      ['Q1 答案缩略图', `/api/sessions/7/config/sources/${'a'.repeat(32)}/questions/Q1/assets/answer`],
     ])
     expect(images.every((image) => !image.src.includes('path='))).toBe(true)
   })
 
-  it('expands long content with keyboard-labelled controls and resets on source revision', async () => {
+  it('keeps the full question visible and expands the complete answer on demand', async () => {
     const onUpdate = vi.fn()
-    const mounted = await mountReview({ onUpdate })
-    const expand = mounted.host.querySelector<HTMLButtonElement>('[aria-label="展开 Q1 题目"]')!
+    const longQuestion = '完整题干不能折叠。'.repeat(30)
+    const completeSolution = '完整解答第一步：由已知条件得到中间结论。'
+    const reviewSource = source({
+      questions: [{
+        ...source().questions[0]!,
+        question_preview: longQuestion,
+        answer_preview: '结论成立',
+        rich_content: {
+          available: true,
+          question_block_count: 1,
+          answer_block_count: 2,
+          question_blocks: [{
+            kind: 'paragraph', text: longQuestion,
+            segments: [], rows: [], asset_indexes: [], asset_urls: [],
+          }],
+          answer_blocks: [
+            {
+              kind: 'paragraph', text: '结论成立',
+              segments: [], rows: [], asset_indexes: [], asset_urls: [],
+            },
+            {
+              kind: 'paragraph', text: completeSolution,
+              segments: [], rows: [], asset_indexes: [], asset_urls: [],
+            },
+          ],
+        },
+      }],
+    })
+    const mounted = await mountReview({ value: reviewSource, onUpdate })
+    const expand = mounted.host.querySelector<HTMLButtonElement>('[aria-label="展开 Q1 答案"]')!
+
+    expect(mounted.host.querySelector('[data-question-content="Q1"]')?.classList)
+      .not.toContain('question-review__preview--clamped')
+    expect(mounted.host.textContent).toContain(longQuestion)
+    expect(mounted.host.textContent).toContain('结论成立')
+    expect(mounted.host.textContent).not.toContain(completeSolution)
     expect(expand.getAttribute('aria-expanded')).toBe('false')
-    expect(mounted.host.querySelector('[data-question-content="Q1"]')?.classList).toContain('question-review__preview--clamped')
     expand.click()
     await nextTick()
     expect(expand.getAttribute('aria-expanded')).toBe('true')
-    expect(expand.textContent).toContain('收起题目')
+    expect(expand.textContent).toContain('收起答案')
+    expect(mounted.host.textContent).toContain(completeSolution)
+    expect(
+      [...mounted.host.querySelectorAll('.question-content')]
+        .every((element) => element.classList.contains('is-dense')),
+    ).toBe(true)
 
-    change(mounted.host.querySelector<HTMLSelectElement>('[aria-label="Q2 题型"]')!, 'proof')
-    await nextTick()
-    mounted.state.value = source({ source_revision: 'd'.repeat(64) })
+    mounted.state.value = source({
+      ...reviewSource,
+      source_revision: 'd'.repeat(64),
+    })
     await nextTick()
 
     expect(onUpdate).toHaveBeenLastCalledWith([])
-    expect(mounted.host.querySelector<HTMLSelectElement>('[aria-label="Q2 题型"]')?.value).toBe('calculation')
-    expect(mounted.host.querySelector<HTMLButtonElement>('[aria-label="展开 Q1 题目"]')?.getAttribute('aria-expanded')).toBe('false')
+    expect(mounted.host.querySelector<HTMLButtonElement>('[aria-label="展开 Q1 答案"]')?.getAttribute('aria-expanded')).toBe('false')
+    expect(mounted.host.textContent).not.toContain(completeSolution)
   })
 
   it('renders a continuous list and an explicit zero-question state', async () => {

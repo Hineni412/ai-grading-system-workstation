@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import json
 import os
@@ -19,12 +20,15 @@ from docx.text.paragraph import Paragraph
 
 from equivalence_engine import merge_equivalent_forms
 from llm_client import LLMClient
-from question_bank.services.ai_tagging_service import KNOWLEDGE_POINT_OPTIONS
 
 
 DEFAULT_CONFIG_GENERATION_TIMEOUT_SECONDS = 600.0
 DEFAULT_CONFIG_GENERATION_RETRY_DELAYS = (2.0, 6.0)
 DEFAULT_CONFIG_GENERATION_BATCH_SIZE = 3
+MAX_WORD_IMAGES_PER_QUESTION = 16
+MAX_WORD_IMAGES_WHOLE_DOCUMENT = 64
+MAX_WORD_IMAGE_BYTES_PER_QUESTION = 24 * 1024 * 1024
+MAX_WORD_IMAGE_BYTES_WHOLE_DOCUMENT = 48 * 1024 * 1024
 
 
 class _QuestionGenerationRequestError(RuntimeError):
@@ -174,21 +178,38 @@ def _aligned_whole_generation_rules() -> str:
         "2. 选择题和普通填空题只按最终答案判分，不得要求推理或计算过程。\n"
         "3. 要求列出全部可能答案的填空题必须使用 match_mode=complete_set，并输出 required_values、"
         "order_sensitive=false、allow_extra_values=false、partial_credit=false；少写、错写、多写均不得分。\n"
-        "4. 必须输出具体知识点 knowledge_name、knowledge_id、knowledge_points，不得用题干或"
-        "“几何综合/代数综合/综合应用”充当知识点。\n"
+        "4. 知识点与题目标签由题库程序单独维护，不要输出任何 knowledge 字段。\n"
         "5. 主观题评分点必须写出可核验的必要条件、式子或结论，不得只写通用描述。\n"
         "6. 作图题应输出 visual_requirements 和必要踩分点，不得把答案图臆造为唯一文字答案。\n"
         "7. 总分严格为100；单题不超过18分；相同类型客观题必须同分，其他题型不要求同分。\n"
     )
 
 
-def _build_whole_text_generation_prompt(doc_text: str) -> str:
+def _build_whole_text_generation_prompt(
+    doc_text: str,
+    *,
+    image_map: Sequence[str] = (),
+    omitted_image_count: int = 0,
+) -> str:
+    image_context = ""
+    if image_map:
+        image_context = (
+            "\n\nWord 关联图片说明：后附图片按下列顺序补充原文中的题图、答案图和解析图；"
+            "图片与全文文字共同构成输入，不得忽略图片中的条件、标注、表格或公式。\n"
+            f"图片顺序：{'; '.join(image_map)}"
+        )
+    if omitted_image_count:
+        image_context += (
+            f"\n安全载入提示：另有 {int(omitted_image_count)} 张关联图片因单次请求数量、"
+            "总体积或文件可读性限制未附带；不得臆造这些图片中的内容。"
+        )
     return (
         "这是 Word 整卷单次请求。你必须在本次响应中一次完成所有题目的解析、评分点生成与赋分；"
         "不要建议后续补充请求。\n"
         + _build_generation_prompt("", include_source_text=False)
         + _aligned_whole_generation_rules()
-        + f"\nWord 原文（唯一文本来源）：\n{doc_text}"
+        + image_context
+        + f"\nWord 解析文本：\n{doc_text}"
     )
 
 
@@ -208,7 +229,7 @@ def _finalize_whole_generation_payload(
 ) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("AI 整卷生成未返回有效 JSON 对象。")
-    normalize_generated_config_schema(payload)
+    normalize_new_generated_config_payload(payload)
     force_payload_total_score(payload, target_total=100.0)
     meta = payload.setdefault("meta", {})
     if not isinstance(meta, dict):
@@ -231,16 +252,50 @@ def generate_grading_config_from_docx_text(
     model_name: str | None = None,
     report: Any = None,
     q_images: dict[str, str] = None,
+    *,
+    question_blocks: Sequence[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    if report:
-        report(0.18, "Word 整卷单次请求", "直接把整份 Word 文本发送给模型，一次完成解析与赋分。")
-    prompt = _build_whole_text_generation_prompt(doc_text)
-    payload = llm_client.json_from_text_once(
-        prompt,
-        model=model_name,
-        extra_kwargs=_config_generation_extra_kwargs(),
+    image_blobs, image_map, omitted_image_count = (
+        _word_document_image_request_assets(question_blocks or ())
     )
-    return _finalize_whole_generation_payload(payload, "whole_word_text_single_request")
+    if report:
+        detail = (
+            f"发送整份 Word 文本及 {len(image_blobs)} 张题目/答案关联图片，"
+            "一次完成解析与赋分。"
+            if image_blobs
+            else "发送整份 Word 文本，一次完成解析与赋分。"
+        )
+        if omitted_image_count:
+            detail += f" 另有 {omitted_image_count} 张图片受安全上限或可读性限制未载入。"
+        report(0.18, "Word 整卷单次请求", detail)
+    prompt = _build_whole_text_generation_prompt(
+        doc_text,
+        image_map=image_map,
+        omitted_image_count=omitted_image_count,
+    )
+    if image_blobs:
+        payload = llm_client.json_from_images_once(
+            prompt,
+            image_blobs,
+            model=model_name,
+            extra_kwargs=_config_generation_extra_kwargs(),
+            use_config_client=True,
+        )
+    else:
+        payload = llm_client.json_from_text_once(
+            prompt,
+            model=model_name,
+            extra_kwargs=_config_generation_extra_kwargs(),
+        )
+    finalized = _finalize_whole_generation_payload(
+        payload,
+        "whole_word_text_single_request",
+    )
+    meta = finalized.setdefault("meta", {})
+    if isinstance(meta, dict):
+        meta["word_source_image_count"] = len(image_blobs)
+        meta["word_source_images_omitted"] = int(omitted_image_count)
+    return finalized
 
 
 def generate_grading_config_from_docx_text_legacy(
@@ -254,6 +309,7 @@ def generate_grading_config_from_docx_text_legacy(
         report(0.18, "旧版整卷生成", "直接把整份 Word 文本发送给模型生成评分标准。")
     prompt = _build_generation_prompt(doc_text)
     payload = llm_client.json_from_text(prompt, model=model_name, extra_kwargs=_config_generation_extra_kwargs())
+    normalize_new_generated_config_payload(payload)
     validate_generated_config(payload)
     if _needs_objective_repair(payload, doc_text):
         if report:
@@ -263,6 +319,7 @@ def generate_grading_config_from_docx_text_legacy(
             model=model_name,
             extra_kwargs=_config_generation_extra_kwargs(),
         )
+        normalize_new_generated_config_payload(payload)
         validate_generated_config(payload)
     return payload
 
@@ -324,35 +381,170 @@ def _call_question_generation_with_retry(
             time.sleep(retry_delays[retry_index])
 
 
-def _word_block_image_blobs(block: dict[str, Any], *, limit: int = 8) -> list[bytes]:
-    raw_paths: list[str] = []
+def _word_block_image_candidates(
+    block: dict[str, Any],
+) -> list[tuple[str, str]]:
+    candidates: list[tuple[str, str]] = []
     image_paths = block.get("image_paths")
     if isinstance(image_paths, list):
-        raw_paths.extend(str(path).strip() for path in image_paths if str(path).strip())
-    for key in ("question_html", "answer_html", "analysis_html"):
-        value = str(block.get(key) or "")
-        raw_paths.extend(_image_paths_from_rich_text(value))
+        candidates.extend(
+            ("question", str(path).strip())
+            for path in image_paths
+            if str(path).strip()
+        )
+    for role, key in (
+        ("question", "question_html"),
+        ("answer", "answer_html"),
+        ("analysis", "analysis_html"),
+    ):
+        candidates.extend(
+            (role, raw_path)
+            for raw_path in _image_paths_from_rich_text(
+                str(block.get(key) or "")
+            )
+        )
+    return candidates
 
-    blobs: list[bytes] = []
+
+def _word_block_image_assets(
+    block: dict[str, Any],
+    *,
+    limit: int = MAX_WORD_IMAGES_PER_QUESTION,
+    max_total_bytes: int = MAX_WORD_IMAGE_BYTES_PER_QUESTION,
+) -> tuple[list[dict[str, Any]], int]:
+    max_images = max(0, int(limit))
+    byte_budget = max(0, int(max_total_bytes))
+    assets: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for raw_path in raw_paths:
+    role_ordinals = {"question": 0, "answer": 0, "analysis": 0}
+    total_bytes = 0
+    omitted_count = 0
+    for role, raw_path in _word_block_image_candidates(block):
         candidates = [Path(raw_path)]
         if not Path(raw_path).is_absolute():
             candidates.append(Path.cwd() / raw_path)
         path = next((candidate for candidate in candidates if candidate.is_file()), None)
         if path is None:
+            omitted_count += 1
             continue
         resolved = str(path.resolve())
         if resolved in seen:
             continue
         seen.add(resolved)
         try:
-            blobs.append(path.read_bytes())
+            file_size = int(path.stat().st_size)
         except OSError:
+            omitted_count += 1
             continue
-        if len(blobs) >= limit:
-            break
-    return blobs
+        if (
+            len(assets) >= max_images
+            or file_size <= 0
+            or file_size > byte_budget
+            or total_bytes + file_size > byte_budget
+        ):
+            omitted_count += 1
+            continue
+        try:
+            content = path.read_bytes()
+        except OSError:
+            omitted_count += 1
+            continue
+        if (
+            not content
+            or len(content) > byte_budget
+            or total_bytes + len(content) > byte_budget
+        ):
+            omitted_count += 1
+            continue
+        total_bytes += len(content)
+        role_ordinals[role] += 1
+        assets.append(
+            {
+                "role": role,
+                "ordinal": role_ordinals[role],
+                "content": content,
+            }
+        )
+    return assets, omitted_count
+
+
+def _word_block_image_blobs(
+    block: dict[str, Any],
+    *,
+    limit: int = 8,
+) -> list[bytes]:
+    assets, _omitted_count = _word_block_image_assets(
+        block,
+        limit=limit,
+        max_total_bytes=MAX_WORD_IMAGE_BYTES_PER_QUESTION,
+    )
+    return [
+        bytes(asset["content"])
+        for asset in assets
+        if isinstance(asset.get("content"), (bytes, bytearray))
+    ]
+
+
+def _word_document_image_request_assets(
+    question_blocks: Sequence[dict[str, Any]],
+) -> tuple[list[bytes], list[str], int]:
+    image_blobs: list[bytes] = []
+    image_labels: list[list[str]] = []
+    digest_to_index: dict[str, int] = {}
+    total_bytes = 0
+    omitted_count = 0
+    role_labels = {
+        "question": "题目图",
+        "answer": "答案图",
+        "analysis": "解析图",
+    }
+
+    for block_index, block in enumerate(question_blocks, start=1):
+        if not isinstance(block, dict):
+            continue
+        question_id = str(block.get("question_id") or "").strip() or (
+            f"第{block_index}题"
+        )
+        assets, block_omitted = _word_block_image_assets(
+            block,
+            limit=MAX_WORD_IMAGES_PER_QUESTION,
+            max_total_bytes=MAX_WORD_IMAGE_BYTES_PER_QUESTION,
+        )
+        omitted_count += block_omitted
+        for asset in assets:
+            content = asset.get("content")
+            if not isinstance(content, (bytes, bytearray)):
+                omitted_count += 1
+                continue
+            blob = bytes(content)
+            role = str(asset.get("role") or "question")
+            ordinal = int(asset.get("ordinal") or 1)
+            label = (
+                f"{question_id}{role_labels.get(role, '关联图')}{ordinal}"
+            )
+            digest = hashlib.sha256(blob).hexdigest()
+            existing_index = digest_to_index.get(digest)
+            if existing_index is not None:
+                if label not in image_labels[existing_index]:
+                    image_labels[existing_index].append(label)
+                continue
+            if (
+                len(image_blobs) >= MAX_WORD_IMAGES_WHOLE_DOCUMENT
+                or total_bytes + len(blob)
+                > MAX_WORD_IMAGE_BYTES_WHOLE_DOCUMENT
+            ):
+                omitted_count += 1
+                continue
+            digest_to_index[digest] = len(image_blobs)
+            image_blobs.append(blob)
+            image_labels.append([label])
+            total_bytes += len(blob)
+
+    image_map = [
+        f"图片{index}={'、'.join(labels)}"
+        for index, labels in enumerate(image_labels, start=1)
+    ]
+    return image_blobs, image_map, omitted_count
 
 
 def _generate_question_block_results(
@@ -512,7 +704,7 @@ def _generate_grading_config_by_question_blocks(
     _attach_parallel_generation_meta(merged, question_blocks, failures, worker_count, attempt_counts)
     _ensure_question_blocks_covered(merged, question_blocks)
     _apply_local_question_facts(merged, question_blocks)
-    normalize_generated_config_schema(merged)
+    normalize_new_generated_config_payload(merged)
 
     if failures:
         meta = merged.setdefault("meta", {})
@@ -1307,7 +1499,7 @@ def _run_config_generation_batches(
                 question_ids,
                 require_canonical_answer=False,
             )
-            normalize_generated_config_schema(batch_payload)
+            normalize_new_generated_config_payload(batch_payload)
             _validate_exact_batch_payload(batch_payload, question_ids)
             _replace_retry_question_payloads(
                 merged,
@@ -1351,7 +1543,7 @@ def _run_config_generation_batches(
             checkpoint(copy.deepcopy(merged))
 
     _apply_local_question_facts(merged, question_blocks)
-    normalize_generated_config_schema(merged)
+    normalize_new_generated_config_payload(merged)
     _attach_batch_generation_meta(merged, batches, states, batch_size)
     failed = failed_grading_config_batches(merged)
     meta = merged.setdefault("meta", {})
@@ -1525,7 +1717,7 @@ def finalize_completed_grading_config_draft(
         raise ValueError("仍有失败批次，不能完成本地发布。")
     _validate_unique_batch_question_ids(question_blocks)
     _apply_local_question_facts(payload, question_blocks)
-    normalize_generated_config_schema(payload)
+    normalize_new_generated_config_payload(payload)
     expected_ids = [str(block.get("question_id") or "").strip() for block in question_blocks]
     _validate_exact_batch_payload(payload, expected_ids)
     force_payload_total_score(payload, target_total=100.0)
@@ -1695,7 +1887,7 @@ def _build_config_batch_request(
         f"BATCH_QUESTION_IDS_JSON={json.dumps(question_ids, ensure_ascii=False)}\n"
         "必须完整且仅返回上述题号，并在 rubric.questions 与 answer_key.questions 中按同一顺序各出现一次；"
         "不得遗漏、重复或增加题号。所有 max_score、part_score、step_score 暂设为1，最终总分由本地程序分配。\n"
-        "每题必须保留教师确认题型，输出具体 knowledge_id、knowledge_name、parts、steps；"
+        "每题必须保留教师确认题型并输出完整 parts、steps；不要输出任何 knowledge 字段；"
         "每个 part 必须有 response_mode，每个 step 必须有可核验的 core_goal 和 required_elements。"
         "选择/普通填空只核对最终答案；过程题保留必要过程；作图题输出 visual_requirements。\n"
         "只允许字段 rubric、answer_key、meta 及其既有评分结构；不要 Markdown、解释或续写建议。\n"
@@ -1906,7 +2098,7 @@ def retry_failed_grading_config_questions(
     _attach_parallel_generation_meta(merged, locked_blocks, failures, worker_count, all_attempts)
     _ensure_question_blocks_covered(merged, locked_blocks)
     _apply_local_question_facts(merged, locked_blocks)
-    normalize_generated_config_schema(merged)
+    normalize_new_generated_config_payload(merged)
 
     if failures:
         meta = merged.setdefault("meta", {})
@@ -1958,7 +2150,7 @@ def retry_grading_config_score_allocation(
     )
     _ensure_question_blocks_covered(merged, question_blocks)
     _apply_local_question_facts(merged, question_blocks)
-    normalize_generated_config_schema(merged)
+    normalize_new_generated_config_payload(merged)
     meta = merged.setdefault("meta", {})
     meta["score_allocation_mode"] = (
         "dedicated_ai_scoring" if meta.get("score_allocation_ai_success") else "local_score_fallback"
@@ -2640,7 +2832,6 @@ def _build_single_question_image_generation_prompt(
         if has_answer_image
         else "图片1是题目原图；未提供标准答案与解析原图。"
     )
-    knowledge_options = "、".join(str(item) for item in KNOWLEDGE_POINT_OPTIONS)
     return (
         "你正在为一道中学数学题生成可执行评分标准。仅返回严格 JSON。\n"
         f"题目ID：{qid}\n"
@@ -2657,14 +2848,11 @@ def _build_single_question_image_generation_prompt(
         "若一个填空要求列出全部可能答案，必须在 canonical_answer 写全，并输出 match_mode=complete_set、required_values、"
         "order_sensitive=false、allow_extra_values=false、partial_credit=false；不要把少写答案列为 accepted_forms。\n"
         "作图题不得把答案图臆造为唯一文字答案；应输出 visual_requirements 和必要踩分点。\n"
-        "必须输出精炼且具体的 knowledge_name、knowledge_id、knowledge_points；严禁用题干或“几何综合/代数综合/综合应用”充当知识点。\n"
+        "知识点与题目标签由题库程序单独维护，不要输出任何 knowledge 字段。\n"
         "每个主观题步骤的 required_elements 必须写出可核验的条件、式子或结论，不得留空或只写通用描述。\n"
-        f"知识点参考字典：{knowledge_options}\n"
         "仅为该题输出 rubric.questions 与 answer_key.questions，并保持 question_id 一致。\n"
         "必须严格使用以下字段，不得自行改名或创造 answers、answer_parts、answer_content、desc 等同义字段：\n"
-        "{\"rubric\":{\"questions\":[{\"question_id\":\"...\",\"question_type\":\"...\","
-        "\"knowledge_name\":\"...\",\"knowledge_id\":\"...\",\"knowledge_points\":["
-        "{\"knowledge_id\":\"...\",\"knowledge_name\":\"具体考查内容\"}],\"parts\":["
+        "{\"rubric\":{\"questions\":[{\"question_id\":\"...\",\"question_type\":\"...\",\"parts\":["
         "{\"part_id\":\"...\",\"response_mode\":\"...\",\"visual_requirements\":[],\"steps\":["
         "{\"step_id\":\"S1\",\"core_goal\":\"具体踩分点描述\",\"required_elements\":[\"可核验的必要条件或结论\"],"
         "\"allow_alternative_methods\":true}]}]}]},\"answer_key\":{\"questions\":["
@@ -2723,7 +2911,7 @@ def _build_single_question_generation_prompt(block: dict[str, str], doc_text: st
         "order_sensitive=false、allow_extra_values=false、partial_credit=false；不要把少写答案列为 accepted_forms。\n"
         "如果该题包含多个空格、表格单元格或子小问，必须将其拆分为不同的 parts 以给与步骤/部分分。\n"
         "accepted_forms 必须仅包含在数学上完全等价的答案形式。\n\n"
-        "必须输出精炼且具体的 knowledge_name、knowledge_id、knowledge_points；严禁用题干或“几何综合/代数综合/综合应用”充当知识点。\n"
+        "知识点与题目标签由题库程序单独维护，不要输出任何 knowledge 字段。\n"
         "每个主观题步骤的 required_elements 必须写出可核验的条件、式子或结论，不得留空或只写通用描述。\n\n"
         f"{question_context}"
     )
@@ -2747,7 +2935,7 @@ def _merge_single_question_payloads(
         if question_blocks and index < len(question_blocks):
             expected_qid = str(question_blocks[index].get("question_id") or "").strip()
         _coerce_single_question_payload_schema(payload, expected_qid, merged["meta"]["warnings"])
-        normalize_generated_config_schema(payload)
+        normalize_new_generated_config_payload(payload)
         rubric = payload.get("rubric") if isinstance(payload, dict) else {}
         answer_key = payload.get("answer_key") if isinstance(payload, dict) else {}
         for question in rubric.get("questions", []) if isinstance(rubric, dict) else []:
@@ -3032,7 +3220,6 @@ def _placeholder_question_from_block(block: dict[str, str]) -> dict[str, Any]:
         "question_id": qid,
         "question_type": qtype,
         "max_score": 1,
-        "knowledge_id": "UNKNOWN",
         "stem_summary": text.splitlines()[0][:120] if text else qid,
         "parts": [
             {
@@ -3457,13 +3644,6 @@ def _build_generation_prompt(doc_text: str, *, include_source_text: bool = True)
         "        \"question_id\": \"Q1\",\n"
         "        \"question_type\": \"fill_blank|choice|calculation|proof|comprehensive\",\n"
         "        \"max_score\": 8,\n"
-        "        \"knowledge_id\": \"C2_01\",\n"
-        "        \"knowledge_ids\": [\"C2_01\", \"C2_03\"],\n"
-        "        \"knowledge_points\": [\n"
-        "          {\"knowledge_id\": \"C2_01\", \"knowledge_name\": \"主要知识点名称\"},\n"
-        "          {\"knowledge_id\": \"C2_03\", \"knowledge_name\": \"相关知识点名称\"}\n"
-        "        ],\n"
-        "        \"knowledge_name\": \"简短知识点名称，例如三角形内角和/全等三角形判定/等价代数化简\",\n"
         "        \"stem_summary\": \"题干摘要，用一句话概括本题考查内容\",\n"
         "        \"grading_mode\": \"direct_answer|deductive_obligation\",\n"
         "        \"require_final_answer\": false,\n"
@@ -3476,7 +3656,7 @@ def _build_generation_prompt(doc_text: str, *, include_source_text: bool = True)
         "        ],\n"
         "        \"parts\": [\n"
         "          {\n"
-        "            \"part_id\": \"Q1(1)\",\n"
+        "            \"part_id\": \"Q1(P1)\",\n"
         "            \"part_score\": 4,\n"
         "            \"steps\": [\n"
         "              {\n"
@@ -3507,7 +3687,7 @@ def _build_generation_prompt(doc_text: str, *, include_source_text: bool = True)
         "        ],\n"
         "        \"parts\": [\n"
         "          {\n"
-        "            \"part_id\": \"Q1(1)\",\n"
+        "            \"part_id\": \"Q1(P1)\",\n"
         "            \"answer\": \"...\",\n"
         "            \"analysis\": \"...\",\n"
         "            \"step_milestones\": [\"关键中间结论1\", \"关键中间结论2\"]\n"
@@ -3523,8 +3703,7 @@ def _build_generation_prompt(doc_text: str, *, include_source_text: bool = True)
         "}\n\n"
         "硬性要求：\n"
         "1) question_id 在 rubric 与 answer_key 中一一对应。\n"
-        "1.1) knowledge_id 仅是本试卷内的来源编号，不承担跨系统知识身份；必须同时给出具体 knowledge_name，供统一技能目录归一。\n"
-        "1.2) 一道题可以涉及多个知识点。若题目同时考查多个数学概念，必须输出 knowledge_ids 数组和 knowledge_points 数组；knowledge_id 只作为主知识点，取 knowledge_ids 的第一项。\n"
+        "1.1) 知识点与题目标签由题库程序单独维护，不要输出任何 knowledge 字段。\n"
         "2) max_score、part_score、step_score 必须为整数且层级总分一致；不得输出小数。\n"
         "2.1) 整张试卷总分必须严格为 100 分，不能返回 10 分、120 分或其他总分。\n"
         "2.2) 相同 question_type 的客观题（choice/fill_blank）max_score 必须完全一致；解答类大题（calculation/proof/comprehensive）允许不同分值。\n"
@@ -3556,12 +3735,15 @@ def generate_grading_config_from_text(
     llm_client: LLMClient,
     model_name: str | None = None,
     report: Any = None,
+    *,
+    question_blocks: Sequence[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return generate_grading_config_from_docx_text(
         doc_text,
         llm_client,
         model_name=model_name,
         report=report,
+        question_blocks=question_blocks,
     )
 
 

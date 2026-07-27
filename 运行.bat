@@ -19,6 +19,9 @@ set "BROWSER_OPTION="
 if "%AI_GRADING_NO_BROWSER%"=="1" set "BROWSER_OPTION=--no-browser"
 set "PYTHONUTF8=1"
 
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$client = New-Object System.Net.Sockets.TcpClient; try { $task = $client.ConnectAsync('127.0.0.1', [int]$env:API_PORT); if ($task.Wait(750) -and $client.Connected) { exit 0 }; exit 1 } catch { exit 1 } finally { $client.Dispose() }" >nul 2>nul
+if not errorlevel 1 goto port_in_use
+
 "%PYTHON_EXE%" "%PROJECT_RUNNER%" backend.api.launcher --check-frontend >nul
 if errorlevel 1 goto frontend_error
 
@@ -57,6 +60,13 @@ goto failed
 :server_error
 echo The P3.5 service stopped unexpectedly.
 echo Confirm that port %API_PORT% is free and send this output to Codex.
+goto failed
+
+:port_in_use
+echo Port %API_PORT% is already in use.
+echo IMPORTANT: This launch did NOT restart the P3.5 service.
+echo The open page may still be connected to an older P3.5 process.
+echo Close the existing P3.5 service window, then run this file again.
 goto failed
 
 :failed

@@ -4,7 +4,7 @@ import os
 from typing import Any, Mapping, Protocol, Sequence
 
 
-DEFAULT_CONFIG_GENERATION_TIMEOUT_SECONDS = 600.0
+DEFAULT_CONFIG_GENERATION_TIMEOUT_SECONDS = 240.0
 
 
 class ConfigGenerationGateway(Protocol):
@@ -29,7 +29,14 @@ def config_generation_extra_kwargs() -> dict[str, float]:
         )
     except (TypeError, ValueError):
         timeout = DEFAULT_CONFIG_GENERATION_TIMEOUT_SECONDS
-    return {"timeout": max(120.0, timeout)}
+    resolved_timeout = min(600.0, max(240.0, timeout))
+    # The shared gateway derives its final deadline from the request policy.
+    # Pass the explicit override as well as the SDK option so config generation
+    # cannot silently fall back to a shorter profile timeout.
+    return {
+        "timeout": resolved_timeout,
+        "timeout_override_seconds": resolved_timeout,
+    }
 
 
 class LLMConfigGenerationGateway:

@@ -11,6 +11,16 @@ import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
 import { useJobStore } from '../../stores/jobs'
 import { useQuestionBankStore } from '../../stores/question-bank'
 
+const props = withDefaults(defineProps<{
+  pendingTaxonomyCount?: number
+}>(), {
+  pendingTaxonomyCount: 0,
+})
+
+const emit = defineEmits<{
+  reviewTaxonomy: []
+}>()
+
 const bank = useQuestionBankStore()
 const jobStore = useJobStore()
 const busy = ref(false)
@@ -134,7 +144,17 @@ function downloadFailures(job: JobResponse): void {
         <h2 id="qb-import-title">上传试卷与任务</h2>
         <p>Word/PDF 会先安全上传，再由后台生成试卷和题目。</p>
       </div>
-      <span>{{ jobs.length }} 个历史任务</span>
+      <div class="qb-jobs__heading-actions">
+        <span>{{ jobs.length }} 个历史任务</span>
+        <button
+          type="button"
+          class="qb-button is-review"
+          @click="emit('reviewTaxonomy')"
+        >
+          待审核新词
+          <strong>{{ props.pendingTaxonomyCount }}</strong>
+        </button>
+      </div>
     </header>
 
     <div class="qb-jobs__actions">

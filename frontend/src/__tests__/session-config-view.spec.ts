@@ -36,7 +36,9 @@ function activeJob(): JobResponse {
 }
 
 async function settle(): Promise<void> {
-  await Promise.resolve(); await nextTick(); await Promise.resolve(); await nextTick()
+  await Promise.resolve(); await nextTick()
+  await new Promise((resolve) => setTimeout(resolve, 240))
+  await Promise.resolve(); await nextTick()
 }
 
 async function mountDirtyView() {
@@ -71,6 +73,10 @@ async function mountDirtyView() {
 }
 
 async function chooseAndSubmit(host: HTMLElement): Promise<void> {
+  const sourceStage = [...host.querySelectorAll<HTMLButtonElement>('.config-stage-rail button')]
+    .find((button) => button.textContent?.includes('上传与拆题'))
+  sourceStage?.click()
+  await settle()
   const input = host.querySelector<HTMLInputElement>('input[type="file"]')!
   Object.defineProperty(input, 'files', {
     configurable: true, value: [new File(['%PDF'], '替换.pdf')],
@@ -84,6 +90,7 @@ async function chooseAndSubmit(host: HTMLElement): Promise<void> {
 beforeEach(() => {
   document.body.innerHTML = ''
   localStorage.clear()
+  window.history.replaceState({}, '', '/')
   vi.clearAllMocks()
 })
 
@@ -145,6 +152,10 @@ describe('SessionConfigView source replacement guard', () => {
     app.mount(host)
     await nextTick()
 
+    const generationStage = [...host.querySelectorAll<HTMLButtonElement>('.config-stage-rail button')]
+      .find((button) => button.textContent?.includes('AI 生成'))
+    generationStage?.click()
+    await settle()
     expect(host.querySelector('button[name="重新核对生成任务"]')).not.toBeNull()
     expect(host.textContent).toContain('结果尚未确认')
     app.unmount()
@@ -187,6 +198,8 @@ describe('SessionConfigView source replacement guard', () => {
     app.mount(host)
     await nextTick()
 
+    expect(host.querySelectorAll('.rubric-question-card')).toHaveLength(1)
+    expect(host.querySelector('.rubric-ledger table')).toBeNull()
     host.querySelector<HTMLButtonElement>('button[name="AI 完善评分单元"]')!.click()
     await settle()
 
@@ -239,10 +252,42 @@ describe('SessionConfigView source replacement guard', () => {
     useJobStore().track(activeJob())
     await nextTick()
 
-    expect(mounted.host.querySelector<HTMLInputElement>('.config-source input[type="file"]')?.disabled).toBe(true)
     expect(mounted.host.querySelector<HTMLButtonElement>('button[name="保存评分依据"]')?.disabled).toBe(true)
-    expect(mounted.host.querySelector<HTMLAnchorElement>('a[href="/sessions/7/regions"]')?.textContent)
-      .toContain('准备样卷')
+    const sourceStage = [...mounted.host.querySelectorAll<HTMLButtonElement>('.config-stage-rail button')]
+      .find((button) => button.textContent?.includes('上传与拆题'))
+    sourceStage?.click()
+    await settle()
+    expect(mounted.host.querySelector<HTMLInputElement>('.config-source input[type="file"]')?.disabled).toBe(true)
     expect(mounted.host.textContent).toContain('样卷题框')
+  })
+
+  it('consumes a returned stage once and still advances after later generation', async () => {
+    window.history.replaceState({}, '', '/sessions?stage=source')
+    const mounted = await mountDirtyView()
+    await settle()
+
+    expect(mounted.host.querySelector('.config-source')).not.toBeNull()
+    mounted.workspace.phase = 'generation'
+    await nextTick()
+    mounted.workspace.phase = 'editor'
+    await settle()
+
+    expect(mounted.host.querySelector('.rubric-ledger')).not.toBeNull()
+    mounted.unmount()
+  })
+
+  it('focuses the selected preparation stage after the slide finishes', async () => {
+    const scrollIntoView = vi.fn()
+    vi.stubGlobal('scrollTo', vi.fn())
+    HTMLElement.prototype.scrollIntoView = scrollIntoView
+    const mounted = await mountDirtyView()
+    const sourceStage = [...mounted.host.querySelectorAll<HTMLButtonElement>('.config-stage-rail button')]
+      .find((button) => button.textContent?.includes('上传与拆题'))
+    sourceStage?.click()
+    await settle()
+
+    expect(document.activeElement?.id).toBe('config-source-stage')
+    expect(scrollIntoView).toHaveBeenCalled()
+    mounted.unmount()
   })
 })

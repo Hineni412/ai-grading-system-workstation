@@ -16,7 +16,11 @@ from .orchestration import (
 )
 from .policy import build_config_generation_policy
 from .prompts import build_manual_structure_refinement_prompt
-from .normalization import validate_generated_config
+from .normalization import (
+    normalize_new_generated_config_payload,
+    strip_generated_config_knowledge_fields,
+    validate_generated_config,
+)
 
 
 def _session_manager() -> Any:
@@ -33,6 +37,15 @@ def _policy():
             limit=limit,
         ),
         is_transient_error=module._is_transient_config_generation_error,
+        word_block_image_assets=(
+            lambda block, limit, max_total_bytes: (
+                module._word_block_image_assets(
+                    block,
+                    limit=limit,
+                    max_total_bytes=max_total_bytes,
+                )
+            )
+        ),
     )
 
 
@@ -124,9 +137,11 @@ def refine_grading_config_from_manual_structure(
     module = _session_manager()
     working_payload = json.loads(json.dumps(payload, ensure_ascii=False))
     validate_generated_config(working_payload)
+    strip_generated_config_knowledge_fields(working_payload)
     prompt = build_manual_structure_refinement_prompt(working_payload)
     refined = llm_client.json_from_text(prompt, model=model_name)
     try:
+        normalize_new_generated_config_payload(refined)
         validate_generated_config(refined)
     except Exception:
         module._dump_failed_generated_payload(refined)

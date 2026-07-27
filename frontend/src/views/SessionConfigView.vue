@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 
 import ConfigStageRail from '../components/config/ConfigStageRail.vue'
 import ConfigSourceUpload from '../components/config/ConfigSourceUpload.vue'
 import ConfigGenerationPanel from '../components/config/ConfigGenerationPanel.vue'
 import ConfigSaveResult from '../components/config/ConfigSaveResult.vue'
 import QuestionBlockReview from '../components/config/QuestionBlockReview.vue'
+import QuestionBankSyncPanel from '../components/config/QuestionBankSyncPanel.vue'
 import RubricEditorTable from '../components/config/RubricEditorTable.vue'
 import ScoringUnitEditor from '../components/config/ScoringUnitEditor.vue'
+import SessionDeletionPanel from '../components/config/SessionDeletionPanel.vue'
 import SessionDraftPanel from '../components/config/SessionDraftPanel.vue'
 import { ApiError, isAmbiguousWriteError, isAuthoritativeNotFoundError } from '../api/errors'
 import {
@@ -49,10 +51,17 @@ const props = withDefaults(defineProps<{
 const sessionStore = useSessionStore()
 const configStore = useConfigWorkspaceStore()
 const jobStore = useJobStore()
+const requestedStage = ref(new URLSearchParams(window.location.search).get('stage'))
+type StageId = 'draft' | 'source' | 'generation' | 'editor' | 'template'
+const activePanel = ref<'source' | 'editor'>('source')
+const sourceStage = ref<'draft' | 'source' | 'generation'>('draft')
+const transitionName = ref<'config-forward' | 'config-back'>('config-forward')
+const pendingStageFocus = ref<'draft' | 'source' | 'generation' | null>(null)
 const selectedScoringQuestion = ref('')
 const refining = ref(false)
 const refineError = ref('')
 const rubricInputValid = ref(true)
+const syncAfterGeneration = ref(false)
 const templatePresent = ref(false)
 const templateReady = ref(false)
 let templateLoadGeneration = 0
@@ -66,15 +75,19 @@ const configJobActive = computed(() => {
     && current.payload.session_id === configStore.sessionId
     && !['succeeded', 'failed', 'cancelled'].includes(current.status)
 })
+const templateReadinessTrigger = computed(() => {
+  const current = configStore.jobId === null ? null : jobStore.jobs[configStore.jobId]
+  if (current?.job_type !== 'config_generation'
+    || current.payload.session_id !== configStore.sessionId) return ''
+  return `${current.id}:${current.status}:${String(current.result.mapping_status ?? '')}`
+})
 const editorIssues = computed(() => [
   ...(configStore.editor?.issues ?? []),
   ...configStore.serverIssues,
 ])
 const blockingIssues = computed(() => editorIssues.value
   .some((issue) => issue.severity === 'error'))
-const knowledgeNormalizationPending = computed(() => configStore.editor?.issues
-  .some((issue) => issue.code === 'knowledge_normalization_pending') ?? false)
-const saveNeeded = computed(() => configStore.hasDirtyEditor || knowledgeNormalizationPending.value)
+const saveNeeded = computed(() => configStore.hasDirtyEditor)
 const saveBlocked = computed(() => configStore.effectiveTotalScore !== 100
   || blockingIssues.value || !rubricInputValid.value)
 const scoringQuestions = computed(() => [...new Set(
@@ -102,8 +115,77 @@ const templateSummary = computed(() => templateReady.value
   ? '题框已确认，可查看正式版本。'
   : templatePresent.value ? '样卷已上传，题框标定尚未确认。'
     : '尚未上传样卷，请准备双页 PDF 后开始标定。')
+const activeStage = computed<StageId>(() => activePanel.value === 'editor'
+  ? 'editor'
+  : sourceStage.value)
 
-watch(() => sessionStore.currentSession?.id ?? null, async (sessionId) => {
+watch(() => configStore.phase, (phase) => {
+  if (requestedStage.value !== null) return
+  if (phase === 'editor') {
+    if (activePanel.value !== 'editor') transitionName.value = 'config-forward'
+    activePanel.value = 'editor'
+    return
+  }
+  sourceStage.value = phase
+}, { immediate: true })
+
+watch(
+  () => configStore.editor?.configured === true,
+  () => {
+    const stage = requestedStage.value
+    if (stage === null || !['draft', 'source', 'generation', 'editor'].includes(stage)) return
+    if (stage === 'editor' && !configStore.editor?.configured) return
+    requestedStage.value = null
+    void selectStage(stage as Exclude<StageId, 'template'>)
+  },
+  { immediate: true },
+)
+
+async function selectStage(stage: StageId): Promise<void> {
+  if (stage === 'template') {
+    const sessionId = sessionStore.currentSession?.id
+    if (sessionId !== undefined && configStore.editor?.configured) {
+      window.location.assign(`/sessions/${sessionId}/regions`)
+    }
+    return
+  }
+  if (stage === 'editor') {
+    if (!configStore.editor?.configured) return
+    transitionName.value = 'config-forward'
+    activePanel.value = 'editor'
+    await nextTick()
+    document.querySelector<HTMLElement>('#rubric-ledger-title')?.focus()
+    return
+  }
+  transitionName.value = 'config-back'
+  const panelChanging = activePanel.value !== 'source'
+  sourceStage.value = stage
+  pendingStageFocus.value = stage
+  activePanel.value = 'source'
+  if (!panelChanging) {
+    await nextTick()
+    focusPendingStage()
+  }
+}
+
+function focusPendingStage(): void {
+  const stage = pendingStageFocus.value
+  if (stage === null) return
+  pendingStageFocus.value = null
+  const target = document.querySelector<HTMLElement>(
+    stage === 'draft' ? '#session-draft-title'
+      : stage === 'source' ? '#config-source-stage'
+        : '#config-generation-stage',
+  )
+  target?.focus({ preventScroll: true })
+  target?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+}
+
+watch([
+  () => sessionStore.currentSession?.id ?? null,
+  () => configStore.editor?.revision ?? '',
+  templateReadinessTrigger,
+], async ([sessionId]) => {
   const generation = ++templateLoadGeneration
   templatePresent.value = false
   templateReady.value = false
@@ -131,7 +213,7 @@ function editorReflectsRequest(
   request: ConfigEditorSaveRequest,
 ): boolean {
   if (request.edits.length === 0 && request.commands.length === 0) {
-    return !response.issues.some((issue) => issue.code === 'knowledge_normalization_pending')
+    return true
   }
   if (response.revision === request.revision || request.commands.length > 0) return false
   const rows = new Map(response.rows.map((row) => [row.row_id, row]))
@@ -267,34 +349,57 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
     <template v-else>
       <ConfigStageRail
         :phase="configStore.phase"
+        :active-stage="activeStage"
         :session-ready="sessionStore.currentSession !== null"
         :source-ready="configStore.sourceId !== null && configStore.sourceRevision !== null"
         :generation-submitted="configStore.jobId !== null"
         :editor-ready="configStore.editor?.configured === true"
         :template-present="templatePresent"
         :template-ready="templateReady"
+        @select="selectStage"
       />
       <p v-if="sessionStore.sessions.length === 0" class="session-config-view__empty">
         还没有考试。创建草稿后，可以继续上传试卷并准备评分依据。
       </p>
-      <SessionDraftPanel />
-      <template v-if="sessionStore.currentSession">
-        <ConfigSourceUpload
-          :session-id="sessionStore.currentSession.id"
-          :source="configStore.source"
-          :before-upload="confirmSourceUpload"
-          @uploaded="configStore.acceptUploadedSource"
-        />
-        <QuestionBlockReview
-          v-if="configStore.source"
-          :source="configStore.source"
-          :decisions="configStore.decisions"
-          @update:decisions="configStore.updateDecisions"
-        />
-        <ConfigGenerationPanel
-          v-if="configStore.source || configStore.pendingJobRequestToken !== null || configStore.jobId !== null"
-        />
-        <section v-if="configStore.editor?.configured" class="config-editor" aria-label="评分依据工作区">
+      <Transition :name="transitionName" mode="out-in" @after-enter="focusPendingStage">
+        <section v-if="activePanel === 'source'" key="source" class="config-workspace__panel" aria-label="试卷准备">
+          <SessionDraftPanel />
+          <template v-if="sessionStore.currentSession">
+            <div id="config-source-stage" tabindex="-1">
+              <ConfigSourceUpload
+                :session-id="sessionStore.currentSession.id"
+                :source="configStore.source"
+                :before-upload="confirmSourceUpload"
+                @uploaded="configStore.acceptUploadedSource"
+              />
+              <QuestionBlockReview
+                v-if="configStore.source"
+                :source="configStore.source"
+                :decisions="configStore.decisions"
+                @update:decisions="configStore.updateDecisions"
+              />
+            </div>
+            <div
+              v-if="configStore.source || configStore.pendingJobRequestToken !== null || configStore.jobId !== null"
+              id="config-generation-stage"
+              tabindex="-1"
+            >
+              <ConfigGenerationPanel v-model:sync-after-generation="syncAfterGeneration" />
+            </div>
+          </template>
+        </section>
+        <section
+          v-else-if="sessionStore.currentSession && configStore.editor?.configured"
+          key="editor"
+          class="config-editor config-workspace__panel"
+          aria-label="评分依据工作区"
+        >
+          <QuestionBankSyncPanel
+            :session-id="sessionStore.currentSession.id"
+            :config-revision="configStore.editor.revision"
+            :auto-start="syncAfterGeneration"
+            @auto-start-consumed="syncAfterGeneration = false"
+          />
           <RubricEditorTable
             :rows="configStore.effectiveEditorRows"
             :total-score="configStore.effectiveTotalScore"
@@ -330,10 +435,8 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
 
           <div class="config-editor__save-bar">
             <div>
-              <strong>{{ configStore.hasDirtyEditor ? '有未保存修改'
-                : knowledgeNormalizationPending ? '有待保存的兼容更新' : '已与服务器版本同步' }}</strong>
+              <strong>{{ configStore.hasDirtyEditor ? '有未保存修改' : '已与服务器版本同步' }}</strong>
               <span v-if="saveBlocked">需处理阻断问题并使总分为 100 后保存。</span>
-              <span v-else-if="knowledgeNormalizationPending">保存会在本地更新旧知识点格式，不会调用 AI。</span>
               <span v-else>保存时会一次提交全部行修改与评分单元命令。</span>
             </div>
             <button
@@ -364,7 +467,8 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
             <a v-if="templateReady" :href="`/sessions/${sessionStore.currentSession.id}/grading-run`">进入批改执行</a>
           </div>
         </section>
-      </template>
+      </Transition>
+      <SessionDeletionPanel />
     </template>
   </article>
 </template>
@@ -384,4 +488,19 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
 .config-template-entry strong, .config-template-entry span { display: block; }
 .config-template-entry span { margin-block-start: var(--space-1); color: var(--color-text-secondary); }
 .config-template-entry a { min-height: var(--control-height-default); padding: var(--space-2) var(--space-3); border-radius: var(--radius-control); background: var(--color-accent); color: white; text-decoration: none; }
+.config-workspace__panel { min-width: 0; }
+.config-forward-enter-active,
+.config-forward-leave-active,
+.config-back-enter-active,
+.config-back-leave-active { transition: opacity 180ms ease, transform 220ms cubic-bezier(.2, .75, .25, 1); }
+.config-forward-enter-from,
+.config-back-leave-to { opacity: 0; transform: translateX(32px); }
+.config-forward-leave-to,
+.config-back-enter-from { opacity: 0; transform: translateX(-32px); }
+@media (prefers-reduced-motion: reduce) {
+  .config-forward-enter-active,
+  .config-forward-leave-active,
+  .config-back-enter-active,
+  .config-back-leave-active { transition: none; }
+}
 </style>

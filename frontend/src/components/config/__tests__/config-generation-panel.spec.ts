@@ -94,6 +94,18 @@ beforeEach(async () => {
 })
 
 describe('ConfigGenerationPanel', () => {
+  it('keeps optional question-bank AI tagging off by default and explains its cost', async () => {
+    const mounted = await mountPanel()
+    const option = mounted.host.querySelector<HTMLInputElement>(
+      '.config-generation__bank-sync input[type="checkbox"]',
+    )!
+
+    expect(option.checked).toBe(false)
+    expect(mounted.host.textContent).toContain('试卷入库并打标签')
+    expect(mounted.host.textContent).toContain('可能产生模型费用')
+    expect(mounted.host.textContent).toContain('入库失败不会影响已经生成的评分标准')
+  })
+
   it('explains small batches and submits a write only once while disabled', async () => {
     const pending = deferred<JobResponse>()
     const submitter = vi.fn((_sessionId: number, _request: ConfigGenerationRequest) => {

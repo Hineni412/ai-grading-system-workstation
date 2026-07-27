@@ -117,12 +117,31 @@ class ScanPreflightSummaryResponse(BaseModel):
     total_pages: int = Field(ge=0)
 
 
+class ScanPageAssignmentResponse(BaseModel):
+    first_page_role: Literal["front", "back"]
+    front_page_parity: Literal["odd", "even"]
+
+
 class ScanPreflightResponse(BaseModel):
     revision: int = Field(ge=0)
     summary: ScanPreflightSummaryResponse
+    page_assignment: ScanPageAssignmentResponse
     groups: list[dict[str, Any]]
     issues: list[dict[str, Any]]
     absent_students: list[dict[str, Any]]
     warnings: list[str]
     decisions: list[ScanDecisionItem]
     pending_issue_count: int = Field(ge=0)
+
+
+class ScanStudentMatchOptionResponse(BaseModel):
+    id: int = Field(gt=0)
+    student_code: str
+    name: str
+    class_name: str | None = None
+    pinyin_initials: str
+    pinyin_full: str
+
+
+class ScanStudentMatchOptionsResponse(BaseModel):
+    items: list[ScanStudentMatchOptionResponse]

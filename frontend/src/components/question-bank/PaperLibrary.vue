@@ -4,9 +4,16 @@ import { computed, ref } from 'vue'
 import type { QuestionBankPaper } from '../../api/question-bank'
 import { useQuestionBankStore } from '../../stores/question-bank'
 
+const props = withDefaults(defineProps<{
+  pendingTaxonomyCount?: number
+}>(), {
+  pendingTaxonomyCount: 0,
+})
+
 const emit = defineEmits<{
   open: [paper: QuestionBankPaper]
   import: []
+  reviewTaxonomy: []
 }>()
 
 const store = useQuestionBankStore()
@@ -106,6 +113,14 @@ function resetFilters(): void {
         <span><strong>{{ store.papers.length }}</strong> 份试卷</span>
         <span><strong>{{ totalQuestions }}</strong> 道题</span>
         <span><strong>{{ completeQuestions }}</strong> 道标签完整</span>
+        <button
+          type="button"
+          class="paper-button is-review"
+          @click="emit('reviewTaxonomy')"
+        >
+          待审核新词
+          <strong>{{ props.pendingTaxonomyCount }}</strong>
+        </button>
         <button type="button" class="paper-button is-primary" @click="emit('import')">
           上传试卷
         </button>
@@ -516,6 +531,29 @@ function resetFilters(): void {
 
 .paper-button.is-quiet {
   color: var(--color-text-secondary, #5c6672);
+}
+
+.paper-button.is-review {
+  background: #fff8e9;
+  border-color: #efdcb0;
+  color: #805a16;
+  gap: 6px;
+}
+
+.paper-button.is-review:hover {
+  background: #fff3d7;
+  border-color: #e2c67f;
+}
+
+.paper-button.is-review strong {
+  background: #805a16;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 10px;
+  line-height: 18px;
+  margin: 0;
+  min-width: 18px;
+  padding: 0 5px;
 }
 
 .paper-library__state {

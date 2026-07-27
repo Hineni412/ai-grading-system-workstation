@@ -70,6 +70,50 @@ def test_save_tag_analysis_persists_reason(tmp_path: Path) -> None:
     assert saved["reason"] == "学生容易漏用截距条件。"
 
 
+def test_save_tag_analysis_does_not_create_retired_free_text_dimensions(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "question_bank.db"
+    service = QuestionService(db_path)
+    question_id = service.add_question(
+        QuestionCreate(question_number="1", question_text="证明三角形全等。")
+    )
+    analysis = TagAnalysis.from_dict(
+        {
+            "knowledge_points": ["三角形全等"],
+            "method_tags": ["构造全等"],
+            "ability_tags": ["推理能力"],
+            "math_model_tags": ["手拉手模型"],
+            "difficulty": 5,
+            "error_prone_points": ["条件识别不完整"],
+            "prerequisite_points": ["全等三角形的判定"],
+            "textbook_chapter": "八年级上册 第四章 三角形的性质",
+            "teaching_stage": "期末冲刺",
+            "suitable_student_level": "中档提升",
+            "reason": "隔离测试",
+            "sub_skills": ["自由子技能"],
+            "measured_skills": ["自由主要技能"],
+            "supporting_skills": ["自由辅助技能"],
+        }
+    )
+
+    assert service.save_tag_analysis(question_id, analysis)
+
+    with sqlite3.connect(db_path) as conn:
+        saved_types = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT DISTINCT tag_type FROM question_tags WHERE question_id = ?",
+                (question_id,),
+            )
+        }
+
+    assert "teaching_stage" not in saved_types
+    assert "sub_skill" not in saved_types
+    assert "measured_skill" not in saved_types
+    assert "supporting_skill" not in saved_types
+
+
 def test_query_questions_sorts_before_pagination(tmp_path: Path) -> None:
     service = QuestionService(tmp_path / "question_bank.db")
     for number, difficulty in [("1", "1"), ("2", "9"), ("3", "5"), ("4", "7")]:

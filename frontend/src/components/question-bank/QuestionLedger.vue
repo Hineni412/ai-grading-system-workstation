@@ -160,6 +160,7 @@ function closeSimilar(): void {
             :blocks="question.rich_content?.question_blocks"
             :fallback="question.question_text"
             image-alt="题目配图"
+            dense
           />
         </div>
 

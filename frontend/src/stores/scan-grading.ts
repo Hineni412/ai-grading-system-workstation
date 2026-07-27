@@ -5,8 +5,10 @@ import {
   cancelGrading,
   clearScans,
   controlGrading,
+  fetchGradingPlan,
   fetchGradingWorkspace,
   fetchPreflight,
+  fetchScanStudentOptions,
   freezeScans,
   removeScan,
   saveScanDecisions,
@@ -15,13 +17,16 @@ import {
   startPreflight,
   supplementGrading,
   uploadScan,
+  type AutomatedGradingMode,
+  type GradingPlan,
   type GradingMode,
   type GradingWorkspace,
   type ScanDecision,
   type ScanPreflight,
+  type ScanStudentMatchOption,
 } from '../api/scan-grading'
 import { TERMINAL_JOB_STATUSES, type JobResponse } from '../api/jobs'
-import { fetchStudents, type StudentSummary } from '../api/students'
+import { ApiError } from '../api/errors'
 import { useJobStore } from './jobs'
 
 export const useScanGradingStore = defineStore('scan-grading', () => {
@@ -29,26 +34,52 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
   const sessionId = ref<number | null>(null)
   const workspace = ref<GradingWorkspace | null>(null)
   const preflight = ref<ScanPreflight | null>(null)
-  const students = ref<StudentSummary[]>([])
+  const students = ref<ScanStudentMatchOption[]>([])
   const loadState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const busyAction = ref('')
   const errorMessage = ref('')
   const activeJobId = ref<number | null>(null)
   const preflightJobId = ref<number | null>(null)
+  const selectedMode = ref<GradingMode | null>(null)
+  const gradingPlan = ref<GradingPlan | null>(null)
+  const planState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const planErrorMessage = ref('')
   let generation = 0
+  let planGeneration = 0
   let jobsInitialized = false
   let workspaceRefresh: Promise<void> | null = null
   let workspaceRefreshQueued = false
 
   const uploadBatch = computed(() => workspace.value?.upload_batch ?? null)
   const gradingRun = computed(() => workspace.value?.grading_run ?? null)
+  const planRevisionMarker = computed(() => [
+    sessionId.value ?? '',
+    uploadBatch.value?.batch_id ?? '',
+    uploadBatch.value?.revision ?? -1,
+    preflight.value?.revision ?? -1,
+  ].join(':'))
 
   function safeMessage(error: unknown): string {
+    if (error instanceof ApiError && error.code === 'grading_preflight_stale') {
+      return '评分依据或样卷题框已经更新，请重新运行扫描预检后再预览批改计划。'
+    }
     return error instanceof Error && error.message ? error.message : '操作没有完成，请稍后重试。'
   }
 
   function isCurrent(id: number, expectedGeneration: number): boolean {
     return sessionId.value === id && generation === expectedGeneration
+  }
+
+  function invalidatePlan(): void {
+    planGeneration += 1
+    gradingPlan.value = null
+    planState.value = 'idle'
+    planErrorMessage.value = ''
+  }
+
+  function resetPlanSelection(): void {
+    selectedMode.value = null
+    invalidatePlan()
   }
 
   function projectedScanJob(next: GradingWorkspace): JobResponse | null {
@@ -173,6 +204,7 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
     students.value = []
     activeJobId.value = null
     preflightJobId.value = null
+    resetPlanSelection()
     workspaceRefreshQueued = false
     busyAction.value = ''
     errorMessage.value = ''
@@ -184,7 +216,7 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
       }
       const [next, studentList] = await Promise.all([
         fetchGradingWorkspace(id),
-        fetchStudents().catch(() => []),
+        fetchScanStudentOptions(id).catch(() => []),
       ])
       if (!isCurrent(id, current)) return
       applyWorkspaceSnapshot(next)
@@ -332,10 +364,43 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
     })
   }
 
-  async function begin(mode: GradingMode, confirmPending: boolean): Promise<void> {
+  async function previewPlan(mode: GradingMode): Promise<void> {
+    const id = sessionId.value; const batch = uploadBatch.value; const check = preflight.value
+    const current = generation
+    if (!id || !batch || !check || busyAction.value) return
+    selectedMode.value = mode
+    invalidatePlan()
+    const currentPlanGeneration = planGeneration
+    const expectedMarker = planRevisionMarker.value
+    planState.value = 'loading'
+    try {
+      const result = await fetchGradingPlan(id, mode)
+      if (!isCurrent(id, current)
+        || planGeneration !== currentPlanGeneration
+        || planRevisionMarker.value !== expectedMarker
+        || selectedMode.value !== mode) return
+      if (result.mode !== mode) throw new Error('计划返回的批改方式与当前选择不一致，请重新预览。')
+      gradingPlan.value = result
+      planState.value = 'ready'
+    } catch (error) {
+      if (!isCurrent(id, current)
+        || planGeneration !== currentPlanGeneration
+        || planRevisionMarker.value !== expectedMarker
+        || selectedMode.value !== mode) return
+      planState.value = 'error'
+      planErrorMessage.value = safeMessage(error)
+    }
+  }
+
+  watch(planRevisionMarker, (next, previous) => {
+    if (next !== previous) invalidatePlan()
+  })
+
+  async function begin(mode: AutomatedGradingMode, confirmPending: boolean): Promise<void> {
     const id = sessionId.value; const batch = uploadBatch.value; const check = preflight.value
     const current = generation
     if (!id || !batch || !check) return
+    invalidatePlan()
     await runAction('grading', id, current, async () => {
       const job = await startGrading(id, mode, batch.revision, check.revision, confirmPending)
       if (!isCurrent(id, current)) return
@@ -393,6 +458,7 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
   }
 
   return { sessionId, workspace, preflight, students, loadState, busyAction, errorMessage,
-    activeJobId, preflightJobId, uploadBatch, gradingRun, load, addFiles, remove, clear,
-    analyze, refreshPreflight, saveDecisions, begin, control, cancel, supplement, newBatch }
+    activeJobId, preflightJobId, selectedMode, gradingPlan, planState, planErrorMessage,
+    uploadBatch, gradingRun, load, addFiles, remove, clear, analyze, refreshPreflight,
+    saveDecisions, previewPlan, begin, control, cancel, supplement, newBatch }
 })

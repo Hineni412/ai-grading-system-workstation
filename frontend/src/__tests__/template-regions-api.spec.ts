@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '../api/errors'
-import { fetchRegionWorkspace, uploadTemplate } from '../api/template-regions'
+import {
+  assignTemplatePageRole,
+  fetchRegionWorkspace,
+  uploadTemplate,
+} from '../api/template-regions'
 
 const template = {
   session_id: 7, template_id: 3, template_fingerprint: 'a'.repeat(64), first_page_role: 'front',
@@ -48,5 +52,39 @@ describe('template region API contract', () => {
       'content-type': 'application/pdf', 'x-client-request-token': 'b'.repeat(32),
       'x-content-sha256': '315d429b7714cedb6ad04ac31240145257692630457f3c88253c5beceac76027',
     })
+  })
+
+  it('sets the current page role as a target state and versions page images', async () => {
+    const reassigned = {
+      ...template,
+      template_fingerprint: 'b'.repeat(64),
+      first_page_role: 'back',
+      pages: {
+        front: { url: '/api/sessions/7/template/pages/front', width: 2480, height: 3508 },
+        back: { url: '/api/sessions/7/template/pages/back', width: 1000, height: 1400 },
+      },
+    }
+    const fetchMock = vi.fn<typeof fetch>(async () => response({
+      changed: true,
+      draft_sync_pending: false,
+      template: reassigned,
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await assignTemplatePageRole(7, 'back', 'a'.repeat(64))
+
+    const [path, init] = fetchMock.mock.calls[0]!
+    expect(path).toBe('/api/sessions/7/template/page-assignment')
+    expect(init).toMatchObject({ method: 'PUT' })
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({
+      first_page_role: 'back',
+      expected_template_fingerprint: 'a'.repeat(64),
+    })
+    expect(result.template.pages.front.url).toBe(
+      `/api/sessions/7/template/pages/front?v=${'b'.repeat(64)}`,
+    )
+    expect(result.template.pages.back.url).toBe(
+      `/api/sessions/7/template/pages/back?v=${'b'.repeat(64)}`,
+    )
   })
 })

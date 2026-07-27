@@ -11,6 +11,7 @@ import {
 vi.mock('../api/template-regions', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/template-regions')>(),
   fetchRegionReadiness: vi.fn(), fetchRegionWorkspace: vi.fn(), saveRegionDraft: vi.fn(), uploadTemplate: vi.fn(),
+  assignTemplatePageRole: vi.fn(),
   fetchTemplateSubmission: vi.fn(), abandonTemplateSubmission: vi.fn(),
   discardRegionDraft: vi.fn(), commitRegions: vi.fn(), retryRegionSnapshot: vi.fn(),
 }))
@@ -99,6 +100,71 @@ describe('template region store', () => {
     store.continueDraft()
     expect(store.editorReady).toBe(true)
     expect(store.editorState.regions[0]?.region_uuid).toBe('draft-region')
+  })
+
+  it('reassigns the current sample pages and resumes the transformed draft', async () => {
+    const initial = workspace()
+    const reassigned = workspace()
+    reassigned.template = {
+      ...reassigned.template,
+      template_fingerprint: 'b'.repeat(64),
+      first_page_role: 'back',
+      pages: {
+        front: { url: '/api/sessions/7/template/pages/front?v=next', width: 1400, height: 1000 },
+        back: { url: '/api/sessions/7/template/pages/back?v=next', width: 1400, height: 1000 },
+      },
+    }
+    reassigned.draft = {
+      status: 'compatible',
+      revision: 2,
+      regions: [{
+        region_uuid: 'draft-region', page: 'back', region_order: 1,
+        x: 10, y: 20, w: 100, h: 80, mapped_question_id: 'Q1',
+        mapping_status: 'manual', is_confirmed: false, multi_region_confirmed: false,
+      }],
+    }
+    vi.mocked(api.fetchRegionWorkspace)
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(reassigned)
+    vi.mocked(api.assignTemplatePageRole).mockResolvedValue({
+      changed: true,
+      draft_sync_pending: false,
+      template: reassigned.template,
+    })
+    const store = useTemplateRegionStore()
+    await store.load(7)
+
+    await store.assignFirstPageRole('back')
+
+    expect(api.assignTemplatePageRole).toHaveBeenCalledWith(7, 'back', 'a'.repeat(64))
+    expect(store.assignmentState).toBe('idle')
+    expect(store.workspace?.template.first_page_role).toBe('back')
+    expect(store.editorReady).toBe(true)
+    expect(store.editorState.regions[0]?.page).toBe('back')
+    expect(store.editorState.active_page).toBe('back')
+  })
+
+  it('keeps the old target visible when draft synchronization needs a retry', async () => {
+    const initial = workspace()
+    vi.mocked(api.fetchRegionWorkspace).mockResolvedValue(initial)
+    vi.mocked(api.assignTemplatePageRole).mockResolvedValue({
+      changed: true,
+      draft_sync_pending: true,
+      template: {
+        ...initial.template,
+        template_fingerprint: 'b'.repeat(64),
+        first_page_role: 'back',
+      },
+    })
+    const store = useTemplateRegionStore()
+    await store.load(7)
+
+    await store.assignFirstPageRole('back')
+
+    expect(store.assignmentState).toBe('error')
+    expect(store.workspace?.template.first_page_role).toBe('front')
+    expect(store.errorMessage).toContain('再次点击')
+    expect(api.fetchRegionWorkspace).toHaveBeenCalledOnce()
   })
 
   it('opens the issue drawer when formal validation rejects the regions', async () => {

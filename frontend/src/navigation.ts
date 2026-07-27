@@ -119,16 +119,16 @@ export const gradingRunRouteDefinition = {
   path: '/sessions/:sessionId/grading-run',
   title: '批改执行',
   description: '上传整班答卷、完成扫描预检并控制批改运行',
-  breadcrumb: '考试配置 / 批改执行',
+  breadcrumb: '考试批改 / 批改执行',
 } as const
 
 export const reviewRouteDefinition = {
   id: 'grading',
-  label: '评分复核',
+  label: '考试批改',
   path: '/grading',
-  title: '评分复核',
-  description: '按题号批量比较并确认评分结果',
-  breadcrumb: '评分复核',
+  title: '考试批改',
+  description: '执行整班批改，并按题人工评分或复核 AI 结果',
+  breadcrumb: '考试批改',
   icon: 'review',
 } as const satisfies WorkspaceRouteDefinition
 

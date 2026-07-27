@@ -482,13 +482,17 @@ export default function answerRegionEditor(component) {
     );
   }
 
-  function nextMappingLabel() {
+  function nextMapping() {
     const supplied = data.next_mapping || data.next_question_id;
     if (supplied && typeof supplied === "object") {
-      return supplied.label || supplied.value || "";
+      const value = String(supplied.value || supplied.label || "").trim();
+      return value ? {
+        value,
+        label: String(supplied.label || supplied.value || "").trim(),
+      } : null;
     }
     if (supplied) {
-      return String(supplied);
+      return { value: String(supplied), label: String(supplied) };
     }
     const candidates = Array.isArray(data.automatic_candidates)
       ? data.automatic_candidates
@@ -496,7 +500,12 @@ export default function answerRegionEditor(component) {
     const used = new Set(
       regions.map((region) => region.mapped_question_id).filter(Boolean),
     );
-    return candidates.find((candidate) => !used.has(candidate)) || "无可用自动映射";
+    const value = candidates.find((candidate) => !used.has(candidate));
+    return value ? { value, label: value } : null;
+  }
+
+  function nextMappingLabel() {
+    return nextMapping()?.label || "无可用自动映射";
   }
 
   function renderStatus() {
@@ -872,13 +881,14 @@ export default function answerRegionEditor(component) {
         (maximum, region) => Math.max(maximum, numberOr(region.region_order)),
         0,
       );
+      const automaticMapping = nextMapping();
       const created = {
         region_uuid: regionUuid,
         page: activePage,
         region_order: maxOrder + 1,
         ...geometry,
-        mapped_question_id: null,
-        mapping_status: "unbound",
+        mapped_question_id: automaticMapping?.value || null,
+        mapping_status: automaticMapping ? "auto" : "unbound",
         multi_region_confirmed: false,
       };
       selectedUuid = regionUuid;

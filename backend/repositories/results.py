@@ -27,7 +27,15 @@ class ResultRepository:
         student_id: int,
         paper_id: int,
         grading_result: GradingResult,
+        *,
+        scan_batch_id: str | None = None,
     ) -> int:
+        details, student_score, raw_json = self._merge_teacher_locks(
+            session_id=session_id,
+            student_id=student_id,
+            scan_batch_id=scan_batch_id,
+            grading_result=grading_result,
+        )
         old_rows = self.session.connection.execute(
             """
             SELECT id
@@ -63,13 +71,13 @@ class ResultRepository:
                 student_id,
                 paper_id,
                 grading_result.total_score,
-                grading_result.student_score,
+                student_score,
                 1 if grading_result.needs_human_review else 0,
-                json.dumps(grading_result.raw_json, ensure_ascii=False),
+                json.dumps(raw_json, ensure_ascii=False),
             ),
         )
         result_id = int(cursor.lastrowid)
-        for detail in grading_result.grading_details:
+        for detail in details:
             self.session.connection.execute(
                 """
                 INSERT INTO session_details (
@@ -93,6 +101,79 @@ class ResultRepository:
                 ),
             )
         return result_id
+
+    def _merge_teacher_locks(
+        self,
+        *,
+        session_id: int,
+        student_id: int,
+        scan_batch_id: str | None,
+        grading_result: GradingResult,
+    ) -> tuple[list[QuestionGradingDetail], float, dict[str, Any]]:
+        details_by_qid = {
+            str(detail.question_id): detail
+            for detail in grading_result.grading_details
+        }
+        if not scan_batch_id:
+            return (
+                list(details_by_qid.values()),
+                float(grading_result.student_score),
+                dict(grading_result.raw_json or {}),
+            )
+
+        rows = self.session.connection.execute(
+            """
+            SELECT
+                question_id, score_awarded, deduction_reason, revision
+            FROM teacher_score_locks
+            WHERE session_id = ? AND scan_batch_id = ? AND student_id = ?
+            ORDER BY id
+            """,
+            (int(session_id), str(scan_batch_id), int(student_id)),
+        ).fetchall()
+        if not rows:
+            return (
+                list(details_by_qid.values()),
+                float(grading_result.student_score),
+                dict(grading_result.raw_json or {}),
+            )
+
+        locked_question_ids: list[str] = []
+        for row in rows:
+            question_id = str(row["question_id"])
+            previous = details_by_qid.get(question_id)
+            details_by_qid[question_id] = QuestionGradingDetail(
+                question_id=question_id,
+                score_awarded=float(row["score_awarded"]),
+                deduction_reason=(
+                    str(row["deduction_reason"])
+                    if row["deduction_reason"] is not None
+                    else "教师人工批改已确认"
+                ),
+                knowledge_id=(
+                    previous.knowledge_id if previous is not None else "UNKNOWN"
+                ),
+                error_category="教师已确认",
+                error_summary="teacher_score_locked",
+                confidence_score=(
+                    previous.confidence_score if previous is not None else None
+                ),
+                knowledge_ids=(
+                    list(previous.knowledge_ids) if previous is not None else []
+                ),
+                secondary_errors=(
+                    list(previous.secondary_errors) if previous is not None else []
+                ),
+            )
+            locked_question_ids.append(question_id)
+
+        details = list(details_by_qid.values())
+        raw_json = dict(grading_result.raw_json or {})
+        raw_json["teacher_score_locks"] = {
+            "scan_batch_id": str(scan_batch_id),
+            "question_ids": locked_question_ids,
+        }
+        return details, sum(float(item.score_awarded) for item in details), raw_json
 
     def current_assignment_matches(
         self,
@@ -506,15 +587,43 @@ class ResultRepository:
         needs_human_review: bool,
         raw_json: dict[str, Any],
         rubric: dict[str, Any] | None = None,
+        scan_batch_id: str | None = None,
     ) -> None:
-        if self.session.connection.execute(
-            "SELECT 1 FROM session_results WHERE id = ?",
+        owner = self.session.connection.execute(
+            "SELECT session_id, student_id FROM session_results WHERE id = ?",
             (result_id,),
-        ).fetchone() is None:
+        ).fetchone()
+        if owner is None:
             raise ValueError(f"Unknown session result: {result_id}")
 
+        locked_rows: list[Any] = []
+        locked_question_ids: set[str] = set()
+        if scan_batch_id:
+            locked_rows = self.session.connection.execute(
+                """
+                SELECT
+                    question_id, score_awarded, deduction_reason, revision
+                FROM teacher_score_locks
+                WHERE session_id = ?
+                  AND scan_batch_id = ?
+                  AND student_id = ?
+                ORDER BY id
+                """,
+                (
+                    int(owner["session_id"]),
+                    str(scan_batch_id),
+                    int(owner["student_id"]),
+                ),
+            ).fetchall()
+            locked_question_ids = {
+                str(row["question_id"]) for row in locked_rows
+            }
         question_ids = list(
-            dict.fromkeys(str(value) for value in remove_question_ids)
+            dict.fromkeys(
+                str(value)
+                for value in remove_question_ids
+                if str(value) not in locked_question_ids
+            )
         )
         if question_ids:
             placeholders = ",".join("?" for _ in question_ids)
@@ -526,7 +635,58 @@ class ResultRepository:
                 (result_id, *question_ids),
             )
         for detail in replacement_details:
+            if str(detail.question_id) in locked_question_ids:
+                continue
             self._insert_detail(result_id, detail)
+
+        # A teacher can confirm an item that was missing from an incomplete AI
+        # result.  Preserve/update existing locked rows and materialize a
+        # missing detail before the completeness audit, so an explicit retry
+        # cannot fail merely because it correctly skipped the teacher's item.
+        for lock in locked_rows:
+            question_id = str(lock["question_id"])
+            existing = self.session.connection.execute(
+                """
+                SELECT id
+                FROM session_details
+                WHERE result_id = ? AND question_id = ?
+                ORDER BY id
+                """,
+                (result_id, question_id),
+            ).fetchall()
+            if existing:
+                for row in existing:
+                    self.session.connection.execute(
+                        """
+                        UPDATE session_details
+                        SET score_awarded = ?,
+                            deduction_reason = ?,
+                            error_category = '教师已确认',
+                            error_summary = 'teacher_score_locked'
+                        WHERE id = ?
+                        """,
+                        (
+                            float(lock["score_awarded"]),
+                            lock["deduction_reason"]
+                            or "教师人工批改已确认",
+                            int(row["id"]),
+                        ),
+                    )
+                continue
+            self._insert_detail(
+                result_id,
+                QuestionGradingDetail(
+                    question_id=question_id,
+                    score_awarded=float(lock["score_awarded"]),
+                    deduction_reason=(
+                        str(lock["deduction_reason"])
+                        if lock["deduction_reason"] is not None
+                        else "教师人工批改已确认"
+                    ),
+                    error_category="教师已确认",
+                    error_summary="teacher_score_locked",
+                ),
+            )
 
         stored_details = [
             _detail_row_with_knowledge_ids(dict(row))
@@ -549,6 +709,13 @@ class ResultRepository:
         persisted_raw_json = (
             dict(raw_json) if isinstance(raw_json, dict) else {}
         )
+        if scan_batch_id and locked_rows:
+            persisted_raw_json["teacher_score_locks"] = {
+                "scan_batch_id": str(scan_batch_id),
+                "question_ids": [
+                    str(row["question_id"]) for row in locked_rows
+                ],
+            }
         if rubric is not None:
             completeness = audit_grading_details(rubric, stored_details)
             if completeness["status"] != "complete":
@@ -666,14 +833,17 @@ class ResultRepositoryGateway:
         student_id: int,
         paper_id: int,
         grading_result: GradingResult,
+        *,
+        scan_batch_id: str | None = None,
     ) -> int:
         with self._sessions.session() as session:
-            with session.transaction():
+            with session.transaction(immediate=True):
                 return ResultRepository(session).save_session_result(
                     session_id,
                     student_id,
                     paper_id,
                     grading_result,
+                    scan_batch_id=scan_batch_id,
                 )
 
     def publish_session_result_if_current_assignment(
@@ -682,6 +852,8 @@ class ResultRepositoryGateway:
         student_id: int,
         paper_id: int,
         grading_result: GradingResult,
+        *,
+        scan_batch_id: str | None = None,
     ) -> int | None:
         with self._sessions.session() as session:
             with session.transaction(immediate=True):
@@ -697,6 +869,7 @@ class ResultRepositoryGateway:
                     student_id,
                     paper_id,
                     grading_result,
+                    scan_batch_id=scan_batch_id,
                 )
                 PaperRepository(session).update_exam_paper_status(
                     paper_id,
@@ -800,10 +973,11 @@ class ResultRepositoryGateway:
         needs_human_review: bool,
         raw_json: dict[str, Any],
         rubric: dict[str, Any] | None = None,
+        scan_batch_id: str | None = None,
     ) -> None:
         del student_score
         with self._sessions.session() as session:
-            with session.transaction():
+            with session.transaction(immediate=True):
                 ResultRepository(session).replace_result_details_atomic(
                     result_id,
                     remove_question_ids,
@@ -811,6 +985,7 @@ class ResultRepositoryGateway:
                     needs_human_review=needs_human_review,
                     raw_json=raw_json,
                     rubric=rubric,
+                    scan_batch_id=scan_batch_id,
                 )
 
     def record_result_retry_failure(

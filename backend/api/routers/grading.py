@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends
 
 from backend.api.app import ApiError
@@ -10,9 +12,16 @@ from backend.api.dependencies import (
 )
 from backend.api.routers.jobs import _job_response
 from backend.api.routers.sessions import _require_session
-from backend.api.schemas.grading import GradingRunCancelRequest, GradingRunRequest
+from backend.api.schemas.grading import (
+    GradingPlanRequest,
+    GradingPlanResponse,
+    GradingRunCancelRequest,
+    GradingRunRequest,
+)
 from backend.api.schemas.jobs import JobResponse
 from backend.api.schemas.scan import GradingRunSummaryResponse
+from backend.config_workspace.publish import load_editor_config
+from backend.grading_workflow import build_grading_plan
 from backend.scan_grading.workspace import (
     GradingConfigChangedError,
     PendingScanIssuesError,
@@ -22,9 +31,97 @@ from backend.scan_grading.workspace import (
 )
 from backend.jobs.manager import ActiveJobExistsError, JobManager, UnsupportedJobTypeError
 from backend.repositories.access import GradingRepositoryAccess
+from path_manager import resolve_stored_file_path
 
 
 router = APIRouter(prefix="/api", tags=["grading"])
+
+
+def _require_current_preflight_config(
+    *,
+    session_id: int,
+    db: GradingRepositoryAccess,
+    workspace: ScanGradingWorkspace,
+) -> None:
+    try:
+        revision = load_editor_config(db, session_id).revision
+        workspace.require_preflight_config_revision(session_id, revision)
+    except (GradingConfigChangedError, KeyError, OSError, TypeError, ValueError) as exc:
+        raise ApiError(
+            409,
+            "grading_preflight_stale",
+            "The grading configuration changed; run scan preflight again",
+        ) from exc
+
+
+@router.post(
+    "/sessions/{session_id}/grading/plan",
+    response_model=GradingPlanResponse,
+)
+def preview_session_grading(
+    session_id: int,
+    request: GradingPlanRequest,
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+) -> GradingPlanResponse:
+    session = _require_session(db, session_id)
+    try:
+        workspace_state = workspace.get_workspace(session_id)
+        upload_batch = workspace_state["upload_batch"]
+        if str(upload_batch.get("state") or "") != "frozen":
+            raise ScanGradingWorkspaceError("scan upload batch is not frozen")
+        preflight = workspace.get_preflight(session_id)
+    except ScanGradingWorkspaceError as exc:
+        raise ApiError(
+            409,
+            "grading_input_not_ready",
+            "Grading input is not ready",
+        ) from exc
+    _require_current_preflight_config(
+        session_id=session_id,
+        db=db,
+        workspace=workspace,
+    )
+
+    data_root = (
+        db.db_path.parent.parent
+        if db.db_path.parent.name == "databases"
+        else None
+    )
+    try:
+        rubric_path = resolve_stored_file_path(
+            session.get("rubric_path"),
+            data_root=data_root,
+        )
+        rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError) as exc:
+        raise ApiError(
+            409,
+            "grading_rubric_not_ready",
+            "Grading rubric is not ready",
+        ) from exc
+    if not isinstance(rubric, dict):
+        raise ApiError(
+            409,
+            "grading_rubric_not_ready",
+            "Grading rubric is not ready",
+        )
+
+    scan_batch_id = str(upload_batch["batch_id"])
+    teacher_locks = db.reviews.list_teacher_score_locks(
+        session_id,
+        scan_batch_id,
+    )
+    plan = build_grading_plan(
+        session_id=session_id,
+        mode=request.grading_mode,
+        scan_batch_id=scan_batch_id,
+        upload_revision=int(upload_batch["revision"]),
+        preflight=preflight,
+        rubric=rubric,
+        teacher_locks=teacher_locks,
+    )
+    return GradingPlanResponse.model_validate(plan)
 
 
 @router.post(
@@ -252,6 +349,11 @@ def run_session_grading(
                 "grading_confirmation_required",
                 "Current upload and preflight revisions are required",
             )
+        _require_current_preflight_config(
+            session_id=session_id,
+            db=db,
+            workspace=workspace,
+        )
         try:
             job = workspace.submit_start(
                 session_id,

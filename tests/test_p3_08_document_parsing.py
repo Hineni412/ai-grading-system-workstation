@@ -51,6 +51,18 @@ def _docx_with_ordered_header_footer_parts() -> bytes:
     return payload.getvalue()
 
 
+def _docx_with_multiline_proof_answer() -> bytes:
+    document = Document()
+    document.add_paragraph("1. 证明：若 a=b，则 a+c=b+c。")
+    document.add_paragraph("参考答案")
+    document.add_paragraph("1. 【答案】结论成立")
+    document.add_paragraph("由 a=b，等式两边同时加 c，得到 a+c=b+c。")
+    document.add_paragraph("所以原命题得证。")
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
 def test_text_extractors_preserve_docx_order_deduplication_and_pdf_pages() -> None:
     from backend.document_parsing import extract_docx_text, extract_pdf_text
 
@@ -110,6 +122,28 @@ def test_broken_rich_docx_falls_back_without_model_or_files(tmp_path: Path) -> N
     assert blocks[0]["question_text"] == "Local fallback question."
     assert not (tmp_path / "parser").exists()
     assert not (tmp_path / "assets").exists()
+
+
+def test_docx_parser_keeps_unheaded_proof_steps_after_short_answer(
+    tmp_path: Path,
+) -> None:
+    from backend.document_parsing import parse_docx_question_blocks
+
+    blocks = parse_docx_question_blocks(
+        _docx_with_multiline_proof_answer(),
+        temporary_root=tmp_path / "parser",
+        asset_root=tmp_path / "assets",
+    )
+
+    assert len(blocks) == 1
+    complete_answer = "\n".join(
+        [
+            str(blocks[0].get("answer_text") or ""),
+            str(blocks[0].get("analysis") or ""),
+        ]
+    )
+    assert "由 a=b，等式两边同时加 c" in complete_answer
+    assert "所以原命题得证" in complete_answer
 
 
 def test_legacy_imports_delegate_to_the_document_parser() -> None:

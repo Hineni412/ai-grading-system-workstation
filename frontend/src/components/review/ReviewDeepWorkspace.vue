@@ -1,19 +1,25 @@
 <script setup lang="ts">
-import type { ReviewConfirmInput, ReviewItem } from '../../api/review'
+import type {
+  ReviewConfirmInput,
+  ReviewItemLike,
+} from '../../api/review'
 import ReviewEvidenceViewer from './ReviewEvidenceViewer.vue'
 import ReviewScoringInspector from './ReviewScoringInspector.vue'
 
 defineProps<{
-  item: ReviewItem
-  previousItem: ReviewItem | null
-  nextItem: ReviewItem | null
-  registerAnnotationRetry: (entry: { input: ReviewConfirmInput; item: ReviewItem }) => void
+  item: ReviewItemLike
+  previousItem: ReviewItemLike | null
+  nextItem: ReviewItemLike | null
+  registerAnnotationRetry: (entry: {
+    input: ReviewConfirmInput
+    item: ReviewItemLike
+  }) => void
 }>()
 
 const emit = defineEmits<{
   back: []
   confirmed: [payload: {
-    detailId: number
+    reviewItemId: string
     annotationRetry: boolean
   }]
 }>()

@@ -71,7 +71,6 @@ export interface ConfigEditorRow {
   standard_answer: string
   accepted_answers: string[]
   match_rule: string
-  knowledge: string
   answer_only_max_score: number | null
   require_final_answer: boolean | null
   required_elements: string[]
@@ -236,12 +235,12 @@ function decodeConfigSource(value: unknown): ConfigSource {
 function isEditorRow(value: unknown): value is ConfigEditorRow {
   if (!isRecord(value) || !hasExactKeys(value, [
     'row_id', 'question_id', 'part_id', 'step_id', 'part_label', 'question_type', 'core_goal',
-    'score', 'standard_answer', 'accepted_answers', 'match_rule', 'knowledge',
+    'score', 'standard_answer', 'accepted_answers', 'match_rule',
     'answer_only_max_score', 'require_final_answer', 'required_elements', 'deduction_rules',
     'final_answer_rule',
   ])) return false
   return ['row_id', 'question_id', 'part_id', 'step_id', 'part_label', 'question_type',
-    'core_goal', 'standard_answer', 'match_rule', 'knowledge', 'final_answer_rule']
+    'core_goal', 'standard_answer', 'match_rule', 'final_answer_rule']
     .every((key) => typeof value[key] === 'string')
     && isFiniteNumber(value.score)
     && (value.answer_only_max_score === null || isFiniteNumber(value.answer_only_max_score))

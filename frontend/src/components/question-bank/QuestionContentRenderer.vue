@@ -10,6 +10,7 @@ withDefaults(defineProps<{
   emptyLabel?: string
   imageAlt?: string
   compact?: boolean
+  dense?: boolean
   supplementalImageUrls?: string[]
 }>(), {
   blocks: () => [],
@@ -17,6 +18,7 @@ withDefaults(defineProps<{
   emptyLabel: '内容暂未录入',
   imageAlt: '题目图片',
   compact: false,
+  dense: false,
   supplementalImageUrls: () => [],
 })
 
@@ -30,7 +32,7 @@ function markImageFailed(url: string): void {
 </script>
 
 <template>
-  <div class="question-content" :class="{ 'is-compact': compact }">
+  <div class="question-content" :class="{ 'is-compact': compact, 'is-dense': dense }">
     <template v-if="blocks.length">
       <div
         v-for="(block, blockIndex) in blocks"
@@ -107,8 +109,17 @@ function markImageFailed(url: string): void {
   line-height: 1.68;
 }
 
+.question-content.is-dense {
+  font-size: 13px;
+  line-height: 1.62;
+}
+
 .question-content__block + .question-content__block {
   margin-top: 10px;
+}
+
+.question-content.is-dense .question-content__block + .question-content__block {
+  margin-top: 6px;
 }
 
 .question-content__text,
@@ -163,6 +174,19 @@ function markImageFailed(url: string): void {
   white-space: pre-wrap;
 }
 
+.question-content.is-dense .question-content__table-wrap {
+  margin: 8px 0;
+}
+
+.question-content.is-dense table {
+  min-width: min(100%, 340px);
+}
+
+.question-content.is-dense td {
+  min-width: 54px;
+  padding: 4px 7px;
+}
+
 .question-content__media {
   align-items: flex-start;
   display: flex;
@@ -196,6 +220,27 @@ function markImageFailed(url: string): void {
 
 .question-content.is-compact .question-content__media img {
   max-height: min(380px, 48vh);
+}
+
+.question-content.is-dense .question-content__media {
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.question-content.is-dense .question-content__media--supplemental {
+  margin-top: 8px;
+}
+
+.question-content.is-dense .question-content__media img {
+  border-radius: 6px;
+  max-height: min(300px, 42vh);
+  max-width: min(100%, 480px);
+  padding: 4px;
+}
+
+.question-content.is-dense .question-content__media figcaption,
+.question-content.is-dense .question-content__empty {
+  font-size: 11px;
 }
 
 .question-content__media figcaption,

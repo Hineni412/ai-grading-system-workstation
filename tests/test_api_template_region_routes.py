@@ -196,6 +196,209 @@ def test_template_upload_selects_page_roles_and_returns_only_safe_media_urls(tmp
     assert Image.open(io.BytesIO(back_response.content)).size == (480, 800)
 
 
+def test_current_template_page_assignment_swaps_regions_and_is_idempotent(tmp_path) -> None:
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+    pdf_bytes = _two_page_template_pdf()
+    uploaded = client.post(
+        f"/api/sessions/{session_id}/template",
+        params={"first_page_role": "front"},
+        content=pdf_bytes,
+        headers=_upload_headers(pdf_bytes, "0" * 32, "anonymous-sample.pdf"),
+    ).json()
+    draft_region = _region()
+    saved_draft = client.put(
+        f"/api/sessions/{session_id}/regions/draft",
+        json={
+            "expected_template_fingerprint": uploaded["template_fingerprint"],
+            "expected_revision": 0,
+            "revision": 1,
+            "regions": [draft_region],
+        },
+    )
+    assert saved_draft.status_code == 200
+    db.save_answer_regions(session_id, uploaded["template_id"], [draft_region])
+    db.mark_template_confirmed(session_id, True)
+    before_template = db.get_session_template(session_id)
+    assert before_template is not None
+    before_region = db.list_answer_regions(session_id)[0]
+    assert db.is_template_ready(session_id) is True
+
+    changed = client.put(
+        f"/api/sessions/{session_id}/template/page-assignment",
+        json={
+            "first_page_role": "back",
+            "expected_template_fingerprint": uploaded["template_fingerprint"],
+        },
+    )
+
+    assert changed.status_code == 200
+    body = changed.json()
+    assert body["changed"] is True
+    assert body["draft_sync_pending"] is False
+    assert body["template"]["first_page_role"] == "back"
+    assert body["template"]["template_fingerprint"] != uploaded["template_fingerprint"]
+    assert body["template"]["pages"]["front"]["width"] == uploaded["pages"]["back"]["width"]
+    assert body["template"]["pages"]["back"]["width"] == uploaded["pages"]["front"]["width"]
+    assert str(tmp_path) not in changed.text
+
+    after_template = db.get_session_template(session_id)
+    assert after_template is not None
+    assert after_template["front_template_path"] == before_template["back_template_path"]
+    assert after_template["back_template_path"] == before_template["front_template_path"]
+    assert after_template["is_confirmed"] == 0
+    assert after_template["regions_snapshot_pending"] == 0
+    after_region = db.list_answer_regions(session_id)[0]
+    assert after_region["page"] == "back"
+    assert after_region["is_confirmed"] == 0
+    assert {
+        key: after_region[key] for key in ("x", "y", "w", "h")
+    } == {
+        key: before_region[key] for key in ("x", "y", "w", "h")
+    }
+    assert db.is_template_ready(session_id) is False
+    draft = client.get(f"/api/sessions/{session_id}/regions/draft").json()
+    assert draft["status"] == "compatible"
+    assert draft["template_fingerprint"] == body["template"]["template_fingerprint"]
+    assert draft["draft"]["revision"] == 2
+    assert draft["draft"]["regions"][0]["page"] == "back"
+
+    retried = client.put(
+        f"/api/sessions/{session_id}/template/page-assignment",
+        json={
+            "first_page_role": "back",
+            "expected_template_fingerprint": uploaded["template_fingerprint"],
+        },
+    )
+
+    assert retried.status_code == 200
+    assert retried.json()["changed"] is False
+    assert retried.json()["draft_sync_pending"] is False
+    assert db.get_session_template(session_id) == after_template
+    assert db.list_answer_regions(session_id)[0]["page"] == "back"
+    assert client.get(f"/api/sessions/{session_id}/regions/draft").json()["draft"][
+        "revision"
+    ] == 2
+
+
+def test_template_page_assignment_retry_repairs_a_pending_draft_sync(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from answer_region_draft_service import AnswerRegionDraftService
+
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+    pdf_bytes = _two_page_template_pdf()
+    uploaded = client.post(
+        f"/api/sessions/{session_id}/template",
+        params={"first_page_role": "front"},
+        content=pdf_bytes,
+        headers=_upload_headers(pdf_bytes, "1" * 32, "anonymous-sample.pdf"),
+    ).json()
+    client.put(
+        f"/api/sessions/{session_id}/regions/draft",
+        json={
+            "expected_template_fingerprint": uploaded["template_fingerprint"],
+            "expected_revision": 0,
+            "revision": 1,
+            "regions": [_region()],
+        },
+    )
+    original_save = AnswerRegionDraftService.save
+
+    def fail_save(*args, **kwargs):
+        raise OSError("synthetic draft sync failure")
+
+    monkeypatch.setattr(AnswerRegionDraftService, "save", fail_save)
+    changed = client.put(
+        f"/api/sessions/{session_id}/template/page-assignment",
+        json={
+            "first_page_role": "back",
+            "expected_template_fingerprint": uploaded["template_fingerprint"],
+        },
+    )
+    monkeypatch.setattr(AnswerRegionDraftService, "save", original_save)
+
+    assert changed.status_code == 200
+    assert changed.json()["changed"] is True
+    assert changed.json()["draft_sync_pending"] is True
+    incompatible = client.get(
+        f"/api/sessions/{session_id}/regions/draft"
+    ).json()
+    assert incompatible["status"] == "incompatible"
+
+    repaired = client.put(
+        f"/api/sessions/{session_id}/template/page-assignment",
+        json={
+            "first_page_role": "back",
+            "expected_template_fingerprint": uploaded["template_fingerprint"],
+        },
+    )
+
+    assert repaired.status_code == 200
+    assert repaired.json()["changed"] is False
+    assert repaired.json()["draft_sync_pending"] is False
+    draft = client.get(f"/api/sessions/{session_id}/regions/draft").json()
+    assert draft["status"] == "compatible"
+    assert draft["draft"]["revision"] == 2
+    assert draft["draft"]["regions"][0]["page"] == "back"
+
+
+def test_template_page_assignment_rejects_stale_and_legacy_requests(tmp_path) -> None:
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+    pdf_bytes = _two_page_template_pdf()
+    uploaded = client.post(
+        f"/api/sessions/{session_id}/template",
+        params={"first_page_role": "front"},
+        content=pdf_bytes,
+        headers=_upload_headers(pdf_bytes, "2" * 32, "anonymous-sample.pdf"),
+    ).json()
+    changed = client.put(
+        f"/api/sessions/{session_id}/template/page-assignment",
+        json={
+            "first_page_role": "back",
+            "expected_template_fingerprint": uploaded["template_fingerprint"],
+        },
+    )
+    stale = client.put(
+        f"/api/sessions/{session_id}/template/page-assignment",
+        json={
+            "first_page_role": "front",
+            "expected_template_fingerprint": uploaded["template_fingerprint"],
+        },
+    )
+
+    assert changed.status_code == 200
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "template_page_assignment_changed"
+    assert client.get(
+        f"/api/sessions/{session_id}/regions/workspace"
+    ).json()["template"]["first_page_role"] == "back"
+
+    legacy_session_id = _session(db)
+    legacy_front, legacy_back = _template_files(tmp_path / "legacy")
+    _bind_template(client, legacy_session_id, legacy_front, legacy_back)
+    legacy_fingerprint = client.get(
+        f"/api/sessions/{legacy_session_id}/regions/draft"
+    ).json()["template_fingerprint"]
+    before = db.get_session_template(legacy_session_id)
+    unsupported = client.put(
+        f"/api/sessions/{legacy_session_id}/template/page-assignment",
+        json={
+            "first_page_role": "back",
+            "expected_template_fingerprint": legacy_fingerprint,
+        },
+    )
+
+    assert unsupported.status_code == 409
+    assert unsupported.json()["error"]["code"] == (
+        "template_page_assignment_unsupported"
+    )
+    assert db.get_session_template(legacy_session_id) == before
+
+
 def test_region_readiness_blocks_template_upload_until_scoring_config_is_saved(tmp_path) -> None:
     from backend.config_workspace.drafts import create_session_draft
 

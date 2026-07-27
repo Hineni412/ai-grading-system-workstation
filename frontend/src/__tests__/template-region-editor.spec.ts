@@ -1,4 +1,4 @@
-import { createApp, nextTick, ref } from 'vue'
+import { createApp, defineComponent, h, nextTick, ref } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import TemplateRegionEditor, {
@@ -73,7 +73,7 @@ describe('TemplateRegionEditor adapter', () => {
     app.unmount()
   })
 
-  it('draws in original image pixels and supports undo through public controls', async () => {
+  it('draws in original image pixels, auto-binds the next question and stays in create mode', async () => {
     const { app, host, updated } = await mountEditor()
     const canvas = host.querySelector<SVGElement>('[data-role="canvas"]')!
     Object.defineProperty(canvas, 'getBoundingClientRect', {
@@ -89,9 +89,59 @@ describe('TemplateRegionEditor adapter', () => {
     canvas.dispatchEvent(pointer('pointerup', { pointerId: 1, clientX: 150, clientY: 210 }))
 
     const created = updated.mock.calls[updated.mock.calls.length - 1]![0]
-    expect(created.regions[created.regions.length - 1]).toMatchObject({ x: 100, y: 140, w: 200, h: 280 })
+    expect(created.regions[created.regions.length - 1]).toMatchObject({
+      x: 100, y: 140, w: 200, h: 280,
+      mapped_question_id: 'Q2', mapping_status: 'auto',
+    })
+    expect(host.querySelector<HTMLButtonElement>('[data-action="create"]')?.classList)
+      .toContain('is-active')
+
+    canvas.dispatchEvent(pointer('pointerdown', {
+      button: 0, pointerId: 2, clientX: 180, clientY: 240,
+    }))
+    canvas.dispatchEvent(pointer('pointermove', {
+      pointerId: 2, clientX: 230, clientY: 310,
+    }))
+    canvas.dispatchEvent(pointer('pointerup', {
+      pointerId: 2, clientX: 230, clientY: 310,
+    }))
+    expect(updated.mock.calls[updated.mock.calls.length - 1]![0].regions).toHaveLength(3)
+
     host.querySelector<HTMLButtonElement>('[data-action="undo"]')!.click()
-    expect(updated.mock.calls[updated.mock.calls.length - 1]![0].regions).toHaveLength(1)
+    expect(updated.mock.calls[updated.mock.calls.length - 1]![0].regions).toHaveLength(2)
+    app.unmount()
+  })
+
+  it('does not rebuild the editor when only the autosave label changes', async () => {
+    const state = ref(editorState())
+    const saveStatus = ref('草稿')
+    const updated = vi.fn((value: EditorState) => { state.value = value })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const Harness = defineComponent(() => () => h(TemplateRegionEditor, {
+      modelValue: state.value,
+      images: {
+        front: { url: 'data:image/gif;base64,R0lGODlhAQABAAAAACw=', width: 1000, height: 1400 },
+        back: { url: 'data:image/gif;base64,R0lGODlhAQABAAAAACw=', width: 1000, height: 1400 },
+      },
+      manualQuestionOptions: [],
+      automaticCandidates: ['Q1', 'Q2'],
+      issues: [],
+      saveStatus: saveStatus.value,
+      'onUpdate:modelValue': updated,
+    }))
+    const app = createApp(Harness)
+    app.mount(host)
+    await nextTick()
+
+    host.querySelector<HTMLButtonElement>('[data-action="create"]')!.click()
+    expect(host.querySelector<HTMLButtonElement>('[data-action="create"]')?.classList)
+      .toContain('is-active')
+    saveStatus.value = '草稿已保存'
+    await nextTick()
+
+    expect(host.querySelector<HTMLButtonElement>('[data-action="create"]')?.classList)
+      .toContain('is-active')
     app.unmount()
   })
 })

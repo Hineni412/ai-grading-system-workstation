@@ -832,6 +832,28 @@ class ScanGradingWorkspace:
                 str(manifest["batch_id"]),
             )
 
+    def require_preflight_config_revision(
+        self,
+        session_id: int,
+        expected_revision: str,
+    ) -> None:
+        """Reject a preflight created for another grading configuration.
+
+        Older preflight files do not have this binding and are intentionally
+        treated as stale once this contract is active.
+        """
+        clean_revision = str(expected_revision or "").strip()
+        if not clean_revision:
+            raise GradingConfigChangedError(
+                "grading configuration revision is unavailable"
+            )
+        with self._lock(session_id):
+            analysis, _identity = self._read_analysis(session_id)
+            if str(analysis.get("config_revision") or "") != clean_revision:
+                raise GradingConfigChangedError(
+                    "scan preflight grading configuration changed"
+                )
+
     def get_preflight(self, session_id: int) -> dict[str, Any]:
         with self._lock(session_id):
             manifest = self._load_or_create_manifest(session_id)
@@ -866,6 +888,19 @@ class ScanGradingWorkspace:
                 for item in analysis.get("absent_students", [])
                 if isinstance(item, dict)
             ]
+            front_page_parity = str(
+                analysis.get("front_page_parity") or "odd"
+            )
+            if front_page_parity not in {"odd", "even"}:
+                front_page_parity = "odd"
+            first_page_role = str(
+                analysis.get("template_first_page_role")
+                or ("front" if front_page_parity == "odd" else "back")
+            )
+            if first_page_role not in {"front", "back"}:
+                first_page_role = (
+                    "front" if front_page_parity == "odd" else "back"
+                )
             return {
                 "revision": int(state["revision"]),
                 "summary": {
@@ -878,6 +913,10 @@ class ScanGradingWorkspace:
                     "issues": len(issues),
                     "absent_candidates": len(absent),
                     "total_pages": int(analysis.get("total_pages") or 0),
+                },
+                "page_assignment": {
+                    "first_page_role": first_page_role,
+                    "front_page_parity": front_page_parity,
                 },
                 "groups": groups,
                 "issues": issues,

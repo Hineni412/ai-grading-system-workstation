@@ -7,8 +7,10 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from answer_region_geometry import answer_regions_with_template_source_sizes
+from backend.config_workspace.publish import load_editor_config
 from backend.repositories.access import GradingRepositoryAccess
 from scanner import ScanAnalysis, Scanner, student_name_region_from_regions
+from template_upload_service import TemplateUploadError, TemplateUploadService
 
 
 class ScannerFactory(Protocol):
@@ -27,7 +29,11 @@ def run_scan_analysis(
     scanner_factory: ScannerFactory = Scanner,
     enhance_images: bool = True,
     ocr_workers: int | None = None,
-    front_page_parity: str | None = "odd",
+    front_page_parity: str | None = None,
+    template_id: int | None = None,
+    template_fingerprint: str | None = None,
+    template_first_page_role: str | None = None,
+    config_revision: str | None = None,
     scan_batch_id: str | None = None,
     raise_if_cancelled: Callable[[], None] | None = None,
 ) -> dict[str, object]:
@@ -37,6 +43,54 @@ def run_scan_analysis(
         raise ValueError(f"session not found: {session_id}")
     if not db.is_template_ready(session_id):
         raise ValueError("session template mapping is not confirmed")
+    expected_config_revision = str(config_revision or "").strip()
+    if not expected_config_revision:
+        raise ValueError("scan analysis grading configuration binding is missing")
+    if load_editor_config(db, session_id).revision != expected_config_revision:
+        raise ValueError("grading configuration changed before scan analysis")
+
+    bound_template = any(
+        value is not None
+        for value in (template_id, template_fingerprint, template_first_page_role)
+    )
+    if bound_template:
+        if (
+            template_id is None
+            or not template_fingerprint
+            or template_first_page_role not in {"front", "back"}
+        ):
+            raise ValueError("scan analysis template binding is incomplete")
+        try:
+            current_template = TemplateUploadService(
+                Path(session_work_dir).parent
+            ).load_current(
+                db=db,
+                session_id=session_id,
+            )
+        except (FileNotFoundError, TemplateUploadError) as exc:
+            raise ValueError("session template is unavailable") from exc
+        if not current_template.is_confirmed or current_template.regions_snapshot_pending:
+            raise ValueError("session template mapping is not confirmed")
+        if (
+            current_template.template_id != int(template_id)
+            or current_template.template_fingerprint != str(template_fingerprint)
+            or current_template.first_page_role != template_first_page_role
+        ):
+            raise ValueError("session template changed before scan analysis")
+        expected_parity = (
+            "odd" if current_template.first_page_role == "front" else "even"
+        )
+        if front_page_parity is not None and front_page_parity != expected_parity:
+            raise ValueError("scan analysis page assignment does not match the template")
+        front_page_parity = expected_parity
+        resolved_first_page_role = current_template.first_page_role
+    else:
+        if front_page_parity not in {None, "odd", "even"}:
+            raise ValueError("scan analysis page parity is invalid")
+        front_page_parity = front_page_parity or "odd"
+        resolved_first_page_role = (
+            "front" if front_page_parity == "odd" else "back"
+        )
 
     exams_dir = Path(exams_dir)
     if not exams_dir.exists():
@@ -63,6 +117,12 @@ def run_scan_analysis(
     _check_cancelled(raise_if_cancelled)
     payload = analysis.to_dict() if isinstance(analysis, ScanAnalysis) else dict(analysis)
     payload["enhance_images"] = bool(enhance_images)
+    payload["front_page_parity"] = front_page_parity
+    payload["template_first_page_role"] = resolved_first_page_role
+    payload["config_revision"] = expected_config_revision
+    if bound_template:
+        payload["template_id"] = int(template_id)
+        payload["template_fingerprint"] = str(template_fingerprint)
     if scan_batch_id:
         payload["scan_batch_id"] = str(scan_batch_id)
 
@@ -84,6 +144,8 @@ def run_scan_analysis(
             temporary.write("\n")
             temporary.flush()
         _check_cancelled(raise_if_cancelled)
+        if load_editor_config(db, session_id).revision != expected_config_revision:
+            raise ValueError("grading configuration changed during scan analysis")
         _require_current_scan_batch(session_work_dir, scan_batch_id)
         os.replace(temporary_path, output_path)
         temporary_path = None

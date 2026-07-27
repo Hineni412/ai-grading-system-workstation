@@ -92,6 +92,25 @@ class PathManager:
                 api_config_root = Path.home() / ".ai_grading_system" / "config"
             self._api_profiles_path = api_config_root / "api_profiles.json"
 
+        taxonomy_state_override = os.getenv("AI_GRADING_TAXONOMY_STATE_PATH")
+        if taxonomy_state_override:
+            self._taxonomy_state_path = (
+                Path(taxonomy_state_override).expanduser().resolve()
+            )
+        else:
+            local_appdata = os.getenv("LOCALAPPDATA")
+            if local_appdata:
+                taxonomy_config_root = (
+                    Path(local_appdata) / "AIGradingSystem" / "config"
+                )
+            else:
+                taxonomy_config_root = (
+                    Path.home() / ".ai_grading_system" / "config"
+                )
+            self._taxonomy_state_path = (
+                taxonomy_config_root / "taxonomy_state_v1.json"
+            )
+
         ops_state_override = os.getenv("AI_GRADING_OPS_STATE_DIR")
         if ops_state_override:
             self._ops_state_dir = Path(ops_state_override).expanduser().resolve()
@@ -150,6 +169,11 @@ class PathManager:
     @property
     def api_profiles_path(self) -> Path:
         return self._api_profiles_path
+
+    @property
+    def taxonomy_state_path(self) -> Path:
+        """Machine-local teacher-approved taxonomy overlay and review queue."""
+        return self._taxonomy_state_path
 
     @property
     def ops_state_dir(self) -> Path:
@@ -249,6 +273,7 @@ class PathManager:
             "快照": str(self.snapshots_dir),
             "日志目录": str(self.logs_dir),
             "API 配置": str(self.api_profiles_path),
+            "标签词表状态": str(self.taxonomy_state_path),
         }
 
 

@@ -14,6 +14,7 @@ from backend.api.dependencies import (
 from backend.api.routers.jobs import _job_response
 from backend.api.schemas.jobs import JobResponse
 from backend.api.schemas.question_bank import (
+    CurriculumCatalog,
     QuestionDetailResponse,
     QuestionFacetsResponse,
     QuestionListItem,
@@ -30,6 +31,22 @@ from backend.api.schemas.question_bank import (
     QuestionWriteResponse,
     SimilarQuestionItem,
     SimilarQuestionListResponse,
+    TaxonomyCatalogResponse,
+    TaxonomyProposalListResponse,
+    TaxonomyProposalReviewRequest,
+    TaxonomyProposalReviewResponse,
+)
+from question_bank.taxonomy.curriculum_catalog import (
+    CurriculumCatalogError,
+    load_curriculum_catalog,
+)
+from question_bank.taxonomy.governance import (
+    TaxonomyProposalNotFound,
+    TaxonomyRevisionConflict,
+    TaxonomyReviewInvalid,
+    TaxonomyStorageError,
+    TaxonomyTargetTermNotFound,
+    get_taxonomy_governance,
 )
 from backend.file_access import (
     ControlledFileExpired,
@@ -75,6 +92,114 @@ QUESTION_WRITE_ERROR_RESPONSES = {
     404: {"model": ErrorResponse, "description": "Question not found"},
     409: {"model": ErrorResponse, "description": "Question state conflict"},
 }
+TAXONOMY_READ_ERROR_RESPONSES = {
+    503: {
+        "model": ErrorResponse,
+        "description": "Taxonomy storage is temporarily unavailable",
+    },
+}
+TAXONOMY_REVIEW_ERROR_RESPONSES = {
+    404: {"model": ErrorResponse, "description": "Taxonomy proposal not found"},
+    409: {"model": ErrorResponse, "description": "Taxonomy state conflict"},
+    422: {"model": ErrorResponse, "description": "Taxonomy review is invalid"},
+    **TAXONOMY_READ_ERROR_RESPONSES,
+}
+
+
+@router.get("/curriculum", response_model=CurriculumCatalog)
+def get_curriculum() -> CurriculumCatalog:
+    try:
+        payload = load_curriculum_catalog()
+    except CurriculumCatalogError as exc:
+        raise ApiError(
+            503,
+            "curriculum_catalog_unavailable",
+            "Curriculum catalog is temporarily unavailable",
+        ) from exc
+    return CurriculumCatalog(**payload)
+
+
+@router.get(
+    "/taxonomy/catalog",
+    response_model=TaxonomyCatalogResponse,
+    responses=TAXONOMY_READ_ERROR_RESPONSES,
+)
+def get_taxonomy_catalog() -> TaxonomyCatalogResponse:
+    governance = get_taxonomy_governance()
+    try:
+        payload = governance.catalog()
+    except (TaxonomyStorageError, OSError, TimeoutError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+    return TaxonomyCatalogResponse(**payload)
+
+
+@router.get(
+    "/taxonomy/proposals",
+    response_model=TaxonomyProposalListResponse,
+    responses=TAXONOMY_READ_ERROR_RESPONSES,
+)
+def list_taxonomy_proposals(
+    status: Annotated[Literal["pending"], Query()] = "pending",
+) -> TaxonomyProposalListResponse:
+    governance = get_taxonomy_governance()
+    try:
+        payload = governance.list_proposals(status=status)
+    except (TaxonomyStorageError, OSError, TimeoutError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+    return TaxonomyProposalListResponse(**payload)
+
+
+@router.post(
+    "/taxonomy/proposals/{proposal_id}/review",
+    response_model=TaxonomyProposalReviewResponse,
+    responses=TAXONOMY_REVIEW_ERROR_RESPONSES,
+)
+def review_taxonomy_proposal(
+    proposal_id: str,
+    body: TaxonomyProposalReviewRequest,
+) -> TaxonomyProposalReviewResponse:
+    governance = get_taxonomy_governance()
+    try:
+        payload = governance.review_proposal(
+            proposal_id=proposal_id,
+            decision=body.decision,
+            edited_name=body.edited_name,
+            target_term_id=body.target_term_id,
+            expected_revision=body.expected_revision,
+            request_token=body.request_token.lower(),
+        )
+    except TaxonomyRevisionConflict as exc:
+        raise ApiError(
+            409,
+            "taxonomy_revision_conflict",
+            "Taxonomy state changed; refresh and retry",
+            {"current_revision": exc.current_revision},
+        ) from exc
+    except TaxonomyProposalNotFound as exc:
+        raise ApiError(
+            404,
+            "taxonomy_proposal_not_found",
+            "Taxonomy proposal not found",
+            {"proposal_id": proposal_id},
+        ) from exc
+    except TaxonomyTargetTermNotFound as exc:
+        raise ApiError(
+            422,
+            "taxonomy_target_term_not_found",
+            "Taxonomy merge target is invalid",
+        ) from exc
+    except (TaxonomyReviewInvalid, ValueError) as exc:
+        raise ApiError(
+            422,
+            "taxonomy_review_invalid",
+            "Taxonomy review is invalid",
+        ) from exc
+    except (TaxonomyStorageError, OSError, TimeoutError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+    return TaxonomyProposalReviewResponse(
+        **payload,
+        application_status="not_requested",
+    )
 
 
 @router.put(
@@ -497,6 +622,13 @@ def list_question_facets(
     question_number: str | None = None,
     keyword: str | None = None,
     knowledge_point: str | None = None,
+    knowledge_points: Annotated[list[str] | None, Query()] = None,
+    abilities: Annotated[list[str] | None, Query()] = None,
+    methods: Annotated[list[str] | None, Query()] = None,
+    models: Annotated[list[str] | None, Query()] = None,
+    student_levels: Annotated[list[str] | None, Query()] = None,
+    teaching_stages: Annotated[list[str] | None, Query()] = None,
+    sub_skills: Annotated[list[str] | None, Query()] = None,
     difficulty_min: Annotated[int | None, Query(ge=1, le=10)] = None,
     difficulty_max: Annotated[int | None, Query(ge=1, le=10)] = None,
     question_types: Annotated[list[str] | None, Query()] = None,
@@ -515,6 +647,13 @@ def list_question_facets(
                 question_number=question_number,
                 keyword=keyword,
                 knowledge_point=knowledge_point,
+                knowledge_points=tuple(knowledge_points or ()),
+                abilities=tuple(abilities or ()),
+                methods=tuple(methods or ()),
+                models=tuple(models or ()),
+                student_levels=tuple(student_levels or ()),
+                teaching_stages=tuple(teaching_stages or ()),
+                sub_skills=tuple(sub_skills or ()),
                 difficulty_min=difficulty_min,
                 difficulty_max=difficulty_max,
                 question_types=tuple(question_types or ()),
@@ -542,6 +681,13 @@ def list_questions(
     question_number: str | None = None,
     keyword: str | None = None,
     knowledge_point: str | None = None,
+    knowledge_points: Annotated[list[str] | None, Query()] = None,
+    abilities: Annotated[list[str] | None, Query()] = None,
+    methods: Annotated[list[str] | None, Query()] = None,
+    models: Annotated[list[str] | None, Query()] = None,
+    student_levels: Annotated[list[str] | None, Query()] = None,
+    teaching_stages: Annotated[list[str] | None, Query()] = None,
+    sub_skills: Annotated[list[str] | None, Query()] = None,
     difficulty_min: Annotated[int | None, Query(ge=1, le=10)] = None,
     difficulty_max: Annotated[int | None, Query(ge=1, le=10)] = None,
     question_types: Annotated[list[str] | None, Query()] = None,
@@ -571,6 +717,13 @@ def list_questions(
                 question_number=question_number,
                 keyword=keyword,
                 knowledge_point=knowledge_point,
+                knowledge_points=tuple(knowledge_points or ()),
+                abilities=tuple(abilities or ()),
+                methods=tuple(methods or ()),
+                models=tuple(models or ()),
+                student_levels=tuple(student_levels or ()),
+                teaching_stages=tuple(teaching_stages or ()),
+                sub_skills=tuple(sub_skills or ()),
                 difficulty_min=difficulty_min,
                 difficulty_max=difficulty_max,
                 question_types=tuple(question_types or ()),
@@ -731,6 +884,15 @@ def _raise_question_snapshot_api_error(
         503,
         "question_bank_snapshot_unavailable",
         "Question bank snapshot is unavailable",
+        headers=NO_STORE_HEADERS,
+    ) from exc
+
+
+def _raise_taxonomy_storage_api_error(exc: Exception) -> NoReturn:
+    raise ApiError(
+        503,
+        "taxonomy_storage_unavailable",
+        "Taxonomy storage is temporarily unavailable",
         headers=NO_STORE_HEADERS,
     ) from exc
 

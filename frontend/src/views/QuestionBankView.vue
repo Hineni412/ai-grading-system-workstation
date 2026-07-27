@@ -7,13 +7,17 @@ import QuestionBankFilters from '../components/question-bank/QuestionBankFilters
 import QuestionImportJobs from '../components/question-bank/QuestionImportJobs.vue'
 import QuestionInspector from '../components/question-bank/QuestionInspector.vue'
 import QuestionLedger from '../components/question-bank/QuestionLedger.vue'
+import TaxonomyCandidateReview from '../components/question-bank/TaxonomyCandidateReview.vue'
 import { useJobStore } from '../stores/jobs'
 import { useQuestionBankStore } from '../stores/question-bank'
+import { useTaxonomyReviewStore } from '../stores/taxonomy-review'
 
 const bank = useQuestionBankStore()
 const jobStore = useJobStore()
+const taxonomyReview = useTaxonomyReviewStore()
 const activePaper = ref<QuestionBankPaper | null>(null)
 const showImport = ref(false)
+const showTaxonomyReview = ref(false)
 
 const activeProgress = computed(() => {
   if (!activePaper.value?.question_count) return 0
@@ -26,6 +30,7 @@ onMounted(() => {
   void Promise.all([
     bank.loadPapers(),
     jobStore.initialize(),
+    taxonomyReview.load(),
   ])
 })
 
@@ -47,14 +52,21 @@ function closePaper(): void {
   bank.clearSelection()
   void bank.selectQuestion(null)
 }
+
+function openTaxonomyReview(): void {
+  showImport.value = false
+  showTaxonomyReview.value = true
+}
 </script>
 
 <template>
   <section class="question-bank">
     <PaperLibrary
       v-if="!activePaper"
+      :pending-taxonomy-count="taxonomyReview.pendingCount"
       @open="openPaper"
       @import="showImport = true"
+      @review-taxonomy="openTaxonomyReview"
     />
 
     <template v-else>
@@ -112,9 +124,17 @@ function closePaper(): void {
       <div v-if="showImport" class="qb-modal-layer" role="presentation" @click.self="showImport = false">
         <div class="qb-import-dialog" role="dialog" aria-modal="true" aria-label="上传试卷与任务">
           <button type="button" class="qb-drawer-close" aria-label="关闭上传窗口" @click="showImport = false">×</button>
-          <QuestionImportJobs />
+          <QuestionImportJobs
+            :pending-taxonomy-count="taxonomyReview.pendingCount"
+            @review-taxonomy="openTaxonomyReview"
+          />
         </div>
       </div>
     </Teleport>
+
+    <TaxonomyCandidateReview
+      :open="showTaxonomyReview"
+      @close="showTaxonomyReview = false"
+    />
   </section>
 </template>

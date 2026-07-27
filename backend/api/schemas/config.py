@@ -285,7 +285,6 @@ class ConfigEditorRowResponse(BaseModel):
     standard_answer: str
     accepted_answers: list[str]
     match_rule: str
-    knowledge: str
     answer_only_max_score: float | None
     require_final_answer: bool | None
     required_elements: list[str]

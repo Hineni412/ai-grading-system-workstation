@@ -3,7 +3,13 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { TERMINAL_JOB_STATUSES } from '../api/jobs'
-import type { GradingMode, ScanDecision } from '../api/scan-grading'
+import type {
+  AutomatedGradingMode,
+  GradingMode,
+  GradingPlanMetrics,
+  ScanDecision,
+} from '../api/scan-grading'
+import StudentMatchSelect from '../components/scan-grading/StudentMatchSelect.vue'
 import { useScanGradingStore } from '../stores/scan-grading'
 
 const route = useRoute()
@@ -22,6 +28,38 @@ const gradingStarting = computed(() => !store.gradingRun && (
 const gradingCompletedWithoutRun = computed(() => !store.gradingRun
   && store.workspace?.grading_job?.status === 'succeeded')
 
+interface GradingModeOption {
+  mode: GradingMode
+  label: string
+  title: string
+  description: string
+  note: string
+}
+
+const gradingModes: GradingModeOption[] = [
+  {
+    mode: 'full_paper',
+    label: '整卷批改',
+    title: '按考生提交整份答卷',
+    description: '保留整张试卷的上下文，适合需要综合判断整卷作答的情况。',
+    note: '会调用 AI · 每份答卷独立处理',
+  },
+  {
+    mode: 'manual',
+    label: '人工批改',
+    title: '直接进入按题评分',
+    description: '不调用 AI，使用现有评分工作台逐题查看全班答题区域。',
+    note: 'AI 请求 0 · 教师分数为最终结果',
+  },
+  {
+    mode: 'hybrid_batch',
+    label: '混合批改',
+    title: '客观题整块，解答题分组',
+    description: '排除教师已完成题目，再按客观题整图和解答题答题框组织请求。',
+    note: '会调用 AI · 执行前显示请求估算',
+  },
+]
+
 const stage = computed(() => {
   if (store.gradingRun || gradingStarting.value || gradingCompletedWithoutRun.value) return 4
   if (store.preflight) return 3
@@ -29,13 +67,26 @@ const stage = computed(() => {
   return 1
 })
 const pendingCount = computed(() => store.preflight?.pending_issue_count ?? 0)
-const canStart = computed(() => Boolean(store.preflight)
+const canPreviewPlan = computed(() => Boolean(store.preflight)
   && !store.gradingRun && !gradingStarting.value && !gradingCompletedWithoutRun.value
-  && (pendingCount.value === 0 || confirmPending.value) && !store.busyAction)
+  && !store.busyAction && store.planState !== 'loading')
+const canConfirmPlan = computed(() => Boolean(
+  store.gradingPlan
+  && store.gradingPlan.mode === store.selectedMode
+  && store.gradingPlan.status === 'ready'
+  && store.planState === 'ready'
+  && (pendingCount.value === 0 || confirmPending.value)
+  && !store.busyAction
+  && !gradingStarting.value,
+))
 const invalidCount = computed(() => store.preflight?.decisions
   .filter((item) => item.target_type === 'issue' && item.action === 'invalid').length ?? 0)
 const missingBackCount = computed(() => store.preflight?.issues
   .filter((item) => item.issue_type === 'missing_back' || item.issue_type === 'orphan_page').length ?? 0)
+const preflightPageAssignment = computed(() => (
+  store.preflight?.page_assignment
+  ?? { first_page_role: 'front' as const, front_page_parity: 'odd' as const }
+))
 const lowConfidenceGroups = computed(() => store.preflight?.groups.filter((item) => (
   item.match_method !== 'exact' || Number(item.match_score ?? 0) < 1
 )) ?? [])
@@ -47,17 +98,39 @@ const runStateLabel = computed(() => ({
   interrupted: '上次运行已中断', cancel_requested: '正在安全取消', cancelled: '本次运行已取消',
   completed: '本次运行已完成', failed: '本次运行有失败项',
 }[store.gradingRun?.state ?? ''] ?? store.gradingRun?.state ?? ''))
+const selectedModeOption = computed(() => gradingModes.find((item) => item.mode === store.selectedMode) ?? null)
+const confirmPlanLabel = computed(() => {
+  if (store.selectedMode === 'manual') return '进入人工批改'
+  if (store.selectedMode === 'hybrid_batch') return '确认并开始混合批改'
+  return '确认并开始整卷批改'
+})
+const requestTotal = computed(() => {
+  if (store.selectedMode === 'manual') return 0
+  return planNumber(store.gradingPlan?.requests, ['total', 'total_requests', 'request_count'])
+})
 
 function loadRoute(): void {
   if (Number.isSafeInteger(sessionId.value) && sessionId.value > 0) void store.load(sessionId.value)
+}
+function openManualScoring(): void {
+  void router.push({
+    path: '/grading',
+    query: { session: String(sessionId.value) },
+  })
 }
 function chooseFiles(event: Event): void {
   const input = event.target as HTMLInputElement
   if (input.files?.length) void store.addFiles([...input.files])
   input.value = ''
 }
-async function start(mode: GradingMode): Promise<void> {
-  if (!canStart.value) return
+function chooseMode(mode: GradingMode): void {
+  if (!canPreviewPlan.value) return
+  void store.previewPlan(mode)
+}
+function retryPlan(): void {
+  if (store.selectedMode && canPreviewPlan.value) void store.previewPlan(store.selectedMode)
+}
+async function startAutomated(mode: AutomatedGradingMode): Promise<void> {
   gradingSubmissionPending.value = true
   const submission = store.begin(mode, confirmPending.value)
   await nextTick()
@@ -66,6 +139,42 @@ async function start(mode: GradingMode): Promise<void> {
   if (store.errorMessage && !store.gradingRun && store.activeJobId === null) {
     gradingSubmissionPending.value = false
   }
+}
+async function confirmPlan(): Promise<void> {
+  const plan = store.gradingPlan
+  if (!plan || !canConfirmPlan.value) return
+  if (plan.mode === 'manual') {
+    await router.push({
+      path: '/grading',
+      query: {
+        session: String(sessionId.value),
+        scope: 'teacher_pending',
+        entry: 'manual',
+      },
+    })
+    return
+  }
+  await startAutomated(plan.mode)
+}
+function planNumber(source: GradingPlanMetrics | undefined, keys: string[]): number | null {
+  if (!source) return null
+  for (const key of keys) {
+    const raw = source[key]
+    const value = typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string' && raw.trim() !== ''
+        ? Number(raw)
+        : Number.NaN
+    if (Number.isFinite(value) && value >= 0) return value
+  }
+  return null
+}
+function formatPlanNumber(source: GradingPlanMetrics | undefined, keys: string[]): string {
+  const value = planNumber(source, keys)
+  return value === null ? '—' : value.toLocaleString('zh-CN')
+}
+function issueText(message: string, count?: number): string {
+  return count === undefined ? message : `${message}（${count} 项）`
 }
 function decisionFor(targetType: 'group' | 'issue', targetId: string): ScanDecision | undefined {
   return store.preflight?.decisions.find((item) => (
@@ -136,7 +245,10 @@ watch(
         <h1>整班答卷批改</h1>
         <p>从答卷入库到异常核对，再到正式批改与补批，状态都保存在本机服务中。</p>
       </div>
-      <button type="button" class="secondary" @click="router.push('/sessions')">返回考试配置</button>
+      <div class="scan-grading__header-actions">
+        <button type="button" @click="openManualScoring">人工评分</button>
+        <button type="button" class="secondary" @click="router.push('/sessions')">返回考试配置</button>
+      </div>
     </header>
 
     <div class="scan-grading__body">
@@ -185,6 +297,11 @@ watch(
           <button v-if="store.uploadBatch?.state === 'frozen' && !store.preflightJobId" data-action="retry-preflight" type="button" class="secondary" @click="store.analyze">运行或重新运行预检</button>
         </div>
         <template v-else>
+          <p class="scan-page-assignment">
+            本次预检按样卷页序识别：
+            <strong>PDF 第 1 页为{{ preflightPageAssignment.first_page_role === 'front' ? '正面' : '反面' }}</strong>
+            （正面位于{{ preflightPageAssignment.front_page_parity === 'odd' ? '奇数页' : '偶数页' }}）。
+          </p>
           <p v-if="pendingCount" class="scan-warning"><strong>仍有 {{ pendingCount }} 份异常答卷待处理</strong>。它们可以暂时跳过，不会阻塞其余学生批改。</p>
           <div v-if="lowConfidenceGroups.length" class="scan-issue-list" aria-label="低可信自动匹配">
             <div v-for="group in lowConfidenceGroups" :key="String(group.id)" class="scan-issue-row">
@@ -202,10 +319,12 @@ watch(
                   {{ decisionStatus(decisionFor('group', String(group.id))) }}
                 </small>
               </span>
-              <select v-model="selectedStudents[String(group.id)]" aria-label="重新选择学生">
-                <option :value="undefined">重新选择学生</option>
-                <option v-for="student in store.students" :key="student.id" :value="student.id">{{ student.name }} · {{ student.student_code }}</option>
-              </select>
+              <StudentMatchSelect
+                v-model="selectedStudents[String(group.id)]"
+                :students="store.students"
+                placeholder="姓名、学号或拼音"
+                aria-label="重新选择学生"
+              />
               <button type="button" class="secondary" :disabled="!selectedStudents[String(group.id)]" @click="saveDecision('group', String(group.id), 'match')">确认改绑</button>
             </div>
           </div>
@@ -226,10 +345,12 @@ watch(
                   {{ decisionStatus(decisionFor('issue', String(issue.id))) }}
                 </small>
               </span>
-              <select v-model="selectedStudents[String(issue.id)]" aria-label="选择学生">
-                <option :value="undefined">选择学生</option>
-                <option v-for="student in store.students" :key="student.id" :value="student.id">{{ student.name }} · {{ student.student_code }}</option>
-              </select>
+              <StudentMatchSelect
+                v-model="selectedStudents[String(issue.id)]"
+                :students="store.students"
+                placeholder="姓名、学号或拼音"
+                aria-label="选择学生"
+              />
               <button type="button" class="secondary" :disabled="!selectedStudents[String(issue.id)]" @click="saveDecision('issue', String(issue.id), 'match')">匹配</button>
               <button type="button" class="text-button" @click="saveDecision('issue', String(issue.id), 'invalid')">标记无效</button>
               <button type="button" class="text-button" @click="saveDecision('issue', String(issue.id), 'pending')">稍后处理</button>
@@ -258,14 +379,106 @@ watch(
           本轮可批改 {{ store.preflight.summary.ready_to_grade ?? 0 }} 份；待处理异常 {{ pendingCount }} 份；
           已标无效 {{ invalidCount }} 份；缺反面/孤页 {{ missingBackCount }} 份；缺考候选 {{ store.preflight.summary.absent_candidates ?? 0 }} 人。
         </p>
-        <div class="grading-modes">
-          <button type="button" data-grading-mode="full_paper" :disabled="!canStart" @click="start('full_paper')">
-            <span>整卷批改</span><strong>按学生逐份完成</strong><small>适合日常整班批改，过程直观。</small>
-          </button>
-          <button type="button" data-grading-mode="hybrid_batch" :disabled="!canStart" @click="start('hybrid_batch')">
-            <span>混合批改</span><strong>客观题批量 + 主观题并行</strong><small>适合题量较大、希望提高吞吐的班级。</small>
+        <div class="grading-modes" aria-label="选择批改方式">
+          <button v-for="option in gradingModes" :key="option.mode" type="button"
+            :data-grading-mode="option.mode" :data-selected="store.selectedMode === option.mode"
+            :aria-pressed="store.selectedMode === option.mode" :disabled="!canPreviewPlan"
+            @click="chooseMode(option.mode)">
+            <span>{{ option.label }}</span>
+            <strong>{{ option.title }}</strong>
+            <small>{{ option.description }}</small>
+            <em>{{ option.note }}</em>
           </button>
         </div>
+        <section v-if="store.selectedMode" class="grading-plan"
+          :data-status="store.gradingPlan?.status ?? store.planState"
+          aria-labelledby="grading-plan-title" aria-live="polite">
+          <header class="grading-plan__header">
+            <div>
+              <span>执行前确认</span>
+              <h3 id="grading-plan-title">{{ selectedModeOption?.label }}计划</h3>
+            </div>
+            <strong v-if="store.planState === 'loading'">正在计算</strong>
+            <strong v-else-if="store.gradingPlan?.status === 'ready'">可以执行</strong>
+            <strong v-else-if="store.gradingPlan?.status === 'blocked'">暂不可执行</strong>
+            <strong v-else-if="store.planState === 'error'">读取失败</strong>
+            <strong v-else>需要重新预览</strong>
+          </header>
+
+          <p v-if="store.planState === 'loading'" class="grading-plan__state" role="status">
+            正在核对可处理答卷、教师已完成项目和预计 AI 请求…
+          </p>
+          <div v-else-if="store.planState === 'error'" class="grading-plan__state grading-plan__state--error">
+            <p>{{ store.planErrorMessage || '计划没有读取成功，请重新预览。' }}</p>
+            <button type="button" class="secondary" :disabled="!canPreviewPlan" @click="retryPlan">重新预览</button>
+          </div>
+          <div v-else-if="store.planState === 'idle'" class="grading-plan__state">
+            <p>答卷或核对结果已经变化，执行前需要按最新数据重新计算。</p>
+            <button type="button" class="secondary" :disabled="!canPreviewPlan" @click="retryPlan">重新预览</button>
+          </div>
+
+          <template v-else-if="store.gradingPlan">
+            <div class="grading-plan__metrics">
+              <div>
+                <span>可处理答卷</span>
+                <strong>{{ formatPlanNumber(store.gradingPlan.counts, ['eligible_papers', 'ready_to_grade', 'matched_papers']) }}</strong>
+                <small>份</small>
+              </div>
+              <div>
+                <span>教师已完成</span>
+                <strong>{{ formatPlanNumber(store.gradingPlan.counts, ['teacher_locked_items', 'teacher_final_items']) }}</strong>
+                <small>题项，不会覆盖</small>
+              </div>
+              <div>
+                <span>{{ store.selectedMode === 'manual' ? '待人工评分' : '本轮 AI 评分' }}</span>
+                <strong>{{ formatPlanNumber(store.gradingPlan.counts,
+                  store.selectedMode === 'manual'
+                    ? ['manual_target_items', 'pending_items', 'total_score_items']
+                    : ['ai_target_items', 'pending_items', 'total_score_items']) }}</strong>
+                <small>题项</small>
+              </div>
+              <div>
+                <span>预计 AI 请求</span>
+                <strong>{{ requestTotal === null ? '—' : requestTotal.toLocaleString('zh-CN') }}</strong>
+                <small>次</small>
+              </div>
+            </div>
+
+            <p v-if="store.selectedMode === 'manual'" class="grading-plan__batching">
+              人工模式不会调用模型。进入后按题查看全班答题区域，教师保存的分数作为最终结果。
+            </p>
+            <p v-else-if="store.selectedMode === 'full_paper'" class="grading-plan__batching">
+              整卷请求 {{ formatPlanNumber(store.gradingPlan.requests, ['full_paper', 'full_paper_requests']) }} 次；
+              每位考生的整份答卷保持在同一请求中。
+            </p>
+            <p v-else class="grading-plan__batching">
+              客观题整图 {{ formatPlanNumber(store.gradingPlan.requests, ['objective_sheet', 'objective_requests']) }} 次；
+              解答题分组 {{ formatPlanNumber(store.gradingPlan.requests, ['subjective_batches', 'subjective_requests']) }} 次；
+              每组 {{ formatPlanNumber(store.gradingPlan.batching, ['subjective_group_min', 'group_min']) }}–{{ formatPlanNumber(store.gradingPlan.batching, ['subjective_group_max', 'group_max']) }} 位考生。
+            </p>
+
+            <ul v-if="store.gradingPlan.warnings.length" class="grading-plan__issues grading-plan__issues--warning">
+              <li v-for="issue in store.gradingPlan.warnings" :key="`warning:${issue.code}:${issue.message}`">
+                {{ issueText(issue.message, issue.count) }}
+              </li>
+            </ul>
+            <ul v-if="store.gradingPlan.blockers.length" class="grading-plan__issues grading-plan__issues--blocked">
+              <li v-for="issue in store.gradingPlan.blockers" :key="`blocker:${issue.code}:${issue.message}`">
+                {{ issueText(issue.message, issue.count) }}
+              </li>
+            </ul>
+
+            <div class="grading-plan__confirm">
+              <p v-if="store.gradingPlan.status === 'blocked'">请先处理上方问题，再重新预览计划。</p>
+              <p v-else-if="pendingCount && !confirmPending">请先勾选上方确认，未匹配的异常答卷才会在本轮安全跳过。</p>
+              <p v-else-if="store.selectedMode === 'manual'">确认后只会打开人工评分工作台，不会产生 AI 请求。</p>
+              <p v-else>确认后才会正式创建批改任务，并按上方估算调用 AI。</p>
+              <button type="button" data-confirm-grading-plan :disabled="!canConfirmPlan" @click="confirmPlan">
+                {{ store.gradingPlan.status === 'blocked' ? '当前计划不可执行' : confirmPlanLabel }}
+              </button>
+            </div>
+          </template>
+        </section>
         <p v-if="gradingStarting" data-grading-submit-status class="scan-grading__notice" role="status">
           批改任务已提交，正在后台启动；进度出现前请勿重复点击。
         </p>
