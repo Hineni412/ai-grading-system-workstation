@@ -79,18 +79,22 @@ def test_create_session_draft_route_rejects_client_path_fields(tmp_path) -> None
     assert not upload_config_dir.exists()
 
 
-def test_renaming_session_draft_keeps_editor_unconfigured(tmp_path) -> None:
-    client, _db, _upload_config_dir = _client_with_db(tmp_path)
-    created = client.post("/api/sessions/drafts", json={"name": "Original"})
-    assert created.status_code == 201
-    session_id = created.json()["id"]
+def test_renaming_session_returns_the_safe_summary_shape(tmp_path) -> None:
+    client, db, _upload_config_dir = _client_with_db(tmp_path)
+    session_id = db.create_grading_session("Original", "rubric.json", "answers.json")
 
     renamed = client.patch(
         f"/api/sessions/{session_id}",
         json={"name": "Renamed after creation"},
     )
     assert renamed.status_code == 200
-
-    editor = client.get(f"/api/sessions/{session_id}/config/editor")
-    assert editor.status_code == 200
-    assert editor.json()["configured"] is False
+    assert renamed.json()["name"] == "Renamed after creation"
+    assert set(renamed.json()) == {
+        "id",
+        "name",
+        "status",
+        "is_deleted",
+        "deleted_at",
+        "created_at",
+        "updated_at",
+    }

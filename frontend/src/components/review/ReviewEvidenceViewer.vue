@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-import type { ReviewItem } from '../../api/review'
+import { resolveReviewItem, type ReviewItemLike } from '../../api/review'
 import { reviewShortcutBus } from '../../composables/review-shortcuts'
 import {
   useEvidenceViewer,
@@ -10,32 +10,40 @@ import {
 } from '../../composables/use-evidence-viewer'
 
 const props = defineProps<{
-  item: ReviewItem
-  previousItem: ReviewItem | null
-  nextItem: ReviewItem | null
+  item: ReviewItemLike
+  previousItem: ReviewItemLike | null
+  nextItem: ReviewItemLike | null
 }>()
 
-const sourceOptions = [
+const allSourceOptions: readonly { value: EvidenceSource; label: string }[] = [
   { value: 'crop', label: '裁剪证据' },
   { value: 'original_front', label: '原卷正面' },
   { value: 'original_back', label: '原卷反面' },
   { value: 'annotated_front', label: '标注正面' },
   { value: 'annotated_back', label: '标注反面' },
-] as const
+]
 
 const viewer = useEvidenceViewer()
 const canvasElement = ref<HTMLElement | null>(null)
 const isDragging = ref(false)
-const sourceUrl = computed(() => ({
-  crop: props.item.media.crop_url,
-  original_front: props.item.media.original_front_url,
-  original_back: props.item.media.original_back_url,
-  annotated_front: props.item.media.annotated_front_url,
-  annotated_back: props.item.media.annotated_back_url,
-})[viewer.source.value])
-const recordKey = computed(() => `${props.item.session_id}:${props.item.detail_id}`)
+const reviewItem = computed(() => resolveReviewItem(props.item))
+const mediaUrls = computed<Record<EvidenceSource, string | null>>(() => ({
+  crop: reviewItem.value.media.crop_url,
+  original_front: reviewItem.value.media.original_front_url,
+  original_back: reviewItem.value.media.original_back_url,
+  annotated_front: reviewItem.value.media.annotated_front_url,
+  annotated_back: reviewItem.value.media.annotated_back_url,
+}))
+const sourceOptions = computed(() =>
+  allSourceOptions.filter((option) => mediaUrls.value[option.value] !== null),
+)
+const sourceUrl = computed(() =>
+  mediaUrls.value[viewer.source.value] ?? reviewItem.value.media.crop_url,
+)
+const recordKey = computed(() => reviewItem.value.review_item_id)
 const sourceLabel = computed(() =>
-  sourceOptions.find((option) => option.value === viewer.source.value)?.label ?? '裁剪证据',
+  sourceOptions.value.find((option) => option.value === viewer.source.value)?.label
+  ?? '裁剪证据',
 )
 const imageRenderKey = computed(() =>
   `${recordKey.value}:${viewer.source.value}:${viewer.imageKey.value}`,
@@ -190,6 +198,11 @@ function onCanvasKeydown(event: KeyboardEvent): void {
 watch(recordKey, (key) => {
   releaseDragging()
   viewer.resetForRecord(key)
+}, { immediate: true, flush: 'sync' })
+watch(sourceOptions, (options) => {
+  if (!options.some((option) => option.value === viewer.source.value)) {
+    viewer.selectSource('crop')
+  }
 }, { immediate: true, flush: 'sync' })
 watch(imageRenderKey, (key) => {
   activeLoad = { key, generation: viewer.beginImageLoad() }

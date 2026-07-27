@@ -3,11 +3,13 @@ import { computed, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 
 import {
+  gradingRunRouteDefinition,
   navigationGroups,
   settingsNavigationItems,
   workbenchRouteDefinition,
   type WorkspaceRouteDefinition,
 } from '../../navigation'
+import { useSessionStore } from '../../stores/session'
 import AppIcon from './AppIcon.vue'
 
 defineProps<{
@@ -19,10 +21,19 @@ const emit = defineEmits<{
 }>()
 
 const route = useRoute()
+const sessionStore = useSessionStore()
 const settingsOpen = ref(false)
 
 function isActive(item: WorkspaceRouteDefinition): boolean {
+  if (route.name === gradingRunRouteDefinition.id) return item.id === 'grading'
   return route.path === item.path || route.path.startsWith(`${item.path}/`)
+}
+
+function navigationTarget(item: WorkspaceRouteDefinition): string {
+  if (item.id === 'grading' && sessionStore.selectedSessionId !== null) {
+    return `/sessions/${sessionStore.selectedSessionId}/grading-run`
+  }
+  return item.path
 }
 
 const settingsActive = computed(() => (
@@ -81,7 +92,7 @@ function completeNavigation(): void {
           v-for="item in group.items"
           :key="item.id"
           class="app-sidebar__link"
-          :to="item.path"
+          :to="navigationTarget(item)"
           :aria-current="isActive(item) ? 'page' : undefined"
           @click="completeNavigation"
         >

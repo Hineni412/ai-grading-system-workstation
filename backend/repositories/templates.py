@@ -157,6 +157,37 @@ class TemplateRepository:
             ),
         )
 
+    def swap_template_page_paths(
+        self,
+        session_id: int,
+        template_id: int,
+        *,
+        expected_front_path: str,
+        expected_back_path: str,
+    ) -> bool:
+        cursor = self.session.connection.execute(
+            """
+            UPDATE session_templates
+            SET front_template_path = back_template_path,
+                back_template_path = front_template_path,
+                is_confirmed = 0,
+                regions_snapshot_pending = 0,
+                regions_snapshot_token = NULL,
+                updated_at = datetime('now','localtime')
+            WHERE id = ?
+              AND session_id = ?
+              AND front_template_path = ?
+              AND back_template_path = ?
+            """,
+            (
+                int(template_id),
+                int(session_id),
+                str(expected_front_path),
+                str(expected_back_path),
+            ),
+        )
+        return cursor.rowcount == 1
+
     def owns_template(self, session_id: int, template_id: int) -> bool:
         row = self.session.connection.execute(
             """
@@ -359,6 +390,27 @@ class RegionRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def swap_answer_region_pages(
+        self,
+        session_id: int,
+        template_id: int,
+    ) -> None:
+        self.session.connection.execute(
+            """
+            UPDATE answer_regions
+            SET page = CASE page
+                    WHEN 'front' THEN 'back'
+                    WHEN 'back' THEN 'front'
+                    ELSE page
+                END,
+                is_confirmed = 0,
+                updated_at = datetime('now','localtime')
+            WHERE session_id = ?
+              AND template_id = ?
+            """,
+            (int(session_id), int(template_id)),
+        )
+
     def bulk_update_answer_region_mapping(
         self,
         session_id: int,
@@ -521,6 +573,31 @@ class TemplateRegionRepositoryGateway:
                     template_config_path=template_config_path,
                     regions_path=regions_path,
                 )
+
+    def swap_template_page_assignment(
+        self,
+        session_id: int,
+        template_id: int,
+        *,
+        expected_front_path: str,
+        expected_back_path: str,
+    ) -> bool:
+        with self._sessions.session() as session:
+            with session.transaction(immediate=True):
+                templates = TemplateRepository(session)
+                changed = templates.swap_template_page_paths(
+                    session_id,
+                    template_id,
+                    expected_front_path=expected_front_path,
+                    expected_back_path=expected_back_path,
+                )
+                if not changed:
+                    return False
+                RegionRepository(session).swap_answer_region_pages(
+                    session_id,
+                    template_id,
+                )
+                return True
 
     def save_answer_regions(
         self,

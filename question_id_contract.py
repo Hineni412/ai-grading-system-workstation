@@ -254,3 +254,54 @@ def canonicalize_question_document(document: Mapping[str, Any]) -> dict[str, Any
             if isinstance(part, dict):
                 part["part_id"] = canonical
     return normalized
+
+
+def canonicalize_grading_config_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return an in-memory copy with rubric/answer-key part IDs kept in sync.
+
+    The rubric is the authority for the question hierarchy. Historical aliases
+    such as ``Q10(1)`` remain accepted, while the returned copy always exposes
+    multi-part items as ``Q10(P1)``. The input mapping is never modified.
+    """
+    normalized = deepcopy(dict(payload))
+    rubric = normalized.get("rubric")
+    answer_key = normalized.get("answer_key")
+    if not isinstance(rubric, Mapping):
+        return normalized
+
+    try:
+        catalog = QuestionIdCatalog.from_document(rubric)
+        normalized_rubric = canonicalize_question_document(rubric)
+    except QuestionIdContractError:
+        return normalized
+    normalized["rubric"] = normalized_rubric
+
+    if not isinstance(answer_key, Mapping):
+        return normalized
+    normalized_answer_key = deepcopy(dict(answer_key))
+    answer_questions = normalized_answer_key.get("questions")
+    if not isinstance(answer_questions, list):
+        normalized["answer_key"] = normalized_answer_key
+        return normalized
+
+    for question in answer_questions:
+        if not isinstance(question, dict):
+            continue
+        raw_question_id = str(question.get("question_id") or "").strip()
+        parent_id = _canonical_parent(raw_question_id) or raw_question_id
+        canonical_parts = catalog.parts_by_parent.get(parent_id, ())
+        parts = question.get("parts")
+        if not isinstance(parts, list) or not canonical_parts:
+            continue
+        for index, part in enumerate(parts):
+            if not isinstance(part, dict):
+                continue
+            raw_part_id = str(part.get("part_id") or "").strip()
+            canonical = catalog.resolve(raw_part_id, parent_id=parent_id)
+            if canonical is None and index < len(canonical_parts):
+                canonical = canonical_parts[index]
+            if canonical is not None:
+                part["part_id"] = canonical
+
+    normalized["answer_key"] = normalized_answer_key
+    return normalized

@@ -3,7 +3,28 @@ import { JOB_STATUSES, decodeJobResponse, type JobResponse, type JobStatus } fro
 import { assertNoPathLikeKeys, isRecord } from './validation'
 
 export type UploadBatchState = 'draft' | 'frozen'
-export type GradingMode = 'full_paper' | 'hybrid_batch'
+export type GradingMode = 'full_paper' | 'manual' | 'hybrid_batch'
+export type AutomatedGradingMode = Exclude<GradingMode, 'manual'>
+export type GradingPlanStatus = 'ready' | 'blocked'
+export type GradingPlanMetricValue = number | string | boolean | null
+export type GradingPlanMetrics = Record<string, GradingPlanMetricValue>
+
+export interface GradingPlanIssue {
+  code: string
+  message: string
+  count?: number
+  question_ids?: string[]
+}
+
+export interface GradingPlan {
+  mode: GradingMode
+  status: GradingPlanStatus
+  counts: GradingPlanMetrics
+  requests: GradingPlanMetrics
+  batching: GradingPlanMetrics
+  warnings: GradingPlanIssue[]
+  blockers: GradingPlanIssue[]
+}
 
 export interface ScanUploadFile {
   id: string
@@ -31,7 +52,7 @@ export interface GradingRunSummary {
   progress?: number | null
   started_at?: string | null
   updated_at?: string | null
-  mode: GradingMode
+  mode: AutomatedGradingMode
   state: string
   counts: Record<'graded' | 'grading' | 'pending' | 'skipped' | 'failed' | 'conflict' | 'total', number>
   allowed_actions: string[]
@@ -63,15 +84,30 @@ export interface ScanDecision {
   student_id?: number | null
 }
 
+export interface ScanPageAssignment {
+  first_page_role: 'front' | 'back'
+  front_page_parity: 'odd' | 'even'
+}
+
 export interface ScanPreflight {
   revision: number
   summary: Record<string, number>
+  page_assignment?: ScanPageAssignment
   groups: Record<string, unknown>[]
   issues: Record<string, unknown>[]
   absent_students: Record<string, unknown>[]
   warnings: string[]
   decisions: ScanDecision[]
   pending_issue_count: number
+}
+
+export interface ScanStudentMatchOption {
+  id: number
+  student_code: string
+  name: string
+  class_name: string | null
+  pinyin_initials: string
+  pinyin_full: string
 }
 
 function positiveSessionId(value: number): number {
@@ -186,6 +222,13 @@ function decodePreflight(value: unknown): ScanPreflight {
     || !Array.isArray(value.decisions) || !finiteInteger(value.pending_issue_count)) {
     throw new Error('Invalid scan preflight')
   }
+  const pageAssignment = value.page_assignment
+  if (pageAssignment !== undefined && (!isRecord(pageAssignment)
+    || !hasExactKeys(pageAssignment, ['first_page_role', 'front_page_parity'])
+    || (pageAssignment.first_page_role !== 'front' && pageAssignment.first_page_role !== 'back')
+    || (pageAssignment.front_page_parity !== 'odd' && pageAssignment.front_page_parity !== 'even'))) {
+    throw new Error('Invalid scan page assignment')
+  }
   const summary = value.summary
   const summaryKeys = [
     'auto_matched', 'ready_to_grade', 'issues', 'absent_candidates', 'total_pages',
@@ -193,7 +236,76 @@ function decodePreflight(value: unknown): ScanPreflight {
   if (!isRecord(summary) || !summaryKeys.every((key) => finiteInteger(summary[key]))) {
     throw new Error('Invalid scan preflight summary')
   }
-  return value as unknown as ScanPreflight
+  return {
+    ...value,
+    page_assignment: isRecord(pageAssignment)
+      ? pageAssignment as unknown as ScanPageAssignment
+      : { first_page_role: 'front', front_page_parity: 'odd' },
+  } as unknown as ScanPreflight
+}
+
+function isGradingMode(value: unknown): value is GradingMode {
+  return value === 'full_paper' || value === 'manual' || value === 'hybrid_batch'
+}
+
+function decodePlanMetrics(value: unknown, label: string): GradingPlanMetrics {
+  if (!isRecord(value)) throw new Error(`Invalid grading plan ${label}`)
+  const decoded: GradingPlanMetrics = {}
+  for (const [key, item] of Object.entries(value)) {
+    if (item === null || typeof item === 'string' || typeof item === 'boolean') {
+      decoded[key] = item
+    } else if (typeof item === 'number' && Number.isFinite(item)) {
+      decoded[key] = item
+    }
+  }
+  return decoded
+}
+
+function decodePlanIssue(value: unknown, index: number): GradingPlanIssue {
+  if (typeof value === 'string') {
+    return { code: `plan_issue_${index + 1}`, message: value }
+  }
+  if (!isRecord(value)) throw new Error('Invalid grading plan issue')
+  const code = typeof value.code === 'string' && value.code
+    ? value.code
+    : `plan_issue_${index + 1}`
+  const messageCandidates = [value.message, value.detail, value.title, value.reason, value.code]
+  const message = messageCandidates.find((item): item is string => (
+    typeof item === 'string' && item.trim().length > 0
+  )) ?? '计划中有一项需要教师确认。'
+  const countCandidate = value.count ?? value.affected_count
+  const questionIds = Array.isArray(value.question_ids)
+    ? value.question_ids.filter((item): item is string => typeof item === 'string')
+    : undefined
+  return {
+    code,
+    message,
+    ...(finiteInteger(countCandidate) ? { count: countCandidate } : {}),
+    ...(questionIds?.length ? { question_ids: questionIds } : {}),
+  }
+}
+
+export function decodeGradingPlan(value: unknown): GradingPlan {
+  assertNoPathLikeKeys(value)
+  if (!isRecord(value)
+    || !isGradingMode(value.mode)
+    || (value.status !== 'ready' && value.status !== 'blocked')
+    || !isRecord(value.counts)
+    || !isRecord(value.requests)
+    || !isRecord(value.batching)
+    || !Array.isArray(value.warnings)
+    || !Array.isArray(value.blockers)) {
+    throw new Error('Invalid grading plan')
+  }
+  return {
+    mode: value.mode,
+    status: value.status,
+    counts: decodePlanMetrics(value.counts, 'counts'),
+    requests: decodePlanMetrics(value.requests, 'requests'),
+    batching: decodePlanMetrics(value.batching, 'batching'),
+    warnings: value.warnings.map(decodePlanIssue),
+    blockers: value.blockers.map(decodePlanIssue),
+  }
 }
 
 async function sha256(file: File): Promise<string> {
@@ -257,6 +369,38 @@ export function fetchPreflight(sessionId: number): Promise<ScanPreflight> {
   return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan/preflight`, { decode: decodePreflight })
 }
 
+export function fetchScanStudentOptions(sessionId: number): Promise<ScanStudentMatchOption[]> {
+  return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan/student-options`, {
+    decode(value) {
+      if (!isRecord(value) || !hasExactKeys(value, ['items']) || !Array.isArray(value.items)) {
+        throw new Error('Invalid scan student options')
+      }
+      return value.items.map((item) => {
+        if (!isRecord(item)
+          || !hasExactKeys(item, ['id', 'student_code', 'name', 'class_name', 'pinyin_initials', 'pinyin_full'])
+          || !finiteInteger(item.id, 1)
+          || typeof item.student_code !== 'string'
+          || typeof item.name !== 'string'
+          || !(item.class_name === null || typeof item.class_name === 'string')
+          || typeof item.pinyin_initials !== 'string'
+          || typeof item.pinyin_full !== 'string') {
+          throw new Error('Invalid scan student option')
+        }
+        return item as unknown as ScanStudentMatchOption
+      })
+    },
+  })
+}
+
+export function fetchGradingPlan(sessionId: number, mode: GradingMode, signal?: AbortSignal): Promise<GradingPlan> {
+  return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/grading/plan`, {
+    method: 'POST',
+    body: { grading_mode: mode },
+    signal,
+    decode: decodeGradingPlan,
+  })
+}
+
 export function saveScanDecisions(sessionId: number, revision: number, decisions: ScanDecision[]): Promise<{
   revision: number
   decisions: ScanDecision[]
@@ -281,7 +425,7 @@ export function saveScanDecisions(sessionId: number, revision: number, decisions
   })
 }
 
-export function startGrading(sessionId: number, mode: GradingMode, uploadRevision: number, decisionRevision: number, confirmPendingIssues: boolean): Promise<JobResponse> {
+export function startGrading(sessionId: number, mode: AutomatedGradingMode, uploadRevision: number, decisionRevision: number, confirmPendingIssues: boolean): Promise<JobResponse> {
   return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/grading/run`, {
     method: 'POST',
     body: { grading_mode: mode, upload_revision: uploadRevision, decision_revision: decisionRevision,

@@ -10,8 +10,14 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from ai_grader import AIGrader
-from backend.domain_models import ExamPaperGroup, QuestionGradingDetail, SecondaryError
+from backend.domain_models import (
+    ExamPaperGroup,
+    GradingResult,
+    QuestionGradingDetail,
+    SecondaryError,
+)
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
+from backend.grading_workflow import rubric_scoring_item_scores
 from evidence_atlas import EvidenceAtlasBuilder
 from grading_limits import (
     FULL_PAPER_WORKERS_MAX,
@@ -146,6 +152,7 @@ class GradingService:
         max_workers: int | None = None,
         requests_per_minute: int | None = None,
         grading_mode: str = "full_paper",
+        scan_batch_id: str | None = None,
         objective_escalation_question_ids: Iterable[str] | None = None,
         failed_only: bool = False,
         resume_run_id: int | None = None,
@@ -169,6 +176,45 @@ class GradingService:
             resolved_grading_mode = "hybrid_batch"
         else:
             resolved_grading_mode = "full_paper"
+        teacher_locks = (
+            self.db.reviews.list_teacher_score_locks(
+                session_id,
+                str(scan_batch_id),
+            )
+            if scan_batch_id
+            else []
+        )
+        teacher_locked_questions_by_student: dict[int, set[str]] = {}
+        teacher_score_locks_by_student: dict[
+            int,
+            dict[str, dict[str, Any]],
+        ] = {}
+        current_max_scores = rubric_scoring_item_scores(rubric)
+        for lock in teacher_locks:
+            locked_question_id = str(lock["question_id"])
+            current_max_score = current_max_scores.get(locked_question_id)
+            if (
+                current_max_score is None
+                or abs(
+                    float(lock.get("max_score") or 0)
+                    - current_max_score
+                )
+                > 1e-6
+                or float(lock.get("score_awarded") or 0)
+                > current_max_score + 1e-6
+            ):
+                raise ValueError(
+                    "教师最终分所用满分与当前评分依据不一致，"
+                    "请先在人工批改中重新确认后再启动 AI 批改"
+                )
+            teacher_locked_questions_by_student.setdefault(
+                int(lock["student_id"]),
+                set(),
+            ).add(locked_question_id)
+            teacher_score_locks_by_student.setdefault(
+                int(lock["student_id"]),
+                {},
+            )[locked_question_id] = dict(lock)
 
         scanner = Scanner(
             exams_dir=exams_dir,
@@ -502,7 +548,11 @@ class GradingService:
                 )
                 total = len(matched_records)
             existing_results_by_student = {}
-            skipped_questions_by_student = {}
+            skipped_questions_by_student = {
+                student_id: set(question_ids)
+                for student_id, question_ids
+                in teacher_locked_questions_by_student.items()
+            }
             if failed_only:
                 for paper_id, group, student_id in matched_records:
                     stored_result = self.results.get_student_result_for_retry(
@@ -556,9 +606,15 @@ class GradingService:
                             replace_all_details
                         )
                         if replace_all_details:
-                            skipped_questions_by_student[student_id] = set()
+                            skipped_questions_by_student.setdefault(
+                                student_id,
+                                set(),
+                            )
                         else:
-                            skipped_questions_by_student[student_id] = {
+                            skipped_questions_by_student.setdefault(
+                                student_id,
+                                set(),
+                            ).update({
                                 detail["question_id"]
                                 for detail in details_rows
                                 if major_question_id(
@@ -566,7 +622,7 @@ class GradingService:
                                     detail["question_id"],
                                 )
                                 not in affected_major_ids
-                            }
+                            })
 
             hybrid_marked_paper_ids: list[int] = []
             for idx, (paper_id, group, student_id) in enumerate(matched_records, start=1):
@@ -745,6 +801,12 @@ class GradingService:
                     paper_key = paper_key_by_paper_id.get(paper_id, "")
                     fallback_items = fallback_items_by_key.get(paper_key, [])
                     result = batch_run.results_by_paper_key[paper_key]
+                    _merge_teacher_score_locks_into_result(
+                        result,
+                        teacher_score_locks_by_student.get(student_id, {}),
+                        grader.rubric,
+                        scan_batch_id=scan_batch_id,
+                    )
 
                     atomic_major_retry = bool(retry_existing and retry_existing["atomic_retry"])
                     if atomic_major_retry:
@@ -852,6 +914,7 @@ class GradingService:
                             student_score=result.student_score,
                             needs_human_review=result.needs_human_review,
                             raw_json=result.raw_json,
+                            scan_batch_id=scan_batch_id,
                         )
                         assignment_is_current = (
                             self.papers.update_exam_paper_status_if_current_assignment(
@@ -867,6 +930,7 @@ class GradingService:
                                 student_id,
                                 paper_id,
                                 result,
+                                scan_batch_id=scan_batch_id,
                             )
                         )
                         assignment_is_current = result_id is not None
@@ -1070,6 +1134,7 @@ class GradingService:
                                 student_id,
                                 paper_id,
                                 result,
+                                scan_batch_id=scan_batch_id,
                             )
                         )
                         if result_id is None:
@@ -1377,6 +1442,96 @@ def _target_question_ids_from_regions(regions: list[dict], rubric: dict | None =
     return result
 
 
+def _question_sort_key(value: str) -> list[tuple[int, Any]]:
+    return [
+        (0, int(part)) if part.isdigit() else (1, part.lower())
+        for part in re.split(r"(\d+)", str(value or ""))
+    ]
+
+
+def _merge_teacher_score_locks_into_result(
+    result: GradingResult,
+    locks_by_question_id: dict[str, dict[str, Any]],
+    rubric: dict[str, Any],
+    *,
+    scan_batch_id: str | None,
+) -> None:
+    """Complete an in-memory hybrid result with pre-existing teacher scores."""
+
+    if not locks_by_question_id:
+        return
+    details_by_question_id = {
+        str(detail.question_id): detail
+        for detail in result.grading_details
+    }
+    locked_question_ids: set[str] = set()
+    for question_id, lock in locks_by_question_id.items():
+        previous = details_by_question_id.get(question_id)
+        details_by_question_id[question_id] = QuestionGradingDetail(
+            question_id=question_id,
+            score_awarded=float(lock["score_awarded"]),
+            deduction_reason=(
+                str(lock["deduction_reason"])
+                if lock.get("deduction_reason") is not None
+                else "教师人工批改已确认"
+            ),
+            knowledge_id=(
+                previous.knowledge_id if previous is not None else "UNKNOWN"
+            ),
+            error_category="教师已确认",
+            error_summary="teacher_score_locked",
+            confidence_score=None,
+            knowledge_ids=(
+                list(previous.knowledge_ids) if previous is not None else []
+            ),
+            secondary_errors=(
+                list(previous.secondary_errors) if previous is not None else []
+            ),
+        )
+        locked_question_ids.add(question_id)
+
+    merged_details = sorted(
+        details_by_question_id.values(),
+        key=lambda detail: _question_sort_key(detail.question_id),
+    )
+    completeness = audit_grading_details(rubric, merged_details)
+    raw_json = dict(result.raw_json or {})
+    raw_json["grading_completeness"] = completeness
+    raw_json["teacher_score_locks"] = {
+        "scan_batch_id": str(scan_batch_id or ""),
+        "question_ids": sorted(
+            locked_question_ids,
+            key=_question_sort_key,
+        ),
+    }
+    fallback = raw_json.get("hybrid_batch_fallback")
+    has_fallback = bool(
+        isinstance(fallback, dict)
+        and isinstance(fallback.get("items"), list)
+        and fallback["items"]
+    )
+    result.grading_details = merged_details
+    result.student_score = sum(
+        float(detail.score_awarded) for detail in merged_details
+    )
+    result.needs_human_review = (
+        completeness["status"] != "complete"
+        or has_fallback
+        or any(
+            detail.question_id not in locked_question_ids
+            and (
+                (
+                    detail.confidence_score is not None
+                    and detail.confidence_score < 80
+                )
+                or str(detail.error_category or "") == "需复核"
+            )
+            for detail in merged_details
+        )
+    )
+    result.raw_json = raw_json
+
+
 
 def _fallback_items_by_student(fallback_items: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
     result: dict[int, list[dict[str, Any]]] = {}
@@ -1606,56 +1761,20 @@ def _grade_one_paper_with_retries(
     answer_regions: list[dict[str, Any]] | None = None,
     atlas_output_root: Path | None = None,
 ):
-    from openai import APIConnectionError, APITimeoutError, RateLimitError
-
-    retry_count = bounded_int(os.getenv("AI_GRADING_FULL_PAPER_RETRIES"), 0, 0, 5)
-    attempts = retry_count + 1
-    last_error: Exception | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            return _grade_one_paper(
-                grader,
-                group,
-                rate_limiter,
-                event_queue,
-                session_id,
-                grading_mode=grading_mode,
-                answer_regions=answer_regions,
-                atlas_output_root=atlas_output_root,
-            )
-        except (APIConnectionError, APITimeoutError, RateLimitError) as exc:
-            # 网络/超时/限流错误——值得重试，加指数退避
-            last_error = exc
-            if attempt >= attempts:
-                break
-            wait_secs = min(2 ** attempt, 30)
-            if event_queue is not None:
-                event_queue.put(
-                    {
-                        "event": "grading_log",
-                        "student_name": group.student_name,
-                        "message": (
-                            f"网络/限流错误，{wait_secs}s 后重试"
-                            f"（第 {attempt}/{retry_count} 次）：{exc}"
-                        ),
-                    }
-                )
-            time.sleep(wait_secs)
-        except Exception as exc:  # noqa: BLE001
-            # 其他错误（JSON解析失败、模型参数错误等）——不值得重试
-            last_error = exc
-            if event_queue is not None:
-                event_queue.put(
-                    {
-                        "event": "grading_log",
-                        "student_name": group.student_name,
-                        "message": f"批改出错（非网络问题，不重试）：{exc}",
-                    }
-                )
-            break
-    if last_error is not None:
-        raise last_error
-    raise RuntimeError("full_paper_grading_failed_without_error")
+    # Compatibility name only.  P3.5 makes every teacher action correspond to
+    # exactly one physical full-paper request.  Network, timeout, rate-limit,
+    # parsing, and validation failures all return to the teacher queue; an
+    # explicit teacher action is required before another paid request exists.
+    return _grade_one_paper(
+        grader,
+        group,
+        rate_limiter,
+        event_queue,
+        session_id,
+        grading_mode=grading_mode,
+        answer_regions=answer_regions,
+        atlas_output_root=atlas_output_root,
+    )
 
 
 def _grade_one_paper(

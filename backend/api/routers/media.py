@@ -6,7 +6,10 @@ from fastapi import APIRouter, Depends, Response
 from fastapi.responses import FileResponse
 
 from backend.api.app import ApiError
-from backend.api.dependencies import get_media_service
+from backend.api.dependencies import (
+    get_media_service,
+    get_scan_grading_workspace,
+)
 from backend.file_access import (
     ControlledFileExpired,
     ControlledFileForbidden,
@@ -16,6 +19,10 @@ from backend.media.service import (
     ReviewMediaNotFound,
     ReviewMediaService,
     ReviewMediaUnreadable,
+)
+from backend.scan_grading.workspace import (
+    ScanGradingWorkspace,
+    ScanGradingWorkspaceError,
 )
 
 
@@ -95,6 +102,72 @@ def get_review_detail_crop(
             session_id,
             result_id,
             detail_id,
+        )
+    except (
+        ReviewMediaNotFound,
+        ControlledFileExpired,
+        ControlledFileForbidden,
+        ControlledFileTypeError,
+        ReviewMediaUnreadable,
+    ) as exc:
+        _raise_media_api_error(exc, details)
+    return Response(
+        content=payload,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get(
+    (
+        "/sessions/{session_id}/review/preflight/"
+        "{target_type}/{target_id}/{question_id}/crop"
+    ),
+    response_class=Response,
+    responses={
+        200: {
+            "content": {
+                "image/jpeg": {"schema": BINARY_SCHEMA},
+            }
+        }
+    },
+)
+def get_preflight_review_crop(
+    session_id: int,
+    target_type: Literal["group", "issue"],
+    target_id: str,
+    question_id: str,
+    media_service: ReviewMediaService = Depends(get_media_service),
+    workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+) -> Response:
+    details = {
+        "session_id": int(session_id),
+        "target_type": target_type,
+        "target_id": target_id,
+        "question_id": question_id,
+    }
+    try:
+        front_source = workspace.resolve_preflight_media(
+            session_id,
+            f"{target_type}:{target_id}:front",
+        )
+        try:
+            back_source = workspace.resolve_preflight_media(
+                session_id,
+                f"{target_type}:{target_id}:back",
+            )
+        except ScanGradingWorkspaceError:
+            back_source = None
+        payload = media_service.render_preflight_crop(
+            session_id,
+            question_id,
+            front_source=front_source,
+            back_source=back_source,
+        )
+    except ScanGradingWorkspaceError as exc:
+        _raise_media_api_error(
+            ReviewMediaNotFound(str(exc)),
+            details,
         )
     except (
         ReviewMediaNotFound,

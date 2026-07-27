@@ -929,7 +929,11 @@ def image_paths_from_rich_text(value: str) -> list[str]:
 
 
 def _parse_answer_section_blocks(answer_blocks: list[Any]) -> tuple[str, str]:
-    in_solution = False
+    # The rich-content mapper has already assigned these blocks to one question's
+    # answer section. Treat unheaded paragraphs as solution content as well:
+    # many Word answer sheets put only the first answer on a labelled line and
+    # continue the proof/derivation in ordinary paragraphs.
+    in_solution = True
     awaiting_answer = False
     solution_lines: list[str] = []
     final_answer = ""
@@ -945,12 +949,14 @@ def _parse_answer_section_blocks(answer_blocks: list[Any]) -> tuple[str, str]:
                 if after:
                     final_answer = _clean_local_answer_text(_strip_inline_html(after))
                     awaiting_answer = False
+                    in_solution = True
                 else:
                     awaiting_answer = True
                 continue
             if awaiting_answer:
                 final_answer = _clean_local_answer_text(_strip_inline_html(line))
                 awaiting_answer = False
+                in_solution = True
                 continue
             if "【点评】" in line or "【点睛】" in line:
                 in_solution = False
@@ -985,6 +991,31 @@ def _parse_answer_section_blocks(answer_blocks: list[Any]) -> tuple[str, str]:
             if match:
                 final_answer = match.group(1).strip().rstrip("．.")
     return final_answer, solution_text
+
+
+def _merge_complete_rich_text(parts: list[str], additional: str) -> list[str]:
+    extra = str(additional or "").strip()
+    if not extra:
+        return parts
+    current = "\n".join(str(part or "").strip() for part in parts if str(part or "").strip())
+    if not current:
+        return [extra]
+
+    def signature(value: str) -> str:
+        visible = _strip_inline_html(str(value or ""))
+        return re.sub(r"\s+", "", visible).strip()
+
+    current_signature = signature(current)
+    extra_signature = signature(extra)
+    if not extra_signature or extra_signature == current_signature:
+        return parts
+    # Prefer the fuller projection when one sufficiently descriptive fragment
+    # contains the other; short answers such as "A" are compared only exactly.
+    if len(current_signature) >= 12 and current_signature in extra_signature:
+        return [extra]
+    if len(extra_signature) >= 12 and extra_signature in current_signature:
+        return parts
+    return [*parts, extra]
 
 
 def parse_rich_question_blocks(
@@ -1033,12 +1064,12 @@ def parse_rich_question_blocks(
         else:
             analysis_lines.append(line)
 
-    if answer_blocks and not answer_lines:
+    if answer_blocks:
         final, analysis = _parse_answer_section_blocks(answer_blocks)
         if final:
-            answer_lines.append(final)
-        if analysis and not analysis_lines:
-            analysis_lines.append(analysis)
+            answer_lines = _merge_complete_rich_text(answer_lines, final)
+        if analysis:
+            analysis_lines = _merge_complete_rich_text(analysis_lines, analysis)
 
     question_html = _strip_leading_question_number(
         number, "\n".join(stem_lines).strip()

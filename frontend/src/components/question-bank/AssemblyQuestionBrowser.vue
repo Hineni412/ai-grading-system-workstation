@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 
 import {
   questionBankApi,
+  type CurriculumCatalog,
+  type CurriculumChapter,
+  type QuestionBankFacet,
   type QuestionBankFacets,
   type QuestionBankFilters,
   type QuestionBankListItem,
@@ -23,12 +26,26 @@ const state = ref<'loading' | 'ready' | 'empty' | 'error'>('loading')
 const facetsState = ref<'loading' | 'ready' | 'error'>('loading')
 const facets = ref<QuestionBankFacets>({
   exam_scopes: [],
+  curriculum_chapters: [],
   knowledge_points: [],
+  abilities: [],
+  methods: [],
+  models: [],
+  student_levels: [],
+  teaching_stages: [],
+  sub_skills: [],
   question_types: [],
   years: [],
   exam_types: [],
   grades: [],
 })
+const catalog = ref<CurriculumCatalog | null>(null)
+const catalogState = ref<'loading' | 'ready' | 'error'>('loading')
+const selectedVolumeId = ref('')
+const selectedChapterId = ref('')
+const selectedHistoricalScope = ref('')
+const expandedChapterIds = ref(new Set<string>())
+const activeTagDimension = ref<TagArrayFilterKey>('knowledgePoints')
 const expandedAnswers = ref(new Set<number>())
 const similarSource = ref<QuestionBankListItem | null>(null)
 const similarItems = ref<SimilarQuestionItem[]>([])
@@ -36,8 +53,11 @@ const similarState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const filters = reactive({
   page: 1,
   keyword: '',
-  examScope: '',
-  knowledgePoint: '',
+  knowledgePoints: [] as string[],
+  abilities: [] as string[],
+  methods: [] as string[],
+  models: [] as string[],
+  studentLevels: [] as string[],
   questionType: '',
   year: '',
   examType: '',
@@ -48,46 +68,179 @@ const filters = reactive({
 
 type TextFilterKey =
   | 'keyword'
-  | 'examScope'
-  | 'knowledgePoint'
   | 'questionType'
   | 'year'
   | 'examType'
   | 'grade'
 
-type ActiveFilterKey = TextFilterKey | 'tagStatus'
+type TagArrayFilterKey =
+  | 'knowledgePoints'
+  | 'abilities'
+  | 'methods'
+  | 'models'
+  | 'studentLevels'
+
+type ActiveFilterKey = TextFilterKey | TagArrayFilterKey | 'scope' | 'tagStatus'
 
 interface ActiveFilter {
+  id: string
   key: ActiveFilterKey
   label: string
   value: string
 }
 
+interface TagFilterRow {
+  key: TagArrayFilterKey
+  label: string
+  items: QuestionBankFacet[]
+  visibleLimit: number
+}
+
+let questionAbortController: AbortController | null = null
+let questionRequestSerial = 0
+
+const currentVolume = computed(() => (
+  catalog.value?.volumes.find((volume) => volume.id === selectedVolumeId.value) ?? null
+))
+
+const selectedChapter = computed<CurriculumChapter | null>(() => {
+  for (const volume of catalog.value?.volumes ?? []) {
+    const chapter = volume.chapters.find((item) => item.id === selectedChapterId.value)
+    if (chapter) return chapter
+  }
+  return null
+})
+
+const selectedExamScopes = computed(() => {
+  if (selectedChapter.value) return [...selectedChapter.value.exam_scope_values]
+  if (selectedHistoricalScope.value) return [selectedHistoricalScope.value]
+  return []
+})
+
+const selectedScopeLabel = computed(() => (
+  selectedChapter.value
+    ? `${currentVolume.value?.label ?? ''} ${selectedChapter.value.label}`.trim()
+    : selectedHistoricalScope.value
+))
+
+const chapterCounts = computed(() => new Map(
+  facets.value.curriculum_chapters.map((item) => [item.value, item.count]),
+))
+
+const recognizedExamScopes = computed(() => {
+  const values = new Set<string>()
+  for (const volume of catalog.value?.volumes ?? []) {
+    for (const chapter of volume.chapters) {
+      for (const value of chapter.exam_scope_values) values.add(value)
+    }
+  }
+  return values
+})
+
+const historicalScopes = computed(() => (
+  facets.value.exam_scopes.filter((item) => !recognizedExamScopes.value.has(item.value))
+))
+
+const primaryTagRows = computed<TagFilterRow[]>(() => [
+  {
+    key: 'knowledgePoints',
+    label: '知识点',
+    items: facets.value.knowledge_points,
+    visibleLimit: 12,
+  },
+  {
+    key: 'abilities',
+    label: '能力',
+    items: facets.value.abilities,
+    visibleLimit: 10,
+  },
+  {
+    key: 'methods',
+    label: '方法',
+    items: facets.value.methods,
+    visibleLimit: 10,
+  },
+  {
+    key: 'models',
+    label: '模型',
+    items: facets.value.models,
+    visibleLimit: 10,
+  },
+  {
+    key: 'studentLevels',
+    label: '学生层级',
+    items: facets.value.student_levels,
+    visibleLimit: 8,
+  },
+])
+
+const activeTagRow = computed(() => (
+  primaryTagRows.value.find((row) => row.key === activeTagDimension.value)
+  ?? primaryTagRows.value[0]
+  ?? null
+))
+
+const activeFilterLabels: Record<TagArrayFilterKey, string> = {
+  knowledgePoints: '知识点',
+  abilities: '能力',
+  methods: '方法',
+  models: '模型',
+  studentLevels: '学生层级',
+}
+
 const activeFilters = computed<ActiveFilter[]>(() => {
   const result: ActiveFilter[] = []
   if (filters.keyword.trim()) {
-    result.push({ key: 'keyword', label: '关键词', value: filters.keyword.trim() })
+    result.push({
+      id: `keyword:${filters.keyword.trim()}`,
+      key: 'keyword',
+      label: '关键词',
+      value: filters.keyword.trim(),
+    })
   }
-  if (filters.examScope) {
-    result.push({ key: 'examScope', label: '章节', value: filters.examScope })
+  if (selectedScopeLabel.value) {
+    result.push({
+      id: `scope:${selectedChapterId.value || selectedHistoricalScope.value}`,
+      key: 'scope',
+      label: selectedChapter.value ? '教材章节' : '历史范围',
+      value: selectedScopeLabel.value,
+    })
   }
   if (filters.questionType) {
-    result.push({ key: 'questionType', label: '题型', value: filters.questionType })
+    result.push({
+      id: `questionType:${filters.questionType}`,
+      key: 'questionType',
+      label: '题型',
+      value: filters.questionType,
+    })
   }
-  if (filters.knowledgePoint) {
-    result.push({ key: 'knowledgePoint', label: '知识点', value: filters.knowledgePoint })
+  for (const key of Object.keys(activeFilterLabels) as TagArrayFilterKey[]) {
+    for (const value of filters[key]) {
+      result.push({
+        id: `${key}:${value}`,
+        key,
+        label: activeFilterLabels[key],
+        value,
+      })
+    }
   }
   if (filters.year) {
-    result.push({ key: 'year', label: '年份', value: filters.year })
+    result.push({ id: `year:${filters.year}`, key: 'year', label: '年份', value: filters.year })
   }
   if (filters.examType) {
-    result.push({ key: 'examType', label: '试卷类型', value: filters.examType })
+    result.push({
+      id: `examType:${filters.examType}`,
+      key: 'examType',
+      label: '试卷类型',
+      value: filters.examType,
+    })
   }
   if (filters.grade) {
-    result.push({ key: 'grade', label: '年级', value: filters.grade })
+    result.push({ id: `grade:${filters.grade}`, key: 'grade', label: '年级', value: filters.grade })
   }
   if (filters.tagStatus !== 'all') {
     result.push({
+      id: `tagStatus:${filters.tagStatus}`,
       key: 'tagStatus',
       label: '标签状态',
       value: filters.tagStatus === 'tagged' ? '核心标签完整' : '标签待完善',
@@ -98,12 +251,18 @@ const activeFilters = computed<ActiveFilter[]>(() => {
 
 const activeFilterCount = computed(() => activeFilters.value.length)
 
-onMounted(() => {
-  void Promise.all([
+onMounted(async () => {
+  await Promise.all([
     assembly.loadState === 'idle' ? assembly.load() : Promise.resolve(),
+    loadCatalog(),
     loadFacets(),
-    loadQuestions(),
   ])
+  chooseInitialVolume()
+  await loadQuestions()
+})
+
+onBeforeUnmount(() => {
+  questionAbortController?.abort()
 })
 
 function queryFilters(): QuestionBankFilters {
@@ -111,12 +270,16 @@ function queryFilters(): QuestionBankFilters {
     page: filters.page,
     pageSize: 12,
     keyword: filters.keyword,
-    knowledgePoint: filters.knowledgePoint,
+    knowledgePoints: [...filters.knowledgePoints],
+    abilities: [...filters.abilities],
+    methods: [...filters.methods],
+    models: [...filters.models],
+    studentLevels: [...filters.studentLevels],
     questionTypes: filters.questionType ? [filters.questionType] : [],
     years: filters.year ? [filters.year] : [],
     examTypes: filters.examType ? [filters.examType] : [],
     grades: filters.grade ? [filters.grade] : [],
-    examScopes: filters.examScope ? [filters.examScope] : [],
+    examScopes: selectedExamScopes.value,
     tagStatus: filters.tagStatus,
     sort: filters.sort,
   }
@@ -124,15 +287,34 @@ function queryFilters(): QuestionBankFilters {
 
 async function loadQuestions(resetPage = false): Promise<void> {
   if (resetPage) filters.page = 1
+  questionAbortController?.abort()
+  const controller = new AbortController()
+  const requestSerial = ++questionRequestSerial
+  questionAbortController = controller
   state.value = 'loading'
   try {
-    const result = await questionBankApi.listQuestions(queryFilters())
+    const result = await questionBankApi.listQuestions(queryFilters(), controller.signal)
+    if (requestSerial !== questionRequestSerial) return
     questions.value = result.items
     total.value = result.total
     totalPages.value = result.total_pages
     state.value = result.items.length ? 'ready' : 'empty'
   } catch {
+    if (controller.signal.aborted || requestSerial !== questionRequestSerial) return
     state.value = 'error'
+  } finally {
+    if (requestSerial === questionRequestSerial) questionAbortController = null
+  }
+}
+
+async function loadCatalog(): Promise<void> {
+  catalogState.value = 'loading'
+  try {
+    catalog.value = await questionBankApi.getCurriculum()
+    catalogState.value = 'ready'
+  } catch {
+    catalog.value = null
+    catalogState.value = 'error'
   }
 }
 
@@ -146,13 +328,80 @@ async function loadFacets(): Promise<void> {
   }
 }
 
-function chooseChapter(value: string): void {
-  filters.examScope = filters.examScope === value ? '' : value
+async function retryCurriculum(): Promise<void> {
+  await Promise.all([loadCatalog(), loadFacets()])
+  chooseInitialVolume()
+}
+
+function chooseInitialVolume(): void {
+  if (selectedVolumeId.value || !catalog.value?.volumes.length) return
+  const ranked = catalog.value.volumes.map((volume, index) => ({
+    id: volume.id,
+    index,
+    count: volume.chapters.reduce(
+      (sum, chapter) => sum + (chapterCounts.value.get(chapter.id) ?? 0),
+      0,
+    ),
+  })).sort((left, right) => right.count - left.count || left.index - right.index)
+  selectedVolumeId.value = ranked[0]?.id ?? catalog.value.volumes[0]?.id ?? ''
+}
+
+function chooseVolume(value: string): void {
+  selectedVolumeId.value = value
+  selectedChapterId.value = ''
+  selectedHistoricalScope.value = ''
+  expandedChapterIds.value = new Set()
   void loadQuestions(true)
 }
 
-function chooseTextFilter(key: Exclude<TextFilterKey, 'keyword' | 'examScope'>, value: string): void {
+function toggleChapter(chapterId: string): void {
+  const next = new Set(expandedChapterIds.value)
+  if (next.has(chapterId)) next.delete(chapterId)
+  else next.add(chapterId)
+  expandedChapterIds.value = next
+}
+
+function chooseChapter(chapter: CurriculumChapter): void {
+  const clear = selectedChapterId.value === chapter.id
+  selectedChapterId.value = clear ? '' : chapter.id
+  selectedHistoricalScope.value = ''
+  if (!clear) {
+    const next = new Set(expandedChapterIds.value)
+    next.add(chapter.id)
+    expandedChapterIds.value = next
+  }
+  void loadQuestions(true)
+}
+
+function clearScope(): void {
+  selectedChapterId.value = ''
+  selectedHistoricalScope.value = ''
+  void loadQuestions(true)
+}
+
+function chooseHistoricalScope(value: string): void {
+  const clear = selectedHistoricalScope.value === value
+  selectedHistoricalScope.value = clear ? '' : value
+  selectedChapterId.value = ''
+  void loadQuestions(true)
+}
+
+function chooseTextFilter(key: Exclude<TextFilterKey, 'keyword'>, value: string): void {
   filters[key] = filters[key] === value ? '' : value
+  void loadQuestions(true)
+}
+
+function toggleTagFilter(key: TagArrayFilterKey, value: string): void {
+  const next = new Set(filters[key])
+  if (next.has(value)) next.delete(value)
+  else next.add(value)
+  filters[key] = [...next]
+  void loadQuestions(true)
+}
+
+function clearTagFilter(key: TagArrayFilterKey): void {
+  if (filters[key].length === 0) return
+  filters[key] = []
   void loadQuestions(true)
 }
 
@@ -161,9 +410,18 @@ function chooseTagStatus(value: 'all' | 'tagged' | 'untagged'): void {
   void loadQuestions(true)
 }
 
-function clearActiveFilter(key: ActiveFilterKey): void {
-  if (key === 'tagStatus') filters.tagStatus = 'all'
-  else filters[key] = ''
+function clearActiveFilter(filter: ActiveFilter): void {
+  if (filter.key === 'scope') {
+    selectedChapterId.value = ''
+    selectedHistoricalScope.value = ''
+  } else if (filter.key === 'tagStatus') {
+    filters.tagStatus = 'all'
+  } else if (filter.key in activeFilterLabels) {
+    const key = filter.key as TagArrayFilterKey
+    filters[key] = filters[key].filter((value) => value !== filter.value)
+  } else {
+    filters[filter.key as TextFilterKey] = ''
+  }
   void loadQuestions(true)
 }
 
@@ -177,8 +435,11 @@ function resetFilters(): void {
   Object.assign(filters, {
     page: 1,
     keyword: '',
-    examScope: '',
-    knowledgePoint: '',
+    knowledgePoints: [],
+    abilities: [],
+    methods: [],
+    models: [],
+    studentLevels: [],
     questionType: '',
     year: '',
     examType: '',
@@ -186,7 +447,13 @@ function resetFilters(): void {
     tagStatus: 'all',
     sort: 'newest',
   })
+  selectedChapterId.value = ''
+  selectedHistoricalScope.value = ''
   void loadQuestions()
+}
+
+function chapterCount(chapterId: string): number {
+  return chapterCounts.value.get(chapterId) ?? 0
 }
 
 function isInBasket(questionId: number): boolean {
@@ -250,34 +517,107 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
     <aside class="assembly-chapters" aria-labelledby="assembly-chapter-title">
       <header>
         <div>
-          <p class="assembly-kicker">TEXTBOOK CHAPTERS</p>
+          <p class="assembly-kicker">CURRICULUM INDEX</p>
           <h2 id="assembly-chapter-title">教材章节</h2>
         </div>
-        <button v-if="filters.examScope" type="button" class="assembly-link" @click="chooseChapter(filters.examScope)">清除</button>
+        <button v-if="selectedScopeLabel" type="button" class="assembly-link" @click="clearScope">清除</button>
       </header>
-      <p class="assembly-chapters__hint">当前题库按已有“教材章节/范围”标签整理，不虚构教材层级。</p>
-      <div v-if="facetsState === 'loading'" class="assembly-compact-state">正在读取章节…</div>
-      <div v-else-if="facetsState === 'error'" class="assembly-compact-state">
-        <span>章节计数暂不可用</span>
-        <button type="button" class="assembly-link" @click="loadFacets">重试</button>
+      <label v-if="catalogState === 'ready' && catalog" class="assembly-volume-select">
+        <span>教材册别</span>
+        <select
+          :value="selectedVolumeId"
+          aria-label="选择教材册别"
+          @change="chooseVolume(($event.currentTarget as HTMLSelectElement).value)"
+        >
+          <option v-for="volume in catalog.volumes" :key="volume.id" :value="volume.id">
+            {{ volume.label }}
+          </option>
+        </select>
+      </label>
+      <p class="assembly-chapters__hint">
+        北师大版 2024 目录保存在本机。章级兼容历史标签；小节未标定时不会猜测归属。
+      </p>
+      <div v-if="catalogState === 'loading' || facetsState === 'loading'" class="assembly-compact-state">
+        正在读取教材目录…
       </div>
-      <nav v-else class="assembly-chapter-list" aria-label="教材章节筛选">
+      <div v-else-if="catalogState === 'error' || facetsState === 'error'" class="assembly-compact-state">
+        <span>教材目录或章节计数暂不可用</span>
         <button
           type="button"
-          :class="{ 'is-active': !filters.examScope }"
-          @click="chooseChapter(filters.examScope)"
+          class="assembly-link"
+          @click="retryCurriculum"
         >
-          <span>全部章节</span><strong>{{ facets.exam_scopes.reduce((sum, item) => sum + item.count, 0) }}</strong>
+          重试
         </button>
+      </div>
+      <nav v-else-if="currentVolume" class="assembly-curriculum-tree" aria-label="教材章节筛选">
         <button
-          v-for="chapter in facets.exam_scopes"
-          :key="chapter.value"
           type="button"
-          :class="{ 'is-active': filters.examScope === chapter.value }"
-          @click="chooseChapter(chapter.value)"
+          class="assembly-curriculum-tree__all"
+          :class="{ 'is-active': !selectedScopeLabel }"
+          @click="clearScope"
         >
-          <span>{{ chapter.value }}</span><strong>{{ chapter.count }}</strong>
+          <span>不限定章节</span>
+          <small>查看全部题目</small>
         </button>
+
+        <div
+          v-for="chapter in currentVolume.chapters"
+          :key="chapter.id"
+          class="assembly-curriculum-node"
+        >
+          <div class="assembly-curriculum-node__heading">
+            <button
+              type="button"
+              class="assembly-curriculum-node__toggle"
+              :aria-label="`${expandedChapterIds.has(chapter.id) ? '收起' : '展开'}${chapter.label}`"
+              :aria-expanded="expandedChapterIds.has(chapter.id)"
+              @click="toggleChapter(chapter.id)"
+            >
+              <span aria-hidden="true">›</span>
+            </button>
+            <button
+              type="button"
+              class="assembly-curriculum-node__chapter"
+              :class="{ 'is-active': selectedChapterId === chapter.id }"
+              :aria-pressed="selectedChapterId === chapter.id"
+              @click="chooseChapter(chapter)"
+            >
+              <span>{{ chapter.label }}</span>
+              <small>{{ chapterCount(chapter.id) }} 题</small>
+            </button>
+          </div>
+          <ul v-if="expandedChapterIds.has(chapter.id)" class="assembly-curriculum-sections">
+            <li class="assembly-curriculum-sections__status">
+              本章 {{ chapterCount(chapter.id) }} 题尚未细分到小节
+            </li>
+            <li v-for="section in chapter.sections" :key="section.id">
+              <button
+                type="button"
+                disabled
+                title="当前题库尚未保存这道题所属的小节，暂不能精确筛选"
+              >
+                <span>{{ section.label }}</span>
+                <small>待标定</small>
+              </button>
+            </li>
+          </ul>
+        </div>
+
+        <details v-if="historicalScopes.length" class="assembly-historical-scopes">
+          <summary>其他／历史范围（{{ historicalScopes.length }}）</summary>
+          <div>
+            <button
+              v-for="item in historicalScopes"
+              :key="item.value"
+              type="button"
+              :class="{ 'is-active': selectedHistoricalScope === item.value }"
+              @click="chooseHistoricalScope(item.value)"
+            >
+              <span>{{ item.value }}</span><small>{{ item.count }}</small>
+            </button>
+          </div>
+        </details>
       </nav>
     </aside>
 
@@ -287,7 +627,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
           <div>
             <p class="assembly-kicker">QUESTION LABELS</p>
             <h2>按标签筛题</h2>
-            <p>点击标签立即筛选；每个数字表示当前题库中带有该标签的题目数量。</p>
+            <p>同一行可多选、满足任一项；不同行同时满足。数字为当前题库标签计数。</p>
           </div>
           <strong v-if="activeFilterCount">{{ activeFilterCount }} 项已选</strong>
         </header>
@@ -325,160 +665,163 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
             </div>
           </div>
 
-          <div class="assembly-filter-row">
-            <span class="assembly-filter-label">知识点</span>
+          <div class="assembly-tag-dimensions" role="tablist" aria-label="标签筛选维度">
+            <button
+              v-for="row in primaryTagRows"
+              :key="row.key"
+              type="button"
+              role="tab"
+              :aria-selected="activeTagDimension === row.key"
+              :class="{ 'is-active': activeTagDimension === row.key }"
+              @click="activeTagDimension = row.key"
+            >
+              {{ row.label }}
+              <small v-if="filters[row.key].length">{{ filters[row.key].length }}</small>
+            </button>
+          </div>
+
+          <div v-if="activeTagRow" class="assembly-filter-row is-tag-dimension">
+            <span class="assembly-filter-label">{{ activeTagRow.label }}</span>
             <div class="assembly-filter-chips">
               <button
                 type="button"
-                :class="{ 'is-active': !filters.knowledgePoint }"
-                :aria-pressed="!filters.knowledgePoint"
-                @click="chooseTextFilter('knowledgePoint', '')"
+                :class="{ 'is-active': filters[activeTagRow.key].length === 0 }"
+                :aria-pressed="filters[activeTagRow.key].length === 0"
+                @click="clearTagFilter(activeTagRow.key)"
               >
                 全部
               </button>
               <button
-                v-for="item in facets.knowledge_points.slice(0, 12)"
+                v-for="item in activeTagRow.items.slice(0, activeTagRow.visibleLimit)"
                 :key="item.value"
                 type="button"
-                :class="{ 'is-active': filters.knowledgePoint === item.value }"
-                :aria-pressed="filters.knowledgePoint === item.value"
-                @click="chooseTextFilter('knowledgePoint', item.value)"
+                :class="{ 'is-active': filters[activeTagRow.key].includes(item.value) }"
+                :aria-pressed="filters[activeTagRow.key].includes(item.value)"
+                @click="toggleTagFilter(activeTagRow.key, item.value)"
               >
                 {{ item.value }} <small>{{ item.count }}</small>
               </button>
-              <details v-if="facets.knowledge_points.length > 12" class="assembly-filter-more">
-                <summary>更多知识点（{{ facets.knowledge_points.length - 12 }}）</summary>
+              <details
+                v-if="activeTagRow.items.length > activeTagRow.visibleLimit"
+                class="assembly-filter-more"
+              >
+                <summary>
+                  更多{{ activeTagRow.label }}（{{ activeTagRow.items.length - activeTagRow.visibleLimit }}）
+                </summary>
                 <div>
                   <button
-                    v-for="item in facets.knowledge_points.slice(12)"
+                    v-for="item in activeTagRow.items.slice(activeTagRow.visibleLimit)"
                     :key="item.value"
                     type="button"
-                    :class="{ 'is-active': filters.knowledgePoint === item.value }"
-                    :aria-pressed="filters.knowledgePoint === item.value"
-                    @click="chooseTextFilter('knowledgePoint', item.value)"
+                    :class="{ 'is-active': filters[activeTagRow.key].includes(item.value) }"
+                    :aria-pressed="filters[activeTagRow.key].includes(item.value)"
+                    @click="toggleTagFilter(activeTagRow.key, item.value)"
                   >
                     {{ item.value }} <small>{{ item.count }}</small>
                   </button>
                 </div>
               </details>
-              <span v-if="facets.knowledge_points.length === 0" class="assembly-filter-empty">暂无知识点标签</span>
+              <span v-if="activeTagRow.items.length === 0" class="assembly-filter-empty">
+                暂无{{ activeTagRow.label }}标签
+              </span>
             </div>
           </div>
 
-          <div class="assembly-filter-row">
-            <span class="assembly-filter-label">年份</span>
-            <div class="assembly-filter-chips">
-              <button
-                type="button"
-                :class="{ 'is-active': !filters.year }"
-                :aria-pressed="!filters.year"
-                @click="chooseTextFilter('year', '')"
-              >
-                全部
-              </button>
-              <button
-                v-for="item in facets.years"
-                :key="item.value"
-                type="button"
-                :class="{ 'is-active': filters.year === item.value }"
-                :aria-pressed="filters.year === item.value"
-                @click="chooseTextFilter('year', item.value)"
-              >
-                {{ item.value }} <small>{{ item.count }}</small>
-              </button>
-              <span v-if="facets.years.length === 0" class="assembly-filter-empty">暂无年份标签</span>
-            </div>
-          </div>
+          <details class="assembly-filter-groups">
+            <summary>更多筛选：试卷来源与标注状态</summary>
+            <div class="assembly-filter-groups__body">
+              <div class="assembly-filter-row">
+                <span class="assembly-filter-label">年份</span>
+                <div class="assembly-filter-chips">
+                  <button type="button" :class="{ 'is-active': !filters.year }" @click="chooseTextFilter('year', '')">
+                    全部
+                  </button>
+                  <button
+                    v-for="item in facets.years"
+                    :key="item.value"
+                    type="button"
+                    :class="{ 'is-active': filters.year === item.value }"
+                    @click="chooseTextFilter('year', item.value)"
+                  >
+                    {{ item.value }} <small>{{ item.count }}</small>
+                  </button>
+                </div>
+              </div>
 
-          <div class="assembly-filter-row">
-            <span class="assembly-filter-label">试卷</span>
-            <div class="assembly-filter-chips">
-              <button
-                type="button"
-                :class="{ 'is-active': !filters.examType }"
-                :aria-pressed="!filters.examType"
-                @click="chooseTextFilter('examType', '')"
-              >
-                全部
-              </button>
-              <button
-                v-for="item in facets.exam_types"
-                :key="item.value"
-                type="button"
-                :class="{ 'is-active': filters.examType === item.value }"
-                :aria-pressed="filters.examType === item.value"
-                @click="chooseTextFilter('examType', item.value)"
-              >
-                {{ item.value }} <small>{{ item.count }}</small>
-              </button>
-              <span v-if="facets.exam_types.length === 0" class="assembly-filter-empty">暂无试卷类型标签</span>
-            </div>
-          </div>
+              <div class="assembly-filter-row">
+                <span class="assembly-filter-label">试卷类型</span>
+                <div class="assembly-filter-chips">
+                  <button type="button" :class="{ 'is-active': !filters.examType }" @click="chooseTextFilter('examType', '')">
+                    全部
+                  </button>
+                  <button
+                    v-for="item in facets.exam_types"
+                    :key="item.value"
+                    type="button"
+                    :class="{ 'is-active': filters.examType === item.value }"
+                    @click="chooseTextFilter('examType', item.value)"
+                  >
+                    {{ item.value }} <small>{{ item.count }}</small>
+                  </button>
+                </div>
+              </div>
 
-          <div class="assembly-filter-row">
-            <span class="assembly-filter-label">年级</span>
-            <div class="assembly-filter-chips">
-              <button
-                type="button"
-                :class="{ 'is-active': !filters.grade }"
-                :aria-pressed="!filters.grade"
-                @click="chooseTextFilter('grade', '')"
-              >
-                全部
-              </button>
-              <button
-                v-for="item in facets.grades"
-                :key="item.value"
-                type="button"
-                :class="{ 'is-active': filters.grade === item.value }"
-                :aria-pressed="filters.grade === item.value"
-                @click="chooseTextFilter('grade', item.value)"
-              >
-                {{ item.value }} <small>{{ item.count }}</small>
-              </button>
-              <span v-if="facets.grades.length === 0" class="assembly-filter-empty">暂无年级标签</span>
-            </div>
-          </div>
+              <div class="assembly-filter-row">
+                <span class="assembly-filter-label">年级</span>
+                <div class="assembly-filter-chips">
+                  <button type="button" :class="{ 'is-active': !filters.grade }" @click="chooseTextFilter('grade', '')">
+                    全部
+                  </button>
+                  <button
+                    v-for="item in facets.grades"
+                    :key="item.value"
+                    type="button"
+                    :class="{ 'is-active': filters.grade === item.value }"
+                    @click="chooseTextFilter('grade', item.value)"
+                  >
+                    {{ item.value }} <small>{{ item.count }}</small>
+                  </button>
+                </div>
+              </div>
 
-          <div class="assembly-filter-row">
-            <span class="assembly-filter-label">标注</span>
-            <div class="assembly-filter-chips">
-              <button
-                type="button"
-                :class="{ 'is-active': filters.tagStatus === 'all' }"
-                :aria-pressed="filters.tagStatus === 'all'"
-                @click="chooseTagStatus('all')"
-              >
-                全部
-              </button>
-              <button
-                type="button"
-                :class="{ 'is-active': filters.tagStatus === 'tagged' }"
-                :aria-pressed="filters.tagStatus === 'tagged'"
-                @click="chooseTagStatus('tagged')"
-              >
-                核心标签完整
-              </button>
-              <button
-                type="button"
-                :class="{ 'is-active': filters.tagStatus === 'untagged' }"
-                :aria-pressed="filters.tagStatus === 'untagged'"
-                @click="chooseTagStatus('untagged')"
-              >
-                标签待完善
-              </button>
+              <div class="assembly-filter-row">
+                <span class="assembly-filter-label">标注状态</span>
+                <div class="assembly-filter-chips">
+                  <button
+                    type="button"
+                    :class="{ 'is-active': filters.tagStatus === 'all' }"
+                    @click="chooseTagStatus('all')"
+                  >
+                    全部
+                  </button>
+                  <button
+                    type="button"
+                    :class="{ 'is-active': filters.tagStatus === 'tagged' }"
+                    @click="chooseTagStatus('tagged')"
+                  >
+                    核心标签完整
+                  </button>
+                  <button
+                    type="button"
+                    :class="{ 'is-active': filters.tagStatus === 'untagged' }"
+                    @click="chooseTagStatus('untagged')"
+                  >
+                    标签待完善
+                  </button>
+                </div>
+              </div>
             </div>
-          </div>
+          </details>
         </template>
 
         <div v-if="activeFilters.length" class="assembly-active-filters" aria-label="已选筛选条件">
           <span>已选条件</span>
           <button
             v-for="filter in activeFilters"
-            :key="filter.key"
+            :key="filter.id"
             type="button"
             :aria-label="`清除${filter.label}：${filter.value}`"
-            @click="clearActiveFilter(filter.key)"
+            @click="clearActiveFilter(filter)"
           >
             <small>{{ filter.label }}</small>
             {{ filter.value }}
@@ -508,7 +851,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
           <h2>题库试题</h2>
           <p>共 {{ total }} 道；加入后会立即保存到本机试卷篮。</p>
         </div>
-        <span v-if="filters.examScope">{{ filters.examScope }}</span>
+        <span v-if="selectedScopeLabel">{{ selectedScopeLabel }}</span>
       </div>
 
       <div v-if="state === 'loading'" class="assembly-state" role="status">正在读取试题…</div>
@@ -539,6 +882,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
               :blocks="question.rich_content?.question_blocks"
               :fallback="question.question_text"
               image-alt="题目配图"
+              dense
             />
           </div>
 
@@ -656,6 +1000,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
               :blocks="item.rich_content?.question_blocks"
               :fallback="item.question_text"
               image-alt="相似题配图"
+              dense
             />
             <footer>
               <span>{{ item.paper_title || '未命名试卷' }}</span>

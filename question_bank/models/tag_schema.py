@@ -15,11 +15,15 @@ LIST_FIELDS = (
     "math_model_tags",
     "error_prone_points",
     "prerequisite_points",
-    "sub_skills",
-    "measured_skills",
-    "supporting_skills",
 )
 MAX_TAG_LENGTH = 36
+PROPOSABLE_TAG_DIMENSIONS = (
+    "curriculum",
+    "knowledge",
+    "ability",
+    "method",
+    "model",
+)
 STUDENT_LEVELS = ("入门补缺", "基础巩固", "中档提升", "综合突破", "压轴拔高")
 ERROR_PRONE_CATEGORIES = (
     "条件识别不完整",
@@ -67,6 +71,7 @@ class TaggingContext:
     has_images: bool = False
     corpus_stats: dict[str, Any] = field(default_factory=dict)
     existing_tags: list[str] = field(default_factory=list)
+    existing_tags_by_dimension: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def has_answer(self) -> bool:
@@ -85,6 +90,13 @@ class TaggingContext:
             "has_images": bool(self.has_images),
             "corpus_stats": self.corpus_stats if isinstance(self.corpus_stats, dict) else {},
             "existing_tags": _normalize_tags(self.existing_tags),
+            "existing_tags_by_dimension": {
+                str(dimension): _normalize_tags(values)
+                for dimension, values in self.existing_tags_by_dimension.items()
+                if str(dimension).strip()
+            }
+            if isinstance(self.existing_tags_by_dimension, dict)
+            else {},
         }
 
 
@@ -102,11 +114,12 @@ class TagAnalysis:
     suitable_student_level: str
     reason: str
     confidence: float = 0.8
+    taxonomy_revision: int = 0
+    proposed_tags: list[dict[str, str]] = field(default_factory=list)
     # 主知识点稳定编码（受控，须来自 registry 的 KP_* 候选表）。
     canonical_knowledge_id: str = ""
-    # 子技能（半受控，按 SUB_SKILL_DIMENSIONS 维度提炼，与薄弱点侧同维度可比对）。
+    # 仅用于读取历史数据。P3.5 起 AI 不再生成或保存这些自由词字段。
     sub_skills: list[str] = field(default_factory=list)
-    # 直接训练与辅助使用的具体技能名称；稳定身份由统一技能目录解析后保存。
     measured_skills: list[str] = field(default_factory=list)
     supporting_skills: list[str] = field(default_factory=list)
 
@@ -125,6 +138,8 @@ class TagAnalysis:
             suitable_student_level=_normalize_student_level(payload.get("suitable_student_level")),
             reason=_normalize_text_value(payload.get("reason")),
             confidence=_normalize_confidence(payload.get("confidence")),
+            taxonomy_revision=_normalize_revision(payload.get("taxonomy_revision")),
+            proposed_tags=_normalize_proposed_tags(payload.get("proposed_tags")),
             canonical_knowledge_id=_normalize_canonical_id(payload.get("canonical_knowledge_id")),
             sub_skills=_normalize_tags(payload.get("sub_skills")),
             measured_skills=_normalize_tags(payload.get("measured_skills")),
@@ -145,6 +160,8 @@ class TagAnalysis:
             "suitable_student_level": self.suitable_student_level,
             "reason": self.reason,
             "confidence": self.confidence,
+            "taxonomy_revision": self.taxonomy_revision,
+            "proposed_tags": self.proposed_tags,
             "canonical_knowledge_id": self.canonical_knowledge_id,
             "sub_skills": self.sub_skills,
             "measured_skills": self.measured_skills,
@@ -236,6 +253,45 @@ def _normalize_confidence(value: object) -> float:
     except (TypeError, ValueError):
         confidence = 0.8
     return round(min(1.0, max(0.0, confidence)), 4)
+
+
+def _normalize_revision(value: object) -> int:
+    try:
+        revision = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, revision)
+
+
+def _normalize_proposed_tags(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        dimension = _clean_text(item.get("dimension")).casefold()
+        name = _clean_text(item.get("name") or item.get("proposed_name"))
+        if dimension not in PROPOSABLE_TAG_DIMENSIONS:
+            continue
+        if not name or len(name) > MAX_TAG_LENGTH:
+            continue
+        key = (dimension, name.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(
+            {
+                "dimension": dimension,
+                "name": name,
+                "definition": _clean_text(item.get("definition"))[:240],
+                "reason": _clean_text(item.get("reason"))[:500],
+                "nearest_id": _clean_text(item.get("nearest_id"))[:80],
+                "why_not_reuse": _clean_text(item.get("why_not_reuse"))[:500],
+            }
+        )
+    return normalized
 
 
 def _normalize_student_level(value: object) -> str:

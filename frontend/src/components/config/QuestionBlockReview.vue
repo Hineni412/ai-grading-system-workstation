@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, watch } from 'vue'
+import { computed, reactive, watch } from 'vue'
 
 import {
   QUESTION_TYPES,
@@ -23,7 +23,8 @@ const emit = defineEmits<{
 
 const selectedTypes = reactive<Record<string, QuestionType>>({})
 const exclusions = reactive<Record<string, boolean>>({})
-const expanded = reactive<Record<string, boolean>>({})
+const expandedAnswers = reactive<Record<string, boolean>>({})
+const imageOnlySource = computed(() => props.source.suffix === '.pdf')
 const emptyRichContent: NonNullable<ConfigQuestionPreview['rich_content']> = {
   available: false,
   question_block_count: 0,
@@ -47,7 +48,7 @@ function defaultType(question: ConfigQuestionPreview): QuestionType {
 function resetReview(): void {
   for (const key of Object.keys(selectedTypes)) delete selectedTypes[key]
   for (const key of Object.keys(exclusions)) delete exclusions[key]
-  for (const key of Object.keys(expanded)) delete expanded[key]
+  for (const key of Object.keys(expandedAnswers)) delete expandedAnswers[key]
   const knownIds = new Set(props.source.questions.map((question) => question.question_id))
   for (const question of props.source.questions) {
     selectedTypes[question.question_id] = defaultType(question)
@@ -82,15 +83,33 @@ function updateExcluded(question: ConfigQuestionPreview, event: Event): void {
   emit('update:decisions', currentDecisions())
 }
 
-function toggle(questionId: string): void {
-  expanded[questionId] = !expanded[questionId]
+function toggleAnswer(questionId: string): void {
+  expandedAnswers[questionId] = !expandedAnswers[questionId]
 }
 
-function isLong(question: ConfigQuestionPreview): boolean {
-  return question.question_preview.length > 180 || question.answer_preview.length > 180
-    || richContent(question).question_block_count > 3
-    || richContent(question).answer_block_count > 2
-    || question.has_question_asset || question.has_answer_asset
+function answerImageUrls(question: ConfigQuestionPreview): string[] {
+  const urls = richContent(question).answer_blocks.flatMap((block) => block.asset_urls)
+  return urls.length ? urls : supplementalAssetUrls(question, 'answer')
+}
+
+function questionImageUrls(question: ConfigQuestionPreview): string[] {
+  const urls = richContent(question).question_blocks.flatMap((block) => block.asset_urls)
+  return urls.length ? urls : supplementalAssetUrls(question, 'question')
+}
+
+function answerSummaryImageUrls(question: ConfigQuestionPreview): string[] {
+  return answerImageUrls(question).slice(0, 1)
+}
+
+function isAnswerExpandable(question: ConfigQuestionPreview): boolean {
+  const summary = question.answer_preview.trim()
+  const hasAdditionalText = richContent(question).answer_blocks.some((block) => {
+    const text = block.text.trim()
+    return Boolean(text && text !== summary)
+  })
+  return question.answer_preview.length > 180
+    || hasAdditionalText
+    || answerImageUrls(question).length > 0
 }
 
 function answerStatus(question: ConfigQuestionPreview): string {
@@ -166,11 +185,27 @@ watch(() => props.source.source_revision, (_revision, previous) => {
           </select>
         </label>
 
-        <div class="question-review__content">
+        <div v-if="imageOnlySource" class="question-review__content question-review__content--images-only">
+          <div class="question-review__pdf-images" :data-question-content="question.question_id">
+            <img
+              v-for="url in questionImageUrls(question)"
+              :key="`question:${url}`"
+              :src="url"
+              :alt="`${question.question_id} 题目裁图`"
+              loading="lazy"
+            >
+            <img
+              v-for="url in answerImageUrls(question)"
+              :key="`answer:${url}`"
+              :src="url"
+              :alt="`${question.question_id} 答案裁图`"
+              loading="lazy"
+            >
+          </div>
+        </div>
+        <div v-else class="question-review__content">
           <div
-            :class="['question-review__preview', {
-              'question-review__preview--clamped': isLong(question) && !expanded[question.question_id],
-            }]"
+            class="question-review__preview"
             :data-question-content="question.question_id"
           >
             <QuestionContentRenderer
@@ -179,35 +214,49 @@ watch(() => props.source.source_revision, (_revision, previous) => {
               empty-label="题目文字未提供预览。"
               :image-alt="`${question.question_id} 题目图`"
               :supplemental-image-urls="supplementalAssetUrls(question, 'question')"
-              compact
+              dense
             />
           </div>
           <div class="question-review__answer-fact">
             <strong :class="{ 'is-untrusted': question.answer_present && !question.local_answer_trusted }">
               {{ answerStatus(question) }}
             </strong>
-            <QuestionContentRenderer
+            <div
               v-if="question.answer_present || richContent(question).answer_blocks.length || question.has_answer_asset"
               class="question-review__answer-content"
-              :blocks="richContent(question).answer_blocks"
-              :fallback="question.answer_preview"
-              empty-label="答案内容暂未识别。"
-              :image-alt="`${question.question_id} 答案图`"
-              :supplemental-image-urls="supplementalAssetUrls(question, 'answer')"
-              compact
-            />
+              :class="{ 'is-expanded': expandedAnswers[question.question_id] }"
+              :data-answer-content="question.question_id"
+            >
+              <QuestionContentRenderer
+                v-if="expandedAnswers[question.question_id]"
+                :blocks="richContent(question).answer_blocks"
+                :fallback="question.answer_preview"
+                empty-label="答案内容暂未识别。"
+                :image-alt="`${question.question_id} 答案图`"
+                :supplemental-image-urls="supplementalAssetUrls(question, 'answer')"
+                dense
+              />
+              <QuestionContentRenderer
+                v-else
+                :fallback="question.answer_preview"
+                empty-label="答案内容已识别，展开后查看完整内容。"
+                :image-alt="`${question.question_id} 答案缩略图`"
+                :supplemental-image-urls="answerSummaryImageUrls(question)"
+                dense
+              />
+            </div>
           </div>
         </div>
 
         <div class="question-review__actions">
           <button
-            v-if="isLong(question)"
+            v-if="!imageOnlySource && isAnswerExpandable(question)"
             type="button"
-            :aria-label="`${expanded[question.question_id] ? '收起' : '展开'} ${question.question_id} 题目`"
-            :aria-expanded="expanded[question.question_id] ? 'true' : 'false'"
-            @click="toggle(question.question_id)"
+            :aria-label="`${expandedAnswers[question.question_id] ? '收起' : '展开'} ${question.question_id} 答案`"
+            :aria-expanded="expandedAnswers[question.question_id] ? 'true' : 'false'"
+            @click="toggleAnswer(question.question_id)"
           >
-            {{ expanded[question.question_id] ? '收起题目' : '展开题目' }}
+            {{ expandedAnswers[question.question_id] ? '收起答案' : '展开答案' }}
           </button>
           <label class="question-review__exclude">
             <input
@@ -223,3 +272,26 @@ watch(() => props.source.source_revision, (_revision, previous) => {
     </ol>
   </section>
 </template>
+
+<style scoped>
+.question-review__pdf-images {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.question-review__pdf-images img {
+  display: block;
+  width: auto;
+  max-width: min(100%, 360px);
+  max-height: min(220px, 32vh);
+  height: auto;
+  padding: 4px;
+  border: var(--border-width) solid var(--color-border-default);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
+  object-fit: contain;
+}
+</style>

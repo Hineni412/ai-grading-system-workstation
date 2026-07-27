@@ -34,6 +34,14 @@ class ConfigSessionBusyError(RuntimeError):
     pass
 
 
+class QuestionBankSyncRequestTokenConflictError(RuntimeError):
+    pass
+
+
+class QuestionBankSyncSessionBusyError(RuntimeError):
+    pass
+
+
 class GradingSessionBusyError(RuntimeError):
     pass
 
@@ -134,6 +142,13 @@ class JobStore:
                     raise GradingSessionBusyError(
                         f"grading work is already active for session {session_id}"
                     )
+                if self._find_active_config_session_row(
+                    conn,
+                    session_id=session_id,
+                ) is not None:
+                    raise GradingSessionBusyError(
+                        f"configuration work is already active for session {session_id}"
+                    )
                 cursor = conn.execute(
                     "INSERT INTO jobs (job_type, payload_json, status) "
                     "VALUES ('grading_run', ?, 'queued')",
@@ -162,6 +177,13 @@ class JobStore:
                 ) is not None:
                     raise ConfigSessionBusyError(
                         f"configuration work is already active for session {session_id}"
+                    )
+                if self._has_active_grading_session(
+                    conn,
+                    session_id=session_id,
+                ):
+                    raise ConfigSessionBusyError(
+                        f"grading work is already active for session {session_id}"
                     )
                 cursor = conn.execute(
                     "INSERT INTO jobs (job_type, payload_json, status) "
@@ -220,6 +242,13 @@ class JobStore:
                     raise ConfigSessionBusyError(
                         f"configuration work is already active for session {session_id}"
                     )
+                if self._has_active_grading_session(
+                    conn,
+                    session_id=session_id,
+                ):
+                    raise ConfigSessionBusyError(
+                        f"grading work is already active for session {session_id}"
+                    )
                 cursor = conn.execute(
                     "INSERT INTO jobs (job_type, payload_json, status) "
                     "VALUES ('config_generation', ?, 'queued')",
@@ -234,6 +263,159 @@ class JobStore:
         if loaded is None:
             raise RuntimeError(f"created job {job_id} could not be loaded")
         return loaded, True
+
+    def create_idempotent_question_bank_sync_job(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[JobRecord, bool]:
+        """Create one version-bound question-bank sync for a session.
+
+        A request token may be replayed only for the exact same source/config
+        version.  A different token cannot start while an earlier sync for the
+        same session is active.
+        """
+
+        clean_payload = dict(payload)
+        token = _clean_request_token(clean_payload.get("client_request_token"))
+        fingerprint = _clean_request_fingerprint(
+            clean_payload.get("client_request_fingerprint")
+        )
+        session_id = _positive_int(clean_payload.get("session_id"))
+        mode = str(clean_payload.get("mode") or "").strip()
+        if mode not in {"sync", "sync_retry", "tag_retry"}:
+            raise ValueError("unsupported question-bank sync mode")
+        source_sha256 = str(
+            clean_payload.get("source_paper_sha256") or ""
+        ).strip().casefold()
+        config_revision = str(clean_payload.get("config_revision") or "").strip()
+        if not _SHA256.fullmatch(source_sha256):
+            raise ValueError("source_paper_sha256 must be sha256")
+        if not _SHA256.fullmatch(config_revision):
+            raise ValueError("config_revision must be sha256")
+
+        payload_json = json.dumps(clean_payload, ensure_ascii=False, sort_keys=True)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = self._find_question_bank_sync_request_row(
+                    conn,
+                    session_id=session_id,
+                    token=token,
+                )
+                if existing is not None:
+                    record = _job_record(existing)
+                    if (
+                        record.payload.get("mode") != mode
+                        or record.payload.get("client_request_fingerprint")
+                        != fingerprint
+                    ):
+                        raise QuestionBankSyncRequestTokenConflictError(
+                            "question-bank sync token was reused for another request"
+                        )
+                    conn.commit()
+                    return record, False
+                existing_version = (
+                    self._find_question_bank_sync_fingerprint_row(
+                        conn,
+                        session_id=session_id,
+                        fingerprint=fingerprint,
+                    )
+                )
+                if existing_version is not None:
+                    conn.commit()
+                    return _job_record(existing_version), False
+                if self._find_active_question_bank_sync_session_row(
+                    conn,
+                    session_id=session_id,
+                ) is not None:
+                    raise QuestionBankSyncSessionBusyError(
+                        f"question-bank sync is already active for session {session_id}"
+                    )
+                cursor = conn.execute(
+                    "INSERT INTO jobs (job_type, payload_json, status) "
+                    "VALUES ('question_bank_sync', ?, 'queued')",
+                    (payload_json,),
+                )
+                job_id = int(cursor.lastrowid)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        loaded = self.get_job(job_id)
+        if loaded is None:
+            raise RuntimeError(f"created job {job_id} could not be loaded")
+        return loaded, True
+
+    @staticmethod
+    def _find_question_bank_sync_request_row(
+        conn: sqlite3.Connection,
+        *,
+        session_id: int,
+        token: str,
+    ) -> sqlite3.Row | None:
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE job_type = 'question_bank_sync' "
+            "ORDER BY id DESC"
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"] or "{}"))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if (
+                _positive_int_or_zero(payload.get("session_id")) == session_id
+                and payload.get("client_request_token") == token
+            ):
+                return row
+        return None
+
+    @staticmethod
+    def _find_question_bank_sync_fingerprint_row(
+        conn: sqlite3.Connection,
+        *,
+        session_id: int,
+        fingerprint: str,
+    ) -> sqlite3.Row | None:
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE job_type = 'question_bank_sync' "
+            "AND status != 'cancelled' ORDER BY id DESC"
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"] or "{}"))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if (
+                _positive_int_or_zero(payload.get("session_id")) == session_id
+                and payload.get("client_request_fingerprint") == fingerprint
+            ):
+                return row
+        return None
+
+    @staticmethod
+    def _find_active_question_bank_sync_session_row(
+        conn: sqlite3.Connection,
+        *,
+        session_id: int,
+    ) -> sqlite3.Row | None:
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE job_type = 'question_bank_sync' "
+            "AND status IN ('queued','running','paused') ORDER BY id DESC"
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"] or "{}"))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if _positive_int_or_zero(payload.get("session_id")) == session_id:
+                return row
+        return None
 
     def abandon_config_request(self, *, session_id: int, request_token: str) -> None:
         """Atomically tombstone an unseen request token.
@@ -335,6 +517,36 @@ class JobStore:
                 return row
         return None
 
+    @staticmethod
+    def _has_active_grading_session(
+        conn: sqlite3.Connection,
+        *,
+        session_id: int,
+    ) -> bool:
+        run = conn.execute(
+            "SELECT 1 FROM grading_runs "
+            "WHERE session_id = ? "
+            "AND state IN ('running','pause_requested','paused') LIMIT 1",
+            (int(session_id),),
+        ).fetchone()
+        if run is not None:
+            return True
+        rows = conn.execute(
+            "SELECT payload_json FROM jobs WHERE job_type = 'grading_run' "
+            "AND status IN ('queued','running','paused')"
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"] or "{}"))
+            except json.JSONDecodeError:
+                continue
+            if (
+                isinstance(payload, dict)
+                and _positive_int_or_zero(payload.get("session_id")) == int(session_id)
+            ):
+                return True
+        return False
+
     def has_active_job_types(self, job_types: set[str]) -> bool:
         clean_types = sorted({str(item).strip() for item in job_types if str(item).strip()})
         if not clean_types:
@@ -430,6 +642,13 @@ class JobStore:
                 ) is not None:
                     raise ConfigSessionBusyError(
                         f"configuration work is already active for session {session_id}"
+                    )
+                if self._has_active_grading_session(
+                    conn,
+                    session_id=session_id,
+                ):
+                    raise ConfigSessionBusyError(
+                        f"grading work is already active for session {session_id}"
                     )
                 cursor = conn.execute(
                     """
@@ -711,6 +930,13 @@ class JobStore:
                 raise ConfigSessionBusyError(
                     f"configuration work is already active for session {clean_session_id}"
                 )
+            if self._has_active_grading_session(
+                conn,
+                session_id=clean_session_id,
+            ):
+                raise ConfigSessionBusyError(
+                    f"grading work is already active for session {clean_session_id}"
+                )
 
     @contextmanager
     def config_session_mutation_guard(self, session_id: int) -> Iterator[None]:
@@ -724,6 +950,13 @@ class JobStore:
                 ) is not None:
                     raise ConfigSessionBusyError(
                         f"configuration work is already active for session {clean_session_id}"
+                    )
+                if self._has_active_grading_session(
+                    conn,
+                    session_id=clean_session_id,
+                ):
+                    raise ConfigSessionBusyError(
+                        f"grading work is already active for session {clean_session_id}"
                     )
                 yield
                 conn.commit()
@@ -753,6 +986,13 @@ class JobStore:
                 ) is not None:
                     raise ConfigSessionBusyError(
                         f"configuration work is already active for session {clean_session_id}"
+                    )
+                if self._has_active_grading_session(
+                    conn,
+                    session_id=clean_session_id,
+                ):
+                    raise ConfigSessionBusyError(
+                        f"grading work is already active for session {clean_session_id}"
                     )
                 if expected_rubric_path is None:
                     cursor = conn.execute(
@@ -1010,6 +1250,12 @@ class JobStore:
                     job is None
                     or str(job["status"]) != "running"
                     or bool(int(job["cancel_requested"] or 0))
+                ):
+                    conn.rollback()
+                    return False
+                if self._has_active_grading_session(
+                    conn,
+                    session_id=int(session_id),
                 ):
                     conn.rollback()
                     return False

@@ -48,6 +48,7 @@ def run_tagging_sync_job(
     context: JobContext,
     question_bank_db_path: Path,
     ai_service_factory: TaggingFactory,
+    taxonomy_governance: Any | None = None,
     batch_size: int = 20,
 ) -> dict[str, object]:
     question_ids = _normalize_question_ids(context.payload.get("question_ids"))
@@ -64,6 +65,7 @@ def run_tagging_sync_job(
             context=context,
             question_bank_db_path=db_path,
             ai_service_factory=ai_service_factory,
+            taxonomy_governance=taxonomy_governance,
             batch_size=batch_size,
             question_ids=question_ids,
         )
@@ -74,6 +76,7 @@ def _run_tagging_sync_job_locked(
     context: JobContext,
     question_bank_db_path: Path,
     ai_service_factory: TaggingFactory,
+    taxonomy_governance: Any | None,
     batch_size: int,
     question_ids: list[int],
 ) -> dict[str, object]:
@@ -98,6 +101,19 @@ def _run_tagging_sync_job_locked(
     except Exception:
         raise RuntimeError("tagging sync setup failed") from None
     service = QuestionService(db_path)
+    governance = taxonomy_governance
+    taxonomy_revision = 0
+    if ai_service is not None:
+        if governance is None and isinstance(ai_service, AITaggingService):
+            governance = ai_service.taxonomy_governance
+        taxonomy_revision = _freeze_taxonomy(
+            ai_service,
+            governance,
+            contexts=contexts,
+        )
+    proposal_ids: list[str] = []
+    proposal_keys: set[str] = set()
+    review_question_ids: list[int] = []
 
     context.report(0.05, "tagging_sync", "loading")
     for batch_index, start in enumerate(range(0, len(pending_ids), size)):
@@ -132,6 +148,34 @@ def _run_tagging_sync_job_locked(
             if not is_auto_saveable_result(result):
                 failures.append(_result_failure(question_id, result))
                 continue
+            persisted_proposals: list[dict[str, Any]] = []
+            if result.proposals or result.quality_status == "needs_review":
+                if governance is None:
+                    failures.append(_failure(question_id, "save"))
+                    continue
+                try:
+                    assert result.analysis is not None
+                    persisted_proposals = _persist_proposals(
+                        governance,
+                        result,
+                        question_id=question_id,
+                        job_id=context.job_id,
+                        expected_revision=taxonomy_revision
+                        or int(result.taxonomy_revision or 0),
+                    )
+                except Exception:  # noqa: BLE001
+                    failures.append(_failure(question_id, "save"))
+                    continue
+                for item in persisted_proposals:
+                    proposal_key = _proposal_key(item)
+                    if proposal_key in proposal_keys:
+                        continue
+                    proposal_keys.add(proposal_key)
+                    proposal_id = _proposal_id(item)
+                    if proposal_id:
+                        proposal_ids.append(proposal_id)
+                if question_id not in review_question_ids:
+                    review_question_ids.append(question_id)
             try:
                 assert result.analysis is not None
                 saved = service.save_tag_analysis(
@@ -164,6 +208,10 @@ def _run_tagging_sync_job_locked(
         "successful_question_ids": successful_ids,
         "failed_question_ids": failed_ids,
         "failures": failures,
+        "taxonomy_revision": taxonomy_revision,
+        "review_count": len(proposal_keys),
+        "review_question_ids": review_question_ids,
+        "proposal_ids": proposal_ids,
         "retryable": any(
             str(item["category"]) in _RETRYABLE_CATEGORIES for item in failures
         ),
@@ -221,6 +269,7 @@ def _load_tagging_candidates(
     rows_by_id = {int(row["id"]): row for row in rows}
     tag_types: dict[int, set[str]] = {}
     tag_values: dict[int, list[str]] = {}
+    tag_values_by_type: dict[int, dict[str, list[str]]] = {}
     for row in tag_rows:
         question_id = int(row["question_id"])
         tag_types.setdefault(question_id, set()).add(str(row["tag_type"]))
@@ -228,6 +277,12 @@ def _load_tagging_candidates(
         values = tag_values.setdefault(question_id, [])
         if value and value not in values:
             values.append(value)
+        type_values = tag_values_by_type.setdefault(question_id, {}).setdefault(
+            str(row["tag_type"]),
+            [],
+        )
+        if value and value not in type_values:
+            type_values.append(value)
     required = set(CORE_ANALYSIS_TAG_TYPES)
     contexts: dict[int, TaggingContext] = {}
     complete: list[int] = []
@@ -250,8 +305,124 @@ def _load_tagging_candidates(
                 district=str(row["district"] or ""),
                 has_images=bool(row["has_images"]),
                 existing_tags=tag_values.get(question_id, []),
+                existing_tags_by_dimension=_existing_tags_by_dimension(
+                    tag_values_by_type.get(question_id, {})
+                ),
             )
     return contexts, complete, unavailable
+
+
+def _freeze_taxonomy(
+    ai_service: Any,
+    governance: Any | None,
+    *,
+    contexts: Mapping[int, TaggingContext],
+) -> int:
+    if governance is None:
+        freeze = getattr(ai_service, "freeze_taxonomy", None)
+        if callable(freeze):
+            return max(0, int(freeze()))
+        return max(0, int(getattr(ai_service, "taxonomy_revision", 0) or 0))
+    search_text = "\n".join(
+        " ".join(
+            part
+            for part in (
+                str(item.question_text or "").strip(),
+                str(item.answer_text or "").strip(),
+                str(item.question_type or "").strip(),
+                str(item.grade or "").strip(),
+                str(item.semester or "").strip(),
+            )
+            if part
+        )
+        for item in contexts.values()
+    )
+    contract = governance.prompt_contract({"text": search_text})
+    revision = _taxonomy_revision(contract)
+    freeze = getattr(ai_service, "freeze_taxonomy", None)
+    if callable(freeze):
+        return max(0, int(freeze(contract)))
+    return revision
+
+
+def _persist_proposals(
+    governance: Any,
+    result: AITaggingResult,
+    *,
+    question_id: int,
+    job_id: str,
+    expected_revision: int,
+) -> list[dict[str, Any]]:
+    assert result.analysis is not None
+    payload = result.analysis.to_dict()
+    payload["proposed_tags"] = [
+        *payload.get("proposed_tags", []),
+        *result.proposals,
+    ]
+    proposal_context: dict[str, object] = {
+        "persist_proposals": True,
+        "question_ref": str(question_id),
+        "model": str(result.model_name or ""),
+        "request_token": (
+            f"tagging-sync:{job_id}:question:{question_id}:"
+            f"taxonomy:{expected_revision}"
+        ),
+    }
+    constrained = governance.constrain(payload, context=proposal_context)
+    if not isinstance(constrained, Mapping):
+        raise ValueError("taxonomy governance returned an invalid result")
+    return [
+        dict(item)
+        for item in constrained.get("proposals", [])
+        if isinstance(item, Mapping)
+    ]
+
+
+def _proposal_id(item: Mapping[str, Any]) -> str:
+    return str(
+        item.get("proposal_id")
+        or item.get("id")
+        or item.get("term_id")
+        or ""
+    ).strip()
+
+
+def _proposal_key(item: Mapping[str, Any]) -> str:
+    proposal_id = _proposal_id(item)
+    if proposal_id:
+        return f"id:{proposal_id}"
+    dimension = str(item.get("dimension") or "").strip().casefold()
+    name = str(item.get("name") or item.get("proposed_name") or "").strip().casefold()
+    return f"value:{dimension}:{name}"
+
+
+def _taxonomy_revision(contract: object) -> int:
+    if not isinstance(contract, Mapping):
+        return 0
+    raw = contract.get("taxonomy_revision", contract.get("revision", 0))
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _existing_tags_by_dimension(
+    values_by_type: Mapping[str, list[str]],
+) -> dict[str, list[str]]:
+    type_to_dimension = {
+        "knowledge_point": "knowledge",
+        "method": "method",
+        "ability": "ability",
+        "model": "model",
+        "exam_scope": "curriculum",
+        "prerequisite": "prerequisite",
+    }
+    result: dict[str, list[str]] = {}
+    for tag_type, dimension in type_to_dimension.items():
+        values = values_by_type.get(tag_type, [])
+        if values:
+            result[dimension] = list(values)
+    return result
 
 
 def _result_failure(question_id: int, result: AITaggingResult) -> dict[str, object]:

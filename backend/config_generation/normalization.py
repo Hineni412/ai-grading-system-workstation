@@ -7,12 +7,52 @@ from typing import Any
 
 from answer_normalizer import complete_answer_set_values
 from equivalence_engine import merge_equivalent_forms
+from question_id_contract import canonicalize_grading_config_payload
 from score_policy import (
     MAX_QUESTION_SCORE,
     OBJECTIVE_TYPES,
     _normalize_type,
     enforce_integer_scores_by_type,
 )
+
+_GRADING_CONFIG_KNOWLEDGE_KEYS = frozenset(
+    {"knowledge_id", "knowledge_ids", "knowledge_name", "knowledge_points"}
+)
+_LEGACY_KNOWLEDGE_ALIASES = frozenset(
+    {"knowledge", "knowledge_text", "knowledge_label"}
+)
+
+
+def strip_generated_config_knowledge_fields(payload: dict[str, Any]) -> None:
+    """Remove scoring-rubric knowledge metadata from a newly generated payload."""
+
+    def strip(value: Any) -> None:
+        if isinstance(value, dict):
+            for key in tuple(value):
+                if str(key) in (
+                    _GRADING_CONFIG_KNOWLEDGE_KEYS | _LEGACY_KNOWLEDGE_ALIASES
+                ):
+                    value.pop(key, None)
+                    continue
+                strip(value[key])
+        elif isinstance(value, list):
+            for item in value:
+                strip(item)
+
+    if isinstance(payload, dict):
+        strip(payload)
+
+
+def _has_legacy_knowledge_metadata(question: dict[str, Any]) -> bool:
+    keys = _GRADING_CONFIG_KNOWLEDGE_KEYS | _LEGACY_KNOWLEDGE_ALIASES
+    if any(key in question for key in keys):
+        return True
+    parts = question.get("parts")
+    return isinstance(parts, list) and any(
+        isinstance(part, dict) and any(key in part for key in keys)
+        for part in parts
+    )
+
 
 def _looks_like_serialized_answer_list(value: Any) -> bool:
     return bool(re.fullmatch(r"\s*\[[\s\S]*\]\s*", str(value or "")))
@@ -87,7 +127,9 @@ def normalize_generated_config_schema(payload: dict[str, Any]) -> None:
             f"Q{idx}",
         )
         question["question_id"] = qid
-        _promote_nested_question_knowledge(question)
+        has_legacy_knowledge = _has_legacy_knowledge_metadata(question)
+        if has_legacy_knowledge:
+            _promote_nested_question_knowledge(question)
         qtype = _normalize_question_type(
             question.get("question_type")
             or question.get("type")
@@ -99,15 +141,20 @@ def normalize_generated_config_schema(payload: dict[str, Any]) -> None:
             or question.get("points"),
             0.0,
         )
-        question["knowledge_id"] = question.get("knowledge_id") or question.get("knowledge") or "UNKNOWN"
-        question["knowledge_name"] = (
-            question.get("knowledge_name")
-            or question.get("knowledge_text")
-            or question.get("knowledge_label")
-            or question.get("knowledge")
-            or ""
-        )
-        _normalize_question_knowledge_fields(question)
+        if has_legacy_knowledge:
+            question["knowledge_id"] = (
+                question.get("knowledge_id")
+                or question.get("knowledge")
+                or "UNKNOWN"
+            )
+            question["knowledge_name"] = (
+                question.get("knowledge_name")
+                or question.get("knowledge_text")
+                or question.get("knowledge_label")
+                or question.get("knowledge")
+                or ""
+            )
+            _normalize_question_knowledge_fields(question)
         question["stem_summary"] = str(question.get("stem_summary") or question.get("棰樺共鎽樿") or "").strip()
         question["grading_mode"] = str(
             question.get("grading_mode")
@@ -138,6 +185,20 @@ def normalize_generated_config_schema(payload: dict[str, Any]) -> None:
         rubric.get("total_score"),
         sum(_safe_float(q.get("max_score"), 0.0) for q in rubric_questions if isinstance(q, dict)),
     )
+
+
+def normalize_new_generated_config_payload(payload: dict[str, Any]) -> None:
+    """Normalize a new AI result without carrying scoring-side knowledge tags."""
+    if not isinstance(payload, dict):
+        return
+    strip_generated_config_knowledge_fields(payload)
+    normalize_generated_config_schema(payload)
+    canonical = canonicalize_grading_config_payload(payload)
+    payload.clear()
+    payload.update(canonical)
+    # Future schema repairs must not reintroduce question-bank-owned fields.
+    strip_generated_config_knowledge_fields(payload)
+
 
 def _canonical_question_id(value: Any, fallback: str = "") -> str:
     raw = str(value or "").strip()
@@ -1394,7 +1455,7 @@ def validate_generated_config(payload: dict[str, Any]) -> None:
     for idx, item in enumerate(rubric_questions, start=1):
         if not isinstance(item, dict):
             raise ValueError(f"rubric.questions[{idx - 1}] must be an object, got {type(item).__name__}: {item!r}")
-        for key in ["question_id", "question_type", "max_score", "knowledge_id", "parts"]:
+        for key in ["question_id", "question_type", "max_score", "parts"]:
             if key not in item:
                 raise ValueError(f"rubric.questions[{idx - 1}] is missing field: {key}")
         qid = str(item["question_id"])
@@ -1529,14 +1590,18 @@ SESSION_MANAGER_COMPAT_EXPORTS = (
     "_string_list",
     "_upsert_policy",
     "force_payload_total_score",
+    "normalize_new_generated_config_payload",
     "normalize_generated_config_knowledge_fields",
     "normalize_generated_config_schema",
+    "strip_generated_config_knowledge_fields",
     "validate_generated_config",
 )
 
 __all__ = [
     "force_payload_total_score",
+    "normalize_new_generated_config_payload",
     "normalize_generated_config_knowledge_fields",
     "normalize_generated_config_schema",
+    "strip_generated_config_knowledge_fields",
     "validate_generated_config",
 ]

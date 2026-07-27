@@ -331,7 +331,7 @@ def test_tagging_retry_uses_original_ids_after_failed_or_cancelled_job(
 def test_generic_job_route_rejects_dedicated_question_bank_jobs(tmp_path: Path) -> None:
     client, _manager, _service, _request = _client(tmp_path)
 
-    for job_type in ("question_import", "tagging_sync"):
+    for job_type in ("question_import", "tagging_sync", "question_bank_sync"):
         response = client.post(
             f"/api/jobs/{job_type}",
             json={"payload": {"api_key": "must-not-persist"}},
@@ -356,5 +356,9 @@ def test_default_handlers_register_both_question_bank_job_types(tmp_path: Path) 
         tagging_ai_service_factory=lambda: object(),
     )
 
-    assert {"question_import", "tagging_sync"}.issubset(manager._handlers)
+    assert {
+        "question_import",
+        "tagging_sync",
+        "question_bank_sync",
+    }.issubset(manager._handlers)
     manager.shutdown()

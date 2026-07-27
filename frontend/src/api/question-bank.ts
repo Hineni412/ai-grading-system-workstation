@@ -93,6 +93,53 @@ export interface QuestionBankPaperListResponse {
   total: number
 }
 
+export type CurriculumSectionKind =
+  | 'activity'
+  | 'activity_group'
+  | 'exercise'
+  | 'lesson'
+  | 'optional_lesson'
+  | 'reflection'
+  | 'review'
+
+export interface CurriculumSection {
+  id: string
+  order: number
+  number: string | null
+  title: string
+  label: string
+  kind: CurriculumSectionKind
+}
+
+export interface CurriculumChapter {
+  id: string
+  order: number
+  number: string | null
+  title: string
+  label: string
+  kind: 'chapter' | 'activity'
+  exam_scope_values: string[]
+  sections: CurriculumSection[]
+}
+
+export interface CurriculumVolume {
+  id: string
+  label: string
+  grade: string
+  semester: string
+  textbook_version: string
+  chapters: CurriculumChapter[]
+}
+
+export interface CurriculumCatalog {
+  schema_version: 1
+  catalog_id: string
+  publisher: string
+  subject: string
+  edition: string
+  volumes: CurriculumVolume[]
+}
+
 export interface QuestionBankWriteResult {
   question_id: number
   revision: string
@@ -167,6 +214,13 @@ export interface QuestionBankFacet {
 export interface QuestionBankFacets {
   exam_scopes: QuestionBankFacet[]
   knowledge_points: QuestionBankFacet[]
+  curriculum_chapters: QuestionBankFacet[]
+  abilities: QuestionBankFacet[]
+  methods: QuestionBankFacet[]
+  models: QuestionBankFacet[]
+  student_levels: QuestionBankFacet[]
+  teaching_stages: QuestionBankFacet[]
+  sub_skills: QuestionBankFacet[]
   question_types: QuestionBankFacet[]
   years: QuestionBankFacet[]
   exam_types: QuestionBankFacet[]
@@ -225,6 +279,13 @@ export interface QuestionBankFilters {
   questionNumber?: string
   keyword?: string
   knowledgePoint?: string
+  knowledgePoints?: string[]
+  abilities?: string[]
+  methods?: string[]
+  models?: string[]
+  studentLevels?: string[]
+  teachingStages?: string[]
+  subSkills?: string[]
   difficultyMin?: number
   difficultyMax?: number
   questionTypes?: string[]
@@ -562,10 +623,130 @@ function isFacet(value: unknown): value is QuestionBankFacet {
   )
 }
 
+const CURRICULUM_SECTION_KINDS = [
+  'activity',
+  'activity_group',
+  'exercise',
+  'lesson',
+  'optional_lesson',
+  'reflection',
+  'review',
+] as const satisfies readonly CurriculumSectionKind[]
+
+function isCurriculumSection(value: unknown): value is CurriculumSection {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['id', 'order', 'number', 'title', 'label', 'kind']) &&
+    typeof value.id === 'string' &&
+    value.id.trim().length > 0 &&
+    isPositiveInteger(value.order) &&
+    isNullableString(value.number) &&
+    typeof value.title === 'string' &&
+    value.title.trim().length > 0 &&
+    typeof value.label === 'string' &&
+    value.label.trim().length > 0 &&
+    typeof value.kind === 'string' &&
+    CURRICULUM_SECTION_KINDS.some((kind) => kind === value.kind)
+  )
+}
+
+function isCurriculumChapter(value: unknown): value is CurriculumChapter {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      'id',
+      'order',
+      'number',
+      'title',
+      'label',
+      'kind',
+      'exam_scope_values',
+      'sections',
+    ]) &&
+    typeof value.id === 'string' &&
+    value.id.trim().length > 0 &&
+    isPositiveInteger(value.order) &&
+    isNullableString(value.number) &&
+    typeof value.title === 'string' &&
+    value.title.trim().length > 0 &&
+    typeof value.label === 'string' &&
+    value.label.trim().length > 0 &&
+    (value.kind === 'chapter' || value.kind === 'activity') &&
+    isStringArray(value.exam_scope_values) &&
+    value.exam_scope_values.length > 0 &&
+    value.exam_scope_values.every((item) => item.trim().length > 0) &&
+    Array.isArray(value.sections) &&
+    value.sections.every(isCurriculumSection)
+  )
+}
+
+function isCurriculumVolume(value: unknown): value is CurriculumVolume {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      'id',
+      'label',
+      'grade',
+      'semester',
+      'textbook_version',
+      'chapters',
+    ]) &&
+    typeof value.id === 'string' &&
+    value.id.trim().length > 0 &&
+    typeof value.label === 'string' &&
+    value.label.trim().length > 0 &&
+    typeof value.grade === 'string' &&
+    value.grade.trim().length > 0 &&
+    typeof value.semester === 'string' &&
+    value.semester.trim().length > 0 &&
+    typeof value.textbook_version === 'string' &&
+    value.textbook_version.trim().length > 0 &&
+    Array.isArray(value.chapters) &&
+    value.chapters.length > 0 &&
+    value.chapters.every(isCurriculumChapter)
+  )
+}
+
+export function decodeCurriculumCatalog(value: unknown): CurriculumCatalog {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      'schema_version',
+      'catalog_id',
+      'publisher',
+      'subject',
+      'edition',
+      'volumes',
+    ]) ||
+    value.schema_version !== 1 ||
+    typeof value.catalog_id !== 'string' ||
+    value.catalog_id.trim().length === 0 ||
+    typeof value.publisher !== 'string' ||
+    value.publisher.trim().length === 0 ||
+    typeof value.subject !== 'string' ||
+    value.subject.trim().length === 0 ||
+    typeof value.edition !== 'string' ||
+    value.edition.trim().length === 0 ||
+    !Array.isArray(value.volumes) ||
+    value.volumes.length !== 4 ||
+    !value.volumes.every(isCurriculumVolume)
+  ) {
+    throw new Error('Invalid curriculum catalog')
+  }
+  return value as unknown as CurriculumCatalog
+}
+
 export function decodeQuestionBankFacets(value: unknown): QuestionBankFacets {
   const keys = [
     'exam_scopes',
     'knowledge_points',
+    'curriculum_chapters',
+    'abilities',
+    'methods',
+    'models',
+    'student_levels',
+    'teaching_stages',
+    'sub_skills',
     'question_types',
     'years',
     'exam_types',
@@ -774,6 +955,13 @@ function questionListPath(filters: QuestionBankFilters): string {
   appendTexts(parameters, 'exam_types', filters.examTypes)
   appendTexts(parameters, 'grades', filters.grades)
   appendTexts(parameters, 'exam_scopes', filters.examScopes)
+  appendTexts(parameters, 'knowledge_points', filters.knowledgePoints)
+  appendTexts(parameters, 'abilities', filters.abilities)
+  appendTexts(parameters, 'methods', filters.methods)
+  appendTexts(parameters, 'models', filters.models)
+  appendTexts(parameters, 'student_levels', filters.studentLevels)
+  appendTexts(parameters, 'teaching_stages', filters.teachingStages)
+  appendTexts(parameters, 'sub_skills', filters.subSkills)
   parameters.set('tag_status', filters.tagStatus ?? 'all')
   parameters.set('sort', filters.sort ?? 'newest')
   return `/api/question-bank/questions?${parameters.toString()}`
@@ -870,6 +1058,13 @@ export function questionJobRetryIds(job: JobResponse): number[] {
 }
 
 export const questionBankApi = {
+  getCurriculum(signal?: AbortSignal): Promise<CurriculumCatalog> {
+    return apiClient.request('/api/question-bank/curriculum', {
+      decode: decodeCurriculumCatalog,
+      signal,
+    })
+  },
+
   listPapers(signal?: AbortSignal): Promise<QuestionBankPaperListResponse> {
     return apiClient.request('/api/question-bank/papers', {
       decode: decodeQuestionPaperListResponse,

@@ -168,6 +168,7 @@ class ConfigSourceRecord:
                 self.private_blocks,
                 session_id=self.session_id,
                 source_id=self.source_id,
+                source_suffix=self.suffix,
             ),
         }
 
@@ -206,6 +207,7 @@ class _ConfigSourceMetadata:
                 self.private_blocks,
                 session_id=self.session_id,
                 source_id=self.source_id,
+                source_suffix=self.suffix,
             ),
         }
 
@@ -1119,6 +1121,9 @@ class ConfigSourceService:
                 register_created_file=parser_registry.register,
                 write_created_file=write_parser_asset,
             )
+            for block in blocks:
+                if isinstance(block, dict):
+                    block.setdefault("semantic_source", "text")
             private_blocks, asset_files = _copy_docx_assets(
                 blocks,
                 source_dir=source_dir,
@@ -1164,6 +1169,9 @@ class ConfigSourceService:
 
         document_text = extract_pdf_text(file_bytes)
         blocks = parse_plain_question_blocks(document_text)
+        for block in blocks:
+            if isinstance(block, dict):
+                block["semantic_source"] = "images"
         raw_assets = extract_pdf_question_images(file_bytes, blocks) if blocks else {}
         raw_pages = extract_pdf_images(file_bytes)
         asset_files: dict[str, dict[str, str | None]] = {}
@@ -1457,6 +1465,13 @@ class ConfigSourceService:
             self._validate_inventory_content(metadata, filename, content)
             _image_type(content)
             whole_pages.append(content)
+        private_blocks = copy.deepcopy(list(metadata.private_blocks))
+        if metadata.suffix == ".pdf":
+            for block in private_blocks:
+                block["semantic_source"] = "images"
+        else:
+            for block in private_blocks:
+                block.setdefault("semantic_source", "text")
         return ConfigSourceRecord(
             session_id=metadata.session_id,
             source_id=metadata.source_id,
@@ -1469,7 +1484,7 @@ class ConfigSourceService:
             manifest_path=metadata.manifest_path,
             private_source_path=metadata.source_path,
             private_source_bytes=source_content,
-            private_blocks=tuple(copy.deepcopy(metadata.private_blocks)),
+            private_blocks=tuple(private_blocks),
             private_document_text=metadata.private_document_text,
             private_question_images=private_images,
             private_whole_page_images=tuple(whole_pages),
@@ -1916,6 +1931,7 @@ def _public_questions_with_rich_content(
     *,
     session_id: int,
     source_id: str,
+    source_suffix: Literal[".docx", ".pdf"],
 ) -> list[dict[str, Any]]:
     blocks_by_id = {
         str(block.get("question_id") or "").strip(): block
@@ -1925,13 +1941,29 @@ def _public_questions_with_rich_content(
     result: list[dict[str, Any]] = []
     for question in questions:
         payload = asdict(question)
+        block = blocks_by_id.get(question.question_id)
+        image_semantic_source = source_suffix == ".pdf" or (
+            isinstance(block, dict)
+            and str(block.get("semantic_source") or "").strip() == "images"
+        )
+        if image_semantic_source:
+            payload.update(
+                {
+                    "question_preview": "",
+                    "answer_preview": "",
+                    "answer_present": question.has_answer_asset,
+                    "needs_review": True,
+                    "local_answer_trusted": False,
+                }
+            )
         payload["rich_content"] = _config_rich_content(
-            blocks_by_id.get(question.question_id),
+            block,
             session_id=session_id,
             source_id=source_id,
             question_id=question.question_id,
             has_question_asset=question.has_question_asset,
             has_answer_asset=question.has_answer_asset,
+            force_image_semantics=image_semantic_source,
         )
         result.append(payload)
     return result
@@ -1945,8 +1977,13 @@ def _config_rich_content(
     question_id: str,
     has_question_asset: bool,
     has_answer_asset: bool,
+    force_image_semantics: bool = False,
 ) -> dict[str, Any]:
-    if not isinstance(block, dict):
+    image_semantic_source = force_image_semantics or (
+        isinstance(block, dict)
+        and str(block.get("semantic_source") or "").strip() == "images"
+    )
+    if not isinstance(block, dict) or image_semantic_source:
         question_blocks: list[dict[str, Any]] = []
         answer_blocks: list[dict[str, Any]] = []
     else:
@@ -1956,11 +1993,18 @@ def _config_rich_content(
             or block.get("text")
             or ""
         )
-        answer_blocks = _project_config_rich_blocks(
-            block.get("answer_html")
-            or block.get("answer_text")
-            or block.get("canonical_answer")
-            or ""
+        answer_blocks = _deduplicate_config_rich_blocks(
+            _project_config_rich_blocks(
+                block.get("answer_html")
+                or block.get("answer_text")
+                or block.get("canonical_answer")
+                or ""
+            ),
+            _project_config_rich_blocks(
+                block.get("analysis_html")
+                or block.get("analysis")
+                or ""
+            ),
         )
     question_blocks = _append_config_asset_block(
         question_blocks,
@@ -2072,6 +2116,31 @@ def _project_config_rich_blocks(value: Any) -> list[dict[str, Any]]:
     return result
 
 
+def _deduplicate_config_rich_blocks(
+    *groups: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for group in groups:
+        for block in group:
+            signature = json.dumps(
+                {
+                    "kind": block.get("kind"),
+                    "text": block.get("text"),
+                    "segments": block.get("segments"),
+                    "rows": block.get("rows"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if signature in seen:
+                continue
+            seen.add(signature)
+            result.append(block)
+    return result
+
+
 def _structured_config_rich_text(text: str) -> dict[str, Any]:
     normalized = str(text or "")
     if normalized.casefold().startswith("<table"):
@@ -2171,19 +2240,36 @@ def _question_previews(
             or ""
         )
         assets = asset_files.get(question_id, {})
+        image_semantic_source = (
+            str(block.get("semantic_source") or "").strip() == "images"
+        )
         questions.append(
             ConfigQuestionPreview(
                 question_id=question_id,
                 question_type=str(block.get("question_type") or "comprehensive"),
-                question_preview=_public_preview(question_value),
-                answer_preview=_public_preview(answer_value),
-                answer_present=bool(
-                    str(block.get("answer_text") or "").strip()
-                    or str(block.get("canonical_answer") or "").strip()
-                    or assets.get("answer")
+                question_preview=(
+                    "" if image_semantic_source else _public_preview(question_value)
                 ),
-                needs_review=bool(block.get("needs_review")),
-                local_answer_trusted=bool(block.get("local_answer_trusted")),
+                answer_preview=(
+                    "" if image_semantic_source else _public_preview(answer_value)
+                ),
+                answer_present=(
+                    bool(assets.get("answer"))
+                    if image_semantic_source
+                    else bool(
+                        str(block.get("answer_text") or "").strip()
+                        or str(block.get("canonical_answer") or "").strip()
+                        or str(block.get("analysis") or "").strip()
+                        or str(block.get("analysis_html") or "").strip()
+                        or assets.get("answer")
+                    )
+                ),
+                needs_review=bool(block.get("needs_review")) or image_semantic_source,
+                local_answer_trusted=(
+                    False
+                    if image_semantic_source
+                    else bool(block.get("local_answer_trusted"))
+                ),
                 has_question_asset=bool(assets.get("question")),
                 has_answer_asset=bool(assets.get("answer")),
             )

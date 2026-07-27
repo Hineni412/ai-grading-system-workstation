@@ -155,6 +155,10 @@ def get_data_root() -> Path:
     return get_path_manager().data_root
 
 
+def get_question_bank_db_path() -> Path:
+    return get_path_manager().qb_db_path
+
+
 def get_exams_dir() -> Path:
     return get_path_manager().exams_dir
 

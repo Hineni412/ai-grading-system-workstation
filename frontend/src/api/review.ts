@@ -1,23 +1,46 @@
 import { apiClient } from './client'
 import { isNullableString, isRecord } from './validation'
 
+export type ReviewScope =
+  | 'teacher_pending'
+  | 'ungraded'
+  | 'ai_review'
+  | 'teacher_final'
+  | 'all'
+export type ReviewScoreStatus =
+  | 'ungraded'
+  | 'ai_ready'
+  | 'ai_review'
+  | 'teacher_final'
+  | 'failed'
+export type ReviewScoreSource = 'none' | 'ai' | 'teacher'
+
 export interface ReviewQuestionSummary {
   question_id: string
   total_count: number
   needs_review_count: number
+  ungraded_count?: number
+  teacher_confirmed_count?: number
   max_score: number
 }
 
 export interface ReviewMediaLinks {
   crop_url: string
   original_front_url: string
-  original_back_url: string
-  annotated_front_url: string
-  annotated_back_url: string
+  original_back_url: string | null
+  annotated_front_url: string | null
+  annotated_back_url: string | null
 }
 
+/**
+ * Legacy-compatible public shape used by existing fixtures and local callers.
+ * API payloads are normalized to ResolvedReviewItem before entering the queue.
+ */
 export interface ReviewItem {
+  review_item_id?: string
+  revision?: number
   session_id: number
+  student_id?: number
   result_id: number
   detail_id: number
   question_id: string
@@ -31,15 +54,49 @@ export interface ReviewItem {
   error_summary: string | null
   confidence_score: number | null
   needs_review: boolean
+  score_status?: ReviewScoreStatus
+  score_source?: ReviewScoreSource
+  teacher_locked?: boolean
   candidate_scores: Record<string, unknown>[]
   metadata: Record<string, unknown>
   media: ReviewMediaLinks
 }
 
+export interface ResolvedReviewItem extends Omit<
+  ReviewItem,
+  | 'review_item_id'
+  | 'revision'
+  | 'student_id'
+  | 'result_id'
+  | 'detail_id'
+  | 'score_awarded'
+  | 'score_status'
+  | 'score_source'
+  | 'teacher_locked'
+> {
+  review_item_id: string
+  revision: number
+  student_id: number
+  result_id: number | null
+  detail_id: number | null
+  score_awarded: number | null
+  score_status: ReviewScoreStatus
+  score_source: ReviewScoreSource
+  teacher_locked: boolean
+}
+
+export type ReviewItemLike = ReviewItem | ResolvedReviewItem
+
 export interface ReviewQuestionListResponse { items: ReviewQuestionSummary[]; total: number }
-export interface ReviewItemListResponse { items: ReviewItem[]; total: number }
+export interface ReviewItemListResponse { items: ReviewItemLike[]; total: number }
+
+export interface FetchReviewQuestionsOptions {
+  scope?: ReviewScope
+  signal?: AbortSignal
+}
 
 export interface FetchReviewItemsOptions {
+  scope?: ReviewScope
   needsReviewOnly?: boolean
   signal?: AbortSignal
 }
@@ -60,8 +117,11 @@ export interface ReviewRubricSection {
 }
 
 export interface ReviewConfirmInput {
-  result_id: number
-  detail_id: number
+  review_item_id?: string
+  expected_revision?: number
+  student_id?: number
+  result_id: number | null
+  detail_id: number | null
   score_awarded: number
   deduction_reason?: string
 }
@@ -81,17 +141,67 @@ export interface ReviewConfirmResponse {
 const isNonnegativeInteger = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0
 const isFiniteNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
 const isApiUrl = (value: unknown): value is string => typeof value === 'string' && /^\/api\//.test(value)
+const isNullableApiUrl = (value: unknown): value is string | null => value === null || isApiUrl(value)
+const isNullablePositiveInteger = (value: unknown): value is number | null =>
+  value === null || (isNonnegativeInteger(value) && value > 0)
+const isReviewScoreStatus = (value: unknown): value is ReviewScoreStatus =>
+  value === 'ungraded' || value === 'ai_ready' || value === 'ai_review'
+  || value === 'teacher_final' || value === 'failed'
+const isReviewScoreSource = (value: unknown): value is ReviewScoreSource =>
+  value === 'none' || value === 'ai' || value === 'teacher'
 
 function isReviewQuestion(value: unknown): value is ReviewQuestionSummary {
-  return isRecord(value) && typeof value.question_id === 'string' && value.question_id.trim().length > 0 && isNonnegativeInteger(value.total_count) && isNonnegativeInteger(value.needs_review_count) && Number(value.needs_review_count) <= Number(value.total_count) && isFiniteNumber(value.max_score) && value.max_score >= 0
+  return isRecord(value)
+    && typeof value.question_id === 'string' && value.question_id.trim().length > 0
+    && isNonnegativeInteger(value.total_count)
+    && isNonnegativeInteger(value.needs_review_count)
+    && Number(value.needs_review_count) <= Number(value.total_count)
+    && (value.ungraded_count === undefined
+      || (isNonnegativeInteger(value.ungraded_count)
+        && Number(value.ungraded_count) <= Number(value.total_count)))
+    && (value.teacher_confirmed_count === undefined
+      || (isNonnegativeInteger(value.teacher_confirmed_count)
+        && Number(value.teacher_confirmed_count) <= Number(value.total_count)))
+    && isFiniteNumber(value.max_score) && value.max_score >= 0
 }
 
 function isReviewMedia(value: unknown): value is ReviewMediaLinks {
-  return isRecord(value) && isApiUrl(value.crop_url) && isApiUrl(value.original_front_url) && isApiUrl(value.original_back_url) && isApiUrl(value.annotated_front_url) && isApiUrl(value.annotated_back_url)
+  return isRecord(value)
+    && isApiUrl(value.crop_url)
+    && isApiUrl(value.original_front_url)
+    && isNullableApiUrl(value.original_back_url)
+    && isNullableApiUrl(value.annotated_front_url)
+    && isNullableApiUrl(value.annotated_back_url)
 }
 
-function isReviewItem(value: unknown): value is ReviewItem {
-  return isRecord(value) && isNonnegativeInteger(value.session_id) && value.session_id > 0 && isNonnegativeInteger(value.result_id) && value.result_id > 0 && isNonnegativeInteger(value.detail_id) && value.detail_id > 0 && typeof value.question_id === 'string' && typeof value.student_name === 'string' && isNullableString(value.student_code) && isNullableString(value.class_name) && isFiniteNumber(value.score_awarded) && isFiniteNumber(value.max_score) && isNullableString(value.deduction_reason) && isNullableString(value.error_category) && isNullableString(value.error_summary) && (value.confidence_score === null || isFiniteNumber(value.confidence_score)) && typeof value.needs_review === 'boolean' && Array.isArray(value.candidate_scores) && value.candidate_scores.every(isRecord) && isRecord(value.metadata) && isReviewMedia(value.media)
+function isReviewItem(value: unknown): value is ReviewItemLike {
+  return isRecord(value)
+    && (value.review_item_id === undefined
+      || (typeof value.review_item_id === 'string'
+        && value.review_item_id.trim().length > 0))
+    && (value.revision === undefined || isNonnegativeInteger(value.revision))
+    && isNonnegativeInteger(value.session_id) && value.session_id > 0
+    && (value.student_id === undefined
+      || (isNonnegativeInteger(value.student_id) && value.student_id > 0))
+    && isNullablePositiveInteger(value.result_id)
+    && isNullablePositiveInteger(value.detail_id)
+    && typeof value.question_id === 'string' && value.question_id.trim().length > 0
+    && typeof value.student_name === 'string'
+    && isNullableString(value.student_code)
+    && isNullableString(value.class_name)
+    && (value.score_awarded === null || isFiniteNumber(value.score_awarded))
+    && isFiniteNumber(value.max_score) && value.max_score >= 0
+    && isNullableString(value.deduction_reason)
+    && isNullableString(value.error_category)
+    && isNullableString(value.error_summary)
+    && (value.confidence_score === null || isFiniteNumber(value.confidence_score))
+    && typeof value.needs_review === 'boolean'
+    && (value.score_status === undefined || isReviewScoreStatus(value.score_status))
+    && (value.score_source === undefined || isReviewScoreSource(value.score_source))
+    && (value.teacher_locked === undefined || typeof value.teacher_locked === 'boolean')
+    && Array.isArray(value.candidate_scores) && value.candidate_scores.every(isRecord)
+    && isRecord(value.metadata)
+    && isReviewMedia(value.media)
 }
 
 export function isReviewQuestionListResponse(value: unknown): value is ReviewQuestionListResponse {
@@ -100,6 +210,36 @@ export function isReviewQuestionListResponse(value: unknown): value is ReviewQue
 
 export function isReviewItemListResponse(value: unknown): value is ReviewItemListResponse {
   return isRecord(value) && Array.isArray(value.items) && value.items.every(isReviewItem) && isNonnegativeInteger(value.total) && value.total === value.items.length
+}
+
+function legacyReviewItemId(item: ReviewItemLike): string {
+  return `${item.session_id}:${item.question_id}:${String(item.detail_id ?? item.result_id ?? 'manual')}`
+}
+
+export function resolveReviewItem(item: ReviewItemLike): ResolvedReviewItem {
+  const resultId = item.result_id ?? null
+  const detailId = item.detail_id ?? null
+  const scoreStatus = item.score_status
+    ?? (item.needs_review ? 'ai_review' : 'teacher_final')
+  const scoreSource = item.score_source
+    ?? (scoreStatus === 'teacher_final' ? 'teacher' : 'ai')
+  const fallbackStudentId = item.student_id ?? resultId ?? detailId
+  if (fallbackStudentId === null || fallbackStudentId <= 0) {
+    throw new Error('review item student identity is required')
+  }
+
+  return {
+    ...item,
+    review_item_id: item.review_item_id?.trim() || legacyReviewItemId(item),
+    revision: item.revision ?? 0,
+    student_id: fallbackStudentId,
+    result_id: resultId,
+    detail_id: detailId,
+    score_awarded: item.score_awarded ?? null,
+    score_status: scoreStatus,
+    score_source: scoreSource,
+    teacher_locked: item.teacher_locked ?? scoreStatus === 'teacher_final',
+  }
 }
 
 function cleanText(value: unknown): string | null {
@@ -219,8 +359,50 @@ export function isReviewConfirmResponse(value: unknown): value is ReviewConfirmR
   )
 }
 
-export async function fetchReviewQuestions(sessionId: number, signal?: AbortSignal): Promise<ReviewQuestionSummary[]> {
-  const payload = await apiClient.request(`/api/sessions/${sessionId}/review/questions`, { signal, decode: (value) => { if (!isReviewQuestionListResponse(value)) throw new Error('invalid review questions'); return value } })
+function isAbortSignal(value: unknown): value is AbortSignal {
+  return typeof value === 'object'
+    && value !== null
+    && 'aborted' in value
+    && typeof value.aborted === 'boolean'
+    && 'addEventListener' in value
+}
+
+export function fetchReviewQuestions(
+  sessionId: number,
+  signal?: AbortSignal,
+): Promise<ReviewQuestionSummary[]>
+export function fetchReviewQuestions(
+  sessionId: number,
+  options?: FetchReviewQuestionsOptions,
+): Promise<ReviewQuestionSummary[]>
+export function fetchReviewQuestions(
+  sessionId: number,
+  signal: AbortSignal,
+  options: FetchReviewQuestionsOptions,
+): Promise<ReviewQuestionSummary[]>
+export async function fetchReviewQuestions(
+  sessionId: number,
+  signalOrOptions?: AbortSignal | FetchReviewQuestionsOptions,
+  scopedOptions?: FetchReviewQuestionsOptions,
+): Promise<ReviewQuestionSummary[]> {
+  const options = scopedOptions
+    ?? (isAbortSignal(signalOrOptions) ? {} : signalOrOptions)
+    ?? {}
+  const signal = options.signal
+    ?? (isAbortSignal(signalOrOptions) ? signalOrOptions : undefined)
+  const path = options.scope === undefined
+    ? `/api/sessions/${sessionId}/review/questions`
+    : `/api/sessions/${sessionId}/review/questions?scope=${encodeURIComponent(options.scope)}`
+  const payload = await apiClient.request(
+    path,
+    {
+      signal,
+      decode: (value) => {
+        if (!isReviewQuestionListResponse(value)) throw new Error('invalid review questions')
+        return value
+      },
+    },
+  )
   return payload.items
 }
 
@@ -228,11 +410,22 @@ export async function fetchReviewItems(
   sessionId: number,
   questionId: string,
   options: FetchReviewItemsOptions = {},
-): Promise<ReviewItem[]> {
+): Promise<ReviewItemLike[]> {
   const encodedQuestion = encodeURIComponent(questionId)
-  const needsReviewOnly = options.needsReviewOnly ?? true
-  const payload = await apiClient.request(`/api/sessions/${sessionId}/review/questions/${encodedQuestion}/items?needs_review_only=${String(needsReviewOnly)}`, { signal: options.signal, decode: (value) => { if (!isReviewItemListResponse(value)) throw new Error('invalid review items'); return value } })
-  return payload.items
+  const query = options.scope === undefined
+    ? `needs_review_only=${String(options.needsReviewOnly ?? true)}`
+    : `scope=${encodeURIComponent(options.scope)}`
+  const payload = await apiClient.request(
+    `/api/sessions/${sessionId}/review/questions/${encodedQuestion}/items?${query}`,
+    {
+      signal: options.signal,
+      decode: (value) => {
+        if (!isReviewItemListResponse(value)) throw new Error('invalid review items')
+        return value
+      },
+    },
+  )
+  return payload.items.map(resolveReviewItem)
 }
 
 export async function fetchReviewRubric(

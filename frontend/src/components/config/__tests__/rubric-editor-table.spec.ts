@@ -34,11 +34,13 @@ async function mountTable(options: {
 }
 
 describe('RubricEditorTable', () => {
-  it('labels the policy column by scoring unit', async () => {
+  it('groups scoring units into compact question cards', async () => {
     const mounted = await mountTable()
 
-    expect(mounted.host.querySelector('thead')?.textContent).toContain('评分单元策略')
-    expect(mounted.host.querySelector('thead')?.textContent).not.toContain('整题策略')
+    expect(mounted.host.querySelectorAll('.rubric-question-card')).toHaveLength(1)
+    expect(mounted.host.querySelectorAll('.rubric-unit-card')).toHaveLength(2)
+    expect(mounted.host.querySelector('.rubric-question-card__header')?.textContent).toContain('Q12')
+    expect(mounted.host.querySelector('.rubric-question-card__header')?.textContent).toContain('100 分')
   })
 
   it('addresses score, standard answer and accepted answers by hidden row id', async () => {
@@ -87,7 +89,7 @@ describe('RubricEditorTable', () => {
       { row_id: 'row-q12-p1-s1', final_answer_rule: '单位必须完整' },
     ]))
     expect(mounted.host.querySelectorAll('[aria-label="Q12 P1 要求最终答案"]')).toHaveLength(1)
-    expect(mounted.host.textContent).toContain('本评分单元策略见首行')
+    expect(mounted.host.textContent).toContain('本评分单元策略沿用同一小问的首个评分点')
   })
 
   it('renders and edits policy controls on the first row of every part', async () => {
@@ -150,13 +152,43 @@ describe('RubricEditorTable', () => {
     expect(document.activeElement?.getAttribute('aria-label')).toBe('Q12 P1 S1 标准答案')
   })
 
-  it('keeps long content in a labelled internal horizontal viewport with sticky identity columns', async () => {
+  it('keeps long content in the card without requiring a horizontal ledger', async () => {
     const mounted = await mountTable()
-    const viewport = mounted.host.querySelector<HTMLElement>('.rubric-ledger__viewport')!
-    expect(viewport.getAttribute('aria-label')).toBe('评分依据编辑表')
-    expect(viewport.getAttribute('tabindex')).toBe('0')
-    expect(mounted.host.querySelectorAll('.rubric-ledger__sticky').length).toBeGreaterThanOrEqual(4)
+    expect(mounted.host.querySelector('.rubric-ledger__viewport')).toBeNull()
+    expect(mounted.host.querySelector('.rubric-ledger__cards')?.getAttribute('aria-label'))
+      .toBe('评分依据题目卡片')
     expect(mounted.host.textContent).toContain('完整证明'.repeat(40))
+  })
+
+  it('uses one-line objective fields and two-line process fields without removing edits', async () => {
+    const mounted = await mountTable({ rows: [
+      row({
+        row_id: 'row-q1-p1-s1',
+        question_id: 'Q1',
+        question_type: 'choice',
+        standard_answer: 'B',
+        score: 4,
+      }),
+      row({
+        row_id: 'row-q12-p1-s1',
+        question_id: 'Q12',
+        question_type: 'proof',
+        score: 96,
+      }),
+    ] })
+
+    const objective = mounted.host.querySelector<HTMLElement>('[data-row-id="row-q1-p1-s1"]')!
+    const proof = mounted.host.querySelector<HTMLElement>('[data-row-id="row-q12-p1-s1"]')!
+    expect(objective.classList.contains('is-objective')).toBe(true)
+    expect(proof.classList.contains('is-process')).toBe(true)
+    expect(objective.querySelector<HTMLTextAreaElement>('[data-edit-field="standard_answer"]')
+      ?.getAttribute('rows')).toBe('1')
+    expect(proof.querySelector<HTMLTextAreaElement>('[data-edit-field="standard_answer"]')
+      ?.getAttribute('rows')).toBe('2')
+    for (const field of ['standard_answer', 'required_elements', 'deduction_rules', 'accepted_answers']) {
+      expect(objective.querySelector(`[data-edit-field="${field}"]`)).not.toBeNull()
+      expect(proof.querySelector(`[data-edit-field="${field}"]`)).not.toBeNull()
+    }
   })
 
   it('never interpolates malformed issue rows or unknown fields into a focus selector', async () => {

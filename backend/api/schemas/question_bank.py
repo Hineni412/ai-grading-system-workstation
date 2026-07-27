@@ -34,6 +34,52 @@ class QuestionPaperListResponse(_QuestionBankModel):
     total: int
 
 
+class CurriculumSection(_QuestionBankModel):
+    id: str
+    order: int = Field(ge=1)
+    number: str | None = None
+    title: str
+    label: str
+    kind: Literal[
+        "activity",
+        "activity_group",
+        "exercise",
+        "lesson",
+        "optional_lesson",
+        "reflection",
+        "review",
+    ]
+
+
+class CurriculumChapter(_QuestionBankModel):
+    id: str
+    order: int = Field(ge=1)
+    number: str | None = None
+    title: str
+    label: str
+    kind: Literal["chapter", "activity"]
+    exam_scope_values: list[str]
+    sections: list[CurriculumSection]
+
+
+class CurriculumVolume(_QuestionBankModel):
+    id: str
+    label: str
+    grade: str
+    semester: str
+    textbook_version: str
+    chapters: list[CurriculumChapter]
+
+
+class CurriculumCatalog(_QuestionBankModel):
+    schema_version: Literal[1]
+    catalog_id: str
+    publisher: str
+    subject: str
+    edition: str
+    volumes: list[CurriculumVolume]
+
+
 class QuestionTagResponse(_QuestionBankModel):
     tag_type: Literal[
         "ability",
@@ -160,6 +206,13 @@ class QuestionFacetItem(_QuestionBankModel):
 class QuestionFacetsResponse(_QuestionBankModel):
     exam_scopes: list[QuestionFacetItem]
     knowledge_points: list[QuestionFacetItem]
+    curriculum_chapters: list[QuestionFacetItem]
+    abilities: list[QuestionFacetItem]
+    methods: list[QuestionFacetItem]
+    models: list[QuestionFacetItem]
+    student_levels: list[QuestionFacetItem]
+    teaching_stages: list[QuestionFacetItem]
+    sub_skills: list[QuestionFacetItem]
     question_types: list[QuestionFacetItem]
     years: list[QuestionFacetItem]
     exam_types: list[QuestionFacetItem]
@@ -225,3 +278,80 @@ class QuestionTaggingJobRequest(_QuestionBankModel):
 
 class QuestionJobRetryRequest(_QuestionBankModel):
     question_ids: list[int] | None = Field(default=None, min_length=1, max_length=500)
+
+
+TaxonomyDimension = Literal[
+    "curriculum",
+    "knowledge",
+    "ability",
+    "method",
+    "model",
+]
+
+
+class TaxonomyTermResponse(_QuestionBankModel):
+    id: str
+    dimension: TaxonomyDimension
+    name: str
+    aliases: list[str] = Field(default_factory=list)
+    status: Literal["active", "retired"] = "active"
+
+
+class TaxonomyDimensionsResponse(_QuestionBankModel):
+    curriculum: list[TaxonomyTermResponse]
+    knowledge: list[TaxonomyTermResponse]
+    ability: list[TaxonomyTermResponse]
+    method: list[TaxonomyTermResponse]
+    model: list[TaxonomyTermResponse]
+
+
+class TaxonomyCatalogResponse(_QuestionBankModel):
+    schema_version: Literal[1]
+    catalog_id: str
+    revision: int = Field(ge=0)
+    dimensions: TaxonomyDimensionsResponse
+
+
+class TaxonomyProposalResponse(_QuestionBankModel):
+    id: str
+    dimension: TaxonomyDimension
+    proposed_name: str
+    edited_name: str | None = None
+    definition: str = ""
+    reason: str = ""
+    nearest_id: str = ""
+    why_not_reuse: str = ""
+    question_refs: list[int] = Field(default_factory=list)
+    status: Literal["pending", "approved", "merged", "rejected", "retired"]
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class TaxonomyProposalCounts(_QuestionBankModel):
+    pending: int = Field(ge=0)
+
+
+class TaxonomyProposalListResponse(_QuestionBankModel):
+    revision: int = Field(ge=0)
+    items: list[TaxonomyProposalResponse]
+    counts: TaxonomyProposalCounts
+
+
+class TaxonomyProposalReviewRequest(_QuestionBankModel):
+    decision: Literal["approve", "edit", "merge", "reject"]
+    edited_name: str | None = Field(default=None, min_length=1, max_length=36)
+    target_term_id: str | None = Field(default=None, min_length=1, max_length=100)
+    expected_revision: int = Field(ge=0)
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+
+
+class TaxonomyProposalReviewResponse(_QuestionBankModel):
+    revision: int = Field(ge=0)
+    proposal: TaxonomyProposalResponse
+    approved_term: TaxonomyTermResponse | None = None
+    application_status: Literal[
+        "not_requested",
+        "pending",
+        "applied",
+        "failed",
+    ] = "not_requested"

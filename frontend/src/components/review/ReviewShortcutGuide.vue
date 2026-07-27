@@ -1,5 +1,5 @@
 <template>
-  <aside class="review-shortcut-guide" aria-label="批量复核快捷键">
+  <aside class="review-shortcut-guide" aria-label="人工评分快捷键">
     <span class="review-shortcut-guide__label">快捷键</span>
     <dl class="review-shortcut-guide__list">
       <div>

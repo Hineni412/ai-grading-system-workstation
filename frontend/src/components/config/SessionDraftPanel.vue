@@ -33,8 +33,9 @@ async function renameDraft(): Promise<void> {
   busy.value = true
   message.value = ''
   try {
-    await sessionStore.renameSelected(name.value)
-    message.value = '考试名称已更新。'
+    const renamed = await sessionStore.renameSelected(name.value)
+    name.value = renamed.name
+    message.value = `考试名称已保存为“${renamed.name}”。`
   } catch {
     message.value = '考试名称未更新，请重试。'
   } finally {
@@ -47,7 +48,7 @@ async function renameDraft(): Promise<void> {
   <section class="session-draft-panel" aria-labelledby="session-draft-title">
     <div>
       <p class="session-draft-panel__eyebrow">第 1 阶段</p>
-      <h2 id="session-draft-title">考试草稿</h2>
+      <h2 id="session-draft-title" tabindex="-1">考试草稿</h2>
       <p>先保存考试名称，后续试卷来源与评分依据都会归入这场考试。</p>
     </div>
     <form @submit.prevent="sessionStore.currentSession ? renameDraft() : createDraft()">

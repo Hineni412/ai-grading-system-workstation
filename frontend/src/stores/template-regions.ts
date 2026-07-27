@@ -5,6 +5,7 @@ import { isAmbiguousWriteError, ApiError } from '../api/errors'
 import { createClientRequestToken } from '../api/config-workspace'
 import {
   abandonTemplateSubmission,
+  assignTemplatePageRole,
   commitRegions,
   discardRegionDraft,
   fetchRegionReadiness,
@@ -23,6 +24,7 @@ import type { EditorState } from '../components/template-regions/TemplateRegionE
 export type RegionLoadState = 'idle' | 'loading' | 'ready' | 'error'
 export type RegionSaveState = 'idle' | 'saving' | 'saved' | 'conflict' | 'error'
 export type TemplateUploadState = 'idle' | 'uploading' | 'unknown' | 'error'
+export type TemplateAssignmentState = 'idle' | 'saving' | 'error'
 export const TEMPLATE_REGION_UPLOAD_STORAGE_KEY = 'ai-grading:template-upload:v1'
 
 interface PersistedTemplateUpload {
@@ -65,6 +67,7 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
   const loadState = ref<RegionLoadState>('idle')
   const saveState = ref<RegionSaveState>('idle')
   const uploadState = ref<TemplateUploadState>('idle')
+  const assignmentState = ref<TemplateAssignmentState>('idle')
   const pendingUploadToken = ref<string | null>(null)
   const errorMessage = ref('')
   const scoringConfigured = ref(false)
@@ -81,6 +84,7 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
     && !editorReady.value)
   const hasUnsavedWork = computed(() => uploadState.value === 'uploading'
     || uploadState.value === 'unknown'
+    || assignmentState.value === 'saving'
     || (editorReady.value && !readOnly.value && editorState.value.revision > savedRevision))
 
   function resetForSession(id: number): number {
@@ -94,6 +98,7 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
     loadState.value = 'loading'
     saveState.value = 'idle'
     uploadState.value = restoredUploadToken === null ? 'idle' : 'unknown'
+    assignmentState.value = 'idle'
     pendingUploadToken.value = restoredUploadToken
     errorMessage.value = restoredUploadToken === null
       ? ''
@@ -212,6 +217,63 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
     }
   }
 
+  async function assignFirstPageRole(firstPageRole: PageRole): Promise<void> {
+    const id = sessionId.value
+    const current = workspace.value
+    if (id === null || current === null || assignmentState.value === 'saving'
+      || uploadState.value === 'uploading' || uploadState.value === 'unknown') return
+    await flushDraft()
+    if (saveInFlight || ['error', 'conflict'].includes(saveState.value)) {
+      errorMessage.value = saveInFlight
+        ? '草稿仍在保存，请稍后再交换当前样卷正反面。'
+        : '请先解决草稿保存问题，再交换当前样卷正反面。'
+      return
+    }
+    const previousActivePage = editorState.value.active_page ?? 'front'
+    assignmentState.value = 'saving'
+    errorMessage.value = ''
+    try {
+      const result = await assignTemplatePageRole(
+        id,
+        firstPageRole,
+        current.template.template_fingerprint,
+      )
+      if (result.draft_sync_pending) {
+        assignmentState.value = 'error'
+        errorMessage.value = '正反面已经交换，但草稿同步尚未完成。请再次点击“交换当前正反面”完成恢复。'
+        return
+      }
+      const roleChangedForClient = (
+        result.template.first_page_role !== current.template.first_page_role
+      )
+      await load(id)
+      if (loadState.value !== 'ready' || workspace.value === null) {
+        assignmentState.value = 'error'
+        errorMessage.value = '正反面已经更新，请重新读取页面查看结果。'
+        return
+      }
+      if (workspace.value.draft.status === 'compatible') continueDraft()
+      if (roleChangedForClient && editorReady.value) {
+        showPage(previousActivePage === 'front' ? 'back' : 'front')
+      }
+      assignmentState.value = 'idle'
+      errorMessage.value = ''
+    } catch (error) {
+      assignmentState.value = 'error'
+      errorMessage.value = isAmbiguousWriteError(error)
+        ? '正反面交换结果尚未确认；再次点击同一按钮会安全核对，不会重复翻转。'
+        : error instanceof ApiError && error.code === 'template_page_assignment_draft_conflict'
+          ? '现有草稿与样卷不一致，请先处理旧草稿，再交换当前样卷正反面。'
+          : error instanceof ApiError && error.code === 'template_page_assignment_unsupported'
+            ? '这份旧式样卷不能直接交换，请重新上传 PDF 并指定第一页对应关系。'
+            : error instanceof ApiError && error.code === 'template_page_assignment_changed'
+              ? '样卷已被其他操作更新。系统没有重复写入，请重新读取页面后再决定是否交换。'
+              : error instanceof ApiError && error.code === 'answer_region_lock_timeout'
+                ? '当前样卷正在被另一项操作使用。系统没有重复写入，请稍后再试。'
+                : '当前样卷正反面没有更新，系统没有自动重试。请稍后再试。'
+    }
+  }
+
   async function reconcileUpload(): Promise<void> {
     const id = sessionId.value
     const token = pendingUploadToken.value
@@ -327,8 +389,9 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
   }
 
   return { sessionId, workspace, editorState, loadState, saveState, uploadState,
+    assignmentState,
     pendingUploadToken, errorMessage, scoringConfigured, editorReady, readOnly,
     snapshotPending, draftChoiceRequired, hasUnsavedWork, load, updateEditor,
-    flushDraft, upload, reconcileUpload, discardDraft, continueDraft,
+    flushDraft, upload, assignFirstPageRole, reconcileUpload, discardDraft, continueDraft,
     restartFromFormal, startEditingConfirmed, showPage, commit, retrySnapshot }
 })
