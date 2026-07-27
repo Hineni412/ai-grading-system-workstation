@@ -227,11 +227,11 @@ def test_hybrid_prompt_describes_shared_tile_scoring_rules() -> None:
     joined = "\n".join(prompts)
 
     assert "Shared tiles may contain vertically, horizontally, or continuously written answers." in joined
-    assert "Score each required part exactly once and do not duplicate evidence across parts." in joined
-    assert "If boundaries are unclear, return all implicated parts with low confidence and needs_human_review=true." in joined
+    assert "Score each targeted part exactly once and do not duplicate evidence across parts." in joined
+    assert "If boundaries are unclear, return all implicated targeted parts with low confidence and needs_human_review=true." in joined
 
 
-def test_subjective_retry_acquires_one_request_slot_per_model_attempt(
+def test_subjective_failure_uses_one_request_slot_without_hidden_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -273,25 +273,25 @@ def test_subjective_retry_acquires_one_request_slot_per_model_attempt(
     limiter = CountingLimiter()
     monkeypatch.setattr("time.sleep", lambda _seconds: None)
 
-    result = grade_major_question_batch(
-        session_id=1,
-        spec=_multipart_spec(),
-        paper_entries=[],
-        answer_regions=[],
-        llm_client=client,
-        grading_model="test-model",
-        output_root=tmp_path,
-        batch_index=1,
-        builder=FakeBuilder(),
-        rate_limiter=limiter,
-    )
+    with pytest.raises(RuntimeError, match="transient"):
+        grade_major_question_batch(
+            session_id=1,
+            spec=_multipart_spec(),
+            paper_entries=[],
+            answer_regions=[],
+            llm_client=client,
+            grading_model="test-model",
+            output_root=tmp_path,
+            batch_index=1,
+            builder=FakeBuilder(),
+            rate_limiter=limiter,
+        )
 
-    assert len(result["accepted"]) == 1
-    assert client.calls == 3
-    assert limiter.calls == 3
+    assert client.calls == 1
+    assert limiter.calls == 1
 
 
-def test_subjective_retry_reuses_one_bounded_image_memo_for_all_attempts(
+def test_subjective_failure_uses_one_bounded_image_memo_without_hidden_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -325,19 +325,18 @@ def test_subjective_retry_reuses_one_bounded_image_memo_for_all_attempts(
     client = RetryingClient()
     monkeypatch.setattr("time.sleep", lambda _seconds: None)
 
-    result = grade_major_question_batch(
-        session_id=1,
-        spec=_multipart_spec(),
-        paper_entries=[],
-        answer_regions=[],
-        llm_client=client,
-        grading_model="test-model",
-        output_root=tmp_path,
-        batch_index=1,
-        builder=FakeBuilder(),
-    )
+    with pytest.raises(RuntimeError, match="transient"):
+        grade_major_question_batch(
+            session_id=1,
+            spec=_multipart_spec(),
+            paper_entries=[],
+            answer_regions=[],
+            llm_client=client,
+            grading_model="test-model",
+            output_root=tmp_path,
+            batch_index=1,
+            builder=FakeBuilder(),
+        )
 
-    assert len(result["accepted"]) == 1
-    assert len(client.memos) == 3
-    assert client.memos[0] is client.memos[1] is client.memos[2]
+    assert len(client.memos) == 1
     assert client.memos[0] == {}

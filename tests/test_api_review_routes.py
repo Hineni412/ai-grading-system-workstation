@@ -221,7 +221,9 @@ def test_review_confirm_question_keeps_request_and_response_compatibility(tmp_pa
     from backend.api.dependencies import get_review_application_service
 
     client, _db, session_id, result_id, detail_id = _seed_review_db(tmp_path)
-    calls: list[tuple[int, dict[str, Any], str, list[Any]]] = []
+    calls: list[
+        tuple[int, dict[str, Any], str, list[Any], dict[str, Any] | None]
+    ] = []
 
     class FakeReviewApplicationService:
         def confirm(
@@ -230,8 +232,18 @@ def test_review_confirm_question_keeps_request_and_response_compatibility(tmp_pa
             session: dict[str, Any],
             question_id: str,
             items: list[Any],
+            *,
+            manual_context: dict[str, Any] | None = None,
         ) -> SimpleNamespace:
-            calls.append((requested_session_id, session, question_id, items))
+            calls.append(
+                (
+                    requested_session_id,
+                    session,
+                    question_id,
+                    items,
+                    manual_context,
+                )
+            )
             return SimpleNamespace(
                 updated_details=1,
                 updated_results=1,
@@ -257,7 +269,13 @@ def test_review_confirm_question_keeps_request_and_response_compatibility(tmp_pa
         {"result_id": result_id, "status": "succeeded"}
     ]
     assert len(calls) == 1
-    called_session_id, called_session, called_question_id, called_items = calls[0]
+    (
+        called_session_id,
+        called_session,
+        called_question_id,
+        called_items,
+        called_manual_context,
+    ) = calls[0]
     assert called_session_id == session_id
     assert called_session["id"] == session_id
     assert called_question_id == "Q1"
@@ -265,6 +283,7 @@ def test_review_confirm_question_keeps_request_and_response_compatibility(tmp_pa
     assert called_items[0].result_id == result_id
     assert called_items[0].detail_id == detail_id
     assert called_items[0].score_awarded == 9.0
+    assert called_manual_context is None
 
 
 def test_review_routes_require_existing_session(tmp_path: Path) -> None:

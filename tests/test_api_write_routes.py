@@ -50,7 +50,16 @@ def test_session_write_routes_create_rename_soft_delete_and_restore(tmp_path) ->
     assert rename_response.status_code == 200
     assert rename_response.json()["name"] == "Exam B Renamed"
 
-    delete_response = client.delete(f"/api/sessions/{session_id}")
+    impact_response = client.get(f"/api/sessions/{session_id}/deletion-impact")
+    assert impact_response.status_code == 200
+    delete_response = client.request(
+        "DELETE",
+        f"/api/sessions/{session_id}",
+        json={
+            "expected_revision": impact_response.json()["revision"],
+            "confirmation_name": "Exam B Renamed",
+        },
+    )
 
     assert delete_response.status_code == 200
     assert delete_response.json()["is_deleted"] is True

@@ -39,7 +39,7 @@ def test_schema_gate_bootstraps_empty_grading_database(tmp_path: Path) -> None:
         migrations_dir=PROJECT_ROOT / "migrations" / "grading",
     )
 
-    assert result.current_version == "008_drop_legacy_cli_tables"
+    assert result.current_version == "009_add_teacher_score_locks"
     assert result.applied == (
         "000_baseline_schema",
         "001_init_migration_tracking",
@@ -50,6 +50,7 @@ def test_schema_gate_bootstraps_empty_grading_database(tmp_path: Path) -> None:
         "006_knowledge_ids_primary",
         "007_drop_legacy_knowledge_id",
         "008_drop_legacy_cli_tables",
+        "009_add_teacher_score_locks",
     )
     with sqlite3.connect(database) as connection:
         tables = {
@@ -214,7 +215,7 @@ def test_schema_gate_serializes_concurrent_bootstrap(tmp_path: Path) -> None:
         )
 
     assert {result.current_version for result in results} == {
-        "008_drop_legacy_cli_tables"
+        "009_add_teacher_score_locks"
     }
     with sqlite3.connect(database) as connection:
         rows = connection.execute(
@@ -236,8 +237,9 @@ def test_schema_gate_serializes_concurrent_bootstrap(tmp_path: Path) -> None:
         ("006_knowledge_ids_primary", 1),
         ("007_drop_legacy_knowledge_id", 1),
         ("008_drop_legacy_cli_tables", 1),
+        ("009_add_teacher_score_locks", 1),
     ]
-    assert len(list((tmp_path / "backups").glob("*.db"))) == 9
+    assert len(list((tmp_path / "backups").glob("*.db"))) == 10
 
 
 def test_migration_backup_includes_committed_wal_content(tmp_path: Path) -> None:
@@ -301,6 +303,7 @@ def test_db_manager_initialize_uses_current_grading_migrations(
         "006_knowledge_ids_primary",
         "007_drop_legacy_knowledge_id",
         "008_drop_legacy_cli_tables",
+        "009_add_teacher_score_locks",
     ]
 
 
@@ -323,7 +326,7 @@ def test_grading_store_initializers_use_current_migrations(
             LIMIT 1
             """
         ).fetchone()
-    assert current == ("008_drop_legacy_cli_tables",)
+    assert current == ("009_add_teacher_score_locks",)
 
 
 def test_question_bank_initializer_uses_current_migrations(
@@ -365,7 +368,7 @@ def test_application_schema_gate_checks_both_databases(tmp_path: Path) -> None:
 
     results = ensure_application_schema(paths)
 
-    assert results["grading"].current_version == "008_drop_legacy_cli_tables"
+    assert results["grading"].current_version == "009_add_teacher_score_locks"
     assert (
         results["question_bank"].current_version
         == "009_drop_legacy_skill_semantics"

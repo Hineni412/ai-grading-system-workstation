@@ -467,7 +467,7 @@ def _explicit_option_labels(value: str) -> set[str]:
 
 def _infer_local_question_type(
     question_text: str,
-    answer_text: str,  # noqa: ARG001
+    answer_text: str,
     number: str,  # noqa: ARG001
     *,
     section_type: str = "",
@@ -477,12 +477,12 @@ def _infer_local_question_type(
     if normalized_section_type in {
         "choice",
         "fill_blank",
-        "calculation",
         "proof",
-        "comprehensive",
     }:
         return normalized_section_type
     if len(_explicit_option_labels(value)) >= 3:
+        return "choice"
+    if _choice_answer_from_text(answer_text):
         return "choice"
     if re.search(r"_{2,}|　{1,}|（\s*）|\(\s*\)|\b填空\b", value):
         return "fill_blank"
@@ -494,6 +494,8 @@ def _infer_local_question_type(
         token in value for token in ["计算", "求", "解答", "解："]
     ):
         return "calculation"
+    if normalized_section_type in {"calculation", "comprehensive"}:
+        return normalized_section_type
     return infer_question_type_from_text(question_text)
 
 
