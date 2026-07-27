@@ -12,14 +12,24 @@ from fastapi.testclient import TestClient
 
 def _client_with_db(tmp_path):
     from backend.api.app import create_app
-    from backend.api.dependencies import get_grading_db
+    from backend.api.dependencies import (
+        get_data_root,
+        get_grading_db,
+        get_question_bank_db_path,
+    )
     from db_manager import DBManager
+    from question_bank.database.schema import initialize_database
 
-    db = DBManager(tmp_path / "grading.db")
+    data_root = tmp_path / "user_data"
+    db = DBManager(data_root / "databases" / "grading.db")
     db.initialize()
+    question_bank_db = data_root / "databases" / "question_bank.db"
+    initialize_database(question_bank_db)
 
     app = create_app()
     app.dependency_overrides[get_grading_db] = lambda: db
+    app.dependency_overrides[get_data_root] = lambda: data_root
+    app.dependency_overrides[get_question_bank_db_path] = lambda: question_bank_db
     return TestClient(app), db
 
 

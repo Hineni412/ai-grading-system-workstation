@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 
 import pytest
 
-from backend.api.routers.sessions import permanently_delete_session
+from backend.api.app import ApiError
+from backend.api.routers.sessions import (
+    get_session_deletion_impact,
+    permanently_delete_session,
+)
 from backend.api.schemas.sessions import PermanentDeleteSessionRequest
 from backend.repositories.sessions import SessionDeletionRevisionConflict
 from db_manager import DBManager
@@ -318,6 +323,85 @@ def test_preview_recovers_storage_left_by_interrupted_delete(
     assert not (
         data_root / ".session-delete-staging" / f"session_{session_id}"
     ).exists()
+
+
+def test_deletion_impact_waits_for_in_flight_permanent_delete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "user_data"
+    db = DBManager(data_root / "databases" / "grading_system.db")
+    db.db_path.parent.mkdir(parents=True)
+    db.initialize()
+    session_id, owned_files = _make_deleted_session(db, data_root)
+    question_bank_db = data_root / "databases" / "question_bank.db"
+    initialize_question_bank(question_bank_db)
+    impact = db.session_repository.session_deletion_impact(session_id)
+    real_delete = db.hard_delete_grading_session
+    delete_reached_database = threading.Event()
+    release_delete = threading.Event()
+    preview_finished = threading.Event()
+    delete_errors: list[BaseException] = []
+    preview_errors: list[BaseException] = []
+
+    def paused_delete(*args, **kwargs):
+        delete_reached_database.set()
+        if not release_delete.wait(timeout=5):
+            raise AssertionError("test did not release permanent deletion")
+        return real_delete(*args, **kwargs)
+
+    monkeypatch.setattr(db, "hard_delete_grading_session", paused_delete)
+
+    def run_delete() -> None:
+        try:
+            permanently_delete_session(
+                session_id,
+                PermanentDeleteSessionRequest(
+                    expected_revision=str(impact["revision"]),
+                    confirmation_phrase="永久删除 old session",
+                ),
+                sessions=db.session_repository,
+                db=db,
+                data_root=data_root,
+                question_bank_db_path=question_bank_db,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            delete_errors.append(exc)
+
+    def run_preview() -> None:
+        try:
+            get_session_deletion_impact(
+                session_id,
+                sessions=db.session_repository,
+                db=db,
+                data_root=data_root,
+                question_bank_db_path=question_bank_db,
+            )
+        except BaseException as exc:
+            preview_errors.append(exc)
+        finally:
+            preview_finished.set()
+
+    delete_thread = threading.Thread(target=run_delete)
+    preview_thread = threading.Thread(target=run_preview)
+    delete_thread.start()
+    assert delete_reached_database.wait(timeout=5)
+    preview_thread.start()
+    preview_finished_before_release = preview_finished.wait(timeout=0.25)
+    release_delete.set()
+    delete_thread.join(timeout=5)
+    preview_thread.join(timeout=5)
+
+    assert not delete_thread.is_alive()
+    assert not preview_thread.is_alive()
+    assert not preview_finished_before_release
+    assert delete_errors == []
+    assert all(not path.exists() for path in owned_files)
+    assert db.get_grading_session(session_id) is None
+    assert len(preview_errors) == 1
+    assert isinstance(preview_errors[0], ApiError)
+    assert preview_errors[0].status_code == 404
+    assert preview_errors[0].code == "session_not_found"
 
 
 def test_success_with_pending_storage_cleanup_is_idempotently_recoverable(
