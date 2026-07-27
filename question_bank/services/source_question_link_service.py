@@ -270,10 +270,14 @@ class SourceQuestionLinkService:
                         and existing_owner is not None
                         and existing_owner != int(sync_job_id)
                     ):
-                        self.discard_automatic_links_for_interrupted_syncs(
-                            [(grading_session_id, existing_owner)]
-                        )
-                        existing = None
+                        if existing_owner > int(sync_job_id):
+                            confirmed += 1
+                            continue
+                        else:
+                            self.discard_automatic_links_for_interrupted_syncs(
+                                [(grading_session_id, existing_owner)]
+                            )
+                            existing = None
                     else:
                         confirmed += 1
                         continue

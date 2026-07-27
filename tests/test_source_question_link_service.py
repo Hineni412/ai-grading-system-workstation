@@ -189,6 +189,20 @@ def test_new_sync_replaces_stale_automatic_link_and_does_not_restore_it_on_rollb
     assert links[0]["evidence"]["sync_job_id"] == 42
     assert second["confirmed"] == 1
 
+    stale_first = link_service.confirm_imported_questions_for_session(
+        grading_session_id=18,
+        source_questions=[{"question_id": "Q17", "bank_question_id": 201}],
+        imported_bank_questions=[{"id": 201, "question_number": "17"}],
+        sync_job_id=41,
+        sync_config_revision="a" * 64,
+    )
+
+    links = link_service.list_links(18)
+    assert len(links) == 1
+    assert links[0]["bank_question_id"] == 301
+    assert links[0]["evidence"]["sync_job_id"] == 42
+    assert stale_first["_rollback_changes"] == []
+
     link_service.rollback_imported_question_links(
         grading_session_id=18,
         sync_job_id=42,

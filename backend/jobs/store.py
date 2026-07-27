@@ -75,6 +75,15 @@ class JobRecord:
     finished_at: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class _InterruptedQuestionBankSync:
+    session_id: int
+    job_id: int
+    source_sha256: str
+    config_revision: str
+    current_details_json: str
+
+
 class JobStore:
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
@@ -1190,40 +1199,14 @@ class JobStore:
     def interrupted_question_bank_sync_owners(self) -> list[tuple[int, int]]:
         """Return (session_id, job_id) pairs that require cross-database cleanup."""
 
-        owners: list[tuple[int, int]] = []
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, payload_json
-                FROM jobs
-                WHERE job_type = 'question_bank_sync'
-                  AND status IN ('queued','running')
-                ORDER BY id
-                """
-            ).fetchall()
-        for row in rows:
-            try:
-                payload = json.loads(str(row["payload_json"] or "{}"))
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(payload, dict):
-                continue
-            session_id = _positive_int_or_zero(payload.get("session_id"))
-            if session_id > 0:
-                owners.append((session_id, int(row["id"])))
-        return owners
+            interrupted = self._interrupted_question_bank_syncs(conn)
+        return [(item.session_id, item.job_id) for item in interrupted]
 
     def fail_interrupted_jobs(self) -> int:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            interrupted_syncs = conn.execute(
-                """
-                SELECT id, payload_json
-                FROM jobs
-                WHERE job_type = 'question_bank_sync'
-                  AND status IN ('queued','running')
-                """
-            ).fetchall()
+            interrupted_syncs = self._interrupted_question_bank_syncs(conn)
             recovered = conn.execute(
                 """
                 UPDATE jobs
@@ -1247,64 +1230,11 @@ class JobStore:
                 """
             )
             for interrupted in interrupted_syncs:
-                try:
-                    payload = json.loads(
-                        str(interrupted["payload_json"] or "{}")
-                    )
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(payload, dict):
-                    continue
-                session_id = _positive_int_or_zero(payload.get("session_id"))
-                source_sha256 = str(
-                    payload.get("source_paper_sha256") or ""
-                ).strip().casefold()
-                config_revision = str(
-                    payload.get("config_revision") or ""
-                ).strip().casefold()
-                if (
-                    session_id <= 0
-                    or not _SHA256.fullmatch(source_sha256)
-                    or not _SHA256.fullmatch(config_revision)
-                ):
-                    continue
-                current = conn.execute(
-                    """
-                    SELECT question_bank_sync_state,
-                           question_bank_sync_details_json
-                    FROM grading_sessions
-                    WHERE id = ? AND is_deleted = 0
-                    """,
-                    (session_id,),
-                ).fetchone()
-                if current is None or str(
-                    current["question_bank_sync_state"]
-                ) != "running":
-                    continue
-                current_details_json = str(
-                    current["question_bank_sync_details_json"] or "{}"
-                )
-                try:
-                    owner = json.loads(current_details_json)
-                except json.JSONDecodeError:
-                    continue
-                if (
-                    not isinstance(owner, dict)
-                    or _positive_int_or_zero(owner.get("job_id"))
-                    != int(interrupted["id"])
-                    or str(
-                        owner.get("source_paper_sha256") or ""
-                    ).casefold()
-                    != source_sha256
-                    or str(owner.get("config_revision") or "").casefold()
-                    != config_revision
-                ):
-                    continue
                 failed_details = json.dumps(
                     {
-                        "job_id": int(interrupted["id"]),
-                        "source_paper_sha256": source_sha256,
-                        "config_revision": config_revision,
+                        "job_id": interrupted.job_id,
+                        "source_paper_sha256": interrupted.source_sha256,
+                        "config_revision": interrupted.config_revision,
                         "stage": "interrupted",
                         "reason": "process_restart",
                         "retryable": True,
@@ -1326,10 +1256,90 @@ class JobStore:
                       AND question_bank_sync_state = 'running'
                       AND question_bank_sync_details_json = ?
                     """,
-                    (failed_details, session_id, current_details_json),
+                    (
+                        failed_details,
+                        interrupted.session_id,
+                        interrupted.current_details_json,
+                    ),
                 )
             conn.commit()
             return int(recovered.rowcount) + int(cursor.rowcount)
+
+    def _interrupted_question_bank_syncs(
+        self,
+        conn: sqlite3.Connection,
+    ) -> list[_InterruptedQuestionBankSync]:
+        interrupted: list[_InterruptedQuestionBankSync] = []
+        sessions = conn.execute(
+            """
+            SELECT id, question_bank_sync_details_json
+            FROM grading_sessions
+            WHERE is_deleted = 0
+              AND question_bank_sync_state = 'running'
+            ORDER BY id
+            """
+        ).fetchall()
+        for session in sessions:
+            current_details_json = str(
+                session["question_bank_sync_details_json"] or "{}"
+            )
+            try:
+                owner = json.loads(current_details_json)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(owner, dict):
+                continue
+            job_id = _positive_int_or_zero(owner.get("job_id"))
+            source_sha256 = str(
+                owner.get("source_paper_sha256") or ""
+            ).strip().casefold()
+            config_revision = str(
+                owner.get("config_revision") or ""
+            ).strip().casefold()
+            if (
+                job_id <= 0
+                or not _SHA256.fullmatch(source_sha256)
+                or not _SHA256.fullmatch(config_revision)
+            ):
+                continue
+            job = conn.execute(
+                """
+                SELECT job_type, payload_json
+                FROM jobs
+                WHERE id = ?
+                """,
+                (job_id,),
+            ).fetchone()
+            if job is None or str(job["job_type"]) != "question_bank_sync":
+                continue
+            try:
+                payload = json.loads(str(job["payload_json"] or "{}"))
+            except json.JSONDecodeError:
+                continue
+            session_id = int(session["id"])
+            if (
+                not isinstance(payload, dict)
+                or _positive_int_or_zero(payload.get("session_id")) != session_id
+                or str(
+                    payload.get("source_paper_sha256") or ""
+                ).strip().casefold()
+                != source_sha256
+                or str(
+                    payload.get("config_revision") or ""
+                ).strip().casefold()
+                != config_revision
+            ):
+                continue
+            interrupted.append(
+                _InterruptedQuestionBankSync(
+                    session_id=session_id,
+                    job_id=job_id,
+                    source_sha256=source_sha256,
+                    config_revision=config_revision,
+                    current_details_json=current_details_json,
+                )
+            )
+        return interrupted
 
     def assert_config_session_idle(self, session_id: int) -> None:
         clean_session_id = _positive_int(session_id)
