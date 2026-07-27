@@ -98,7 +98,7 @@ runtime\python\python.exe update_tools/restore_backup.py <备份文件名>
 
 ## 系统自检
 
-启动系统后，在左侧导航栏点击“设置与运维”，可以查看：
+启动系统后，在顶部导航点击“设置与运维”，可以查看：
 - 系统环境状态
 - 数据库状态与 Schema 版本
 - API 配置状态
@@ -134,4 +134,4 @@ runtime\python\python.exe tools\export_legacy_skill_data.py --database user_data
 
 ---
 版本: 1.5.0
-更新时间: 2026-06-28
+更新时间: 2026-07-25

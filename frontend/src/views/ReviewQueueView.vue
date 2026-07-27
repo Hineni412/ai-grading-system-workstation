@@ -2,10 +2,13 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { ApiError } from '../api/errors'
 import {
   confirmReviewItems,
+  fetchReviewItems,
+  resolveReviewItem,
   type ReviewConfirmInput,
-  type ReviewItem,
+  type ReviewItemLike,
 } from '../api/review'
 import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
 import StatePanel from '../components/design-system/StatePanel.vue'
@@ -14,12 +17,16 @@ import ReviewDeepWorkspace from '../components/review/ReviewDeepWorkspace.vue'
 import ReviewFeedbackToast from '../components/review/ReviewFeedbackToast.vue'
 import ReviewShortcutGuide from '../components/review/ReviewShortcutGuide.vue'
 import { useReviewDraftStore } from '../stores/review-drafts'
-import { useReviewQueueStore, type ReviewScope, type ReviewSort } from '../stores/review-queue'
+import {
+  useReviewQueueStore,
+  type ReviewScope,
+  type ReviewSort,
+} from '../stores/review-queue'
 import { useSessionStore } from '../stores/session'
 
 interface AnnotationRetryEntry {
   input: ReviewConfirmInput
-  item: ReviewItem
+  item: ReviewItemLike
 }
 
 const route = useRoute()
@@ -38,14 +45,15 @@ const batchScrollTop = ref(0)
 let contextGeneration = 0
 let itemGeneration = 0
 let unmounting = false
+let initialRouteSessionHandled = false
 let querySync = Promise.resolve()
 
 const hasRetainedContentError = computed(() =>
   Boolean(
-    reviewStore.errorMessage &&
-    (
-      (reviewStore.questionLoadState === 'error' && reviewStore.questions.length > 0) ||
-      (reviewStore.itemLoadState === 'error' && reviewStore.items.length > 0)
+    reviewStore.errorMessage
+    && (
+      (reviewStore.questionLoadState === 'error' && reviewStore.questions.length > 0)
+      || (reviewStore.itemLoadState === 'error' && reviewStore.items.length > 0)
     ),
   ),
 )
@@ -54,11 +62,11 @@ const initialLoading = computed(() =>
 )
 const firstLoadError = computed(() =>
   Boolean(
-    reviewStore.errorMessage &&
-    !hasRetainedContentError.value &&
-    (
-      (reviewStore.questionLoadState === 'error' && reviewStore.questions.length === 0) ||
-      (reviewStore.itemLoadState === 'error' && reviewStore.items.length === 0)
+    reviewStore.errorMessage
+    && !hasRetainedContentError.value
+    && (
+      (reviewStore.questionLoadState === 'error' && reviewStore.questions.length === 0)
+      || (reviewStore.itemLoadState === 'error' && reviewStore.items.length === 0)
     ),
   ),
 )
@@ -66,8 +74,8 @@ const noQuestions = computed(() =>
   reviewStore.questionLoadState === 'ready' && reviewStore.questions.length === 0,
 )
 const hasValidatedQuestion = computed(() =>
-  reviewStore.selectedQuestionId !== null &&
-  reviewStore.questions.some(
+  reviewStore.selectedQuestionId !== null
+  && reviewStore.questions.some(
     (question) => question.question_id === reviewStore.selectedQuestionId,
   ),
 )
@@ -75,20 +83,26 @@ const selectedQuestionIdForView = computed(() => reviewStore.selectedQuestionId 
 const deepItem = computed(() => mode.value === 'deep' ? reviewStore.currentItem : null)
 const deepItemIndex = computed(() => {
   if (!deepItem.value) return -1
-  return reviewStore.filteredItems.findIndex((entry) => entry.detail_id === deepItem.value?.detail_id)
+  return reviewStore.filteredItems.findIndex(
+    (entry) => entry.review_item_id === deepItem.value?.review_item_id,
+  )
 })
 const previousDeepItem = computed(() =>
-  deepItemIndex.value > 0 ? reviewStore.filteredItems[deepItemIndex.value - 1] ?? null : null,
+  deepItemIndex.value > 0
+    ? reviewStore.filteredItems[deepItemIndex.value - 1] ?? null
+    : null,
 )
 const nextDeepItem = computed(() =>
-  deepItemIndex.value >= 0 ? reviewStore.filteredItems[deepItemIndex.value + 1] ?? null : null,
+  deepItemIndex.value >= 0
+    ? reviewStore.filteredItems[deepItemIndex.value + 1] ?? null
+    : null,
 )
 const annotationRetryTitle = computed(() =>
   `分数已保存，${annotationRetryEntries.value.length} 份标注图需要重试`,
 )
 
 function annotationRetryKey(entry: AnnotationRetryEntry): string {
-  return `${entry.item.session_id}:${entry.item.question_id}:${entry.item.result_id}:${entry.item.detail_id}`
+  return resolveReviewItem(entry.item).review_item_id
 }
 
 function mergeAnnotationRetryEntries(entries: AnnotationRetryEntry[]): void {
@@ -103,31 +117,60 @@ function stringQuery(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
 }
 
-function detailQuery(value: unknown): number | null {
+function positiveIntegerQuery(value: unknown): number | null {
   if (typeof value !== 'string' || !/^\d+$/.test(value)) return null
-  const detailId = Number(value)
-  return Number.isSafeInteger(detailId) && detailId > 0 ? detailId : null
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null
+}
+
+function scopeQuery(value: unknown): ReviewScope {
+  return value === 'teacher_pending'
+    || value === 'ungraded'
+    || value === 'ai_review'
+    || value === 'teacher_final'
+    || value === 'all'
+    ? value
+    : 'teacher_pending'
+}
+
+function manualEntryQuery(): boolean {
+  return stringQuery(route.query.entry) === 'manual'
+}
+
+function openGradingRun(): void {
+  const sessionId = sessionStore.selectedSessionId
+  if (sessionId !== null) void router.push(`/sessions/${sessionId}/grading-run`)
 }
 
 function syncValidatedQuery(): void {
-  const query: Record<string, string> = {}
+  const query: Record<string, string> = {
+    scope: reviewStore.scope,
+  }
+  const sessionId = sessionStore.selectedSessionId
   const questionId = reviewStore.selectedQuestionId
-  const detailId = reviewStore.selectedDetailId
+  const reviewItemId = reviewStore.selectedReviewItemId
   const questionIsValid = questionId !== null && reviewStore.questions.some(
     (question) => question.question_id === questionId,
   )
 
+  if (sessionId !== null) query.session = String(sessionId)
+  if (manualEntryQuery()) query.entry = 'manual'
   if (questionIsValid && questionId !== null) query.question = questionId
   if (
-    mode.value === 'deep' &&
-    questionIsValid &&
-    detailId !== null &&
-    reviewStore.items.some(
-      (item) => item.question_id === questionId && item.detail_id === detailId,
+    mode.value === 'deep'
+    && questionIsValid
+    && reviewItemId !== null
+    && reviewStore.items.some(
+      (item) => {
+        const resolved = resolveReviewItem(item)
+        return resolved.question_id === questionId
+          && resolved.review_item_id === reviewItemId
+      },
     )
   ) {
-    query.detail = String(detailId)
+    query.item = reviewItemId
   }
+
   querySync = querySync
     .then(async () => {
       if (unmounting) return
@@ -139,7 +182,8 @@ function syncValidatedQuery(): void {
 async function loadQuestion(
   sessionId: number,
   questionId: string,
-  preferredDetailId: number | null,
+  preferredReviewItemId: string | null,
+  legacyDetailId: number | null,
   clearPreviousItems: boolean,
   expectedContextGeneration: number,
 ): Promise<void> {
@@ -148,20 +192,28 @@ async function loadQuestion(
   reviewStore.selectQuestion(questionId)
   await reviewStore.loadItems(sessionId, questionId)
   if (
-    unmounting ||
-    generation !== itemGeneration ||
-    expectedContextGeneration !== contextGeneration ||
-    sessionStore.selectedSessionId !== sessionId ||
-    reviewStore.selectedQuestionId !== questionId
+    unmounting
+    || generation !== itemGeneration
+    || expectedContextGeneration !== contextGeneration
+    || sessionStore.selectedSessionId !== sessionId
+    || reviewStore.selectedQuestionId !== questionId
   ) return
 
-  if (
-    preferredDetailId !== null &&
-    reviewStore.items.some((entry) => entry.detail_id === preferredDetailId)
-  ) {
-    reviewStore.selectDetail(preferredDetailId)
+  const requestedItem = preferredReviewItemId === null
+    ? null
+    : reviewStore.items
+      .map(resolveReviewItem)
+      .find((entry) => entry.review_item_id === preferredReviewItemId) ?? null
+  const legacyItem = requestedItem === null && legacyDetailId !== null
+    ? reviewStore.items
+      .map(resolveReviewItem)
+      .find((entry) => entry.detail_id === legacyDetailId) ?? null
+    : null
+  const resolvedItem = requestedItem ?? legacyItem
+  if (resolvedItem !== null) {
+    reviewStore.selectItem(resolvedItem.review_item_id)
     mode.value = 'deep'
-  } else if (preferredDetailId !== null) {
+  } else if (preferredReviewItemId !== null || legacyDetailId !== null) {
     mode.value = 'batch'
   }
   syncValidatedQuery()
@@ -169,11 +221,14 @@ async function loadQuestion(
 
 async function loadSession(sessionId: number | null): Promise<void> {
   const preferredQuestionId = stringQuery(route.query.question)
-  const preferredDetailId = detailQuery(route.query.detail)
+  const preferredReviewItemId = stringQuery(route.query.item)
+  const legacyDetailId = positiveIntegerQuery(route.query.detail)
+  const initialScope = scopeQuery(route.query.scope)
   const generation = ++contextGeneration
   itemGeneration += 1
-  reviewStore.reset()
-  mode.value = preferredDetailId === null ? 'batch' : 'deep'
+  reviewStore.reset(initialScope)
+  mode.value =
+    preferredReviewItemId === null && legacyDetailId === null ? 'batch' : 'deep'
 
   if (sessionId === null || sessionId <= 0) {
     syncValidatedQuery()
@@ -182,9 +237,9 @@ async function loadSession(sessionId: number | null): Promise<void> {
 
   await reviewStore.loadQuestions(sessionId)
   if (
-    unmounting ||
-    generation !== contextGeneration ||
-    sessionStore.selectedSessionId !== sessionId
+    unmounting
+    || generation !== contextGeneration
+    || sessionStore.selectedSessionId !== sessionId
   ) return
 
   const questionId = reviewStore.questions.some(
@@ -198,95 +253,154 @@ async function loadSession(sessionId: number | null): Promise<void> {
     return
   }
 
-  await loadQuestion(sessionId, questionId, preferredDetailId, false, generation)
+  await loadQuestion(
+    sessionId,
+    questionId,
+    preferredReviewItemId,
+    legacyDetailId,
+    false,
+    generation,
+  )
 }
 
 async function selectQuestion(questionId: string): Promise<void> {
   const sessionId = sessionStore.selectedSessionId
   if (
-    sessionId === null ||
-    questionId === reviewStore.selectedQuestionId ||
-    !reviewStore.questions.some((question) => question.question_id === questionId)
+    sessionId === null
+    || questionId === reviewStore.selectedQuestionId
+    || !reviewStore.questions.some((question) => question.question_id === questionId)
   ) return
   mode.value = 'batch'
-  await loadQuestion(sessionId, questionId, null, true, contextGeneration)
+  await loadQuestion(
+    sessionId,
+    questionId,
+    null,
+    null,
+    true,
+    contextGeneration,
+  )
 }
 
 async function updateScope(scope: ReviewScope): Promise<void> {
   if (scope === reviewStore.scope) return
   const previousScope = reviewStore.scope
+  const previousQuestionId = reviewStore.selectedQuestionId
+  const sessionId = sessionStore.selectedSessionId
   reviewStore.setScope(scope)
-  const sessionId = sessionStore.selectedSessionId
-  const questionId = reviewStore.selectedQuestionId
-  if (sessionId === null || questionId === null) return
-  await loadQuestion(sessionId, questionId, null, false, contextGeneration)
-  if (
-    reviewStore.scope === scope &&
-    reviewStore.itemLoadState === 'error' &&
-    sessionStore.selectedSessionId === sessionId &&
-    reviewStore.selectedQuestionId === questionId
-  ) {
-    reviewStore.setScope(previousScope)
-  }
-}
-
-async function retry(): Promise<void> {
-  const sessionId = sessionStore.selectedSessionId
-  if (sessionId === null) return
-
-  const questionId = reviewStore.selectedQuestionId
-  if (reviewStore.itemLoadState === 'error' && questionId !== null) {
-    await loadQuestion(
-      sessionId,
-      questionId,
-      reviewStore.selectedDetailId,
-      false,
-      contextGeneration,
-    )
+  mode.value = 'batch'
+  if (sessionId === null) {
+    syncValidatedQuery()
     return
   }
 
   const generation = contextGeneration
   await reviewStore.loadQuestions(sessionId)
   if (
-    unmounting ||
-    generation !== contextGeneration ||
-    sessionStore.selectedSessionId !== sessionId
+    unmounting
+    || generation !== contextGeneration
+    || sessionStore.selectedSessionId !== sessionId
   ) return
+  if (reviewStore.questionLoadState === 'error') {
+    reviewStore.setScope(previousScope)
+    return
+  }
 
-  const nextQuestionId = reviewStore.questions.some(
-    (question) => question.question_id === questionId,
+  const questionId = reviewStore.questions.some(
+    (question) => question.question_id === previousQuestionId,
   )
-    ? questionId
+    ? previousQuestionId
     : (reviewStore.questions[0]?.question_id ?? null)
-  if (nextQuestionId === null) {
+  if (questionId === null) {
+    reviewStore.replaceItems([])
+    reviewStore.selectQuestion(null)
     syncValidatedQuery()
     return
   }
-  if (reviewStore.items.length === 0 || nextQuestionId !== questionId) {
-    await loadQuestion(sessionId, nextQuestionId, null, true, generation)
-  } else {
+  await loadQuestion(sessionId, questionId, null, null, false, generation)
+  if (reviewStore.itemLoadState === 'error') {
+    reviewStore.setScope(previousScope)
+    await reviewStore.loadQuestions(sessionId)
+    feedbackTone.value = 'warning'
+    feedback.value = '显示范围切换失败，已恢复原来的评分范围。'
     syncValidatedQuery()
   }
 }
 
-function nextPendingQuestion(questionId: string): string | null {
-  const currentIndex = reviewStore.questions.findIndex(
-    (question) => question.question_id === questionId,
+async function refreshServerState(
+  sessionId: number,
+  submittedQuestionId: string,
+  preferredReviewItemId: string | null,
+): Promise<void> {
+  const generation = contextGeneration
+  await reviewStore.loadQuestions(sessionId)
+  if (
+    unmounting
+    || generation !== contextGeneration
+    || sessionStore.selectedSessionId !== sessionId
+  ) return
+
+  const questionId = reviewStore.questions.some(
+    (question) => question.question_id === submittedQuestionId,
   )
-  const ordered = [
-    ...reviewStore.questions.slice(currentIndex + 1),
-    ...reviewStore.questions.slice(0, Math.max(0, currentIndex)),
-  ]
-  return ordered.find((question) => question.needs_review_count > 0)?.question_id ?? null
+    ? submittedQuestionId
+    : (reviewStore.questions[0]?.question_id ?? null)
+  if (questionId === null) {
+    reviewStore.replaceItems([])
+    reviewStore.selectQuestion(null)
+    syncValidatedQuery()
+    return
+  }
+  await loadQuestion(
+    sessionId,
+    questionId,
+    questionId === submittedQuestionId ? preferredReviewItemId : null,
+    null,
+    false,
+    generation,
+  )
+}
+
+async function retry(): Promise<void> {
+  const sessionId = sessionStore.selectedSessionId
+  if (sessionId === null) return
+  await refreshServerState(
+    sessionId,
+    reviewStore.selectedQuestionId ?? '',
+    reviewStore.selectedReviewItemId,
+  )
+}
+
+function retryEntriesFromResponse(
+  response: Awaited<ReturnType<typeof confirmReviewItems>>,
+  inputs: ReviewConfirmInput[],
+  items: ReviewItemLike[],
+): AnnotationRetryEntry[] {
+  const retryResultIds = new Set(
+    response.annotation_outcomes
+      .filter((outcome) => outcome.status === 'retry_required')
+      .map((outcome) => outcome.result_id),
+  )
+  return inputs.flatMap((input, index) => {
+    const item = items[index]
+    if (
+      item === undefined
+      || item.result_id === null
+      || !retryResultIds.has(item.result_id)
+    ) return []
+    return [{ input, item }]
+  })
 }
 
 async function confirmBatch(
   inputs: ReviewConfirmInput[],
   draftKeys: string[],
-  submittedItems: ReviewItem[],
+  submittedItems: ReviewItemLike[],
 ): Promise<void> {
-  if (batchSubmitting.value || inputs.length === 0 || submittedItems.length !== inputs.length) return
+  if (
+    batchSubmitting.value
+    || inputs.length === 0
+    || submittedItems.length !== inputs.length
+  ) return
   const sessionId = submittedItems[0]?.session_id
   const questionId = submittedItems[0]?.question_id
   if (!sessionId || !questionId) return
@@ -296,57 +410,40 @@ async function confirmBatch(
   feedback.value = ''
   try {
     const response = await confirmReviewItems(sessionId, questionId, inputs)
-    const retryResultIds = new Set(
-      response.annotation_outcomes
-        .filter((outcome) => outcome.status === 'retry_required')
-        .map((outcome) => outcome.result_id),
+    const nextRetryEntries = retryEntriesFromResponse(
+      response,
+      inputs,
+      submittedItems,
     )
-    const nextRetryEntries = inputs.flatMap((input, index) => {
-      const item = submittedItems[index]
-      return item && retryResultIds.has(item.result_id) ? [{ input, item }] : []
-    })
     draftStore.markConfirmedMany(draftKeys)
-
-    const stillOnSubmittedContext =
-      !unmounting &&
-      contextGeneration === submittedContextGeneration &&
-      sessionStore.selectedSessionId === sessionId &&
-      reviewStore.selectedQuestionId === questionId
-    if (!stillOnSubmittedContext) {
-      mergeAnnotationRetryEntries(nextRetryEntries)
-      feedbackTone.value = nextRetryEntries.length > 0 ? 'warning' : 'success'
-      feedback.value = nextRetryEntries.length > 0
-        ? '先前考试的本批分数已保存；部分标注图需要显式重试。当前考试未被旧响应更改。'
-        : '先前考试的本批分数已确认；当前考试未被旧响应更改。'
-      return
-    }
-
-    reviewStore.markItemsConfirmed(inputs.map((input, index) => ({
-      identity: submittedItems[index]!,
-      scoreAwarded: input.score_awarded,
-      deductionReason: input.deduction_reason?.trim() || '人工复核已确认',
-    })))
-    reviewStore.adjustQuestionPendingCount(questionId, -inputs.length)
-    reviewStore.reconcileAfterConfirmation()
     mergeAnnotationRetryEntries(nextRetryEntries)
 
-    const currentQuestion = reviewStore.questions.find(
-      (question) => question.question_id === questionId,
-    )
-    if (currentQuestion?.needs_review_count === 0) {
-      const nextQuestionId = nextPendingQuestion(questionId)
-      if (nextQuestionId !== null) {
-        await loadQuestion(sessionId, nextQuestionId, null, true, contextGeneration)
-      }
+    const stillOnSubmittedContext =
+      !unmounting
+      && contextGeneration === submittedContextGeneration
+      && sessionStore.selectedSessionId === sessionId
+      && reviewStore.selectedQuestionId === questionId
+    if (stillOnSubmittedContext) {
+      await refreshServerState(sessionId, questionId, null)
     }
 
-    feedbackTone.value = annotationRetryEntries.value.length > 0 ? 'warning' : 'success'
-    feedback.value = annotationRetryEntries.value.length > 0
-      ? '本批分数已保存；部分标注图需要单独重试。'
-      : `本批 ${inputs.length} 份评分已确认。`
-  } catch {
+    const refreshFailed = stillOnSubmittedContext
+      && (
+        reviewStore.questionLoadState === 'error'
+        || reviewStore.itemLoadState === 'error'
+      )
+    feedbackTone.value =
+      nextRetryEntries.length > 0 || refreshFailed ? 'warning' : 'success'
+    feedback.value = refreshFailed
+      ? `本批 ${inputs.length} 份评分已保存，但页面刷新失败；可安全重新加载。`
+      : nextRetryEntries.length > 0
+        ? '本批分数已保存；部分标注图需要单独重试。'
+        : `本批 ${inputs.length} 份评分已确认。`
+  } catch (error) {
     feedbackTone.value = 'error'
-    feedback.value = '确认失败，整批草稿已保留。请检查网络后重试。'
+    feedback.value = error instanceof ApiError && error.kind === 'conflict'
+      ? '本批中有答卷已被更新，整批草稿仍保留。请重新加载后核对再确认。'
+      : '确认失败，整批草稿已保留。请检查网络后重试。'
   } finally {
     batchSubmitting.value = false
   }
@@ -355,32 +452,70 @@ async function confirmBatch(
 async function retryAnnotations(): Promise<void> {
   if (batchSubmitting.value || annotationRetryEntries.value.length === 0) return
   const entries = [...annotationRetryEntries.value]
-  const snapshotByKey = new Map(entries.map((entry) => [annotationRetryKey(entry), entry]))
+  const snapshotByKey = new Map(
+    entries.map((entry) => [annotationRetryKey(entry), entry]),
+  )
   batchSubmitting.value = true
   let hadRequestFailure = false
   const remainingKeys = new Set<string>()
+
   try {
     const groups = new Map<string, AnnotationRetryEntry[]>()
     for (const entry of entries) {
       const key = `${entry.item.session_id}:${entry.item.question_id}`
       groups.set(key, [...(groups.get(key) ?? []), entry])
     }
+
     for (const group of groups.values()) {
       const first = group[0]!
       try {
+        const currentItems = await fetchReviewItems(
+          first.item.session_id,
+          first.item.question_id,
+          { scope: 'all' },
+        )
+        const currentById = new Map(
+          currentItems.map(resolveReviewItem).map(
+            (item) => [item.review_item_id, item],
+          ),
+        )
+        const refreshedEntries = group.flatMap((entry) => {
+          const current = currentById.get(annotationRetryKey(entry))
+          if (!current) {
+            remainingKeys.add(annotationRetryKey(entry))
+            hadRequestFailure = true
+            return []
+          }
+          return [{
+            item: current,
+            input: {
+              ...entry.input,
+              review_item_id: current.review_item_id,
+              expected_revision: current.revision,
+              student_id: current.student_id,
+              result_id: current.result_id,
+              detail_id: current.detail_id,
+            },
+          }]
+        })
+        if (refreshedEntries.length === 0) continue
+
         const response = await confirmReviewItems(
           first.item.session_id,
           first.item.question_id,
-          group.map((entry) => entry.input),
+          refreshedEntries.map((entry) => entry.input),
         )
         const retryResultIds = new Set(
           response.annotation_outcomes
             .filter((outcome) => outcome.status === 'retry_required')
             .map((outcome) => outcome.result_id),
         )
-        for (const entry of group) {
-          if (retryResultIds.has(entry.item.result_id)) {
-            remainingKeys.add(annotationRetryKey(entry))
+        for (const entry of refreshedEntries) {
+          if (
+            entry.item.result_id !== null
+            && retryResultIds.has(entry.item.result_id)
+          ) {
+            remainingKeys.add(entry.item.review_item_id)
           }
         }
       } catch {
@@ -388,13 +523,15 @@ async function retryAnnotations(): Promise<void> {
         for (const entry of group) remainingKeys.add(annotationRetryKey(entry))
       }
     }
+
     annotationRetryEntries.value = annotationRetryEntries.value.filter((entry) => {
       const key = annotationRetryKey(entry)
       const snapshotEntry = snapshotByKey.get(key)
       return snapshotEntry !== entry || remainingKeys.has(key)
     })
     const remainingCount = annotationRetryEntries.value.length
-    feedbackTone.value = hadRequestFailure ? 'error' : remainingCount > 0 ? 'warning' : 'success'
+    feedbackTone.value =
+      hadRequestFailure ? 'error' : remainingCount > 0 ? 'warning' : 'success'
     feedback.value = hadRequestFailure
       ? '部分标注图重试失败；分数仍已保存，可以稍后再次重试。'
       : remainingCount > 0
@@ -405,41 +542,48 @@ async function retryAnnotations(): Promise<void> {
   }
 }
 
-async function openDetail(detailId: number): Promise<void> {
+async function openItem(reviewItemId: string): Promise<void> {
   const scrollingElement = reviewPage.value?.parentElement
   batchScrollTop.value = scrollingElement?.scrollTop ?? 0
-  reviewStore.selectDetail(detailId)
+  reviewStore.selectItem(reviewItemId)
   mode.value = 'deep'
-  const questionId = reviewStore.selectedQuestionId
-  if (questionId !== null) {
-    querySync = querySync.then(async () => {
-      await router.replace({ query: { question: questionId, detail: String(detailId) } })
-    })
-  }
+  syncValidatedQuery()
   await querySync
 }
 
 async function closeDeepReview(): Promise<void> {
   mode.value = 'batch'
-  const questionId = reviewStore.selectedQuestionId
-  querySync = querySync.then(async () => {
-    await router.replace({ query: questionId === null ? {} : { question: questionId } })
-  })
+  syncValidatedQuery()
   await querySync
   await nextTick()
   const scrollingElement = reviewPage.value?.parentElement
   if (scrollingElement) scrollingElement.scrollTop = batchScrollTop.value
 }
 
-function handleDeepConfirmed(payload: {
-  detailId: number
+async function handleDeepConfirmed(payload: {
+  reviewItemId: string
   annotationRetry: boolean
-}): void {
+}): Promise<void> {
+  const sessionId = sessionStore.selectedSessionId
+  const questionId = reviewStore.selectedQuestionId
+  const selectedReviewItemId = reviewStore.selectedReviewItemId
+  const selectionChanged =
+    selectedReviewItemId !== null
+    && selectedReviewItemId !== payload.reviewItemId
+  if (sessionId !== null && questionId !== null) {
+    await refreshServerState(
+      sessionId,
+      questionId,
+      selectionChanged ? selectedReviewItemId : payload.reviewItemId,
+    )
+  }
   feedbackTone.value = payload.annotationRetry ? 'warning' : 'success'
   feedback.value = payload.annotationRetry
     ? '此份分数已保存；标注图需要显式重试。'
-    : '此份评分已确认。'
-  void closeDeepReview()
+    : reviewStore.itemLoadState === 'error'
+      ? '此份评分已确认，但页面刷新失败；可安全重新加载。'
+      : '此份评分已确认。'
+  if (!selectionChanged) await closeDeepReview()
 }
 
 function handleDeepAnnotationRetry(entry: AnnotationRetryEntry): void {
@@ -457,36 +601,42 @@ function isShortcutProtectedTarget(target: EventTarget | null): boolean {
   return editableRoot.getAttribute('contenteditable')?.trim().toLocaleLowerCase() !== 'false'
 }
 
+function focusSelectedBatchScore(): void {
+  const reviewItemId = reviewStore.selectedReviewItemId
+  if (reviewItemId === null) return
+  const card = [...(reviewPage.value?.querySelectorAll<HTMLElement>(
+    '[data-review-item-id]',
+  ) ?? [])].find((entry) => entry.dataset.reviewItemId === reviewItemId)
+  card?.querySelector<HTMLInputElement>('input:not(:disabled)')?.focus()
+}
+
 function onKeydown(event: KeyboardEvent): void {
   if (
-    !event.defaultPrevented &&
-    !event.altKey &&
-    !event.ctrlKey &&
-    !event.metaKey &&
-    !event.shiftKey &&
-    !isShortcutProtectedTarget(event.target) &&
-    (event.key.toLocaleLowerCase() === 'j' || event.key.toLocaleLowerCase() === 'k')
+    !event.defaultPrevented
+    && !event.altKey
+    && !event.ctrlKey
+    && !event.metaKey
+    && !event.shiftKey
+    && !isShortcutProtectedTarget(event.target)
+    && (
+      event.key.toLocaleLowerCase() === 'j'
+      || event.key.toLocaleLowerCase() === 'k'
+    )
   ) {
     reviewStore.moveSelection(event.key.toLocaleLowerCase() === 'j' ? 1 : -1)
     event.preventDefault()
-    if (mode.value === 'batch') {
-      void nextTick(() => reviewPage.value
-        ?.querySelector<HTMLInputElement>(
-          `[data-detail-id="${reviewStore.selectedDetailId}"] input:not(:disabled)`,
-        )
-        ?.focus())
-    }
+    if (mode.value === 'batch') void nextTick(focusSelectedBatchScore)
     return
   }
   if (
-    event.defaultPrevented ||
-    event.altKey ||
-    event.ctrlKey ||
-    event.metaKey ||
-    event.shiftKey ||
-    event.key !== '/' ||
-    mode.value !== 'batch' ||
-    isShortcutProtectedTarget(event.target)
+    event.defaultPrevented
+    || event.altKey
+    || event.ctrlKey
+    || event.metaKey
+    || event.shiftKey
+    || event.key !== '/'
+    || mode.value !== 'batch'
+    || isShortcutProtectedTarget(event.target)
   ) return
   reviewPage.value?.querySelector<HTMLInputElement>('#review-search')?.focus()
   event.preventDefault()
@@ -499,6 +649,18 @@ const stopSessionWatch = watch(
   ],
   ([sessionId, loadState]) => {
     if (loadState !== 'ready') return
+    if (!initialRouteSessionHandled) {
+      initialRouteSessionHandled = true
+      const requestedSessionId = positiveIntegerQuery(route.query.session)
+      if (
+        requestedSessionId !== null
+        && requestedSessionId !== sessionId
+        && sessionStore.sessions.some((session) => session.id === requestedSessionId)
+      ) {
+        sessionStore.selectSession(requestedSessionId)
+        return
+      }
+    }
     void loadSession(sessionId)
   },
   { immediate: true },
@@ -507,7 +669,8 @@ const stopSessionWatch = watch(
 const stopSelectionWatch = watch(
   [
     () => reviewStore.selectedQuestionId,
-    () => reviewStore.selectedDetailId,
+    () => reviewStore.selectedReviewItemId,
+    () => reviewStore.scope,
     () => mode.value,
   ],
   syncValidatedQuery,
@@ -531,8 +694,19 @@ onBeforeUnmount(() => {
 <template>
   <section ref="reviewPage" class="review-page" aria-labelledby="review-page-title">
     <header class="review-page__header">
-      <h1 id="review-page-title" tabindex="-1">评分复核</h1>
-      <p>按题号批量比较答卷；遇到疑难记录时再进入单份深查。</p>
+      <div class="review-page__header-copy">
+        <h1 id="review-page-title" tabindex="-1">人工评分工作台</h1>
+        <p>按题集中查看全部考生答题区域；既可直接人工评分，也可复核 AI 结果。</p>
+      </div>
+      <button
+        type="button"
+        class="review-page__run-switch"
+        :disabled="sessionStore.selectedSessionId === null"
+        :title="sessionStore.selectedSessionId === null ? '请先选择考试' : '进入当前考试的批改执行'"
+        @click="openGradingRun"
+      >
+        批改执行
+      </button>
     </header>
 
     <ReviewShortcutGuide v-if="mode === 'batch'" />
@@ -540,7 +714,7 @@ onBeforeUnmount(() => {
     <FeedbackBanner
       v-if="hasRetainedContentError"
       tone="warning"
-      title="复核内容刷新失败"
+      title="评分内容刷新失败"
       :description="reviewStore.errorMessage"
       action-label="重新加载"
       @action="retry"
@@ -559,18 +733,18 @@ onBeforeUnmount(() => {
       v-if="sessionStore.selectedSessionId === null"
       kind="empty"
       title="请先选择考试"
-      description="从顶部考试选择器选择一个考试后，可以按题号批量复核。"
+      description="从顶部考试选择器选择一个考试后，可以按题集中评分。"
     />
     <StatePanel
       v-else-if="initialLoading"
       kind="loading"
-      title="正在读取复核题目"
-      description="正在校验题号和待复核数量。"
+      title="正在读取评分题目"
+      description="正在核对题号、未批数量和教师确认数量。"
     />
     <StatePanel
       v-else-if="firstLoadError"
       kind="error"
-      title="复核内容加载失败"
+      title="评分内容加载失败"
       :description="reviewStore.errorMessage"
       retry-label="重新加载"
       @retry="retry"
@@ -578,8 +752,8 @@ onBeforeUnmount(() => {
     <StatePanel
       v-else-if="noQuestions"
       kind="empty"
-      title="当前考试没有复核题目"
-      description="该考试暂时没有可浏览的复核记录。"
+      title="当前范围没有评分题目"
+      description="可以切换显示范围，查看未批、AI 待复核或教师已确认记录。"
     />
 
     <ReviewDeepWorkspace
@@ -610,7 +784,7 @@ onBeforeUnmount(() => {
       @update-scope="updateScope"
       @update-sort="(value: ReviewSort) => reviewStore.setSort(value)"
       @update-page="reviewStore.setPage"
-      @open-detail="openDetail"
+      @open-item="openItem"
       @confirm-batch="confirmBatch"
     />
 

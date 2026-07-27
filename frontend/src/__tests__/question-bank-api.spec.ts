@@ -33,6 +33,13 @@ const question = {
     { tag_type: 'knowledge_point', tag_value: '二次函数', confidence: 0.92 },
   ],
   asset_urls: ['/api/question-bank/questions/17/assets/0'],
+  rich_content: {
+    available: true,
+    question_block_count: 0,
+    answer_block_count: 0,
+    question_blocks: [],
+    answer_blocks: [],
+  },
 }
 
 afterEach(() => vi.restoreAllMocks())
@@ -66,11 +73,17 @@ describe('question bank API contracts', () => {
         question_block_count: 1,
         answer_block_count: 1,
         question_blocks: [{
+          kind: 'paragraph',
+          segments: [],
+          rows: [],
           text: '题干公式块',
           asset_indexes: [0],
           asset_urls: ['/api/question-bank/questions/17/assets/0'],
         }],
         answer_blocks: [{
+          kind: 'paragraph',
+          segments: [],
+          rows: [],
           text: '答案公式块',
           asset_indexes: [],
           asset_urls: [],
@@ -152,6 +165,8 @@ describe('question bank API contracts', () => {
       updated_at: '2026-07-18T09:00:00Z',
       question_count: 20,
       tagged_question_count: 12,
+      tagged_any_question_count: 15,
+      source_type: 'docx',
     }
 
     expect(decodeQuestionPaperListResponse({ items: [paper], total: 1 })).toEqual({

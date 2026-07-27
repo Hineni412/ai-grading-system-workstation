@@ -296,23 +296,32 @@ def _questions_needing_complete_tags(
     placeholders = ",".join("?" for _ in question_ids)
     with connect(db_path) as conn:
         tag_types_by_question: dict[int, set[str]] = {}
+        tag_values_by_question: dict[int, list[str]] = {}
         for row in conn.execute(
             f"""
-            SELECT question_id, tag_type FROM question_tags
+            SELECT question_id, tag_type, tag_value FROM question_tags
             WHERE question_id IN ({placeholders})
               AND COALESCE(tag_value, '') <> ''
+            ORDER BY question_id ASC, id ASC
             """,
             question_ids,
         ).fetchall():
-            tag_types_by_question.setdefault(int(row["question_id"]), set()).add(
-                str(row["tag_type"])
-            )
+            question_id = int(row["question_id"])
+            tag_types_by_question.setdefault(question_id, set()).add(str(row["tag_type"]))
+            value = str(row["tag_value"] or "").strip()
+            values = tag_values_by_question.setdefault(question_id, [])
+            if value and value not in values:
+                values.append(value)
     required = set(CORE_ANALYSIS_TAG_TYPES)
-    return [
-        item
-        for item in questions
-        if not required.issubset(tag_types_by_question.get(int(item["id"]), set()))
-    ]
+    pending: list[dict[str, Any]] = []
+    for item in questions:
+        question_id = int(item["id"])
+        if required.issubset(tag_types_by_question.get(question_id, set())):
+            continue
+        candidate = dict(item)
+        candidate["_existing_tag_values"] = tag_values_by_question.get(question_id, [])
+        pending.append(candidate)
+    return pending
 
 
 def _tagging_context(question: dict[str, Any]) -> TaggingContext:
@@ -325,6 +334,8 @@ def _tagging_context(question: dict[str, Any]) -> TaggingContext:
         semester=str(question.get("semester") or ""),
         exam_type=str(question.get("exam_type") or ""),
         district=str(question.get("district") or ""),
+        has_images=bool(question.get("has_images")),
+        existing_tags=list(question.get("_existing_tag_values") or []),
     )
 
 

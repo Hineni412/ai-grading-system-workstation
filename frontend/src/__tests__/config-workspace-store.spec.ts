@@ -18,7 +18,7 @@ function editor(answer: string): ConfigEditorResponse {
     rows: [{
       row_id: 'row-1', question_id: 'Q1', part_id: 'Q1', step_id: 's1',
       part_label: '第 1 题', question_type: 'calculation', core_goal: '计算', score: 5,
-      standard_answer: answer, accepted_answers: [], match_rule: 'exact', knowledge: '',
+      standard_answer: answer, accepted_answers: [], match_rule: 'exact',
       answer_only_max_score: null, require_final_answer: null, required_elements: [],
       deduction_rules: [], final_answer_rule: '',
     }],

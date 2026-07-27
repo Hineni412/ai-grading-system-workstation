@@ -112,6 +112,19 @@ def _docx_bytes(*, question: str = "1. Solve x squared.", with_image: bool = Fal
     return output.getvalue()
 
 
+def _docx_with_multiline_proof_answer() -> bytes:
+    document = Document()
+    document.add_paragraph("1. 证明：若 a=b，则 a+c=b+c。")
+    document.add_paragraph("参考答案")
+    document.add_paragraph("1. 【答案】结论成立")
+    document.add_paragraph("【解答】结论成立")
+    document.add_paragraph("由 a=b，等式两边同时加 c，得到 a+c=b+c。")
+    document.add_paragraph("所以原命题得证。")
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
 def _pdf_bytes(*, question: bool = True, answer: bool = True, pages: int = 1) -> bytes:
     document = fitz.open()
     for index in range(pages):
@@ -209,6 +222,173 @@ def test_docx_rich_text_and_image_are_kept_in_controlled_source_dir(tmp_path: Pa
     )
     assert content == _png_bytes()
     assert media_type == "image/png"
+
+
+def test_docx_public_preview_keeps_short_answer_and_complete_solution(
+    tmp_path: Path,
+) -> None:
+    record = asyncio.run(
+        service(tmp_path).stage_and_parse(
+            session_id=7,
+            filename="proof.docx",
+            chunks=chunks(_docx_with_multiline_proof_answer()),
+        )
+    )
+
+    question = record.public_snapshot()["questions"][0]
+    complete_answer = "\n".join(
+        str(block.get("text") or "")
+        for block in question["rich_content"]["answer_blocks"]
+    )
+    assert question["answer_preview"] == "结论成立"
+    assert complete_answer.splitlines().count("结论成立") == 1
+    assert "由 a=b，等式两边同时加 c" in complete_answer
+    assert "所以原命题得证" in complete_answer
+
+
+def test_pdf_public_preview_and_generation_keep_ocr_text_internal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rubric_auto_cropper
+    import backend.config_workspace.sources as sources_module
+
+    monkeypatch.setattr(
+        sources_module,
+        "extract_pdf_text",
+        lambda _payload: "CORRUPTED OCR POSITIONING TEXT",
+    )
+    monkeypatch.setattr(
+        sources_module,
+        "parse_plain_question_blocks",
+        lambda _text: [
+            {
+                "question_id": "Q1",
+                "question_type": "proof",
+                "text": "CORRUPTED QUESTION OCR",
+                "question_text": "CORRUPTED QUESTION OCR",
+                "answer_text": "CORRUPTED ANSWER OCR",
+                "analysis": "CORRUPTED ANALYSIS OCR",
+                "canonical_answer": "CORRUPTED CANONICAL OCR",
+                "local_answer_trusted": True,
+                "needs_review": False,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        rubric_auto_cropper,
+        "extract_pdf_question_images",
+        lambda _payload, _blocks: {
+            "Q1": {"question": _png_bytes(), "answer": _alternate_png_bytes()}
+        },
+    )
+    monkeypatch.setattr(
+        rubric_auto_cropper,
+        "extract_pdf_images",
+        lambda _payload: [_png_bytes()],
+    )
+
+    source_service = service(tmp_path)
+    record = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="paper.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+
+    question = record.public_snapshot()["questions"][0]
+    public_text = "\n".join(
+        str(block.get("text") or "")
+        for key in ("question_blocks", "answer_blocks")
+        for block in question["rich_content"][key]
+    )
+    prepared = source_service.apply_teacher_decisions(record, [])
+
+    assert question["question_preview"] == ""
+    assert question["answer_preview"] == ""
+    assert "CORRUPTED" not in public_text
+    assert question["rich_content"]["question_blocks"][0]["asset_urls"]
+    assert question["rich_content"]["answer_blocks"][0]["asset_urls"]
+    assert record.private_blocks[0]["question_text"] == "CORRUPTED QUESTION OCR"
+    assert prepared.confirmed_blocks[0]["semantic_source"] == "images"
+    assert prepared.confirmed_blocks[0]["question_text"] == "CORRUPTED QUESTION OCR"
+    assert prepared.question_images["Q1"]["question"]
+    assert prepared.question_images["Q1"]["answer"]
+
+
+def test_pdf_missing_crop_stays_image_semantic_without_text_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rubric_auto_cropper
+    import backend.config_workspace.sources as sources_module
+
+    monkeypatch.setattr(sources_module, "extract_pdf_text", lambda _payload: "1. OCR only")
+    monkeypatch.setattr(
+        sources_module,
+        "parse_plain_question_blocks",
+        lambda _text: [
+            {
+                "question_id": "Q1",
+                "question_type": "choice",
+                "text": "OCR QUESTION MUST NOT BECOME A FALLBACK",
+                "answer_text": "OCR ANSWER MUST NOT BECOME A FALLBACK",
+                "local_answer_trusted": True,
+                "needs_review": False,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        rubric_auto_cropper,
+        "extract_pdf_question_images",
+        lambda _payload, _blocks: {},
+    )
+    monkeypatch.setattr(
+        rubric_auto_cropper,
+        "extract_pdf_images",
+        lambda _payload: [_png_bytes()],
+    )
+
+    source_service = service(tmp_path)
+    record = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="missing-crop.pdf",
+            chunks=chunks(_pdf_bytes()),
+        )
+    )
+
+    question = record.public_snapshot()["questions"][0]
+    prepared = source_service.apply_teacher_decisions(record, [])
+
+    assert question["question_preview"] == ""
+    assert question["answer_preview"] == ""
+    assert question["answer_present"] is False
+    assert question["rich_content"]["question_blocks"] == []
+    assert question["rich_content"]["answer_blocks"] == []
+    assert prepared.confirmed_blocks[0]["semantic_source"] == "images"
+    assert prepared.question_images == {}
+
+
+def test_docx_public_preview_and_generation_keep_text_semantics(
+    tmp_path: Path,
+) -> None:
+    record = asyncio.run(
+        service(tmp_path).stage_and_parse(
+            session_id=7,
+            filename="proof.docx",
+            chunks=chunks(_docx_with_multiline_proof_answer()),
+        )
+    )
+
+    question = record.public_snapshot()["questions"][0]
+    prepared = service(tmp_path).apply_teacher_decisions(record, [])
+
+    assert "若 a=b" in question["question_preview"]
+    assert question["answer_preview"] == "结论成立"
+    assert prepared.confirmed_blocks[0].get("semantic_source") != "images"
+    assert "若 a=b" in prepared.confirmed_blocks[0]["question_text"]
 
 
 def test_controlled_docx_parser_does_not_use_path_scratch_writes(

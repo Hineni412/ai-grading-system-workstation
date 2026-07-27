@@ -10,6 +10,40 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+def _configure_scan_prerequisites(db, tmp_path, session_id: int) -> None:
+    from PIL import Image
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    rubric_path = config_dir / f"rubric-{session_id}.json"
+    answer_path = config_dir / f"answer-{session_id}.json"
+    rubric_path.write_text(
+        json.dumps({"total_score": 0, "questions": []}),
+        encoding="utf-8",
+    )
+    answer_path.write_text(
+        json.dumps({"questions": []}),
+        encoding="utf-8",
+    )
+    db.update_grading_session_config(
+        session_id,
+        rubric_path=str(rubric_path),
+        answer_key_path=str(answer_path),
+    )
+    session_dir = tmp_path / "templates" / f"session_{session_id}"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    front_path = session_dir / "front.png"
+    back_path = session_dir / "back.png"
+    Image.new("RGB", (16, 16), "white").save(front_path)
+    Image.new("RGB", (16, 16), "black").save(back_path)
+    db.upsert_session_template(
+        session_id,
+        str(front_path),
+        str(back_path),
+    )
+    db.mark_template_confirmed(session_id, True)
+
+
 def _jpeg(payload: bytes) -> bytes:
     return b"\xff\xd8\xff" + payload
 
@@ -32,7 +66,7 @@ def _client(tmp_path):
 
     db = DBManager(tmp_path / "grading.db")
     db.initialize()
-    manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
+    manager = JobManager(JobStore(db.db_path), max_workers=1)
     app = create_app()
     app.dependency_overrides[get_grading_db] = lambda: db
     app.dependency_overrides[get_job_manager] = lambda: manager
@@ -283,6 +317,7 @@ def test_preflight_routes_return_safe_snapshot_and_revisioned_decisions(tmp_path
 def test_scan_analysis_uses_frozen_server_batch_and_rejects_client_paths(tmp_path) -> None:
     client, db, manager = _client(tmp_path)
     session_id = db.create_grading_session("匿名模拟考", "rubric.json", "answer.json")
+    _configure_scan_prerequisites(db, tmp_path, session_id)
 
     def handler(context):
         return {
@@ -328,6 +363,7 @@ def test_scan_analysis_uses_frozen_server_batch_and_rejects_client_paths(tmp_pat
 def test_active_preflight_is_server_projected_and_blocks_new_batch(tmp_path) -> None:
     client, db, manager = _client(tmp_path)
     session_id = db.create_grading_session("预检批次隔离", "rubric.json", "answer.json")
+    _configure_scan_prerequisites(db, tmp_path, session_id)
     release = threading.Event()
 
     def blocking_handler(_context):
@@ -455,6 +491,7 @@ def test_preflight_submission_and_new_batch_share_one_session_lock(
 def test_failed_preflight_after_restart_is_projected_and_can_be_retried(tmp_path) -> None:
     client, db, manager = _client(tmp_path)
     session_id = db.create_grading_session("预检重启恢复", "rubric.json", "answer.json")
+    _configure_scan_prerequisites(db, tmp_path, session_id)
     content = _jpeg(b"front")
     try:
         client.post(

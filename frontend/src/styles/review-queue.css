@@ -6,9 +6,17 @@
 }
 
 .review-page__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
   padding: var(--space-4) var(--space-6);
   border-block-end: var(--border-width) solid var(--color-border-default);
   background: var(--color-bg-surface);
+}
+
+.review-page__header-copy {
+  min-width: 0;
 }
 
 .review-page__header h1,
@@ -26,6 +34,22 @@
   margin-block-start: var(--space-1);
   color: var(--color-text-secondary);
   font-size: var(--font-size-dense);
+}
+
+.review-page__run-switch {
+  flex: 0 0 auto;
+  min-height: var(--control-height-small);
+  border-color: var(--color-accent);
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
+  font-size: var(--font-size-dense);
+  font-weight: var(--font-weight-semibold);
+}
+
+.review-page__run-switch:hover:not(:disabled) {
+  border-color: var(--color-accent-hover);
+  background: var(--color-accent);
+  color: var(--color-bg-surface);
 }
 
 .review-shortcut-guide {
@@ -216,22 +240,33 @@
   font-size: var(--font-size-caption);
 }
 
-.review-answer-sheet__pending,
-.review-answer-sheet__confirmed {
+.review-answer-sheet__status {
   flex: none;
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-tag);
+  background: var(--color-bg-selected);
+  color: var(--color-text-secondary);
   font-size: var(--font-size-caption);
 }
 
-.review-answer-sheet__pending {
+.review-answer-sheet__status.is-ai_ready {
+  background: var(--color-ai-subtle);
+  color: var(--color-ai);
+}
+
+.review-answer-sheet__status.is-ai_review {
   background: var(--color-warning-subtle);
   color: var(--color-warning);
 }
 
-.review-answer-sheet__confirmed {
-  background: var(--color-success-subtle);
-  color: var(--color-success);
+.review-answer-sheet__status.is-teacher_final {
+  background: var(--color-teacher-subtle);
+  color: var(--color-teacher);
+}
+
+.review-answer-sheet__status.is-failed {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
 }
 
 .review-answer-sheet__risk {
@@ -407,5 +442,12 @@
 
   .review-batch-toolbar__count {
     grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 640px) {
+  .review-page__header {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

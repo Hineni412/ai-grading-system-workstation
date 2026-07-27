@@ -43,9 +43,8 @@ def client_with_db_and_manager(tmp_path):
             manager.shutdown()
 
 
-def test_session_scan_analysis_route_queues_scan_job(
+def test_session_scan_analysis_route_requires_confirmed_template(
     client_with_db_and_manager,
-    tmp_path,
 ) -> None:
     client, db, manager = client_with_db_and_manager
     session_id = db.create_grading_session("Exam A", "rubric.json", "answer.json")
@@ -55,22 +54,9 @@ def test_session_scan_analysis_route_queues_scan_job(
         json={"enhance_images": False, "ocr_workers": 3},
     )
 
-    assert response.status_code == 202
-    created = response.json()
-    assert created["job_type"] == "scan_analysis"
-    assert created["payload"] == {
-        "session_id": session_id,
-        "enhance_images": False,
-        "ocr_workers": 3,
-    }
-    assert "api_key" not in str(created["payload"]).lower()
-
-    manager.wait(created["id"], timeout=5)
-    loaded = client.get(f"/api/jobs/{created['id']}").json()
-    assert loaded["status"] == "succeeded"
-    assert loaded["result"]["summary"]["auto_matched"] == 1
-    assert "scan_analysis_path" not in loaded["result"]
-    assert str(tmp_path) not in str(loaded["result"])
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "scan_template_not_found"
+    assert manager.list() == ([], 0)
 
 
 def test_session_scan_analysis_route_requires_existing_session(client_with_db_and_manager) -> None:

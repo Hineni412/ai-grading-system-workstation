@@ -86,9 +86,16 @@ function initialize(): void {
 onMounted(initialize)
 watch(
   () => [props.images, props.manualQuestionOptions, props.automaticCandidates, props.issues,
-    props.readOnly, props.saveStatus, props.activePage],
+    props.readOnly, props.activePage],
   async () => { await nextTick(); initialize() },
   { deep: true },
+)
+watch(
+  () => [props.saveStatus, props.modelValue.revision],
+  ([status, revision]) => {
+    const output = host.value?.querySelector<HTMLElement>('[data-role="status-save"]')
+    if (output) output.textContent = `${status || '草稿'} · 修订 ${revision}`
+  },
 )
 onBeforeUnmount(() => dispose?.())
 </script>

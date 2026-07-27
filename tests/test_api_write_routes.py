@@ -12,14 +12,24 @@ from fastapi.testclient import TestClient
 
 def _client_with_db(tmp_path):
     from backend.api.app import create_app
-    from backend.api.dependencies import get_grading_db
+    from backend.api.dependencies import (
+        get_data_root,
+        get_grading_db,
+        get_question_bank_db_path,
+    )
     from db_manager import DBManager
+    from question_bank.database.schema import initialize_database
 
-    db = DBManager(tmp_path / "grading.db")
+    data_root = tmp_path / "user_data"
+    db = DBManager(data_root / "databases" / "grading.db")
     db.initialize()
+    question_bank_db = data_root / "databases" / "question_bank.db"
+    initialize_database(question_bank_db)
 
     app = create_app()
     app.dependency_overrides[get_grading_db] = lambda: db
+    app.dependency_overrides[get_data_root] = lambda: data_root
+    app.dependency_overrides[get_question_bank_db_path] = lambda: question_bank_db
     return TestClient(app), db
 
 
@@ -50,7 +60,16 @@ def test_session_write_routes_create_rename_soft_delete_and_restore(tmp_path) ->
     assert rename_response.status_code == 200
     assert rename_response.json()["name"] == "Exam B Renamed"
 
-    delete_response = client.delete(f"/api/sessions/{session_id}")
+    impact_response = client.get(f"/api/sessions/{session_id}/deletion-impact")
+    assert impact_response.status_code == 200
+    delete_response = client.request(
+        "DELETE",
+        f"/api/sessions/{session_id}",
+        json={
+            "expected_revision": impact_response.json()["revision"],
+            "confirmation_name": "Exam B Renamed",
+        },
+    )
 
     assert delete_response.status_code == 200
     assert delete_response.json()["is_deleted"] is True

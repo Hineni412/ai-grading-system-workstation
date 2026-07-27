@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import re
 from typing import Any
 from xml.etree import ElementTree
@@ -48,9 +49,27 @@ def parse_plain_question_blocks(doc_text: str) -> list[dict[str, Any]]:
             last_number = number
         parsed_questions = truncated
 
+    fallback_blocks = (
+        [] if parsed_questions else _split_doc_text_into_question_blocks(normalized_doc_text)
+    )
+    if parsed_questions:
+        question_numbers = [
+            str(int(str(getattr(item, "question_number", "") or "").strip()))
+            for item in parsed_questions
+            if str(getattr(item, "question_number", "") or "").strip().isdigit()
+        ]
+    else:
+        question_numbers = [
+            str(block.get("question_id") or "").removeprefix("Q")
+            for block in fallback_blocks
+            if str(block.get("question_id") or "").removeprefix("Q").isdigit()
+        ]
     answer_section = _local_answer_section_text(normalized_doc_text)
     answer_blocks = _local_answer_blocks(answer_section)
-    choice_answers = _extract_choice_answer_sequence(answer_section)
+    choice_answers = _extract_choice_answer_sequence(
+        answer_section,
+        question_numbers=question_numbers,
+    )
     section_hints = _question_type_hints_from_section_headings(normalized_doc_text)
 
     blocks: list[dict[str, Any]] = []
@@ -77,6 +96,13 @@ def parse_plain_question_blocks(doc_text: str) -> list[dict[str, Any]]:
                 answer_text=raw_answer or answer_blocks.get(number, ""),
                 choice_answers=choice_answers,
             )
+            local_answer_trusted = _is_local_answer_trusted(
+                qtype=qtype,
+                question_text=question_text,
+                canonical_answer=canonical,
+                answer_text=raw_answer,
+                explicitly_mapped=bool(answer_from_map),
+            )
             blocks.append(
                 {
                     "question_id": qid,
@@ -86,20 +112,12 @@ def parse_plain_question_blocks(doc_text: str) -> list[dict[str, Any]]:
                     "question_type": qtype,
                     "canonical_answer": canonical,
                     "accepted_forms": _local_accepted_forms(canonical, qtype),
-                    "local_answer_trusted": bool(answer_from_map)
-                    or any(
-                        token in raw_answer
-                        for token in ["故答案为", "故选", "答案为"]
-                    ),
-                    "needs_review": (
-                        not bool(canonical)
-                        if qtype in {"choice", "fill_blank"}
-                        else False
-                    ),
+                    "local_answer_trusted": local_answer_trusted,
+                    "needs_review": not local_answer_trusted,
                 }
             )
     else:
-        for block in _split_doc_text_into_question_blocks(normalized_doc_text):
+        for block in fallback_blocks:
             qid = str(block.get("question_id") or "")
             number = qid.removeprefix("Q")
             question_text = str(block.get("text") or "")
@@ -121,6 +139,13 @@ def parse_plain_question_blocks(doc_text: str) -> list[dict[str, Any]]:
                 answer_text=raw_answer,
                 choice_answers=choice_answers,
             )
+            local_answer_trusted = _is_local_answer_trusted(
+                qtype=qtype,
+                question_text=question_text,
+                canonical_answer=canonical,
+                answer_text=raw_answer,
+                explicitly_mapped=bool(answer_blocks.get(number)),
+            )
             block.update(
                 {
                     "question_text": question_text,
@@ -128,16 +153,8 @@ def parse_plain_question_blocks(doc_text: str) -> list[dict[str, Any]]:
                     "question_type": qtype,
                     "canonical_answer": canonical,
                     "accepted_forms": _local_accepted_forms(canonical, qtype),
-                    "local_answer_trusted": bool(raw_answer)
-                    or any(
-                        token in raw_answer
-                        for token in ["故答案为", "故选", "答案为"]
-                    ),
-                    "needs_review": (
-                        not bool(canonical)
-                        if qtype in {"choice", "fill_blank"}
-                        else False
-                    ),
+                    "local_answer_trusted": local_answer_trusted,
+                    "needs_review": not local_answer_trusted,
                 }
             )
             blocks.append(block)
@@ -168,7 +185,8 @@ def _parse_inline_answer_blocks(doc_text: str) -> list[dict[str, Any]] | None:
         return None
 
     choice_answers = _extract_choice_answer_sequence(
-        answer_section or _local_answer_section_text(text)
+        answer_section or _local_answer_section_text(text),
+        question_numbers=[str(number) for _, number in markers],
     )
     section_hints = _question_type_hints_from_section_headings(text)
     blocks: list[dict[str, Any]] = []
@@ -247,6 +265,13 @@ def _parse_inline_segment(
         answer_text=answer_raw,
         choice_answers=choice_answers,
     )
+    local_answer_trusted = _is_local_answer_trusted(
+        qtype=qtype,
+        question_text=question_text,
+        canonical_answer=canonical,
+        answer_text=answer_raw,
+        explicitly_mapped=bool(answer_raw or choice_answers.get(num_str)),
+    )
     return {
         "question_id": f"Q{number}",
         "text": question_text,
@@ -256,10 +281,8 @@ def _parse_inline_segment(
         "question_type": qtype,
         "canonical_answer": canonical,
         "accepted_forms": _local_accepted_forms(canonical, qtype),
-        "local_answer_trusted": bool(answer_raw or canonical),
-        "needs_review": (
-            not bool(canonical) if qtype in {"choice", "fill_blank"} else False
-        ),
+        "local_answer_trusted": local_answer_trusted,
+        "needs_review": not local_answer_trusted,
     }
 
 
@@ -365,8 +388,36 @@ def _local_answer_blocks(answer_section: str) -> dict[str, str]:
     return result
 
 
-def _extract_choice_answer_sequence(answer_section: str) -> dict[str, str]:
+def _choice_answer_from_text(value: str) -> str:
+    text = str(value or "")
+    match = re.search(
+        r"(?:故\s*选|选择|选\s*[:：]|答\s*案\s*(?:是|为|选)?\s*[:：]?"
+        r"|答\s*[:：]|【答案】)\s*([A-Da-d])",
+        text,
+    )
+    if match:
+        return match.group(1).upper()
+    bare = re.fullmatch(
+        r"\s*(?:\d{1,2}\s*[.．、:：)）]\s*)?([A-Da-d])\s*[。；;]?\s*",
+        text,
+    )
+    return bare.group(1).upper() if bare else ""
+
+
+def _extract_choice_answer_sequence(
+    answer_section: str,
+    *,
+    question_numbers: list[str] | None = None,
+) -> dict[str, str]:
     section = str(answer_section or "")
+    explicitly_numbered: dict[str, str] = {}
+    for number, answer_text in _local_answer_blocks(section).items():
+        answer = _choice_answer_from_text(answer_text)
+        if answer:
+            explicitly_numbered[str(int(number))] = answer
+    if explicitly_numbered:
+        return explicitly_numbered
+
     found: list[str] = []
     pattern = (
         r"(?:"
@@ -389,7 +440,29 @@ def _extract_choice_answer_sequence(answer_section: str) -> dict[str, str]:
     if not found:
         for match in re.finditer(r"(?:^|\n)\s*([A-D])\s*(?:\n|$)", section):
             found.append(match.group(1).upper())
+    normalized_numbers = [
+        str(int(number))
+        for number in question_numbers or []
+        if str(number or "").isdigit()
+    ]
+    if normalized_numbers:
+        return {
+            number: answer
+            for number, answer in zip(normalized_numbers, found)
+        }
     return {str(index): value for index, value in enumerate(found[:20], start=1)}
+
+
+def _explicit_option_labels(value: str) -> set[str]:
+    """Return option letters only when they carry visible option punctuation."""
+    return {
+        match.group(1).upper()
+        for match in re.finditer(
+            r"(?:^|[\s;；])([A-Da-d])\s*(?:[.．、:：)）])",
+            str(value or ""),
+            flags=re.MULTILINE,
+        )
+    }
 
 
 def _infer_local_question_type(
@@ -401,24 +474,15 @@ def _infer_local_question_type(
 ) -> str:
     value = str(question_text or "")
     normalized_section_type = str(section_type or "").strip()
-    if normalized_section_type in {"choice", "fill_blank", "proof"}:
+    if normalized_section_type in {
+        "choice",
+        "fill_blank",
+        "proof",
+    }:
         return normalized_section_type
-    option_labels = {
-        match.group(1).upper()
-        for match in re.finditer(
-            r"(?m)^\s*([A-Da-d])\s*(?:[.．、)]|\s{2,})", value
-        )
-    }
-    compact_options = any(
-        re.search(
-            r"[Aa][.．、]?\s*.{0,80}[Bb][.．、]?\s*.{0,80}[Cc][.．、]?\s*.{0,80}[Dd]",
-            line,
-        )
-        for line in value.splitlines()
-    )
-    if len(option_labels) >= 3 or compact_options:
+    if len(_explicit_option_labels(value)) >= 3:
         return "choice"
-    if re.fullmatch(r"\s*[A-Da-d]\s*", str(answer_text or "")):
+    if _choice_answer_from_text(answer_text):
         return "choice"
     if re.search(r"_{2,}|　{1,}|（\s*）|\(\s*\)|\b填空\b", value):
         return "fill_blank"
@@ -430,8 +494,8 @@ def _infer_local_question_type(
         token in value for token in ["计算", "求", "解答", "解："]
     ):
         return "calculation"
-    if normalized_section_type == "comprehensive":
-        return "comprehensive"
+    if normalized_section_type in {"calculation", "comprehensive"}:
+        return normalized_section_type
     return infer_question_type_from_text(question_text)
 
 
@@ -504,6 +568,37 @@ def _local_accepted_forms(canonical: str, qtype: str) -> list[str]:
         if cleaned:
             candidates.append(cleaned)
     return merge_equivalent_forms([], *candidates, max_forms=16)
+
+
+def _has_multiple_required_answers(question_text: str) -> bool:
+    text = str(question_text or "")
+    subquestion_numbers = {
+        match.group(1)
+        for match in re.finditer(r"[（(]\s*(\d{1,2})\s*[)）]", text)
+    }
+    if len(subquestion_numbers) >= 2:
+        return True
+    blank_count = len(re.findall(r"_{2,}|＿{2,}|　{2,}", text))
+    return blank_count >= 2
+
+
+def _is_local_answer_trusted(
+    *,
+    qtype: str,
+    question_text: str,
+    canonical_answer: str,
+    answer_text: str,
+    explicitly_mapped: bool,
+) -> bool:
+    """Trust only a complete-looking objective answer tied to this question."""
+    canonical = str(canonical_answer or "").strip()
+    if not explicitly_mapped or not canonical or not str(answer_text or "").strip():
+        return False
+    if qtype == "choice":
+        return re.fullmatch(r"[A-D]", canonical.upper()) is not None
+    if qtype == "fill_blank":
+        return not _has_multiple_required_answers(question_text)
+    return False
 
 
 def _strip_leading_question_number(number: int, text: str) -> str:
@@ -636,17 +731,7 @@ def _next_leading_main_question_number(
 
 def infer_question_type_from_text(text: str) -> str:
     value = str(text or "")
-    option_labels = {
-        match.group(1).upper()
-        for match in re.finditer(
-            r"(?m)^\s*([A-Da-d])\s*(?:[.．、)]|\s{2,})", value
-        )
-    }
-    option_line = any(
-        re.search(r"A.{0,80}B.{0,80}C.{0,80}D", line)
-        for line in value.splitlines()
-    )
-    if len(option_labels) >= 3 or option_line:
+    if len(_explicit_option_labels(value)) >= 3:
         return "choice"
     if re.search(r"_{2,}|[ \t]{3,}|　{1,}|（\s*）|\(\s*\)", value):
         return "fill_blank"
@@ -803,13 +888,37 @@ def rich_blocks_plain_text(blocks: list[Any]) -> str:
     )
 
 
+def rich_text_for_model(value: Any) -> str:
+    """Preserve visible structure while removing private image paths and HTML."""
+    text = _INLINE_IMAGE_MARKER.sub("[图片]", str(value or ""))
+    return _strip_inline_html(text).strip()
+
+
 def _strip_inline_html(value: str) -> str:
-    return re.sub(
-        r"</?(?:sub|sup|u|table|tbody|tr|td|th|br)\b[^>]*>",
-        "",
-        str(value or ""),
-        flags=re.IGNORECASE,
+    text = str(value or "")
+    text = re.sub(
+        r"<sup\b[^>]*>(.*?)</sup>",
+        lambda match: f"^({match.group(1)})",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
     )
+    text = re.sub(
+        r"<sub\b[^>]*>(.*?)</sub>",
+        lambda match: f"_({match.group(1)})",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    text = re.sub(
+        r"<u\b[^>]*>(.*?)</u>",
+        lambda match: f"____{match.group(1)}____",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    text = re.sub(r"<br\b[^>]*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</(?:td|th)\s*>", " | ", text, flags=re.IGNORECASE)
+    text = re.sub(r"</tr\s*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]*>", "", text)
+    return html.unescape(text)
 
 
 def image_paths_from_rich_text(value: str) -> list[str]:
@@ -822,7 +931,12 @@ def image_paths_from_rich_text(value: str) -> list[str]:
 
 
 def _parse_answer_section_blocks(answer_blocks: list[Any]) -> tuple[str, str]:
-    in_solution = False
+    # The rich-content mapper has already assigned these blocks to one question's
+    # answer section. Treat unheaded paragraphs as solution content as well:
+    # many Word answer sheets put only the first answer on a labelled line and
+    # continue the proof/derivation in ordinary paragraphs.
+    in_solution = True
+    awaiting_answer = False
     solution_lines: list[str] = []
     final_answer = ""
     for block in answer_blocks:
@@ -830,6 +944,21 @@ def _parse_answer_section_blocks(answer_blocks: list[Any]) -> tuple[str, str]:
         for raw in text.splitlines() if "\n" in text else [text]:
             line = str(raw or "").strip()
             if not line:
+                continue
+            if "【答案】" in line:
+                in_solution = False
+                after = line.split("【答案】", 1)[1].strip()
+                if after:
+                    final_answer = _clean_local_answer_text(_strip_inline_html(after))
+                    awaiting_answer = False
+                    in_solution = True
+                else:
+                    awaiting_answer = True
+                continue
+            if awaiting_answer:
+                final_answer = _clean_local_answer_text(_strip_inline_html(line))
+                awaiting_answer = False
+                in_solution = True
                 continue
             if "【点评】" in line or "【点睛】" in line:
                 in_solution = False
@@ -855,14 +984,40 @@ def _parse_answer_section_blocks(answer_blocks: list[Any]) -> tuple[str, str]:
                 solution_lines.append(line)
     solution_text = "\n".join(solution_lines).strip()
     plain = _strip_inline_html(_INLINE_IMAGE_MARKER.sub("", solution_text))
-    match = re.search(r"故\s*选\s*[:：]?\s*([A-Da-d]+)", plain)
-    if match:
-        final_answer = match.group(1).upper()
-    else:
-        match = re.search(r"故\s*答\s*案\s*为\s*[:：]?\s*([^。\n．]+)", plain)
+    if not final_answer:
+        match = re.search(r"故\s*选\s*[:：]?\s*([A-Da-d]+)", plain)
         if match:
-            final_answer = match.group(1).strip().rstrip("．.")
+            final_answer = match.group(1).upper()
+        else:
+            match = re.search(r"故\s*答\s*案\s*为\s*[:：]?\s*([^。\n．]+)", plain)
+            if match:
+                final_answer = match.group(1).strip().rstrip("．.")
     return final_answer, solution_text
+
+
+def _merge_complete_rich_text(parts: list[str], additional: str) -> list[str]:
+    extra = str(additional or "").strip()
+    if not extra:
+        return parts
+    current = "\n".join(str(part or "").strip() for part in parts if str(part or "").strip())
+    if not current:
+        return [extra]
+
+    def signature(value: str) -> str:
+        visible = _strip_inline_html(str(value or ""))
+        return re.sub(r"\s+", "", visible).strip()
+
+    current_signature = signature(current)
+    extra_signature = signature(extra)
+    if not extra_signature or extra_signature == current_signature:
+        return parts
+    # Prefer the fuller projection when one sufficiently descriptive fragment
+    # contains the other; short answers such as "A" are compared only exactly.
+    if len(current_signature) >= 12 and current_signature in extra_signature:
+        return [extra]
+    if len(extra_signature) >= 12 and extra_signature in current_signature:
+        return parts
+    return [*parts, extra]
 
 
 def parse_rich_question_blocks(
@@ -870,6 +1025,8 @@ def parse_rich_question_blocks(
     question_blocks: list[Any],
     answer_blocks: list[Any] | None,
     choice_answers: dict[str, str],
+    *,
+    section_type: str = "",
 ) -> dict[str, Any] | None:
     lines: list[str] = []
     for block in question_blocks:
@@ -909,12 +1066,12 @@ def parse_rich_question_blocks(
         else:
             analysis_lines.append(line)
 
-    if answer_blocks and not answer_lines:
+    if answer_blocks:
         final, analysis = _parse_answer_section_blocks(answer_blocks)
         if final:
-            answer_lines.append(final)
-        if analysis and not analysis_lines:
-            analysis_lines.append(analysis)
+            answer_lines = _merge_complete_rich_text(answer_lines, final)
+        if analysis:
+            analysis_lines = _merge_complete_rich_text(analysis_lines, analysis)
 
     question_html = _strip_leading_question_number(
         number, "\n".join(stem_lines).strip()
@@ -932,13 +1089,25 @@ def parse_rich_question_blocks(
         return None
 
     num_str = str(number)
-    qtype = _infer_local_question_type(question_text, answer_text, num_str)
+    qtype = _infer_local_question_type(
+        question_text,
+        answer_text,
+        num_str,
+        section_type=section_type,
+    )
     canonical = _extract_canonical_answer_for_local_question(
         number=num_str,
         qtype=qtype,
         question_text=question_text,
         answer_text=answer_text,
         choice_answers=choice_answers,
+    )
+    local_answer_trusted = _is_local_answer_trusted(
+        qtype=qtype,
+        question_text=question_text,
+        canonical_answer=canonical,
+        answer_text=answer_text,
+        explicitly_mapped=bool(answer_text and (answer_lines or answer_blocks)),
     )
     return {
         "question_id": f"Q{number}",
@@ -953,8 +1122,6 @@ def parse_rich_question_blocks(
         "question_type": qtype,
         "canonical_answer": canonical,
         "accepted_forms": _local_accepted_forms(canonical, qtype),
-        "local_answer_trusted": bool(answer_text or canonical),
-        "needs_review": (
-            not bool(canonical) if qtype in {"choice", "fill_blank"} else False
-        ),
+        "local_answer_trusted": local_answer_trusted,
+        "needs_review": not local_answer_trusted,
     }

@@ -31,14 +31,15 @@ def _analysis(**overrides) -> TagAnalysis:
         "math_model_tags": [],
         "difficulty": 4,
         "error_prone_points": ["运算化简错误"],
-        "prerequisite_points": ["幂的运算"],
+        "prerequisite_points": ["整数指数幂"],
         "textbook_chapter": "七年级下册 第一章 整式的乘除",
-        "teaching_stage": "期末复习",
+        "teaching_stage": "",
         "suitable_student_level": "基础巩固",
+        "canonical_knowledge_id": "kp_alg_polynomial",
         "reason": "考查幂运算和整式化简。",
         "confidence": 0.86,
-        "measured_skills": ["整式乘法运算"],
-        "supporting_skills": ["整数指数幂运算"],
+        "measured_skills": [],
+        "supporting_skills": [],
     }
     payload.update(overrides)
     return TagAnalysis.from_dict(payload)
@@ -208,7 +209,7 @@ def test_batch_responses_preserves_structured_payload_mapping_and_lazy_adapter(
     first_analysis = _analysis()
     second_analysis = _analysis(
         knowledge_points=["概率初步"],
-        measured_skills=["古典概型概率计算"],
+        canonical_knowledge_id="kp_probability",
         reason="考查古典概型。",
     )
 

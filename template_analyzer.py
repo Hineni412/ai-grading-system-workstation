@@ -883,7 +883,7 @@ def _build_template_analysis_prompt(
         "      \"method_variants\": [{\"name\": \"方法A\", \"outline\": \"关键路径\"}],\n"
         "      \"parts\": [\n"
         "        {\n"
-        "          \"part_id\": \"Q1或Q1(1)\",\n"
+        "          \"part_id\": \"Q1或Q1(P1)\",\n"
         "          \"part_score\": 6,\n"
         "          \"answer\": \"该小题答案\",\n"
         "          \"analysis\": \"解析或证明过程\",\n"

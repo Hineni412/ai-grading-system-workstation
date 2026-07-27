@@ -3,13 +3,18 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import {
   confirmReviewItem,
-  fetchReviewItems,
   fetchReviewRubric,
   type ReviewConfirmInput,
-  type ReviewItem,
+  type ReviewItemLike,
   type ReviewRubricSection,
 } from '../../api/review'
-import { scoreIssue, useReviewDraftStore, type ReviewDraft } from '../../stores/review-drafts'
+import { ApiError } from '../../api/errors'
+import {
+  reviewDraftRevision,
+  scoreIssue,
+  useReviewDraftStore,
+  type ReviewDraft,
+} from '../../stores/review-drafts'
 import { useReviewQueueStore } from '../../stores/review-queue'
 import StatePanel from '../design-system/StatePanel.vue'
 import ReviewFeedbackToast from './ReviewFeedbackToast.vue'
@@ -17,7 +22,10 @@ import ReviewFeedbackToast from './ReviewFeedbackToast.vue'
 const reviewStore = useReviewQueueStore()
 const draftStore = useReviewDraftStore()
 const props = defineProps<{
-  registerAnnotationRetry: (entry: { input: ReviewConfirmInput; item: ReviewItem }) => void
+  registerAnnotationRetry: (entry: {
+    input: ReviewConfirmInput
+    item: ReviewItemLike
+  }) => void
 }>()
 const rubric = ref<ReviewRubricSection | null>(null)
 const rubricState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
@@ -30,7 +38,7 @@ let rubricGeneration = 0
 
 const emit = defineEmits<{
   confirmed: [payload: {
-    detailId: number
+    reviewItemId: string
     annotationRetry: boolean
   }]
 }>()
@@ -54,6 +62,18 @@ const disabledReason = computed(() => {
 })
 const evidenceSteps = computed(() => stringList(item.value?.metadata.evidence_steps))
 const missingSteps = computed(() => stringList(item.value?.metadata.missing_steps))
+const hasAiAssessment = computed(() => item.value?.score_source === 'ai')
+const statusLabel = computed(() => {
+  const status = item.value?.score_status
+  if (!status) return ''
+  return {
+    ungraded: '未批',
+    ai_ready: 'AI 已完成',
+    ai_review: 'AI 待复核',
+    teacher_final: '教师已确认',
+    failed: '处理失败',
+  }[status]
+})
 const candidates = computed(() => (item.value?.candidate_scores ?? []).flatMap((candidate) => {
   const score = typeof candidate.score === 'number' && Number.isFinite(candidate.score)
     ? candidate.score
@@ -75,8 +95,8 @@ function stringList(value: unknown): string[] {
   })
 }
 
-function formatScore(value: number): string {
-  return Number.isInteger(value) ? String(value) : String(value)
+function formatScore(value: number | null): string {
+  return value !== null && Number.isFinite(value) ? String(value) : '—'
 }
 
 function formatConfidence(value: number | null): string {
@@ -103,15 +123,16 @@ async function submitCurrent(): Promise<void> {
   const draft = currentDraft.value
   if (!submittedItem || !draft || submitDisabled.value || submitting.value) return
 
-  const submittedDetailId = submittedItem.detail_id
   const submittedQuestionId = submittedItem.question_id
   const submittedSessionId = submittedItem.session_id
-  const submittedContext = `${submittedSessionId}:${submittedQuestionId}:${submittedDetailId}`
   const score = Number(draft.scoreText.trim())
   const note = draft.note.trim()
   const confirmInput: ReviewConfirmInput = {
+    review_item_id: submittedItem.review_item_id,
+    expected_revision: reviewDraftRevision(draft),
+    student_id: submittedItem.student_id,
     result_id: submittedItem.result_id,
-    detail_id: submittedDetailId,
+    detail_id: submittedItem.detail_id,
     score_awarded: score,
     ...(note ? { deduction_reason: note } : {}),
   }
@@ -124,47 +145,24 @@ async function submitCurrent(): Promise<void> {
       submittedQuestionId,
       confirmInput,
     )
-    const selectedEntry = reviewStore.items.find(
-      (entry) =>
-        entry.question_id === reviewStore.selectedQuestionId &&
-        entry.detail_id === reviewStore.selectedDetailId,
-    )
-    const activeContext = selectedEntry
-      ? `${selectedEntry.session_id}:${selectedEntry.question_id}:${selectedEntry.detail_id}`
-      : null
-    const stillOnSubmittedContext = activeContext === submittedContext
-    const confirmedReason = note || '人工复核已确认'
-    reviewStore.markItemConfirmed(submittedItem, score, confirmedReason)
     draftStore.markConfirmed(draft.key)
     const annotationRetry = response.annotation_outcomes.some(
       (outcome) => outcome.status === 'retry_required',
     )
     if (annotationRetry) props.registerAnnotationRetry({ input: confirmInput, item: submittedItem })
-    if (stillOnSubmittedContext) {
-      if (submittedItem.needs_review) {
-        reviewStore.adjustQuestionPendingCount(submittedQuestionId, -1)
-      }
-      emit('confirmed', {
-        detailId: submittedDetailId,
-        annotationRetry,
-      })
-      await reviewStore.loadItems(submittedSessionId, submittedQuestionId, fetchReviewItems)
-    }
-
-    const refreshFailed = stillOnSubmittedContext && reviewStore.itemLoadState === 'error'
-    feedbackTone.value = annotationRetry || refreshFailed ? 'warning' : 'success'
-    feedback.value = !stillOnSubmittedContext
-      ? annotationRetry
-        ? '先前记录的分数已确认，标注图需要稍后刷新；当前选择未更改。'
-        : '先前记录的教师最终分已确认；当前选择未更改。'
-      : annotationRetry
-        ? '分数已确认，标注图需要稍后刷新。'
-        : refreshFailed
-          ? '分数已确认，队列刷新失败；草稿不会重复提交，可稍后安全刷新。'
-          : '教师最终分已确认。'
-  } catch {
+    emit('confirmed', {
+      reviewItemId: submittedItem.review_item_id,
+      annotationRetry,
+    })
+    feedbackTone.value = annotationRetry ? 'warning' : 'success'
+    feedback.value = annotationRetry
+      ? '分数已确认，标注图需要稍后刷新。'
+      : '教师最终分已确认。'
+  } catch (error) {
     feedbackTone.value = 'error'
-    feedback.value = '确认失败，教师草稿已保留。请检查网络后重试。'
+    feedback.value = error instanceof ApiError && error.kind === 'conflict'
+      ? '这份答卷已在别处更新。教师草稿仍保留，请返回批量页刷新后再确认。'
+      : '确认失败，教师草稿已保留。请检查网络后重试。'
   } finally {
     submitting.value = false
   }
@@ -238,8 +236,12 @@ onBeforeUnmount(() => {
           <span v-if="currentDraft.dirty" class="review-scoring-inspector__draft-state">
             教师草稿未确认
           </span>
-          <span v-else-if="!item.needs_review" class="review-scoring-inspector__confirmed-state">
-            教师已确认
+          <span
+            v-else
+            class="review-scoring-inspector__status-state"
+            :class="`is-${item.score_status}`"
+          >
+            {{ statusLabel }}
           </span>
         </header>
 
@@ -270,8 +272,12 @@ onBeforeUnmount(() => {
           </template>
         </section>
 
-        <section class="review-scoring-section review-scoring-section--ai" aria-labelledby="review-ai-title">
-          <h3 id="review-ai-title">{{ item.needs_review ? 'AI 初评' : '确认前记录' }}</h3>
+        <section
+          v-if="hasAiAssessment"
+          class="review-scoring-section review-scoring-section--ai"
+          aria-labelledby="review-ai-title"
+        >
+          <h3 id="review-ai-title">AI 初评</h3>
           <div class="review-ai-score">
             <strong>{{ formatScore(item.score_awarded) }}</strong>
             <span>/ {{ formatScore(item.max_score) }} 分</span>
@@ -294,11 +300,27 @@ onBeforeUnmount(() => {
             </ul>
           </details>
         </section>
+        <section
+          v-else
+          class="review-scoring-section review-scoring-section--manual"
+          aria-labelledby="review-manual-title"
+        >
+          <h3 id="review-manual-title">人工评分项</h3>
+          <p>这份答卷没有 AI 初评分数或 AI 标注，请直接参考左侧原卷与裁图评分。</p>
+        </section>
 
         <section class="review-scoring-section" aria-labelledby="review-risk-title">
           <h3 id="review-risk-title">风险与错因</h3>
-          <p v-if="item.needs_review" class="review-scoring-section__warning">当前记录需要教师复核。</p>
-          <p v-else class="review-scoring-section__muted">当前记录已由教师确认。</p>
+          <p v-if="item.score_status === 'ungraded'" class="review-scoring-section__warning">
+            当前记录尚未评分。
+          </p>
+          <p v-else-if="item.score_status === 'ai_review'" class="review-scoring-section__warning">
+            当前 AI 结果需要教师复核。
+          </p>
+          <p v-else-if="item.score_status === 'failed'" class="review-scoring-section__warning">
+            自动处理失败，请教师直接评分。
+          </p>
+          <p v-else class="review-scoring-section__muted">当前状态：{{ statusLabel }}。</p>
           <dl class="review-risk-list">
             <template v-if="item.deduction_reason"><dt>扣分原因</dt><dd>{{ item.deduction_reason }}</dd></template>
             <template v-if="item.error_category"><dt>错误类别</dt><dd>{{ item.error_category }}</dd></template>
@@ -326,7 +348,9 @@ onBeforeUnmount(() => {
             >
             <span>/ {{ formatScore(item.max_score) }} 分</span>
           </div>
-          <p id="teacher-score-help" class="review-scoring-section__muted">教师确认结果将覆盖 AI 初评。</p>
+          <p id="teacher-score-help" class="review-scoring-section__muted">
+            {{ hasAiAssessment ? '教师确认结果将覆盖 AI 初评。' : '未批答卷必须填写分数后才能确认。' }}
+          </p>
           <p v-if="issue" id="teacher-score-error" class="review-field-error">{{ issue }}</p>
           <label for="teacher-note">教师备注</label>
           <textarea

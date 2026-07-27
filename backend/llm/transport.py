@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 import usage_logger
 from openai import OpenAI
 
+from .diagnostics import DIAGNOSTIC_LOG_FILE, JsonlDiagnosticJournal
 from .gateway import LLMGateway
 from .policy import LLMRequestKind
 from .usage import JsonlUsageSink
@@ -68,6 +69,10 @@ def _default_trace_sink() -> JsonlCallTraceSink:
     return JsonlCallTraceSink(TRACE_LOG_FILE)
 
 
+def _default_diagnostic_sink() -> JsonlDiagnosticJournal:
+    return JsonlDiagnosticJournal(DIAGNOSTIC_LOG_FILE)
+
+
 class LLMProtocolAdapter:
     def __init__(
         self,
@@ -78,6 +83,7 @@ class LLMProtocolAdapter:
         gateway_factory=LLMGateway,
         usage_sink_factory=_default_usage_sink,
         trace_sink_factory=_default_trace_sink,
+        diagnostic_sink_factory=_default_diagnostic_sink,
     ) -> None:
         self.client = (
             client
@@ -89,6 +95,7 @@ class LLMProtocolAdapter:
             config_key=gateway_config_key(api_key, base_url),
             usage_sink=usage_sink_factory(),
             trace_sink=trace_sink_factory(),
+            diagnostic_sink=diagnostic_sink_factory(),
             endpoint_host=safe_endpoint_host(base_url),
         )
 
@@ -99,6 +106,7 @@ class LLMProtocolAdapter:
         model: str,
         kwargs: Mapping[str, object],
         request_id: object | None = None,
+        operation_id: object | None = None,
         allow_retry: bool = True,
         timeout_override_seconds: float | None = None,
     ) -> object:
@@ -108,6 +116,7 @@ class LLMProtocolAdapter:
             model=model,
             kwargs=dict(kwargs),
             request_id=request_id,
+            operation_id=operation_id,
             allow_retry=allow_retry,
             timeout_override_seconds=timeout_override_seconds,
         )
@@ -119,6 +128,7 @@ class LLMProtocolAdapter:
         model: str,
         kwargs: Mapping[str, object],
         request_id: object | None = None,
+        operation_id: object | None = None,
         allow_retry: bool = True,
         timeout_override_seconds: float | None = None,
     ) -> object:
@@ -128,6 +138,7 @@ class LLMProtocolAdapter:
             model=model,
             kwargs=dict(kwargs),
             request_id=request_id,
+            operation_id=operation_id,
             allow_retry=allow_retry,
             timeout_override_seconds=timeout_override_seconds,
         )

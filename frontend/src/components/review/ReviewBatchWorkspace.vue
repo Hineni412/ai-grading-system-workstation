@@ -1,8 +1,18 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 
-import type { ReviewConfirmInput, ReviewItem, ReviewQuestionSummary } from '../../api/review'
-import { reviewDraftKey, scoreIssue, useReviewDraftStore } from '../../stores/review-drafts'
+import {
+  resolveReviewItem,
+  type ReviewConfirmInput,
+  type ReviewItemLike,
+  type ReviewQuestionSummary,
+} from '../../api/review'
+import {
+  reviewDraftKey,
+  reviewDraftRevision,
+  scoreIssue,
+  useReviewDraftStore,
+} from '../../stores/review-drafts'
 import type { ReviewScope, ReviewSort } from '../../stores/review-queue'
 import StatePanel from '../design-system/StatePanel.vue'
 import ReviewAnswerSheet from './ReviewAnswerSheet.vue'
@@ -10,7 +20,7 @@ import ReviewAnswerSheet from './ReviewAnswerSheet.vue'
 const props = defineProps<{
   questions: ReviewQuestionSummary[]
   selectedQuestionId: string
-  items: ReviewItem[]
+  items: ReviewItemLike[]
   search: string
   scope: ReviewScope
   sort: ReviewSort
@@ -27,19 +37,25 @@ const emit = defineEmits<{
   updateScope: [value: ReviewScope]
   updateSort: [value: ReviewSort]
   updatePage: [value: number]
-  openDetail: [detailId: number]
-  confirmBatch: [inputs: ReviewConfirmInput[], draftKeys: string[], items: ReviewItem[]]
+  openItem: [reviewItemId: string]
+  confirmBatch: [inputs: ReviewConfirmInput[], draftKeys: string[], items: ReviewItemLike[]]
 }>()
 
 const draftStore = useReviewDraftStore()
 const root = ref<HTMLElement | null>(null)
-const pendingItems = computed(() => props.items.filter((item) => item.needs_review))
-const invalidItems = computed(() => pendingItems.value.filter((item) => {
+const actionableItems = computed(() =>
+  props.items.filter((item) => !resolveReviewItem(item).teacher_locked),
+)
+const invalidItems = computed(() => actionableItems.value.filter((item) => {
+  const resolved = resolveReviewItem(item)
   const draft = draftStore.drafts[reviewDraftKey(item)] ?? draftStore.ensureDraft(item)
-  return scoreIssue(draft.scoreText, item.max_score) !== null
+  return scoreIssue(draft.scoreText, resolved.max_score) !== null
 }))
 const submitDisabled = computed(() =>
-  props.loading || props.submitting || pendingItems.value.length === 0 || invalidItems.value.length > 0,
+  props.loading
+  || props.submitting
+  || actionableItems.value.length === 0
+  || invalidItems.value.length > 0,
 )
 
 function onSearch(event: Event): void {
@@ -54,20 +70,28 @@ function onSort(event: Event): void {
   emit('updateSort', (event.currentTarget as HTMLSelectElement).value as ReviewSort)
 }
 
+function itemKey(item: ReviewItemLike): string {
+  return resolveReviewItem(item).review_item_id
+}
+
 function submitBatch(): void {
   if (submitDisabled.value) return
   const inputs: ReviewConfirmInput[] = []
   const draftKeys: string[] = []
-  const submittedItems: ReviewItem[] = []
+  const submittedItems: ReviewItemLike[] = []
 
-  for (const item of pendingItems.value) {
+  for (const item of actionableItems.value) {
+    const resolved = resolveReviewItem(item)
     const draft = draftStore.drafts[reviewDraftKey(item)] ?? draftStore.ensureDraft(item)
-    const issue = scoreIssue(draft.scoreText, item.max_score)
+    const issue = scoreIssue(draft.scoreText, resolved.max_score)
     if (issue !== null) return
     const note = draft.note.trim()
     inputs.push({
-      result_id: item.result_id,
-      detail_id: item.detail_id,
+      review_item_id: resolved.review_item_id,
+      expected_revision: reviewDraftRevision(draft),
+      student_id: resolved.student_id,
+      result_id: resolved.result_id,
+      detail_id: resolved.detail_id,
       score_awarded: Number(draft.scoreText.trim()),
       ...(note ? { deduction_reason: note } : {}),
     })
@@ -109,7 +133,10 @@ watch(
         @click="emit('selectQuestion', question.question_id)"
       >
         <strong>{{ question.question_id }}</strong>
-        <span>待复核 {{ question.needs_review_count }} / {{ question.total_count }}</span>
+        <span>
+          未批 {{ question.ungraded_count ?? 0 }} ·
+          教师确认 {{ question.teacher_confirmed_count ?? 0 }} / {{ question.total_count }}
+        </span>
         <span>满分 {{ question.max_score }}</span>
       </button>
     </nav>
@@ -129,7 +156,10 @@ watch(
       <label for="review-scope">
         <span>显示范围</span>
         <select id="review-scope" :value="scope" @change="onScope">
-          <option value="needs_review">仅待复核</option>
+          <option value="teacher_pending">教师待处理</option>
+          <option value="ungraded">仅未批</option>
+          <option value="ai_review">仅 AI 待复核</option>
+          <option value="teacher_final">仅教师已确认</option>
           <option value="all">本题全部</option>
         </select>
       </label>
@@ -159,10 +189,10 @@ watch(
     <div v-else class="review-contact-sheet" data-testid="review-contact-sheet">
       <ReviewAnswerSheet
         v-for="(item, index) in items"
-        :key="`${item.session_id}:${item.question_id}:${item.detail_id}`"
+        :key="itemKey(item)"
         :item="item"
         :position="index"
-        @open-detail="emit('openDetail', $event)"
+        @open-item="emit('openItem', $event)"
         @focus-next-score="focusNextScore"
       />
     </div>
@@ -179,10 +209,10 @@ watch(
 
     <footer class="review-batch-actions">
       <div>
-        <strong>本批待确认 {{ pendingItems.length }} 份</strong>
+        <strong>本批可确认 {{ actionableItems.length }} 份</strong>
         <span v-if="invalidItems.length > 0">其中 {{ invalidItems.length }} 份分数需要修正</span>
-        <span v-else-if="pendingItems.length > 0">可以保留 AI 原分直接确认</span>
-        <span v-else>本批没有待复核答卷</span>
+        <span v-else-if="actionableItems.length > 0">未批答卷需填写分数；已有 AI 分可直接确认或修改</span>
+        <span v-else>本批没有可确认的答卷</span>
       </div>
       <button
         type="button"

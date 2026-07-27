@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import json
 from dataclasses import dataclass
 from typing import Any, Callable, Sequence
+
+from backend.document_parsing.question_blocks import rich_text_for_model
 
 from .gateway import ConfigGenerationGateway
 from .prompts import (
@@ -14,6 +17,10 @@ from .prompts import (
 
 
 DEFAULT_CONFIG_GENERATION_BATCH_SIZE = 3
+MAX_WORD_IMAGES_PER_QUESTION = 16
+MAX_WORD_IMAGES_PER_BATCH = 24
+MAX_WORD_IMAGE_BYTES_PER_QUESTION = 24 * 1024 * 1024
+MAX_WORD_IMAGE_BYTES_PER_BATCH = 32 * 1024 * 1024
 
 ProgressReporter = Callable[[float, str, str], None]
 CheckpointWriter = Callable[[dict[str, Any]], None]
@@ -47,6 +54,13 @@ class ConfigGenerationPolicy:
     apply_score_allocation: Callable[
         [dict[str, Any], dict[str, Any]], None
     ]
+    word_block_image_assets: (
+        Callable[
+            [dict[str, Any], int, int],
+            tuple[list[dict[str, Any]], int],
+        ]
+        | None
+    ) = None
 
 
 class _BatchSchemaMismatch(ValueError):
@@ -77,10 +91,7 @@ class ConfigGenerationOrchestrator:
         q_images: dict[str, Any] | None = None,
         checkpoint: CheckpointWriter | None = None,
     ) -> dict[str, Any]:
-        locked_blocks = [
-            {**block, "question_type_confirmed": True}
-            for block in confirmed_blocks
-        ]
+        locked_blocks = [copy.deepcopy(block) for block in confirmed_blocks]
         if not locked_blocks:
             raise ValueError("至少需要一道已确认题目。")
         return self._run_batches(
@@ -111,10 +122,7 @@ class ConfigGenerationOrchestrator:
         failed_batches = (
             meta.get("failed_batches") if isinstance(meta, dict) else None
         )
-        locked_blocks = [
-            {**block, "question_type_confirmed": True}
-            for block in question_blocks
-        ]
+        locked_blocks = [copy.deepcopy(block) for block in question_blocks]
         if not isinstance(failed_batches, list) or not failed_batches:
             return self._score_completed_draft_once(
                 existing_payload,
@@ -239,7 +247,10 @@ class ConfigGenerationOrchestrator:
                 self._report(
                     progress,
                     "分批生成评分标准",
-                    f"正在生成批次 {batch_id}（{', '.join(question_ids)}）",
+                    (
+                        f"正在生成第 {completed}/{total_targets} 个批次"
+                        f"（本批 {len(question_ids)} 道题：{', '.join(question_ids)}）"
+                    ),
                 )
             try:
                 prompt, image_blobs = self._build_batch_request(
@@ -345,7 +356,10 @@ class ConfigGenerationOrchestrator:
             self._report(
                 0.92,
                 "分批生成完成",
-                f"{len(batches)} 个批次和整卷 AI 统一配分均已完成。",
+                (
+                    f"{len(batches)} 个批次（共 {len(question_blocks)} 道题）"
+                    "和整卷 AI 统一配分均已完成。"
+                ),
             )
         return merged
 
@@ -520,16 +534,49 @@ class ConfigGenerationOrchestrator:
         contexts: list[dict[str, Any]] = []
         image_blobs: list[bytes] = []
         image_map: list[str] = []
+        word_digest_to_index: dict[str, int] = {}
+        word_image_total_bytes = 0
+        word_omitted_count = 0
+        word_role_labels = {
+            "question": "题目图",
+            "answer": "答案图",
+            "analysis": "解析图",
+        }
+
+        def append_word_image(blob: bytes, label: str) -> None:
+            nonlocal word_image_total_bytes, word_omitted_count
+            digest = hashlib.sha256(blob).hexdigest()
+            existing_index = word_digest_to_index.get(digest)
+            if existing_index is not None:
+                association = f"、{label}"
+                if association not in image_map[existing_index]:
+                    image_map[existing_index] += association
+                return
+            if (
+                len(word_digest_to_index) >= MAX_WORD_IMAGES_PER_BATCH
+                or word_image_total_bytes + len(blob)
+                > MAX_WORD_IMAGE_BYTES_PER_BATCH
+            ):
+                word_omitted_count += 1
+                return
+            word_digest_to_index[digest] = len(image_blobs)
+            image_blobs.append(blob)
+            image_map.append(f"图片{len(image_blobs)}={label}")
+            word_image_total_bytes += len(blob)
+
         for block in blocks:
             qid = str(block.get("question_id") or "").strip()
-            image_semantic_source = (
-                str(block.get("semantic_source") or "").strip() == "images"
-            )
+            semantic_source = str(block.get("semantic_source") or "").strip()
+            image_semantic_source = semantic_source == "images"
+            word_semantic_source = semantic_source == "text"
             contexts.append(
                 {
                     "question_id": qid,
                     "question_type": str(
                         block.get("question_type") or ""
+                    ),
+                    "question_type_confirmed": (
+                        block.get("question_type_confirmed") is True
                     ),
                     "question_text": (
                         ""
@@ -549,10 +596,31 @@ class ConfigGenerationOrchestrator:
                             or ""
                         )
                     ),
+                    "question_rich_text": (
+                        ""
+                        if image_semantic_source
+                        else rich_text_for_model(block.get("question_html") or "")[
+                            :50_000
+                        ]
+                    ),
+                    "answer_rich_text": (
+                        ""
+                        if image_semantic_source
+                        else rich_text_for_model(block.get("answer_html") or "")[
+                            :50_000
+                        ]
+                    ),
                     "analysis": (
                         ""
                         if image_semantic_source
                         else str(block.get("analysis") or "")
+                    ),
+                    "analysis_rich_text": (
+                        ""
+                        if image_semantic_source
+                        else rich_text_for_model(block.get("analysis_html") or "")[
+                            :50_000
+                        ]
                     ),
                 }
             )
@@ -561,7 +629,11 @@ class ConfigGenerationOrchestrator:
                 if isinstance(q_images, dict)
                 else None
             )
-            if isinstance(image_data, dict) and image_data.get("question"):
+            if (
+                isinstance(image_data, dict)
+                and image_data.get("question")
+                and not word_semantic_source
+            ):
                 image_blobs.append(
                     base64.b64decode(
                         str(image_data["question"]),
@@ -580,11 +652,47 @@ class ConfigGenerationOrchestrator:
                         f"图片{len(image_blobs)}={qid}答案解析"
                     )
             elif not image_semantic_source:
-                for blob in self._policy.word_block_image_blobs(block, 4):
-                    image_blobs.append(blob)
-                    image_map.append(
-                        f"图片{len(image_blobs)}={qid}内嵌图"
+                collector = self._policy.word_block_image_assets
+                if collector is not None:
+                    assets, omitted_count = collector(
+                        block,
+                        MAX_WORD_IMAGES_PER_QUESTION,
+                        MAX_WORD_IMAGE_BYTES_PER_QUESTION,
                     )
+                    word_omitted_count += max(0, int(omitted_count))
+                    for asset in assets:
+                        if not isinstance(asset, dict):
+                            word_omitted_count += 1
+                            continue
+                        content = asset.get("content")
+                        if not isinstance(content, (bytes, bytearray)):
+                            word_omitted_count += 1
+                            continue
+                        role = str(asset.get("role") or "question")
+                        try:
+                            ordinal = max(1, int(asset.get("ordinal") or 1))
+                        except (TypeError, ValueError):
+                            ordinal = 1
+                        append_word_image(
+                            bytes(content),
+                            (
+                                f"{qid}"
+                                f"{word_role_labels.get(role, '关联图')}"
+                                f"{ordinal}"
+                            ),
+                        )
+                else:
+                    for index, blob in enumerate(
+                        self._policy.word_block_image_blobs(
+                            block,
+                            MAX_WORD_IMAGES_PER_QUESTION,
+                        ),
+                        start=1,
+                    ):
+                        append_word_image(
+                            bytes(blob),
+                            f"{qid}关联图{index}",
+                        )
         fallback = (
             str(doc_text or "")[:4000]
             if any(
@@ -596,15 +704,24 @@ class ConfigGenerationOrchestrator:
             )
             else ""
         )
-        return (
-            build_batch_generation_prompt(
-                question_ids,
-                contexts,
-                image_map,
-                fallback,
-            ),
-            image_blobs,
+        prompt = build_batch_generation_prompt(
+            question_ids,
+            contexts,
+            image_map,
+            fallback,
         )
+        if word_digest_to_index or word_omitted_count:
+            prompt += (
+                "\nWord关联图片载入摘要：本批附带 "
+                f"{len(word_digest_to_index)} 张去重后的题目/答案关联图片；"
+                "图片标签只包含题号、语义角色和序号，原始文件路径未发送。"
+            )
+            if word_omitted_count:
+                prompt += (
+                    f"另有 {word_omitted_count} 张关联图片因单次请求数量、"
+                    "总体积或文件可读性限制未附带，不得臆造其内容。"
+                )
+        return prompt, image_blobs
 
 
 def failed_grading_config_batches(

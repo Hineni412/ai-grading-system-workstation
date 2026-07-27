@@ -270,7 +270,8 @@ def test_pdf_image_prompt_does_not_include_extracted_pdf_text() -> None:
     assert "图片2是标准答案与解析原图" in prompt
     assert "图片是唯一权威内容来源" in prompt
     assert "response_mode" in prompt
-    assert "knowledge_name" in prompt
+    assert "knowledge_name" not in prompt
+    assert "knowledge_id" not in prompt
 
 
 def test_image_semantic_source_does_not_overwrite_ai_answer_with_corrupt_local_text() -> None:
@@ -497,7 +498,7 @@ def test_quality_warnings_detect_garbled_content_missing_answers_and_stem_knowle
 
     warnings = session_manager.collect_generated_config_quality_warnings(payload)
 
-    assert any("知识点疑似直接复制题干" in warning for warning in warnings)
+    assert not any("knowledge" in warning.lower() for warning in warnings)
     assert any("疑似乱码" in warning for warning in warnings)
     assert any("缺少可评分的标准答案" in warning for warning in warnings)
 
@@ -1058,16 +1059,17 @@ def test_generated_config_normalization_blocks_conflicting_redundant_knowledge_f
         },
     }
 
-    session_manager.normalize_generated_config_schema(payload)
+    session_manager.normalize_new_generated_config_payload(payload)
 
     question = payload["rubric"]["questions"][0]
-    assert any(
-        point["knowledge_id"] == "K3"
-        and point["knowledge_name"] == "已有合法知识点"
-        for point in question["knowledge_points"]
+    assert not any(key.startswith("knowledge") for key in question)
+    assert not any(
+        key.startswith("knowledge")
+        for part in question.get("parts", [])
+        for key in part
     )
     warnings = session_manager.collect_generated_config_quality_warnings(payload)
-    assert any("Q2" in warning and "列表字符串" in warning for warning in warnings)
+    assert not any("knowledge" in warning.lower() for warning in warnings)
 
 
 @pytest.mark.parametrize(
@@ -1108,10 +1110,12 @@ def test_generated_config_normalization_keeps_unsafe_knowledge_lists_blocked(
         },
     }
 
-    session_manager.normalize_generated_config_schema(payload)
+    session_manager.normalize_new_generated_config_payload(payload)
 
+    question = payload["rubric"]["questions"][0]
+    assert not any(key.startswith("knowledge") for key in question)
     warnings = session_manager.collect_generated_config_quality_warnings(payload)
-    assert any("Q1" in warning and "列表字符串" in warning for warning in warnings)
+    assert not any("knowledge" in warning.lower() for warning in warnings)
 
 
 def test_quality_warnings_flag_overly_broad_knowledge_and_serialized_answer_lists() -> None:
@@ -1140,7 +1144,7 @@ def test_quality_warnings_flag_overly_broad_knowledge_and_serialized_answer_list
 
     warnings = session_manager.collect_generated_config_quality_warnings(payload)
 
-    assert any("知识点过于宽泛" in warning for warning in warnings)
+    assert not any("knowledge" in warning.lower() for warning in warnings)
     assert any("列表字符串" in warning for warning in warnings)
 
 
@@ -1394,11 +1398,14 @@ def test_retry_failed_questions_preserves_successes_and_then_scores(
 
     questions = {question["question_id"]: question for question in payload["rubric"]["questions"]}
     assert client.calls == 2
-    assert questions["Q1"]["parts"][0]["steps"][0]["core_goal"] == "人工修改后保留"
-    assert questions["Q2"]["knowledge_name"] == "测试知识点"
+    assert not any(key.startswith("knowledge") for key in questions["Q2"])
     assert payload["meta"]["failed_question_ids"] == []
     assert payload["meta"]["score_allocation_ai_success"] is True
-    assert not any("Q2 placeholder added" in warning for warning in payload["meta"]["warnings"])
+    assert not any(
+        "Q2 placeholder added" in warning
+        for warning in payload["meta"]["warnings"]
+    )
+    assert questions["Q1"]["parts"][0]["steps"][0]["core_goal"] == "人工修改后保留"
 
 
 def test_retry_selected_failed_question_preserves_unselected_failure(
@@ -1457,8 +1464,8 @@ def test_retry_selected_failed_question_preserves_unselected_failure(
     assert [item["question_id"] for item in payload["meta"]["failed_questions"]] == ["Q2"]
     assert payload["meta"]["score_allocation_pending"] is True
     questions = {item["question_id"]: item for item in payload["rubric"]["questions"]}
-    assert questions["Q1"]["knowledge_name"] == "测试知识点"
-    assert questions["Q2"]["knowledge_id"] == "UNKNOWN"
+    assert not any(key.startswith("knowledge") for key in questions["Q1"])
+    assert not any(key.startswith("knowledge") for key in questions["Q2"])
 
 
 def test_word_whole_generation_is_one_request_and_uses_shared_postprocessing(
@@ -1485,7 +1492,8 @@ def test_word_whole_generation_is_one_request_and_uses_shared_postprocessing(
 
         def json_from_text_once(self, prompt, **_kwargs):
             self.once_calls += 1
-            assert "Word 原文" in prompt
+            assert "paper text" in prompt
+            assert "knowledge_name" not in prompt
             return payload
 
         def json_from_text(self, *_args, **_kwargs):
@@ -1590,7 +1598,7 @@ def test_word_split_and_pdf_split_share_retry_and_normalization_pipeline() -> No
     assert "return _generate_grading_config_by_question_blocks(" in source
     assert "_generate_question_block_results(" in source
     assert "_call_question_generation_with_retry" in source
-    assert "normalize_generated_config_schema(merged)" in source
+    assert "normalize_new_generated_config_payload(merged)" in source
     assert "retry_grading_config_score_allocation(" in source
 
 

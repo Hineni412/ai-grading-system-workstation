@@ -67,7 +67,6 @@ const editor = {
       standard_answer: '42',
       accepted_answers: ['42'],
       match_rule: 'exact',
-      knowledge: '整数运算',
       answer_only_max_score: null,
       require_final_answer: true,
       required_elements: ['列式'],

@@ -94,6 +94,18 @@ beforeEach(async () => {
 })
 
 describe('ConfigGenerationPanel', () => {
+  it('keeps optional question-bank AI tagging off by default and explains its cost', async () => {
+    const mounted = await mountPanel()
+    const option = mounted.host.querySelector<HTMLInputElement>(
+      '.config-generation__bank-sync input[type="checkbox"]',
+    )!
+
+    expect(option.checked).toBe(false)
+    expect(mounted.host.textContent).toContain('试卷入库并打标签')
+    expect(mounted.host.textContent).toContain('可能产生模型费用')
+    expect(mounted.host.textContent).toContain('入库失败不会影响已经生成的评分标准')
+  })
+
   it('explains small batches and submits a write only once while disabled', async () => {
     const pending = deferred<JobResponse>()
     const submitter = vi.fn((_sessionId: number, _request: ConfigGenerationRequest) => {
@@ -103,9 +115,9 @@ describe('ConfigGenerationPanel', () => {
     })
     const mounted = await mountPanel({ submitter })
 
-    expect(mounted.host.textContent).toContain('小批次生成')
+    expect(mounted.host.textContent).toContain('按拆题结果生成')
     expect(mounted.host.textContent).toContain('每批最多 3 题')
-    expect(mounted.host.textContent).toContain('全部批次成功后，再请求一次 AI 统一配置 100 分')
+    expect(mounted.host.textContent).toContain('失败批次可单独重试')
     expect(mounted.host.textContent).not.toContain('整卷单次生成')
     const submit = mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!
     submit.click()
@@ -277,8 +289,8 @@ describe('ConfigGenerationPanel', () => {
     configStore.attachJob(31, configStore.captureGenerationContext())
     const mounted = await mountPanel({ retryer })
 
-    expect(mounted.host.textContent).toContain('已成功 3 题')
-    expect(mounted.host.textContent).toContain('失败 2 题')
+    expect(mounted.host.textContent).toContain('已成功 3 道题')
+    expect(mounted.host.textContent).toContain('失败 2 道题')
     expect(mounted.host.querySelectorAll('input[type="checkbox"]')).toHaveLength(2)
     expect(mounted.host.querySelector('button[name="重新进行 AI 统一配分"]')).toBeNull()
     mounted.host.querySelector<HTMLInputElement>('[aria-label="选择失败批次 B002"]')!.click()
@@ -290,7 +302,8 @@ describe('ConfigGenerationPanel', () => {
       7, 31, ['Q5'], expect.stringMatching(/^[0-9a-f]{32}$/),
     )
     expect(configStore.jobId).toBe(32)
-    expect(mounted.host.textContent).toContain('已成功 3 题')
+    expect(mounted.host.textContent).toContain('上一轮已成功 1 题')
+    expect(mounted.host.textContent).toContain('共 3 题')
     expect(mounted.host.textContent).toContain('当前恢复任务')
   })
 
@@ -359,7 +372,7 @@ describe('ConfigGenerationPanel', () => {
     configStore.attachJob(31, configStore.captureGenerationContext())
     const mounted = await mountPanel({ retryer })
 
-    expect(mounted.host.textContent).toContain('12 道题的批次结果已经保存在本机')
+    expect(mounted.host.textContent).toMatch(/12 道题\s+的生成结果已经保存在本机/)
     expect(mounted.host.textContent).toContain('没有使用本地分数替代')
     expect(mounted.host.querySelectorAll('input[type="checkbox"]')).toHaveLength(0)
     mounted.host.querySelector<HTMLButtonElement>('button[name="重新进行 AI 统一配分"]')!.click()
@@ -443,7 +456,9 @@ describe('ConfigGenerationPanel', () => {
 
     expect(mounted.host.textContent).toContain('应用重启后，本次生成已停止。')
     expect(mounted.host.textContent).not.toContain('private failure')
-    mounted.host.querySelector<HTMLButtonElement>('button[name="重新分批生成"]')!.click()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="开始新一轮生成"]')!.click()
+    await nextTick()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!.click()
     await settle()
     expect(submitter.mock.calls[0]?.[1]).toMatchObject({ generation_mode: 'batched' })
     expect(retryer).not.toHaveBeenCalled()
@@ -464,10 +479,13 @@ describe('ConfigGenerationPanel', () => {
     configStore.attachJob(31, configStore.captureGenerationContext())
     const mounted = await mountPanel({ submitter })
 
-    expect(mounted.host.textContent).toContain('小批次生成')
+    expect(mounted.host.textContent).toContain('重新选择方式并生成新版本')
     expect(mounted.host.textContent).not.toContain('private-hash')
-    expect(mounted.host.querySelector('button[name="重新整卷生成"]')).toBeNull()
-    mounted.host.querySelector<HTMLButtonElement>('button[name="重新分批生成"]')!.click()
+    expect(mounted.host.querySelector('button[name="重新生成"]')?.textContent)
+      .toContain('重新整卷生成')
+    mounted.host.querySelector<HTMLButtonElement>('button[name="开始新一轮生成"]')!.click()
+    await nextTick()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!.click()
     await settle()
 
     expect(submitter).toHaveBeenCalledOnce()

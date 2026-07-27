@@ -177,7 +177,7 @@ def test_put_is_strict_reports_stable_row_issues_and_noop(editor_env) -> None:
     assert current["answer_key_path"] == old_paths["answer_key_path"]
 
 
-def test_editor_can_publish_safe_knowledge_normalization_without_teacher_edits(editor_env) -> None:
+def test_editor_treats_historical_knowledge_metadata_as_inert_on_noop(editor_env) -> None:
     client, db, _manager, tmp_path = editor_env
     payload = _payload()
     question = payload["rubric"]["questions"][0]
@@ -219,8 +219,20 @@ def test_editor_can_publish_safe_knowledge_normalization_without_teacher_edits(e
 
     assert first.status_code == 200
     body = first.json()
-    assert any(issue["code"] == "knowledge_normalization_pending" for issue in body["issues"])
-    assert not any(issue["code"] == "quality_blocking" for issue in body["issues"])
+    assert not any(
+        issue["code"] == "knowledge_normalization_pending"
+        for issue in body["issues"]
+    )
+    editor_json = json.dumps(body, ensure_ascii=False)
+    assert all(
+        field not in editor_json
+        for field in (
+            "knowledge_id",
+            "knowledge_ids",
+            "knowledge_name",
+            "knowledge_points",
+        )
+    )
     assert client.get(f"/api/sessions/{session_id}/config/editor").json()["revision"] == body["revision"]
     assert old_rubric_path.read_bytes() == old_rubric_bytes
     assert old_answer_path.read_bytes() == old_answer_bytes
@@ -232,27 +244,22 @@ def test_editor_can_publish_safe_knowledge_normalization_without_teacher_edits(e
 
     assert saved.status_code == 200
     saved_body = saved.json()
-    assert saved_body["save_result"]["config_saved"] is True
+    assert saved_body["save_result"]["config_saved"] is False
     assert not any(
         issue["code"] == "knowledge_normalization_pending"
         for issue in saved_body["issues"]
     )
     current = db.get_grading_session(session_id)
-    assert current["rubric_path"] != str(old_rubric_path)
-    assert current["answer_key_path"] != str(old_answer_path)
+    assert current["rubric_path"] == str(old_rubric_path)
+    assert current["answer_key_path"] == str(old_answer_path)
     assert old_rubric_path.read_bytes() == old_rubric_bytes
     assert old_answer_path.read_bytes() == old_answer_bytes
-    published_rubric = json.loads(Path(current["rubric_path"]).read_text(encoding="utf-8"))
-    published_answer = json.loads(Path(current["answer_key_path"]).read_text(encoding="utf-8"))
-    published_question = published_rubric["questions"][0]
-    assert published_question["knowledge_id"] == "K1"
-    assert published_question["knowledge_name"] == "知识点一"
-    assert published_question["knowledge_ids"] == ["K1", "K2", "K3"]
-    assert published_question["knowledge_points"] == [
-        {"knowledge_id": "K1", "knowledge_name": "知识点一"},
-        {"knowledge_id": "K2", "knowledge_name": "知识点二"},
-        {"knowledge_id": "K3", "knowledge_name": "知识点三"},
-    ]
+    stored_rubric = json.loads(old_rubric_path.read_text(encoding="utf-8"))
+    stored_answer = json.loads(old_answer_path.read_text(encoding="utf-8"))
+    # Historical fields remain readable in place, but the scoring editor neither
+    # exposes them as active data nor republishes a knowledge-only migration.
+    stored_question = stored_rubric["questions"][0]
+    assert stored_question["knowledge_id"] == "['K1', 'K2', 'K3']"
     assert [
         (
             answer["question_id"],
@@ -260,9 +267,9 @@ def test_editor_can_publish_safe_knowledge_normalization_without_teacher_edits(e
             answer["accepted_forms"],
             [(part["part_id"], part["answer"]) for part in answer["parts"]],
         )
-        for answer in published_answer["questions"]
+        for answer in stored_answer["questions"]
     ] == original_answer_content
-    assert [item["max_score"] for item in published_rubric["questions"]] == original_scores
+    assert [item["max_score"] for item in stored_rubric["questions"]] == original_scores
 
 
 def test_put_saves_once_preserves_source_and_rejects_stale_revision(editor_env) -> None:
@@ -468,10 +475,16 @@ def test_editor_mapping_keeps_config_job_submission_outside_the_session_claim(
 def test_existing_template_with_missing_files_requires_reconfirmation(editor_env) -> None:
     client, db, _manager, tmp_path = editor_env
     session_id = _write_config(tmp_path, db)
-    db.upsert_session_template(
+    template_id = db.upsert_session_template(
         session_id,
         str(tmp_path / "missing-front.png"),
         str(tmp_path / "missing-back.png"),
+    )
+    db.replace_answer_regions_atomic(
+        session_id,
+        template_id,
+        [],
+        confirmed=True,
     )
     first = client.get(f"/api/sessions/{session_id}/config/editor").json()
     response = client.put(
@@ -486,6 +499,10 @@ def test_existing_template_with_missing_files_requires_reconfirmation(editor_env
     )
     assert response.status_code == 200
     assert response.json()["save_result"]["mapping_status"] == "reconfirm_required"
+    template = db.get_session_template(session_id)
+    assert template["is_confirmed"] == 0
+    assert template["regions_snapshot_pending"] == 0
+    assert template["regions_snapshot_token"] is None
 
 
 def test_refine_accepts_only_revision_and_server_commands_and_rejects_old_revision(editor_env) -> None:
@@ -544,6 +561,26 @@ def test_db_conditional_publish_requires_both_old_paths_and_preserves_source(tmp
     session_id = _write_config(tmp_path, db)
     old = db.get_grading_session(session_id)
     db.bind_grading_session_source(session_id, source_paper_path="papers/source.pdf", source_paper_sha256="d" * 64)
+    template_id = db.upsert_session_template(
+        session_id,
+        str(tmp_path / "front.png"),
+        str(tmp_path / "back.png"),
+    )
+    snapshot_token = db.replace_answer_regions_atomic(
+        session_id,
+        template_id,
+        [],
+        confirmed=True,
+    )
+    db.update_question_bank_sync_state(
+        session_id,
+        state="ready",
+        details={
+            "config_revision": "e" * 64,
+            "source_paper_sha256": "d" * 64,
+        },
+        error="old sync",
+    )
 
     assert db.publish_grading_session_config(
         session_id,
@@ -557,3 +594,24 @@ def test_db_conditional_publish_requires_both_old_paths_and_preserves_source(tmp
     assert current["answer_key_path"] == old["answer_key_path"]
     assert current["source_paper_path"] == "papers/source.pdf"
     assert current["source_paper_sha256"] == "d" * 64
+    template = db.get_session_template(session_id)
+    assert template["is_confirmed"] == 1
+    assert template["regions_snapshot_pending"] == 1
+    assert template["regions_snapshot_token"] == snapshot_token
+
+    assert db.publish_grading_session_config(
+        session_id,
+        rubric_path="new-rubric.json",
+        answer_key_path="new-answer.json",
+        expected_rubric_path=old["rubric_path"],
+        expected_answer_key_path=old["answer_key_path"],
+    ) is True
+    template = db.get_session_template(session_id)
+    assert template["is_confirmed"] == 0
+    assert template["regions_snapshot_pending"] == 0
+    assert template["regions_snapshot_token"] is None
+    current = db.get_grading_session(session_id)
+    assert current["question_bank_sync_state"] == "not_started"
+    assert json.loads(current["question_bank_sync_details_json"]) == {}
+    assert current["question_bank_sync_error"] is None
+    assert current["question_bank_sync_updated_at"] is None

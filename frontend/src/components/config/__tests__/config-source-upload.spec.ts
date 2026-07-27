@@ -191,7 +191,9 @@ describe('ConfigSourceUpload', () => {
     const submissionLoader = vi.fn(async () => ({ status: 'processing', source: null } as const))
     const mounted = await mountUpload({ submissionLoader })
 
-    mounted.host.querySelector<HTMLButtonElement>('button:not([type="submit"])')!.click()
+    const reconcile = [...mounted.host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('重新核对上传结果'))!
+    reconcile.click()
     await settle()
 
     expect(submissionLoader).toHaveBeenCalledExactlyOnceWith(7, token)
@@ -208,7 +210,9 @@ describe('ConfigSourceUpload', () => {
       activeSourceLoader,
     })
 
-    mounted.host.querySelector<HTMLButtonElement>('button:not([type="submit"])')!.click()
+    const reconcile = [...mounted.host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('重新核对上传结果'))!
+    reconcile.click()
     await settle()
 
     expect(activeSourceLoader).toHaveBeenCalledExactlyOnceWith(7)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -42,6 +44,75 @@ class RenameSessionRequest(BaseModel):
         return clean
 
 
+class DeleteSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: str
+    confirmation_name: str
+
+    @field_validator("expected_revision")
+    @classmethod
+    def _revision(cls, value: str) -> str:
+        clean = str(value or "").strip().casefold()
+        if re.fullmatch(r"[0-9a-f]{64}", clean) is None:
+            raise ValueError("must be a sha256 revision")
+        return clean
+
+    @field_validator("confirmation_name")
+    @classmethod
+    def _confirmation_name(cls, value: str) -> str:
+        clean = str(value or "").strip()
+        if not clean:
+            raise ValueError("must be nonblank")
+        return clean
+
+
+class PermanentDeleteSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: str
+    confirmation_phrase: str
+
+    @field_validator("expected_revision")
+    @classmethod
+    def _revision(cls, value: str) -> str:
+        clean = str(value or "").strip().casefold()
+        if re.fullmatch(r"[0-9a-f]{64}", clean) is None:
+            raise ValueError("must be a sha256 revision")
+        return clean
+
+    @field_validator("confirmation_phrase")
+    @classmethod
+    def _confirmation_phrase(cls, value: str) -> str:
+        clean = str(value or "").strip()
+        if not clean:
+            raise ValueError("must be nonblank")
+        return clean
+
+
+class QuestionBankSyncRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    config_revision: str
+    client_request_token: str
+
+    @field_validator("config_revision")
+    @classmethod
+    def _revision(cls, value: str) -> str:
+        clean = str(value or "").strip().casefold()
+        if re.fullmatch(r"[0-9a-f]{64}", clean) is None:
+            raise ValueError("must be a sha256 revision")
+        return clean
+
+    @field_validator("client_request_token")
+    @classmethod
+    def _request_token(cls, value: str) -> str:
+        clean = str(value or "").strip().casefold()
+        if re.fullmatch(r"[0-9a-f]{32}", clean) is None:
+            raise ValueError("must be 32 lowercase hexadecimal characters")
+        return clean
+
+
 class SessionSummary(BaseModel):
     id: int
     name: str
@@ -67,6 +138,45 @@ class SessionDetail(SessionSummary):
 class SessionListResponse(BaseModel):
     items: list[SessionSummary]
     total: int
+
+
+class SessionDeletionImpactResponse(BaseModel):
+    session: SessionSummary
+    revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    active_jobs: int = Field(ge=0)
+    active_grading_runs: int = Field(ge=0)
+    can_archive: bool
+    can_permanently_delete: bool
+    permanent_delete_phrase: str
+    permanent_counts: dict[str, int] = Field(default_factory=dict)
+    storage_counts: dict[str, int] = Field(default_factory=dict)
+    question_bank_counts: dict[str, int] = Field(default_factory=dict)
+    blocking_training_tasks: list[str] = Field(default_factory=list)
+    # One-release compatibility field for the former recycle-bin API client.
+    can_delete: bool
+
+
+class SessionPermanentDeletionResponse(BaseModel):
+    session_id: int = Field(gt=0)
+    db_counts: dict[str, int] = Field(default_factory=dict)
+    question_bank_counts: dict[str, int] = Field(default_factory=dict)
+    deleted_files: int = Field(ge=0)
+    deleted_dirs: int = Field(ge=0)
+    skipped_shared: int = Field(ge=0)
+    storage_cleanup_pending: bool = False
+    recovered_interrupted_delete: bool = False
+
+
+class SessionPendingCleanup(BaseModel):
+    session_id: int = Field(gt=0)
+    deleted_files: int = Field(ge=0)
+    deleted_dirs: int = Field(ge=0)
+    skipped_shared: int = Field(ge=0)
+
+
+class SessionPendingCleanupListResponse(BaseModel):
+    items: list[SessionPendingCleanup]
+    total: int = Field(ge=0)
 
 
 class SessionProgress(BaseModel):

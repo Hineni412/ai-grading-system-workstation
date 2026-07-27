@@ -6,6 +6,7 @@ import threading
 
 from fastapi import Depends, Request
 
+from api_profiles import get_api_profile_store
 from backend.repositories.access import GradingRepositoryAccess
 from backend.repositories.compat import open_grading_repositories
 from backend.analytics import SessionAnalysisService
@@ -21,6 +22,7 @@ from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
 from backend.ops.jobs import register_ops_job_handlers
 from backend.media.service import ReviewMediaService
+from backend.model_profiles import ModelProfileService
 from backend.ops.service import OpsSelfCheckService
 from backend.ops.plan_store import OpsPlanStore
 from backend.ops.write_service import OpsWriteService
@@ -85,6 +87,10 @@ def get_ops_self_check_service(
     return OpsSelfCheckService(paths)
 
 
+def get_model_profile_service() -> ModelProfileService:
+    return ModelProfileService(get_api_profile_store())
+
+
 def create_ops_write_service(
     path_manager: PathManager | None = None,
 ) -> OpsWriteService:
@@ -147,6 +153,10 @@ def get_annotated_dir() -> Path:
 
 def get_data_root() -> Path:
     return get_path_manager().data_root
+
+
+def get_question_bank_db_path() -> Path:
+    return get_path_manager().qb_db_path
 
 
 def get_exams_dir() -> Path:
@@ -299,9 +309,15 @@ def create_job_manager(path_manager: PathManager | None = None) -> JobManager:
         "upload_config_dir",
         Path(paths.data_root) / "config" / "uploaded",
     )
+    question_bank_db_path = getattr(
+        paths,
+        "qb_db_path",
+        Path(paths.data_root) / "databases" / "question_bank.db",
+    )
     manager = JobManager(
         JobStore(paths.db_path),
         interrupted_input_root=Path(upload_config_dir),
+        question_bank_db_path=Path(question_bank_db_path),
     )
     try:
         register_default_job_handlers(
@@ -311,11 +327,7 @@ def create_job_manager(path_manager: PathManager | None = None) -> JobManager:
             exams_dir=paths.exams_dir,
             templates_dir=paths.templates_dir,
             data_root=paths.data_root,
-            question_bank_db_path=getattr(
-                paths,
-                "qb_db_path",
-                Path(paths.data_root) / "databases" / "question_bank.db",
-            ),
+            question_bank_db_path=question_bank_db_path,
             upload_config_dir=upload_config_dir,
             training_output_root=getattr(
                 paths,

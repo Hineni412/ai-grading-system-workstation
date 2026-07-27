@@ -38,6 +38,13 @@ const item = {
   textbook_version: null,
   tags: [],
   asset_urls: [],
+  rich_content: {
+    available: true,
+    question_block_count: 0,
+    answer_block_count: 0,
+    question_blocks: [],
+    answer_blocks: [],
+  },
 }
 const paper = {
   id: 4,
@@ -55,6 +62,8 @@ const paper = {
   updated_at: '2026-07-18T09:00:00Z',
   question_count: 1,
   tagged_question_count: 0,
+  tagged_any_question_count: 0,
+  source_type: 'docx',
 }
 
 const mounted: Array<ReturnType<typeof createApp>> = []
@@ -71,6 +80,12 @@ async function mountView() {
   app.use(router)
   app.mount(host)
   mounted.push(app)
+  await vi.waitFor(() => {
+    expect(host.textContent).toContain('匿名期末试卷')
+  })
+  const openPaper = [...host.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.includes('查看试题'))
+  openPaper?.click()
   await vi.waitFor(() => {
     expect(host.textContent).toContain('已知 x + y = 3')
   })
@@ -128,41 +143,48 @@ describe('question bank workspace', () => {
       throw new Error(`unexpected request: ${url}`)
     })
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    const { host } = await mountView()
-    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    const { host, pinia } = await mountView()
+    const baselineCalls = fetchSpy.mock.calls.length
 
     const search = host.querySelector<HTMLInputElement>('input[type="search"]')!
     search.value = '二次函数'
     search.dispatchEvent(new Event('input', { bubbles: true }))
-    const examScope = host.querySelector<HTMLInputElement>('input[placeholder="如 期中"]')!
+    host.querySelector<HTMLElement>('.qb-more-filters summary')!.click()
+    await nextTick()
+    const examScope = host.querySelector<HTMLInputElement>('input[placeholder="如：函数"]')!
     examScope.value = '期中'
     examScope.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
-    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    expect(fetchSpy).toHaveBeenCalledTimes(baselineCalls)
 
     const apply = [...host.querySelectorAll('button')]
       .find((button) => button.textContent?.includes('应用筛选'))!
     apply.click()
-    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(3))
-    expect(String(fetchSpy.mock.calls[2]?.[0])).toContain(
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(baselineCalls + 1))
+    expect(String(fetchSpy.mock.calls[baselineCalls]?.[0])).toContain(
       'exam_scopes=%E6%9C%9F%E4%B8%AD',
     )
 
     host.querySelector<HTMLInputElement>('input[aria-label="选择第 1 题"]')!.click()
     await nextTick()
-    const aiButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('AI 标注'))!
+    expect(useQuestionBankStore(pinia).selectedQuestionIds).toEqual([17])
+    const openImport = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('上传与 AI 标注'))!
+    openImport.click()
+    await nextTick()
+    const aiButton = document.body.querySelector<HTMLButtonElement>('.qb-button.is-ai')!
+    await vi.waitFor(() => expect(aiButton.disabled).toBe(false))
     aiButton.click()
     await nextTick()
     expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('已选 1 道题'))
-    expect(fetchSpy).toHaveBeenCalledTimes(3)
+    expect(fetchSpy).toHaveBeenCalledTimes(baselineCalls + 1)
 
     confirmSpy.mockReturnValue(true)
     aiButton.click()
     aiButton.click()
-    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(4))
-    expect(String(fetchSpy.mock.calls[3]?.[0])).toBe('/api/question-bank/tagging-jobs')
-    expect(JSON.parse(String(fetchSpy.mock.calls[3]?.[1]?.body))).toEqual({
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(baselineCalls + 2))
+    expect(String(fetchSpy.mock.calls[baselineCalls + 1]?.[0])).toBe('/api/question-bank/tagging-jobs')
+    expect(JSON.parse(String(fetchSpy.mock.calls[baselineCalls + 1]?.[1]?.body))).toEqual({
       question_ids: [17],
     })
   })
@@ -251,10 +273,16 @@ describe('question bank workspace', () => {
     host.querySelector<HTMLInputElement>('input[aria-label="选择第 1 题"]')!.click()
     await nextTick()
     const add = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('加入组卷篮'))!
+      .find((button) => button.textContent?.includes('加入试卷篮'))!
     add.click()
 
-    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/question-assembly'))
+    await vi.waitFor(() => expect(
+      (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.some(
+        ([input, init]) => String(input) === '/api/question-assembly/draft'
+          && init?.method === 'PUT',
+      ),
+    ).toBe(true))
+    expect(router.currentRoute.value.fullPath).toBe('/question-bank')
     const saveCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(
       ([input, init]) => String(input) === '/api/question-assembly/draft' && init?.method === 'PUT',
     )
@@ -283,9 +311,19 @@ describe('question bank workspace', () => {
         available: true,
         question_block_count: 1,
         answer_block_count: 1,
-        question_blocks: [{ text: '题干', asset_indexes: [], asset_urls: [] }],
+        question_blocks: [{
+          kind: 'paragraph',
+          text: '题干',
+          segments: [],
+          rows: [],
+          asset_indexes: [],
+          asset_urls: [],
+        }],
         answer_blocks: [{
+          kind: 'paragraph',
           text: '答案',
+          segments: [],
+          rows: [],
           asset_indexes: [0],
           asset_urls: ['/api/question-bank/questions/17/assets/0'],
         }],
@@ -294,10 +332,12 @@ describe('question bank workspace', () => {
     }
     bank.detailState = 'ready'
     await nextTick()
-    const answerImage = host.querySelector<HTMLImageElement>('img[alt="答案图片素材"]')!
+    document.body.querySelector<HTMLElement>('.qb-answer-section summary')!.click()
+    await nextTick()
+    const answerImage = document.body.querySelector<HTMLImageElement>('img[alt="答案配图"]')!
     answerImage.dispatchEvent(new Event('error'))
     await nextTick()
-    expect(host.textContent).toContain('这张答案图片暂时无法读取')
+    expect(document.body.textContent).toContain('图片暂时无法读取')
 
     const jobs = useJobStore(pinia)
     jobs.track({

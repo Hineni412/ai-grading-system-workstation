@@ -1,13 +1,18 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import type { ReviewItem } from '../api/review'
+import {
+  resolveReviewItem,
+  type ReviewItemLike,
+} from '../api/review'
 
 export interface ReviewDraft {
   key: string
   sessionId: number
   questionId: string
-  detailId: number
+  reviewItemId?: string
+  baseRevision?: number
+  detailId?: number
   scoreText: string
   note: string
   baseScoreText: string
@@ -16,8 +21,14 @@ export interface ReviewDraft {
   updatedAt: number
 }
 
-export function reviewDraftKey(item: Pick<ReviewItem, 'session_id' | 'question_id' | 'detail_id'>): string {
-  return `${item.session_id}:${item.question_id}:${item.detail_id}`
+export function reviewDraftKey(item: ReviewItemLike): string {
+  return item.review_item_id
+    ? `review-item:${item.review_item_id}`
+    : `${item.session_id}:${item.question_id}:${String(item.detail_id)}`
+}
+
+export function reviewDraftRevision(draft: ReviewDraft): number {
+  return draft.baseRevision ?? 0
 }
 
 export function scoreIssue(scoreText: string, maxScore: number): string | null {
@@ -31,12 +42,14 @@ export function scoreIssue(scoreText: string, maxScore: number): string | null {
   return null
 }
 
-function scoreText(value: number): string {
-  return Number.isFinite(value) ? String(value) : ''
+function scoreText(value: number | null): string {
+  return value !== null && Number.isFinite(value) ? String(value) : ''
 }
 
-function baseNote(item: ReviewItem): string {
-  return item.needs_review ? '' : (item.deduction_reason ?? '').trim()
+function baseNote(item: ReviewItemLike): string {
+  return item.score_source === 'teacher' || item.teacher_locked
+    ? (item.deduction_reason ?? '').trim()
+    : ''
 }
 
 function refreshDirty(draft: ReviewDraft): void {
@@ -51,18 +64,20 @@ export const useReviewDraftStore = defineStore('review-drafts', () => {
   )
   const hasDirtyDrafts = computed(() => dirtyCount.value > 0)
 
-  function ensureDraft(item: ReviewItem): ReviewDraft {
+  function ensureDraft(item: ReviewItemLike): ReviewDraft {
     const key = reviewDraftKey(item)
     const current = drafts.value[key]
     if (current?.dirty) return current
 
-    const nextScore = scoreText(item.score_awarded)
-    const nextNote = baseNote(item)
+    const resolved = resolveReviewItem(item)
+    const nextScore = scoreText(resolved.score_awarded)
+    const nextNote = baseNote(resolved)
     if (current) {
       current.scoreText = nextScore
       current.note = nextNote
       current.baseScoreText = nextScore
       current.baseNote = nextNote
+      current.baseRevision = resolved.revision
       current.dirty = false
       current.updatedAt = Date.now()
       return current
@@ -70,9 +85,11 @@ export const useReviewDraftStore = defineStore('review-drafts', () => {
 
     const draft: ReviewDraft = {
       key,
-      sessionId: item.session_id,
-      questionId: item.question_id,
-      detailId: item.detail_id,
+      sessionId: resolved.session_id,
+      questionId: resolved.question_id,
+      reviewItemId: resolved.review_item_id,
+      baseRevision: resolved.revision,
+      ...(resolved.detail_id === null ? {} : { detailId: resolved.detail_id }),
       scoreText: nextScore,
       note: nextNote,
       baseScoreText: nextScore,

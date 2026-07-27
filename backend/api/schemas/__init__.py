@@ -1,3 +1,10 @@
+from .ai_diagnostics import (
+    AiDiagnosticAttachment,
+    AiDiagnosticDetail,
+    AiDiagnosticError,
+    AiDiagnosticListResponse,
+    AiDiagnosticSummary,
+)
 from .config import (
     ConfigGenerationRequest,
     ConfigGenerationRetryRequest,
@@ -65,9 +72,14 @@ from .sessions import (
     AnswerRegionListResponse,
     AnswerRegionResponse,
     CreateSessionRequest,
+    DeleteSessionRequest,
+    PermanentDeleteSessionRequest,
+    QuestionBankSyncRequest,
     RenameSessionRequest,
+    SessionDeletionImpactResponse,
     SessionDetail,
     SessionListResponse,
+    SessionPermanentDeletionResponse,
     SessionProgress,
     SessionSummary,
     SessionTemplateResponse,
@@ -115,9 +127,17 @@ from .training import (
 )
 
 __all__ = [
+    "AiDiagnosticAttachment",
+    "AiDiagnosticDetail",
+    "AiDiagnosticError",
+    "AiDiagnosticListResponse",
+    "AiDiagnosticSummary",
     "AnswerRegionListResponse",
     "AnswerRegionResponse",
     "CreateSessionRequest",
+    "DeleteSessionRequest",
+    "PermanentDeleteSessionRequest",
+    "QuestionBankSyncRequest",
     "ConfigGenerationRequest",
     "ConfigGenerationRetryRequest",
     "ConfigQuestionPreviewResponse",
@@ -137,6 +157,8 @@ __all__ = [
     "JobResponse",
     "JobSubmitRequest",
     "RenameSessionRequest",
+    "SessionDeletionImpactResponse",
+    "SessionPermanentDeletionResponse",
     "QuestionListItem",
     "QuestionListResponse",
     "QuestionPaperListItem",

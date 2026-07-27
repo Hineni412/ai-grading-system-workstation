@@ -5,11 +5,13 @@ from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import FileResponse
+from pypinyin import Style, lazy_pinyin
 
 from backend.api.app import ApiError
 from backend.api.dependencies import (
     get_grading_db,
     get_scan_grading_workspace,
+    get_template_upload_service,
 )
 from backend.api.routers.jobs import _job_response
 from backend.api.routers.sessions import _require_session
@@ -20,10 +22,12 @@ from backend.api.schemas.scan import (
     ScanDecisionResponse,
     ScanGradingWorkspaceResponse,
     ScanPreflightResponse,
+    ScanStudentMatchOptionsResponse,
     ScanUploadBatchResponse,
     ScanUploadFreezeRequest,
     ScanUploadResponse,
 )
+from backend.config_workspace.publish import load_editor_config
 from backend.scan_grading.workspace import (
     ActiveScanAnalysisError,
     FrozenUploadBatchError,
@@ -35,9 +39,29 @@ from backend.scan_grading.workspace import (
 )
 from backend.jobs.manager import ActiveJobExistsError, UnsupportedJobTypeError
 from backend.repositories.access import GradingRepositoryAccess
+from template_upload_service import TemplateUploadError, TemplateUploadService
 
 
 router = APIRouter(prefix="/api", tags=["scan"])
+
+
+def _student_name_initials(name: object) -> str:
+    return "".join(
+        lazy_pinyin(
+            str(name or "").strip(),
+            style=Style.FIRST_LETTER,
+            strict=False,
+        )
+    ).casefold()
+
+
+def _student_name_pinyin(name: object) -> str:
+    return "".join(
+        lazy_pinyin(
+            str(name or "").strip(),
+            strict=False,
+        )
+    ).casefold()
 
 
 @router.get(
@@ -51,6 +75,32 @@ def get_grading_workspace(
 ) -> ScanGradingWorkspaceResponse:
     _require_session(db, session_id)
     return ScanGradingWorkspaceResponse.model_validate(workspace.get_workspace(session_id))
+
+
+@router.get(
+    "/sessions/{session_id}/scan/student-options",
+    response_model=ScanStudentMatchOptionsResponse,
+)
+def get_scan_student_options(
+    session_id: int,
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+) -> ScanStudentMatchOptionsResponse:
+    _require_session(db, session_id)
+    return ScanStudentMatchOptionsResponse.model_validate(
+        {
+            "items": [
+                {
+                    "id": int(student["id"]),
+                    "student_code": str(student.get("student_code") or ""),
+                    "name": str(student.get("name") or ""),
+                    "class_name": student.get("class_name"),
+                    "pinyin_initials": _student_name_initials(student.get("name")),
+                    "pinyin_full": _student_name_pinyin(student.get("name")),
+                }
+                for student in db.list_students()
+            ]
+        }
+    )
 
 
 @router.post(
@@ -303,17 +353,60 @@ def analyze_session_scans(
     request: ScanAnalyzeRequest | None = None,
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+    template_service: TemplateUploadService = Depends(get_template_upload_service),
 ) -> JobResponse:
     _require_session(db, session_id)
     request = request or ScanAnalyzeRequest()
+    try:
+        template = template_service.load_current(db=db, session_id=session_id)
+    except FileNotFoundError:
+        raise ApiError(
+            409,
+            "scan_template_not_found",
+            "Upload a sample paper before running scan preflight",
+        ) from None
+    except TemplateUploadError:
+        raise ApiError(
+            409,
+            "scan_template_unavailable",
+            "The current sample paper is unavailable",
+        ) from None
+    if not template.is_confirmed or template.regions_snapshot_pending:
+        raise ApiError(
+            409,
+            "scan_template_not_confirmed",
+            "Confirm the sample paper regions before running scan preflight",
+        )
+    first_page_role = template.first_page_role
+    front_page_parity = "odd" if first_page_role == "front" else "even"
+    if (
+        request.front_page_parity is not None
+        and request.front_page_parity != front_page_parity
+    ):
+        raise ApiError(
+            409,
+            "scan_template_page_assignment_changed",
+            "The sample paper page assignment changed; start preflight again",
+        )
+    try:
+        config_revision = load_editor_config(db, session_id).revision
+    except (KeyError, OSError, TypeError, ValueError):
+        raise ApiError(
+            409,
+            "scan_grading_config_not_ready",
+            "Save a complete grading rubric before running scan preflight",
+        ) from None
     payload: dict[str, object] = {
         "session_id": int(session_id),
         "enhance_images": request.enhance_images,
+        "front_page_parity": front_page_parity,
+        "template_first_page_role": first_page_role,
+        "template_id": template.template_id,
+        "template_fingerprint": template.template_fingerprint,
+        "config_revision": config_revision,
     }
     if request.ocr_workers is not None:
         payload["ocr_workers"] = request.ocr_workers
-    if request.front_page_parity:
-        payload["front_page_parity"] = request.front_page_parity
     try:
         job = workspace.submit_scan_analysis(session_id, payload)
     except ScanGradingWorkspaceError as exc:

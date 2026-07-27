@@ -14,12 +14,14 @@ from original_paper_exporter import OriginalPaperExporter
 from report import ReportGenerator
 from question_bank.services.ai_tagging_service import AITaggingService
 from question_bank.services.question_write_service import QuestionBankWriteService
+from question_bank.taxonomy.governance import get_taxonomy_governance
 
 from .manager import JobContext, JobManager
 from .config_generation import run_config_generation_job
 from .assembly_export import run_assembly_export_job
 from .grading_run import run_grading_job
 from .question_import import run_question_import_job
+from .question_bank_sync import run_session_question_bank_sync_job
 from .scan_analysis import run_scan_analysis
 from .tagging_sync import run_tagging_sync_job
 from .training_export import run_training_export_job
@@ -60,6 +62,9 @@ def register_default_job_handlers(
     grading_runner: Callable[..., dict[str, object]] = run_grading_job,
     config_generation_runner: Callable[..., dict[str, object]] = run_config_generation_job,
     question_import_runner: Callable[..., dict[str, object]] = run_question_import_job,
+    question_bank_sync_runner: Callable[
+        ..., dict[str, object]
+    ] = run_session_question_bank_sync_job,
     tagging_sync_runner: Callable[..., dict[str, object]] = run_tagging_sync_job,
     training_export_runner: Callable[..., dict[str, object]] = run_training_export_job,
     assembly_export_runner: Callable[..., dict[str, object]] = run_assembly_export_job,
@@ -72,6 +77,12 @@ def register_default_job_handlers(
         Path(question_bank_db_path)
         if question_bank_db_path is not None
         else base_data_root / "databases" / "question_bank.db"
+    )
+    taxonomy_governance = get_taxonomy_governance()
+    resolved_tagging_factory = (
+        (lambda: AITaggingService(taxonomy_governance=taxonomy_governance))
+        if tagging_ai_service_factory is AITaggingService
+        else tagging_ai_service_factory
     )
     manager.register(
         "report_export",
@@ -137,7 +148,21 @@ def register_default_job_handlers(
         _build_tagging_sync_handler(
             question_bank_db_path=resolved_question_bank_db,
             tagging_sync_runner=tagging_sync_runner,
-            ai_service_factory=tagging_ai_service_factory,
+            ai_service_factory=resolved_tagging_factory,
+            taxonomy_governance=taxonomy_governance,
+        ),
+    )
+    manager.register(
+        "question_bank_sync",
+        _build_question_bank_sync_handler(
+            db_path=Path(db_path),
+            question_bank_db_path=resolved_question_bank_db,
+            data_root=base_data_root,
+            question_bank_sync_runner=question_bank_sync_runner,
+            question_import_runner=question_import_runner,
+            tagging_sync_runner=tagging_sync_runner,
+            ai_service_factory=resolved_tagging_factory,
+            taxonomy_governance=taxonomy_governance,
         ),
     )
     manager.register(
@@ -219,12 +244,46 @@ def _build_tagging_sync_handler(
     question_bank_db_path: Path,
     tagging_sync_runner: Callable[..., dict[str, object]],
     ai_service_factory: Callable[[], Any],
+    taxonomy_governance: Any,
 ):
     def handler(context: JobContext) -> dict[str, object]:
         return tagging_sync_runner(
             context=context,
             question_bank_db_path=question_bank_db_path,
             ai_service_factory=ai_service_factory,
+            taxonomy_governance=taxonomy_governance,
+        )
+
+    return handler
+
+
+def _build_question_bank_sync_handler(
+    *,
+    db_path: Path,
+    question_bank_db_path: Path,
+    data_root: Path,
+    question_bank_sync_runner: Callable[..., dict[str, object]],
+    question_import_runner: Callable[..., dict[str, object]],
+    tagging_sync_runner: Callable[..., dict[str, object]],
+    ai_service_factory: Callable[[], Any],
+    taxonomy_governance: Any,
+):
+    write_service = QuestionBankWriteService(
+        question_bank_db_path,
+        data_root=data_root,
+    )
+
+    def handler(context: JobContext) -> dict[str, object]:
+        return question_bank_sync_runner(
+            context=context,
+            grading_db=open_grading_repositories(db_path),
+            question_bank_db_path=question_bank_db_path,
+            data_root=data_root,
+            write_service=write_service,
+            question_import_runner=question_import_runner,
+            tagging_sync_runner=tagging_sync_runner,
+            ai_service_factory=ai_service_factory,
+            taxonomy_governance=taxonomy_governance,
         )
 
     return handler
@@ -351,6 +410,11 @@ def _build_grading_run_handler(
             llm_client_factory=llm_client_factory,
             report=context.report,
             grading_mode=str(context.payload.get("grading_mode") or "full_paper"),
+            scan_batch_id=(
+                str(context.payload["scan_batch_id"])
+                if context.payload.get("scan_batch_id")
+                else None
+            ),
             failed_only=bool(context.payload.get("failed_only", False)),
             enhance_images=bool(context.payload.get("enhance_images", True)),
             max_workers=int(max_workers) if max_workers is not None else None,
@@ -398,9 +462,21 @@ def _build_scan_analysis_handler(
             "llm_client_factory": llm_client_factory,
             "enhance_images": bool(context.payload.get("enhance_images", True)),
             "ocr_workers": int(ocr_workers) if ocr_workers is not None else None,
-            "front_page_parity": str(context.payload.get("front_page_parity") or "odd"),
+            "front_page_parity": (
+                str(context.payload["front_page_parity"])
+                if context.payload.get("front_page_parity")
+                else None
+            ),
             "raise_if_cancelled": context.raise_if_cancelled,
         }
+        for key in (
+            "template_id",
+            "template_fingerprint",
+            "template_first_page_role",
+            "config_revision",
+        ):
+            if context.payload.get(key) is not None:
+                scan_kwargs[key] = context.payload[key]
         if context.payload.get("scan_batch_id"):
             scan_kwargs["scan_batch_id"] = str(context.payload["scan_batch_id"])
         result = scan_runner(

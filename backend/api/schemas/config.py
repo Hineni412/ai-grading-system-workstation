@@ -24,6 +24,49 @@ class SessionConfigResponse(BaseModel):
     answer_key: dict[str, Any]
 
 
+class ConfigRichInlineSegmentResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(max_length=200_000)
+    superscript: bool
+    subscript: bool
+    underline: bool
+    line_break: bool
+
+
+class ConfigRichTableCellResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    segments: list[ConfigRichInlineSegmentResponse] = Field(max_length=2_000)
+
+
+class ConfigRichTableRowResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cells: list[ConfigRichTableCellResponse] = Field(max_length=100)
+
+
+class ConfigRichBlockResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["paragraph", "table"]
+    text: str = Field(max_length=500_000)
+    segments: list[ConfigRichInlineSegmentResponse] = Field(max_length=5_000)
+    rows: list[ConfigRichTableRowResponse] = Field(max_length=500)
+    asset_indexes: list[int] = Field(max_length=5_000)
+    asset_urls: list[str] = Field(max_length=5_000)
+
+
+class ConfigRichContentResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    available: bool
+    question_block_count: int = Field(ge=0, le=5_000)
+    answer_block_count: int = Field(ge=0, le=5_000)
+    question_blocks: list[ConfigRichBlockResponse] = Field(max_length=5_000)
+    answer_blocks: list[ConfigRichBlockResponse] = Field(max_length=5_000)
+
+
 class ConfigQuestionPreviewResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -36,6 +79,7 @@ class ConfigQuestionPreviewResponse(BaseModel):
     local_answer_trusted: bool
     has_question_asset: bool
     has_answer_asset: bool
+    rich_content: ConfigRichContentResponse
 
 
 class ConfigSourceResponse(BaseModel):
@@ -78,7 +122,7 @@ class ConfigSourceGenerationRequest(BaseModel):
 
     source_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     source_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
-    generation_mode: Literal["batched", "per_question"] = "batched"
+    generation_mode: Literal["batched", "per_question", "whole_document"] = "batched"
 
     @field_validator("generation_mode")
     @classmethod
@@ -241,7 +285,6 @@ class ConfigEditorRowResponse(BaseModel):
     standard_answer: str
     accepted_answers: list[str]
     match_rule: str
-    knowledge: str
     answer_only_max_score: float | None
     require_final_answer: bool | None
     required_elements: list[str]

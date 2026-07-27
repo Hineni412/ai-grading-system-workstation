@@ -38,8 +38,22 @@ function item(index: number, overrides: Partial<ReviewItem> = {}): ReviewItem {
 }
 
 const questions: ReviewQuestionSummary[] = [
-  { question_id: 'Q1', total_count: 3, needs_review_count: 2, max_score: 5 },
-  { question_id: 'Q2', total_count: 2, needs_review_count: 1, max_score: 8 },
+  {
+    question_id: 'Q1',
+    total_count: 3,
+    needs_review_count: 2,
+    ungraded_count: 0,
+    teacher_confirmed_count: 0,
+    max_score: 5,
+  },
+  {
+    question_id: 'Q2',
+    total_count: 2,
+    needs_review_count: 1,
+    ungraded_count: 0,
+    teacher_confirmed_count: 0,
+    max_score: 8,
+  },
 ]
 
 async function mountWorkspace(items: ReviewItem[] = [item(1), item(2)]) {
@@ -53,7 +67,7 @@ async function mountWorkspace(items: ReviewItem[] = [item(1), item(2)]) {
     selectedQuestionId: 'Q1',
     items,
     search: '',
-    scope: 'needs_review',
+    scope: 'teacher_pending',
     sort: 'risk',
     page: 1,
     totalPages: 1,
@@ -78,7 +92,7 @@ describe('question batch review workspace', () => {
     const { app, host } = await mountWorkspace([item(1), item(2), confirmed])
 
     expect(host.querySelector('[data-testid="question-strip"]')?.textContent).toContain('Q1')
-    expect(host.querySelector('[data-testid="question-strip"]')?.textContent).toContain('待复核 2 / 3')
+    expect(host.querySelector('[data-testid="question-strip"]')?.textContent).toContain('未批 0 · 教师确认 0 / 3')
     expect(host.querySelector('[data-question-id="Q1"]')?.getAttribute('aria-current')).toBe('true')
     expect(host.querySelectorAll('[data-testid="review-answer-sheet"]')).toHaveLength(3)
     expect(host.querySelector('[data-detail-id="3"] input')).toHaveProperty('disabled', true)
@@ -96,8 +110,22 @@ describe('question batch review workspace', () => {
 
     expect(confirmBatch).toHaveBeenCalledTimes(1)
     expect(confirmBatch.mock.calls[0]?.[0]).toEqual([
-      { result_id: 101, detail_id: 1, score_awarded: 3 },
-      { result_id: 102, detail_id: 2, score_awarded: 2.5 },
+      {
+        review_item_id: '7:Q1:1',
+        expected_revision: 0,
+        student_id: 101,
+        result_id: 101,
+        detail_id: 1,
+        score_awarded: 3,
+      },
+      {
+        review_item_id: '7:Q1:2',
+        expected_revision: 0,
+        student_id: 102,
+        result_id: 102,
+        detail_id: 2,
+        score_awarded: 2.5,
+      },
     ])
     expect(confirmBatch.mock.calls[0]?.[1]).toEqual(['7:Q1:1', '7:Q1:2'])
     expect(confirmBatch.mock.calls[0]?.[2].map((entry: ReviewItem) => entry.detail_id)).toEqual([1, 2])
@@ -107,7 +135,7 @@ describe('question batch review workspace', () => {
 
   it('blocks the whole batch when one score is invalid and retains every draft', async () => {
     const { app, host, pinia, confirmBatch } = await mountWorkspace()
-    const invalid = host.querySelector<HTMLInputElement>('[data-testid="teacher-score-2"]')!
+    const invalid = host.querySelector<HTMLInputElement>('[data-testid="teacher-score-1"]')!
     invalid.value = '6'
     invalid.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
@@ -123,8 +151,8 @@ describe('question batch review workspace', () => {
 
   it('moves Enter to the next score without confirming the batch', async () => {
     const { app, host, confirmBatch } = await mountWorkspace()
-    const first = host.querySelector<HTMLInputElement>('[data-testid="teacher-score-1"]')!
-    const second = host.querySelector<HTMLInputElement>('[data-testid="teacher-score-2"]')!
+    const first = host.querySelector<HTMLInputElement>('[data-testid="teacher-score-0"]')!
+    const second = host.querySelector<HTMLInputElement>('[data-testid="teacher-score-1"]')!
     const focus = vi.spyOn(second, 'focus')
 
     first.dispatchEvent(new KeyboardEvent('keydown', {
@@ -142,7 +170,7 @@ describe('question batch review workspace', () => {
 
   it('keeps image failure local and remounts the same controlled crop URL on retry', async () => {
     const { app, host } = await mountWorkspace([item(1)])
-    const image = host.querySelector<HTMLImageElement>('[data-testid="answer-crop-1"]')!
+    const image = host.querySelector<HTMLImageElement>('[data-testid="answer-crop-0"]')!
     image.dispatchEvent(new Event('error'))
     await nextTick()
 
@@ -152,7 +180,7 @@ describe('question batch review workspace', () => {
     retry.click()
     await nextTick()
 
-    expect(host.querySelector<HTMLImageElement>('[data-testid="answer-crop-1"]')?.getAttribute('src')).toBe('/api/crop/1')
+    expect(host.querySelector<HTMLImageElement>('[data-testid="answer-crop-0"]')?.getAttribute('src')).toBe('/api/crop/1')
 
     app.unmount()
   })

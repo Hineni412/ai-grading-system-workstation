@@ -48,6 +48,15 @@ from backend.config_generation.compat import (
     retry_failed_grading_config_batches,
     refine_grading_config_from_manual_structure,
 )
+from backend.config_generation.normalization import (
+    normalize_generated_config_schema,
+    normalize_new_generated_config_payload,
+    strip_generated_config_knowledge_fields,
+)
+from session_manager import (
+    generate_grading_config_from_images,
+    generate_grading_config_from_text,
+)
 
 from .manager import JobCancellationRequested, JobContext
 
@@ -415,8 +424,10 @@ def _run_config_generation_job_impl(
     ).strip()
     if generation_mode == "per_question":
         generation_mode = "batched"
-    if generation_mode != "batched":
+    if generation_mode not in {"batched", "whole_document"}:
         raise ValueError("unsupported config generation mode")
+    if mode == "retry" and generation_mode != "batched":
+        raise ValueError("whole-document config generation is not retryable")
     staged_generation_mode = inputs.get("generation_mode")
     staged_mode = str(staged_generation_mode or "").strip()
     if staged_mode == "per_question":
@@ -472,7 +483,9 @@ def _run_config_generation_job_impl(
         document_text = str(inputs.get("document_text") or "")
         whole_page_images = _decode_whole_page_images(inputs.get("whole_page_images"))
         source_suffix = str(inputs.get("source_suffix") or "")
-    if not isinstance(confirmed_blocks, list) or not confirmed_blocks:
+    if not isinstance(confirmed_blocks, list) or (
+        generation_mode == "batched" and not confirmed_blocks
+    ):
         raise ValueError("confirmed_blocks must be a non-empty list")
     if question_images is not None and not isinstance(question_images, dict):
         raise ValueError("question_images must be an object")
@@ -522,7 +535,7 @@ def _run_config_generation_job_impl(
             retry_question_ids=retry_ids,
             checkpoint=checkpoint,
         )
-    else:
+    elif generation_mode == "batched":
         payload = generate_grading_config_from_confirmed_blocks(
             confirmed_blocks,
             document_text,
@@ -532,6 +545,27 @@ def _run_config_generation_job_impl(
             q_images=question_images or None,
             checkpoint=checkpoint,
         )
+    elif source_suffix == ".docx":
+        payload = generate_grading_config_from_text(
+            document_text,
+            llm_client=client,
+            model_name=_config_model(client),
+            report=report,
+            question_blocks=(
+                list(source_record.private_blocks)
+                if source_record is not None
+                else confirmed_blocks
+            ),
+        )
+    else:
+        payload = generate_grading_config_from_images(
+            whole_page_images,
+            "",
+            llm_client=client,
+            model_name=_config_model(client),
+            report=report,
+        )
+    normalize_new_generated_config_payload(payload)
     context.raise_if_cancelled()
     failed_ids = failed_grading_config_question_ids(payload)
     score_allocation = _score_allocation_summary(payload)
@@ -540,11 +574,18 @@ def _run_config_generation_job_impl(
         session_id,
         total_questions,
         failed_ids,
+        total_batch_count=_batch_count(payload),
         failed_batches=failed_grading_config_batches(payload),
         local_json_repairs=_local_json_repairs(payload),
         **score_allocation,
-        retryable_mode=True,
+        retryable_mode=generation_mode == "batched",
     )
+    if generation_mode == "whole_document" and (
+        failed_ids or bool(score_allocation["score_allocation_pending"])
+    ):
+        raise ValueError(
+            "whole-document generation returned an incomplete result; nothing was published"
+        )
     if failed_ids or bool(score_allocation["score_allocation_pending"]):
         with session_config_lock(Path(upload_config_dir), session_id):
             current_session = db.get_grading_session(session_id)
@@ -707,6 +748,13 @@ def _run_refine_config_job(
         llm_client=client,
         model_name=_config_model(client),
     )
+    # Teacher-created scoring-unit identities are stable references used by
+    # the editor and answer-region mapping.  Refine repairs the schema and
+    # removes forbidden knowledge metadata, but must not canonicalise part IDs
+    # as if this were a newly generated rubric.
+    strip_generated_config_knowledge_fields(payload)
+    normalize_generated_config_schema(payload)
+    strip_generated_config_knowledge_fields(payload)
     context.raise_if_cancelled()
     if editor_identity_signature(payload) != expected_identity:
         raise ValueError("refined config changed teacher scoring-unit identities")
@@ -887,9 +935,44 @@ def _question_count(
     payload: dict[str, Any],
     confirmed_blocks: list[dict[str, Any]],
 ) -> int:
+    confirmed_ids = {
+        str(block.get("question_id") or "").strip()
+        for block in confirmed_blocks
+        if isinstance(block, dict) and str(block.get("question_id") or "").strip()
+    }
+    if confirmed_ids:
+        return len(confirmed_ids)
+    batch_ids = _batch_question_ids(payload)
+    if batch_ids:
+        return len(batch_ids)
     rubric = payload.get("rubric")
     questions = rubric.get("questions") if isinstance(rubric, dict) else None
     return len(questions) if isinstance(questions, list) else len(confirmed_blocks)
+
+
+def _batch_question_ids(payload: dict[str, Any]) -> set[str]:
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    batches = meta.get("batches") if isinstance(meta, dict) else None
+    return {
+        str(qid).strip()
+        for batch in batches or []
+        if isinstance(batch, dict)
+        for qid in batch.get("question_ids") or []
+        if str(qid).strip()
+    }
+
+
+def _batch_count(payload: dict[str, Any]) -> int:
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    batches = meta.get("batches") if isinstance(meta, dict) else None
+    if not isinstance(batches, list):
+        return 0
+    return sum(
+        1
+        for batch in batches
+        if isinstance(batch, dict)
+        and any(str(qid).strip() for qid in batch.get("question_ids") or [])
+    )
 
 
 def _summary(
@@ -897,6 +980,7 @@ def _summary(
     total_questions: int,
     failed_ids: list[str],
     *,
+    total_batch_count: int = 0,
     failed_batches: list[dict[str, Any]] | None = None,
     local_json_repairs: list[dict[str, Any]] | None = None,
     score_allocation_pending: bool = False,
@@ -912,6 +996,7 @@ def _summary(
         "outcome": "partial" if is_partial else "complete",
         "total_questions": total_questions,
         "generated_questions": max(0, total_questions - failed_count),
+        "total_batch_count": max(0, int(total_batch_count)),
         "failed_count": failed_count,
         "failed_question_ids": failed_ids,
         "failed_batch_count": len(clean_batches),
@@ -963,19 +1048,12 @@ def _summary_from_batch_draft(
     session_id: int,
     payload: dict[str, Any],
 ) -> dict[str, object]:
-    batches = payload.get("meta", {}).get("batches", []) if isinstance(payload, dict) else []
-    all_ids = [
-        str(qid)
-        for batch in batches
-        if isinstance(batch, dict)
-        for qid in batch.get("question_ids") or []
-        if str(qid).strip()
-    ]
     failed_ids = failed_grading_config_question_ids(payload)
     return _summary(
         session_id,
-        len(all_ids) or _question_count(payload, []),
+        _question_count(payload, []),
         failed_ids,
+        total_batch_count=_batch_count(payload),
         failed_batches=failed_grading_config_batches(payload),
         local_json_repairs=_local_json_repairs(payload),
         **_score_allocation_summary(payload),

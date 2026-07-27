@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from concurrent.futures import ThreadPoolExecutor, FIRST_COMPLETED, as_completed, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -88,6 +88,7 @@ def run_hybrid_batch_grading(
     rate_limiter: Any | None = None,
     rubric_images_dir: Path | None = None,
     skipped_questions_by_student: dict[int, set[str]] | None = None,
+    target_questions_by_student: Mapping[Any, Sequence[str] | set[str]] | None = None,
     question_tag_context: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
     should_pause: Any | None = None,
 ) -> HybridBatchRunResult:
@@ -108,12 +109,11 @@ def run_hybrid_batch_grading(
             output_root=output_root / "objective_batch",
             batch_size=objective_batch_size,
             min_confidence=OBJECTIVE_AUTO_SCORE_MIN_CONFIDENCE,
-            fallback_recognition_client=llm_client,
-            fallback_model=grading_model,
             progress_callback=progress_callback,
             batch_workers=batch_workers,
             rate_limiter=rate_limiter,
             skipped_questions_by_student=skipped_questions_by_student,
+            target_questions_by_student=target_questions_by_student,
         )
         for paper_key, details in objective_run.details_by_paper_key.items():
             details_by_key.setdefault(paper_key, []).extend(details)
@@ -122,19 +122,45 @@ def run_hybrid_batch_grading(
         usage_records.extend(objective_run.usage_records)
 
     builder = MajorQuestionAtlasBuilder(output_root=output_root)
-    major_tasks: list[tuple[MajorQuestionSpec, int, list[PaperEntry]]] = []
+    major_tasks: list[
+        tuple[
+            MajorQuestionSpec,
+            int,
+            list[PaperEntry],
+            dict[str, list[str]],
+        ]
+    ] = []
     for spec in specs:
-        filtered_entries = []
+        filtered_entries: list[tuple[PaperEntry, list[str]]] = []
         for entry in entries:
-            if skipped_questions_by_student and entry.student_id in skipped_questions_by_student:
-                student_skipped = skipped_questions_by_student[entry.student_id]
-                if all(dqid in student_skipped for dqid in spec.detail_question_ids):
-                    continue
-            filtered_entries.append(entry)
+            target_detail_qids = _subjective_target_qids_for_entry(
+                entry,
+                spec,
+                skipped_questions_by_student=skipped_questions_by_student,
+                target_questions_by_student=target_questions_by_student,
+            )
+            if not target_detail_qids:
+                continue
+            filtered_entries.append((entry, target_detail_qids))
         if not filtered_entries:
             continue
-        for batch_index, batch_entries in enumerate(_chunk(filtered_entries, batch_size), start=1):
-            major_tasks.append((spec, batch_index, batch_entries))
+        for batch_index, batch_items in enumerate(
+            _balanced_subjective_groups(filtered_entries, batch_size),
+            start=1,
+        ):
+            batch_entries = [item[0] for item in batch_items]
+            targets_by_paper_key = {
+                item[0].paper_key: list(item[1])
+                for item in batch_items
+            }
+            major_tasks.append(
+                (
+                    spec,
+                    batch_index,
+                    batch_entries,
+                    targets_by_paper_key,
+                )
+            )
     if progress_callback is not None:
         progress_callback(
             {
@@ -145,8 +171,15 @@ def run_hybrid_batch_grading(
             }
         )
 
-    def _run_major_task(task: tuple[MajorQuestionSpec, int, list[PaperEntry]]) -> dict[str, Any]:
-        spec, batch_index, batch_entries = task
+    def _run_major_task(
+        task: tuple[
+            MajorQuestionSpec,
+            int,
+            list[PaperEntry],
+            dict[str, list[str]],
+        ],
+    ) -> dict[str, Any]:
+        spec, batch_index, batch_entries, targets_by_paper_key = task
         try:
             if progress_callback is not None:
                 progress_callback(
@@ -172,6 +205,7 @@ def run_hybrid_batch_grading(
                     rubric_images_dir=rubric_images_dir,
                     rate_limiter=rate_limiter,
                     question_tag_context=question_tag_context,
+                    target_detail_question_ids_by_paper_key=targets_by_paper_key,
                 )
             except Exception as exc:  # noqa: BLE001
                 if progress_callback is not None:
@@ -192,6 +226,10 @@ def run_hybrid_batch_grading(
                             "paper_key": entry.paper_key,
                             "student_id": entry.student_id,
                             "question_id": spec.question_id,
+                            "target_detail_question_ids": targets_by_paper_key.get(
+                                entry.paper_key,
+                                [],
+                            ),
                             "reason": str(exc) or "hybrid_major_batch_failed",
                         }
                         for entry in batch_entries
@@ -218,6 +256,10 @@ def run_hybrid_batch_grading(
                         "paper_key": entry.paper_key,
                         "student_id": entry.student_id,
                         "question_id": spec.question_id,
+                        "target_detail_question_ids": targets_by_paper_key.get(
+                            entry.paper_key,
+                            [],
+                        ),
                         "reason": str(exc) or "hybrid_major_batch_failed",
                     }
                     for entry in batch_entries
@@ -347,10 +389,104 @@ def build_major_question_specs(rubric: dict[str, Any], answer_key: dict[str, Any
     return result
 
 
+def _subjective_target_qids_for_entry(
+    entry: PaperEntry,
+    spec: MajorQuestionSpec,
+    *,
+    skipped_questions_by_student: Mapping[Any, Sequence[str] | set[str]] | None,
+    target_questions_by_student: Mapping[Any, Sequence[str] | set[str]] | None,
+) -> list[str]:
+    detail_qids = list(spec.detail_question_ids or [spec.question_id])
+    target_found, explicit_targets = _question_selection_for_paper(
+        target_questions_by_student,
+        entry,
+    )
+    _, skipped = _question_selection_for_paper(
+        skipped_questions_by_student,
+        entry,
+    )
+    normalized_targets = {
+        normalize_sub_question_id(qid)
+        for qid in explicit_targets
+    }
+    normalized_skipped = {
+        normalize_sub_question_id(qid)
+        for qid in skipped
+    }
+    parent_targeted = normalize_sub_question_id(spec.question_id) in normalized_targets
+    parent_skipped = normalize_sub_question_id(spec.question_id) in normalized_skipped
+    if parent_skipped:
+        return []
+    return [
+        qid
+        for qid in detail_qids
+        if (
+            not target_found
+            or parent_targeted
+            or normalize_sub_question_id(qid) in normalized_targets
+        )
+        and normalize_sub_question_id(qid) not in normalized_skipped
+    ]
+
+
+def _question_selection_for_paper(
+    mapping: Mapping[Any, Sequence[str] | set[str]] | None,
+    entry: PaperEntry,
+) -> tuple[bool, set[str]]:
+    if mapping is None:
+        return False, set()
+    candidate_keys: list[Any] = [entry.paper_key]
+    if entry.student_id is not None:
+        candidate_keys.extend([entry.student_id, str(entry.student_id)])
+    for key in candidate_keys:
+        if key not in mapping:
+            continue
+        value = mapping[key]
+        if value is None:
+            return True, set()
+        if isinstance(value, str):
+            return True, {value.strip()} if value.strip() else set()
+        return True, {
+            str(question_id).strip()
+            for question_id in value
+            if str(question_id).strip()
+        }
+    return False, set()
+
+
+def _balanced_subjective_groups(
+    items: list[Any],
+    preferred_size: int = 3,
+) -> list[list[Any]]:
+    """Partition into groups of two or three; only a lone paper stays single."""
+
+    count = len(items)
+    if count == 0:
+        return []
+    if count == 1:
+        return [list(items)]
+    # ``preferred_size`` is retained for caller compatibility.  The new
+    # workflow has a fixed cost/legibility contract of two or three papers.
+    _ = preferred_size
+    groups = (count + 2) // 3
+    groups = max(1, groups)
+    base_size, remainder = divmod(count, groups)
+    sizes = [
+        base_size + (1 if index < remainder else 0)
+        for index in range(groups)
+    ]
+    result: list[list[Any]] = []
+    offset = 0
+    for size in sizes:
+        result.append(items[offset : offset + size])
+        offset += size
+    return result
+
+
 def normalize_sub_question_id(qid: str) -> str:
     import re
     s = qid.strip()
-    m = re.match(r"^Q?(\d+)(?:\(|（|-|_)(\d+)(?:\)|）)?$", s)
+    m = re.match(r"^Q?(\d+)(?:\(|（|-|_)[Pp]?(\d+)(?:\)|）)?$", s)
     if m:
         return f"{m.group(1)}-{m.group(2)}"
     return s
@@ -371,6 +507,10 @@ class MajorQuestionAtlasBuilder:
         paper_entries: list[PaperEntry],
         answer_regions: list[dict[str, Any]],
         batch_index: int,
+        target_detail_question_ids_by_paper_key: Mapping[
+            str,
+            Sequence[str],
+        ] | None = None,
     ) -> dict[str, Any]:
         evidence_groups = build_major_evidence_groups(
             spec.question_id,
@@ -389,6 +529,18 @@ class MajorQuestionAtlasBuilder:
 
         try:
             for item_index, entry in enumerate(paper_entries, start=1):
+                target_detail_qids = list(
+                    (
+                        target_detail_question_ids_by_paper_key or {}
+                    ).get(
+                        entry.paper_key,
+                        spec.detail_question_ids or [spec.question_id],
+                    )
+                )
+                normalized_targets = {
+                    normalize_sub_question_id(qid)
+                    for qid in target_detail_qids
+                }
                 student_sub_items: list[dict[str, Any]] = []
                 for evidence_group in evidence_groups:
                     page = str(evidence_group["page"])
@@ -412,6 +564,10 @@ class MajorQuestionAtlasBuilder:
                                 "tile_label": tile_label,
                                 "page": page,
                                 "bbox": bbox,
+                                "is_target": (
+                                    normalize_sub_question_id(part_id)
+                                    in normalized_targets
+                                ),
                             }
                         )
                 items.append(
@@ -421,6 +577,7 @@ class MajorQuestionAtlasBuilder:
                         "student_name": entry.student_name,
                         "question_id": spec.question_id,
                         "detail_question_ids": spec.detail_question_ids,
+                        "target_detail_question_ids": target_detail_qids,
                         "batch_index": int(batch_index),
                         "item_index": item_index,
                         "sub_items": student_sub_items,
@@ -432,7 +589,7 @@ class MajorQuestionAtlasBuilder:
                 image.close()
 
         manifest = {
-            "schema_version": 2,
+            "schema_version": 3,
             "mode": "hybrid_major_batch",
             "session_id": session_id,
             "question_id": spec.question_id,
@@ -460,6 +617,10 @@ def grade_major_question_batch(
     rubric_images_dir: Path | None = None,
     rate_limiter: Any | None = None,
     question_tag_context: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
+    target_detail_question_ids_by_paper_key: Mapping[
+        str,
+        Sequence[str],
+    ] | None = None,
 ) -> dict[str, Any]:
     atlas_builder = builder or MajorQuestionAtlasBuilder(output_root)
     atlas = atlas_builder.build(
@@ -468,6 +629,9 @@ def grade_major_question_batch(
         paper_entries=paper_entries,
         answer_regions=answer_regions,
         batch_index=batch_index,
+        target_detail_question_ids_by_paper_key=(
+            target_detail_question_ids_by_paper_key
+        ),
     )
     
     rubric_image_bytes = None
@@ -536,44 +700,54 @@ def grade_major_question_batch(
 
     dynamic_images = [image_bytes]
     
-    json_from_images = getattr(llm_client, "json_from_images_with_options", None)
-    image_compression_memo: dict[str, bytes] = {}
-    
-    max_retries = 3
-    last_err = None
-    import time
-    for attempt in range(max_retries):
-        try:
-            if rate_limiter is not None:
-                rate_limiter.acquire()
-            if callable(json_from_images):
-                response = json_from_images(
-                    static_prompt,
-                    dynamic_images,
-                    model=grading_model,
-                    system_prompt=system_prompt,
-                    usage_callback=_usage_callback,
-                    extra_kwargs={"omit_token_limit": True, "timeout": None},
-                    static_image_blobs=static_images,
-                    dynamic_prompt=dynamic_prompt,
-                    image_compression_memo=image_compression_memo,
-                )
-            else:
-                combined_prompt = f"{static_prompt}\n\n{dynamic_prompt}"
-                all_images = static_images + dynamic_images
-                response = llm_client.json_from_images(
-                    combined_prompt,
-                    all_images,
-                    model=grading_model,
-                    system_prompt=system_prompt,
-                    usage_callback=_usage_callback
-                )
-            break
-        except Exception as e:
-            last_err = e
-            time.sleep(2 ** attempt)
+    if rate_limiter is not None:
+        rate_limiter.acquire()
+    json_from_images_once = getattr(
+        llm_client,
+        "json_from_images_once",
+        None,
+    )
+    json_from_images_with_options = getattr(
+        llm_client,
+        "json_from_images_with_options",
+        None,
+    )
+    if callable(json_from_images_once):
+        response = json_from_images_once(
+            static_prompt,
+            dynamic_images,
+            model=grading_model,
+            system_prompt=system_prompt,
+            usage_callback=_usage_callback,
+            extra_kwargs={"timeout": None},
+            static_image_blobs=static_images,
+            dynamic_prompt=dynamic_prompt,
+        )
+    elif callable(json_from_images_with_options):
+        # Compatibility seam for test/custom clients.  This module invokes it
+        # exactly once and explicitly disables gateway retry.
+        response = json_from_images_with_options(
+            static_prompt,
+            dynamic_images,
+            model=grading_model,
+            system_prompt=system_prompt,
+            usage_callback=_usage_callback,
+            extra_kwargs={"omit_token_limit": True, "timeout": None},
+            static_image_blobs=static_images,
+            dynamic_prompt=dynamic_prompt,
+            allow_gateway_retry=False,
+            image_compression_memo={},
+        )
     else:
-        raise Exception(f"Major batch failed after {max_retries} retries: {last_err}")
+        combined_prompt = f"{static_prompt}\n\n{dynamic_prompt}"
+        all_images = static_images + dynamic_images
+        response = llm_client.json_from_images(
+            combined_prompt,
+            all_images,
+            model=grading_model,
+            system_prompt=system_prompt,
+            usage_callback=_usage_callback,
+        )
     accepted, failed = validate_hybrid_major_response(
         response,
         atlas["manifest"],
@@ -598,11 +772,12 @@ def build_hybrid_major_prompt(
         "任务：根据给定评分细则(rubric) + 标准答案(answer_key) and 学生试卷作答区域的切片进行批量横批（一次处理多个学生的作答）。\n"
         "拼图(atlas)中包含多个学生的答题切片。每个切片上都标有学生的序号、姓名和切片对应的题号。\n"
         "你必须根据 TILE_TO_SUBQUESTION_MAP 将拼图中的每一个切片(tile)正确映射到学生的 paper_key 和对应的小问(part_id)。\n"
+        "每名学生可能有不同的 target_detail_question_ids。只返回该学生的目标题；图中其他已人工处理的小题仅用于理解上下文，禁止返回或改写。\n"
         "硬性要求：\n"
         f"{SHARED_GRADING_RULES}\n"
         "Shared tiles may contain vertically, horizontally, or continuously written answers.\n"
-        "Score each required part exactly once and do not duplicate evidence across parts.\n"
-        "If boundaries are unclear, return all implicated parts with low confidence and needs_human_review=true.\n"
+        "Score each targeted part exactly once and do not duplicate evidence across parts.\n"
+        "If boundaries are unclear, return all implicated targeted parts with low confidence and needs_human_review=true.\n"
         "1) 评分必须遵循 rubric 中的题目-小题-步骤分值，不得跳步打分。\n"
         "2) 必须逐小问读取 response_mode；仅 response_mode=process_required 的小问采用“证明义务完成度 + 扣分制”；short_answer_points 按答对的独立答案项给分，visual_construction 对照标准答案图和 visual_requirements 给分。\n"
         "3) 若学生使用标准答案之外但数学上成立的方法，也应给相应过程分；不要因为路径不同扣分。\n"
@@ -615,7 +790,7 @@ def build_hybrid_major_prompt(
         "    - student_id (学生ID)\n"
         "    - grading_details (一个数组，每一小问对应其中的一个对象)\n"
         "9) grading_details 每项必须包含以下字段：\n"
-        "    - question_id (小题ID，如 10-1 或 10-2，必须与 rubric 中的 part_id/detail_question_ids 一致)\n"
+        "    - question_id (小题ID，如 Q10(P1) 或 Q10(P2)，必须与 rubric 中的 part_id/detail_question_ids 一致)\n"
         "    - score_awarded (给分，数值)\n"
         "    - deduction_reason (扣分原因，若给满分则可为空)\n"
         "    - confidence_score (0 到 100 之间的数字，表示你对该题判分尺度或识别准确度的置信度。如果你觉得答案模糊、争议或者拿捏不准扣分尺度，请给低分（<50）；如果极其确定，请给高分（90-100）。)\n"
@@ -679,7 +854,8 @@ def build_hybrid_major_prompt(
     static_prompt = "\n".join([
         "【批改任务说明】",
         image_instruction,
-        f"需要评分的小问ID列表: {detail_ids}",
+        f"本题全部可见小问ID列表: {detail_ids}",
+        "每名学生实际需要评分的小问以 BATCH_MANIFEST_JSON 中各自的 target_detail_question_ids 为准。",
         "本题的评分细则与标准答案 JSON：",
         "QUESTION_PAYLOAD_JSON:",
         _stable_json(payload)
@@ -689,14 +865,26 @@ def build_hybrid_major_prompt(
     for item in manifest.get("items", []):
         pk = item.get("paper_key", "?")
         name = item.get("student_name", "?")
+        target_qids = {
+            normalize_sub_question_id(str(qid))
+            for qid in item.get(
+                "target_detail_question_ids",
+                detail_ids,
+            )
+        }
         for si in item.get("sub_items", []):
+            is_target = (
+                normalize_sub_question_id(str(si.get("part_id") or ""))
+                in target_qids
+            )
             tile_map_lines.append(
-                f"  切片 '{si['tile_label']}' → paper_key={pk!r} (学生:{name}), 小问 ID={si['part_id']!r}"
+                f"  切片 '{si['tile_label']}' → paper_key={pk!r} (学生:{name}), "
+                f"小问 ID={si['part_id']!r}, 本次目标={'是' if is_target else '否（仅上下文）'}"
             )
     tile_map_block = "【切片与学生/小问映射关系表 (TILE_TO_SUBQUESTION_MAP)】:\n" + "\n".join(tile_map_lines) if tile_map_lines else ""
 
-    schema_grading_details = [
-        {
+    def _schema_detail(sub_qid: str) -> dict[str, Any]:
+        return {
             "question_id": sub_qid,
             "score_awarded": 0,
             "deduction_reason": "",
@@ -716,26 +904,46 @@ def build_hybrid_major_prompt(
                 {"score": 0, "confidence": 0.0, "reason": ""}
             ],
         }
-        for sub_qid in detail_ids
-    ]
+
+    schema_items = []
+    for manifest_item in manifest.get("items", []):
+        target_qids = list(
+            manifest_item.get(
+                "target_detail_question_ids",
+                detail_ids,
+            )
+        )
+        schema_items.append(
+            {
+                "paper_key": manifest_item.get(
+                    "paper_key",
+                    "paper_001_student_1_sample",
+                ),
+                "student_id": manifest_item.get("student_id"),
+                "grading_details": [
+                    _schema_detail(str(sub_qid))
+                    for sub_qid in target_qids
+                ],
+            }
+        )
     schema = {
         "question_id": spec.question_id,
-        "items": [
-            {
-                "paper_key": "paper_001_student_1_sample",
-                "student_id": 1,
-                "grading_details": schema_grading_details,
-            }
-        ],
+        "items": schema_items,
     }
 
     dynamic_prompt = "\n".join([
         tile_map_block,
-        "请务必对照上面的映射表，识别每一张切片的序号和学生姓名，将对应的评分写入 items 下的每一个学生项中。",
+        "请务必对照上面的映射表，只为各学生 target_detail_question_ids 中的小题返回评分；标为“仅上下文”的小题不得出现在响应中。",
         "【期望返回的 JSON 结构示例 (RESPONSE_SCHEMA_JSON)】：",
         _stable_json(schema),
         "【本批次清单 (BATCH_MANIFEST_JSON)】：",
-        _stable_json(manifest)
+        _stable_json(
+            {
+                key: value
+                for key, value in manifest.items()
+                if key != "atlas_path"
+            }
+        )
     ])
 
     return system_prompt, static_prompt, dynamic_prompt
@@ -752,9 +960,12 @@ def validate_hybrid_major_response(
     if str(response.get("question_id") or "").strip() != spec.question_id:
         return [], [_failed_manifest_item(item, "question_id_mismatch", spec.question_id) for item in manifest.get("items", [])]
     expected = {str(item.get("paper_key")): item for item in manifest.get("items", [])}
-    required_qids = list(spec.detail_question_ids or [spec.question_id])
-    allowed_qids = set(required_qids)
-    required_normalized_qids = {normalize_sub_question_id(qid) for qid in required_qids}
+    all_detail_qids = list(spec.detail_question_ids or [spec.question_id])
+    all_allowed_qids = set(all_detail_qids)
+    all_allowed_normalized_qids = {
+        normalize_sub_question_id(qid)
+        for qid in all_detail_qids
+    }
     accepted: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -766,17 +977,55 @@ def validate_hybrid_major_response(
             failed.append({"paper_key": paper_key, "student_id": item.get("student_id"), "question_id": spec.question_id, "reason": "unknown_paper_key"})
             continue
         if paper_key in seen:
-            failed.append({"paper_key": paper_key, "student_id": expected[paper_key].get("student_id"), "question_id": spec.question_id, "reason": "duplicate_paper_key"})
+            failed.append(
+                {
+                    "paper_key": paper_key,
+                    "student_id": expected[paper_key].get("student_id"),
+                    "question_id": spec.question_id,
+                    "target_detail_question_ids": expected[paper_key].get(
+                        "target_detail_question_ids",
+                        all_detail_qids,
+                    ),
+                    "reason": "duplicate_paper_key",
+                }
+            )
             continue
         seen.add(paper_key)
+        required_qids = list(
+            expected[paper_key].get(
+                "target_detail_question_ids",
+                all_detail_qids,
+            )
+        )
+        allowed_qids = set(required_qids)
+        required_normalized_qids = {
+            normalize_sub_question_id(qid)
+            for qid in required_qids
+        }
         details = []
         metadata = []
         item_failed_reason = ""
         seen_detail_qids: set[str] = set()
         for detail in item.get("grading_details", []):
+            response_qid = str(
+                detail.get("question_id") if isinstance(detail, dict) else ""
+            ).strip()
+            normalized_response_qid = normalize_sub_question_id(response_qid)
+            if (
+                normalized_response_qid in all_allowed_normalized_qids
+                and normalized_response_qid not in required_normalized_qids
+            ):
+                # An already manually graded part may remain visible in a
+                # shared crop, but its model output is never accepted.
+                continue
             converted, reason, detail_metadata = _detail_from_ai_item(
                 detail,
-                allowed_qids,
+                (
+                    allowed_qids
+                    if normalized_response_qid
+                    in required_normalized_qids
+                    else all_allowed_qids
+                ),
                 min_confidence,
                 spec=spec,
                 question_tag_context=question_tag_context,
@@ -795,7 +1044,18 @@ def validate_hybrid_major_response(
         if not item_failed_reason and required_normalized_qids - seen_detail_qids:
             item_failed_reason = "missing_detail_question_ids"
         if item_failed_reason or not details:
-            failed.append({"paper_key": paper_key, "student_id": expected[paper_key].get("student_id"), "question_id": spec.question_id, "reason": item_failed_reason or "missing_grading_details"})
+            failed.append(
+                {
+                    "paper_key": paper_key,
+                    "student_id": expected[paper_key].get("student_id"),
+                    "question_id": spec.question_id,
+                    "target_detail_question_ids": required_qids,
+                    "reason": (
+                        item_failed_reason
+                        or "missing_grading_details"
+                    ),
+                }
+            )
             continue
         accepted.append({"paper_key": paper_key, "student_id": expected[paper_key].get("student_id"), "details": details, "metadata": metadata})
     for paper_key, item in expected.items():
@@ -1086,8 +1346,8 @@ def _bbox_from_regions(region_list: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _extract_sub_number(qid: str) -> int:
-    """Extract the numeric index from labels like 'Q10(1)' -> 1, 'Q10(2)' -> 2."""
-    m = re.search(r'\((\d+)\)', qid)
+    """Extract the index from labels such as ``Q10(P1)`` or legacy ``Q10(1)``."""
+    m = re.search(r'\([Pp]?(\d+)\)', qid)
     return int(m.group(1)) if m else 999
 
 
@@ -1097,8 +1357,8 @@ def _major_sub_regions(spec: MajorQuestionSpec, regions: list[dict[str, Any]]) -
 
     Matching strategy (in order of priority):
     1. Exact match: region's mapped_question_id == part_id directly.
-    2. Positional prefix match: regions named 'Q10(1)', 'Q10(2)' are sorted by
-       their sub-number and matched positionally to ['10-1', '10-2'] etc.
+    2. Positional prefix match: regions named 'Q10(P1)', 'Q10(P2)' are sorted by
+       their sub-number and matched positionally to canonical part IDs.
     3. Fallback: a single merged bounding box is used for all parts.
     """
     detail_ids = spec.detail_question_ids or [spec.question_id]
@@ -1107,13 +1367,19 @@ def _major_sub_regions(spec: MajorQuestionSpec, regions: list[dict[str, Any]]) -
     # --- Strategy 1: exact match per part_id ---
     exact: list[tuple[str, dict[str, Any]]] = []
     for did in detail_ids:
-        matched = [r for r in page_candidates if _region_question_id(r) == did]
+        normalized_detail_id = normalize_sub_question_id(did)
+        matched = [
+            region
+            for region in page_candidates
+            if normalize_sub_question_id(_region_question_id(region))
+            == normalized_detail_id
+        ]
         if matched:
             exact.append((did, _bbox_from_regions(matched)))
     if len(exact) == len(detail_ids):
         return exact
 
-    # --- Strategy 2: prefix + positional match (e.g. Q10(1)->10-1, Q10(2)->10-2) ---
+    # --- Strategy 2: prefix + positional match (e.g. Q10(P1)->10-1) ---
     parent = spec.question_id
     prefix_regions = sorted(
         [r for r in page_candidates if _region_question_id(r).startswith(parent)],
@@ -1238,7 +1504,17 @@ def _detail_full_score(spec: MajorQuestionSpec, question_id: str) -> float | Non
 
 
 def _failed_manifest_item(item: dict[str, Any], reason: str, question_id: str) -> dict[str, Any]:
-    return {"paper_key": item.get("paper_key"), "student_id": item.get("student_id"), "question_id": question_id, "reason": reason}
+    result = {
+        "paper_key": item.get("paper_key"),
+        "student_id": item.get("student_id"),
+        "question_id": question_id,
+        "reason": reason,
+    }
+    if "target_detail_question_ids" in item:
+        result["target_detail_question_ids"] = list(
+            item.get("target_detail_question_ids") or []
+        )
+    return result
 
 
 def _region_question_id(region: dict[str, Any]) -> str:

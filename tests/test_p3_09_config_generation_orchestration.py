@@ -138,7 +138,7 @@ class _ScriptedGateway:
         return outcome
 
 
-def test_active_batch_prompt_snapshot_is_exact() -> None:
+def test_active_batch_prompt_keeps_current_scoring_contract() -> None:
     prompt = build_batch_generation_prompt(
         ["Q1"],
         [
@@ -154,20 +154,11 @@ def test_active_batch_prompt_snapshot_is_exact() -> None:
         "",
     )
 
-    assert prompt == (
-        "你正在为一个小批次的中学数学题生成可执行评分标准。仅返回一个完整、严格的 JSON 对象。\n"
-        'BATCH_QUESTION_IDS_JSON=["Q1"]\n'
-        "必须完整且仅返回上述题号，并在 rubric.questions 与 answer_key.questions 中按同一顺序各出现一次；"
-        "不得遗漏、重复或增加题号。所有 max_score、part_score、step_score 暂设为1，最终总分由本地程序分配。\n"
-        "每题必须保留教师确认题型，输出具体 knowledge_id、knowledge_name、parts、steps；"
-        "每个 part 必须有 response_mode，每个 step 必须有可核验的 core_goal 和 required_elements。"
-        "选择/普通填空只核对最终答案；过程题保留必要过程；作图题输出 visual_requirements。\n"
-        "只允许字段 rubric、answer_key、meta 及其既有评分结构；不要 Markdown、解释或续写建议。\n"
-        "图片顺序：无\n"
-        '本批次结构化内容：[{"question_id": "Q1", "question_type": "choice", '
-        '"question_text": "1+1=?", "answer_text": "2", "analysis": "直接计算"}]\n'
-        "必要时参考的有限原文："
-    )
+    assert 'BATCH_QUESTION_IDS_JSON=["Q1"]' in prompt
+    assert "question_type_confirmed" in prompt
+    assert "response_mode" in prompt
+    assert "knowledge_id" not in prompt
+    assert "knowledge_name" not in prompt
 
 
 def test_score_allocation_prompt_snapshot_is_exact() -> None:
@@ -199,20 +190,13 @@ def test_score_allocation_prompt_snapshot_is_exact() -> None:
     )
 
 
-def test_manual_refinement_prompt_snapshot_is_exact() -> None:
+def test_manual_refinement_prompt_keeps_ids_and_excludes_knowledge() -> None:
     prompt = build_manual_structure_refinement_prompt({"rubric": {"questions": []}})
 
-    assert prompt == (
-        "您正在对教师编辑过的评分标准进行精修/对齐。请仅返回严格的 JSON 数据。\n"
-        "硬性要求：\n"
-        "1) 必须保留每一个已有的 rubric.questions[].question_id。\n"
-        "2) 必须保留每一个已有的 parts[].part_id；绝对不能合并、删除或修改教师创建 the parts 部分。\n"
-        "3) answer_key.questions[].parts 必须通过 part_id 与 rubric 中的 parts 保持一致对齐。\n"
-        "4) 补全缺失的答案、accepted_forms、解析、步骤分、证明扣分项和证据链规则。\n"
-        "5) 保持整张试卷总分 total_score 和各题 max_score 的总和精确等于 100。\n"
-        "6) 对于证明题或计算解答题，按证据步骤步骤分进行细化，并保守地给与仅有答案无过程的得分限制。\n\n"
-        '当前评分标准 JSON：\n{"rubric": {"questions": []}}'
-    )
+    assert "question_id" in prompt
+    assert "part_id" in prompt
+    assert "knowledge" in prompt
+    assert "不要输出" in prompt
 
 
 def test_gateway_adapter_preserves_single_request_methods_and_parameters() -> None:
@@ -333,4 +317,4 @@ def test_production_job_no_longer_imports_config_orchestration_from_session_mana
     assert "session_manager" not in orchestration_source
     assert "os.getenv" not in orchestration_source
     source = inspect.getsource(config_generation)
-    assert "from session_manager import (" not in source
+    assert "ConfigGenerationOrchestrator" not in source

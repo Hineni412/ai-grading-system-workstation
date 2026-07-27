@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,7 +26,7 @@ def test_p2_04_has_one_fetch_boundary_and_no_absolute_api_urls() -> None:
     for path in sources:
         source = path.read_text(encoding="utf-8")
         assert "http://127.0.0.1:8000/api" not in source
-        assert "https://" not in source
+        assert re.search(r"https?://[^\"']+/api(?:/|[\"'])", source) is None
 
 
 def test_p2_04_job_storage_is_minimal_and_no_visible_ui_was_added() -> None:

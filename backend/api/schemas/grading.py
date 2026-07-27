@@ -19,5 +19,31 @@ class GradingRunRequest(BaseModel):
     confirm_pending_issues: bool = False
 
 
+class GradingPlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    grading_mode: Literal["full_paper", "manual", "hybrid_batch"]
+
+
+class GradingPlanIssueResponse(BaseModel):
+    code: str
+    message: str
+
+
+class GradingPlanResponse(BaseModel):
+    session_id: int
+    scan_batch_id: str
+    upload_revision: int
+    decision_revision: int
+    mode: Literal["full_paper", "manual", "hybrid_batch"]
+    status: Literal["ready", "blocked"]
+    counts: dict[str, int]
+    requests: dict[str, int]
+    batching: dict[str, int]
+    warnings: list[GradingPlanIssueResponse]
+    blockers: list[GradingPlanIssueResponse]
+    created_at: str
+
+
 class GradingRunCancelRequest(BaseModel):
     job_id: int | None = Field(default=None, gt=0)

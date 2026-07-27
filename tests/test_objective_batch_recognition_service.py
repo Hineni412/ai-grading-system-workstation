@@ -68,21 +68,25 @@ class FakeBatchClient:
                 )(),
                 {"model": model},
             )
-        return {
-            "question_id": manifest["question_id"],
-            "items": [
+        answers = []
+        for question_id in manifest["target_question_ids"]:
+            question_type = manifest["question_types"][question_id]
+            answers.append(
                 {
-                    "paper_key": item["paper_key"],
-                    "student_id": item["student_id"],
+                    "question_id": question_id,
+                    "question_type": question_type,
                     "recognized_answer": self.answer,
                     "raw_answer": self.answer,
                     "normalized_answer": self.normalized_answer if self.normalized_answer is not None else self.answer,
                     "confidence": self.confidence,
                     "need_review": self.need_review,
                     "review_reason": self.review_reason if self.review_reason is not None else ("unclear" if self.need_review else ""),
-                }
-                for item in manifest["items"]
-            ],
+                },
+            )
+        return {
+            "paper_key": manifest["paper_key"],
+            "student_id": manifest["student_id"],
+            "answers": answers,
         }
 
 
@@ -100,6 +104,7 @@ class SlowBatchClient(FakeBatchClient):
         images: list[bytes],
         model: str | None = None,
         usage_callback: Any = None,
+        allow_gateway_retry: bool = False,
     ) -> dict[str, Any]:
         with self.lock:
             self.active += 1
@@ -109,7 +114,13 @@ class SlowBatchClient(FakeBatchClient):
                 self.barrier.wait(timeout=0.5)
             except threading.BrokenBarrierError:
                 pass
-            return super().json_from_images(prompt, images, model=model, usage_callback=usage_callback)
+            return super().json_from_images(
+                prompt,
+                images,
+                model=model,
+                usage_callback=usage_callback,
+                allow_gateway_retry=allow_gateway_retry,
+            )
         finally:
             with self.lock:
                 self.active -= 1
@@ -310,7 +321,7 @@ def _groups(tmp_path: Path, count: int) -> list[ExamPaperGroup]:
     return groups
 
 
-def test_choice_objective_batch_splits_16_papers_into_two_requests(tmp_path: Path) -> None:
+def test_choice_objective_batch_sends_one_continuous_image_per_student(tmp_path: Path) -> None:
     client = FakeBatchClient()
 
     result = run_objective_batch_recognition(
@@ -326,7 +337,7 @@ def test_choice_objective_batch_splits_16_papers_into_two_requests(tmp_path: Pat
         batch_size=15,
     )
 
-    assert len(client.calls) == 2
+    assert len(client.calls) == 16
     assert len(client.calls[0]["images"]) == 1
     assert len(result.review_items) == 0
     assert sum(len(items) for items in result.details_by_paper_key.values()) == 16
@@ -679,7 +690,7 @@ def test_objective_clear_replacement_answer_after_smudge_can_auto_score(tmp_path
     assert result.review_items == []
 
 
-def test_objective_low_confidence_retries_with_main_model_before_review(tmp_path: Path) -> None:
+def test_objective_low_confidence_goes_to_review_without_a_second_paid_request(tmp_path: Path) -> None:
     primary = FakeBatchClient(confidence=0.50, need_review=False, answer="A", review_reason="low confidence cursive A")
     fallback = FakeBatchClient(confidence=0.92, need_review=False, answer="A", review_reason="")
 
@@ -700,16 +711,14 @@ def test_objective_low_confidence_retries_with_main_model_before_review(tmp_path
     detail = next(iter(result.details_by_paper_key.values()))[0]
     metadata = next(iter(result.metadata_by_paper_key.values()))[0]
     assert len(primary.calls) == 1
-    assert len(fallback.calls) == 1
-    assert fallback.calls[0]["model"] == "pro-model"
-    assert fallback.calls[0]["allow_gateway_retry"] is False
-    assert detail.score_awarded == 8
-    assert metadata["source"] == "objective_batch_pro_recognition"
-    assert metadata["primary_review_reason"] == "low_confidence"
-    assert result.review_items == []
+    assert len(fallback.calls) == 0
+    assert detail.score_awarded == 0
+    assert metadata["source"] == "objective_paper_recognition"
+    assert metadata["need_review"] is True
+    assert len(result.review_items) == 1
 
 
-def test_objective_legacy_fallback_client_keeps_old_call_signature(tmp_path: Path) -> None:
+def test_objective_legacy_fallback_client_is_not_called(tmp_path: Path) -> None:
     class LegacyFallbackClient:
         def __init__(self) -> None:
             self.delegate = FakeBatchClient(
@@ -757,13 +766,13 @@ def test_objective_legacy_fallback_client_keeps_old_call_signature(tmp_path: Pat
 
     detail = next(iter(result.details_by_paper_key.values()))[0]
     metadata = next(iter(result.metadata_by_paper_key.values()))[0]
-    assert len(fallback.delegate.calls) == 1
-    assert detail.score_awarded == 8
-    assert metadata["source"] == "objective_batch_pro_recognition"
-    assert result.review_items == []
+    assert len(fallback.delegate.calls) == 0
+    assert detail.score_awarded == 0
+    assert metadata["source"] == "objective_paper_recognition"
+    assert len(result.review_items) == 1
 
 
-def test_objective_fallback_root_client_retries_two_503s_then_scores(
+def test_objective_fallback_root_client_is_not_called(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -875,16 +884,11 @@ def test_objective_fallback_root_client_retries_two_503s_then_scores(
     detail = next(iter(result.details_by_paper_key.values()))[0]
     metadata = next(iter(result.metadata_by_paper_key.values()))[0]
     assert len(primary.calls) == 1
-    assert len(provider_calls) == 3
-    assert [call["timeout"] for call in provider_calls] == [60.0, 60.0, 60.0]
-    assert [event.request_kind for event in usage_events] == [
-        "recognition",
-        "recognition",
-        "recognition",
-    ]
-    assert detail.score_awarded == 8
-    assert metadata["source"] == "objective_batch_pro_recognition"
-    assert result.review_items == []
+    assert len(provider_calls) == 0
+    assert usage_events == []
+    assert detail.score_awarded == 0
+    assert metadata["source"] == "objective_paper_recognition"
+    assert len(result.review_items) == 1
 
 
 def test_objective_batches_can_run_concurrently_with_rate_limit(tmp_path: Path) -> None:
@@ -906,9 +910,9 @@ def test_objective_batches_can_run_concurrently_with_rate_limit(tmp_path: Path) 
         rate_limiter=limiter,
     )
 
-    assert len(client.calls) == 2
+    assert len(client.calls) == 16
     assert client.max_active > 1
-    assert limiter.calls == 2
+    assert limiter.calls == 16
     assert len(result.review_items) == 0
 
 
@@ -1018,7 +1022,7 @@ def test_objective_batch_client_uses_recognition_gateway_contract(
     assert "max_completion_tokens" not in completion_kwargs
 
 
-def test_objective_batch_client_gateway_retries_two_503s_then_succeeds(
+def test_objective_batch_client_does_not_retry_provider_failures(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1070,16 +1074,13 @@ def test_objective_batch_client_gateway_retries_two_503s_then_succeeds(
     )
     _install_fake_openai_client(monkeypatch, FakeOpenAI)
 
-    result = ObjectiveBatchRecognitionClient().json_from_images(
-        "prompt",
-        [b"fake-jpeg"],
-    )
+    with pytest.raises(Retryable503Error, match="temporary provider outage"):
+        ObjectiveBatchRecognitionClient().json_from_images(
+            "prompt",
+            [b"fake-jpeg"],
+        )
 
-    assert provider_calls == 3
-    assert result == {
-        "question_id": "Q1",
-        "items": [{"paper_key": "paper-1"}],
-    }
+    assert provider_calls == 1
 
 
 def test_objective_batch_run_calls_failing_client_and_limiter_once(

@@ -56,8 +56,22 @@ const item = (index: number, overrides: Partial<ReviewItem> = {}): ReviewItem =>
 })
 
 const questions: ReviewQuestionSummary[] = [
-  { question_id: 'Q1', total_count: 2, needs_review_count: 2, max_score: 5 },
-  { question_id: 'Q2', total_count: 2, needs_review_count: 1, max_score: 5 },
+  {
+    question_id: 'Q1',
+    total_count: 2,
+    needs_review_count: 2,
+    ungraded_count: 0,
+    teacher_confirmed_count: 0,
+    max_score: 5,
+  },
+  {
+    question_id: 'Q2',
+    total_count: 2,
+    needs_review_count: 1,
+    ungraded_count: 0,
+    teacher_confirmed_count: 1,
+    max_score: 5,
+  },
 ]
 
 const itemsByQuestion: Record<string, ReviewItem[]> = {
@@ -91,6 +105,7 @@ interface MountOptions {
     signal?: AbortSignal,
   ) => Promise<ReviewItem[]>
   configureRouter?: (router: Router) => void
+  waitForItems?: boolean
 }
 
 const mountedApps: App[] = []
@@ -111,6 +126,7 @@ async function mountView({
   failItemLoad = false,
   itemLoader,
   configureRouter,
+  waitForItems = true,
 }: MountOptions = {}) {
   const pinia = createPinia()
   setActivePinia(pinia)
@@ -143,7 +159,30 @@ async function mountView({
   const loadQuestionsSpy = vi
     .spyOn(reviewStore, 'loadQuestions')
     .mockImplementation((requestedSessionId) =>
-      loadQuestionsDirect(requestedSessionId, async () => reviewQuestions),
+      loadQuestionsDirect(requestedSessionId, async (_sessionId, _signal, options = {}) => {
+        const updated = reviewQuestions.map((question) => {
+          return {
+            ...question,
+            teacher_confirmed_count: question.teacher_confirmed_count ?? 0,
+            ungraded_count: question.ungraded_count ?? 0,
+          }
+        })
+        if (options.scope === 'teacher_pending') {
+          return updated.filter(
+            (question) => question.needs_review_count + question.ungraded_count > 0,
+          )
+        }
+        if (options.scope === 'ungraded') {
+          return updated.filter((question) => question.ungraded_count > 0)
+        }
+        if (options.scope === 'ai_review') {
+          return updated.filter((question) => question.needs_review_count > 0)
+        }
+        if (options.scope === 'teacher_final') {
+          return updated.filter((question) => question.teacher_confirmed_count > 0)
+        }
+        return updated
+      }),
     )
   const loadItemsSpy = vi
     .spyOn(reviewStore, 'loadItems')
@@ -151,11 +190,24 @@ async function mountView({
       loadItemsDirect(requestedSessionId, questionId, async (_sessionId, _questionId, options) => {
         itemRequests.push(options)
         if (failItemLoad) throw new Error('private item failure')
-        if (itemLoader) return itemLoader(requestedSessionId, questionId, options.signal)
-        const available = reviewItems[questionId] ?? []
-        return options.needsReviewOnly
-          ? available.filter((entry) => entry.needs_review)
-          : available
+        const available = itemLoader
+          ? await itemLoader(requestedSessionId, questionId, options.signal)
+          : (reviewItems[questionId] ?? [])
+        const updated = available
+        if (options.needsReviewOnly) return updated.filter((entry) => entry.needs_review)
+        if (options.scope === 'teacher_pending') {
+          return updated.filter((entry) => entry.needs_review || entry.score_status === 'ungraded')
+        }
+        if (options.scope === 'ungraded') {
+          return updated.filter((entry) => entry.score_status === 'ungraded')
+        }
+        if (options.scope === 'ai_review') {
+          return updated.filter((entry) => entry.needs_review)
+        }
+        if (options.scope === 'teacher_final') {
+          return updated.filter((entry) => entry.score_status === 'teacher_final')
+        }
+        return updated
       }, needsReviewOnly),
     )
 
@@ -167,6 +219,10 @@ async function mountView({
   app.mount(host)
   mountedApps.push(app)
   await settleUi()
+  if (sessionId !== null && sessionLoadState === 'ready' && waitForItems) {
+    await vi.waitFor(() => expect(reviewStore.questionLoadState).not.toBe('loading'))
+    await vi.waitFor(() => expect(reviewStore.itemLoadState).not.toBe('loading'))
+  }
 
   return {
     host,
@@ -220,14 +276,22 @@ beforeEach(() => {
     updated_results: 1,
     annotation_outcomes: [],
   })
-  vi.mocked(fetchReviewItems).mockResolvedValue([])
+  vi.mocked(fetchReviewItems).mockImplementation(async (sessionId, questionId) =>
+    (itemsByQuestion[questionId] ?? []).map((entry) => ({
+      ...entry,
+      session_id: sessionId,
+      score_status: entry.needs_review ? 'ai_review' : 'teacher_final',
+      teacher_locked: !entry.needs_review,
+    })),
+  )
   vi.mocked(fetchReviewRubric).mockResolvedValue(null)
   document.body.innerHTML = ''
   localStorage.clear()
 })
 
-afterEach(() => {
+afterEach(async () => {
   for (const app of mountedApps.splice(0)) app.unmount()
+  await settleUi()
 })
 
 describe('source-recalibrated review view', () => {
@@ -249,18 +313,34 @@ describe('source-recalibrated review view', () => {
 
     await vi.waitFor(() => expect(confirmReviewItems).toHaveBeenCalledTimes(1))
     expect(confirmReviewItems).toHaveBeenCalledWith(7, 'Q1', [
-      { result_id: 11, detail_id: 11, score_awarded: 3 },
-      { result_id: 12, detail_id: 12, score_awarded: 2.5 },
+      {
+        review_item_id: '7:Q1:11',
+        expected_revision: 0,
+        student_id: 11,
+        result_id: 11,
+        detail_id: 11,
+        score_awarded: 3,
+      },
+      {
+        review_item_id: '7:Q1:12',
+        expected_revision: 0,
+        student_id: 12,
+        result_id: 12,
+        detail_id: 12,
+        score_awarded: 2.5,
+      },
     ])
-    await vi.waitFor(() => expect(useReviewQueueStore(pinia).questions[0]?.needs_review_count).toBe(0))
-    expect(useReviewQueueStore(pinia).items.every((entry) => !entry.needs_review)).toBe(true)
-    expect(useReviewDraftStore(pinia).drafts).toEqual({})
+    await vi.waitFor(() => expect(useReviewQueueStore(pinia).selectedQuestionId).toBe('Q1'))
+    expect(useReviewQueueStore(pinia).questions[0]?.needs_review_count).toBe(2)
+    expect(Object.values(useReviewDraftStore(pinia).drafts).every(
+      (draft) => !draft.dirty,
+    )).toBe(true)
   })
 
   it('keeps every batch draft when confirmation fails', async () => {
     vi.mocked(confirmReviewItems).mockRejectedValue(new Error('private server failure'))
     const { host, pinia } = await mountView()
-    const firstScore = host.querySelector<HTMLInputElement>('[data-testid="teacher-score-11"]')!
+    const firstScore = host.querySelector<HTMLInputElement>('[data-testid="teacher-score-0"]')!
     inputValue(firstScore, '4')
     await nextTick()
 
@@ -272,7 +352,7 @@ describe('source-recalibrated review view', () => {
     await vi.waitFor(() => expect(
       document.body.querySelector('[data-testid="review-feedback-toast"]')?.textContent,
     ).toContain('确认失败，整批草稿已保留'))
-    expect(useReviewDraftStore(pinia).drafts['7:Q1:11']?.scoreText).toBe('4')
+    expect(useReviewDraftStore(pinia).drafts['review-item:7:Q1:11']?.scoreText).toBe('4')
     expect(useReviewQueueStore(pinia).items.every((entry) => entry.needs_review)).toBe(true)
     expect(document.body.textContent).not.toContain('private server failure')
   })
@@ -355,7 +435,15 @@ describe('source-recalibrated review view', () => {
       updated_results: 1,
       annotation_outcomes: [{ result_id: 11, status: 'retry_required' }],
     })
-    vi.mocked(fetchReviewItems).mockResolvedValue([itemsByQuestion.Q1![1]!])
+    vi.mocked(fetchReviewItems).mockResolvedValue([
+      {
+        ...itemsByQuestion.Q1![0]!,
+        needs_review: false,
+        score_status: 'teacher_final',
+        teacher_locked: true,
+      },
+      itemsByQuestion.Q1![1]!,
+    ])
     vi.mocked(confirmReviewItems).mockResolvedValue({
       updated_details: 1,
       updated_results: 1,
@@ -371,15 +459,20 @@ describe('source-recalibrated review view', () => {
     host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')!.click()
 
     await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
-    await vi.waitFor(() => expect(reviewStore.questions[0]?.needs_review_count).toBe(1))
+    await vi.waitFor(() => expect(reviewStore.questions[0]?.needs_review_count).toBe(2))
     await vi.waitFor(() => expect(host.textContent).toContain('分数已保存，1 份标注图需要重试'))
-    expect(host.querySelector('[data-testid="review-batch-workspace"]')).not.toBeNull()
-    expect(reviewStore.questions[0]?.needs_review_count).toBe(1)
+    await vi.waitFor(() => expect(
+      host.querySelector('[data-testid="review-batch-workspace"]'),
+    ).not.toBeNull())
+    expect(reviewStore.questions[0]?.needs_review_count).toBe(2)
 
     const retry = [...host.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent === '重试标注图')!
     retry.click()
     await vi.waitFor(() => expect(confirmReviewItems).toHaveBeenCalledWith(7, 'Q1', [{
+      review_item_id: '7:Q1:11',
+      expected_revision: 0,
+      student_id: 11,
       result_id: 11,
       detail_id: 11,
       score_awarded: 3,
@@ -414,6 +507,9 @@ describe('source-recalibrated review view', () => {
       .find((button) => button.textContent === '重试标注图')!
     retry.click()
     await vi.waitFor(() => expect(confirmReviewItems).toHaveBeenCalledWith(7, 'Q1', [{
+      review_item_id: '7:Q1:11',
+      expected_revision: 0,
+      student_id: 11,
       result_id: 11,
       detail_id: 11,
       score_awarded: 3,
@@ -423,6 +519,14 @@ describe('source-recalibrated review view', () => {
   it('keeps an old-session single-review retry after the deep workspace is unmounted', async () => {
     const pendingSingle = deferred<Awaited<ReturnType<typeof confirmReviewItem>>>()
     vi.mocked(confirmReviewItem).mockReturnValue(pendingSingle.promise)
+    vi.mocked(fetchReviewItems).mockImplementation(async (sessionId, questionId) =>
+      (itemsByQuestion[questionId] ?? []).map((entry) => ({
+        ...entry,
+        session_id: sessionId,
+        result_id: sessionId * 100 + entry.detail_id!,
+        score_status: entry.needs_review ? 'ai_review' : 'teacher_final',
+      })),
+    )
     const { host, reviewStore, sessionStore } = await mountView({
       itemLoader: async (sessionId, questionId) => (itemsByQuestion[questionId] ?? []).map(
         (entry) => ({ ...entry, session_id: sessionId, result_id: sessionId * 100 + entry.detail_id }),
@@ -472,7 +576,6 @@ describe('source-recalibrated review view', () => {
         updated_results: 2,
         annotation_outcomes: [],
       })
-    host.querySelector<HTMLButtonElement>('[data-testid="back-to-batch"]')!.click()
     await vi.waitFor(() => expect(host.querySelector('[data-testid="review-batch-workspace"]')).not.toBeNull())
     await vi.waitFor(() => expect(
       host.querySelector<HTMLButtonElement>('[data-testid="confirm-batch"]')?.disabled,
@@ -485,13 +588,30 @@ describe('source-recalibrated review view', () => {
     retry.click()
     await vi.waitFor(() => expect(confirmReviewItems).toHaveBeenCalledTimes(3))
     expect(confirmReviewItems).toHaveBeenNthCalledWith(2, 7, 'Q1', [{
+      review_item_id: '7:Q1:11',
+      expected_revision: 0,
+      student_id: 711,
       result_id: 711,
       detail_id: 11,
       score_awarded: 3,
     }])
     expect(confirmReviewItems).toHaveBeenNthCalledWith(3, 8, 'Q1', [
-      { result_id: 811, detail_id: 11, score_awarded: 3 },
-      { result_id: 812, detail_id: 12, score_awarded: 3 },
+      {
+        review_item_id: '8:Q1:11',
+        expected_revision: 0,
+        student_id: 811,
+        result_id: 811,
+        detail_id: 11,
+        score_awarded: 3,
+      },
+      {
+        review_item_id: '8:Q1:12',
+        expected_revision: 0,
+        student_id: 812,
+        result_id: 812,
+        detail_id: 12,
+        score_awarded: 3,
+      },
     ])
   })
 
@@ -527,6 +647,7 @@ describe('source-recalibrated review view', () => {
 
     host.querySelector<HTMLButtonElement>('[data-testid="confirm-batch"]')!.click()
     await vi.waitFor(() => expect(host.textContent).toContain('分数已保存，2 份标注图需要重试'))
+    host.querySelector<HTMLButtonElement>('[data-question-id="Q2"]')!.click()
     await vi.waitFor(() => expect(
       host.querySelector<HTMLButtonElement>('[data-question-id="Q2"]')?.getAttribute('aria-current'),
     ).toBe('true'))
@@ -538,11 +659,32 @@ describe('source-recalibrated review view', () => {
     retry.click()
     await vi.waitFor(() => expect(confirmReviewItems).toHaveBeenCalledTimes(4))
     expect(confirmReviewItems).toHaveBeenNthCalledWith(3, 7, 'Q1', [
-      { result_id: 11, detail_id: 11, score_awarded: 3 },
-      { result_id: 12, detail_id: 12, score_awarded: 3 },
+      {
+        review_item_id: '7:Q1:11',
+        expected_revision: 0,
+        student_id: 11,
+        result_id: 11,
+        detail_id: 11,
+        score_awarded: 3,
+      },
+      {
+        review_item_id: '7:Q1:12',
+        expected_revision: 0,
+        student_id: 12,
+        result_id: 12,
+        detail_id: 12,
+        score_awarded: 3,
+      },
     ])
     expect(confirmReviewItems).toHaveBeenNthCalledWith(4, 7, 'Q2', [
-      { result_id: 22, detail_id: 22, score_awarded: 3 },
+      {
+        review_item_id: '7:Q2:22',
+        expected_revision: 0,
+        student_id: 22,
+        result_id: 22,
+        detail_id: 22,
+        score_awarded: 3,
+      },
     ])
     await vi.waitFor(() => expect(host.textContent).not.toContain('标注图需要重试'))
   })
@@ -573,6 +715,7 @@ describe('source-recalibrated review view', () => {
 
     host.querySelector<HTMLButtonElement>('[data-testid="confirm-batch"]')!.click()
     await vi.waitFor(() => expect(host.textContent).toContain('分数已保存，2 份标注图需要重试'))
+    host.querySelector<HTMLButtonElement>('[data-question-id="Q2"]')!.click()
     await vi.waitFor(() => expect(
       host.querySelector<HTMLButtonElement>('[data-question-id="Q2"]')?.getAttribute('aria-current'),
     ).toBe('true'))
@@ -607,6 +750,9 @@ describe('source-recalibrated review view', () => {
       .find((button) => button.textContent === '重试标注图')!
     finalRetry.click()
     await vi.waitFor(() => expect(confirmReviewItems).toHaveBeenNthCalledWith(3, 7, 'Q2', [{
+      review_item_id: '7:Q2:22',
+      expected_revision: 0,
+      student_id: 22,
       result_id: 22,
       detail_id: 22,
       score_awarded: 3,
@@ -628,7 +774,12 @@ describe('source-recalibrated review view', () => {
 
     await vi.waitFor(() => expect(reviewStore.selectedQuestionId).toBe('Q2'))
     expect(reviewStore.selectedDetailId).toBe(22)
-    expect(router.currentRoute.value.query).toEqual({ question: 'Q2', detail: '22' })
+    await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({
+      scope: 'teacher_pending',
+      session: '7',
+      question: 'Q2',
+      item: '7:Q2:22',
+    }))
     expect(host.textContent).toContain('学生丁')
     expect(host.querySelector('[data-testid="review-deep-workspace"]')).not.toBeNull()
     expect(host.querySelector('[data-testid="review-batch-workspace"]')).toBeNull()
@@ -642,6 +793,8 @@ describe('source-recalibrated review view', () => {
     await vi.waitFor(() => expect(reviewStore.selectedQuestionId).toBe('Q1'))
     expect(reviewStore.selectedDetailId).toBe(11)
     await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({
+      scope: 'teacher_pending',
+      session: '7',
       question: 'Q1',
     }))
   })
@@ -650,7 +803,7 @@ describe('source-recalibrated review view', () => {
     const { host, router, reviewStore } = await mountView()
     const search = host.querySelector<HTMLInputElement>('#review-search')!
     inputValue(search, '学生甲')
-    const score = host.querySelector<HTMLInputElement>('[data-testid="teacher-score-11"]')!
+    const score = host.querySelector<HTMLInputElement>('[data-testid="teacher-score-0"]')!
     inputValue(score, '4')
 
     const deepButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
@@ -663,8 +816,10 @@ describe('source-recalibrated review view', () => {
     expect(reviewStore.selectedDetailId).toBe(11)
     expect(reviewStore.items.some((entry) => entry.detail_id === 11)).toBe(true)
     await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({
+      scope: 'teacher_pending',
+      session: '7',
       question: 'Q1',
-      detail: '11',
+      item: '7:Q1:11',
     }))
 
     host.querySelector<HTMLButtonElement>('[data-testid="back-to-batch"]')!.click()
@@ -672,8 +827,12 @@ describe('source-recalibrated review view', () => {
     expect(host.querySelector('[data-testid="review-batch-workspace"]')).not.toBeNull()
     expect(host.querySelector('[data-testid="review-deep-workspace"]')).toBeNull()
     expect(host.querySelector<HTMLInputElement>('#review-search')?.value).toBe('学生甲')
-    expect(host.querySelector<HTMLInputElement>('[data-testid="teacher-score-11"]')?.value).toBe('4')
-    await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({ question: 'Q1' }))
+    expect(host.querySelector<HTMLInputElement>('[data-testid="teacher-score-0"]')?.value).toBe('4')
+    await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({
+      scope: 'teacher_pending',
+      session: '7',
+      question: 'Q1',
+    }))
   })
 
   it('defaults to pending reads and reloads all items only after explicit scope change', async () => {
@@ -683,12 +842,12 @@ describe('source-recalibrated review view', () => {
         Q1: [itemsByQuestion.Q1![0]!, { ...itemsByQuestion.Q1![1]!, needs_review: false }],
       },
     })
-    expect(itemRequests[0]?.needsReviewOnly).toBe(true)
+    expect(itemRequests[0]?.scope).toBe('teacher_pending')
     expect(host.textContent).not.toContain('学生乙')
 
     inputValue(host.querySelector<HTMLSelectElement>('#review-scope')!, 'all')
 
-    await vi.waitFor(() => expect(itemRequests[itemRequests.length - 1]?.needsReviewOnly).toBe(false))
+    await vi.waitFor(() => expect(itemRequests[itemRequests.length - 1]?.scope).toBe('all'))
     await vi.waitFor(() => expect(host.textContent).toContain('学生乙'))
   })
 
@@ -704,9 +863,11 @@ describe('source-recalibrated review view', () => {
     failAll = true
     inputValue(host.querySelector<HTMLSelectElement>('#review-scope')!, 'all')
 
-    await vi.waitFor(() => expect(host.textContent).toContain('复核内容刷新失败'))
-    expect(reviewStore.scope).toBe('needs_review')
-    expect(host.querySelector<HTMLSelectElement>('#review-scope')?.value).toBe('needs_review')
+    await vi.waitFor(() => expect(document.body.textContent).toContain(
+      '显示范围切换失败，已恢复原来的评分范围',
+    ))
+    expect(reviewStore.scope).toBe('teacher_pending')
+    expect(host.querySelector<HTMLSelectElement>('#review-scope')?.value).toBe('teacher_pending')
     expect(reviewStore.items.map((entry) => entry.detail_id)).toEqual([11, 12])
   })
 
@@ -727,7 +888,7 @@ describe('source-recalibrated review view', () => {
 
   it('uses a blocking first-load error and a non-blocking retained-content error', async () => {
     const first = await mountView({ failItemLoad: true })
-    await vi.waitFor(() => expect(first.host.textContent).toContain('复核内容加载失败'))
+    await vi.waitFor(() => expect(first.host.textContent).toContain('评分内容加载失败'))
     expect(first.host.querySelector('[data-testid="state-panel"][data-kind="error"]')).not.toBeNull()
     first.unmount()
 
@@ -776,6 +937,7 @@ describe('source-recalibrated review view', () => {
     const pending = deferred<ReviewItem[]>()
     let signal: AbortSignal | undefined
     const mounted = await mountView({
+      waitForItems: false,
       itemLoader: async (_sessionId, _questionId, nextSignal) => {
         signal = nextSignal
         return pending.promise

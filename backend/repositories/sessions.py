@@ -2,10 +2,55 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from typing import Any
 
 from backend.repositories.base import RepositorySession, RepositorySessionProvider
+
+
+class SessionDeletionRevisionConflict(RuntimeError):
+    """The session changed after the user reviewed the delete action."""
+
+
+class SessionDeletionConfirmationMismatch(ValueError):
+    """The typed session name does not exactly match the stored name."""
+
+
+class SessionDeletionActiveWork(RuntimeError):
+    """Reversible deletion is blocked while session work can still mutate data."""
+
+    def __init__(self, *, active_jobs: int, active_grading_runs: int) -> None:
+        super().__init__("Session work is still active")
+        self.active_jobs = int(active_jobs)
+        self.active_grading_runs = int(active_grading_runs)
+
+
+class SessionPermanentDeletionRequiresArchive(RuntimeError):
+    """Permanent deletion is allowed only after the session is archived."""
+
+
+def session_deletion_revision(row: dict[str, Any]) -> str:
+    """Return the stable revision used by the delete preview/commit handshake."""
+
+    payload = {
+        str(key): (
+            value.hex()
+            if isinstance(value, bytes)
+            else value
+            if value is None or isinstance(value, (str, int, float, bool))
+            else str(value)
+        )
+        for key, value in sorted(row.items(), key=lambda item: str(item[0]))
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _validated_source_binding(
@@ -129,6 +174,104 @@ class SessionRepository:
         ).fetchone()
         return dict(row) if row else None
 
+    def session_active_work_counts(self, session_id: int) -> dict[str, int]:
+        active_grading_runs = int(
+            self.session.connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM grading_runs
+                WHERE session_id = ?
+                  AND state IN ('running', 'pause_requested', 'paused')
+                """,
+                (int(session_id),),
+            ).fetchone()[0]
+        )
+        active_jobs = int(
+            self.session.connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM jobs
+                WHERE status IN ('queued', 'running', 'paused')
+                  AND json_valid(payload_json) = 1
+                  AND json_type(payload_json, '$.session_id') IN ('integer', 'text')
+                  AND CAST(json_extract(payload_json, '$.session_id') AS TEXT) = ?
+                """,
+                (str(int(session_id)),),
+            ).fetchone()[0]
+        )
+        return {
+            "active_jobs": active_jobs,
+            "active_grading_runs": active_grading_runs,
+        }
+
+    def session_permanent_deletion_counts(self, session_id: int) -> dict[str, int]:
+        clean_session_id = int(session_id)
+        connection = self.session.connection
+
+        def scalar(statement: str, parameters: tuple[Any, ...]) -> int:
+            return max(0, int(connection.execute(statement, parameters).fetchone()[0]))
+
+        return {
+            "answer_sheets": scalar(
+                "SELECT COUNT(*) FROM exam_papers WHERE session_id = ?",
+                (clean_session_id,),
+            ),
+            "grading_results": scalar(
+                "SELECT COUNT(*) FROM session_results WHERE session_id = ?",
+                (clean_session_id,),
+            ),
+            "grading_details": scalar(
+                """
+                SELECT COUNT(*)
+                FROM session_details
+                WHERE result_id IN (
+                    SELECT id FROM session_results WHERE session_id = ?
+                )
+                """,
+                (clean_session_id,),
+            ),
+            "annotations": scalar(
+                "SELECT COUNT(*) FROM annotated_results WHERE session_id = ?",
+                (clean_session_id,),
+            ),
+            "attendance_rows": scalar(
+                "SELECT COUNT(*) FROM session_attendance WHERE session_id = ?",
+                (clean_session_id,),
+            ),
+            "grading_runs": scalar(
+                "SELECT COUNT(*) FROM grading_runs WHERE session_id = ?",
+                (clean_session_id,),
+            ),
+            "grading_run_items": scalar(
+                """
+                SELECT COUNT(*)
+                FROM grading_run_items
+                WHERE run_id IN (
+                    SELECT id FROM grading_runs WHERE session_id = ?
+                )
+                """,
+                (clean_session_id,),
+            ),
+            "jobs": scalar(
+                """
+                SELECT COUNT(*)
+                FROM jobs
+                WHERE json_valid(payload_json) = 1
+                  AND json_type(payload_json, '$.session_id') IN ('integer', 'text')
+                  AND CAST(json_extract(payload_json, '$.session_id') AS TEXT) = ?
+                """,
+                (str(clean_session_id),),
+            ),
+            "answer_regions": scalar(
+                "SELECT COUNT(*) FROM answer_regions WHERE session_id = ?",
+                (clean_session_id,),
+            ),
+            "templates": scalar(
+                "SELECT COUNT(*) FROM session_templates WHERE session_id = ?",
+                (clean_session_id,),
+            ),
+        }
+
     def replace_session_attendance(
         self,
         session_id: int,
@@ -235,6 +378,87 @@ class SessionRepositoryGateway:
     def get_grading_session(self, session_id: int) -> dict[str, Any] | None:
         with self._sessions.session(read_only=True) as session:
             return SessionRepository(session).get_grading_session(session_id)
+
+    def session_deletion_impact(self, session_id: int) -> dict[str, Any]:
+        with self._sessions.session(read_only=True) as session:
+            with session.transaction():
+                repository = SessionRepository(session)
+                current = repository.get_grading_session(int(session_id))
+                if current is None:
+                    raise ValueError(f"grading session not found: {session_id}")
+                active = repository.session_active_work_counts(int(session_id))
+                permanent_counts = repository.session_permanent_deletion_counts(
+                    int(session_id)
+                )
+        return {
+            "session": current,
+            "revision": session_deletion_revision(current),
+            **active,
+            "permanent_counts": permanent_counts,
+        }
+
+    def soft_delete_grading_session_protected(
+        self,
+        session_id: int,
+        *,
+        expected_revision: str,
+        confirmation_name: str,
+    ) -> dict[str, Any]:
+        with self._sessions.session() as session:
+            with session.transaction(immediate=True):
+                repository = SessionRepository(session)
+                current = repository.get_grading_session(int(session_id))
+                if current is None:
+                    raise ValueError(f"grading session not found: {session_id}")
+                if str(confirmation_name) != str(current["session_name"]):
+                    raise SessionDeletionConfirmationMismatch(
+                        "Session name confirmation does not match"
+                    )
+                if bool(int(current.get("is_deleted") or 0)):
+                    return current
+                if session_deletion_revision(current) != str(expected_revision):
+                    raise SessionDeletionRevisionConflict(
+                        "Session changed after delete preview"
+                    )
+                active = repository.session_active_work_counts(int(session_id))
+                if active["active_jobs"] or active["active_grading_runs"]:
+                    raise SessionDeletionActiveWork(**active)
+                repository.soft_delete_grading_session(int(session_id))
+                deleted = repository.get_grading_session(int(session_id))
+                if deleted is None:
+                    raise RuntimeError("Session disappeared while being archived")
+                return deleted
+
+    def assert_permanent_deletion_ready(
+        self,
+        session_id: int,
+        *,
+        expected_revision: str,
+        confirmation_phrase: str,
+    ) -> dict[str, Any]:
+        with self._sessions.session(read_only=True) as session:
+            with session.transaction():
+                repository = SessionRepository(session)
+                current = repository.get_grading_session(int(session_id))
+                if current is None:
+                    raise ValueError(f"grading session not found: {session_id}")
+                expected_phrase = f"永久删除 {current['session_name']}"
+                if str(confirmation_phrase) != expected_phrase:
+                    raise SessionDeletionConfirmationMismatch(
+                        "Permanent deletion phrase does not match"
+                    )
+                if not bool(int(current.get("is_deleted") or 0)):
+                    raise SessionPermanentDeletionRequiresArchive(
+                        "Session must be archived before permanent deletion"
+                    )
+                if session_deletion_revision(current) != str(expected_revision):
+                    raise SessionDeletionRevisionConflict(
+                        "Session changed after permanent deletion preview"
+                    )
+                active = repository.session_active_work_counts(int(session_id))
+                if active["active_jobs"] or active["active_grading_runs"]:
+                    raise SessionDeletionActiveWork(**active)
+                return current
 
     def replace_session_attendance(
         self,

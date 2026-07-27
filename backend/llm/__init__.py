@@ -1,3 +1,10 @@
+from .diagnostics import (
+    DIAGNOSTIC_LOG_FILE,
+    DIAGNOSTIC_MAX_FILE_BYTES,
+    DIAGNOSTIC_ROTATED_FILE_COUNT,
+    JsonlDiagnosticJournal,
+    NullDiagnosticSink,
+)
 from .errors import LLMErrorCategory, classify_llm_error, is_retryable_error
 from .gateway import LLMGateway
 from .pacing import LLMPacerRegistry
@@ -35,6 +42,10 @@ from .trace import (
 __all__ = [
     "JsonlUsageSink",
     "JsonlCallTraceSink",
+    "JsonlDiagnosticJournal",
+    "DIAGNOSTIC_LOG_FILE",
+    "DIAGNOSTIC_MAX_FILE_BYTES",
+    "DIAGNOSTIC_ROTATED_FILE_COUNT",
     "LLMErrorCategory",
     "LLMGateway",
     "LLMPacerRegistry",
@@ -46,6 +57,7 @@ __all__ = [
     "LLMUsageEvent",
     "LLMCallTraceEvent",
     "NullCallTraceSink",
+    "NullDiagnosticSink",
     "NullUsageSink",
     "TRACE_LOG_FILE",
     "classify_llm_error",
