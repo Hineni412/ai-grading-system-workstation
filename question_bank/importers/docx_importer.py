@@ -238,8 +238,34 @@ def _math_text(element) -> str:
     if local_name == "f":
         numerator = _math_named_child_text(element, "num")
         denominator = _math_named_child_text(element, "den")
-        if numerator and denominator:
-            return f"({numerator})/({denominator})"
+        if numerator or denominator:
+            return f"({numerator or '□'})/({denominator or '□'})"
+    if local_name == "rad":
+        degree = _math_named_child_text(element, "deg")
+        radicand = _math_named_child_text(element, "e")
+        if not radicand:
+            return ""
+        if degree and degree.strip() not in {"2", "²"}:
+            return f"<sup>{degree}</sup>√({radicand})"
+        return f"√({radicand})"
+    if local_name == "limLow":
+        base = _math_named_child_text(element, "e")
+        lower = _math_named_child_text(element, "lim")
+        return f"{base}<sub>{lower}</sub>" if lower else base
+    if local_name == "limUpp":
+        base = _math_named_child_text(element, "e")
+        upper = _math_named_child_text(element, "lim")
+        return f"{base}<sup>{upper}</sup>" if upper else base
+    if local_name == "d":
+        expressions = [
+            _math_text(child)
+            for child in element.iterchildren()
+            if _local_name(child) == "e"
+        ]
+        begin = _math_delimiter_character(element, "begChr", "(")
+        end = _math_delimiter_character(element, "endChr", ")")
+        separator = _math_delimiter_character(element, "sepChr", "，")
+        return f"{begin}{separator.join(expressions)}{end}"
     return "".join(_math_text(child) for child in element.iterchildren())
 
 
@@ -248,6 +274,19 @@ def _math_named_child_text(element, name: str) -> str:
         if _local_name(child) == name:
             return _math_text(child)
     return ""
+
+
+def _math_delimiter_character(element, property_name: str, default: str) -> str:
+    for child in element.iterchildren():
+        if _local_name(child) != "dPr":
+            continue
+        for property_element in child.iterchildren():
+            if _local_name(property_element) != property_name:
+                continue
+            for key, value in property_element.attrib.items():
+                if str(key).split("}")[-1] == "val":
+                    return str(value)
+    return default
 
 
 def _run_property_value(run_element, property_name: str) -> str | None:

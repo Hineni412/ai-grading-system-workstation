@@ -11,6 +11,16 @@ import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
 import { useJobStore } from '../../stores/jobs'
 import { useQuestionBankStore } from '../../stores/question-bank'
 
+const props = withDefaults(defineProps<{
+  pendingTaxonomyCount?: number
+}>(), {
+  pendingTaxonomyCount: 0,
+})
+
+const emit = defineEmits<{
+  reviewTaxonomy: []
+}>()
+
 const bank = useQuestionBankStore()
 const jobStore = useJobStore()
 const busy = ref(false)
@@ -84,13 +94,12 @@ async function retry(job: JobResponse): Promise<void> {
   if (busy.value) return
   if (job.job_type === 'tagging_sync') {
     const ids = questionJobRetryIds(job)
-    const count = ids.length
-    if (count === 0) {
-      feedback.value = '服务端没有公开可安全重试的题目范围，请先刷新任务。'
+    if (ids.length === 0) {
+      feedback.value = '服务端没有提供可安全重试的题目范围，请先刷新任务。'
       return
     }
     const confirmed = window.confirm(
-      `将只重试 ${count} 道失败题目，可能产生外部费用。确认继续吗？`,
+      `只重试 ${ids.length} 道失败题目，仍可能产生外部费用。确认继续吗？`,
     )
     if (!confirmed) return
     busy.value = true
@@ -104,6 +113,7 @@ async function retry(job: JobResponse): Promise<void> {
     }
     return
   }
+
   busy.value = true
   try {
     jobStore.track(await questionBankApi.retryImport(job.id))
@@ -127,28 +137,41 @@ function downloadFailures(job: JobResponse): void {
 </script>
 
 <template>
-  <details class="qb-jobs" open>
-    <summary>
-      <span>
-        <strong>导入与任务</strong>
-        <small>受控 DOCX/PDF、AI 标注、取消与失败重试</small>
-      </span>
-      <span>{{ jobs.length }} 个任务</span>
-    </summary>
+  <section class="qb-jobs" aria-labelledby="qb-import-title">
+    <header class="qb-jobs__heading">
+      <div>
+        <p class="qb-eyebrow">IMPORT & TASKS</p>
+        <h2 id="qb-import-title">上传试卷与任务</h2>
+        <p>Word/PDF 会先安全上传，再由后台生成试卷和题目。</p>
+      </div>
+      <div class="qb-jobs__heading-actions">
+        <span>{{ jobs.length }} 个历史任务</span>
+        <button
+          type="button"
+          class="qb-button is-review"
+          @click="emit('reviewTaxonomy')"
+        >
+          待审核新词
+          <strong>{{ props.pendingTaxonomyCount }}</strong>
+        </button>
+      </div>
+    </header>
 
     <div class="qb-jobs__actions">
       <label class="qb-file-picker">
-        <span>选择 DOCX/PDF，可一次添加多个文件</span>
         <input type="file" accept=".docx,.pdf" multiple :disabled="busy" @change="chooseFiles">
-        <strong>{{ busy ? '正在处理……' : '选择文件' }}</strong>
+        <span>
+          <strong>{{ busy ? '正在处理…' : '选择 Word / PDF' }}</strong>
+          <small>可一次选择多个文件，单个文件不超过 200 MB</small>
+        </span>
       </label>
       <button
         type="button"
-        class="qb-button qb-button--ai"
+        class="qb-button is-ai"
         :disabled="bank.selectedCount === 0 || busy"
         @click="startTagging"
       >
-        AI 标注 {{ bank.selectedCount }} 题
+        AI 标注已选 {{ bank.selectedCount }} 题
       </button>
     </div>
     <p class="qb-help">不会自动调用 AI；只有确认题数和费用提示后才会提交。</p>
@@ -160,65 +183,69 @@ function downloadFailures(job: JobResponse): void {
       </li>
     </ul>
 
-    <div v-if="jobs.length" class="qb-job-list">
-      <article v-for="job in jobs" :key="job.id" class="qb-job">
-        <header>
-          <div>
-            <strong>{{ job.job_type === 'tagging_sync' ? 'AI 标注' : '试卷导入' }} #{{ job.id }}</strong>
-            <span>{{ statusLabels[job.status] || job.status }} · {{ Math.round(job.progress * 100) }}%</span>
+    <details class="qb-job-history">
+      <summary>查看任务记录（{{ jobs.length }}）</summary>
+      <div v-if="jobs.length" class="qb-job-list">
+        <article v-for="job in jobs" :key="job.id" class="qb-job">
+          <header>
+            <div>
+              <strong>{{ job.job_type === 'tagging_sync' ? 'AI 标注' : '试卷导入' }} #{{ job.id }}</strong>
+              <span>{{ statusLabels[job.status] || job.status }} · {{ Math.round(job.progress * 100) }}%</span>
+            </div>
+            <progress :value="job.progress" max="1">{{ Math.round(job.progress * 100) }}%</progress>
+          </header>
+          <p>{{ job.detail || job.stage || '任务等待服务处理' }}</p>
+          <p v-if="job.result.outcome === 'partial'" class="qb-feedback is-warning">
+            部分完成：成功
+            {{ safeCount(job.result, 'tagged_count') || safeCount(job.result, 'question_count') }}，
+            跳过 {{ safeCount(job.result, 'skipped_complete_count') }}，
+            失败 {{ safeCount(job.result, 'failed_count') }}。
+          </p>
+          <p v-if="job.error" class="qb-feedback is-error">{{ job.error }}</p>
+          <p v-if="jobStore.syncErrors[job.id]" class="qb-feedback is-error" role="alert">
+            {{ jobStore.syncErrors[job.id]?.message }}
+            <template v-if="jobStore.syncErrors[job.id]?.requestId">
+              请求编号：{{ jobStore.syncErrors[job.id]?.requestId }}
+            </template>
+          </p>
+          <div class="qb-job__actions">
+            <button
+              v-if="!TERMINAL_JOB_STATUSES.has(job.status)"
+              type="button"
+              class="qb-link"
+              @click="jobStore.cancel(job.id)"
+            >
+              请求取消
+            </button>
+            <button type="button" class="qb-link" @click="jobStore.refresh(job.id)">刷新</button>
+            <button
+              v-if="questionJobFailures(job.result).length"
+              type="button"
+              class="qb-link"
+              @click="downloadFailures(job)"
+            >
+              下载失败清单
+            </button>
+            <button
+              v-if="
+                TERMINAL_JOB_STATUSES.has(job.status) &&
+                (
+                  job.job_type === 'question_import' ||
+                  questionJobRetryIds(job).length > 0
+                ) &&
+                (job.status !== 'succeeded' || job.result.outcome === 'partial')
+              "
+              type="button"
+              class="qb-link"
+              :disabled="busy"
+              @click="retry(job)"
+            >
+              重试允许的失败项
+            </button>
           </div>
-          <progress :value="job.progress" max="1">{{ Math.round(job.progress * 100) }}%</progress>
-        </header>
-        <p>{{ job.detail || job.stage || '任务等待服务处理' }}</p>
-        <p v-if="job.result.outcome === 'partial'" class="qb-feedback is-warning">
-          部分完成：成功 {{ safeCount(job.result, 'tagged_count') || safeCount(job.result, 'question_count') }}，
-          跳过 {{ safeCount(job.result, 'skipped_complete_count') }}，
-          失败 {{ safeCount(job.result, 'failed_count') }}。
-        </p>
-        <p v-if="job.error" class="qb-feedback is-error">{{ job.error }}</p>
-        <p v-if="jobStore.syncErrors[job.id]" class="qb-feedback is-error" role="alert">
-          {{ jobStore.syncErrors[job.id]?.message }}
-          <template v-if="jobStore.syncErrors[job.id]?.requestId">
-            请求编号：{{ jobStore.syncErrors[job.id]?.requestId }}
-          </template>
-        </p>
-        <div class="qb-job__actions">
-          <button
-            v-if="!TERMINAL_JOB_STATUSES.has(job.status)"
-            type="button"
-            class="qb-link"
-            @click="jobStore.cancel(job.id)"
-          >
-            请求取消
-          </button>
-          <button type="button" class="qb-link" @click="jobStore.refresh(job.id)">刷新</button>
-          <button
-            v-if="questionJobFailures(job.result).length"
-            type="button"
-            class="qb-link"
-            @click="downloadFailures(job)"
-          >
-            下载失败清单
-          </button>
-          <button
-            v-if="
-              TERMINAL_JOB_STATUSES.has(job.status)
-              && (
-                job.job_type === 'question_import'
-                || questionJobRetryIds(job).length > 0
-              )
-              && (job.status !== 'succeeded' || job.result.outcome === 'partial')
-            "
-            type="button"
-            class="qb-link"
-            :disabled="busy"
-            @click="retry(job)"
-          >
-            重试允许的失败项
-          </button>
-        </div>
-      </article>
-    </div>
-    <p v-else class="qb-empty">当前浏览器还没有记录题库任务。</p>
-  </details>
+        </article>
+      </div>
+      <p v-else class="qb-empty">当前浏览器还没有记录题库任务。</p>
+    </details>
+  </section>
 </template>

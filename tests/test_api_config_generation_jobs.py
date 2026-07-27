@@ -356,7 +356,8 @@ def test_generation_request_token_rejects_a_different_request(tmp_path: Path) ->
     )
 
     assert first.status_code == 202
-    assert conflict.status_code == 422
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "config_request_token_conflict"
     manager.wait(first.json()["id"], timeout=5)
 
 

@@ -60,7 +60,7 @@ def prepared_session_id(api_e2e: ApiE2EHarness) -> int:
     )
     assert submitted.status_code == 202
     config_job = api_e2e.poll_job(submitted.json()["id"], "succeeded")
-    assert config_job["result"]["outcome"] == "complete"
+    assert config_job["result"]["outcome"] == "complete", config_job["result"]
     api_e2e.bind_and_commit_template(session_id)
 
     upload_dir = (

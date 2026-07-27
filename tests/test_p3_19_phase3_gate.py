@@ -93,7 +93,7 @@ def test_phase_gate_upgrades_every_supported_historical_version(
         item["target"]: item for item in matrix["targets"]
     }
     assert set(by_target) == {"grading", "question_bank"}
-    for target, expected_count in (("grading", 10), ("question_bank", 11)):
+    for target, expected_count in (("grading", 11), ("question_bank", 11)):
         item = by_target[target]
         assert len(item["versions"]) == expected_count
         assert item["versions"][0] == {
@@ -104,6 +104,4 @@ def test_phase_gate_upgrades_every_supported_historical_version(
             version["status"] in {"passed", "passed_expected_retirement"}
             for version in item["versions"]
         )
-        assert item["versions"][-1]["start_version"].startswith(
-            "008_" if target == "grading" else "009_"
-        )
+        assert item["versions"][-1]["start_version"].startswith("009_")

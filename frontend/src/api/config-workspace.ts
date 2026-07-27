@@ -1,12 +1,13 @@
 import { apiClient } from './client'
 import { decodeJobResponse, type JobResponse } from './jobs'
+import type { QuestionBankRichContent } from './question-bank'
 import { assertNoPathLikeKeys, isNullableString, isRecord } from './validation'
 
 export const QUESTION_TYPES = [
   'choice', 'fill_blank', 'calculation', 'proof', 'comprehensive',
 ] as const
 export type QuestionType = (typeof QUESTION_TYPES)[number]
-export type GenerationMode = 'batched'
+export type GenerationMode = 'batched' | 'whole_document'
 
 export interface QuestionDecision {
   question_id: string
@@ -24,6 +25,7 @@ export interface ConfigQuestionPreview {
   local_answer_trusted: boolean
   has_question_asset: boolean
   has_answer_asset: boolean
+  rich_content?: QuestionBankRichContent
 }
 
 export interface ConfigSource {
@@ -69,7 +71,6 @@ export interface ConfigEditorRow {
   standard_answer: string
   accepted_answers: string[]
   match_rule: string
-  knowledge: string
   answer_only_max_score: number | null
   require_final_answer: boolean | null
   required_elements: string[]
@@ -156,16 +157,58 @@ function isStringList(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
 }
 
-function isQuestionPreview(value: unknown): value is ConfigQuestionPreview {
+function isControlledConfigAssetUrl(value: string): boolean {
+  return /^\/api\/sessions\/[1-9]\d*\/config\/sources\/[0-9a-f]{32}\/questions\/[A-Za-z0-9_-]{1,100}\/assets\/(?:question|answer)(?:\/\d+)?$/.test(value)
+}
+
+function isRichSegment(value: unknown): boolean {
+  return isRecord(value) && hasExactKeys(value, [
+    'text', 'superscript', 'subscript', 'underline', 'line_break',
+  ]) && typeof value.text === 'string'
+    && typeof value.superscript === 'boolean' && typeof value.subscript === 'boolean'
+    && typeof value.underline === 'boolean' && typeof value.line_break === 'boolean'
+}
+
+function isRichBlock(value: unknown): boolean {
   if (!isRecord(value) || !hasExactKeys(value, [
+    'kind', 'text', 'segments', 'rows', 'asset_indexes', 'asset_urls',
+  ]) || !['paragraph', 'table'].includes(String(value.kind)) || typeof value.text !== 'string'
+    || !Array.isArray(value.segments) || !value.segments.every(isRichSegment)
+    || !Array.isArray(value.rows) || !Array.isArray(value.asset_indexes)
+    || !value.asset_indexes.every((item) => Number.isSafeInteger(item) && Number(item) >= 0)
+    || !isStringList(value.asset_urls)
+    || !value.asset_urls.every(isControlledConfigAssetUrl)) return false
+  return value.rows.every((row) => isRecord(row) && hasExactKeys(row, ['cells'])
+    && Array.isArray(row.cells) && row.cells.every((cell) => isRecord(cell)
+      && hasExactKeys(cell, ['segments']) && Array.isArray(cell.segments)
+      && cell.segments.every(isRichSegment)))
+}
+
+function isRichContent(value: unknown): value is QuestionBankRichContent {
+  return isRecord(value) && hasExactKeys(value, [
+    'available', 'question_block_count', 'answer_block_count', 'question_blocks', 'answer_blocks',
+  ]) && typeof value.available === 'boolean'
+    && Number.isSafeInteger(value.question_block_count) && Number(value.question_block_count) >= 0
+    && Number.isSafeInteger(value.answer_block_count) && Number(value.answer_block_count) >= 0
+    && Array.isArray(value.question_blocks) && value.question_blocks.every(isRichBlock)
+    && Array.isArray(value.answer_blocks) && value.answer_blocks.every(isRichBlock)
+    && value.question_block_count === value.question_blocks.length
+    && value.answer_block_count === value.answer_blocks.length
+}
+
+function isQuestionPreview(value: unknown): value is ConfigQuestionPreview {
+  if (!isRecord(value)) return false
+  const baseKeys = [
     'question_id', 'question_type', 'question_preview', 'answer_preview', 'answer_present',
     'needs_review', 'local_answer_trusted', 'has_question_asset', 'has_answer_asset',
-  ])) return false
+  ]
+  if (!hasExactKeys(value, baseKeys) && !hasExactKeys(value, [...baseKeys, 'rich_content'])) return false
   return typeof value.question_id === 'string' && typeof value.question_type === 'string'
     && typeof value.question_preview === 'string' && typeof value.answer_preview === 'string'
     && typeof value.answer_present === 'boolean' && typeof value.needs_review === 'boolean'
     && typeof value.local_answer_trusted === 'boolean'
     && typeof value.has_question_asset === 'boolean' && typeof value.has_answer_asset === 'boolean'
+    && (value.rich_content === undefined || isRichContent(value.rich_content))
 }
 
 function isSafeBasename(value: unknown): value is string {
@@ -192,12 +235,12 @@ function decodeConfigSource(value: unknown): ConfigSource {
 function isEditorRow(value: unknown): value is ConfigEditorRow {
   if (!isRecord(value) || !hasExactKeys(value, [
     'row_id', 'question_id', 'part_id', 'step_id', 'part_label', 'question_type', 'core_goal',
-    'score', 'standard_answer', 'accepted_answers', 'match_rule', 'knowledge',
+    'score', 'standard_answer', 'accepted_answers', 'match_rule',
     'answer_only_max_score', 'require_final_answer', 'required_elements', 'deduction_rules',
     'final_answer_rule',
   ])) return false
   return ['row_id', 'question_id', 'part_id', 'step_id', 'part_label', 'question_type',
-    'core_goal', 'standard_answer', 'match_rule', 'knowledge', 'final_answer_rule']
+    'core_goal', 'standard_answer', 'match_rule', 'final_answer_rule']
     .every((key) => typeof value[key] === 'string')
     && isFiniteNumber(value.score)
     && (value.answer_only_max_score === null || isFiniteNumber(value.answer_only_max_score))
@@ -342,7 +385,7 @@ export async function fetchLatestConfigGenerationJob(
   const id = requireSessionId(sessionId)
   const sourceId = requireSourceId(request.source_id)
   if (!/^[0-9a-f]{64}$/.test(request.source_revision)
-    || request.generation_mode !== 'batched') {
+    || !['batched', 'whole_document'].includes(request.generation_mode)) {
     throw new Error('Invalid generation lookup')
   }
   const query = new URLSearchParams({

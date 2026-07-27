@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from backend.schema_migrations import SchemaVersionError
+from backend.repositories.templates import TemplateMutationBusyError
+from backend.jobs.store import JobStore
 from db_manager import DBManager
 
 
@@ -31,6 +33,39 @@ def _region(region_uuid: str, order: int, question_id: str) -> dict[str, object]
         "mapping_status": "manual",
         "multi_region_confirmed": order == 2,
     }
+
+
+def test_formal_template_regions_cannot_change_after_grading_is_queued(
+    tmp_path: Path,
+) -> None:
+    db = DBManager(tmp_path / "grading.db")
+    db.initialize()
+    session_id, template_id = _make_session(db)
+    original = [_region("original", 1, "Q1")]
+    db.replace_answer_regions_atomic(
+        session_id,
+        template_id,
+        original,
+        confirmed=True,
+    )
+    JobStore(db.db_path).create_job("grading_run", {"session_id": session_id})
+
+    with pytest.raises(TemplateMutationBusyError):
+        db.replace_answer_regions_atomic(
+            session_id,
+            template_id,
+            [_region("replacement", 1, "Q2")],
+            confirmed=True,
+        )
+    with pytest.raises(TemplateMutationBusyError):
+        db.upsert_session_template(session_id, "new-front.png", "new-back.png")
+
+    saved = db.list_answer_regions(session_id)
+    assert [row["region_uuid"] for row in saved] == ["original"]
+    template = db.get_session_template(session_id)
+    assert template is not None
+    assert template["front_template_path"] == "front.png"
+    assert template["back_template_path"] == "back.png"
 
 
 def test_initialize_rejects_incomplete_unregistered_answer_region_schema(

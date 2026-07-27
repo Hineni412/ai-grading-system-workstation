@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from .store import GradingSessionBusyError, JobRecord, JobStore
+from .store import (
+    GradingSessionBusyError,
+    JobRecord,
+    JobStore,
+    QuestionBankSyncSessionBusyError,
+)
 
 
 JobHandler = Callable[["JobContext"], dict[str, Any] | None]
@@ -62,6 +67,7 @@ class JobManager:
         max_workers: int = 2,
         cleanup_interrupted: bool = True,
         interrupted_input_root: Path | None = None,
+        question_bank_db_path: Path | None = None,
     ) -> None:
         self.store = store
         self._handlers: dict[str, JobHandler] = {}
@@ -75,6 +81,19 @@ class JobManager:
             else None
         )
         if cleanup_interrupted:
+            interrupted_sync_owners = (
+                self.store.interrupted_question_bank_sync_owners()
+            )
+            if question_bank_db_path is not None and interrupted_sync_owners:
+                from question_bank.services.source_question_link_service import (
+                    SourceQuestionLinkService,
+                )
+
+                SourceQuestionLinkService(
+                    Path(question_bank_db_path)
+                ).discard_automatic_links_for_interrupted_syncs(
+                    interrupted_sync_owners
+                )
             owned_input_ids = (
                 self.store.interrupted_owned_config_input_ids()
                 if interrupted_input_root is not None
@@ -219,6 +238,42 @@ class JobManager:
             if not created:
                 return job, False
             future = self._executor.submit(self._run_job, job.id, handler)
+            self._futures[job.id] = future
+        future.add_done_callback(
+            lambda completed, job_id=job.id: self._discard_completed_future(
+                job_id,
+                completed,
+            )
+        )
+        return job, True
+
+    def submit_idempotent_question_bank_sync(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[JobRecord, bool]:
+        handler = self._handlers.get("question_bank_sync")
+        if handler is None:
+            raise UnsupportedJobTypeError(
+                "unsupported job type: question_bank_sync"
+            )
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("JobManager has shut down")
+            try:
+                job, created = (
+                    self.store.create_idempotent_question_bank_sync_job(payload)
+                )
+            except QuestionBankSyncSessionBusyError as exc:
+                raise ActiveJobExistsError(str(exc)) from exc
+            if not created:
+                return job, False
+            try:
+                future = self._executor.submit(self._run_job, job.id, handler)
+            except Exception as exc:
+                self.store.finish(job.id, "failed", "job scheduling failed")
+                raise RuntimeError(
+                    "question-bank sync job could not be scheduled"
+                ) from exc
             self._futures[job.id] = future
         future.add_done_callback(
             lambda completed, job_id=job.id: self._discard_completed_future(

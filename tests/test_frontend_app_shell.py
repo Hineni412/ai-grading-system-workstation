@@ -11,18 +11,13 @@ COLOR_LITERAL = re.compile(r"#[0-9a-fA-F]{3,8}\b|\b(?:rgb|hsl)a?\(")
 
 def test_recalibrated_shell_keeps_one_truthful_navigation_source_and_general_client() -> None:
     navigation = (SRC / "navigation.ts").read_text(encoding="utf-8")
+    assert "export const navigationGroups:" in navigation
+    assert "export const settingsNavigationItems:" in navigation
     assert re.search(
-        r"export const navigationItems = \[\s*"
+        r"export const navigationItems:[^=]+=\s*\[\s*"
         r"workbenchRouteDefinition,\s*"
-        r"sessionRouteDefinition,\s*"
-        r"studentsRouteDefinition,\s*"
-        r"questionBankRouteDefinition,\s*"
-        r"questionAssemblyRouteDefinition,\s*"
-        r"trainingRouteDefinition,\s*"
-        r"knowledgeGraphRouteDefinition,\s*"
-        r"filesRouteDefinition,\s*"
-        r"reviewRouteDefinition,\s*"
-        r"settingsRouteDefinition,\s*"
+        r"\.\.\.navigationGroups\.flatMap\(\(group\) => group\.items\),\s*"
+        r"\.\.\.settingsNavigationItems,\s*"
         r"\] as const",
         navigation,
     )
@@ -33,6 +28,7 @@ def test_recalibrated_shell_keeps_one_truthful_navigation_source_and_general_cli
     assert "path: '/question-assembly'" in navigation
     assert "path: '/knowledge-graph'" in navigation
     assert "path: '/grading'" in navigation
+    assert "path: '/model-profiles'" in navigation
     assert "futureReason" not in navigation
     assert "智能体与自动化" not in navigation
     assert (SRC / "api" / "client.ts").is_file()
@@ -45,24 +41,21 @@ def test_shell_uses_tokens_and_exposes_only_the_truthful_workspace() -> None:
     main = (SRC / "main.ts").read_text(encoding="utf-8")
     assert not COLOR_LITERAL.search(css)
     required_tokens = {
-        "--shell-topbar-height: 60px": "var(--shell-topbar-height)",
+        "--shell-topbar-height: 68px": "var(--shell-topbar-height)",
         "--shell-topbar-z-index: 32": "var(--shell-topbar-z-index)",
         "--shell-skip-link-z-index: 33": "var(--shell-skip-link-z-index)",
+        "--shell-navigation-width: 180px": "var(--shell-navigation-width)",
+        "--shell-navigation-collapsed-width: 56px": (
+            "var(--shell-navigation-collapsed-width)"
+        ),
     }
     for definition, reference in required_tokens.items():
         assert definition in tokens
         assert reference in css
-    assert "z-index: calc(" not in css
-    for obsolete_reference in (
-        "var(--shell-navigation-width)",
-        "var(--shell-navigation-collapsed-width)",
-        "var(--shell-inspector-width)",
-        "var(--shell-inspector-compact-width)",
-    ):
-        assert obsolete_reference not in css
-    assert "@media (max-width: 1100px)" in css
-    assert "@media (max-width: 1023px)" not in css
-    assert "@media (max-width: 767px)" not in css
+    assert "z-index: calc(var(--shell-topbar-z-index) + 1)" in css
+    assert "@media (min-width: 901px)" in css
+    assert "@media (max-width: 900px)" in css
+    assert "@media (max-width: 620px)" in css
     assert "--shell-overlay-z-index" not in tokens
     assert "--shell-panel-z-index" not in tokens
     assert "import './styles/app-shell.css'" in main

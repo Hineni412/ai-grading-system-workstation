@@ -86,7 +86,7 @@ class SolutionAnswerGuardTests(unittest.TestCase):
                                 "question_type": "proof",
                                 "max_score": 12,
                                 "answer_only_max_score": 1,
-                                "parts": [{"part_id": "Q12(3)", "part_score": 4}],
+                                "parts": [{"part_id": "Q12", "part_score": 4}],
                             }
                         ],
                     },
@@ -103,7 +103,7 @@ class SolutionAnswerGuardTests(unittest.TestCase):
                     "needs_human_review": False,
                     "grading_details": [
                         {
-                            "question_id": "Q12(3)",
+                            "question_id": "Q12",
                             "observed_answer": "(3)是不是定值√",
                             "score_awarded": 4,
                             "deduction_reason": "",
@@ -147,7 +147,7 @@ class SolutionAnswerGuardTests(unittest.TestCase):
                                 "answer_only_max_score": 1,
                                 "parts": [
                                     {
-                                        "part_id": "Q11(1)",
+                                        "part_id": "Q11",
                                         "part_score": 4,
                                         "response_mode": "short_answer_points",
                                         "answer_only_max_score": 4,
@@ -169,7 +169,7 @@ class SolutionAnswerGuardTests(unittest.TestCase):
                     "needs_human_review": False,
                     "grading_details": [
                         {
-                            "question_id": "Q11(1)",
+                            "question_id": "Q11",
                             "observed_answer": "72°，54°",
                             "score_awarded": 4,
                             "deduction_reason": "",
@@ -197,7 +197,7 @@ class SolutionAnswerGuardTests(unittest.TestCase):
                                 "question_id": "Q12",
                                 "question_type": "proof",
                                 "max_score": 4,
-                                "parts": [{"part_id": "Q12(3)", "part_score": 4}],
+                                "parts": [{"part_id": "Q12", "part_score": 4}],
                             }
                         ],
                     },
@@ -214,7 +214,7 @@ class SolutionAnswerGuardTests(unittest.TestCase):
                 "needs_human_review": False,
                 "grading_details": [
                     {
-                        "question_id": "Q12(3)",
+                        "question_id": "Q12",
                         "observed_answer": "∵证明过程",
                         "score_awarded": 3.0,
                         "deduction_reason": "缺少最后证明结论",
@@ -240,9 +240,9 @@ class SolutionAnswerGuardTests(unittest.TestCase):
             self.assertTrue(result.needs_human_review)
             self.assertIn("detail_metadata", result.raw_json)
             detail_metadata = result.raw_json["detail_metadata"]
-            self.assertIn("Q12(3)", detail_metadata)
+            self.assertIn("Q12", detail_metadata)
             
-            meta = detail_metadata["Q12(3)"]
+            meta = detail_metadata["Q12"]
             self.assertEqual(meta["evidence_steps"], ["step1", "step2"])
             self.assertEqual(meta["missing_steps"], ["step3"])
             self.assertEqual(len(meta["candidate_scores"]), 2)

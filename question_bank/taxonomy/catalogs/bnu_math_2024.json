@@ -1,0 +1,1252 @@
+{
+  "schema_version": 1,
+  "catalog_id": "bnu-math-2024",
+  "publisher": "北京师范大学出版社",
+  "subject": "初中数学",
+  "edition": "2024",
+  "capture": {
+    "captured_at": "2026-07-26T12:37:26+08:00",
+    "mode": "one_time_public_catalog_capture",
+    "scope": "教材册别、章和直接小节名称及顺序",
+    "runtime_refresh": false,
+    "source_provider": "菁优网公开教材目录页",
+    "notes": "未采集题目、试卷、资源详情或小节下的知识细项。"
+  },
+  "volumes": [
+    {
+      "id": "bnu24-math-g7-upper",
+      "label": "七年级上册",
+      "grade": "七年级",
+      "semester": "上学期",
+      "textbook_version": "北师大版（2024）",
+      "source": {
+        "url": "https://www.jyeoo.com/resource/tb/2/99839",
+        "page_heading": "北师大版（2024） 七年级上册",
+        "retrieved_at": "2026-07-26T12:37:26+08:00"
+      },
+      "chapters": [
+        {
+          "id": "bnu24-math-g7-upper-c01",
+          "order": 1,
+          "number": "第一章",
+          "title": "丰富的图形世界",
+          "label": "第一章 丰富的图形世界",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g7-upper-c01-s01",
+              "order": 1,
+              "number": "1",
+              "title": "生活中的立体图形",
+              "label": "1 生活中的立体图形",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-upper-c01-s02",
+              "order": 2,
+              "number": "2",
+              "title": "从立体图形到平面图形",
+              "label": "2 从立体图形到平面图形",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-upper-c01-s03",
+              "order": 3,
+              "number": null,
+              "title": "回顾与思考",
+              "label": "回顾与思考",
+              "kind": "review"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g7-upper-c02",
+          "order": 2,
+          "number": "第二章",
+          "title": "有理数及其运算",
+          "label": "第二章 有理数及其运算",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g7-upper-c02-s01",
+              "order": 1,
+              "number": "1",
+              "title": "认识有理数",
+              "label": "1 认识有理数",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-upper-c02-s02",
+              "order": 2,
+              "number": "2",
+              "title": "有理数的加减运算",
+              "label": "2 有理数的加减运算",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-upper-c02-s03",
+              "order": 3,
+              "number": "3",
+              "title": "有理数的乘除运算",
+              "label": "3 有理数的乘除运算",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-upper-c02-s04",
+              "order": 4,
+              "number": "4",
+              "title": "有理数的乘方",
+              "label": "4 有理数的乘方",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-upper-c02-s05",
+              "order": 5,
+              "number": "5",
+              "title": "有理数的混合运算",
+              "label": "5 有理数的混合运算",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-upper-c02-s06",
+              "order": 6,
+              "number": null,
+              "title": "回顾与思考",
+              "label": "回顾与思考",
+              "kind": "review"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g7-upper-c03",
+          "order": 3,
+          "number": "第三章",
+          "title": "整式及其加减",
+          "label": "第三章 整式及其加减",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g7-upper-c03-s01",
+              "order": 1,
+              "number": "1",
+              "title": "代数式",
+              "label": "1 代数式",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-upper-c03-s02",
+              "order": 2,
+              "number": "2",
+              "title": "整式的加减",
+              "label": "2 整式的加减",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-upper-c03-s03",
+              "order": 3,
+              "number": "3",
+              "title": "探索与表达规律",
+              "label": "3 探索与表达规律",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-upper-c03-s04",
+              "order": 4,
+              "number": null,
+              "title": "回顾与思考",
+              "label": "回顾与思考",
+              "kind": "review"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g7-upper-c04",
+          "order": 4,
+          "number": "第四章",
+          "title": "基本平面图形",
+          "label": "第四章 基本平面图形",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g7-upper-c04-s01",
+              "order": 1,
+              "number": "1",
+              "title": "线段、射线、直线",
+              "label": "1 线段、射线、直线",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-upper-c04-s02",
+              "order": 2,
+              "number": "2",
+              "title": "角",
+              "label": "2 角",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-upper-c04-s03",
+              "order": 3,
+              "number": "3",
+              "title": "多边形和圆的初步认识",
+              "label": "3 多边形和圆的初步认识",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-upper-c04-s04",
+              "order": 4,
+              "number": null,
+              "title": "回顾与思考",
+              "label": "回顾与思考",
+              "kind": "review"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g7-upper-c05",
+          "order": 5,
+          "number": "第五章",
+          "title": "一元一次方程",
+          "label": "第五章 一元一次方程",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g7-upper-c05-s01",
+              "order": 1,
+              "number": "1",
+              "title": "认识方程",
+              "label": "1 认识方程",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-upper-c05-s02",
+              "order": 2,
+              "number": "2",
+              "title": "一元一次方程的解法",
+              "label": "2 一元一次方程的解法",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-upper-c05-s03",
+              "order": 3,
+              "number": "3",
+              "title": "一元一次方程的应用",
+              "label": "3 一元一次方程的应用",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-upper-c05-s04",
+              "order": 4,
+              "number": null,
+              "title": "回顾与思考",
+              "label": "回顾与思考",
+              "kind": "review"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g7-upper-c06",
+          "order": 6,
+          "number": "第六章",
+          "title": "数据的收集与整理",
+          "label": "第六章 数据的收集与整理",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g7-upper-c06-s01",
+              "order": 1,
+              "number": "1",
+              "title": "丰富的数据世界",
+              "label": "1 丰富的数据世界",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-upper-c06-s02",
+              "order": 2,
+              "number": "2",
+              "title": "数据的收集",
+              "label": "2 数据的收集",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-upper-c06-s03",
+              "order": 3,
+              "number": "3",
+              "title": "数据的表示",
+              "label": "3 数据的表示",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-upper-c06-s04",
+              "order": 4,
+              "number": null,
+              "title": "回顾与思考",
+              "label": "回顾与思考",
+              "kind": "review"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g7-upper-c07",
+          "order": 7,
+          "number": null,
+          "title": "综合与实践",
+          "label": "综合与实践",
+          "kind": "activity",
+          "sections": []
+        }
+      ]
+    },
+    {
+      "id": "bnu24-math-g7-lower",
+      "label": "七年级下册",
+      "grade": "七年级",
+      "semester": "下学期",
+      "textbook_version": "北师大版（2024）",
+      "source": {
+        "url": "https://www.jyeoo.com/resource/tb/2/103840",
+        "page_heading": "北师大版（2024） 七年级下册",
+        "retrieved_at": "2026-07-26T12:37:26+08:00"
+      },
+      "chapters": [
+        {
+          "id": "bnu24-math-g7-lower-c01",
+          "order": 1,
+          "number": "第一章",
+          "title": "整式的乘除",
+          "label": "第一章 整式的乘除",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g7-lower-c01-s01",
+              "order": 1,
+              "number": "1",
+              "title": "幂的乘除",
+              "label": "1 幂的乘除",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-lower-c01-s02",
+              "order": 2,
+              "number": "2",
+              "title": "整式的乘法",
+              "label": "2 整式的乘法",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-lower-c01-s03",
+              "order": 3,
+              "number": "3",
+              "title": "乘法公式",
+              "label": "3 乘法公式",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-lower-c01-s04",
+              "order": 4,
+              "number": "4",
+              "title": "整式的除法",
+              "label": "4 整式的除法",
+              "kind": "lesson"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g7-lower-c02",
+          "order": 2,
+          "number": "第二章",
+          "title": "相交线与平行线",
+          "label": "第二章 相交线与平行线",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g7-lower-c02-s01",
+              "order": 1,
+              "number": "1",
+              "title": "两条直线的位置关系",
+              "label": "1 两条直线的位置关系",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-lower-c02-s02",
+              "order": 2,
+              "number": "2",
+              "title": "探索直线平行的条件",
+              "label": "2 探索直线平行的条件",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-lower-c02-s03",
+              "order": 3,
+              "number": "3",
+              "title": "平行线的性质",
+              "label": "3 平行线的性质",
+              "kind": "lesson"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g7-lower-c03",
+          "order": 3,
+          "number": "第三章",
+          "title": "概率初步",
+          "label": "第三章 概率初步",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g7-lower-c03-s01",
+              "order": 1,
+              "number": "1",
+              "title": "感受可能性",
+              "label": "1 感受可能性",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-lower-c03-s02",
+              "order": 2,
+              "number": "2",
+              "title": "频率的稳定性",
+              "label": "2 频率的稳定性",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-lower-c03-s03",
+              "order": 3,
+              "number": "3",
+              "title": "等可能事件的概率",
+              "label": "3 等可能事件的概率",
+              "kind": "lesson"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g7-lower-c04",
+          "order": 4,
+          "number": "第四章",
+          "title": "三角形",
+          "label": "第四章 三角形",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g7-lower-c04-s01",
+              "order": 1,
+              "number": "1",
+              "title": "认识三角形",
+              "label": "1 认识三角形",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-lower-c04-s02",
+              "order": 2,
+              "number": "2",
+              "title": "全等三角形",
+              "label": "2 全等三角形",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-lower-c04-s03",
+              "order": 3,
+              "number": "3",
+              "title": "探究三角形全等的条件",
+              "label": "3 探究三角形全等的条件",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-lower-c04-s04",
+              "order": 4,
+              "number": "4",
+              "title": "利用三角形全等测距离",
+              "label": "4 利用三角形全等测距离",
+              "kind": "lesson"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g7-lower-c05",
+          "order": 5,
+          "number": "第五章",
+          "title": "图形的轴对称",
+          "label": "第五章 图形的轴对称",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g7-lower-c05-s01",
+              "order": 1,
+              "number": "1",
+              "title": "轴对称及其性质",
+              "label": "1 轴对称及其性质",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-lower-c05-s02",
+              "order": 2,
+              "number": "2",
+              "title": "简单的轴对称图形",
+              "label": "2 简单的轴对称图形",
+              "kind": "lesson"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g7-lower-c06",
+          "order": 6,
+          "number": "第六章",
+          "title": "变量之间的关系",
+          "label": "第六章 变量之间的关系",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g7-lower-c06-s01",
+              "order": 1,
+              "number": "1",
+              "title": "现实中的变量",
+              "label": "1 现实中的变量",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-lower-c06-s02",
+              "order": 2,
+              "number": "2",
+              "title": "用表格表示变量之间的关系",
+              "label": "2 用表格表示变量之间的关系",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-lower-c06-s03",
+              "order": 3,
+              "number": "3",
+              "title": "用关系式表示变量之间的关系",
+              "label": "3 用关系式表示变量之间的关系",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g7-lower-c06-s04",
+              "order": 4,
+              "number": "4",
+              "title": "用图象表示变量之间的关系",
+              "label": "4 用图象表示变量之间的关系",
+              "kind": "lesson"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bnu24-math-g8-upper",
+      "label": "八年级上册",
+      "grade": "八年级",
+      "semester": "上学期",
+      "textbook_version": "北师大版（2024）",
+      "source": {
+        "url": "https://www.jyeoo.com/resource/tb/2/107677",
+        "page_heading": "北师大版（2024） 八年级上册",
+        "retrieved_at": "2026-07-26T12:37:26+08:00"
+      },
+      "chapters": [
+        {
+          "id": "bnu24-math-g8-upper-c01",
+          "order": 1,
+          "number": "第一章",
+          "title": "勾股定理",
+          "label": "第一章 勾股定理",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g8-upper-c01-s01",
+              "order": 1,
+              "number": "1",
+              "title": "探索勾股定理",
+              "label": "1 探索勾股定理",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c01-s02",
+              "order": 2,
+              "number": "2",
+              "title": "一定是直角三角形吗",
+              "label": "2 一定是直角三角形吗",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c01-s03",
+              "order": 3,
+              "number": "3",
+              "title": "勾股定理的应用",
+              "label": "3 勾股定理的应用",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c01-s04",
+              "order": 4,
+              "number": null,
+              "title": "回顾与思考",
+              "label": "回顾与思考",
+              "kind": "review"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g8-upper-c02",
+          "order": 2,
+          "number": "第二章",
+          "title": "实数",
+          "label": "第二章 实数",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g8-upper-c02-s01",
+              "order": 1,
+              "number": "1",
+              "title": "认识实数",
+              "label": "1 认识实数",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c02-s02",
+              "order": 2,
+              "number": "2",
+              "title": "平方根与立方根",
+              "label": "2 平方根与立方根",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c02-s03",
+              "order": 3,
+              "number": "3",
+              "title": "二次根式",
+              "label": "3 二次根式",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c02-s04",
+              "order": 4,
+              "number": null,
+              "title": "回顾与思考",
+              "label": "回顾与思考",
+              "kind": "review"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g8-upper-c03",
+          "order": 3,
+          "number": "第三章",
+          "title": "位置与坐标",
+          "label": "第三章 位置与坐标",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g8-upper-c03-s01",
+              "order": 1,
+              "number": "1",
+              "title": "确定位置",
+              "label": "1 确定位置",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c03-s02",
+              "order": 2,
+              "number": "2",
+              "title": "平面直角坐标系",
+              "label": "2 平面直角坐标系",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c03-s03",
+              "order": 3,
+              "number": "3",
+              "title": "轴对称与坐标变化",
+              "label": "3 轴对称与坐标变化",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c03-s04",
+              "order": 4,
+              "number": null,
+              "title": "回顾与思考",
+              "label": "回顾与思考",
+              "kind": "review"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g8-upper-c04",
+          "order": 4,
+          "number": "第四章",
+          "title": "一次函数",
+          "label": "第四章 一次函数",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g8-upper-c04-s01",
+              "order": 1,
+              "number": "1",
+              "title": "函数",
+              "label": "1 函数",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c04-s02",
+              "order": 2,
+              "number": "2",
+              "title": "认识一次函数",
+              "label": "2 认识一次函数",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c04-s03",
+              "order": 3,
+              "number": "3",
+              "title": "一次函数的图象",
+              "label": "3 一次函数的图象",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c04-s04",
+              "order": 4,
+              "number": "4",
+              "title": "一次函数的应用",
+              "label": "4 一次函数的应用",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c04-s05",
+              "order": 5,
+              "number": null,
+              "title": "回顾与思考",
+              "label": "回顾与思考",
+              "kind": "review"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g8-upper-c05",
+          "order": 5,
+          "number": "第五章",
+          "title": "二元一次方程组",
+          "label": "第五章 二元一次方程组",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g8-upper-c05-s01",
+              "order": 1,
+              "number": "1",
+              "title": "认识二元一次方程组",
+              "label": "1 认识二元一次方程组",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c05-s02",
+              "order": 2,
+              "number": "2",
+              "title": "二元一次方程组的解法",
+              "label": "2 二元一次方程组的解法",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c05-s03",
+              "order": 3,
+              "number": "3",
+              "title": "二元一次方程组的应用",
+              "label": "3 二元一次方程组的应用",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c05-s04",
+              "order": 4,
+              "number": "4",
+              "title": "二元一次方程与一次函数",
+              "label": "4 二元一次方程与一次函数",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c05-s05",
+              "order": 5,
+              "number": "*5",
+              "title": "三元一次方程组",
+              "label": "*5 三元一次方程组",
+              "kind": "optional_lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c05-s06",
+              "order": 6,
+              "number": null,
+              "title": "回顾与思考",
+              "label": "回顾与思考",
+              "kind": "review"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g8-upper-c06",
+          "order": 6,
+          "number": "第六章",
+          "title": "数据的分析",
+          "label": "第六章 数据的分析",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g8-upper-c06-s01",
+              "order": 1,
+              "number": "1",
+              "title": "平均数与方差",
+              "label": "1 平均数与方差",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c06-s02",
+              "order": 2,
+              "number": "2",
+              "title": "中位数与箱线图",
+              "label": "2 中位数与箱线图",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c06-s03",
+              "order": 3,
+              "number": "3",
+              "title": "哪个团队收益大",
+              "label": "3 哪个团队收益大",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c06-s04",
+              "order": 4,
+              "number": null,
+              "title": "回顾与思考",
+              "label": "回顾与思考",
+              "kind": "review"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g8-upper-c07",
+          "order": 7,
+          "number": "第七章",
+          "title": "证明",
+          "label": "第七章 证明",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g8-upper-c07-s01",
+              "order": 1,
+              "number": "1",
+              "title": "为什么要证明",
+              "label": "1 为什么要证明",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c07-s02",
+              "order": 2,
+              "number": "2",
+              "title": "认识证明",
+              "label": "2 认识证明",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c07-s03",
+              "order": 3,
+              "number": "3",
+              "title": "平行线的证明",
+              "label": "3 平行线的证明",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-upper-c07-s04",
+              "order": 4,
+              "number": null,
+              "title": "回顾与思考",
+              "label": "回顾与思考",
+              "kind": "review"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bnu24-math-g8-lower",
+      "label": "八年级下册",
+      "grade": "八年级",
+      "semester": "下学期",
+      "textbook_version": "北师大版（2024）",
+      "source": {
+        "url": "https://www.jyeoo.com/resource/tb/2/112332",
+        "page_heading": "北师大版（2024） 初中数学北师版(2024)八年级下",
+        "retrieved_at": "2026-07-26T12:37:26+08:00"
+      },
+      "chapters": [
+        {
+          "id": "bnu24-math-g8-lower-c01",
+          "order": 1,
+          "number": "第一章",
+          "title": "三角形的证明",
+          "label": "第一章 三角形的证明",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g8-lower-c01-s01",
+              "order": 1,
+              "number": "1",
+              "title": "三角形内角和定理",
+              "label": "1 三角形内角和定理",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c01-s02",
+              "order": 2,
+              "number": "2",
+              "title": "等腰三角形",
+              "label": "2 等腰三角形",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c01-s03",
+              "order": 3,
+              "number": "3",
+              "title": "直角三角形",
+              "label": "3 直角三角形",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c01-s04",
+              "order": 4,
+              "number": "4",
+              "title": "线段的垂直平分线",
+              "label": "4 线段的垂直平分线",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c01-s05",
+              "order": 5,
+              "number": "5",
+              "title": "角平分线",
+              "label": "5 角平分线",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c01-s06",
+              "order": 6,
+              "number": null,
+              "title": "问题解决策略：反思",
+              "label": "☆ 问题解决策略：反思",
+              "kind": "activity"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c01-s07",
+              "order": 7,
+              "number": null,
+              "title": "回顾与思考",
+              "label": "回顾与思考",
+              "kind": "review"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c01-s08",
+              "order": 8,
+              "number": null,
+              "title": "复习题",
+              "label": "复习题",
+              "kind": "exercise"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g8-lower-c02",
+          "order": 2,
+          "number": "第二章",
+          "title": "不等式与不等式组",
+          "label": "第二章 不等式与不等式组",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g8-lower-c02-s01",
+              "order": 1,
+              "number": "1",
+              "title": "不等式及其性质",
+              "label": "1 不等式及其性质",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c02-s02",
+              "order": 2,
+              "number": "2",
+              "title": "一元一次不等式",
+              "label": "2 一元一次不等式",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c02-s03",
+              "order": 3,
+              "number": "3",
+              "title": "一元一次不等式与一次函数",
+              "label": "3 一元一次不等式与一次函数",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c02-s04",
+              "order": 4,
+              "number": "4",
+              "title": "一元一次不等式组",
+              "label": "4 一元一次不等式组",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c02-s05",
+              "order": 5,
+              "number": null,
+              "title": "回顾与思考",
+              "label": "回顾与思考",
+              "kind": "review"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c02-s06",
+              "order": 6,
+              "number": null,
+              "title": "复习题",
+              "label": "复习题",
+              "kind": "exercise"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g8-lower-c03",
+          "order": 3,
+          "number": "第三章",
+          "title": "图形的平移与旋转",
+          "label": "第三章 图形的平移与旋转",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g8-lower-c03-s01",
+              "order": 1,
+              "number": "1",
+              "title": "图形的平移",
+              "label": "1 图形的平移",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c03-s02",
+              "order": 2,
+              "number": "2",
+              "title": "图形的旋转",
+              "label": "2 图形的旋转",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c03-s03",
+              "order": 3,
+              "number": "3",
+              "title": "简单的图案设计",
+              "label": "3 简单的图案设计",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c03-s04",
+              "order": 4,
+              "number": null,
+              "title": "问题解决活动：最短距离",
+              "label": "☆ 问题解决活动：最短距离",
+              "kind": "activity"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c03-s05",
+              "order": 5,
+              "number": null,
+              "title": "回顾与思考",
+              "label": "回顾与思考",
+              "kind": "review"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c03-s06",
+              "order": 6,
+              "number": null,
+              "title": "复习题",
+              "label": "复习题",
+              "kind": "exercise"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g8-lower-c04",
+          "order": 4,
+          "number": "第四章",
+          "title": "因式分解",
+          "label": "第四章 因式分解",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g8-lower-c04-s01",
+              "order": 1,
+              "number": "1",
+              "title": "因式分解",
+              "label": "1 因式分解",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c04-s02",
+              "order": 2,
+              "number": "2",
+              "title": "提公因式法",
+              "label": "2 提公因式法",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c04-s03",
+              "order": 3,
+              "number": "3",
+              "title": "公式法",
+              "label": "3 公式法",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c04-s04",
+              "order": 4,
+              "number": null,
+              "title": "回顾与思考",
+              "label": "回顾与思考",
+              "kind": "review"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c04-s05",
+              "order": 5,
+              "number": null,
+              "title": "复习题",
+              "label": "复习题",
+              "kind": "exercise"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g8-lower-c05",
+          "order": 5,
+          "number": "第五章",
+          "title": "分式与分式方程",
+          "label": "第五章 分式与分式方程",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g8-lower-c05-s01",
+              "order": 1,
+              "number": "1",
+              "title": "分式及其基本性质",
+              "label": "1 分式及其基本性质",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c05-s02",
+              "order": 2,
+              "number": "2",
+              "title": "分式的运算",
+              "label": "2 分式的运算",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c05-s03",
+              "order": 3,
+              "number": "3",
+              "title": "分式方程",
+              "label": "3 分式方程",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c05-s04",
+              "order": 4,
+              "number": null,
+              "title": "回顾与思考",
+              "label": "回顾与思考",
+              "kind": "review"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c05-s05",
+              "order": 5,
+              "number": null,
+              "title": "复习题",
+              "label": "复习题",
+              "kind": "exercise"
+            }
+          ]
+        },
+        {
+          "id": "bnu24-math-g8-lower-c06",
+          "order": 6,
+          "number": "第六章",
+          "title": "平行四边形",
+          "label": "第六章 平行四边形",
+          "kind": "chapter",
+          "sections": [
+            {
+              "id": "bnu24-math-g8-lower-c06-s01",
+              "order": 1,
+              "number": "1",
+              "title": "平行四边形的性质与判定",
+              "label": "1 平行四边形的性质与判定",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c06-s02",
+              "order": 2,
+              "number": "2",
+              "title": "三角形的中位线",
+              "label": "2 三角形的中位线",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c06-s03",
+              "order": 3,
+              "number": "3",
+              "title": "多边形的内角和与外角和",
+              "label": "3 多边形的内角和与外角和",
+              "kind": "lesson"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c06-s04",
+              "order": 4,
+              "number": null,
+              "title": "回顾与思考",
+              "label": "回顾与思考",
+              "kind": "review"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c06-s05",
+              "order": 5,
+              "number": null,
+              "title": "复习题",
+              "label": "复习题",
+              "kind": "exercise"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c06-s06",
+              "order": 6,
+              "number": null,
+              "title": "综合与实践",
+              "label": "综合与实践",
+              "kind": "activity_group"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c06-s07",
+              "order": 7,
+              "number": null,
+              "title": "开展垃圾处理宣传活动",
+              "label": "开展垃圾处理宣传活动",
+              "kind": "activity"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c06-s08",
+              "order": 8,
+              "number": null,
+              "title": "设计美丽的镶嵌图案",
+              "label": "设计美丽的镶嵌图案",
+              "kind": "activity"
+            },
+            {
+              "id": "bnu24-math-g8-lower-c06-s09",
+              "order": 9,
+              "number": null,
+              "title": "学习印记",
+              "label": "学习印记",
+              "kind": "reflection"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

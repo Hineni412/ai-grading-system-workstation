@@ -5,7 +5,6 @@ from typing import Any
 from .normalization import (
     _infer_part_response_mode,
     _looks_like_serialized_answer_list,
-    _looks_like_serialized_knowledge_sequence,
     _string_list,
 )
 
@@ -25,6 +24,78 @@ def _quality_answer_texts(node: Any) -> list[str]:
 def _looks_like_garbled_generated_text(value: Any) -> bool:
     text = str(value or "")
     return "\ufffd" in text or "锟" in text or "��" in text
+
+
+def _positive_score(value: Any) -> float:
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _meaningful_proof_obligations(question: dict[str, Any]) -> list[Any]:
+    obligations = question.get("proof_obligations")
+    if not isinstance(obligations, list):
+        return []
+    return [
+        item
+        for item in obligations
+        if (
+            isinstance(item, dict)
+            and str(
+                item.get("description")
+                or item.get("obligation")
+                or item.get("core_goal")
+                or ""
+            ).strip()
+        )
+        or (not isinstance(item, dict) and str(item or "").strip())
+    ]
+
+
+def _has_specific_deduction_evidence(
+    question: dict[str, Any],
+    steps: list[dict[str, Any]],
+) -> bool:
+    generic_policy_ids = {
+        "answer_only_process_missing",
+        "core_process_missing",
+    }
+    policies = question.get("deduction_policy")
+    if isinstance(policies, list):
+        for policy in policies:
+            if isinstance(policy, dict):
+                policy_id = str(policy.get("policy_id") or "").strip()
+                detail = str(
+                    policy.get("issue")
+                    or policy.get("description")
+                    or policy.get("rule")
+                    or ""
+                ).strip()
+                if policy_id not in generic_policy_ids and detail:
+                    return True
+            elif str(policy or "").strip():
+                return True
+    return any(_string_list(step.get("deduction_rules")) for step in steps)
+
+
+def _has_independently_scorable_steps(
+    steps: list[dict[str, Any]],
+    generic_goals: set[str],
+) -> bool:
+    if len(steps) < 2:
+        return False
+    for step in steps:
+        goal = str(step.get("core_goal") or "").strip()
+        required = [
+            item
+            for item in _string_list(step.get("required_elements"))
+            if item not in generic_goals
+        ]
+        if not goal or goal in generic_goals or not required:
+            return False
+    return True
+
 
 def collect_generated_config_quality_warnings(payload: dict[str, Any]) -> list[str]:
     rubric = payload.get("rubric") if isinstance(payload, dict) else None
@@ -46,14 +117,6 @@ def collect_generated_config_quality_warnings(payload: dict[str, Any]) -> list[s
         qid = str(question.get("question_id") or "未知题号")
         qtype = str(question.get("question_type") or "")
         stem = str(question.get("stem_summary") or "").strip()
-        knowledge_id = str(question.get("knowledge_id") or "").strip()
-        knowledge_name = str(question.get("knowledge_name") or "").strip()
-        if not knowledge_name or knowledge_id in {"", "UNKNOWN"}:
-            warnings.append(f"[质量检查-提醒] {qid} 缺少明确知识点")
-        if knowledge_name and stem and knowledge_name == stem:
-            warnings.append(f"[质量检查-提醒] {qid} 知识点疑似直接复制题干")
-        if knowledge_name in {"几何综合", "代数综合", "数学综合", "综合应用", "未知知识点"}:
-            warnings.append(f"[质量检查-提醒] {qid} 知识点过于宽泛，应写明具体考查概念")
 
         answer_item = answer_map.get(qid, {})
         answer_image_present = bool(isinstance(answer_item, dict) and answer_item.get("answer_image_base64"))
@@ -62,21 +125,7 @@ def collect_generated_config_quality_warnings(payload: dict[str, Any]) -> list[s
         if not isinstance(answer_parts, list):
             answer_parts = []
 
-        knowledge_texts: list[Any] = [knowledge_id, knowledge_name]
-        knowledge_ids = question.get("knowledge_ids")
-        if isinstance(knowledge_ids, list):
-            knowledge_texts.extend(knowledge_ids)
-        knowledge_points = question.get("knowledge_points")
-        if isinstance(knowledge_points, list):
-            for point in knowledge_points:
-                if isinstance(point, dict):
-                    knowledge_texts.extend(
-                        (point.get("knowledge_id"), point.get("knowledge_name"))
-                    )
-                else:
-                    knowledge_texts.append(point)
-
-        text_fields: list[Any] = [stem, *knowledge_texts, *answer_texts]
+        text_fields: list[Any] = [stem, *answer_texts]
         parts = question.get("parts")
         if not isinstance(parts, list):
             parts = []
@@ -94,15 +143,9 @@ def collect_generated_config_quality_warnings(payload: dict[str, Any]) -> list[s
             text_fields.extend(_quality_answer_texts(answer_part))
         if any(_looks_like_garbled_generated_text(value) for value in text_fields):
             warnings.append(f"[质量检查-阻断] {qid} 的题干、公式、答案或踩分点中存在疑似乱码")
-        if (
-            any(_looks_like_serialized_answer_list(value) for value in text_fields)
-            or any(
-                _looks_like_serialized_knowledge_sequence(value)
-                for value in knowledge_texts
-            )
-        ):
+        if any(_looks_like_serialized_answer_list(value) for value in text_fields):
             warnings.append(
-                f"[质量检查-阻断] {qid} 的知识点、答案或评分点中混入列表字符串或元组字符串"
+                f"[质量检查-阻断] {qid} 的答案或评分点中混入列表字符串"
             )
 
         if qtype in {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}:
@@ -130,6 +173,26 @@ def collect_generated_config_quality_warnings(payload: dict[str, Any]) -> list[s
             if mode not in {"exact_objective", "short_answer_points", "visual_construction"}:
                 if qtype in {"proof", "calculation", "comprehensive"} and goals and all(goal in generic_goals for goal in goals):
                     warnings.append(f"[质量检查-阻断] {qid} 评分点全部为通用描述，无法执行可靠批改")
+                part_score = _positive_score(
+                    part.get("part_score") or question.get("max_score")
+                )
+                if (
+                    qtype in {"proof", "calculation", "comprehensive"}
+                    and mode == "process_required"
+                    and part_score > 1
+                ):
+                    part_id = str(part.get("part_id") or f"第{index + 1}问")
+                    if not _has_independently_scorable_steps(steps, generic_goals):
+                        warnings.append(
+                            f"[质量检查-阻断] {qid}/{part_id} 缺少可独立评分的逻辑步骤和具体得分证据"
+                        )
+                    if (
+                        qtype == "proof"
+                        and not _meaningful_proof_obligations(question)
+                    ) or not _has_specific_deduction_evidence(question, steps):
+                        warnings.append(
+                            f"[质量检查-阻断] {qid}/{part_id} 缺少具体证明义务或扣分证据"
+                        )
                 continue
             answer_part = answer_parts[index] if index < len(answer_parts) and isinstance(answer_parts[index], dict) else {}
             if not _quality_answer_texts(answer_part) and not answer_texts and not answer_image_present:

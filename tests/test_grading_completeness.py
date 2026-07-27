@@ -40,8 +40,8 @@ RUBRIC = {
             "max_score": 10,
             "knowledge_id": "K10",
             "parts": [
-                {"part_id": "10-1", "part_score": 4, "knowledge_id": "K10-1"},
-                {"part_id": "10-2", "part_score": 6, "knowledge_id": "K10-2"},
+                {"part_id": "Q10(P1)", "part_score": 4, "knowledge_id": "K10-1"},
+                {"part_id": "Q10(P2)", "part_score": 6, "knowledge_id": "K10-2"},
             ],
         },
     ],
@@ -93,7 +93,7 @@ def test_audit_detects_missing_part_with_equivalent_sub_question_spelling() -> N
     )
 
     assert audit["status"] == "incomplete"
-    assert audit["missing_question_ids"] == ["10-2"]
+    assert audit["missing_question_ids"] == ["Q10(P2)"]
     assert audit["duplicate_question_ids"] == []
     assert audit["unexpected_question_ids"] == []
     assert audit["score_out_of_range"] == []
@@ -112,7 +112,7 @@ def test_audit_does_not_expand_supported_sub_question_spellings() -> None:
     )
 
     assert audit["status"] == "invalid"
-    assert audit["missing_question_ids"] == ["10-1"]
+    assert audit["missing_question_ids"] == ["Q10(P1)"]
     assert audit["unexpected_question_ids"] == ["q10(1)"]
     assert audit["affected_major_question_ids"] == ["Q10"]
 
@@ -127,7 +127,7 @@ def test_audit_marks_parent_substitution_unexpected_and_invalid() -> None:
     )
 
     assert audit["status"] == "invalid"
-    assert audit["missing_question_ids"] == ["10-1", "10-2"]
+    assert audit["missing_question_ids"] == ["Q10(P1)", "Q10(P2)"]
     assert audit["duplicate_question_ids"] == []
     assert audit["unexpected_question_ids"] == ["Q10"]
     assert audit["affected_major_question_ids"] == ["Q10"]
@@ -146,11 +146,11 @@ def test_audit_detects_duplicates_and_scores_above_exact_part_maximum() -> None:
 
     assert audit["status"] == "invalid"
     assert audit["missing_question_ids"] == []
-    assert audit["duplicate_question_ids"] == ["10-1"]
+    assert audit["duplicate_question_ids"] == ["Q10(P1)"]
     assert audit["unexpected_question_ids"] == []
     assert audit["score_out_of_range"] == [
         {
-            "question_id": "10-1",
+            "question_id": "Q10(P1)",
             "score_awarded": 5.0,
             "max_score": 4.0,
             "reason": "above_max",
@@ -213,7 +213,7 @@ def test_audit_marks_negative_scores_invalid() -> None:
     assert audit["status"] == "invalid"
     assert audit["score_out_of_range"] == [
         {
-            "question_id": "10-1",
+            "question_id": "Q10(P1)",
             "score_awarded": -1.0,
             "max_score": 4.0,
             "reason": "negative",
@@ -225,7 +225,7 @@ def test_audit_marks_negative_scores_invalid() -> None:
 def test_full_paper_validation_rejects_incomplete_multipart_results(tmp_path: Path) -> None:
     grader = _grader(tmp_path)
 
-    with pytest.raises(ValueError, match="10-2"):
+    with pytest.raises(ValueError, match=r"Q10\(P2\)"):
         grader._validate_and_convert(
             _full_result_payload(
                 _detail("Q1", 5),
@@ -247,7 +247,11 @@ def test_full_paper_validation_stores_rubric_exact_ids_for_equivalent_parts(tmp_
         expected_student_name="student",
     )
 
-    assert [detail.question_id for detail in result.grading_details] == ["Q1", "10-1", "10-2"]
+    assert [detail.question_id for detail in result.grading_details] == [
+        "Q1",
+        "Q10(P1)",
+        "Q10(P2)",
+    ]
     assert result.raw_json["grading_completeness"]["status"] == "complete"
 
 
@@ -278,7 +282,7 @@ def test_hybrid_build_result_records_completeness_and_forces_review_for_non_comp
     assert result.needs_human_review is True
     assert result.raw_json["grading_completeness"] == {
         "status": "incomplete",
-        "missing_question_ids": ["10-2"],
+        "missing_question_ids": ["Q10(P2)"],
         "duplicate_question_ids": [],
         "unexpected_question_ids": [],
         "score_out_of_range": [],

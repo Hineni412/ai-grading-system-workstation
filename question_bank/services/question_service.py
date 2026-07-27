@@ -19,11 +19,7 @@ TAG_ANALYSIS_MAP = {
     "error_prone_points": "error_type",
     "prerequisite_points": "prerequisite",
     "textbook_chapter": "exam_scope",
-    "teaching_stage": "teaching_stage",
     "suitable_student_level": "student_level",
-    "sub_skills": "sub_skill",
-    "measured_skills": "measured_skill_name",
-    "supporting_skills": "supporting_skill_name",
 }
 ANSWERED_AI_CONFIDENCE = 0.8
 ANSWERLESS_AI_CONFIDENCE = 0.55
@@ -900,8 +896,9 @@ class QuestionService:
             ).fetchone()
             if question is None:
                 return False
-            # sub_skill 随 TAG_ANALYSIS_MAP 自动纳入覆盖删除；
-            # canonical_knowledge_id 走单独 taxonomy 行，需显式加入覆盖范围，避免重新打标后残留旧编码。
+            # P3.5 停止新写 teaching_stage/sub_skill/measured/supporting；
+            # 历史行原样保留，避免一次重新打标暗中改写旧数据。
+            # canonical_knowledge_id 走单独 taxonomy 行，需显式加入覆盖范围。
             covered_tag_types = tuple(TAG_ANALYSIS_MAP.values()) + ("canonical_knowledge_id",)
             placeholders = ", ".join("?" for _ in covered_tag_types)
             conn.execute(

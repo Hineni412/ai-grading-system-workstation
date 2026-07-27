@@ -96,6 +96,7 @@ def test_007_drops_legacy_column_and_preserves_detail_contract(
     assert [(item.name, item.status) for item in report.results] == [
         ("007_drop_legacy_knowledge_id", "applied"),
         ("008_drop_legacy_cli_tables", "applied"),
+        ("009_add_teacher_score_locks", "applied"),
     ]
     with sqlite3.connect(database) as connection:
         columns = {

@@ -13,6 +13,7 @@ import {
   knowledgeGraphRouteDefinition,
   reviewRouteDefinition,
   workbenchRouteDefinition,
+  modelProfilesRouteDefinition,
   settingsRouteDefinition,
 } from '../navigation'
 
@@ -134,6 +135,16 @@ const routes: RouteRecordRaw[] = [
       title: reviewRouteDefinition.title,
       description: reviewRouteDefinition.description,
       breadcrumb: reviewRouteDefinition.breadcrumb,
+    },
+  },
+  {
+    path: modelProfilesRouteDefinition.path,
+    name: modelProfilesRouteDefinition.id,
+    component: () => import('../views/ModelProfilesView.vue'),
+    meta: {
+      title: modelProfilesRouteDefinition.title,
+      description: modelProfilesRouteDefinition.description,
+      breadcrumb: modelProfilesRouteDefinition.breadcrumb,
     },
   },
   {

@@ -35,6 +35,8 @@ from backend.api.schemas.templates import (
     RegionIssueResponse,
     RegionReadinessResponse,
     RegionSnapshotRetryRequest,
+    TemplatePageAssignmentRequest,
+    TemplatePageAssignmentResponse,
     TemplateUpdateRequest,
     TemplateUploadSubmissionResponse,
     TemplateUploadResponse,
@@ -42,6 +44,9 @@ from backend.api.schemas.templates import (
 from backend.repositories.access import GradingRepositoryAccess
 from path_manager import resolve_stored_file_path
 from template_upload_service import (
+    TemplatePageAssignmentConflictError,
+    TemplatePageAssignmentDraftConflictError,
+    TemplatePageAssignmentUnsupportedError,
     TemplateUploadError,
     TemplateUploadInProgressError,
     TemplateUploadService,
@@ -273,6 +278,63 @@ async def upload_session_template(
     if response is None:
         raise RuntimeError("template upload response is missing")
     return response
+
+
+@router.put(
+    "/sessions/{session_id}/template/page-assignment",
+    response_model=TemplatePageAssignmentResponse,
+)
+def assign_template_page_role(
+    session_id: int,
+    request: TemplatePageAssignmentRequest,
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    service: TemplateUploadService = Depends(get_template_upload_service),
+) -> TemplatePageAssignmentResponse:
+    _require_session(db, session_id)
+    try:
+        result = service.assign_first_page_role(
+            db=db,
+            session_id=int(session_id),
+            first_page_role=request.first_page_role,
+            expected_template_fingerprint=request.expected_template_fingerprint,
+        )
+    except FileNotFoundError:
+        raise ApiError(
+            404,
+            "template_not_found",
+            "Session template not found",
+        ) from None
+    except TemplatePageAssignmentUnsupportedError:
+        raise ApiError(
+            409,
+            "template_page_assignment_unsupported",
+            "Replace the sample PDF before changing its page assignment",
+        ) from None
+    except TemplatePageAssignmentDraftConflictError:
+        raise ApiError(
+            409,
+            "template_page_assignment_draft_conflict",
+            "Resolve the existing answer region draft before changing page assignment",
+        ) from None
+    except TemplatePageAssignmentConflictError:
+        raise ApiError(
+            409,
+            "template_page_assignment_changed",
+            "Session template changed before page reassignment",
+        ) from None
+    except TimeoutError:
+        raise _region_lock_timeout_error(session_id) from None
+    except TemplateUploadError:
+        raise ApiError(
+            404,
+            "template_file_not_found",
+            "Template file not found",
+        ) from None
+    return TemplatePageAssignmentResponse(
+        changed=result.changed,
+        draft_sync_pending=result.draft_sync_pending,
+        template=_upload_response(result.template),
+    )
 
 
 @router.get(

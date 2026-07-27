@@ -4,7 +4,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.api.schemas.question_bank import QuestionTagResponse
+from backend.api.schemas.question_bank import (
+    QuestionRichContentMetadata,
+    QuestionTagResponse,
+)
 
 
 class _AssemblyModel(BaseModel):
@@ -57,6 +60,7 @@ class AssemblyQuestionItem(_AssemblyModel):
     paper_title: str | None = None
     tags: list[QuestionTagResponse]
     asset_urls: list[str]
+    rich_content: QuestionRichContentMetadata
     score_value: int | None = Field(default=None, ge=0)
 
 

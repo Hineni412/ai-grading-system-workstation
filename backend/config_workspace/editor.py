@@ -32,7 +32,6 @@ class ConfigEditorRow:
     standard_answer: str
     accepted_answers: tuple[str, ...]
     match_rule: str
-    knowledge: str
     answer_only_max_score: float | None
     require_final_answer: bool | None
     required_elements: tuple[str, ...] = ()
@@ -102,7 +101,6 @@ def project_config_editor(payload: dict[str, Any]) -> list[ConfigEditorRow]:
         question_type = str(question.get("question_type") or "")
         answer_question = answer_map.get(question_id, {})
         parts = _dict_list(question.get("parts"))
-        knowledge = _knowledge_label(question)
         require_final = question.get("require_final_answer")
         if require_final is None:
             require_final = question_type == "comprehensive"
@@ -128,7 +126,6 @@ def project_config_editor(payload: dict[str, Any]) -> list[ConfigEditorRow]:
                     standard_answer=_answer_text(answer_question),
                     accepted_answers=_unique_texts(answer_question.get("accepted_forms")),
                     match_rule=_match_rule(answer_question),
-                    knowledge=knowledge,
                     answer_only_max_score=answer_only if question_type in _SOLUTION_TYPES else None,
                     require_final_answer=bool(require_final) if question_type in _SOLUTION_TYPES else None,
                     final_answer_rule=final_rule if question_type in _SOLUTION_TYPES else "",
@@ -149,7 +146,6 @@ def project_config_editor(payload: dict[str, Any]) -> list[ConfigEditorRow]:
             if "answer_only_max_score" not in part and "answer_only_max_score" not in question:
                 part_answer_only = float(max(1, round(part_score * 0.25))) if part_score > 0 else 1.0
             part_final_rule = _final_answer_rule(part) or final_rule
-            part_knowledge = _part_knowledge(part, knowledge)
             steps = _dict_list(part.get("steps"))
             if not steps:
                 rows.append(
@@ -165,7 +161,6 @@ def project_config_editor(payload: dict[str, Any]) -> list[ConfigEditorRow]:
                         standard_answer=_answer_text(first_answer),
                         accepted_answers=_unique_texts(first_answer.get("accepted_forms")),
                         match_rule=_match_rule(first_answer, answer_question),
-                        knowledge=part_knowledge,
                         answer_only_max_score=part_answer_only if question_type in _SOLUTION_TYPES else None,
                         require_final_answer=part_require_final if question_type in _SOLUTION_TYPES else None,
                         required_elements=_unique_texts(part.get("required_elements")),
@@ -190,7 +185,6 @@ def project_config_editor(payload: dict[str, Any]) -> list[ConfigEditorRow]:
                         standard_answer=_answer_text(first_answer) if is_first else "",
                         accepted_answers=_unique_texts(first_answer.get("accepted_forms")) if is_first else (),
                         match_rule=_match_rule(first_answer, answer_question) if is_first else "",
-                        knowledge=part_knowledge if is_first else "",
                         answer_only_max_score=(part_answer_only if question_type in _SOLUTION_TYPES else None) if is_first else None,
                         require_final_answer=(part_require_final if question_type in _SOLUTION_TYPES else None) if is_first else None,
                         required_elements=_unique_texts(step.get("required_elements")),
@@ -338,7 +332,6 @@ def editor_row_to_streamlit_dict(row: ConfigEditorRow) -> dict[str, Any]:
         "作答匹配规则": row.match_rule,
         "证据要求/关键步骤": "; ".join(row.required_elements),
         "扣分规则": "; ".join(row.deduction_rules),
-        "知识点": row.knowledge,
         "需要单独写答": row.require_final_answer,
         "无过程结论分上限": row.answer_only_max_score,
         "未写答扣分说明": row.final_answer_rule,
@@ -972,7 +965,7 @@ def _answer_part(
 
 def _visible_identity_matches(record: dict[str, Any], row: ConfigEditorRow) -> bool:
     projected = editor_row_to_streamlit_dict(row)
-    for key in ("题号", "评分单元", "评分点", "题型", "作答匹配规则", "知识点"):
+    for key in ("题号", "评分单元", "评分点", "题型", "作答匹配规则"):
         if key not in record:
             return False
         if str(record.get(key) or "").strip() != str(projected.get(key) or "").strip():
@@ -1062,27 +1055,6 @@ def _match_rule(node: Any, fallback: Any = None) -> str:
     if not values:
         return "必须填写全部正确答案；顺序不限；少写、错写或多写均不得分"
     return f"必须全部填写：{'、'.join(values)}；顺序不限；少写、错写或多写均不得分"
-
-
-def _knowledge_label(question: dict[str, Any]) -> str:
-    name = str(question.get("knowledge_name") or "").strip()
-    return name or str(question.get("knowledge_id") or "").strip()
-
-
-def _part_knowledge(part: dict[str, Any], fallback: str) -> str:
-    points = part.get("knowledge_points")
-    labels: list[str] = []
-    if isinstance(points, str) and points.strip():
-        labels.append(points.strip())
-    elif isinstance(points, list):
-        for point in points:
-            if isinstance(point, dict):
-                label = str(point.get("knowledge_name") or point.get("name") or point.get("label") or "").strip()
-            else:
-                label = str(point or "").strip()
-            if label:
-                labels.append(label)
-    return "；".join(dict.fromkeys(labels)) or str(part.get("knowledge_name") or "").strip() or fallback
 
 
 def _part_label(question_id: str, part_id: str, index: int, count: int) -> str:

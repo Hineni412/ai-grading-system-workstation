@@ -48,6 +48,17 @@ class TemplateUploadSubmissionResponse(BaseModel):
     template: TemplateUploadResponse | None = None
 
 
+class TemplatePageAssignmentRequest(BaseModel):
+    first_page_role: Literal["front", "back"]
+    expected_template_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class TemplatePageAssignmentResponse(BaseModel):
+    changed: bool
+    draft_sync_pending: bool
+    template: TemplateUploadResponse
+
+
 class RegionReadinessResponse(BaseModel):
     session_id: int = Field(gt=0)
     scoring_configured: bool

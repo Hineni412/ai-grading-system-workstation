@@ -89,10 +89,10 @@ describe('AppShell', () => {
 
     expect(initialize).toHaveBeenCalledTimes(1)
     expect(host.querySelector('[data-testid="app-shell"]')).not.toBeNull()
-    expect(host.querySelector('[data-testid="app-topbar"]')?.textContent).toContain('AI 阅卷系统')
-    expect(host.querySelector('[data-testid="app-topbar"]')?.textContent).toContain('评分复核')
-    expect(host.querySelector('.app-topbar__identity')).not.toBeNull()
-    expect(host.querySelector('.app-topbar__navigation')).not.toBeNull()
+    expect(host.querySelector('[data-testid="app-shell"]')?.textContent).toContain('AI 阅卷系统')
+    expect(host.querySelector('[data-testid="app-topbar"]')?.textContent).toContain('考试批改')
+    expect(host.querySelector('.app-sidebar__brand')).not.toBeNull()
+    expect(host.querySelector('.app-sidebar__navigation')).not.toBeNull()
     expect(host.querySelector('.app-topbar__session')).not.toBeNull()
     expect(
       [...host.querySelectorAll<HTMLAnchorElement>('[data-testid="app-navigation"] a')].map(
@@ -101,14 +101,12 @@ describe('AppShell', () => {
     ).toEqual([
       ['工作台', '/workbench'],
       ['考试配置', '/sessions'],
-      ['学生名单', '/students'],
+      ['考试批改', '/grading'],
+      ['文件中心', '/files'],
       ['题库管理', '/question-bank'],
       ['组卷工作台', '/question-assembly'],
-      ['训练推荐', '/training'],
       ['知识图谱', '/knowledge-graph'],
-      ['文件中心', '/files'],
-      ['评分复核', '/grading'],
-      ['设置与运维', '/settings'],
+      ['训练推荐', '/training'],
     ])
     expect(
       host.querySelector('[data-testid="app-navigation"] a[href="/grading"]')?.getAttribute(
@@ -125,13 +123,14 @@ describe('AppShell', () => {
     expect([...host.querySelectorAll('nav a')].map((link) => link.textContent)).toEqual([
       '工作台',
       '考试配置',
-      '学生名单',
+      '考试批改',
+      '文件中心',
       '题库管理',
       '组卷工作台',
-      '训练推荐',
       '知识图谱',
-      '文件中心',
-      '评分复核',
+      '训练推荐',
+      '学生管理',
+      '大模型 API',
       '设置与运维',
     ])
     expect(host.querySelector('[data-testid="navigation-toggle"]')).toBeNull()
@@ -163,34 +162,32 @@ describe('AppShell', () => {
 
   it('defines explicit responsive areas and token-only navigation states for all topbar blocks', () => {
     const css = readFileSync(resolve(process.cwd(), 'src/styles/app-shell.css'), 'utf-8')
-    const tabletStart = css.indexOf('@media (max-width: 1100px)')
-    const compactStart = css.indexOf('@media (max-width: 720px)')
+    const tabletStart = css.indexOf('@media (max-width: 900px)')
+    const compactStart = css.indexOf('@media (max-width: 620px)')
 
     expect(css).toMatch(
-      /\.app-topbar\s*\{[^}]*grid-template-columns:\s*minmax\(220px,\s*1fr\)\s+auto\s+minmax\(280px,\s*360px\);/s,
+      /\.app-topbar\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(280px,\s*380px\);/s,
     )
-    expect(css).toContain('"identity navigation session"')
-    expect(css).toContain('"status status status"')
-    expect(css).toMatch(/\.app-topbar__identity\s*\{[^}]*grid-area:\s*identity;/s)
-    expect(css).toMatch(/\.app-topbar__navigation\s*\{[^}]*grid-area:\s*navigation;/s)
+    expect(css).toContain('"page session"')
+    expect(css).toContain('"status status"')
+    expect(css).toMatch(/\.app-topbar__page\s*\{[^}]*grid-area:\s*page;/s)
     expect(css).toMatch(/\.app-topbar__session\s*\{[^}]*grid-area:\s*session;/s)
     expect(css).toMatch(/\.app-topbar__status\s*\{[^}]*grid-area:\s*status;/s)
-    expect(css).toMatch(/\.app-topbar__navigation a\s*\{/)
-    expect(css).toMatch(/\.app-topbar__navigation a\[aria-current="page"\]\s*\{/)
-    expect(css).toMatch(/\.app-topbar__navigation a:focus-visible\s*\{/)
+    expect(css).toMatch(/\.app-sidebar__link\s*\{/)
+    expect(css).toMatch(/\.app-sidebar__link\[aria-current='page'\]\s*\{/)
+    expect(css).toMatch(/\.app-sidebar__link:focus-visible/)
     expect(css).not.toMatch(/#[\da-f]{3,8}\b|(?:rgb|hsl)a?\s*\(/i)
 
     expect(tabletStart).toBeGreaterThanOrEqual(0)
     expect(compactStart).toBeGreaterThan(tabletStart)
     const tabletRules = css.slice(tabletStart, compactStart)
-    expect(tabletRules).toContain('"identity session"')
-    expect(tabletRules).toContain('"navigation navigation"')
-    expect(tabletRules).toContain('"status status"')
+    expect(tabletRules).toContain('"topbar"')
+    expect(tabletRules).toContain('"sidebar"')
+    expect(tabletRules).toContain('"main"')
 
     const compactRules = css.slice(compactStart)
     expect(compactRules).toContain('grid-template-columns: minmax(0, 1fr)')
-    expect(compactRules).toContain('"identity"')
-    expect(compactRules).toContain('"navigation"')
+    expect(compactRules).toContain('"page"')
     expect(compactRules).toContain('"session"')
     expect(compactRules).toContain('"status"')
   })
@@ -305,7 +302,7 @@ describe('AppShell', () => {
     expect(initialize).toHaveBeenCalledTimes(1)
 
     const retry = [...host.querySelectorAll<HTMLButtonElement>('[data-testid="app-topbar"] button')]
-      .find((button) => button.textContent === '重新加载考试列表')!
+      .find((button) => button.textContent === '重新加载')!
     retry.click()
     await settleUi()
     expect(initialize).toHaveBeenCalledTimes(2)

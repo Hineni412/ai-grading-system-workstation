@@ -179,12 +179,32 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
         return sanitize_public_mapping(
             {key: job.result[key] for key in allowed if key in job.result}
         )
+    if job.job_type == "question_bank_sync":
+        allowed = (
+            "session_id",
+            "outcome",
+            "imported_count",
+            "tagged_count",
+            "linked_count",
+            "failed_count",
+            "successful_question_ids",
+            "failed_question_ids",
+            "unresolved_question_ids",
+            "review_count",
+            "proposal_ids",
+            "failure_category",
+            "retryable",
+        )
+        return sanitize_public_mapping(
+            {key: job.result[key] for key in allowed if key in job.result}
+        )
     if job.job_type == "config_generation":
         allowed = (
             "session_id",
             "outcome",
             "total_questions",
             "generated_questions",
+            "total_batch_count",
             "failed_count",
             "failed_question_ids",
             "failed_batch_count",
@@ -268,6 +288,17 @@ def public_job_payload(job: JobRecord) -> dict[str, Any]:
         return sanitize_public_mapping(
             {key: job.payload[key] for key in allowed if key in job.payload}
         )
+    if job.job_type == "question_bank_sync":
+        allowed = (
+            "session_id",
+            "mode",
+            "config_revision",
+            "retry_of_job_id",
+            "question_ids",
+        )
+        return sanitize_public_mapping(
+            {key: job.payload[key] for key in allowed if key in job.payload}
+        )
     if job.job_type == "config_generation":
         allowed = ("session_id", "mode")
         if str(job.payload.get("source_id") or "").strip():
@@ -342,6 +373,7 @@ def submit_job(
     if clean_job_type in {
         "config_generation",
         "question_import",
+        "question_bank_sync",
         "tagging_sync",
         "training_export",
         "assembly_export",

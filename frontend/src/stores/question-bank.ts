@@ -68,6 +68,13 @@ function copyFilters(filters: QuestionBankFilters): QuestionBankFilters {
     examTypes: [...(filters.examTypes ?? [])],
     grades: [...(filters.grades ?? [])],
     examScopes: [...(filters.examScopes ?? [])],
+    knowledgePoints: [...(filters.knowledgePoints ?? [])],
+    abilities: [...(filters.abilities ?? [])],
+    methods: [...(filters.methods ?? [])],
+    models: [...(filters.models ?? [])],
+    studentLevels: [...(filters.studentLevels ?? [])],
+    teachingStages: [...(filters.teachingStages ?? [])],
+    subSkills: [...(filters.subSkills ?? [])],
   }
 }
 

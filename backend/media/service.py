@@ -152,6 +152,38 @@ class ReviewMediaService:
             self._publish_crop_cache(cache_path, rendered)
             return rendered
 
+    def render_preflight_crop(
+        self,
+        session_id: int,
+        question_id: str,
+        *,
+        front_source: Path,
+        back_source: Path | None,
+    ) -> bytes:
+        """Render one teacher-grading crop before an AI result exists."""
+
+        region = self._find_region(
+            int(session_id),
+            str(question_id or "").strip(),
+        )
+        if region is None:
+            raise ReviewMediaNotFound("Review media resource was not found.")
+        page = (
+            "back"
+            if str(region.get("page") or "").lower() == "back"
+            else "front"
+        )
+        source = back_source if page == "back" else front_source
+        if source is None:
+            raise ReviewMediaNotFound("Review media resource was not found.")
+        try:
+            source_bytes = Path(source).read_bytes()
+        except OSError as exc:
+            raise ReviewMediaUnreadable(
+                "Review media resource could not be decoded."
+            ) from exc
+        return _render_crop_jpeg(source_bytes, region)
+
     def clear_detail_crop_cache(self) -> int:
         """Remove only rebuildable review crop derivatives."""
         with self._crop_cache_lock:

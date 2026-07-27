@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from backend.document_parsing.question_blocks import (
     _extract_choice_answer_sequence,
+    _question_type_hints_from_section_headings,
     flatten_answer_blocks,
     parse_plain_question_blocks,
     parse_rich_question_blocks,
@@ -90,8 +91,17 @@ def _extract_rich_question_blocks(
         except (TypeError, ValueError):
             return 999
 
+    question_numbers = [
+        str(numeric_key(number_key))
+        for number_key in sorted(question_map, key=numeric_key)
+        if 1 <= numeric_key(number_key) <= 99
+    ]
     choice_answers = _extract_choice_answer_sequence(
-        rich_blocks_plain_text(flatten_answer_blocks(answer_map))
+        rich_blocks_plain_text(flatten_answer_blocks(answer_map)),
+        question_numbers=question_numbers,
+    )
+    section_hints = _question_type_hints_from_section_headings(
+        rich_blocks_plain_text(extracted.rich_paragraphs)
     )
     blocks: list[dict[str, Any]] = []
     for number_key in sorted(question_map, key=numeric_key):
@@ -103,6 +113,7 @@ def _extract_rich_question_blocks(
             question_map.get(number_key) or [],
             answer_map.get(number_key) if isinstance(answer_map, dict) else None,
             choice_answers,
+            section_type=section_hints.get(str(number), ""),
         )
         if block:
             blocks.append(block)

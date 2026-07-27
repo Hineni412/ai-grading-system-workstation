@@ -7,6 +7,7 @@ import {
   renameSession,
   type SessionDraftCreator,
   type SessionLoader,
+  type SessionRenamer,
   type SessionSummary,
 } from '../api/sessions'
 import { isAmbiguousWriteError } from '../api/errors'
@@ -105,9 +106,33 @@ export const useSessionStore = defineStore('session', () => {
     return created
   }
 
-  async function renameSelected(name: string): Promise<SessionSummary> {
+  async function renameSelected(
+    name: string,
+    renamer: SessionRenamer = renameSession,
+    loader: SessionLoader = fetchSessions,
+  ): Promise<SessionSummary> {
     if (selectedSessionId.value === null) throw new Error('请先选择考试')
-    const renamed = await renameSession(selectedSessionId.value, name)
+    const sessionId = selectedSessionId.value
+    const normalized = name.trim()
+    if (!normalized) throw new Error('考试名称不能为空')
+
+    let renamed: SessionSummary
+    try {
+      renamed = await renamer(sessionId, normalized)
+    } catch (error) {
+      if (!isAmbiguousWriteError(error)) throw error
+
+      const loaded = await loader()
+      sessions.value = loaded
+      loadState.value = 'ready'
+      const confirmed = loaded.find((session) =>
+        session.id === sessionId
+        && session.name.trim() === normalized
+        && !session.is_deleted)
+      if (!confirmed) throw error
+      renamed = confirmed
+    }
+
     const index = sessions.value.findIndex((session) => session.id === renamed.id)
     if (index >= 0) sessions.value[index] = renamed
     return renamed

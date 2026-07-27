@@ -13,6 +13,32 @@ from backend.repositories.base import (
 from backend.status_contracts import validate_status
 
 
+class TemplateMutationBusyError(RuntimeError):
+    """A formal template binding cannot change during active grading."""
+
+
+def _assert_no_active_grading_job(
+    session: RepositorySession,
+    session_id: int,
+) -> None:
+    active = session.connection.execute(
+        """
+        SELECT 1
+        FROM jobs
+        WHERE job_type = 'grading_run'
+          AND status IN ('queued', 'running', 'paused')
+          AND json_valid(payload_json) = 1
+          AND CAST(json_extract(payload_json, '$.session_id') AS INTEGER) = ?
+        LIMIT 1
+        """,
+        (int(session_id),),
+    ).fetchone()
+    if active is not None:
+        raise TemplateMutationBusyError(
+            f"grading work is active for session {int(session_id)}"
+        )
+
+
 class TemplateRepository:
     """Session-bound template SQL without transaction ownership."""
 
@@ -156,6 +182,37 @@ class TemplateRepository:
                 int(session_id),
             ),
         )
+
+    def swap_template_page_paths(
+        self,
+        session_id: int,
+        template_id: int,
+        *,
+        expected_front_path: str,
+        expected_back_path: str,
+    ) -> bool:
+        cursor = self.session.connection.execute(
+            """
+            UPDATE session_templates
+            SET front_template_path = back_template_path,
+                back_template_path = front_template_path,
+                is_confirmed = 0,
+                regions_snapshot_pending = 0,
+                regions_snapshot_token = NULL,
+                updated_at = datetime('now','localtime')
+            WHERE id = ?
+              AND session_id = ?
+              AND front_template_path = ?
+              AND back_template_path = ?
+            """,
+            (
+                int(template_id),
+                int(session_id),
+                str(expected_front_path),
+                str(expected_back_path),
+            ),
+        )
+        return cursor.rowcount == 1
 
     def owns_template(self, session_id: int, template_id: int) -> bool:
         row = self.session.connection.execute(
@@ -359,6 +416,27 @@ class RegionRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def swap_answer_region_pages(
+        self,
+        session_id: int,
+        template_id: int,
+    ) -> None:
+        self.session.connection.execute(
+            """
+            UPDATE answer_regions
+            SET page = CASE page
+                    WHEN 'front' THEN 'back'
+                    WHEN 'back' THEN 'front'
+                    ELSE page
+                END,
+                is_confirmed = 0,
+                updated_at = datetime('now','localtime')
+            WHERE session_id = ?
+              AND template_id = ?
+            """,
+            (int(session_id), int(template_id)),
+        )
+
     def bulk_update_answer_region_mapping(
         self,
         session_id: int,
@@ -466,7 +544,8 @@ class TemplateRegionRepositoryGateway:
         back_template_path: str,
     ) -> int:
         with self._sessions.session() as session:
-            with session.transaction():
+            with session.transaction(immediate=True):
+                _assert_no_active_grading_job(session, session_id)
                 return TemplateRepository(session).upsert_session_template(
                     session_id,
                     front_template_path,
@@ -484,7 +563,8 @@ class TemplateRegionRepositoryGateway:
         regions_path: str,
     ) -> int:
         with self._sessions.session() as session:
-            with session.transaction():
+            with session.transaction(immediate=True):
+                _assert_no_active_grading_job(session, session_id)
                 return TemplateRepository(
                     session
                 ).activate_session_template(
@@ -512,7 +592,8 @@ class TemplateRegionRepositoryGateway:
         regions_path: str | None,
     ) -> None:
         with self._sessions.session() as session:
-            with session.transaction():
+            with session.transaction(immediate=True):
+                _assert_no_active_grading_job(session, session_id)
                 TemplateRepository(
                     session
                 ).update_session_template_analysis(
@@ -522,6 +603,32 @@ class TemplateRegionRepositoryGateway:
                     regions_path=regions_path,
                 )
 
+    def swap_template_page_assignment(
+        self,
+        session_id: int,
+        template_id: int,
+        *,
+        expected_front_path: str,
+        expected_back_path: str,
+    ) -> bool:
+        with self._sessions.session() as session:
+            with session.transaction(immediate=True):
+                _assert_no_active_grading_job(session, session_id)
+                templates = TemplateRepository(session)
+                changed = templates.swap_template_page_paths(
+                    session_id,
+                    template_id,
+                    expected_front_path=expected_front_path,
+                    expected_back_path=expected_back_path,
+                )
+                if not changed:
+                    return False
+                RegionRepository(session).swap_answer_region_pages(
+                    session_id,
+                    template_id,
+                )
+                return True
+
     def save_answer_regions(
         self,
         session_id: int,
@@ -529,7 +636,8 @@ class TemplateRegionRepositoryGateway:
         regions: list[dict[str, Any]],
     ) -> None:
         with self._sessions.session() as session:
-            with session.transaction():
+            with session.transaction(immediate=True):
+                _assert_no_active_grading_job(session, session_id)
                 RegionRepository(session).replace_answer_regions(
                     session_id,
                     template_id,
@@ -549,7 +657,8 @@ class TemplateRegionRepositoryGateway:
         rows: list[dict[str, Any]],
     ) -> None:
         with self._sessions.session() as session:
-            with session.transaction():
+            with session.transaction(immediate=True):
+                _assert_no_active_grading_job(session, session_id)
                 RegionRepository(
                     session
                 ).bulk_update_answer_region_mapping(session_id, rows)
@@ -561,7 +670,8 @@ class TemplateRegionRepositoryGateway:
         region: dict[str, Any],
     ) -> int:
         with self._sessions.session() as session:
-            with session.transaction():
+            with session.transaction(immediate=True):
+                _assert_no_active_grading_job(session, session_id)
                 return RegionRepository(session).insert_answer_region(
                     session_id,
                     template_id,
@@ -579,6 +689,7 @@ class TemplateRegionRepositoryGateway:
         snapshot_token = uuid4().hex
         with self._sessions.session() as session:
             with session.transaction(immediate=True):
+                _assert_no_active_grading_job(session, session_id)
                 templates = TemplateRepository(session)
                 if not templates.owns_template(session_id, template_id):
                     raise sqlite3.IntegrityError(
@@ -617,7 +728,13 @@ class TemplateRegionRepositoryGateway:
 
     def delete_answer_region(self, region_id: int) -> None:
         with self._sessions.session() as session:
-            with session.transaction():
+            with session.transaction(immediate=True):
+                row = session.connection.execute(
+                    "SELECT session_id FROM answer_regions WHERE id = ?",
+                    (int(region_id),),
+                ).fetchone()
+                if row is not None:
+                    _assert_no_active_grading_job(session, int(row["session_id"]))
                 RegionRepository(session).delete_answer_region(region_id)
 
     def update_answer_region_bbox(
@@ -629,7 +746,13 @@ class TemplateRegionRepositoryGateway:
         h: int,
     ) -> None:
         with self._sessions.session() as session:
-            with session.transaction():
+            with session.transaction(immediate=True):
+                row = session.connection.execute(
+                    "SELECT session_id FROM answer_regions WHERE id = ?",
+                    (int(region_id),),
+                ).fetchone()
+                if row is not None:
+                    _assert_no_active_grading_job(session, int(row["session_id"]))
                 RegionRepository(session).update_answer_region_bbox(
                     region_id,
                     x,
@@ -644,7 +767,8 @@ class TemplateRegionRepositoryGateway:
         confirmed: bool = True,
     ) -> None:
         with self._sessions.session() as session:
-            with session.transaction():
+            with session.transaction(immediate=True):
+                _assert_no_active_grading_job(session, session_id)
                 TemplateRepository(session).mark_template_confirmed(
                     session_id,
                     confirmed,

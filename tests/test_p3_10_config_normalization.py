@@ -160,9 +160,10 @@ def test_quality_warning_order_and_text_are_exact() -> None:
         },
     }
 
-    assert quality.collect_generated_config_quality_warnings(payload) == [
-        "[质量检查-提醒] Q1 缺少明确知识点",
-        "[质量检查-提醒] Q1 知识点疑似直接复制题干",
+    warnings = quality.collect_generated_config_quality_warnings(payload)
+    assert len(warnings) == 3
+    assert not any("knowledge" in warning.lower() for warning in warnings)
+    assert warnings == [
         "[质量检查-阻断] Q1 的题干、公式、答案或踩分点中存在疑似乱码",
         "[质量检查-阻断] Q1 缺少可评分的标准答案",
         "[质量检查-阻断] Q1/Q1 缺少可评分的标准答案或答案图",
@@ -177,7 +178,6 @@ def test_score_allocation_structure_validation_and_application_are_exact() -> No
                     "question_id": "Q1",
                     "question_type": "choice",
                     "max_score": 1,
-                    "knowledge_name": "arithmetic",
                     "parts": [
                         {
                             "part_id": "Q1",
@@ -201,7 +201,6 @@ def test_score_allocation_structure_validation_and_application_are_exact() -> No
         {
             "question_id": "Q1",
             "question_type": "choice",
-            "knowledge_name": "arithmetic",
             "parts": [
                 {
                     "part_id": "Q1",
@@ -314,7 +313,10 @@ def test_new_policy_modules_are_session_manager_free_and_facade_is_exact() -> No
         assert "session_manager" not in inspect.getsource(module)
 
     policy = _policy()
-    assert policy.normalize_payload is normalization.normalize_generated_config_schema
+    assert (
+        policy.normalize_payload
+        is normalization.normalize_new_generated_config_payload
+    )
     assert (
         policy.apply_local_question_facts
         is local_facts.apply_local_question_facts

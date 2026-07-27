@@ -32,6 +32,7 @@ def run_grading_job(
     service_factory: GradingServiceFactory = GradingService,
     report: Callable[[float, str, str], None] | None = None,
     grading_mode: str = "full_paper",
+    scan_batch_id: str | None = None,
     failed_only: bool = False,
     enhance_images: bool = True,
     max_workers: int | None = None,
@@ -80,6 +81,11 @@ def run_grading_job(
         max_workers=max_workers,
         requests_per_minute=requests_per_minute,
         grading_mode=_normalize_grading_mode(grading_mode),
+        scan_batch_id=(
+            str(scan_batch_id).strip()
+            if scan_batch_id is not None and str(scan_batch_id).strip()
+            else None
+        ),
         failed_only=bool(failed_only),
         resume_run_id=resume_run_id,
         supplement_only=bool(supplement_only),

@@ -126,7 +126,6 @@ def _score_allocation_structure_summary(
             {
                 "question_id": str(question.get("question_id") or ""),
                 "question_type": str(question.get("question_type") or ""),
-                "knowledge_name": str(question.get("knowledge_name") or ""),
                 "parts": parts,
             }
         )

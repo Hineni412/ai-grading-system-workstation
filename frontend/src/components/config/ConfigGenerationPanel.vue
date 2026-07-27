@@ -33,6 +33,9 @@ const props = withDefaults(defineProps<{
   generationLoader: fetchConfigGenerationJobByToken,
   requestAbandoner: abandonConfigGenerationRequest,
 })
+const syncAfterGeneration = defineModel<boolean>('syncAfterGeneration', {
+  default: false,
+})
 
 const configStore = useConfigWorkspaceStore()
 const jobStore = useJobStore()
@@ -44,6 +47,9 @@ const selectedFailed = ref<string[]>([])
 const editorLoads = new Set<number>()
 const submissionUnknown = computed(() => configStore.pendingJobRequestToken !== null)
 const workspacePending = computed(() => configStore.hasPendingSubmission)
+const generationAvailable = computed(() => mode.value === 'whole_document'
+  ? configStore.canGenerateWholeDocument
+  : configStore.canGenerate)
 
 const job = computed(() => configStore.jobId === null ? null : jobStore.jobs[configStore.jobId] ?? null)
 const syncError = computed(() => configStore.jobId === null
@@ -87,13 +93,43 @@ const scoreAllocationPending = computed(
 const scoreAllocationFailed = computed(
   () => job.value?.result.score_allocation_failed === true,
 )
+const totalQuestionCount = computed(() => safeCount(job.value?.result.total_questions))
+const totalBatchCount = computed(() => safeCount(job.value?.result.total_batch_count))
 const generatedCount = computed(() => safeCount(job.value?.result.generated_questions))
 const failedCount = computed(() => safeCount(job.value?.result.failed_count))
+const includedSourceQuestionCount = computed(() => {
+  const source = configStore.source
+  if (source === null) return 0
+  const excluded = new Set(
+    configStore.decisions
+      .filter((decision) => decision.excluded)
+      .map((decision) => decision.question_id),
+  )
+  return source.questions.filter((question) => !excluded.has(question.question_id)).length
+})
+const retainedSummary = computed<ConfigGenerationSummary | null>(() => {
+  const stored = configStore.generationSummary
+  if (stored === null || totalQuestionCount.value > 0) return null
+  const total = includedSourceQuestionCount.value || stored.totalQuestions
+  const failed = Math.min(total, stored.failedQuestions)
+  return {
+    totalQuestions: total,
+    succeededQuestions: Math.max(0, total - failed),
+    failedQuestions: failed,
+  }
+})
 const active = computed(() => job.value !== null
   && !['succeeded', 'failed', 'cancelled'].includes(job.value.status))
+const terminal = computed(() => job.value !== null
+  && ['succeeded', 'failed', 'cancelled'].includes(job.value.status))
 const waitingForCancel = computed(() => job.value?.cancel_requested === true
   && (job.value.status === 'queued' || job.value.status === 'running'))
 const refineJob = computed(() => job.value?.payload.mode === 'refine')
+const publishedConfigPresent = computed(() => configStore.editor?.configured === true)
+const sourceDiffersFromPublishedConfig = computed(() => {
+  if (!publishedConfigPresent.value || configStore.source === null) return false
+  return configStore.editor?.source?.sha256_prefix !== configStore.source.sha256_prefix
+})
 const safeDetail = computed(() => {
   const detail = job.value?.detail.trim() ?? ''
   if (!detail || detail.length > 240 || /(?:[a-z]:[\\/]|\\\\|\/[^ ]+\/)/i.test(detail)) return ''
@@ -138,6 +174,15 @@ function returnToEditor(): void {
   document.querySelector<HTMLElement>('#rubric-ledger-title')?.focus()
 }
 
+function prepareFreshGeneration(): void {
+  const current = job.value
+  if (current === null || !terminal.value || workspacePending.value) return
+  configStore.detachJob(current.id)
+  requestError.value = ''
+  editorError.value = ''
+  selectedFailed.value = []
+}
+
 async function abandonMissingRequest(
   sessionId: number,
   requestToken: string,
@@ -153,8 +198,14 @@ async function abandonMissingRequest(
 }
 
 async function startGeneration(requestedMode: GenerationMode = mode.value): Promise<void> {
-  if (!configStore.canGenerate || submitting.value || active.value || workspacePending.value
+  const ready = requestedMode === 'whole_document'
+    ? configStore.canGenerateWholeDocument
+    : configStore.canGenerate
+  if (!ready || submitting.value || active.value || workspacePending.value
     || configStore.sessionId === null) return
+  if (configStore.hasDirtyEditor && !window.confirm(
+    '评分依据还有未保存修改。新一轮完整生成成功后会用新结果替换当前正式版本，未保存修改不会保留。是否继续？',
+  )) return
   const context = configStore.captureGenerationContext()
   const sessionId = configStore.sessionId
   const requestToken = createClientRequestToken()
@@ -228,10 +279,16 @@ async function retrySelected(resumeComplete = false): Promise<void> {
   const ids = resumeComplete ? [] : [...new Set(selectedBatches.flatMap((item) => item.question_ids))]
   if (!resumeComplete && ids.length === 0) return
   const context = configStore.captureGenerationContext()
+  const authoritativeTotal = includedSourceQuestionCount.value
+    || safeCount(current.result.total_questions)
+  const authoritativeFailed = Math.min(
+    authoritativeTotal,
+    safeCount(current.result.failed_count),
+  )
   const retainedSummary: ConfigGenerationSummary = {
-    totalQuestions: safeCount(current.result.total_questions),
-    succeededQuestions: safeCount(current.result.generated_questions),
-    failedQuestions: safeCount(current.result.failed_count),
+    totalQuestions: authoritativeTotal,
+    succeededQuestions: Math.max(0, authoritativeTotal - authoritativeFailed),
+    failedQuestions: authoritativeFailed,
   }
   const requestToken = createClientRequestToken()
   if (!configStore.markJobSubmissionPending(requestToken, 'retry', null, retainedSummary)) return
@@ -294,23 +351,53 @@ watch(job, (current, previous) => {
     <header class="config-section-heading">
       <div>
         <h2 id="config-generation-title">生成评分依据</h2>
-        <p>系统每批处理 3 题；本地修复后仍失败的批次才需要手动重试。</p>
+        <p>可按拆题结果分批生成，也可让 AI 直接阅读整卷并一次生成完整评分标准。</p>
       </div>
     </header>
 
-    <div class="config-generation__modes" role="note">
-      <strong>小批次生成</strong>
-      <small>按顺序每批最多 3 题，每批只请求一次；全部批次成功后，再请求一次 AI 统一配置 100 分。任何失败都不会自动重试。</small>
+    <p
+      v-if="job === null && publishedConfigPresent"
+      class="config-generation__candidate-note"
+      role="status"
+    >
+      <strong>{{ sourceDiffersFromPublishedConfig ? '当前上传的是新的候选试卷。' : '当前正式评分依据仍然有效。' }}</strong>
+      新一轮只有完整成功后才会替换正式版本；失败、取消或部分完成都保留旧版。
+      替换成功后，样卷题框和扫描预检需要重新确认，历史批改结果不会删除。
+    </p>
+
+    <div v-if="job === null" class="config-generation__modes" role="radiogroup" aria-label="评分依据生成方式">
+      <label :class="{ 'is-selected': mode === 'batched' }">
+        <input v-model="mode" type="radio" value="batched">
+        <span>
+          <strong>按拆题结果生成</strong>
+          <small>适合拆题准确时使用。每批最多 3 题，失败批次可单独重试。</small>
+        </span>
+      </label>
+      <label :class="{ 'is-selected': mode === 'whole_document' }">
+        <input v-model="mode" type="radio" value="whole_document">
+        <span>
+          <strong>整卷生成评分标准</strong>
+          <small>不依赖当前拆题和答案片段。整份 Word 文本或 PDF 页面只发送一次；失败不自动重试，也不会发布半成品。</small>
+        </span>
+      </label>
     </div>
+
+    <label v-if="job === null" class="config-generation__bank-sync">
+      <input v-model="syncAfterGeneration" type="checkbox">
+      <span>
+        <strong>评分标准生成后，将这份试卷入库并打标签</strong>
+        <small>默认关闭。开启后会另行调用 AI，可能产生模型费用；入库失败不会影响已经生成的评分标准。</small>
+      </span>
+    </label>
 
     <button
       v-if="job === null"
       type="button"
       name="开始生成"
       class="config-generation__primary"
-      :disabled="!configStore.canGenerate || submitting || workspacePending"
+      :disabled="!generationAvailable || submitting || workspacePending"
       @click="startGeneration()"
-    >{{ submitting ? '正在提交…' : '开始生成' }}</button>
+    >{{ submitting ? '正在提交…' : mode === 'whole_document' ? '整卷生成评分标准' : '开始分批生成' }}</button>
 
     <div v-else class="config-generation__job" aria-live="polite">
       <div class="config-generation__status-line">
@@ -326,14 +413,19 @@ watch(job, (current, previous) => {
       <p v-if="localJsonRepairs.length > 0" class="config-generation__retained" role="status">
         本地程序已修复 {{ localJsonRepairs.length }} 个批次的 JSON（{{ localJsonRepairs.map((item) => item.batch_id).join('、') }}），未产生额外模型请求。
       </p>
-      <p v-if="configStore.generationSummary" class="config-generation__retained">
-        <strong>上一轮已成功 {{ configStore.generationSummary.succeededQuestions }} 题</strong>
-        / 共 {{ configStore.generationSummary.totalQuestions }} 题；
+      <p v-if="retainedSummary" class="config-generation__retained">
+        <strong>上一轮已成功 {{ retainedSummary.succeededQuestions }} 题</strong>
+        / 共 {{ retainedSummary.totalQuestions }} 题；
         当前恢复任务：{{ statusCopy(job) }}。
       </p>
 
       <div v-if="['succeeded', 'failed', 'cancelled'].includes(job.status) && outcome === 'partial' && failedBatches.length > 0" class="config-generation__partial">
-        <p><strong>已成功 {{ generatedCount }} 题</strong>，失败 {{ failedCount }} 题。成功批次已保存，不会重复请求。</p>
+        <p>
+          本次共 {{ totalQuestionCount }} 道题
+          <template v-if="totalBatchCount">，分为 {{ totalBatchCount }} 个批次</template>；
+          <strong>已成功 {{ generatedCount }} 道题</strong>，失败 {{ failedCount }} 道题。
+          成功批次已保存，不会重复请求。
+        </p>
         <fieldset>
           <legend>选择要重试的失败批次</legend>
           <label v-for="batch in failedBatches" :key="batch.batch_id">
@@ -348,7 +440,11 @@ watch(job, (current, previous) => {
 
       <div v-if="['succeeded', 'failed', 'cancelled'].includes(job.status) && outcome === 'partial' && failedBatches.length === 0 && scoreAllocationPending" class="config-generation__partial">
         <p>
-          <strong>{{ generatedCount }} 道题的批次结果已经保存在本机。</strong>
+          <strong>
+            {{ totalQuestionCount || generatedCount }} 道题
+            <template v-if="totalBatchCount">、共 {{ totalBatchCount }} 个批次</template>
+            的生成结果已经保存在本机。
+          </strong>
           <template v-if="scoreAllocationFailed">AI 统一配分没有成功；没有发布评分依据，也没有使用本地分数替代。</template>
           <template v-else>尚未完成 AI 统一配分。</template>
         </p>
@@ -383,11 +479,19 @@ watch(job, (current, previous) => {
       <button
         v-else-if="job.status === 'failed' && outcome !== 'partial' && outcome !== 'complete'"
         type="button"
-        name="重新分批生成"
+        name="重新生成"
         class="config-generation__primary"
         :disabled="submitting || workspacePending"
-        @click="startGeneration('batched')"
-      >重新分批生成</button>
+        @click="startGeneration(job.payload.generation_mode === 'whole_document' ? 'whole_document' : 'batched')"
+      >{{ job.payload.generation_mode === 'whole_document' ? '重新整卷生成' : '重新分批生成' }}</button>
+      <button
+        v-if="terminal && !refineJob"
+        type="button"
+        name="开始新一轮生成"
+        class="config-generation__secondary"
+        :disabled="workspacePending"
+        @click="prepareFreshGeneration"
+      >重新选择方式并生成新版本</button>
     </div>
 
     <div v-if="syncError" class="config-generation__warning" role="alert">
@@ -414,11 +518,20 @@ watch(job, (current, previous) => {
 <style scoped>
 .config-generation { min-width: 0; margin-block-start: var(--space-6); border-block-start: var(--border-width) solid var(--color-border-default); }
 .config-generation__modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); margin: 0 0 var(--space-3); padding: var(--space-4); border: var(--border-width) solid var(--color-border-default); background: var(--color-bg-subtle); }
+.config-generation__candidate-note { margin: 0 0 var(--space-3); padding: var(--space-3) var(--space-4); border-inline-start: var(--border-selected-width) solid var(--color-accent); background: var(--color-accent-subtle); color: var(--color-text-secondary); }
+.config-generation__candidate-note strong { color: var(--color-text-primary); }
 .config-generation__failure-actions { display: flex; flex-wrap: wrap; gap: var(--space-3); }
 .config-generation__modes legend { padding-inline: var(--space-1); font-weight: var(--font-weight-medium); }
-.config-generation__modes label { display: flex; align-items: flex-start; gap: var(--space-2); min-width: 0; }
+.config-generation__modes label { display: flex; align-items: flex-start; min-width: 0; gap: var(--space-3); padding: var(--space-3); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); cursor: pointer; }
+.config-generation__modes label.is-selected { border-color: var(--color-accent); box-shadow: inset var(--border-selected-width) 0 0 var(--color-accent); }
+.config-generation__modes label:focus-within { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.config-generation__modes input { flex: 0 0 auto; margin-block-start: 3px; accent-color: var(--color-accent); }
 .config-generation__modes span { display: grid; gap: var(--space-1); }
 .config-generation__modes small { color: var(--color-text-secondary); line-height: var(--line-height-relaxed); }
+.config-generation__bank-sync { display: flex; align-items: flex-start; gap: var(--space-2); margin: 0 0 var(--space-3); padding: var(--space-3) var(--space-4); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); cursor: pointer; }
+.config-generation__bank-sync input { flex: 0 0 auto; margin-block-start: 3px; accent-color: var(--color-accent); }
+.config-generation__bank-sync span { display: grid; gap: var(--space-1); }
+.config-generation__bank-sync small { color: var(--color-text-secondary); line-height: var(--line-height-relaxed); }
 .config-generation__primary,
 .config-generation__secondary,
 .config-generation__partial button,

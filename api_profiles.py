@@ -274,6 +274,71 @@ class ApiProfileStore:
                 profiles.append(replacement)
             _atomic_write_profiles(self.path, profiles)
 
+    def update_named(
+        self,
+        profile_name: str,
+        updates: Mapping[str, Any],
+        *,
+        preserve_nonempty_keys: Iterable[str] = (),
+        required_nonempty_keys_on_create: Iterable[str] = (),
+    ) -> tuple[dict[str, Any], bool]:
+        """Atomically merge allowed updates into one named profile."""
+        normalized_name = str(profile_name)
+        preserved = set(preserve_nonempty_keys)
+        required_on_create = set(required_nonempty_keys_on_create)
+        with _exclusive_profile_lock(self.path):
+            profiles = self._load_unlocked()
+            created = True
+            profile: dict[str, Any] = {"name": normalized_name}
+            profile_index: int | None = None
+            for index, item in enumerate(profiles):
+                if item.get("name") == normalized_name:
+                    profile = dict(item)
+                    profile_index = index
+                    created = False
+                    break
+            for key, value in updates.items():
+                normalized_key = str(key)
+                if (
+                    normalized_key in preserved
+                    and _is_blank(value)
+                    and not _is_blank(profile.get(normalized_key))
+                ):
+                    continue
+                profile[normalized_key] = value
+            profile["name"] = normalized_name
+            if created and any(
+                _is_blank(profile.get(key))
+                for key in required_on_create
+            ):
+                raise ValueError("Required profile value is missing")
+            if profile_index is None:
+                profiles.append(profile)
+            else:
+                profiles[profile_index] = profile
+            _atomic_write_profiles(self.path, profiles)
+            return dict(profile), created
+
+    def activate(self, profile_name: str) -> dict[str, Any] | None:
+        """Atomically make a named profile active by moving it to the tail."""
+        normalized_name = str(profile_name)
+        with _exclusive_profile_lock(self.path):
+            profiles = self._load_unlocked()
+            profile_index = next(
+                (
+                    index
+                    for index, item in enumerate(profiles)
+                    if item.get("name") == normalized_name
+                ),
+                None,
+            )
+            if profile_index is None:
+                return None
+            profile = profiles.pop(profile_index)
+            profiles.append(profile)
+            _atomic_write_profiles(self.path, profiles)
+            return dict(profile)
+
     def delete(self, profile_name: str) -> bool:
         with _exclusive_profile_lock(self.path):
             profiles = self._load_unlocked()

@@ -25,7 +25,13 @@ from backend.repositories.review import (
     ReviewRepositoryGateway,
 )
 from backend.repositories.settings import SettingsRepositoryGateway
-from backend.repositories.sessions import SessionRepository, SessionRepositoryGateway
+from backend.repositories.sessions import (
+    SessionDeletionActiveWork,
+    SessionDeletionRevisionConflict,
+    SessionRepository,
+    SessionRepositoryGateway,
+    session_deletion_revision,
+)
 from backend.repositories.students import (
     StudentBackupFailedError,
     StudentCodeConflictError,
@@ -463,6 +469,10 @@ class DBManager:
         expected_rubric_path: str,
         expected_answer_key_path: str,
     ) -> bool:
+        config_changed = (
+            str(rubric_path) != str(expected_rubric_path)
+            or str(answer_key_path) != str(expected_answer_key_path)
+        )
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -470,6 +480,14 @@ class DBManager:
                     """
                     UPDATE grading_sessions
                     SET rubric_path = ?, answer_key_path = ?,
+                        question_bank_sync_state = CASE
+                            WHEN ? THEN 'not_started' ELSE question_bank_sync_state END,
+                        question_bank_sync_details_json = CASE
+                            WHEN ? THEN '{}' ELSE question_bank_sync_details_json END,
+                        question_bank_sync_error = CASE
+                            WHEN ? THEN NULL ELSE question_bank_sync_error END,
+                        question_bank_sync_updated_at = CASE
+                            WHEN ? THEN NULL ELSE question_bank_sync_updated_at END,
                         updated_at = datetime('now','localtime')
                     WHERE id = ? AND is_deleted = 0
                       AND rubric_path = ? AND answer_key_path = ?
@@ -477,6 +495,10 @@ class DBManager:
                     (
                         str(rubric_path),
                         str(answer_key_path),
+                        config_changed,
+                        config_changed,
+                        config_changed,
+                        config_changed,
                         int(session_id),
                         str(expected_rubric_path),
                         str(expected_answer_key_path),
@@ -485,6 +507,17 @@ class DBManager:
                 if cursor.rowcount != 1:
                     conn.rollback()
                     return False
+                conn.execute(
+                    """
+                    UPDATE session_templates
+                    SET is_confirmed = 0,
+                        regions_snapshot_pending = 0,
+                        regions_snapshot_token = NULL,
+                        updated_at = datetime('now','localtime')
+                    WHERE session_id = ?
+                    """,
+                    (int(session_id),),
+                )
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -512,14 +545,19 @@ class DBManager:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 current = conn.execute(
-                    "SELECT source_paper_sha256 FROM grading_sessions "
+                    "SELECT rubric_path, answer_key_path, source_paper_sha256 "
+                    "FROM grading_sessions "
                     "WHERE id = ? AND is_deleted = 0",
                     (int(session_id),),
                 ).fetchone()
                 if current is None:
                     conn.rollback()
                     return False
-                changed = str(current["source_paper_sha256"] or "") != source_sha256
+                changed = (
+                    str(current["source_paper_sha256"] or "") != source_sha256
+                    or str(current["rubric_path"] or "") != str(rubric_path)
+                    or str(current["answer_key_path"] or "") != str(answer_key_path)
+                )
                 cursor = conn.execute(
                     """
                     UPDATE grading_sessions
@@ -554,6 +592,17 @@ class DBManager:
                 if cursor.rowcount != 1:
                     conn.rollback()
                     return False
+                conn.execute(
+                    """
+                    UPDATE session_templates
+                    SET is_confirmed = 0,
+                        regions_snapshot_pending = 0,
+                        regions_snapshot_token = NULL,
+                        updated_at = datetime('now','localtime')
+                    WHERE session_id = ?
+                    """,
+                    (int(session_id),),
+                )
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -615,17 +664,58 @@ class DBManager:
             session_id
         ):
             add_values(row, ["annotated_front_path", "annotated_back_path"])
+        with self._connect() as conn:
+            report_rows = conn.execute(
+                """
+                SELECT json_extract(result_json, '$.file_path') AS file_path
+                FROM jobs
+                WHERE job_type = 'report_export'
+                  AND json_valid(payload_json) = 1
+                  AND json_type(payload_json, '$.session_id') IN ('integer', 'text')
+                  AND CAST(json_extract(payload_json, '$.session_id') AS TEXT) = ?
+                  AND json_valid(result_json) = 1
+                  AND json_type(result_json, '$.file_path') = 'text'
+                """,
+                (str(int(session_id)),),
+            ).fetchall()
+            config_job_rows = conn.execute(
+                """
+                SELECT id, json_extract(payload_json, '$.input_id') AS input_id
+                FROM jobs
+                WHERE job_type = 'config_generation'
+                  AND json_valid(payload_json) = 1
+                  AND json_type(payload_json, '$.session_id') IN ('integer', 'text')
+                  AND CAST(json_extract(payload_json, '$.session_id') AS TEXT) = ?
+                """,
+                (str(int(session_id)),),
+            ).fetchall()
+        for row in report_rows:
+            add_values(row, ["file_path"])
+        upload_config_dir = self.db_path.parent.parent / "config" / "uploaded"
+        for row in config_job_rows:
+            job_id = int(row["id"])
+            paths.append(
+                str(upload_config_dir / f"config_generation_draft_job_{job_id}.json")
+            )
+            input_id = str(row["input_id"] or "").strip().casefold()
+            if re.fullmatch(r"[0-9a-f]{32}", input_id):
+                paths.append(
+                    str(upload_config_dir / f"config_generation_input_{input_id}.json")
+                )
 
         return paths
 
-    def hard_delete_grading_session(self, session_id: int) -> dict[str, int]:
-        session = self.get_grading_session(session_id)
-        if session is None:
-            raise ValueError(f"Session {session_id} does not exist.")
-        if int(session.get("is_deleted") or 0) != 1:
-            raise ValueError("Only sessions in recycle bin can be permanently deleted.")
-
+    def hard_delete_grading_session(
+        self,
+        session_id: int,
+        *,
+        expected_revision: str | None = None,
+    ) -> dict[str, int]:
         counts = {
+            "teacher_score_locks": 0,
+            "grading_run_items": 0,
+            "grading_runs": 0,
+            "jobs": 0,
             "session_details": 0,
             "annotated_results": 0,
             "session_attendance": 0,
@@ -644,6 +734,66 @@ class DBManager:
                 sessions = SessionRepository(repository_session)
                 regions = RegionRepository(repository_session)
                 templates = TemplateRepository(repository_session)
+                current = sessions.get_grading_session(int(session_id))
+                if current is None:
+                    raise ValueError(f"Session {session_id} does not exist.")
+                if int(current.get("is_deleted") or 0) != 1:
+                    raise ValueError(
+                        "Only archived sessions can be permanently deleted."
+                    )
+                if (
+                    expected_revision is not None
+                    and session_deletion_revision(current) != str(expected_revision)
+                ):
+                    raise SessionDeletionRevisionConflict(
+                        "Session changed before permanent deletion"
+                    )
+                active = sessions.session_active_work_counts(int(session_id))
+                if active["active_jobs"] or active["active_grading_runs"]:
+                    raise SessionDeletionActiveWork(**active)
+                counts["grading_run_items"] = max(
+                    0,
+                    int(
+                        repository_session.connection.execute(
+                            """
+                            DELETE FROM grading_run_items
+                            WHERE run_id IN (
+                                SELECT id FROM grading_runs WHERE session_id = ?
+                            )
+                            """,
+                            (int(session_id),),
+                        ).rowcount
+                    ),
+                )
+                counts["grading_runs"] = max(
+                    0,
+                    int(
+                        repository_session.connection.execute(
+                            "DELETE FROM grading_runs WHERE session_id = ?",
+                            (int(session_id),),
+                        ).rowcount
+                    ),
+                )
+                counts["jobs"] = max(
+                    0,
+                    int(
+                        repository_session.connection.execute(
+                            """
+                            DELETE FROM jobs
+                            WHERE json_valid(payload_json) = 1
+                              AND json_type(payload_json, '$.session_id')
+                                  IN ('integer', 'text')
+                              AND CAST(
+                                  json_extract(payload_json, '$.session_id') AS TEXT
+                              ) = ?
+                            """,
+                            (str(int(session_id)),),
+                        ).rowcount
+                    ),
+                )
+                counts["teacher_score_locks"] = (
+                    reviews.delete_session_teacher_score_locks(session_id)
+                )
                 result_ids = results.get_session_result_ids(session_id)
                 counts["session_details"] = results.delete_result_details(
                     result_ids
@@ -733,6 +883,8 @@ class DBManager:
         self.create_backup("clear_session")
         with self._repository_sessions.session() as repository_session:
             with repository_session.transaction(immediate=True):
+                # Teacher-confirmed sidecar scores intentionally survive an
+                # ordinary AI run reset and are removed only by hard delete.
                 results = ResultRepository(repository_session)
                 result_ids = results.get_session_result_ids(session_id)
                 results.delete_result_details(result_ids)
@@ -797,6 +949,21 @@ class DBManager:
             ai_analysis_path=ai_analysis_path,
             template_config_path=template_config_path,
             regions_path=regions_path,
+        )
+
+    def swap_template_page_assignment(
+        self,
+        session_id: int,
+        template_id: int,
+        *,
+        expected_front_path: str,
+        expected_back_path: str,
+    ) -> bool:
+        return self.template_repository.swap_template_page_assignment(
+            session_id,
+            template_id,
+            expected_front_path=expected_front_path,
+            expected_back_path=expected_back_path,
         )
 
     def save_answer_regions(self, session_id: int, template_id: int, regions: list[dict[str, Any]]) -> None:
@@ -1092,6 +1259,89 @@ class DBManager:
 
     def get_session_review_rows(self, session_id: int) -> list[dict[str, Any]]:
         return self.review_repository.get_session_review_rows(session_id)
+
+    def list_teacher_score_locks(
+        self,
+        session_id: int,
+        scan_batch_id: str | None = None,
+        *,
+        student_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        return self.review_repository.list_teacher_score_locks(
+            session_id,
+            scan_batch_id=scan_batch_id,
+            student_id=student_id,
+        )
+
+    def get_teacher_score_lock(
+        self,
+        session_id: int,
+        scan_batch_id: str,
+        student_id: int,
+        question_id: str,
+    ) -> dict[str, Any] | None:
+        return self.review_repository.get_teacher_score_lock(
+            session_id,
+            scan_batch_id,
+            student_id,
+            question_id,
+        )
+
+    def confirm_teacher_score_lock(
+        self,
+        *,
+        session_id: int,
+        scan_batch_id: str,
+        student_id: int,
+        question_id: str,
+        score_awarded: float,
+        max_score: float,
+        deduction_reason: str | None,
+        source_target_type: str,
+        source_target_id: int,
+        expected_revision: int,
+        sync_existing_detail: bool = True,
+    ) -> dict[str, Any]:
+        return self.review_repository.confirm_teacher_score_lock(
+            session_id=session_id,
+            scan_batch_id=scan_batch_id,
+            student_id=student_id,
+            question_id=question_id,
+            score_awarded=score_awarded,
+            max_score=max_score,
+            deduction_reason=deduction_reason,
+            source_target_type=source_target_type,
+            source_target_id=source_target_id,
+            expected_revision=expected_revision,
+            sync_existing_detail=sync_existing_detail,
+        )
+
+    def confirm_teacher_scores(
+        self,
+        session_id: int,
+        scan_batch_id: str,
+        confirmations: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return self.review_repository.confirm_teacher_scores(
+            session_id,
+            scan_batch_id,
+            confirmations,
+        )
+
+    def confirm_teacher_score_locks(
+        self,
+        session_id: int,
+        scan_batch_id: str,
+        confirmations: list[dict[str, Any]],
+        *,
+        sync_existing_details: bool = True,
+    ) -> dict[str, Any]:
+        return self.review_repository.confirm_teacher_score_locks(
+            session_id,
+            scan_batch_id,
+            confirmations,
+            sync_existing_details=sync_existing_details,
+        )
 
     def get_review_media_context(
         self,

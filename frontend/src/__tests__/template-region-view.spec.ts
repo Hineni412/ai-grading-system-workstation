@@ -10,6 +10,7 @@ import TemplateRegionView from '../views/TemplateRegionView.vue'
 vi.mock('../api/template-regions', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/template-regions')>(),
   fetchRegionReadiness: vi.fn(), fetchRegionWorkspace: vi.fn(), saveRegionDraft: vi.fn(), uploadTemplate: vi.fn(),
+  assignTemplatePageRole: vi.fn(),
   fetchTemplateSubmission: vi.fn(), abandonTemplateSubmission: vi.fn(),
   discardRegionDraft: vi.fn(), commitRegions: vi.fn(), retryRegionSnapshot: vi.fn(),
 }))
@@ -58,7 +59,7 @@ async function mountView() {
   app.use(router)
   app.mount(host)
   await Promise.resolve(); await nextTick(); await Promise.resolve(); await nextTick()
-  return { app, host }
+  return { app, host, router }
 }
 
 beforeEach(() => {
@@ -79,6 +80,10 @@ describe('TemplateRegionView', () => {
 
     expect(host.textContent).toContain('上传双页样卷')
     expect(host.querySelector<HTMLInputElement>('input[type="file"]')).not.toBeNull()
+    const backRole = host.querySelector<HTMLInputElement>('input[type="radio"][value="back"]')
+    backRole?.click()
+    await nextTick()
+    expect(host.querySelector('output')?.textContent).toContain('第 1 页 → 反面')
     app.unmount()
   })
 
@@ -105,6 +110,50 @@ describe('TemplateRegionView', () => {
     app.unmount()
   })
 
+  it('separates immediate current-page reassignment from replacement upload settings', async () => {
+    const initial = editableWorkspace()
+    const reassigned = editableWorkspace()
+    reassigned.template = {
+      ...reassigned.template,
+      template_fingerprint: 'b'.repeat(64),
+      first_page_role: 'back',
+      pages: {
+        front: { url: '/api/sessions/7/template/pages/front?v=next', width: 1000, height: 1400 },
+        back: { url: '/api/sessions/7/template/pages/back?v=next', width: 1000, height: 1400 },
+      },
+    }
+    reassigned.formal_regions = reassigned.formal_regions.map((region) => ({
+      ...region,
+      page: region.page === 'front' ? 'back' : 'front',
+    }))
+    vi.mocked(api.fetchRegionWorkspace)
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(reassigned)
+    vi.mocked(api.assignTemplatePageRole).mockResolvedValue({
+      changed: true,
+      draft_sync_pending: false,
+      template: reassigned.template,
+    })
+    const { app, host } = await mountView()
+
+    expect(host.textContent).toContain('当前样卷')
+    expect(host.textContent).toContain('PDF 第 1 页 → 正面')
+    expect(host.textContent).toContain('该选择只作用于这次新上传的 PDF')
+    const replacementBack = host.querySelector<HTMLInputElement>(
+      '.template-upload__form input[type="radio"][value="back"]',
+    )
+    replacementBack?.click()
+    await nextTick()
+    expect(api.assignTemplatePageRole).not.toHaveBeenCalled()
+
+    host.querySelector<HTMLButtonElement>('[data-action="swap-current-pages"]')?.click()
+    await Promise.resolve(); await nextTick(); await Promise.resolve(); await nextTick()
+
+    expect(api.assignTemplatePageRole).toHaveBeenCalledWith(7, 'back', 'a'.repeat(64))
+    expect(api.uploadTemplate).not.toHaveBeenCalled()
+    app.unmount()
+  })
+
   it('summarizes both pages, bindings and issues before formal commit', async () => {
     vi.mocked(api.fetchRegionWorkspace).mockResolvedValue(editableWorkspace())
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
@@ -117,6 +166,19 @@ describe('TemplateRegionView', () => {
       '正面 1 框，反面 1 框；已绑定 1 框，待处理 1 框，校验问题 1 项。确认保存为正式版本？',
     )
     expect(api.commitRegions).not.toHaveBeenCalled()
+    app.unmount()
+  })
+
+  it('keeps the five-step rail with earlier configuration stages available', async () => {
+    vi.mocked(api.fetchRegionWorkspace).mockResolvedValue(editableWorkspace())
+    const { app, host } = await mountView()
+
+    expect(host.querySelectorAll('.config-stage-rail button')).toHaveLength(5)
+    const editorStage = [...host.querySelectorAll<HTMLButtonElement>('.config-stage-rail button')]
+      .find((button) => button.textContent?.includes('评分依据'))
+    expect(editorStage?.disabled).toBe(false)
+    expect(host.querySelector<HTMLButtonElement>('.config-stage-rail button[aria-current="step"]')
+      ?.textContent).toContain('样卷题框')
     app.unmount()
   })
 })

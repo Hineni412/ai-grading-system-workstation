@@ -8,6 +8,7 @@ import sqlite3
 import stat
 import tempfile
 import time
+import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -24,8 +25,16 @@ from question_bank.services.asset_path_service import (
     AmbiguousQuestionBankAssetPathError,
     resolve_question_bank_asset_path,
 )
+from question_bank.services.question_frequency_service import (
+    calculate_question_similarity,
+)
 from question_bank.services.question_service import build_question_filter_query
 from question_bank.services.question_revision import question_revision, question_revisions
+from question_bank.services.similarity_service import text_similarity
+from question_bank.taxonomy.curriculum_catalog import (
+    curriculum_chapter_exam_scope_values,
+)
+from question_bank.taxonomy.governance import get_taxonomy_governance
 
 
 ANALYSIS_TAG_TYPES = (
@@ -40,6 +49,18 @@ ANALYSIS_TAG_TYPES = (
 _IMAGE_MARKER_PATTERN = re.compile(
     r"\[\[IMAGE:(?P<path>.*?)\]\]",
     re.DOTALL | re.IGNORECASE,
+)
+_RICH_INLINE_TOKEN_PATTERN = re.compile(
+    r"(<br\s*/?>|</?(?:sup|sub|u)>)",
+    re.IGNORECASE,
+)
+_RICH_TABLE_ROW_PATTERN = re.compile(
+    r"<tr>(.*?)</tr>",
+    re.IGNORECASE | re.DOTALL,
+)
+_RICH_TABLE_CELL_PATTERN = re.compile(
+    r"<td>(.*?)</td>",
+    re.IGNORECASE | re.DOTALL,
 )
 _FILE_URI_TOKEN_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_])file:",
@@ -147,6 +168,13 @@ class QuestionReadFilters:
     question_number: str | None = None
     keyword: str | None = None
     knowledge_point: str | None = None
+    knowledge_points: tuple[str, ...] = ()
+    abilities: tuple[str, ...] = ()
+    methods: tuple[str, ...] = ()
+    models: tuple[str, ...] = ()
+    student_levels: tuple[str, ...] = ()
+    teaching_stages: tuple[str, ...] = ()
+    sub_skills: tuple[str, ...] = ()
     difficulty_min: int | None = None
     difficulty_max: int | None = None
     question_types: tuple[str, ...] = ()
@@ -530,6 +558,7 @@ class QuestionBankReadService:
                 SELECT
                     p.id,
                     p.title,
+                    p.source_file AS _source_file,
                     p.year,
                     p.province,
                     p.city,
@@ -550,6 +579,23 @@ class QuestionBankReadService:
                          AND COALESCE(q.is_deleted, 0) = 0
                          AND t.id IS NOT NULL
                         THEN q.id
+                    END) AS tagged_any_question_count,
+                    COUNT(DISTINCT CASE
+                        WHEN q.id IS NOT NULL
+                         AND COALESCE(q.is_deleted, 0) = 0
+                         AND (
+                            SELECT COUNT(DISTINCT core_tags.tag_type)
+                            FROM question_tags core_tags
+                            WHERE core_tags.question_id = q.id
+                              AND core_tags.tag_type IN (
+                                  'knowledge_point',
+                                  'ability',
+                                  'exam_scope',
+                                  'student_level'
+                              )
+                              AND COALESCE(core_tags.tag_value, '') <> ''
+                         ) = 4
+                        THEN q.id
                     END) AS tagged_question_count
                 FROM papers p
                 LEFT JOIN questions q ON q.paper_id = p.id
@@ -563,27 +609,15 @@ class QuestionBankReadService:
                 """,
                 ANALYSIS_TAG_TYPES,
             ).fetchall()
-        return [dict(row) for row in rows]
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["source_type"] = _safe_source_type(item.pop("_source_file", None))
+            items.append(item)
+        return items
 
     def list_questions(self, filters: QuestionReadFilters) -> QuestionReadPage:
-        difficulty_range = None
-        if filters.difficulty_min is not None and filters.difficulty_max is not None:
-            difficulty_range = (filters.difficulty_min, filters.difficulty_max)
-
-        joins, where, params = build_question_filter_query(
-            question_number=filters.question_number,
-            keyword=filters.keyword,
-            knowledge_point=filters.knowledge_point,
-            difficulty_range=difficulty_range,
-            question_types=list(filters.question_types),
-            paper_ids=list(filters.paper_ids),
-            years=list(filters.years),
-            exam_types=list(filters.exam_types),
-            grades=list(filters.grades),
-            tag_filters={"exam_scope": list(filters.exam_scopes)} if filters.exam_scopes else None,
-            is_deleted=False,
-            tag_status=_TAG_STATUS_MAP[filters.tag_status],
-        )
+        joins, where, params = _question_filter_parts(filters)
         where_sql = "WHERE " + " AND ".join(where) if where else ""
         count_sql = " ".join(
             [
@@ -647,7 +681,7 @@ class QuestionBankReadService:
             revisions = question_revisions(conn, [int(row["id"]) for row in rows])
 
         items = [
-            _public_question_item(
+            self._public_question_with_rich_content(
                 row,
                 tags_by_question.get(int(row["id"]), []),
                 revision=revisions[int(row["id"])],
@@ -661,6 +695,219 @@ class QuestionBankReadService:
             page_size=filters.page_size,
             total_pages=max(math.ceil(total / filters.page_size), 1),
         )
+
+    def list_facets(
+        self,
+        filters: QuestionReadFilters,
+    ) -> dict[str, list[dict[str, Any]]]:
+        joins, where, params = _question_filter_parts(filters)
+        where_sql = "WHERE " + " AND ".join(where) if where else ""
+        filtered_sql = " ".join(
+            [
+                """
+                SELECT DISTINCT
+                    q.id,
+                    q.question_type,
+                    p.year,
+                    p.exam_type,
+                    p.grade
+                FROM questions q
+                """,
+                *joins,
+                where_sql,
+            ]
+        )
+        with _read_connection(self.db_path) as conn:
+            return {
+                "exam_scopes": _tag_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                    tag_type="exam_scope",
+                ),
+                "knowledge_points": _tag_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                    tag_type="knowledge_point",
+                    taxonomy_dimension="knowledge",
+                ),
+                "curriculum_chapters": _curriculum_chapter_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                ),
+                "abilities": _tag_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                    tag_type="ability",
+                    taxonomy_dimension="ability",
+                ),
+                "methods": _tag_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                    tag_type="method",
+                    taxonomy_dimension="method",
+                ),
+                "models": _tag_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                    tag_type="model",
+                    taxonomy_dimension="model",
+                ),
+                "student_levels": _tag_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                    tag_type="student_level",
+                ),
+                "teaching_stages": _tag_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                    tag_type="teaching_stage",
+                ),
+                "sub_skills": _tag_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                    tag_type="sub_skill",
+                ),
+                "question_types": _column_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                    column="question_type",
+                ),
+                "years": _column_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                    column="year",
+                ),
+                "exam_types": _column_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                    column="exam_type",
+                ),
+                "grades": _column_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                    column="grade",
+                ),
+            }
+
+    def find_similar_questions(
+        self,
+        question_id: int,
+        *,
+        limit: int,
+    ) -> list[dict[str, Any]] | None:
+        with _read_connection(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    q.id,
+                    q.paper_id,
+                    q.question_number,
+                    q.question_type,
+                    q.question_text,
+                    q.answer_text,
+                    q.image_paths AS _image_paths,
+                    q.difficulty,
+                    q.typicality,
+                    q.reason,
+                    q.needs_review,
+                    q.has_images,
+                    q.needs_image_review,
+                    q.created_at,
+                    q.updated_at,
+                    p.title AS paper_title,
+                    p.year,
+                    p.province,
+                    p.city,
+                    p.district,
+                    p.exam_type,
+                    p.grade,
+                    p.semester,
+                    p.textbook_version
+                FROM questions q
+                LEFT JOIN papers p ON p.id = q.paper_id
+                WHERE COALESCE(q.is_deleted, 0) = 0
+                  AND COALESCE(p.import_status, '') <> 'deleted'
+                """
+            ).fetchall()
+            rows_by_id = {int(row["id"]): row for row in rows}
+            target = rows_by_id.get(int(question_id))
+            if target is None:
+                return None
+            tags_by_question = _load_page_tags(conn, list(rows_by_id))
+            target_tags = tags_by_question.get(int(question_id), [])
+            scored: list[tuple[float, str, int, sqlite3.Row, list[str]]] = []
+            target_for_similarity = {
+                "difficulty": target["difficulty"],
+                "tags": target_tags,
+            }
+            for candidate_id, candidate in rows_by_id.items():
+                if candidate_id == int(question_id):
+                    continue
+                candidate_tags = tags_by_question.get(candidate_id, [])
+                tag_score = calculate_question_similarity(
+                    target_for_similarity,
+                    {
+                        "difficulty": candidate["difficulty"],
+                        "tags": candidate_tags,
+                    },
+                )
+                wording_score = text_similarity(
+                    target["question_text"],
+                    candidate["question_text"],
+                )
+                score = _combined_similarity_score(tag_score, wording_score)
+                if score <= 0:
+                    continue
+                reasons = _similarity_reasons(
+                    target,
+                    target_tags,
+                    candidate,
+                    candidate_tags,
+                    wording_score=wording_score,
+                )
+                scored.append(
+                    (
+                        score,
+                        str(candidate["updated_at"] or ""),
+                        candidate_id,
+                        candidate,
+                        reasons,
+                    )
+                )
+            selected = sorted(
+                scored,
+                key=lambda item: (item[0], item[1], item[2]),
+                reverse=True,
+            )[: max(1, min(int(limit), 20))]
+            revisions = question_revisions(
+                conn,
+                [candidate_id for _, _, candidate_id, _, _ in selected],
+            )
+
+        items: list[dict[str, Any]] = []
+        for score, _, candidate_id, candidate, reasons in selected:
+            item = self._public_question_with_rich_content(
+                candidate,
+                tags_by_question.get(candidate_id, []),
+                revision=revisions[candidate_id],
+            )
+            item["similarity_score"] = score
+            item["similarity_reasons"] = reasons
+            items.append(item)
+        return items
 
     def get_question(self, question_id: int) -> dict[str, Any] | None:
         with _read_connection(self.db_path) as conn:
@@ -707,13 +954,9 @@ class QuestionBankReadService:
             previews = _load_question_previews(conn, int(question_id))
             revision = question_revision(conn, int(question_id))
 
-        rich_payload = self._load_rich_content(int(question_id))
-        asset_paths, rich_blocks = _ordered_question_assets(row, rich_payload)
-
-        item = _public_question_item(
+        item = self._public_question_with_rich_content(
             row,
             tags,
-            asset_paths=asset_paths,
             revision=revision,
         )
         item["page_range"] = row["page_range"]
@@ -722,14 +965,8 @@ class QuestionBankReadService:
                 "index": index,
                 "url": f"/api/question-bank/questions/{question_id}/assets/{index}",
             }
-            for index in range(len(asset_paths))
+            for index in range(len(item["asset_urls"]))
         ]
-        item["rich_content"] = _public_rich_content(
-            int(question_id),
-            rich_payload is not None,
-            rich_blocks,
-            asset_paths,
-        )
         item["previews"] = previews
         return item
 
@@ -785,7 +1022,7 @@ class QuestionBankReadService:
             revisions = question_revisions(conn, list(rows_by_id))
 
         return [
-            _public_question_item(
+            self._public_question_with_rich_content(
                 rows_by_id[question_id],
                 tags_by_question.get(question_id, []),
                 revision=revisions[question_id],
@@ -793,6 +1030,30 @@ class QuestionBankReadService:
             for question_id in ordered_ids
             if question_id in rows_by_id
         ]
+
+    def _public_question_with_rich_content(
+        self,
+        row: sqlite3.Row,
+        tags: list[dict[str, Any]],
+        *,
+        revision: str,
+    ) -> dict[str, Any]:
+        question_id = int(row["id"])
+        rich_payload = self._load_rich_content(question_id)
+        asset_paths, rich_blocks = _ordered_question_assets(row, rich_payload)
+        item = _public_question_item(
+            row,
+            tags,
+            asset_paths=asset_paths,
+            revision=revision,
+        )
+        item["rich_content"] = _public_rich_content(
+            question_id,
+            rich_payload is not None,
+            rich_blocks,
+            asset_paths,
+        )
+        return item
 
     def resolve_asset(self, question_id: int, asset_index: int) -> ResolvedFile:
         with _read_connection(self.db_path) as conn:
@@ -897,6 +1158,368 @@ class QuestionBankReadService:
         if not _valid_rich_block_list(payload.get("answer_blocks")):
             return None
         return payload
+
+
+def _question_filter_parts(
+    filters: QuestionReadFilters,
+) -> tuple[list[str], list[str], list[Any]]:
+    difficulty_range = None
+    if filters.difficulty_min is not None and filters.difficulty_max is not None:
+        difficulty_range = (filters.difficulty_min, filters.difficulty_max)
+    governance = get_taxonomy_governance()
+    return build_question_filter_query(
+        question_number=filters.question_number,
+        keyword=filters.keyword,
+        knowledge_point=filters.knowledge_point,
+        difficulty_range=difficulty_range,
+        question_types=list(filters.question_types),
+        paper_ids=list(filters.paper_ids),
+        years=list(filters.years),
+        exam_types=list(filters.exam_types),
+        grades=list(filters.grades),
+        tag_filters={
+            tag_type: list(values)
+            for tag_type, values in (
+                (
+                    "exam_scope",
+                    governance.expand_filter_values(
+                        "curriculum", filters.exam_scopes
+                    ),
+                ),
+                (
+                    "knowledge_point",
+                    governance.expand_filter_values(
+                        "knowledge", filters.knowledge_points
+                    ),
+                ),
+                (
+                    "ability",
+                    governance.expand_filter_values(
+                        "ability", filters.abilities
+                    ),
+                ),
+                (
+                    "method",
+                    governance.expand_filter_values(
+                        "method", filters.methods
+                    ),
+                ),
+                (
+                    "model",
+                    governance.expand_filter_values(
+                        "model", filters.models
+                    ),
+                ),
+                ("student_level", filters.student_levels),
+                ("teaching_stage", filters.teaching_stages),
+                ("sub_skill", filters.sub_skills),
+            )
+            if values
+        },
+        is_deleted=False,
+        tag_status=_TAG_STATUS_MAP[filters.tag_status],
+    )
+
+
+def _tag_facet(
+    conn: sqlite3.Connection,
+    filtered_sql: str,
+    params: list[Any],
+    *,
+    tag_type: str,
+    taxonomy_dimension: str | None = None,
+) -> list[dict[str, Any]]:
+    if tag_type not in {
+        "ability",
+        "exam_scope",
+        "knowledge_point",
+        "method",
+        "model",
+        "student_level",
+        "sub_skill",
+        "teaching_stage",
+    }:
+        raise ValueError("Unsupported question facet")
+    if taxonomy_dimension is not None:
+        return _controlled_taxonomy_facet(
+            conn,
+            filtered_sql,
+            params,
+            tag_type=tag_type,
+            dimension=taxonomy_dimension,
+        )
+    rows = conn.execute(
+        f"""
+        WITH filtered_questions AS (
+            {filtered_sql}
+        )
+        SELECT
+            facet.tag_value AS value,
+            COUNT(DISTINCT filtered_questions.id) AS count
+        FROM filtered_questions
+        JOIN question_tags facet
+          ON facet.question_id = filtered_questions.id
+         AND facet.tag_type = '{tag_type}'
+        WHERE COALESCE(facet.tag_value, '') <> ''
+        GROUP BY facet.tag_value
+        ORDER BY count DESC, value COLLATE NOCASE ASC
+        """,
+        params,
+    ).fetchall()
+    return _public_facet_items(rows)
+
+
+def _controlled_taxonomy_facet(
+    conn: sqlite3.Connection,
+    filtered_sql: str,
+    params: list[Any],
+    *,
+    tag_type: str,
+    dimension: str,
+) -> list[dict[str, Any]]:
+    snapshot = get_taxonomy_governance().snapshot()
+    terms = snapshot["terms_by_dimension"].get(dimension, [])
+    alias_index: dict[str, str] = {}
+    for term in terms:
+        canonical_name = str(term.get("name") or "").strip()
+        if not canonical_name:
+            continue
+        for value in (
+            term.get("id"),
+            canonical_name,
+            *term.get("aliases", []),
+        ):
+            key = _taxonomy_value_key(value)
+            if key:
+                alias_index[key] = canonical_name
+    rows = conn.execute(
+        f"""
+        WITH filtered_questions AS (
+            {filtered_sql}
+        )
+        SELECT DISTINCT
+            filtered_questions.id AS question_id,
+            facet.tag_value AS value
+        FROM filtered_questions
+        JOIN question_tags facet
+          ON facet.question_id = filtered_questions.id
+         AND facet.tag_type = '{tag_type}'
+        WHERE COALESCE(facet.tag_value, '') <> ''
+        """,
+        params,
+    ).fetchall()
+    questions_by_value: dict[str, set[int]] = {}
+    for row in rows:
+        raw_value = str(row["value"] or "").strip()
+        if not raw_value:
+            continue
+        public_value = alias_index.get(
+            _taxonomy_value_key(raw_value),
+            raw_value,
+        )
+        questions_by_value.setdefault(public_value, set()).add(
+            int(row["question_id"])
+        )
+    return [
+        {"value": value, "count": len(question_ids)}
+        for value, question_ids in sorted(
+            questions_by_value.items(),
+            key=lambda item: (-len(item[1]), item[0].casefold()),
+        )
+    ]
+
+
+def _taxonomy_value_key(value: object) -> str:
+    normalized = unicodedata.normalize(
+        "NFKC", str(value or "")
+    ).casefold()
+    return re.sub(r"[\s\W_]+", "", normalized)
+
+
+def _curriculum_chapter_facet(
+    conn: sqlite3.Connection,
+    filtered_sql: str,
+    params: list[Any],
+) -> list[dict[str, Any]]:
+    chapter_values = curriculum_chapter_exam_scope_values()
+    value_rows = [
+        (chapter_id, exam_scope)
+        for chapter_id, exam_scopes in chapter_values.items()
+        for exam_scope in exam_scopes
+    ]
+    value_placeholders = ", ".join("(?, ?)" for _ in value_rows)
+    rows = conn.execute(
+        f"""
+        WITH filtered_questions AS (
+            {filtered_sql}
+        ),
+        chapter_values(chapter_id, tag_value) AS (
+            VALUES {value_placeholders}
+        )
+        SELECT
+            chapter_values.chapter_id AS value,
+            COUNT(DISTINCT filtered_questions.id) AS count
+        FROM filtered_questions
+        JOIN question_tags facet
+          ON facet.question_id = filtered_questions.id
+         AND facet.tag_type = 'exam_scope'
+        JOIN chapter_values
+          ON chapter_values.tag_value = facet.tag_value
+        WHERE COALESCE(facet.tag_value, '') <> ''
+        GROUP BY chapter_values.chapter_id
+        ORDER BY count DESC, value COLLATE NOCASE ASC
+        """,
+        [
+            *params,
+            *(
+                value
+                for chapter_id, exam_scope in value_rows
+                for value in (chapter_id, exam_scope)
+            ),
+        ],
+    ).fetchall()
+    return _public_facet_items(rows)
+
+
+def _column_facet(
+    conn: sqlite3.Connection,
+    filtered_sql: str,
+    params: list[Any],
+    *,
+    column: str,
+) -> list[dict[str, Any]]:
+    if column not in {"question_type", "year", "exam_type", "grade"}:
+        raise ValueError("Unsupported question facet")
+    rows = conn.execute(
+        f"""
+        WITH filtered_questions AS (
+            {filtered_sql}
+        )
+        SELECT
+            {column} AS value,
+            COUNT(DISTINCT id) AS count
+        FROM filtered_questions
+        WHERE COALESCE({column}, '') <> ''
+        GROUP BY {column}
+        ORDER BY count DESC, value COLLATE NOCASE ASC
+        """,
+        params,
+    ).fetchall()
+    return _public_facet_items(rows)
+
+
+def _public_facet_items(rows: Iterable[sqlite3.Row]) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        value = _public_tag_value(row["value"])
+        if value is None:
+            continue
+        counts[value] = counts.get(value, 0) + int(row["count"] or 0)
+    return [
+        {"value": value, "count": count}
+        for value, count in sorted(
+            counts.items(),
+            key=lambda item: (-item[1], item[0].casefold()),
+        )
+        if count > 0
+    ]
+
+
+def _combined_similarity_score(tag_score: float, wording_score: float) -> float:
+    normalized_tag = max(0.0, min(float(tag_score), 1.0))
+    normalized_wording = max(0.0, min(float(wording_score), 1.0))
+    if normalized_tag > 0:
+        return round((normalized_tag * 0.8) + (normalized_wording * 0.2), 4)
+    return round(normalized_wording * 0.5, 4)
+
+
+def _similarity_reasons(
+    target: sqlite3.Row,
+    target_tags: list[dict[str, Any]],
+    candidate: sqlite3.Row,
+    candidate_tags: list[dict[str, Any]],
+    *,
+    wording_score: float,
+) -> list[str]:
+    reasons: list[str] = []
+    shared_knowledge = _shared_tag_values(
+        target_tags,
+        candidate_tags,
+        ("knowledge_point",),
+    )
+    if shared_knowledge:
+        reasons.append(f"同知识点：{'、'.join(shared_knowledge[:2])}")
+    shared_methods = _shared_tag_values(
+        target_tags,
+        candidate_tags,
+        ("method",),
+    )
+    if shared_methods:
+        reasons.append(f"同解法：{'、'.join(shared_methods[:2])}")
+    shared_models = _shared_tag_values(
+        target_tags,
+        candidate_tags,
+        ("model",),
+    )
+    if shared_models:
+        reasons.append(f"同模型：{'、'.join(shared_models[:2])}")
+    target_difficulty = _numeric_difficulty(target["difficulty"])
+    candidate_difficulty = _numeric_difficulty(candidate["difficulty"])
+    if (
+        target_difficulty is not None
+        and candidate_difficulty is not None
+        and abs(target_difficulty - candidate_difficulty) <= 1
+    ):
+        reasons.append("难度接近")
+    if wording_score >= 0.55:
+        reasons.append("题干表述相近")
+    if (
+        not reasons
+        and str(target["question_type"] or "").strip()
+        and target["question_type"] == candidate["question_type"]
+    ):
+        reasons.append("题型相同")
+    if not reasons:
+        reasons.append("题干存在相似片段")
+    return reasons[:4]
+
+
+def _shared_tag_values(
+    left: list[dict[str, Any]],
+    right: list[dict[str, Any]],
+    tag_types: tuple[str, ...],
+) -> list[str]:
+    allowed_types = set(tag_types)
+    left_values = {
+        str(tag.get("tag_value") or "").strip()
+        for tag in left
+        if tag.get("tag_type") in allowed_types
+        and str(tag.get("tag_value") or "").strip()
+    }
+    right_values = {
+        str(tag.get("tag_value") or "").strip()
+        for tag in right
+        if tag.get("tag_type") in allowed_types
+        and str(tag.get("tag_value") or "").strip()
+    }
+    return sorted(left_values & right_values)
+
+
+def _numeric_difficulty(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _safe_source_type(value: Any) -> str:
+    suffix = Path(str(value or "")).suffix.casefold()
+    if suffix == ".docx":
+        return "docx"
+    if suffix == ".pdf":
+        return "pdf"
+    return "other"
 
 
 def _load_question_media_row(
@@ -1111,9 +1734,13 @@ def _public_rich_content(
                 for path in block["_asset_paths"]
                 if path in asset_indexes
             ]
+            structured = _structured_rich_text(block["text"])
             projected_blocks.append(
                 {
+                    "kind": structured["kind"],
                     "text": block["text"],
+                    "segments": structured["segments"],
+                    "rows": structured["rows"],
                     "asset_indexes": indexes,
                     "asset_urls": [
                         f"/api/question-bank/questions/{question_id}/assets/{index}"
@@ -1124,6 +1751,84 @@ def _public_rich_content(
         public[key] = projected_blocks
         public[key.replace("blocks", "block_count")] = len(projected_blocks)
     return public
+
+
+def _structured_rich_text(text: str) -> dict[str, Any]:
+    normalized = str(text or "")
+    if normalized.strip().casefold().startswith("<table"):
+        rows: list[dict[str, Any]] = []
+        for row_match in _RICH_TABLE_ROW_PATTERN.finditer(normalized):
+            cells = [
+                {"segments": _rich_inline_segments(cell_match.group(1))}
+                for cell_match in _RICH_TABLE_CELL_PATTERN.finditer(
+                    row_match.group(1)
+                )
+            ]
+            if cells:
+                rows.append({"cells": cells})
+        if rows:
+            return {
+                "kind": "table",
+                "segments": [],
+                "rows": rows,
+            }
+    return {
+        "kind": "paragraph",
+        "segments": _rich_inline_segments(normalized),
+        "rows": [],
+    }
+
+
+def _rich_inline_segments(text: str) -> list[dict[str, Any]]:
+    segments: list[dict[str, Any]] = []
+    superscript_depth = 0
+    subscript_depth = 0
+    underline_depth = 0
+
+    def append_segment(value: str, *, line_break: bool = False) -> None:
+        if not value and not line_break:
+            return
+        segment = {
+            "text": value,
+            "superscript": superscript_depth > 0,
+            "subscript": subscript_depth > 0,
+            "underline": underline_depth > 0,
+            "line_break": line_break,
+        }
+        if (
+            segments
+            and not line_break
+            and not segments[-1]["line_break"]
+            and all(
+                segments[-1][key] == segment[key]
+                for key in ("superscript", "subscript", "underline")
+            )
+        ):
+            segments[-1]["text"] += value
+        else:
+            segments.append(segment)
+
+    cursor = 0
+    for match in _RICH_INLINE_TOKEN_PATTERN.finditer(str(text or "")):
+        append_segment(text[cursor : match.start()])
+        token = match.group(0).casefold()
+        if token.startswith("<br"):
+            append_segment("", line_break=True)
+        elif token == "<sup>":
+            superscript_depth += 1
+        elif token == "</sup>":
+            superscript_depth = max(0, superscript_depth - 1)
+        elif token == "<sub>":
+            subscript_depth += 1
+        elif token == "</sub>":
+            subscript_depth = max(0, subscript_depth - 1)
+        elif token == "<u>":
+            underline_depth += 1
+        elif token == "</u>":
+            underline_depth = max(0, underline_depth - 1)
+        cursor = match.end()
+    append_segment(text[cursor:])
+    return segments
 
 
 def _select_current_preview_rows(

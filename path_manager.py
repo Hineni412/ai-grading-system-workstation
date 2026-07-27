@@ -4,9 +4,10 @@ Provides a single source of truth for all data-related paths so that
 program code (replaceable) and user data (persistent) stay separated.
 
 Resolution order:
-1. ``config/app_config.yaml`` – DATA_DIR / LOGS_DIR keys
-2. ``AI_GRADING_DATA_DIR`` environment variable (legacy compat)
-3. Default: ``<project_root>/user_data``
+1. ``AI_GRADING_WORKTREE_DATA_DIR`` for an explicitly isolated worktree
+2. ``config/app_config.yaml`` – DATA_DIR / LOGS_DIR keys
+3. ``AI_GRADING_DATA_DIR`` environment variable (legacy compat)
+4. Default: ``<project_root>/user_data``
 """
 
 from __future__ import annotations
@@ -55,8 +56,11 @@ class PathManager:
         self._cfg = _load_yaml_simple(self._project_root / "config" / "app_config.yaml")
 
         # --- resolve data root ---
+        worktree_data_override = os.getenv("AI_GRADING_WORKTREE_DATA_DIR")
         configured_data = self._cfg.get("DATA_DIR")
-        if configured_data:
+        if worktree_data_override:
+            self._data_root = Path(worktree_data_override).expanduser().resolve()
+        elif configured_data:
             p = Path(configured_data)
             self._data_root = p if p.is_absolute() else (self._project_root / p).resolve()
         else:
@@ -87,6 +91,25 @@ class PathManager:
             else:
                 api_config_root = Path.home() / ".ai_grading_system" / "config"
             self._api_profiles_path = api_config_root / "api_profiles.json"
+
+        taxonomy_state_override = os.getenv("AI_GRADING_TAXONOMY_STATE_PATH")
+        if taxonomy_state_override:
+            self._taxonomy_state_path = (
+                Path(taxonomy_state_override).expanduser().resolve()
+            )
+        else:
+            local_appdata = os.getenv("LOCALAPPDATA")
+            if local_appdata:
+                taxonomy_config_root = (
+                    Path(local_appdata) / "AIGradingSystem" / "config"
+                )
+            else:
+                taxonomy_config_root = (
+                    Path.home() / ".ai_grading_system" / "config"
+                )
+            self._taxonomy_state_path = (
+                taxonomy_config_root / "taxonomy_state_v1.json"
+            )
 
         ops_state_override = os.getenv("AI_GRADING_OPS_STATE_DIR")
         if ops_state_override:
@@ -146,6 +169,11 @@ class PathManager:
     @property
     def api_profiles_path(self) -> Path:
         return self._api_profiles_path
+
+    @property
+    def taxonomy_state_path(self) -> Path:
+        """Machine-local teacher-approved taxonomy overlay and review queue."""
+        return self._taxonomy_state_path
 
     @property
     def ops_state_dir(self) -> Path:
@@ -245,6 +273,7 @@ class PathManager:
             "快照": str(self.snapshots_dir),
             "日志目录": str(self.logs_dir),
             "API 配置": str(self.api_profiles_path),
+            "标签词表状态": str(self.taxonomy_state_path),
         }
 
 

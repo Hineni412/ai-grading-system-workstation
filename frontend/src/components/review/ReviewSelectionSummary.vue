@@ -1,17 +1,51 @@
 <script setup lang="ts">
-import type { ReviewItem } from '../../api/review'
+import { resolveReviewItem, type ReviewItemLike } from '../../api/review'
 import StatePanel from '../design-system/StatePanel.vue'
 import StatusBadge from '../design-system/StatusBadge.vue'
 
 defineProps<{
-  item: ReviewItem | null
+  item: ReviewItemLike | null
   questionId: string | null
 }>()
 
-function confidenceLabel(item: ReviewItem): string {
-  return item.confidence_score === null
+function confidenceLabel(item: ReviewItemLike): string {
+  const resolved = resolveReviewItem(item)
+  if (resolved.score_source !== 'ai') return '人工评分'
+  return resolved.confidence_score === null
     ? '置信度未提供'
-    : `置信度 ${Math.round(item.confidence_score)}%`
+    : `置信度 ${Math.round(
+      resolved.confidence_score <= 1
+        ? resolved.confidence_score * 100
+        : resolved.confidence_score,
+    )}%`
+}
+
+function scoreLabel(value: number | null): string {
+  return value === null ? '未填写' : String(value)
+}
+
+function statusLabel(item: ReviewItemLike): string {
+  const resolved = resolveReviewItem(item)
+  return {
+    ungraded: '未批',
+    ai_ready: 'AI 已完成',
+    ai_review: 'AI 待复核',
+    teacher_final: '教师已确认',
+    failed: '处理失败',
+  }[resolved.score_status]
+}
+
+function statusTone(
+  item: ReviewItemLike,
+): 'neutral' | 'ai' | 'warning' | 'teacher' | 'danger' {
+  const resolved = resolveReviewItem(item)
+  return {
+    ungraded: 'neutral',
+    ai_ready: 'ai',
+    ai_review: 'warning',
+    teacher_final: 'teacher',
+    failed: 'danger',
+  }[resolved.score_status] as 'neutral' | 'ai' | 'warning' | 'teacher' | 'danger'
 }
 </script>
 
@@ -35,11 +69,11 @@ function confidenceLabel(item: ReviewItem): string {
         <p v-if="item.class_name">{{ item.class_name }}</p>
       </header>
 
-      <p>当前得分 {{ item.score_awarded }} / {{ item.max_score }}</p>
+      <p>当前得分 {{ scoreLabel(item.score_awarded) }} / {{ item.max_score }}</p>
       <p>{{ confidenceLabel(item) }}</p>
       <StatusBadge
-        :tone="item.needs_review ? 'warning' : 'success'"
-        :label="item.needs_review ? '待复核' : '已复核'"
+        :tone="statusTone(item)"
+        :label="statusLabel(item)"
       />
 
       <dl v-if="item.error_summary || item.error_category || item.deduction_reason">

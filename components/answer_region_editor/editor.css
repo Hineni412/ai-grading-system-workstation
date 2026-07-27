@@ -1,12 +1,12 @@
-:host {
+.region-editor {
   --editor-bg: #e9edf2;
   --surface: #ffffff;
   --surface-muted: #f5f7fa;
   --border: #d7dee8;
   --text: #172033;
   --muted: #687386;
-  --primary: #2563eb;
-  --primary-hover: #1d4ed8;
+  --primary: #0f6673;
+  --primary-hover: #0b5661;
   --warning: #d97706;
   --invalid: #dc2626;
   --normal: #0f9f6e;
@@ -83,6 +83,8 @@ output {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 7px;
+  box-shadow: 0 1px 1px rgb(15 32 51 / 5%);
+  font-weight: 650;
 }
 
 .tool-button:hover:not(:disabled) {
@@ -97,7 +99,7 @@ output {
 }
 
 .tool-button:disabled {
-  color: #9aa4b2;
+  color: #7c8797;
   cursor: not-allowed;
   background: #f4f6f8;
 }
@@ -121,9 +123,9 @@ output {
 }
 
 .tool-button.primary-soft {
-  color: #1748a6;
-  background: #e8f0ff;
-  border-color: #b9cff8;
+  color: #0b5661;
+  background: #e8f5f6;
+  border-color: #9ecbd0;
 }
 
 .icon-button {

@@ -169,8 +169,8 @@ class FakeLLM:
 
 
 def _fake_single_question_payload(question_id: str) -> dict[str, Any]:
-    part_id = f"{question_id}-P1"
-    step_id = f"{part_id}-S1"
+    part_id = question_id
+    step_id = "S1"
     return {
         "rubric": {
             "questions": [
@@ -178,14 +178,6 @@ def _fake_single_question_payload(question_id: str) -> dict[str, Any]:
                     "question_id": question_id,
                     "question_type": "comprehensive",
                     "max_score": 1,
-                    "knowledge_name": f"Synthetic knowledge {question_id}",
-                    "knowledge_id": f"SYN-K{question_id[1:]}",
-                    "knowledge_points": [
-                        {
-                            "knowledge_id": f"SYN-K{question_id[1:]}",
-                            "knowledge_name": f"Synthetic knowledge {question_id}",
-                        }
-                    ],
                     "parts": [
                         {
                             "part_id": part_id,
@@ -232,7 +224,7 @@ def _fake_score_allocation() -> dict[str, Any]:
     question_scores = []
     for index, score in enumerate([17, 17, 17, 17, 17, 15], start=1):
         question_id = f"Q{index}"
-        part_id = f"{question_id}-P1"
+        part_id = question_id
         question_scores.append(
             {
                 "question_id": question_id,
@@ -243,7 +235,7 @@ def _fake_score_allocation() -> dict[str, Any]:
                         "part_score": score,
                         "steps": [
                             {
-                                "step_id": f"{part_id}-S1",
+                                "step_id": "S1",
                                 "step_score": score,
                             }
                         ],

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 
 import type { ConfigEditorEdit, ConfigEditorIssue, ConfigEditorRow } from '../../api/config-workspace'
 
@@ -19,9 +19,17 @@ const emit = defineEmits<{
 }>()
 const root = ref<HTMLElement | null>(null)
 const scoreErrors = ref<Record<string, string>>({})
+const editingRowId = ref<string | null>(null)
 const blockingIssues = computed(() => props.issues.filter((issue) => issue.severity === 'error'))
 const warningIssues = computed(() => props.issues.filter((issue) => issue.severity !== 'error'))
 const totalBlocked = computed(() => props.totalScore !== 100)
+const objectiveQuestionTypes = new Set([
+  'choice',
+  'fill_blank',
+  'judgement',
+  'true_false',
+  'direct_answer',
+])
 const firstRowIds = computed(() => {
   const seen = new Set<string>()
   const first = new Set<string>()
@@ -36,6 +44,42 @@ const firstRowIds = computed(() => {
 
 function identity(row: ConfigEditorRow): string {
   return `${row.question_id} ${row.part_id} ${row.step_id}`
+}
+
+function isObjective(row: ConfigEditorRow): boolean {
+  return objectiveQuestionTypes.has(row.question_type)
+}
+
+function compactPreview(value: string | readonly string[], fallback = '未填写'): string {
+  const source = typeof value === 'string' ? value : value.join('\n')
+  const compacted = source
+    .replace(/\r\n?|\u2028|\u2029/g, '\n')
+    .split(/\n+/)
+    .map((part) => part.trim().replace(/^[；;]+|[；;]+$/g, ''))
+    .filter(Boolean)
+    .join('；')
+    .replace(/[；;]+/g, '；')
+    .replace(/[ \t]+/g, ' ')
+    .trim()
+  return compacted || fallback
+}
+
+function openEditor(rowId: string): void {
+  if (props.disabled) return
+  editingRowId.value = rowId
+}
+
+function closeEditor(rowId: string): void {
+  const row = [...(root.value?.querySelectorAll<HTMLElement>('[data-row-id]') ?? [])]
+    .find((candidate) => candidate.dataset.rowId === rowId)
+  const activeElement = document.activeElement
+  if (activeElement instanceof HTMLElement && row?.contains(activeElement)) activeElement.blur()
+  editingRowId.value = null
+  void nextTick(() => row?.querySelector<HTMLButtonElement>('.rubric-unit-card__preview')?.focus())
+}
+
+function editorId(index: number): string {
+  return `rubric-unit-editor-${index}`
 }
 
 function validateScore(row: ConfigEditorRow, event: Event): number | null {
@@ -114,12 +158,25 @@ function fieldForIssue(issue: ConfigEditorIssue): RenderedEditField | null {
   return null
 }
 
-function focusIssue(issue: ConfigEditorIssue): void {
+const policyFields = new Set<RenderedEditField>([
+  'answer_only_max_score',
+  'require_final_answer',
+  'final_answer_rule',
+])
+
+async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
   if (issue.row_id === null) return
   const field = fieldForIssue(issue)
   if (field === null) return
+  const issueRow = props.rows.find((candidate) => candidate.row_id === issue.row_id)
+  const targetRowId = policyFields.has(field) && issueRow && !firstRowIds.value.has(issue.row_id)
+    ? props.rows.find((candidate) => candidate.question_id === issueRow.question_id
+      && candidate.part_id === issueRow.part_id)?.row_id ?? issue.row_id
+    : issue.row_id
+  editingRowId.value = targetRowId
+  await nextTick()
   const row = [...(root.value?.querySelectorAll<HTMLElement>('[data-row-id]') ?? [])]
-    .find((candidate) => candidate.dataset.rowId === issue.row_id)
+    .find((candidate) => candidate.dataset.rowId === targetRowId)
   const target = [...(row?.querySelectorAll<HTMLElement>('[data-edit-field]') ?? [])]
     .find((candidate) => candidate.dataset.editField === field)
   target?.focus()
@@ -165,32 +222,82 @@ function focusIssue(issue: ConfigEditorIssue): void {
       >{{ issue.message }}</button>
     </div>
 
-    <div class="rubric-ledger__viewport" tabindex="0" aria-label="评分依据编辑表">
-      <table>
-        <thead>
-          <tr>
-            <th class="rubric-ledger__sticky rubric-ledger__sticky--question" scope="col">题号</th>
-            <th class="rubric-ledger__sticky rubric-ledger__sticky--part" scope="col">评分单元</th>
-            <th scope="col">评分点</th>
-            <th scope="col">匹配规则</th>
-            <th scope="col">分值</th>
-            <th scope="col">等价答案</th>
-            <th scope="col">标准答案</th>
-            <th scope="col">证据要求/关键步骤</th>
-            <th scope="col">扣分规则</th>
-            <th scope="col">评分单元策略</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="row in rows" :key="row.row_id" :data-row-id="row.row_id">
-            <th class="rubric-ledger__sticky rubric-ledger__sticky--question" scope="row">{{ row.question_id }}</th>
-            <td class="rubric-ledger__sticky rubric-ledger__sticky--part">
-              <strong>{{ row.part_label }}</strong>
-              <small>{{ row.part_id }} / {{ row.step_id }}</small>
-            </td>
-            <td class="rubric-ledger__goal">{{ row.core_goal || '未提供评分点' }}</td>
-            <td class="rubric-ledger__match">{{ row.match_rule || '按评分依据判定' }}</td>
-            <td>
+    <div class="rubric-ledger__cards" aria-label="评分依据评分点卡片">
+      <article
+        v-for="(row, index) in rows"
+        :key="row.row_id"
+        class="rubric-unit-card"
+        :class="{
+          'rubric-unit-card--objective': isObjective(row),
+          'rubric-unit-card--editing': editingRowId === row.row_id,
+        }"
+        :data-row-id="row.row_id"
+      >
+        <button
+          v-show="editingRowId !== row.row_id"
+          type="button"
+          class="rubric-unit-card__preview"
+          :aria-controls="editorId(index)"
+          aria-expanded="false"
+          :aria-label="`${identity(row)}，${row.score} 分，点击编辑`"
+          :disabled="disabled"
+          @click="openEditor(row.row_id)"
+        >
+          <span class="rubric-unit-card__preview-header">
+            <span class="rubric-unit-card__identity">
+              <strong>{{ row.question_id }}</strong>
+              <span>{{ row.part_label }}</span>
+              <span>{{ row.step_id }}</span>
+            </span>
+            <span class="rubric-unit-card__goal" :title="compactPreview(row.core_goal, '未提供评分点')">
+              {{ compactPreview(row.core_goal, '未提供评分点') }}
+            </span>
+            <strong class="rubric-unit-card__score-badge">{{ row.score }} 分</strong>
+          </span>
+          <span class="rubric-unit-card__preview-fields">
+            <span class="rubric-unit-card__preview-field">
+              <span>标准答案</span>
+              <span :title="compactPreview(row.standard_answer)">{{ compactPreview(row.standard_answer) }}</span>
+            </span>
+            <span class="rubric-unit-card__preview-field">
+              <span>关键步骤</span>
+              <span :title="compactPreview(row.required_elements)">
+                {{ compactPreview(row.required_elements) }}
+              </span>
+            </span>
+            <span class="rubric-unit-card__preview-field">
+              <span>扣分规则</span>
+              <span :title="compactPreview(row.deduction_rules)">
+                {{ compactPreview(row.deduction_rules) }}
+              </span>
+            </span>
+          </span>
+          <span class="rubric-unit-card__preview-footer">
+            <span :title="compactPreview(row.match_rule, '按评分依据判定')">
+              {{ compactPreview(row.match_rule, '按评分依据判定') }}
+            </span>
+            <strong>点击编辑</strong>
+          </span>
+        </button>
+
+        <section
+          v-show="editingRowId === row.row_id"
+          :id="editorId(index)"
+          class="rubric-unit-card__editor"
+          :aria-label="`${identity(row)} 编辑区`"
+          @keydown.esc.stop="closeEditor(row.row_id)"
+        >
+          <header class="rubric-unit-card__editor-header">
+            <span class="rubric-unit-card__identity">
+              <strong>{{ row.question_id }}</strong>
+              <span>{{ row.part_label }}</span>
+              <span>{{ row.step_id }}</span>
+            </span>
+            <span class="rubric-unit-card__goal" :title="compactPreview(row.core_goal, '未提供评分点')">
+              {{ compactPreview(row.core_goal, '未提供评分点') }}
+            </span>
+            <label class="rubric-unit-card__score">
+              <span>分值</span>
               <input
                 type="number"
                 min="0"
@@ -207,88 +314,106 @@ function focusIssue(issue: ConfigEditorIssue): void {
               <small v-if="scoreErrors[row.row_id]" class="rubric-ledger__field-error" role="alert">
                 {{ scoreErrors[row.row_id] }}
               </small>
-            </td>
-            <td>
+            </label>
+            <button type="button" class="rubric-unit-card__done" @click="closeEditor(row.row_id)">
+              收起编辑
+            </button>
+          </header>
+
+          <div class="rubric-unit-card__fields">
+            <label>
+              <span>标准答案</span>
               <textarea
-                rows="4"
-                data-edit-field="accepted_answers"
-                :aria-label="`${identity(row)} 等价答案`"
-                :value="row.accepted_answers.join('\n')"
-                :disabled="disabled"
-                @change="acceptedEdit(row, $event)"
-              />
-            </td>
-            <td>
-              <textarea
-                rows="4"
+                rows="3"
                 data-edit-field="standard_answer"
                 :aria-label="`${identity(row)} 标准答案`"
                 :value="row.standard_answer"
                 :disabled="disabled"
                 @change="textEdit(row, 'standard_answer', $event)"
               />
-            </td>
-            <td>
+            </label>
+            <label>
+              <span>关键步骤 / 得分证据</span>
               <textarea
-                rows="4"
+                rows="3"
                 data-edit-field="required_elements"
                 :aria-label="`${identity(row)} 证据要求/关键步骤`"
                 :value="row.required_elements.join('\n')"
                 :disabled="disabled"
                 @change="listEdit(row, 'required_elements', $event)"
               />
-            </td>
-            <td>
+            </label>
+            <label>
+              <span>扣分规则</span>
               <textarea
-                rows="4"
+                rows="3"
                 data-edit-field="deduction_rules"
                 :aria-label="`${identity(row)} 扣分规则`"
                 :value="row.deduction_rules.join('\n')"
                 :disabled="disabled"
                 @change="listEdit(row, 'deduction_rules', $event)"
               />
-            </td>
-            <td>
-              <div v-if="firstRowIds.has(row.row_id)" class="rubric-ledger__policy">
-                <label>
-                  <input
-                    type="checkbox"
-                    data-edit-field="require_final_answer"
-                    :aria-label="`${row.question_id} ${row.part_id} 要求最终答案`"
-                    :checked="row.require_final_answer === true"
-                    :disabled="disabled"
-                    @change="policyRequiredEdit(row, $event)"
-                  >
-                  要求最终答案
-                </label>
-                <label>
-                  <span>仅答案最高分</span>
-                  <input
-                    type="number"
-                    min="0"
-                    max="100"
-                    step="0.5"
-                    data-edit-field="answer_only_max_score"
-                    :aria-label="`${row.question_id} ${row.part_id} 仅答案最高分`"
-                    :value="row.answer_only_max_score ?? ''"
-                    :disabled="disabled"
-                    @change="policyNumberEdit(row, $event)"
-                  >
-                </label>
-                <textarea
-                  rows="3"
-                  data-edit-field="final_answer_rule"
-                  :aria-label="`${row.question_id} ${row.part_id} 最终答案规则`"
-                  :value="row.final_answer_rule"
-                  :disabled="disabled"
-                  @change="policyRuleEdit(row, $event)"
-                />
-              </div>
-              <small v-else>本评分单元策略见首行</small>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+            </label>
+            <label>
+              <span>等价答案（每行一个）</span>
+              <textarea
+                rows="3"
+                data-edit-field="accepted_answers"
+                :aria-label="`${identity(row)} 等价答案`"
+                :value="row.accepted_answers.join('\n')"
+                :disabled="disabled"
+                @change="acceptedEdit(row, $event)"
+              />
+            </label>
+          </div>
+
+          <div v-if="firstRowIds.has(row.row_id)" class="rubric-ledger__policy">
+            <div class="rubric-ledger__policy-heading">
+              <strong>评分单元策略</strong>
+              <span>{{ compactPreview(row.match_rule, '按评分依据判定') }}</span>
+            </div>
+            <label class="rubric-ledger__policy-check">
+              <input
+                type="checkbox"
+                data-edit-field="require_final_answer"
+                :aria-label="`${row.question_id} ${row.part_id} 要求最终答案`"
+                :checked="row.require_final_answer === true"
+                :disabled="disabled"
+                @change="policyRequiredEdit(row, $event)"
+              >
+              要求最终答案
+            </label>
+            <label>
+              <span>仅答案最高分</span>
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="0.5"
+                data-edit-field="answer_only_max_score"
+                :aria-label="`${row.question_id} ${row.part_id} 仅答案最高分`"
+                :value="row.answer_only_max_score ?? ''"
+                :disabled="disabled"
+                @change="policyNumberEdit(row, $event)"
+              >
+            </label>
+            <label class="rubric-ledger__policy-rule">
+              <span>最终答案规则</span>
+              <textarea
+                rows="2"
+                data-edit-field="final_answer_rule"
+                :aria-label="`${row.question_id} ${row.part_id} 最终答案规则`"
+                :value="row.final_answer_rule"
+                :disabled="disabled"
+                @change="policyRuleEdit(row, $event)"
+              />
+            </label>
+          </div>
+          <small v-else class="rubric-unit-card__policy-note">
+            本评分点沿用同一小问首个评分点的评分策略。
+          </small>
+        </section>
+      </article>
     </div>
   </section>
 </template>

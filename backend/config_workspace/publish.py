@@ -28,7 +28,6 @@ from backend.config_workspace.editor import (
 )
 from backend.config_workspace.locks import session_config_lock
 from backend.config_generation.normalization import (
-    normalize_generated_config_knowledge_fields,
     validate_generated_config,
 )
 from path_manager import resolve_stored_file_path
@@ -160,14 +159,13 @@ def load_editor_config(db: Any, session_id: int) -> LoadedEditorConfig:
     rubric = _read_json_object(session.get("rubric_path"), data_root=data_root)
     answer_key = _read_json_object(session.get("answer_key_path"), data_root=data_root)
     payload = {"rubric": rubric, "answer_key": answer_key, "meta": {"warnings": []}}
-    knowledge_normalization_pending = normalize_generated_config_knowledge_fields(payload)
     configured = not _is_exact_draft(session, rubric, answer_key)
     return LoadedEditorConfig(
         session=session,
         payload=payload,
         revision=config_revision(session, payload),
         configured=configured,
-        knowledge_normalization_pending=knowledge_normalization_pending,
+        knowledge_normalization_pending=False,
     )
 
 
@@ -180,14 +178,6 @@ def editor_response(config: LoadedEditorConfig) -> dict[str, Any]:
         rows = []
         issues = []
         total_score = 0.0
-    if config.knowledge_normalization_pending:
-        issues.append({
-            "code": "knowledge_normalization_pending",
-            "severity": "warning",
-            "row_id": None,
-            "field": "knowledge",
-            "message": "检测到可安全兼容的旧知识点格式；保存评分依据即可完成本地更新，不会调用 AI。",
-        })
     return {
         "session_id": int(config.session["id"]),
         "configured": config.configured,
@@ -233,7 +223,7 @@ def _save_editor_config_locked(
 ) -> tuple[LoadedEditorConfig, bool]:
     current = load_editor_config(db, session_id)
     _require_revision(expected_revision, current)
-    if not edits and not commands and not current.knowledge_normalization_pending:
+    if not edits and not commands:
         return current, False
     if not current.configured:
         raise ConfigEditorValidationError(({
@@ -342,11 +332,10 @@ def publish_legacy_config_and_refresh_mapping(
     else:
         store = job_store
     with session_config_lock(Path(upload_config_dir), int(session_id)):
-        store.assert_config_session_idle(session_id)
         current = db.get_grading_session(int(session_id))
         if current is None or bool(int(current.get("is_deleted") or 0)):
             raise ConfigRevisionConflict("session is unavailable")
-        bound = db.publish_grading_session_config_with_source(
+        bound = store.update_session_config_with_source_if_idle(
             int(session_id),
             rubric_path=str(rubric_path),
             answer_key_path=str(answer_key_path),
@@ -357,6 +346,8 @@ def publish_legacy_config_and_refresh_mapping(
         )
         if not bound:
             raise ConfigRevisionConflict("config binding changed")
+        if hasattr(db, "_rubric_map_cache"):
+            db._rubric_map_cache.pop(int(session_id), None)
         refresher = mapping_refresher or (
             lambda: refresh_template_mapping_from_session(
                 db,
@@ -378,6 +369,7 @@ def refresh_template_mapping_from_session(
     template = db.get_session_template(int(session_id))
     if not session or not template:
         return "not_present"
+    _invalidate_template_mapping_confirmation(db, session_id)
     db_path = Path(db.db_path)
     data_root = db_path.parent.parent if db_path.parent.name == "databases" else None
     front = resolve_stored_file_path(template.get("front_template_path"), data_root=data_root)
@@ -402,6 +394,11 @@ def refresh_template_mapping_from_session(
     if after_refresh is not None:
         after_refresh(package)
     return "refreshed"
+
+
+def _invalidate_template_mapping_confirmation(db: Any, session_id: int) -> None:
+    if db.get_session_template(int(session_id)) is not None:
+        db.mark_template_confirmed(int(session_id), False)
 
 
 def refresh_mapping_after_config_save(
