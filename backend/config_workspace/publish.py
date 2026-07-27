@@ -368,6 +368,7 @@ def refresh_template_mapping_from_session(
     template = db.get_session_template(int(session_id))
     if not session or not template:
         return "not_present"
+    _invalidate_template_mapping_confirmation(db, session_id)
     db_path = Path(db.db_path)
     data_root = db_path.parent.parent if db_path.parent.name == "databases" else None
     front = resolve_stored_file_path(template.get("front_template_path"), data_root=data_root)
@@ -392,6 +393,11 @@ def refresh_template_mapping_from_session(
     if after_refresh is not None:
         after_refresh(package)
     return "refreshed"
+
+
+def _invalidate_template_mapping_confirmation(db: Any, session_id: int) -> None:
+    if db.get_session_template(int(session_id)) is not None:
+        db.mark_template_confirmed(int(session_id), False)
 
 
 def refresh_mapping_after_config_save(

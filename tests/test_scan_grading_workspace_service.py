@@ -38,6 +38,82 @@ def _frozen_workspace(tmp_path, session_id: int):
     return workspace, session_dir, previous_manifest
 
 
+def test_grading_start_rejects_preflight_from_a_previous_template(tmp_path) -> None:
+    from PIL import Image
+
+    from backend.scan_grading.workspace import (
+        GradingConfigChangedError,
+        ScanGradingWorkspace,
+    )
+    from db_manager import DBManager
+
+    db = DBManager(tmp_path / "grading.db")
+    db.initialize()
+    session_id = db.create_grading_session("Template revision", "rubric.json", "answer.json")
+    template_dir = tmp_path / "template-files"
+    template_dir.mkdir()
+    front_path = template_dir / "front.png"
+    back_path = template_dir / "back.png"
+    Image.new("RGB", (8, 8), "white").save(front_path)
+    Image.new("RGB", (8, 8), "black").save(back_path)
+    template_id = db.upsert_session_template(
+        session_id,
+        str(front_path),
+        str(back_path),
+    )
+    db.mark_template_confirmed(session_id, True)
+
+    workspace = ScanGradingWorkspace(
+        exams_root=tmp_path / "exams",
+        templates_root=tmp_path / "templates",
+        grading_db_path=db.db_path,
+    )
+    content = _jpeg(b"student scan")
+    workspace.add_upload(
+        session_id,
+        filename="scan.jpg",
+        media_type="image/jpeg",
+        content_sha256=hashlib.sha256(content).hexdigest(),
+        source=io.BytesIO(content),
+    )
+    frozen = workspace.freeze_uploads(session_id, expected_revision=1)
+    analysis_path = (
+        tmp_path
+        / "templates"
+        / f"session_{session_id}"
+        / "scan_analysis_latest.json"
+    )
+    analysis_path.write_text(
+        json.dumps(
+            {
+                "scan_batch_id": frozen["batch_id"],
+                "config_revision": "config-revision",
+                "template_id": template_id,
+                "template_fingerprint": "f" * 64,
+                "template_first_page_role": "front",
+                "groups": [],
+                "issues": [],
+                "absent_students": [],
+                "warnings": [],
+                "total_pages": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(GradingConfigChangedError, match="template"):
+        workspace.prepare_start(
+            session_id,
+            grading_mode="full_paper",
+            upload_revision=int(frozen["revision"]),
+            decision_revision=0,
+            confirm_pending_issues=False,
+            enhance_images=True,
+            max_workers=None,
+            requests_per_minute=None,
+        )
+
+
 def test_upload_batch_adds_deduplicates_and_freezes_files(tmp_path) -> None:
     from backend.scan_grading.workspace import (
         FrozenUploadBatchError,

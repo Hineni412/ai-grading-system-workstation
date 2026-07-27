@@ -22,6 +22,17 @@ def test_legacy_publish_binds_config_and_source_atomically(tmp_path: Path) -> No
     old_rubric.write_text("{}", encoding="utf-8")
     old_answer.write_text("{}", encoding="utf-8")
     session_id = db.create_grading_session("Exam", str(old_rubric), str(old_answer))
+    template_id = db.upsert_session_template(
+        session_id,
+        str(tmp_path / "front.png"),
+        str(tmp_path / "back.png"),
+    )
+    snapshot_token = db.replace_answer_regions_atomic(
+        session_id,
+        template_id,
+        [],
+        confirmed=True,
+    )
     store = JobStore(db.db_path)
 
     with db._connect() as connection:
@@ -54,6 +65,10 @@ def test_legacy_publish_binds_config_and_source_atomically(tmp_path: Path) -> No
     assert current["rubric_path"] == str(old_rubric)
     assert current["answer_key_path"] == str(old_answer)
     assert not current["source_paper_path"]
+    template = db.get_session_template(session_id)
+    assert template["is_confirmed"] == 1
+    assert template["regions_snapshot_pending"] == 1
+    assert template["regions_snapshot_token"] == snapshot_token
 
 
 def test_legacy_mapping_blocks_new_config_job_submission(tmp_path: Path) -> None:

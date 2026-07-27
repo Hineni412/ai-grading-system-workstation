@@ -17,7 +17,7 @@ from .orchestration import (
 from .policy import build_config_generation_policy
 from .prompts import build_manual_structure_refinement_prompt
 from .normalization import (
-    normalize_new_generated_config_payload,
+    normalize_generated_config_schema,
     strip_generated_config_knowledge_fields,
     validate_generated_config,
 )
@@ -141,7 +141,13 @@ def refine_grading_config_from_manual_structure(
     prompt = build_manual_structure_refinement_prompt(working_payload)
     refined = llm_client.json_from_text(prompt, model=model_name)
     try:
-        normalize_new_generated_config_payload(refined)
+        # Refinement is different from generating a new rubric: the teacher's
+        # part/step identifiers are persistent editor identities.  Schema
+        # repair is safe here, but canonicalising those identities would make
+        # an unchanged model response look like a structural rewrite.
+        strip_generated_config_knowledge_fields(refined)
+        normalize_generated_config_schema(refined)
+        strip_generated_config_knowledge_fields(refined)
         validate_generated_config(refined)
     except Exception:
         module._dump_failed_generated_payload(refined)

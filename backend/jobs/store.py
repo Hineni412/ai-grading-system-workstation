@@ -20,6 +20,13 @@ _SOURCE_ID = re.compile(r"^[0-9a-f]{32}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REQUEST_TOKEN = re.compile(r"^[0-9a-f]{32}$")
 _SCAN_BATCH_ID = re.compile(r"^[0-9a-f]{32}$")
+_QUESTION_BANK_SYNC_STATES = {
+    "not_started",
+    "running",
+    "ready",
+    "partial",
+    "failed",
+}
 
 
 class ConfigRetryAlreadySubmittedError(RuntimeError):
@@ -416,6 +423,99 @@ class JobStore:
             if _positive_int_or_zero(payload.get("session_id")) == session_id:
                 return row
         return None
+
+    def transition_question_bank_sync_state_if_owned(
+        self,
+        *,
+        session_id: int,
+        job_id: int,
+        source_paper_sha256: str,
+        config_revision: str,
+        state: str,
+        details: dict[str, object],
+        error: str | None = None,
+    ) -> bool:
+        """Finish only the sync state still owned by this exact versioned job."""
+
+        clean_session_id = _positive_int(session_id)
+        clean_job_id = _positive_int(job_id)
+        clean_source_sha256 = str(source_paper_sha256 or "").strip().casefold()
+        clean_config_revision = str(config_revision or "").strip().casefold()
+        clean_state = str(state or "").strip().casefold()
+        if not _SHA256.fullmatch(clean_source_sha256):
+            raise ValueError("source_paper_sha256 must be sha256")
+        if not _SHA256.fullmatch(clean_config_revision):
+            raise ValueError("config_revision must be sha256")
+        if clean_state not in _QUESTION_BANK_SYNC_STATES - {"running"}:
+            raise ValueError("unsupported terminal question-bank sync state")
+        terminal_details = {
+            **dict(details),
+            "job_id": clean_job_id,
+            "source_paper_sha256": clean_source_sha256,
+            "config_revision": clean_config_revision,
+        }
+        details_json = json.dumps(
+            terminal_details,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                current = conn.execute(
+                    """
+                    SELECT question_bank_sync_state, question_bank_sync_details_json
+                    FROM grading_sessions
+                    WHERE id = ? AND is_deleted = 0
+                    """,
+                    (clean_session_id,),
+                ).fetchone()
+                if current is None:
+                    raise KeyError(
+                        f"grading session not found: {clean_session_id}"
+                    )
+                try:
+                    owner = json.loads(
+                        str(current["question_bank_sync_details_json"] or "{}")
+                    )
+                except json.JSONDecodeError:
+                    owner = {}
+                if (
+                    str(current["question_bank_sync_state"]) != "running"
+                    or not isinstance(owner, dict)
+                    or _positive_int_or_zero(owner.get("job_id")) != clean_job_id
+                    or str(owner.get("source_paper_sha256") or "").casefold()
+                    != clean_source_sha256
+                    or str(owner.get("config_revision") or "").casefold()
+                    != clean_config_revision
+                ):
+                    conn.rollback()
+                    return False
+                cursor = conn.execute(
+                    """
+                    UPDATE grading_sessions
+                    SET question_bank_sync_state = ?,
+                        question_bank_sync_details_json = ?,
+                        question_bank_sync_error = ?,
+                        question_bank_sync_updated_at = datetime('now','localtime'),
+                        updated_at = datetime('now','localtime')
+                    WHERE id = ? AND is_deleted = 0
+                    """,
+                    (
+                        clean_state,
+                        details_json,
+                        str(error).strip() if error else None,
+                        clean_session_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    conn.rollback()
+                    return False
+                conn.commit()
+                return True
+            except BaseException:
+                conn.rollback()
+                raise
 
     def abandon_config_request(self, *, session_id: int, request_token: str) -> None:
         """Atomically tombstone an unseen request token.
@@ -980,6 +1080,22 @@ class JobStore:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                current = conn.execute(
+                    """
+                    SELECT rubric_path, answer_key_path
+                    FROM grading_sessions
+                    WHERE id = ? AND is_deleted = 0
+                    """,
+                    (clean_session_id,),
+                ).fetchone()
+                if current is None:
+                    conn.rollback()
+                    return False
+                config_changed = (
+                    str(current["rubric_path"] or "") != str(rubric_path)
+                    or str(current["answer_key_path"] or "")
+                    != str(answer_key_path)
+                )
                 if self._find_active_config_session_row(
                     conn,
                     session_id=clean_session_id,
@@ -1000,12 +1116,29 @@ class JobStore:
                         UPDATE grading_sessions
                         SET rubric_path = ?, answer_key_path = ?,
                             template_config_path = COALESCE(?, template_config_path),
+                            question_bank_sync_state =
+                                CASE WHEN ? THEN 'not_started'
+                                     ELSE question_bank_sync_state END,
+                            question_bank_sync_details_json =
+                                CASE WHEN ? THEN '{}'
+                                     ELSE question_bank_sync_details_json END,
+                            question_bank_sync_error =
+                                CASE WHEN ? THEN NULL
+                                     ELSE question_bank_sync_error END,
+                            question_bank_sync_updated_at =
+                                CASE WHEN ? THEN NULL
+                                     ELSE question_bank_sync_updated_at END,
                             updated_at = datetime('now','localtime')
                         WHERE id = ? AND is_deleted = 0
                         """,
                         (
                             str(rubric_path), str(answer_key_path),
-                            template_config_path, clean_session_id,
+                            template_config_path,
+                            config_changed,
+                            config_changed,
+                            config_changed,
+                            config_changed,
+                            clean_session_id,
                         ),
                     )
                 else:
@@ -1013,18 +1146,47 @@ class JobStore:
                         """
                         UPDATE grading_sessions
                         SET rubric_path = ?, answer_key_path = ?,
+                            question_bank_sync_state =
+                                CASE WHEN ? THEN 'not_started'
+                                     ELSE question_bank_sync_state END,
+                            question_bank_sync_details_json =
+                                CASE WHEN ? THEN '{}'
+                                     ELSE question_bank_sync_details_json END,
+                            question_bank_sync_error =
+                                CASE WHEN ? THEN NULL
+                                     ELSE question_bank_sync_error END,
+                            question_bank_sync_updated_at =
+                                CASE WHEN ? THEN NULL
+                                     ELSE question_bank_sync_updated_at END,
                             updated_at = datetime('now','localtime')
                         WHERE id = ? AND is_deleted = 0
                           AND rubric_path = ? AND answer_key_path = ?
                         """,
                         (
-                            str(rubric_path), str(answer_key_path), clean_session_id,
+                            str(rubric_path),
+                            str(answer_key_path),
+                            config_changed,
+                            config_changed,
+                            config_changed,
+                            config_changed,
+                            clean_session_id,
                             str(expected_rubric_path), str(expected_answer_key_path),
                         ),
                     )
                 if cursor.rowcount != 1:
                     conn.rollback()
                     return False
+                conn.execute(
+                    """
+                    UPDATE session_templates
+                    SET is_confirmed = 0,
+                        regions_snapshot_pending = 0,
+                        regions_snapshot_token = NULL,
+                        updated_at = datetime('now','localtime')
+                    WHERE session_id = ?
+                    """,
+                    (clean_session_id,),
+                )
                 conn.commit()
                 return True
             except BaseException:
@@ -1253,6 +1415,28 @@ class JobStore:
                 ):
                     conn.rollback()
                     return False
+                current_session = conn.execute(
+                    """
+                    SELECT rubric_path, answer_key_path, source_paper_sha256
+                    FROM grading_sessions
+                    WHERE id = ? AND is_deleted = 0
+                    """,
+                    (int(session_id),),
+                ).fetchone()
+                if current_session is None:
+                    conn.rollback()
+                    return False
+                config_changed = (
+                    str(current_session["rubric_path"] or "") != str(rubric_path)
+                    or str(current_session["answer_key_path"] or "")
+                    != str(answer_key_path)
+                )
+                source_changed = (
+                    clean_source_sha256 is not None
+                    and str(current_session["source_paper_sha256"] or "")
+                    != clean_source_sha256
+                )
+                sync_invalidated = config_changed or source_changed
                 if self._has_active_grading_session(
                     conn,
                     session_id=int(session_id),
@@ -1264,6 +1448,18 @@ class JobStore:
                         """
                         UPDATE grading_sessions
                         SET rubric_path = ?, answer_key_path = ?,
+                            question_bank_sync_state =
+                                CASE WHEN ? THEN 'not_started'
+                                     ELSE question_bank_sync_state END,
+                            question_bank_sync_details_json =
+                                CASE WHEN ? THEN '{}'
+                                     ELSE question_bank_sync_details_json END,
+                            question_bank_sync_error =
+                                CASE WHEN ? THEN NULL
+                                     ELSE question_bank_sync_error END,
+                            question_bank_sync_updated_at =
+                                CASE WHEN ? THEN NULL
+                                     ELSE question_bank_sync_updated_at END,
                             updated_at = datetime('now','localtime')
                         WHERE id = ? AND is_deleted = 0
                           AND rubric_path = ? AND answer_key_path = ?
@@ -1271,6 +1467,10 @@ class JobStore:
                         (
                             str(rubric_path),
                             str(answer_key_path),
+                            sync_invalidated,
+                            sync_invalidated,
+                            sync_invalidated,
+                            sync_invalidated,
                             int(session_id),
                             str(expected_rubric_path),
                             str(expected_answer_key_path),
@@ -1283,16 +1483,16 @@ class JobStore:
                         SET rubric_path = ?, answer_key_path = ?,
                             source_paper_path = ?, source_paper_sha256 = ?,
                             question_bank_sync_state = CASE
-                                WHEN COALESCE(source_paper_sha256, '') <> ?
+                                WHEN ?
                                 THEN 'not_started' ELSE question_bank_sync_state END,
                             question_bank_sync_details_json = CASE
-                                WHEN COALESCE(source_paper_sha256, '') <> ?
+                                WHEN ?
                                 THEN '{}' ELSE question_bank_sync_details_json END,
                             question_bank_sync_error = CASE
-                                WHEN COALESCE(source_paper_sha256, '') <> ?
+                                WHEN ?
                                 THEN NULL ELSE question_bank_sync_error END,
                             question_bank_sync_updated_at = CASE
-                                WHEN COALESCE(source_paper_sha256, '') <> ?
+                                WHEN ?
                                 THEN NULL ELSE question_bank_sync_updated_at END,
                             updated_at = datetime('now','localtime')
                         WHERE id = ? AND is_deleted = 0
@@ -1303,10 +1503,10 @@ class JobStore:
                             str(answer_key_path),
                             clean_source_path,
                             clean_source_sha256,
-                            clean_source_sha256,
-                            clean_source_sha256,
-                            clean_source_sha256,
-                            clean_source_sha256,
+                            sync_invalidated,
+                            sync_invalidated,
+                            sync_invalidated,
+                            sync_invalidated,
                             int(session_id),
                             str(expected_rubric_path),
                             str(expected_answer_key_path),
@@ -1315,6 +1515,17 @@ class JobStore:
                 if session_update.rowcount != 1:
                     conn.rollback()
                     return False
+                conn.execute(
+                    """
+                    UPDATE session_templates
+                    SET is_confirmed = 0,
+                        regions_snapshot_pending = 0,
+                        regions_snapshot_token = NULL,
+                        updated_at = datetime('now','localtime')
+                    WHERE session_id = ?
+                    """,
+                    (int(session_id),),
+                )
                 job_update = conn.execute(
                     """
                     UPDATE jobs
