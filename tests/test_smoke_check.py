@@ -52,6 +52,7 @@ def test_python_file_discovery_excludes_generated_and_data_directories(tmp_path:
     _write(tmp_path / "app.py")
     _write(tmp_path / "pkg" / "service.py")
     _write(tmp_path / "runtime" / "ignored.py")
+    _write(tmp_path / ".test-runs" / "ignored.py")
     _write(tmp_path / ".worktrees" / "ignored.py")
     _write(tmp_path / "user_data" / "ignored.py")
     _write(tmp_path / ".git" / "hooks" / "ignored.py")
