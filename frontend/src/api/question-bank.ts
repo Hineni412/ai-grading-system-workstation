@@ -5,6 +5,7 @@ import { decodeJobResponse, type JobResponse } from './jobs'
 export const QUESTION_BANK_TAG_TYPES = [
   'ability',
   'canonical_knowledge_id',
+  'curriculum_section',
   'error_type',
   'exam_scope',
   'knowledge_point',
@@ -213,6 +214,7 @@ export interface QuestionBankFacet {
 
 export interface QuestionBankFacets {
   exam_scopes: QuestionBankFacet[]
+  curriculum_sections: QuestionBankFacet[]
   knowledge_points: QuestionBankFacet[]
   curriculum_chapters: QuestionBankFacet[]
   abilities: QuestionBankFacet[]
@@ -294,6 +296,7 @@ export interface QuestionBankFilters {
   examTypes?: string[]
   grades?: string[]
   examScopes?: string[]
+  curriculumSections?: string[]
   tagStatus?: QuestionBankTagStatus
   sort?: QuestionBankSort
 }
@@ -739,6 +742,7 @@ export function decodeCurriculumCatalog(value: unknown): CurriculumCatalog {
 export function decodeQuestionBankFacets(value: unknown): QuestionBankFacets {
   const keys = [
     'exam_scopes',
+    'curriculum_sections',
     'knowledge_points',
     'curriculum_chapters',
     'abilities',
@@ -955,6 +959,7 @@ function questionListPath(filters: QuestionBankFilters): string {
   appendTexts(parameters, 'exam_types', filters.examTypes)
   appendTexts(parameters, 'grades', filters.grades)
   appendTexts(parameters, 'exam_scopes', filters.examScopes)
+  appendTexts(parameters, 'curriculum_sections', filters.curriculumSections)
   appendTexts(parameters, 'knowledge_points', filters.knowledgePoints)
   appendTexts(parameters, 'abilities', filters.abilities)
   appendTexts(parameters, 'methods', filters.methods)

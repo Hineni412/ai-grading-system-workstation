@@ -12,7 +12,7 @@ vi.mock('../api/scan-grading', async (importOriginal) => ({
   fetchGradingWorkspace: vi.fn(), uploadScan: vi.fn(), removeScan: vi.fn(), clearScans: vi.fn(),
   freezeScans: vi.fn(), startPreflight: vi.fn(), fetchPreflight: vi.fn(),
   saveScanDecisions: vi.fn(), startGrading: vi.fn(), controlGrading: vi.fn(), cancelGrading: vi.fn(),
-  supplementGrading: vi.fn(), startNewScanBatch: vi.fn(),
+  supplementGrading: vi.fn(), startNewScanBatch: vi.fn(), commitScanReplacement: vi.fn(),
 }))
 vi.mock('../api/students', () => ({ fetchStudents: vi.fn() }))
 
@@ -40,6 +40,65 @@ beforeEach(() => {
 })
 
 describe('scan grading store isolation and recovery', () => {
+  it('drops the completed job from the replaced scan batch', async () => {
+    const current = workspace(1, 'frozen')
+    current.replacement_batch = {
+      batch_id: 'batch-replacement',
+      revision: 1,
+      state: 'draft',
+      files: [{
+        id: 'replacement',
+        name: 'replacement.pdf',
+        media_type: 'application/pdf',
+        size_bytes: 2048,
+        sha256_prefix: 'b'.repeat(12),
+        added_at: '2026-07-18T00:00:00Z',
+      }],
+      file_count: 1,
+      total_bytes: 2048,
+      frozen_at: null,
+    }
+    current.grading_job = {
+      id: 93,
+      status: 'succeeded',
+      progress: 1,
+      updated_at: '2026-07-17T00:00:03Z',
+      cancel_requested: false,
+      scan_batch_id: 'batch-1',
+    }
+    const replacement = {
+      ...current.replacement_batch,
+      revision: 2,
+      state: 'frozen' as const,
+      frozen_at: '2026-07-18T00:01:00Z',
+    }
+    vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(current)
+    vi.mocked(api.commitScanReplacement).mockResolvedValue(replacement)
+    vi.mocked(api.startPreflight).mockResolvedValue({
+      id: 94,
+      job_type: 'scan_analysis',
+      payload: { session_id: 1, scan_batch_id: replacement.batch_id },
+      result: {},
+      status: 'queued',
+      progress: 0,
+      stage: 'queued',
+      detail: '',
+      error: null,
+      cancel_requested: false,
+      created_at: '2026-07-18T00:01:01Z',
+      started_at: null,
+      updated_at: '2026-07-18T00:01:01Z',
+      finished_at: null,
+    })
+    const store = useScanGradingStore()
+    await store.load(1)
+
+    await store.commitReplacement()
+
+    expect(store.uploadBatch?.batch_id).toBe('batch-replacement')
+    expect(store.workspace?.grading_job).toBeNull()
+  })
+
   it('does not let an old remove response overwrite a newly selected session', async () => {
     let resolveRemove!: (value: api.ScanUploadBatch) => void
     vi.mocked(api.fetchGradingWorkspace)

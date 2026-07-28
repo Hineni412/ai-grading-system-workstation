@@ -26,7 +26,7 @@ function showBrowser(): void {
 </script>
 
 <template>
-  <section class="assembly">
+  <section class="assembly is-workspace-wide">
     <header class="assembly__hero">
       <div>
         <p class="assembly-kicker">PAPER ASSEMBLY</p>

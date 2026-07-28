@@ -752,3 +752,165 @@ def test_transition_recovery_validates_every_file_before_recovery_moves_any_file
     assert not (session_dir / "scan_analysis_latest.json").exists()
     assert not (session_dir / "scan_decisions_state.json").exists()
     assert not (history_dir / "scan_decisions_state.json").exists()
+
+
+def test_scan_replacement_keeps_recovery_journal_until_old_files_are_deleted(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from pathlib import Path
+
+    from backend.scan_grading.workspace import (
+        ScanGradingWorkspace,
+        ScanGradingWorkspaceError,
+    )
+
+    data_root = tmp_path / "data"
+    old_report = data_root / "reports" / "old-report.docx"
+    old_report.parent.mkdir(parents=True)
+    old_report.write_bytes(b"old report")
+    reset_calls = 0
+
+    def reset_old_scan(_session_id: int) -> list[str]:
+        nonlocal reset_calls
+        reset_calls += 1
+        return [str(old_report)] if reset_calls == 1 else []
+
+    workspace = ScanGradingWorkspace(
+        exams_root=data_root / "exams",
+        templates_root=data_root / "templates",
+        data_root=data_root,
+        replacement_reset=reset_old_scan,
+    )
+    old_content = _jpeg(b"old answer sheets")
+    workspace.add_upload(
+        12,
+        filename="old.jpg",
+        media_type="image/jpeg",
+        content_sha256=hashlib.sha256(old_content).hexdigest(),
+        source=io.BytesIO(old_content),
+    )
+    workspace.freeze_uploads(12, expected_revision=1)
+    workspace.begin_replacement_upload(12)
+    replacement_content = _jpeg(b"replacement answer sheets")
+    workspace.add_upload(
+        12,
+        filename="replacement.jpg",
+        media_type="image/jpeg",
+        content_sha256=hashlib.sha256(replacement_content).hexdigest(),
+        source=io.BytesIO(replacement_content),
+        replacement=True,
+    )
+    candidate = workspace.get_workspace(12)["replacement_batch"]
+    session_dir = data_root / "templates" / "session_12"
+    journal_path = session_dir / "scan_upload_replacement_commit.json"
+    original_unlink = Path.unlink
+
+    def fail_old_report_unlink(path: Path, *args, **kwargs):
+        if path == old_report:
+            raise OSError("injected Windows file lock")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_old_report_unlink)
+    with pytest.raises(ScanGradingWorkspaceError, match="cleanup"):
+        workspace.commit_replacement_upload(
+            12,
+            expected_revision=int(candidate["revision"]),
+        )
+
+    assert old_report.is_file()
+    assert journal_path.is_file()
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert journal["pending_storage_paths"] == [str(old_report)]
+
+    monkeypatch.setattr(Path, "unlink", original_unlink)
+    restarted = ScanGradingWorkspace(
+        exams_root=data_root / "exams",
+        templates_root=data_root / "templates",
+        data_root=data_root,
+        replacement_reset=reset_old_scan,
+    )
+    recovered = restarted.get_workspace(12)
+
+    assert recovered["upload_batch"]["batch_id"] == candidate["batch_id"]
+    assert recovered["replacement_batch"] is None
+    assert not old_report.exists()
+    assert not journal_path.exists()
+
+
+def test_scan_replacement_records_old_paths_before_reset_can_exit(
+    tmp_path,
+) -> None:
+    from backend.scan_grading.workspace import ScanGradingWorkspace
+
+    data_root = tmp_path / "data"
+    old_report = data_root / "reports" / "old-report.docx"
+    old_report.parent.mkdir(parents=True)
+    old_report.write_bytes(b"old report")
+    reset_started = False
+
+    def old_storage_paths(_session_id: int) -> list[str]:
+        return [] if reset_started else [str(old_report)]
+
+    def reset_old_scan(_session_id: int) -> list[str]:
+        nonlocal reset_started
+        if not reset_started:
+            reset_started = True
+            raise SystemExit("injected exit after database reset")
+        return []
+
+    workspace = ScanGradingWorkspace(
+        exams_root=data_root / "exams",
+        templates_root=data_root / "templates",
+        data_root=data_root,
+        replacement_storage_paths=old_storage_paths,
+        replacement_reset=reset_old_scan,
+    )
+    old_content = _jpeg(b"old answer sheets")
+    workspace.add_upload(
+        13,
+        filename="old.jpg",
+        media_type="image/jpeg",
+        content_sha256=hashlib.sha256(old_content).hexdigest(),
+        source=io.BytesIO(old_content),
+    )
+    workspace.freeze_uploads(13, expected_revision=1)
+    workspace.begin_replacement_upload(13)
+    replacement_content = _jpeg(b"replacement answer sheets")
+    workspace.add_upload(
+        13,
+        filename="replacement.jpg",
+        media_type="image/jpeg",
+        content_sha256=hashlib.sha256(replacement_content).hexdigest(),
+        source=io.BytesIO(replacement_content),
+        replacement=True,
+    )
+    candidate = workspace.get_workspace(13)["replacement_batch"]
+    journal_path = (
+        data_root
+        / "templates"
+        / "session_13"
+        / "scan_upload_replacement_commit.json"
+    )
+
+    with pytest.raises(SystemExit, match="database reset"):
+        workspace.commit_replacement_upload(
+            13,
+            expected_revision=int(candidate["revision"]),
+        )
+
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert journal["pending_storage_paths"] == [str(old_report)]
+
+    restarted = ScanGradingWorkspace(
+        exams_root=data_root / "exams",
+        templates_root=data_root / "templates",
+        data_root=data_root,
+        replacement_storage_paths=old_storage_paths,
+        replacement_reset=reset_old_scan,
+    )
+    recovered = restarted.get_workspace(13)
+
+    assert recovered["upload_batch"]["batch_id"] == candidate["batch_id"]
+    assert not old_report.exists()
+    assert not journal_path.exists()

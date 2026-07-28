@@ -185,6 +185,64 @@ def test_media_route_rejects_disallowed_extension(media_client) -> None:
     assert response.headers["cache-control"] == "no-store"
 
 
+def test_preflight_crop_route_uses_the_owned_source_region(media_client) -> None:
+    from backend.api.dependencies import get_scan_grading_workspace
+
+    client, seed, _image_factory = media_client
+    with sqlite3.connect(seed.db.db_path) as conn:
+        conn.execute(
+            """
+            UPDATE answer_regions
+            SET mapped_question_id = 'Q1(1)'
+            WHERE session_id = ?
+            """,
+            (seed.session_id,),
+        )
+        region_id = int(
+            conn.execute(
+                "SELECT id FROM answer_regions WHERE session_id = ?",
+                (seed.session_id,),
+            ).fetchone()[0]
+        )
+        conn.commit()
+
+    class FixtureWorkspace:
+        def resolve_preflight_media(
+            self,
+            requested_session_id: int,
+            media_id: str,
+        ) -> Path:
+            assert requested_session_id == seed.session_id
+            return seed.back_path if media_id.endswith(":back") else seed.front_path
+
+    client.app.dependency_overrides[get_scan_grading_workspace] = (
+        lambda: FixtureWorkspace()
+    )
+    try:
+        response = client.get(
+            (
+                f"/api/sessions/{seed.session_id}/review/preflight/"
+                f"group/group-1/Q1(P1)/crop?source_region_id={region_id}"
+            )
+        )
+        missing = client.get(
+            (
+                f"/api/sessions/{seed.session_id}/review/preflight/"
+                "group/group-1/Q1(P1)/crop?source_region_id=999999"
+            )
+        )
+    finally:
+        client.app.dependency_overrides.pop(get_scan_grading_workspace, None)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/jpeg"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.content.startswith(b"\xff\xd8")
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "media_not_found"
+    assert missing.headers["cache-control"] == "no-store"
+
+
 @pytest.mark.parametrize(
     "url",
     [

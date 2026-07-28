@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
 import threading
 from datetime import datetime, timezone
@@ -44,6 +45,10 @@ class ActiveScanAnalysisError(ScanGradingWorkspaceError):
     """当前上传批次仍有预检任务在运行。"""
 
 
+class ScanReplacementCleanupIncompleteError(ScanGradingWorkspaceError):
+    """新答卷已生效，但旧文件清理仍需安全重试。"""
+
+
 class ScanGradingWorkspace:
     """隐藏上传文件、manifest 与后续扫描状态的会话级模块。"""
 
@@ -70,6 +75,9 @@ class ScanGradingWorkspace:
         templates_root: Path,
         grading_db_path: Path | None = None,
         job_manager: Any | None = None,
+        data_root: Path | None = None,
+        replacement_storage_paths: Callable[[int], list[str]] | None = None,
+        replacement_reset: Callable[[int], list[str]] | None = None,
         config_fingerprint_resolver: Callable[[int, str], str] | None = None,
         max_file_bytes: int = 100 * 1024 * 1024,
     ) -> None:
@@ -77,16 +85,23 @@ class ScanGradingWorkspace:
         self.templates_root = Path(templates_root)
         self.grading_db_path = Path(grading_db_path) if grading_db_path is not None else None
         self.job_manager = job_manager
+        self.data_root = Path(data_root).resolve() if data_root is not None else None
+        self.replacement_storage_paths = replacement_storage_paths
+        self.replacement_reset = replacement_reset
         self.config_fingerprint_resolver = config_fingerprint_resolver
         self.max_file_bytes = int(max_file_bytes)
 
     def get_workspace(self, session_id: int) -> dict[str, Any]:
         with self._lock(session_id):
+            self._recover_replacement_commit(session_id)
             manifest = self._load_or_create_manifest(session_id)
             scan_batch_id = str(manifest["batch_id"])
             return {
                 "session_id": int(session_id),
                 "upload_batch": self._public_batch(manifest),
+                "replacement_batch": self._public_batch(
+                    self._load_replacement_manifest(session_id)
+                ) if self._replacement_manifest_path(session_id).exists() else None,
                 "grading_run": self.get_grading_run(session_id),
                 "grading_job": self._grading_job_summary(
                     session_id,
@@ -742,9 +757,14 @@ class ScanGradingWorkspace:
         media_type: str,
         content_sha256: str,
         source: BinaryIO,
+        replacement: bool = False,
     ) -> dict[str, Any]:
         with self._lock(session_id):
-            manifest = self._load_or_create_manifest(session_id)
+            manifest = (
+                self._load_or_create_replacement_manifest(session_id)
+                if replacement
+                else self._load_or_create_manifest(session_id)
+            )
             self._require_draft(manifest)
             digest = str(content_sha256 or "").strip().lower()
             safe_name = Path(str(filename or "")).name
@@ -815,7 +835,7 @@ class ScanGradingWorkspace:
             }
             manifest["files"].append(item)
             manifest["revision"] += 1
-            self._write_manifest(session_id, manifest)
+            self._write_target_manifest(session_id, manifest, replacement=replacement)
             return {"duplicate": False, "file": self._public_file(item)}
 
     def freeze_uploads(self, session_id: int, *, expected_revision: int) -> dict[str, Any]:
@@ -838,9 +858,14 @@ class ScanGradingWorkspace:
         upload_id: str,
         *,
         expected_revision: int,
+        replacement: bool = False,
     ) -> dict[str, Any]:
         with self._lock(session_id):
-            manifest = self._load_or_create_manifest(session_id)
+            manifest = (
+                self._load_replacement_manifest(session_id)
+                if replacement
+                else self._load_or_create_manifest(session_id)
+            )
             self._require_draft(manifest)
             self._require_revision(manifest, expected_revision)
             removed = next(
@@ -853,22 +878,228 @@ class ScanGradingWorkspace:
                 item for item in manifest["files"] if item["id"] != str(upload_id)
             ]
             manifest["revision"] += 1
-            self._write_manifest(session_id, manifest)
+            self._write_target_manifest(session_id, manifest, replacement=replacement)
             self._stored_file(session_id, manifest, removed).unlink(missing_ok=True)
             return self._public_batch(manifest)
 
-    def clear_uploads(self, session_id: int, *, expected_revision: int) -> dict[str, Any]:
+    def clear_uploads(
+        self,
+        session_id: int,
+        *,
+        expected_revision: int,
+        replacement: bool = False,
+    ) -> dict[str, Any]:
         with self._lock(session_id):
-            manifest = self._load_or_create_manifest(session_id)
+            manifest = (
+                self._load_replacement_manifest(session_id)
+                if replacement
+                else self._load_or_create_manifest(session_id)
+            )
             self._require_draft(manifest)
             self._require_revision(manifest, expected_revision)
             removed = list(manifest["files"])
             manifest["files"] = []
             manifest["revision"] += 1
-            self._write_manifest(session_id, manifest)
+            self._write_target_manifest(session_id, manifest, replacement=replacement)
             for item in removed:
                 self._stored_file(session_id, manifest, item).unlink(missing_ok=True)
             return self._public_batch(manifest)
+
+    def begin_replacement_upload(self, session_id: int) -> dict[str, Any]:
+        with self._lock(session_id):
+            self._require_no_active_scan_work(session_id)
+            path = self._replacement_manifest_path(session_id)
+            manifest = (
+                self._load_replacement_manifest(session_id)
+                if path.exists()
+                else self._new_manifest()
+            )
+            if not path.exists():
+                self._write_target_manifest(session_id, manifest, replacement=True)
+            return self._public_batch(manifest)
+
+    def cancel_replacement_upload(self, session_id: int) -> None:
+        with self._lock(session_id):
+            path = self._replacement_manifest_path(session_id)
+            if not path.exists():
+                return
+            manifest = self._load_replacement_manifest(session_id)
+            shutil.rmtree(
+                self._batch_dir(session_id, str(manifest["batch_id"])),
+                ignore_errors=True,
+            )
+            path.unlink(missing_ok=True)
+
+    def commit_replacement_upload(
+        self,
+        session_id: int,
+        *,
+        expected_revision: int,
+    ) -> dict[str, Any]:
+        with self._lock(session_id):
+            self._require_no_active_scan_work(session_id)
+            candidate = self._load_replacement_manifest(session_id)
+            self._require_draft(candidate)
+            self._require_revision(candidate, expected_revision)
+            if not candidate["files"]:
+                raise ScanGradingWorkspaceError("replacement upload batch is empty")
+            if self.replacement_reset is None:
+                raise ScanGradingWorkspaceError("replacement reset is unavailable")
+            old = self._load_or_create_manifest(session_id)
+            pending_storage_paths = (
+                self._normalize_cleanup_paths(
+                    self.replacement_storage_paths(session_id)
+                )
+                if self.replacement_storage_paths is not None
+                else None
+            )
+            candidate = {
+                **candidate,
+                "state": "frozen",
+                "frozen_at": self._now(),
+                "revision": int(candidate["revision"]) + 1,
+            }
+            journal = {
+                "version": 1,
+                "old_batch_id": str(old["batch_id"]),
+                "candidate": candidate,
+            }
+            if pending_storage_paths is not None:
+                journal["pending_storage_paths"] = pending_storage_paths
+            self._atomic_write_json(self._replacement_commit_path(session_id), journal)
+            self._write_target_manifest(session_id, candidate, replacement=True)
+            return self._finish_replacement_commit(session_id, journal)
+
+    def _require_no_active_scan_work(self, session_id: int) -> None:
+        if self._active_scan_analysis_job(session_id) is not None:
+            raise ActiveScanAnalysisError("active scan analysis must be resolved first")
+        current_run = self.get_grading_run(session_id)
+        active_job = self._active_grading_job(session_id)
+        if (
+            current_run is not None
+            and current_run["state"] in {
+                "running",
+                "pause_requested",
+                "paused",
+                "interrupted",
+                "cancel_requested",
+            }
+        ) or active_job is not None:
+            raise ScanGradingWorkspaceError("active grading run must be resolved first")
+
+    def _recover_replacement_commit(self, session_id: int) -> None:
+        path = self._replacement_commit_path(session_id)
+        if not path.exists():
+            return
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            raise ScanGradingWorkspaceError("replacement commit recovery failed")
+        self._finish_replacement_commit(session_id, payload)
+
+    def _finish_replacement_commit(
+        self,
+        session_id: int,
+        journal: dict[str, Any],
+    ) -> dict[str, Any]:
+        candidate = journal.get("candidate")
+        if not isinstance(candidate, dict):
+            raise ScanGradingWorkspaceError("replacement commit is invalid")
+        stored_paths = journal.get("pending_storage_paths")
+        reset_completed = False
+        if stored_paths is None:
+            if self.replacement_storage_paths is not None:
+                stored_paths = self.replacement_storage_paths(session_id)
+            else:
+                stored_paths = (
+                    self.replacement_reset(session_id)
+                    if self.replacement_reset
+                    else []
+                )
+                reset_completed = True
+            stored_paths = self._normalize_cleanup_paths(stored_paths)
+            journal = {
+                **journal,
+                "pending_storage_paths": stored_paths,
+            }
+            self._atomic_write_json(
+                self._replacement_commit_path(session_id),
+                journal,
+            )
+        else:
+            stored_paths = self._normalize_cleanup_paths(stored_paths)
+        if not reset_completed and self.replacement_reset is not None:
+            self.replacement_reset(session_id)
+        self._write_manifest(session_id, candidate)
+        session_dir = self._session_dir(session_id)
+        try:
+            self._replacement_manifest_path(session_id).unlink(missing_ok=True)
+            for name in (
+                "scan_analysis_latest.json",
+                "scan_decisions_state.json",
+                "scan_manual_decisions_latest.json",
+                "grading_control_state.json",
+            ):
+                (session_dir / name).unlink(missing_ok=True)
+            self._remove_tree(session_dir / "scan_history")
+            old_batch_id = str(journal.get("old_batch_id") or "")
+            if re.fullmatch(r"[0-9a-f]{32}", old_batch_id):
+                self._remove_tree(
+                    self._batch_dir(session_id, old_batch_id)
+                )
+            for raw_path in stored_paths:
+                self._unlink_owned_data_file(raw_path)
+        except OSError as exc:
+            raise ScanReplacementCleanupIncompleteError(
+                "replacement cleanup is incomplete"
+            ) from exc
+        try:
+            self._replacement_commit_path(session_id).unlink(missing_ok=True)
+        except OSError as exc:
+            raise ScanReplacementCleanupIncompleteError(
+                "replacement cleanup is incomplete"
+            ) from exc
+        return self._public_batch(candidate)
+
+    @staticmethod
+    def _normalize_cleanup_paths(paths: object) -> list[str]:
+        if not isinstance(paths, list):
+            raise ScanGradingWorkspaceError(
+                "replacement cleanup plan is invalid"
+            )
+        return [str(path) for path in paths if str(path)]
+
+    @staticmethod
+    def _remove_tree(path: Path) -> None:
+        try:
+            shutil.rmtree(path)
+        except FileNotFoundError:
+            return
+
+    def _unlink_owned_data_file(self, raw_path: str) -> None:
+        if self.data_root is None or not raw_path:
+            return
+        path = Path(str(raw_path))
+        candidates = [path] if path.is_absolute() else [self.data_root.parent / path, self.data_root / path]
+        delete_error: OSError | None = None
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except OSError as exc:
+                delete_error = exc
+                continue
+            if not resolved.is_relative_to(self.data_root):
+                continue
+            try:
+                if not resolved.exists():
+                    continue
+                if not resolved.is_file():
+                    raise OSError("replacement cleanup target is not a file")
+                resolved.unlink()
+                return
+            except OSError as exc:
+                delete_error = exc
+        if delete_error is not None:
+            raise delete_error
 
     def frozen_scan_dir(self, session_id: int) -> Path:
         with self._lock(session_id):
@@ -1193,6 +1424,9 @@ class ScanGradingWorkspace:
             payload = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(payload, dict):
                 return payload
+        return self._new_manifest()
+
+    def _new_manifest(self) -> dict[str, Any]:
         return {
             "batch_id": uuid4().hex,
             "revision": 0,
@@ -1201,6 +1435,37 @@ class ScanGradingWorkspace:
             "frozen_at": None,
             "run_floor_id": 0,
         }
+
+    def _load_or_create_replacement_manifest(self, session_id: int) -> dict[str, Any]:
+        path = self._replacement_manifest_path(session_id)
+        if path.exists():
+            return self._load_replacement_manifest(session_id)
+        manifest = self._new_manifest()
+        self._write_target_manifest(session_id, manifest, replacement=True)
+        return manifest
+
+    def _load_replacement_manifest(self, session_id: int) -> dict[str, Any]:
+        path = self._replacement_manifest_path(session_id)
+        if not path.exists():
+            raise ScanGradingWorkspaceError("replacement upload batch was not found")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ScanGradingWorkspaceError("replacement upload batch is invalid")
+        return payload
+
+    def _write_target_manifest(
+        self,
+        session_id: int,
+        manifest: dict[str, Any],
+        *,
+        replacement: bool,
+    ) -> None:
+        path = (
+            self._replacement_manifest_path(session_id)
+            if replacement
+            else self._manifest_path(session_id)
+        )
+        self._atomic_write_json(path, manifest)
 
     def _write_manifest(self, session_id: int, manifest: dict[str, Any]) -> None:
         self._atomic_write_json(self._manifest_path(session_id), manifest)
@@ -1230,6 +1495,12 @@ class ScanGradingWorkspace:
 
     def _manifest_path(self, session_id: int) -> Path:
         return self._session_dir(session_id) / "scan_upload_batch.json"
+
+    def _replacement_manifest_path(self, session_id: int) -> Path:
+        return self._session_dir(session_id) / "scan_upload_replacement.json"
+
+    def _replacement_commit_path(self, session_id: int) -> Path:
+        return self._session_dir(session_id) / "scan_upload_replacement_commit.json"
 
     def _transition_path(self, session_id: int) -> Path:
         return self._session_dir(session_id) / "scan_batch_transition.json"

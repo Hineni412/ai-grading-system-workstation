@@ -197,6 +197,8 @@ def test_manual_refinement_prompt_keeps_ids_and_excludes_knowledge() -> None:
     assert "part_id" in prompt
     assert "knowledge" in prompt
     assert "不要输出" in prompt
+    assert "教师创建的 parts[] 小问结构" in prompt
+    assert "教师创建 the parts 部分" not in prompt
 
 
 def test_gateway_adapter_preserves_single_request_methods_and_parameters() -> None:

@@ -58,6 +58,7 @@ const item = (index: number, overrides: Partial<ReviewItem> = {}): ReviewItem =>
 const questions: ReviewQuestionSummary[] = [
   {
     question_id: 'Q1',
+    question_type: 'choice',
     total_count: 2,
     needs_review_count: 2,
     ungraded_count: 0,
@@ -66,6 +67,7 @@ const questions: ReviewQuestionSummary[] = [
   },
   {
     question_id: 'Q2',
+    question_type: 'proof',
     total_count: 2,
     needs_review_count: 1,
     ungraded_count: 0,
@@ -302,7 +304,13 @@ describe('source-recalibrated review view', () => {
     ]
     const { host, pinia } = await mountView({
       reviewQuestions: [
-        { question_id: 'Q1', total_count: 2, needs_review_count: 2, max_score: 5 },
+        {
+          question_id: 'Q1',
+          question_type: 'choice',
+          total_count: 2,
+          needs_review_count: 2,
+          max_score: 5,
+        },
       ],
       reviewItems: { Q1: pending },
     })
@@ -355,6 +363,39 @@ describe('source-recalibrated review view', () => {
     expect(useReviewDraftStore(pinia).drafts['review-item:7:Q1:11']?.scoreText).toBe('4')
     expect(useReviewQueueStore(pinia).items.every((entry) => entry.needs_review)).toBe(true)
     expect(document.body.textContent).not.toContain('private server failure')
+  })
+
+  it('moves across the 24/25 boundary and submits every page once from the final score', async () => {
+    const wholeClass = Array.from({ length: 25 }, (_, offset) => item(offset + 1))
+    const { host, reviewStore } = await mountView({
+      reviewQuestions: [{
+        question_id: 'Q1',
+        question_type: 'choice',
+        total_count: 25,
+        needs_review_count: 25,
+        ungraded_count: 0,
+        teacher_confirmed_count: 0,
+        max_score: 5,
+      }],
+      reviewItems: { Q1: wholeClass },
+    })
+    const pageOneLast = host.querySelector<HTMLInputElement>('[data-testid="teacher-score-23"]')!
+
+    pageOneLast.focus()
+    const tab = dispatchKey(pageOneLast, 'Tab')
+    await vi.waitFor(() => expect(reviewStore.page).toBe(2))
+    await vi.waitFor(() => expect(
+      document.activeElement,
+    ).toBe(host.querySelector<HTMLInputElement>('[data-testid="teacher-score-0"]')))
+    expect(tab.defaultPrevented).toBe(true)
+
+    const finalScore = host.querySelector<HTMLInputElement>('[data-testid="teacher-score-0"]')!
+    dispatchKey(finalScore, 'Enter')
+
+    await vi.waitFor(() => expect(confirmReviewItems).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(confirmReviewItems).mock.calls[0]?.[2]).toHaveLength(25)
+    expect(vi.mocked(confirmReviewItems).mock.calls[0]?.[2].map((entry) => entry.detail_id))
+      .toEqual(Array.from({ length: 25 }, (_, offset) => offset + 1))
   })
 
   it('keeps saved scores and retries annotations only after an explicit action', async () => {
@@ -775,7 +816,7 @@ describe('source-recalibrated review view', () => {
     await vi.waitFor(() => expect(reviewStore.selectedQuestionId).toBe('Q2'))
     expect(reviewStore.selectedDetailId).toBe(22)
     await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({
-      scope: 'teacher_pending',
+      scope: 'all',
       session: '7',
       question: 'Q2',
       item: '7:Q2:22',
@@ -793,7 +834,7 @@ describe('source-recalibrated review view', () => {
     await vi.waitFor(() => expect(reviewStore.selectedQuestionId).toBe('Q1'))
     expect(reviewStore.selectedDetailId).toBe(11)
     await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({
-      scope: 'teacher_pending',
+      scope: 'all',
       session: '7',
       question: 'Q1',
     }))
@@ -816,7 +857,7 @@ describe('source-recalibrated review view', () => {
     expect(reviewStore.selectedDetailId).toBe(11)
     expect(reviewStore.items.some((entry) => entry.detail_id === 11)).toBe(true)
     await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({
-      scope: 'teacher_pending',
+      scope: 'all',
       session: '7',
       question: 'Q1',
       item: '7:Q1:11',
@@ -829,46 +870,46 @@ describe('source-recalibrated review view', () => {
     expect(host.querySelector<HTMLInputElement>('#review-search')?.value).toBe('学生甲')
     expect(host.querySelector<HTMLInputElement>('[data-testid="teacher-score-0"]')?.value).toBe('4')
     await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({
-      scope: 'teacher_pending',
+      scope: 'all',
       session: '7',
       question: 'Q1',
     }))
   })
 
-  it('defaults to pending reads and reloads all items only after explicit scope change', async () => {
+  it('loads the complete queue once and applies display scopes locally', async () => {
     const { host, itemRequests } = await mountView({
       reviewItems: {
         ...itemsByQuestion,
         Q1: [itemsByQuestion.Q1![0]!, { ...itemsByQuestion.Q1![1]!, needs_review: false }],
       },
     })
-    expect(itemRequests[0]?.scope).toBe('teacher_pending')
+    expect(itemRequests[0]?.scope).toBe('all')
+    expect(host.textContent).toContain('学生乙')
+    const requestCount = itemRequests.length
+
+    inputValue(host.querySelector<HTMLSelectElement>('#review-scope')!, 'teacher_pending')
+
+    await nextTick()
+    expect(itemRequests).toHaveLength(requestCount)
     expect(host.textContent).not.toContain('学生乙')
-
-    inputValue(host.querySelector<HTMLSelectElement>('#review-scope')!, 'all')
-
-    await vi.waitFor(() => expect(itemRequests[itemRequests.length - 1]?.scope).toBe('all'))
-    await vi.waitFor(() => expect(host.textContent).toContain('学生乙'))
   })
 
-  it('rolls the scope label back when loading the requested scope fails', async () => {
-    let failAll = false
-    const { host, reviewStore } = await mountView({
-      itemLoader: async (_sessionId, questionId) => {
-        if (failAll) throw new Error('scope load failed')
-        return itemsByQuestion[questionId] ?? []
-      },
-    })
+  it('preserves the complete queue while narrowing and restoring the local scope', async () => {
+    const { host, reviewStore, itemRequests } = await mountView()
     await vi.waitFor(() => expect(reviewStore.items).toHaveLength(2))
-    failAll = true
-    inputValue(host.querySelector<HTMLSelectElement>('#review-scope')!, 'all')
+    const requestCount = itemRequests.length
+    inputValue(host.querySelector<HTMLSelectElement>('#review-scope')!, 'teacher_pending')
+    await nextTick()
 
-    await vi.waitFor(() => expect(document.body.textContent).toContain(
-      '显示范围切换失败，已恢复原来的评分范围',
-    ))
     expect(reviewStore.scope).toBe('teacher_pending')
     expect(host.querySelector<HTMLSelectElement>('#review-scope')?.value).toBe('teacher_pending')
     expect(reviewStore.items.map((entry) => entry.detail_id)).toEqual([11, 12])
+    expect(itemRequests).toHaveLength(requestCount)
+
+    inputValue(host.querySelector<HTMLSelectElement>('#review-scope')!, 'all')
+    await nextTick()
+    expect(reviewStore.scope).toBe('all')
+    expect(host.querySelectorAll('[data-testid="review-answer-sheet"]')).toHaveLength(2)
   })
 
   it('searches identity fields and slash focuses search outside protected controls', async () => {

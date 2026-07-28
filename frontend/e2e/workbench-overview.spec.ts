@@ -546,6 +546,8 @@ for (const viewport of viewports) {
     await expect(page.getByRole('button', { name: '查看批改' })).toBeFocused()
 
     const nodes = page.getByTestId('progress-action-rail').locator('li')
+    await expect(nodes).toHaveCount(3)
+    await expect(page.getByText('最近任务', { exact: true })).toHaveCount(0)
     const first = await nodes.nth(0).boundingBox()
     const second = await nodes.nth(1).boundingBox()
     expect(first).not.toBeNull()

@@ -26,6 +26,23 @@ const state = ref<'loading' | 'ready' | 'empty' | 'error'>('loading')
 const facetsState = ref<'loading' | 'ready' | 'error'>('loading')
 const facets = ref<QuestionBankFacets>({
   exam_scopes: [],
+  curriculum_sections: [],
+  curriculum_chapters: [],
+  knowledge_points: [],
+  abilities: [],
+  methods: [],
+  models: [],
+  student_levels: [],
+  teaching_stages: [],
+  sub_skills: [],
+  question_types: [],
+  years: [],
+  exam_types: [],
+  grades: [],
+})
+const baseFacets = ref<QuestionBankFacets>({
+  exam_scopes: [],
+  curriculum_sections: [],
   curriculum_chapters: [],
   knowledge_points: [],
   abilities: [],
@@ -43,6 +60,7 @@ const catalog = ref<CurriculumCatalog | null>(null)
 const catalogState = ref<'loading' | 'ready' | 'error'>('loading')
 const selectedVolumeId = ref('')
 const selectedChapterId = ref('')
+const selectedSectionId = ref('')
 const selectedHistoricalScope = ref('')
 const expandedChapterIds = ref(new Set<string>())
 const activeTagDimension = ref<TagArrayFilterKey>('knowledgePoints')
@@ -111,6 +129,16 @@ const selectedChapter = computed<CurriculumChapter | null>(() => {
   return null
 })
 
+const selectedSection = computed(() => {
+  for (const volume of catalog.value?.volumes ?? []) {
+    for (const chapter of volume.chapters) {
+      const section = chapter.sections.find((item) => item.id === selectedSectionId.value)
+      if (section) return section
+    }
+  }
+  return null
+})
+
 const selectedExamScopes = computed(() => {
   if (selectedChapter.value) return [...selectedChapter.value.exam_scope_values]
   if (selectedHistoricalScope.value) return [selectedHistoricalScope.value]
@@ -119,12 +147,16 @@ const selectedExamScopes = computed(() => {
 
 const selectedScopeLabel = computed(() => (
   selectedChapter.value
-    ? `${currentVolume.value?.label ?? ''} ${selectedChapter.value.label}`.trim()
+    ? `${currentVolume.value?.label ?? ''} ${selectedChapter.value.label}${selectedSection.value ? ` / ${selectedSection.value.label}` : ''}`.trim()
     : selectedHistoricalScope.value
 ))
 
 const chapterCounts = computed(() => new Map(
-  facets.value.curriculum_chapters.map((item) => [item.value, item.count]),
+  baseFacets.value.curriculum_chapters.map((item) => [item.value, item.count]),
+))
+
+const sectionCounts = computed(() => new Map(
+  baseFacets.value.curriculum_sections.map((item) => [item.value, item.count]),
 ))
 
 const recognizedExamScopes = computed(() => {
@@ -138,7 +170,7 @@ const recognizedExamScopes = computed(() => {
 })
 
 const historicalScopes = computed(() => (
-  facets.value.exam_scopes.filter((item) => !recognizedExamScopes.value.has(item.value))
+  baseFacets.value.exam_scopes.filter((item) => !recognizedExamScopes.value.has(item.value))
 ))
 
 const primaryTagRows = computed<TagFilterRow[]>(() => [
@@ -200,7 +232,7 @@ const activeFilters = computed<ActiveFilter[]>(() => {
   }
   if (selectedScopeLabel.value) {
     result.push({
-      id: `scope:${selectedChapterId.value || selectedHistoricalScope.value}`,
+      id: `scope:${selectedSectionId.value || selectedChapterId.value || selectedHistoricalScope.value}`,
       key: 'scope',
       label: selectedChapter.value ? '教材章节' : '历史范围',
       value: selectedScopeLabel.value,
@@ -280,6 +312,7 @@ function queryFilters(): QuestionBankFilters {
     examTypes: filters.examType ? [filters.examType] : [],
     grades: filters.grade ? [filters.grade] : [],
     examScopes: selectedExamScopes.value,
+    curriculumSections: selectedSectionId.value ? [selectedSectionId.value] : [],
     tagStatus: filters.tagStatus,
     sort: filters.sort,
   }
@@ -292,15 +325,27 @@ async function loadQuestions(resetPage = false): Promise<void> {
   const requestSerial = ++questionRequestSerial
   questionAbortController = controller
   state.value = 'loading'
+  const [questionResult, facetsResult] = await Promise.allSettled([
+    questionBankApi.listQuestions(queryFilters(), controller.signal),
+    questionBankApi.listFacets(queryFilters(), controller.signal),
+  ])
+  if (controller.signal.aborted || requestSerial !== questionRequestSerial) return
+
+  if (facetsResult.status === 'fulfilled') {
+    facets.value = facetsResult.value
+    facetsState.value = 'ready'
+  } else {
+    facetsState.value = 'error'
+  }
+
   try {
-    const result = await questionBankApi.listQuestions(queryFilters(), controller.signal)
-    if (requestSerial !== questionRequestSerial) return
+    if (questionResult.status === 'rejected') throw questionResult.reason
+    const result = questionResult.value
     questions.value = result.items
     total.value = result.total
     totalPages.value = result.total_pages
     state.value = result.items.length ? 'ready' : 'empty'
   } catch {
-    if (controller.signal.aborted || requestSerial !== questionRequestSerial) return
     state.value = 'error'
   } finally {
     if (requestSerial === questionRequestSerial) questionAbortController = null
@@ -321,7 +366,9 @@ async function loadCatalog(): Promise<void> {
 async function loadFacets(): Promise<void> {
   facetsState.value = 'loading'
   try {
-    facets.value = await questionBankApi.listFacets({ tagStatus: 'all' })
+    const loaded = await questionBankApi.listFacets({ tagStatus: 'all' })
+    baseFacets.value = loaded
+    facets.value = loaded
     facetsState.value = 'ready'
   } catch {
     facetsState.value = 'error'
@@ -349,6 +396,7 @@ function chooseInitialVolume(): void {
 function chooseVolume(value: string): void {
   selectedVolumeId.value = value
   selectedChapterId.value = ''
+  selectedSectionId.value = ''
   selectedHistoricalScope.value = ''
   expandedChapterIds.value = new Set()
   void loadQuestions(true)
@@ -362,8 +410,9 @@ function toggleChapter(chapterId: string): void {
 }
 
 function chooseChapter(chapter: CurriculumChapter): void {
-  const clear = selectedChapterId.value === chapter.id
+  const clear = selectedChapterId.value === chapter.id && !selectedSectionId.value
   selectedChapterId.value = clear ? '' : chapter.id
+  selectedSectionId.value = ''
   selectedHistoricalScope.value = ''
   if (!clear) {
     const next = new Set(expandedChapterIds.value)
@@ -373,8 +422,17 @@ function chooseChapter(chapter: CurriculumChapter): void {
   void loadQuestions(true)
 }
 
+function chooseSection(chapter: CurriculumChapter, sectionId: string): void {
+  const clear = selectedSectionId.value === sectionId
+  selectedChapterId.value = clear ? '' : chapter.id
+  selectedSectionId.value = clear ? '' : sectionId
+  selectedHistoricalScope.value = ''
+  void loadQuestions(true)
+}
+
 function clearScope(): void {
   selectedChapterId.value = ''
+  selectedSectionId.value = ''
   selectedHistoricalScope.value = ''
   void loadQuestions(true)
 }
@@ -383,6 +441,7 @@ function chooseHistoricalScope(value: string): void {
   const clear = selectedHistoricalScope.value === value
   selectedHistoricalScope.value = clear ? '' : value
   selectedChapterId.value = ''
+  selectedSectionId.value = ''
   void loadQuestions(true)
 }
 
@@ -413,6 +472,7 @@ function chooseTagStatus(value: 'all' | 'tagged' | 'untagged'): void {
 function clearActiveFilter(filter: ActiveFilter): void {
   if (filter.key === 'scope') {
     selectedChapterId.value = ''
+    selectedSectionId.value = ''
     selectedHistoricalScope.value = ''
   } else if (filter.key === 'tagStatus') {
     filters.tagStatus = 'all'
@@ -448,12 +508,22 @@ function resetFilters(): void {
     sort: 'newest',
   })
   selectedChapterId.value = ''
+  selectedSectionId.value = ''
   selectedHistoricalScope.value = ''
   void loadQuestions()
 }
 
 function chapterCount(chapterId: string): number {
   return chapterCounts.value.get(chapterId) ?? 0
+}
+
+function sectionCount(sectionId: string): number {
+  return sectionCounts.value.get(sectionId) ?? 0
+}
+
+function unassignedSectionCount(chapter: CurriculumChapter): number {
+  const assigned = chapter.sections.reduce((sum, section) => sum + sectionCount(section.id), 0)
+  return Math.max(0, chapterCount(chapter.id) - assigned)
 }
 
 function isInBasket(questionId: number): boolean {
@@ -589,16 +659,17 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
           </div>
           <ul v-if="expandedChapterIds.has(chapter.id)" class="assembly-curriculum-sections">
             <li class="assembly-curriculum-sections__status">
-              本章 {{ chapterCount(chapter.id) }} 题尚未细分到小节
+              其中 {{ unassignedSectionCount(chapter) }} 题待标定小节
             </li>
             <li v-for="section in chapter.sections" :key="section.id">
               <button
                 type="button"
-                disabled
-                title="当前题库尚未保存这道题所属的小节，暂不能精确筛选"
+                :class="{ 'is-active': selectedSectionId === section.id }"
+                :aria-pressed="selectedSectionId === section.id"
+                @click="chooseSection(chapter, section.id)"
               >
                 <span>{{ section.label }}</span>
-                <small>待标定</small>
+                <small>{{ sectionCount(section.id) }} 题</small>
               </button>
             </li>
           </ul>
@@ -649,7 +720,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
                 :aria-pressed="!filters.questionType"
                 @click="chooseTextFilter('questionType', '')"
               >
-                全部
+                全部 <small>{{ total }}</small>
               </button>
               <button
                 v-for="item in facets.question_types"
@@ -689,7 +760,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
                 :aria-pressed="filters[activeTagRow.key].length === 0"
                 @click="clearTagFilter(activeTagRow.key)"
               >
-                全部
+                全部 <small>{{ total }}</small>
               </button>
               <button
                 v-for="item in activeTagRow.items.slice(0, activeTagRow.visibleLimit)"
@@ -734,7 +805,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
                 <span class="assembly-filter-label">年份</span>
                 <div class="assembly-filter-chips">
                   <button type="button" :class="{ 'is-active': !filters.year }" @click="chooseTextFilter('year', '')">
-                    全部
+                    全部 <small>{{ total }}</small>
                   </button>
                   <button
                     v-for="item in facets.years"
@@ -752,7 +823,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
                 <span class="assembly-filter-label">试卷类型</span>
                 <div class="assembly-filter-chips">
                   <button type="button" :class="{ 'is-active': !filters.examType }" @click="chooseTextFilter('examType', '')">
-                    全部
+                    全部 <small>{{ total }}</small>
                   </button>
                   <button
                     v-for="item in facets.exam_types"
@@ -770,7 +841,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
                 <span class="assembly-filter-label">年级</span>
                 <div class="assembly-filter-chips">
                   <button type="button" :class="{ 'is-active': !filters.grade }" @click="chooseTextFilter('grade', '')">
-                    全部
+                    全部 <small>{{ total }}</small>
                   </button>
                   <button
                     v-for="item in facets.grades"

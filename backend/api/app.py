@@ -231,6 +231,7 @@ def create_app(
         ops_router,
         question_bank_router,
         reports_router,
+        results_center_router,
         review_router,
         scan_router,
         sessions_router,
@@ -253,6 +254,7 @@ def create_app(
     api.include_router(ops_router)
     api.include_router(question_bank_router)
     api.include_router(reports_router)
+    api.include_router(results_center_router)
     api.include_router(review_router)
     api.include_router(scan_router)
     api.include_router(sessions_router)

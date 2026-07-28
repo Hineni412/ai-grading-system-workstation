@@ -705,6 +705,93 @@ class DBManager:
 
         return paths
 
+    def collect_session_reupload_storage_paths(self, session_id: int) -> list[str]:
+        """Return only files produced from uploaded student answer sheets."""
+        paths: list[str] = []
+
+        def add_values(row: Any, fields: list[str]) -> None:
+            if row is None:
+                return
+            for field in fields:
+                value = row[field]
+                if value:
+                    paths.append(str(value))
+
+        for row in self.paper_repository.get_session_storage_path_rows(session_id):
+            add_values(row, ["front_image", "back_image"])
+        for row in self.review_repository.get_session_annotation_path_rows(session_id):
+            add_values(row, ["annotated_front_path", "annotated_back_path"])
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT json_extract(result_json, '$.file_path') AS file_path
+                FROM jobs
+                WHERE job_type = 'report_export'
+                  AND json_valid(payload_json) = 1
+                  AND CAST(json_extract(payload_json, '$.session_id') AS TEXT) = ?
+                  AND json_valid(result_json) = 1
+                  AND json_type(result_json, '$.file_path') = 'text'
+                """,
+                (str(int(session_id)),),
+            ).fetchall()
+        for row in rows:
+            add_values(row, ["file_path"])
+        return paths
+
+    def reset_session_for_scan_replacement(self, session_id: int) -> dict[str, int]:
+        """Delete every downstream result while preserving exam setup and roster."""
+        counts: dict[str, int] = {}
+        with self._repository_sessions.session() as repository_session:
+            with repository_session.transaction(immediate=True):
+                results = ResultRepository(repository_session)
+                reviews = ReviewRepository(repository_session)
+                papers = PaperRepository(repository_session)
+                sessions = SessionRepository(repository_session)
+                active = sessions.session_active_work_counts(int(session_id))
+                if active["active_jobs"] or active["active_grading_runs"]:
+                    raise SessionDeletionActiveWork(**active)
+                connection = repository_session.connection
+                counts["grading_run_items"] = max(0, int(connection.execute(
+                    """
+                    DELETE FROM grading_run_items
+                    WHERE run_id IN (SELECT id FROM grading_runs WHERE session_id = ?)
+                    """,
+                    (int(session_id),),
+                ).rowcount))
+                counts["grading_runs"] = max(0, int(connection.execute(
+                    "DELETE FROM grading_runs WHERE session_id = ?",
+                    (int(session_id),),
+                ).rowcount))
+                counts["jobs"] = max(0, int(connection.execute(
+                    """
+                    DELETE FROM jobs
+                    WHERE job_type IN ('scan_analysis', 'grading_run', 'report_export')
+                      AND json_valid(payload_json) = 1
+                      AND CAST(json_extract(payload_json, '$.session_id') AS TEXT) = ?
+                    """,
+                    (str(int(session_id)),),
+                ).rowcount))
+                counts["teacher_score_locks"] = reviews.delete_session_teacher_score_locks(
+                    session_id
+                )
+                result_ids = results.get_session_result_ids(session_id)
+                counts["session_details"] = results.delete_result_details(result_ids)
+                counts["annotated_results"] = reviews.delete_session_annotations(
+                    session_id, result_ids
+                )
+                counts["session_attendance"] = sessions.delete_session_attendance(session_id)
+                counts["session_results"] = results.delete_session_results(session_id)
+                counts["exam_papers"] = papers.delete_session_papers(session_id)
+                connection.execute(
+                    """
+                    UPDATE grading_sessions
+                    SET status = 'created', updated_at = datetime('now','localtime')
+                    WHERE id = ?
+                    """,
+                    (int(session_id),),
+                )
+        return counts
+
     def hard_delete_grading_session(
         self,
         session_id: int,

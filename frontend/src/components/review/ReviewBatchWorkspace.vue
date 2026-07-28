@@ -21,6 +21,7 @@ const props = defineProps<{
   questions: ReviewQuestionSummary[]
   selectedQuestionId: string
   items: ReviewItemLike[]
+  queueItems: ReviewItemLike[]
   search: string
   scope: ReviewScope
   sort: ReviewSort
@@ -38,13 +39,32 @@ const emit = defineEmits<{
   updateSort: [value: ReviewSort]
   updatePage: [value: number]
   openItem: [reviewItemId: string]
+  focusScore: [reviewItemId: string]
   confirmBatch: [inputs: ReviewConfirmInput[], draftKeys: string[], items: ReviewItemLike[]]
 }>()
 
 const draftStore = useReviewDraftStore()
 const root = ref<HTMLElement | null>(null)
+const selectedQuestionLayout = computed<'compact' | 'expanded'>(() => {
+  const questionType = props.questions
+    .find((question) => question.question_id === props.selectedQuestionId)
+    ?.question_type
+    ?.trim()
+    .toLocaleLowerCase()
+  return questionType === 'choice' || questionType === 'fill_blank'
+    ? 'compact'
+    : 'expanded'
+})
+const editableItems = computed(() =>
+  props.queueItems.filter((item) => !resolveReviewItem(item).teacher_locked),
+)
 const actionableItems = computed(() =>
-  props.items.filter((item) => !resolveReviewItem(item).teacher_locked),
+  props.queueItems.filter((item) => {
+    const resolved = resolveReviewItem(item)
+    if (resolved.teacher_locked) return false
+    const draft = draftStore.drafts[reviewDraftKey(item)] ?? draftStore.ensureDraft(item)
+    return resolved.score_status !== 'ai_ready' || draft.dirty
+  }),
 )
 const invalidItems = computed(() => actionableItems.value.filter((item) => {
   const resolved = resolveReviewItem(item)
@@ -74,8 +94,34 @@ function itemKey(item: ReviewItemLike): string {
   return resolveReviewItem(item).review_item_id
 }
 
-function submitBatch(): void {
-  if (submitDisabled.value) return
+async function focusScore(reviewItemId: string): Promise<void> {
+  await nextTick()
+  const card = [...(root.value?.querySelectorAll<HTMLElement>(
+    '[data-review-item-id]',
+  ) ?? [])].find((entry) => entry.dataset.reviewItemId === reviewItemId)
+  const input = card?.querySelector<HTMLInputElement>(
+    '[data-score-position]:not(:disabled)',
+  )
+  if (input) {
+    input.focus()
+    return
+  }
+  emit('focusScore', reviewItemId)
+}
+
+function submitBatch(focusInvalid = false): void {
+  if (
+    props.loading
+    || props.submitting
+    || actionableItems.value.length === 0
+  ) return
+  const firstInvalid = invalidItems.value[0]
+  if (firstInvalid) {
+    if (focusInvalid) {
+      void focusScore(resolveReviewItem(firstInvalid).review_item_id)
+    }
+    return
+  }
   const inputs: ReviewConfirmInput[] = []
   const draftKeys: string[] = []
   const submittedItems: ReviewItemLike[] = []
@@ -102,15 +148,30 @@ function submitBatch(): void {
   emit('confirmBatch', inputs, draftKeys, submittedItems)
 }
 
-async function focusNextScore(position: number): Promise<void> {
-  await nextTick()
-  root.value
-    ?.querySelector<HTMLInputElement>(`[data-score-position="${position}"]:not(:disabled)`)
-    ?.focus()
+function onScoreKeydown(event: KeyboardEvent, reviewItemId: string): void {
+  if (props.loading || props.submitting || event.repeat) {
+    event.preventDefault()
+    return
+  }
+  const direction = event.key === 'Tab' && event.shiftKey ? -1 : 1
+  const currentIndex = editableItems.value.findIndex(
+    (item) => resolveReviewItem(item).review_item_id === reviewItemId,
+  )
+  if (currentIndex < 0) return
+  const target = editableItems.value[currentIndex + direction]
+  if (target) {
+    event.preventDefault()
+    void focusScore(resolveReviewItem(target).review_item_id)
+    return
+  }
+  if (event.key === 'Enter' && direction > 0) {
+    event.preventDefault()
+    submitBatch(true)
+  }
 }
 
 watch(
-  () => props.items,
+  () => props.queueItems,
   (items) => items.forEach((item) => draftStore.ensureDraft(item)),
   { immediate: true },
 )
@@ -134,9 +195,11 @@ watch(
       >
         <strong>{{ question.question_id }}</strong>
         <span>
-          未批 {{ question.ungraded_count ?? 0 }} ·
-          教师确认 {{ question.teacher_confirmed_count ?? 0 }} / {{ question.total_count }}
+          待人工 {{ (question.ungraded_count ?? 0) + (question.failed_count ?? 0) }} ·
+          待复核 {{ question.needs_review_count }} ·
+          AI 已评 {{ question.ai_ready_count ?? 0 }}
         </span>
+        <span>教师确认 {{ question.teacher_confirmed_count ?? 0 }} / 总计 {{ question.total_count }}</span>
         <span>满分 {{ question.max_score }}</span>
       </button>
     </nav>
@@ -156,11 +219,11 @@ watch(
       <label for="review-scope">
         <span>显示范围</span>
         <select id="review-scope" :value="scope" @change="onScope">
+          <option value="all">全部答卷</option>
           <option value="teacher_pending">教师待处理</option>
           <option value="ungraded">仅未批</option>
           <option value="ai_review">仅 AI 待复核</option>
           <option value="teacher_final">仅教师已确认</option>
-          <option value="all">本题全部</option>
         </select>
       </label>
       <label for="review-sort">
@@ -186,14 +249,20 @@ watch(
       title="当前范围没有答卷"
       description="可以更换题号、搜索条件或显示范围。"
     />
-    <div v-else class="review-contact-sheet" data-testid="review-contact-sheet">
+    <div
+      v-else
+      class="review-contact-sheet"
+      data-testid="review-contact-sheet"
+      :data-question-layout="selectedQuestionLayout"
+    >
       <ReviewAnswerSheet
         v-for="(item, index) in items"
         :key="itemKey(item)"
         :item="item"
         :position="index"
+        :submitting="submitting"
         @open-item="emit('openItem', $event)"
-        @focus-next-score="focusNextScore"
+        @score-keydown="onScoreKeydown"
       />
     </div>
 
@@ -209,18 +278,18 @@ watch(
 
     <footer class="review-batch-actions">
       <div>
-        <strong>本批可确认 {{ actionableItems.length }} 份</strong>
+        <strong>本题需要教师处理 {{ actionableItems.length }} 份</strong>
         <span v-if="invalidItems.length > 0">其中 {{ invalidItems.length }} 份分数需要修正</span>
-        <span v-else-if="actionableItems.length > 0">未批答卷需填写分数；已有 AI 分可直接确认或修改</span>
-        <span v-else>本批没有可确认的答卷</span>
+        <span v-else-if="actionableItems.length > 0">未批答卷需填写分数；待复核 AI 分可直接确认或修改</span>
+        <span v-else>本批只有高置信 AI 结果，无需逐份确认；修改后才会进入保存范围</span>
       </div>
       <button
         type="button"
         data-testid="confirm-batch"
         :disabled="submitDisabled"
-        @click="submitBatch"
+        @click="submitBatch()"
       >
-        {{ submitting ? '正在确认本批' : '确认本批并继续' }}
+        {{ submitting ? '正在保存本题' : '保存本题处理结果' }}
       </button>
     </footer>
   </section>

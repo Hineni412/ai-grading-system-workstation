@@ -10,7 +10,7 @@ import tempfile
 import time
 import unicodedata
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, BinaryIO, Iterable, Iterator
 
@@ -183,6 +183,7 @@ class QuestionReadFilters:
     exam_types: tuple[str, ...] = ()
     grades: tuple[str, ...] = ()
     exam_scopes: tuple[str, ...] = ()
+    curriculum_sections: tuple[str, ...] = ()
     tag_status: str = "all"
     sort: str = "newest"
 
@@ -700,24 +701,79 @@ class QuestionBankReadService:
         self,
         filters: QuestionReadFilters,
     ) -> dict[str, list[dict[str, Any]]]:
-        joins, where, params = _question_filter_parts(filters)
-        where_sql = "WHERE " + " AND ".join(where) if where else ""
-        filtered_sql = " ".join(
-            [
-                """
-                SELECT DISTINCT
-                    q.id,
-                    q.question_type,
-                    p.year,
-                    p.exam_type,
-                    p.grade
-                FROM questions q
-                """,
-                *joins,
-                where_sql,
-            ]
-        )
+        def facet_source(
+            **excluded_dimension: object,
+        ) -> tuple[str, list[Any]]:
+            facet_filters = replace(filters, **excluded_dimension)
+            joins, where, params = _question_filter_parts(facet_filters)
+            where_sql = "WHERE " + " AND ".join(where) if where else ""
+            return (
+                " ".join(
+                    [
+                        """
+                        SELECT DISTINCT
+                            q.id,
+                            q.question_type,
+                            p.year,
+                            p.exam_type,
+                            p.grade
+                        FROM questions q
+                        """,
+                        *joins,
+                        where_sql,
+                    ]
+                ),
+                params,
+            )
+
+        sources = {
+            "exam_scopes": facet_source(exam_scopes=()),
+            "curriculum_sections": facet_source(
+                curriculum_sections=(),
+            ),
+            "knowledge_points": facet_source(
+                knowledge_point=None,
+                knowledge_points=(),
+            ),
+            "curriculum_chapters": facet_source(exam_scopes=()),
+            "abilities": facet_source(abilities=()),
+            "methods": facet_source(methods=()),
+            "models": facet_source(models=()),
+            "student_levels": facet_source(student_levels=()),
+            "teaching_stages": facet_source(teaching_stages=()),
+            "sub_skills": facet_source(sub_skills=()),
+            "question_types": facet_source(question_types=()),
+            "years": facet_source(years=()),
+            "exam_types": facet_source(exam_types=()),
+            "grades": facet_source(grades=()),
+        }
+
+        def source(name: str) -> tuple[str, list[Any]]:
+            return sources[name]
+
         with _read_connection(self.db_path) as conn:
+            filtered_sql, params = source("exam_scopes")
+            curriculum_section_sql, curriculum_section_params = source(
+                "curriculum_sections"
+            )
+            knowledge_sql, knowledge_params = source("knowledge_points")
+            chapter_sql, chapter_params = source("curriculum_chapters")
+            ability_sql, ability_params = source("abilities")
+            method_sql, method_params = source("methods")
+            model_sql, model_params = source("models")
+            student_level_sql, student_level_params = source(
+                "student_levels"
+            )
+            teaching_stage_sql, teaching_stage_params = source(
+                "teaching_stages"
+            )
+            sub_skill_sql, sub_skill_params = source("sub_skills")
+            question_type_sql, question_type_params = source(
+                "question_types"
+            )
+            year_sql, year_params = source("years")
+            exam_type_sql, exam_type_params = source("exam_types")
+            grade_sql, grade_params = source("grades")
             return {
                 "exam_scopes": _tag_facet(
                     conn,
@@ -725,79 +781,85 @@ class QuestionBankReadService:
                     params,
                     tag_type="exam_scope",
                 ),
+                "curriculum_sections": _tag_facet(
+                    conn,
+                    curriculum_section_sql,
+                    curriculum_section_params,
+                    tag_type="curriculum_section",
+                ),
                 "knowledge_points": _tag_facet(
                     conn,
-                    filtered_sql,
-                    params,
+                    knowledge_sql,
+                    knowledge_params,
                     tag_type="knowledge_point",
                     taxonomy_dimension="knowledge",
                 ),
                 "curriculum_chapters": _curriculum_chapter_facet(
                     conn,
-                    filtered_sql,
-                    params,
+                    chapter_sql,
+                    chapter_params,
                 ),
                 "abilities": _tag_facet(
                     conn,
-                    filtered_sql,
-                    params,
+                    ability_sql,
+                    ability_params,
                     tag_type="ability",
                     taxonomy_dimension="ability",
                 ),
                 "methods": _tag_facet(
                     conn,
-                    filtered_sql,
-                    params,
+                    method_sql,
+                    method_params,
                     tag_type="method",
                     taxonomy_dimension="method",
                 ),
                 "models": _tag_facet(
                     conn,
-                    filtered_sql,
-                    params,
+                    model_sql,
+                    model_params,
                     tag_type="model",
                     taxonomy_dimension="model",
                 ),
                 "student_levels": _tag_facet(
                     conn,
-                    filtered_sql,
-                    params,
+                    student_level_sql,
+                    student_level_params,
                     tag_type="student_level",
                 ),
                 "teaching_stages": _tag_facet(
                     conn,
-                    filtered_sql,
-                    params,
+                    teaching_stage_sql,
+                    teaching_stage_params,
                     tag_type="teaching_stage",
                 ),
                 "sub_skills": _tag_facet(
                     conn,
-                    filtered_sql,
-                    params,
+                    sub_skill_sql,
+                    sub_skill_params,
                     tag_type="sub_skill",
                 ),
                 "question_types": _column_facet(
                     conn,
-                    filtered_sql,
-                    params,
+                    question_type_sql,
+                    question_type_params,
                     column="question_type",
                 ),
                 "years": _column_facet(
                     conn,
-                    filtered_sql,
-                    params,
+                    year_sql,
+                    year_params,
                     column="year",
                 ),
                 "exam_types": _column_facet(
                     conn,
-                    filtered_sql,
-                    params,
+                    exam_type_sql,
+                    exam_type_params,
                     column="exam_type",
                 ),
                 "grades": _column_facet(
                     conn,
-                    filtered_sql,
-                    params,
+                    grade_sql,
+                    grade_params,
                     column="grade",
                 ),
             }
@@ -1186,6 +1248,7 @@ def _question_filter_parts(
                         "curriculum", filters.exam_scopes
                     ),
                 ),
+                ("curriculum_section", filters.curriculum_sections),
                 (
                     "knowledge_point",
                     governance.expand_filter_values(
@@ -1231,6 +1294,7 @@ def _tag_facet(
 ) -> list[dict[str, Any]]:
     if tag_type not in {
         "ability",
+        "curriculum_section",
         "exam_scope",
         "knowledge_point",
         "method",

@@ -107,7 +107,7 @@ export const useReviewQueueStore = defineStore('review-queue', () => {
   const selectedReviewItemId = ref<string | null>(null)
   const selectedDetailId = ref<number | null>(null)
   const search = ref('')
-  const scope = ref<ReviewScope>('teacher_pending')
+  const scope = ref<ReviewScope>('all')
   const sort = ref<ReviewSort>('risk')
   const page = ref(1)
 
@@ -321,7 +321,7 @@ export const useReviewQueueStore = defineStore('review-queue', () => {
     try {
       const options: FetchReviewQuestionsOptions = {
         signal: controller.signal,
-        ...(scope.value === 'needs_review' ? {} : { scope: scope.value }),
+        scope: 'all',
       }
       const loadedQuestions = await loader(
         sessionId,
@@ -358,6 +358,9 @@ export const useReviewQueueStore = defineStore('review-queue', () => {
     loader: ReviewItemsLoader = fetchReviewItems,
     needsReviewOnly?: boolean,
   ): Promise<void> {
+    // Keep the legacy argument for existing callers; the intervention
+    // workspace now always loads the complete question queue.
+    void needsReviewOnly
     itemController?.abort()
     const controller = new AbortController()
     itemController = controller
@@ -367,12 +370,9 @@ export const useReviewQueueStore = defineStore('review-queue', () => {
     errorMessage.value = ''
 
     try {
-      const useLegacyScope = needsReviewOnly !== undefined || scope.value === 'needs_review'
       const options: FetchReviewItemsOptions = {
         signal: controller.signal,
-        ...(useLegacyScope
-          ? { needsReviewOnly: needsReviewOnly ?? true }
-          : { scope: scope.value as ApiReviewScope }),
+        scope: 'all',
       }
       const loadedItems = await loader(sessionId, questionId, options)
       if (generation !== itemGeneration) return
@@ -394,7 +394,7 @@ export const useReviewQueueStore = defineStore('review-queue', () => {
     }
   }
 
-  function reset(nextScope: ReviewScope = 'teacher_pending'): void {
+  function reset(nextScope: ReviewScope = 'all'): void {
     questionController?.abort()
     itemController?.abort()
     questionController = null

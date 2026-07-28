@@ -72,6 +72,7 @@ export type GradingJobSummary = ScanAnalysisJobSummary
 export interface GradingWorkspace {
   session_id: number
   upload_batch: ScanUploadBatch
+  replacement_batch?: ScanUploadBatch | null
   grading_run: GradingRunSummary | null
   grading_job?: GradingJobSummary | null
   scan_analysis_job?: ScanAnalysisJobSummary | null
@@ -195,7 +196,7 @@ function decodeScanAnalysisJob(value: unknown): ScanAnalysisJobSummary {
 
 export function decodeGradingWorkspace(value: unknown): GradingWorkspace {
   if (!isRecord(value) || !hasOnlyKeys(value, [
-    'session_id', 'upload_batch', 'grading_run', 'grading_job', 'scan_analysis_job',
+    'session_id', 'upload_batch', 'replacement_batch', 'grading_run', 'grading_job', 'scan_analysis_job',
   ]) || !('session_id' in value) || !('upload_batch' in value) || !('grading_run' in value)
     || !finiteInteger(value.session_id, 1)
     || !(value.grading_run === null || isRecord(value.grading_run))
@@ -206,6 +207,8 @@ export function decodeGradingWorkspace(value: unknown): GradingWorkspace {
   return {
     session_id: value.session_id,
     upload_batch: decodeUploadBatch(value.upload_batch),
+    replacement_batch: value.replacement_batch === null || value.replacement_batch === undefined
+      ? null : decodeUploadBatch(value.replacement_batch),
     grading_run: value.grading_run === null ? null : decodeRun(value.grading_run),
     grading_job: value.grading_job === undefined || value.grading_job === null
       ? null : decodeScanAnalysisJob(value.grading_job),
@@ -319,9 +322,10 @@ export function fetchGradingWorkspace(sessionId: number, signal?: AbortSignal): 
   })
 }
 
-export async function uploadScan(sessionId: number, file: File, signal?: AbortSignal): Promise<{ duplicate: boolean, file: ScanUploadFile }> {
+export async function uploadScan(sessionId: number, file: File, replacement = false, signal?: AbortSignal): Promise<{ duplicate: boolean, file: ScanUploadFile }> {
   const digest = await sha256(file)
-  return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan-uploads`, {
+  const suffix = replacement ? '?replacement=true' : ''
+  return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan-uploads${suffix}`, {
     method: 'POST', rawBody: file, signal, timeoutMs: 120_000,
     headers: {
       'content-type': file.type,
@@ -335,14 +339,14 @@ export async function uploadScan(sessionId: number, file: File, signal?: AbortSi
   })
 }
 
-export function removeScan(sessionId: number, uploadId: string, revision: number): Promise<ScanUploadBatch> {
-  return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan-uploads/${encodeURIComponent(uploadId)}?expected_revision=${revision}`, {
+export function removeScan(sessionId: number, uploadId: string, revision: number, replacement = false): Promise<ScanUploadBatch> {
+  return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan-uploads/${encodeURIComponent(uploadId)}?expected_revision=${revision}${replacement ? '&replacement=true' : ''}`, {
     method: 'DELETE', decode: decodeUploadBatch,
   })
 }
 
-export function clearScans(sessionId: number, revision: number): Promise<ScanUploadBatch> {
-  return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan-uploads?expected_revision=${revision}`, {
+export function clearScans(sessionId: number, revision: number, replacement = false): Promise<ScanUploadBatch> {
+  return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan-uploads?expected_revision=${revision}${replacement ? '&replacement=true' : ''}`, {
     method: 'DELETE', decode: decodeUploadBatch,
   })
 }
@@ -356,6 +360,30 @@ export function freezeScans(sessionId: number, revision: number): Promise<ScanUp
 export function startNewScanBatch(sessionId: number): Promise<ScanUploadBatch> {
   return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan-uploads/new-batch`, {
     method: 'POST', decode: decodeUploadBatch,
+  })
+}
+
+export function beginScanReplacement(sessionId: number): Promise<ScanUploadBatch> {
+  return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan-uploads/replacement`, {
+    method: 'POST', decode: decodeUploadBatch,
+  })
+}
+
+export function cancelScanReplacement(sessionId: number): Promise<void> {
+  return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan-uploads/replacement/cancel`, {
+    method: 'POST',
+    decode(value) {
+      if (!isRecord(value) || !hasExactKeys(value, ['cancelled']) || value.cancelled !== true) {
+        throw new Error('Invalid scan replacement cancellation')
+      }
+    },
+  })
+}
+
+export function commitScanReplacement(sessionId: number, revision: number): Promise<ScanUploadBatch> {
+  return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan-uploads/replacement/commit`, {
+    method: 'POST', body: { expected_revision: revision }, decode: decodeUploadBatch,
+    timeoutMs: 60_000,
   })
 }
 

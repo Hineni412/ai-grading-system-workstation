@@ -6,6 +6,7 @@ export type WorkspaceRouteId =
   | 'question-assembly'
   | 'training'
   | 'knowledge-graph'
+  | 'results'
   | 'files'
   | 'grading'
   | 'model-profiles'
@@ -15,6 +16,7 @@ export type WorkspaceNavigationIcon =
   | 'workbench'
   | 'exam'
   | 'review'
+  | 'results'
   | 'files'
   | 'question-bank'
   | 'assembly'
@@ -26,6 +28,7 @@ export type WorkspaceNavigationIcon =
 
 export type AppIconName =
   | WorkspaceNavigationIcon
+  | 'archive'
   | 'menu'
   | 'close'
   | 'chevron-down'
@@ -152,6 +155,16 @@ export const filesRouteDefinition = {
   icon: 'files',
 } as const satisfies WorkspaceRouteDefinition
 
+export const resultsRouteDefinition = {
+  id: 'results',
+  label: '成绩中心',
+  path: '/results',
+  title: '成绩中心',
+  description: '查看当前考试成绩、定位需要处理的题目并导出正式文件',
+  breadcrumb: '成绩中心',
+  icon: 'results',
+} as const satisfies WorkspaceRouteDefinition
+
 export const modelProfilesRouteDefinition = {
   id: 'model-profiles',
   label: '大模型 API',
@@ -179,7 +192,7 @@ export const navigationGroups: readonly WorkspaceNavigationGroup[] = [
     items: [
       sessionRouteDefinition,
       reviewRouteDefinition,
-      filesRouteDefinition,
+      resultsRouteDefinition,
     ],
   },
   {

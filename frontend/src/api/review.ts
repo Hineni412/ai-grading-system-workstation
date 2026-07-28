@@ -17,9 +17,12 @@ export type ReviewScoreSource = 'none' | 'ai' | 'teacher'
 
 export interface ReviewQuestionSummary {
   question_id: string
+  question_type: string | null
   total_count: number
   needs_review_count: number
   ungraded_count?: number
+  failed_count?: number
+  ai_ready_count?: number
   teacher_confirmed_count?: number
   max_score: number
 }
@@ -101,19 +104,29 @@ export interface FetchReviewItemsOptions {
   signal?: AbortSignal
 }
 
-export interface ReviewRubricLine {
-  label: string
-  score: number | null
+export interface ReviewRubricPoint {
+  part_id: string
+  part_label: string
+  step_id: string
+  core_goal: string
+  score: number
+  standard_answer: string
+  accepted_answers: string[]
+  match_rule: string
+  required_elements: string[]
+  deduction_rules: string[]
+  answer_only_max_score: number | null
+  require_final_answer: boolean | null
+  final_answer_rule: string
 }
 
 export interface ReviewRubricSection {
-  questionId: string
-  parentQuestionId: string | null
-  title: string
-  maxScore: number
-  questionType: string | null
-  knowledgeLabels: string[]
-  lines: ReviewRubricLine[]
+  question_id: string
+  parent_question_id: string
+  question_type: string | null
+  max_score: number
+  knowledge_labels: string[]
+  points: ReviewRubricPoint[]
 }
 
 export interface ReviewConfirmInput {
@@ -153,12 +166,19 @@ const isReviewScoreSource = (value: unknown): value is ReviewScoreSource =>
 function isReviewQuestion(value: unknown): value is ReviewQuestionSummary {
   return isRecord(value)
     && typeof value.question_id === 'string' && value.question_id.trim().length > 0
+    && isNullableString(value.question_type)
     && isNonnegativeInteger(value.total_count)
     && isNonnegativeInteger(value.needs_review_count)
     && Number(value.needs_review_count) <= Number(value.total_count)
     && (value.ungraded_count === undefined
       || (isNonnegativeInteger(value.ungraded_count)
         && Number(value.ungraded_count) <= Number(value.total_count)))
+    && (value.failed_count === undefined
+      || (isNonnegativeInteger(value.failed_count)
+        && Number(value.failed_count) <= Number(value.total_count)))
+    && (value.ai_ready_count === undefined
+      || (isNonnegativeInteger(value.ai_ready_count)
+        && Number(value.ai_ready_count) <= Number(value.total_count)))
     && (value.teacher_confirmed_count === undefined
       || (isNonnegativeInteger(value.teacher_confirmed_count)
         && Number(value.teacher_confirmed_count) <= Number(value.total_count)))
@@ -242,105 +262,88 @@ export function resolveReviewItem(item: ReviewItemLike): ResolvedReviewItem {
   }
 }
 
-function cleanText(value: unknown): string | null {
-  if (typeof value !== 'string') return null
-  const text = value.trim()
-  return text.length > 0 ? text : null
+const RUBRIC_SECTION_KEYS = [
+  'question_id',
+  'parent_question_id',
+  'question_type',
+  'max_score',
+  'knowledge_labels',
+  'points',
+] as const
+
+const RUBRIC_POINT_KEYS = [
+  'part_id',
+  'part_label',
+  'step_id',
+  'core_goal',
+  'score',
+  'standard_answer',
+  'accepted_answers',
+  'match_rule',
+  'required_elements',
+  'deduction_rules',
+  'answer_only_max_score',
+  'require_final_answer',
+  'final_answer_rule',
+] as const
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  const actual = Object.keys(value)
+  return actual.length === expected.length
+    && actual.every((key) => expected.includes(key))
 }
 
-function finiteNonnegative(value: unknown): number | null {
-  return isFiniteNumber(value) && value >= 0 ? value : null
+function isNonblankString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0
 }
 
-function uniqueTexts(values: unknown[]): string[] {
-  return [...new Set(values.map(cleanText).filter((value): value is string => value !== null))]
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string')
 }
 
-function knowledgeLabels(question: Record<string, unknown>): string[] {
-  const labels: unknown[] = []
-  const points = question.knowledge_points
-  if (Array.isArray(points)) {
-    for (const point of points) {
-      if (!isRecord(point)) continue
-      labels.push(
-        cleanText(point.knowledge_name) ??
-        cleanText(point.name) ??
-        cleanText(point.knowledge_id) ??
-        cleanText(point.id),
-      )
-    }
-  }
-  if (Array.isArray(question.knowledge_ids)) labels.push(...question.knowledge_ids)
-  if (labels.length === 0) labels.push(question.knowledge_name, question.knowledge_id)
-  return uniqueTexts(labels)
+function isNullableNonnegativeNumber(value: unknown): value is number | null {
+  return value === null || (isFiniteNumber(value) && value >= 0)
 }
 
-function rubricLines(container: Record<string, unknown>): ReviewRubricLine[] {
-  const lines: ReviewRubricLine[] = []
-  const seen = new Set<string>()
-  const append = (label: unknown, score: unknown = null) => {
-    const text = cleanText(label)
-    if (text === null || seen.has(text)) return
-    seen.add(text)
-    lines.push({ label: text, score: finiteNonnegative(score) })
-  }
-  append(container.core_goal, container.step_score)
-  append(container.analysis)
-  for (const key of ['required_elements', 'step_milestones', 'grading_points']) {
-    const values = container[key]
-    if (Array.isArray(values)) values.forEach((value) => append(value))
-  }
-  const steps = container.steps
-  if (Array.isArray(steps)) {
-    for (const step of steps) {
-      if (!isRecord(step)) continue
-      append(step.core_goal, step.step_score)
-      append(step.analysis, step.step_score)
-      for (const key of ['required_elements', 'step_milestones']) {
-        const values = step[key]
-        if (Array.isArray(values)) values.forEach((value) => append(value))
-      }
-    }
-  }
-  return lines
+function isReviewRubricPoint(value: unknown): value is ReviewRubricPoint {
+  return isRecord(value)
+    && hasExactKeys(value, RUBRIC_POINT_KEYS)
+    && isNonblankString(value.part_id)
+    && isNonblankString(value.part_label)
+    && isNonblankString(value.step_id)
+    && typeof value.core_goal === 'string'
+    && isFiniteNumber(value.score) && value.score >= 0
+    && typeof value.standard_answer === 'string'
+    && isStringArray(value.accepted_answers)
+    && typeof value.match_rule === 'string'
+    && isStringArray(value.required_elements)
+    && isStringArray(value.deduction_rules)
+    && isNullableNonnegativeNumber(value.answer_only_max_score)
+    && (
+      value.require_final_answer === null
+      || typeof value.require_final_answer === 'boolean'
+    )
+    && typeof value.final_answer_rule === 'string'
 }
 
-export function extractReviewRubricSection(
-  rubric: unknown,
-  requestedQuestionId: string,
-): ReviewRubricSection | null {
-  if (!isRecord(rubric) || !Array.isArray(rubric.questions)) return null
-  const requested = requestedQuestionId.trim()
-  if (!requested) return null
-
-  for (const rawQuestion of rubric.questions) {
-    if (!isRecord(rawQuestion)) continue
-    const questionId = cleanText(rawQuestion.question_id)
-    if (questionId === null) continue
-    const parts = Array.isArray(rawQuestion.parts)
-      ? rawQuestion.parts.filter(isRecord)
-      : []
-    const part = parts.find((entry) => cleanText(entry.part_id) === requested)
-    if (questionId !== requested && part === undefined) continue
-
-    const maxScore = finiteNonnegative(
-      part === undefined ? rawQuestion.max_score : part.part_score,
-    ) ?? 0
-    const lineSources = part === undefined ? [rawQuestion, ...parts] : [part]
-    const lines = lineSources.flatMap(rubricLines)
-    return {
-      questionId: requested,
-      parentQuestionId: part === undefined ? null : questionId,
-      title: requested,
-      maxScore,
-      questionType: cleanText(rawQuestion.question_type),
-      knowledgeLabels: knowledgeLabels(rawQuestion),
-      lines: lines.filter(
-        (line, index) => lines.findIndex((candidate) => candidate.label === line.label) === index,
-      ),
-    }
-  }
-  return null
+export function isReviewRubricSection(
+  value: unknown,
+): value is ReviewRubricSection {
+  return isRecord(value)
+    && hasExactKeys(value, RUBRIC_SECTION_KEYS)
+    && isNonblankString(value.question_id)
+    && isNonblankString(value.parent_question_id)
+    && (
+      value.question_type === null
+      || isNonblankString(value.question_type)
+    )
+    && isFiniteNumber(value.max_score) && value.max_score >= 0
+    && isStringArray(value.knowledge_labels)
+    && Array.isArray(value.points)
+    && value.points.every(isReviewRubricPoint)
 }
 
 export function isReviewConfirmResponse(value: unknown): value is ReviewConfirmResponse {
@@ -435,15 +438,18 @@ export async function fetchReviewRubric(
 ): Promise<ReviewRubricSection | null> {
   const requested = questionId.trim()
   if (!requested) throw new Error('question id is required')
-  return apiClient.request(`/api/sessions/${sessionId}/config`, {
-    signal,
-    decode: (value) => {
-      if (!isRecord(value) || !isRecord(value.rubric)) {
-        throw new Error('invalid review rubric')
-      }
-      return extractReviewRubricSection(value.rubric, requested)
+  const encodedQuestion = encodeURIComponent(requested)
+  return apiClient.request(
+    `/api/sessions/${sessionId}/review/questions/${encodedQuestion}/rubric`,
+    {
+      signal,
+      decode: (value) => {
+        if (value === null) return null
+        if (!isReviewRubricSection(value)) throw new Error('invalid review rubric')
+        return value
+      },
     },
-  })
+  )
 }
 
 export async function confirmReviewItems(

@@ -39,6 +39,7 @@ const question = (
   overrides: Partial<ReviewQuestionSummary> = {},
 ): ReviewQuestionSummary => ({
   question_id: questionId,
+  question_type: null,
   total_count: 2,
   needs_review_count: 1,
   max_score: 5,
@@ -58,10 +59,10 @@ function deferred<T>() {
 describe('review queue store', () => {
   beforeEach(() => setActivePinia(createPinia()))
 
-  it('defaults to pending-only batches of 24 records', () => {
+  it('defaults to the complete answer queue in pages of 24 records', () => {
     const store = useReviewQueueStore()
     expect(REVIEW_PAGE_SIZE).toBe(24)
-    expect(store.scope).toBe('teacher_pending')
+    expect(store.scope).toBe('all')
   })
 
   it('sorts risk deterministically and searches only identity fields', () => {
@@ -83,11 +84,11 @@ describe('review queue store', () => {
     expect(store.filteredItems).toEqual([])
   })
 
-  it('filters by server needs_review and reconciles selection', () => {
+  it('filters the complete local queue and reconciles selection', () => {
     const store = useReviewQueueStore()
     store.replaceItems([item(1, { needs_review: false }), item(2)], 1)
-    expect(store.selectedDetailId).toBe(2)
-    store.setScope('all')
+    expect(store.selectedDetailId).toBe(1)
+    store.setScope('teacher_pending')
     expect(store.selectedDetailId).toBe(2)
   })
 
@@ -308,7 +309,7 @@ describe('review queue store', () => {
       selectedDetailId: null,
       selectedReviewItemId: null,
       search: '',
-      scope: 'teacher_pending',
+      scope: 'all',
       sort: 'risk',
       page: 1,
     })

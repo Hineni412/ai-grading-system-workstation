@@ -1,18 +1,22 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import {
   QUESTION_BANK_TAG_TYPES,
+  questionBankApi,
+  type CurriculumCatalog,
   type QuestionBankTag,
 } from '../../api/question-bank'
 import { useQuestionBankStore } from '../../stores/question-bank'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 
 const store = useQuestionBankStore()
+const curriculum = ref<CurriculumCatalog | null>(null)
 
 const tagLabels: Record<string, string> = {
   ability: '能力',
   canonical_knowledge_id: '标准知识点 ID',
+  curriculum_section: '教材小节',
   error_type: '错误类型',
   exam_scope: '教材章节/考试范围',
   knowledge_point: '知识点',
@@ -24,6 +28,52 @@ const tagLabels: Record<string, string> = {
   sub_skill: '子技能',
   supporting_skill_name: '支撑技能',
   teaching_stage: '教学阶段',
+}
+
+const selectedSectionId = computed(() => (
+  store.tagDraft.find((tag) => tag.tag_type === 'curriculum_section')?.tag_value ?? ''
+))
+
+const curriculumGroups = computed(() => (
+  (curriculum.value?.volumes ?? []).flatMap((volume) => (
+    volume.chapters.map((chapter) => ({
+      id: chapter.id,
+      label: `${volume.label} · ${chapter.label}`,
+      chapter,
+    }))
+  ))
+))
+
+onMounted(async () => {
+  try {
+    curriculum.value = await questionBankApi.getCurriculum()
+  } catch {
+    curriculum.value = null
+  }
+})
+
+function chooseCurriculumSection(sectionId: string): void {
+  const retained = store.tagDraft.filter((tag) => (
+    tag.tag_type !== 'curriculum_section' && (sectionId === '' || tag.tag_type !== 'exam_scope')
+  ))
+  if (!sectionId) {
+    store.replaceTagDraft(retained)
+    return
+  }
+  for (const group of curriculumGroups.value) {
+    const section = group.chapter.sections.find((item) => item.id === sectionId)
+    if (!section) continue
+    store.replaceTagDraft([
+      ...retained,
+      {
+        tag_type: 'exam_scope',
+        tag_value: group.chapter.exam_scope_values[0] ?? group.chapter.label,
+        confidence: null,
+      },
+      { tag_type: 'curriculum_section', tag_value: section.id, confidence: null },
+    ])
+    return
+  }
 }
 
 const coreTagTypes = ['knowledge_point', 'ability', 'exam_scope', 'student_level']
@@ -179,6 +229,30 @@ async function removeCurrent(): Promise<void> {
               </button>
             </div>
             <p class="qb-help">知识点、能力、教材章节/范围和学生层级四项齐全后，才计入试卷的完整进度。</p>
+
+            <label v-if="curriculum" class="qb-section-picker">
+              <span>精确标定教材小节</span>
+              <select
+                :value="selectedSectionId"
+                @change="chooseCurriculumSection(($event.currentTarget as HTMLSelectElement).value)"
+              >
+                <option value="">待标定（不猜测）</option>
+                <optgroup
+                  v-for="group in curriculumGroups"
+                  :key="group.id"
+                  :label="group.label"
+                >
+                  <option
+                    v-for="section in group.chapter.sections"
+                    :key="section.id"
+                    :value="section.id"
+                  >
+                    {{ section.label }}
+                  </option>
+                </optgroup>
+              </select>
+              <small>选择后会同时校准所属章节；旧题未选择时继续显示“待标定”。</small>
+            </label>
 
             <div v-if="store.tagDraft.length" class="qb-tag-editor">
               <div v-for="(tag, index) in store.tagDraft" :key="index" class="qb-tag-row">

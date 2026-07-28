@@ -20,6 +20,17 @@ from question_bank.taxonomy.registry import canonical_knowledge_options
 
 DEFAULT_TAGGING_MODEL = "gpt-4o"
 STUDENT_LEVELS = ("入门补缺", "基础巩固", "中档提升", "综合突破", "压轴拔高")
+_TAGGING_REASONING_INSTRUCTION = (
+    "Use deliberate reasoning before selecting tags. First read the question and "
+    "reference answer carefully. Analyze the underlying junior-middle-school "
+    "mathematics knowledge being assessed, the key auxiliary construction and "
+    "solution steps, any classic mathematical model involved (for example, "
+    "midpoint or hand-in-hand models), and the typical errors students are likely "
+    "to make, such as omitted conditions or confused concepts. After completing "
+    "this mathematical reasoning and diagnostic analysis, select the final tags "
+    "according to the schema. Every tag must agree with that analysis; do not "
+    "invent, omit, or misclassify tags."
+)
 # Compatibility for older configuration-analysis prompts. New question-bank
 # tagging obtains its candidates exclusively from TaxonomyGovernance.
 KNOWLEDGE_POINT_OPTIONS = tuple(canonical_knowledge_options())
@@ -457,14 +468,7 @@ def _prompt_text(
         "output_schema": _plain_output_schema(_taxonomy_revision(contract)),
     }
     if os.getenv("QUESTION_BANK_TAGGING_THINKING") == "1":
-        user_payload["reasoning_instruction"] = (
-            "【推理引导】：请启动深思熟虑的推理过程！"
-            "首先请你仔细阅读题目与参考答案，推导并阐述其考核的初中数学知识本质、"
-            "解题的关键辅助线及步骤、所涉及的经典数学模型（例如中点模型、手拉手模型等），"
-            "以及学生在做这道题时容易踩的典型错因（如条件遗漏、概念混淆等）。"
-            "在完成了上述扎实的数学逻辑推导与诊断分析后，"
-            "再按照 schema 规范，精心选择并确定最终输出的各项标签（各项标签内容必须与前述推导分析结论完全吻合，不得凭空臆造或漏标错标）。"
-        )
+        user_payload["reasoning_instruction"] = _TAGGING_REASONING_INSTRUCTION
     return f"{_system_prompt(contract)}\n\n{json.dumps(user_payload, ensure_ascii=False)}"
 
 
@@ -479,14 +483,7 @@ def _prompt_input(
         "output_schema": _plain_output_schema(_taxonomy_revision(contract)),
     }
     if os.getenv("QUESTION_BANK_TAGGING_THINKING") == "1":
-        user_payload["reasoning_instruction"] = (
-            "【推理引导】：请启动深思熟虑的推理过程！"
-            "首先请你仔细阅读题目与参考答案，推导并阐述其考核的初中数学知识本质、"
-            "解题的关键辅助线及步骤、所涉及的经典数学模型（例如中点模型、手拉手模型等），"
-            "以及学生在做这道题时容易踩的典型错因（如条件遗漏、概念混淆等）。"
-            "在完成了上述扎实的数学逻辑推导与诊断分析后，"
-            "再按照 schema 规范，精心选择并确定最终输出的各项标签（各项标签内容必须与前述推导分析结论完全吻合，不得凭空臆造或漏标错标）。"
-        )
+        user_payload["reasoning_instruction"] = _TAGGING_REASONING_INSTRUCTION
     return [
         {"role": "system", "content": _system_prompt(contract)},
         {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
@@ -769,14 +766,7 @@ def _batch_prompt_input(
         },
     }
     if os.getenv("QUESTION_BANK_TAGGING_THINKING") == "1":
-        user_payload["reasoning_instruction"] = (
-            "【推理引导】：请启动深思熟虑的推理过程！"
-            "首先请你仔细阅读题目与参考答案，推导并阐述其考核的初中数学知识本质、"
-            "解题的关键辅助线及步骤、所涉及的经典数学模型（例如中点模型、手拉手模型等），"
-            "以及学生在做这道题时容易踩的典型错因（如条件遗漏、概念混淆等）。"
-            "在完成了上述扎实的数学逻辑推导与诊断分析后，"
-            "再按照 schema 规范，精心选择并确定最终输出的各项标签（各项标签内容必须与前述推导分析结论完全吻合，不得凭空臆造或漏标错标）。"
-        )
+        user_payload["reasoning_instruction"] = _TAGGING_REASONING_INSTRUCTION
     
     return [
         {"role": "system", "content": _batch_system_prompt(contract)},
@@ -870,12 +860,7 @@ def _analyze_one_batch(
             }
             if os.getenv("QUESTION_BANK_TAGGING_THINKING") == "1":
                 user_payload["reasoning_instruction"] = (
-                    "【推理引导】：请启动深思熟虑的推理过程！"
-                    "首先请你仔细阅读题目与参考答案，推导并阐述其考核的初中数学知识本质、"
-                    "解题的关键辅助线及步骤、所涉及的经典数学模型（例如中点模型、手拉手模型等），"
-                    "以及学生在做这道题时容易踩的典型错因（如条件遗漏、概念混淆等）。"
-                    "在完成了上述扎实的数学逻辑推导与诊断分析后，"
-                    "再按照 schema 规范，精心选择并确定最终输出的各项标签（各项标签内容必须与前述推导分析结论完全吻合，不得凭空臆造或漏标错标）。"
+                    _TAGGING_REASONING_INSTRUCTION
                 )
             prompt = (
                 f"{_batch_system_prompt(taxonomy_contract)}\n\n"

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReviewItem } from '../api/review'
 import ReviewEvidenceViewer from '../components/review/ReviewEvidenceViewer.vue'
 import { reviewShortcutBus } from '../composables/review-shortcuts'
+import type { EvidenceSource } from '../composables/use-evidence-viewer'
 
 const makeItem = (detailId: number): ReviewItem => ({
   session_id: 7,
@@ -70,12 +71,14 @@ async function mountViewer({
   item = makeItem(2),
   previousItem = makeItem(1),
   nextItem = makeItem(3),
+  source = 'crop',
 }: Partial<{
   item: ReviewItem
   previousItem: ReviewItem | null
   nextItem: ReviewItem | null
+  source: EvidenceSource
 }> = {}) {
-  const props = reactive({ item, previousItem, nextItem })
+  const props = reactive({ item, previousItem, nextItem, source })
   const Root = defineComponent({
     setup: () => () => h(ReviewEvidenceViewer, props),
   })
@@ -138,31 +141,31 @@ describe('P2-06 review evidence viewer', () => {
     expect(images).toHaveLength(1)
     expect(images[0]?.getAttribute('src')).toBe('/api/crop/2')
     expect(images[0]?.getAttribute('alt')).toBe('匿名学生2 的裁剪证据')
-    expect(host.textContent).toContain('裁剪证据')
+    expect(host.querySelector('[aria-label="证据来源"]')).toBeNull()
   })
 
   it('switches across crop, original, and annotated evidence while resetting transform state', async () => {
-    const { host } = await mountViewer()
+    const { host, props } = await mountViewer()
     ResizeObserverStub.instances[0]?.emit()
     loadActiveImage(host)
     await settle()
     clickButton(host, '放大')
     clickButton(host, '向右旋转')
-    clickButton(host, '原卷正面')
+    props.source = 'original_front'
     await settle()
     expect(host.querySelector('img')?.getAttribute('src')).toBe('/api/front/2')
     expect(host.querySelector('img')?.getAttribute('style')).toContain('rotate(0deg)')
     expect(host.textContent).toContain('适应宽度')
 
-    clickButton(host, '原卷反面')
+    props.source = 'original_back'
     await settle()
     expect(host.querySelector('img')?.getAttribute('src')).toBe('/api/back/2')
 
-    clickButton(host, '标注正面')
+    props.source = 'annotated_front'
     await settle()
     expect(host.querySelector('img')?.getAttribute('src')).toBe('/api/front/2?variant=annotated')
 
-    clickButton(host, '标注反面')
+    props.source = 'annotated_back'
     await settle()
     expect(host.querySelector('img')?.getAttribute('src')).toBe('/api/back/2?variant=annotated')
   })
@@ -213,7 +216,7 @@ describe('P2-06 review evidence viewer', () => {
     startDrag(4)
     await nextTick()
     expect(canvas.classList.contains('is-dragging')).toBe(true)
-    clickButton(host, '原卷正面')
+    props.source = 'original_front'
     await settle()
     expect(releasePointerCapture).toHaveBeenCalledWith(4)
     expect(canvas.classList.contains('is-dragging')).toBe(false)
@@ -248,7 +251,7 @@ describe('P2-06 review evidence viewer', () => {
     expect(PreloadImageStub.instances.every((image) => image.onerror === null)).toBe(true)
   })
 
-  it('supports wheel-centered zoom, pointer drag, and focused canvas keys', async () => {
+  it('changes image size only through toolbar buttons while retaining drag and arrow pan', async () => {
     const { host } = await mountViewer()
     const canvas = host.querySelector<HTMLElement>('.review-evidence-canvas')!
     Object.defineProperty(canvas, 'getBoundingClientRect', {
@@ -258,6 +261,8 @@ describe('P2-06 review evidence viewer', () => {
     ResizeObserverStub.instances[0]?.emit()
     loadActiveImage(host, 800, 600)
     await settle()
+    const scale = () => host.querySelector('output')?.textContent
+    const fittedScale = scale()
 
     const wheel = new WheelEvent('wheel', {
       deltaY: -1,
@@ -267,9 +272,22 @@ describe('P2-06 review evidence viewer', () => {
       cancelable: true,
     })
     canvas.dispatchEvent(wheel)
-    expect(wheel.defaultPrevented).toBe(true)
+    expect(wheel.defaultPrevented).toBe(false)
     await settle()
-    expect(host.textContent).toContain('119%')
+    expect(scale()).toBe(fittedScale)
+
+    const zoomKey = new KeyboardEvent('keydown', {
+      key: '+',
+      bubbles: true,
+      cancelable: true,
+    })
+    canvas.dispatchEvent(zoomKey)
+    expect(zoomKey.defaultPrevented).toBe(false)
+    expect(scale()).toBe(fittedScale)
+
+    clickButton(host, '放大')
+    await settle()
+    expect(scale()).not.toBe(fittedScale)
 
     const beforeDrag = host.querySelector('img')?.getAttribute('style')
     const down = new Event('pointerdown', { bubbles: true })
@@ -282,9 +300,6 @@ describe('P2-06 review evidence viewer', () => {
     expect(canvas.classList.contains('is-dragging')).toBe(true)
     expect(host.querySelector('img')?.getAttribute('style')).not.toBe(beforeDrag)
 
-    const fitKey = new KeyboardEvent('keydown', { key: 'z', bubbles: true, cancelable: true })
-    canvas.dispatchEvent(fitKey)
-    expect(fitKey.defaultPrevented).toBe(true)
     const rightKey = new KeyboardEvent('keydown', {
       key: 'ArrowRight',
       bubbles: true,
@@ -294,7 +309,7 @@ describe('P2-06 review evidence viewer', () => {
     expect(rightKey.defaultPrevented).toBe(true)
   })
 
-  it('consumes global fit and zoom commands through the existing viewer state once', async () => {
+  it('does not let the legacy global shortcut bus change image size', async () => {
     const { host, unmount } = await mountViewer()
     ResizeObserverStub.instances[0]?.emit()
     loadActiveImage(host, 800, 600)
@@ -304,7 +319,7 @@ describe('P2-06 review evidence viewer', () => {
 
     reviewShortcutBus.dispatch('zoom-in')
     await settle()
-    expect(scale()).not.toBe(fittedScale)
+    expect(scale()).toBe(fittedScale)
 
     reviewShortcutBus.dispatch('zoom-out')
     await settle()

@@ -281,6 +281,7 @@ async function deleteRecord(recordId: string): Promise<void> {
                     :blocks="question.rich_content?.question_blocks"
                     :fallback="question.question_text"
                     image-alt="试卷题目配图"
+                    dense
                   />
                 </div>
                 <div
@@ -293,7 +294,7 @@ async function deleteRecord(recordId: string): Promise<void> {
                     :fallback="question.answer_text"
                     empty-label="暂未录入答案"
                     image-alt="试卷答案配图"
-                    compact
+                    dense
                   />
                 </div>
               </li>
@@ -320,14 +321,6 @@ async function deleteRecord(recordId: string): Promise<void> {
             @click="assembly.submitExport('docx')"
           >
             导出 Word
-          </button>
-          <button
-            type="button"
-            class="assembly-button"
-            :disabled="!assembly.canExport || assembly.submitting"
-            @click="assembly.submitExport('markdown')"
-          >
-            导出 Markdown
           </button>
         </div>
 

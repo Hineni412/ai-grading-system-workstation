@@ -34,11 +34,14 @@ from backend.scan_grading.workspace import (
     InvalidScanUploadError,
     ScanGradingWorkspace,
     ScanGradingWorkspaceError,
+    ScanReplacementCleanupIncompleteError,
     ScanUploadTooLargeError,
     UploadBatchRevisionError,
 )
 from backend.jobs.manager import ActiveJobExistsError, UnsupportedJobTypeError
 from backend.repositories.access import GradingRepositoryAccess
+from backend.repositories.sessions import SessionDeletionActiveWork
+from session_cleanup import SessionDerivedTrainingDataExists
 from template_upload_service import TemplateUploadError, TemplateUploadService
 
 
@@ -136,6 +139,7 @@ async def upload_session_scan(
     session_id: int,
     request: Request,
     response: Response,
+    replacement: bool = False,
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanUploadResponse:
@@ -164,6 +168,7 @@ async def upload_session_scan(
                 media_type=media_type,
                 content_sha256=digest,
                 source=upload,
+                replacement=replacement,
             )
     except FrozenUploadBatchError as exc:
         raise ApiError(409, "scan_upload_batch_frozen", "Scan upload batch is frozen") from exc
@@ -197,6 +202,7 @@ def remove_session_scan_upload(
     session_id: int,
     upload_id: str,
     expected_revision: int,
+    replacement: bool = False,
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanUploadBatchResponse:
@@ -206,6 +212,7 @@ def remove_session_scan_upload(
             session_id,
             upload_id,
             expected_revision=expected_revision,
+            replacement=replacement,
         )
     )
 
@@ -217,6 +224,7 @@ def remove_session_scan_upload(
 def clear_session_scan_uploads(
     session_id: int,
     expected_revision: int,
+    replacement: bool = False,
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanUploadBatchResponse:
@@ -225,6 +233,7 @@ def clear_session_scan_uploads(
         lambda: workspace.clear_uploads(
             session_id,
             expected_revision=expected_revision,
+            replacement=replacement,
         )
     )
 
@@ -274,6 +283,86 @@ def start_new_session_scan_batch(
         ) from exc
     except ScanGradingWorkspaceError as exc:
         raise ApiError(409, "grading_run_still_active", "Active grading run must be resolved first") from exc
+    return ScanUploadBatchResponse.model_validate(batch)
+
+
+@router.post(
+    "/sessions/{session_id}/scan-uploads/replacement",
+    response_model=ScanUploadBatchResponse,
+)
+def begin_session_scan_replacement(
+    session_id: int,
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+) -> ScanUploadBatchResponse:
+    _require_session(db, session_id)
+    try:
+        batch = workspace.begin_replacement_upload(session_id)
+    except ActiveScanAnalysisError as exc:
+        raise ApiError(409, "scan_analysis_still_active", "Scan analysis is still active") from exc
+    except SessionDerivedTrainingDataExists as exc:
+        raise ApiError(
+            409,
+            "scan_replacement_training_snapshot_exists",
+            "A saved training task still references this exam",
+        ) from exc
+    except SessionDeletionActiveWork as exc:
+        raise ApiError(409, "scan_replacement_active_work", "Exam work is still active") from exc
+    except ScanGradingWorkspaceError as exc:
+        raise ApiError(409, "grading_run_still_active", "Grading run is still active") from exc
+    return ScanUploadBatchResponse.model_validate(batch)
+
+
+@router.post(
+    "/sessions/{session_id}/scan-uploads/replacement/cancel",
+)
+def cancel_session_scan_replacement(
+    session_id: int,
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+) -> dict[str, bool]:
+    _require_session(db, session_id)
+    workspace.cancel_replacement_upload(session_id)
+    return {"cancelled": True}
+
+
+@router.post(
+    "/sessions/{session_id}/scan-uploads/replacement/commit",
+    response_model=ScanUploadBatchResponse,
+)
+def commit_session_scan_replacement(
+    session_id: int,
+    request: ScanUploadFreezeRequest,
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+) -> ScanUploadBatchResponse:
+    _require_session(db, session_id)
+    try:
+        batch = workspace.commit_replacement_upload(
+            session_id,
+            expected_revision=request.expected_revision,
+        )
+    except UploadBatchRevisionError as exc:
+        raise ApiError(409, "scan_upload_revision_conflict", "Replacement batch changed") from exc
+    except ActiveScanAnalysisError as exc:
+        raise ApiError(409, "scan_analysis_still_active", "Scan analysis is still active") from exc
+    except SessionDerivedTrainingDataExists as exc:
+        raise ApiError(
+            409,
+            "scan_replacement_training_snapshot_exists",
+            "A saved training task still references this exam",
+        ) from exc
+    except SessionDeletionActiveWork as exc:
+        raise ApiError(409, "scan_replacement_active_work", "Exam work is still active") from exc
+    except ScanReplacementCleanupIncompleteError as exc:
+        raise ApiError(
+            409,
+            "scan_replacement_cleanup_pending",
+            "最新答卷已经替换，但部分旧文件尚未清理；"
+            "请关闭正在查看的答卷或报告后刷新页面重试。",
+        ) from exc
+    except ScanGradingWorkspaceError as exc:
+        raise ApiError(409, "scan_replacement_rejected", "Scan replacement was rejected") from exc
     return ScanUploadBatchResponse.model_validate(batch)
 
 

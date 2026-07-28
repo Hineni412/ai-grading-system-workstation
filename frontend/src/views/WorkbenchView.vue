@@ -19,9 +19,7 @@ const analysisStore = useAnalysisStore()
 const selectedClass = ref<string | null>(null)
 const selectedQuestionId = ref<string | null>(null)
 const showAnomalies = ref(false)
-const showJobs = ref(false)
 const anomaliesSection = ref<HTMLElement | null>(null)
-const jobsSection = ref<HTMLElement | null>(null)
 
 const anomalyCount = computed(() => {
   const value = workbenchStore.overview?.anomalies
@@ -57,19 +55,12 @@ const anomalyStatus = computed(() => {
   return anomalyCount.value === 0 ? '当前没有异常记录' : '可查看只读异常清单'
 })
 
-const recentJob = computed(() => workbenchStore.overview?.recent_jobs[0] ?? null)
-const jobValue = computed(() => recentJob.value ? formatJobProgress(recentJob.value.progress) : null)
-const jobStatus = computed(() => recentJob.value
-  ? `${recentJob.value.stage} · ${recentJob.value.status}`
-  : '暂无最近任务')
-
 watch(
   () => sessionStore.selectedSessionId,
   (sessionId) => {
     selectedClass.value = null
     selectedQuestionId.value = null
     showAnomalies.value = false
-    showJobs.value = false
     workbenchStore.resetForSession(sessionId)
     analysisStore.resetForSession(sessionId)
     const loads: Promise<void>[] = [workbenchStore.loadOverview(sessionId)]
@@ -97,10 +88,6 @@ function formatTime(value: string | null): string {
   return value?.replace('T', ' ').replace('Z', '') ?? '时间暂不可用'
 }
 
-function formatJobProgress(value: number): string {
-  return `${Math.round(value * 1000) / 10}%`
-}
-
 function openGrading(questionId?: string): void {
   void router.push(questionId ? { path: '/grading', query: { question: questionId } } : '/grading')
 }
@@ -122,14 +109,12 @@ async function openAnomalies(): Promise<void> {
   anomaliesSection.value?.focus()
 }
 
-async function openJobs(): Promise<void> {
-  showJobs.value = true
-  await nextTick()
-  jobsSection.value?.focus()
-}
-
 function selectRecentSession(sessionId: number): void {
   sessionStore.selectSession(sessionId)
+}
+
+function archivedRecentSession(): void {
+  void workbenchStore.loadOverview(sessionStore.selectedSessionId)
 }
 
 async function selectClass(className: string | null): Promise<void> {
@@ -232,12 +217,9 @@ function loadMoreAnomalies(): void {
         :review-status="reviewStatus"
         :anomaly-value="anomalyValue"
         :anomaly-status="anomalyStatus"
-        :job-value="jobValue"
-        :job-status="jobStatus"
         @open-grading="openGrading()"
         @open-review="openGrading()"
         @open-anomalies="openAnomalies"
-        @open-jobs="openJobs"
       />
 
       <div class="workbench-primary-grid">
@@ -261,6 +243,7 @@ function loadMoreAnomalies(): void {
           :sessions="workbenchStore.overview?.recent_sessions ?? []"
           :current-session-id="sessionStore.selectedSessionId"
           @select="selectRecentSession"
+          @archived="archivedRecentSession"
         />
       </div>
 
@@ -343,25 +326,6 @@ function loadMoreAnomalies(): void {
         </template>
       </section>
 
-      <section
-        v-if="showJobs"
-        ref="jobsSection"
-        class="workbench-section workbench-disclosure"
-        aria-labelledby="job-list-title"
-        tabindex="-1"
-      >
-        <header class="workbench-section__heading"><h2 id="job-list-title">最近任务</h2></header>
-        <p v-if="!workbenchStore.overview?.recent_jobs.length" class="workbench-empty-copy">暂无最近任务</p>
-        <ul v-else class="workbench-readonly-list">
-          <li v-for="job in workbenchStore.overview.recent_jobs" :key="job.id">
-            <strong :aria-label="`任务进度：${formatJobProgress(job.progress)}`">
-              {{ job.stage }} · {{ formatJobProgress(job.progress) }}
-            </strong>
-            <span>{{ job.status }} · {{ job.job_type }}</span>
-            <span>{{ job.detail }}</span>
-          </li>
-        </ul>
-      </section>
     </div>
   </section>
 </template>
